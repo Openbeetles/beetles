@@ -51,3 +51,16 @@ CONFIG_ESP_TASK_WDT_TIMEOUT_S=60
 # 禁用：该配置导致 WiFi 重连时栈溢出（v6.0 的 WiFi/TLS 驱动在 Flash 执行时栈使用增加）
 # CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH is not set
 # CONFIG_FREERTOS_PLACE_SNAPSHOT_FUNS_INTO_FLASH is not set
+
+# ─── ESP-SR WakeNet ────────────────────────────────────────────────────────────
+# 启用 WakeNet 唤醒词引擎（v1 只打包一个模型以节省 Flash）。
+# Enable WakeNet wake-word engine (v1 packages one model to save Flash).
+CONFIG_USE_WAKENET=y
+# WakeNet9「Hi,ESP」(wn9_hiesp)；仅注册此一个模型以最小化 Flash 占用。
+# WakeNet9 "Hi,ESP" (wn9_hiesp); single model to minimise Flash.
+CONFIG_SR_WN_WN9_HIESP=y
+# WakeNet 推理在 PSRAM 执行（降低内部 RAM 压力，ESP32-S3 + PSRAM 强烈建议）。
+# Run WakeNet inference from PSRAM (reduces internal RAM pressure; strongly recommended on S3 + PSRAM).
+CONFIG_WAKENET_MODEL_IN_PSRAM=y
+# WakeNet9 激活模式：90% 置信度（DET_MODE_90）；误唤醒率与漏检率较均衡。
+CONFIG_SR_WN_DETECTION_MODE=1

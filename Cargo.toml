@@ -17,6 +17,16 @@ esp_idf_version = "v6.0"
 # 飞书长连接入站 WSS 客户端
 remote_component = { name = "espressif/esp_websocket_client", version = "1.3" }
 
+[[package.metadata.esp-idf-sys.extra_components]]
+# 乐鑫语音识别框架：WakeNet 唤醒词引擎（声明 idf>=5.0，含 6.x；锁定版本禁止漂移）。
+# ESP Speech Recognition framework: WakeNet engine (manifest declares idf>=5.0 including 6.x; version pinned).
+remote_component = { name = "espressif/esp-sr", version = "2.4.0" }
+
+[[package.metadata.esp-idf-sys.extra_components]]
+# 唤醒词薄 C 封装层：暴露稳定 ABI 供 Rust FFI，内部依赖 esp-sr WakeNet。
+# Thin C wrapper exposing stable ABI for Rust FFI; depends on esp-sr WakeNet internally.
+component_dirs = ["components"]
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(esp_idf_version_at_least_6_0_0)',

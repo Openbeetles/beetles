@@ -755,6 +755,12 @@ impl AudioPipelineState {
                     if backend.mic_ready() {
                         match backend.read_mic_frame_pcm16(&mut mic_frame) {
                             Ok(n) if n > 0 => {
+                                // Tee raw PCM to the wake-word engine BEFORE pushing to the
+                                // shared ring buffer.  This avoids contention with voice_input
+                                // which pops from the ring buffer on demand.
+                                #[cfg(target_arch = "xtensa")]
+                                crate::platform::wake_word::feed_pcm_i16(&mic_frame[..n]);
+
                                 let mut guard =
                                     worker_shared.mic.lock().unwrap_or_else(|e| e.into_inner());
                                 guard.push_slice_drop_oldest(&mic_frame[..n]);

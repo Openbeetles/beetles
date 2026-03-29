@@ -392,6 +392,35 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     let outbound_tx = bus.outbound_tx;
     let qq_msg_id_cache: beetle::channels::QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
 
+    // ── Audio init + wake-word registration (ESP only, after MessageBus) ───
+    // Ordering guarantee: init_audio starts audio_io_worker; wake_word::configure
+    // arms the WakeNet engine with a valid inbound sender immediately after.
+    // This ensures feed_pcm_i16 can never race against an uninitialised sender.
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    {
+        beetle::bootstrap::esp_init_audio(&platform, &config);
+        if let Some(audio_cfg) = config.audio.as_ref() {
+            if audio_cfg.enabled && audio_cfg.wake_word.enabled {
+                if let Some(model_name) =
+                    beetle::config::wake_word_resolve_model(&audio_cfg.wake_word.keyword)
+                {
+                    let channel = audio_cfg
+                        .wake_word
+                        .inbound_channel
+                        .as_deref()
+                        .unwrap_or(&config.enabled_channel);
+                    beetle::platform::wake_word::configure(
+                        model_name.as_str(),
+                        channel,
+                        &audio_cfg.wake_word.inbound_chat_id,
+                        &audio_cfg.wake_word.wake_prompt,
+                        user_inbound_tx.clone(),
+                    );
+                }
+            }
+        }
+    }
+
     if !startup_self_check(memory_store.as_ref()) {
         log::error!(
             "[{}] startup self-check failed: storage not readable (get_memory and get_soul both failed)",

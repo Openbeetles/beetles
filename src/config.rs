@@ -8,8 +8,8 @@ use crate::display::{
 };
 use crate::error::{Error, Result};
 use crate::platform::ConfigStore;
-use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
 /// SPIFFS 读出的单体 JSON：默认严格解析（与历史行为一致）；仅当整段非法而「第一个顶层值」仍合法时降级
 /// （典型：短写未截断导致尾部旧字节 → `trailing characters`），并打 warn，避免静默掩盖其它错误。
@@ -997,6 +997,84 @@ const AUDIO_STT_API_SECRET_MAX_LEN: usize = 256;
 const AUDIO_SOUND_EVENTS_MAX: usize = 16;
 const AUDIO_SOUND_EVENT_MAX_LEN: usize = 32;
 const AUDIO_MIC_DEVICE_I2S_INMP441: &str = "i2s_inmp441";
+/// Maximum length for `wake_word.inbound_chat_id`.
+const AUDIO_WAKE_CHAT_ID_MAX_LEN: usize = 128;
+/// Maximum length for `wake_word.wake_prompt`.
+const AUDIO_WAKE_PROMPT_MAX_LEN: usize = 256;
+
+/// Supported wake word **aliases** → WakeNet model id (passed to `beetle_wakenet_init`).
+///
+/// Configure-UI / `audio.json` `wake_word.keyword` is normally one of the
+/// left-hand aliases (default **`hi_beetle`**, aligned with `configure-ui`).
+/// The right-hand side must exist in the device **model** partition (see
+/// `sdkconfig` `CONFIG_SR_WN_*`).  **`hi_beetle`** currently maps to the single
+/// model shipped in `sdkconfig.defaults.esp32s3`; replace the mapping when a
+/// dedicated "Hi Beetle" WakeNet binary is packaged.
+///
+/// Advanced: [`wake_word_resolve_model`] also accepts a verbatim WakeNet id
+/// such as `wn9_hiesp` without an alias row.
+pub const WAKE_WORD_SUPPORTED_KEYWORDS: &[(&str, &str)] = &[
+    ("hi_beetle", "wn9_hiesp"),
+    ("hiesp", "wn9_hiesp"),
+    ("nihaoxiaojia", "wn9_nihaoxiaojia"),
+    ("hilexin", "wn9_hilexin"),
+    ("alexa", "wn9_alexa"),
+];
+
+/// Resolve a user-facing keyword alias to its WakeNet model name.
+///
+/// Returns `None` when the keyword is not in [`WAKE_WORD_SUPPORTED_KEYWORDS`].
+pub fn wake_word_model_name(keyword: &str) -> Option<&'static str> {
+    let k = keyword.trim();
+    WAKE_WORD_SUPPORTED_KEYWORDS
+        .iter()
+        .find(|(alias, _)| *alias == k)
+        .map(|(_, model)| *model)
+}
+
+/// True when `s` looks like a WakeNet model id (`wn` + version digits + `_` + suffix).
+fn wake_word_verbatim_model_id(s: &str) -> bool {
+    let s = s.trim();
+    if s.len() < 6 || s.len() > AUDIO_KEYWORD_MAX_LEN || !s.is_ascii() {
+        return false;
+    }
+    let parts: Vec<&str> = s.split('_').collect();
+    if parts.len() < 2 {
+        return false;
+    }
+    let head = parts[0];
+    let Some(ver) = head.strip_prefix("wn") else {
+        return false;
+    };
+    if ver.is_empty() || !ver.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    for p in &parts[1..] {
+        if p.is_empty()
+            || !p
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Resolve `wake_word.keyword` to the WakeNet model id for `beetle_wakenet_init`.
+///
+/// Accepts: (1) aliases from [`WAKE_WORD_SUPPORTED_KEYWORDS`], or (2) a verbatim
+/// id such as `wn9_hiesp` when the partition contains that model.
+pub fn wake_word_resolve_model(keyword: &str) -> Option<String> {
+    let k = keyword.trim();
+    if let Some(m) = wake_word_model_name(k) {
+        return Some(m.to_string());
+    }
+    if wake_word_verbatim_model_id(k) {
+        return Some(k.to_string());
+    }
+    None
+}
 const AUDIO_MIC_DEVICE_PDM: &str = "pdm";
 const AUDIO_SPEAKER_DEVICE_I2S_MAX98357A: &str = "i2s_max98357a";
 
@@ -1058,8 +1136,23 @@ pub struct AudioVadConfig {
 pub struct AudioWakeWordConfig {
     #[serde(default)]
     pub enabled: bool,
+    /// Wake keyword: alias from [`WAKE_WORD_SUPPORTED_KEYWORDS`] or verbatim WakeNet id (`wn9_…`).
     #[serde(default)]
     pub keyword: String,
+    /// Chat ID injected into the user inbound queue when wake word fires.
+    /// Required when `enabled == true`.
+    #[serde(default)]
+    pub inbound_chat_id: String,
+    /// Channel override; `None` means use `AppConfig.enabled_channel`.
+    #[serde(default)]
+    pub inbound_channel: Option<String>,
+    /// Text content of the injected `PcMsg`.  Defaults to a Chinese greeting.
+    #[serde(default = "default_wake_prompt")]
+    pub wake_prompt: String,
+}
+
+fn default_wake_prompt() -> String {
+    "你好，我在听，请说。".to_string()
 }
 
 /// 语音识别（STT）配置。
@@ -1211,6 +1304,9 @@ pub fn default_disabled_audio_segment() -> AudioSegment {
         wake_word: AudioWakeWordConfig {
             enabled: false,
             keyword: "hi_beetle".to_string(),
+            inbound_chat_id: String::new(),
+            inbound_channel: None,
+            wake_prompt: default_wake_prompt(),
         },
         stt: AudioSttConfig {
             provider: "baidu".to_string(),
@@ -1518,6 +1614,53 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
                 AUDIO_KEYWORD_MAX_LEN
             ),
         ));
+    }
+    if seg.wake_word.inbound_chat_id.len() > AUDIO_WAKE_CHAT_ID_MAX_LEN {
+        return Err(Error::config(
+            "audio",
+            format!(
+                "wake_word.inbound_chat_id length must be <= {}",
+                AUDIO_WAKE_CHAT_ID_MAX_LEN
+            ),
+        ));
+    }
+    if seg.wake_word.wake_prompt.len() > AUDIO_WAKE_PROMPT_MAX_LEN {
+        return Err(Error::config(
+            "audio",
+            format!(
+                "wake_word.wake_prompt length must be <= {}",
+                AUDIO_WAKE_PROMPT_MAX_LEN
+            ),
+        ));
+    }
+    if seg.wake_word.enabled {
+        if !seg.microphone.enabled {
+            return Err(Error::config(
+                "audio",
+                "wake_word.enabled requires microphone.enabled == true",
+            ));
+        }
+        if seg.wake_word.inbound_chat_id.trim().is_empty() {
+            return Err(Error::config(
+                "audio",
+                "wake_word.inbound_chat_id is required when wake_word.enabled == true",
+            ));
+        }
+        if wake_word_resolve_model(&seg.wake_word.keyword).is_none() {
+            let mut aliases: Vec<&str> = WAKE_WORD_SUPPORTED_KEYWORDS
+                .iter()
+                .map(|(k, _)| *k)
+                .collect();
+            aliases.sort_unstable();
+            aliases.dedup();
+            return Err(Error::config(
+                "audio",
+                format!(
+                    "wake_word.keyword {:?} is not supported; use an alias from {:?} or a WakeNet id like wn9_xxx (must exist in the model partition)",
+                    seg.wake_word.keyword, aliases
+                ),
+            ));
+        }
     }
     if seg.stt.provider.len() > CONFIG_FIELD_MAX_LEN
         || seg.stt.model.len() > CONFIG_FIELD_MAX_LEN
@@ -2017,10 +2160,7 @@ fn validate_pin_range(pin: i32, stage: &'static str) -> Result<()> {
     if HARDWARE_FORBIDDEN_PINS.contains(&pin) {
         return Err(Error::config(
             stage,
-            format!(
-                "pin {} is forbidden (strapping pin)",
-                pin
-            ),
+            format!("pin {} is forbidden (strapping pin)", pin),
         ));
     }
     Ok(())

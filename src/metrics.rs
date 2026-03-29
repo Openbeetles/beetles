@@ -49,6 +49,7 @@ static VOICE_OUTPUT_TTS_HTTP_LAST_MS: AtomicU32 = AtomicU32::new(0);
 static VOICE_OUTPUT_PLAY_LAST_MS: AtomicU32 = AtomicU32::new(0);
 static VOICE_INPUT_FAIL_TOTAL: AtomicU32 = AtomicU32::new(0);
 static VOICE_OUTPUT_FAIL_TOTAL: AtomicU32 = AtomicU32::new(0);
+static WAKE_WORD_TRIGGER_TOTAL: AtomicU32 = AtomicU32::new(0);
 
 /// Linux 嵌入式 WiFi：wpa 守护恢复、AP 栈重启计数；失败 stage 摘要（脱敏，固定长度）。
 static WIFI_RECONNECT_TOTAL: AtomicU32 = AtomicU32::new(0);
@@ -225,6 +226,11 @@ pub fn record_voice_output_play_ms(ms: u128) {
 }
 
 #[inline]
+pub fn record_wake_word_trigger() {
+    WAKE_WORD_TRIGGER_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
 pub fn record_voice_tool_failure(tool_name: &str) {
     match tool_name {
         "voice_input" => {
@@ -318,6 +324,7 @@ pub fn snapshot() -> MetricsSnapshot {
         voice_output_play_last_ms: VOICE_OUTPUT_PLAY_LAST_MS.load(Ordering::Relaxed) as u64,
         voice_input_fail_total: VOICE_INPUT_FAIL_TOTAL.load(Ordering::Relaxed) as u64,
         voice_output_fail_total: VOICE_OUTPUT_FAIL_TOTAL.load(Ordering::Relaxed) as u64,
+        wake_word_trigger_total: WAKE_WORD_TRIGGER_TOTAL.load(Ordering::Relaxed) as u64,
         errors_agent_chat: ERRORS_AGENT_CHAT.load(Ordering::Relaxed) as u64,
         errors_agent_context: ERRORS_AGENT_CONTEXT.load(Ordering::Relaxed) as u64,
         errors_tool_execute: ERRORS_TOOL_EXECUTE.load(Ordering::Relaxed) as u64,
@@ -373,6 +380,7 @@ pub struct MetricsSnapshot {
     pub voice_output_play_last_ms: u64,
     pub voice_input_fail_total: u64,
     pub voice_output_fail_total: u64,
+    pub wake_word_trigger_total: u64,
     pub errors_agent_chat: u64,
     pub errors_agent_context: u64,
     pub errors_tool_execute: u64,
@@ -396,7 +404,7 @@ impl MetricsSnapshot {
         let mut buf = String::with_capacity(384);
         let _ = write!(
             buf,
-            "metrics msg_in={} msg_out={} llm_calls={} llm_err={} llm_last_ms={} ttft_last_ms={} e2e_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} user_done={} sys_done={} cron_done={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} wdt_feeds={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} voice_in_capture_ms={} voice_in_stt_http_ms={} voice_out_tts_http_ms={} voice_out_play_ms={} voice_in_fail={} voice_out_fail={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={}",
+            "metrics msg_in={} msg_out={} llm_calls={} llm_err={} llm_last_ms={} ttft_last_ms={} e2e_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} user_done={} sys_done={} cron_done={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} wdt_feeds={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} voice_in_capture_ms={} voice_in_stt_http_ms={} voice_out_tts_http_ms={} voice_out_play_ms={} voice_in_fail={} voice_out_fail={} wake_word_trigger={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={}",
             self.messages_in,
             self.messages_out,
             self.llm_calls,
@@ -430,6 +438,7 @@ impl MetricsSnapshot {
             self.voice_output_play_last_ms,
             self.voice_input_fail_total,
             self.voice_output_fail_total,
+            self.wake_word_trigger_total,
             self.errors_agent_chat,
             self.errors_agent_context,
             self.errors_tool_execute,

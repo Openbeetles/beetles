@@ -242,3 +242,7 @@ pub const AUDIO_TTS_MAX_TEXT_LEN: usize = 512;
 pub const AUDIO_TTS_WRITE_CHUNK_SAMPLES: usize = 1024;
 /// `raw` 模型 `options.init_cmd` 最大长度（字节）。
 pub const I2C_SENSOR_MAX_CMD_LEN: usize = 4;
+// ---------- wake_word ----------
+/// 唤醒词检测后的冷却时长（毫秒）。防止误触连续灌爆 PcMsg 队列。
+/// Cooldown after a wake-word detection (ms). Prevents false triggers flooding the queue.
+pub const WAKE_WORD_COOLDOWN_MS: u64 = 2_000;
