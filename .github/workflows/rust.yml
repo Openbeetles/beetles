@@ -31,6 +31,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ripgrep
       - name: Check §14.2 patterns
         run: bash scripts/check_platform_isolation.sh
+      - name: Check thread stack literals (Linux TLS threads)
+        run: bash scripts/check_thread_stack.sh
 
   linux-musl-check:
     # Zig + cargo-zigbuild: ring/rustls need a cross C compiler for musl targets (same strategy as scripts/check_linux_musl.sh fallback).

@@ -5,7 +5,7 @@ use crate::platform::abstraction::MemorySnapshot;
 
 /// 构建 Linux 内存快照。
 /// - `heap_free_internal` = `MemAvailable`（与 ESP `internal` 语义对齐：可分配量）。
-/// - `heap_largest_block` = `u32::MAX`（Linux 无碎片维度，不做伪碎片判断）。
+/// - `heap_largest_block` = **0**（无等价于 ESP「最大连续空闲块」的内核指标；0 表示 N/A，非「零字节块」）。
 /// - `heap_free_spiram` = 0（Linux 无 PSRAM）。
 pub fn linux_memory_snapshot() -> MemorySnapshot {
     let s = match std::fs::read_to_string("/proc/meminfo") {
@@ -15,7 +15,7 @@ pub fn linux_memory_snapshot() -> MemorySnapshot {
             return MemorySnapshot {
                 heap_free_internal: 0,
                 heap_free_spiram: 0,
-                heap_largest_block: u32::MAX,
+                heap_largest_block: 0,
             };
         }
     };
@@ -29,7 +29,7 @@ pub fn linux_memory_snapshot() -> MemorySnapshot {
     MemorySnapshot {
         heap_free_internal: internal,
         heap_free_spiram: 0,
-        heap_largest_block: u32::MAX,
+        heap_largest_block: 0,
     }
 }
 

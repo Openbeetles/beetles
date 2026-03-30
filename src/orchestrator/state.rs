@@ -151,7 +151,7 @@ pub struct ResourceSnapshot {
     pub pressure: super::pressure::PressureLevel,
     pub heap_free_internal: u32,
     pub heap_free_spiram: u32,
-    /// internal 堆最大连续空闲块（字节），与 TLS 准入、mbedTLS 碎片诊断一致。
+    /// internal 堆最大连续空闲块（字节）；ESP 上用于 TLS 碎片门禁。Linux 上为 **0（N/A）**，与 `MemAvailable` 映射的 `heap_free_internal` 分开表述。
     pub heap_largest_block_internal: u32,
     pub active_http_count: u32,
     /// Agent 当前处理中的任务数（0 表示空闲）。

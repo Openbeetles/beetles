@@ -7,7 +7,9 @@ use crate::constants::{
     LLM_RETRY_LATER_DELAY_MS, LOW_MEM_DEFER_SLEEP_MS, OUTBOUND_DEFER_DELAY_MS,
     PRESSURE_QUEUE_CONGESTION_THRESHOLD,
 };
-use crate::constants::{TLS_ADMISSION_MIN_INTERNAL_BYTES, TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES};
+use crate::constants::TLS_ADMISSION_MIN_INTERNAL_BYTES;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES;
 use std::sync::atomic::Ordering;
 
 use super::pressure::PressureLevel;
@@ -23,6 +25,7 @@ pub enum AdmissionDecision {
 
 /// LLM 调用门控决策。
 /// LLM call gating decision.
+#[derive(Debug)]
 pub enum LlmDecision {
     Proceed,
     RetryLater { delay_ms: u64 },
@@ -69,11 +72,28 @@ fn critical_inbound_defer_delay_ms(state: &OrchestratorState) -> u64 {
     scaled.clamp(LOW_MEM_DEFER_SLEEP_MS_MIN, base)
 }
 
+/// ESP：按「最大连续块」相对 `TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES` 的缺口缩放退避。
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 #[inline]
 fn cautious_llm_retry_delay_ms(state: &OrchestratorState) -> u64 {
     let largest = state.heap_largest_block.load(Ordering::Relaxed) as u64;
     let need = TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u64;
     let deficit = need.saturating_sub(largest);
+    cautious_llm_retry_delay_scaled(deficit, need)
+}
+
+/// Linux/host：`heap_largest_block` 为 N/A，按 `MemAvailable` 映射的 internal 相对 `TLS_ADMISSION_MIN_INTERNAL_BYTES` 缩放退避。
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[inline]
+fn cautious_llm_retry_delay_ms(state: &OrchestratorState) -> u64 {
+    let internal = state.heap_free_internal.load(Ordering::Relaxed) as u64;
+    let need = TLS_ADMISSION_MIN_INTERNAL_BYTES as u64;
+    let deficit = need.saturating_sub(internal);
+    cautious_llm_retry_delay_scaled(deficit, need)
+}
+
+#[inline]
+fn cautious_llm_retry_delay_scaled(deficit: u64, need: u64) -> u64 {
     let range = LLM_RETRY_LATER_DELAY_MS.saturating_sub(LLM_RETRY_LATER_DELAY_MS_MIN);
     if range == 0 || need == 0 {
         return LLM_RETRY_LATER_DELAY_MS;
@@ -139,13 +159,27 @@ pub fn can_call_llm(state: &OrchestratorState) -> LlmDecision {
             reason: "critical_pressure",
         },
         PressureLevel::Cautious => {
-            let largest_block = state.heap_largest_block.load(Ordering::Relaxed);
-            if largest_block < TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32 {
-                LlmDecision::RetryLater {
-                    delay_ms: cautious_llm_retry_delay_ms(state),
+            #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+            {
+                let largest_block = state.heap_largest_block.load(Ordering::Relaxed);
+                if largest_block < TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32 {
+                    LlmDecision::RetryLater {
+                        delay_ms: cautious_llm_retry_delay_ms(state),
+                    }
+                } else {
+                    LlmDecision::Proceed
                 }
-            } else {
-                LlmDecision::Proceed
+            }
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            {
+                let internal = state.heap_free_internal.load(Ordering::Relaxed);
+                if internal < TLS_ADMISSION_MIN_INTERNAL_BYTES as u32 {
+                    LlmDecision::RetryLater {
+                        delay_ms: cautious_llm_retry_delay_ms(state),
+                    }
+                } else {
+                    LlmDecision::Proceed
+                }
             }
         }
         PressureLevel::Normal => LlmDecision::Proceed,
@@ -238,4 +272,70 @@ pub fn background_outbound_yield_ms(state: &OrchestratorState) -> u64 {
     // At most 3 in-flight agent tasks are counted for additional yield.
     let extra = active_agent.min(3) * 30;
     (base + extra).min(OUTBOUND_BACKGROUND_YIELD_MS_MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constants::{LLM_RETRY_LATER_DELAY_MS, TLS_ADMISSION_MIN_INTERNAL_BYTES};
+
+    fn state_with_heap(internal: u32, largest: u32, pressure: PressureLevel) -> OrchestratorState {
+        let s = OrchestratorState::new();
+        s.heap_free_internal.store(internal, Ordering::Relaxed);
+        s.heap_largest_block.store(largest, Ordering::Relaxed);
+        s.pressure_level.store(pressure as u8, Ordering::Relaxed);
+        s
+    }
+
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[test]
+    fn linux_cautious_llm_proceeds_when_internal_above_min() {
+        let s = state_with_heap(
+            TLS_ADMISSION_MIN_INTERNAL_BYTES as u32 + 1_000_000,
+            0,
+            PressureLevel::Cautious,
+        );
+        assert!(matches!(can_call_llm(&s), LlmDecision::Proceed));
+    }
+
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[test]
+    fn linux_cautious_llm_retry_when_internal_below_min() {
+        let s = state_with_heap(1024, 0, PressureLevel::Cautious);
+        match can_call_llm(&s) {
+            LlmDecision::RetryLater { delay_ms } => {
+                assert!(delay_ms >= super::LLM_RETRY_LATER_DELAY_MS_MIN);
+                assert!(delay_ms <= LLM_RETRY_LATER_DELAY_MS);
+            }
+            other => panic!("expected RetryLater, got {:?}", other),
+        }
+    }
+
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    use crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES;
+
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    #[test]
+    fn esp_cautious_llm_proceeds_when_largest_block_ok() {
+        let s = state_with_heap(
+            200_000,
+            TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32 + 1024,
+            PressureLevel::Cautious,
+        );
+        assert!(matches!(can_call_llm(&s), LlmDecision::Proceed));
+    }
+
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    #[test]
+    fn esp_cautious_llm_retry_when_largest_block_low() {
+        let s = state_with_heap(
+            200_000,
+            (TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32).saturating_sub(1024),
+            PressureLevel::Cautious,
+        );
+        assert!(matches!(
+            can_call_llm(&s),
+            LlmDecision::RetryLater { .. }
+        ));
+    }
 }
