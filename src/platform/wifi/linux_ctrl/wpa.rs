@@ -1,7 +1,7 @@
 //! STA 连接/扫描：经 [`super::wpa_ctrl`] Unix 套接字控制 `wpa_supplicant`（热路径无 `wpa_cli`）。
 //! STA connect/scan via [`super::wpa_ctrl`] Unix socket to `wpa_supplicant` (no `wpa_cli` on hot path).
 
-use crate::constants::{WIFI_CONNECT_TIMEOUT_SECS, WIFI_RETRY_BACKOFF_SECS};
+use crate::constants::WIFI_CONNECT_TIMEOUT_SECS;
 use crate::error::{Error, Result};
 use crate::platform::state_mount_path;
 use crate::platform::wifi::linux_ctrl::net;
@@ -193,7 +193,8 @@ pub fn connect_sta(iface: &str, ssid: &str, pass: &str) -> Result<Option<String>
                 format!("STA timeout after {}s", WIFI_CONNECT_TIMEOUT_SECS),
             ));
         }
-        std::thread::sleep(Duration::from_secs(WIFI_RETRY_BACKOFF_SECS[0]));
+        // 与 probe 线程的退避 [`WIFI_RETRY_BACKOFF_SECS`] 解耦：此处仅轮询 wpa_state，用较短间隔更快收敛。
+        std::thread::sleep(Duration::from_millis(500));
     }
 }
 

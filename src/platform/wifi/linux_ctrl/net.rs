@@ -47,6 +47,29 @@ pub fn create_virtual_ap_iface(phy_iface: &str, ap_iface: &str) -> Result<()> {
     Ok(())
 }
 
+/// Read current WiFi channel index from `iw dev <iface> info`.
+/// 从 `iw dev <iface> info` 读取当前信道号；无信道信息时返回 `Ok(None)`。
+pub fn read_wifi_channel(iface: &str) -> Result<Option<u8>> {
+    let out = run_checked(
+        "iw",
+        &["dev", iface, "info"],
+        Duration::from_secs(3),
+        "wifi_channel_read",
+    )?;
+    for line in out.stdout.lines() {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("channel ") {
+            let token = rest.split_whitespace().next().unwrap_or_default();
+            if let Ok(ch) = token.parse::<u16>() {
+                if (1..=255).contains(&ch) {
+                    return Ok(Some(ch as u8));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// After `iw interface add`, sysfs may appear before rtnetlink is consistent; wait briefly.
 /// `iw` 创建接口后 sysfs 与 netlink 可能短暂不一致，轮询 sysfs 并小睡再交给 rtnetlink。
 fn wait_iface_sysfs_ready(name: &str) -> Result<()> {

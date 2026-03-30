@@ -7,9 +7,13 @@ use crate::platform::wifi::linux_ctrl::net;
 use crate::platform::wifi::linux_ctrl::process::{is_pid_alive, run_checked, write_secure_atomic};
 use crate::platform::wifi::linux_ctrl::HOSTAPD_CTRL_INTERFACE_DIR;
 use std::path::{Path, PathBuf};
+use std::thread;
 use std::time::{Duration, Instant};
 
 const CMD_TIMEOUT: Duration = Duration::from_secs(10);
+/// `hostapd -B` 返回后控制套接字可能尚未创建；在启动 dnsmasq 前必须确认 AP 守护进程可响应。
+const HOSTAPD_CTRL_READY_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_SOFTAP_CHANNEL: u8 = 1;
 
 /// 发 TERM，等待进程退出（最多 2s），超时后发 KILL。
 fn kill_and_wait(pid: u32) {
@@ -80,11 +84,48 @@ pub fn daemon_pid_path(name: &str) -> PathBuf {
     pidfile(name)
 }
 
-pub fn start_ap(iface: &str, ssid: &str, ip: &str) -> Result<()> {
+/// 轮询 hostapd 控制口直至 `PING` 返回 `PONG` 或超时，避免「进程已 fork 但 AP 未就绪」时立刻启动 dnsmasq / 返回给调用方。
+fn wait_hostapd_ctrl_ready(iface: &str) -> Result<()> {
+    let deadline = Instant::now() + HOSTAPD_CTRL_READY_TIMEOUT;
+    loop {
+        match hostapd_ctrl::request(
+            iface,
+            "PING",
+            Duration::from_millis(400),
+            "wifi_hostapd_ready",
+        ) {
+            Ok(r) if r.contains("PONG") => return Ok(()),
+            Ok(_) | Err(_) => {}
+        }
+        if Instant::now() >= deadline {
+            return Err(crate::error::Error::config(
+                "wifi_hostapd_ready",
+                format!(
+                    "hostapd ctrl iface not ready on '{}' within {:?}",
+                    iface, HOSTAPD_CTRL_READY_TIMEOUT
+                ),
+            ));
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Start AP with an explicit channel. Invalid channel falls back to default channel 1.
+pub fn start_ap_on_channel(iface: &str, ssid: &str, ip: &str, channel: u8) -> Result<()> {
+    let safe_channel = if (1..=13).contains(&channel) {
+        channel
+    } else {
+        log::warn!(
+            "[hostapd] invalid channel {}, fallback to {}",
+            channel,
+            DEFAULT_SOFTAP_CHANNEL
+        );
+        DEFAULT_SOFTAP_CHANNEL
+    };
     net::setup_ap_address(iface, &format!("{}/24", ip))?;
 
     let hostapd_conf_body = format!(
-        "interface={iface}\ndriver=nl80211\nssid={ssid}\nhw_mode=g\nchannel=1\nauth_algs=1\nwpa=0\nctrl_interface={HOSTAPD_CTRL_INTERFACE_DIR}\n",
+        "interface={iface}\ndriver=nl80211\nssid={ssid}\nhw_mode=g\nchannel={safe_channel}\nauth_algs=1\nwpa=0\nctrl_interface={HOSTAPD_CTRL_INTERFACE_DIR}\n",
     );
     let hostapd_conf_file = hostapd_conf_path();
     write_secure_atomic(
@@ -120,6 +161,15 @@ pub fn start_ap(iface: &str, ssid: &str, ip: &str) -> Result<()> {
         CMD_TIMEOUT,
         "wifi_hostapd_start",
     )?;
+    if let Err(e) = wait_hostapd_ctrl_ready(iface) {
+        log::warn!(
+            "[hostapd] control interface not ready on '{}', tearing down partial AP stack: {}",
+            iface,
+            e
+        );
+        stop_ap(iface);
+        return Err(e);
+    }
     // Single-token `--opt=path` avoids any ambiguity with multi-arg parsing on embedded dnsmasq.
     let dnsmasq_cf = format!("--conf-file={}", dnsmasq_conf_file.display());
     let dnsmasq_pf = format!("--pid-file={}", dnsmasq_pid.display());

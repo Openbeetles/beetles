@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 const TAG: &str = "platform::wifi_linux";
 const SOFTAP_SSID: &str = "Beetle";
+const SOFTAP_DEFAULT_CHANNEL: u8 = 1;
 
 static WIFI_STA_CONNECTED: AtomicBool = AtomicBool::new(false);
 static WIFI_STA_IP: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -97,12 +98,50 @@ fn choose_ap_ip(iface: &str) -> &'static str {
     }
 }
 
+/// 智能选择 AP 信道：若 STA 已有信道则优先跟随（提高并发芯片兼容性），否则用默认信道。
+fn choose_ap_channel(sta_iface: &str) -> u8 {
+    match net::read_wifi_channel(sta_iface).ok().flatten() {
+        Some(ch) => {
+            log::info!("[{}] adaptive AP channel selected from STA iface: {}", TAG, ch);
+            ch
+        }
+        None => SOFTAP_DEFAULT_CHANNEL,
+    }
+}
+
+/// 在并发模式下，STA 连上后将 AP 对齐到 STA 当前信道，减少“进程正常但热点难扫描”的兼容性问题。
+fn maybe_align_ap_channel_for_concurrency(
+    sta_iface: &str,
+    ap_iface: &str,
+    ap_ip: &str,
+    ap_channel: &mut u8,
+) -> Result<()> {
+    let Some(sta_ch) = net::read_wifi_channel(sta_iface).ok().flatten() else {
+        return Ok(());
+    };
+    if sta_ch == *ap_channel {
+        return Ok(());
+    }
+    log::warn!(
+        "[{}] aligning AP channel {} -> {} to match STA iface '{}' for better compatibility",
+        TAG,
+        *ap_channel,
+        sta_ch,
+        sta_iface
+    );
+    hostapd::stop_ap(ap_iface);
+    hostapd::start_ap_on_channel(ap_iface, SOFTAP_SSID, ap_ip, sta_ch)?;
+    *ap_channel = sta_ch;
+    Ok(())
+}
+
 /// AP 已用默认地址而 STA DHCP 落在 `192.168.4.0/24` 时，迁移 AP 至备用地址。
 /// `ap_iface` 为 hostapd 实际运行的接口（可能是虚拟接口 `ap0`）。
 fn migrate_ap_if_subnet_conflict(
     ap_iface: &str,
     ap_ip: &str,
     sta_ip: &Option<String>,
+    ap_channel: u8,
 ) -> Result<()> {
     if ap_ip != SOFTAP_DEFAULT_IPV4 {
         return Ok(());
@@ -119,7 +158,8 @@ fn migrate_ap_if_subnet_conflict(
             SOFTAP_FALLBACK_IPV4
         );
         hostapd::stop_ap(ap_iface);
-        match hostapd::start_ap(ap_iface, SOFTAP_SSID, SOFTAP_FALLBACK_IPV4) {
+        match hostapd::start_ap_on_channel(ap_iface, SOFTAP_SSID, SOFTAP_FALLBACK_IPV4, ap_channel)
+        {
             Ok(()) => return Ok(()),
             Err(e) => {
                 log::error!(
@@ -129,7 +169,12 @@ fn migrate_ap_if_subnet_conflict(
                     e,
                     SOFTAP_DEFAULT_IPV4
                 );
-                return hostapd::start_ap(ap_iface, SOFTAP_SSID, SOFTAP_DEFAULT_IPV4);
+                return hostapd::start_ap_on_channel(
+                    ap_iface,
+                    SOFTAP_SSID,
+                    SOFTAP_DEFAULT_IPV4,
+                    ap_channel,
+                );
             }
         }
     }
@@ -164,6 +209,7 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
     let concurrent = caps.supports_sta_ap_concurrent;
     let want_sta = !config.wifi_ssid.trim().is_empty();
     let ap_ip = choose_ap_ip(&iface);
+    let mut ap_channel = choose_ap_channel(&iface);
 
     // Stop any existing AP stack on the physical interface before deciding whether
     // we will re-create AP on the physical iface or a virtual iface.
@@ -207,7 +253,7 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
         iface.clone()
     };
 
-    if let Err(e) = hostapd::start_ap(&ap_iface, SOFTAP_SSID, ap_ip) {
+    if let Err(e) = hostapd::start_ap_on_channel(&ap_iface, SOFTAP_SSID, ap_ip, ap_channel) {
         if ap_iface != iface {
             log::warn!(
                 "[{}] start AP on virtual iface '{}' failed: {}; deleting iface and degrading to SoftAP-only on '{}'",
@@ -227,7 +273,8 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
             }
             ap_iface = iface.clone();
             effective_concurrent = false;
-            hostapd::start_ap(&ap_iface, SOFTAP_SSID, ap_ip)?;
+            ap_channel = choose_ap_channel(&iface);
+            hostapd::start_ap_on_channel(&ap_iface, SOFTAP_SSID, ap_ip, ap_channel)?;
         } else {
             return Err(e);
         }
@@ -235,7 +282,12 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
     clear_sta_state();
 
     let ap_ip_owned = ap_ip.to_string();
-    start_daemon_watch_thread(iface.clone(), ap_iface.clone(), ap_ip_owned);
+    start_daemon_watch_thread(
+        iface.clone(),
+        ap_iface.clone(),
+        ap_ip_owned.clone(),
+        ap_channel,
+    );
 
     if !want_sta {
         log::info!("[{}] AP ready (SSID: {})", TAG, SOFTAP_SSID);
@@ -258,39 +310,86 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
         }));
     }
 
-    match wpa::connect_sta(&iface, config.wifi_ssid.trim(), config.wifi_pass.as_str()) {
-        Ok(ip) => {
-            if let Err(e) = migrate_ap_if_subnet_conflict(&ap_iface, ap_ip, &ip) {
-                log::error!(
-                    "[{}] subnet migration failed after restore attempt: {}",
-                    TAG,
-                    e
-                );
-                if let Err(e2) = hostapd::start_ap(&ap_iface, SOFTAP_SSID, ap_ip) {
-                    log::error!(
-                        "[{}] SoftAP emergency recovery failed (user may lose hotspot until reboot): {}",
+    // STA 连接与 DHCP 可达数十秒；不得阻塞 `connect_wifi` 主路径（与 ESP/Linux P0 一致：AP+配网页先就绪）。
+    // 在独立线程中关联 STA，避免 bootstrap 停顿；短暂延迟让 hostapd 在部分驱动上先完成 beacon，再与 wpa 竞争空口。
+    let iface_sta = iface.clone();
+    let ap_iface_sta = ap_iface.clone();
+    let ap_ip_for_migrate = ap_ip_owned;
+    let mut ap_channel_for_sta = ap_channel;
+    let ssid_owned = config.wifi_ssid.trim().to_string();
+    let pass_owned = config.wifi_pass.clone();
+    if let Err(e) = std::thread::Builder::new()
+        .name("wifi-linux-sta".into())
+        .spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            match wpa::connect_sta(&iface_sta, ssid_owned.as_str(), pass_owned.as_str()) {
+                Ok(ip) => {
+                    if let Err(e) = maybe_align_ap_channel_for_concurrency(
+                        &iface_sta,
+                        &ap_iface_sta,
+                        ap_ip_for_migrate.as_str(),
+                        &mut ap_channel_for_sta,
+                    ) {
+                        log::warn!(
+                            "[{}] AP channel alignment skipped due to error; keep current AP config: {}",
+                            TAG,
+                            e
+                        );
+                    }
+                    if let Err(e) =
+                        migrate_ap_if_subnet_conflict(
+                            &ap_iface_sta,
+                            ap_ip_for_migrate.as_str(),
+                            &ip,
+                            ap_channel_for_sta,
+                        )
+                    {
+                        log::error!(
+                            "[{}] subnet migration failed after restore attempt: {}",
+                            TAG,
+                            e
+                        );
+                        if let Err(e2) =
+                            hostapd::start_ap_on_channel(
+                                &ap_iface_sta,
+                                SOFTAP_SSID,
+                                ap_ip_for_migrate.as_str(),
+                                ap_channel_for_sta,
+                            )
+                        {
+                            log::error!(
+                                "[{}] SoftAP emergency recovery failed (user may lose hotspot until reboot): {}",
+                                TAG,
+                                e2
+                            );
+                        } else {
+                            log::info!(
+                                "[{}] SoftAP recovered on emergency retry (STA still up)",
+                                TAG
+                            );
+                        }
+                    }
+                    set_sta_state(ip);
+                }
+                Err(e) => {
+                    metrics::record_wifi_failure_stage(e.stage());
+                    log::warn!(
+                        "[{}] STA failed (auth/DHCP/unreachable); SoftAP stays up for provisioning: {}",
                         TAG,
-                        e2
+                        e
                     );
-                } else {
-                    log::info!(
-                        "[{}] SoftAP recovered on emergency retry (STA still up)",
-                        TAG
-                    );
+                    clear_sta_state();
                 }
             }
-            set_sta_state(ip);
-        }
-        Err(e) => {
-            metrics::record_wifi_failure_stage(e.stage());
-            log::warn!(
-                "[{}] STA failed (auth/DHCP/unreachable); SoftAP stays up for provisioning: {}",
-                TAG,
-                e
-            );
-            clear_sta_state();
-        }
+        })
+    {
+        log::error!("[{}] STA background thread spawn failed: {}", TAG, e);
+        clear_sta_state();
     }
+    log::info!(
+        "[{}] STA connect running in background (SSID configured); SoftAP already up",
+        TAG
+    );
     start_sta_probe_thread(iface.clone());
     Ok(Some(WifiScanHandle {
         iface,
@@ -300,27 +399,37 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
 
 /// `sta_iface`: physical interface for wpa_supplicant (e.g. `wlan0`).
 /// `ap_iface`: interface where hostapd runs (virtual `ap0` or same as `sta_iface`).
-fn start_daemon_watch_thread(sta_iface: String, ap_iface: String, ap_ip: String) {
+fn start_daemon_watch_thread(sta_iface: String, ap_iface: String, ap_ip: String, ap_channel: u8) {
     let res = std::thread::Builder::new()
         .name("wifi-linux-watch".into())
         .spawn(move || {
             let hostapd_pf = hostapd::daemon_pid_path("hostapd");
             let dnsmasq_pf = hostapd::daemon_pid_path("dnsmasq");
             let wpa_pf = wpa::supplicant_pid_path(&sta_iface);
+            let mut current_ap_channel = ap_channel;
             loop {
                 std::thread::sleep(Duration::from_secs(WIFI_LINUX_DAEMON_WATCH_INTERVAL_SECS));
                 let need_ap = !pid_file_alive(&hostapd_pf) || !pid_file_alive(&dnsmasq_pf);
                 if need_ap {
+                    let desired_channel = net::read_wifi_channel(&sta_iface)
+                        .ok()
+                        .flatten()
+                        .unwrap_or(current_ap_channel);
                     log::warn!(
-                        "[{}] AP stack pid missing or dead; restarting hostapd+dnsmasq on '{}'",
+                        "[{}] AP stack pid missing or dead; restarting hostapd+dnsmasq on '{}' (channel={})",
                         TAG,
-                        ap_iface
+                        ap_iface,
+                        desired_channel
                     );
                     metrics::record_wifi_ap_restart();
                     hostapd::stop_ap(&ap_iface);
-                    if let Err(e) = hostapd::start_ap(&ap_iface, SOFTAP_SSID, &ap_ip) {
+                    if let Err(e) =
+                        hostapd::start_ap_on_channel(&ap_iface, SOFTAP_SSID, &ap_ip, desired_channel)
+                    {
                         metrics::record_wifi_failure_stage(e.stage());
                         log::error!("[{}] AP stack restart failed: {}", TAG, e);
+                    } else {
+                        current_ap_channel = desired_channel;
                     }
                     continue;
                 }
