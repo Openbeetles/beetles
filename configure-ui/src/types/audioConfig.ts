@@ -29,7 +29,6 @@ export interface AudioSpeakerConfig {
 }
 
 export interface AudioVadConfig {
-  enabled: boolean
   threshold: number
   silence_duration_ms: number
 }
@@ -228,7 +227,6 @@ export function defaultAudioConfig(): AudioConfig {
       bits_per_sample: 16,
     },
     vad: {
-      enabled: false,
       threshold: 0.5,
       silence_duration_ms: 1000,
     },

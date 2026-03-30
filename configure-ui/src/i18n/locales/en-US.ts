@@ -143,18 +143,12 @@ export const enUS = {
     audioConfig: {
       sectionMain: 'Audio devices',
       sectionMainDesc: 'Configure microphone, speaker, VAD, wake word, and STT/TTS parameters. Restart required after save.',
-      tabOverview: 'Overview',
       tabMic: 'Microphone',
       tabSpeaker: 'Speaker',
       tabSpeech: 'STT & TTS',
       tabMore: 'Ambient & LED',
-      sectionOverview: 'Quick toggles',
-      overviewIntro:
-        'Turn features on here first, then open each tab for hardware and cloud settings. For daily use you often only need this page.',
-      overviewMicHint: 'Voice in, wake word, speech-to-text',
-      overviewSpkHint: 'Playback and text-to-speech',
       accordionMicHw: 'Hardware (bit depth, buffer, I2S pins)',
-      accordionSpkHw: 'Pins & SD shutdown',
+      accordionSpkHw: 'Pin configuration',
       sectionBasic: 'Master switch',
       sectionMicrophone: 'Microphone',
       sectionSpeaker: 'Speaker / amplifier',
@@ -166,12 +160,13 @@ export const enUS = {
       hintEnableAudioFirst: 'Turn on the master switch to configure microphone, speaker, VAD, cloud STT/TTS, and more.',
       sttBlockTitle: 'Speech-to-text (STT)',
       ttsBlockTitle: 'Text-to-speech (TTS)',
-      useSdPin: 'Use SD (shutdown) pin',
+
       soundEventsPick: 'Sound events (presets)',
       ambientSoundEventsExtra: 'Extra events (comma-separated, optional)',
       ambientSoundEventsExtraHelp: 'Names not in the list above; merged with presets, max 16 total.',
       deviceMic: {
         i2s_inmp441: 'INMP441 (I2S, recommended)',
+        pdm: 'PDM digital microphone',
         i2s_sph0645: 'SPH0645 (I2S)',
         i2s_mems: 'I2S MEMS',
         analog_max9814: 'MAX9814 (analog / ADC)',
@@ -215,7 +210,7 @@ export const enUS = {
       enabled: 'Enable audio config',
       microphoneEnabled: 'Enable microphone',
       speakerEnabled: 'Enable speaker',
-      vadEnabled: 'Enable VAD',
+
       wakeWordEnabled: 'Enable wake word',
       wakeWordKeyword: 'Wake word keyword',
       deviceType: 'Device type',

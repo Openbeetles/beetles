@@ -92,16 +92,8 @@ impl Tool for VoiceInputTool {
             let frame_ms =
                 ((AUDIO_CAPTURE_FRAME_SAMPLES as u64) * 1000 / (mic_sr as u64)).clamp(1, 40) as u32;
             let endpoint_cfg = EndpointConfig {
-                threshold: if self.audio_cfg.vad.enabled {
-                    self.audio_cfg.vad.threshold
-                } else {
-                    0.08
-                },
-                silence_duration_ms: if self.audio_cfg.vad.enabled {
-                    self.audio_cfg.vad.silence_duration_ms
-                } else {
-                    1200
-                },
+                threshold: self.audio_cfg.vad.threshold,
+                silence_duration_ms: self.audio_cfg.vad.silence_duration_ms,
             };
             let mut endpoint = EndpointState::new();
             let mut frame = [0i16; AUDIO_CAPTURE_FRAME_SAMPLES];

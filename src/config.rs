@@ -1124,8 +1124,6 @@ pub struct AudioSpeakerConfig {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AudioVadConfig {
-    #[serde(default)]
-    pub enabled: bool,
     #[serde(default = "default_audio_vad_threshold")]
     pub threshold: f32,
     #[serde(default = "default_audio_vad_silence_ms")]
@@ -1297,7 +1295,6 @@ pub fn default_disabled_audio_segment() -> AudioSegment {
             bits_per_sample: default_audio_bits_per_sample(),
         },
         vad: AudioVadConfig {
-            enabled: false,
             threshold: default_audio_vad_threshold(),
             silence_duration_ms: default_audio_vad_silence_ms(),
         },
@@ -1771,19 +1768,17 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
         validate_audio_sample_rate(seg.speaker.sample_rate, "speaker.sample_rate")?;
         validate_audio_bits_per_sample(seg.speaker.bits_per_sample, "speaker.bits_per_sample")?;
     }
-    if seg.vad.enabled {
-        if !(0.0..=1.0).contains(&seg.vad.threshold) {
-            return Err(Error::config(
-                "audio",
-                "vad.threshold must be in [0.0, 1.0]",
-            ));
-        }
-        if seg.vad.silence_duration_ms == 0 || seg.vad.silence_duration_ms > 60_000 {
-            return Err(Error::config(
-                "audio",
-                "vad.silence_duration_ms must be 1..=60000",
-            ));
-        }
+    if !(0.0..=1.0).contains(&seg.vad.threshold) {
+        return Err(Error::config(
+            "audio",
+            "vad.threshold must be in [0.0, 1.0]",
+        ));
+    }
+    if seg.vad.silence_duration_ms == 0 || seg.vad.silence_duration_ms > 60_000 {
+        return Err(Error::config(
+            "audio",
+            "vad.silence_duration_ms must be 1..=60000",
+        ));
     }
     if seg.ambient_listening.sound_events.len() > AUDIO_SOUND_EVENTS_MAX {
         return Err(Error::config(
