@@ -123,8 +123,8 @@ mod imp {
         if !ARMED.load(Ordering::Relaxed) {
             return;
         }
-        // Skip while voice capture or TTS playback is active.
-        if crate::orchestrator::is_audio_recording() {
+        // Skip while voice capture or speaker playback is active.
+        if crate::orchestrator::is_audio_recording() || crate::orchestrator::is_audio_playing() {
             return;
         }
 

@@ -823,7 +823,7 @@ export function AudioConfigPanel() {
                               })
                             }
                           >
-                            {['hi_beetle', 'hiesp', 'nihaoxiaojia', 'hilexin', 'alexa'].map((kw) => (
+                            {['hiesp'].map((kw) => (
                               <MenuItem key={kw} value={kw}>
                                 {kw}
                               </MenuItem>

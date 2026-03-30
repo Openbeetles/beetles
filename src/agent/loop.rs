@@ -432,6 +432,8 @@ pub struct AgentLoopConfig {
     pub llm_stream: bool,
     /// 流式编辑器；llm_stream 开且通道支持编辑时由 main 传入。
     pub stream_editor: Option<Arc<dyn StreamEditor + Send + Sync>>,
+    /// 流式编辑器对应的通道名；仅当前消息来自该通道时才允许流式编辑。
+    pub stream_editor_channel: Option<Arc<str>>,
     /// 当前 NVS 语言；工具与降级文案按此本地化。
     pub resolve_locale: std::sync::Arc<dyn Fn() -> UiLocale + Send + Sync>,
 }
@@ -1104,7 +1106,9 @@ fn run_worker_path(
     let mut tool_error_buf = String::with_capacity(256);
     let mut final_content = String::with_capacity(4096);
     // 流式编辑状态（跨 ReAct 轮次共享）。
-    let editor = if config.llm_stream {
+    let editor = if config.llm_stream
+        && config.stream_editor_channel.as_deref() == Some(msg.channel.as_ref())
+    {
         config.stream_editor.as_deref()
     } else {
         None

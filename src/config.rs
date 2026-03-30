@@ -1003,20 +1003,15 @@ const AUDIO_WAKE_PROMPT_MAX_LEN: usize = 256;
 /// Supported wake word **aliases** → WakeNet model id (passed to `beetle_wakenet_init`).
 ///
 /// Configure-UI / `audio.json` `wake_word.keyword` is normally one of the
-/// left-hand aliases (default **`hi_beetle`**, aligned with `configure-ui`).
+/// left-hand aliases (default **`hiesp`**, aligned with `configure-ui`).
 /// The right-hand side must exist in the device **model** partition (see
-/// `sdkconfig` `CONFIG_SR_WN_*`).  **`hi_beetle`** currently maps to the single
-/// model shipped in `sdkconfig.defaults.esp32s3`; replace the mapping when a
-/// dedicated "Hi Beetle" WakeNet binary is packaged.
+/// `sdkconfig` `CONFIG_SR_WN_*`). The default firmware currently ships a single
+/// `wn9_hiesp` model.
 ///
 /// Advanced: [`wake_word_resolve_model`] also accepts a verbatim WakeNet id
 /// such as `wn9_hiesp` without an alias row.
 pub const WAKE_WORD_SUPPORTED_KEYWORDS: &[(&str, &str)] = &[
-    ("hi_beetle", "wn9_hiesp"),
     ("hiesp", "wn9_hiesp"),
-    ("nihaoxiaojia", "wn9_nihaoxiaojia"),
-    ("hilexin", "wn9_hilexin"),
-    ("alexa", "wn9_alexa"),
 ];
 
 /// Resolve a user-facing keyword alias to its WakeNet model name.
@@ -1292,7 +1287,7 @@ pub fn default_disabled_audio_segment() -> AudioSegment {
         },
         wake_word: AudioWakeWordConfig {
             enabled: false,
-            keyword: "hi_beetle".to_string(),
+            keyword: "hiesp".to_string(),
             wake_prompt: default_wake_prompt(),
         },
         stt: AudioSttConfig {
@@ -1622,6 +1617,18 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
             return Err(Error::config(
                 "audio",
                 "wake_word.enabled requires speaker.enabled == true (voice replies use TTS)",
+            ));
+        }
+        if seg.stt.provider != "baidu" {
+            return Err(Error::config(
+                "audio",
+                "wake_word.enabled currently requires stt.provider == baidu",
+            ));
+        }
+        if seg.tts.provider != "baidu" {
+            return Err(Error::config(
+                "audio",
+                "wake_word.enabled currently requires tts.provider == baidu",
             ));
         }
         if seg.stt.api_key.trim().is_empty() || seg.stt.api_secret.trim().is_empty() {

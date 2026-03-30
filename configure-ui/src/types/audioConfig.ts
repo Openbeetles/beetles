@@ -233,7 +233,7 @@ export function defaultAudioConfig(): AudioConfig {
     },
     wake_word: {
       enabled: false,
-      keyword: 'hi_beetle',
+      keyword: 'hiesp',
       wake_prompt: '你好，我在听，请说。',
     },
     stt: {

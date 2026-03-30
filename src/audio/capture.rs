@@ -51,10 +51,7 @@ pub fn capture_speech(
     let mut elapsed = 0u32;
     let mut dbg_next_log_ms = 0u32;
     let debug_enabled = log::log_enabled!(log::Level::Debug);
-    let max_pcm_samples = (max_ms as usize)
-        .saturating_mul(mic_sr as usize)
-        .min(AUDIO_STT_MAX_PCM_BYTES)
-        / 1000;
+    let max_pcm_samples = max_capture_samples(max_ms, mic_sr);
     let mut captured =
         crate::platform::psram_vec::PsramVec::<i16>::with_max_capacity(max_pcm_samples);
     let capture_start = Instant::now();
@@ -109,4 +106,27 @@ pub fn capture_speech(
         ));
     }
     Ok(captured)
+}
+
+fn max_capture_samples(max_ms: u32, sample_rate: u32) -> usize {
+    let requested_samples = (max_ms as usize)
+        .saturating_mul(sample_rate as usize)
+        / 1000;
+    let max_samples_by_bytes = AUDIO_STT_MAX_PCM_BYTES / std::mem::size_of::<i16>();
+    requested_samples.min(max_samples_by_bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::max_capture_samples;
+
+    #[test]
+    fn keeps_requested_duration_when_under_byte_limit() {
+        assert_eq!(max_capture_samples(12_000, 16_000), 192_000);
+    }
+
+    #[test]
+    fn clamps_by_pcm_byte_limit_in_sample_units() {
+        assert_eq!(max_capture_samples(60_000, 16_000), 480_000);
+    }
 }

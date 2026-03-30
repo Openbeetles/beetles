@@ -394,10 +394,11 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     let qq_msg_id_cache: beetle::channels::QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
 
     // ── Audio init + wake-word registration (ESP only, after MessageBus) ───
-    // voice_event_tx is created here so wake_word::configure can arm the signal;
-    // voice_session thread is spawned later (after build_default_registry provides BaiduTokenCache).
+    // Prepare the voice-session event channel here; wake_word::configure is deferred
+    // until the voice_session thread is confirmed startable.
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     let mut voice_event_tx_rx: Option<(
+        String,
         std::sync::mpsc::SyncSender<beetle::audio::voice_session::VoiceEvent>,
         std::sync::mpsc::Receiver<beetle::audio::voice_session::VoiceEvent>,
     )>;
@@ -411,8 +412,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                     beetle::config::wake_word_resolve_model(&audio_cfg.wake_word.keyword)
                 {
                     let (vtx, vrx) = std::sync::mpsc::sync_channel(4);
-                    beetle::platform::wake_word::configure(model_name.as_str(), vtx.clone());
-                    voice_event_tx_rx = Some((vtx, vrx));
+                    voice_event_tx_rx = Some((model_name, vtx, vrx));
                 }
             }
         }
@@ -810,7 +810,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
 
     // Register VoiceSink so dispatch routes channel="voice" replies to the voice session thread.
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    if let Some((ref vtx, _)) = voice_event_tx_rx {
+    if let Some((_, ref vtx, _)) = voice_event_tx_rx {
         sinks.register(
             beetle::constants::VOICE_CHANNEL_NAME,
             Box::new(beetle::channels::VoiceSink::new(vtx.clone())),
@@ -958,7 +958,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
 
         // ── Voice session thread (ESP only) ─────────────────────────────────
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        if let Some((_, voice_rx)) = voice_event_tx_rx.take() {
+        if let Some((model_name, voice_tx, voice_rx)) = voice_event_tx_rx.take() {
             if let (Some(audio_cfg), Some(ref bt_cache)) =
                 (config.audio.as_ref(), &baidu_token_cache)
             {
@@ -991,6 +991,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                         );
                     },
                 );
+                beetle::platform::wake_word::configure(model_name.as_str(), voice_tx);
             }
         }
 
@@ -1062,6 +1063,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             pending_retry: Arc::clone(&pending_retry_store),
             llm_stream: config.llm_stream,
             stream_editor,
+            stream_editor_channel: Some(Arc::<str>::from(config.enabled_channel.as_str())),
             resolve_locale: std::sync::Arc::clone(&resolve_locale_ui),
         });
         #[cfg(feature = "cli")]
