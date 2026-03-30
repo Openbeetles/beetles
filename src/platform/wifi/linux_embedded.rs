@@ -1,4 +1,4 @@
-//! Linux embedded WiFi implementation (P0 + P1 守护/探测/降级).
+//! Linux embedded WiFi：STA/AP/扫描、能力探测、守护与降级（rtnetlink + nl80211 + ctrl 套接字）。
 
 use crate::config::AppConfig;
 use crate::constants::{

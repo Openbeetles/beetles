@@ -411,9 +411,8 @@ fn del_by_ifindex(ifindex: u32) -> Result<()> {
 /// 否则回退到固定等待（[`SCAN_FALLBACK_WAIT`]）后直接调用 GET_SCAN，与旧 `iw dev scan` 行为一致。
 ///
 /// # AP-only 驱动限制
-/// TODO(step6): 部分驱动在 AP-only 模式下拒绝 TRIGGER_SCAN（返回 EOPNOTSUPP/EBUSY）；
-/// 此时错误 stage 为 `wifi_scan`，由调用方按与 wpa 路径相同的语义处理。
-/// 前提由步 3（probe_phy_capabilities）与步 4（create_virtual_ap_iface）保证接口存在与就绪。
+/// 部分驱动在 SoftAP 同口上拒绝 `TRIGGER_SCAN`（EOPNOTSUPP/EBUSY）；错误 stage 为 `wifi_scan`，
+/// 由调用方上报，不静默回退。接口须已由能力探测与虚拟 AP 创建路径就绪。
 pub(super) fn scan_bounded(
     iface: &str,
     deadline: Instant,
