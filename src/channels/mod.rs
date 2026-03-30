@@ -10,6 +10,7 @@ mod http_client;
 mod qq;
 mod send;
 pub(crate) mod telegram;
+pub(crate) mod voice_sink;
 mod websocket;
 pub(crate) mod wecom;
 mod wss_gateway;
@@ -37,6 +38,7 @@ pub use telegram::{
     poll_telegram_once, run_telegram_poll_loop, run_telegram_sender_loop, send_chat_action,
     tg_send_and_get_id, TelegramCommandCtx,
 };
+pub use voice_sink::VoiceSink;
 pub use websocket::{WebSocketSink, MAX_WS_CONNECTIONS, MAX_WS_MESSAGE_LEN};
 pub use wecom::{flush_wecom_sends, run_wecom_sender_loop};
 pub use wss_gateway::connect_wss;

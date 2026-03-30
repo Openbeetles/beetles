@@ -242,7 +242,11 @@ pub const AUDIO_TTS_MAX_TEXT_LEN: usize = 512;
 pub const AUDIO_TTS_WRITE_CHUNK_SAMPLES: usize = 1024;
 /// `raw` 模型 `options.init_cmd` 最大长度（字节）。
 pub const I2C_SENSOR_MAX_CMD_LEN: usize = 4;
-// ---------- wake_word ----------
-/// 唤醒词检测后的冷却时长（毫秒）。防止误触连续灌爆 PcMsg 队列。
-/// Cooldown after a wake-word detection (ms). Prevents false triggers flooding the queue.
+// ---------- wake_word / voice session ----------
+/// 唤醒词检测后的冷却时长（毫秒）。防止误触连续灌爆事件队列。
+/// Cooldown after a wake-word detection (ms). Prevents false triggers flooding the event queue.
 pub const WAKE_WORD_COOLDOWN_MS: u64 = 2_000;
+/// 语音虚拟通道名称（dispatch 按此路由到 VoiceSink）。
+pub const VOICE_CHANNEL_NAME: &str = "voice";
+/// 语音交互的固定 chat_id（本地设备只有一个用户）。
+pub const VOICE_DEVICE_CHAT_ID: &str = "device";

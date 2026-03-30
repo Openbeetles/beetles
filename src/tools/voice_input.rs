@@ -1,12 +1,10 @@
 //! voice_input：采集麦克风 PCM，能量断句后调用百度 STT。
 
 use crate::audio::baidu_token::BaiduTokenCache;
-use crate::audio::energy::{EndpointConfig, EndpointEvent, EndpointState};
+use crate::audio::capture::{capture_speech, AudioRecordingGuard};
 use crate::audio::stt_baidu;
 use crate::config::AudioSegment;
-use crate::constants::{
-    AUDIO_CAPTURE_FRAME_SAMPLES, AUDIO_CAPTURE_MAX_MS, AUDIO_STT_MAX_PCM_BYTES,
-};
+use crate::constants::AUDIO_CAPTURE_MAX_MS;
 use crate::error::{Error, Result};
 use crate::tools::http_bridge::ToolContextHttpClient;
 use crate::tools::{parse_tool_args, Tool, ToolContext};
@@ -14,23 +12,6 @@ use crate::Platform;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Instant;
-
-/// RAII guard：创建时设 orchestrator 录音标志，Drop 时清除。
-/// 确保无论正常返回还是 `?` 早退，标志都会被清除。
-struct AudioRecordingGuard;
-
-impl AudioRecordingGuard {
-    fn new() -> Self {
-        crate::orchestrator::set_audio_recording(true);
-        Self
-    }
-}
-
-impl Drop for AudioRecordingGuard {
-    fn drop(&mut self) {
-        crate::orchestrator::set_audio_recording(false);
-    }
-}
 
 pub struct VoiceInputTool {
     platform: Arc<dyn Platform>,
@@ -87,75 +68,12 @@ impl Tool for VoiceInputTool {
                 .map(|v| v.min(AUDIO_CAPTURE_MAX_MS as u64) as u32)
                 .unwrap_or(AUDIO_CAPTURE_MAX_MS);
 
-            let mut http = ToolContextHttpClient::new(ctx);
-            let mic_sr = self.audio_cfg.microphone.sample_rate.max(8_000);
-            let frame_ms =
-                ((AUDIO_CAPTURE_FRAME_SAMPLES as u64) * 1000 / (mic_sr as u64)).clamp(1, 40) as u32;
-            let endpoint_cfg = EndpointConfig {
-                threshold: self.audio_cfg.vad.threshold,
-                silence_duration_ms: self.audio_cfg.vad.silence_duration_ms,
-            };
-            let mut endpoint = EndpointState::new();
-            let mut frame = [0i16; AUDIO_CAPTURE_FRAME_SAMPLES];
-            let mut started = false;
-            let mut elapsed = 0u32;
-            let mut dbg_next_log_ms = 0u32;
-            let debug_enabled = log::log_enabled!(log::Level::Debug);
-            let max_pcm_samples = (max_ms as usize)
-                .saturating_mul(mic_sr as usize)
-                .min(AUDIO_STT_MAX_PCM_BYTES)
-                / 1000;
-            let mut captured =
-                crate::platform::psram_vec::PsramVec::<i16>::with_max_capacity(max_pcm_samples);
             let _recording_guard = AudioRecordingGuard::new();
-            let capture_start = Instant::now();
-            while elapsed < max_ms {
-                let n = self.platform.read_mic_pcm_i16(&mut frame)?;
-                if n == 0 {
-                    elapsed = elapsed.saturating_add(frame_ms);
-                    continue;
-                }
-                let chunk = &frame[..n.min(frame.len())];
-                if debug_enabled && elapsed >= dbg_next_log_ms {
-                    let rms = crate::audio::energy::normalized_rms(chunk);
-                    let (mn, mx) = chunk
-                        .iter()
-                        .fold((i16::MAX, i16::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
-                    log::debug!(
-                        "[voice_input] t={}ms samples={} rms={:.5} min={} max={} thr={:.3}",
-                        elapsed,
-                        n,
-                        rms,
-                        mn,
-                        mx,
-                        endpoint_cfg.threshold
-                    );
-                    dbg_next_log_ms = elapsed.saturating_add(1000);
-                }
-                match endpoint.update(chunk, frame_ms, &endpoint_cfg) {
-                    EndpointEvent::SpeechStart => {
-                        started = true;
-                        captured.extend_from_slice(chunk);
-                    }
-                    EndpointEvent::SpeechEnd => break,
-                    EndpointEvent::None => {
-                        if started {
-                            captured.extend_from_slice(chunk);
-                        }
-                    }
-                }
-                if captured.len() * 2 >= AUDIO_STT_MAX_PCM_BYTES {
-                    break;
-                }
-                elapsed = elapsed.saturating_add(frame_ms);
-            }
-            crate::metrics::record_voice_input_capture_ms(capture_start.elapsed().as_millis());
-            if captured.len() == 0 {
-                return Err(Error::config(
-                    "tool_voice_input",
-                    "no speech captured within time window",
-                ));
-            }
+            let captured =
+                capture_speech(self.platform.as_ref(), &self.audio_cfg, max_ms, "voice_input")?;
+
+            let mic_sr = self.audio_cfg.microphone.sample_rate.max(8_000);
+            let mut http = ToolContextHttpClient::new(ctx);
             let stt_start = Instant::now();
             let text = stt_baidu::transcribe_pcm16_samples(
                 &mut http,

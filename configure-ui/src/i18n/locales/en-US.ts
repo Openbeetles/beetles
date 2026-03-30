@@ -213,6 +213,8 @@ export const enUS = {
 
       wakeWordEnabled: 'Enable wake word',
       wakeWordKeyword: 'Wake word keyword',
+      wakePrompt: 'Wake greeting',
+      wakePromptHelper: 'TTS greeting after wake word, then starts listening',
       deviceType: 'Device type',
       sampleRate: 'Sample rate (Hz)',
       bitsPerSample: 'Bits per sample',

@@ -213,6 +213,8 @@ export const zhCN = {
 
       wakeWordEnabled: '启用唤醒词',
       wakeWordKeyword: '唤醒词关键词',
+      wakePrompt: '唤醒应答语',
+      wakePromptHelper: '唤醒后 TTS 播报的问候语，播报完毕后开始聆听',
       deviceType: '设备类型',
       sampleRate: '采样率（Hz）',
       bitsPerSample: '位深（bits）',

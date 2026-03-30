@@ -36,6 +36,7 @@ export interface AudioVadConfig {
 export interface AudioWakeWordConfig {
   enabled: boolean
   keyword: string
+  wake_prompt: string
 }
 
 export interface AudioSttConfig {
@@ -233,6 +234,7 @@ export function defaultAudioConfig(): AudioConfig {
     wake_word: {
       enabled: false,
       keyword: 'hi_beetle',
+      wake_prompt: '你好，我在听，请说。',
     },
     stt: {
       provider: 'baidu',

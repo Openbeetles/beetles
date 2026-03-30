@@ -112,6 +112,7 @@ impl ToolRegistry {
 }
 
 /// 构建包含所有内置工具的注册表。`platform` 用于 `board_info` 等依赖平台能力的工具。
+/// Returns `(registry, Option<baidu_token_cache>)` — the cache is shared with voice_session.
 pub fn build_default_registry(
     config: &AppConfig,
     platform: Arc<dyn crate::Platform>,
@@ -120,7 +121,7 @@ pub fn build_default_registry(
     session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
     _memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
     _config_store: Arc<dyn crate::platform::ConfigStore + Send + Sync>,
-) -> ToolRegistry {
+) -> (ToolRegistry, Option<Arc<crate::audio::baidu_token::BaiduTokenCache>>) {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(super::GetTimeTool));
     registry.register(Box::new(super::EnvTool));
@@ -193,14 +194,13 @@ pub fn build_default_registry(
             config.i2c_sensors.clone(),
         )));
     }
+    let mut shared_baidu_token: Option<Arc<crate::audio::baidu_token::BaiduTokenCache>> = None;
     if let Some(audio_cfg) = config.audio.clone() {
         let baidu_stt_credential_ok =
             !audio_cfg.stt.api_key.trim().is_empty() && !audio_cfg.stt.api_secret.trim().is_empty();
         let stt_ok = audio_cfg.stt.provider == "baidu"
             && baidu_stt_credential_ok
             && audio_cfg.microphone.enabled;
-        // Baidu TTS reuses STT credentials; require them at registration time
-        // so tool availability matches runtime behavior.
         let tts_ok = audio_cfg.tts.provider == "baidu"
             && audio_cfg.stt.provider == "baidu"
             && baidu_stt_credential_ok
@@ -228,6 +228,7 @@ pub fn build_default_registry(
                 )));
             }
         }
+        shared_baidu_token = baidu_token_cache;
     }
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     registry.register(Box::new(super::ShellTool));
@@ -235,5 +236,5 @@ pub fn build_default_registry(
     registry.register(Box::new(super::ProcessTool));
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     registry.register(Box::new(super::NetworkTool));
-    registry
+    (registry, shared_baidu_token)
 }

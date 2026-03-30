@@ -809,18 +809,41 @@ export function AudioConfigPanel() {
                       label={t('audioConfig.wakeWordEnabled')}
                     />
                     {form.wake_word.enabled ? (
-                      <TextField
-                        size="small"
-                        sx={{ gridColumn: { xs: '1', md: '1 / -1' } }}
-                        label={t('audioConfig.wakeWordKeyword')}
-                        value={form.wake_word.keyword}
-                        onChange={(e) =>
-                          setDraftSafe({
-                            ...form,
-                            wake_word: { ...form.wake_word, keyword: e.target.value.trim() },
-                          })
-                        }
-                      />
+                      <>
+                        <FormControl size="small" sx={{ gridColumn: { xs: '1', md: '1 / -1' } }}>
+                          <InputLabel id="wake-kw">{t('audioConfig.wakeWordKeyword')}</InputLabel>
+                          <Select
+                            labelId="wake-kw"
+                            label={t('audioConfig.wakeWordKeyword')}
+                            value={form.wake_word.keyword}
+                            onChange={(e: SelectChangeEvent) =>
+                              setDraftSafe({
+                                ...form,
+                                wake_word: { ...form.wake_word, keyword: e.target.value },
+                              })
+                            }
+                          >
+                            {['hi_beetle', 'hiesp', 'nihaoxiaojia', 'hilexin', 'alexa'].map((kw) => (
+                              <MenuItem key={kw} value={kw}>
+                                {kw}
+                              </MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
+                        <TextField
+                          size="small"
+                          sx={{ gridColumn: { xs: '1', md: '1 / -1' } }}
+                          label={t('audioConfig.wakePrompt')}
+                          value={form.wake_word.wake_prompt}
+                          onChange={(e) =>
+                            setDraftSafe({
+                              ...form,
+                              wake_word: { ...form.wake_word, wake_prompt: e.target.value },
+                            })
+                          }
+                          helperText={t('audioConfig.wakePromptHelper')}
+                        />
+                      </>
                     ) : null}
                   </Box>
                 </FormSectionSub>

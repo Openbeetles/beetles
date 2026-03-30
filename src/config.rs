@@ -997,8 +997,6 @@ const AUDIO_STT_API_SECRET_MAX_LEN: usize = 256;
 const AUDIO_SOUND_EVENTS_MAX: usize = 16;
 const AUDIO_SOUND_EVENT_MAX_LEN: usize = 32;
 const AUDIO_MIC_DEVICE_I2S_INMP441: &str = "i2s_inmp441";
-/// Maximum length for `wake_word.inbound_chat_id`.
-const AUDIO_WAKE_CHAT_ID_MAX_LEN: usize = 128;
 /// Maximum length for `wake_word.wake_prompt`.
 const AUDIO_WAKE_PROMPT_MAX_LEN: usize = 256;
 
@@ -1137,14 +1135,8 @@ pub struct AudioWakeWordConfig {
     /// Wake keyword: alias from [`WAKE_WORD_SUPPORTED_KEYWORDS`] or verbatim WakeNet id (`wn9_…`).
     #[serde(default)]
     pub keyword: String,
-    /// Chat ID injected into the user inbound queue when wake word fires.
-    /// Required when `enabled == true`.
-    #[serde(default)]
-    pub inbound_chat_id: String,
-    /// Channel override; `None` means use `AppConfig.enabled_channel`.
-    #[serde(default)]
-    pub inbound_channel: Option<String>,
-    /// Text content of the injected `PcMsg`.  Defaults to a Chinese greeting.
+    /// TTS greeting played when wake word fires, before voice capture starts.
+    /// 唤醒后 TTS 播报的问候语，播报完毕后开始采集用户语音。
     #[serde(default = "default_wake_prompt")]
     pub wake_prompt: String,
 }
@@ -1301,8 +1293,6 @@ pub fn default_disabled_audio_segment() -> AudioSegment {
         wake_word: AudioWakeWordConfig {
             enabled: false,
             keyword: "hi_beetle".to_string(),
-            inbound_chat_id: String::new(),
-            inbound_channel: None,
             wake_prompt: default_wake_prompt(),
         },
         stt: AudioSttConfig {
@@ -1612,15 +1602,6 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
             ),
         ));
     }
-    if seg.wake_word.inbound_chat_id.len() > AUDIO_WAKE_CHAT_ID_MAX_LEN {
-        return Err(Error::config(
-            "audio",
-            format!(
-                "wake_word.inbound_chat_id length must be <= {}",
-                AUDIO_WAKE_CHAT_ID_MAX_LEN
-            ),
-        ));
-    }
     if seg.wake_word.wake_prompt.len() > AUDIO_WAKE_PROMPT_MAX_LEN {
         return Err(Error::config(
             "audio",
@@ -1637,10 +1618,16 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
                 "wake_word.enabled requires microphone.enabled == true",
             ));
         }
-        if seg.wake_word.inbound_chat_id.trim().is_empty() {
+        if !seg.speaker.enabled {
             return Err(Error::config(
                 "audio",
-                "wake_word.inbound_chat_id is required when wake_word.enabled == true",
+                "wake_word.enabled requires speaker.enabled == true (voice replies use TTS)",
+            ));
+        }
+        if seg.stt.api_key.trim().is_empty() || seg.stt.api_secret.trim().is_empty() {
+            return Err(Error::config(
+                "audio",
+                "wake_word.enabled requires STT api_key and api_secret configured",
             ));
         }
         if wake_word_resolve_model(&seg.wake_word.keyword).is_none() {

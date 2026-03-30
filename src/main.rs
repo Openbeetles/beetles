@@ -3,17 +3,15 @@
 //! Startup order: NVS → SPIFFS → config → WiFi → memory/session stores → MessageBus → self-check → cron/heartbeat/sinks/dispatch/CLI → agent_loop.
 //! ESP32: no graceful shutdown; process runs until power off.
 use beetle::channels::connect_wss;
-#[cfg(any(
-    target_arch = "xtensa",
-    target_arch = "riscv32",
-    target_os = "linux"
-))]
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
 use beetle::constants::SOFTAP_DEFAULT_IPV4;
 use beetle::memory::{MemoryStore, SessionStore};
 #[cfg(feature = "feishu")]
 use beetle::run_feishu_ws_loop;
 use beetle::runtime::{execute_stream_http_op, spawn_planned, thread_plan};
 use beetle::util::{STACK_AGENT_LOOP, STACK_CHANNEL_SENDER, STACK_CHANNEL_WS};
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use beetle::Esp32Platform;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use beetle::LinuxPlatform;
 use beetle::Platform;
@@ -22,16 +20,8 @@ use beetle::{
     parse_allowed_chat_ids, run_dispatch, run_system_agent_loop, run_user_agent_loop,
     send_chat_action, AppConfig, MessageBus, DEFAULT_CAPACITY,
 };
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-use beetle::Esp32Platform;
-#[cfg(any(
-    target_arch = "xtensa",
-    target_arch = "riscv32",
-    target_os = "linux"
-))]
-use beetle::{
-    DisplayChannelStatus, DisplayCommand, DisplayPressureLevel, DisplaySystemState,
-};
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
+use beetle::{DisplayChannelStatus, DisplayCommand, DisplayPressureLevel, DisplaySystemState};
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use clap::Parser;
 
@@ -48,11 +38,7 @@ type HttpFactory = beetle::runtime::stream_http::HttpFactory;
 /// 从 orchestrator snapshot 的 internal 堆空闲字节数估算已用百分比。
 /// 以运行时首次观测到的空闲值作为动态基线（首次调用时的空闲量，此时大部分业务线程已启动），
 /// 反映业务层实际消耗，而非 ESP-IDF 框架本身的固有开销。Linux 永远返回 0（无 PSRAM 堆基线）。
-#[cfg(any(
-    target_arch = "xtensa",
-    target_arch = "riscv32",
-    target_os = "linux"
-))]
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
 fn heap_used_percent(snapshot: &beetle::orchestrator::ResourceSnapshot) -> u8 {
     use std::sync::atomic::{AtomicU32, Ordering};
     // 0 means "not yet calibrated"; first call sets the baseline.
@@ -191,11 +177,7 @@ impl beetle::StreamEditor for FeishuStreamEditor {
 }
 
 /// F2: 根据当前状态计算下一轮显示刷新间隔（秒）。
-#[cfg(any(
-    target_arch = "xtensa",
-    target_arch = "riscv32",
-    target_os = "linux"
-))]
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
 fn compute_refresh_secs(
     state: DisplaySystemState,
     backlight_off: bool,
@@ -412,29 +394,25 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     let qq_msg_id_cache: beetle::channels::QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
 
     // ── Audio init + wake-word registration (ESP only, after MessageBus) ───
-    // Ordering guarantee: init_audio starts audio_io_worker; wake_word::configure
-    // arms the WakeNet engine with a valid inbound sender immediately after.
-    // This ensures feed_pcm_i16 can never race against an uninitialised sender.
+    // voice_event_tx is created here so wake_word::configure can arm the signal;
+    // voice_session thread is spawned later (after build_default_registry provides BaiduTokenCache).
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    let mut voice_event_tx_rx: Option<(
+        std::sync::mpsc::SyncSender<beetle::audio::voice_session::VoiceEvent>,
+        std::sync::mpsc::Receiver<beetle::audio::voice_session::VoiceEvent>,
+    )>;
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     {
         beetle::bootstrap::esp_init_audio(&platform, &config);
+        voice_event_tx_rx = None;
         if let Some(audio_cfg) = config.audio.as_ref() {
             if audio_cfg.enabled && audio_cfg.wake_word.enabled {
                 if let Some(model_name) =
                     beetle::config::wake_word_resolve_model(&audio_cfg.wake_word.keyword)
                 {
-                    let channel = audio_cfg
-                        .wake_word
-                        .inbound_channel
-                        .as_deref()
-                        .unwrap_or(&config.enabled_channel);
-                    beetle::platform::wake_word::configure(
-                        model_name.as_str(),
-                        channel,
-                        &audio_cfg.wake_word.inbound_chat_id,
-                        &audio_cfg.wake_word.wake_prompt,
-                        user_inbound_tx.clone(),
-                    );
+                    let (vtx, vrx) = std::sync::mpsc::sync_channel(4);
+                    beetle::platform::wake_word::configure(model_name.as_str(), vtx.clone());
+                    voice_event_tx_rx = Some((vtx, vrx));
                 }
             }
         }
@@ -531,11 +509,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     beetle::platform::wait_for_network_ready();
     beetle::orchestrator::init();
 
-    #[cfg(any(
-        target_arch = "xtensa",
-        target_arch = "riscv32",
-        target_os = "linux"
-    ))]
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
     if platform.display_available() {
         let display_platform = Arc::clone(&platform);
         let display_config = Arc::clone(&config);
@@ -825,16 +799,22 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         );
     }
 
-    let (sinks, mut channel_rx_set) =
+    #[allow(unused_mut)]
+    let (mut sinks, mut channel_rx_set) =
         beetle::channels::build_channel_sinks(config.as_ref(), &qq_msg_id_cache);
     // F8: 启动进度条 stage=3（channel sinks 后）
-    #[cfg(any(
-        target_arch = "xtensa",
-        target_arch = "riscv32",
-        target_os = "linux"
-    ))]
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
     if platform.display_available() {
         let _ = platform.display_command(DisplayCommand::UpdateBootProgress { stage: 3 });
+    }
+
+    // Register VoiceSink so dispatch routes channel="voice" replies to the voice session thread.
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    if let Some((ref vtx, _)) = voice_event_tx_rx {
+        sinks.register(
+            beetle::constants::VOICE_CHANNEL_NAME,
+            Box::new(beetle::channels::VoiceSink::new(vtx.clone())),
+        );
     }
 
     let sinks = Arc::new(sinks);
@@ -964,7 +944,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         let worker_llm: Arc<dyn beetle::LlmClient + Send + Sync> = Arc::from(
             beetle::build_llm_clients(&config, Arc::clone(&resolve_locale_ui)),
         );
-        let registry = Arc::new(beetle::build_default_registry(
+        #[allow(unused_variables)]
+        let (registry, baidu_token_cache) = beetle::build_default_registry(
             &config,
             Arc::clone(&platform),
             Arc::clone(&remind_at_store),
@@ -972,7 +953,47 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             Arc::clone(&session_store),
             Arc::clone(&memory_store),
             platform.config_store(),
-        ));
+        );
+        let registry = Arc::new(registry);
+
+        // ── Voice session thread (ESP only) ─────────────────────────────────
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        if let Some((_, voice_rx)) = voice_event_tx_rx.take() {
+            if let (Some(audio_cfg), Some(ref bt_cache)) =
+                (config.audio.as_ref(), &baidu_token_cache)
+            {
+                let vs_platform = Arc::clone(&platform);
+                let vs_audio = audio_cfg.clone();
+                let vs_token = Arc::clone(bt_cache);
+                let vs_pf = Arc::clone(&platform);
+                let vs_cfg = Arc::clone(&config);
+                let vs_make_http: Arc<
+                    dyn Fn() -> beetle::error::Result<Box<dyn beetle::PlatformHttpClient>>
+                        + Send
+                        + Sync,
+                > = Arc::new(move || vs_pf.create_http_client(vs_cfg.as_ref()));
+                let vs_inbound_tx = user_inbound_tx.clone();
+                let vs_prompt = audio_cfg.wake_word.wake_prompt.clone();
+                spawn_planned(
+                    "voice_session",
+                    beetle::util::STACK_VOICE_SESSION,
+                    move || {
+                        beetle::audio::voice_session::run_voice_session(
+                            beetle::audio::voice_session::VoiceSessionConfig {
+                                platform: vs_platform,
+                                audio_cfg: vs_audio,
+                                baidu_token: vs_token,
+                                make_http: vs_make_http,
+                                inbound_tx: vs_inbound_tx,
+                                wake_prompt: vs_prompt,
+                            },
+                            voice_rx,
+                        );
+                    },
+                );
+            }
+        }
+
         let tool_specs: Arc<[beetle::llm::ToolSpec]> = registry.tool_specs_for_api(32768).into();
         let skill_meta_store_fn = Arc::clone(&skill_meta_store);
         let skill_storage_fn = Arc::clone(&skill_storage);
@@ -1071,11 +1092,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         beetle::channels::spawn_sender_threads(&mut channel_rx_set, &config.tg_token, create_http);
 
         // F8: 启动进度条 stage=4（agent 前）
-        #[cfg(any(
-            target_arch = "xtensa",
-            target_arch = "riscv32",
-            target_os = "linux"
-        ))]
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
         if platform.display_available() {
             let _ = platform.display_command(DisplayCommand::UpdateBootProgress { stage: 4 });
         }

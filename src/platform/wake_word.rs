@@ -8,15 +8,19 @@
 //! under the same mutex to avoid tearing vs the global `beetle_wakenet_*` context.
 //! `feed_pcm_i16()` is called from `audio_io_worker` (hot path, every ~20 ms).
 //!
+//! On detection, a `VoiceEvent::WakeDetected` is sent to the voice session thread
+//! which handles capture, STT, and agent injection.
+//!
 //! Safety invariant: the Mutex is only held for the duration of a single feed
 //! call (≤ 1 ms), so contention with the configure path is negligible.
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 mod imp {
-    use crate::bus::{PcMsg, TrackedSender};
+    use crate::audio::voice_session::VoiceEvent;
     use crate::constants::WAKE_WORD_COOLDOWN_MS;
     use std::ffi::CString;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc::SyncSender;
     use std::sync::{Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
@@ -37,14 +41,8 @@ mod imp {
     struct WakeWordInner {
         /// WakeNet model name as passed to beetle_wakenet_init.
         model_name: String,
-        /// Sender into the user inbound bus.
-        inbound_tx: TrackedSender<PcMsg>,
-        /// Channel name for the injected PcMsg.
-        channel: String,
-        /// Chat ID for the injected PcMsg.
-        chat_id: String,
-        /// Prompt text injected on each detection.
-        prompt: String,
+        /// Sender to the voice session thread.
+        voice_tx: SyncSender<VoiceEvent>,
         /// Whether the C engine has been successfully initialised.
         engine_ready: bool,
         /// Monotonic instant of the last successful trigger (for cooldown).
@@ -63,17 +61,11 @@ mod imp {
 
     // ── public API ────────────────────────────────────────────────────────────
 
-    /// Initialise the wake-word engine and register the inbound sender.
+    /// Initialise the wake-word engine and register the voice event sender.
     ///
     /// Must be called from `run_app`, **after** `MessageBus` is created and
     /// `init_audio` has been called. Subsequent calls log a warning and return.
-    pub fn configure(
-        model_name: &str,
-        channel: &str,
-        chat_id: &str,
-        prompt: &str,
-        tx: TrackedSender<PcMsg>,
-    ) {
+    pub fn configure(model_name: &str, voice_tx: SyncSender<VoiceEvent>) {
         let mut guard = state_mutex()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -107,10 +99,7 @@ mod imp {
 
         let inner = WakeWordInner {
             model_name: model_name.to_string(),
-            inbound_tx: tx,
-            channel: channel.to_string(),
-            chat_id: chat_id.to_string(),
-            prompt: prompt.to_string(),
+            voice_tx,
             engine_ready,
             last_trigger: None,
         };
@@ -124,7 +113,7 @@ mod imp {
     /// Returns immediately (no-op) when:
     /// - `configure()` has not been called yet
     /// - the engine failed to initialise
-    /// - `orchestrator::is_audio_recording()` is true (voice_input is active)
+    /// - `orchestrator::is_audio_recording()` is true (voice capture is active)
     /// - within the post-detection cooldown window
     ///
     /// SAFETY: the C function `beetle_wakenet_feed` is not re-entrant; access
@@ -134,8 +123,7 @@ mod imp {
         if !ARMED.load(Ordering::Relaxed) {
             return;
         }
-        // Skip while voice_input tool is actively recording to avoid semantic
-        // confusion (overlapping mic ownership is documented in module rustdoc).
+        // Skip while voice capture or TTS playback is active.
         if crate::orchestrator::is_audio_recording() {
             return;
         }
@@ -166,24 +154,12 @@ mod imp {
         };
 
         if detected {
-            crate::metrics::record_wake_word_trigger();
-            log::info!(
-                "[wake_word] triggered keyword={} chat={}",
-                st.model_name,
-                st.chat_id
-            );
+            log::info!("[wake_word] triggered keyword={}", st.model_name);
             st.last_trigger = Some(Instant::now());
             unsafe { beetle_wakenet_reset() };
 
-            match PcMsg::new_inbound(&*st.channel, &*st.chat_id, &*st.prompt, false) {
-                Ok(msg) => {
-                    if let Err(e) = st.inbound_tx.try_send(msg) {
-                        log::warn!("[wake_word] inbound queue full, trigger dropped: {}", e);
-                    }
-                }
-                Err(e) => {
-                    log::warn!("[wake_word] PcMsg construction failed: {}", e);
-                }
+            if let Err(e) = st.voice_tx.try_send(VoiceEvent::WakeDetected) {
+                log::warn!("[wake_word] voice event queue full, trigger dropped: {}", e);
             }
         }
     }
