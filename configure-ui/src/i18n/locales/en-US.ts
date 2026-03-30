@@ -486,9 +486,24 @@ export const enUS = {
       pageDesc: 'Display driver, pin mapping and dashboard rendering parameters.',
       sectionMain: 'Display',
       sectionMainDesc: 'Changes take effect after restart.',
+      sectionMainDescLinux:
+        'Linux uses the kernel framebuffer; changes take effect after restart.',
+      linuxFramebufferHint:
+        'Linux device detected: showing framebuffer and backlight sysfs fields only (matches firmware DisplayDriver::Framebuffer).',
       sectionBasic: 'Basic settings',
       sectionGeometry: 'Geometry',
       sectionSpi: 'SPI settings',
+      sectionFramebuffer: 'Framebuffer (Linux)',
+      driverFramebuffer: 'Framebuffer (Linux)',
+      fbDevice: 'Framebuffer device path',
+      fbDeviceHelp: 'Usually /dev/fb0; must match the kernel device node.',
+      backlightSysfs: 'Backlight sysfs path (optional)',
+      backlightSysfsHelp:
+        'Brightness file path, e.g. /sys/class/backlight/backlight0/brightness; leave empty to disable backlight control and auto-sleep.',
+      rotationFramebufferHelp:
+        'Framebuffer mode only supports 0° in this firmware; save will write rotation=0.',
+      sleepTimeoutSecsHelpLinux:
+        'After idle for this many seconds, backlight is dimmed/off via sysfs. 0 = disabled. Requires backlight sysfs path.',
       enabled: 'Enable display',
       driver: 'Driver',
       rotation: 'Rotation',
@@ -517,6 +532,8 @@ export const enUS = {
         offset: 'Offset must be in range -480..480',
         freq: 'SPI frequency must be in range 1,000,000..80,000,000',
         pin: 'Pins must be in range 1..48',
+        fbDeviceRequired: 'Framebuffer device path is required',
+        pathInvalid: 'Path must not contain NUL or control characters',
       },
     },
     systemLogs: {

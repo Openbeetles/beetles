@@ -1,6 +1,9 @@
 //! Linux / host 的 `Platform` 实现：与 ESP 相同存储布局（`state_mount_path`），HTTP 由 `ureq` 客户端提供。
 //! Linux/host Platform: same on-disk layout as ESP; HTTP via `ureq` client.
 
+#[cfg(target_os = "linux")]
+pub(crate) mod display_fb;
+
 use crate::platform::abstraction::{MemorySnapshot, Platform, StateFs};
 use crate::platform::{
     display_driver::DisplayState,

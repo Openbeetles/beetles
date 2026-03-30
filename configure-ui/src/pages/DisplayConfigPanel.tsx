@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import FormControlLabel from "@mui/material/FormControlLabel";
 import Switch from "@mui/material/Switch";
 import TextField from "@mui/material/TextField";
+import Typography from "@mui/material/Typography";
 import SaveRounded from "@mui/icons-material/SaveRounded";
 import MonitorOutlined from "@mui/icons-material/MonitorOutlined";
 import {
@@ -20,6 +21,10 @@ import { useSaveFeedback } from "../hooks/useSaveFeedback";
 import { useUnsaved } from "../hooks/useUnsaved";
 import type { DisplayConfig } from "../types/displayConfig";
 import { defaultDisplayConfig } from "../types/displayConfig";
+import {
+  useDeviceRuntimeKind,
+  type DeviceRuntimeKind,
+} from "../store/deviceStatusStore";
 
 const PIN_MIN = 1;
 const PIN_MAX = 48;
@@ -35,7 +40,15 @@ function asNumber(v: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function validate(
+function pathNoControlChars(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x20 || c === 0) return false;
+  }
+  return true;
+}
+
+function validateEsp(
   form: DisplayConfig,
   t: (k: string) => string,
 ): string | null {
@@ -70,9 +83,58 @@ function validate(
   return null;
 }
 
+function validateLinuxFb(
+  form: DisplayConfig,
+  t: (k: string) => string,
+): string | null {
+  if (!form.enabled) return null;
+  const dimOk =
+    form.width >= DIM_MIN &&
+    form.width <= DIM_MAX &&
+    form.height >= DIM_MIN &&
+    form.height <= DIM_MAX;
+  if (!dimOk) return t("displayConfig.validation.dimension");
+  const fb = form.fb_device.trim();
+  if (!fb) return t("displayConfig.validation.fbDeviceRequired");
+  if (!pathNoControlChars(fb))
+    return t("displayConfig.validation.pathInvalid");
+  const bl = form.backlight_sysfs?.trim() ?? "";
+  if (bl && !pathNoControlChars(bl))
+    return t("displayConfig.validation.pathInvalid");
+  return null;
+}
+
+function validateForRuntime(
+  form: DisplayConfig,
+  kind: DeviceRuntimeKind,
+  t: (k: string) => string,
+): string | null {
+  if (kind === "linux") return validateLinuxFb(form, t);
+  return validateEsp(form, t);
+}
+
+/** Linux 保存时强制与固件约定一致（framebuffer、rotation=0）。 */
+function buildSavePayload(
+  form: DisplayConfig,
+  kind: DeviceRuntimeKind,
+): DisplayConfig {
+  if (kind !== "linux") return form;
+  const bl = form.backlight_sysfs?.trim() || null;
+  return {
+    ...form,
+    driver: "framebuffer",
+    bus: "framebuffer",
+    rotation: 0,
+    fb_device: form.fb_device.trim(),
+    backlight_sysfs: bl,
+  };
+}
+
 /** 设备配置 →「显示」Tab 内容（路由子页） */
 export function DisplayConfigPanel() {
   const { t } = useTranslation();
+  const runtimeKind = useDeviceRuntimeKind();
+  const showLinuxFramebuffer = runtimeKind === "linux";
   const {
     displayConfig,
     displayLoading,
@@ -84,6 +146,11 @@ export function DisplayConfigPanel() {
   const { setDirty } = useUnsaved();
   const [draft, setDraft] = useState<DisplayConfig | null>(null);
   const form = draft ?? displayConfig ?? defaultDisplayConfig();
+
+  const sectionDesc = useMemo(() => {
+    if (showLinuxFramebuffer) return t("displayConfig.sectionMainDescLinux");
+    return t("displayConfig.sectionMainDesc");
+  }, [showLinuxFramebuffer, t]);
 
   useEffect(() => {
     void loadDisplayConfig();
@@ -110,13 +177,14 @@ export function DisplayConfigPanel() {
   }
 
   const save = async () => {
-    const err = validate(form, t);
+    const err = validateForRuntime(form, runtimeKind, t);
     if (err) {
       saveFeedback.fail(err);
       return;
     }
     saveFeedback.begin();
-    const result = await saveDisplayConfig(form);
+    const body = buildSavePayload(form, runtimeKind);
+    const result = await saveDisplayConfig(body);
     saveFeedback.finishFromResult(result);
     if (result.ok) setDirty(false);
   };
@@ -139,7 +207,7 @@ export function DisplayConfigPanel() {
       <SettingsSection
         icon={<MonitorOutlined sx={{ fontSize: "var(--icon-size-md)" }} />}
         label={t("displayConfig.sectionMain")}
-        description={t("displayConfig.sectionMainDesc")}
+        description={sectionDesc}
         accessory={
           <Button
             size="small"
@@ -170,6 +238,12 @@ export function DisplayConfigPanel() {
         }
       >
         <FormFieldStack>
+          {showLinuxFramebuffer ? (
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+              {t("displayConfig.linuxFramebufferHint")}
+            </Typography>
+          ) : null}
+
           <FormSectionSub title={t("displayConfig.sectionBasic")}>
             <FormControlLabel
               control={
@@ -181,72 +255,102 @@ export function DisplayConfigPanel() {
               label={t("displayConfig.enabled")}
             />
             <Box sx={fieldGridSx}>
-              <TextField
-                select
-                size="small"
-                fullWidth
-                disabled={!form.enabled}
-                value={form.driver}
-                label={t("displayConfig.driver")}
-                onChange={(e) =>
-                  setField("driver", e.target.value as DisplayConfig["driver"])
-                }
-                slotProps={{ select: { native: true } }}
-              >
-                <option value="st7789">ST7789</option>
-                <option value="ili9341">ILI9341</option>
-                <option value="st7735">ST7735 (1.8&quot; / 1.44&quot; / 0.96&quot;)</option>
-              </TextField>
-              <TextField
-                select
-                size="small"
-                fullWidth
-                disabled={!form.enabled}
-                value={form.rotation}
-                label={t("displayConfig.rotation")}
-                onChange={(e) =>
-                  setField(
-                    "rotation",
-                    Number(e.target.value) as DisplayConfig["rotation"],
-                  )
-                }
-                slotProps={{ select: { native: true } }}
-              >
-                <option value={0}>0</option>
-                <option value={90}>90</option>
-                <option value={180}>180</option>
-                <option value={270}>270</option>
-              </TextField>
-              <TextField
-                select
-                size="small"
-                fullWidth
-                disabled={!form.enabled}
-                value={form.color_order}
-                label={t("displayConfig.colorOrder")}
-                onChange={(e) =>
-                  setField(
-                    "color_order",
-                    e.target.value as DisplayConfig["color_order"],
-                  )
-                }
-                slotProps={{ select: { native: true } }}
-              >
-                <option value="rgb">RGB</option>
-                <option value="bgr">BGR</option>
-              </TextField>
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={form.invert_colors}
-                    onChange={(_, checked) =>
-                      setField("invert_colors", checked)
-                    }
+              {showLinuxFramebuffer ? (
+                <TextField
+                  size="small"
+                  fullWidth
+                  disabled
+                  label={t("displayConfig.driver")}
+                  value={t("displayConfig.driverFramebuffer")}
+                />
+              ) : (
+                <TextField
+                  select
+                  size="small"
+                  fullWidth
+                  disabled={!form.enabled}
+                  value={form.driver}
+                  label={t("displayConfig.driver")}
+                  onChange={(e) =>
+                    setField(
+                      "driver",
+                      e.target.value as DisplayConfig["driver"],
+                    )
+                  }
+                  slotProps={{ select: { native: true } }}
+                >
+                  <option value="st7789">ST7789</option>
+                  <option value="ili9341">ILI9341</option>
+                  <option value="st7735">
+                    ST7735 (1.8&quot; / 1.44&quot; / 0.96&quot;)
+                  </option>
+                </TextField>
+              )}
+              {showLinuxFramebuffer ? (
+                <TextField
+                  size="small"
+                  fullWidth
+                  disabled
+                  label={t("displayConfig.rotation")}
+                  value="0°"
+                  helperText={t("displayConfig.rotationFramebufferHelp")}
+                />
+              ) : (
+                <TextField
+                  select
+                  size="small"
+                  fullWidth
+                  disabled={!form.enabled}
+                  value={form.rotation}
+                  label={t("displayConfig.rotation")}
+                  onChange={(e) =>
+                    setField(
+                      "rotation",
+                      Number(e.target.value) as DisplayConfig["rotation"],
+                    )
+                  }
+                  slotProps={{ select: { native: true } }}
+                >
+                  <option value={0}>0</option>
+                  <option value={90}>90</option>
+                  <option value={180}>180</option>
+                  <option value={270}>270</option>
+                </TextField>
+              )}
+              {!showLinuxFramebuffer ? (
+                <>
+                  <TextField
+                    select
+                    size="small"
+                    fullWidth
                     disabled={!form.enabled}
+                    value={form.color_order}
+                    label={t("displayConfig.colorOrder")}
+                    onChange={(e) =>
+                      setField(
+                        "color_order",
+                        e.target.value as DisplayConfig["color_order"],
+                      )
+                    }
+                    slotProps={{ select: { native: true } }}
+                  >
+                    <option value="rgb">RGB</option>
+                    <option value="bgr">BGR</option>
+                  </TextField>
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={form.invert_colors}
+                        onChange={(_, checked) =>
+                          setField("invert_colors", checked)
+                        }
+                        disabled={!form.enabled}
+                      />
+                    }
+                    label={t("displayConfig.invertColors")}
                   />
-                }
-                label={t("displayConfig.invertColors")}
-              />
+                </>
+              ) : null}
             </Box>
           </FormSectionSub>
 
@@ -274,106 +378,144 @@ export function DisplayConfigPanel() {
                   if (n != null) setField("height", n);
                 }}
               />
-              <TextField
-                type="number"
-                size="small"
-                label={t("displayConfig.offsetX")}
-                disabled={!form.enabled}
-                value={form.offset_x}
-                onChange={(e) => {
-                  const n = asNumber(e.target.value);
-                  if (n != null) setField("offset_x", n);
-                }}
-              />
-              <TextField
-                type="number"
-                size="small"
-                label={t("displayConfig.offsetY")}
-                disabled={!form.enabled}
-                value={form.offset_y}
-                onChange={(e) => {
-                  const n = asNumber(e.target.value);
-                  if (n != null) setField("offset_y", n);
-                }}
-              />
+              {!showLinuxFramebuffer ? (
+                <>
+                  <TextField
+                    type="number"
+                    size="small"
+                    label={t("displayConfig.offsetX")}
+                    disabled={!form.enabled}
+                    value={form.offset_x}
+                    onChange={(e) => {
+                      const n = asNumber(e.target.value);
+                      if (n != null) setField("offset_x", n);
+                    }}
+                  />
+                  <TextField
+                    type="number"
+                    size="small"
+                    label={t("displayConfig.offsetY")}
+                    disabled={!form.enabled}
+                    value={form.offset_y}
+                    onChange={(e) => {
+                      const n = asNumber(e.target.value);
+                      if (n != null) setField("offset_y", n);
+                    }}
+                  />
+                </>
+              ) : null}
             </Box>
           </FormSectionSub>
 
-          <FormSectionSub title={t("displayConfig.sectionSpi")}>
-            <Box sx={fieldGridSx}>
-              <TextField
-                select
-                size="small"
-                fullWidth
-                disabled={!form.enabled}
-                value={form.spi.host}
-                label={t("displayConfig.spiHost")}
-                onChange={(e) => {
-                  const host = Number(e.target.value) as 1 | 2;
-                  setDraft((prev) => ({
-                    ...(prev ?? form),
-                    spi: { ...(prev ?? form).spi, host },
-                  }));
-                  setDirty(true);
-                }}
-                slotProps={{ select: { native: true } }}
-              >
-                <option value={1}>{t("displayConfig.spiHostSpi2")}</option>
-                <option value={2}>{t("displayConfig.spiHostSpi3")}</option>
-              </TextField>
-              {(["sclk", "mosi", "cs", "dc", "rst", "bl"] as const).map((k) => (
+          {showLinuxFramebuffer ? (
+            <FormSectionSub title={t("displayConfig.sectionFramebuffer")}>
+              <Box sx={fieldGridSx}>
                 <TextField
-                  key={k}
+                  size="small"
+                  fullWidth
+                  disabled={!form.enabled}
+                  label={t("displayConfig.fbDevice")}
+                  value={form.fb_device}
+                  helperText={t("displayConfig.fbDeviceHelp")}
+                  onChange={(e) => setField("fb_device", e.target.value)}
+                />
+                <TextField
+                  size="small"
+                  fullWidth
+                  disabled={!form.enabled}
+                  label={t("displayConfig.backlightSysfs")}
+                  value={form.backlight_sysfs ?? ""}
+                  helperText={t("displayConfig.backlightSysfsHelp")}
+                  onChange={(e) => {
+                    const v = e.target.value.trim();
+                    setField("backlight_sysfs", v === "" ? null : e.target.value);
+                  }}
+                />
+              </Box>
+            </FormSectionSub>
+          ) : (
+            <FormSectionSub title={t("displayConfig.sectionSpi")}>
+              <Box sx={fieldGridSx}>
+                <TextField
+                  select
+                  size="small"
+                  fullWidth
+                  disabled={!form.enabled}
+                  value={form.spi.host}
+                  label={t("displayConfig.spiHost")}
+                  onChange={(e) => {
+                    const host = Number(e.target.value) as 1 | 2;
+                    setDraft((prev) => ({
+                      ...(prev ?? form),
+                      spi: { ...(prev ?? form).spi, host },
+                    }));
+                    setDirty(true);
+                  }}
+                  slotProps={{ select: { native: true } }}
+                >
+                  <option value={1}>{t("displayConfig.spiHostSpi2")}</option>
+                  <option value={2}>{t("displayConfig.spiHostSpi3")}</option>
+                </TextField>
+                {(["sclk", "mosi", "cs", "dc", "rst", "bl"] as const).map(
+                  (k) => (
+                    <TextField
+                      key={k}
+                      type="number"
+                      size="small"
+                      disabled={!form.enabled}
+                      label={t(
+                        `displayConfig.spi${k[0].toUpperCase()}${k.slice(1)}`,
+                      )}
+                      value={form.spi[k] ?? ""}
+                      onChange={(e) => {
+                        const raw = e.target.value.trim();
+                        setDraft((prev) => {
+                          const base = prev ?? form;
+                          const next = { ...base.spi };
+                          if (raw === "" && (k === "rst" || k === "bl")) {
+                            next[k] = null;
+                          } else {
+                            const n = asNumber(raw);
+                            if (n == null) return base;
+                            next[k] = n as never;
+                          }
+                          return { ...base, spi: next };
+                        });
+                        setDirty(true);
+                      }}
+                    />
+                  ),
+                )}
+                <TextField
                   type="number"
                   size="small"
+                  label={t("displayConfig.spiFreqHz")}
                   disabled={!form.enabled}
-                  label={t(
-                    `displayConfig.spi${k[0].toUpperCase()}${k.slice(1)}`,
-                  )}
-                  value={form.spi[k] ?? ""}
+                  value={form.spi.freq_hz}
                   onChange={(e) => {
-                    const raw = e.target.value.trim();
-                    setDraft((prev) => {
-                      const base = prev ?? form;
-                      const next = { ...base.spi };
-                      if (raw === "" && (k === "rst" || k === "bl")) {
-                        next[k] = null;
-                      } else {
-                        const n = asNumber(raw);
-                        if (n == null) return base;
-                        next[k] = n as never;
-                      }
-                      return { ...base, spi: next };
-                    });
+                    const n = asNumber(e.target.value);
+                    if (n == null) return;
+                    setDraft((prev) => ({
+                      ...(prev ?? form),
+                      spi: { ...(prev ?? form).spi, freq_hz: n },
+                    }));
                     setDirty(true);
                   }}
                 />
-              ))}
-              <TextField
-                type="number"
-                size="small"
-                label={t("displayConfig.spiFreqHz")}
-                disabled={!form.enabled}
-                value={form.spi.freq_hz}
-                onChange={(e) => {
-                  const n = asNumber(e.target.value);
-                  if (n == null) return;
-                  setDraft((prev) => ({
-                    ...(prev ?? form),
-                    spi: { ...(prev ?? form).spi, freq_hz: n },
-                  }));
-                  setDirty(true);
-                }}
-              />
-            </Box>
-          </FormSectionSub>
+              </Box>
+            </FormSectionSub>
+          )}
 
           <FormSectionSub title={t("displayConfig.sleepTimeoutSecs")}>
             <TextField
               type="number"
               size="small"
               label={t("displayConfig.sleepTimeoutSecs")}
-              helperText={t("displayConfig.sleepTimeoutSecsHelp")}
+              helperText={
+                showLinuxFramebuffer
+                  ? t("displayConfig.sleepTimeoutSecsHelpLinux")
+                  : t("displayConfig.sleepTimeoutSecsHelp")
+              }
               disabled={!form.enabled}
               value={form.sleep_timeout_secs}
               onChange={(e) => {

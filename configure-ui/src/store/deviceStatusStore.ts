@@ -9,10 +9,18 @@ import { useSyncExternalStore } from 'react'
 
 export type ConnectionStatus = 'none' | 'checking' | 'reachable' | 'unreachable'
 
+/**
+ * 设备运行平台（由固件 `GET /api/system_info` 的 `board_id` 推断），供 UI 按平台裁剪表单项。
+ * Inferred from firmware `board_id`: `linux` → linux, `esp32-*` / `unsupported-soc-*` → esp, `host` → 本机调试二进制。
+ */
+export type DeviceRuntimeKind = 'unknown' | 'linux' | 'esp' | 'host'
+
 export interface DeviceStatus {
   connectionStatus: ConnectionStatus
   /** 设备端是否已设配对码（GET /api/pairing_code 的 code_set）；null = 未请求或不可达 */
   activated: boolean | null
+  /** 在成功拉取 system_info 并解析 board_id 之前为 unknown */
+  runtimeKind: DeviceRuntimeKind
 }
 
 /** 重启闭环阶段：idle=无重启流程，pending=指令已发设备仍可达，restarting=设备已掉线等待上线 */
@@ -28,6 +36,36 @@ const RESTART_PENDING_MAX_MS = 90_000
 let status: DeviceStatus = {
   connectionStatus: 'none',
   activated: null,
+  runtimeKind: 'unknown',
+}
+
+/** 由 `board_id` 推断平台；与固件 `runtime_board::resolved_board_id()` 约定一致。 */
+export function inferDeviceRuntimeKind(boardId: string | undefined): DeviceRuntimeKind {
+  const id = boardId?.trim()
+  if (!id) return 'unknown'
+  if (id === 'linux') return 'linux'
+  if (id === 'host') return 'host'
+  if (id.startsWith('esp32-') || id.startsWith('unsupported-soc-')) return 'esp'
+  return 'unknown'
+}
+
+/** 在拿到 system_info 后调用（如 DevicePage）。 */
+export function setDeviceRuntimeKindFromBoardId(boardId: string | undefined): void {
+  const next = inferDeviceRuntimeKind(boardId)
+  if (status.runtimeKind === next) return
+  status = { ...status, runtimeKind: next }
+  emitChange()
+}
+
+/** baseUrl 切换或清空时由 DeviceProvider 调用，避免沿用上一条连接的平台。 */
+export function resetDeviceRuntimeKind(): void {
+  if (status.runtimeKind === 'unknown') return
+  status = { ...status, runtimeKind: 'unknown' }
+  emitChange()
+}
+
+function getRuntimeKindSnapshot(): DeviceRuntimeKind {
+  return status.runtimeKind
 }
 let restartPending = false
 let restartPendingSince: number | null = null
@@ -53,8 +91,14 @@ function emitChange(): void {
 
 /** 设置设备状态。仅由 DeviceProvider 调用。 */
 export function setDeviceStatus(connectionStatus: ConnectionStatus, activated: boolean | null): void {
-  const next: DeviceStatus = { connectionStatus, activated }
-  if (status.connectionStatus === next.connectionStatus && status.activated === next.activated) return
+  const next: DeviceStatus = { connectionStatus, activated, runtimeKind: status.runtimeKind }
+  if (
+    status.connectionStatus === next.connectionStatus &&
+    status.activated === next.activated &&
+    status.runtimeKind === next.runtimeKind
+  ) {
+    return
+  }
   status = next
   emitChange()
 }
@@ -62,7 +106,7 @@ export function setDeviceStatus(connectionStatus: ConnectionStatus, activated: b
 /** 配置刷新成功后可调用：立即把连接态标记为可达，避免 UI 继续显示断连蒙层。 */
 export function markDeviceReachable(): void {
   if (status.connectionStatus === 'reachable') return
-  status = { ...status, connectionStatus: 'reachable' }
+  status = { ...status, connectionStatus: 'reachable', runtimeKind: status.runtimeKind }
   emitChange()
 }
 
@@ -150,6 +194,11 @@ export function useRestartPhase(): RestartPhase {
 /** 在组件中订阅完整设备状态。 */
 export function useDeviceStatus(): DeviceStatus {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+}
+
+/** 仅订阅运行平台（Linux / ESP / host / unknown），用于表单项显隐。 */
+export function useDeviceRuntimeKind(): DeviceRuntimeKind {
+  return useSyncExternalStore(subscribe, getRuntimeKindSnapshot, getRuntimeKindSnapshot)
 }
 
 /** 设备是否已连接（可达且已拿到 pairing_code 响应）。 */

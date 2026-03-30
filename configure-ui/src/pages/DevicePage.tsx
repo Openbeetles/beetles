@@ -20,6 +20,7 @@ import {
   type ChannelConnectivityItem,
   type HealthData,
 } from "../api/endpoints/system";
+import { setDeviceRuntimeKindFromBoardId } from "../store/deviceStatusStore";
 import { SystemStatusPanel } from "../components/SystemStatusPanel";
 import { SectionLoadProgress } from "../components/SectionLoadProgress";
 
@@ -80,8 +81,10 @@ export function DevicePage() {
       .then((res) => {
         if (cancelled) return;
         setSystemInfoLoading(false);
-        if (res.ok && res.data) setSystemInfo(res.data);
-        else setSystemInfoError(res.error ?? "");
+        if (res.ok && res.data) {
+          setSystemInfo(res.data);
+          setDeviceRuntimeKindFromBoardId(res.data.board_id);
+        } else setSystemInfoError(res.error ?? "");
       })
       .catch(() => {
         if (!cancelled) {
@@ -162,8 +165,10 @@ export function DevicePage() {
       .info()
       .then((res) => {
         setSystemInfoLoading(false);
-        if (res.ok && res.data) setSystemInfo(res.data);
-        else setSystemInfoError(res.error ?? "");
+        if (res.ok && res.data) {
+          setSystemInfo(res.data);
+          setDeviceRuntimeKindFromBoardId(res.data.board_id);
+        } else setSystemInfoError(res.error ?? "");
       })
       .catch(() => {
         setSystemInfoLoading(false);

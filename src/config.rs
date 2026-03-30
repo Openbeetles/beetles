@@ -3,8 +3,8 @@
 //! Build-time / env config with validation; secrets never logged or written to SPIFFS.
 
 use crate::display::{
-    default_disabled_display_config, validate_display_config_core, DisplayConfig,
-    DISPLAY_CONFIG_VERSION,
+    default_disabled_display_config, is_framebuffer_config, validate_display_config_core,
+    DisplayConfig, DISPLAY_CONFIG_VERSION,
 };
 use crate::error::{Error, Result};
 use crate::platform::ConfigStore;
@@ -2185,6 +2185,10 @@ fn collect_display_pins(cfg: &DisplayConfig) -> Vec<(String, i32)> {
 fn validate_display_segment(cfg: &DisplayConfig, hardware_devices: &[DeviceEntry]) -> Result<()> {
     validate_display_config_core(cfg)?;
     if !cfg.enabled {
+        return Ok(());
+    }
+    // Framebuffer 模式无 SPI 引脚，跳过 pin 冲突检查。
+    if is_framebuffer_config(cfg) {
         return Ok(());
     }
 

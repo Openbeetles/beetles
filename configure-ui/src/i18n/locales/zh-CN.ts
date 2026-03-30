@@ -484,9 +484,22 @@ export const zhCN = {
       pageDesc: '显示驱动、引脚与仪表盘渲染参数。',
       sectionMain: '显示配置',
       sectionMainDesc: '保存后重启生效。',
+      sectionMainDescLinux: 'Linux 使用内核 framebuffer；保存后重启生效。',
+      linuxFramebufferHint:
+        '已识别为 Linux 设备：仅显示 framebuffer 与背光 sysfs 相关项（与固件 DisplayDriver::Framebuffer 一致）。',
       sectionBasic: '基础参数',
       sectionGeometry: '几何参数',
       sectionSpi: 'SPI 参数',
+      sectionFramebuffer: 'Framebuffer（Linux）',
+      driverFramebuffer: 'Framebuffer（Linux）',
+      fbDevice: 'Framebuffer 设备路径',
+      fbDeviceHelp: '一般为 /dev/fb0，须与内核节点一致。',
+      backlightSysfs: '背光 sysfs 路径（可选）',
+      backlightSysfsHelp:
+        '填写亮度文件路径，例如 /sys/class/backlight/backlight0/brightness；留空则无法通过 UI 调背光与自动熄屏。',
+      rotationFramebufferHelp: '当前固件 framebuffer 模式仅支持 0°；保存时会写入 rotation=0。',
+      sleepTimeoutSecsHelpLinux:
+        '空闲指定秒数后通过 sysfs 写背光关闭屏幕。0 = 不熄屏。需填写背光 sysfs 路径。',
       enabled: '启用显示',
       driver: '驱动型号',
       rotation: '旋转角度',
@@ -515,6 +528,8 @@ export const zhCN = {
         offset: '偏移需在 -480~480 范围内',
         freq: 'SPI 频率需在 1,000,000~80,000,000 范围内',
         pin: '引脚需在 1~48 范围内',
+        fbDeviceRequired: '请填写 framebuffer 设备路径',
+        pathInvalid: '路径不能为空字节且不能含控制字符',
       },
     },
     systemLogs: {

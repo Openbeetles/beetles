@@ -22,12 +22,17 @@ pub enum DisplayDriver {
     Ili9341,
     /// ST7735 / ST7735R / ST7735S 家族（寄存器兼容）。
     St7735,
+    /// Linux framebuffer 驱动（通过 /dev/fb0 等 fbdev 接口）。
+    /// Linux framebuffer driver via /dev/fbX fbdev interface.
+    Framebuffer,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DisplayBus {
     Spi,
+    /// Linux framebuffer 总线（与 DisplayDriver::Framebuffer 配对）。
+    Framebuffer,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -81,6 +86,15 @@ pub struct DisplayConfig {
     #[serde(default)]
     pub offset_y: i16,
     pub spi: DisplaySpiConfig,
+    /// Linux framebuffer 设备路径（仅 driver/bus == Framebuffer 时生效）。
+    /// Linux framebuffer device path (only used when driver/bus == Framebuffer).
+    #[serde(default = "default_fb_device")]
+    pub fb_device: String,
+    /// Linux sysfs 背光亮度文件路径，如 /sys/class/backlight/backlight0/brightness。
+    /// 为 None 时背光不可控（auto-sleep 不启用）。
+    /// Linux sysfs backlight brightness file path. None means no backlight control.
+    #[serde(default)]
+    pub backlight_sysfs: Option<String>,
     /// 空闲自动熄屏超时（秒）。0 = 禁用。
     /// Auto-sleep timeout in seconds. 0 = disabled.
     #[serde(default)]
@@ -247,6 +261,10 @@ fn default_spi_freq_hz() -> u32 {
     40_000_000
 }
 
+fn default_fb_device() -> String {
+    "/dev/fb0".to_string()
+}
+
 pub fn default_disabled_display_config() -> DisplayConfig {
     DisplayConfig {
         version: DISPLAY_CONFIG_VERSION,
@@ -270,8 +288,19 @@ pub fn default_disabled_display_config() -> DisplayConfig {
             bl: None,
             freq_hz: default_spi_freq_hz(),
         },
+        fb_device: default_fb_device(),
+        backlight_sysfs: None,
         sleep_timeout_secs: 0,
     }
+}
+
+/// 判断配置是否使用 Linux framebuffer 后端。
+#[inline]
+pub fn is_framebuffer_config(cfg: &DisplayConfig) -> bool {
+    matches!(
+        (&cfg.driver, &cfg.bus),
+        (DisplayDriver::Framebuffer, DisplayBus::Framebuffer)
+    )
 }
 
 pub fn validate_display_config_core(cfg: &DisplayConfig) -> Result<()> {
@@ -295,6 +324,36 @@ pub fn validate_display_config_core(cfg: &DisplayConfig) -> Result<()> {
             "DISPLAY_CONFIG_INVALID_DIMENSION: width/height must be 1..=480",
         ));
     }
+    // Framebuffer 首版仅支持 rotation=0；MADCTL 软件旋转留 TODO。
+    if is_framebuffer_config(cfg) {
+        if cfg.rotation != 0 {
+            return Err(Error::config(
+                "display",
+                "DISPLAY_CONFIG_FRAMEBUFFER_ROTATION: framebuffer mode only supports rotation=0 in this version",
+            ));
+        }
+        // fb_device 路径安全检查：非空、无 NUL 字节与控制字符。
+        if cfg.fb_device.is_empty()
+            || cfg.fb_device.bytes().any(|b| b == 0 || b < 0x20)
+        {
+            return Err(Error::config(
+                "display",
+                "DISPLAY_CONFIG_INVALID_FB_DEVICE: fb_device path must be non-empty and contain no control characters",
+            ));
+        }
+        // backlight_sysfs 路径安全检查（若有）。
+        if let Some(ref bl) = cfg.backlight_sysfs {
+            if bl.is_empty() || bl.bytes().any(|b| b == 0 || b < 0x20) {
+                return Err(Error::config(
+                    "display",
+                    "DISPLAY_CONFIG_INVALID_BACKLIGHT_SYSFS: backlight_sysfs path must be non-empty and contain no control characters",
+                ));
+            }
+        }
+        return Ok(());
+    }
+
+    // SPI 驱动校验（仅 driver/bus != Framebuffer 时执行）。
     if !matches!(cfg.rotation, 0 | 90 | 180 | 270) {
         return Err(Error::config(
             "display",

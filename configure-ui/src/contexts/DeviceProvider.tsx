@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getPairingCode } from '../api/endpoints/pairingCode'
 import { fetchCsrfToken } from '../api/client'
-import { setDeviceStatus, updateRestartState } from '../store/deviceStatusStore'
+import {
+  resetDeviceRuntimeKind,
+  setDeviceStatus,
+  updateRestartState,
+} from '../store/deviceStatusStore'
 import {
   DeviceContext,
   getStoredBaseUrl,
@@ -30,6 +34,7 @@ export function DeviceProvider({ children }: { children: React.ReactNode }) {
 
   // 初次或 baseUrl 变化时检测一次
   useEffect(() => {
+    resetDeviceRuntimeKind()
     const url = baseUrl?.trim()
     if (!url) {
       setDeviceStatus('none', null)

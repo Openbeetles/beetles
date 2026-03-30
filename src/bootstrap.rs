@@ -3,7 +3,11 @@
 
 use crate::config::{self, AppConfig};
 use crate::Platform;
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+#[cfg(any(
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
 use crate::{
     constants::SOFTAP_DEFAULT_IPV4, DisplayChannelStatus, DisplayCommand, DisplayPressureLevel,
     DisplaySystemState,
@@ -67,16 +71,24 @@ pub fn bootstrap_config_and_wifi(platform: &Arc<dyn Platform>) -> (Arc<AppConfig
         std::process::exit(1);
     }
 
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    esp_boot_display_after_wifi(platform, &config, wifi_init_ok);
+    #[cfg(any(
+        target_arch = "xtensa",
+        target_arch = "riscv32",
+        target_os = "linux"
+    ))]
+    post_wifi_display_bootstrap(platform, &config, wifi_init_ok);
     // Audio init has been moved to run_app, after MessageBus creation, so that
     // the wake-word engine can receive a valid inbound sender on first boot.
 
     (config, wifi_init_ok)
 }
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-fn esp_boot_display_after_wifi(
+#[cfg(any(
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+fn post_wifi_display_bootstrap(
     platform: &Arc<dyn Platform>,
     config: &Arc<AppConfig>,
     wifi_init_ok: bool,

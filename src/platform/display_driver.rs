@@ -10,7 +10,21 @@ use crate::display::{
     DisplayPressureLevel, DisplaySystemState, DISPLAY_LAYOUT_REF_PX,
 };
 use crate::error::Result;
+use std::convert::Infallible;
 use std::time::Instant;
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  FlushRgb565 — 抽象刷屏接口，SPI 与 framebuffer 均实现
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// 将内存帧缓冲写到物理显示器的统一接口。
+/// `SpiDisplayBackend`（ESP）与 `LinuxFramebufferBackend` 均实现此 trait。
+pub(crate) trait FlushRgb565 {
+    /// 将整个逻辑帧写到硬件（委托 `flush_rows`）。
+    fn flush(&mut self, offset_x: i16, offset_y: i16) -> Result<()>;
+    /// 将行范围 `[ry, ry+rh)` 写到硬件。
+    fn flush_rows(&mut self, offset_x: i16, offset_y: i16, ry: u16, rh: u16) -> Result<()>;
+}
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  ESP32 target — real SPI backend
@@ -373,12 +387,12 @@ mod esp_backend {
         }
 
         /// Set column/row address window then push full framebuf via SPI.
-        pub fn flush(&self, offset_x: i16, offset_y: i16) -> Result<()> {
+        pub fn flush(&mut self, offset_x: i16, offset_y: i16) -> Result<()> {
             self.flush_rows(offset_x, offset_y, 0, self.height)
         }
 
         /// Push only the rows `[ry..ry+rh)` from the framebuffer, reducing SPI transfer.
-        pub fn flush_rows(&self, offset_x: i16, offset_y: i16, ry: u16, rh: u16) -> Result<()> {
+        pub fn flush_rows(&mut self, offset_x: i16, offset_y: i16, ry: u16, rh: u16) -> Result<()> {
             if rh == 0 || self.width == 0 {
                 return Ok(());
             }
@@ -460,6 +474,154 @@ mod esp_backend {
             Size::new(self.width as u32, self.height as u32)
         }
     }
+
+    impl super::FlushRgb565 for SpiDisplayBackend {
+        fn flush(&mut self, offset_x: i16, offset_y: i16) -> Result<()> {
+            SpiDisplayBackend::flush(self, offset_x, offset_y)
+        }
+        fn flush_rows(&mut self, offset_x: i16, offset_y: i16, ry: u16, rh: u16) -> Result<()> {
+            SpiDisplayBackend::flush_rows(self, offset_x, offset_y, ry, rh)
+        }
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  Linux framebuffer backend — FlushRgb565 impl
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[cfg(all(target_os = "linux", not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
+use crate::platform::linux::display_fb::LinuxFramebufferBackend;
+
+#[cfg(all(target_os = "linux", not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
+impl FlushRgb565 for LinuxFramebufferBackend {
+    fn flush(&mut self, offset_x: i16, offset_y: i16) -> Result<()> {
+        LinuxFramebufferBackend::flush(self, offset_x, offset_y)
+    }
+    fn flush_rows(&mut self, offset_x: i16, offset_y: i16, ry: u16, rh: u16) -> Result<()> {
+        LinuxFramebufferBackend::flush_rows(self, offset_x, offset_y, ry, rh)
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  dispatch_display_command — 平台无关显示指令派发（单份 match）
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// 将 `DisplayCommand` 渲染到 `backend` 并调用对应 flush。
+/// `B` 须同时实现 `DrawTarget<Color=Rgb565>` 与 `FlushRgb565`，ESP 与 Linux 均可用。
+fn dispatch_display_command<B>(
+    backend: &mut B,
+    config: &DisplayConfig,
+    layout: &DisplayLayout,
+    cmd: &DisplayCommand,
+) -> Result<()>
+where
+    B: embedded_graphics_core::draw_target::DrawTarget<
+            Color = embedded_graphics_core::pixelcolor::Rgb565,
+            Error = Infallible,
+        > + FlushRgb565,
+{
+    use embedded_graphics_core::pixelcolor::Rgb565;
+    match cmd {
+        DisplayCommand::RefreshDashboard {
+            state,
+            wifi_connected: _,
+            ip_address,
+            channels,
+            pressure,
+            heap_percent,
+            messages_in,
+            messages_out,
+            last_active_epoch_secs,
+            uptime_secs,
+            busy_phase,
+            llm_last_ms,
+            error_flash,
+        } => {
+            render_dashboard(
+                backend,
+                &DashboardParams {
+                    layout,
+                    state: *state,
+                    ip_address: ip_address.as_deref(),
+                    channels,
+                    pressure,
+                    heap_percent: *heap_percent,
+                    width: config.width,
+                    height: config.height,
+                    messages_in: *messages_in,
+                    messages_out: *messages_out,
+                    last_active_epoch_secs: *last_active_epoch_secs,
+                    uptime_secs: *uptime_secs,
+                    busy_phase: *busy_phase,
+                    llm_last_ms: *llm_last_ms,
+                    error_flash: *error_flash,
+                },
+            );
+            backend.flush(config.offset_x, config.offset_y)?;
+        }
+        DisplayCommand::UpdateIp { ip, uptime_secs } => {
+            render_ip_partial(backend, ip.as_str(), *uptime_secs, config.width, layout);
+            let flush_h = subtitle_ip_flush_rows(config.width, *uptime_secs);
+            backend.flush_rows(config.offset_x, config.offset_y, layout.subtitle_top, flush_h)?;
+        }
+        DisplayCommand::UpdatePressure {
+            level,
+            heap_percent,
+            messages_in,
+            messages_out,
+            last_active_epoch_secs,
+            llm_last_ms,
+            error_flash,
+        } => {
+            let bg = DISPLAY_BG;
+            render_pressure_partial(
+                backend,
+                level,
+                bg,
+                layout,
+                &FooterPartialParams {
+                    heap_percent: *heap_percent,
+                    width: config.width,
+                    height: config.height,
+                    messages_in: *messages_in,
+                    messages_out: *messages_out,
+                    last_active_epoch_secs: *last_active_epoch_secs,
+                    llm_last_ms: *llm_last_ms,
+                    error_flash: *error_flash,
+                },
+            );
+            let footer_h = config.height.saturating_sub(layout.footer_top);
+            backend.flush_rows(config.offset_x, config.offset_y, layout.footer_top, footer_h)?;
+        }
+        DisplayCommand::UpdateChannels { channels } => {
+            let bg = DISPLAY_BG;
+            render_channels_partial(backend, channels, bg, config.width, layout);
+            let ch_h = layout_middle_panel_height(layout) as u16;
+            backend.flush_rows(
+                config.offset_x,
+                config.offset_y,
+                layout.middle_top,
+                ch_h,
+            )?;
+        }
+        DisplayCommand::UpdateBootProgress { stage } => {
+            let bg = DISPLAY_BG;
+            render_boot_progress(backend, *stage, config.width, config.height, bg, layout);
+            let footer_h = config.height.saturating_sub(layout.footer_top);
+            backend.flush_rows(
+                config.offset_x,
+                config.offset_y,
+                layout.footer_top,
+                footer_h,
+            )?;
+        }
+        DisplayCommand::Clear => {
+            use embedded_graphics::prelude::*;
+            let _ = backend.clear(Rgb565::BLACK);
+            backend.flush(config.offset_x, config.offset_y)?;
+        }
+    }
+    Ok(())
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -478,6 +640,9 @@ pub struct DisplayState {
     bl_ledc_initialized: bool,
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     backend: Option<esp_backend::SpiDisplayBackend>,
+    /// Linux framebuffer 后端（仅 Linux 非 ESP 目标编译）。
+    #[cfg(all(target_os = "linux", not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
+    backend_fb: Option<LinuxFramebufferBackend>,
 }
 
 /// F1: LEDC PWM 背光常量。Channel 7 / Timer 3，不与 tool pwm_out 的 0-5 冲突。
@@ -488,7 +653,10 @@ const BL_LEDC_DUTY_RESOLUTION: u32 = 13; // 13-bit → max duty 8191
 const BL_LEDC_MAX_DUTY: u32 = 8191;
 
 impl DisplayState {
+    // cfg-gated return chains require explicit `return` to prevent fall-through to other cfg blocks.
+    #[allow(clippy::needless_return)]
     pub fn init(config: &DisplayConfig) -> Result<Self> {
+        use crate::display::is_framebuffer_config;
         let layout = compute_layout(config.width, config.height);
         if !config.enabled {
             return Ok(Self {
@@ -500,6 +668,8 @@ impl DisplayState {
                 bl_ledc_initialized: false,
                 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
                 backend: None,
+                #[cfg(all(target_os = "linux", not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
+                backend_fb: None,
             });
         }
 
@@ -519,12 +689,52 @@ impl DisplayState {
             };
             // F1: 尝试初始化 LEDC PWM 背光；失败则降级为 GPIO 开关
             state.try_init_ledc_backlight();
-            Ok(state)
+            return Ok(state);
         }
 
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        #[cfg(all(target_os = "linux", not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
         {
-            log::info!("[display] host stub: init skipped (no SPI hardware)");
+            if !is_framebuffer_config(config) {
+                return Err(crate::error::Error::config(
+                    "display_init",
+                    "Linux target only supports driver=framebuffer / bus=framebuffer",
+                ));
+            }
+            match LinuxFramebufferBackend::new(config) {
+                Ok(fb) => {
+                    return Ok(Self {
+                        config: config.clone(),
+                        layout,
+                        available: true,
+                        last_command_at: None,
+                        bl_pin,
+                        bl_ledc_initialized: false,
+                        backend_fb: Some(fb),
+                    });
+                }
+                Err(e) => {
+                    log::warn!("[display] framebuffer init failed ({}); display unavailable", e);
+                    return Ok(Self {
+                        config: config.clone(),
+                        layout,
+                        available: false,
+                        last_command_at: None,
+                        bl_pin,
+                        bl_ledc_initialized: false,
+                        backend_fb: None,
+                    });
+                }
+            }
+        }
+
+        #[cfg(not(any(
+            target_arch = "xtensa",
+            target_arch = "riscv32",
+            target_os = "linux"
+        )))]
+        {
+            log::info!("[display] host stub: init skipped (no SPI hardware, not Linux)");
+            let _ = is_framebuffer_config;
             Ok(Self {
                 config: config.clone(),
                 layout,
@@ -599,138 +809,25 @@ impl DisplayState {
                 Some(b) => b,
                 None => return Ok(()),
             };
-            match &cmd {
-                DisplayCommand::RefreshDashboard {
-                    state,
-                    wifi_connected: _,
-                    ip_address,
-                    channels,
-                    pressure,
-                    heap_percent,
-                    messages_in,
-                    messages_out,
-                    last_active_epoch_secs,
-                    uptime_secs,
-                    busy_phase,
-                    llm_last_ms,
-                    error_flash,
-                } => {
-                    render_dashboard(
-                        backend,
-                        &DashboardParams {
-                            layout: &self.layout,
-                            state: *state,
-                            ip_address: ip_address.as_deref(),
-                            channels,
-                            pressure,
-                            heap_percent: *heap_percent,
-                            width: self.config.width,
-                            height: self.config.height,
-                            messages_in: *messages_in,
-                            messages_out: *messages_out,
-                            last_active_epoch_secs: *last_active_epoch_secs,
-                            uptime_secs: *uptime_secs,
-                            busy_phase: *busy_phase,
-                            llm_last_ms: *llm_last_ms,
-                            error_flash: *error_flash,
-                        },
-                    );
-                    backend.flush(self.config.offset_x, self.config.offset_y)?;
-                }
-                DisplayCommand::UpdateIp { ip, uptime_secs } => {
-                    render_ip_partial(
-                        backend,
-                        ip.as_str(),
-                        *uptime_secs,
-                        self.config.width,
-                        &self.layout,
-                    );
-                    let layout = &self.layout;
-                    let flush_h = subtitle_ip_flush_rows(self.config.width, *uptime_secs);
-                    backend.flush_rows(
-                        self.config.offset_x,
-                        self.config.offset_y,
-                        layout.subtitle_top,
-                        flush_h,
-                    )?;
-                }
-                DisplayCommand::UpdatePressure {
-                    level,
-                    heap_percent,
-                    messages_in,
-                    messages_out,
-                    last_active_epoch_secs,
-                    llm_last_ms,
-                    error_flash,
-                } => {
-                    let bg = DISPLAY_BG;
-                    render_pressure_partial(
-                        backend,
-                        level,
-                        bg,
-                        &self.layout,
-                        &FooterPartialParams {
-                            heap_percent: *heap_percent,
-                            width: self.config.width,
-                            height: self.config.height,
-                            messages_in: *messages_in,
-                            messages_out: *messages_out,
-                            last_active_epoch_secs: *last_active_epoch_secs,
-                            llm_last_ms: *llm_last_ms,
-                            error_flash: *error_flash,
-                        },
-                    );
-                    let layout = &self.layout;
-                    let footer_h = self.config.height.saturating_sub(layout.footer_top);
-                    backend.flush_rows(
-                        self.config.offset_x,
-                        self.config.offset_y,
-                        layout.footer_top,
-                        footer_h,
-                    )?;
-                }
-                DisplayCommand::UpdateChannels { channels } => {
-                    let bg = DISPLAY_BG;
-                    render_channels_partial(backend, channels, bg, self.config.width, &self.layout);
-                    let layout = &self.layout;
-                    let ch_h = layout_middle_panel_height(layout) as u16;
-                    backend.flush_rows(
-                        self.config.offset_x,
-                        self.config.offset_y,
-                        layout.middle_top,
-                        ch_h,
-                    )?;
-                }
-                DisplayCommand::UpdateBootProgress { stage } => {
-                    let bg = DISPLAY_BG;
-                    render_boot_progress(
-                        backend,
-                        *stage,
-                        self.config.width,
-                        self.config.height,
-                        bg,
-                        &self.layout,
-                    );
-                    let layout = &self.layout;
-                    let footer_h = self.config.height.saturating_sub(layout.footer_top);
-                    backend.flush_rows(
-                        self.config.offset_x,
-                        self.config.offset_y,
-                        layout.footer_top,
-                        footer_h,
-                    )?;
-                }
-                DisplayCommand::Clear => {
-                    use embedded_graphics::prelude::*;
-                    use embedded_graphics_core::pixelcolor::Rgb565;
-                    let _ = backend.clear(Rgb565::BLACK);
-                    backend.flush(self.config.offset_x, self.config.offset_y)?;
-                }
-            }
+            dispatch_display_command(backend, &self.config, &self.layout, &cmd)?;
             self.last_command_at = Some(Instant::now());
         }
 
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        #[cfg(all(target_os = "linux", not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
+        {
+            let backend = match self.backend_fb.as_mut() {
+                Some(b) => b,
+                None => return Ok(()),
+            };
+            dispatch_display_command(backend, &self.config, &self.layout, &cmd)?;
+            self.last_command_at = Some(Instant::now());
+        }
+
+        #[cfg(not(any(
+            target_arch = "xtensa",
+            target_arch = "riscv32",
+            target_os = "linux"
+        )))]
         {
             let _ = cmd;
             self.last_command_at = Some(Instant::now());
@@ -739,42 +836,39 @@ impl DisplayState {
         Ok(())
     }
 
-    /// 背光控制是否可用（显示器已初始化且有 BL 引脚）。
-    /// Whether backlight control is available.
+    /// 背光控制是否可用。
+    /// ESP: 显示器已初始化且有 BL 引脚；Linux: 显示器已初始化且配置了 backlight_sysfs 路径。
     pub fn backlight_available(&self) -> bool {
-        self.available && self.bl_pin.is_some()
+        if !self.available {
+            return false;
+        }
+        #[cfg(all(target_os = "linux", not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
+        let result = self.config.backlight_sysfs.is_some();
+        #[cfg(not(all(target_os = "linux", not(any(target_arch = "xtensa", target_arch = "riscv32")))))]
+        let result = self.bl_pin.is_some();
+        result
     }
 
     /// 设置背光开关。on=true 开启（GPIO HIGH 或 PWM 100%），on=false 关闭。
-    /// Set backlight on/off. Uses PWM if LEDC initialized, otherwise GPIO level.
+    /// Set backlight on/off. Uses PWM if LEDC initialized, otherwise GPIO level (ESP) or sysfs (Linux).
     pub fn set_backlight(&self, on: bool) -> Result<()> {
-        if self.bl_ledc_initialized {
-            return self.set_brightness(if on { 100 } else { 0 });
-        }
-        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        {
-            if let Some(bl) = self.bl_pin {
-                let level = if on { 1 } else { 0 };
-                unsafe {
-                    esp_idf_svc::sys::gpio_set_level(bl, level);
-                }
-            }
-        }
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        {
-            let _ = on;
-        }
-        Ok(())
+        self.set_brightness(if on { 100 } else { 0 })
     }
 
-    /// F1: 设置背光亮度（0-100%）。duty = percent * 8191 / 100。
-    /// Set backlight brightness via LEDC PWM (0-100%).
+    /// F1: 设置背光亮度（0-100%）。
+    /// ESP: LEDC PWM duty；Linux: sysfs brightness 文件；其它目标: no-op。
     pub fn set_brightness(&self, percent: u8) -> Result<()> {
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
         {
             if !self.bl_ledc_initialized {
                 // 降级为 GPIO 开关
-                return self.set_backlight(percent > 0);
+                if let Some(bl) = self.bl_pin {
+                    let level = if percent > 0 { 1u32 } else { 0u32 };
+                    unsafe {
+                        esp_idf_svc::sys::gpio_set_level(bl, level);
+                    }
+                }
+                return Ok(());
             }
             let duty = (percent.min(100) as u32) * BL_LEDC_MAX_DUTY / 100;
             unsafe {
@@ -789,7 +883,17 @@ impl DisplayState {
                 }
             }
         }
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        #[cfg(all(target_os = "linux", not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
+        {
+            if let Some(ref bl_path) = self.config.backlight_sysfs {
+                sysfs_write_brightness(bl_path, percent);
+            }
+        }
+        #[cfg(not(any(
+            target_arch = "xtensa",
+            target_arch = "riscv32",
+            target_os = "linux"
+        )))]
         {
             let _ = percent;
         }
@@ -799,10 +903,6 @@ impl DisplayState {
     /// F1: 背光渐变，20 步线性插值，阻塞在调用线程。
     /// Fade backlight from `from`% to `to`% over `duration_ms`, 20 steps, blocking.
     pub fn fade_brightness(&self, from: u8, to: u8, duration_ms: u32) -> Result<()> {
-        if !self.bl_ledc_initialized {
-            // 无 PWM 则直接开关
-            return self.set_backlight(to > 0);
-        }
         const STEPS: u32 = 20;
         let step_ms = duration_ms / STEPS;
         let from_val = from.min(100) as i32;
@@ -815,6 +915,33 @@ impl DisplayState {
             }
         }
         Ok(())
+    }
+}
+
+// ── sysfs 背光辅助（Linux 非 ESP）──────────────────────────────────────────
+
+#[cfg(all(target_os = "linux", not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
+fn sysfs_write_brightness(bl_path: &str, percent: u8) {
+    use std::io::Write;
+    // 读取 max_brightness（与 brightness 文件同目录）。
+    let max: u32 = (|| -> Option<u32> {
+        let parent = std::path::Path::new(bl_path).parent()?;
+        let max_path = parent.join("max_brightness");
+        let s = std::fs::read_to_string(max_path).ok()?;
+        s.trim().parse().ok()
+    })()
+    .unwrap_or(255);
+
+    let value = (percent.min(100) as u32) * max / 100;
+    match std::fs::OpenOptions::new().write(true).open(bl_path) {
+        Ok(mut f) => {
+            if let Err(e) = write!(f, "{}", value) {
+                log::warn!("[display] sysfs backlight write failed: {}", e);
+            }
+        }
+        Err(e) => {
+            log::warn!("[display] sysfs backlight open failed ({}): {}", bl_path, e);
+        }
     }
 }
 

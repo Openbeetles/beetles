@@ -3,7 +3,11 @@
 //! Startup order: NVS → SPIFFS → config → WiFi → memory/session stores → MessageBus → self-check → cron/heartbeat/sinks/dispatch/CLI → agent_loop.
 //! ESP32: no graceful shutdown; process runs until power off.
 use beetle::channels::connect_wss;
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+#[cfg(any(
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
 use beetle::constants::SOFTAP_DEFAULT_IPV4;
 use beetle::memory::{MemoryStore, SessionStore};
 #[cfg(feature = "feishu")]
@@ -19,8 +23,14 @@ use beetle::{
     send_chat_action, AppConfig, MessageBus, DEFAULT_CAPACITY,
 };
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use beetle::Esp32Platform;
+#[cfg(any(
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
 use beetle::{
-    DisplayChannelStatus, DisplayCommand, DisplayPressureLevel, DisplaySystemState, Esp32Platform,
+    DisplayChannelStatus, DisplayCommand, DisplayPressureLevel, DisplaySystemState,
 };
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use clap::Parser;
@@ -37,8 +47,12 @@ type HttpFactory = beetle::runtime::stream_http::HttpFactory;
 
 /// 从 orchestrator snapshot 的 internal 堆空闲字节数估算已用百分比。
 /// 以运行时首次观测到的空闲值作为动态基线（首次调用时的空闲量，此时大部分业务线程已启动），
-/// 反映业务层实际消耗，而非 ESP-IDF 框架本身的固有开销。非 ESP 返回 0。
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+/// 反映业务层实际消耗，而非 ESP-IDF 框架本身的固有开销。Linux 永远返回 0（无 PSRAM 堆基线）。
+#[cfg(any(
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
 fn heap_used_percent(snapshot: &beetle::orchestrator::ResourceSnapshot) -> u8 {
     use std::sync::atomic::{AtomicU32, Ordering};
     // 0 means "not yet calibrated"; first call sets the baseline.
@@ -177,7 +191,11 @@ impl beetle::StreamEditor for FeishuStreamEditor {
 }
 
 /// F2: 根据当前状态计算下一轮显示刷新间隔（秒）。
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+#[cfg(any(
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
 fn compute_refresh_secs(
     state: DisplaySystemState,
     backlight_off: bool,
@@ -504,7 +522,11 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     beetle::platform::wait_for_network_ready();
     beetle::orchestrator::init();
 
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        target_arch = "riscv32",
+        target_os = "linux"
+    ))]
     if platform.display_available() {
         let display_platform = Arc::clone(&platform);
         let display_config = Arc::clone(&config);
@@ -797,7 +819,11 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     let (sinks, mut channel_rx_set) =
         beetle::channels::build_channel_sinks(config.as_ref(), &qq_msg_id_cache);
     // F8: 启动进度条 stage=3（channel sinks 后）
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        target_arch = "riscv32",
+        target_os = "linux"
+    ))]
     if platform.display_available() {
         let _ = platform.display_command(DisplayCommand::UpdateBootProgress { stage: 3 });
     }
@@ -1037,7 +1063,11 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         beetle::channels::spawn_sender_threads(&mut channel_rx_set, &config.tg_token, create_http);
 
         // F8: 启动进度条 stage=4（agent 前）
-        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        #[cfg(any(
+            target_arch = "xtensa",
+            target_arch = "riscv32",
+            target_os = "linux"
+        ))]
         if platform.display_available() {
             let _ = platform.display_command(DisplayCommand::UpdateBootProgress { stage: 4 });
         }

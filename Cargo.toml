@@ -75,6 +75,8 @@ tungstenite = { version = "0.24", default-features = false, features = ["handsha
 rtnetlink = "0.20"
 tokio = { version = "1", default-features = false, features = ["rt", "macros", "net", "time", "sync"] }
 futures = "0.3"
+# Linux framebuffer 显示：内存 DrawTarget + mmap 回写
+embedded-graphics-framebuf = "0.5.0"
 
 [features]
 default = [

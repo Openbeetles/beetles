@@ -1,5 +1,5 @@
-export type DisplayDriver = 'st7789' | 'ili9341' | 'st7735'
-export type DisplayBus = 'spi'
+export type DisplayDriver = 'st7789' | 'ili9341' | 'st7735' | 'framebuffer'
+export type DisplayBus = 'spi' | 'framebuffer'
 export type DisplayColorOrder = 'rgb' | 'bgr'
 
 export interface DisplaySpiConfig {
@@ -26,6 +26,10 @@ export interface DisplayConfig {
   offset_x: number
   offset_y: number
   spi: DisplaySpiConfig
+  /** Linux fbdev 设备路径，默认 /dev/fb0 */
+  fb_device: string
+  /** sysfs 背光亮度文件路径，如 /sys/class/backlight/xxx/brightness；空则关闭背光控制 */
+  backlight_sysfs: string | null
   sleep_timeout_secs: number
 }
 
@@ -52,6 +56,70 @@ export function defaultDisplayConfig(): DisplayConfig {
       bl: null,
       freq_hz: 40_000_000,
     },
+    fb_device: '/dev/fb0',
+    backlight_sysfs: null,
     sleep_timeout_secs: 0,
+  }
+}
+
+/** 合并 API 返回（可能缺省 serde 新字段）为完整 DisplayConfig。 */
+export function normalizeDisplayConfig(
+  input: Partial<DisplayConfig> & Record<string, unknown>,
+): DisplayConfig {
+  const d = defaultDisplayConfig()
+  const spiIn = (input.spi ?? {}) as Partial<DisplaySpiConfig>
+  const blRaw = input.backlight_sysfs
+  let backlight_sysfs: string | null = d.backlight_sysfs
+  if (blRaw === null || blRaw === undefined) {
+    backlight_sysfs = null
+  } else if (typeof blRaw === 'string') {
+    const t = blRaw.trim()
+    backlight_sysfs = t === '' ? null : t
+  }
+
+  let driver = input.driver ?? d.driver
+  if (driver !== 'st7789' && driver !== 'ili9341' && driver !== 'st7735' && driver !== 'framebuffer') {
+    driver = d.driver
+  }
+  let bus = input.bus ?? d.bus
+  if (bus !== 'spi' && bus !== 'framebuffer') {
+    bus = d.bus
+  }
+
+  return {
+    ...d,
+    ...input,
+    version: typeof input.version === 'number' ? input.version : d.version,
+    enabled: Boolean(input.enabled),
+    driver,
+    bus,
+    width: typeof input.width === 'number' ? input.width : d.width,
+    height: typeof input.height === 'number' ? input.height : d.height,
+    rotation: [0, 90, 180, 270].includes(input.rotation as number)
+      ? (input.rotation as DisplayConfig['rotation'])
+      : d.rotation,
+    color_order:
+      input.color_order === 'bgr' || input.color_order === 'rgb'
+        ? input.color_order
+        : d.color_order,
+    invert_colors: Boolean(input.invert_colors),
+    offset_x: typeof input.offset_x === 'number' ? input.offset_x : d.offset_x,
+    offset_y: typeof input.offset_y === 'number' ? input.offset_y : d.offset_y,
+    spi: {
+      ...d.spi,
+      ...spiIn,
+      host: spiIn.host === 2 ? 2 : 1,
+      rst: spiIn.rst === undefined ? d.spi.rst : spiIn.rst,
+      bl: spiIn.bl === undefined ? d.spi.bl : spiIn.bl,
+    },
+    fb_device:
+      typeof input.fb_device === 'string' && input.fb_device.trim() !== ''
+        ? input.fb_device.trim()
+        : d.fb_device,
+    backlight_sysfs,
+    sleep_timeout_secs:
+      typeof input.sleep_timeout_secs === 'number'
+        ? input.sleep_timeout_secs
+        : d.sleep_timeout_secs,
   }
 }
