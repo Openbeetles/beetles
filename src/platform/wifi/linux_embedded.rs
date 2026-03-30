@@ -202,7 +202,7 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
     if !caps.supports_ap {
         return Err(Error::config(
             "wifi_capability_check",
-            "nl80211 does not report AP mode; check driver / iw phy",
+            "nl80211 does not report AP mode; check driver / cfg80211",
         ));
     }
 

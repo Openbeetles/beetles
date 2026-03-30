@@ -4,7 +4,9 @@ use crate::error::Result;
 use crate::platform::state_mount_path;
 use crate::platform::wifi::linux_ctrl::hostapd_ctrl;
 use crate::platform::wifi::linux_ctrl::net;
-use crate::platform::wifi::linux_ctrl::process::{is_pid_alive, run_checked, write_secure_atomic};
+use crate::platform::wifi::linux_ctrl::process::{
+    is_pid_alive, run_checked, signal_pid as signal_process, write_secure_atomic,
+};
 use crate::platform::wifi::linux_ctrl::HOSTAPD_CTRL_INTERFACE_DIR;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -17,13 +19,7 @@ const DEFAULT_SOFTAP_CHANNEL: u8 = 1;
 
 /// 发 TERM，等待进程退出（最多 2s），超时后发 KILL。
 fn kill_and_wait(pid: u32) {
-    let pid_s = pid.to_string();
-    let _ = run_checked(
-        "kill",
-        &["-TERM", pid_s.as_str()],
-        Duration::from_secs(3),
-        "wifi_ap_stop",
-    );
+    let _ = signal_process(pid, true); // SIGTERM
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
         if !is_pid_alive(pid) {
@@ -31,13 +27,7 @@ fn kill_and_wait(pid: u32) {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    // 超时后强杀
-    let _ = run_checked(
-        "kill",
-        &["-KILL", pid_s.as_str()],
-        Duration::from_secs(1),
-        "wifi_ap_stop",
-    );
+    let _ = signal_process(pid, false); // SIGKILL
     // 给内核最多 500ms 回收 socket
     std::thread::sleep(Duration::from_millis(500));
 }

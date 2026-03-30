@@ -16,23 +16,22 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 /// Minimal command output used by WiFi controllers.
 #[derive(Debug, Clone)]
 pub struct CmdOutput {
+    // stdout 仅在守护进程启动失败时用于诊断日志，正常路径不读取
+    #[allow(dead_code)]
     pub stdout: String,
 }
 
 fn is_allowed_bin(bin: &str) -> bool {
+    // "kill" and "iw" are intentionally absent: we use libc::kill(2) and GENL nl80211 directly.
     matches!(
         bin,
-        "ip" | "iw" | "wpa_cli" | "wpa_supplicant" | "hostapd" | "dnsmasq" | "udhcpc" | "kill"
+        "wpa_supplicant" | "hostapd" | "dnsmasq" | "udhcpc"
     )
 }
 
 /// Prefer tools shipped under `/opt/beetle/bin` (e.g. deploy script + bundled static
-/// `iw`/`hostapd`/`dnsmasq` on distros without opkg). Fall back to `PATH`.
-/// `kill` always uses the system resolver (never a bundled copy).
+/// `hostapd`/`dnsmasq` on distros without opkg). Fall back to `PATH`.
 fn resolve_tool_executable(bin: &'static str) -> OsString {
-    if bin == "kill" {
-        return OsString::from(bin);
-    }
     let bundled = Path::new("/opt/beetle/bin").join(bin);
     if bundled.is_file() {
         return bundled.into_os_string();
@@ -45,18 +44,37 @@ pub fn read_pid_file(path: &Path) -> Option<u32> {
     std::fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
-/// `kill -0` 探测进程是否存在（不发送信号）。
+/// 发送信号给进程：`sigterm=true` → SIGTERM，`false` → SIGKILL。
+/// ESRCH（进程已不存在）视为成功；其它 errno 作为 IO 错误返回。
+pub fn signal_pid(pid: u32, sigterm: bool) -> Result<()> {
+    if pid == 0 {
+        return Ok(());
+    }
+    let sig = if sigterm { libc::SIGTERM } else { libc::SIGKILL };
+    let rc = unsafe { libc::kill(pid as libc::pid_t, sig) };
+    if rc < 0 {
+        let e = std::io::Error::last_os_error();
+        // ESRCH = process already gone — treat as success for cleanup paths
+        if e.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(());
+        }
+        return Err(Error::io("wifi_signal_pid", e));
+    }
+    Ok(())
+}
+
+/// `kill(pid, 0)` 探测进程是否存在（不发送实际信号）。
 pub fn is_pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
-    run_checked(
-        "kill",
-        &["-0", &pid.to_string()],
-        Duration::from_millis(400),
-        "wifi_daemon_watch",
-    )
-    .is_ok()
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if rc == 0 {
+        return true;
+    }
+    let e = std::io::Error::last_os_error();
+    // EPERM = process exists but we lack permission to signal it → still alive
+    e.raw_os_error() == Some(libc::EPERM)
 }
 
 pub fn run_checked(

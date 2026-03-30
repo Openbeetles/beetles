@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use crate::platform::state_mount_path;
 use crate::platform::wifi::linux_ctrl::net;
 use crate::platform::wifi::linux_ctrl::process::{
-    is_pid_alive, read_pid_file, run_checked, write_secure_atomic,
+    is_pid_alive, read_pid_file, run_checked, signal_pid as signal_process, write_secure_atomic,
 };
 use crate::platform::wifi::linux_ctrl::wpa_ctrl;
 use std::path::PathBuf;
@@ -35,13 +35,7 @@ fn cleanup_stale_daemon(iface: &str) {
     let pid_path = supplicant_pid_path(iface);
     if let Some(pid) = read_pid_file(pid_path.as_path()) {
         if is_pid_alive(pid) {
-            let pid_s = pid.to_string();
-            let _ = run_checked(
-                "kill",
-                &["-TERM", pid_s.as_str()],
-                Duration::from_secs(3),
-                "wifi_wpa_start",
-            );
+            let _ = signal_process(pid, true); // SIGTERM
             let deadline = Instant::now() + Duration::from_secs(2);
             while Instant::now() < deadline {
                 if !is_pid_alive(pid) {
@@ -50,12 +44,7 @@ fn cleanup_stale_daemon(iface: &str) {
                 std::thread::sleep(Duration::from_millis(100));
             }
             if is_pid_alive(pid) {
-                let _ = run_checked(
-                    "kill",
-                    &["-KILL", pid_s.as_str()],
-                    Duration::from_secs(1),
-                    "wifi_wpa_start",
-                );
+                let _ = signal_process(pid, false); // SIGKILL
             }
         }
         let _ = std::fs::remove_file(&pid_path);
