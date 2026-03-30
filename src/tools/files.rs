@@ -92,7 +92,10 @@ impl Tool for FilesTool {
         }
 
         if mode != "read" {
-            return Err(Error::config("tool_files", "mode must be 'list', 'read', or 'delete'"));
+            return Err(Error::config(
+                "tool_files",
+                "mode must be 'list', 'read', or 'delete'",
+            ));
         }
 
         match self.state_fs.read(&rel)? {

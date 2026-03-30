@@ -251,7 +251,8 @@ fn truncate_messages_to_len(
     let mut kept = Vec::with_capacity(drained.len().saturating_sub(remove_indices.len()));
     let mut remove_cursor = 0usize;
     for (i, m) in drained.into_iter().enumerate() {
-        let should_remove = remove_cursor < remove_indices.len() && remove_indices[remove_cursor] == i;
+        let should_remove =
+            remove_cursor < remove_indices.len() && remove_indices[remove_cursor] == i;
         if should_remove {
             remove_cursor += 1;
         } else {

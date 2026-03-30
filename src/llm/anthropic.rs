@@ -440,16 +440,17 @@ fn do_request_streaming(
             body,
             Some(crate::orchestrator::current_budget().response_body_max),
             &mut |chunk| {
-            sse_reader.feed(chunk);
-            while let Some(event) = sse_reader.next_event() {
-                let delta_text = accumulator.handle_event_value(&event.event, &event.data);
+                sse_reader.feed(chunk);
+                while let Some(event) = sse_reader.next_event() {
+                    let delta_text = accumulator.handle_event_value(&event.event, &event.data);
 
-                if let (Some(delta), Some(ref mut cb)) = (delta_text, &mut progress_cb) {
-                    cb(delta, &accumulator.content);
+                    if let (Some(delta), Some(ref mut cb)) = (delta_text, &mut progress_cb) {
+                        cb(delta, &accumulator.content);
+                    }
                 }
-            }
-            Ok(())
-        })
+                Ok(())
+            },
+        )
         .map_err(|e| match e {
             Error::Http { status_code, .. } => Error::Http {
                 status_code,

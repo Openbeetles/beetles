@@ -117,9 +117,7 @@ impl Tool for VoiceOutputTool {
                 Err(e) => return Err(e),
             };
             crate::metrics::record_voice_output_tts_http_ms(tts_start.elapsed().as_millis());
-            let play_ms = first_pcm_at
-                .map(|t| t.elapsed().as_millis())
-                .unwrap_or(0);
+            let play_ms = first_pcm_at.map(|t| t.elapsed().as_millis()).unwrap_or(0);
             crate::metrics::record_voice_output_play_ms(play_ms);
             log_audio_resource_snapshot("voice_output_done");
             crate::orchestrator::set_audio_playing(false);

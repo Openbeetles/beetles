@@ -246,10 +246,7 @@ fn init_speaker_channel(seg: &AudioSegment) -> Result<SpeakerState> {
                 intr_type: gpio_int_type_t_GPIO_INTR_DISABLE,
             };
             check_esp("i2s_spk_sd_gpio_config", gpio_config(&conf))?;
-            check_esp(
-                "i2s_spk_sd_gpio_set",
-                gpio_set_level(pin as gpio_num_t, 1),
-            )?;
+            check_esp("i2s_spk_sd_gpio_set", gpio_set_level(pin as gpio_num_t, 1))?;
         }
     }
 
@@ -408,10 +405,8 @@ impl Drop for I2sStdBackend {
             }
             if let Some(pin) = spk.sd_pin {
                 unsafe {
-                    let _ = esp_idf_svc::sys::gpio_set_level(
-                        pin as esp_idf_svc::sys::gpio_num_t,
-                        0,
-                    );
+                    let _ =
+                        esp_idf_svc::sys::gpio_set_level(pin as esp_idf_svc::sys::gpio_num_t, 0);
                 }
             }
             log::debug!("[audio] speaker I2S1 TX channel released");
@@ -457,10 +452,8 @@ impl Drop for PdmStubBackend {
             }
             if let Some(pin) = spk.sd_pin {
                 unsafe {
-                    let _ = esp_idf_svc::sys::gpio_set_level(
-                        pin as esp_idf_svc::sys::gpio_num_t,
-                        0,
-                    );
+                    let _ =
+                        esp_idf_svc::sys::gpio_set_level(pin as esp_idf_svc::sys::gpio_num_t, 0);
                 }
             }
             log::debug!("[audio] speaker I2S1 TX channel released (pdm-stub)");
@@ -476,8 +469,8 @@ impl Drop for PdmStubBackend {
 struct AudioRingBuffer {
     buf: *mut i16,
     cap: usize,
-    head: usize, // read position
-    len: usize,  // valid sample count
+    head: usize,  // read position
+    len: usize,   // valid sample count
     spiram: bool, // true if buf was allocated from PSRAM
 }
 
@@ -512,7 +505,10 @@ impl AudioRingBuffer {
             if let Some(ptr) = alloc_spiram_buffer(byte_size) {
                 // Zero-initialize
                 unsafe { core::ptr::write_bytes(ptr, 0, byte_size) };
-                log::info!("[audio] ring buffer {}KB allocated in PSRAM", byte_size / 1024);
+                log::info!(
+                    "[audio] ring buffer {}KB allocated in PSRAM",
+                    byte_size / 1024
+                );
                 return Self {
                     buf: ptr as *mut i16,
                     cap,
@@ -528,7 +524,10 @@ impl AudioRingBuffer {
         v.resize(cap, 0);
         let ptr = v.as_mut_ptr();
         core::mem::forget(v); // ownership transferred to raw pointer
-        log::info!("[audio] ring buffer {}KB allocated in internal heap (PSRAM unavailable)", byte_size / 1024);
+        log::info!(
+            "[audio] ring buffer {}KB allocated in internal heap (PSRAM unavailable)",
+            byte_size / 1024
+        );
         Self {
             buf: ptr,
             cap,
@@ -552,7 +551,11 @@ impl AudioRingBuffer {
     #[inline]
     fn tail(&self) -> usize {
         let t = self.head + self.len;
-        if t >= self.cap { t - self.cap } else { t }
+        if t >= self.cap {
+            t - self.cap
+        } else {
+            t
+        }
     }
 
     fn push_slice_drop_oldest(&mut self, input: &[i16]) {
@@ -681,63 +684,62 @@ impl AudioPipelineState {
             stop: AtomicBool::new(false),
         });
 
-        let mut backend: Box<dyn AudioBackend> = if seg.microphone.enabled
-            && seg.microphone.device_type == MIC_DEVICE_PDM
-        {
-            if seg.speaker.enabled && seg.speaker.device_type != SPEAKER_DEVICE_I2S_MAX98357A {
-                return Err(Error::config(
-                    "audio_init",
-                    format!(
-                        "unsupported speaker device_type '{}', only {} is supported now",
-                        seg.speaker.device_type, SPEAKER_DEVICE_I2S_MAX98357A
-                    ),
-                ));
-            }
-            log::warn!("[audio] pdm microphone selected; running with pdm stub backend");
-            Box::new(PdmStubBackend {
-                speaker: if seg.speaker.enabled {
-                    Some(init_speaker_channel(seg)?)
+        let mut backend: Box<dyn AudioBackend> =
+            if seg.microphone.enabled && seg.microphone.device_type == MIC_DEVICE_PDM {
+                if seg.speaker.enabled && seg.speaker.device_type != SPEAKER_DEVICE_I2S_MAX98357A {
+                    return Err(Error::config(
+                        "audio_init",
+                        format!(
+                            "unsupported speaker device_type '{}', only {} is supported now",
+                            seg.speaker.device_type, SPEAKER_DEVICE_I2S_MAX98357A
+                        ),
+                    ));
+                }
+                log::warn!("[audio] pdm microphone selected; running with pdm stub backend");
+                Box::new(PdmStubBackend {
+                    speaker: if seg.speaker.enabled {
+                        Some(init_speaker_channel(seg)?)
+                    } else {
+                        None
+                    },
+                })
+            } else {
+                if seg.microphone.enabled && seg.microphone.device_type != MIC_DEVICE_I2S_INMP441 {
+                    return Err(Error::config(
+                        "audio_init",
+                        format!(
+                            "unsupported microphone device_type '{}', supported: {}, {}",
+                            seg.microphone.device_type, MIC_DEVICE_I2S_INMP441, MIC_DEVICE_PDM
+                        ),
+                    ));
+                }
+                if seg.speaker.enabled && seg.speaker.device_type != SPEAKER_DEVICE_I2S_MAX98357A {
+                    return Err(Error::config(
+                        "audio_init",
+                        format!(
+                            "unsupported speaker device_type '{}', only {} is supported now",
+                            seg.speaker.device_type, SPEAKER_DEVICE_I2S_MAX98357A
+                        ),
+                    ));
+                }
+                let mic = if seg.microphone.enabled {
+                    Some(init_mic_channel(seg)?)
                 } else {
                     None
-                },
-            })
-        } else {
-            if seg.microphone.enabled && seg.microphone.device_type != MIC_DEVICE_I2S_INMP441 {
-                return Err(Error::config(
-                    "audio_init",
-                    format!(
-                        "unsupported microphone device_type '{}', supported: {}, {}",
-                        seg.microphone.device_type, MIC_DEVICE_I2S_INMP441, MIC_DEVICE_PDM
-                    ),
-                ));
-            }
-            if seg.speaker.enabled && seg.speaker.device_type != SPEAKER_DEVICE_I2S_MAX98357A {
-                return Err(Error::config(
-                    "audio_init",
-                    format!(
-                        "unsupported speaker device_type '{}', only {} is supported now",
-                        seg.speaker.device_type, SPEAKER_DEVICE_I2S_MAX98357A
-                    ),
-                ));
-            }
-            let mic = if seg.microphone.enabled {
-                Some(init_mic_channel(seg)?)
-            } else {
-                None
-            };
-            let speaker = if seg.speaker.enabled {
-                match init_speaker_channel(seg) {
-                    Ok(s) => Some(s),
-                    Err(e) => {
-                        drop(mic);
-                        return Err(e);
+                };
+                let speaker = if seg.speaker.enabled {
+                    match init_speaker_channel(seg) {
+                        Ok(s) => Some(s),
+                        Err(e) => {
+                            drop(mic);
+                            return Err(e);
+                        }
                     }
-                }
-            } else {
-                None
+                } else {
+                    None
+                };
+                Box::new(I2sStdBackend { mic, speaker })
             };
-            Box::new(I2sStdBackend { mic, speaker })
-        };
 
         let mic_enabled = backend.mic_ready();
         let speaker_enabled = backend.speaker_ready();
@@ -774,8 +776,10 @@ impl AudioPipelineState {
                         }
                     }
                     if backend.speaker_ready() {
-                        let mut guard =
-                            worker_shared.speaker.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut guard = worker_shared
+                            .speaker
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
                         let n = guard.pop_into(&mut speaker_frame);
                         if n > 0 {
                             worker_shared.speaker_cv.notify_all();
@@ -793,7 +797,9 @@ impl AudioPipelineState {
                     }
                 }
             })
-            .map_err(|e| Error::config("audio_init", format!("spawn audio worker failed: {}", e)))?;
+            .map_err(|e| {
+                Error::config("audio_init", format!("spawn audio worker failed: {}", e))
+            })?;
 
         Ok(Self {
             mic_enabled,
@@ -842,7 +848,11 @@ impl AudioPipelineState {
         }
         let mut written = 0usize;
         while written < buf.len() {
-            let mut guard = self.shared.speaker.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = self
+                .shared
+                .speaker
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             while guard.available() == 0 {
                 let waited = self
                     .shared

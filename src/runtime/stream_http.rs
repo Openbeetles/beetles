@@ -89,9 +89,9 @@ fn with_stream_http_slot<T>(
             STREAM_HTTP_SLOT_REUSE_HITS.fetch_add(1, Ordering::Relaxed);
         }
         STREAM_HTTP_SLOT_OPS.fetch_add(1, Ordering::Relaxed);
-        let http = slot
-            .as_mut()
-            .ok_or_else(|| crate::error::Error::config("stream_http", "http client missing in slot"))?;
+        let http = slot.as_mut().ok_or_else(|| {
+            crate::error::Error::config("stream_http", "http client missing in slot")
+        })?;
         op(http)
     })
 }

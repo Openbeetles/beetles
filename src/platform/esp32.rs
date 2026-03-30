@@ -246,7 +246,8 @@ impl Platform for Esp32Platform {
         }
         match crate::platform::audio_drivers::AudioPipelineState::from_config(config) {
             Ok(state) => {
-                *self.audio_state.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(state));
+                *self.audio_state.write().unwrap_or_else(|e| e.into_inner()) =
+                    Some(Arc::new(state));
                 Ok(())
             }
             Err(e) => {

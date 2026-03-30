@@ -1,6 +1,7 @@
 //! GET /api/system_info：供系统信息页展示用，返回 product_name、system_status、current_time、firmware_version、locale、lan_ip。
 //! `current_time`：Host 用系统时钟；ESP 在 SNTP 同步后由 `util::current_unix_secs()` 提供 UTC 字符串，未同步时返回 "—"。
 //! `lan_ip`：STA 模式下路由器 DHCP 分配的 IPv4（点分十进制）；未连接或无地址时为 "—"。
+//! `board_id`：运行期拼装（ESP：`esp_chip_info`+Flash 与 manifest 档位对齐；Linux：`linux`）。`hardware_model`：ESP 为摘要句；Linux 为设备树/DMI 等（若有）。
 
 use super::HandlerContext;
 use crate::config;
@@ -136,6 +137,28 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         }
     }
 
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    {
+        let hw = crate::platform::runtime_board::hardware_summary_line();
+        if let Some(obj) = json.as_object_mut() {
+            obj.insert("hardware_model".to_string(), serde_json::json!(hw));
+        }
+    }
+
+    #[cfg(all(
+        not(any(target_arch = "xtensa", target_arch = "riscv32")),
+        target_os = "linux"
+    ))]
+    {
+        if let Some(hw) = crate::platform::board_info::linux_machine_display_name() {
+            if hw != ctx.board_id.as_ref() {
+                if let Some(obj) = json.as_object_mut() {
+                    obj.insert("hardware_model".to_string(), serde_json::json!(hw));
+                }
+            }
+        }
+    }
+
     serde_json::to_string(&json).map_err(to_io)
 }
 
@@ -166,7 +189,10 @@ fn get_cpu_model() -> Option<String> {
 fn get_cpu_cores() -> u32 {
     use std::fs;
     if let Ok(content) = fs::read_to_string("/proc/cpuinfo") {
-        return content.lines().filter(|l| l.starts_with("processor")).count() as u32;
+        return content
+            .lines()
+            .filter(|l| l.starts_with("processor"))
+            .count() as u32;
     }
     1
 }

@@ -19,7 +19,12 @@ pub fn body(ctx: &HandlerContext, page: usize, limit: usize) -> Result<String, S
     let total_pages = (total + limit - 1) / limit;
     let skip = (page - 1) * limit;
 
-    let items: Vec<&str> = all_ids.iter().skip(skip).take(limit).map(|s| s.as_str()).collect();
+    let items: Vec<&str> = all_ids
+        .iter()
+        .skip(skip)
+        .take(limit)
+        .map(|s| s.as_str())
+        .collect();
 
     let response = serde_json::json!({
         "items": items,

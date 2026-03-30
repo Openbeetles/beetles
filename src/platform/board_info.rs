@@ -3,37 +3,10 @@
 
 use serde_json::json;
 
-// 从编译目标推断芯片型号（esp_chip_info 未在 esp-idf-sys bindings 中暴露，避免依赖）。
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-fn chip_model_from_target() -> (&'static str, u32, u32) {
-    let target = option_env!("TARGET").unwrap_or("");
-    let (model, cores) = if target.contains("esp32s3") {
-        ("ESP32-S3", 2u32)
-    } else if target.contains("esp32s2") {
-        ("ESP32-S2", 1u32)
-    } else if target.contains("esp32c3") {
-        ("ESP32-C3", 1u32)
-    } else if target.contains("esp32c6") {
-        ("ESP32-C6", 1u32)
-    } else if target.contains("esp32h2") {
-        ("ESP32-H2", 1u32)
-    } else if target.contains("esp32c2") {
-        ("ESP32-C2", 1u32)
-    } else if target.contains("esp32") {
-        ("ESP32", 2u32)
-    } else {
-        #[cfg(target_arch = "xtensa")]
-        let fallback = ("ESP32-S3", 2u32);
-        #[cfg(target_arch = "riscv32")]
-        let fallback = ("ESP32-C3", 1u32);
-        fallback
-    };
-    (model, 0u32, cores)
-}
-
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn collect_esp() -> String {
-    let (chip_model, chip_revision, cores) = chip_model_from_target();
+    let (chip_model, chip_revision, cores) =
+        crate::platform::runtime_board::esp_chip_model_revision_cores();
     let snap = crate::orchestrator::snapshot();
     let heap_internal = snap.heap_free_internal as usize;
     let psram_free = snap.heap_free_spiram as usize;
@@ -42,15 +15,24 @@ fn collect_esp() -> String {
     let uptime_secs = crate::platform::time::uptime_secs();
     let idf_version = option_env!("IDF_VERSION").unwrap_or("unknown");
     let wifi_sta_connected = crate::platform::is_wifi_sta_connected();
-    let (spiffs, spiffs_usage_pct) = crate::platform::spiffs_usage().map(|(total, used)| {
-        let free = total.saturating_sub(used);
-        let pct = if total > 0 { (used as f32 / total as f32) * 100.0 } else { 0.0 };
-        (json!({
-            "total_bytes": total,
-            "used_bytes": used,
-            "free_bytes": free,
-        }), pct)
-    }).unwrap_or((serde_json::Value::Null, 0.0));
+    let (spiffs, spiffs_usage_pct) = crate::platform::spiffs_usage()
+        .map(|(total, used)| {
+            let free = total.saturating_sub(used);
+            let pct = if total > 0 {
+                (used as f32 / total as f32) * 100.0
+            } else {
+                0.0
+            };
+            (
+                json!({
+                    "total_bytes": total,
+                    "used_bytes": used,
+                    "free_bytes": free,
+                }),
+                pct,
+            )
+        })
+        .unwrap_or((serde_json::Value::Null, 0.0));
 
     let out = json!({
         "platform": "esp32",
@@ -353,16 +335,79 @@ fn parse_proc_cpu_model() -> String {
     linux_device_tree_model()
 }
 
+#[cfg(all(
+    not(any(target_arch = "xtensa", target_arch = "riscv32")),
+    target_os = "linux"
+))]
+fn dmi_product_line_trimmed(path: &str) -> Option<String> {
+    const PLACEHOLDERS: [&str; 4] = [
+        "to be filled by o.e.m.",
+        "default string",
+        "system product name",
+        "not specified",
+    ];
+    let s = std::fs::read_to_string(path).ok()?;
+    let t = s.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let lower = t.to_ascii_lowercase();
+    if PLACEHOLDERS.iter().any(|p| lower == *p) {
+        return None;
+    }
+    Some(t.to_string())
+}
+
+/// Linux：供 HTTP `system_info` 等展示的机型字符串（设备树 model、DMI、cpuinfo、主机名回退）。
+/// Runtime machine label for Linux (device-tree, DMI, cpuinfo, hostname); `None` if unavailable.
+#[cfg(all(
+    not(any(target_arch = "xtensa", target_arch = "riscv32")),
+    target_os = "linux"
+))]
+pub fn linux_machine_display_name() -> Option<String> {
+    let dt = linux_device_tree_model();
+    if !dt.is_empty() {
+        return Some(dt);
+    }
+    for path in [
+        "/sys/class/dmi/id/product_name",
+        "/sys/class/dmi/id/board_name",
+    ] {
+        if let Some(v) = dmi_product_line_trimmed(path) {
+            return Some(v);
+        }
+    }
+    let cpu = parse_proc_cpu_model();
+    if !cpu.is_empty() {
+        return Some(cpu);
+    }
+    let host = hostname_best_effort();
+    if !host.is_empty() {
+        return Some(format!("{} ({})", host, std::env::consts::ARCH));
+    }
+    None
+}
+
 #[cfg(target_os = "linux")]
 fn linux_load_avg() -> (f32, f32, f32, u32) {
     let s = std::fs::read_to_string("/proc/loadavg").unwrap_or_default();
     let parts: Vec<&str> = s.split_whitespace().collect();
-    let load1 = parts.first().and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
-    let load5 = parts.get(1).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
-    let load15 = parts.get(2).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
-    let procs = parts.get(3).and_then(|s| {
-        s.split('/').nth(1).and_then(|n| n.parse::<u32>().ok())
-    }).unwrap_or(0);
+    let load1 = parts
+        .first()
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(0.0);
+    let load5 = parts
+        .get(1)
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(0.0);
+    let load15 = parts
+        .get(2)
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(0.0);
+    let procs = parts
+        .get(3)
+        .and_then(|s| s.split('/').nth(1).and_then(|n| n.parse::<u32>().ok()))
+        .unwrap_or(0);
     (load1, load5, load15, procs)
 }
 
@@ -372,7 +417,9 @@ fn linux_cpu_usage() -> f32 {
     for line in s.lines() {
         if line.starts_with("cpu ") {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 5 { break; }
+            if parts.len() < 5 {
+                break;
+            }
             let user = parts[1].parse::<u64>().unwrap_or(0);
             let nice = parts[2].parse::<u64>().unwrap_or(0);
             let system = parts[3].parse::<u64>().unwrap_or(0);
@@ -406,9 +453,13 @@ fn linux_network_interfaces() -> Vec<serde_json::Value> {
     if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name == "lo" { continue; }
+            if name == "lo" {
+                continue;
+            }
             let addr = std::fs::read_to_string(format!("/sys/class/net/{}/address", name))
-                .ok().map(|s| s.trim().to_string()).unwrap_or_default();
+                .ok()
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
             ifaces.push(json!({
                 "name": name,
                 "mac": addr,
@@ -471,13 +522,21 @@ fn linux_host_payload(
 
     let mem_usage_pct = if mem_total_bytes > 0 {
         ((mem_total_bytes - mem_available_bytes) as f32 / mem_total_bytes as f32) * 100.0
-    } else { 0.0 };
+    } else {
+        0.0
+    };
 
     let storage_usage_pct = if let Some(obj) = storage.as_object() {
         let total = obj.get("total_bytes").and_then(|v| v.as_u64()).unwrap_or(0);
         let used = obj.get("used_bytes").and_then(|v| v.as_u64()).unwrap_or(0);
-        if total > 0 { (used as f32 / total as f32) * 100.0 } else { 0.0 }
-    } else { 0.0 };
+        if total > 0 {
+            (used as f32 / total as f32) * 100.0
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
 
     json!({
         "platform": "linux",

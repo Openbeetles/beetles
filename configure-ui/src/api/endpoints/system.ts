@@ -126,7 +126,10 @@ export interface SystemInfoData {
   system_status: string
   current_time?: string
   firmware_version: string
+  /** 运行期板型键（ESP：片型+Flash 档；Linux：`linux`），与 OTA manifest `boards` 键对齐。 */
   board_id?: string
+  /** 设备摘要：ESP 为芯片/Flash/核数等一句；Linux 为设备树/DMI 等（若有）。 */
+  hardware_model?: string
   /** STA 下路由器分配的 IPv4；未连接时设备返回 "—"。 */
   lan_ip?: string
   ota_available?: boolean

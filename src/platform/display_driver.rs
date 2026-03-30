@@ -167,18 +167,22 @@ mod esp_backend {
                         data5_io_num: -1,
                         data6_io_num: -1,
                         data7_io_num: -1,
-                        __bindgen_anon_1: spi_bus_config_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1 {
-                            mosi_io_num: spi.mosi,
-                        },
-                        __bindgen_anon_2: spi_bus_config_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2 {
-                            miso_io_num: -1,
-                        },
-                        __bindgen_anon_3: spi_bus_config_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_3 {
-                            quadwp_io_num: -1,
-                        },
-                        __bindgen_anon_4: spi_bus_config_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_4 {
-                            quadhd_io_num: -1,
-                        },
+                        __bindgen_anon_1:
+                            spi_bus_config_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1 {
+                                mosi_io_num: spi.mosi,
+                            },
+                        __bindgen_anon_2:
+                            spi_bus_config_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2 {
+                                miso_io_num: -1,
+                            },
+                        __bindgen_anon_3:
+                            spi_bus_config_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_3 {
+                                quadwp_io_num: -1,
+                            },
+                        __bindgen_anon_4:
+                            spi_bus_config_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_4 {
+                                quadhd_io_num: -1,
+                            },
                     },
                 },
                 data_io_default_level: false,
@@ -873,7 +877,7 @@ fn draw_beetle<D: DrawTarget<Color = Rgb565>>(
     // Logical radii for external overlays (like busy dots, mic, etc.)
     let body_r = size * 28 / 100;
     let head_r = size * 14 / 100;
-    
+
     // Mecha/Stag beetle proportions (elongated body, wider head)
     let body_rx = size * 24 / 100;
     let body_ry = size * 32 / 100;
@@ -905,15 +909,20 @@ fn draw_beetle<D: DrawTarget<Color = Rgb565>>(
         size * 20 / 100
     };
     let ant_base_dy = dir * head_ry * 8 / 10;
-    
+
     for &sx in &[-1i32, 1] {
         let ant_base = Point::new(cx + sx * head_rx / 2, head_cy - ant_base_dy);
         let ant_tip = Point::new(cx + sx * ant_spread, head_cy - ant_tip_dy);
-        let _ = Line::new(ant_base, ant_tip).into_styled(line_style).draw(target);
-        // Radar cross at tip
-        let _ = Line::new(Point::new(ant_tip.x - 2, ant_tip.y), Point::new(ant_tip.x + 2, ant_tip.y))
+        let _ = Line::new(ant_base, ant_tip)
             .into_styled(line_style)
             .draw(target);
+        // Radar cross at tip
+        let _ = Line::new(
+            Point::new(ant_tip.x - 2, ant_tip.y),
+            Point::new(ant_tip.x + 2, ant_tip.y),
+        )
+        .into_styled(line_style)
+        .draw(target);
     }
 
     // --- Legs (Mechanical joints) ---
@@ -940,7 +949,7 @@ fn draw_beetle<D: DrawTarget<Color = Rgb565>>(
             let _ = Line::new(Point::new(kx, ky), Point::new(fx, fy))
                 .into_styled(line_style)
                 .draw(target);
-                
+
             // Mechanical joint dot
             let _ = Rectangle::new(Point::new(kx - 1, ky - 1), Size::new(3, 3))
                 .into_styled(PrimitiveStyle::with_fill(color))
@@ -1020,10 +1029,18 @@ fn draw_beetle<D: DrawTarget<Color = Rgb565>>(
 
     // Energy core (small diamond on the upper back)
     let core_y = body_cy - body_ry * 30 / 100;
-    let _ = Line::new(Point::new(cx, core_y - 3), Point::new(cx - 3, core_y)).into_styled(seam_style).draw(target);
-    let _ = Line::new(Point::new(cx - 3, core_y), Point::new(cx, core_y + 3)).into_styled(seam_style).draw(target);
-    let _ = Line::new(Point::new(cx, core_y + 3), Point::new(cx + 3, core_y)).into_styled(seam_style).draw(target);
-    let _ = Line::new(Point::new(cx + 3, core_y), Point::new(cx, core_y - 3)).into_styled(seam_style).draw(target);
+    let _ = Line::new(Point::new(cx, core_y - 3), Point::new(cx - 3, core_y))
+        .into_styled(seam_style)
+        .draw(target);
+    let _ = Line::new(Point::new(cx - 3, core_y), Point::new(cx, core_y + 3))
+        .into_styled(seam_style)
+        .draw(target);
+    let _ = Line::new(Point::new(cx, core_y + 3), Point::new(cx + 3, core_y))
+        .into_styled(seam_style)
+        .draw(target);
+    let _ = Line::new(Point::new(cx + 3, core_y), Point::new(cx, core_y - 3))
+        .into_styled(seam_style)
+        .draw(target);
 
     // --- Elytra ridges (Mecha panel lines) ---
     let ridge_color = darken(color, 30);
@@ -1087,9 +1104,12 @@ fn draw_beetle<D: DrawTarget<Color = Rgb565>>(
         let eye_fill = PrimitiveStyle::with_fill(Rgb565::WHITE);
         for &sx in &[-1i32, 1] {
             let ex = cx + sx * eye_spread;
-            let _ = Rectangle::new(Point::new(ex - (eye_w as i32 / 2), eye_y), Size::new(eye_w, eye_h))
-                .into_styled(eye_fill)
-                .draw(target);
+            let _ = Rectangle::new(
+                Point::new(ex - (eye_w as i32 / 2), eye_y),
+                Size::new(eye_w, eye_h),
+            )
+            .into_styled(eye_fill)
+            .draw(target);
         }
     }
 
@@ -1098,21 +1118,27 @@ fn draw_beetle<D: DrawTarget<Color = Rgb565>>(
     let jaw_base_y = head_cy - dir * head_ry * 8 / 10;
     let jaw_mid_y = head_cy - dir * (head_ry + size * 4 / 100);
     let jaw_tip_y = head_cy - dir * (head_ry + size * 10 / 100);
-    
+
     let jaw_spread = head_rx * 4 / 10;
     let jaw_mid_spread = head_rx * 8 / 10;
     let jaw_tip_spread = head_rx * 6 / 10;
-    
+
     for &sx in &[-1i32, 1] {
         let p_base = Point::new(cx + sx * jaw_spread, jaw_base_y);
         let p_mid = Point::new(cx + sx * jaw_mid_spread, jaw_mid_y);
         let p_tip = Point::new(cx + sx * jaw_tip_spread, jaw_tip_y);
-        
-        let _ = Line::new(p_base, p_mid).into_styled(mandible_style).draw(target);
-        let _ = Line::new(p_mid, p_tip).into_styled(mandible_style).draw(target);
-        
+
+        let _ = Line::new(p_base, p_mid)
+            .into_styled(mandible_style)
+            .draw(target);
+        let _ = Line::new(p_mid, p_tip)
+            .into_styled(mandible_style)
+            .draw(target);
+
         let tooth_tip = Point::new(cx + sx * jaw_spread * 2 / 10, jaw_mid_y - dir * 2);
-        let _ = Line::new(p_mid, tooth_tip).into_styled(PrimitiveStyle::with_stroke(darken(color, 10), 1)).draw(target);
+        let _ = Line::new(p_mid, tooth_tip)
+            .into_styled(PrimitiveStyle::with_stroke(darken(color, 10), 1))
+            .draw(target);
     }
 
     (cx, body_cy, body_r, head_cy, head_r)
@@ -1675,7 +1701,7 @@ fn state_accent_color(state: DisplaySystemState) -> Rgb565 {
         DisplaySystemState::Busy => STATUS_INFO,
         DisplaySystemState::Fault => STATUS_DANGER,
         DisplaySystemState::Recording => rgb565(34, 197, 94), // #22C55E
-        DisplaySystemState::Playing => rgb565(14, 165, 233), // #0EA5E9
+        DisplaySystemState::Playing => rgb565(14, 165, 233),  // #0EA5E9
     }
 }
 
@@ -1706,13 +1732,16 @@ fn draw_panel_fill<D: DrawTarget<Color = Rgb565>>(
     let _ = Rectangle::new(Point::new(x, y), Size::new(w, h))
         .into_styled(PrimitiveStyle::with_stroke(border, 1))
         .draw(target);
-        
+
     // Add a subtle top highlight for 3D HUD effect
     if h > 2 && w > 2 {
         let highlight = rgb565(35, 43, 56); // slightly brighter than PANEL_BG
-        let _ = Line::new(Point::new(x + 1, y + 1), Point::new(x + w as i32 - 2, y + 1))
-            .into_styled(PrimitiveStyle::with_stroke(highlight, 1))
-            .draw(target);
+        let _ = Line::new(
+            Point::new(x + 1, y + 1),
+            Point::new(x + w as i32 - 2, y + 1),
+        )
+        .into_styled(PrimitiveStyle::with_stroke(highlight, 1))
+        .draw(target);
     }
 }
 
@@ -1900,12 +1929,12 @@ fn render_channels_inner<D: DrawTarget<Color = Rgb565>>(
             STATUS_OFF
         };
         let dot_y = py - (dot_d as i32 / 2);
-        
+
         // Bullseye style: hollow outer circle, solid inner dot
         let _ = Circle::new(Point::new(px, dot_y), dot_d)
             .into_styled(PrimitiveStyle::with_stroke(dot_color, 1))
             .draw(target);
-            
+
         if dot_d > 4 {
             let inner_d = dot_d - 4;
             let _ = Circle::new(Point::new(px + 2, dot_y + 2), inner_d)

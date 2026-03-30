@@ -127,12 +127,17 @@ impl Tool for VoiceInputTool {
                 let chunk = &frame[..n.min(frame.len())];
                 if debug_enabled && elapsed >= dbg_next_log_ms {
                     let rms = crate::audio::energy::normalized_rms(chunk);
-                    let (mn, mx) = chunk.iter().fold((i16::MAX, i16::MIN), |(lo, hi), &v| {
-                        (lo.min(v), hi.max(v))
-                    });
+                    let (mn, mx) = chunk
+                        .iter()
+                        .fold((i16::MAX, i16::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
                     log::debug!(
                         "[voice_input] t={}ms samples={} rms={:.5} min={} max={} thr={:.3}",
-                        elapsed, n, rms, mn, mx, endpoint_cfg.threshold
+                        elapsed,
+                        n,
+                        rms,
+                        mn,
+                        mx,
+                        endpoint_cfg.threshold
                     );
                     dbg_next_log_ms = elapsed.saturating_add(1000);
                 }

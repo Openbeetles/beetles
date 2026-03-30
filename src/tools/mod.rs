@@ -26,14 +26,20 @@ pub mod kv_store;
 pub mod memory_manage;
 #[cfg(feature = "tools_network_extra")]
 pub mod model_config;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub mod network;
 #[cfg(feature = "tools_diagnostics")]
 pub mod network_scan;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub mod process;
 #[cfg(feature = "tools_network_extra")]
 pub mod proxy_config;
 pub mod remind_at;
 pub mod sensor_watch;
 #[cfg(feature = "tools_diagnostics")]
 pub mod session_manage;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub mod shell;
 #[cfg(feature = "tools_diagnostics")]
 pub mod system_control;
 pub mod update_session_summary;
@@ -41,12 +47,6 @@ pub mod voice_input;
 pub mod voice_output;
 #[cfg(feature = "tools_network_extra")]
 pub mod web_search;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub mod shell;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub mod process;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub mod network;
 
 #[cfg(feature = "tools_network_extra")]
 pub use analyze_image::AnalyzeImageTool;
@@ -69,8 +69,12 @@ pub use kv_store::KvStoreTool;
 pub use memory_manage::MemoryManageTool;
 #[cfg(feature = "tools_network_extra")]
 pub use model_config::ModelConfigTool;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use network::NetworkTool;
 #[cfg(feature = "tools_diagnostics")]
 pub use network_scan::NetworkScanTool;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use process::ProcessTool;
 #[cfg(feature = "tools_network_extra")]
 pub use proxy_config::ProxyConfigTool;
 pub use registry::{build_default_registry, ToolRegistry};
@@ -78,6 +82,8 @@ pub use remind_at::{RemindAtTool, RemindListTool};
 pub use sensor_watch::SensorWatchTool;
 #[cfg(feature = "tools_diagnostics")]
 pub use session_manage::SessionManageTool;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use shell::ShellTool;
 #[cfg(feature = "tools_diagnostics")]
 pub use system_control::SystemControlTool;
 pub use update_session_summary::UpdateSessionSummaryTool;
@@ -85,12 +91,6 @@ pub use voice_input::VoiceInputTool;
 pub use voice_output::VoiceOutputTool;
 #[cfg(feature = "tools_network_extra")]
 pub use web_search::WebSearchTool;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub use shell::ShellTool;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub use process::ProcessTool;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub use network::NetworkTool;
 
 use crate::error::{Error, Result};
 use serde_json::{Map, Value};

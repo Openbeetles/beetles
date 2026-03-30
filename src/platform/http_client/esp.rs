@@ -9,8 +9,8 @@ use crate::platform::ResponseBody;
 use embedded_svc::http::client::Client as HttpClient;
 use embedded_svc::http::Method;
 use embedded_svc::io::{Read, Write};
-use esp_idf_svc::io::EspIOError;
 use esp_idf_svc::http::client::{Configuration as HttpConfig, EspHttpConnection};
+use esp_idf_svc::io::EspIOError;
 use std::time::{Duration, Instant};
 
 const TAG: &str = "platform::http_client";
@@ -38,10 +38,7 @@ fn is_http_eagain(err: &(dyn std::error::Error + 'static)) -> bool {
         .unwrap_or(false)
 }
 
-fn map_http_read_error(
-    err: impl std::error::Error + 'static,
-    stage: &'static str,
-) -> Error {
+fn map_http_read_error(err: impl std::error::Error + 'static, stage: &'static str) -> Error {
     Error::Other {
         source: Box::new(std::io::Error::other(format!("{:?}", err))),
         stage,

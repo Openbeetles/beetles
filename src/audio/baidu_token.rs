@@ -131,10 +131,7 @@ fn fetch_access_token(
 fn format_baidu_oauth_failure_detail(status: u16, body: &[u8]) -> String {
     const MAX: usize = 280;
     if let Ok(v) = serde_json::from_slice::<Value>(body) {
-        let err = v
-            .get("error")
-            .and_then(|x| x.as_str())
-            .unwrap_or("");
+        let err = v.get("error").and_then(|x| x.as_str()).unwrap_or("");
         let desc = v
             .get("error_description")
             .and_then(|x| x.as_str())

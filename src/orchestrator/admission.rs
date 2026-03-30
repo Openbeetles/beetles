@@ -3,13 +3,13 @@
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::constants::OUTBOUND_DEFER_DELAY_MS_CAUTIOUS;
+use crate::constants::TLS_ADMISSION_MIN_INTERNAL_BYTES;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES;
 use crate::constants::{
     LLM_RETRY_LATER_DELAY_MS, LOW_MEM_DEFER_SLEEP_MS, OUTBOUND_DEFER_DELAY_MS,
     PRESSURE_QUEUE_CONGESTION_THRESHOLD,
 };
-use crate::constants::TLS_ADMISSION_MIN_INTERNAL_BYTES;
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-use crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES;
 use std::sync::atomic::Ordering;
 
 use super::pressure::PressureLevel;
@@ -333,9 +333,6 @@ mod tests {
             (TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32).saturating_sub(1024),
             PressureLevel::Cautious,
         );
-        assert!(matches!(
-            can_call_llm(&s),
-            LlmDecision::RetryLater { .. }
-        ));
+        assert!(matches!(can_call_llm(&s), LlmDecision::RetryLater { .. }));
     }
 }

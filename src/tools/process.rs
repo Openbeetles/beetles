@@ -60,13 +60,14 @@ impl Tool for ProcessTool {
 
         match parsed.mode.as_str() {
             "list" => {
-                let output = Command::new("ps")
-                    .args(&["aux"])
-                    .output()
-                    .map_err(|e| Error::Other {
-                        source: Box::new(e),
-                        stage: "process_list",
-                    })?;
+                let output =
+                    Command::new("ps")
+                        .args(&["aux"])
+                        .output()
+                        .map_err(|e| Error::Other {
+                            source: Box::new(e),
+                            stage: "process_list",
+                        })?;
 
                 if output.status.success() {
                     let stdout = String::from_utf8_lossy(&output.stdout);

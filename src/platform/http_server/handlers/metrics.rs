@@ -16,24 +16,48 @@ pub fn body_prometheus(_ctx: &HandlerContext) -> Result<String, std::io::Error> 
 
     // Counters
     buf.push_str(&format!("beetle_messages_in_total {}\n", snap.messages_in));
-    buf.push_str(&format!("beetle_messages_out_total {}\n", snap.messages_out));
+    buf.push_str(&format!(
+        "beetle_messages_out_total {}\n",
+        snap.messages_out
+    ));
     buf.push_str(&format!("beetle_llm_calls_total {}\n", snap.llm_calls));
     buf.push_str(&format!("beetle_llm_errors_total {}\n", snap.llm_errors));
     buf.push_str(&format!("beetle_tool_calls_total {}\n", snap.tool_calls));
     buf.push_str(&format!("beetle_tool_errors_total {}\n", snap.tool_errors));
-    buf.push_str(&format!("beetle_dispatch_send_ok_total {}\n", snap.dispatch_send_ok));
-    buf.push_str(&format!("beetle_dispatch_send_fail_total {}\n", snap.dispatch_send_fail));
+    buf.push_str(&format!(
+        "beetle_dispatch_send_ok_total {}\n",
+        snap.dispatch_send_ok
+    ));
+    buf.push_str(&format!(
+        "beetle_dispatch_send_fail_total {}\n",
+        snap.dispatch_send_fail
+    ));
 
     // Gauges (last values)
     buf.push_str(&format!("beetle_llm_last_ms {}\n", snap.llm_last_ms));
     buf.push_str(&format!("beetle_e2e_last_ms {}\n", snap.e2e_last_ms));
-    buf.push_str(&format!("beetle_user_queue_wait_last_ms {}\n", snap.user_queue_wait_last_ms));
+    buf.push_str(&format!(
+        "beetle_user_queue_wait_last_ms {}\n",
+        snap.user_queue_wait_last_ms
+    ));
 
     // Errors by stage
-    buf.push_str(&format!("beetle_errors_agent_chat_total {}\n", snap.errors_agent_chat));
-    buf.push_str(&format!("beetle_errors_tool_execute_total {}\n", snap.errors_tool_execute));
-    buf.push_str(&format!("beetle_errors_llm_request_total {}\n", snap.errors_llm_request));
-    buf.push_str(&format!("beetle_errors_channel_dispatch_total {}\n", snap.errors_channel_dispatch));
+    buf.push_str(&format!(
+        "beetle_errors_agent_chat_total {}\n",
+        snap.errors_agent_chat
+    ));
+    buf.push_str(&format!(
+        "beetle_errors_tool_execute_total {}\n",
+        snap.errors_tool_execute
+    ));
+    buf.push_str(&format!(
+        "beetle_errors_llm_request_total {}\n",
+        snap.errors_llm_request
+    ));
+    buf.push_str(&format!(
+        "beetle_errors_channel_dispatch_total {}\n",
+        snap.errors_channel_dispatch
+    ));
 
     Ok(buf)
 }

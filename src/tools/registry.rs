@@ -196,8 +196,9 @@ pub fn build_default_registry(
     if let Some(audio_cfg) = config.audio.clone() {
         let baidu_stt_credential_ok =
             !audio_cfg.stt.api_key.trim().is_empty() && !audio_cfg.stt.api_secret.trim().is_empty();
-        let stt_ok =
-            audio_cfg.stt.provider == "baidu" && baidu_stt_credential_ok && audio_cfg.microphone.enabled;
+        let stt_ok = audio_cfg.stt.provider == "baidu"
+            && baidu_stt_credential_ok
+            && audio_cfg.microphone.enabled;
         // Baidu TTS reuses STT credentials; require them at registration time
         // so tool availability matches runtime behavior.
         let tts_ok = audio_cfg.tts.provider == "baidu"

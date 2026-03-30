@@ -90,7 +90,11 @@ mod imp {
                 log::info!("[wake_word] WakeNet init ok (model={})", model_name);
                 true
             } else {
-                log::error!("[wake_word] WakeNet init failed (rc={}, model={}); wake word disabled", rc, model_name);
+                log::error!(
+                    "[wake_word] WakeNet init failed (rc={}, model={}); wake word disabled",
+                    rc,
+                    model_name
+                );
                 false
             }
         };

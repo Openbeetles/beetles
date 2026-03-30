@@ -179,7 +179,13 @@ fn summarize_tool_results(content: &str) -> String {
                 while end > 0 && !first_val.is_char_boundary(end) {
                     end -= 1;
                 }
-                let _ = writeln!(out, "{}{}…[{} bytes]", id_part, &first_val[..end], total_bytes);
+                let _ = writeln!(
+                    out,
+                    "{}{}…[{} bytes]",
+                    id_part,
+                    &first_val[..end],
+                    total_bytes
+                );
             } else if extra_bytes > 0 {
                 let _ = writeln!(out, "{}{}…[{} bytes]", id_part, first_val, total_bytes);
             } else {
@@ -301,7 +307,8 @@ fn handle_llm_gate(
                 retry_msg.enqueue_ts_ms = now_unix_ms();
                 let inbound_tx =
                     choose_inbound_tx(retry_msg.ingress, user_inbound_tx, system_inbound_tx);
-                if let Err(std::sync::mpsc::TrySendError::Full(m)) = inbound_tx.try_send(retry_msg) {
+                if let Err(std::sync::mpsc::TrySendError::Full(m)) = inbound_tx.try_send(retry_msg)
+                {
                     let _ = config.pending_retry.save_pending_retry(&m);
                 }
             } else {
@@ -340,7 +347,14 @@ impl LlmHttpClient for AgentToolCtx<'_> {
         max_response_bytes: Option<usize>,
         on_chunk: &mut dyn FnMut(&[u8]) -> Result<()>,
     ) -> Result<u16> {
-        crate::platform::PlatformHttpClient::post_streaming(self.http, url, headers, body, max_response_bytes, on_chunk)
+        crate::platform::PlatformHttpClient::post_streaming(
+            self.http,
+            url,
+            headers,
+            body,
+            max_response_bytes,
+            on_chunk,
+        )
     }
 
     fn reset_connection_for_retry(&mut self) {
@@ -372,7 +386,14 @@ impl ToolContext for AgentToolCtx<'_> {
         max_response_bytes: Option<usize>,
         on_chunk: &mut dyn FnMut(&[u8]) -> Result<()>,
     ) -> Result<u16> {
-        crate::platform::PlatformHttpClient::post_streaming(self.http, url, headers, body, max_response_bytes, on_chunk)
+        crate::platform::PlatformHttpClient::post_streaming(
+            self.http,
+            url,
+            headers,
+            body,
+            max_response_bytes,
+            on_chunk,
+        )
     }
     fn patch_with_headers(
         &mut self,
@@ -441,7 +462,13 @@ fn generate_session_summary(
         channel: Arc::from("system"),
         locale: loc,
     };
-    match llm.chat(&mut ctx, SUMMARY_SYSTEM, &messages, None, ToolChoicePolicy::Auto) {
+    match llm.chat(
+        &mut ctx,
+        SUMMARY_SYSTEM,
+        &messages,
+        None,
+        ToolChoicePolicy::Auto,
+    ) {
         Ok(resp) => {
             let summary =
                 truncate_content_to_max(&resp.content, SESSION_SUMMARY_MAX_LEN).into_owned();
@@ -1126,7 +1153,11 @@ fn run_worker_path(
                     .task_continuation
                     .clear_task_continuation(&msg.chat_id);
                 let mut s = String::with_capacity(out.len().saturating_add(48));
-                let _ = write!(&mut s, "上一轮产出（第{}轮）：\n{}\n\n本轮请在此基础上继续。", r, out);
+                let _ = write!(
+                    &mut s,
+                    "上一轮产出（第{}轮）：\n{}\n\n本轮请在此基础上继续。",
+                    r, out
+                );
                 (Some(s), Some(r))
             }
             _ => (None, None),
@@ -1382,9 +1413,7 @@ fn run_worker_path(
                 // 记录本轮进度（任务未完成，继续下一轮）。
                 progress_history[0] = progress_history[1];
                 progress_history[1] = progress_history[2];
-                progress_history[2] = Some(RoundProgress {
-                    new_info: false,
-                });
+                progress_history[2] = Some(RoundProgress { new_info: false });
                 continue;
             }
 
@@ -1472,16 +1501,21 @@ fn run_worker_path(
                                         "[agent_tool] {} execute failed: {} input={:?}",
                                         tc.name,
                                         e,
-                                        crate::util::truncate_content_to_max(&tc.input, 200).as_ref()
+                                        crate::util::truncate_content_to_max(&tc.input, 200)
+                                            .as_ref()
                                     );
                                     state::set_last_error(&e);
                                     tool_error_buf.clear();
                                     // 根据错误类型生成具体的引导提示
                                     let hint = match &e {
                                         crate::error::Error::Config { message, .. } => {
-                                            if message.contains("not found") || message.contains("does not exist") {
+                                            if message.contains("not found")
+                                                || message.contains("does not exist")
+                                            {
                                                 " Try a different approach or verify the resource exists."
-                                            } else if message.contains("invalid") || message.contains("parse") {
+                                            } else if message.contains("invalid")
+                                                || message.contains("parse")
+                                            {
                                                 " Check the input format and try with corrected parameters."
                                             } else {
                                                 " Review the parameters and try a different approach."
@@ -1501,9 +1535,12 @@ fn run_worker_path(
                                         crate::error::Error::Io { source, .. } => {
                                             if source.kind() == std::io::ErrorKind::NotFound {
                                                 " File or resource not found. Check the path."
-                                            } else if source.kind() == std::io::ErrorKind::PermissionDenied {
+                                            } else if source.kind()
+                                                == std::io::ErrorKind::PermissionDenied
+                                            {
                                                 " Permission denied. This operation may not be allowed."
-                                            } else if source.kind() == std::io::ErrorKind::TimedOut {
+                                            } else if source.kind() == std::io::ErrorKind::TimedOut
+                                            {
                                                 " Operation timed out. Try with simpler parameters or check connectivity."
                                             } else {
                                                 " Try a different approach."
@@ -1517,12 +1554,8 @@ fn run_worker_path(
                                             }
                                         }
                                     };
-                                    let _ = write!(
-                                        &mut tool_error_buf,
-                                        "[tool error] {}.{}",
-                                        e,
-                                        hint
-                                    );
+                                    let _ =
+                                        write!(&mut tool_error_buf, "[tool error] {}.{}", e, hint);
                                     result_view = tool_error_buf.as_str();
                                 }
                             }
@@ -1568,7 +1601,11 @@ fn run_worker_path(
                     "]: ",
                     MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
                 ) || repeat_note.is_some_and(|note| {
-                    push_bounded_utf8(&mut user_content_raw, note, MAX_TOOL_RESULTS_USER_MESSAGE_LEN)
+                    push_bounded_utf8(
+                        &mut user_content_raw,
+                        note,
+                        MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
+                    )
                 }) || push_bounded_utf8(
                     &mut user_content_raw,
                     result_view,
@@ -1650,4 +1687,3 @@ fn run_worker_path(
         latency,
     ))
 }
-

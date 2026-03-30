@@ -37,7 +37,8 @@ impl PlatformHttpClient for ToolContextHttpClient<'_> {
         max_response_bytes: Option<usize>,
         on_chunk: &mut dyn FnMut(&[u8]) -> Result<()>,
     ) -> Result<u16> {
-        self.ctx.post_streaming(url, headers, body, max_response_bytes, on_chunk)
+        self.ctx
+            .post_streaming(url, headers, body, max_response_bytes, on_chunk)
     }
 
     fn patch(

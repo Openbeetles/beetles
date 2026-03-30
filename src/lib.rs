@@ -6,7 +6,8 @@ pub mod constants;
 pub mod metrics;
 pub mod util;
 
-pub use build_info::{build_board_id, ota_manifest_url};
+pub use build_info::ota_manifest_url;
+pub use platform::runtime_board::resolved_board_id;
 /// Re-export PlatformHttpClient at crate root so core modules (agent, tools) can depend on
 /// `crate::PlatformHttpClient` without importing `crate::platform` directly.
 pub use platform::PlatformHttpClient;
@@ -34,11 +35,11 @@ pub mod commands;
 #[cfg(all(feature = "ota", any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod ota;
 
+pub mod bootstrap;
 pub mod cron;
 pub mod heartbeat;
 pub mod i18n;
 pub mod orchestrator;
-pub mod bootstrap;
 pub mod runtime;
 pub mod skills;
 
@@ -86,8 +87,8 @@ pub use platform::{
 };
 pub use platform::{ConfigStore, MemorySnapshot, Platform, SkillStorage, StateFs};
 pub use tools::{
-    build_default_registry, FileWriteTool, FilesTool, GetTimeTool, KvStoreTool, RemindAtTool,
-    Tool, ToolContext, ToolRegistry, UpdateSessionSummaryTool, VoiceInputTool, VoiceOutputTool,
+    build_default_registry, FileWriteTool, FilesTool, GetTimeTool, KvStoreTool, RemindAtTool, Tool,
+    ToolContext, ToolRegistry, UpdateSessionSummaryTool, VoiceInputTool, VoiceOutputTool,
 };
 #[cfg(feature = "tools_diagnostics")]
 pub use tools::{
@@ -115,7 +116,14 @@ impl<T: platform::PlatformHttpClient> llm::LlmHttpClient for T {
         max_response_bytes: Option<usize>,
         on_chunk: &mut dyn FnMut(&[u8]) -> Result<()>,
     ) -> Result<u16> {
-        platform::PlatformHttpClient::post_streaming(self, url, headers, body, max_response_bytes, on_chunk)
+        platform::PlatformHttpClient::post_streaming(
+            self,
+            url,
+            headers,
+            body,
+            max_response_bytes,
+            on_chunk,
+        )
     }
     fn reset_connection_for_retry(&mut self) {
         platform::PlatformHttpClient::reset_connection_for_retry(self);
@@ -149,7 +157,14 @@ impl<T: platform::PlatformHttpClient> tools::ToolContext for T {
         max_response_bytes: Option<usize>,
         on_chunk: &mut dyn FnMut(&[u8]) -> Result<()>,
     ) -> Result<u16> {
-        platform::PlatformHttpClient::post_streaming(self, url, headers, body, max_response_bytes, on_chunk)
+        platform::PlatformHttpClient::post_streaming(
+            self,
+            url,
+            headers,
+            body,
+            max_response_bytes,
+            on_chunk,
+        )
     }
     fn patch_with_headers(
         &mut self,

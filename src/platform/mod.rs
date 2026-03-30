@@ -14,7 +14,6 @@ pub mod fetch_url;
 pub(crate) mod fs_atomic;
 pub(crate) mod hardware_drivers;
 pub(crate) mod heap;
-pub(crate) mod psram_vec;
 pub mod heartbeat_file;
 pub mod http_client;
 pub mod http_server;
@@ -24,8 +23,10 @@ pub mod linux;
 pub mod memory_linux;
 pub mod nvs;
 pub mod pairing;
+pub(crate) mod psram_vec;
 pub mod response;
 pub mod response_body;
+pub mod runtime_board;
 pub mod sntp;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub mod softap_ip;

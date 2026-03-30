@@ -111,8 +111,10 @@ impl Tool for NetworkTool {
 
                 let output = Command::new("curl")
                     .args(&[
-                        "-X", method,
-                        "--max-time", &CURL_TIMEOUT_SECS.to_string(),
+                        "-X",
+                        method,
+                        "--max-time",
+                        &CURL_TIMEOUT_SECS.to_string(),
                         "-i",
                         &url,
                     ])

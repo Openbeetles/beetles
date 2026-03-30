@@ -263,17 +263,17 @@ pub fn drive_pwm_out(
 /// ADC1 使用 oneshot 驱动（esp_adc/adc_oneshot.h），替代已弃用的 driver/adc.h legacy API。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub fn drive_adc_in(pins: &PinConfig, _params: &Value, options: &Value) -> Result<String> {
-    use esp_idf_svc::sys::{
-        adc_atten_t_ADC_ATTEN_DB_0, adc_atten_t_ADC_ATTEN_DB_2_5, adc_atten_t_ADC_ATTEN_DB_6,
-        adc_bitwidth_t_ADC_BITWIDTH_12, adc_oneshot_chan_cfg_t,
-        adc_oneshot_config_channel, adc_oneshot_del_unit, adc_oneshot_new_unit, adc_oneshot_read,
-        adc_oneshot_unit_init_cfg_t, adc_ulp_mode_t_ADC_ULP_MODE_DISABLE, adc_unit_t_ADC_UNIT_1,
-        soc_periph_adc_rtc_clk_src_t_ADC_RTC_CLK_SRC_DEFAULT, ESP_OK,
-    };
-    #[cfg(esp_idf_version_at_least_6_0_0)]
-    use esp_idf_svc::sys::adc_atten_t_ADC_ATTEN_DB_12;
     #[cfg(not(esp_idf_version_at_least_6_0_0))]
     use esp_idf_svc::sys::adc_atten_t_ADC_ATTEN_DB_11;
+    #[cfg(esp_idf_version_at_least_6_0_0)]
+    use esp_idf_svc::sys::adc_atten_t_ADC_ATTEN_DB_12;
+    use esp_idf_svc::sys::{
+        adc_atten_t_ADC_ATTEN_DB_0, adc_atten_t_ADC_ATTEN_DB_2_5, adc_atten_t_ADC_ATTEN_DB_6,
+        adc_bitwidth_t_ADC_BITWIDTH_12, adc_oneshot_chan_cfg_t, adc_oneshot_config_channel,
+        adc_oneshot_del_unit, adc_oneshot_new_unit, adc_oneshot_read, adc_oneshot_unit_init_cfg_t,
+        adc_ulp_mode_t_ADC_ULP_MODE_DISABLE, adc_unit_t_ADC_UNIT_1,
+        soc_periph_adc_rtc_clk_src_t_ADC_RTC_CLK_SRC_DEFAULT, ESP_OK,
+    };
 
     let pin = *pins
         .get("pin")

@@ -112,9 +112,11 @@ impl OrchestratorState {
     pub fn update_heap(&self, internal: u32, spiram: u32, largest_block: u32) {
         let baseline = self.heap_baseline_internal.load(Ordering::Relaxed);
         if baseline == 0 {
-            self.heap_baseline_internal.store(internal, Ordering::Relaxed);
+            self.heap_baseline_internal
+                .store(internal, Ordering::Relaxed);
         } else if internal > baseline {
-            self.heap_baseline_internal.store(internal, Ordering::Relaxed);
+            self.heap_baseline_internal
+                .store(internal, Ordering::Relaxed);
         }
         self.heap_free_internal.store(internal, Ordering::Relaxed);
         self.heap_free_spiram.store(spiram, Ordering::Relaxed);

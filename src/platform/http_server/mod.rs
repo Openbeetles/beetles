@@ -58,7 +58,7 @@ pub fn run(
         inbound_depth: Arc::clone(&inbound_depth),
         outbound_depth: Arc::clone(&outbound_depth),
         version: Arc::from(env!("CARGO_PKG_VERSION")),
-        board_id: Arc::from(crate::build_board_id()),
+        board_id: Arc::from(crate::platform::runtime_board::resolved_board_id()),
     });
 
     let config_for_router =
@@ -204,7 +204,7 @@ pub fn run(
         inbound_depth: Arc::clone(&inbound_depth),
         outbound_depth: Arc::clone(&outbound_depth),
         version: Arc::from(env!("CARGO_PKG_VERSION")),
-        board_id: Arc::from(crate::build_board_id()),
+        board_id: Arc::from(crate::platform::runtime_board::resolved_board_id()),
     });
     let config_for_router =
         crate::config::AppConfig::load(config_store.as_ref(), Some(config_file_store.as_ref()));

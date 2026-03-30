@@ -70,7 +70,7 @@ where
             BAIDU_TTS_URL,
             &headers,
             body.as_bytes(),
-            None,  // 无限制：边下载边播放，内存占用恒定
+            None, // 无限制：边下载边播放，内存占用恒定
             &mut |chunk: &[u8]| -> Result<()> {
                 if stream_start.elapsed().as_secs() > TTS_STREAM_TIMEOUT_SECS {
                     return Err(Error::config("tts_baidu_timeout", "stream timeout"));
@@ -131,7 +131,12 @@ where
             break;
         }
         let src = &bytes[idx..idx + take_samples * 2];
-        for (sample, pair) in chunk.as_mut_slice().iter_mut().take(take_samples).zip(src.chunks_exact(2)) {
+        for (sample, pair) in chunk
+            .as_mut_slice()
+            .iter_mut()
+            .take(take_samples)
+            .zip(src.chunks_exact(2))
+        {
             *sample = i16::from_le_bytes([pair[0], pair[1]]);
         }
         on_chunk(&chunk.as_mut_slice()[..take_samples])?;
@@ -255,11 +260,7 @@ impl WavPcmStreamDecoder {
         }
     }
 
-    fn feed(
-        &mut self,
-        bytes: &[u8],
-        on_chunk: &mut dyn FnMut(&[i16]) -> Result<()>,
-    ) -> Result<()> {
+    fn feed(&mut self, bytes: &[u8], on_chunk: &mut dyn FnMut(&[i16]) -> Result<()>) -> Result<()> {
         if bytes.is_empty() {
             return Ok(());
         }
@@ -428,9 +429,7 @@ mod tests {
         wav.extend_from_slice(b"fmt ");
         wav.extend_from_slice(&(16u32).to_le_bytes());
         wav.extend_from_slice(&[1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-        assert!(try_parse_wav_data_chunk_prefix(&wav)
-            .expect("ok")
-            .is_none());
+        assert!(try_parse_wav_data_chunk_prefix(&wav).expect("ok").is_none());
     }
 
     #[test]

@@ -319,8 +319,7 @@ pub fn snapshot() -> MetricsSnapshot {
         http_permit_wait_last_ms: HTTP_PERMIT_WAIT_LAST_MS.load(Ordering::Relaxed) as u64,
         voice_input_capture_last_ms: VOICE_INPUT_CAPTURE_LAST_MS.load(Ordering::Relaxed) as u64,
         voice_input_stt_http_last_ms: VOICE_INPUT_STT_HTTP_LAST_MS.load(Ordering::Relaxed) as u64,
-        voice_output_tts_http_last_ms: VOICE_OUTPUT_TTS_HTTP_LAST_MS.load(Ordering::Relaxed)
-            as u64,
+        voice_output_tts_http_last_ms: VOICE_OUTPUT_TTS_HTTP_LAST_MS.load(Ordering::Relaxed) as u64,
         voice_output_play_last_ms: VOICE_OUTPUT_PLAY_LAST_MS.load(Ordering::Relaxed) as u64,
         voice_input_fail_total: VOICE_INPUT_FAIL_TOTAL.load(Ordering::Relaxed) as u64,
         voice_output_fail_total: VOICE_OUTPUT_FAIL_TOTAL.load(Ordering::Relaxed) as u64,

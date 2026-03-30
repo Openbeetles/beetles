@@ -361,6 +361,13 @@ export function DevicePage() {
                       value={systemInfo.product_name}
                       breakWords
                     />
+                    {systemInfo.hardware_model && (
+                      <Row
+                        label={t("device.deviceInfoHardwareModel")}
+                        value={systemInfo.hardware_model}
+                        breakWords
+                      />
+                    )}
                     {systemInfo.board_id && (
                       <Row
                         label={t("device.deviceInfoBoardId")}
