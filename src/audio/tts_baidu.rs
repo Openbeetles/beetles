@@ -123,7 +123,7 @@ where
     let mut played = 0usize;
     let mut idx = start;
     let end = start + data_len;
-    let mut chunk = crate::platform::psram_vec::PsramVecI16::new(chunk_samples.max(1));
+    let mut chunk = crate::platform::psram_vec::PsramVec::<i16>::new(chunk_samples.max(1));
     while idx < end {
         let remain_bytes = end - idx;
         let take_samples = (remain_bytes / 2).min(chunk.len());
@@ -243,7 +243,7 @@ fn append_preview(dst: &mut Vec<u8>, src: &[u8], max: usize) {
 
 struct WavPcmStreamDecoder {
     pending: Vec<u8>,
-    chunk: crate::platform::psram_vec::PsramVecI16,
+    chunk: crate::platform::psram_vec::PsramVec<i16>,
     chunk_fill: usize,
     data_bytes_remaining: Option<usize>,
     played_samples: usize,
@@ -253,7 +253,7 @@ impl WavPcmStreamDecoder {
     fn new(chunk_samples: usize) -> Self {
         Self {
             pending: Vec::with_capacity(256),
-            chunk: crate::platform::psram_vec::PsramVecI16::new(chunk_samples),
+            chunk: crate::platform::psram_vec::PsramVec::<i16>::new(chunk_samples),
             chunk_fill: 0,
             data_bytes_remaining: None,
             played_samples: 0,

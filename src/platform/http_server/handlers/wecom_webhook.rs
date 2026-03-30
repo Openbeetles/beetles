@@ -41,10 +41,7 @@ pub fn post(
     inbound_tx: &InboundTx,
     body: &str,
 ) -> Result<ApiResponse, std::io::Error> {
-    let config = crate::config::AppConfig::load(
-        ctx.config_store.as_ref(),
-        Some(ctx.config_file_store.as_ref()),
-    );
+    let config = ctx.config();
     let wecom_token = &config.wecom_token;
     let msg_signature = extract_query_param(uri, "msg_signature").unwrap_or_default();
     let timestamp = extract_query_param(uri, "timestamp").unwrap_or_default();

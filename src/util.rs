@@ -563,7 +563,7 @@ pub fn is_private_url(url: &str) -> bool {
 // | tg_poll                               | STACK_CHANNEL_SENDER   | 8 KB  | 64 KB |
 // | display                               | (inline 6144)          | 6 KB  | 6 KB  | ← no TLS, render chain ~3.5KB peak
 // | audio_io_worker                       | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS, I2S + WakeNet NN
-// | http_server                           | (inline 6144)          | 6 KB  | 6 KB  | ← no TLS, init ~1.7KB then sleep
+// | http_server                           | (inline 6144)          | 6 KB  | 6 KB  | ← no TLS, config pre-loaded by main
 // | dispatch                              | (inline 4096)          | 4 KB  | 4 KB  | ← no TLS/HTTP, recv+queue only
 // | bg_timer                              | (inline 6144)          | 6 KB  | 6 KB  | ← no TLS, MetricsSnapshot 352B peak
 // | heartbeat, cli_repl                  | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS

@@ -12,10 +12,7 @@ pub fn post(
     inbound_tx: &InboundTx,
     body: &str,
 ) -> Result<ApiResponse, std::io::Error> {
-    let config = crate::config::AppConfig::load(
-        ctx.config_store.as_ref(),
-        Some(ctx.config_file_store.as_ref()),
-    );
+    let config = ctx.config();
     let r = handle_http_event(&config, inbound_tx, body);
     let api = match r {
         FeishuEventResponse::Ok200Json(s) => ApiResponse::ok_200_json(&s),

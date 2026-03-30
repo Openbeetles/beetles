@@ -1,19 +1,16 @@
 //! 配置 API：GET /api/config、POST /api/config/wifi、POST /api/config/llm、/channels、/system、/hardware。
 
-use crate::config::{self, AppConfig};
+use crate::config;
 use crate::i18n::{locale_from_store, tr, tr_error, Message};
 use crate::platform::http_server::common::{to_io, ApiResponse, WifiConfigPayload};
 use serde_json::Value;
 
 use super::HandlerContext;
 
-/// GET /api/config：从 config_store + SPIFFS 实时 load，返回完整配置 JSON（含密钥）+ locale。
+/// GET /api/config：从缓存返回完整配置 JSON（含密钥）+ locale。
 pub fn get_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
-    let config = AppConfig::load(
-        ctx.config_store.as_ref(),
-        Some(ctx.config_file_store.as_ref()),
-    );
-    let mut j: Value = serde_json::to_value(&config).map_err(|e| to_io(e.to_string()))?;
+    let config = ctx.config();
+    let mut j: Value = serde_json::to_value(&*config).map_err(|e| to_io(e.to_string()))?;
     j["locale"] = serde_json::Value::String(config::get_locale(ctx.config_store.as_ref()));
     serde_json::to_string_pretty(&j).map_err(|e| to_io(e.to_string()))
 }
@@ -30,9 +27,12 @@ pub fn post_wifi(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::i
         &payload.wifi_ssid,
         &payload.wifi_pass,
     ) {
-        Ok(()) => Ok(ApiResponse::ok_200_json(
-            r#"{"ok":true,"restart_required":true}"#,
-        )),
+        Ok(()) => {
+            ctx.reload_config();
+            Ok(ApiResponse::ok_200_json(
+                r#"{"ok":true,"restart_required":true}"#,
+            ))
+        }
         Err(e) => Ok(ApiResponse::err_400(&tr_error(&e, loc))),
     }
 }
@@ -41,7 +41,10 @@ pub fn post_wifi(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::i
 pub fn post_llm(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
     let loc = locale_from_store(ctx.config_store.as_ref());
     match config::save_llm_segment(ctx.config_file_store.as_ref(), body) {
-        Ok(()) => Ok(ApiResponse::ok_200_json("{\"ok\":true}")),
+        Ok(()) => {
+            ctx.reload_config();
+            Ok(ApiResponse::ok_200_json("{\"ok\":true}"))
+        }
         Err(e) => Ok(ApiResponse::err_400(&tr_error(&e, loc))),
     }
 }
@@ -50,7 +53,10 @@ pub fn post_llm(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io
 pub fn post_channels(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
     let loc = locale_from_store(ctx.config_store.as_ref());
     match config::save_channels_segment(ctx.config_file_store.as_ref(), body) {
-        Ok(()) => Ok(ApiResponse::ok_200_json("{\"ok\":true}")),
+        Ok(()) => {
+            ctx.reload_config();
+            Ok(ApiResponse::ok_200_json("{\"ok\":true}"))
+        }
         Err(e) => Ok(ApiResponse::err_400(&tr_error(&e, loc))),
     }
 }
@@ -59,7 +65,10 @@ pub fn post_channels(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, st
 pub fn post_system(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
     let loc = locale_from_store(ctx.config_store.as_ref());
     match config::save_system_segment_to_nvs(ctx.config_store.as_ref(), body) {
-        Ok(()) => Ok(ApiResponse::ok_200_json("{\"ok\":true}")),
+        Ok(()) => {
+            ctx.reload_config();
+            Ok(ApiResponse::ok_200_json("{\"ok\":true}"))
+        }
         Err(e) => Ok(ApiResponse::err_400(&tr_error(&e, loc))),
     }
 }
@@ -83,7 +92,10 @@ pub fn get_hardware_body(ctx: &HandlerContext) -> Result<String, std::io::Error>
 pub fn post_hardware(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
     let loc = locale_from_store(ctx.config_store.as_ref());
     match config::save_hardware_segment(ctx.config_file_store.as_ref(), body) {
-        Ok(()) => Ok(ApiResponse::ok_200_json("{\"ok\":true}")),
+        Ok(()) => {
+            ctx.reload_config();
+            Ok(ApiResponse::ok_200_json("{\"ok\":true}"))
+        }
         Err(e) => Ok(ApiResponse::err_400(&tr_error(&e, loc))),
     }
 }
@@ -97,9 +109,12 @@ pub fn get_audio_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
 pub fn post_audio(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
     let loc = locale_from_store(ctx.config_store.as_ref());
     match config::save_audio_segment(ctx.config_file_store.as_ref(), body) {
-        Ok(()) => Ok(ApiResponse::ok_200_json(
-            r#"{"ok":true,"restart_required":true}"#,
-        )),
+        Ok(()) => {
+            ctx.reload_config();
+            Ok(ApiResponse::ok_200_json(
+                r#"{"ok":true,"restart_required":true}"#,
+            ))
+        }
         Err(e) => Ok(ApiResponse::err_400(&tr_error(&e, loc))),
     }
 }
@@ -112,18 +127,14 @@ pub fn get_display_body(ctx: &HandlerContext) -> Result<String, std::io::Error> 
 /// POST /api/config/display：校验并写入 DisplayConfig 到 SPIFFS config/display.json。
 pub fn post_display(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
     let loc = locale_from_store(ctx.config_store.as_ref());
-    let current = AppConfig::load(
-        ctx.config_store.as_ref(),
-        Some(ctx.config_file_store.as_ref()),
-    );
-    match config::save_display_segment(
-        ctx.config_file_store.as_ref(),
-        &current.hardware_devices,
-        body,
-    ) {
-        Ok(()) => Ok(ApiResponse::ok_200_json(
-            r#"{"ok":true,"restart_required":true}"#,
-        )),
+    let hw_devices = ctx.config().hardware_devices.clone();
+    match config::save_display_segment(ctx.config_file_store.as_ref(), &hw_devices, body) {
+        Ok(()) => {
+            ctx.reload_config();
+            Ok(ApiResponse::ok_200_json(
+                r#"{"ok":true,"restart_required":true}"#,
+            ))
+        }
         Err(e) => Ok(ApiResponse::err_400(&tr_error(&e, loc))),
     }
 }

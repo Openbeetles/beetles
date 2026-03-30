@@ -4,9 +4,10 @@ use crate::config::{AppConfig, ConfigFileStore};
 use crate::platform::fetch_url::fetch_url_with_client;
 use crate::platform::{ConfigStore, Platform, SkillMetaStore, SkillStorage};
 use std::sync::atomic::AtomicUsize;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
-/// 各 handler 共享的只读上下文，由 run() 构建后以 Arc 传入闭包。配置以 config_store 为唯一源，按需 load。
+/// 各 handler 共享的上下文，由 run() 构建后以 Arc 传入闭包。
+/// `cached_config` 缓存最新配置：读路径零 `AppConfig::load()`，写路径保存后 `reload_config()` 刷新。
 #[allow(dead_code)]
 pub struct HandlerContext {
     pub config_store: Arc<dyn ConfigStore + Send + Sync>,
@@ -19,15 +20,29 @@ pub struct HandlerContext {
     pub inbound_depth: Arc<AtomicUsize>,
     pub outbound_depth: Arc<AtomicUsize>,
     pub version: Arc<str>,
-    /// 板型 ID，与 board_presets.toml 一致，用于 OTA 渠道查 manifest。
     pub board_id: Arc<str>,
+    pub cached_config: RwLock<AppConfig>,
 }
 
 impl HandlerContext {
-    /// GET url，返回 body 截断至 max_len。经 `config_store` 加载代理等配置后建 HTTP 客户端。
+    /// 借用缓存配置的读锁。httpd 任务为单线程，不会死锁。
+    pub fn config(&self) -> std::sync::RwLockReadGuard<'_, AppConfig> {
+        self.cached_config.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// 保存操作后调用，从 stores 重新加载配置到缓存。运行在 12KB httpd 任务上。
+    pub fn reload_config(&self) {
+        let new = AppConfig::load(
+            self.config_store.as_ref(),
+            Some(self.config_file_store.as_ref()),
+        );
+        *self.cached_config.write().unwrap_or_else(|e| e.into_inner()) = new;
+    }
+
     pub fn fetch_url(&self, url: &str, max_len: usize) -> crate::error::Result<Vec<u8>> {
-        let config = AppConfig::load(self.config_store.as_ref(), None);
-        let mut client = self.platform.create_http_client(&config)?;
+        let cfg = self.config();
+        let mut client = self.platform.create_http_client(&cfg)?;
+        drop(cfg);
         fetch_url_with_client(client.as_mut(), url, max_len)
     }
 }

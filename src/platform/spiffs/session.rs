@@ -171,7 +171,12 @@ impl SessionStore for SpiffsSessionStore {
         let existing_buf = read_file(&path).unwrap_or_default();
         let msg_count = count_session_message_lines(&existing_buf);
         if msg_count < MAX_SESSION_ENTRIES {
-            let mut out = Vec::with_capacity(existing_buf.len() + line.len() + 2);
+            let out_cap = existing_buf.len() + line.len() + 2;
+            let mut out = if out_cap >= super::PSRAM_FILE_THRESHOLD {
+                super::psram_vec_with_capacity(out_cap)
+            } else {
+                Vec::with_capacity(out_cap)
+            };
             if existing_buf.is_empty() {
                 if write_header {
                     out.extend_from_slice(CHAT_ID_HEADER_PREFIX.as_bytes());

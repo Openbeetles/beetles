@@ -472,6 +472,11 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         let session_http = Arc::clone(&session_store);
         let http_inbound_tx = user_inbound_tx.clone();
         let http_qq_cache = Arc::clone(&qq_msg_id_cache);
+        let qq_wh_enabled = !config.qq_channel_app_id.trim().is_empty()
+            && !config.qq_channel_secret.trim().is_empty();
+        let qq_app_id = config.qq_channel_app_id.clone();
+        let qq_secret = config.qq_channel_secret.clone();
+        let initial_config = (*config).clone();
         spawn_planned("http_server", 6144, move || {
             if let Err(e) = beetle::platform::http_server::run(
                 platform_http,
@@ -481,6 +486,10 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                 session_http,
                 http_inbound_tx,
                 http_qq_cache,
+                qq_wh_enabled,
+                qq_app_id,
+                qq_secret,
+                initial_config,
             ) {
                 log::warn!("[{}] HTTP config API server error: {}", TAG, e);
             }

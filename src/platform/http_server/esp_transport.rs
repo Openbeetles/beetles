@@ -61,6 +61,20 @@ fn collect_headers(req: &impl Headers) -> Vec<(String, String)> {
     v
 }
 
+/// Allocate a zeroed `Vec<u8>` backed by PSRAM when available (ESP32-S3).
+/// Falls back to normal heap on non-xtensa or PSRAM exhaustion.
+/// Safe to drop: `Esp32Alloc::dealloc` uses `heap_caps_free` for both regions.
+fn psram_backed_vec_u8(len: usize) -> Vec<u8> {
+    if let Some(ptr) = crate::platform::heap::alloc_spiram_buffer(len) {
+        unsafe {
+            std::ptr::write_bytes(ptr, 0, len);
+            Vec::from_raw_parts(ptr, len, len)
+        }
+    } else {
+        vec![0u8; len]
+    }
+}
+
 #[inline(never)]
 fn read_body_esp<C: Connection>(
     req: &mut Request<C>,
@@ -118,7 +132,7 @@ fn read_body_esp<C: Connection>(
                 .content_len()
                 .map(|u| u.min(crate::channels::QQ_WEBHOOK_BODY_MAX as u64) as usize)
                 .unwrap_or(crate::channels::QQ_WEBHOOK_BODY_MAX);
-            let mut buf = vec![0u8; max_len];
+            let mut buf = psram_backed_vec_u8(max_len);
             let n = match embedded_io::Read::read(req, &mut buf) {
                 Ok(n) => n,
                 Err(_) => {

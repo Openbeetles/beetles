@@ -3,18 +3,12 @@
 
 use super::HandlerContext;
 use crate::channels::check_all;
-use crate::config::AppConfig;
 use crate::i18n::{locale_from_store, tr, Message};
 
 /// 成功返回 `{ "channels": [ ... ] }` 字符串，失败返回 Err（mod 层写 500，不暴露内部细节）。
 pub fn body(ctx: &HandlerContext) -> Result<String, String> {
-    // NOTE: 不再注册 httpd 线程到 TWDT。httpd 是请求-响应模型，空闲时间不可控；
-    // 注册后无法取消，导致空闲期 WDT 触发。HTTP 客户端层的 feed 在未注册时为 no-op。
     let loc = locale_from_store(ctx.config_store.as_ref());
-    let config = AppConfig::load(
-        ctx.config_store.as_ref(),
-        Some(ctx.config_file_store.as_ref()),
-    );
+    let config = ctx.config();
     let mut client = match ctx.platform.create_http_client(&config) {
         Ok(c) => c,
         Err(e) => {
@@ -23,6 +17,7 @@ pub fn body(ctx: &HandlerContext) -> Result<String, String> {
         }
     };
     let list = check_all(&config, &mut *client, loc);
+    drop(config);
     let out = serde_json::json!({ "channels": list });
     serde_json::to_string(&out).map_err(|e| e.to_string())
 }

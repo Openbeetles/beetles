@@ -3,7 +3,6 @@
 
 use super::auth;
 use super::types::{IncomingRequest, OutgoingResponse, RestartAction, RouterEnv};
-use crate::config::AppConfig;
 use crate::error::{Error, Result};
 use crate::i18n::{locale_from_store, tr, Message};
 use crate::platform::http_server::common::{
@@ -710,10 +709,7 @@ pub fn dispatch(
             Ok(api_to_out(r))
         }
         ("GET", "/api/wecom/webhook") => {
-            let config = AppConfig::load(
-                ctx.config_store.as_ref(),
-                Some(ctx.config_file_store.as_ref()),
-            );
+            let config = ctx.config();
             let r = handlers::wecom_webhook::get_verify(uri, &config.wecom_token);
             Ok(OutgoingResponse::json(
                 r.status,

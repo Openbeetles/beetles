@@ -52,19 +52,51 @@ pub fn transcribe_pcm16_samples(
     sample_rate: u32,
 ) -> Result<String> {
     let token = token_cache.get_or_fetch(http, &stt.api_key, &stt.api_secret)?;
-    let speech_b64 = encode_pcm16_samples_base64(pcm16)?;
     let dev_pid = stt.model.trim().parse::<u32>().unwrap_or(1537);
-    let body = serde_json::json!({
-        "format": "pcm",
-        "rate": sample_rate,
-        "channel": 1,
-        "cuid": "beetle",
-        "token": token,
-        "speech": speech_b64,
-        "len": pcm16.len() * 2,
-        "dev_pid": dev_pid,
-    })
-    .to_string();
+    let pcm_byte_len = pcm16.len() * 2;
+
+    let prefix = format!(
+        r#"{{"format":"pcm","rate":{},"channel":1,"cuid":"beetle","token":"{}","speech":""#,
+        sample_rate, token
+    );
+    let suffix = format!(r#"","len":{},"dev_pid":{}}}"#, pcm_byte_len, dev_pid);
+
+    let b64_output_len = (pcm_byte_len * 4 + 2) / 3 + 4;
+    let total_cap = prefix.len() + b64_output_len + suffix.len();
+    let mut body =
+        crate::platform::psram_vec::PsramVec::<u8>::with_max_capacity(total_cap);
+
+    body.extend_from_slice(prefix.as_bytes());
+    {
+        let mut encoder = base64::write::EncoderWriter::new(
+            &mut body,
+            &base64::engine::general_purpose::STANDARD,
+        );
+        let mut staging = [0u8; 1024];
+        let mut cursor = 0usize;
+        for sample in pcm16 {
+            let bytes = sample.to_le_bytes();
+            staging[cursor] = bytes[0];
+            staging[cursor + 1] = bytes[1];
+            cursor += 2;
+            if cursor == staging.len() {
+                encoder
+                    .write_all(&staging)
+                    .map_err(|e| Error::config("stt_baidu_encode", e.to_string()))?;
+                cursor = 0;
+            }
+        }
+        if cursor > 0 {
+            encoder
+                .write_all(&staging[..cursor])
+                .map_err(|e| Error::config("stt_baidu_encode", e.to_string()))?;
+        }
+        encoder
+            .finish()
+            .map_err(|e| Error::config("stt_baidu_encode", e.to_string()))?;
+    }
+    body.extend_from_slice(suffix.as_bytes());
+
     let api_url = if stt.api_url.trim().is_empty() {
         BAIDU_STT_DEFAULT_URL
     } else {
@@ -72,7 +104,7 @@ pub fn transcribe_pcm16_samples(
     };
     let headers = [("Content-Type", "application/json")];
     let (status, body_buf) = http
-        .post(api_url, &headers, body.as_bytes())
+        .post(api_url, &headers, body.as_slice())
         .map_err(|e| Error::config("stt_baidu_request", e.to_string()))?;
     parse_asr_response(status, body_buf)
 }
@@ -106,33 +138,3 @@ fn parse_asr_response(status: u16, body: ResponseBody) -> Result<String> {
     Ok(first.trim().to_string())
 }
 
-fn encode_pcm16_samples_base64(samples: &[i16]) -> Result<String> {
-    let mut out = Vec::with_capacity((samples.len() * 8) / 3 + 8);
-    {
-        let mut encoder =
-            base64::write::EncoderWriter::new(&mut out, &base64::engine::general_purpose::STANDARD);
-        let mut buf = [0u8; 1024];
-        let mut cursor = 0usize;
-        for sample in samples {
-            let bytes = sample.to_le_bytes();
-            buf[cursor] = bytes[0];
-            buf[cursor + 1] = bytes[1];
-            cursor += 2;
-            if cursor == buf.len() {
-                encoder
-                    .write_all(&buf)
-                    .map_err(|e| Error::config("stt_baidu_encode", e.to_string()))?;
-                cursor = 0;
-            }
-        }
-        if cursor > 0 {
-            encoder
-                .write_all(&buf[..cursor])
-                .map_err(|e| Error::config("stt_baidu_encode", e.to_string()))?;
-        }
-        encoder
-            .finish()
-            .map_err(|e| Error::config("stt_baidu_encode", e.to_string()))?;
-    }
-    String::from_utf8(out).map_err(|e| Error::config("stt_baidu_encode", e.to_string()))
-}

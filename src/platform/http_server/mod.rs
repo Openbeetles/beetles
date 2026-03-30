@@ -22,6 +22,10 @@ pub fn run(
     session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
     inbound_tx: crate::bus::InboundTx,
     msg_id_cache: crate::channels::QqMsgIdCache,
+    qq_webhook_enabled: bool,
+    qq_app_id: String,
+    qq_secret: String,
+    initial_config: crate::config::AppConfig,
 ) -> Result<()> {
     let config_store = platform.config_store();
     let config_file_store: std::sync::Arc<dyn crate::config::ConfigFileStore + Send + Sync> =
@@ -35,9 +39,7 @@ pub fn run(
 
     let server_config = Configuration {
         max_open_sockets: MAX_OPEN_SOCKETS,
-        // 路由多（每 URI 常含 Get+Options，部分有 Post），需 ≥ 实际 register! 数量，否则 ESP_ERR_HTTPD_HANDLERS_FULL
         max_uri_handlers: 96,
-        // 默认 6KB 栈在 Rust handler（闭包+JSON+深层调用）下易溢出；GET /api/channel_connectivity 在任务内串行执行多次外网 HTTP，栈压力大，故提高到 12KB
         stack_size: 12 * 1024,
         ..Default::default()
     };
@@ -59,17 +61,15 @@ pub fn run(
         outbound_depth: Arc::clone(&outbound_depth),
         version: Arc::from(env!("CARGO_PKG_VERSION")),
         board_id: Arc::from(crate::platform::runtime_board::resolved_board_id()),
+        cached_config: std::sync::RwLock::new(initial_config),
     });
 
-    let config_for_router =
-        crate::config::AppConfig::load(config_store.as_ref(), Some(config_file_store.as_ref()));
     let router_env = router::RouterEnv::new(
         inbound_tx.clone(),
         msg_id_cache.clone(),
-        !config_for_router.qq_channel_app_id.trim().is_empty()
-            && !config_for_router.qq_channel_secret.trim().is_empty(),
-        config_for_router.qq_channel_app_id.clone(),
-        config_for_router.qq_channel_secret.clone(),
+        qq_webhook_enabled,
+        qq_app_id,
+        qq_secret,
     );
     esp_transport::register_all_esp_routes(&mut server, &ctx, &router_env, &config_store)?;
 
@@ -97,6 +97,7 @@ const LINUX_HTTP_WORKERS: usize = 4;
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn handle_linux_request(
+
     ctx: &Arc<handlers::HandlerContext>,
     router_env: &router::RouterEnv,
     mut request: tiny_http::Request,
@@ -183,6 +184,10 @@ pub fn run(
     session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
     inbound_tx: crate::bus::InboundTx,
     msg_id_cache: crate::channels::QqMsgIdCache,
+    qq_webhook_enabled: bool,
+    qq_app_id: String,
+    qq_secret: String,
+    initial_config: crate::config::AppConfig,
 ) -> Result<()> {
     use std::time::Duration;
 
@@ -205,16 +210,14 @@ pub fn run(
         outbound_depth: Arc::clone(&outbound_depth),
         version: Arc::from(env!("CARGO_PKG_VERSION")),
         board_id: Arc::from(crate::platform::runtime_board::resolved_board_id()),
+        cached_config: std::sync::RwLock::new(initial_config),
     });
-    let config_for_router =
-        crate::config::AppConfig::load(config_store.as_ref(), Some(config_file_store.as_ref()));
     let router_env = router::RouterEnv::new(
         inbound_tx.clone(),
         msg_id_cache.clone(),
-        !config_for_router.qq_channel_app_id.trim().is_empty()
-            && !config_for_router.qq_channel_secret.trim().is_empty(),
-        config_for_router.qq_channel_app_id.clone(),
-        config_for_router.qq_channel_secret.clone(),
+        qq_webhook_enabled,
+        qq_app_id,
+        qq_secret,
     );
     let listen =
         std::env::var("BEETLE_CONFIG_HTTP_LISTEN").unwrap_or_else(|_| "0.0.0.0:80".to_string());

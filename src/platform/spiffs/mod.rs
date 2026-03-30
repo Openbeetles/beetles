@@ -115,8 +115,21 @@ pub fn spiffs_usage() -> Option<(usize, usize)> {
     }
 }
 
+const PSRAM_FILE_THRESHOLD: usize = 8 * 1024;
+
+/// Allocate a `Vec<u8>` with `len=0, capacity=cap` backed by PSRAM when available.
+/// Safe to drop: `Esp32Alloc::dealloc` uses `heap_caps_free` for both regions.
+fn psram_vec_with_capacity(cap: usize) -> Vec<u8> {
+    if let Some(ptr) = crate::platform::heap::alloc_spiram_buffer(cap) {
+        unsafe { Vec::from_raw_parts(ptr, 0, cap) }
+    } else {
+        Vec::with_capacity(cap)
+    }
+}
+
 /// 读整个文件到 Vec。路径相对于 SPIFFS_BASE，或绝对如 /spiffs/config/SOUL.md。
 /// 有 metadata 时预分配 capacity，减少 read_to_end 的多次 realloc。
+/// 大文件（>= 8KB）优先使用 PSRAM 分配。
 pub fn read_file(path: impl AsRef<Path>) -> Result<Vec<u8>> {
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     let _guard = lock_spiffs();
@@ -133,7 +146,9 @@ pub fn read_file(path: impl AsRef<Path>) -> Result<Vec<u8>> {
         .and_then(|m| m.len().try_into().ok())
         .map(|len: usize| len.min(MAX_WRITE_SIZE))
         .unwrap_or(0);
-    let mut buf = if capacity > 0 {
+    let mut buf = if capacity >= PSRAM_FILE_THRESHOLD {
+        psram_vec_with_capacity(capacity)
+    } else if capacity > 0 {
         Vec::with_capacity(capacity)
     } else {
         Vec::new()

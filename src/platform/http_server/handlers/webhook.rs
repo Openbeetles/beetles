@@ -14,10 +14,7 @@ pub fn post(
     provided_token: &str,
 ) -> Result<ApiResponse, std::io::Error> {
     let loc = locale_from_store(ctx.config_store.as_ref());
-    let cfg = crate::config::AppConfig::load(
-        ctx.config_store.as_ref(),
-        Some(ctx.config_file_store.as_ref()),
-    );
+    let cfg = ctx.config();
     if !cfg.webhook_enabled || cfg.webhook_token.is_empty() {
         return Ok(ApiResponse::err_403(&tr(Message::WebhookDisabled, loc)));
     }

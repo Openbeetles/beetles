@@ -113,9 +113,8 @@ impl Tool for VoiceInputTool {
                 .saturating_mul(mic_sr as usize)
                 .min(AUDIO_STT_MAX_PCM_BYTES)
                 / 1000;
-            // Start small (~2s worth), grow on demand; avoids 384KB upfront spike.
-            let init_cap = (2 * mic_sr as usize).min(max_pcm_samples);
-            let mut captured: Vec<i16> = Vec::with_capacity(init_cap);
+            let mut captured =
+                crate::platform::psram_vec::PsramVec::<i16>::with_max_capacity(max_pcm_samples);
             let _recording_guard = AudioRecordingGuard::new();
             let capture_start = Instant::now();
             while elapsed < max_ms {
@@ -159,7 +158,7 @@ impl Tool for VoiceInputTool {
                 elapsed = elapsed.saturating_add(frame_ms);
             }
             crate::metrics::record_voice_input_capture_ms(capture_start.elapsed().as_millis());
-            if captured.is_empty() {
+            if captured.len() == 0 {
                 return Err(Error::config(
                     "tool_voice_input",
                     "no speech captured within time window",
@@ -170,7 +169,7 @@ impl Tool for VoiceInputTool {
                 &mut http,
                 self.baidu_token.as_ref(),
                 &self.audio_cfg.stt,
-                &captured,
+                captured.as_slice(),
                 mic_sr,
             )?;
             crate::metrics::record_voice_input_stt_http_ms(stt_start.elapsed().as_millis());
