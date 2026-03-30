@@ -50,6 +50,12 @@
 - **绑核唯一入口**：多核/绑核改造只能通过 `platform/task_affinity.rs` 与 `util::spawn_guarded_with_profile*` 执行；业务域禁止直接使用 `esp_pthread_*`/`xTaskCreatePinnedToCore`。
 - **线程角色一致性**：涉及 HTTP/TLS 的线程必须设置统一角色（`Interactive` / `Io` / `Background`），由 orchestrator 准入层统一消费；禁止各模块自行实现第二套 TLS 抢占策略。
 - **Agent 独立线程**：`agent_main_loop` 必须在 Core1 独立线程运行并自行注册/喂 TWDT；主线程只负责监管与故障恢复（记录 + `request_restart`），不得再直接执行 agent 正文。
+- **Linux / 嵌入式线程栈（必须遵守）**：在非 ESP/RISC-V 目标上，`rustls` 在调用方线程内完成 TLS 握手，栈深度远大于 ESP-IDF 路径。任何会调用 `create_http_client()` 或 `connect_wss()` 的线程，**禁止**写死 `8192` / `16384` 字节；必须使用 `src/util.rs` 中对应的 `STACK_*` 常量：
+  - `STACK_CHANNEL_WS`：WS 长连接线程（`qq_ws`、`feishu_ws`）
+  - `STACK_AGENT_LOOP`：Agent 主循环线程（`agent_user_loop`、`agent_system_loop`）
+  - `STACK_CHANNEL_SENDER`：出站发送与入站轮询线程（`*_sender`、`tg_poll`）
+  - 以上三者在 Linux 上统一由 `LINUX_RUSTLS_THREAD_STACK`（目前 **64KB**）驱动；若板子仍溢出，只改该单一常量。
+  - 无 TLS 的纯调度/日志线程（`dispatch`、`http_server`、`bg_timer`、`heartbeat`）保持 8192 不变。
 
 ### 嵌入式字节序
 

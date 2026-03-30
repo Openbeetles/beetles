@@ -541,11 +541,64 @@ pub fn is_private_url(url: &str) -> bool {
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const DEFAULT_GUARD_STACK_SIZE: usize = 8192;
 
-/// Default stack for `spawn_guarded` on host/Linux: `rustls` + tungstenite TLS handshake
-/// needs far more than 8KB; 128KB is a safe default without matching OS default (multi-MB).
-/// Linux/host：`rustls` + tungstenite 握手在进程内执行，8KB 会栈溢出；128KB 足够且仍远小于系统默认线程栈。
+// ---------------------------------------------------------------------------
+// Thread stack budget constants
+// ---------------------------------------------------------------------------
+//
+// On ESP32/RISC-V, TLS runs inside the IDF task that owns the socket, so
+// our Rust threads only need small stacks (8–16 KB).  On Linux (including
+// embedded boards like Luckfox), `rustls` executes *inside* the thread that
+// calls `create_http_client` / `connect_wss`, making the stack requirement
+// roughly 4–8× larger.
+//
+// Single tuning knob: `LINUX_RUSTLS_THREAD_STACK` (non-ESP targets).
+// Raise this constant if a board still overflows; all dependent constants
+// follow automatically.  Verified floor: >16 KB required; 64 KB comfortable
+// on boards with ≥256 MB RAM.  Do NOT write 8192 / 16384 inline in main.rs
+// for any thread that calls `create_http_client` or `connect_wss` on Linux.
+//
+// Thread → constant mapping (Linux column):
+//
+// | Thread(s)                             | Constant               | ESP   | Linux |
+// |---------------------------------------|------------------------|-------|-------|
+// | http_config_worker_*                  | DEFAULT_GUARD_STACK_SIZE (spawn_guarded) | 8 KB | 64 KB |
+// | qq_ws, feishu_ws                      | STACK_CHANNEL_WS       | 16 KB | 64 KB |
+// | agent_user_loop, agent_system_loop    | STACK_AGENT_LOOP       | 16 KB | 64 KB |
+// | tg_sender, qq_sender, fs/dt/wc_sender | STACK_CHANNEL_SENDER   | 8 KB  | 64 KB |
+// | tg_poll                               | STACK_CHANNEL_SENDER   | 8 KB  | 64 KB |
+// | dispatch, http_server                 | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS
+// | bg_timer, heartbeat, cli_repl        | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS
+// ---------------------------------------------------------------------------
+
+/// Linux（含嵌入式）：TLS 栈远大于 ESP 的 16KB，但不必拉到桌面级上百 KB；
+/// 单一调节点，所有下游常量跟随。若仍溢出先试 96KB。
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-const DEFAULT_GUARD_STACK_SIZE: usize = 128 * 1024;
+const LINUX_RUSTLS_THREAD_STACK: usize = 64 * 1024;
+
+/// `spawn_guarded` 默认栈：ESP 维持 8KB；Linux 与 TLS 线程同档。
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+const DEFAULT_GUARD_STACK_SIZE: usize = 8192;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+const DEFAULT_GUARD_STACK_SIZE: usize = LINUX_RUSTLS_THREAD_STACK;
+
+/// `qq_ws` / `feishu_ws`：WSS 握手 + 帧处理。
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub const STACK_CHANNEL_WS: usize = 16384;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub const STACK_CHANNEL_WS: usize = LINUX_RUSTLS_THREAD_STACK;
+
+/// `agent_user_loop` / `agent_system_loop`：LLM HTTPS + 工具调用。
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub const STACK_AGENT_LOOP: usize = 16384;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub const STACK_AGENT_LOOP: usize = LINUX_RUSTLS_THREAD_STACK;
+
+/// `tg_sender` / `qq_sender` / `fs_sender` / `dt_sender` / `wc_sender` / `tg_poll`：
+/// 各通道出站 HTTPS 与入站轮询。ESP 8KB；Linux 64KB。
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub const STACK_CHANNEL_SENDER: usize = 8192;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub const STACK_CHANNEL_SENDER: usize = LINUX_RUSTLS_THREAD_STACK;
 
 /// 线程目标核心。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

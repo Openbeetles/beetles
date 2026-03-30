@@ -48,6 +48,14 @@ alwaysApply: false
 
 - **禁止重复线程**：同一职责（如显示刷新）只允许一个后台线程。若需要不同频率执行不同逻辑，在单一线程内用计数器区分，不得为此多开线程。ESP32 每个线程占 ~4KB 栈，资源宝贵。
 - **禁止虚假度量**：显示、日志、API 返回的度量值（heap、CPU、温度等）必须来自真实数据源；对外口径以 `orchestrator::snapshot()` / `format_resource_baseline_line()` 为权威，heap 维度通过 `Platform::memory_snapshot()` 注入编排路径，业务域禁止直读 `platform::heap` 作为观测口径。禁止用固定映射或占位值冒充真实度量；暂时不可用的度量应传 0 或在 UI 标注 N/A。
+- **Linux / 嵌入式线程栈（必须遵守）**：在非 ESP/RISC-V 目标（嵌入式 Linux SBC，如 Luckfox）上，`rustls` 在调用方线程内完成 TLS 握手，栈深度远大于 ESP-IDF 路径，**8KB/16KB 写死必然溢出**。规则：
+  - 任何会在 Linux 上调用 `create_http_client()` 或 `connect_wss()` 的线程，**禁止**内联写死 `8192` / `16384`，必须使用 `src/util.rs` 中的 `STACK_*` 常量。
+  - `STACK_CHANNEL_WS`：WS 长连接（`qq_ws`、`feishu_ws`）
+  - `STACK_AGENT_LOOP`：Agent 主循环（`agent_user_loop`、`agent_system_loop`）
+  - `STACK_CHANNEL_SENDER`：出站发送 + 入站轮询（`*_sender`、`tg_poll`）
+  - 以上三者由单一常量 `LINUX_RUSTLS_THREAD_STACK`（当前 **64 KB**）驱动；板子仍溢出时只改该一处。
+  - 纯调度/日志线程（`dispatch`、`http_server`、`bg_timer`、`heartbeat`）无 TLS，保持 8192 不变。
+  - 可用 `./scripts/check_thread_stack.sh` 做静态检查（CI 可接入）。
 
 ### 嵌入式字节序
 

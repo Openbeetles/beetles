@@ -6,7 +6,7 @@ use crate::config::AppConfig;
 use crate::error::Result;
 use crate::metrics;
 use crate::platform::PlatformHttpClient;
-use crate::util::truncate_content_to_max;
+use crate::util::{truncate_content_to_max, STACK_CHANNEL_SENDER};
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::mpsc;
@@ -404,7 +404,7 @@ pub fn spawn_sender_threads(
         let tg_send_token = tg_token.to_string();
         crate::util::spawn_guarded_with_profile(
             "tg_sender",
-            8192,
+            STACK_CHANNEL_SENDER,
             Some(crate::util::SpawnCore::Core0),
             crate::util::HttpThreadRole::Io,
             move || {
@@ -421,7 +421,7 @@ pub fn spawn_sender_threads(
         let fs_sec = c.app_secret;
         crate::util::spawn_guarded_with_profile(
             "fs_sender",
-            8192,
+            STACK_CHANNEL_SENDER,
             Some(crate::util::SpawnCore::Core0),
             crate::util::HttpThreadRole::Io,
             move || {
@@ -436,7 +436,7 @@ pub fn spawn_sender_threads(
         let dt_url = c.webhook_url;
         crate::util::spawn_guarded_with_profile(
             "dt_sender",
-            8192,
+            STACK_CHANNEL_SENDER,
             Some(crate::util::SpawnCore::Core0),
             crate::util::HttpThreadRole::Io,
             move || {
@@ -454,7 +454,7 @@ pub fn spawn_sender_threads(
         let wc_usr = c.default_touser;
         crate::util::spawn_guarded_with_profile(
             "wc_sender",
-            8192,
+            STACK_CHANNEL_SENDER,
             Some(crate::util::SpawnCore::Core0),
             crate::util::HttpThreadRole::Io,
             move || {
@@ -478,7 +478,7 @@ pub fn spawn_sender_threads(
         let qq_cache = c.msg_id_cache;
         crate::util::spawn_guarded_with_profile(
             "qq_sender",
-            8192,
+            STACK_CHANNEL_SENDER,
             Some(crate::util::SpawnCore::Core0),
             crate::util::HttpThreadRole::Io,
             move || {

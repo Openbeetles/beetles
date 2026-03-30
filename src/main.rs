@@ -9,6 +9,7 @@ use beetle::memory::{MemoryStore, SessionStore};
 #[cfg(feature = "feishu")]
 use beetle::run_feishu_ws_loop;
 use beetle::runtime::{execute_stream_http_op, spawn_planned, thread_plan};
+use beetle::util::{STACK_AGENT_LOOP, STACK_CHANNEL_SENDER, STACK_CHANNEL_WS};
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use beetle::LinuxPlatform;
 use beetle::Platform;
@@ -822,9 +823,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         let pending = Arc::clone(&pending_retry_store);
         let pf = Arc::clone(&platform);
         let cfg = Arc::clone(&config);
-        // WSS protocol parse + serde_json on ESP can exceed 8KB stack in bursts.
-        // Keep 16KB stack to avoid runtime pthread stack overflow.
-        spawn_planned("feishu_ws", 16384, move || {
+        // WSS + JSON: 16KB on ESP; Linux uses `STACK_CHANNEL_WS` (64KB embedded-class, rustls).
+        spawn_planned("feishu_ws", STACK_CHANNEL_WS, move || {
             run_feishu_ws_loop(
                 id,
                 sec,
@@ -854,8 +854,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                 let qq_pending = Arc::clone(&pending_retry_store);
                 let pf = Arc::clone(&platform);
                 let cfg = Arc::clone(&config);
-                // QQ WS path handles hello/dispatch JSON frames; 16KB required (tested, 8KB caused reboot).
-                spawn_planned("qq_ws", 16384, move || {
+                // QQ WS: 16KB on ESP; Linux `STACK_CHANNEL_WS` (64KB) — 16KB overflows rustls.
+                spawn_planned("qq_ws", STACK_CHANNEL_WS, move || {
                     beetle::run_qq_ws_loop(
                         qq_id,
                         qq_sec,
@@ -897,7 +897,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             let tg_resolve_locale = Arc::clone(&resolve_locale_ui);
             let pf = Arc::clone(&platform);
             let cfg = Arc::clone(&config);
-            spawn_planned("tg_poll", 8192, move || {
+            // tg_poll calls rustls on Linux; use same budget as other channel HTTPS threads.
+            spawn_planned("tg_poll", STACK_CHANNEL_SENDER, move || {
                 beetle::run_telegram_poll_loop(
                     tg_token,
                     tg_allowed,
@@ -1052,7 +1053,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         let user_worker_outbound_tx = outbound_tx.clone();
         user_agent_handle = beetle::util::spawn_guarded_with_profile_handle(
             "agent_user_loop",
-            16384,
+            STACK_AGENT_LOOP,
             user_plan.core,
             user_plan.role,
             move || {
@@ -1098,7 +1099,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         let system_worker_outbound_tx = outbound_tx.clone();
         system_agent_handle = beetle::util::spawn_guarded_with_profile_handle(
             "agent_system_loop",
-            16384,
+            STACK_AGENT_LOOP,
             system_plan.core,
             system_plan.role,
             move || {
