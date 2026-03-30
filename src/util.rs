@@ -561,8 +561,12 @@ pub fn is_private_url(url: &str) -> bool {
 // | agent_user_loop, agent_system_loop    | STACK_AGENT_LOOP       | 16 KB | 64 KB |
 // | tg_sender, qq_sender, fs/dt/wc_sender | STACK_CHANNEL_SENDER   | 8 KB  | 64 KB |
 // | tg_poll                               | STACK_CHANNEL_SENDER   | 8 KB  | 64 KB |
-// | dispatch, http_server                 | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS
-// | bg_timer, heartbeat, cli_repl        | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS
+// | display                               | (inline 6144)          | 6 KB  | 6 KB  | ← no TLS, render chain ~3.5KB peak
+// | audio_io_worker                       | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS, I2S + WakeNet NN
+// | http_server                           | (inline 6144)          | 6 KB  | 6 KB  | ← no TLS, init ~1.7KB then sleep
+// | dispatch                              | (inline 4096)          | 4 KB  | 4 KB  | ← no TLS/HTTP, recv+queue only
+// | bg_timer                              | (inline 6144)          | 6 KB  | 6 KB  | ← no TLS, MetricsSnapshot 352B peak
+// | heartbeat, cli_repl                  | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS
 // ---------------------------------------------------------------------------
 
 /// Linux（含嵌入式）：TLS 栈远大于 ESP 的 16KB，但不必拉到桌面级上百 KB；

@@ -693,6 +693,7 @@ impl AudioPipelineState {
         let worker_shared = Arc::clone(&shared);
         let worker = std::thread::Builder::new()
             .name("audio_io_worker".to_string())
+            .stack_size(8192)
             .spawn(move || {
                 let mut mic_frame = vec![0i16; 320];
                 let mut speaker_frame = vec![0i16; 1024];

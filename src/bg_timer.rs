@@ -44,7 +44,7 @@ pub struct BgTimerContext {
 pub fn run_bg_timer(ctx: BgTimerContext) {
     crate::util::spawn_guarded_with_profile(
         "bg_timer",
-        8192,
+        6144,
         Some(crate::util::SpawnCore::Core1),
         crate::util::HttpThreadRole::Background,
         move || {

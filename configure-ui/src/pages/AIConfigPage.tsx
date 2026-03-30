@@ -31,25 +31,16 @@ import { useSaveFeedback } from "../hooks/useSaveFeedback";
 import { useUnsaved } from "../hooks/useUnsaved";
 import { useRevealedPasswordFields } from "../hooks/useRevealedPassword";
 import type { LlmSource } from "../types/appConfig";
+import {
+  apiUrlAfterProviderChange,
+  DEFAULT_LLM_PROVIDER,
+  defaultApiUrlForProvider,
+  LLM_PROVIDER_VALUES,
+  type LlmProviderValue,
+} from "../constants/llmProviders";
 
 const MAX_LEN = 64;
 const MAX_API_URL = 256;
-
-/** 后端支持的 LLM provider 取值，与 main.rs 中分支一致。 */
-const LLM_PROVIDER_VALUES = [
-  "anthropic",
-  "openai",
-  "openai_compatible",
-  "gemini",
-  "glm",
-  "qwen",
-  "deepseek",
-  "moonshot",
-  "ollama",
-] as const;
-const DEFAULT_PROVIDER: (typeof LLM_PROVIDER_VALUES)[number] = "openai_compatible";
-
-type LlmProviderValue = (typeof LLM_PROVIDER_VALUES)[number];
 
 /** 与 `LLM_PROVIDER_VALUES` 顺序无关；下拉项与文案一一对应，避免只改数组忘改 MenuItem。 */
 const LLM_PROVIDER_LABEL_KEY: Record<LlmProviderValue, string> = {
@@ -67,7 +58,7 @@ const LLM_PROVIDER_LABEL_KEY: Record<LlmProviderValue, string> = {
 function normalizeProvider(provider: string): LlmProviderValue {
   return (LLM_PROVIDER_VALUES as readonly string[]).includes(provider)
     ? (provider as LlmProviderValue)
-    : DEFAULT_PROVIDER;
+    : DEFAULT_LLM_PROVIDER;
 }
 
 type SourceFormRow = LlmSource & { provider: LlmProviderValue };
@@ -196,10 +187,10 @@ export function AIConfigPage() {
     setSources((prev) => [
       ...prev,
       {
-        provider: DEFAULT_PROVIDER,
+        provider: DEFAULT_LLM_PROVIDER,
         api_key: "",
         model: "",
-        api_url: "",
+        api_url: defaultApiUrlForProvider(DEFAULT_LLM_PROVIDER),
       },
     ]);
   };
@@ -220,6 +211,21 @@ export function AIConfigPage() {
     setSources((prev) => {
       const next = [...prev];
       next[i] = { ...next[i], [field]: value };
+      return next;
+    });
+  };
+
+  const changeProvider = (i: number, newProviderRaw: string) => {
+    const newP = normalizeProvider(newProviderRaw);
+    setDirty(true);
+    setSources((prev) => {
+      const next = [...prev];
+      const cur = next[i];
+      next[i] = {
+        ...cur,
+        provider: newP,
+        api_url: apiUrlAfterProviderChange(cur.api_url, cur.provider, newP),
+      };
       return next;
     });
   };
@@ -380,7 +386,7 @@ export function AIConfigPage() {
                     label={t("config.llmProvider")}
                     value={normalizeProvider(row.provider)}
                     onChange={(e: SelectChangeEvent<string>) =>
-                      updateSource(i, "provider", e.target.value)
+                      changeProvider(i, e.target.value)
                     }
                   >
                     {LLM_PROVIDER_VALUES.map((p) => (
@@ -419,7 +425,7 @@ export function AIConfigPage() {
                   onChange={(e) => updateSource(i, "api_url", e.target.value)}
                   size="small"
                   fullWidth
-                  placeholder={t("config.placeholderApiUrl")}
+                  placeholder={defaultApiUrlForProvider(row.provider)}
                   slotProps={{
                     htmlInput: {
                       maxLength: MAX_API_URL,

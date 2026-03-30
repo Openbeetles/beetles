@@ -2,7 +2,7 @@
 
 [English](../en-us/config-api.md) | **中文** | [文档索引](../README.md)
 
-本文档面向**对接设备 HTTP API 的开发者**（如自建配置页、脚本或第三方集成）。设备固件仅提供 HTTP API，**不**内嵌配置页；配置页由外置前端（如本仓库 `configure-ui` 或 GitHub Pages 部署）实现。用户连接设备热点或与设备同网后，在配置页中填写**设备地址**（连接设备热点时填 **http://192.168.4.1**，同网时填路由器分配的 IP）即可调用下述接口。
+本文档面向**对接设备 HTTP API 的开发者**（如自建配置页、脚本或第三方集成）。设备固件以 **HTTP API** 为主；同时内嵌 **`/wifi`、`/pairing`** 等基础 HTML 与静态资源（见下文）。完整配置 UI 也可由外置前端（如本仓库 `configure-ui`）实现。用户连接设备热点或与设备同网后，在配置页中填写**设备地址**（连接设备热点时填 **http://192.168.4.1**，同网时填路由器分配的 IP）即可调用下述接口。
 
 ## 网络与访问
 
@@ -37,7 +37,7 @@
 
 以下接口在**已激活**后，**无需** `?code=` 或 `X-Pairing-Code`（与部分用户文档中「无需配对码」同义：**指请求不必附带码**，不是指未激活即可访问）：
 
-**GET /**、**GET /api/config**、**GET /api/config/hardware**、**GET /api/config/audio**、**GET /api/config/display**、**GET /api/health**、**GET /api/metrics**、**GET /api/resource**、**GET /api/diagnose**、**GET /api/system_info**、**GET /api/channel_connectivity**、**GET /api/sessions**、**GET /api/memory/status**、**GET /api/skills**、**GET /api/soul**、**GET /api/user**；启用 `ota` 时另有 **GET /api/ota/check**。
+**GET /**、**GET /api/config**、**GET /api/config/hardware**、**GET /api/config/audio**、**GET /api/config/display**、**GET /api/health**、**GET /api/metrics**、**GET /api/resource**、**GET /api/tools**、**GET /api/diagnose**、**GET /api/system_info**、**GET /api/channel_connectivity**、**GET /api/sessions**、**GET /api/memory/status**、**GET /api/skills**、**GET /api/soul**、**GET /api/user**；启用 `ota` 时另有 **GET /api/ota/check**。
 
 未激活时访问上述接口 → 401。
 
@@ -59,7 +59,7 @@
 
 ### 恢复出厂
 
-**POST /api/config_reset** 须配对码 + CSRF；成功后清除配置与配对码，设备回到未激活状态。
+**POST /api/config_reset** 须配对码 + CSRF；成功后清除配置与配对码，设备回到未激活状态（实现会删除 SPIFFS 上 `config/skills_meta.json`、`config/llm.json`、`config/channels.json`、`config/hardware.json`、`config/audio.json`、`config/display.json` 等，与 [`config_reset` handler](../../src/platform/http_server/handlers/config_reset.rs) 一致）。
 
 ---
 
@@ -69,13 +69,13 @@
 
 - **未激活**：302，`Location: /pairing`。
 - **已激活**：200 JSON，`name` 固定为 **`beetle`**，`version` 为固件版本，`endpoints` 为字符串数组。
-- **权威列表**：以设备返回为准；由 [`handlers/root.rs`](../../src/platform/http_server/handlers/root.rs) 生成。当前固件中该数组**未穷尽**所有已实现路由，下列路径在 [`dispatch.rs`](../../src/platform/http_server/router/dispatch.rs) 中存在但可能**未**出现在 `endpoints` 中，集成时不应仅以 `GET /` 数组为唯一依据：
+- **权威列表**：以设备返回为准；由 [`handlers/root.rs`](../../src/platform/http_server/handlers/root.rs) 生成。该数组会随版本扩充，但仍可能**未穷尽** [`dispatch.rs`](../../src/platform/http_server/router/dispatch.rs) 中已实现的路由；集成时不应仅以 `GET /` 的 `endpoints` 为唯一依据。截至当前实现，下列路由仍常见于 dispatch 中而**未**列入 `endpoints`（以固件为准）：
   - `POST /api/config/wifi`
   - `GET` / `POST /api/config/display`
-  - `GET /api/metrics`、`GET /api/resource`、`GET /api/csrf_token`
+  - `GET /api/metrics`、`GET /api/resource`、`GET /api/csrf_token`、`GET /api/tools`
   - `DELETE /api/sessions`
   - `POST /api/dingtalk/webhook`、`GET`/`POST /api/wecom/webhook`、`POST /api/webhook/qq`
-  - 启用 `ota` 时：`GET /api/ota/check` 与 `POST /api/ota`（`endpoints` 可能已含，以设备为准）
+  - `GET /common.css`、`GET /common.js`
 
 **示例**（字段与顺序以运行时为准）：
 
@@ -112,7 +112,7 @@
 
 ## 配置读写
 
-**存储策略**：NVS 仅存 6 个小键（WiFi SSID/密码、代理、会话条数、群组触发、界面语言）；LLM 多源与通道配置存 SPIFFS（`config/llm.json`、`config/channels.json`），硬件设备配置存 `config/hardware.json`，音频配置存 `config/audio.json`，技能启用/顺序存 `config/skills_meta.json`。GET /api/config 合并 NVS 与 SPIFFS 后返回完整配置。
+**存储策略**：NVS 仅存 6 个小键（WiFi SSID/密码、代理、会话条数、群组触发、界面语言）；LLM 多源与通道配置存 SPIFFS（`config/llm.json`、`config/channels.json`），硬件设备配置存 `config/hardware.json`，音频配置存 `config/audio.json`，显示配置存 `config/display.json`，技能启用/顺序存 `config/skills_meta.json`。GET /api/config 合并 NVS 与 SPIFFS 后返回完整配置。
 
 ### GET /api/wifi/scan
 
@@ -125,26 +125,26 @@
 - **用途**：获取当前完整配置（含各字段真实值，含密钥类字段）。
 - **鉴权**：已激活；GET **不必**附带配对码。
 - **响应**：200，JSON 为 `AppConfig` 序列化，各字段为实际存储值。
-- **多 LLM 源**：`llm_sources` 为数组，每项含 `provider`、`api_key`、`model`、`api_url`、`max_tokens`（可选 u32，null 时各客户端使用内置默认值 1024）；空时 load 从旧字段构造单源。运行时固定为**单段 worker 主链路 + 多源顺序 fallback**。全局流式开关为 `llm_stream`（位于 LLM 段顶层）。
+- **多 LLM 源**：`llm_sources` 为数组，每项含 `provider`、`api_key`、`model`、`api_url`、`max_tokens`（可选 u32，null 时各客户端使用内置默认值 1024）；空时 load 从旧字段构造单源。可选 **`llm_router_source_index`**、**`llm_worker_source_index`**（`u32`，对应 `llm_sources` 下标）：用于调整 worker 内 [`FallbackLlmClient`](../../src/llm/fallback.rs) 的尝试顺序——若设置了有效的 `llm_router_source_index`，则**先该源**，再（若配置且有效）`llm_worker_source_index`，再其余校验通过的源；均未设置时按列表中**有效源**的原有顺序。全局流式开关为 `llm_stream`（LLM 段顶层）。
 
 ### POST /api/config/llm
 
 - **用途**：仅写入 LLM 段（多源 + 全局流式开关）到 SPIFFS（`config/llm.json`）；请求体为 segment 全量，后端按 body 校验并写入。
 - **鉴权**：已激活 + 配对码 + CSRF（要求同本节「写操作：配对码 + CSRF」）。
-- **请求**：`Content-Type: application/json`，Body 为 `{ "llm_sources": [...], "llm_stream": false }`。`llm_sources` 非空；每项 `api_key` 必填。每项可含：
+- **请求**：`Content-Type: application/json`，Body 为 `{ "llm_sources": [...], "llm_stream": false, "llm_router_source_index": null, "llm_worker_source_index": null }`（后两项可选，省略等同 null）。`llm_sources` 非空；每项 `api_key` 必填。每项可含：
   - `provider`（必填，非空字符串；长度等校验见 `config` 模块。运行时客户端分流见 [`llm/mod.rs`](../../src/llm/mod.rs)：常见值含 `anthropic` 与 `openai`、`openai_compatible`、`gemini`、`glm`、`qwen`、`deepseek`、`moonshot`、`ollama` 等；完整说明见 [LLM 提供商](llm-providers.md)）
   - `api_key`（必填）
   - `model`（必填）
   - `api_url`（必填字段；若 `provider` 属于 OpenAI 兼容族且留空，则由客户端使用各厂商默认 base URL，见 `build_llm_clients`）
   - `max_tokens`（可选 u32，默认 null；null 时各客户端使用内置默认值 1024）
-- **校验**：仅本段——`llm_sources` 非空，各字段长度（provider/api_key/model ≤ 64，api_url ≤ 256）；`llm_stream` 为布尔值。
+- **校验**：仅本段——`llm_sources` 非空，各字段长度（provider/api_key/model ≤ 64，api_url ≤ 256）；`llm_stream` 为布尔值；`llm_router_source_index` / `llm_worker_source_index` 若存在须在 `llm_sources` 长度范围内（见 `config` 模块 `validate_llm_source_indices`）。
 - **响应**：成功 200 `{"ok": true}`；校验失败 400。
 
 ### POST /api/config/channels
 
 - **用途**：仅写入通道段（Telegram、飞书、钉钉、企微、QQ 频道、Webhook）到 SPIFFS（`config/channels.json`）；请求体为 segment 全量，后端按 body 校验并写入。
 - **鉴权**：已激活 + 配对码 + CSRF。
-- **请求**：`Content-Type: application/json`，Body 含 `tg_token`、`tg_allowed_chat_ids`、`feishu_app_id`、`feishu_app_secret`、`feishu_allowed_chat_ids`、`dingtalk_webhook_url`、`wecom_corp_id`、`wecom_corp_secret`、`wecom_agent_id`、`wecom_default_touser`、`qq_channel_app_id`、`qq_channel_secret`、`webhook_enabled`、`webhook_token`。
+- **请求**：`Content-Type: application/json`，Body 为通道段全量（与 `ChannelsSegment` 一致），除常见字段外还可含 **`wecom_token`**、**`wecom_encoding_aes_key`**、**`dingtalk_app_secret`** 等；完整键名以固件 `config.rs` 中 `ChannelsSegment` 为准。
 - **校验**：仅本段字段长度（tg/feishu/wecom/qq 等 ≤ 64，dingtalk_webhook_url ≤ 512，wecom_default_touser ≤ 128）。
 - **响应**：成功 200 `{"ok": true}`；校验失败 400。
 
@@ -249,15 +249,23 @@
 
 ### GET /api/sessions
 
-- **用途**：获取当前所有会话的 chat_id 列表（只读），供外置配置页展示。
+- **用途**：分页列出会话 chat_id，或查询单会话最近消息（只读）。
 - **鉴权**：已激活；GET **不必**附带配对码。
-- **响应**：200，JSON 数组 `["chat_id1", "chat_id2", ...]`；失败 500，`{"error":"..."}`。
+- **查询参数**：
+  - 无 `chat_id`：分页列表。支持 **`page`**（默认 1）、**`limit`**（默认 20，最大 100）。响应 200，JSON：`{"items":["chat_id1",...],"total":N,"page":1,"limit":20,"total_pages":...}`。
+  - query 中带 **`chat_id`** 或 **`name`**（二者任一，值为会话 id）：返回该会话最近消息 JSON（最多约 50 条，见 [`sessions.rs`](../../src/platform/http_server/handlers/sessions.rs)）；失败 500，`{"error":"..."}`。
 
 ### GET /api/memory/status
 
 - **用途**：获取 MEMORY、SOUL、USER 的字节数（只读）。
 - **鉴权**：已激活；GET **不必**附带配对码。
 - **响应**：200，JSON `{"memory_len": number, "soul_len": number, "user_len": number}`。
+
+### GET /api/tools
+
+- **用途**：返回固件侧为 HTTP 列举的「工具名 + 简短描述」JSON 数组，供配置页或脚本探测能力。
+- **鉴权**：已激活；GET **不必**附带配对码。
+- **响应**：200，JSON 数组 `[{"name":"get_time","description":"..."}, ...]`。实现见 [`handlers/tools.rs`](../../src/platform/http_server/handlers/tools.rs)：条目随 **`tools_network_extra`** / **`tools_diagnostics`** 等编译 feature 变化，且**不一定**与 Agent 运行时 [`build_default_registry`](../../src/tools/registry.rs) 完全一致（例如始终注册的 **env**、**file_write** 等可能未出现在该列表中）。**权威工具集合**以 Agent 注册表与 [Agent 工具说明](tools.md) 为准。
 
 ## Skills
 
@@ -350,7 +358,7 @@
 
 ### GET /api/metrics
 
-- **用途**：导出 metrics 快照 JSON（字段以固件 `metrics` 模块为准）。
+- **用途**：导出 metrics 快照 JSON（字段以固件 `metrics` 模块为准）。可选 query **`format=prometheus`** 返回 Prometheus 文本格式（`Content-Type` 为 `text/plain`）。
 - **鉴权**：已激活；GET **不必**附带配对码。
 
 ### GET /api/resource
@@ -418,7 +426,7 @@
 
 ### POST /api/config_reset
 
-- **用途**：恢复出厂（清空 NVS 配置区并删除 SPIFFS 上的 `config/llm.json`、`config/channels.json`、`config/hardware.json`、`config/skills_meta.json`），与 CLI `config_reset yes` 等价。
+- **用途**：恢复出厂（清空 NVS 配置区并删除 SPIFFS 上 `config/llm.json`、`config/channels.json`、`config/hardware.json`、`config/audio.json`、`config/display.json`、`config/skills_meta.json` 等），与 CLI `config_reset yes` 等价。
 - **鉴权**：已激活 + 配对码 + CSRF。
 - **响应**：成功 200，`{"ok": true}`；失败 500，`{"error": "reset failed"}`。
 - **说明**：调用后建议用户重启设备，重启后 `AppConfig::load()` 仅来自环境变量；NVS 仅保留 6 个小键（wifi、proxy、session、tg_group、locale 等），其余配置存 SPIFFS。
@@ -430,4 +438,4 @@
 
 ## 配置页归属
 
-配置页由独立仓库或文档示例维护；本仓库固件不提供 HTML/JS/CSS 静态资源。
+设备固件内嵌 **`GET /wifi`**（配置页 HTML）、**`GET /pairing`**、**`GET /common.css`**、**`GET /common.js`** 等（见上文路由表）。功能更全的界面也可由本仓库 **`configure-ui`** 或独立部署的静态站点提供，通过填写设备地址调用同一套 HTTP API。

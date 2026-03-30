@@ -55,7 +55,7 @@
 ## 扩展方式
 
 - **新通道**：出站统一使用 `dispatch::QueuedSink`（`QueuedSink::new(tx, "stage")`），在 main 的 `run_app` 编排中注册到 dispatch 的 sink 列表；通道侧只需实现 `flush_*_sends` 从对应 rx 取消息并发 HTTP。入站时向 bus 的 Inbound 发送消息。若需自定义发送逻辑，可实现 `MessageSink` trait 并注册。
-- **新工具**：实现 `Tool` trait（`name`、`description`、`schema` 含 parameters、`execute`），在 `tools/mod.rs` 中可用 `parse_tool_args(args, stage)` 解析 JSON 参数；注册到 `ToolRegistry`，返回值由 Registry 统一截断至 `MAX_TOOL_RESULT_LEN`。
+- **新工具**：实现 `Tool` trait（`name`、`description`、`schema` 含 parameters、`execute`），在 `tools/mod.rs` 中可用 `parse_tool_args(args, stage)` 解析 JSON 参数；在 [`build_default_registry`](../../src/tools/registry.rs)（或 main 中等价注册点）加入 `registry.register`；返回值由 Registry 统一截断至 `MAX_TOOL_RESULT_LEN`。网络/诊断类工具可挂在 Cargo feature **`tools_network_extra`** / **`tools_diagnostics`** 上，与现有一致。
 - **新 LLM 后端**：实现 `LlmClient` trait，由 main 注入给 agent。
 
 核心（agent、bus、llm、tools、memory）不依赖具体通道或平台实现，仅依赖抽象 trait，便于维护与扩展。

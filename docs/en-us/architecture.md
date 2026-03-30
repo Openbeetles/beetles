@@ -55,7 +55,7 @@ This doc is for **readers who want to understand module layout, data flow, or ho
 ## How to extend
 
 - **New channel**: Outbound uses `dispatch::QueuedSink` (`QueuedSink::new(tx, "stage")`); register in main's `run_app` into dispatch's sink list. Channel side implements `flush_*_sends` reading from the corresponding rx and sending HTTP. Inbound: send messages to the bus Inbound. For custom send logic, implement `MessageSink` and register.
-- **New tool**: Implement `Tool` trait (`name`, `description`, `schema` with parameters, `execute`); in `tools/mod.rs` use `parse_tool_args(args, stage)` for JSON args; register with `ToolRegistry`; return value is truncated to `MAX_TOOL_RESULT_LEN` by the registry.
+- **New tool**: Implement `Tool` trait (`name`, `description`, `schema` with parameters, `execute`); in `tools/mod.rs` use `parse_tool_args(args, stage)` for JSON args; register in [`build_default_registry`](../../src/tools/registry.rs) (or the equivalent in `main`); return value is truncated to `MAX_TOOL_RESULT_LEN` by the registry. Network/diagnostic tools can use Cargo features **`tools_network_extra`** / **`tools_diagnostics`** like the built-ins.
 - **New LLM backend**: Implement `LlmClient` trait; main injects it into the agent.
 
 Core (agent, bus, llm, tools, memory) does not depend on concrete channel or platform; it only depends on abstract traits, which keeps maintenance and extension straightforward.

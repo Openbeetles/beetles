@@ -38,6 +38,13 @@
 - 对外调用（LLM、HTTP、通道）需有超时与可配置重试/退避；失败返回 `Error` 而非 panic。dispatch 层单通道连续失败会熔断冷却，避免单通道拖垮全局。
 - **资源可观测（orchestrator 为唯一权威）**：`GET /api/resource` 与 `orchestrator::snapshot()` / `format_resource_baseline_line()` 对齐；心跳在同周期内输出 orchestrator 单行基线 + `metrics::to_baseline_log_line`。**出站 Cautious**：`should_accept_outbound` 在 Cautious 下短延迟 `OUTBOUND_DEFER_DELAY_MS_CAUTIOUS`（500ms），Critical 仍用 `OUTBOUND_DEFER_DELAY_MS`；`GET /api/health` 嵌套 `metrics` 与 `resource` 快照（JSON 字段名与 serde 结构体一致）。
 
+### ESP32 SRAM / PSRAM（嵌入式内存口径）
+
+- **TLS / Transport**：生产路径为 **mbedTLS + esp-tls**；不得以「省 SRAM」为由擅自切换 **wolfSSL**，除非单独立项评审。**TLS stack stays mbedTLS + esp-tls; no wolfSSL migration for ad-hoc SRAM savings.**
+- **HTTP 大响应体**：ESP 侧 HTTP 客户端已优先将响应体放入 **PSRAM**（如 `alloc_spiram_buffer`）；新功能勿再把「512KB 响应体迁 PSRAM」当作从零待办。**Large response bodies already prefer PSRAM on ESP HTTP path.**
+- **语音与工具 HTTP**：在 **orchestrator 准入**内收口——减少语音链路上的整段复制与重复建连；语音相关出站应复用 **注入的 `ToolContext` / 既有 HTTP 客户端**，禁止为省内存再开一套并行 TLS 栈。**Voice/tools: fewer copies, no redundant per-tool HTTP clients outside the injected path.**
+- **禁区（不放 PSRAM）**：**任务栈**、**DMA 描述符**、**Wi‑Fi / NVS 等 IDF 核心结构**须保留在 **internal DRAM**；实时或高频缓冲（如 SSE 行缓冲）按 `constants` 与现有设计留在 SRAM。**Stacks, DMA descriptors, Wi‑Fi/NVS internals stay internal; not SPIRAM.**
+
 ## 代码风格
 
 - 公共 API 必须有 rustdoc（中英均可）；新增模块在 `lib.rs` 或对应 `mod.rs` 中导出稳定接口。
