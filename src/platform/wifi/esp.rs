@@ -171,6 +171,7 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
 /// 2. 响应扫描请求（scan_req_rx）。
 ///
 /// `has_sta` 为 true 时才做 STA 保活检测（纯 AP 模式不需要）。
+/// `initial_cooldown` 为 true 时首轮进入冷却（初始 `connect()` 刚发起，等驱动完成，不要抢跑）。
 ///
 /// **重连策略**：只调 `wifi.connect()` 发起重连，**不调 `wait_netif_up()`**。
 /// `wait_netif_up()` 会阻塞线程数秒，阻止 WiFi 驱动处理内部事件，导致
@@ -180,43 +181,52 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
 /// `(AP started) ∧ (STA connected)`，与 SoftAP 事件不同步时会出现短暂假阴性，进而误触发
 /// `connect()`，把已关联 STA 打回 `run -> init`。此处以 `WifiDriver::is_sta_connected` 与
 /// STA netif 上的有效 IPv4 为准；二者任一成立则视为链路仍在，不发起重连。
+///
+/// **冷却期仍更新状态**：`WIFI_STA_CONNECTED` 在每轮都刷新，确保其他线程
+/// 能及时感知 STA 恢复，而不是等 15s cooldown 结束。
 fn run_scan_loop(
     wifi: &mut BlockingWifi<EspWifi>,
     scan_req_rx: &mpsc::Receiver<()>,
     scan_resp_tx: &mpsc::Sender<ScanResponse>,
     has_sta: bool,
+    initial_cooldown: bool,
 ) {
     use std::time::Instant;
-    let mut cooldown_until: Option<Instant> = None;
+    let mut cooldown_until: Option<Instant> = if initial_cooldown {
+        Some(Instant::now() + Duration::from_millis(STA_RECONNECT_COOLDOWN_MS))
+    } else {
+        None
+    };
 
     loop {
-        // -- STA 保活（非阻塞） --
+        // -- STA 保活 --
         if has_sta {
+            let sta_l2 = wifi.wifi().driver().is_sta_connected().unwrap_or(false);
+            let sta_ip_ok = read_sta_ipv4_string()
+                .map(|s| s != "0.0.0.0")
+                .unwrap_or(false);
+            let sta_link_up = sta_l2 || sta_ip_ok;
+
+            // 状态刷新（不受 cooldown 影响，让其他线程立即感知）
+            if sta_ip_ok {
+                if !WIFI_STA_CONNECTED.load(Ordering::Relaxed) {
+                    log::info!("[{}] STA connected (detected in poll)", TAG);
+                }
+                WIFI_STA_CONNECTED.store(true, Ordering::Relaxed);
+                update_sta_ip_cache();
+            } else {
+                if WIFI_STA_CONNECTED.load(Ordering::Relaxed) && !sta_link_up {
+                    log::warn!("[{}] STA disconnected, will reconnect", TAG);
+                }
+                WIFI_STA_CONNECTED.store(false, Ordering::Relaxed);
+            }
+
+            // 重连决策（受 cooldown 限制）
             let in_cooldown = cooldown_until.is_some_and(|t| Instant::now() < t);
             if !in_cooldown {
-                let sta_l2 = wifi.wifi().driver().is_sta_connected().unwrap_or(false);
-                let sta_ip_ok = read_sta_ipv4_string()
-                    .map(|s| s != "0.0.0.0")
-                    .unwrap_or(false);
-                let sta_link_up = sta_l2 || sta_ip_ok;
-
                 if sta_link_up {
-                    if sta_ip_ok {
-                        if !WIFI_STA_CONNECTED.load(Ordering::Relaxed) {
-                            log::info!("[{}] STA connected (detected in poll)", TAG);
-                        }
-                        WIFI_STA_CONNECTED.store(true, Ordering::Relaxed);
-                    } else {
-                        // 已关联但尚未拿到 IP：不调用 connect()，避免打断 DHCP。
-                        WIFI_STA_CONNECTED.store(false, Ordering::Relaxed);
-                    }
-                    update_sta_ip_cache();
                     cooldown_until = None;
                 } else {
-                    if WIFI_STA_CONNECTED.load(Ordering::Relaxed) {
-                        log::warn!("[{}] STA disconnected, will reconnect", TAG);
-                    }
-                    WIFI_STA_CONNECTED.store(false, Ordering::Relaxed);
                     if let Ok(mut g) = WIFI_STA_IP.get_or_init(|| Mutex::new(None)).lock() {
                         *g = None;
                     }
@@ -366,7 +376,7 @@ fn do_connect(
         }
         log::info!("[{}] SoftAP started (SSID: {})", TAG, SOFTAP_SSID);
         let _ = result_tx.send(Ok(()));
-        run_scan_loop(&mut wifi, &scan_req_rx, &scan_resp_tx, false);
+        run_scan_loop(&mut wifi, &scan_req_rx, &scan_resp_tx, false, false);
         return;
     }
 
@@ -424,6 +434,13 @@ fn do_connect(
     }) {
         return send_err(e);
     }
+
+    // AP+STA 下禁用 WiFi 省电：MIN_MODEM 导致 STA 近 50% 时间 sleep，
+    // 低 RX 缓冲下极易丢帧，路由器发 DELBA / deauth 导致反复断连。
+    unsafe {
+        esp_idf_svc::sys::esp_wifi_set_ps(0);
+    }
+
     if let Err(e) = crate::platform::softap_ip::set_softap_ip() {
         log::warn!("[{}] SoftAP IP set failed: {}", TAG, e);
     }
@@ -443,27 +460,13 @@ fn do_connect(
         );
         clear_sta_ip_cache();
         let _ = result_tx.send(Ok(()));
-        run_scan_loop(&mut wifi, &scan_req_rx, &scan_resp_tx, true);
+        run_scan_loop(&mut wifi, &scan_req_rx, &scan_resp_tx, true, false);
         return;
     }
-    if let Err(e) = wifi.wait_netif_up().map_err(|e| Error::Other {
-        source: Box::new(e),
-        stage: "wifi_wait_netif",
-    }) {
-        log::warn!(
-            "[{}] STA netif not up (SoftAP stays up for provisioning): {}",
-            TAG,
-            e
-        );
-        clear_sta_ip_cache();
-        let _ = result_tx.send(Ok(()));
-        run_scan_loop(&mut wifi, &scan_req_rx, &scan_resp_tx, true);
-        return;
-    }
-    WIFI_STA_CONNECTED.store(true, Ordering::Relaxed);
-    update_sta_ip_cache();
+    // 不调 wait_netif_up()：阻塞 wifi_worker 线程会阻止驱动处理 Mixed 模式内部事件，
+    // 导致 STA 获取 IP 后 1-2s 内断连。改为 connect() 成功即报告 ready，由 scan_loop 检测 IP。
     let _ = result_tx.send(Ok(()));
-    run_scan_loop(&mut wifi, &scan_req_rx, &scan_resp_tx, true);
+    run_scan_loop(&mut wifi, &scan_req_rx, &scan_resp_tx, true, true);
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
