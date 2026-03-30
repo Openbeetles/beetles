@@ -84,7 +84,7 @@
 
 ## Linux 嵌入式 WiFi（P2）
 
-- **Linux 嵌入式 WiFi P2** 指控制面（rtnetlink、`wpa_supplicant`/hostapd ctrl 套接字、systemd 单元、`metrics` WiFi 字段），与帧缓冲显示 / [linux-migration-plan.md](dev-docs/linux-migration-plan.md) Step 7 显示迁移**无关**。
+- **Linux 嵌入式 WiFi P2** 指控制面（rtnetlink、`wpa_supplicant`/hostapd ctrl 套接字、systemd 单元、`metrics` WiFi 字段），与帧缓冲显示 / [linux-platform-plan.md](dev-docs/linux-platform-plan.md) §3.1 显示 显示迁移**无关**。
 
 ## 扩展点
 

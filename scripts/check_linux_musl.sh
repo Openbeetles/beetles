@@ -28,7 +28,7 @@ check_target() {
 check_target armv7-unknown-linux-musleabihf
 check_target riscv64gc-unknown-linux-musl
 
-# Linux 依赖图不得包含 ESP 栈（与 dev-docs/linux-migration-plan.md Step 2 验收一致）。
+# Linux 依赖图不得包含 ESP 栈（与 dev-docs/linux-platform-plan.md §2.1 验收一致）。
 assert_no_esp_stack_in_tree() {
   local t=$1
   if cargo tree -p beetle --target "$t" 2>/dev/null | grep -E 'esp-idf-svc|embedded-svc' | grep -q .; then

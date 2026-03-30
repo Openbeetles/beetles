@@ -1,5 +1,5 @@
 # 默认不设置 [build] target：裸 `cargo build`/`check` 使用 host triple（Linux 迁移 Step 1）。
-# ESP 固件须显式 `--target xtensa-esp32s3-espidf` 或使用 ./build.sh / CI（见 dev-docs/linux-migration-plan.md §4）。
+# ESP 固件须显式 `--target xtensa-esp32s3-espidf` 或使用 ./build.sh / CI（见 dev-docs/linux-platform-plan.md）。
 # 将构建产物固定在本仓库 `target/`，避免 IDE/沙箱注入的 CARGO_TARGET_DIR 导致 esp-idf-sys 与 esp-idf-svc 使用不同 bindings。
 [env]
 CARGO_TARGET_DIR = { value = "target", relative = true, force = true }
