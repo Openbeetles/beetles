@@ -3,8 +3,9 @@
 //!
 //! Architecture
 //! ───────────
-//! A single `OnceLock<Mutex<WakeWordInner>>` holds all mutable state.
-//! `configure()` is called once from `run_app` after `MessageBus` creation.
+//! `OnceLock<Mutex<Option<WakeWordInner>>>` holds mutable state: `None` until
+//! `configure()` runs; then `Some`. C engine init and Rust state install happen
+//! under the same mutex to avoid tearing vs the global `beetle_wakenet_*` context.
 //! `feed_pcm_i16()` is called from `audio_io_worker` (hot path, every ~20 ms).
 //!
 //! Safety invariant: the Mutex is only held for the duration of a single feed
@@ -54,14 +55,18 @@ mod imp {
     /// engine init failed, so `feed_pcm_i16` short-circuits without locking.
     static ARMED: AtomicBool = AtomicBool::new(false);
 
-    static STATE: OnceLock<Mutex<WakeWordInner>> = OnceLock::new();
+    static STATE: OnceLock<Mutex<Option<WakeWordInner>>> = OnceLock::new();
+
+    fn state_mutex() -> &'static Mutex<Option<WakeWordInner>> {
+        STATE.get_or_init(|| Mutex::new(None))
+    }
 
     // ── public API ────────────────────────────────────────────────────────────
 
     /// Initialise the wake-word engine and register the inbound sender.
     ///
-    /// Must be called exactly once from `run_app`, **after** `MessageBus` is
-    /// created and `init_audio` has been called.  Subsequent calls are ignored.
+    /// Must be called from `run_app`, **after** `MessageBus` is created and
+    /// `init_audio` has been called. Subsequent calls log a warning and return.
     pub fn configure(
         model_name: &str,
         channel: &str,
@@ -69,9 +74,10 @@ mod imp {
         prompt: &str,
         tx: TrackedSender<PcMsg>,
     ) {
-        // OnceLock: only the first caller wins; concurrent re-configure is a
-        // programming error but harmless (second call is silently dropped).
-        if STATE.get().is_some() {
+        let mut guard = state_mutex()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if guard.is_some() {
             log::warn!("[wake_word] configure() called more than once – ignored");
             return;
         }
@@ -109,12 +115,7 @@ mod imp {
             last_trigger: None,
         };
 
-        if STATE.set(Mutex::new(inner)).is_err() {
-            // Another thread beat us; engine is initialised twice – destroy ours.
-            unsafe { beetle_wakenet_destroy() };
-            return;
-        }
-
+        *guard = Some(inner);
         ARMED.store(engine_ready, Ordering::Release);
     }
 
@@ -139,14 +140,14 @@ mod imp {
             return;
         }
 
-        let state_mutex = match STATE.get() {
-            Some(m) => m,
-            None => return,
-        };
-
-        let mut st = match state_mutex.lock() {
+        let mut st_guard = match state_mutex().lock() {
             Ok(g) => g,
             Err(p) => p.into_inner(),
+        };
+
+        let st = match st_guard.as_mut() {
+            Some(s) => s,
+            None => return,
         };
 
         if !st.engine_ready {

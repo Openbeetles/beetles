@@ -6,7 +6,6 @@ use crate::platform::abstraction::{MemorySnapshot, Platform, StateFs};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::platform::{
     display_driver::{install_display_state, DisplayState},
-    fetch_url::fetch_url_with_client,
     heartbeat_file::read_heartbeat_file,
     spiffs::{
         spiffs_usage, SpiffsImportantMessageStore, SpiffsMemoryStore, SpiffsPendingRetryStore,
@@ -204,12 +203,6 @@ impl Platform for Esp32Platform {
         read_heartbeat_file()
     }
 
-    fn fetch_url_to_bytes(&self, url: &str, max_len: usize) -> crate::error::Result<Vec<u8>> {
-        let config = AppConfig::load(self.config_store.as_ref(), None);
-        let mut client = self.create_http_client(&config)?;
-        fetch_url_with_client(client.as_mut(), url, max_len)
-    }
-
     fn request_restart(&self) {
         unsafe { esp_idf_svc::sys::esp_restart() };
     }
@@ -303,7 +296,10 @@ impl Platform for Esp32Platform {
         let mut guard = self.display_state.lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_mut() {
             Some(state) => state.execute(cmd),
-            None => Ok(()),
+            None => Err(crate::error::Error::config(
+                "display",
+                "display not initialized",
+            )),
         }
     }
 
@@ -311,7 +307,10 @@ impl Platform for Esp32Platform {
         let guard = self.display_state.lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_ref() {
             Some(state) => state.set_backlight(on),
-            None => Ok(()),
+            None => Err(crate::error::Error::config(
+                "display",
+                "display not initialized",
+            )),
         }
     }
 
@@ -328,7 +327,10 @@ impl Platform for Esp32Platform {
         let guard = self.display_state.lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_ref() {
             Some(state) => state.set_brightness(percent),
-            None => Ok(()),
+            None => Err(crate::error::Error::config(
+                "display",
+                "display not initialized",
+            )),
         }
     }
 
@@ -341,7 +343,10 @@ impl Platform for Esp32Platform {
         let guard = self.display_state.lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_ref() {
             Some(state) => state.fade_brightness(from, to, duration_ms),
-            None => Ok(()),
+            None => Err(crate::error::Error::config(
+                "display",
+                "display not initialized",
+            )),
         }
     }
 

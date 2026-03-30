@@ -193,12 +193,6 @@ impl Platform for LinuxPlatform {
         read_heartbeat_file()
     }
 
-    fn fetch_url_to_bytes(&self, url: &str, max_len: usize) -> crate::error::Result<Vec<u8>> {
-        let config = AppConfig::load(self.config_store.as_ref(), None);
-        let mut client = self.create_http_client(&config)?;
-        crate::platform::fetch_url::fetch_url_with_client(client.as_mut(), url, max_len)
-    }
-
     fn request_restart(&self) {
         log::warn!("[platform::linux] restart requested, exiting process (systemd will restart)");
         std::process::exit(42);
@@ -226,7 +220,10 @@ impl Platform for LinuxPlatform {
         let mut guard = self.display_state.lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_mut() {
             Some(state) => state.execute(cmd),
-            None => Ok(()),
+            None => Err(crate::error::Error::config(
+                "display",
+                "display not initialized",
+            )),
         }
     }
 
@@ -234,7 +231,10 @@ impl Platform for LinuxPlatform {
         let guard = self.display_state.lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_ref() {
             Some(state) => state.set_backlight(on),
-            None => Ok(()),
+            None => Err(crate::error::Error::config(
+                "display",
+                "display not initialized",
+            )),
         }
     }
 
@@ -251,7 +251,10 @@ impl Platform for LinuxPlatform {
         let guard = self.display_state.lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_ref() {
             Some(state) => state.set_brightness(percent),
-            None => Ok(()),
+            None => Err(crate::error::Error::config(
+                "display",
+                "display not initialized",
+            )),
         }
     }
 
@@ -264,7 +267,10 @@ impl Platform for LinuxPlatform {
         let guard = self.display_state.lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_ref() {
             Some(state) => state.fade_brightness(from, to, duration_ms),
-            None => Ok(()),
+            None => Err(crate::error::Error::config(
+                "display",
+                "display not initialized",
+            )),
         }
     }
 

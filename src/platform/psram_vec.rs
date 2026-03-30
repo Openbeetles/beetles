@@ -3,11 +3,14 @@
 
 use super::heap::{alloc_spiram_buffer, free_spiram_buffer};
 
+enum Backing {
+    Spiram { ptr: *mut i16, len: usize },
+    Heap(Vec<i16>),
+}
+
 /// PSRAM 分配的 i16 缓冲区。失败时回退到普通 Vec。
 pub struct PsramVecI16 {
-    ptr: Option<*mut i16>,
-    len: usize,
-    fallback: Option<Vec<i16>>,
+    backing: Backing,
 }
 
 impl PsramVecI16 {
@@ -18,40 +21,38 @@ impl PsramVecI16 {
                 std::ptr::write_bytes(ptr, 0, byte_size);
             }
             Self {
-                ptr: Some(ptr as *mut i16),
-                len: capacity,
-                fallback: None,
+                backing: Backing::Spiram {
+                    ptr: ptr as *mut i16,
+                    len: capacity,
+                },
             }
         } else {
             Self {
-                ptr: None,
-                len: 0,
-                fallback: Some(vec![0i16; capacity]),
+                backing: Backing::Heap(vec![0i16; capacity]),
             }
         }
     }
 
     pub fn as_mut_slice(&mut self) -> &mut [i16] {
-        if let Some(ptr) = self.ptr {
-            unsafe { std::slice::from_raw_parts_mut(ptr, self.len) }
-        } else {
-            self.fallback.as_mut().unwrap().as_mut_slice()
+        match &mut self.backing {
+            Backing::Spiram { ptr, len } => unsafe { std::slice::from_raw_parts_mut(*ptr, *len) },
+            Backing::Heap(v) => v.as_mut_slice(),
         }
     }
 
     pub fn len(&self) -> usize {
-        if self.ptr.is_some() {
-            self.len
-        } else {
-            self.fallback.as_ref().unwrap().len()
+        match &self.backing {
+            Backing::Spiram { len, .. } => *len,
+            Backing::Heap(v) => v.len(),
         }
     }
 }
 
 impl Drop for PsramVecI16 {
     fn drop(&mut self) {
-        if let Some(ptr) = self.ptr {
-            unsafe { free_spiram_buffer(ptr as *mut u8) };
+        match &mut self.backing {
+            Backing::Spiram { ptr, .. } => unsafe { free_spiram_buffer(*ptr as *mut u8) },
+            Backing::Heap(_) => {}
         }
     }
 }

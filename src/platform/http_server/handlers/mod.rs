@@ -1,6 +1,7 @@
 //! 按接口域拆分的 handler 逻辑；mod.rs 只做路由注册与配对检查，具体响应体由各子模块生成。
 
-use crate::config::ConfigFileStore;
+use crate::config::{AppConfig, ConfigFileStore};
+use crate::platform::fetch_url::fetch_url_with_client;
 use crate::platform::{ConfigStore, Platform, SkillMetaStore, SkillStorage};
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
@@ -23,9 +24,11 @@ pub struct HandlerContext {
 }
 
 impl HandlerContext {
-    /// GET url，返回 body 截断至 max_len。委托 Platform::fetch_url_to_bytes。
+    /// GET url，返回 body 截断至 max_len。经 `config_store` 加载代理等配置后建 HTTP 客户端。
     pub fn fetch_url(&self, url: &str, max_len: usize) -> crate::error::Result<Vec<u8>> {
-        self.platform.fetch_url_to_bytes(url, max_len)
+        let config = AppConfig::load(self.config_store.as_ref(), None);
+        let mut client = self.platform.create_http_client(&config)?;
+        fetch_url_with_client(client.as_mut(), url, max_len)
     }
 }
 

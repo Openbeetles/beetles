@@ -1,5 +1,5 @@
-//! 同步 GET URL 返回 body；供 Platform::fetch_url_to_bytes 实现调用。
-//! Synchronous GET URL to bytes; called by Platform::fetch_url_to_bytes implementations.
+//! 同步 GET URL 返回 body；供 HTTP handler 等经 `PlatformHttpClient` 调用。
+//! Synchronous GET URL to bytes; used with an injected `PlatformHttpClient`.
 
 use crate::error::Result;
 use crate::platform::response::check_2xx_and_truncate;

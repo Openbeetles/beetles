@@ -208,7 +208,6 @@ pub trait Platform: Send + Sync {
     fn create_http_client(&self, config: &AppConfig) -> Result<Box<dyn PlatformHttpClient>>;
     fn spiffs_usage(&self) -> Option<(usize, usize)>;
     fn read_heartbeat_file(&self) -> Result<String>;
-    fn fetch_url_to_bytes(&self, url: &str, max_len: usize) -> Result<Vec<u8>>;
 
     /// 板级状态 JSON（芯片、堆、运行时间、压力、WiFi、SPIFFS）。默认实现委托 `platform/board_info`；新平台可覆写。
     fn board_info_json(&self) -> Result<String> {
@@ -299,12 +298,13 @@ pub trait Platform: Send + Sync {
         false
     }
 
-    /// 执行显示指令。默认 no-op。
+    /// 执行显示指令。无显示硬件的默认实现为 no-op `Ok(())`；带可选显示栈的实现（如 ESP/Linux）在
+    /// 未成功 `init_display`、内部状态为 `None` 时须返回 `Err`（stage `display`），勿静默成功。
     fn display_command(&self, _cmd: DisplayCommand) -> Result<()> {
         Ok(())
     }
 
-    /// 设置显示器背光开关。on=true 开启，on=false 关闭。默认 no-op。
+    /// 设置显示器背光开关。默认 no-op `Ok`；可选显示栈在未初始化时返回 `Err`（`display`）。
     /// Set display backlight on/off. Default no-op.
     fn set_display_backlight(&self, _on: bool) -> Result<()> {
         Ok(())
@@ -316,13 +316,13 @@ pub trait Platform: Send + Sync {
         false
     }
 
-    /// 设置显示器背光亮度（0-100%）。PWM 调光；默认 no-op。
+    /// 设置显示器背光亮度（0-100%）。默认 no-op；可选显示栈未初始化时返回 `Err`（`display`）。
     /// Set display backlight brightness (0-100%). Default no-op.
     fn set_display_backlight_brightness(&self, _percent: u8) -> Result<()> {
         Ok(())
     }
 
-    /// 背光渐变（阻塞，在调用线程执行）。默认 no-op。
+    /// 背光渐变（阻塞，在调用线程执行）。默认 no-op；可选显示栈未初始化时返回 `Err`（`display`）。
     /// Fade display backlight from `from`% to `to`% over `duration_ms`. Blocking. Default no-op.
     fn fade_display_backlight(&self, _from: u8, _to: u8, _duration_ms: u32) -> Result<()> {
         Ok(())
