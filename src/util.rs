@@ -536,11 +536,6 @@ pub fn is_private_url(url: &str) -> bool {
     false
 }
 
-/// Default stack for `spawn_guarded` on ESP: TLS runs in IDF tasks; keep stacks small.
-/// ESP 上 TLS 在 IDF 任务栈执行，后台线程保持较小栈。
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-const DEFAULT_GUARD_STACK_SIZE: usize = 8192;
-
 // ---------------------------------------------------------------------------
 // Thread stack budget constants
 // ---------------------------------------------------------------------------

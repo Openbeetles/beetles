@@ -485,8 +485,6 @@ export const zhCN = {
       sectionMain: '显示配置',
       sectionMainDesc: '保存后重启生效。',
       sectionMainDescLinux: 'Linux 使用内核 framebuffer；保存后重启生效。',
-      linuxFramebufferHint:
-        '已识别为 Linux 设备：仅显示 framebuffer 与背光 sysfs 相关项（与固件 DisplayDriver::Framebuffer 一致）。',
       sectionBasic: '基础参数',
       sectionGeometry: '几何参数',
       sectionSpi: 'SPI 参数',

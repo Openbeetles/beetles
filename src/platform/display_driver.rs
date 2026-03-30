@@ -71,6 +71,12 @@ mod esp_backend {
 
     impl SpiDisplayBackend {
         pub fn new(config: &DisplayConfig) -> Result<Self> {
+            if matches!(config.driver, DisplayDriver::Framebuffer) {
+                return Err(crate::error::Error::config(
+                    "display_spi_init",
+                    "driver=framebuffer is for Linux fbdev only; on ESP use St7789/ILI9341/ST7735",
+                ));
+            }
             let spi = &config.spi;
             let width = config.width;
             let height = config.height;
@@ -300,6 +306,12 @@ mod esp_backend {
             std::thread::sleep(std::time::Duration::from_millis(120));
 
             match config.driver {
+                DisplayDriver::Framebuffer => {
+                    return Err(crate::error::Error::config(
+                        "display_spi_init",
+                        "driver=framebuffer is for Linux fbdev only; on ESP use St7789/ILI9341/ST7735",
+                    ));
+                }
                 DisplayDriver::St7735 => {
                     // ST7735 / ST7735R / ST7735S: frame rate, power, gamma (not used on ST7789/ILI9341).
                     self.send_cmd(0xB1)?;
@@ -352,6 +364,12 @@ mod esp_backend {
             // ST7789: panel often inverted by default → INVON unless invert_colors.
             // ILI9341 / ST7735: typically non-inverted → INVOFF unless invert_colors.
             let needs_invon = match config.driver {
+                DisplayDriver::Framebuffer => {
+                    return Err(crate::error::Error::config(
+                        "display_spi_init",
+                        "driver=framebuffer is for Linux fbdev only",
+                    ));
+                }
                 DisplayDriver::St7789 => !config.invert_colors,
                 DisplayDriver::Ili9341 | DisplayDriver::St7735 => config.invert_colors,
             };
@@ -489,10 +507,16 @@ mod esp_backend {
 //  Linux framebuffer backend — FlushRgb565 impl
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-#[cfg(all(target_os = "linux", not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
+#[cfg(all(
+    target_os = "linux",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 use crate::platform::linux::display_fb::LinuxFramebufferBackend;
 
-#[cfg(all(target_os = "linux", not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
+#[cfg(all(
+    target_os = "linux",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 impl FlushRgb565 for LinuxFramebufferBackend {
     fn flush(&mut self, offset_x: i16, offset_y: i16) -> Result<()> {
         LinuxFramebufferBackend::flush(self, offset_x, offset_y)
@@ -562,7 +586,12 @@ where
         DisplayCommand::UpdateIp { ip, uptime_secs } => {
             render_ip_partial(backend, ip.as_str(), *uptime_secs, config.width, layout);
             let flush_h = subtitle_ip_flush_rows(config.width, *uptime_secs);
-            backend.flush_rows(config.offset_x, config.offset_y, layout.subtitle_top, flush_h)?;
+            backend.flush_rows(
+                config.offset_x,
+                config.offset_y,
+                layout.subtitle_top,
+                flush_h,
+            )?;
         }
         DisplayCommand::UpdatePressure {
             level,
@@ -591,18 +620,18 @@ where
                 },
             );
             let footer_h = config.height.saturating_sub(layout.footer_top);
-            backend.flush_rows(config.offset_x, config.offset_y, layout.footer_top, footer_h)?;
+            backend.flush_rows(
+                config.offset_x,
+                config.offset_y,
+                layout.footer_top,
+                footer_h,
+            )?;
         }
         DisplayCommand::UpdateChannels { channels } => {
             let bg = DISPLAY_BG;
             render_channels_partial(backend, channels, bg, config.width, layout);
             let ch_h = layout_middle_panel_height(layout) as u16;
-            backend.flush_rows(
-                config.offset_x,
-                config.offset_y,
-                layout.middle_top,
-                ch_h,
-            )?;
+            backend.flush_rows(config.offset_x, config.offset_y, layout.middle_top, ch_h)?;
         }
         DisplayCommand::UpdateBootProgress { stage } => {
             let bg = DISPLAY_BG;
@@ -641,7 +670,10 @@ pub struct DisplayState {
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     backend: Option<esp_backend::SpiDisplayBackend>,
     /// Linux framebuffer 后端（仅 Linux 非 ESP 目标编译）。
-    #[cfg(all(target_os = "linux", not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
+    #[cfg(all(
+        target_os = "linux",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     backend_fb: Option<LinuxFramebufferBackend>,
 }
 
@@ -656,7 +688,6 @@ impl DisplayState {
     // cfg-gated return chains require explicit `return` to prevent fall-through to other cfg blocks.
     #[allow(clippy::needless_return)]
     pub fn init(config: &DisplayConfig) -> Result<Self> {
-        use crate::display::is_framebuffer_config;
         let layout = compute_layout(config.width, config.height);
         if !config.enabled {
             return Ok(Self {
@@ -668,7 +699,10 @@ impl DisplayState {
                 bl_ledc_initialized: false,
                 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
                 backend: None,
-                #[cfg(all(target_os = "linux", not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
+                #[cfg(all(
+                    target_os = "linux",
+                    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+                ))]
                 backend_fb: None,
             });
         }
@@ -692,7 +726,10 @@ impl DisplayState {
             return Ok(state);
         }
 
-        #[cfg(all(target_os = "linux", not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
+        #[cfg(all(
+            target_os = "linux",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
         {
             if !is_framebuffer_config(config) {
                 return Err(crate::error::Error::config(
@@ -713,7 +750,10 @@ impl DisplayState {
                     });
                 }
                 Err(e) => {
-                    log::warn!("[display] framebuffer init failed ({}); display unavailable", e);
+                    log::warn!(
+                        "[display] framebuffer init failed ({}); display unavailable",
+                        e
+                    );
                     return Ok(Self {
                         config: config.clone(),
                         layout,
@@ -727,11 +767,7 @@ impl DisplayState {
             }
         }
 
-        #[cfg(not(any(
-            target_arch = "xtensa",
-            target_arch = "riscv32",
-            target_os = "linux"
-        )))]
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux")))]
         {
             log::info!("[display] host stub: init skipped (no SPI hardware, not Linux)");
             let _ = is_framebuffer_config;
@@ -813,7 +849,10 @@ impl DisplayState {
             self.last_command_at = Some(Instant::now());
         }
 
-        #[cfg(all(target_os = "linux", not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
+        #[cfg(all(
+            target_os = "linux",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
         {
             let backend = match self.backend_fb.as_mut() {
                 Some(b) => b,
@@ -823,11 +862,7 @@ impl DisplayState {
             self.last_command_at = Some(Instant::now());
         }
 
-        #[cfg(not(any(
-            target_arch = "xtensa",
-            target_arch = "riscv32",
-            target_os = "linux"
-        )))]
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux")))]
         {
             let _ = cmd;
             self.last_command_at = Some(Instant::now());
@@ -842,9 +877,15 @@ impl DisplayState {
         if !self.available {
             return false;
         }
-        #[cfg(all(target_os = "linux", not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
+        #[cfg(all(
+            target_os = "linux",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
         let result = self.config.backlight_sysfs.is_some();
-        #[cfg(not(all(target_os = "linux", not(any(target_arch = "xtensa", target_arch = "riscv32")))))]
+        #[cfg(not(all(
+            target_os = "linux",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        )))]
         let result = self.bl_pin.is_some();
         result
     }
@@ -883,17 +924,16 @@ impl DisplayState {
                 }
             }
         }
-        #[cfg(all(target_os = "linux", not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
+        #[cfg(all(
+            target_os = "linux",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
         {
             if let Some(ref bl_path) = self.config.backlight_sysfs {
                 sysfs_write_brightness(bl_path, percent);
             }
         }
-        #[cfg(not(any(
-            target_arch = "xtensa",
-            target_arch = "riscv32",
-            target_os = "linux"
-        )))]
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux")))]
         {
             let _ = percent;
         }
@@ -920,7 +960,10 @@ impl DisplayState {
 
 // ── sysfs 背光辅助（Linux 非 ESP）──────────────────────────────────────────
 
-#[cfg(all(target_os = "linux", not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
+#[cfg(all(
+    target_os = "linux",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 fn sysfs_write_brightness(bl_path: &str, percent: u8) {
     use std::io::Write;
     // 读取 max_brightness（与 brightness 文件同目录）。

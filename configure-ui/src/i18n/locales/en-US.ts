@@ -488,8 +488,6 @@ export const enUS = {
       sectionMainDesc: 'Changes take effect after restart.',
       sectionMainDescLinux:
         'Linux uses the kernel framebuffer; changes take effect after restart.',
-      linuxFramebufferHint:
-        'Linux device detected: showing framebuffer and backlight sysfs fields only (matches firmware DisplayDriver::Framebuffer).',
       sectionBasic: 'Basic settings',
       sectionGeometry: 'Geometry',
       sectionSpi: 'SPI settings',

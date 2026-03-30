@@ -333,9 +333,7 @@ pub fn validate_display_config_core(cfg: &DisplayConfig) -> Result<()> {
             ));
         }
         // fb_device 路径安全检查：非空、无 NUL 字节与控制字符。
-        if cfg.fb_device.is_empty()
-            || cfg.fb_device.bytes().any(|b| b == 0 || b < 0x20)
-        {
+        if cfg.fb_device.is_empty() || cfg.fb_device.bytes().any(|b| b == 0 || b < 0x20) {
             return Err(Error::config(
                 "display",
                 "DISPLAY_CONFIG_INVALID_FB_DEVICE: fb_device path must be non-empty and contain no control characters",

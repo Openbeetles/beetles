@@ -15,7 +15,8 @@
 
 #include "esp_wn_iface.h"
 #include "esp_wn_models.h"
-#include "esp_srmodel.h"
+/* esp-sr 2.4+: API lives in model_path.h (former esp_srmodel.h). */
+#include "model_path.h"
 #include "esp_heap_caps.h"
 
 #include <string.h>

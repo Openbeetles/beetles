@@ -5,9 +5,21 @@
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 mod esp {
-    use esp_idf_svc::sys::{
-        esp_chip_info, esp_chip_info_t, esp_flash_default_chip, esp_flash_get_physical_size, ESP_OK,
-    };
+    use esp_idf_svc::sys::{esp_flash_default_chip, esp_flash_get_physical_size, ESP_OK};
+
+    /// 与 `esp_hw_support/include/esp_chip_info.h` 中 `esp_chip_info_t` 布局一致。
+    /// `esp-idf-sys` 绑定未导出 `esp_chip_info` 时由本地 `extern "C"` 链接 IDF。
+    #[repr(C)]
+    struct EspChipInfoRaw {
+        model: u32,
+        features: u32,
+        revision: u16,
+        cores: u8,
+    }
+
+    extern "C" {
+        fn esp_chip_info(out_info: *mut EspChipInfoRaw);
+    }
 
     /// OTA manifest `boards` 键与 `board_presets.toml` Flash 档位一致。
     const FLASH_MANIFEST_BUCKETS_MB: &[u32] = &[8, 16, 32];
@@ -49,7 +61,7 @@ mod esp {
 
     fn read_flash_bytes() -> u32 {
         let mut sz: u32 = 0;
-        let r = unsafe { esp_flash_get_physical_size(&esp_flash_default_chip, &mut sz) };
+        let r = unsafe { esp_flash_get_physical_size(esp_flash_default_chip, &mut sz) };
         if r == ESP_OK && sz > 0 {
             sz
         } else {
@@ -57,8 +69,8 @@ mod esp {
         }
     }
 
-    fn chip_info() -> esp_chip_info_t {
-        let mut info: esp_chip_info_t = unsafe { core::mem::zeroed() };
+    fn chip_info() -> EspChipInfoRaw {
+        let mut info: EspChipInfoRaw = unsafe { core::mem::zeroed() };
         unsafe { esp_chip_info(&mut info) };
         info
     }

@@ -153,8 +153,11 @@ fn init_mic_channel(seg: &AudioSegment) -> Result<MicState> {
         role: i2s_role_t_I2S_ROLE_MASTER,
         dma_desc_num: 6,
         dma_frame_num: 240,
+        __bindgen_anon_1: Default::default(),
+        // IDF 6 bindgen: `auto_clear_before_cb` + union `__bindgen_anon_1` (TX `auto_clear` / `auto_clear_after_cb`).
         auto_clear_before_cb: true,
-        ..unsafe { core::mem::zeroed() }
+        allow_pd: false,
+        intr_priority: 0,
     };
 
     check_esp("i2s_mic_new_channel", unsafe {
@@ -258,8 +261,10 @@ fn init_speaker_channel(seg: &AudioSegment) -> Result<SpeakerState> {
         role: i2s_role_t_I2S_ROLE_MASTER,
         dma_desc_num: 6,
         dma_frame_num: 240,
+        __bindgen_anon_1: Default::default(),
         auto_clear_before_cb: true,
-        ..unsafe { core::mem::zeroed() }
+        allow_pd: false,
+        intr_priority: 0,
     };
 
     let new_ret = unsafe { i2s_new_channel(&chan_cfg, &mut tx_handle, core::ptr::null_mut()) };

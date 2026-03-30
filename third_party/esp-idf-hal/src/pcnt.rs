@@ -163,9 +163,11 @@ pub mod config {
         }
     }
 
+    #[cfg(esp_idf_version_at_least_6_0_0)]
     impl From<&UnitConfig> for pcnt_unit_config_t {
         fn from(value: &UnitConfig) -> Self {
             pcnt_unit_config_t {
+                // ESP-IDF 6.0+: `pcnt_unit_config_t` gained `clk_src` (default = APB).
                 clk_src: soc_periph_pcnt_clk_src_t_PCNT_CLK_SRC_DEFAULT,
                 low_limit: value.low_limit,
                 high_limit: value.high_limit,
@@ -173,14 +175,23 @@ pub mod config {
                 flags: pcnt_unit_config_t__bindgen_ty_1 {
                     _bitfield_1: pcnt_unit_config_t__bindgen_ty_1::new_bitfield_1(
                         value.accum_count as u32,
-                        #[cfg(esp_idf_soc_pcnt_support_step_notify)]
-                        {
-                            0
-                        },
-                        #[cfg(esp_idf_soc_pcnt_support_step_notify)]
-                        {
-                            0
-                        },
+                    ),
+                    ..Default::default()
+                },
+            }
+        }
+    }
+
+    #[cfg(not(esp_idf_version_at_least_6_0_0))]
+    impl From<&UnitConfig> for pcnt_unit_config_t {
+        fn from(value: &UnitConfig) -> Self {
+            pcnt_unit_config_t {
+                low_limit: value.low_limit,
+                high_limit: value.high_limit,
+                intr_priority: value.intr_priority,
+                flags: pcnt_unit_config_t__bindgen_ty_1 {
+                    _bitfield_1: pcnt_unit_config_t__bindgen_ty_1::new_bitfield_1(
+                        value.accum_count as u32,
                     ),
                     ..Default::default()
                 },

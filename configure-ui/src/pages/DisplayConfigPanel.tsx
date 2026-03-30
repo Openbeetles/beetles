@@ -5,7 +5,6 @@ import Button from "@mui/material/Button";
 import FormControlLabel from "@mui/material/FormControlLabel";
 import Switch from "@mui/material/Switch";
 import TextField from "@mui/material/TextField";
-import Typography from "@mui/material/Typography";
 import SaveRounded from "@mui/icons-material/SaveRounded";
 import MonitorOutlined from "@mui/icons-material/MonitorOutlined";
 import {
@@ -238,12 +237,6 @@ export function DisplayConfigPanel() {
         }
       >
         <FormFieldStack>
-          {showLinuxFramebuffer ? (
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-              {t("displayConfig.linuxFramebufferHint")}
-            </Typography>
-          ) : null}
-
           <FormSectionSub title={t("displayConfig.sectionBasic")}>
             <FormControlLabel
               control={
