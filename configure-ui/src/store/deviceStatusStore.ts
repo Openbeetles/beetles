@@ -1,6 +1,6 @@
 /**
  * 设备状态单一数据源：连接状态 + 是否激活（设备端是否已设配对码）+ 重启闭环状态。
- * 仅由 DeviceProvider 写入：baseUrl 变化时检测一次，并有定时复检（约 30s），
+ * 仅由 DeviceProvider 写入：baseUrl 变化时检测一次，并有定时复检（10s，见 DeviceProvider），
  * 便于设备断线后更新侧栏/横幅；各页通过 useDeviceStatus() / useDeviceConnected() 消费。
  * 重启闭环：指令发出→仍可达=正在重启→不可达=重启中→再次可达=重启完成；超时 1 分钟=设备可能异常。
  */

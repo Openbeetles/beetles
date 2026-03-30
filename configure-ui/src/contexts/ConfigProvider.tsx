@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { API_ERROR } from "../api/client";
+import { API_ERROR, type ApiResult } from "../api/client";
 import type {
   AppConfig,
   LlmConfigSegment,
@@ -13,10 +13,9 @@ import type { AudioConfig } from "../types/audioConfig";
 import { ensureHardwareDeviceIds } from "../util/hardwareDeviceId";
 import { ConfigContext } from "./ConfigContext";
 import { useDeviceApi } from "../hooks/useDeviceApi";
-import {
-  markDeviceReachable,
-  setDeviceRuntimeKindFromBoardId,
-} from "../store/deviceStatusStore";
+import { useDevice } from "../hooks/useDevice";
+import { fetchSystemInfoCoalesced } from "../session/systemInfoCoordinator";
+import { markDeviceReachable } from "../store/deviceStatusStore";
 
 /** i18n keys for config load errors; 与顶栏横幅重复的配对/设备类不展示，由 DeviceBanner 处理 */
 const ERROR_KEY_NO_BASE = "device.bannerNeedDevice";
@@ -36,7 +35,42 @@ function isDeviceOrPairingHint(err: string | undefined): boolean {
   );
 }
 
+function mapSegmentLoadError(res: ApiResult<unknown>): string | null {
+  return res.error === API_ERROR.NO_BASE_URL
+    ? ERROR_KEY_NO_BASE
+    : isDeviceOrPairingHint(res.error ?? "")
+      ? null
+      : ERROR_KEY_LOAD_FAILED;
+}
+
+/** display / audio / hardware / 主配置 GET 共用：ready、loading、错误映射一致。 */
+async function loadDeviceSegment<T extends object>(args: {
+  ready: boolean;
+  setLoading: (v: boolean) => void;
+  setError: (v: string | null) => void;
+  fetch: () => Promise<ApiResult<T>>;
+  applySuccess: (data: T) => void;
+  clearData: () => void;
+}): Promise<void> {
+  const { ready, setLoading, setError, fetch, applySuccess, clearData } = args;
+  if (!ready) {
+    setError(ERROR_KEY_NO_BASE);
+    return;
+  }
+  setLoading(true);
+  setError(null);
+  const res = await fetch();
+  setLoading(false);
+  if (res.ok && res.data != null && typeof res.data === "object") {
+    applySuccess(res.data as T);
+  } else {
+    setError(mapSegmentLoadError(res));
+    clearData();
+  }
+}
+
 export function ConfigProvider({ children }: { children: React.ReactNode }) {
+  const { baseUrl, pairingCode } = useDevice();
   const { api, ready, deviceConnected } = useDeviceApi();
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [loading, setLoading] = useState(false);
@@ -54,18 +88,14 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   const [hardwareLoading, setHardwareLoading] = useState(false);
   const [hardwareError, setHardwareError] = useState<string | null>(null);
 
-  /** 未进「设备」页时也要能解析平台（显示页等按 Linux/ESP 裁剪 UI）。 */
+  /** 未进「设备」页时也要能解析平台（显示页等按 Linux/ESP 裁剪 UI）；与 DevicePage 共用协调器避免重复请求。 */
   useEffect(() => {
-    if (!ready || !deviceConnected) return;
-    let cancelled = false;
-    void api.system.info().then((res) => {
-      if (cancelled || !res.ok || !res.data) return;
-      setDeviceRuntimeKindFromBoardId(res.data.board_id);
+    if (!ready || !deviceConnected || !baseUrl?.trim()) return;
+    const code = (pairingCode ?? "").trim();
+    void fetchSystemInfoCoalesced(baseUrl.trim(), code, () => api.system.info(), {
+      force: false,
     });
-    return () => {
-      cancelled = true;
-    };
-  }, [ready, deviceConnected, api.system]);
+  }, [ready, deviceConnected, baseUrl, pairingCode, api.system]);
 
   const clearCachedConfig = useCallback(() => {
     setConfig(null);
@@ -79,26 +109,14 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const loadConfig = useCallback(async () => {
-    if (!ready) {
-      setError(ERROR_KEY_NO_BASE);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    const res = await api.config.get();
-    setLoading(false);
-    if (res.ok && res.data != null && typeof res.data === "object") {
-      setConfig(res.data as AppConfig);
-    } else {
-      setError(
-        res.error === API_ERROR.NO_BASE_URL
-          ? ERROR_KEY_NO_BASE
-          : isDeviceOrPairingHint(res.error ?? "")
-            ? null
-            : ERROR_KEY_LOAD_FAILED,
-      );
-      setConfig(null);
-    }
+    await loadDeviceSegment({
+      ready,
+      setLoading,
+      setError,
+      fetch: () => api.config.get() as Promise<ApiResult<AppConfig>>,
+      applySuccess: (data) => setConfig(data),
+      clearData: () => setConfig(null),
+    });
   }, [api.config, ready]);
 
   /**
@@ -165,28 +183,17 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   );
 
   const loadDisplayConfig = useCallback(async () => {
-    if (!ready) {
-      setDisplayError(ERROR_KEY_NO_BASE);
-      return;
-    }
-    setDisplayLoading(true);
-    setDisplayError(null);
-    const res = await api.display.get();
-    setDisplayLoading(false);
-    if (res.ok && res.data != null && typeof res.data === "object") {
-      setDisplayConfig(
-        normalizeDisplayConfig(res.data as Partial<DisplayConfig> & Record<string, unknown>),
-      );
-    } else {
-      setDisplayError(
-        res.error === API_ERROR.NO_BASE_URL
-          ? ERROR_KEY_NO_BASE
-          : isDeviceOrPairingHint(res.error ?? "")
-            ? null
-            : ERROR_KEY_LOAD_FAILED,
-      );
-      setDisplayConfig(null);
-    }
+    await loadDeviceSegment({
+      ready,
+      setLoading: setDisplayLoading,
+      setError: setDisplayError,
+      fetch: () => api.display.get() as Promise<ApiResult<DisplayConfig>>,
+      applySuccess: (data) =>
+        setDisplayConfig(
+          normalizeDisplayConfig(data as Partial<DisplayConfig> & Record<string, unknown>),
+        ),
+      clearData: () => setDisplayConfig(null),
+    });
   }, [api.display, ready]);
 
   const saveDisplayConfig = useCallback(
@@ -209,26 +216,14 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   );
 
   const loadAudioConfig = useCallback(async () => {
-    if (!ready) {
-      setAudioError(ERROR_KEY_NO_BASE);
-      return;
-    }
-    setAudioLoading(true);
-    setAudioError(null);
-    const res = await api.audio.get();
-    setAudioLoading(false);
-    if (res.ok && res.data != null && typeof res.data === "object") {
-      setAudioConfig(res.data as AudioConfig);
-    } else {
-      setAudioError(
-        res.error === API_ERROR.NO_BASE_URL
-          ? ERROR_KEY_NO_BASE
-          : isDeviceOrPairingHint(res.error ?? "")
-            ? null
-            : ERROR_KEY_LOAD_FAILED,
-      );
-      setAudioConfig(null);
-    }
+    await loadDeviceSegment({
+      ready,
+      setLoading: setAudioLoading,
+      setError: setAudioError,
+      fetch: () => api.audio.get() as Promise<ApiResult<AudioConfig>>,
+      applySuccess: (data) => setAudioConfig(data),
+      clearData: () => setAudioConfig(null),
+    });
   }, [api.audio, ready]);
 
   const saveAudioConfig = useCallback(
@@ -251,33 +246,23 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   );
 
   const loadHardwareConfig = useCallback(async () => {
-    if (!ready) {
-      setHardwareError(ERROR_KEY_NO_BASE);
-      return;
-    }
-    setHardwareLoading(true);
-    setHardwareError(null);
-    const res = await api.hardware.get();
-    setHardwareLoading(false);
-    if (res.ok && res.data != null && typeof res.data === "object") {
-      const d = res.data as HardwareSegment;
-      const list = Array.isArray(d.hardware_devices) ? d.hardware_devices : [];
-      setHardwareSegment({
-        hardware_devices: ensureHardwareDeviceIds(list),
-        i2c_bus: d.i2c_bus ?? undefined,
-        i2c_devices: Array.isArray(d.i2c_devices) ? d.i2c_devices : undefined,
-        i2c_sensors: Array.isArray(d.i2c_sensors) ? d.i2c_sensors : [],
-      });
-    } else {
-      setHardwareError(
-        res.error === API_ERROR.NO_BASE_URL
-          ? ERROR_KEY_NO_BASE
-          : isDeviceOrPairingHint(res.error ?? "")
-            ? null
-            : ERROR_KEY_LOAD_FAILED,
-      );
-      setHardwareSegment(null);
-    }
+    await loadDeviceSegment({
+      ready,
+      setLoading: setHardwareLoading,
+      setError: setHardwareError,
+      fetch: () => api.hardware.get() as Promise<ApiResult<HardwareSegment>>,
+      applySuccess: (data) => {
+        const d = data as HardwareSegment;
+        const list = Array.isArray(d.hardware_devices) ? d.hardware_devices : [];
+        setHardwareSegment({
+          hardware_devices: ensureHardwareDeviceIds(list),
+          i2c_bus: d.i2c_bus ?? undefined,
+          i2c_devices: Array.isArray(d.i2c_devices) ? d.i2c_devices : undefined,
+          i2c_sensors: Array.isArray(d.i2c_sensors) ? d.i2c_sensors : [],
+        });
+      },
+      clearData: () => setHardwareSegment(null),
+    });
   }, [api.hardware, ready]);
 
   const saveHardwareConfig = useCallback(

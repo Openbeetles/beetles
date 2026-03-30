@@ -20,7 +20,7 @@ import {
   type ChannelConnectivityItem,
   type HealthData,
 } from "../api/endpoints/system";
-import { setDeviceRuntimeKindFromBoardId } from "../store/deviceStatusStore";
+import { fetchSystemInfoCoalesced } from "../session/systemInfoCoordinator";
 import { SystemStatusPanel } from "../components/SystemStatusPanel";
 import { SectionLoadProgress } from "../components/SectionLoadProgress";
 
@@ -76,14 +76,15 @@ export function DevicePage() {
         setSystemInfoError("");
       }
     }, 0);
-    api.system
-      .info()
+    const code = (pairingCode ?? "").trim();
+    void fetchSystemInfoCoalesced(baseUrl.trim(), code, () => api.system.info(), {
+      force: false,
+    })
       .then((res) => {
         if (cancelled) return;
         setSystemInfoLoading(false);
         if (res.ok && res.data) {
           setSystemInfo(res.data);
-          setDeviceRuntimeKindFromBoardId(res.data.board_id);
         } else setSystemInfoError(res.error ?? "");
       })
       .catch(() => {
@@ -96,7 +97,7 @@ export function DevicePage() {
       cancelled = true;
       window.clearTimeout(tid);
     };
-  }, [api.system, deviceConnected, baseUrl]);
+  }, [api.system, deviceConnected, baseUrl, pairingCode]);
 
   useEffect(() => {
     if (!deviceConnected || !baseUrl?.trim()) return;
@@ -161,13 +162,14 @@ export function DevicePage() {
     setSystemInfoError("");
     if (!deviceConnected || !baseUrl?.trim()) return;
     setSystemInfoLoading(true);
-    api.system
-      .info()
+    const code = (pairingCode ?? "").trim();
+    void fetchSystemInfoCoalesced(baseUrl.trim(), code, () => api.system.info(), {
+      force: true,
+    })
       .then((res) => {
         setSystemInfoLoading(false);
         if (res.ok && res.data) {
           setSystemInfo(res.data);
-          setDeviceRuntimeKindFromBoardId(res.data.board_id);
         } else setSystemInfoError(res.error ?? "");
       })
       .catch(() => {
