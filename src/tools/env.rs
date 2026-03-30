@@ -5,13 +5,8 @@ use crate::tools::{Tool, ToolContext};
 use serde_json::json;
 use std::env;
 
+#[derive(Default)]
 pub struct EnvTool;
-
-impl EnvTool {
-    pub fn new() -> Self {
-        Self
-    }
-}
 
 impl Tool for EnvTool {
     fn name(&self) -> &'static str {

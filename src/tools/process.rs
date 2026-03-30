@@ -5,13 +5,8 @@ use crate::tools::{Tool, ToolContext};
 use serde_json::Value;
 use std::process::Command;
 
+#[derive(Default)]
 pub struct ProcessTool;
-
-impl ProcessTool {
-    pub fn new() -> Self {
-        Self
-    }
-}
 
 impl Tool for ProcessTool {
     fn name(&self) -> &'static str {
@@ -62,7 +57,7 @@ impl Tool for ProcessTool {
             "list" => {
                 let output =
                     Command::new("ps")
-                        .args(&["aux"])
+                        .args(["aux"])
                         .output()
                         .map_err(|e| Error::Other {
                             source: Box::new(e),
@@ -90,7 +85,7 @@ impl Tool for ProcessTool {
                 let signal_arg = format!("-{}", signal);
 
                 let output = Command::new("kill")
-                    .args(&[signal_arg.as_str(), &pid.to_string()])
+                    .args([signal_arg.as_str(), &pid.to_string()])
                     .output()
                     .map_err(|e| Error::Other {
                         source: Box::new(e),

@@ -30,6 +30,10 @@ const STRUCTURED_BLOCK: &str = concat!(
 );
 
 /// build_context 参数聚合，减少函数签名复杂度。
+///
+/// 所有与资源预算相关的字段（`system_max_len`、`messages_max_len`、`llm_hint`）
+/// 由调用方从 `orchestrator::current_budget()` 取值后显式传入，
+/// 避免 `build_context` 直接依赖 orchestrator 全局状态，保持函数可单独测试。
 pub struct ContextParams<'a> {
     pub msg: &'a PcMsg,
     pub memory: &'a dyn MemoryStore,
@@ -44,6 +48,8 @@ pub struct ContextParams<'a> {
     pub system_continuation_suffix: Option<&'a str>,
     pub emotion_signal_suffix: Option<&'a str>,
     pub summary_text: Option<&'a str>,
+    /// orchestrator 在高压力时附加到 system 末尾的提示文字；由调用方从 `budget.llm_hint` 传入。
+    pub llm_hint: &'a str,
 }
 
 /// 根据入站 PcMsg 与 store 构建 (system, messages)，供 LlmClient.chat 使用。
@@ -156,12 +162,15 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
         system.push_str("\n\n");
         system.push_str(em);
     }
-    let hint = crate::orchestrator::current_budget().llm_hint;
-    if !hint.is_empty()
-        && system.len().saturating_add(hint.len()).saturating_add(2) <= p.system_max_len
+    if !p.llm_hint.is_empty()
+        && system
+            .len()
+            .saturating_add(p.llm_hint.len())
+            .saturating_add(2)
+            <= p.system_max_len
     {
         system.push_str("\n\n");
-        system.push_str(hint);
+        system.push_str(p.llm_hint);
     }
     if system.len() > p.system_max_len {
         let mut end = p.system_max_len;

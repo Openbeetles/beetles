@@ -98,7 +98,9 @@ pub use tools::{
 #[cfg(feature = "tools_network_extra")]
 pub use tools::{HttpRequestTool, ModelConfigTool, ProxyConfigTool, WebSearchTool};
 
-/// 任何 PlatformHttpClient 均可作为 LlmHttpClient、ToolContext、ChannelHttpClient 使用。
+/// 任何 PlatformHttpClient 均可作为 LlmHttpClient 使用。
+/// ToolContext 的实现由 `tools::http_bridge::HttpClientToolContext` 承载（含会话元数据），
+/// 不再提供硬编码 locale 的 blanket impl。
 impl<T: platform::PlatformHttpClient> llm::LlmHttpClient for T {
     fn do_post(
         &mut self,
@@ -130,68 +132,10 @@ impl<T: platform::PlatformHttpClient> llm::LlmHttpClient for T {
     }
 }
 
-impl<T: platform::PlatformHttpClient> tools::ToolContext for T {
-    fn user_locale(&self) -> crate::i18n::Locale {
-        crate::i18n::Locale::Zh
-    }
-    fn get_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-    ) -> Result<(u16, platform::ResponseBody)> {
-        platform::PlatformHttpClient::get(self, url, headers)
-    }
-    fn post_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: &[u8],
-    ) -> Result<(u16, platform::ResponseBody)> {
-        platform::PlatformHttpClient::post(self, url, headers, body)
-    }
-    fn post_streaming(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: &[u8],
-        max_response_bytes: Option<usize>,
-        on_chunk: &mut dyn FnMut(&[u8]) -> Result<()>,
-    ) -> Result<u16> {
-        platform::PlatformHttpClient::post_streaming(
-            self,
-            url,
-            headers,
-            body,
-            max_response_bytes,
-            on_chunk,
-        )
-    }
-    fn patch_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: &[u8],
-    ) -> Result<(u16, platform::ResponseBody)> {
-        platform::PlatformHttpClient::patch(self, url, headers, body)
-    }
-    fn put_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: &[u8],
-    ) -> Result<(u16, platform::ResponseBody)> {
-        platform::PlatformHttpClient::put(self, url, headers, body)
-    }
-    fn delete_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-    ) -> Result<(u16, platform::ResponseBody)> {
-        platform::PlatformHttpClient::delete(self, url, headers)
-    }
-}
-
-impl<T: platform::PlatformHttpClient> channels::ChannelHttpClient for T {
+/// 任何 PlatformHttpClient（含 `dyn PlatformHttpClient`）均可作为 ChannelHttpClient 使用。
+/// `?Sized` 覆盖 `dyn PlatformHttpClient` / `dyn PlatformHttpClient + Send`，
+/// 替代原先三份重复的手写 dyn 实现。
+impl<T: platform::PlatformHttpClient + ?Sized> channels::ChannelHttpClient for T {
     fn http_get(&mut self, url: &str) -> Result<(u16, platform::ResponseBody)> {
         platform::PlatformHttpClient::get(self, url, &[])
     }
@@ -226,72 +170,3 @@ impl<T: platform::PlatformHttpClient> channels::ChannelHttpClient for T {
     }
 }
 
-impl channels::ChannelHttpClient for dyn platform::PlatformHttpClient + '_ {
-    fn http_get(&mut self, url: &str) -> Result<(u16, platform::ResponseBody)> {
-        platform::PlatformHttpClient::get(self, url, &[])
-    }
-    fn http_get_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-    ) -> Result<(u16, platform::ResponseBody)> {
-        platform::PlatformHttpClient::get(self, url, headers)
-    }
-    fn http_post(&mut self, url: &str, body: &[u8]) -> Result<(u16, platform::ResponseBody)> {
-        platform::PlatformHttpClient::post(self, url, &[], body)
-    }
-    fn http_post_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: &[u8],
-    ) -> Result<(u16, platform::ResponseBody)> {
-        platform::PlatformHttpClient::post(self, url, headers, body)
-    }
-    fn http_patch_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: &[u8],
-    ) -> Result<(u16, platform::ResponseBody)> {
-        platform::PlatformHttpClient::patch(self, url, headers, body)
-    }
-    fn reset_connection_for_retry(&mut self) {
-        platform::PlatformHttpClient::reset_connection_for_retry(self);
-    }
-}
-
-impl channels::ChannelHttpClient for dyn platform::PlatformHttpClient + Send + '_ {
-    fn http_get(&mut self, url: &str) -> Result<(u16, platform::ResponseBody)> {
-        platform::PlatformHttpClient::get(self, url, &[])
-    }
-    fn http_get_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-    ) -> Result<(u16, platform::ResponseBody)> {
-        platform::PlatformHttpClient::get(self, url, headers)
-    }
-    fn http_post(&mut self, url: &str, body: &[u8]) -> Result<(u16, platform::ResponseBody)> {
-        platform::PlatformHttpClient::post(self, url, &[], body)
-    }
-    fn http_post_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: &[u8],
-    ) -> Result<(u16, platform::ResponseBody)> {
-        platform::PlatformHttpClient::post(self, url, headers, body)
-    }
-    fn http_patch_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: &[u8],
-    ) -> Result<(u16, platform::ResponseBody)> {
-        platform::PlatformHttpClient::patch(self, url, headers, body)
-    }
-    fn reset_connection_for_retry(&mut self) {
-        platform::PlatformHttpClient::reset_connection_for_retry(self);
-    }
-}

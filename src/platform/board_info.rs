@@ -39,10 +39,15 @@ fn collect_esp() -> String {
         "chip_model": chip_model,
         "chip_revision": chip_revision,
         "cores": cores,
-        // Keep heap_free for backward compatibility; it represents internal + PSRAM total.
+        // heap_free：兼容旧字段，等于 heap_free_total（内部 + PSRAM 空闲之和）。
+        // heap_free_total: internal free + PSRAM free (unified pool for legacy consumers).
         "heap_free": heap_total,
         "heap_free_total": heap_total,
+        // heap_free_internal：当前内部 SRAM 空闲（不含 PSRAM），反映实时堆压力。
+        // heap_free_internal: current internal SRAM free (excludes PSRAM); real-time pressure indicator.
         "heap_free_internal": heap_internal,
+        // heap_min_free：内部 SRAM 空闲历史最低水位（启动以来最小值），反映峰值压力。
+        // heap_min_free: all-time minimum of internal SRAM free since boot (peak pressure watermark).
         "heap_min_free": heap_min_free,
         "psram_free": psram_free,
         "uptime_secs": uptime_secs,
@@ -141,12 +146,13 @@ fn hostname_best_effort() -> String {
     String::new()
 }
 
+/// 在线逻辑 CPU 数量；供 `board_info` 与 `system_info` 共用。Linux 用 `libc::sysconf`；非 unix 返回 0。
 #[cfg(all(
     not(any(target_arch = "xtensa", target_arch = "riscv32")),
     unix,
     target_os = "linux"
 ))]
-fn cpu_core_count() -> u32 {
+pub(crate) fn cpu_core_count() -> u32 {
     for sc in [libc::_SC_NPROCESSORS_ONLN, libc::_SC_NPROCESSORS_CONF] {
         let n = unsafe { libc::sysconf(sc) };
         if n > 0 {
@@ -161,7 +167,7 @@ fn cpu_core_count() -> u32 {
     unix,
     not(target_os = "linux")
 ))]
-fn cpu_core_count() -> u32 {
+pub(crate) fn cpu_core_count() -> u32 {
     let n = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) };
     if n > 0 {
         n as u32
@@ -171,7 +177,7 @@ fn cpu_core_count() -> u32 {
 }
 
 #[cfg(all(not(any(target_arch = "xtensa", target_arch = "riscv32")), not(unix)))]
-fn cpu_core_count() -> u32 {
+pub(crate) fn cpu_core_count() -> u32 {
     0
 }
 
@@ -249,8 +255,9 @@ fn linux_device_tree_model() -> String {
         .unwrap_or_default()
 }
 
+/// `/proc/sys/kernel/osrelease` 内容（即 `uname -r`）；供 `board_info` 与 `system_info` 共用。
 #[cfg(target_os = "linux")]
-fn linux_kernel_release() -> String {
+pub(crate) fn linux_kernel_release() -> String {
     std::fs::read_to_string("/proc/sys/kernel/osrelease")
         .ok()
         .map(|s| s.trim().to_string())
@@ -258,11 +265,12 @@ fn linux_kernel_release() -> String {
         .unwrap_or_default()
 }
 
+/// `/proc/cpuinfo` 中最具代表性的 CPU 型号字符串；供 `board_info` 与 `system_info` 共用。
 #[cfg(all(
     not(any(target_arch = "xtensa", target_arch = "riscv32")),
     target_os = "linux"
 ))]
-fn parse_proc_cpu_model() -> String {
+pub(crate) fn parse_proc_cpu_model() -> String {
     let Ok(s) = std::fs::read_to_string("/proc/cpuinfo") else {
         return linux_device_tree_model();
     };
@@ -411,28 +419,6 @@ fn linux_load_avg() -> (f32, f32, f32, u32) {
     (load1, load5, load15, procs)
 }
 
-#[cfg(target_os = "linux")]
-fn linux_cpu_usage() -> f32 {
-    let s = std::fs::read_to_string("/proc/stat").unwrap_or_default();
-    for line in s.lines() {
-        if line.starts_with("cpu ") {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 5 {
-                break;
-            }
-            let user = parts[1].parse::<u64>().unwrap_or(0);
-            let nice = parts[2].parse::<u64>().unwrap_or(0);
-            let system = parts[3].parse::<u64>().unwrap_or(0);
-            let idle = parts[4].parse::<u64>().unwrap_or(0);
-            let total = user + nice + system + idle;
-            if total > 0 {
-                return ((total - idle) as f32 / total as f32) * 100.0;
-            }
-            break;
-        }
-    }
-    0.0
-}
 
 #[cfg(target_os = "linux")]
 fn linux_thermal_temp() -> Option<f32> {
@@ -516,7 +502,8 @@ fn linux_host_payload(
     let storage = disk_storage_json(&state_root);
 
     let (load1, load5, load15, proc_count) = linux_load_avg();
-    let cpu_usage = linux_cpu_usage();
+    // 使用 orchestrator 的 delta 采样值，与 /api/resource 口径一致，避免重复采样。
+    let cpu_usage = snap.cpu_usage_percent;
     let temp = linux_thermal_temp();
     let ifaces = linux_network_interfaces();
 

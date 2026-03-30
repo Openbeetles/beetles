@@ -1,5 +1,8 @@
 //! Stream HTTP connection slot management for agent thread.
 //! Agent 线程内的 Stream HTTP 连接槽位管理。
+//!
+//! 连接槽位统计（reuse/create/reset/invalidate）通过 `crate::metrics` 记录，
+//! 可在 `/api/metrics` 等端点统一查询，不再只靠周期日志排障。
 
 use crate::PlatformHttpClient;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -15,10 +18,7 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-static STREAM_HTTP_SLOT_REUSE_HITS: AtomicU32 = AtomicU32::new(0);
-static STREAM_HTTP_SLOT_CREATES: AtomicU32 = AtomicU32::new(0);
-static STREAM_HTTP_SLOT_RESETS: AtomicU32 = AtomicU32::new(0);
-static STREAM_HTTP_SLOT_INVALIDATES: AtomicU32 = AtomicU32::new(0);
+/// 总操作次数，仅用于周期日志触发（每 N 次打印一次摘要）；不在 metrics 快照中暴露。
 static STREAM_HTTP_SLOT_OPS: AtomicU32 = AtomicU32::new(0);
 
 fn maybe_log_stream_http_stats(trigger: &str) {
@@ -26,25 +26,20 @@ fn maybe_log_stream_http_stats(trigger: &str) {
     if ops == 0 || !ops.is_multiple_of(STREAM_HTTP_STATS_LOG_EVERY) {
         return;
     }
-    let hits = STREAM_HTTP_SLOT_REUSE_HITS.load(Ordering::Relaxed);
-    let creates = STREAM_HTTP_SLOT_CREATES.load(Ordering::Relaxed);
-    let resets = STREAM_HTTP_SLOT_RESETS.load(Ordering::Relaxed);
-    let invalidates = STREAM_HTTP_SLOT_INVALIDATES.load(Ordering::Relaxed);
-    let reuse_rate = if ops == 0 {
-        0u32
+    let snap = crate::metrics::snapshot();
+    let hits = snap.stream_http_reuse_hits;
+    let creates = snap.stream_http_creates;
+    let resets = snap.stream_http_resets;
+    let invalidates = snap.stream_http_invalidates;
+    let total = hits + creates;
+    let reuse_rate = if total == 0 {
+        0u64
     } else {
-        ((hits as u64 * 100) / ops as u64) as u32
+        (hits * 100) / total
     };
     log::info!(
         "[{}] stream_http_stats trigger={} ops={} reuse_hits={} creates={} resets={} invalidates={} reuse_rate={}%",
-        TAG,
-        trigger,
-        ops,
-        hits,
-        creates,
-        resets,
-        invalidates,
-        reuse_rate
+        TAG, trigger, ops, hits, creates, resets, invalidates, reuse_rate
     );
 }
 
@@ -52,7 +47,7 @@ pub fn invalidate_stream_http_slot(reason: &str) {
     STREAM_EDITOR_HTTP_SLOT.with(|slot| {
         let mut slot = slot.borrow_mut();
         if slot.take().is_some() {
-            STREAM_HTTP_SLOT_INVALIDATES.fetch_add(1, Ordering::Relaxed);
+            crate::metrics::record_stream_http_invalidate();
             log::warn!("[{}] stream_http invalidate reason={}", TAG, reason);
         }
     });
@@ -64,7 +59,7 @@ fn reset_stream_http_slot(reason: &str) -> bool {
         let mut slot = slot.borrow_mut();
         if let Some(http) = slot.as_mut() {
             PlatformHttpClient::reset_connection_for_retry(http.as_mut());
-            STREAM_HTTP_SLOT_RESETS.fetch_add(1, Ordering::Relaxed);
+            crate::metrics::record_stream_http_reset();
             reset = true;
         }
     });
@@ -83,10 +78,10 @@ fn with_stream_http_slot<T>(
         let mut slot = slot.borrow_mut();
         if slot.is_none() {
             *slot = Some(create_http()?);
-            STREAM_HTTP_SLOT_CREATES.fetch_add(1, Ordering::Relaxed);
+            crate::metrics::record_stream_http_create();
             log::info!("[{}] stream_http create op={}", TAG, op_name);
         } else {
-            STREAM_HTTP_SLOT_REUSE_HITS.fetch_add(1, Ordering::Relaxed);
+            crate::metrics::record_stream_http_reuse();
         }
         STREAM_HTTP_SLOT_OPS.fetch_add(1, Ordering::Relaxed);
         let http = slot.as_mut().ok_or_else(|| {

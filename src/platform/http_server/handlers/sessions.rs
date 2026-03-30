@@ -14,9 +14,9 @@ pub fn body(ctx: &HandlerContext, page: usize, limit: usize) -> Result<String, S
         .map_err(|e| state::sanitize_error_for_log(&e))?;
 
     let total = all_ids.len();
-    let limit = limit.min(100).max(1);
+    let limit = limit.clamp(1, 100);
     let page = page.max(1);
-    let total_pages = (total + limit - 1) / limit;
+    let total_pages = total.div_ceil(limit);
     let skip = (page - 1) * limit;
 
     let items: Vec<&str> = all_ids

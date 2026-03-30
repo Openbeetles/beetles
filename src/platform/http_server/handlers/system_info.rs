@@ -109,7 +109,7 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let firmware_version = ctx.version.as_ref();
     let ota_available = cfg!(feature = "ota");
     let locale = config::get_locale(ctx.config_store.as_ref());
-    let lan_ip = crate::platform::wifi::wifi_sta_ip().unwrap_or_else(|| "—".to_string());
+    let lan_ip = ctx.platform.wifi_sta_ip().unwrap_or_else(|| "—".to_string());
     #[allow(unused_mut)]
     let mut json = serde_json::json!({
         "product_name": product_name,
@@ -122,24 +122,33 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         "lan_ip": lan_ip,
     });
 
-    // Linux 特有字段
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    // Linux 特有字段——统一从 board_info 共享函数取值，避免重复解析 /proc。
+    #[cfg(target_os = "linux")]
     {
+        use crate::platform::board_info::{
+            cpu_core_count, linux_kernel_release, parse_proc_cpu_model,
+        };
         if let Some(obj) = json.as_object_mut() {
             obj.insert("os_type".to_string(), serde_json::json!("Linux"));
-            if let Some(kernel) = get_kernel_version() {
+            let kernel = linux_kernel_release();
+            if !kernel.is_empty() {
                 obj.insert("kernel_version".to_string(), serde_json::json!(kernel));
             }
-            if let Some(cpu) = get_cpu_model() {
+            let cpu = parse_proc_cpu_model();
+            if !cpu.is_empty() {
                 obj.insert("cpu_model".to_string(), serde_json::json!(cpu));
             }
-            obj.insert("cpu_cores".to_string(), serde_json::json!(get_cpu_cores()));
+            obj.insert(
+                "cpu_cores".to_string(),
+                serde_json::json!(cpu_core_count()),
+            );
         }
     }
 
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     {
-        let hw = crate::platform::runtime_board::hardware_summary_line();
+        let has_psram = ctx.platform.memory_snapshot().heap_free_spiram > 0;
+        let hw = crate::platform::runtime_board::hardware_summary_line(has_psram);
         if let Some(obj) = json.as_object_mut() {
             obj.insert("hardware_model".to_string(), serde_json::json!(hw));
         }
@@ -162,37 +171,3 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     serde_json::to_string(&json).map_err(to_io)
 }
 
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-fn get_kernel_version() -> Option<String> {
-    use std::fs;
-    fs::read_to_string("/proc/version")
-        .ok()
-        .and_then(|s| s.split_whitespace().nth(2).map(String::from))
-}
-
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-fn get_cpu_model() -> Option<String> {
-    use std::fs;
-    if let Ok(content) = fs::read_to_string("/proc/cpuinfo") {
-        for line in content.lines() {
-            if line.starts_with("model name") {
-                if let Some(model) = line.split(':').nth(1) {
-                    return Some(model.trim().to_string());
-                }
-            }
-        }
-    }
-    None
-}
-
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-fn get_cpu_cores() -> u32 {
-    use std::fs;
-    if let Ok(content) = fs::read_to_string("/proc/cpuinfo") {
-        return content
-            .lines()
-            .filter(|l| l.starts_with("processor"))
-            .count() as u32;
-    }
-    1
-}

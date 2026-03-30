@@ -8,13 +8,8 @@ use std::process::Command;
 const PING_MAX_COUNT: u32 = 10;
 const CURL_TIMEOUT_SECS: u32 = 30;
 
+#[derive(Default)]
 pub struct NetworkTool;
-
-impl NetworkTool {
-    pub fn new() -> Self {
-        Self
-    }
-}
 
 impl Tool for NetworkTool {
     fn name(&self) -> &'static str {
@@ -83,7 +78,7 @@ impl Tool for NetworkTool {
                 let count = parsed.count.unwrap_or(4).min(PING_MAX_COUNT);
 
                 let output = Command::new("ping")
-                    .args(&["-c", &count.to_string(), &host])
+                    .args(["-c", &count.to_string(), &host])
                     .output()
                     .map_err(|e| Error::Other {
                         source: Box::new(e),
@@ -110,7 +105,7 @@ impl Tool for NetworkTool {
                 let method = parsed.method.as_deref().unwrap_or("GET");
 
                 let output = Command::new("curl")
-                    .args(&[
+                    .args([
                         "-X",
                         method,
                         "--max-time",

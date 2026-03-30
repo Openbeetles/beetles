@@ -13,7 +13,7 @@ use crate::constants::{
 };
 use crate::error::Result;
 use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
-use crate::llm::{LlmClient, LlmHttpClient, Message, StopReason, ToolChoicePolicy, ToolSpec};
+use crate::llm::{LlmClient, Message, StopReason, ToolChoicePolicy, ToolSpec};
 use crate::memory::{
     EmotionSignalStore, ImportantMessageStore, MemoryStore, PendingRetryStore, SessionStore,
     SessionSummaryStore, TaskContinuationStore,
@@ -21,7 +21,7 @@ use crate::memory::{
 use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
 use crate::state;
-use crate::tools::ToolContext;
+use crate::tools::http_bridge::HttpClientToolContext;
 use crate::util::{
     remove_substrings_all_trim, strip_agent_stop_confirmation, truncate_content_to_max,
 };
@@ -224,14 +224,6 @@ fn compact_early_tool_rounds(messages: &mut [Message], initial_count: usize) {
     }
 }
 
-/// 在 run_worker_path 内包装 http，注入当前 msg 的 chat_id/channel，供 remind_at 等工具使用。
-struct AgentToolCtx<'a> {
-    http: &'a mut dyn PlatformHttpClient,
-    chat_id: Arc<str>,
-    channel: Arc<str>,
-    locale: UiLocale,
-}
-
 fn try_send_outbound(outbound_tx: &OutboundTx, msg: PcMsg, log_prefix: &str) -> bool {
     match outbound_tx.try_send(msg) {
         Ok(()) => {
@@ -329,105 +321,6 @@ fn handle_llm_gate(
     }
 }
 
-impl LlmHttpClient for AgentToolCtx<'_> {
-    fn do_post(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: &[u8],
-    ) -> Result<(u16, crate::platform::ResponseBody)> {
-        crate::platform::PlatformHttpClient::post(self.http, url, headers, body)
-    }
-
-    fn do_post_streaming(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: &[u8],
-        max_response_bytes: Option<usize>,
-        on_chunk: &mut dyn FnMut(&[u8]) -> Result<()>,
-    ) -> Result<u16> {
-        crate::platform::PlatformHttpClient::post_streaming(
-            self.http,
-            url,
-            headers,
-            body,
-            max_response_bytes,
-            on_chunk,
-        )
-    }
-
-    fn reset_connection_for_retry(&mut self) {
-        crate::platform::PlatformHttpClient::reset_connection_for_retry(self.http);
-    }
-}
-
-impl ToolContext for AgentToolCtx<'_> {
-    fn get_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-    ) -> Result<(u16, crate::platform::ResponseBody)> {
-        crate::platform::PlatformHttpClient::get(self.http, url, headers)
-    }
-    fn post_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: &[u8],
-    ) -> Result<(u16, crate::platform::ResponseBody)> {
-        crate::platform::PlatformHttpClient::post(self.http, url, headers, body)
-    }
-    fn post_streaming(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: &[u8],
-        max_response_bytes: Option<usize>,
-        on_chunk: &mut dyn FnMut(&[u8]) -> Result<()>,
-    ) -> Result<u16> {
-        crate::platform::PlatformHttpClient::post_streaming(
-            self.http,
-            url,
-            headers,
-            body,
-            max_response_bytes,
-            on_chunk,
-        )
-    }
-    fn patch_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: &[u8],
-    ) -> Result<(u16, crate::platform::ResponseBody)> {
-        crate::platform::PlatformHttpClient::patch(self.http, url, headers, body)
-    }
-    fn put_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: &[u8],
-    ) -> Result<(u16, crate::platform::ResponseBody)> {
-        crate::platform::PlatformHttpClient::put(self.http, url, headers, body)
-    }
-    fn delete_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-    ) -> Result<(u16, crate::platform::ResponseBody)> {
-        crate::platform::PlatformHttpClient::delete(self.http, url, headers)
-    }
-    fn current_chat_id(&self) -> Option<&str> {
-        Some(&self.chat_id)
-    }
-    fn current_channel(&self) -> Option<&str> {
-        Some(&self.channel)
-    }
-    fn user_locale(&self) -> UiLocale {
-        self.locale
-    }
-}
 
 /// 程序性触发：用最近会话生成摘要并 `set_with_count`。LLM 失败时确定性回退，仍落盘。
 fn generate_session_summary(
@@ -456,10 +349,10 @@ fn generate_session_summary(
     };
     let messages = [user_msg];
     let loc = (config.resolve_locale)();
-    let mut ctx = AgentToolCtx {
+    let mut ctx = HttpClientToolContext {
         http,
-        chat_id: Arc::from(chat_id),
-        channel: Arc::from("system"),
+        chat_id: Some(Arc::from(chat_id)),
+        channel: Some(Arc::from("system")),
         locale: loc,
     };
     match llm.chat(
@@ -803,16 +696,11 @@ fn run_agent_loop_lane(
                 continue;
             }
         }
-        // 准入通过：标记 agent 任务开始。Guard Drop 时自动递减，覆盖整个任务生命周期（含工具调用、会话写入、回复发送）。
-        // Admission passed: mark agent task in-flight for the display busy indicator.
-        // The guard auto-decrements on drop, covering the full task lifetime.
         let admission_ms = msg_start.elapsed().as_millis();
-        let _agent_task_guard = crate::orchestrator::begin_agent_task();
 
-        if let Some(ref mut f) = typing_notifier {
-            f(&msg.channel, &msg.chat_id, http);
-        }
-
+        // LLM 门控先于任务槽位获取与 typing 提示，确保：
+        // 1. RetryLater 睡眠期间 active_agent_tasks 不被错误计为 1；
+        // 2. typing 仅在真正进入 LLM 路径时才发送，避免产生空响应。
         if matches!(
             handle_llm_gate(
                 &msg,
@@ -826,6 +714,13 @@ fn run_agent_loop_lane(
             GateResult::Skipped
         ) {
             continue;
+        }
+
+        // Gate 通过后获取任务槽位：Guard Drop 时自动递减，覆盖整个任务生命周期（含工具调用、会话写入、回复发送）。
+        // Acquire task slot only after gate passes; guard auto-decrements on drop.
+        let _agent_task_guard = crate::orchestrator::begin_agent_task();
+        if let Some(ref mut f) = typing_notifier {
+            f(&msg.channel, &msg.chat_id, http);
         }
         let final_content = run_worker_path(
             http,
@@ -1140,10 +1035,10 @@ fn run_worker_path(
 ) -> Result<(WorkerOutcome, Option<u32>, bool, WorkerLatency)> {
     let mut latency = WorkerLatency::default();
     let llm_tool_choice = ToolChoicePolicy::Auto;
-    let mut tool_ctx = AgentToolCtx {
+    let mut tool_ctx = HttpClientToolContext {
         http,
-        chat_id: msg.chat_id.clone(),
-        channel: msg.channel.clone(),
+        chat_id: Some(msg.chat_id.clone()),
+        channel: Some(msg.channel.clone()),
         locale: loc,
     };
     let (suffix, consumed_round) =
@@ -1196,6 +1091,7 @@ fn run_worker_path(
         system_continuation_suffix: suffix.as_deref(),
         emotion_signal_suffix,
         summary_text,
+        llm_hint: budget.llm_hint,
     })
     .map_err(|e| e.with_stage("agent_context"))?;
     latency.context_ms = context_start.elapsed().as_millis();
@@ -1246,9 +1142,9 @@ fn run_worker_path(
         }
         // P1 Enhancement 3: 检测连续3轮无进展，注入提示。
         if round >= 3
-            && progress_history[0].map_or(false, |p| !p.new_info)
-            && progress_history[1].map_or(false, |p| !p.new_info)
-            && progress_history[2].map_or(false, |p| !p.new_info)
+            && progress_history[0].is_some_and(|p| !p.new_info)
+            && progress_history[1].is_some_and(|p| !p.new_info)
+            && progress_history[2].is_some_and(|p| !p.new_info)
         {
             messages.push(Message {
                 role: Cow::Borrowed("user"),

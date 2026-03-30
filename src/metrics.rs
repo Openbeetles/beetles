@@ -51,6 +51,13 @@ static VOICE_INPUT_FAIL_TOTAL: AtomicU32 = AtomicU32::new(0);
 static VOICE_OUTPUT_FAIL_TOTAL: AtomicU32 = AtomicU32::new(0);
 static WAKE_WORD_TRIGGER_TOTAL: AtomicU32 = AtomicU32::new(0);
 
+/// Stream HTTP 连接槽位统计：由 `runtime::stream_http` 写入，metrics 快照统一暴露。
+/// stream_http connection slot stats, written by `runtime::stream_http`.
+static STREAM_HTTP_REUSE_HITS: AtomicU32 = AtomicU32::new(0);
+static STREAM_HTTP_CREATES: AtomicU32 = AtomicU32::new(0);
+static STREAM_HTTP_RESETS: AtomicU32 = AtomicU32::new(0);
+static STREAM_HTTP_INVALIDATES: AtomicU32 = AtomicU32::new(0);
+
 /// Linux 嵌入式 WiFi：wpa 守护恢复、AP 栈重启计数；失败 stage 摘要（脱敏，固定长度）。
 static WIFI_RECONNECT_TOTAL: AtomicU32 = AtomicU32::new(0);
 static WIFI_AP_RESTART_TOTAL: AtomicU32 = AtomicU32::new(0);
@@ -287,6 +294,23 @@ pub fn record_error_by_stage(stage: &str) {
     c.fetch_add(1, Ordering::Relaxed);
 }
 
+/// Stream HTTP 槽位复用命中（slot 已存在，直接使用）。
+pub fn record_stream_http_reuse() {
+    STREAM_HTTP_REUSE_HITS.fetch_add(1, Ordering::Relaxed);
+}
+/// Stream HTTP 槽位新建（首次使用或已无效）。
+pub fn record_stream_http_create() {
+    STREAM_HTTP_CREATES.fetch_add(1, Ordering::Relaxed);
+}
+/// Stream HTTP 连接重置重试（keep-alive 恢复）。
+pub fn record_stream_http_reset() {
+    STREAM_HTTP_RESETS.fetch_add(1, Ordering::Relaxed);
+}
+/// Stream HTTP 槽位失效（连续失败后清空）。
+pub fn record_stream_http_invalidate() {
+    STREAM_HTTP_INVALIDATES.fetch_add(1, Ordering::Relaxed);
+}
+
 /// 快照：用于 health API 与结构化基线日志（无敏感信息）。内部用 u32 存储，以 u64 暴露。
 pub fn snapshot() -> MetricsSnapshot {
     MetricsSnapshot {
@@ -341,6 +365,10 @@ pub fn snapshot() -> MetricsSnapshot {
             .and_then(|m| m.lock().ok())
             .map(|g| g.clone())
             .unwrap_or_default(),
+        stream_http_reuse_hits: STREAM_HTTP_REUSE_HITS.load(Ordering::Relaxed) as u64,
+        stream_http_creates: STREAM_HTTP_CREATES.load(Ordering::Relaxed) as u64,
+        stream_http_resets: STREAM_HTTP_RESETS.load(Ordering::Relaxed) as u64,
+        stream_http_invalidates: STREAM_HTTP_INVALIDATES.load(Ordering::Relaxed) as u64,
     }
 }
 
@@ -393,6 +421,11 @@ pub struct MetricsSnapshot {
     pub wifi_reconnect_total: u64,
     pub wifi_ap_restart_total: u64,
     pub wifi_last_failure_stage: String,
+    /// Stream HTTP 连接槽位统计（复用命中 / 新建 / 重置 / 失效）。
+    pub stream_http_reuse_hits: u64,
+    pub stream_http_creates: u64,
+    pub stream_http_resets: u64,
+    pub stream_http_invalidates: u64,
 }
 
 impl MetricsSnapshot {
@@ -403,7 +436,7 @@ impl MetricsSnapshot {
         let mut buf = String::with_capacity(384);
         let _ = write!(
             buf,
-            "metrics msg_in={} msg_out={} llm_calls={} llm_err={} llm_last_ms={} ttft_last_ms={} e2e_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} user_done={} sys_done={} cron_done={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} wdt_feeds={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} voice_in_capture_ms={} voice_in_stt_http_ms={} voice_out_tts_http_ms={} voice_out_play_ms={} voice_in_fail={} voice_out_fail={} wake_word_trigger={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={}",
+            "metrics msg_in={} msg_out={} llm_calls={} llm_err={} llm_last_ms={} ttft_last_ms={} e2e_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} user_done={} sys_done={} cron_done={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} wdt_feeds={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} voice_in_capture_ms={} voice_in_stt_http_ms={} voice_out_tts_http_ms={} voice_out_play_ms={} voice_in_fail={} voice_out_fail={} wake_word_trigger={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={} shttp_reuse={} shttp_create={} shttp_reset={} shttp_invalidate={}",
             self.messages_in,
             self.messages_out,
             self.llm_calls,
@@ -450,7 +483,11 @@ impl MetricsSnapshot {
             self.last_active_epoch_secs,
             self.wifi_reconnect_total,
             self.wifi_ap_restart_total,
-            self.wifi_last_failure_stage
+            self.wifi_last_failure_stage,
+            self.stream_http_reuse_hits,
+            self.stream_http_creates,
+            self.stream_http_resets,
+            self.stream_http_invalidates,
         );
         buf
     }

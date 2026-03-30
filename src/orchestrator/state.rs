@@ -2,6 +2,8 @@
 //! Atomic state aggregation: heap, socket, pressure, channel health — fixed-size + atomics, zero heap alloc.
 
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+use std::sync::{Mutex, OnceLock};
 
 use super::channel_health::ChannelHealthSlot;
 
@@ -111,10 +113,7 @@ impl OrchestratorState {
     /// 首次调用时设置 baseline，后续若空闲增加则更新 baseline（避免负使用率）。
     pub fn update_heap(&self, internal: u32, spiram: u32, largest_block: u32) {
         let baseline = self.heap_baseline_internal.load(Ordering::Relaxed);
-        if baseline == 0 {
-            self.heap_baseline_internal
-                .store(internal, Ordering::Relaxed);
-        } else if internal > baseline {
+        if baseline == 0 || internal > baseline {
             self.heap_baseline_internal
                 .store(internal, Ordering::Relaxed);
         }
@@ -226,10 +225,77 @@ impl ResourceSnapshot {
     }
 }
 
+/// 上次 /proc/stat 采样的总 tick 数与 idle tick 数（Linux delta CPU 采样）。
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+struct CpuSample {
+    total: u64,
+    idle: u64,
+}
+
+/// 读取 /proc/stat 第一行（`cpu  ...`）并返回 (total, idle) tick 对；
+/// idle 包含 iowait，与主流工具（top、vmstat）语义一致。
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn read_cpu_stat() -> Option<CpuSample> {
+    let s = std::fs::read_to_string("/proc/stat").ok()?;
+    for line in s.lines() {
+        if !line.starts_with("cpu ") {
+            continue;
+        }
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 5 {
+            break;
+        }
+        let user = parts[1].parse::<u64>().unwrap_or(0);
+        let nice = parts[2].parse::<u64>().unwrap_or(0);
+        let system = parts[3].parse::<u64>().unwrap_or(0);
+        let idle = parts[4].parse::<u64>().unwrap_or(0);
+        let iowait = parts.get(5).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+        let irq = parts.get(6).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+        let softirq = parts.get(7).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+        let steal = parts.get(8).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+        let total = user + nice + system + idle + iowait + irq + softirq + steal;
+        return Some(CpuSample {
+            total,
+            idle: idle + iowait,
+        });
+    }
+    None
+}
+
+/// 上次读取的 CPU 样本，用于 delta 计算。`None` 表示尚无前一次采样（首次调用返回 0.0）。
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+static CPU_PREV: OnceLock<Mutex<Option<CpuSample>>> = OnceLock::new();
+
+/// 基于两次 /proc/stat 采样计算 CPU 使用率（%）。
+/// 首次调用存储基线快照并返回 0.0（无区间可比），之后返回区间利用率。
+/// 与单次瞬时测量（`(total-idle)/total` 累计量）不同，此为真实区间 CPU 使用率。
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub(super) fn read_cpu_usage_percent() -> f32 {
+    let prev_lock = CPU_PREV.get_or_init(|| Mutex::new(None));
+    let Ok(mut prev_guard) = prev_lock.lock() else {
+        return 0.0;
+    };
+    let Some(curr) = read_cpu_stat() else {
+        return 0.0;
+    };
+    let result = if let Some(ref prev) = *prev_guard {
+        let delta_total = curr.total.saturating_sub(prev.total);
+        let delta_idle = curr.idle.saturating_sub(prev.idle);
+        if delta_total > 0 {
+            (delta_total.saturating_sub(delta_idle) as f32 / delta_total as f32) * 100.0
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+    *prev_guard = Some(curr);
+    result
+}
+
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn get_cpu_usage() -> f32 {
-    // 简化实现：返回0，后续可以通过读取 /proc/stat 实现
-    0.0
+    read_cpu_usage_percent()
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]

@@ -72,14 +72,15 @@ mod esp {
         format!("{}-{}mb", slug, bucket)
     }
 
-    pub(super) fn hardware_summary_line() -> String {
+    /// `has_psram`: 由调用方从 `Platform::memory_snapshot().heap_free_spiram > 0` 传入，
+    /// 避免 platform 层直接依赖 orchestrator。
+    pub(super) fn hardware_summary_line(has_psram: bool) -> String {
         let info = chip_info();
         let model = info.model as u32;
         let pretty = model_id_label(model);
         let flash = read_flash_bytes();
         let flash_mb = flash / (1024 * 1024);
-        let snap = crate::orchestrator::snapshot();
-        let psram_note = if snap.heap_free_spiram > 0 {
+        let psram_note = if has_psram {
             "PSRAM present"
         } else {
             "no PSRAM (or not in use)"
@@ -124,9 +125,10 @@ pub fn resolved_board_id() -> String {
 }
 
 /// 给人看的单行硬件摘要（ESP）；其它目标由 `system_info` / `board_info` 另行组装。
+/// `has_psram`：由调用方从 `Platform::memory_snapshot().heap_free_spiram > 0` 传入。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub fn hardware_summary_line() -> String {
-    esp::hardware_summary_line()
+pub fn hardware_summary_line(has_psram: bool) -> String {
+    esp::hardware_summary_line(has_psram)
 }
 
 /// 供 `board_info` JSON：`chip_model` 字符串、revision、cores。

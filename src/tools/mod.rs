@@ -14,7 +14,7 @@ pub mod files;
 pub mod get_time;
 #[cfg(feature = "tools_diagnostics")]
 pub mod hardware;
-mod http_bridge;
+pub(crate) mod http_bridge;
 #[cfg(feature = "tools_network_extra")]
 pub mod http_request;
 #[cfg(feature = "tools_diagnostics")]

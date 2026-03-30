@@ -10,14 +10,11 @@ const ALLOWED_COMMANDS: &[&str] = &[
     "ls", "cat", "grep", "ps", "df", "free", "uptime", "whoami", "pwd", "date", "uname",
 ];
 
+#[derive(Default)]
 pub struct ShellTool;
 
 impl ShellTool {
-    pub fn new() -> Self {
-        Self
-    }
-
-    fn is_command_allowed(&self, cmd: &str) -> bool {
+    fn is_command_allowed(cmd: &str) -> bool {
         ALLOWED_COMMANDS.contains(&cmd)
     }
 }
@@ -62,7 +59,7 @@ impl Tool for ShellTool {
             message: format!("invalid args: {}", e),
         })?;
 
-        if !self.is_command_allowed(&parsed.command) {
+        if !Self::is_command_allowed(&parsed.command) {
             return Err(Error::Config {
                 stage: "shell_tool",
                 message: format!("command '{}' not in whitelist", parsed.command),
