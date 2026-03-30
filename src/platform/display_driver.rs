@@ -9,7 +9,12 @@ use crate::display::{
     compute_layout, DisplayChannelStatus, DisplayCommand, DisplayConfig, DisplayLayout,
     DisplayPressureLevel, DisplaySystemState, DISPLAY_LAYOUT_REF_PX,
 };
-use crate::error::Result;
+#[cfg(all(
+    target_os = "linux",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+use crate::display::is_framebuffer_config;
+use crate::error::{Error, Result};
 use std::convert::Infallible;
 use std::time::Instant;
 
@@ -646,7 +651,10 @@ where
         }
         DisplayCommand::Clear => {
             use embedded_graphics::prelude::*;
-            let _ = backend.clear(Rgb565::BLACK);
+            match backend.clear(Rgb565::BLACK) {
+                Ok(()) => {}
+                Err(never) => match never {},
+            }
             backend.flush(config.offset_x, config.offset_y)?;
         }
     }
@@ -750,19 +758,11 @@ impl DisplayState {
                     });
                 }
                 Err(e) => {
-                    log::warn!(
-                        "[display] framebuffer init failed ({}); display unavailable",
-                        e
-                    );
-                    return Ok(Self {
-                        config: config.clone(),
-                        layout,
-                        available: false,
-                        last_command_at: None,
-                        bl_pin,
-                        bl_ledc_initialized: false,
-                        backend_fb: None,
-                    });
+                    log::warn!("[display] framebuffer init failed: {}", e);
+                    return Err(Error::config(
+                        "display_init",
+                        format!("framebuffer init failed: {e}"),
+                    ));
                 }
             }
         }
@@ -770,7 +770,6 @@ impl DisplayState {
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux")))]
         {
             log::info!("[display] host stub: init skipped (no SPI hardware, not Linux)");
-            let _ = is_framebuffer_config;
             Ok(Self {
                 config: config.clone(),
                 layout,
@@ -955,6 +954,27 @@ impl DisplayState {
             }
         }
         Ok(())
+    }
+}
+
+/// 将 `DisplayState::init` 结果写入 `slot`：成功则 `Some`，失败则清空并返回 `display_init` 错误。
+/// Writes `DisplayState::init` into `slot`: `Some` on success; clears and returns on failure.
+pub(crate) fn install_display_state(
+    slot: &mut Option<DisplayState>,
+    config: &DisplayConfig,
+) -> Result<()> {
+    match DisplayState::init(config) {
+        Ok(state) => {
+            *slot = Some(state);
+            Ok(())
+        }
+        Err(e) => {
+            *slot = None;
+            Err(Error::config(
+                "display_init",
+                format!("display init failed: {e}"),
+            ))
+        }
     }
 }
 
@@ -2459,6 +2479,14 @@ fn render_boot_progress<D: DrawTarget<Color = Rgb565>>(
     }
 }
 
+/// 将仅含 ASCII 数字/标点的缓冲区转为 `&str`；异常时回退为 `"?"`（release 不 panic）。
+fn utf8_ascii_digits_or_fallback(buf: &[u8]) -> &str {
+    match std::str::from_utf8(buf) {
+        Ok(s) => s,
+        Err(_) => "?",
+    }
+}
+
 /// Draw message stats line with separated label and value colors for better typography.
 fn draw_stats_line<D: DrawTarget<Color = Rgb565>>(
     target: &mut D,
@@ -2486,12 +2514,12 @@ fn draw_stats_line<D: DrawTarget<Color = Rgb565>>(
     // In
     let mut buf_in = [0u8; 10];
     let len_in = write_u32_to_buf(msg_in, &mut buf_in, 0);
-    draw_part("In:", core::str::from_utf8(&buf_in[..len_in]).unwrap());
+    draw_part("In:", utf8_ascii_digits_or_fallback(&buf_in[..len_in]));
 
     // Out
     let mut buf_out = [0u8; 10];
     let len_out = write_u32_to_buf(msg_out, &mut buf_out, 0);
-    draw_part("Out:", core::str::from_utf8(&buf_out[..len_out]).unwrap());
+    draw_part("Out:", utf8_ascii_digits_or_fallback(&buf_out[..len_out]));
 
     // L
     if llm_ms > 0 {
@@ -2511,7 +2539,7 @@ fn draw_stats_line<D: DrawTarget<Color = Rgb565>>(
             buf_l[pos + 1] = b's';
             pos += 2;
         }
-        draw_part("L:", core::str::from_utf8(&buf_l[..pos]).unwrap());
+        draw_part("L:", utf8_ascii_digits_or_fallback(&buf_l[..pos]));
     }
 
     // Time
@@ -2545,7 +2573,7 @@ fn draw_stats_line<D: DrawTarget<Color = Rgb565>>(
             buf_t[3] = b'0' + m / 10;
             buf_t[4] = b'0' + m % 10;
         }
-        draw_part("", core::str::from_utf8(&buf_t).unwrap());
+        draw_part("", utf8_ascii_digits_or_fallback(&buf_t));
     }
 }
 

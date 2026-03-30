@@ -6,7 +6,7 @@ pub(crate) mod display_fb;
 
 use crate::platform::abstraction::{MemorySnapshot, Platform, StateFs};
 use crate::platform::{
-    display_driver::DisplayState,
+    display_driver::{install_display_state, DisplayState},
     heartbeat_file::read_heartbeat_file,
     spiffs::{
         spiffs_usage, SpiffsImportantMessageStore, SpiffsMemoryStore, SpiffsPendingRetryStore,
@@ -209,19 +209,8 @@ impl Platform for LinuxPlatform {
     }
 
     fn init_display(&self, config: &DisplayConfig) -> crate::error::Result<()> {
-        match DisplayState::init(config) {
-            Ok(state) => {
-                *self.display_state.lock().unwrap_or_else(|e| e.into_inner()) = Some(state);
-                Ok(())
-            }
-            Err(e) => {
-                *self.display_state.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                Err(crate::error::Error::config(
-                    "display_init",
-                    format!("display init failed: {}", e),
-                ))
-            }
-        }
+        let mut guard = self.display_state.lock().unwrap_or_else(|e| e.into_inner());
+        install_display_state(&mut guard, config)
     }
 
     fn display_available(&self) -> bool {

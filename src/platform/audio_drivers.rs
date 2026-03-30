@@ -765,7 +765,7 @@ impl AudioPipelineState {
                                 // Tee raw PCM to the wake-word engine BEFORE pushing to the
                                 // shared ring buffer.  This avoids contention with voice_input
                                 // which pops from the ring buffer on demand.
-                                #[cfg(target_arch = "xtensa")]
+                                #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
                                 crate::platform::wake_word::feed_pcm_i16(&mic_frame[..n]);
 
                                 let mut guard =

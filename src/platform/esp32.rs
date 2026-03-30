@@ -5,7 +5,7 @@
 use crate::platform::abstraction::{MemorySnapshot, Platform, StateFs};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::platform::{
-    display_driver::DisplayState,
+    display_driver::{install_display_state, DisplayState},
     fetch_url::fetch_url_with_client,
     heartbeat_file::read_heartbeat_file,
     spiffs::{
@@ -224,19 +224,8 @@ impl Platform for Esp32Platform {
     }
 
     fn init_display(&self, config: &DisplayConfig) -> crate::error::Result<()> {
-        match DisplayState::init(config) {
-            Ok(state) => {
-                *self.display_state.lock().unwrap_or_else(|e| e.into_inner()) = Some(state);
-                Ok(())
-            }
-            Err(e) => {
-                *self.display_state.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                Err(crate::error::Error::config(
-                    "display_init",
-                    format!("display init failed: {}", e),
-                ))
-            }
-        }
+        let mut guard = self.display_state.lock().unwrap_or_else(|e| e.into_inner());
+        install_display_state(&mut guard, config)
     }
 
     fn init_audio(&self, config: &AudioSegment) -> crate::error::Result<()> {
