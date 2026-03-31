@@ -44,6 +44,7 @@ impl Tool for MemoryManageTool {
                 "recent_n": { "type": "integer", "description": "Max number of daily notes to list (default 10, max 30)" },
                 "append": { "type": "boolean", "description": "If true, append to existing note instead of overwrite (default false, for write_daily_note)" },
                 "id": { "type": "string", "description": "Structured long-term memory id for get_long_term/delete_long_term" },
+                "topic": { "type": "string", "description": "Structured long-term memory stable topic key, e.g. response_style or current_project" },
                 "kind": { "type": "string", "description": "Structured long-term memory kind: preference|profile|relationship|project|task|constraint|fact" },
                 "keywords": { "type": "array", "items": { "type": "string" }, "description": "Structured long-term memory keywords" }
             },
@@ -173,6 +174,10 @@ impl Tool for MemoryManageTool {
                     .and_then(|x| x.as_str())
                     .ok_or_else(|| Error::config("tool_memory_manage", "missing kind"))?;
                 let kind = parse_long_term_kind(kind)?;
+                let topic = obj
+                    .get("topic")
+                    .and_then(|x| x.as_str())
+                    .ok_or_else(|| Error::config("tool_memory_manage", "missing topic"))?;
                 let content = obj
                     .get("content")
                     .and_then(|x| x.as_str())
@@ -189,6 +194,7 @@ impl Tool for MemoryManageTool {
                     .unwrap_or_default();
                 let draft = LongTermMemoryDraft {
                     kind,
+                    topic: topic.to_string(),
                     content: content.to_string(),
                     keywords,
                     source_chat_id: None,

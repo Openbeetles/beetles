@@ -70,7 +70,7 @@ const PLAN_SYSTEM_SUFFIX: &str = "\n\n## Internal planning\nBefore solving the l
 
 /// 程序性会话摘要：单次轻量 LLM 调用的 system 提示。
 const SUMMARY_SYSTEM: &str = "You are a conversation summarizer. Compress the following conversation into a concise summary (max 800 chars) preserving key facts, user preferences and pending tasks. Reply with the summary only.";
-const LONG_TERM_MEMORY_EXTRACTION_SYSTEM: &str = "You extract durable long-term memory for a personal AI assistant. Return JSON only: an array of objects with keys kind, content, keywords. kind must be one of preference, profile, relationship, project, task, constraint, fact. First decide whether the recent conversation contains any stable user fact, lasting preference, durable project context, persistent task, or explicit constraint that will matter in future conversations. If not, return []. When uncertain, return []. Do not store greetings, one-off troubleshooting steps, transient status, or assistant-only claims.";
+const LONG_TERM_MEMORY_EXTRACTION_SYSTEM: &str = "You extract durable long-term memory for a personal AI assistant. Return JSON only: an array of objects with keys kind, topic, content, keywords. kind must be one of preference, profile, relationship, project, task, constraint, fact. topic must be a short stable slot key identifying the same memory across future updates, for example response_style, user_name, current_project, timezone, partner_name. First decide whether the recent conversation contains any stable user fact, lasting preference, durable project context, persistent task, or explicit constraint that will matter in future conversations. If not, return []. When uncertain, return []. Do not store greetings, one-off troubleshooting steps, transient status, or assistant-only claims.";
 const SESSION_SUMMARY_MIN_MESSAGES: usize = 20;
 const SESSION_SUMMARY_REFRESH_DELTA: usize = 10;
 const LONG_TERM_MEMORY_RECALL_RECENT_N: usize = 8;
@@ -169,9 +169,12 @@ fn parse_long_term_memory_drafts(raw: &str, chat_id: &str) -> Vec<LongTermMemory
             _ => return Vec::new(),
         }
     };
-    let parsed = serde_json::from_str::<Vec<LongTermMemoryDraft>>(json_slice).unwrap_or_default();
+    let parsed = serde_json::from_str::<Vec<serde_json::Value>>(json_slice).unwrap_or_default();
     let mut drafts = Vec::with_capacity(parsed.len().min(LONG_TERM_MEMORY_EXTRACTION_BATCH));
-    for mut draft in parsed {
+    for item in parsed {
+        let Ok(mut draft) = serde_json::from_value::<LongTermMemoryDraft>(item) else {
+            continue;
+        };
         if draft.source_chat_id.is_none() {
             draft.source_chat_id = Some(chat_id.to_string());
         }
@@ -185,6 +188,7 @@ fn parse_long_term_memory_drafts(raw: &str, chat_id: &str) -> Vec<LongTermMemory
 
 fn recall_long_term_memory_block(
     store: &dyn LongTermMemoryStore,
+    chat_id: &str,
     user_query: &str,
     system_max_len: usize,
 ) -> Option<String> {
@@ -195,6 +199,7 @@ fn recall_long_term_memory_block(
     store
         .recall(
             user_query,
+            Some(chat_id),
             crate::memory::DEFAULT_LONG_TERM_MEMORY_RECALL_LIMIT,
         )
         .ok()
@@ -1679,6 +1684,7 @@ fn run_worker_path(
     let snapshot = crate::orchestrator::snapshot();
     let long_term_memory_text = recall_long_term_memory_block(
         config.long_term_memory_store.as_ref(),
+        &msg.chat_id,
         &msg.content,
         budget.system_prompt_max,
     );
@@ -2320,6 +2326,21 @@ mod tests {
             12,
             crate::orchestrator::PressureLevel::Critical,
         ));
+    }
+
+    #[test]
+    fn parse_long_term_memory_drafts_skips_invalid_items_but_keeps_valid_ones() {
+        let raw = r#"
+        [
+          {"kind":"preference","topic":"response_style","content":"User prefers concise answers.","keywords":["concise"]},
+          {"kind":"preference","content":"missing topic should be ignored"},
+          {"kind":"task","topic":"current_focus","content":"Continue memory redesign","keywords":["memory"]}
+        ]
+        "#;
+        let drafts = parse_long_term_memory_drafts(raw, "chat-1");
+        assert_eq!(drafts.len(), 2);
+        assert_eq!(drafts[0].topic, "response_style");
+        assert_eq!(drafts[1].topic, "current_focus");
     }
 
     #[test]

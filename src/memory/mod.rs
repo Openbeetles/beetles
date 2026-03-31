@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 
 mod long_term;
 
-pub(crate) use long_term::score_long_term_memory_recall;
+pub(crate) use long_term::{
+    canonicalize_long_term_memory_entry, merge_long_term_memory_entry,
+    score_long_term_memory_recall,
+};
 pub use long_term::{
     render_long_term_memory_block, LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryKind,
     LongTermMemoryStore, DEFAULT_LONG_TERM_MEMORY_RECALL_LIMIT, MAX_LONG_TERM_MEMORY_BLOCK_LEN,

@@ -3,6 +3,7 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
+    canonicalize_long_term_memory_entry, merge_long_term_memory_entry,
     score_long_term_memory_recall, LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryStore,
     MAX_LONG_TERM_MEMORY_ITEMS, REL_PATH_LONG_TERM_MEMORIES,
 };
@@ -32,7 +33,11 @@ impl SpiffsLongTermMemoryStore {
                 if buf.len() <= 2 {
                     Vec::new()
                 } else {
-                    serde_json::from_slice(&buf).unwrap_or_default()
+                    serde_json::from_slice::<Vec<LongTermMemoryEntry>>(&buf)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter_map(canonicalize_long_term_memory_entry)
+                        .collect()
                 }
             }
             Err(_) => Vec::new(),
@@ -81,66 +86,57 @@ impl LongTermMemoryStore for SpiffsLongTermMemoryStore {
                     continue;
                 };
                 if let Some(existing) = entries.iter_mut().find(|entry| entry.id == id) {
-                    let mut merged_keywords = existing.keywords.clone();
-                    for keyword in normalized.keywords {
-                        if merged_keywords.iter().any(|item| item == &keyword) {
-                            continue;
-                        }
-                        merged_keywords.push(keyword);
-                    }
-                    merged_keywords.truncate(crate::memory::MAX_LONG_TERM_MEMORY_KEYWORDS);
-                    if existing.keywords != merged_keywords {
-                        existing.keywords = merged_keywords;
-                        changed = true;
-                    }
-                    if existing.source_chat_id.is_none() && normalized.source_chat_id.is_some() {
-                        existing.source_chat_id = normalized.source_chat_id.clone();
-                        changed = true;
-                    }
+                    changed |= merge_long_term_memory_entry(existing, &normalized, now_secs);
                     continue;
                 }
 
                 entries.push(LongTermMemoryEntry {
                     id,
                     kind: normalized.kind,
+                    topic: normalized.topic,
                     content: normalized.content,
                     keywords: normalized.keywords,
                     source_chat_id: normalized.source_chat_id,
                     created_at: now_secs,
+                    updated_at: now_secs,
                 });
                 changed = true;
             }
 
             if entries.len() > MAX_LONG_TERM_MEMORY_ITEMS {
-                entries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
                 entries.truncate(MAX_LONG_TERM_MEMORY_ITEMS);
                 changed = true;
             }
 
             if changed {
-                entries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
                 Self::persist(entries)?;
             }
             Ok(entries.len())
         })
     }
 
-    fn recall(&self, query: &str, limit: usize) -> Result<Vec<LongTermMemoryEntry>> {
-        let limit = limit.clamp(
-            crate::memory::DEFAULT_LONG_TERM_MEMORY_RECALL_LIMIT,
-            MAX_LONG_TERM_MEMORY_ITEMS,
-        );
+    fn recall(
+        &self,
+        query: &str,
+        source_chat_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<LongTermMemoryEntry>> {
+        let limit = limit.clamp(1, MAX_LONG_TERM_MEMORY_ITEMS);
+        let now_secs = crate::util::current_unix_secs();
         self.with_entries_mut(|entries| {
             let mut scored: Vec<(u32, LongTermMemoryEntry)> = entries
                 .iter()
                 .filter_map(|entry| {
-                    let score = score_long_term_memory_recall(query, entry);
+                    let score =
+                        score_long_term_memory_recall(query, source_chat_id, now_secs, entry);
                     (score > 0).then(|| (score, entry.clone()))
                 })
                 .collect();
             scored.sort_by(|a, b| {
                 b.0.cmp(&a.0)
-                    .then_with(|| b.1.created_at.cmp(&a.1.created_at))
+                    .then_with(|| b.1.updated_at.cmp(&a.1.updated_at))
             });
             scored.truncate(limit);
             Ok(scored.into_iter().map(|(_, entry)| entry).collect())
@@ -155,7 +151,7 @@ impl LongTermMemoryStore for SpiffsLongTermMemoryStore {
         let limit = limit.clamp(1, MAX_LONG_TERM_MEMORY_ITEMS);
         self.with_entries_mut(|entries| {
             let mut out = entries.clone();
-            out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
             out.truncate(limit);
             Ok(out)
         })
