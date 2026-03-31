@@ -1045,6 +1045,11 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             } else {
                 None
             };
+        let agent_strategy = if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
+            beetle::agent::AgentRunStrategy::Embedded
+        } else {
+            beetle::agent::AgentRunStrategy::LinuxEnhanced
+        };
         let agent_config = Arc::new(beetle::AgentLoopConfig {
             memory_store: Arc::clone(&memory_store),
             session_store: Arc::clone(&session_store),
@@ -1058,6 +1063,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             emotion_signal_store: Arc::clone(&emotion_signal_store)
                 as Arc<dyn beetle::memory::EmotionSignalStore + Send + Sync>,
             pending_retry: Arc::clone(&pending_retry_store),
+            strategy: agent_strategy,
             llm_stream: config.llm_stream,
             stream_editor,
             stream_editor_channel: Some(Arc::<str>::from(config.enabled_channel.as_str())),

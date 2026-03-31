@@ -1,5 +1,7 @@
 //! Agent ReAct 循环：入站一条 → context → chat（含 tool_use 多轮）→ 会话持久化 → 出站一条。
 //! 仅依赖 trait；HTTP/Tool 由 main 注入同一实现（如 EspHttpClient）。
+use super::parse_tools::{append_tool_fallback_instructions, recover_text_tool_calls};
+use super::strategy::{append_execution_plan, should_generate_execution_plan, AgentRunStrategy};
 use crate::agent::context::{build_context, RuntimeContext};
 use crate::bus::{
     InboundRx, IngressKind, OutboundTx, PcMsg, SystemInboundTx, UserInboundRx, UserInboundTx,
@@ -54,6 +56,8 @@ const TOOL_REPEAT_NOTE_3: &str =
     "[NOTE: identical tool call #3 - you've tried this exact call multiple times. The repeated results show this method won't work. Either try a fundamentally different approach or explain the blocker to the user.]\n";
 const TOOL_REPEAT_NOTE_MANY: &str =
     "[NOTE: identical tool call (repeated many times) - this is clearly not working. Stop repeating the same call. Either find a completely different solution or honestly explain to the user why you're stuck.]\n";
+const PLAN_SYSTEM_SUFFIX: &str = "\n\n## Internal planning\nBefore solving the latest user request, create a short internal execution plan. Return 3-6 concise numbered steps only. Do not answer the user. Do not call tools in this planning step.";
+const REFLECTION_NOTE: &str = "\n\n[SYSTEM] The last tool round did not produce a useful result. Reassess the plan, avoid repeating the same call, and either switch strategy or explain the blocker clearly.";
 
 /// 程序性会话摘要：单次轻量 LLM 调用的 system 提示。
 const SUMMARY_SYSTEM: &str = "You are a conversation summarizer. Compress the following conversation into a concise summary (max 800 chars) preserving key facts, user preferences and pending tasks. Reply with the summary only.";
@@ -472,6 +476,7 @@ pub struct AgentLoopConfig {
     pub important_message_store: Arc<dyn ImportantMessageStore + Send + Sync>,
     pub emotion_signal_store: Arc<dyn EmotionSignalStore + Send + Sync>,
     pub pending_retry: Arc<dyn PendingRetryStore + Send + Sync>,
+    pub strategy: AgentRunStrategy,
     /// 全局 LLM 流式模式；true 时 agent 使用 chat_with_progress 回调。
     pub llm_stream: bool,
     /// 流式编辑器；llm_stream 开且通道支持编辑时由 main 传入。
@@ -1078,6 +1083,7 @@ fn run_worker_path(
     let tool_policy = ToolPolicyContext::new(msg.ingress, msg.channel.as_ref());
     let tool_specs = registry.tool_specs_for_llm(&tool_policy);
     let has_tools = !tool_specs.is_empty();
+    let native_tool_calling = has_tools && worker_llm.supports_native_tools();
     let mut tool_ctx = HttpClientToolContext {
         http,
         chat_id: Some(msg.chat_id.clone()),
@@ -1140,12 +1146,13 @@ fn run_worker_path(
     };
     let context_start = Instant::now();
     let skill_descriptions = (config.get_skill_descriptions)();
-    let (system, mut messages) = build_context(&super::ContextParams {
+    let (mut system, mut messages) = build_context(&super::ContextParams {
         msg,
         memory: config.memory_store.as_ref(),
         session: config.session_store.as_ref(),
         important_message_store: config.important_message_store.as_ref(),
         has_tools,
+        native_tool_calling,
         skill_descriptions: &skill_descriptions,
         system_max_len: budget.system_prompt_max,
         messages_max_len: budget.messages_max,
@@ -1159,6 +1166,26 @@ fn run_worker_path(
     })
     .map_err(|e| e.with_stage("agent_context"))?;
     latency.context_ms = context_start.elapsed().as_millis();
+    if has_tools && !native_tool_calling {
+        append_tool_fallback_instructions(&mut system, budget.system_prompt_max, &tool_specs);
+    }
+    if config.strategy.enables_preplanning()
+        && should_generate_execution_plan(msg, has_tools, snapshot.pressure)
+    {
+        let planning_system = format!("{}{}", system, PLAN_SYSTEM_SUFFIX);
+        match worker_llm.chat(
+            &mut tool_ctx,
+            &planning_system,
+            &messages,
+            None,
+            ToolChoicePolicy::Auto,
+        ) {
+            Ok(resp) => append_execution_plan(&mut system, budget.system_prompt_max, &resp.content),
+            Err(e) => {
+                log::debug!("[agent_plan] skipped after planning error: {}", e);
+            }
+        }
+    }
 
     // ReAct 追加消息起始下标；用于滑动窗口压缩早期轮次。
     let initial_msg_count = messages.len();
@@ -1289,7 +1316,7 @@ fn run_worker_path(
                 &mut tool_ctx,
                 &system,
                 &messages,
-                (!tool_specs.is_empty()).then_some(tool_specs.as_slice()),
+                native_tool_calling.then_some(tool_specs.as_slice()),
                 llm_tool_choice,
                 &mut progress_cb,
             )
@@ -1298,7 +1325,7 @@ fn run_worker_path(
                 &mut tool_ctx,
                 &system,
                 &messages,
-                (!tool_specs.is_empty()).then_some(tool_specs.as_slice()),
+                native_tool_calling.then_some(tool_specs.as_slice()),
                 llm_tool_choice,
             )
         };
@@ -1316,6 +1343,11 @@ fn run_worker_path(
                 metrics::record_error_by_stage("agent_chat");
                 return Err(e.with_stage("agent_chat"));
             }
+        };
+        let response = if has_tools {
+            recover_text_tool_calls(response)
+        } else {
+            response
         };
         crate::platform::task_wdt::feed_current_task();
         metrics::record_wdt_feed();
@@ -1597,6 +1629,13 @@ fn run_worker_path(
                 let _ = push_bounded_utf8(
                     &mut user_content_raw,
                     "\n[truncated]",
+                    MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
+                );
+            }
+            if config.strategy.enables_reflection_boost() && !round_tool_success {
+                let _ = push_bounded_utf8(
+                    &mut user_content_raw,
+                    REFLECTION_NOTE,
                     MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
                 );
             }

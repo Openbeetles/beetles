@@ -22,6 +22,7 @@ pub struct OpenAiCompatibleClient {
     model: String,
     max_tokens: u32,
     stream: bool,
+    supports_native_tools: bool,
 }
 
 impl OpenAiCompatibleClient {
@@ -67,6 +68,7 @@ impl OpenAiCompatibleClient {
             model: source.model.clone(),
             max_tokens: source.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
             stream,
+            supports_native_tools: source.provider != "ollama",
         }
     }
 }
@@ -222,6 +224,10 @@ fn build_request_body(
 }
 
 impl LlmClient for OpenAiCompatibleClient {
+    fn supports_native_tools(&self) -> bool {
+        self.supports_native_tools
+    }
+
     fn chat(
         &self,
         http: &mut dyn LlmHttpClient,
@@ -611,7 +617,8 @@ fn do_request_streaming(
 
 #[cfg(test)]
 mod tests {
-    use super::build_request_body;
+    use super::{build_request_body, OpenAiCompatibleClient};
+    use crate::config::LlmSource;
     use crate::llm::{Message, ToolChoicePolicy, ToolSpec};
 
     #[test]
@@ -638,5 +645,20 @@ mod tests {
             v.get("tool_choice").and_then(|x| x.as_str()),
             Some("required")
         );
+    }
+
+    #[test]
+    fn ollama_uses_prompt_guided_tools() {
+        let client = OpenAiCompatibleClient::from_source(
+            &LlmSource {
+                provider: "ollama".to_string(),
+                api_key: "k".to_string(),
+                model: "qwen2.5".to_string(),
+                api_url: String::new(),
+                max_tokens: None,
+            },
+            false,
+        );
+        assert!(!crate::llm::LlmClient::supports_native_tools(&client));
     }
 }

@@ -47,6 +47,12 @@ impl FallbackLlmClient {
 }
 
 impl LlmClient for FallbackLlmClient {
+    fn supports_native_tools(&self) -> bool {
+        self.clients
+            .iter()
+            .all(|client| client.supports_native_tools())
+    }
+
     fn chat(
         &self,
         http: &mut dyn LlmHttpClient,

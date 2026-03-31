@@ -148,6 +148,12 @@ pub trait LlmHttpClient {
 
 /// LLM 客户端 trait；Agent 只依赖此接口。
 pub trait LlmClient: Send + Sync {
+    /// 当前客户端是否支持原生结构化 tools 参数。
+    /// 返回 false 时，agent loop 会退化到 prompt-guided 文本工具调用。
+    fn supports_native_tools(&self) -> bool {
+        true
+    }
+
     /// 发起一次 chat；tools 本阶段传 None。HTTP 客户端由调用方注入。
     fn chat(
         &self,
