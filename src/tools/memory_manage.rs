@@ -2,18 +2,28 @@
 //! memory_manage tool: manage long-term memory, soul, user config, and daily notes.
 
 use crate::error::{Error, Result};
-use crate::memory::{MemoryStore, MAX_MEMORY_CONTENT_LEN, MAX_SOUL_USER_LEN};
+use crate::memory::{
+    LongTermMemoryDraft, LongTermMemoryKind, LongTermMemoryStore, MemoryStore,
+    MAX_MEMORY_CONTENT_LEN, MAX_SOUL_USER_LEN,
+};
 use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
 use serde_json::json;
 use std::sync::Arc;
 
 pub struct MemoryManageTool {
     store: Arc<dyn MemoryStore + Send + Sync>,
+    long_term_store: Arc<dyn LongTermMemoryStore + Send + Sync>,
 }
 
 impl MemoryManageTool {
-    pub fn new(store: Arc<dyn MemoryStore + Send + Sync>) -> Self {
-        Self { store }
+    pub fn new(
+        store: Arc<dyn MemoryStore + Send + Sync>,
+        long_term_store: Arc<dyn LongTermMemoryStore + Send + Sync>,
+    ) -> Self {
+        Self {
+            store,
+            long_term_store,
+        }
     }
 }
 
@@ -22,17 +32,20 @@ impl Tool for MemoryManageTool {
         "memory_manage"
     }
     fn description(&self) -> &'static str {
-        "Manage persistent memory, soul/user config, and daily notes. Op: get_memory, set_memory, get_soul, set_soul, get_user, set_user, list_daily_notes, get_daily_note, write_daily_note."
+        "Manage persistent memory, structured long-term memory, soul/user config, and daily notes. Op: get_memory, set_memory, get_soul, set_soul, get_user, set_user, list_daily_notes, get_daily_note, write_daily_note, list_long_term, get_long_term, upsert_long_term, delete_long_term."
     }
     fn schema(&self) -> serde_json::Value {
         json!({
             "type": "object",
             "properties": {
-                "op": { "type": "string", "description": "Operation: get_memory|set_memory|get_soul|set_soul|get_user|set_user|list_daily_notes|get_daily_note|write_daily_note" },
+                "op": { "type": "string", "description": "Operation: get_memory|set_memory|get_soul|set_soul|get_user|set_user|list_daily_notes|get_daily_note|write_daily_note|list_long_term|get_long_term|upsert_long_term|delete_long_term" },
                 "content": { "type": "string", "description": "Content for set_memory/set_soul/set_user/write_daily_note" },
                 "name": { "type": "string", "description": "Daily note name (e.g. 2025-03-10.md) for get_daily_note/write_daily_note" },
                 "recent_n": { "type": "integer", "description": "Max number of daily notes to list (default 10, max 30)" },
-                "append": { "type": "boolean", "description": "If true, append to existing note instead of overwrite (default false, for write_daily_note)" }
+                "append": { "type": "boolean", "description": "If true, append to existing note instead of overwrite (default false, for write_daily_note)" },
+                "id": { "type": "string", "description": "Structured long-term memory id for get_long_term/delete_long_term" },
+                "kind": { "type": "string", "description": "Structured long-term memory kind: preference|profile|relationship|project|task|constraint|fact" },
+                "keywords": { "type": "array", "items": { "type": "string" }, "description": "Structured long-term memory keywords" }
             },
             "required": ["op"]
         })
@@ -141,6 +154,58 @@ impl Tool for MemoryManageTool {
                         .to_string(),
                 )
             }
+            "list_long_term" => {
+                let limit = obj.get("recent_n").and_then(|x| x.as_u64()).unwrap_or(20) as usize;
+                let items = self.long_term_store.list(limit)?;
+                Ok(json!({"op": "list_long_term", "items": items}).to_string())
+            }
+            "get_long_term" => {
+                let id = obj
+                    .get("id")
+                    .and_then(|x| x.as_str())
+                    .ok_or_else(|| Error::config("tool_memory_manage", "missing id"))?;
+                let item = self.long_term_store.get(id)?;
+                Ok(json!({"op": "get_long_term", "item": item}).to_string())
+            }
+            "upsert_long_term" => {
+                let kind = obj
+                    .get("kind")
+                    .and_then(|x| x.as_str())
+                    .ok_or_else(|| Error::config("tool_memory_manage", "missing kind"))?;
+                let kind = parse_long_term_kind(kind)?;
+                let content = obj
+                    .get("content")
+                    .and_then(|x| x.as_str())
+                    .ok_or_else(|| Error::config("tool_memory_manage", "missing content"))?;
+                let keywords = obj
+                    .get("keywords")
+                    .and_then(|x| x.as_array())
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| item.as_str().map(str::to_string))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let draft = LongTermMemoryDraft {
+                    kind,
+                    content: content.to_string(),
+                    keywords,
+                    source_chat_id: None,
+                };
+                let total = self
+                    .long_term_store
+                    .upsert_many(&[draft], crate::util::current_unix_secs())?;
+                Ok(json!({"op": "upsert_long_term", "ok": true, "total": total}).to_string())
+            }
+            "delete_long_term" => {
+                let id = obj
+                    .get("id")
+                    .and_then(|x| x.as_str())
+                    .ok_or_else(|| Error::config("tool_memory_manage", "missing id"))?;
+                let deleted = self.long_term_store.delete(id)?;
+                Ok(json!({"op": "delete_long_term", "deleted": deleted}).to_string())
+            }
             _ => Err(Error::config(
                 "tool_memory_manage",
                 format!("unknown op: {}", op),
@@ -167,4 +232,20 @@ fn validate_daily_note_name(name: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn parse_long_term_kind(kind: &str) -> Result<LongTermMemoryKind> {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "preference" => Ok(LongTermMemoryKind::Preference),
+        "profile" => Ok(LongTermMemoryKind::Profile),
+        "relationship" => Ok(LongTermMemoryKind::Relationship),
+        "project" => Ok(LongTermMemoryKind::Project),
+        "task" => Ok(LongTermMemoryKind::Task),
+        "constraint" => Ok(LongTermMemoryKind::Constraint),
+        "fact" => Ok(LongTermMemoryKind::Fact),
+        _ => Err(Error::config(
+            "tool_memory_manage",
+            "invalid kind: expected preference|profile|relationship|project|task|constraint|fact",
+        )),
+    }
 }

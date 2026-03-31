@@ -26,8 +26,9 @@ use crate::error::Result;
 use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
 use crate::llm::{LlmClient, Message, StopReason, ToolChoicePolicy};
 use crate::memory::{
-    EmotionSignalStore, ImportantMessageStore, MemoryStore, PendingRetryStore, SessionMessage,
-    SessionStore, SessionSummaryStore, TaskContinuationStore,
+    render_long_term_memory_block, EmotionSignalStore, ImportantMessageStore, LongTermMemoryDraft,
+    LongTermMemoryStore, MemoryStore, PendingRetryStore, SessionMessage, SessionStore,
+    SessionSummaryStore, TaskContinuationStore,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
@@ -64,12 +65,16 @@ const TOOL_EVIDENCE_TAIL_CHARS: usize = 32;
 const MAX_TOOL_EVIDENCE_ITEMS: usize = 4;
 const ASSISTANT_COMPACT_PREVIEW_CHARS: usize = 160;
 const ASSISTANT_COMPACT_TAIL_CHARS: usize = 48;
+const LONG_TERM_MEMORY_REFRESH_CHANNEL: &str = "_memory_refresh";
 const PLAN_SYSTEM_SUFFIX: &str = "\n\n## Internal planning\nBefore solving the latest user request, create a short internal execution plan. Return 3-6 concise numbered steps only. Do not answer the user. Do not call tools in this planning step.";
 
 /// 程序性会话摘要：单次轻量 LLM 调用的 system 提示。
 const SUMMARY_SYSTEM: &str = "You are a conversation summarizer. Compress the following conversation into a concise summary (max 800 chars) preserving key facts, user preferences and pending tasks. Reply with the summary only.";
+const LONG_TERM_MEMORY_EXTRACTION_SYSTEM: &str = "You extract durable long-term memory for a personal AI assistant. Return JSON only: an array of objects with keys kind, content, keywords. kind must be one of preference, profile, relationship, project, task, constraint, fact. First decide whether the recent conversation contains any stable user fact, lasting preference, durable project context, persistent task, or explicit constraint that will matter in future conversations. If not, return []. When uncertain, return []. Do not store greetings, one-off troubleshooting steps, transient status, or assistant-only claims.";
 const SESSION_SUMMARY_MIN_MESSAGES: usize = 20;
 const SESSION_SUMMARY_REFRESH_DELTA: usize = 10;
+const LONG_TERM_MEMORY_RECALL_RECENT_N: usize = 8;
+const LONG_TERM_MEMORY_EXTRACTION_BATCH: usize = 4;
 
 /// 同一 chat_id 的 "low memory, defer" 日志最少间隔，避免刷屏。
 const LOW_MEM_DEFER_LOG_INTERVAL: Duration = Duration::from_secs(60);
@@ -130,6 +135,70 @@ fn choose_inbound_tx<'a>(
         IngressKind::User => user_inbound_tx,
         IngressKind::System => system_inbound_tx,
     }
+}
+
+fn is_long_term_memory_refresh_job(msg: &PcMsg) -> bool {
+    msg.ingress == IngressKind::System && msg.channel.as_ref() == LONG_TERM_MEMORY_REFRESH_CHANNEL
+}
+
+fn should_extract_long_term_memory(
+    msg: &PcMsg,
+    reply_content: &str,
+    after_count: usize,
+    pressure: crate::orchestrator::PressureLevel,
+) -> bool {
+    if msg.ingress != IngressKind::User || msg.channel.as_ref() == "cron" {
+        return false;
+    }
+    if pressure != crate::orchestrator::PressureLevel::Normal {
+        return false;
+    }
+    if msg.content.trim().is_empty() || reply_content.trim().is_empty() {
+        return false;
+    }
+    after_count >= 12 && after_count.is_multiple_of(12)
+}
+
+fn parse_long_term_memory_drafts(raw: &str, chat_id: &str) -> Vec<LongTermMemoryDraft> {
+    let trimmed = raw.trim();
+    let json_slice = if trimmed.starts_with('[') {
+        trimmed
+    } else {
+        match (trimmed.find('['), trimmed.rfind(']')) {
+            (Some(start), Some(end)) if start < end => &trimmed[start..=end],
+            _ => return Vec::new(),
+        }
+    };
+    let parsed = serde_json::from_str::<Vec<LongTermMemoryDraft>>(json_slice).unwrap_or_default();
+    let mut drafts = Vec::with_capacity(parsed.len().min(LONG_TERM_MEMORY_EXTRACTION_BATCH));
+    for mut draft in parsed {
+        if draft.source_chat_id.is_none() {
+            draft.source_chat_id = Some(chat_id.to_string());
+        }
+        drafts.push(draft);
+        if drafts.len() >= LONG_TERM_MEMORY_EXTRACTION_BATCH {
+            break;
+        }
+    }
+    drafts
+}
+
+fn recall_long_term_memory_block(
+    store: &dyn LongTermMemoryStore,
+    user_query: &str,
+    system_max_len: usize,
+) -> Option<String> {
+    let mut block_max_len = (system_max_len / 4).min(crate::memory::MAX_LONG_TERM_MEMORY_BLOCK_LEN);
+    if block_max_len < 192 {
+        block_max_len = system_max_len.min(crate::memory::MAX_LONG_TERM_MEMORY_BLOCK_LEN);
+    }
+    store
+        .recall(
+            user_query,
+            crate::memory::DEFAULT_LONG_TERM_MEMORY_RECALL_LIMIT,
+        )
+        .ok()
+        .and_then(|entries| render_long_term_memory_block(&entries, block_max_len))
 }
 
 #[derive(Clone, Copy)]
@@ -683,6 +752,79 @@ fn generate_session_summary(
     }
 }
 
+fn extract_long_term_memory(
+    http: &mut dyn PlatformHttpClient,
+    llm: &(dyn LlmClient + Send + Sync),
+    config: &AgentLoopConfig,
+    chat_id: &str,
+) -> Result<usize> {
+    use std::fmt::Write;
+
+    let recent = config
+        .session_store
+        .load_recent(chat_id, LONG_TERM_MEMORY_RECALL_RECENT_N)?;
+    if recent.len() < 2 {
+        return Ok(0);
+    }
+
+    let mut transcript = String::with_capacity(1536);
+    for message in &recent {
+        let preview = truncate_content_to_max(&message.content, 180);
+        let _ = writeln!(
+            transcript,
+            "{}: {}",
+            message.role.to_uppercase(),
+            preview.as_ref()
+        );
+    }
+
+    let messages = [Message {
+        role: Cow::Borrowed("user"),
+        content: transcript,
+    }];
+    let loc = (config.resolve_locale)();
+    let mut ctx = HttpClientToolContext {
+        http,
+        chat_id: Some(Arc::from(chat_id)),
+        channel: Some(Arc::from("system")),
+        locale: loc,
+    };
+    let response = llm.chat(
+        &mut ctx,
+        LONG_TERM_MEMORY_EXTRACTION_SYSTEM,
+        &messages,
+        None,
+        ToolChoicePolicy::Auto,
+    )?;
+    let drafts = parse_long_term_memory_drafts(response.content.trim(), chat_id);
+    if drafts.is_empty() {
+        return Ok(0);
+    }
+    config
+        .long_term_memory_store
+        .upsert_many(&drafts, crate::util::current_unix_secs())
+}
+
+fn run_long_term_memory_refresh_job(
+    http: &mut dyn PlatformHttpClient,
+    worker_llm: &(dyn LlmClient + Send + Sync),
+    config: &AgentLoopConfig,
+    msg: &PcMsg,
+) {
+    if crate::orchestrator::snapshot().pressure != crate::orchestrator::PressureLevel::Normal {
+        return;
+    }
+    match extract_long_term_memory(http, worker_llm, config, &msg.chat_id) {
+        Ok(0) => {}
+        Ok(count) => log::info!(
+            "[agent_memory] long-term memory refreshed for {} (count={})",
+            msg.chat_id,
+            count
+        ),
+        Err(e) => log::warn!("[agent_memory] refresh failed: {}", e),
+    }
+}
+
 /// run_worker_path 返回：正常内容或用户要求停止时的确认文案。
 pub enum WorkerOutcome {
     Content(String),
@@ -832,6 +974,7 @@ fn resolve_end_turn_followup(ctx: EndTurnFollowupContext<'_>) -> Option<(String,
 /// Agent 循环的存储与运行参数，由 main 构建并传入 run_agent_loop，减少参数数量。
 pub struct AgentLoopConfig {
     pub memory_store: Arc<dyn MemoryStore + Send + Sync>,
+    pub long_term_memory_store: Arc<dyn LongTermMemoryStore + Send + Sync>,
     pub session_store: Arc<dyn SessionStore + Send + Sync>,
     pub session_summary_store: Arc<dyn SessionSummaryStore + Send + Sync>,
     pub get_skill_descriptions: Arc<dyn Fn() -> String + Send + Sync>,
@@ -976,6 +1119,11 @@ fn run_agent_loop_lane(
             metrics::record_system_queue_wait_ms(queue_wait_ms);
         } else {
             metrics::record_user_queue_wait_ms(queue_wait_ms);
+        }
+        if is_long_term_memory_refresh_job(&msg) {
+            run_long_term_memory_refresh_job(http, worker_llm, config, &msg);
+            metrics::record_system_message_done(false);
+            continue;
         }
 
         // Periodic GC: evict expired failure/defer entries to prevent unbounded growth.
@@ -1375,6 +1523,33 @@ fn run_agent_loop_lane(
                     Err(e) => log::warn!("[agent_summary] failed: {}", e),
                 }
             }
+            if should_extract_long_term_memory(
+                &msg,
+                &reply_content,
+                after_count,
+                crate::orchestrator::snapshot().pressure,
+            ) {
+                match PcMsg::new_system(LONG_TERM_MEMORY_REFRESH_CHANNEL, msg.chat_id.as_ref(), "")
+                {
+                    Ok(job) => {
+                        match system_inbound_tx.try_send(job) {
+                            Ok(()) => {}
+                            Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                                log::debug!(
+                                "[agent_memory] skip refresh enqueue because system queue is full chat_id={}",
+                                msg.chat_id
+                            );
+                            }
+                            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                                log::warn!("[agent_memory] refresh enqueue failed: system queue disconnected");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("[agent_memory] refresh job build failed: {}", e);
+                    }
+                }
+            }
         }
         let total_ms = msg_start.elapsed().as_millis();
         let post_reply_ms = total_ms.saturating_sub(reply_handoff_ms);
@@ -1502,6 +1677,11 @@ fn run_worker_path(
     let summary_text = summary_with_count.as_ref().map(|(s, _)| s.as_str());
     let budget = crate::orchestrator::current_budget();
     let snapshot = crate::orchestrator::snapshot();
+    let long_term_memory_text = recall_long_term_memory_block(
+        config.long_term_memory_store.as_ref(),
+        &msg.content,
+        budget.system_prompt_max,
+    );
     let runtime = RuntimeContext {
         now_secs: crate::util::current_unix_secs(),
         platform: if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
@@ -1535,6 +1715,7 @@ fn run_worker_path(
         group_activation: config.tg_group_activation.as_ref(),
         system_continuation_suffix: suffix.as_deref(),
         emotion_signal_suffix,
+        long_term_memory_text: long_term_memory_text.as_deref(),
         summary_text,
         runtime: Some(runtime),
         llm_hint: budget.llm_hint,
@@ -2106,6 +2287,40 @@ fn run_worker_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_term_memory_refresh_requires_six_completed_turns_without_explicit_cue() {
+        let msg = PcMsg::new("qq_channel", "chat-1", "hi").unwrap();
+        assert!(!should_extract_long_term_memory(
+            &msg,
+            "先看下链路。",
+            10,
+            crate::orchestrator::PressureLevel::Normal,
+        ));
+        assert!(should_extract_long_term_memory(
+            &msg,
+            "先看下链路。",
+            12,
+            crate::orchestrator::PressureLevel::Normal,
+        ));
+    }
+
+    #[test]
+    fn long_term_memory_refresh_requires_normal_pressure_only() {
+        let msg = PcMsg::new("qq_channel", "chat-1", "hi").unwrap();
+        assert!(!should_extract_long_term_memory(
+            &msg,
+            "ok",
+            12,
+            crate::orchestrator::PressureLevel::Cautious,
+        ));
+        assert!(!should_extract_long_term_memory(
+            &msg,
+            "ok",
+            12,
+            crate::orchestrator::PressureLevel::Critical,
+        ));
+    }
 
     #[test]
     fn summarize_tool_results_keeps_multiline_preview() {

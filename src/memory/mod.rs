@@ -4,6 +4,16 @@ use crate::bus::PcMsg;
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
 
+mod long_term;
+
+pub(crate) use long_term::score_long_term_memory_recall;
+pub use long_term::{
+    render_long_term_memory_block, LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryKind,
+    LongTermMemoryStore, DEFAULT_LONG_TERM_MEMORY_RECALL_LIMIT, MAX_LONG_TERM_MEMORY_BLOCK_LEN,
+    MAX_LONG_TERM_MEMORY_CONTENT_LEN, MAX_LONG_TERM_MEMORY_ITEMS, MAX_LONG_TERM_MEMORY_KEYWORDS,
+    MAX_LONG_TERM_MEMORY_KEYWORD_LEN, REL_PATH_LONG_TERM_MEMORIES,
+};
+
 /// 单次写入内容最大字节数（与 platform::spiffs 上界一致）。实现应拒绝超长写入。
 pub const MAX_MEMORY_CONTENT_LEN: usize = 256 * 1024;
 /// SOUL/USER 单次写入上限（实现应拒绝超长）。

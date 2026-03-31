@@ -9,9 +9,10 @@ use crate::platform::{
     display_driver::{install_display_state, DisplayState},
     heartbeat_file::read_heartbeat_file,
     spiffs::{
-        spiffs_usage, SpiffsImportantMessageStore, SpiffsMemoryStore, SpiffsPendingRetryStore,
-        SpiffsRemindAtStore, SpiffsSessionStore, SpiffsSessionSummaryStore, SpiffsSkillMetaStore,
-        SpiffsSkillStorage, SpiffsTaskContinuationStore,
+        spiffs_usage, SpiffsImportantMessageStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
+        SpiffsPendingRetryStore, SpiffsRemindAtStore, SpiffsSessionStore,
+        SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
+        SpiffsTaskContinuationStore,
     },
     NvsConfigStore,
 };
@@ -19,8 +20,8 @@ use crate::{
     config::AppConfig,
     display::{DisplayCommand, DisplayConfig},
     memory::{
-        ImportantMessageStore, MemoryStore, PendingRetryStore, RemindAtStore, SessionStore,
-        SessionSummaryStore, TaskContinuationStore,
+        ImportantMessageStore, LongTermMemoryStore, MemoryStore, PendingRetryStore, RemindAtStore,
+        SessionStore, SessionSummaryStore, TaskContinuationStore,
     },
 };
 use std::sync::{Arc, Mutex};
@@ -32,6 +33,7 @@ pub struct LinuxPlatform {
     skill_storage: Arc<SpiffsSkillStorage>,
     skill_meta_store: Arc<SpiffsSkillMetaStore>,
     memory_store: Arc<SpiffsMemoryStore>,
+    long_term_memory_store: Arc<SpiffsLongTermMemoryStore>,
     session_store: Arc<SpiffsSessionStore>,
     pending_retry_store: Arc<SpiffsPendingRetryStore>,
     task_continuation_store: Arc<SpiffsTaskContinuationStore>,
@@ -52,6 +54,7 @@ impl LinuxPlatform {
             skill_storage: Arc::new(SpiffsSkillStorage),
             skill_meta_store: Arc::new(SpiffsSkillMetaStore),
             memory_store: Arc::new(SpiffsMemoryStore::new()),
+            long_term_memory_store: Arc::new(SpiffsLongTermMemoryStore::new()),
             session_store: Arc::new(SpiffsSessionStore::new()),
             pending_retry_store: Arc::new(SpiffsPendingRetryStore::new()),
             task_continuation_store: Arc::new(SpiffsTaskContinuationStore::new()),
@@ -138,6 +141,10 @@ impl Platform for LinuxPlatform {
 
     fn memory_store(&self) -> Arc<dyn MemoryStore + Send + Sync> {
         Arc::clone(&self.memory_store) as Arc<dyn MemoryStore + Send + Sync>
+    }
+
+    fn long_term_memory_store(&self) -> Arc<dyn LongTermMemoryStore + Send + Sync> {
+        Arc::clone(&self.long_term_memory_store) as Arc<dyn LongTermMemoryStore + Send + Sync>
     }
 
     fn session_store(&self) -> Arc<dyn SessionStore + Send + Sync> {

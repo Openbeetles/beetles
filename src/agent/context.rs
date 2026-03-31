@@ -63,6 +63,7 @@ pub struct ContextParams<'a> {
     pub group_activation: &'a str,
     pub system_continuation_suffix: Option<&'a str>,
     pub emotion_signal_suffix: Option<&'a str>,
+    pub long_term_memory_text: Option<&'a str>,
     pub summary_text: Option<&'a str>,
     pub runtime: Option<RuntimeContext>,
     /// orchestrator 在高压力时附加到 system 末尾的提示文字；由调用方从 `budget.llm_hint` 传入。
@@ -166,6 +167,21 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     let system_base = build_system_prompt(&soul, &user, &mem, &daily_contents, base_max);
     let mut system = String::with_capacity(p.system_max_len);
     system.push_str(&system_base);
+    if let Some(long_term_memory_text) = p.long_term_memory_text {
+        let remain = p.system_max_len.saturating_sub(system.len());
+        if remain > 0 {
+            system.push_str("\n\n");
+            if long_term_memory_text.len() <= remain {
+                system.push_str(long_term_memory_text);
+            } else {
+                let mut end = remain;
+                while end > 0 && !long_term_memory_text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                system.push_str(&long_term_memory_text[..end]);
+            }
+        }
+    }
     // NOTE: tool_descriptions 不再注入 system prompt。工具规格已通过 API `tools` 参数
     // 以结构化 JSON schema 传递；在 system prompt 中重复文字版描述会导致部分模型
     // （尤其 OpenAI 兼容的国产模型）退化为"用文字说要调工具"而不走 tool_use 路径。

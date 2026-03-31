@@ -58,8 +58,9 @@ pub use nvs::{
 pub use response_body::ResponseBody;
 pub use sntp::init_sntp;
 pub use spiffs::{
-    default_skill_storage_arc, init_spiffs, spiffs_base_string, spiffs_usage, SpiffsMemoryStore,
-    SpiffsSessionStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
+    default_skill_storage_arc, init_spiffs, spiffs_base_string, spiffs_usage,
+    SpiffsLongTermMemoryStore, SpiffsMemoryStore, SpiffsSessionStore, SpiffsSkillMetaStore,
+    SpiffsSkillStorage,
 };
 pub use state_root::state_mount_path;
 pub use wifi::{

@@ -126,6 +126,7 @@ pub fn build_default_registry(
     remind_at_store: Arc<dyn crate::memory::RemindAtStore + Send + Sync>,
     session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
     _memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
+    _long_term_memory_store: Arc<dyn crate::memory::LongTermMemoryStore + Send + Sync>,
     _config_store: Arc<dyn crate::platform::ConfigStore + Send + Sync>,
 ) -> (
     ToolRegistry,
@@ -155,9 +156,10 @@ pub fn build_default_registry(
     }
     // --- New tools ---
     #[cfg(feature = "tools_diagnostics")]
-    registry.register(Box::new(super::MemoryManageTool::new(Arc::clone(
-        &_memory_store,
-    ))));
+    registry.register(Box::new(super::MemoryManageTool::new(
+        Arc::clone(&_memory_store),
+        Arc::clone(&_long_term_memory_store),
+    )));
     #[cfg(feature = "tools_network_extra")]
     registry.register(Box::new(super::HttpRequestTool));
     #[cfg(feature = "tools_diagnostics")]

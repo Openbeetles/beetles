@@ -349,6 +349,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     let skill_storage = platform.skill_storage();
     let skill_meta_store = platform.skill_meta_store();
     let memory_store: Arc<dyn MemoryStore + Send + Sync> = platform.memory_store();
+    let long_term_memory_store: Arc<dyn beetle::memory::LongTermMemoryStore + Send + Sync> =
+        platform.long_term_memory_store();
     ensure_storage_ready(memory_store.as_ref());
     if let Ok(s) = memory_store.get_memory() {
         log::info!("[{}] memory len={}", TAG, s.len());
@@ -951,6 +953,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             Arc::clone(&remind_at_store),
             Arc::clone(&session_store),
             Arc::clone(&memory_store),
+            Arc::clone(&long_term_memory_store),
             platform.config_store(),
         );
         let registry = Arc::new(registry);
@@ -1052,6 +1055,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         };
         let agent_config = Arc::new(beetle::AgentLoopConfig {
             memory_store: Arc::clone(&memory_store),
+            long_term_memory_store: Arc::clone(&long_term_memory_store),
             session_store: Arc::clone(&session_store),
             session_summary_store: Arc::clone(&session_summary_store),
             get_skill_descriptions,

@@ -234,6 +234,7 @@ pub fn list_dir(path: impl AsRef<Path>) -> Result<Vec<String>> {
 // --- 子模块与对外类型 ---
 
 pub mod important_message;
+pub mod long_term_memory;
 pub mod memory;
 pub mod pending_retry;
 pub mod remind_at;
@@ -244,6 +245,7 @@ pub mod skill_storage;
 pub mod task_continuation;
 
 pub use important_message::SpiffsImportantMessageStore;
+pub use long_term_memory::SpiffsLongTermMemoryStore;
 pub use memory::SpiffsMemoryStore;
 pub use pending_retry::SpiffsPendingRetryStore;
 pub use remind_at::SpiffsRemindAtStore;
