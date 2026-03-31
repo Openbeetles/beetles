@@ -111,20 +111,12 @@ impl<T: Copy> PsramVec<T> {
     /// 追加切片。PSRAM 路径在容量耗尽时静默截断；Heap 路径可正常增长。
     pub fn extend_from_slice(&mut self, data: &[T]) {
         match &mut self.backing {
-            Backing::Spiram {
-                ptr,
-                capacity,
-                len,
-            } => {
+            Backing::Spiram { ptr, capacity, len } => {
                 let avail = *capacity - *len;
                 let take = data.len().min(avail);
                 if take > 0 {
                     unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            data.as_ptr(),
-                            (*ptr).add(*len),
-                            take,
-                        );
+                        std::ptr::copy_nonoverlapping(data.as_ptr(), (*ptr).add(*len), take);
                     }
                     *len += take;
                 }
@@ -137,16 +129,16 @@ impl<T: Copy> PsramVec<T> {
 impl std::io::Write for PsramVec<u8> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match &mut self.backing {
-            Backing::Spiram {
-                ptr,
-                capacity,
-                len,
-            } => {
+            Backing::Spiram { ptr, capacity, len } => {
                 let avail = *capacity - *len;
                 let take = buf.len().min(avail);
                 if take > 0 {
                     unsafe {
-                        std::ptr::copy_nonoverlapping(buf.as_ptr(), (*ptr as *mut u8).add(*len), take);
+                        std::ptr::copy_nonoverlapping(
+                            buf.as_ptr(),
+                            (*ptr as *mut u8).add(*len),
+                            take,
+                        );
                     }
                     *len += take;
                 }
@@ -174,4 +166,3 @@ impl<T> Drop for PsramVec<T> {
 }
 
 unsafe impl<T: Send> Send for PsramVec<T> {}
-

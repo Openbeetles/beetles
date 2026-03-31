@@ -36,7 +36,10 @@ impl HandlerContext {
             self.config_store.as_ref(),
             Some(self.config_file_store.as_ref()),
         );
-        *self.cached_config.write().unwrap_or_else(|e| e.into_inner()) = new;
+        *self
+            .cached_config
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = new;
     }
 
     pub fn fetch_url(&self, url: &str, max_len: usize) -> crate::error::Result<Vec<u8>> {

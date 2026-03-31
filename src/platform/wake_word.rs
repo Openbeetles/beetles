@@ -66,9 +66,7 @@ mod imp {
     /// Must be called from `run_app`, **after** `MessageBus` is created and
     /// `init_audio` has been called. Subsequent calls log a warning and return.
     pub fn configure(model_name: &str, voice_tx: SyncSender<VoiceEvent>) {
-        let mut guard = state_mutex()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut guard = state_mutex().lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_some() {
             log::warn!("[wake_word] configure() called more than once – ignored");
             return;

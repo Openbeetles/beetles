@@ -23,8 +23,8 @@ const NLM_F_MATCH: u16 = 0x0200;
 const NLMSG_ERROR: u16 = 2;
 const NLMSG_DONE: u16 = 3;
 const NLMSG_HDR: usize = 16; // sizeof(nlmsghdr)
-const GENL_HDR: usize = 4;   // sizeof(genlmsghdr)
-const NLA_HDR: usize = 4;    // sizeof(nlattr)
+const GENL_HDR: usize = 4; // sizeof(genlmsghdr)
+const NLA_HDR: usize = 4; // sizeof(nlattr)
 
 // ── GENL 控制族 ──────────────────────────────────────────────────────────────
 const GENL_ID_CTRL: u16 = 0x10;
@@ -62,7 +62,7 @@ const ATTR_INTERFACE_COMBINATIONS: u16 = 120;
 // nl80211 接口类型（作为 u32 载荷写入 ATTR_IFTYPE；作为 u16 用于 SUPPORTED_IFTYPES/IFACE_LIMIT_TYPES 类型比较）
 pub(super) const IFTYPE_AP: u32 = 3;
 const IFTYPE_STATION_KEY: u16 = 2; // NL80211_IFTYPE_STATION，作为 NLA type key
-const IFTYPE_AP_KEY: u16 = 3;      // NL80211_IFTYPE_AP，作为 NLA type key
+const IFTYPE_AP_KEY: u16 = 3; // NL80211_IFTYPE_AP，作为 NLA type key
 
 // 频段属性
 const BAND_ATTR_FREQS: u16 = 1;
@@ -181,7 +181,9 @@ pub(super) fn detect_wifi_iface() -> Result<String> {
 
 /// 从 sysfs 读取 wiphy 索引（`/sys/class/net/<iface>/phy80211/index`）。
 pub(super) fn get_wiphy_index(iface: &str) -> Result<u32> {
-    let path = Path::new("/sys/class/net").join(iface).join("phy80211/index");
+    let path = Path::new("/sys/class/net")
+        .join(iface)
+        .join("phy80211/index");
     read_sysfs_u32(&path, "wifi_capability_check")
 }
 
@@ -200,9 +202,7 @@ fn read_sysfs_u32(path: &Path, stage: &'static str) -> Result<u32> {
 }
 
 /// GET_WIPHY → `PhyCapabilities`（AP 支持、STA+AP 并发、频段）。
-pub(super) fn probe_phy_capabilities(
-    iface: &str,
-) -> Result<super::capability::PhyCapabilities> {
+pub(super) fn probe_phy_capabilities(iface: &str) -> Result<super::capability::PhyCapabilities> {
     let cfg = nl80211_cfg()?;
     let ifindex = get_ifindex(iface)?;
 
@@ -220,9 +220,7 @@ pub(super) fn probe_phy_capabilities(
     parse_wiphy_capabilities(&msgs)
 }
 
-fn parse_wiphy_capabilities(
-    msgs: &[(u8, Vec<u8>)],
-) -> Result<super::capability::PhyCapabilities> {
+fn parse_wiphy_capabilities(msgs: &[(u8, Vec<u8>)]) -> Result<super::capability::PhyCapabilities> {
     let mut supports_ap = false;
     let mut supports_sta_ap_concurrent = false;
     let mut has_2ghz = false;
@@ -422,10 +420,8 @@ pub(super) fn scan_bounded(
 
     // TRIGGER_SCAN 套接字：同时订阅 scan multicast group 以接收完成事件
     let trigger_sock = Socket::open()?;
-    let subscribed = cfg.scan_group_id != 0
-        && trigger_sock
-            .add_mcast_group(cfg.scan_group_id)
-            .is_ok();
+    let subscribed =
+        cfg.scan_group_id != 0 && trigger_sock.add_mcast_group(cfg.scan_group_id).is_ok();
 
     // 发送 TRIGGER_SCAN
     {
@@ -437,12 +433,7 @@ pub(super) fn scan_bounded(
         let hdr = msg.reserve_nlmsghdr();
         msg.push_genlmsghdr(CMD_TRIGGER_SCAN, 0);
         msg.push_nlattr_u32(ATTR_IFINDEX, ifindex);
-        msg.finalize(
-            hdr,
-            cfg.family_id,
-            NLM_F_REQUEST | NLM_F_ACK,
-            next_seq(),
-        );
+        msg.finalize(hdr, cfg.family_id, NLM_F_REQUEST | NLM_F_ACK, next_seq());
         trigger_sock.send(msg.as_bytes())?;
     }
 
@@ -481,11 +472,7 @@ pub(super) fn scan_bounded(
 }
 
 /// 在 `trigger_sock` 上接收直到同时获得 ACK + NEW_SCAN_RESULTS（或 SCAN_ABORTED）。
-fn wait_scan_complete(
-    sock: &Socket,
-    family_id: u16,
-    deadline: Instant,
-) -> Result<()> {
+fn wait_scan_complete(sock: &Socket, family_id: u16, deadline: Instant) -> Result<()> {
     let mut buf = vec![0u8; 65536];
     let mut got_ack = false;
     let mut got_event = false;
@@ -493,7 +480,10 @@ fn wait_scan_complete(
     while !got_ack || !got_event {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return Err(Error::config("wifi_scan", "scan timeout waiting for completion event"));
+            return Err(Error::config(
+                "wifi_scan",
+                "scan timeout waiting for completion event",
+            ));
         }
         let timeout_ms = remaining.as_millis().min(5000) as i32;
         let n = sock.recv_into(&mut buf, timeout_ms)?;
@@ -522,10 +512,7 @@ fn wait_scan_complete(
                         match cmd {
                             CMD_NEW_SCAN_RESULTS => got_event = true,
                             CMD_SCAN_ABORTED => {
-                                return Err(Error::config(
-                                    "wifi_scan",
-                                    "scan aborted by driver",
-                                ));
+                                return Err(Error::config("wifi_scan", "scan aborted by driver"));
                             }
                             _ => {}
                         }
@@ -848,7 +835,8 @@ impl MsgBuf {
         self.data[hdr_pos + 4..hdr_pos + 6].copy_from_slice(&nlmsg_type.to_ne_bytes());
         self.data[hdr_pos + 6..hdr_pos + 8].copy_from_slice(&flags.to_ne_bytes());
         self.data[hdr_pos + 8..hdr_pos + 12].copy_from_slice(&seq.to_ne_bytes());
-        self.data[hdr_pos + 12..hdr_pos + 16].copy_from_slice(&0u32.to_ne_bytes()); // pid=0
+        self.data[hdr_pos + 12..hdr_pos + 16].copy_from_slice(&0u32.to_ne_bytes());
+        // pid=0
     }
 
     fn as_bytes(&self) -> &[u8] {
@@ -870,8 +858,7 @@ impl<'a> Iterator for NlAttrIter<'a> {
         if self.pos + NLA_HDR > self.data.len() {
             return None;
         }
-        let nla_len =
-            u16::from_ne_bytes([self.data[self.pos], self.data[self.pos + 1]]) as usize;
+        let nla_len = u16::from_ne_bytes([self.data[self.pos], self.data[self.pos + 1]]) as usize;
         if nla_len < NLA_HDR || self.pos + nla_len > self.data.len() {
             return None;
         }
@@ -936,13 +923,12 @@ fn next_seq() -> u32 {
 
 fn map_errno(errno: i32, stage: &'static str) -> Error {
     match errno {
-        libc::EPERM | libc::EACCES => {
-            Error::config("wifi_permission", "insufficient permissions for nl80211 operation")
-        }
+        libc::EPERM | libc::EACCES => Error::config(
+            "wifi_permission",
+            "insufficient permissions for nl80211 operation",
+        ),
         libc::ENODEV => Error::config(stage, "device not found (ENODEV)"),
-        libc::EOPNOTSUPP => {
-            Error::config(stage, "operation not supported by driver (EOPNOTSUPP)")
-        }
+        libc::EOPNOTSUPP => Error::config(stage, "operation not supported by driver (EOPNOTSUPP)"),
         libc::EBUSY => Error::config(stage, "device busy (EBUSY)"),
         libc::ENOENT => Error::config(stage, "no such entry (ENOENT)"),
         libc::ENOMEM => Error::config(stage, "out of kernel memory (ENOMEM)"),

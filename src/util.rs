@@ -320,20 +320,6 @@ pub fn weekday_name(days_since_epoch: u64) -> &'static str {
 /// 不引入 regex 依赖，适合嵌入式环境。
 /// Scrub credential-like key/value lines in tool output; no regex dependency for embedded builds.
 pub fn scrub_credentials(input: &str) -> String {
-    const SENSITIVE_KEYS: &[&str] = &[
-        "token",
-        "api_key",
-        "api-key",
-        "apikey",
-        "password",
-        "passwd",
-        "secret",
-        "bearer",
-        "credential",
-        "authorization",
-        "access_key",
-        "private_key",
-    ];
     if input.is_empty() {
         return String::new();
     }
@@ -344,8 +330,7 @@ pub fn scrub_credentials(input: &str) -> String {
             out.push('\n');
         }
         first = false;
-        let lower = line.to_ascii_lowercase();
-        if SENSITIVE_KEYS.iter().any(|k| lower.contains(k)) {
+        if line_has_sensitive_kv(line) {
             out.push_str(&scrub_kv_line(line));
         } else {
             out.push_str(line);
@@ -354,33 +339,174 @@ pub fn scrub_credentials(input: &str) -> String {
     out
 }
 
+fn line_has_sensitive_kv(line: &str) -> bool {
+    let Some(pos) = find_kv_separator(line) else {
+        return false;
+    };
+    is_sensitive_key(&line[..pos])
+}
+
 fn scrub_kv_line(line: &str) -> String {
-    let bytes = line.as_bytes();
-    let mut sep = None;
-    for (i, &b) in bytes.iter().enumerate() {
-        if b == b':' && bytes.get(i + 1) == Some(&b'/') {
-            continue; // skip "://" (URL scheme)
-        }
-        if b == b'=' || b == b':' {
-            sep = Some(i);
-            break;
-        }
-    }
-    match sep {
+    match find_kv_separator(line) {
         Some(pos) => {
             let (key_part, val_part) = line.split_at(pos + 1);
-            let val = val_part.trim().trim_matches('"').trim_matches('\'');
-            if val.len() >= 8 {
-                let mut prefix_end = val.len().min(4);
-                while prefix_end > 0 && !val.is_char_boundary(prefix_end) {
-                    prefix_end -= 1;
+            match redact_value_fragment(val_part) {
+                Some(redacted) => {
+                    let mut out = String::with_capacity(key_part.len() + redacted.len());
+                    out.push_str(key_part);
+                    out.push_str(&redacted);
+                    out
                 }
-                format!("{} {}…[REDACTED]", key_part, &val[..prefix_end])
-            } else {
-                line.to_string()
+                None => line.to_string(),
             }
         }
         None => line.to_string(),
+    }
+}
+
+fn find_kv_separator(line: &str) -> Option<usize> {
+    let bytes = line.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b':' && bytes.get(i + 1) == Some(&b'/') {
+            continue;
+        }
+        if b == b'=' || b == b':' {
+            return Some(i);
+        }
+    }
+    None
+}
+
+fn is_sensitive_key(raw_key: &str) -> bool {
+    let key = raw_key
+        .trim()
+        .trim_start_matches(|c: char| c.is_ascii_punctuation() && c != '_' && c != '-')
+        .trim_matches(|c: char| matches!(c, '"' | '\'' | '{' | '}' | '[' | ']' | '(' | ')'))
+        .trim();
+    matches!(
+        (),
+        _ if key.eq_ignore_ascii_case("token")
+            || key.eq_ignore_ascii_case("api_key")
+            || key.eq_ignore_ascii_case("api-key")
+            || key.eq_ignore_ascii_case("apikey")
+            || key.eq_ignore_ascii_case("client_secret")
+            || key.eq_ignore_ascii_case("client-secret")
+            || key.eq_ignore_ascii_case("password")
+            || key.eq_ignore_ascii_case("passwd")
+            || key.eq_ignore_ascii_case("secret")
+            || key.eq_ignore_ascii_case("secret_key")
+            || key.eq_ignore_ascii_case("secret-key")
+            || key.eq_ignore_ascii_case("credential")
+            || key.eq_ignore_ascii_case("authorization")
+            || key.eq_ignore_ascii_case("cookie")
+            || key.eq_ignore_ascii_case("access_key")
+            || key.eq_ignore_ascii_case("access_token")
+            || key.eq_ignore_ascii_case("refresh_token")
+            || key.eq_ignore_ascii_case("private_key")
+    )
+}
+
+fn redact_value_fragment(fragment: &str) -> Option<String> {
+    let leading_ws_len = fragment.len().saturating_sub(fragment.trim_start().len());
+    let leading_ws = &fragment[..leading_ws_len];
+    let trimmed = &fragment[leading_ws_len..];
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut out = String::with_capacity(fragment.len().max(24));
+    out.push_str(leading_ws);
+    let mut chars = trimmed.chars();
+    if let Some(quote) = chars.next().filter(|c| *c == '"' || *c == '\'') {
+        let quote_len = quote.len_utf8();
+        let rest = &trimmed[quote_len..];
+        if let Some(close_rel) = rest.find(quote) {
+            let value = &rest[..close_rel];
+            let redacted = redact_secret_value(value)?;
+            out.push(quote);
+            out.push_str(&redacted);
+            out.push(quote);
+            out.push_str(&rest[close_rel + quote_len..]);
+            return Some(out);
+        }
+        let redacted = redact_secret_value(rest)?;
+        out.push(quote);
+        out.push_str(&redacted);
+        return Some(out);
+    }
+
+    if let Some((scheme, token)) = split_auth_scheme_value(trimmed) {
+        let redacted = redact_secret_value(&format!("{} {}", scheme, token))?;
+        out.push_str(&redacted);
+        out.push_str(&trimmed[scheme.len() + 1 + token.len()..]);
+        return Some(out);
+    }
+
+    let value_end = trimmed
+        .find(|c: char| c.is_whitespace() || matches!(c, ',' | '}' | ']' | ';'))
+        .unwrap_or(trimmed.len());
+    let value = &trimmed[..value_end];
+    let redacted = redact_secret_value(value)?;
+    out.push_str(&redacted);
+    out.push_str(&trimmed[value_end..]);
+    Some(out)
+}
+
+fn redact_secret_value(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.len() < 8 {
+        return None;
+    }
+    if let Some(rest) = strip_ascii_prefix(trimmed, "bearer ") {
+        let prefix = secret_prefix(rest);
+        return Some(format!("Bearer {}…[REDACTED]", prefix));
+    }
+    if let Some(rest) = strip_ascii_prefix(trimmed, "basic ") {
+        let prefix = secret_prefix(rest);
+        return Some(format!("Basic {}…[REDACTED]", prefix));
+    }
+    Some(format!("{}…[REDACTED]", secret_prefix(trimmed)))
+}
+
+fn split_auth_scheme_value(s: &str) -> Option<(&str, &str)> {
+    let space = s.find(' ')?;
+    let scheme = &s[..space];
+    if !(scheme.eq_ignore_ascii_case("bearer") || scheme.eq_ignore_ascii_case("basic")) {
+        return None;
+    }
+    let rest = &s[space + 1..];
+    let token_end = rest
+        .find(|c: char| c.is_whitespace() || matches!(c, ',' | '}' | ']' | ';'))
+        .unwrap_or(rest.len());
+    let token = &rest[..token_end];
+    if token.is_empty() {
+        None
+    } else {
+        Some((scheme, token))
+    }
+}
+
+fn strip_ascii_prefix<'a>(s: &'a str, prefix_lower: &str) -> Option<&'a str> {
+    let prefix_len = prefix_lower.len();
+    if s.len() < prefix_len {
+        return None;
+    }
+    let head = s.get(..prefix_len)?;
+    if head.eq_ignore_ascii_case(prefix_lower) {
+        s.get(prefix_len..)
+    } else {
+        None
+    }
+}
+
+fn secret_prefix(s: &str) -> &str {
+    let mut end = 0usize;
+    for (idx, ch) in s.char_indices().take(4) {
+        end = idx + ch.len_utf8();
+    }
+    if end == 0 {
+        s
+    } else {
+        &s[..end]
     }
 }
 
@@ -774,6 +900,32 @@ mod scrub_credentials_tests {
         // value shorter than 8 bytes: should NOT redact (likely not a real secret)
         let s = scrub_credentials("token: abc");
         assert!(!s.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn scrub_preserves_json_suffix() {
+        let s = scrub_credentials(r#"{"access_token":"abcdefghi123","ok":true}"#);
+        assert!(s.contains(r#""access_token":"abcd…[REDACTED]""#));
+        assert!(s.ends_with('}'));
+    }
+
+    #[test]
+    fn scrub_bearer_keeps_scheme() {
+        let s = scrub_credentials("authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9");
+        assert!(s.contains("Bearer eyJh…[REDACTED]"));
+    }
+
+    #[test]
+    fn scrub_cookie_like_value() {
+        let s = scrub_credentials("cookie=sessionid=abc123456789; Path=/; HttpOnly");
+        assert!(s.contains("[REDACTED]"));
+        assert!(s.contains("Path=/"));
+    }
+
+    #[test]
+    fn does_not_redact_plain_error_text_with_sensitive_words() {
+        let s = scrub_credentials("error: authorization header missing");
+        assert_eq!(s, "error: authorization header missing");
     }
 }
 

@@ -97,7 +97,6 @@ const LINUX_HTTP_WORKERS: usize = 4;
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn handle_linux_request(
-
     ctx: &Arc<handlers::HandlerContext>,
     router_env: &router::RouterEnv,
     mut request: tiny_http::Request,

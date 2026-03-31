@@ -102,7 +102,11 @@ fn choose_ap_ip(iface: &str) -> &'static str {
 fn choose_ap_channel(sta_iface: &str) -> u8 {
     match net::read_wifi_channel(sta_iface).ok().flatten() {
         Some(ch) => {
-            log::info!("[{}] adaptive AP channel selected from STA iface: {}", TAG, ch);
+            log::info!(
+                "[{}] adaptive AP channel selected from STA iface: {}",
+                TAG,
+                ch
+            );
             ch
         }
         None => SOFTAP_DEFAULT_CHANNEL,

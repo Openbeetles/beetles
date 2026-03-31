@@ -1010,9 +1010,7 @@ const AUDIO_WAKE_PROMPT_MAX_LEN: usize = 256;
 ///
 /// Advanced: [`wake_word_resolve_model`] also accepts a verbatim WakeNet id
 /// such as `wn9_hiesp` without an alias row.
-pub const WAKE_WORD_SUPPORTED_KEYWORDS: &[(&str, &str)] = &[
-    ("hiesp", "wn9_hiesp"),
-];
+pub const WAKE_WORD_SUPPORTED_KEYWORDS: &[(&str, &str)] = &[("hiesp", "wn9_hiesp")];
 
 /// Resolve a user-facing keyword alias to its WakeNet model name.
 ///

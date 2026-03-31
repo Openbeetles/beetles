@@ -169,4 +169,3 @@ impl<T: platform::PlatformHttpClient + ?Sized> channels::ChannelHttpClient for T
         platform::PlatformHttpClient::reset_connection_for_retry(self);
     }
 }
-

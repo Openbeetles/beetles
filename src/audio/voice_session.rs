@@ -46,17 +46,18 @@ pub fn run_voice_session(cfg: VoiceSessionConfig, rx: Receiver<VoiceEvent>) {
 
     let mut http: Option<Box<dyn PlatformHttpClient>> = None;
 
-    let ensure_http =
-        |h: &mut Option<Box<dyn PlatformHttpClient>>,
-         make: &(dyn Fn() -> crate::error::Result<Box<dyn PlatformHttpClient>> + Send + Sync)| {
-            if h.is_none() {
-                match make() {
-                    Ok(c) => *h = Some(c),
-                    Err(e) => log::error!("[{}] create_http_client failed: {}", TAG, e),
-                }
+    let ensure_http = |h: &mut Option<Box<dyn PlatformHttpClient>>,
+                       make: &(dyn Fn() -> crate::error::Result<Box<dyn PlatformHttpClient>>
+                             + Send
+                             + Sync)| {
+        if h.is_none() {
+            match make() {
+                Ok(c) => *h = Some(c),
+                Err(e) => log::error!("[{}] create_http_client failed: {}", TAG, e),
             }
-            h.is_some()
-        };
+        }
+        h.is_some()
+    };
 
     loop {
         let event = match rx.recv() {
@@ -151,11 +152,7 @@ pub fn run_voice_session(cfg: VoiceSessionConfig, rx: Receiver<VoiceEvent>) {
             }
 
             VoiceEvent::Speak(text) => {
-                log::info!(
-                    "[{}] speaking agent reply ({} chars)",
-                    TAG,
-                    text.len()
-                );
+                log::info!("[{}] speaking agent reply ({} chars)", TAG, text.len());
 
                 if !cfg.platform.audio_speaker_ready() {
                     log::warn!("[{}] speaker not ready, dropping TTS", TAG);

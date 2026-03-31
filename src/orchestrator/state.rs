@@ -249,10 +249,22 @@ fn read_cpu_stat() -> Option<CpuSample> {
         let nice = parts[2].parse::<u64>().unwrap_or(0);
         let system = parts[3].parse::<u64>().unwrap_or(0);
         let idle = parts[4].parse::<u64>().unwrap_or(0);
-        let iowait = parts.get(5).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-        let irq = parts.get(6).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-        let softirq = parts.get(7).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-        let steal = parts.get(8).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+        let iowait = parts
+            .get(5)
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        let irq = parts
+            .get(6)
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        let softirq = parts
+            .get(7)
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        let steal = parts
+            .get(8)
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
         let total = user + nice + system + idle + iowait + irq + softirq + steal;
         return Some(CpuSample {
             total,

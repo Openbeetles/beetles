@@ -314,12 +314,15 @@ impl LinuxFramebufferBackend {
             }
 
             // SAFETY: dst_row + slice len 已通过上述边界检查。
-            let dst = unsafe { std::slice::from_raw_parts_mut(self.mmap_ptr.add(dst_row), w * bytes_per_pixel) };
+            let dst = unsafe {
+                std::slice::from_raw_parts_mut(self.mmap_ptr.add(dst_row), w * bytes_per_pixel)
+            };
 
             if self.bits_per_pixel == 16 {
                 // RGB565 → 16bpp 行拷贝（小端与帧缓冲区一致）。
                 for (i, px) in src_pixels.iter().enumerate() {
-                    let raw: u16 = embedded_graphics_core::pixelcolor::IntoStorage::into_storage(*px);
+                    let raw: u16 =
+                        embedded_graphics_core::pixelcolor::IntoStorage::into_storage(*px);
                     let le = raw.to_le_bytes();
                     dst[i * 2] = le[0];
                     dst[i * 2 + 1] = le[1];

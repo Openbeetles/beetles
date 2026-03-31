@@ -1,6 +1,6 @@
 //! Agent ReAct 循环：入站一条 → context → chat（含 tool_use 多轮）→ 会话持久化 → 出站一条。
 //! 仅依赖 trait；HTTP/Tool 由 main 注入同一实现（如 EspHttpClient）。
-use crate::agent::context::build_context;
+use crate::agent::context::{build_context, RuntimeContext};
 use crate::bus::{
     InboundRx, IngressKind, OutboundTx, PcMsg, SystemInboundTx, UserInboundRx, UserInboundTx,
     MAX_CONTENT_LEN,
@@ -165,31 +165,30 @@ fn summarize_tool_results(content: &str) -> String {
         if let Some(idx) = line.find("]: ") {
             let id_part = &line[..idx + 3];
             let first_val = &line[idx + 3..];
-            let mut extra_bytes = 0usize;
+            let mut preview = String::with_capacity(TOOL_RESULT_PREVIEW_CHARS + 16);
+            let mut preview_chars = 0usize;
+            let mut preview_truncated =
+                !push_preview_chars(&mut preview, first_val, &mut preview_chars);
+            let mut total_bytes = first_val.len();
             while let Some(next) = lines.peek().copied() {
                 if next.contains("]: ") && next.starts_with('[') {
                     break;
                 }
-                extra_bytes = extra_bytes.saturating_add(1).saturating_add(next.len());
+                total_bytes = total_bytes.saturating_add(1).saturating_add(next.len());
+                if preview_chars < TOOL_RESULT_PREVIEW_CHARS {
+                    preview_truncated |=
+                        !push_preview_chars(&mut preview, "\n", &mut preview_chars);
+                    preview_truncated |=
+                        !push_preview_chars(&mut preview, next, &mut preview_chars);
+                } else {
+                    preview_truncated = true;
+                }
                 let _ = lines.next();
             }
-            let total_bytes = first_val.len().saturating_add(extra_bytes);
-            if first_val.len() > TOOL_RESULT_PREVIEW_CHARS {
-                let mut end = TOOL_RESULT_PREVIEW_CHARS;
-                while end > 0 && !first_val.is_char_boundary(end) {
-                    end -= 1;
-                }
-                let _ = writeln!(
-                    out,
-                    "{}{}…[{} bytes]",
-                    id_part,
-                    &first_val[..end],
-                    total_bytes
-                );
-            } else if extra_bytes > 0 {
-                let _ = writeln!(out, "{}{}…[{} bytes]", id_part, first_val, total_bytes);
+            if preview_truncated {
+                let _ = writeln!(out, "{}{}…[{} bytes total]", id_part, preview, total_bytes);
             } else {
-                let _ = writeln!(out, "{}{}", id_part, first_val);
+                let _ = writeln!(out, "{}{}", id_part, preview);
             }
             wrote_any = true;
         }
@@ -198,6 +197,28 @@ fn summarize_tool_results(content: &str) -> String {
         let _ = writeln!(out, "[{} bytes total, format not parsed]", body.len());
     }
     out
+}
+
+fn push_preview_chars(dst: &mut String, text: &str, used_chars: &mut usize) -> bool {
+    if *used_chars >= TOOL_RESULT_PREVIEW_CHARS {
+        return false;
+    }
+    let remain = TOOL_RESULT_PREVIEW_CHARS - *used_chars;
+    let mut chars = 0usize;
+    if text.chars().count() > remain {
+        let mut end = 0usize;
+        for (idx, ch) in text.char_indices().take(remain) {
+            end = idx + ch.len_utf8();
+            chars += 1;
+        }
+        dst.push_str(&text[..end]);
+        *used_chars += chars;
+        false
+    } else {
+        dst.push_str(text);
+        *used_chars += text.chars().count();
+        true
+    }
 }
 
 /// 滑动窗口：保留最近 `REACT_FULL_MSGS_KEPT` 条 ReAct 追加消息完整，更早的 assistant / tool 结果做机械摘要。
@@ -320,7 +341,6 @@ fn handle_llm_gate(
         }
     }
 }
-
 
 /// 程序性触发：用最近会话生成摘要并 `set_with_count`。LLM 失败时确定性回退，仍落盘。
 fn generate_session_summary(
@@ -1078,6 +1098,25 @@ fn run_worker_path(
         .flatten();
     let summary_text = summary_with_count.as_ref().map(|(s, _)| s.as_str());
     let budget = crate::orchestrator::current_budget();
+    let snapshot = crate::orchestrator::snapshot();
+    let runtime = RuntimeContext {
+        now_secs: crate::util::current_unix_secs(),
+        platform: if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
+            "ESP32-S3"
+        } else {
+            "Linux"
+        },
+        pressure: snapshot.pressure,
+        active_agent_tasks: snapshot.active_agent_tasks,
+        inbound_depth: snapshot.inbound_depth,
+        outbound_depth: snapshot.outbound_depth,
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        cpu_usage_percent: snapshot.cpu_usage_percent,
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        load_average: snapshot.load_average,
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        process_memory_kb: snapshot.process_memory_kb,
+    };
     let context_start = Instant::now();
     let (system, mut messages) = build_context(&super::ContextParams {
         msg,
@@ -1093,6 +1132,7 @@ fn run_worker_path(
         system_continuation_suffix: suffix.as_deref(),
         emotion_signal_suffix,
         summary_text,
+        runtime: Some(runtime),
         llm_hint: budget.llm_hint,
     })
     .map_err(|e| e.with_stage("agent_context"))?;
@@ -1370,14 +1410,14 @@ fn run_worker_path(
                     }
                 }
                 // 工具执行门控
-                let mut result_owned: Option<String> = None;
-                let mut result_view: &str = "";
-                {
+                let result_owned = {
                     let needs_net = registry.is_network_tool(&tc.name);
                     match crate::orchestrator::can_execute_tool_pub(&tc.name, needs_net) {
                         ToolDecision::Deny { reason } => {
                             log::info!("[agent_tool] {} denied: {}", tc.name, reason);
-                            result_owned = Some(serde_json::json!({ "error": reason }).to_string());
+                            crate::util::scrub_credentials(
+                                &serde_json::json!({ "error": reason }).to_string(),
+                            )
                         }
                         ToolDecision::Allow => {
                             let tool_exec_start = Instant::now();
@@ -1387,9 +1427,9 @@ fn run_worker_path(
                                         .tool_exec_ms
                                         .saturating_add(tool_exec_start.elapsed().as_millis());
                                     metrics::record_tool_call(true);
-                                    result_owned = Some(crate::util::scrub_credentials(&s));
                                     round_tool_success = true;
                                     any_tool_used = true;
+                                    crate::util::scrub_credentials(&s)
                                 }
                                 Err(e) => {
                                     latency.tool_exec_ms = latency
@@ -1456,15 +1496,13 @@ fn run_worker_path(
                                     };
                                     let _ =
                                         write!(&mut tool_error_buf, "[tool error] {}.{}", e, hint);
-                                    result_view = tool_error_buf.as_str();
+                                    crate::util::scrub_credentials(tool_error_buf.as_str())
                                 }
                             }
                         }
                     }
-                }
-                if let Some(ref owned) = result_owned {
-                    result_view = owned.as_str();
-                }
+                };
+                let result_view = result_owned.as_str();
                 let call_key = hash_tool_call(&tc.name, &tc.input);
                 let n = tool_call_repeat.entry(call_key).or_insert(0);
                 *n = (*n).saturating_add(1);
@@ -1586,4 +1624,31 @@ fn run_worker_path(
         streamed,
         latency,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn summarize_tool_results_keeps_multiline_preview() {
+        let input = concat!(
+            "Tool results:\n",
+            "[call_1]: Beijing weather: sunny\n",
+            "Temperature 25C\n",
+            "Humidity 20%\n"
+        );
+        let summary = summarize_tool_results(input);
+        assert!(summary.contains("Beijing weather: sunny"));
+        assert!(summary.contains("Temperature 25C"));
+    }
+
+    #[test]
+    fn summarize_tool_results_adds_total_bytes_for_long_output() {
+        let long_value = "a".repeat(120);
+        let input = format!("Tool results:\n[call_1]: {}", long_value);
+        let summary = summarize_tool_results(&input);
+        assert!(summary.contains("[120 bytes total]"));
+        assert!(summary.contains("[call_1]: aaaa"));
+    }
 }

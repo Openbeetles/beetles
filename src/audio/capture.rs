@@ -109,9 +109,7 @@ pub fn capture_speech(
 }
 
 fn max_capture_samples(max_ms: u32, sample_rate: u32) -> usize {
-    let requested_samples = (max_ms as usize)
-        .saturating_mul(sample_rate as usize)
-        / 1000;
+    let requested_samples = (max_ms as usize).saturating_mul(sample_rate as usize) / 1000;
     let max_samples_by_bytes = AUDIO_STT_MAX_PCM_BYTES / std::mem::size_of::<i16>();
     requested_samples.min(max_samples_by_bytes)
 }

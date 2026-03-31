@@ -15,6 +15,22 @@ pub const SESSION_RECENT_N: usize = 32;
 /// 每日笔记取最近条数。
 const DAILY_RECENT_N: usize = 5;
 
+#[derive(Clone, Copy)]
+pub struct RuntimeContext {
+    pub now_secs: u64,
+    pub platform: &'static str,
+    pub pressure: crate::orchestrator::PressureLevel,
+    pub active_agent_tasks: u32,
+    pub inbound_depth: u32,
+    pub outbound_depth: u32,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    pub cpu_usage_percent: f32,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    pub load_average: (f32, f32, f32),
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    pub process_memory_kb: u32,
+}
+
 /// 预构建的 structured output 指令块（三个 marker 均为编译期常量）。
 const STRUCTURED_BLOCK: &str = concat!(
     "\n\n## Structured output\n",
@@ -48,8 +64,67 @@ pub struct ContextParams<'a> {
     pub system_continuation_suffix: Option<&'a str>,
     pub emotion_signal_suffix: Option<&'a str>,
     pub summary_text: Option<&'a str>,
+    pub runtime: Option<RuntimeContext>,
     /// orchestrator 在高压力时附加到 system 末尾的提示文字；由调用方从 `budget.llm_hint` 传入。
     pub llm_hint: &'a str,
+}
+
+fn push_if_fits(system: &mut String, addition: &str, max_len: usize) -> bool {
+    if system.len().saturating_add(addition.len()) > max_len {
+        return false;
+    }
+    system.push_str(addition);
+    true
+}
+
+fn append_runtime_context(system: &mut String, max_len: usize, runtime: Option<RuntimeContext>) {
+    let Some(runtime) = runtime else {
+        return;
+    };
+    if runtime.now_secs == 0 {
+        return;
+    }
+    let (y, mo, d, h, mi, s_sec) = crate::util::epoch_to_ymdhms(runtime.now_secs);
+    let weekday = crate::util::weekday_name(runtime.now_secs / 86400);
+
+    let mut header = String::with_capacity(72);
+    let _ = write!(
+        header,
+        "\n\n## Runtime\nUTC: {:04}-{:02}-{:02} {} {:02}:{:02}:{:02}\nPlatform: {}",
+        y, mo, d, weekday, h, mi, s_sec, runtime.platform
+    );
+    if !push_if_fits(system, &header, max_len) {
+        return;
+    }
+
+    let mut pressure_line = String::with_capacity(64);
+    let _ = write!(pressure_line, "\nPressure: {:?}", runtime.pressure);
+    if !push_if_fits(system, &pressure_line, max_len) {
+        return;
+    }
+
+    let mut queue_line = String::with_capacity(48);
+    let _ = write!(
+        queue_line,
+        "\nAgent: tasks={} queues={}/{}",
+        runtime.active_agent_tasks, runtime.inbound_depth, runtime.outbound_depth
+    );
+    let _ = push_if_fits(system, &queue_line, max_len);
+
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    {
+        let mut linux_block = String::with_capacity(96);
+        let _ = write!(
+            linux_block,
+            "\nLinux: cpu={:.0}% load={:.2}/{:.2}/{:.2} rss={}KB",
+            runtime.cpu_usage_percent,
+            runtime.load_average.0,
+            runtime.load_average.1,
+            runtime.load_average.2,
+            runtime.process_memory_kb
+        );
+        let _ = push_if_fits(system, &linux_block, max_len);
+    }
 }
 
 /// 根据入站 PcMsg 与 store 构建 (system, messages)，供 LlmClient.chat 使用。
@@ -117,28 +192,7 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
             system.push_str(constraint);
         }
     }
-    // Runtime context: current UTC time + platform (before group/structured sections).
-    let now_secs = crate::util::current_unix_secs();
-    if now_secs > 0 {
-        let (y, mo, d, h, mi, s_sec) = crate::util::epoch_to_ymdhms(now_secs);
-        let wd = crate::util::weekday_name(now_secs / 86400);
-        let platform = if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
-            "ESP32-S3"
-        } else {
-            "Linux"
-        };
-        // 直接写入已预分配的 system String，避免临时 format!() 分配。
-        let before = system.len();
-        let _ = write!(
-            system,
-            "\n\n## Runtime\n{:04}-{:02}-{:02} {} {:02}:{:02}:{:02} UTC | {}",
-            y, mo, d, wd, h, mi, s_sec, platform
-        );
-        // 若超出预算，回退到写入前状态。
-        if system.len() > p.system_max_len {
-            system.truncate(before);
-        }
-    }
+    append_runtime_context(&mut system, p.system_max_len, p.runtime);
     if p.msg.is_group {
         let remain = p.system_max_len.saturating_sub(system.len());
         if remain > 64 {
@@ -283,5 +337,40 @@ fn merge_consecutive_same_role(messages: &mut Vec<Message>) {
         } else {
             i += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_runtime() -> RuntimeContext {
+        RuntimeContext {
+            now_secs: crate::util::ymdhms_to_epoch(2026, 3, 31, 12, 34, 56),
+            platform: "Linux",
+            pressure: crate::orchestrator::PressureLevel::Normal,
+            active_agent_tasks: 2,
+            inbound_depth: 3,
+            outbound_depth: 4,
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            cpu_usage_percent: 17.0,
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            load_average: (0.11, 0.22, 0.33),
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            process_memory_kb: 4096,
+        }
+    }
+
+    #[test]
+    fn runtime_context_keeps_core_fields_under_tight_budget() {
+        let runtime = sample_runtime();
+        let core =
+            "\n\n## Runtime\nUTC: 2026-03-31 Tuesday 12:34:56\nPlatform: Linux\nPressure: Normal";
+        let mut system = String::new();
+        append_runtime_context(&mut system, core.len(), Some(runtime));
+        assert!(system.contains("UTC: 2026-03-31 Tuesday 12:34:56"));
+        assert!(system.contains("Platform: Linux"));
+        assert!(system.contains("Pressure: Normal"));
+        assert!(!system.contains("Agent:"));
     }
 }

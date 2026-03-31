@@ -109,7 +109,10 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let firmware_version = ctx.version.as_ref();
     let ota_available = cfg!(feature = "ota");
     let locale = config::get_locale(ctx.config_store.as_ref());
-    let lan_ip = ctx.platform.wifi_sta_ip().unwrap_or_else(|| "—".to_string());
+    let lan_ip = ctx
+        .platform
+        .wifi_sta_ip()
+        .unwrap_or_else(|| "—".to_string());
     #[allow(unused_mut)]
     let mut json = serde_json::json!({
         "product_name": product_name,
@@ -138,10 +141,7 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
             if !cpu.is_empty() {
                 obj.insert("cpu_model".to_string(), serde_json::json!(cpu));
             }
-            obj.insert(
-                "cpu_cores".to_string(),
-                serde_json::json!(cpu_core_count()),
-            );
+            obj.insert("cpu_cores".to_string(), serde_json::json!(cpu_core_count()));
         }
     }
 
@@ -170,4 +170,3 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
 
     serde_json::to_string(&json).map_err(to_io)
 }
-

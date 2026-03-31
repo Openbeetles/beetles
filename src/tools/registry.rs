@@ -121,7 +121,10 @@ pub fn build_default_registry(
     session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
     _memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
     _config_store: Arc<dyn crate::platform::ConfigStore + Send + Sync>,
-) -> (ToolRegistry, Option<Arc<crate::audio::baidu_token::BaiduTokenCache>>) {
+) -> (
+    ToolRegistry,
+    Option<Arc<crate::audio::baidu_token::BaiduTokenCache>>,
+) {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(super::GetTimeTool));
     registry.register(Box::new(super::EnvTool));

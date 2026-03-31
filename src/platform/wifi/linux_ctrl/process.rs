@@ -23,10 +23,7 @@ pub struct CmdOutput {
 
 fn is_allowed_bin(bin: &str) -> bool {
     // "kill" and "iw" are intentionally absent: we use libc::kill(2) and GENL nl80211 directly.
-    matches!(
-        bin,
-        "wpa_supplicant" | "hostapd" | "dnsmasq" | "udhcpc"
-    )
+    matches!(bin, "wpa_supplicant" | "hostapd" | "dnsmasq" | "udhcpc")
 }
 
 /// Prefer tools shipped under `/opt/beetle/bin` (e.g. deploy script + bundled static
@@ -50,7 +47,11 @@ pub fn signal_pid(pid: u32, sigterm: bool) -> Result<()> {
     if pid == 0 {
         return Ok(());
     }
-    let sig = if sigterm { libc::SIGTERM } else { libc::SIGKILL };
+    let sig = if sigterm {
+        libc::SIGTERM
+    } else {
+        libc::SIGKILL
+    };
     let rc = unsafe { libc::kill(pid as libc::pid_t, sig) };
     if rc < 0 {
         let e = std::io::Error::last_os_error();

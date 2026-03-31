@@ -28,7 +28,7 @@ fn kill_and_wait(pid: u32) {
         std::thread::sleep(Duration::from_millis(100));
     }
     let _ = signal_process(pid, false); // SIGKILL
-    // 给内核最多 500ms 回收 socket
+                                        // 给内核最多 500ms 回收 socket
     std::thread::sleep(Duration::from_millis(500));
 }
 

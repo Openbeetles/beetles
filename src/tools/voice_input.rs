@@ -69,8 +69,12 @@ impl Tool for VoiceInputTool {
                 .unwrap_or(AUDIO_CAPTURE_MAX_MS);
 
             let _recording_guard = AudioRecordingGuard::new();
-            let captured =
-                capture_speech(self.platform.as_ref(), &self.audio_cfg, max_ms, "voice_input")?;
+            let captured = capture_speech(
+                self.platform.as_ref(),
+                &self.audio_cfg,
+                max_ms,
+                "voice_input",
+            )?;
 
             let mic_sr = self.audio_cfg.microphone.sample_rate.max(8_000);
             let mut http = ToolContextHttpClient::new(ctx);

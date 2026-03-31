@@ -419,7 +419,6 @@ fn linux_load_avg() -> (f32, f32, f32, u32) {
     (load1, load5, load15, procs)
 }
 
-
 #[cfg(target_os = "linux")]
 fn linux_thermal_temp() -> Option<f32> {
     for i in 0..10 {

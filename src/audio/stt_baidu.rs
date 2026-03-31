@@ -63,8 +63,7 @@ pub fn transcribe_pcm16_samples(
 
     let b64_output_len = (pcm_byte_len * 4 + 2) / 3 + 4;
     let total_cap = prefix.len() + b64_output_len + suffix.len();
-    let mut body =
-        crate::platform::psram_vec::PsramVec::<u8>::with_max_capacity(total_cap);
+    let mut body = crate::platform::psram_vec::PsramVec::<u8>::with_max_capacity(total_cap);
 
     body.extend_from_slice(prefix.as_bytes());
     {
@@ -137,4 +136,3 @@ fn parse_asr_response(status: u16, body: ResponseBody) -> Result<String> {
         .ok_or_else(|| Error::config("stt_baidu_parse", "missing result text"))?;
     Ok(first.trim().to_string())
 }
-

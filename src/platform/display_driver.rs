@@ -5,15 +5,15 @@
     allow(dead_code)
 )]
 
-use crate::display::{
-    compute_layout, DisplayChannelStatus, DisplayCommand, DisplayConfig, DisplayLayout,
-    DisplayPressureLevel, DisplaySystemState, DISPLAY_LAYOUT_REF_PX,
-};
 #[cfg(all(
     target_os = "linux",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 use crate::display::is_framebuffer_config;
+use crate::display::{
+    compute_layout, DisplayChannelStatus, DisplayCommand, DisplayConfig, DisplayLayout,
+    DisplayPressureLevel, DisplaySystemState, DISPLAY_LAYOUT_REF_PX,
+};
 use crate::error::{Error, Result};
 use std::convert::Infallible;
 use std::time::Instant;
