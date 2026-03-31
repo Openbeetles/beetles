@@ -14,7 +14,7 @@ NC='\033[0m'
 show_help() {
   cat <<'EOF'
 Usage:
-  ./build.sh [--flash | --flash-update] [--no-monitor] [--no-deploy] [--deploy-linux] [cargo build args...]
+  ./build.sh [--flash | --flash-update | --flash-model] [--no-monitor] [--no-deploy] [--deploy-linux] [cargo build args...]
 
 Linux SSH deploy only (no compile; needs an existing target/*/release/beetle):
   ./build.sh --deploy-linux
@@ -28,6 +28,7 @@ Non-interactive / CI: use --no-deploy, BEETLE_SKIP_DEPLOY_PROMPT=1, or redirect 
 Skip the question and flash ESP immediately (automation):
   --flash          Build then flash ESP; interactive erase menu (default: update only, keep NVS).
   --flash-update   Build then flash ESP without erase (no erase menu).
+  --flash-model    Build if needed, then write only the `model` partition (preserves SPIFFS / NVS / OTA).
 
 Quick examples:
   ./build.sh
@@ -35,6 +36,7 @@ Quick examples:
   TARGET=linux-armv7 ./build.sh
   TARGET=esp ./build.sh
   TARGET=esp ./build.sh --flash
+  TARGET=esp ./build.sh --flash-model
   ./build.sh --deploy-linux
 
 Notes:
@@ -81,6 +83,7 @@ export PATH="${HOME}/.cargo/bin:${PATH}"
 
 # --- Parse args (same as build.ps1) ---
 DO_FLASH=""
+DO_FLASH_MODEL=""
 DO_DEPLOY_LINUX=""
 NO_MONITOR=""
 NO_DEPLOY_PROMPT=""
@@ -92,6 +95,7 @@ for arg in "$@"; do
     -h|--help)       show_help; exit 0 ;;
     --flash)         DO_FLASH=1 ;;
     --flash-update)  DO_FLASH=1; FLASH_NO_ERASE=1 ;;
+    --flash-model)   DO_FLASH_MODEL=1 ;;
     --no-monitor)    NO_MONITOR=1 ;;
     --no-deploy)     NO_DEPLOY_PROMPT=1 ;;
     --deploy-linux)  DO_DEPLOY_LINUX=1 ;;
@@ -708,8 +712,8 @@ select_build_platform() {
     esac
   fi
 
-  # If --flash / --flash-update is set, default to ESP32.
-  if [[ -n "$DO_FLASH" ]]; then
+  # If flashing is requested, default to ESP32.
+  if [[ -n "$DO_FLASH" || -n "$DO_FLASH_MODEL" ]]; then
     PLATFORM_CHOICE=1
     return 0
   fi
@@ -1164,6 +1168,51 @@ run_esp_flash_workflow() {
   return 1
 }
 
+run_esp_model_flash_workflow() {
+  local model_script="$SCRIPT_ROOT/scripts/flash_model_partition.sh"
+  if [[ ! -x "$model_script" ]]; then
+    echo "Error: model flash script not found or not executable: $model_script" >&2
+    return 1
+  fi
+  if [[ -z "$FLASH_CHIP" ]]; then
+    echo "Error: Cannot derive chip from target for model flash: $BUILD_TARGET" >&2
+    return 1
+  fi
+
+  CHOSEN_PORT=$(get_flash_port)
+  echo ""
+  echo "=========================================="
+  echo "  Beetle — Flash model partition"
+  echo "=========================================="
+  echo ""
+  echo "========== Model flash: hardware and paths =========="
+  echo ""
+  echo "  Project root:      $SCRIPT_ROOT"
+  echo "  Build target:      $BUILD_TARGET"
+  echo "  BOARD (optional):  ${BOARD:-(not set)}"
+  echo "  Chip (for flash):  ${FLASH_CHIP:-(N/A)}"
+  echo -e "  ${BLUE}Serial port:${NC}       $CHOSEN_PORT"
+  echo "  Partition table:   $PARTITION_CSV"
+  echo "  Preserved:         spiffs, nvs, ota slots"
+  echo ""
+
+  echo "========== Checking connection =========="
+  echo ""
+  echo "  Serial port occupancy (lsof):" >&2
+  warn_serial_port_busy "$CHOSEN_PORT"
+  echo ""
+  if espflash board-info --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 2>/dev/null; then
+    echo -e "${GREEN}✓ board-info OK${NC}"
+  else
+    echo -e "${YELLOW}⚠ Could not read board-info from $CHOSEN_PORT (connection or chip mismatch).${NC}"
+    echo "  If flash then fails to open the port, use download mode: hold BOOT, tap RESET, flash within a few seconds."
+    echo "  Also close any Serial Monitor / screen / idf.py monitor using this port."
+  fi
+  echo ""
+
+  ESPTOOL_CHIP="$FLASH_CHIP" ESPFLASH_PORT="$CHOSEN_PORT" "$model_script" --port "$CHOSEN_PORT" --partition-csv "$PARTITION_CSV"
+}
+
 # After build: one prompt for Linux (SSH) or ESP (USB flash), unless --flash or skipped.
 prompt_deploy_maybe() {
   [[ -f "$BIN" ]] || return 0
@@ -1171,6 +1220,7 @@ prompt_deploy_maybe() {
   [[ -n "${NO_DEPLOY_PROMPT:-}" ]] && return 0
   [[ "${BEETLE_SKIP_DEPLOY_PROMPT:-}" == "1" ]] && return 0
   [[ -z "${DO_FLASH:-}" ]] || return 0
+  [[ -z "${DO_FLASH_MODEL:-}" ]] || return 0
 
   local prompt_msg
   if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then
@@ -1426,6 +1476,16 @@ echo ""
 echo "========== $MSG_BUILD_COMPLETE =========="
 echo "  $MSG_BINARY: $BIN"
 ls -lh "$BIN" 2>/dev/null || true
+
+if [[ -n "$DO_FLASH_MODEL" ]]; then
+  if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then
+    echo -e "${YELLOW}Note: --flash-model applies to ESP builds only (current target is Linux).${NC}" >&2
+  else
+    ensure_espflash
+    run_esp_model_flash_workflow || exit 1
+    exit 0
+  fi
+fi
 
 if [[ -n "$DO_FLASH" ]]; then
   if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then
