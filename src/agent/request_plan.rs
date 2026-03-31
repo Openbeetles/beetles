@@ -2,9 +2,9 @@
 //! Centralizes runtime tool visibility, native/prompt-guided mode selection,
 //! and request/response assembly helpers so agent loop stays thin.
 
-use super::parse_tools::{append_tool_fallback_instructions, recover_text_tool_calls};
 use crate::bus::PcMsg;
-use crate::llm::{LlmClient, LlmResponse, ToolSpec};
+use crate::llm::tool_fallback::{append_tool_fallback_instructions, recover_text_tool_calls};
+use crate::llm::{LlmClient, LlmResponse, ToolCallSupport, ToolSpec};
 use crate::tools::{ToolPolicyContext, ToolRegistry};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,10 +30,11 @@ impl<'a> AgentRequestPlan<'a> {
         let tool_specs = registry.tool_specs_for_llm(&tool_policy);
         let tool_call_mode = if tool_specs.is_empty() {
             ToolCallMode::Disabled
-        } else if worker_llm.supports_native_tools() {
-            ToolCallMode::Native
         } else {
-            ToolCallMode::PromptGuided
+            match worker_llm.model_compat().tool_call_support {
+                ToolCallSupport::Native => ToolCallMode::Native,
+                ToolCallSupport::PromptGuided => ToolCallMode::PromptGuided,
+            }
         };
         Self {
             tool_policy,
@@ -77,7 +78,7 @@ impl<'a> AgentRequestPlan<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::{LlmHttpClient, Message, StopReason, ToolChoicePolicy};
+    use crate::llm::{LlmHttpClient, LlmModelCompat, Message, StopReason, ToolChoicePolicy};
     use crate::tools::Tool;
     use crate::Result;
     use serde_json::json;
@@ -122,8 +123,8 @@ mod tests {
     }
 
     impl crate::llm::LlmClient for PromptGuidedLlm {
-        fn supports_native_tools(&self) -> bool {
-            false
+        fn model_compat(&self) -> LlmModelCompat {
+            LlmModelCompat::prompt_guided()
         }
 
         fn chat(

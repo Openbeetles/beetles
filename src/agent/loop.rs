@@ -1149,7 +1149,6 @@ fn run_worker_path(
         session: config.session_store.as_ref(),
         important_message_store: config.important_message_store.as_ref(),
         has_tools,
-        native_tool_calling: request_plan.uses_native_tools(),
         skill_descriptions: &skill_descriptions,
         system_max_len: budget.system_prompt_max,
         messages_max_len: budget.messages_max,

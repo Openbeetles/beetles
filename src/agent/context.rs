@@ -56,7 +56,6 @@ pub struct ContextParams<'a> {
     pub session: &'a dyn SessionStore,
     pub important_message_store: &'a dyn ImportantMessageStore,
     pub has_tools: bool,
-    pub native_tool_calling: bool,
     pub skill_descriptions: &'a str,
     pub system_max_len: usize,
     pub messages_max_len: usize,
@@ -185,14 +184,10 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
             }
         }
     }
-    // 工具使用行为约束：按本轮工具模式要求模型发起真正的工具调用，
-    // 避免“口头说要调工具”却没有进入执行链路。
+    // 工具使用行为约束：给模型一个模式无关的硬约束，
+    // 具体是原生 tools 还是 prompt-guided 协议，由后续请求装配层决定。
     if p.has_tools {
-        let constraint = if p.native_tool_calling {
-            "\n\nWhen you decide to use a tool, call it directly via structured tool_use. Never describe or narrate the tool call in plain text. Before using tools, you may briefly explain your reasoning (1-2 sentences) to help track your thought process."
-        } else {
-            "\n\nWhen you decide to use a tool, emit a <tool_call> JSON block exactly as instructed below. Never narrate a tool call in plain text without outputting the block."
-        };
+        let constraint = "\n\nWhen you decide to use a tool, use the provided tool invocation mechanism directly. Never describe or narrate a tool call in plain text without actually invoking it. Before using tools, you may briefly explain your reasoning (1-2 sentences) to help track your thought process.";
         let remain = p.system_max_len.saturating_sub(system.len());
         if constraint.len() <= remain {
             system.push_str(constraint);

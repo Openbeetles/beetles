@@ -1,8 +1,10 @@
 //! LLM 抽象与实现。核心域不依赖 platform；HTTP 由 main 注入。
 //! LLM trait and implementations; HTTP client injected by main.
 
+mod compat;
 mod retry;
 pub mod sse;
+pub(crate) mod tool_fallback;
 mod types;
 
 pub mod anthropic;
@@ -15,6 +17,7 @@ pub use fallback::FallbackLlmClient;
 pub use noop::NoopLlmClient;
 pub use openai_compatible::OpenAiCompatibleClient;
 
+pub use compat::{LlmModelCompat, ToolCallSupport};
 pub use types::{
     LlmResponse, Message, StopReason, StreamProgressFn, ToolCall, ToolChoicePolicy, ToolSpec,
     MAX_MESSAGE_CONTENT_LEN, MAX_REQUEST_BODY_LEN,
@@ -148,10 +151,9 @@ pub trait LlmHttpClient {
 
 /// LLM 客户端 trait；Agent 只依赖此接口。
 pub trait LlmClient: Send + Sync {
-    /// 当前客户端是否支持原生结构化 tools 参数。
-    /// 返回 false 时，agent loop 会退化到 prompt-guided 文本工具调用。
-    fn supports_native_tools(&self) -> bool {
-        true
+    /// 当前模型/客户端的最小兼容能力；agent/runtime 用它决定是否走原生 tools 等链路。
+    fn model_compat(&self) -> LlmModelCompat {
+        LlmModelCompat::default()
     }
 
     /// 发起一次 chat；tools 本阶段传 None。HTTP 客户端由调用方注入。

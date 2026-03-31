@@ -1,6 +1,5 @@
 //! Prompt-guided tool fallback helpers.
-//! When native tool APIs are unavailable, the agent loop appends these
-//! instructions and recovers `<tool_call>` blocks from text responses.
+//! Shared by agent planning and heterogeneous fallback chains.
 
 use crate::llm::{LlmResponse, StopReason, ToolCall, ToolSpec};
 use crate::util::truncate_content_to_max;

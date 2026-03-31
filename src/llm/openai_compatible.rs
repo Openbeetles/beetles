@@ -4,8 +4,9 @@
 
 use crate::config::{AppConfig, LlmSource};
 use crate::error::{Error, Result};
+use crate::llm::compat::model_compat_for_source;
 use crate::llm::types::{LlmResponse, StopReason, ToolCall, MAX_REQUEST_BODY_LEN};
-use crate::llm::{LlmClient, LlmHttpClient, Message, ToolChoicePolicy, ToolSpec};
+use crate::llm::{LlmClient, LlmHttpClient, LlmModelCompat, Message, ToolChoicePolicy, ToolSpec};
 use serde::{Deserialize, Serialize};
 
 const TAG: &str = "llm::openai_compat";
@@ -22,7 +23,7 @@ pub struct OpenAiCompatibleClient {
     model: String,
     max_tokens: u32,
     stream: bool,
-    supports_native_tools: bool,
+    compat: LlmModelCompat,
 }
 
 impl OpenAiCompatibleClient {
@@ -68,7 +69,7 @@ impl OpenAiCompatibleClient {
             model: source.model.clone(),
             max_tokens: source.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
             stream,
-            supports_native_tools: source.provider != "ollama",
+            compat: model_compat_for_source(source),
         }
     }
 }
@@ -224,8 +225,8 @@ fn build_request_body(
 }
 
 impl LlmClient for OpenAiCompatibleClient {
-    fn supports_native_tools(&self) -> bool {
-        self.supports_native_tools
+    fn model_compat(&self) -> LlmModelCompat {
+        self.compat
     }
 
     fn chat(
@@ -619,7 +620,7 @@ fn do_request_streaming(
 mod tests {
     use super::{build_request_body, OpenAiCompatibleClient};
     use crate::config::LlmSource;
-    use crate::llm::{Message, ToolChoicePolicy, ToolSpec};
+    use crate::llm::{Message, ToolCallSupport, ToolChoicePolicy, ToolSpec};
 
     #[test]
     fn request_contains_required_tool_choice_when_forced() {
@@ -659,6 +660,9 @@ mod tests {
             },
             false,
         );
-        assert!(!crate::llm::LlmClient::supports_native_tools(&client));
+        assert_eq!(
+            crate::llm::LlmClient::model_compat(&client).tool_call_support,
+            ToolCallSupport::PromptGuided
+        );
     }
 }
