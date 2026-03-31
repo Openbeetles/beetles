@@ -27,8 +27,8 @@ use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
 use crate::llm::{LlmClient, Message, StopReason, ToolChoicePolicy};
 use crate::memory::{
     render_long_term_memory_block, EmotionSignalStore, ImportantMessageStore, LongTermMemoryDraft,
-    LongTermMemoryStore, MemoryStore, PendingRetryStore, SessionMessage, SessionStore,
-    SessionSummaryStore, TaskContinuationStore,
+    LongTermMemoryKind, LongTermMemorySlot, LongTermMemoryStore, MemoryStore, PendingRetryStore,
+    SessionMessage, SessionStore, SessionSummaryStore, TaskContinuationStore,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
@@ -70,7 +70,7 @@ const PLAN_SYSTEM_SUFFIX: &str = "\n\n## Internal planning\nBefore solving the l
 
 /// 程序性会话摘要：单次轻量 LLM 调用的 system 提示。
 const SUMMARY_SYSTEM: &str = "You are a conversation summarizer. Compress the following conversation into a concise summary (max 800 chars) preserving key facts, user preferences and pending tasks. Reply with the summary only.";
-const LONG_TERM_MEMORY_EXTRACTION_SYSTEM: &str = "You extract durable long-term memory for a personal AI assistant. Return JSON only: an array of objects with keys kind, topic, content, keywords. kind must be one of preference, profile, relationship, project, task, constraint, fact. topic must be a short stable slot key identifying the same memory across future updates, for example response_style, user_name, current_project, timezone, partner_name. First decide whether the recent conversation contains any stable user fact, lasting preference, durable project context, persistent task, or explicit constraint that will matter in future conversations. If not, return []. When uncertain, return []. Do not store greetings, one-off troubleshooting steps, transient status, or assistant-only claims.";
+const LONG_TERM_MEMORY_EXTRACTION_SYSTEM: &str = "You extract durable long-term memory for a personal AI assistant. Return JSON only: an array of objects. Each object must contain op, kind, topic. op must be upsert or delete. kind must be one of preference, profile, relationship, project, task, constraint, fact. topic must be a short stable slot key identifying the same memory across future updates, for example response_style, user_name, current_project, timezone, partner_name. For op=upsert, also provide content and optional keywords. For op=delete, omit content and keywords. Use delete when the conversation clearly invalidates or completes an existing durable slot, for example a task is finished, a temporary project focus is no longer active, or a prior fact is explicitly corrected. First decide whether the recent conversation contains any durable addition, update, or deletion that will matter in future conversations. If not, return []. When uncertain, return []. Do not store greetings, one-off troubleshooting steps, transient status, or assistant-only claims.";
 const SESSION_SUMMARY_MIN_MESSAGES: usize = 20;
 const SESSION_SUMMARY_REFRESH_DELTA: usize = 10;
 const LONG_TERM_MEMORY_RECALL_RECENT_N: usize = 8;
@@ -159,31 +159,74 @@ fn should_extract_long_term_memory(
     after_count >= 12 && after_count.is_multiple_of(12)
 }
 
-fn parse_long_term_memory_drafts(raw: &str, chat_id: &str) -> Vec<LongTermMemoryDraft> {
+#[derive(Default)]
+struct ParsedLongTermMemoryExtraction {
+    upserts: Vec<LongTermMemoryDraft>,
+    deletes: Vec<LongTermMemorySlot>,
+}
+
+#[derive(serde::Deserialize)]
+struct LongTermMemoryExtractionItem {
+    #[serde(default = "default_long_term_memory_extraction_op")]
+    op: String,
+    kind: LongTermMemoryKind,
+    topic: String,
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    keywords: Vec<String>,
+    #[serde(default)]
+    source_chat_id: Option<String>,
+}
+
+fn default_long_term_memory_extraction_op() -> String {
+    "upsert".to_string()
+}
+
+fn parse_long_term_memory_extraction(raw: &str, chat_id: &str) -> ParsedLongTermMemoryExtraction {
     let trimmed = raw.trim();
     let json_slice = if trimmed.starts_with('[') {
         trimmed
     } else {
         match (trimmed.find('['), trimmed.rfind(']')) {
             (Some(start), Some(end)) if start < end => &trimmed[start..=end],
-            _ => return Vec::new(),
+            _ => return ParsedLongTermMemoryExtraction::default(),
         }
     };
     let parsed = serde_json::from_str::<Vec<serde_json::Value>>(json_slice).unwrap_or_default();
-    let mut drafts = Vec::with_capacity(parsed.len().min(LONG_TERM_MEMORY_EXTRACTION_BATCH));
+    let mut upserts = Vec::with_capacity(parsed.len().min(LONG_TERM_MEMORY_EXTRACTION_BATCH));
+    let mut deletes = Vec::with_capacity(parsed.len().min(LONG_TERM_MEMORY_EXTRACTION_BATCH));
     for item in parsed {
-        let Ok(mut draft) = serde_json::from_value::<LongTermMemoryDraft>(item) else {
+        let Ok(mut parsed_item) = serde_json::from_value::<LongTermMemoryExtractionItem>(item)
+        else {
             continue;
         };
-        if draft.source_chat_id.is_none() {
-            draft.source_chat_id = Some(chat_id.to_string());
+        match parsed_item.op.trim().to_ascii_lowercase().as_str() {
+            "delete" => {
+                deletes.push(LongTermMemorySlot {
+                    kind: parsed_item.kind,
+                    topic: parsed_item.topic,
+                });
+            }
+            "upsert" => {
+                if parsed_item.source_chat_id.is_none() {
+                    parsed_item.source_chat_id = Some(chat_id.to_string());
+                }
+                upserts.push(LongTermMemoryDraft {
+                    kind: parsed_item.kind,
+                    topic: parsed_item.topic,
+                    content: parsed_item.content,
+                    keywords: parsed_item.keywords,
+                    source_chat_id: parsed_item.source_chat_id,
+                });
+            }
+            _ => continue,
         }
-        drafts.push(draft);
-        if drafts.len() >= LONG_TERM_MEMORY_EXTRACTION_BATCH {
+        if upserts.len() + deletes.len() >= LONG_TERM_MEMORY_EXTRACTION_BATCH {
             break;
         }
     }
-    drafts
+    ParsedLongTermMemoryExtraction { upserts, deletes }
 }
 
 fn recall_long_term_memory_block(
@@ -801,13 +844,23 @@ fn extract_long_term_memory(
         None,
         ToolChoicePolicy::Auto,
     )?;
-    let drafts = parse_long_term_memory_drafts(response.content.trim(), chat_id);
-    if drafts.is_empty() {
+    let extraction = parse_long_term_memory_extraction(response.content.trim(), chat_id);
+    if extraction.upserts.is_empty() && extraction.deletes.is_empty() {
         return Ok(0);
     }
-    config
-        .long_term_memory_store
-        .upsert_many(&drafts, crate::util::current_unix_secs())
+    let mut changed = 0usize;
+    for slot in &extraction.deletes {
+        if config.long_term_memory_store.delete_slot(slot)? {
+            changed += 1;
+        }
+    }
+    if !extraction.upserts.is_empty() {
+        config
+            .long_term_memory_store
+            .upsert_many(&extraction.upserts, crate::util::current_unix_secs())?;
+        changed += extraction.upserts.len();
+    }
+    Ok(changed)
 }
 
 fn run_long_term_memory_refresh_job(
@@ -2329,18 +2382,21 @@ mod tests {
     }
 
     #[test]
-    fn parse_long_term_memory_drafts_skips_invalid_items_but_keeps_valid_ones() {
+    fn parse_long_term_memory_extraction_skips_invalid_items_but_keeps_valid_ones() {
         let raw = r#"
         [
-          {"kind":"preference","topic":"response_style","content":"User prefers concise answers.","keywords":["concise"]},
-          {"kind":"preference","content":"missing topic should be ignored"},
-          {"kind":"task","topic":"current_focus","content":"Continue memory redesign","keywords":["memory"]}
+          {"op":"upsert","kind":"preference","topic":"response_style","content":"User prefers concise answers.","keywords":["concise"]},
+          {"op":"upsert","kind":"preference","content":"missing topic should be ignored"},
+          {"op":"delete","kind":"task","topic":"current_focus"},
+          {"op":"upsert","kind":"task","topic":"current_focus","content":"Continue memory redesign","keywords":["memory"]}
         ]
         "#;
-        let drafts = parse_long_term_memory_drafts(raw, "chat-1");
-        assert_eq!(drafts.len(), 2);
-        assert_eq!(drafts[0].topic, "response_style");
-        assert_eq!(drafts[1].topic, "current_focus");
+        let parsed = parse_long_term_memory_extraction(raw, "chat-1");
+        assert_eq!(parsed.upserts.len(), 2);
+        assert_eq!(parsed.deletes.len(), 1);
+        assert_eq!(parsed.upserts[0].topic, "response_style");
+        assert_eq!(parsed.upserts[1].topic, "current_focus");
+        assert_eq!(parsed.deletes[0].topic, "current_focus");
     }
 
     #[test]

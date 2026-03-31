@@ -3,7 +3,7 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    LongTermMemoryDraft, LongTermMemoryKind, LongTermMemoryStore, MemoryStore,
+    LongTermMemoryDraft, LongTermMemoryKind, LongTermMemorySlot, LongTermMemoryStore, MemoryStore,
     MAX_MEMORY_CONTENT_LEN, MAX_SOUL_USER_LEN,
 };
 use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
@@ -32,13 +32,13 @@ impl Tool for MemoryManageTool {
         "memory_manage"
     }
     fn description(&self) -> &'static str {
-        "Manage persistent memory, structured long-term memory, soul/user config, and daily notes. Op: get_memory, set_memory, get_soul, set_soul, get_user, set_user, list_daily_notes, get_daily_note, write_daily_note, list_long_term, get_long_term, upsert_long_term, delete_long_term."
+        "Manage persistent memory, structured long-term memory, soul/user config, and daily notes. Op: get_memory, set_memory, get_soul, set_soul, get_user, set_user, list_daily_notes, get_daily_note, write_daily_note, list_long_term, get_long_term, upsert_long_term, delete_long_term, delete_long_term_slot."
     }
     fn schema(&self) -> serde_json::Value {
         json!({
             "type": "object",
             "properties": {
-                "op": { "type": "string", "description": "Operation: get_memory|set_memory|get_soul|set_soul|get_user|set_user|list_daily_notes|get_daily_note|write_daily_note|list_long_term|get_long_term|upsert_long_term|delete_long_term" },
+                "op": { "type": "string", "description": "Operation: get_memory|set_memory|get_soul|set_soul|get_user|set_user|list_daily_notes|get_daily_note|write_daily_note|list_long_term|get_long_term|upsert_long_term|delete_long_term|delete_long_term_slot" },
                 "content": { "type": "string", "description": "Content for set_memory/set_soul/set_user/write_daily_note" },
                 "name": { "type": "string", "description": "Daily note name (e.g. 2025-03-10.md) for get_daily_note/write_daily_note" },
                 "recent_n": { "type": "integer", "description": "Max number of daily notes to list (default 10, max 30)" },
@@ -211,6 +211,22 @@ impl Tool for MemoryManageTool {
                     .ok_or_else(|| Error::config("tool_memory_manage", "missing id"))?;
                 let deleted = self.long_term_store.delete(id)?;
                 Ok(json!({"op": "delete_long_term", "deleted": deleted}).to_string())
+            }
+            "delete_long_term_slot" => {
+                let kind = obj
+                    .get("kind")
+                    .and_then(|x| x.as_str())
+                    .ok_or_else(|| Error::config("tool_memory_manage", "missing kind"))?;
+                let kind = parse_long_term_kind(kind)?;
+                let topic = obj
+                    .get("topic")
+                    .and_then(|x| x.as_str())
+                    .ok_or_else(|| Error::config("tool_memory_manage", "missing topic"))?;
+                let deleted = self.long_term_store.delete_slot(&LongTermMemorySlot {
+                    kind,
+                    topic: topic.to_string(),
+                })?;
+                Ok(json!({"op": "delete_long_term_slot", "deleted": deleted}).to_string())
             }
             _ => Err(Error::config(
                 "tool_memory_manage",

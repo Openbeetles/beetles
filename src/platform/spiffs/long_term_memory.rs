@@ -3,9 +3,10 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    canonicalize_long_term_memory_entry, merge_long_term_memory_entry,
-    score_long_term_memory_recall, LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryStore,
-    MAX_LONG_TERM_MEMORY_ITEMS, REL_PATH_LONG_TERM_MEMORIES,
+    canonicalize_long_term_memory_entry, govern_long_term_memory_entries,
+    merge_long_term_memory_entry, score_long_term_memory_recall, LongTermMemoryDraft,
+    LongTermMemoryEntry, LongTermMemorySlot, LongTermMemoryStore, MAX_LONG_TERM_MEMORY_ITEMS,
+    REL_PATH_LONG_TERM_MEMORIES,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -58,6 +59,9 @@ impl SpiffsLongTermMemoryStore {
         let entries = guard
             .as_mut()
             .ok_or_else(|| Error::config("long_term_memory_cache", "cache not initialized"))?;
+        if govern_long_term_memory_entries(entries, crate::util::current_unix_secs()) {
+            Self::persist(entries)?;
+        }
         f(entries)
     }
 
@@ -103,11 +107,7 @@ impl LongTermMemoryStore for SpiffsLongTermMemoryStore {
                 changed = true;
             }
 
-            if entries.len() > MAX_LONG_TERM_MEMORY_ITEMS {
-                entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-                entries.truncate(MAX_LONG_TERM_MEMORY_ITEMS);
-                changed = true;
-            }
+            changed |= govern_long_term_memory_entries(entries, now_secs);
 
             if changed {
                 entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
@@ -167,6 +167,13 @@ impl LongTermMemoryStore for SpiffsLongTermMemoryStore {
             }
             Ok(removed)
         })
+    }
+
+    fn delete_slot(&self, slot: &LongTermMemorySlot) -> Result<bool> {
+        let Some(id) = slot.stable_id() else {
+            return Ok(false);
+        };
+        self.delete(&id)
     }
 
     fn count(&self) -> Result<usize> {

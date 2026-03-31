@@ -22,6 +22,10 @@ pub const MAX_LONG_TERM_MEMORY_TOPIC_LEN: usize = 40;
 pub const DEFAULT_LONG_TERM_MEMORY_RECALL_LIMIT: usize = 4;
 /// 注入 prompt 的长期记忆块上限。
 pub const MAX_LONG_TERM_MEMORY_BLOCK_LEN: usize = 1024;
+/// 长期记忆治理：任务超时后视为陈旧。
+const LONG_TERM_MEMORY_TASK_TTL_SECS: u64 = 45 * 86_400;
+/// 长期记忆治理：项目超时后视为陈旧。
+const LONG_TERM_MEMORY_PROJECT_TTL_SECS: u64 = 180 * 86_400;
 
 /// 长期记忆类别。只保留当前 beetle 真实会用到的 durable 类型。
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -77,6 +81,13 @@ pub struct LongTermMemoryDraft {
     pub source_chat_id: Option<String>,
 }
 
+/// 长期记忆槽位键，用于更新/删除同一条结构化记忆。
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LongTermMemorySlot {
+    pub kind: LongTermMemoryKind,
+    pub topic: String,
+}
+
 impl LongTermMemoryDraft {
     /// 规范化草稿：裁剪长度、去重关键词、忽略空内容。
     pub fn normalized(&self) -> Option<Self> {
@@ -119,15 +130,40 @@ impl LongTermMemoryDraft {
 
     pub fn stable_id(&self) -> Option<String> {
         let normalized = self.normalized()?;
-        let mut hasher = DefaultHasher::new();
-        normalized.kind.hash(&mut hasher);
-        0x517c_c1b7_u32.hash(&mut hasher);
-        normalized.topic.hash(&mut hasher);
-        let mut id = String::with_capacity(20);
-        id.push_str("ltm-");
-        id.push_str(&format!("{:016x}", hasher.finish()));
-        Some(id)
+        stable_id_for_kind_topic(&normalized.kind, &normalized.topic)
     }
+}
+
+impl LongTermMemorySlot {
+    pub fn normalized(&self) -> Option<Self> {
+        let topic = normalize_topic(self.topic.trim());
+        if topic.is_empty() {
+            return None;
+        }
+        Some(Self {
+            kind: self.kind.clone(),
+            topic,
+        })
+    }
+
+    pub fn stable_id(&self) -> Option<String> {
+        let normalized = self.normalized()?;
+        stable_id_for_kind_topic(&normalized.kind, &normalized.topic)
+    }
+}
+
+fn stable_id_for_kind_topic(kind: &LongTermMemoryKind, topic: &str) -> Option<String> {
+    if topic.is_empty() {
+        return None;
+    }
+    let mut hasher = DefaultHasher::new();
+    kind.hash(&mut hasher);
+    0x517c_c1b7_u32.hash(&mut hasher);
+    topic.hash(&mut hasher);
+    let mut id = String::with_capacity(20);
+    id.push_str("ltm-");
+    id.push_str(&format!("{:016x}", hasher.finish()));
+    Some(id)
 }
 
 /// 结构化长期记忆存储接口。实现负责持久化、去重与轻量召回。
@@ -142,6 +178,7 @@ pub trait LongTermMemoryStore: Send + Sync {
     fn get(&self, id: &str) -> Result<Option<LongTermMemoryEntry>>;
     fn list(&self, limit: usize) -> Result<Vec<LongTermMemoryEntry>>;
     fn delete(&self, id: &str) -> Result<bool>;
+    fn delete_slot(&self, slot: &LongTermMemorySlot) -> Result<bool>;
     fn count(&self) -> Result<usize>;
 }
 
@@ -230,6 +267,52 @@ pub fn merge_long_term_memory_entry(
         existing.updated_at = now_secs;
         changed = true;
     }
+    changed
+}
+
+pub(crate) fn govern_long_term_memory_entries(
+    entries: &mut Vec<LongTermMemoryEntry>,
+    now_secs: u64,
+) -> bool {
+    let original_len = entries.len();
+    entries.retain(|entry| !is_long_term_memory_entry_stale(entry, now_secs));
+
+    entries.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| b.created_at.cmp(&a.created_at))
+    });
+
+    let mut preference = 0usize;
+    let mut profile = 0usize;
+    let mut relationship = 0usize;
+    let mut project = 0usize;
+    let mut task = 0usize;
+    let mut constraint = 0usize;
+    let mut fact = 0usize;
+    let mut kept = Vec::with_capacity(entries.len().min(MAX_LONG_TERM_MEMORY_ITEMS));
+    for entry in entries.drain(..) {
+        let used = match entry.kind {
+            LongTermMemoryKind::Preference => &mut preference,
+            LongTermMemoryKind::Profile => &mut profile,
+            LongTermMemoryKind::Relationship => &mut relationship,
+            LongTermMemoryKind::Project => &mut project,
+            LongTermMemoryKind::Task => &mut task,
+            LongTermMemoryKind::Constraint => &mut constraint,
+            LongTermMemoryKind::Fact => &mut fact,
+        };
+        if *used >= long_term_memory_kind_budget(&entry.kind) {
+            continue;
+        }
+        *used += 1;
+        kept.push(entry);
+    }
+
+    if kept.len() > MAX_LONG_TERM_MEMORY_ITEMS {
+        kept.truncate(MAX_LONG_TERM_MEMORY_ITEMS);
+    }
+    let changed = kept.len() != original_len;
+    *entries = kept;
     changed
 }
 
@@ -433,6 +516,34 @@ fn push_unique_term(out: &mut Vec<String>, term: &str) {
     out.push(term.to_string());
 }
 
+fn long_term_memory_kind_budget(kind: &LongTermMemoryKind) -> usize {
+    match kind {
+        LongTermMemoryKind::Preference => 18,
+        LongTermMemoryKind::Profile => 12,
+        LongTermMemoryKind::Relationship => 8,
+        LongTermMemoryKind::Project => 16,
+        LongTermMemoryKind::Task => 12,
+        LongTermMemoryKind::Constraint => 12,
+        LongTermMemoryKind::Fact => 18,
+    }
+}
+
+fn is_long_term_memory_entry_stale(entry: &LongTermMemoryEntry, now_secs: u64) -> bool {
+    if now_secs == 0 || entry.updated_at == 0 || entry.updated_at > now_secs {
+        return false;
+    }
+    let age_secs = now_secs - entry.updated_at;
+    match entry.kind {
+        LongTermMemoryKind::Task => age_secs > LONG_TERM_MEMORY_TASK_TTL_SECS,
+        LongTermMemoryKind::Project => age_secs > LONG_TERM_MEMORY_PROJECT_TTL_SECS,
+        LongTermMemoryKind::Preference
+        | LongTermMemoryKind::Profile
+        | LongTermMemoryKind::Relationship
+        | LongTermMemoryKind::Constraint
+        | LongTermMemoryKind::Fact => false,
+    }
+}
+
 fn recall_chat_affinity_bonus(kind: &LongTermMemoryKind) -> u32 {
     match kind {
         LongTermMemoryKind::Task | LongTermMemoryKind::Project => 4,
@@ -505,6 +616,23 @@ mod tests {
         };
 
         assert_eq!(draft.stable_id(), draft.stable_id());
+    }
+
+    #[test]
+    fn slot_stable_id_matches_draft_slot() {
+        let draft = LongTermMemoryDraft {
+            kind: LongTermMemoryKind::Profile,
+            topic: "user_name".to_string(),
+            content: "甲壳虫".to_string(),
+            keywords: vec![],
+            source_chat_id: None,
+        };
+        let slot = LongTermMemorySlot {
+            kind: LongTermMemoryKind::Profile,
+            topic: "user_name".to_string(),
+        };
+
+        assert_eq!(draft.stable_id(), slot.stable_id());
     }
 
     #[test]
@@ -670,5 +798,60 @@ mod tests {
         let preferred = score_long_term_memory_recall("memory project", Some("chat-a"), 100, &base);
         let fallback = score_long_term_memory_recall("memory project", Some("chat-a"), 100, &older);
         assert!(preferred > fallback);
+    }
+
+    #[test]
+    fn governance_prunes_stale_task_entries() {
+        let mut entries = vec![
+            LongTermMemoryEntry {
+                id: "ltm-task".to_string(),
+                kind: LongTermMemoryKind::Task,
+                topic: "current_task".to_string(),
+                content: "Continue old task".to_string(),
+                keywords: vec![],
+                source_chat_id: None,
+                created_at: 1,
+                updated_at: 1,
+            },
+            LongTermMemoryEntry {
+                id: "ltm-pref".to_string(),
+                kind: LongTermMemoryKind::Preference,
+                topic: "response_style".to_string(),
+                content: "Prefer direct answers".to_string(),
+                keywords: vec![],
+                source_chat_id: None,
+                created_at: 1,
+                updated_at: 1,
+            },
+        ];
+
+        assert!(govern_long_term_memory_entries(
+            &mut entries,
+            LONG_TERM_MEMORY_TASK_TTL_SECS + 2
+        ));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "ltm-pref");
+    }
+
+    #[test]
+    fn governance_keeps_newest_entries_within_kind_budget() {
+        let mut entries = Vec::new();
+        for idx in 0..14u64 {
+            entries.push(LongTermMemoryEntry {
+                id: format!("ltm-task-{idx}"),
+                kind: LongTermMemoryKind::Task,
+                topic: format!("task_{idx}"),
+                content: format!("Task {idx}"),
+                keywords: vec![],
+                source_chat_id: None,
+                created_at: idx,
+                updated_at: idx,
+            });
+        }
+
+        assert!(govern_long_term_memory_entries(&mut entries, 0));
+        assert_eq!(entries.len(), 12);
+        assert_eq!(entries[0].id, "ltm-task-13");
+        assert_eq!(entries[11].id, "ltm-task-2");
     }
 }

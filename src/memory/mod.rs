@@ -7,14 +7,14 @@ use serde::{Deserialize, Serialize};
 mod long_term;
 
 pub(crate) use long_term::{
-    canonicalize_long_term_memory_entry, merge_long_term_memory_entry,
-    score_long_term_memory_recall,
+    canonicalize_long_term_memory_entry, govern_long_term_memory_entries,
+    merge_long_term_memory_entry, score_long_term_memory_recall,
 };
 pub use long_term::{
     render_long_term_memory_block, LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryKind,
-    LongTermMemoryStore, DEFAULT_LONG_TERM_MEMORY_RECALL_LIMIT, MAX_LONG_TERM_MEMORY_BLOCK_LEN,
-    MAX_LONG_TERM_MEMORY_CONTENT_LEN, MAX_LONG_TERM_MEMORY_ITEMS, MAX_LONG_TERM_MEMORY_KEYWORDS,
-    MAX_LONG_TERM_MEMORY_KEYWORD_LEN, REL_PATH_LONG_TERM_MEMORIES,
+    LongTermMemorySlot, LongTermMemoryStore, DEFAULT_LONG_TERM_MEMORY_RECALL_LIMIT,
+    MAX_LONG_TERM_MEMORY_BLOCK_LEN, MAX_LONG_TERM_MEMORY_CONTENT_LEN, MAX_LONG_TERM_MEMORY_ITEMS,
+    MAX_LONG_TERM_MEMORY_KEYWORDS, MAX_LONG_TERM_MEMORY_KEYWORD_LEN, REL_PATH_LONG_TERM_MEMORIES,
 };
 
 /// 单次写入内容最大字节数（与 platform::spiffs 上界一致）。实现应拒绝超长写入。
