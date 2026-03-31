@@ -61,7 +61,7 @@ pub fn transcribe_pcm16_samples(
     );
     let suffix = format!(r#"","len":{},"dev_pid":{}}}"#, pcm_byte_len, dev_pid);
 
-    let b64_output_len = (pcm_byte_len * 4 + 2) / 3 + 4;
+    let b64_output_len = (pcm_byte_len * 4).div_ceil(3) + 4;
     let total_cap = prefix.len() + b64_output_len + suffix.len();
     let mut body = crate::platform::psram_vec::PsramVec::<u8>::with_max_capacity(total_cap);
 

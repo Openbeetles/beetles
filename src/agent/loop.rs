@@ -226,34 +226,38 @@ fn failure_kind_attr(
     }
 }
 
+struct ToolResultBlock<'a> {
+    call_id: &'a str,
+    tool_name: &'a str,
+    status: &'a str,
+    failure: Option<&'a str>,
+    repeat_count: usize,
+    content: &'a str,
+}
+
 fn append_tool_result_block(
     dst: &mut String,
-    call_id: &str,
-    tool_name: &str,
-    status: &str,
-    failure: Option<&str>,
-    repeat_count: usize,
-    content: &str,
+    block: ToolResultBlock<'_>,
     max_bytes: usize,
 ) -> bool {
     if push_bounded_utf8(dst, "<tool_result id=\"", max_bytes)
-        || push_bounded_utf8(dst, call_id, max_bytes)
+        || push_bounded_utf8(dst, block.call_id, max_bytes)
         || push_bounded_utf8(dst, "\" tool=\"", max_bytes)
-        || push_bounded_utf8(dst, tool_name, max_bytes)
+        || push_bounded_utf8(dst, block.tool_name, max_bytes)
         || push_bounded_utf8(dst, "\" status=\"", max_bytes)
-        || push_bounded_utf8(dst, status, max_bytes)
+        || push_bounded_utf8(dst, block.status, max_bytes)
     {
         return true;
     }
-    if let Some(failure) = failure {
+    if let Some(failure) = block.failure {
         if push_bounded_utf8(dst, "\" failure=\"", max_bytes)
             || push_bounded_utf8(dst, failure, max_bytes)
         {
             return true;
         }
     }
-    if repeat_count > 1 {
-        let repeat_attr = repeat_count.to_string();
+    if block.repeat_count > 1 {
+        let repeat_attr = block.repeat_count.to_string();
         if push_bounded_utf8(dst, "\" repeat_count=\"", max_bytes)
             || push_bounded_utf8(dst, &repeat_attr, max_bytes)
         {
@@ -261,7 +265,7 @@ fn append_tool_result_block(
         }
     }
     push_bounded_utf8(dst, "\">\n", max_bytes)
-        || push_bounded_utf8(dst, content, max_bytes)
+        || push_bounded_utf8(dst, block.content, max_bytes)
         || push_bounded_utf8(dst, "\n</tool_result>", max_bytes)
 }
 
@@ -317,7 +321,7 @@ fn summarize_tool_results(content: &str) -> String {
             let failure = extract_tag_attr(line, "failure");
             let repeat_count = extract_tag_attr(line, "repeat_count");
             let mut block_body = String::new();
-            while let Some(next) = lines.next() {
+            for next in lines.by_ref() {
                 if next == "</tool_result>" {
                     break;
                 }
@@ -349,7 +353,7 @@ fn summarize_tool_results(content: &str) -> String {
         }
         if line == "<tool_round_guidance>" {
             let mut guidance = String::new();
-            while let Some(next) = lines.next() {
+            for next in lines.by_ref() {
                 if next == "</tool_round_guidance>" {
                     break;
                 }
@@ -367,7 +371,7 @@ fn summarize_tool_results(content: &str) -> String {
             continue;
         }
         if line == "<tool_evidence_summary>" {
-            while let Some(next) = lines.next() {
+            for next in lines.by_ref() {
                 if next == "</tool_evidence_summary>" {
                     break;
                 }
@@ -778,40 +782,49 @@ fn collect_recent_assistant_messages(messages: &[Message], limit: usize) -> Vec<
     recent
 }
 
-fn resolve_end_turn_followup(
-    request_plan: &AgentRequestPlan<'_>,
+struct EndTurnFollowupContext<'a> {
+    request_plan: &'a AgentRequestPlan<'a>,
     strategy: AgentRunStrategy,
     round: usize,
     any_tool_used: bool,
     end_turn_followup_used: bool,
-    recent_tool_round: &RecentToolRoundState,
-    messages: &[Message],
-    content: &str,
-) -> Option<(String, bool)> {
-    if let Some(followup) = request_plan.missing_tool_followup(round, any_tool_used, content) {
+    recent_tool_round: &'a RecentToolRoundState,
+    messages: &'a [Message],
+    content: &'a str,
+}
+
+fn resolve_end_turn_followup(ctx: EndTurnFollowupContext<'_>) -> Option<(String, bool)> {
+    if let Some(followup) =
+        ctx.request_plan
+            .missing_tool_followup(ctx.round, ctx.any_tool_used, ctx.content)
+    {
         return Some((followup.to_string(), false));
     }
-    if end_turn_followup_used {
+    if ctx.end_turn_followup_used {
         return None;
     }
-    if let Some(followup) =
-        final_answer_followup(strategy, recent_tool_round.successful_round, content)
-    {
+    if let Some(followup) = final_answer_followup(
+        ctx.strategy,
+        ctx.recent_tool_round.successful_round,
+        ctx.content,
+    ) {
         return Some((followup, true));
     }
-    let recent_assistant_messages = collect_recent_assistant_messages(messages, 3);
-    if let Some(followup) = repeated_answer_followup(strategy, &recent_assistant_messages, content)
+    let recent_assistant_messages = collect_recent_assistant_messages(ctx.messages, 3);
+    if let Some(followup) =
+        repeated_answer_followup(ctx.strategy, &recent_assistant_messages, ctx.content)
     {
         return Some((followup.to_string(), true));
     }
-    if let Some(followup) = blocker_end_turn_followup(strategy, recent_tool_round.blocker, content)
+    if let Some(followup) =
+        blocker_end_turn_followup(ctx.strategy, ctx.recent_tool_round.blocker, ctx.content)
     {
         return Some((followup.to_string(), true));
     }
     stalled_end_turn_followup(
-        strategy,
-        recent_tool_round.consecutive_stalled_rounds,
-        content,
+        ctx.strategy,
+        ctx.recent_tool_round.consecutive_stalled_rounds,
+        ctx.content,
     )
     .map(|followup| (followup.to_string(), true))
 }
@@ -1755,16 +1768,18 @@ fn run_worker_path(
                     latency,
                 ));
             }
-            if let Some((followup, consume_single_use_budget)) = resolve_end_turn_followup(
-                &request_plan,
-                config.strategy,
-                round,
-                any_tool_used,
-                end_turn_followup_used,
-                &recent_tool_round,
-                &messages,
-                &content,
-            ) {
+            if let Some((followup, consume_single_use_budget)) =
+                resolve_end_turn_followup(EndTurnFollowupContext {
+                    request_plan: &request_plan,
+                    strategy: config.strategy,
+                    round,
+                    any_tool_used,
+                    end_turn_followup_used,
+                    recent_tool_round: &recent_tool_round,
+                    messages: &messages,
+                    content: &content,
+                })
+            {
                 enqueue_end_turn_followup(
                     &mut messages,
                     &mut progress_history,
@@ -1943,12 +1958,14 @@ fn run_worker_path(
                 }
                 if append_tool_result_block(
                     &mut user_content_raw,
-                    &tc.id,
-                    &tc.name,
-                    tool_result_status_attr(failure_kind.is_some()),
-                    failure_kind_attr(failure_kind),
-                    repeat_count,
-                    result_view,
+                    ToolResultBlock {
+                        call_id: &tc.id,
+                        tool_name: &tc.name,
+                        status: tool_result_status_attr(failure_kind.is_some()),
+                        failure: failure_kind_attr(failure_kind),
+                        repeat_count,
+                        content: result_view,
+                    },
                     MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
                 ) {
                     truncated = true;

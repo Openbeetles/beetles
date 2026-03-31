@@ -19,6 +19,12 @@ impl AudioRecordingGuard {
     }
 }
 
+impl Default for AudioRecordingGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Drop for AudioRecordingGuard {
     fn drop(&mut self) {
         crate::orchestrator::set_audio_recording(false);

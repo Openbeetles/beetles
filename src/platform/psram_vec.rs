@@ -134,11 +134,7 @@ impl std::io::Write for PsramVec<u8> {
                 let take = buf.len().min(avail);
                 if take > 0 {
                     unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            buf.as_ptr(),
-                            (*ptr as *mut u8).add(*len),
-                            take,
-                        );
+                        std::ptr::copy_nonoverlapping(buf.as_ptr(), (*ptr).add(*len), take);
                     }
                     *len += take;
                 }
