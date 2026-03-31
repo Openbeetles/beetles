@@ -70,7 +70,7 @@ const PLAN_SYSTEM_SUFFIX: &str = "\n\n## Internal planning\nBefore solving the l
 
 /// 程序性会话摘要：单次轻量 LLM 调用的 system 提示。
 const SUMMARY_SYSTEM: &str = "You are a conversation summarizer. Compress the following conversation into a concise summary (max 800 chars) preserving key facts, user preferences and pending tasks. Reply with the summary only.";
-const LONG_TERM_MEMORY_EXTRACTION_SYSTEM: &str = "You extract durable long-term memory for a personal AI assistant. Return JSON only: an array of objects. Each object must contain op, kind, topic. op must be upsert or delete. kind must be one of preference, profile, relationship, project, task, constraint, fact. topic must be a short stable slot key identifying the same memory across future updates, for example response_style, user_name, current_project, timezone, partner_name. For op=upsert, also provide content and optional keywords. For op=delete, omit content and keywords. Use delete when the conversation clearly invalidates or completes an existing durable slot, for example a task is finished, a temporary project focus is no longer active, or a prior fact is explicitly corrected. First decide whether the recent conversation contains any durable addition, update, or deletion that will matter in future conversations. If not, return []. When uncertain, return []. Do not store greetings, one-off troubleshooting steps, transient status, or assistant-only claims.";
+const LONG_TERM_MEMORY_EXTRACTION_SYSTEM: &str = "You extract durable long-term memory for a personal AI assistant. Return JSON only: an array of objects. Each object must contain op, kind, topic. op must be upsert or delete. kind must be one of preference, profile, relationship, project, task, constraint, fact. topic must be a short stable slot key identifying the same memory across future updates, for example response_style, user_name, current_project, timezone, partner_name. Reuse an existing topic whenever the conversation updates, completes, or corrects that same durable slot. Prefer updating an existing slot over inventing a nearby new topic. For op=upsert, also provide content and optional keywords. For op=delete, omit content and keywords. Use delete when the conversation clearly invalidates or completes an existing durable slot, for example a task is finished, a temporary project focus is no longer active, or a prior fact is explicitly corrected. Use the provided session summary and existing long-term memory as grounding when deciding whether to upsert, delete, or ignore. Keep only the highest-value durable changes, at most 4 items. If there is nothing durable to add, update, or delete, return []. Do not store greetings, one-off troubleshooting steps, transient status, or assistant-only claims.";
 const SESSION_SUMMARY_MIN_MESSAGES: usize = 20;
 const SESSION_SUMMARY_REFRESH_DELTA: usize = 10;
 const LONG_TERM_MEMORY_RECALL_RECENT_N: usize = 8;
@@ -179,6 +179,11 @@ struct LongTermMemoryExtractionItem {
     source_chat_id: Option<String>,
 }
 
+enum ParsedLongTermMemoryAction {
+    Upsert(LongTermMemoryDraft),
+    Delete(LongTermMemorySlot),
+}
+
 fn default_long_term_memory_extraction_op() -> String {
     "upsert".to_string()
 }
@@ -194,39 +199,107 @@ fn parse_long_term_memory_extraction(raw: &str, chat_id: &str) -> ParsedLongTerm
         }
     };
     let parsed = serde_json::from_str::<Vec<serde_json::Value>>(json_slice).unwrap_or_default();
-    let mut upserts = Vec::with_capacity(parsed.len().min(LONG_TERM_MEMORY_EXTRACTION_BATCH));
-    let mut deletes = Vec::with_capacity(parsed.len().min(LONG_TERM_MEMORY_EXTRACTION_BATCH));
+    let mut actions = Vec::with_capacity(parsed.len().min(LONG_TERM_MEMORY_EXTRACTION_BATCH));
+    let mut slot_indexes =
+        HashMap::with_capacity(parsed.len().min(LONG_TERM_MEMORY_EXTRACTION_BATCH));
     for item in parsed {
         let Ok(mut parsed_item) = serde_json::from_value::<LongTermMemoryExtractionItem>(item)
         else {
             continue;
         };
-        match parsed_item.op.trim().to_ascii_lowercase().as_str() {
-            "delete" => {
-                deletes.push(LongTermMemorySlot {
-                    kind: parsed_item.kind,
-                    topic: parsed_item.topic,
-                });
-            }
+        let action = match parsed_item.op.trim().to_ascii_lowercase().as_str() {
+            "delete" => ParsedLongTermMemoryAction::Delete(LongTermMemorySlot {
+                kind: parsed_item.kind,
+                topic: parsed_item.topic,
+            }),
             "upsert" => {
                 if parsed_item.source_chat_id.is_none() {
                     parsed_item.source_chat_id = Some(chat_id.to_string());
                 }
-                upserts.push(LongTermMemoryDraft {
+                ParsedLongTermMemoryAction::Upsert(LongTermMemoryDraft {
                     kind: parsed_item.kind,
                     topic: parsed_item.topic,
                     content: parsed_item.content,
                     keywords: parsed_item.keywords,
                     source_chat_id: parsed_item.source_chat_id,
-                });
+                })
             }
             _ => continue,
+        };
+        let slot_id = match &action {
+            ParsedLongTermMemoryAction::Upsert(draft) => draft.stable_id(),
+            ParsedLongTermMemoryAction::Delete(slot) => slot.stable_id(),
+        };
+        let Some(slot_id) = slot_id else {
+            continue;
+        };
+        if let Some(existing_idx) = slot_indexes.get(&slot_id).copied() {
+            actions[existing_idx] = action;
+        } else {
+            slot_indexes.insert(slot_id, actions.len());
+            actions.push(action);
         }
-        if upserts.len() + deletes.len() >= LONG_TERM_MEMORY_EXTRACTION_BATCH {
+        if actions.len() >= LONG_TERM_MEMORY_EXTRACTION_BATCH {
             break;
         }
     }
+    let mut upserts = Vec::with_capacity(actions.len());
+    let mut deletes = Vec::with_capacity(actions.len());
+    for action in actions {
+        match action {
+            ParsedLongTermMemoryAction::Upsert(draft) => upserts.push(draft),
+            ParsedLongTermMemoryAction::Delete(slot) => deletes.push(slot),
+        }
+    }
     ParsedLongTermMemoryExtraction { upserts, deletes }
+}
+
+fn build_long_term_memory_extraction_input(
+    config: &AgentLoopConfig,
+    chat_id: &str,
+    recent: &[SessionMessage],
+) -> String {
+    let mut transcript = String::with_capacity(1536);
+    for message in recent {
+        let preview = truncate_content_to_max(&message.content, 180);
+        let _ = writeln!(
+            transcript,
+            "{}: {}",
+            message.role.to_uppercase(),
+            preview.as_ref()
+        );
+    }
+
+    let mut input = String::with_capacity(2300);
+    if let Some(summary) = config
+        .session_summary_store
+        .get(chat_id)
+        .ok()
+        .flatten()
+        .filter(|value| !value.trim().is_empty())
+    {
+        input.push_str("## Session summary\n");
+        input.push_str(summary.trim());
+        input.push_str("\n\n");
+    }
+
+    if let Some(existing_memory) = config
+        .long_term_memory_store
+        .recall(
+            &transcript,
+            Some(chat_id),
+            LONG_TERM_MEMORY_EXTRACTION_BATCH,
+        )
+        .ok()
+        .and_then(|entries| render_long_term_memory_block(&entries, 768))
+    {
+        input.push_str(&existing_memory);
+        input.push_str("\n\n");
+    }
+
+    input.push_str("## Recent conversation\n");
+    input.push_str(transcript.trim());
+    input
 }
 
 fn recall_long_term_memory_block(
@@ -806,8 +879,6 @@ fn extract_long_term_memory(
     config: &AgentLoopConfig,
     chat_id: &str,
 ) -> Result<usize> {
-    use std::fmt::Write;
-
     let recent = config
         .session_store
         .load_recent(chat_id, LONG_TERM_MEMORY_RECALL_RECENT_N)?;
@@ -815,20 +886,9 @@ fn extract_long_term_memory(
         return Ok(0);
     }
 
-    let mut transcript = String::with_capacity(1536);
-    for message in &recent {
-        let preview = truncate_content_to_max(&message.content, 180);
-        let _ = writeln!(
-            transcript,
-            "{}: {}",
-            message.role.to_uppercase(),
-            preview.as_ref()
-        );
-    }
-
     let messages = [Message {
         role: Cow::Borrowed("user"),
-        content: transcript,
+        content: build_long_term_memory_extraction_input(config, chat_id, &recent),
     }];
     let loc = (config.resolve_locale)();
     let mut ctx = HttpClientToolContext {
@@ -2393,10 +2453,26 @@ mod tests {
         "#;
         let parsed = parse_long_term_memory_extraction(raw, "chat-1");
         assert_eq!(parsed.upserts.len(), 2);
-        assert_eq!(parsed.deletes.len(), 1);
+        assert_eq!(parsed.deletes.len(), 0);
         assert_eq!(parsed.upserts[0].topic, "response_style");
         assert_eq!(parsed.upserts[1].topic, "current_focus");
-        assert_eq!(parsed.deletes[0].topic, "current_focus");
+    }
+
+    #[test]
+    fn parse_long_term_memory_extraction_keeps_last_action_per_slot() {
+        let raw = r#"
+        [
+          {"op":"delete","kind":"task","topic":"current_focus"},
+          {"op":"upsert","kind":"task","topic":"current_focus","content":"Continue memory redesign","keywords":["memory"]},
+          {"op":"upsert","kind":"profile","topic":"user_name","content":"甲壳虫"},
+          {"op":"delete","kind":"profile","topic":"user_name"}
+        ]
+        "#;
+        let parsed = parse_long_term_memory_extraction(raw, "chat-1");
+        assert_eq!(parsed.upserts.len(), 1);
+        assert_eq!(parsed.deletes.len(), 1);
+        assert_eq!(parsed.upserts[0].topic, "current_focus");
+        assert_eq!(parsed.deletes[0].topic, "user_name");
     }
 
     #[test]
