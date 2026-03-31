@@ -1,6 +1,6 @@
 //! Agent ReAct 循环：入站一条 → context → chat（含 tool_use 多轮）→ 会话持久化 → 出站一条。
 //! 仅依赖 trait；HTTP/Tool 由 main 注入同一实现（如 EspHttpClient）。
-use super::parse_tools::{append_tool_fallback_instructions, recover_text_tool_calls};
+use super::request_plan::AgentRequestPlan;
 use super::strategy::{append_execution_plan, should_generate_execution_plan, AgentRunStrategy};
 use crate::agent::context::{build_context, RuntimeContext};
 use crate::bus::{
@@ -24,7 +24,6 @@ use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
 use crate::state;
 use crate::tools::http_bridge::HttpClientToolContext;
-use crate::tools::ToolPolicyContext;
 use crate::util::{
     remove_substrings_all_trim, strip_agent_stop_confirmation, truncate_content_to_max,
 };
@@ -1080,10 +1079,8 @@ fn run_worker_path(
 ) -> Result<(WorkerOutcome, Option<u32>, bool, WorkerLatency)> {
     let mut latency = WorkerLatency::default();
     let llm_tool_choice = ToolChoicePolicy::Auto;
-    let tool_policy = ToolPolicyContext::new(msg.ingress, msg.channel.as_ref());
-    let tool_specs = registry.tool_specs_for_llm(&tool_policy);
-    let has_tools = !tool_specs.is_empty();
-    let native_tool_calling = has_tools && worker_llm.supports_native_tools();
+    let request_plan = AgentRequestPlan::build(msg, registry, worker_llm);
+    let has_tools = request_plan.has_tools();
     let mut tool_ctx = HttpClientToolContext {
         http,
         chat_id: Some(msg.chat_id.clone()),
@@ -1152,7 +1149,7 @@ fn run_worker_path(
         session: config.session_store.as_ref(),
         important_message_store: config.important_message_store.as_ref(),
         has_tools,
-        native_tool_calling,
+        native_tool_calling: request_plan.uses_native_tools(),
         skill_descriptions: &skill_descriptions,
         system_max_len: budget.system_prompt_max,
         messages_max_len: budget.messages_max,
@@ -1166,9 +1163,7 @@ fn run_worker_path(
     })
     .map_err(|e| e.with_stage("agent_context"))?;
     latency.context_ms = context_start.elapsed().as_millis();
-    if has_tools && !native_tool_calling {
-        append_tool_fallback_instructions(&mut system, budget.system_prompt_max, &tool_specs);
-    }
+    request_plan.apply_system_prompt(&mut system, budget.system_prompt_max);
     if config.strategy.enables_preplanning()
         && should_generate_execution_plan(msg, has_tools, snapshot.pressure)
     {
@@ -1316,7 +1311,7 @@ fn run_worker_path(
                 &mut tool_ctx,
                 &system,
                 &messages,
-                native_tool_calling.then_some(tool_specs.as_slice()),
+                request_plan.request_tools(),
                 llm_tool_choice,
                 &mut progress_cb,
             )
@@ -1325,7 +1320,7 @@ fn run_worker_path(
                 &mut tool_ctx,
                 &system,
                 &messages,
-                native_tool_calling.then_some(tool_specs.as_slice()),
+                request_plan.request_tools(),
                 llm_tool_choice,
             )
         };
@@ -1344,11 +1339,7 @@ fn run_worker_path(
                 return Err(e.with_stage("agent_chat"));
             }
         };
-        let response = if has_tools {
-            recover_text_tool_calls(response)
-        } else {
-            response
-        };
+        let response = request_plan.recover_response(response);
         crate::platform::task_wdt::feed_current_task();
         metrics::record_wdt_feed();
 
@@ -1465,7 +1456,7 @@ fn run_worker_path(
                 }
                 // 工具执行门控
                 let result_owned = {
-                    if !registry.is_llm_tool_visible(&tc.name, &tool_policy) {
+                    if !registry.is_llm_tool_visible(&tc.name, request_plan.policy()) {
                         metrics::record_tool_call(false);
                         crate::util::scrub_credentials(
                             &serde_json::json!({
