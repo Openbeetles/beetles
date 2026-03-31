@@ -136,6 +136,26 @@ pub fn snapshot() -> ResourceSnapshot {
 /// Single-line resource baseline aligned with [`snapshot`] and `GET /api/resource` for heartbeat/serial.
 pub fn format_resource_baseline_line() -> String {
     let s = snapshot();
+    #[cfg(target_os = "linux")]
+    {
+        let largest = if s.heap_largest_block_internal == 0 {
+            "n/a".to_string()
+        } else {
+            s.heap_largest_block_internal.to_string()
+        };
+        return format!(
+            "resource pressure={:?} mem_available={} heap_spiram={} heap_largest={} active_http={} agent_tasks={} inbound={} outbound={}",
+            s.pressure,
+            s.heap_free_internal,
+            s.heap_free_spiram,
+            largest,
+            s.active_http_count,
+            s.active_agent_tasks,
+            s.inbound_depth,
+            s.outbound_depth,
+        );
+    }
+    #[cfg(not(target_os = "linux"))]
     format!(
         "resource pressure={:?} heap_internal={} heap_spiram={} heap_largest={} active_http={} agent_tasks={} inbound={} outbound={}",
         s.pressure,

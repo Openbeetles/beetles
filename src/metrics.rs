@@ -22,6 +22,7 @@ static LLM_ERRORS: AtomicU32 = AtomicU32::new(0);
 static LLM_LAST_MS: AtomicU32 = AtomicU32::new(0);
 static TTFT_LAST_MS: AtomicU32 = AtomicU32::new(0);
 static E2E_LAST_MS: AtomicU32 = AtomicU32::new(0);
+static POST_REPLY_LAST_MS: AtomicU32 = AtomicU32::new(0);
 static USER_QUEUE_WAIT_LAST_MS: AtomicU32 = AtomicU32::new(0);
 static SYSTEM_QUEUE_WAIT_LAST_MS: AtomicU32 = AtomicU32::new(0);
 static CRON_E2E_LAST_MS: AtomicU32 = AtomicU32::new(0);
@@ -110,6 +111,11 @@ pub fn record_ttft_ms(ms: u128) {
 #[inline]
 pub fn record_e2e_ms(ms: u128) {
     E2E_LAST_MS.store(ms.min(u32::MAX as u128) as u32, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_post_reply_ms(ms: u128) {
+    POST_REPLY_LAST_MS.store(ms.min(u32::MAX as u128) as u32, Ordering::Relaxed);
 }
 
 #[inline]
@@ -321,6 +327,7 @@ pub fn snapshot() -> MetricsSnapshot {
         llm_last_ms: LLM_LAST_MS.load(Ordering::Relaxed) as u64,
         ttft_last_ms: TTFT_LAST_MS.load(Ordering::Relaxed) as u64,
         e2e_last_ms: E2E_LAST_MS.load(Ordering::Relaxed) as u64,
+        post_reply_last_ms: POST_REPLY_LAST_MS.load(Ordering::Relaxed) as u64,
         user_queue_wait_last_ms: USER_QUEUE_WAIT_LAST_MS.load(Ordering::Relaxed) as u64,
         system_queue_wait_last_ms: SYSTEM_QUEUE_WAIT_LAST_MS.load(Ordering::Relaxed) as u64,
         cron_e2e_last_ms: CRON_E2E_LAST_MS.load(Ordering::Relaxed) as u64,
@@ -381,6 +388,7 @@ pub struct MetricsSnapshot {
     pub llm_last_ms: u64,
     pub ttft_last_ms: u64,
     pub e2e_last_ms: u64,
+    pub post_reply_last_ms: u64,
     pub user_queue_wait_last_ms: u64,
     pub system_queue_wait_last_ms: u64,
     pub cron_e2e_last_ms: u64,
@@ -436,7 +444,7 @@ impl MetricsSnapshot {
         let mut buf = String::with_capacity(384);
         let _ = write!(
             buf,
-            "metrics msg_in={} msg_out={} llm_calls={} llm_err={} llm_last_ms={} ttft_last_ms={} e2e_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} user_done={} sys_done={} cron_done={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} wdt_feeds={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} voice_in_capture_ms={} voice_in_stt_http_ms={} voice_out_tts_http_ms={} voice_out_play_ms={} voice_in_fail={} voice_out_fail={} wake_word_trigger={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={} shttp_reuse={} shttp_create={} shttp_reset={} shttp_invalidate={}",
+            "metrics msg_in={} msg_out={} llm_calls={} llm_err={} llm_last_ms={} ttft_last_ms={} e2e_last_ms={} post_reply_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} user_done={} sys_done={} cron_done={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} wdt_feeds={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} voice_in_capture_ms={} voice_in_stt_http_ms={} voice_out_tts_http_ms={} voice_out_play_ms={} voice_in_fail={} voice_out_fail={} wake_word_trigger={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={} shttp_reuse={} shttp_create={} shttp_reset={} shttp_invalidate={}",
             self.messages_in,
             self.messages_out,
             self.llm_calls,
@@ -444,6 +452,7 @@ impl MetricsSnapshot {
             self.llm_last_ms,
             self.ttft_last_ms,
             self.e2e_last_ms,
+            self.post_reply_last_ms,
             self.user_queue_wait_last_ms,
             self.system_queue_wait_last_ms,
             self.cron_e2e_last_ms,

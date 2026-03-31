@@ -37,6 +37,10 @@ pub fn body_prometheus(_ctx: &HandlerContext) -> Result<String, std::io::Error> 
     buf.push_str(&format!("beetle_llm_last_ms {}\n", snap.llm_last_ms));
     buf.push_str(&format!("beetle_e2e_last_ms {}\n", snap.e2e_last_ms));
     buf.push_str(&format!(
+        "beetle_post_reply_last_ms {}\n",
+        snap.post_reply_last_ms
+    ));
+    buf.push_str(&format!(
         "beetle_user_queue_wait_last_ms {}\n",
         snap.user_queue_wait_last_ms
     ));

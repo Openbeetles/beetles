@@ -1,6 +1,6 @@
-//! 定时向 bus 推系统消息；错峰退避，失败打日志不 panic。
-//! Cron: push system message to bus at interval; backoff on failure, log only.
-//! 同时检查持久化 cron 任务并在到期时注入消息。
+//! 定时检查持久化 cron 任务与 sensor watch；错峰退避，失败打日志不 panic。
+//! Cron: check persisted cron tasks and sensor watches on interval; backoff on failure, log only.
+//! 到期任务 / 告警才注入系统消息，避免空闲 tick 驱动 agent 空转。
 
 use crate::bus::{PcMsg, SystemInboundTx};
 use crate::config::{DeviceEntry, I2cSensorEntry};
@@ -43,7 +43,7 @@ impl CronTickState {
     }
 }
 
-/// 单次 cron tick：推 cron 系统消息 + 检查持久化任务 + sensor watch。
+/// 单次 cron tick：检查持久化任务与 sensor watch，并在有真实事件时注入消息。
 /// 由 bg_timer 每 60s 调用一次。
 pub(crate) fn cron_tick(
     inbound_tx: &SystemInboundTx,
@@ -52,21 +52,8 @@ pub(crate) fn cron_tick(
     resolve_locale: &Arc<dyn Fn() -> Locale + Send + Sync>,
     state: &mut CronTickState,
 ) {
-    // 1. Push standard cron tick
-    match PcMsg::new_system("cron", "cron", "tick") {
-        Ok(msg) => {
-            if let Err(e) = inbound_tx.send(msg) {
-                log::warn!("[{}] inbound_tx.send failed: {}", TAG, e);
-            } else {
-                log::debug!("[{}] cron message pushed", TAG);
-            }
-        }
-        Err(e) => {
-            log::warn!("[{}] PcMsg::new failed: {}", TAG, e);
-        }
-    }
-
-    // 2. Check persisted cron tasks
+    // Check persisted cron tasks and sensor watches. Do not emit a synthetic "tick"
+    // message; idle cron rounds must not wake the agent on either ESP or Linux.
     if let Some(store) = memory_store {
         fire_persisted_tasks(
             store.as_ref(),
@@ -167,4 +154,124 @@ fn cron_matches(
         && hours.contains(&hour)
         && (doms.contains(&dom) || dows.contains(&dow))
         && months.contains(&month))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bus::new_inbound_channel;
+    use crate::memory::MemoryStore;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    struct TestMemoryStore {
+        daily_notes: Mutex<HashMap<String, String>>,
+    }
+
+    impl TestMemoryStore {
+        fn new() -> Self {
+            Self {
+                daily_notes: Mutex::new(HashMap::new()),
+            }
+        }
+
+        fn with_daily_note(path: &str, content: &str) -> Self {
+            let mut daily_notes = HashMap::new();
+            daily_notes.insert(path.to_string(), content.to_string());
+            Self {
+                daily_notes: Mutex::new(daily_notes),
+            }
+        }
+    }
+
+    impl MemoryStore for TestMemoryStore {
+        fn get_memory(&self) -> crate::error::Result<String> {
+            Ok(String::new())
+        }
+
+        fn set_memory(&self, _content: &str) -> crate::error::Result<()> {
+            Ok(())
+        }
+
+        fn get_soul(&self) -> crate::error::Result<String> {
+            Ok(String::new())
+        }
+
+        fn set_soul(&self, _content: &str) -> crate::error::Result<()> {
+            Ok(())
+        }
+
+        fn get_user(&self) -> crate::error::Result<String> {
+            Ok(String::new())
+        }
+
+        fn set_user(&self, _content: &str) -> crate::error::Result<()> {
+            Ok(())
+        }
+
+        fn list_daily_note_names(&self, _recent_n: usize) -> crate::error::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn get_daily_note(&self, name: &str) -> crate::error::Result<String> {
+            Ok(self
+                .daily_notes
+                .lock()
+                .expect("daily_notes poisoned")
+                .get(name)
+                .cloned()
+                .unwrap_or_default())
+        }
+
+        fn write_daily_note(&self, name: &str, content: &str) -> crate::error::Result<()> {
+            self.daily_notes
+                .lock()
+                .expect("daily_notes poisoned")
+                .insert(name.to_string(), content.to_string());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn cron_tick_without_tasks_does_not_enqueue_synthetic_tick() {
+        let (tx, rx, _depth) = new_inbound_channel(4);
+        let resolve_locale: Arc<dyn Fn() -> crate::i18n::Locale + Send + Sync> =
+            Arc::new(|| crate::i18n::Locale::Zh);
+        let mut state = CronTickState::new();
+        let store: Arc<dyn MemoryStore + Send + Sync> = Arc::new(TestMemoryStore::new());
+
+        cron_tick(&tx, Some(&store), None, &resolve_locale, &mut state);
+
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn cron_tick_enqueues_due_persisted_task() {
+        let (tx, rx, _depth) = new_inbound_channel(4);
+        let resolve_locale: Arc<dyn Fn() -> crate::i18n::Locale + Send + Sync> =
+            Arc::new(|| crate::i18n::Locale::Zh);
+        let mut state = CronTickState::new();
+        let tasks = serde_json::json!([{
+            "id": "ct_test",
+            "expr": "* * * * *",
+            "action": "ping",
+            "channel": "qq_channel",
+            "chat_id": "c2c:test",
+            "enabled": true
+        }]);
+        let store: Arc<dyn MemoryStore + Send + Sync> = Arc::new(TestMemoryStore::with_daily_note(
+            "memory/cron_tasks.json",
+            &tasks.to_string(),
+        ));
+
+        CRON_PERSISTED_TASKS_DIRTY.store(true, Ordering::Release);
+        cron_tick(&tx, Some(&store), None, &resolve_locale, &mut state);
+
+        let msg = rx.try_recv().expect("expected due cron task");
+        assert_eq!(msg.channel.as_ref(), "qq_channel");
+        assert_eq!(msg.chat_id.as_ref(), "c2c:test");
+        assert_eq!(msg.ingress, crate::bus::IngressKind::System);
+        assert!(msg.content.contains("ct_test"));
+        assert!(msg.content.contains("ping"));
+    }
 }

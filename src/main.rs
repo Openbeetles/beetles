@@ -1230,6 +1230,6 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         }
         std::thread::sleep(std::time::Duration::from_secs(10));
         beetle::platform::task_wdt::feed_current_task();
-        log::info!("[{}] running v{}", TAG, VERSION);
+        log::debug!("[{}] running v{}", TAG, VERSION);
     }
 }

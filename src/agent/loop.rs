@@ -158,6 +158,12 @@ struct WorkerLatency {
     tool_calls: u32,
 }
 
+fn mark_ttft_if_visible(latency: &mut WorkerLatency, worker_start: Instant, content: &str) {
+    if latency.ttft_ms.is_none() && !content.trim().is_empty() {
+        latency.ttft_ms = Some(worker_start.elapsed().as_millis());
+    }
+}
+
 /// 将文本按 UTF-8 边界追加到 dst，确保总字节不超过 max_bytes。
 /// 返回 true 表示本次发生截断（达到上限）。
 fn push_bounded_utf8(dst: &mut String, text: &str, max_bytes: usize) -> bool {
@@ -1286,11 +1292,6 @@ fn run_agent_loop_lane(
         defer_tracker.remove(&msg_key);
 
         // 流式编辑已发送到通道时，跳过 outbound_tx 避免重复发送。
-        let llm_ms = worker_latency
-            .context_ms
-            .saturating_add(worker_latency.llm_round_total_ms)
-            .saturating_add(worker_latency.tool_exec_ms)
-            .saturating_add(worker_latency.session_write_ms);
         let outbound_start = Instant::now();
         let delivered = if !streamed {
             let out = PcMsg {
@@ -1310,6 +1311,11 @@ fn run_agent_loop_lane(
             true
         };
         let outbound_enqueue_ms = outbound_start.elapsed().as_millis();
+        let reply_handoff_ms = if delivered {
+            msg_start.elapsed().as_millis()
+        } else {
+            0
+        };
 
         if delivered {
             let session_assistant_start = Instant::now();
@@ -1329,8 +1335,14 @@ fn run_agent_loop_lane(
                     .set_important_offset_from_end(&msg.chat_id, 1);
             }
         }
+        let llm_ms = worker_latency
+            .context_ms
+            .saturating_add(worker_latency.llm_round_total_ms)
+            .saturating_add(worker_latency.tool_exec_ms)
+            .saturating_add(worker_latency.session_write_ms);
 
-        // Programmatic session summary — only after the reply is visible to user or streamed successfully.
+        // Programmatic session summary — only after the reply has been handed off to the
+        // outbound path (or streamed successfully).
         if delivered {
             let after_count = config
                 .session_store
@@ -1352,10 +1364,12 @@ fn run_agent_loop_lane(
             }
         }
         let total_ms = msg_start.elapsed().as_millis();
+        let post_reply_ms = total_ms.saturating_sub(reply_handoff_ms);
         metrics::record_react_rounds(worker_latency.react_rounds);
         metrics::record_tool_calls_last(worker_latency.tool_calls);
         metrics::record_ttft_ms(worker_latency.ttft_ms.unwrap_or(0));
-        metrics::record_e2e_ms(total_ms);
+        metrics::record_e2e_ms(reply_handoff_ms);
+        metrics::record_post_reply_ms(post_reply_ms);
         if msg.ingress == IngressKind::System {
             let is_cron = msg.channel.as_ref() == "cron";
             metrics::record_system_message_done(is_cron);
@@ -1368,7 +1382,7 @@ fn run_agent_loop_lane(
         }
         if total_ms >= LATENCY_WARN_MS {
             log::warn!(
-                "[latency][agent:{}] req_id={} channel={} chat_id={} admission_ms={} context_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={} level=slow",
+                "[latency][agent:{}] req_id={} channel={} chat_id={} admission_ms={} context_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={} level=slow",
                 worker_lane_tag,
                 req_id,
                 msg.channel,
@@ -1380,6 +1394,8 @@ fn run_agent_loop_lane(
                 worker_latency.session_write_ms,
                 llm_ms,
                 outbound_enqueue_ms,
+                reply_handoff_ms,
+                post_reply_ms,
                 total_ms,
                 worker_latency.react_rounds,
                 worker_latency.tool_calls,
@@ -1389,7 +1405,7 @@ fn run_agent_loop_lane(
             );
         } else {
             log::info!(
-                "[latency][agent:{}] req_id={} channel={} chat_id={} admission_ms={} context_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={}",
+                "[latency][agent:{}] req_id={} channel={} chat_id={} admission_ms={} context_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={}",
                 worker_lane_tag,
                 req_id,
                 msg.channel,
@@ -1401,6 +1417,8 @@ fn run_agent_loop_lane(
                 worker_latency.session_write_ms,
                 llm_ms,
                 outbound_enqueue_ms,
+                reply_handoff_ms,
+                post_reply_ms,
                 total_ms,
                 worker_latency.react_rounds,
                 worker_latency.tool_calls,
@@ -1426,6 +1444,7 @@ fn run_worker_path(
     loc: UiLocale,
 ) -> Result<(WorkerOutcome, Option<u32>, bool, WorkerLatency)> {
     let mut latency = WorkerLatency::default();
+    let worker_start = Instant::now();
     let request_plan = AgentRequestPlan::build(msg, registry, worker_llm, config.strategy);
     let has_tools = request_plan.has_tools();
     let mut tool_ctx = HttpClientToolContext {
@@ -1592,7 +1611,7 @@ fn run_worker_path(
         let mut first_token_marked = latency.ttft_ms.is_some();
         let response = if config.llm_stream {
             let chat_id_for_cb = msg.chat_id.clone();
-            let progress_base = llm_round_start;
+            let progress_base = worker_start;
             let llm_tool_choice = request_plan.tool_choice(round, any_tool_used);
             let mut progress_cb = |_delta: &str, accumulated: &str| {
                 crate::platform::task_wdt::feed_current_task();
@@ -1710,6 +1729,7 @@ fn run_worker_path(
                 content.push_str("\n\n");
                 content.push_str(&tr(UiMessage::ReplyTruncated, loc));
             }
+            mark_ttft_if_visible(&mut latency, worker_start, &content);
             final_content = content;
             break;
         }
@@ -1718,6 +1738,7 @@ fn run_worker_path(
             let content = response.content;
             if content.contains(AGENT_MARKER_STOP) {
                 let confirmation = strip_agent_stop_confirmation(&content);
+                mark_ttft_if_visible(&mut latency, worker_start, &confirmation);
                 // 流式编辑：更新为清理后的确认文案，避免用户看到原始标记。
                 let streamed = if let (Some(ref mid), Some(ed)) = (&stream_msg_id, editor) {
                     if !confirmation.is_empty() {
@@ -1756,6 +1777,7 @@ fn run_worker_path(
                 continue;
             }
 
+            mark_ttft_if_visible(&mut latency, worker_start, &content);
             final_content = content;
             break;
         }
@@ -1763,6 +1785,7 @@ fn run_worker_path(
         if response.stop_reason == StopReason::ToolUse {
             let tool_calls = response.tool_calls.as_deref().unwrap_or(&[]);
             if tool_calls.is_empty() {
+                mark_ttft_if_visible(&mut latency, worker_start, &response.content);
                 final_content = response.content;
                 break;
             }
