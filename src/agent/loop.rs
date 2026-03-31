@@ -2,11 +2,14 @@
 //! 仅依赖 trait；HTTP/Tool 由 main 注入同一实现（如 EspHttpClient）。
 use super::request_plan::AgentRequestPlan;
 use super::strategy::{
-    append_execution_plan, build_tool_round_guidance, detect_ping_pong_tool_rounds,
-    should_generate_execution_plan, stalled_end_turn_followup, AgentRunStrategy,
+    append_execution_plan, blocker_end_turn_followup, build_success_tool_round_guidance,
+    build_tool_round_guidance, detect_ping_pong_tool_rounds, final_answer_followup,
+    repeated_answer_followup, should_generate_execution_plan, stalled_end_turn_followup,
+    AgentRunStrategy, SuccessfulToolRoundSummary,
 };
 use super::tool_outcome::{
-    classify_tool_error, denied_tool_assessment, unavailable_tool_assessment, ToolFailureSummary,
+    classify_tool_error, denied_tool_assessment, summarize_tool_blocker,
+    unavailable_tool_assessment, ToolBlockerSummary, ToolFailureSummary,
 };
 use crate::agent::context::{build_context, RuntimeContext};
 use crate::bus::{
@@ -55,12 +58,12 @@ const REACT_FULL_MSGS_KEPT: usize = REACT_FULL_ROUNDS_KEPT * 2;
 
 /// 早期轮次工具结果摘要：每条结果保留的首行预览字符数（UTF-8 安全截断）。
 const TOOL_RESULT_PREVIEW_CHARS: usize = 80;
-const TOOL_REPEAT_NOTE_2: &str =
-    "[NOTE: identical tool call #2 - check the result above. If it's the same as before or didn't help, this approach isn't working. Try a completely different strategy.]\n";
-const TOOL_REPEAT_NOTE_3: &str =
-    "[NOTE: identical tool call #3 - you've tried this exact call multiple times. The repeated results show this method won't work. Either try a fundamentally different approach or explain the blocker to the user.]\n";
-const TOOL_REPEAT_NOTE_MANY: &str =
-    "[NOTE: identical tool call (repeated many times) - this is clearly not working. Stop repeating the same call. Either find a completely different solution or honestly explain to the user why you're stuck.]\n";
+const TOOL_RESULT_TAIL_CHARS: usize = 24;
+const TOOL_EVIDENCE_PREVIEW_CHARS: usize = 120;
+const TOOL_EVIDENCE_TAIL_CHARS: usize = 32;
+const MAX_TOOL_EVIDENCE_ITEMS: usize = 4;
+const ASSISTANT_COMPACT_PREVIEW_CHARS: usize = 160;
+const ASSISTANT_COMPACT_TAIL_CHARS: usize = 48;
 const PLAN_SYSTEM_SUFFIX: &str = "\n\n## Internal planning\nBefore solving the latest user request, create a short internal execution plan. Return 3-6 concise numbered steps only. Do not answer the user. Do not call tools in this planning step.";
 
 /// 程序性会话摘要：单次轻量 LLM 调用的 system 提示。
@@ -198,6 +201,101 @@ fn hash_tool_round(call_keys: &[u64]) -> u64 {
     h.finish()
 }
 
+fn tool_result_status_attr(call_failed: bool) -> &'static str {
+    if call_failed {
+        "error"
+    } else {
+        "ok"
+    }
+}
+
+fn failure_kind_attr(
+    failure_kind: Option<super::tool_outcome::ToolFailureKind>,
+) -> Option<&'static str> {
+    match failure_kind {
+        Some(super::tool_outcome::ToolFailureKind::Retryable) => Some("retryable"),
+        Some(super::tool_outcome::ToolFailureKind::Permanent) => Some("permanent"),
+        Some(super::tool_outcome::ToolFailureKind::Capability) => Some("capability"),
+        None => None,
+    }
+}
+
+fn append_tool_result_block(
+    dst: &mut String,
+    call_id: &str,
+    tool_name: &str,
+    status: &str,
+    failure: Option<&str>,
+    repeat_count: usize,
+    content: &str,
+    max_bytes: usize,
+) -> bool {
+    if push_bounded_utf8(dst, "<tool_result id=\"", max_bytes)
+        || push_bounded_utf8(dst, call_id, max_bytes)
+        || push_bounded_utf8(dst, "\" tool=\"", max_bytes)
+        || push_bounded_utf8(dst, tool_name, max_bytes)
+        || push_bounded_utf8(dst, "\" status=\"", max_bytes)
+        || push_bounded_utf8(dst, status, max_bytes)
+    {
+        return true;
+    }
+    if let Some(failure) = failure {
+        if push_bounded_utf8(dst, "\" failure=\"", max_bytes)
+            || push_bounded_utf8(dst, failure, max_bytes)
+        {
+            return true;
+        }
+    }
+    if repeat_count > 1 {
+        let repeat_attr = repeat_count.to_string();
+        if push_bounded_utf8(dst, "\" repeat_count=\"", max_bytes)
+            || push_bounded_utf8(dst, &repeat_attr, max_bytes)
+        {
+            return true;
+        }
+    }
+    push_bounded_utf8(dst, "\">\n", max_bytes)
+        || push_bounded_utf8(dst, content, max_bytes)
+        || push_bounded_utf8(dst, "\n</tool_result>", max_bytes)
+}
+
+fn append_tool_round_guidance_block(dst: &mut String, guidance: &str, max_bytes: usize) -> bool {
+    push_bounded_utf8(dst, "<tool_round_guidance>\n", max_bytes)
+        || push_bounded_utf8(dst, guidance, max_bytes)
+        || push_bounded_utf8(dst, "\n</tool_round_guidance>", max_bytes)
+}
+
+fn append_tool_evidence_summary_block(
+    dst: &mut String,
+    evidence_lines: &[String],
+    omitted_count: usize,
+    max_bytes: usize,
+) -> bool {
+    if push_bounded_utf8(dst, "<tool_evidence_summary>\n", max_bytes) {
+        return true;
+    }
+    for line in evidence_lines {
+        if push_bounded_utf8(dst, line, max_bytes) || push_bounded_utf8(dst, "\n", max_bytes) {
+            return true;
+        }
+    }
+    if omitted_count > 0 {
+        let more = format!("- [more] {omitted_count} additional successful tool result(s)");
+        if push_bounded_utf8(dst, &more, max_bytes) || push_bounded_utf8(dst, "\n", max_bytes) {
+            return true;
+        }
+    }
+    push_bounded_utf8(dst, "</tool_evidence_summary>", max_bytes)
+}
+
+fn extract_tag_attr<'a>(line: &'a str, attr: &str) -> Option<&'a str> {
+    let pattern = format!("{attr}=\"");
+    let start = line.find(&pattern)? + pattern.len();
+    let remain = &line[start..];
+    let end = remain.find('"')?;
+    Some(&remain[..end])
+}
+
 /// 将早期轮次的工具结果压缩为「预览 + 总字节数」摘要，保留语义锚点、不丢轮次结构。
 fn summarize_tool_results(content: &str) -> String {
     let body = content.strip_prefix(TOOL_RESULTS_PREFIX).unwrap_or(content);
@@ -206,31 +304,98 @@ fn summarize_tool_results(content: &str) -> String {
     let mut wrote_any = false;
     let mut lines = body.lines().peekable();
     while let Some(line) = lines.next() {
+        if line.starts_with("<tool_result ") {
+            let call_id = extract_tag_attr(line, "id").unwrap_or("unknown");
+            let tool_name = extract_tag_attr(line, "tool").unwrap_or("unknown");
+            let status = extract_tag_attr(line, "status").unwrap_or("unknown");
+            let failure = extract_tag_attr(line, "failure");
+            let repeat_count = extract_tag_attr(line, "repeat_count");
+            let mut block_body = String::new();
+            while let Some(next) = lines.next() {
+                if next == "</tool_result>" {
+                    break;
+                }
+                if !block_body.is_empty() {
+                    block_body.push('\n');
+                }
+                block_body.push_str(next);
+            }
+            let preview = build_tool_result_preview(&block_body);
+            let header = match (failure, repeat_count) {
+                (Some(failure), Some(repeat_count)) => {
+                    format!("[{call_id}] {tool_name} status={status} failure={failure} repeat={repeat_count}: ")
+                }
+                (Some(failure), None) => {
+                    format!("[{call_id}] {tool_name} status={status} failure={failure}: ")
+                }
+                (None, Some(repeat_count)) => {
+                    format!("[{call_id}] {tool_name} status={status} repeat={repeat_count}: ")
+                }
+                (None, None) => format!("[{call_id}] {tool_name} status={status}: "),
+            };
+            if block_body.chars().count() <= TOOL_RESULT_PREVIEW_CHARS {
+                let _ = writeln!(out, "{header}{preview}");
+            } else {
+                let _ = writeln!(out, "{header}{}[{} bytes total]", preview, block_body.len());
+            }
+            wrote_any = true;
+            continue;
+        }
+        if line == "<tool_round_guidance>" {
+            let mut guidance = String::new();
+            while let Some(next) = lines.next() {
+                if next == "</tool_round_guidance>" {
+                    break;
+                }
+                if !guidance.is_empty() {
+                    guidance.push('\n');
+                }
+                guidance.push_str(next);
+            }
+            let _ = writeln!(
+                out,
+                "[guidance] {}",
+                truncate_content_to_max(&guidance, 140).as_ref()
+            );
+            wrote_any = true;
+            continue;
+        }
+        if line == "<tool_evidence_summary>" {
+            while let Some(next) = lines.next() {
+                if next == "</tool_evidence_summary>" {
+                    break;
+                }
+                let trimmed = next.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let _ = writeln!(
+                    out,
+                    "[evidence] {}",
+                    build_tool_evidence_preview(trimmed).unwrap_or_default()
+                );
+                wrote_any = true;
+            }
+            continue;
+        }
         if let Some(idx) = line.find("]: ") {
             let id_part = &line[..idx + 3];
             let first_val = &line[idx + 3..];
-            let mut preview = String::with_capacity(TOOL_RESULT_PREVIEW_CHARS + 16);
-            let mut preview_chars = 0usize;
-            let mut preview_truncated =
-                !push_preview_chars(&mut preview, first_val, &mut preview_chars);
+            let mut block_body = String::new();
+            block_body.push_str(first_val);
             let mut total_bytes = first_val.len();
             while let Some(next) = lines.peek().copied() {
                 if next.contains("]: ") && next.starts_with('[') {
                     break;
                 }
                 total_bytes = total_bytes.saturating_add(1).saturating_add(next.len());
-                if preview_chars < TOOL_RESULT_PREVIEW_CHARS {
-                    preview_truncated |=
-                        !push_preview_chars(&mut preview, "\n", &mut preview_chars);
-                    preview_truncated |=
-                        !push_preview_chars(&mut preview, next, &mut preview_chars);
-                } else {
-                    preview_truncated = true;
-                }
+                block_body.push('\n');
+                block_body.push_str(next);
                 let _ = lines.next();
             }
-            if preview_truncated {
-                let _ = writeln!(out, "{}{}…[{} bytes total]", id_part, preview, total_bytes);
+            let preview = build_tool_result_preview(&block_body);
+            if block_body.chars().count() > TOOL_RESULT_PREVIEW_CHARS {
+                let _ = writeln!(out, "{}{}[{} bytes total]", id_part, preview, total_bytes);
             } else {
                 let _ = writeln!(out, "{}{}", id_part, preview);
             }
@@ -243,26 +408,80 @@ fn summarize_tool_results(content: &str) -> String {
     out
 }
 
-fn push_preview_chars(dst: &mut String, text: &str, used_chars: &mut usize) -> bool {
-    if *used_chars >= TOOL_RESULT_PREVIEW_CHARS {
-        return false;
+fn take_suffix_chars(text: &str, max_chars: usize) -> &str {
+    if max_chars == 0 {
+        return "";
     }
-    let remain = TOOL_RESULT_PREVIEW_CHARS - *used_chars;
-    let mut chars = 0usize;
-    if text.chars().count() > remain {
-        let mut end = 0usize;
-        for (idx, ch) in text.char_indices().take(remain) {
-            end = idx + ch.len_utf8();
-            chars += 1;
+    let total_chars = text.chars().count();
+    if total_chars <= max_chars {
+        return text;
+    }
+    let keep_from = total_chars.saturating_sub(max_chars);
+    match text.char_indices().nth(keep_from) {
+        Some((idx, _)) => &text[idx..],
+        None => text,
+    }
+}
+
+fn collapse_inline_whitespace(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut normalized = String::with_capacity(trimmed.len().min(256));
+    let mut pending_space = false;
+    for ch in trimmed.chars() {
+        if ch.is_whitespace() {
+            pending_space = !normalized.is_empty();
+            continue;
         }
-        dst.push_str(&text[..end]);
-        *used_chars += chars;
-        false
-    } else {
-        dst.push_str(text);
-        *used_chars += text.chars().count();
-        true
+        if pending_space {
+            normalized.push(' ');
+            pending_space = false;
+        }
+        normalized.push(ch);
     }
+    if normalized.is_empty() {
+        return None;
+    }
+    Some(normalized)
+}
+
+fn build_head_tail_preview(text: &str, max_chars: usize, tail_chars: usize) -> Option<String> {
+    let normalized = collapse_inline_whitespace(text)?;
+    let total_chars = normalized.chars().count();
+    if total_chars <= max_chars {
+        return Some(normalized);
+    }
+    let head_chars = max_chars
+        .saturating_sub(tail_chars)
+        .saturating_sub(5)
+        .max(1);
+    let head = truncate_content_to_max(&normalized, head_chars).into_owned();
+    let tail = take_suffix_chars(&normalized, tail_chars);
+    Some(format!("{head} ... {tail}"))
+}
+
+fn build_tool_result_preview(text: &str) -> String {
+    build_head_tail_preview(text, TOOL_RESULT_PREVIEW_CHARS, TOOL_RESULT_TAIL_CHARS)
+        .unwrap_or_default()
+}
+
+fn build_tool_evidence_preview(text: &str) -> Option<String> {
+    build_head_tail_preview(text, TOOL_EVIDENCE_PREVIEW_CHARS, TOOL_EVIDENCE_TAIL_CHARS)
+}
+
+fn build_assistant_compact_preview(text: &str) -> Option<String> {
+    build_head_tail_preview(
+        text,
+        ASSISTANT_COMPACT_PREVIEW_CHARS,
+        ASSISTANT_COMPACT_TAIL_CHARS,
+    )
+}
+
+fn build_tool_evidence_line(call_id: &str, tool_name: &str, content: &str) -> Option<String> {
+    let preview = build_tool_evidence_preview(content)?;
+    Some(format!("- [{call_id}] {tool_name}: {preview}"))
 }
 
 /// 滑动窗口：保留最近 `REACT_FULL_MSGS_KEPT` 条 ReAct 追加消息完整，更早的 assistant / tool 结果做机械摘要。
@@ -278,13 +497,13 @@ fn compact_early_tool_rounds(messages: &mut [Message], initial_count: usize) {
         if msg.content.starts_with(TOOL_RESULTS_PREFIX) && msg.content.len() > 128 {
             let s = summarize_tool_results(&msg.content);
             msg.content = s;
-        } else if msg.role == "assistant" && msg.content.len() > 200 {
-            let mut end = 150;
-            while end > 0 && !msg.content.is_char_boundary(end) {
-                end -= 1;
+        } else if msg.role.as_ref() == "assistant" && msg.content.len() > 200 {
+            if let Some(preview) = build_assistant_compact_preview(&msg.content) {
+                if preview.chars().count() < msg.content.chars().count() {
+                    msg.content = preview;
+                    msg.content.push_str(" [compressed]");
+                }
             }
-            msg.content.truncate(end);
-            msg.content.push_str("…[compressed]");
         }
     }
 }
@@ -474,6 +693,121 @@ pub trait StreamEditor {
 struct RoundProgress {
     /// 本轮是否产生新信息（工具成功或内容长度显著增加）
     new_info: bool,
+}
+
+#[derive(Default)]
+struct RecentToolRoundState {
+    consecutive_stalled_rounds: u8,
+    stalled_signatures: [Option<u64>; 4],
+    blocker: Option<ToolBlockerSummary>,
+    successful_round: Option<SuccessfulToolRoundSummary>,
+}
+
+impl RecentToolRoundState {
+    fn record_round(
+        &mut self,
+        total_calls: usize,
+        round_had_success: bool,
+        round_signature: u64,
+        failure_summary: ToolFailureSummary,
+    ) {
+        if round_had_success {
+            self.consecutive_stalled_rounds = 0;
+            self.stalled_signatures = [None; 4];
+            self.blocker = None;
+            self.successful_round = Some(SuccessfulToolRoundSummary {
+                total_calls,
+                successful_calls: total_calls.saturating_sub(failure_summary.failed_calls),
+            });
+            return;
+        }
+        self.consecutive_stalled_rounds = self.consecutive_stalled_rounds.saturating_add(1);
+        self.stalled_signatures[0] = self.stalled_signatures[1];
+        self.stalled_signatures[1] = self.stalled_signatures[2];
+        self.stalled_signatures[2] = self.stalled_signatures[3];
+        self.stalled_signatures[3] = Some(round_signature);
+        self.blocker = summarize_tool_blocker(total_calls, failure_summary);
+        self.successful_round = None;
+    }
+
+    fn ping_pong_detected(&self) -> bool {
+        detect_ping_pong_tool_rounds(&self.stalled_signatures)
+    }
+}
+
+fn enqueue_end_turn_followup(
+    messages: &mut Vec<Message>,
+    progress_history: &mut [Option<RoundProgress>; 3],
+    content: &str,
+    followup: &str,
+) {
+    messages.push(Message {
+        role: Cow::Borrowed("assistant"),
+        content: content.to_string(),
+    });
+    messages.push(Message {
+        role: Cow::Borrowed("user"),
+        content: followup.to_string(),
+    });
+    progress_history[0] = progress_history[1];
+    progress_history[1] = progress_history[2];
+    progress_history[2] = Some(RoundProgress { new_info: false });
+}
+
+fn collect_recent_assistant_messages(messages: &[Message], limit: usize) -> Vec<String> {
+    let mut recent = Vec::with_capacity(limit);
+    for message in messages.iter().rev() {
+        if recent.len() >= limit {
+            break;
+        }
+        if message.role.as_ref() != "assistant" {
+            continue;
+        }
+        let content = message.content.trim();
+        if content.is_empty() || content == "[tool_use]" {
+            continue;
+        }
+        recent.push(content.to_string());
+    }
+    recent
+}
+
+fn resolve_end_turn_followup(
+    request_plan: &AgentRequestPlan<'_>,
+    strategy: AgentRunStrategy,
+    round: usize,
+    any_tool_used: bool,
+    end_turn_followup_used: bool,
+    recent_tool_round: &RecentToolRoundState,
+    messages: &[Message],
+    content: &str,
+) -> Option<(String, bool)> {
+    if let Some(followup) = request_plan.missing_tool_followup(round, any_tool_used, content) {
+        return Some((followup.to_string(), false));
+    }
+    if end_turn_followup_used {
+        return None;
+    }
+    if let Some(followup) =
+        final_answer_followup(strategy, recent_tool_round.successful_round, content)
+    {
+        return Some((followup, true));
+    }
+    let recent_assistant_messages = collect_recent_assistant_messages(messages, 3);
+    if let Some(followup) = repeated_answer_followup(strategy, &recent_assistant_messages, content)
+    {
+        return Some((followup.to_string(), true));
+    }
+    if let Some(followup) = blocker_end_turn_followup(strategy, recent_tool_round.blocker, content)
+    {
+        return Some((followup.to_string(), true));
+    }
+    stalled_end_turn_followup(
+        strategy,
+        recent_tool_round.consecutive_stalled_rounds,
+        content,
+    )
+    .map(|followup| (followup.to_string(), true))
 }
 
 /// Agent 循环的存储与运行参数，由 main 构建并传入 run_agent_loop，减少参数数量。
@@ -1218,9 +1552,8 @@ fn run_worker_path(
     // P1 Enhancement 3: 进度跟踪（最近3轮），用于检测无效循环。
     let mut progress_history: [Option<RoundProgress>; 3] = [None; 3];
     let mut any_tool_used = false; // 本次请求是否使用过任何工具
-    let mut consecutive_stalled_tool_rounds: u8 = 0;
-    let mut stalled_blocker_followup_used = false;
-    let mut recent_stalled_tool_round_signatures: [Option<u64>; 4] = [None; 4];
+    let mut end_turn_followup_used = false;
+    let mut recent_tool_round = RecentToolRoundState::default();
 
     for round in 0..MAX_REACT_ROUNDS {
         latency.react_rounds = round as u32 + 1;
@@ -1401,42 +1734,26 @@ fn run_worker_path(
                     latency,
                 ));
             }
-            if let Some(followup) =
-                request_plan.missing_tool_followup(round, any_tool_used, &content)
-            {
-                messages.push(Message {
-                    role: Cow::Borrowed("assistant"),
-                    content: content.clone(),
-                });
-                messages.push(Message {
-                    role: Cow::Borrowed("user"),
-                    content: followup.to_string(),
-                });
-                progress_history[0] = progress_history[1];
-                progress_history[1] = progress_history[2];
-                progress_history[2] = Some(RoundProgress { new_info: false });
-                continue;
-            }
-            if !stalled_blocker_followup_used {
-                if let Some(followup) = stalled_end_turn_followup(
-                    config.strategy,
-                    consecutive_stalled_tool_rounds,
+            if let Some((followup, consume_single_use_budget)) = resolve_end_turn_followup(
+                &request_plan,
+                config.strategy,
+                round,
+                any_tool_used,
+                end_turn_followup_used,
+                &recent_tool_round,
+                &messages,
+                &content,
+            ) {
+                enqueue_end_turn_followup(
+                    &mut messages,
+                    &mut progress_history,
                     &content,
-                ) {
-                    messages.push(Message {
-                        role: Cow::Borrowed("assistant"),
-                        content: content.clone(),
-                    });
-                    messages.push(Message {
-                        role: Cow::Borrowed("user"),
-                        content: followup.to_string(),
-                    });
-                    progress_history[0] = progress_history[1];
-                    progress_history[1] = progress_history[2];
-                    progress_history[2] = Some(RoundProgress { new_info: false });
-                    stalled_blocker_followup_used = true;
-                    continue;
+                    &followup,
+                );
+                if consume_single_use_budget {
+                    end_turn_followup_used = true;
                 }
+                continue;
             }
 
             final_content = content;
@@ -1470,6 +1787,8 @@ fn run_worker_path(
             let mut round_repeat_count = 0usize;
             let mut round_call_keys = Vec::with_capacity(tool_calls.len());
             let mut round_failure_summary = ToolFailureSummary::default();
+            let mut round_evidence_lines = Vec::with_capacity(tool_calls.len().min(4));
+            let mut omitted_evidence_count = 0usize;
             for (i, tc) in tool_calls.iter().enumerate() {
                 // 流式编辑：进入每个工具前更新进度（Telegram typing ~5s 过期；此处用 edit 续期可见活跃状态）。
                 if let (Some(ref mid), Some(ed)) = (&stream_msg_id, editor) {
@@ -1570,21 +1889,24 @@ fn run_worker_path(
                 let result_view = result_owned.as_str();
                 if let Some(kind) = failure_kind {
                     round_failure_summary.record(kind);
+                } else if config.strategy == AgentRunStrategy::LinuxEnhanced {
+                    if round_evidence_lines.len() < MAX_TOOL_EVIDENCE_ITEMS {
+                        if let Some(line) = build_tool_evidence_line(&tc.id, &tc.name, result_view)
+                        {
+                            round_evidence_lines.push(line);
+                        }
+                    } else {
+                        omitted_evidence_count = omitted_evidence_count.saturating_add(1);
+                    }
                 }
                 let call_key = hash_tool_call(&tc.name, &tc.input);
                 round_call_keys.push(call_key);
                 let n = tool_call_repeat.entry(call_key).or_insert(0);
                 *n = (*n).saturating_add(1);
-                let repeat_note = if *n >= 2 {
+                let repeat_count = *n as usize;
+                if *n >= 2 {
                     round_repeat_count = round_repeat_count.saturating_add(1);
-                    Some(match *n {
-                        2 => TOOL_REPEAT_NOTE_2,
-                        3 => TOOL_REPEAT_NOTE_3,
-                        _ => TOOL_REPEAT_NOTE_MANY,
-                    })
-                } else {
-                    None
-                };
+                }
                 crate::platform::task_wdt::feed_current_task();
                 if i > 0
                     && push_bounded_utf8(
@@ -1596,26 +1918,13 @@ fn run_worker_path(
                     truncated = true;
                     break;
                 }
-                if push_bounded_utf8(
-                    &mut user_content_raw,
-                    "[",
-                    MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
-                ) || push_bounded_utf8(
+                if append_tool_result_block(
                     &mut user_content_raw,
                     &tc.id,
-                    MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
-                ) || push_bounded_utf8(
-                    &mut user_content_raw,
-                    "]: ",
-                    MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
-                ) || repeat_note.is_some_and(|note| {
-                    push_bounded_utf8(
-                        &mut user_content_raw,
-                        note,
-                        MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
-                    )
-                }) || push_bounded_utf8(
-                    &mut user_content_raw,
+                    &tc.name,
+                    tool_result_status_attr(failure_kind.is_some()),
+                    failure_kind_attr(failure_kind),
+                    repeat_count,
                     result_view,
                     MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
                 ) {
@@ -1623,38 +1932,68 @@ fn run_worker_path(
                     break;
                 }
             }
+            if !round_evidence_lines.is_empty() {
+                if !user_content_raw.ends_with('\n') {
+                    let _ = push_bounded_utf8(
+                        &mut user_content_raw,
+                        "\n",
+                        MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
+                    );
+                }
+                if append_tool_evidence_summary_block(
+                    &mut user_content_raw,
+                    &round_evidence_lines,
+                    omitted_evidence_count,
+                    MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
+                ) {
+                    truncated = true;
+                }
+            }
+            let round_signature = hash_tool_round(&round_call_keys);
+            recent_tool_round.record_round(
+                tool_calls.len(),
+                round_tool_success,
+                round_signature,
+                round_failure_summary,
+            );
+            let ping_pong_detected = recent_tool_round.ping_pong_detected();
+            let round_guidance = if round_tool_success {
+                build_success_tool_round_guidance(
+                    config.strategy,
+                    tool_calls.len(),
+                    round_failure_summary,
+                )
+            } else {
+                build_tool_round_guidance(
+                    config.strategy,
+                    round_tool_success,
+                    recent_tool_round.consecutive_stalled_rounds,
+                    tool_calls.len(),
+                    round_repeat_count,
+                    round_failure_summary,
+                    ping_pong_detected,
+                )
+            };
+            if let Some(guidance) = round_guidance {
+                if !user_content_raw.ends_with('\n') {
+                    let _ = push_bounded_utf8(
+                        &mut user_content_raw,
+                        "\n",
+                        MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
+                    );
+                }
+                if append_tool_round_guidance_block(
+                    &mut user_content_raw,
+                    &guidance,
+                    MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
+                ) {
+                    truncated = true;
+                }
+            }
             if truncated && user_content_raw.len() < MAX_TOOL_RESULTS_USER_MESSAGE_LEN {
                 let _ = push_bounded_utf8(
                     &mut user_content_raw,
                     "\n[truncated]",
-                    MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
-                );
-            }
-            let round_signature = hash_tool_round(&round_call_keys);
-            if round_tool_success {
-                consecutive_stalled_tool_rounds = 0;
-                recent_stalled_tool_round_signatures = [None; 4];
-            } else {
-                consecutive_stalled_tool_rounds = consecutive_stalled_tool_rounds.saturating_add(1);
-                recent_stalled_tool_round_signatures[0] = recent_stalled_tool_round_signatures[1];
-                recent_stalled_tool_round_signatures[1] = recent_stalled_tool_round_signatures[2];
-                recent_stalled_tool_round_signatures[2] = recent_stalled_tool_round_signatures[3];
-                recent_stalled_tool_round_signatures[3] = Some(round_signature);
-            }
-            let ping_pong_detected =
-                detect_ping_pong_tool_rounds(&recent_stalled_tool_round_signatures);
-            if let Some(guidance) = build_tool_round_guidance(
-                config.strategy,
-                round_tool_success,
-                consecutive_stalled_tool_rounds,
-                tool_calls.len(),
-                round_repeat_count,
-                round_failure_summary,
-                ping_pong_detected,
-            ) {
-                let _ = push_bounded_utf8(
-                    &mut user_content_raw,
-                    &guidance,
                     MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
                 );
             }
@@ -1748,6 +2087,156 @@ mod tests {
         let summary = summarize_tool_results(&input);
         assert!(summary.contains("[120 bytes total]"));
         assert!(summary.contains("[call_1]: aaaa"));
+    }
+
+    #[test]
+    fn summarize_tool_results_keeps_tail_for_long_legacy_output() {
+        let input = "Tool results:\n[call_1]: prefix text ".to_string()
+            + &"x".repeat(120)
+            + " tail-marker-404";
+        let summary = summarize_tool_results(&input);
+        assert!(summary.contains("prefix text"));
+        assert!(summary.contains("tail-marker-404"));
+        assert!(summary.contains(" ... "));
+    }
+
+    #[test]
+    fn summarize_tool_results_understands_structured_tool_result_blocks() {
+        let input = concat!(
+            "Tool results:\n",
+            "<tool_result id=\"call_1\" tool=\"web_search\" status=\"error\" failure=\"permanent\" repeat_count=\"2\">\n",
+            "[tool error] Resource not found.\n",
+            "</tool_result>\n",
+        );
+        let summary = summarize_tool_results(input);
+        assert!(summary.contains("[call_1] web_search status=error failure=permanent repeat=2"));
+        assert!(summary.contains("Resource not found"));
+    }
+
+    #[test]
+    fn summarize_tool_results_keeps_tail_for_long_structured_blocks() {
+        let input = concat!(
+            "Tool results:\n",
+            "<tool_result id=\"call_1\" tool=\"read_file\" status=\"ok\">\n",
+            "head section ",
+            "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx ",
+            "tail-path=/tmp/final.log\n",
+            "</tool_result>\n",
+        );
+        let summary = summarize_tool_results(input);
+        assert!(summary.contains("head section"));
+        assert!(summary.contains("tail-path=/tmp/final.log"));
+        assert!(summary.contains(" ... "));
+    }
+
+    #[test]
+    fn summarize_tool_results_keeps_round_guidance_summary() {
+        let input = concat!(
+            "Tool results:\n",
+            "<tool_round_guidance>\n",
+            "[SYSTEM] Explain the blocker clearly.\n",
+            "</tool_round_guidance>\n",
+        );
+        let summary = summarize_tool_results(input);
+        assert!(summary.contains("[guidance]"));
+        assert!(summary.contains("Explain the blocker clearly"));
+    }
+
+    #[test]
+    fn summarize_tool_results_keeps_tool_evidence_summary() {
+        let input = concat!(
+            "Tool results:\n",
+            "<tool_evidence_summary>\n",
+            "- [call_1] read_file: version = 1.2.3\n",
+            "- [call_2] web_search: release date 2026-03-31\n",
+            "</tool_evidence_summary>\n",
+        );
+        let summary = summarize_tool_results(input);
+        assert!(summary.contains("[evidence] - [call_1] read_file: version = 1.2.3"));
+        assert!(summary.contains("[evidence] - [call_2] web_search: release date 2026-03-31"));
+    }
+
+    #[test]
+    fn tool_evidence_preview_keeps_head_and_tail_for_long_results() {
+        let preview = build_tool_evidence_preview(
+            "first line has the important context and then a lot of filler text keeps going for quite a while across this synthetic long sample so the preview must shrink the middle and still preserve the tail-marker-XYZ",
+        )
+        .expect("preview");
+        assert!(preview.contains("first line"));
+        assert!(preview.contains("tail-marker-XYZ"));
+        assert!(preview.contains(" ... "));
+    }
+
+    #[test]
+    fn compact_early_tool_rounds_keeps_assistant_tail_context() {
+        let mut messages = vec![
+            Message {
+                role: Cow::Borrowed("user"),
+                content: "latest request".to_string(),
+            },
+            Message {
+                role: Cow::Borrowed("assistant"),
+                content: "head analysis ".to_string()
+                    + &"x".repeat(220)
+                    + " final decision: use file /tmp/result.json",
+            },
+            Message {
+                role: Cow::Borrowed("assistant"),
+                content: "recent assistant".to_string(),
+            },
+            Message {
+                role: Cow::Borrowed("user"),
+                content: "recent user followup".to_string(),
+            },
+            Message {
+                role: Cow::Borrowed("assistant"),
+                content: "latest assistant".to_string(),
+            },
+            Message {
+                role: Cow::Borrowed("user"),
+                content: "latest tool results".to_string(),
+            },
+        ];
+        compact_early_tool_rounds(&mut messages, 1);
+        assert!(messages[1].content.contains("head analysis"));
+        assert!(messages[1]
+            .content
+            .contains("final decision: use file /tmp/result.json"));
+        assert!(messages[1].content.contains("[compressed]"));
+        assert!(messages[1].content.contains(" ... "));
+    }
+
+    #[test]
+    fn compact_early_tool_rounds_leaves_recent_assistant_messages_intact() {
+        let original = "recent assistant should stay whole".to_string();
+        let mut messages = vec![
+            Message {
+                role: Cow::Borrowed("user"),
+                content: "latest request".to_string(),
+            },
+            Message {
+                role: Cow::Borrowed("assistant"),
+                content: "older assistant ".to_string() + &"y".repeat(220),
+            },
+            Message {
+                role: Cow::Borrowed("assistant"),
+                content: original.clone(),
+            },
+            Message {
+                role: Cow::Borrowed("user"),
+                content: "recent user followup".to_string(),
+            },
+            Message {
+                role: Cow::Borrowed("assistant"),
+                content: "latest assistant".to_string(),
+            },
+            Message {
+                role: Cow::Borrowed("user"),
+                content: "latest tool results".to_string(),
+            },
+        ];
+        compact_early_tool_rounds(&mut messages, 1);
+        assert_eq!(messages[2].content, original);
     }
 
     #[test]

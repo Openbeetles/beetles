@@ -1,7 +1,7 @@
 //! Agent 运行策略：按平台选择轻量或增强链路。
 //! Internal agent strategy helpers for platform-specific behavior.
 
-use super::tool_outcome::ToolFailureSummary;
+use super::tool_outcome::{ToolBlockerKind, ToolBlockerSummary, ToolFailureSummary};
 use crate::bus::{IngressKind, PcMsg};
 use crate::orchestrator::PressureLevel;
 use crate::util::truncate_content_to_max;
@@ -16,6 +16,12 @@ const PLAN_MAX_CHARS: usize = 512;
 pub enum AgentRunStrategy {
     Embedded,
     LinuxEnhanced,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SuccessfulToolRoundSummary {
+    pub(crate) total_calls: usize,
+    pub(crate) successful_calls: usize,
 }
 
 impl AgentRunStrategy {
@@ -156,6 +162,29 @@ pub(crate) fn build_tool_round_guidance(
     )
 }
 
+pub(crate) fn build_success_tool_round_guidance(
+    strategy: AgentRunStrategy,
+    total_calls: usize,
+    failure_summary: ToolFailureSummary,
+) -> Option<String> {
+    if strategy != AgentRunStrategy::LinuxEnhanced || total_calls == 0 {
+        return None;
+    }
+    if failure_summary.failed_calls == 0 {
+        return Some(
+            "\n\n[SYSTEM] You now have concrete tool results. If they answer the user's request, respond directly from those results. Do not call more tools unless a specific unanswered gap remains."
+                .to_string(),
+        );
+    }
+    if failure_summary.failed_calls < total_calls {
+        return Some(
+            "\n\n[SYSTEM] Some tool calls succeeded and already produced useful evidence. Prioritize those successful results in your answer. Only call more tools if a specific missing fact still matters."
+                .to_string(),
+        );
+    }
+    None
+}
+
 pub(crate) fn detect_ping_pong_tool_rounds(recent_round_signatures: &[Option<u64>; 4]) -> bool {
     match *recent_round_signatures {
         [Some(a), Some(b), Some(c), Some(d)] => a != b && a == c && b == d,
@@ -180,6 +209,99 @@ pub(crate) fn stalled_end_turn_followup(
     Some(
         "[SYSTEM] Previous tool attempts failed or made no useful progress. Do not keep retrying silently. Either switch to a clearly different approach now or explain the blocker, what remains unknown, and what the user can do next.",
     )
+}
+
+pub(crate) fn blocker_end_turn_followup(
+    strategy: AgentRunStrategy,
+    blocker: Option<ToolBlockerSummary>,
+    content: &str,
+) -> Option<&'static str> {
+    if strategy != AgentRunStrategy::LinuxEnhanced {
+        return None;
+    }
+    let blocker = blocker?;
+    if content_signals_blocker(content) || content.chars().count() >= 360 {
+        return None;
+    }
+    Some(match blocker.kind {
+        ToolBlockerKind::Capability => {
+            "[SYSTEM] Recent tool attempts were blocked by unavailable tools, permissions, or runtime policy. Do not end with a vague answer. Clearly explain that limitation, what capability is missing, and what the user can do next."
+        }
+        ToolBlockerKind::Permanent => {
+            "[SYSTEM] Recent tool attempts failed because the requested inputs, resource, or action were invalid or unavailable. Do not suggest blind retries. Explain exactly what is wrong and what the user needs to change."
+        }
+        ToolBlockerKind::Retryable => {
+            "[SYSTEM] Recent tool attempts failed for temporary reasons such as timeout, network issues, or upstream pressure. If you cannot recover with a clearly different path, explain that the blocker looks temporary, what was tried, and when retrying could help."
+        }
+        ToolBlockerKind::Mixed => {
+            "[SYSTEM] Recent tool attempts hit multiple blockers. Do not end vaguely. Summarize the concrete blockers, separate what is temporary from what requires changed input or capability, and tell the user the next useful step."
+        }
+    })
+}
+
+pub(crate) fn final_answer_followup(
+    strategy: AgentRunStrategy,
+    recent_successful_round: Option<SuccessfulToolRoundSummary>,
+    content: &str,
+) -> Option<String> {
+    if strategy != AgentRunStrategy::LinuxEnhanced {
+        return None;
+    }
+    let recent_successful_round = recent_successful_round?;
+    if content_signals_blocker(content) || !content_looks_generic_after_tool_success(content) {
+        return None;
+    }
+    Some(
+        if recent_successful_round.successful_calls == recent_successful_round.total_calls {
+            "[SYSTEM] Recent tool calls already produced concrete results. Answer the latest user request directly from those results now. Do not give a vague summary or meta wrap-up."
+            .to_string()
+        } else {
+            format!(
+            "[SYSTEM] Recent tool calls already produced {} useful result(s). Answer directly from those successful results now. Mention only the specific remaining gap if it still matters, and do not end with generic wrap-up text.",
+            recent_successful_round.successful_calls
+        )
+        },
+    )
+}
+
+pub(crate) fn repeated_answer_followup(
+    strategy: AgentRunStrategy,
+    recent_assistant_messages: &[String],
+    content: &str,
+) -> Option<&'static str> {
+    if strategy != AgentRunStrategy::LinuxEnhanced || recent_assistant_messages.is_empty() {
+        return None;
+    }
+    let content = content.trim();
+    if content.chars().count() < 24 || content_signals_blocker(content) {
+        return None;
+    }
+    let current = normalize_repetition_text(content);
+    if current.len() < 24 {
+        return None;
+    }
+    for prior in recent_assistant_messages {
+        let prior = prior.trim();
+        if prior.is_empty() || prior == "[tool_use]" {
+            continue;
+        }
+        let prior_norm = normalize_repetition_text(prior);
+        if prior_norm.len() < 24 {
+            continue;
+        }
+        let min_len = current.len().min(prior_norm.len());
+        let near_same = current == prior_norm
+            || (min_len >= 32
+                && (prior_norm.contains(&current)
+                    || current.contains(&prior_norm)
+                    || normalized_prefix_overlap(&current, &prior_norm) >= 0.85));
+        if near_same {
+            return Some(
+                "[SYSTEM] Your draft mostly repeats assistant text that is already in the current context. Do not restate the same analysis. Only provide the new delta or the final conclusion that still matters.",
+            );
+        }
+    }
+    None
 }
 
 fn content_signals_blocker(content: &str) -> bool {
@@ -213,6 +335,92 @@ fn content_signals_blocker(content: &str) -> bool {
     markers
         .iter()
         .any(|marker| content.contains(marker) || lower.contains(marker))
+}
+
+fn content_looks_generic_after_tool_success(content: &str) -> bool {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    if trimmed.chars().count() >= 140 || content_has_concrete_anchor(trimmed) {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let generic_markers = [
+        "简短总结",
+        "当前情况",
+        "目前情况",
+        "先给你",
+        "目前来看",
+        "供你参考",
+        "希望有帮助",
+        "如果你需要",
+        "如需我可以继续",
+        "summary",
+        "currently",
+        "at the moment",
+        "for reference",
+        "hope this helps",
+        "if you want",
+        "if you'd like",
+        "let me know",
+    ];
+    generic_markers
+        .iter()
+        .any(|marker| trimmed.contains(marker) || lower.contains(marker))
+}
+
+fn content_has_concrete_anchor(content: &str) -> bool {
+    let lower = content.to_ascii_lowercase();
+    let file_markers = [
+        ".rs", ".md", ".json", ".toml", ".yaml", ".yml", ".log", ".txt", ".py", ".sh",
+    ];
+    content.chars().any(|ch| ch.is_ascii_digit())
+        || content.contains("://")
+        || content.contains('`')
+        || content.contains('/')
+        || content.contains('\\')
+        || file_markers.iter().any(|marker| lower.contains(marker))
+}
+
+fn normalize_repetition_text(content: &str) -> String {
+    let lower = content
+        .replace("[compressed]", "")
+        .replace("...", " ")
+        .to_ascii_lowercase();
+    let mut out = String::with_capacity(lower.len());
+    for ch in lower.chars() {
+        if ch.is_alphanumeric()
+            || matches!(
+                ch,
+                '\u{4e00}'..='\u{9fff}'
+                    | '\u{3400}'..='\u{4dbf}'
+                    | '/'
+                    | '\\'
+                    | '.'
+                    | '_'
+                    | '-'
+            )
+        {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn normalized_prefix_overlap(a: &str, b: &str) -> f32 {
+    let max = a.len().max(b.len());
+    if max == 0 {
+        return 0.0;
+    }
+    let mut matched = 0usize;
+    for (left, right) in a.bytes().zip(b.bytes()) {
+        if left != right {
+            break;
+        }
+        matched += 1;
+    }
+    matched as f32 / max as f32
 }
 
 #[cfg(test)]
@@ -364,6 +572,146 @@ mod tests {
             false,
         );
         assert!(guidance.is_none());
+    }
+
+    #[test]
+    fn blocker_end_turn_followup_targets_capability_limits() {
+        let followup = blocker_end_turn_followup(
+            AgentRunStrategy::LinuxEnhanced,
+            Some(ToolBlockerSummary {
+                kind: ToolBlockerKind::Capability,
+                failed_calls: 2,
+                total_calls: 2,
+            }),
+            "我先给你一个简短总结。",
+        );
+        assert!(followup.is_some_and(|text| text.contains("capability is missing")));
+    }
+
+    #[test]
+    fn blocker_end_turn_followup_skips_explicit_blockers() {
+        let followup = blocker_end_turn_followup(
+            AgentRunStrategy::LinuxEnhanced,
+            Some(ToolBlockerSummary {
+                kind: ToolBlockerKind::Permanent,
+                failed_calls: 1,
+                total_calls: 1,
+            }),
+            "我无法继续，因为路径不存在。",
+        );
+        assert!(followup.is_none());
+    }
+
+    #[test]
+    fn success_tool_round_guidance_prefers_direct_answer_after_full_success() {
+        let guidance = build_success_tool_round_guidance(
+            AgentRunStrategy::LinuxEnhanced,
+            2,
+            ToolFailureSummary::default(),
+        )
+        .expect("guidance");
+        assert!(guidance.contains("respond directly"));
+    }
+
+    #[test]
+    fn success_tool_round_guidance_handles_mixed_success_rounds() {
+        let guidance = build_success_tool_round_guidance(
+            AgentRunStrategy::LinuxEnhanced,
+            3,
+            ToolFailureSummary {
+                failed_calls: 1,
+                permanent_failures: 1,
+                ..ToolFailureSummary::default()
+            },
+        )
+        .expect("guidance");
+        assert!(guidance.contains("Some tool calls succeeded"));
+    }
+
+    #[test]
+    fn final_answer_followup_targets_generic_wrapups_after_tool_success() {
+        let followup = final_answer_followup(
+            AgentRunStrategy::LinuxEnhanced,
+            Some(SuccessfulToolRoundSummary {
+                total_calls: 2,
+                successful_calls: 2,
+            }),
+            "我先给你一个简短总结，供你参考。",
+        )
+        .expect("followup");
+        assert!(followup.contains("Answer the latest user request directly"));
+    }
+
+    #[test]
+    fn final_answer_followup_keeps_concrete_short_answers() {
+        let followup = final_answer_followup(
+            AgentRunStrategy::LinuxEnhanced,
+            Some(SuccessfulToolRoundSummary {
+                total_calls: 1,
+                successful_calls: 1,
+            }),
+            "当前版本是 1.2.3。",
+        );
+        assert!(followup.is_none());
+    }
+
+    #[test]
+    fn final_answer_followup_skips_non_linux_strategy() {
+        let followup = final_answer_followup(
+            AgentRunStrategy::Embedded,
+            Some(SuccessfulToolRoundSummary {
+                total_calls: 1,
+                successful_calls: 1,
+            }),
+            "我先给你一个简短总结。",
+        );
+        assert!(followup.is_none());
+    }
+
+    #[test]
+    fn final_answer_followup_mentions_successful_subset_for_mixed_rounds() {
+        let followup = final_answer_followup(
+            AgentRunStrategy::LinuxEnhanced,
+            Some(SuccessfulToolRoundSummary {
+                total_calls: 3,
+                successful_calls: 2,
+            }),
+            "目前来看，我先给你一个简短总结。",
+        )
+        .expect("followup");
+        assert!(followup.contains("2 useful result(s)"));
+    }
+
+    #[test]
+    fn repeated_answer_followup_flags_repeated_assistant_text() {
+        let followup = repeated_answer_followup(
+            AgentRunStrategy::LinuxEnhanced,
+            &[String::from(
+                "目前结论是查看 /tmp/result.json，然后按 phase_b 继续执行。",
+            )],
+            "目前结论是查看 /tmp/result.json，然后按 phase_b 继续执行。",
+        );
+        assert!(followup.is_some());
+    }
+
+    #[test]
+    fn repeated_answer_followup_skips_new_content() {
+        let followup = repeated_answer_followup(
+            AgentRunStrategy::LinuxEnhanced,
+            &[String::from("先检查日志，再确认模型分区。")],
+            "新的问题在于 Linux 侧 agent loop 的最终收口还不够硬。",
+        );
+        assert!(followup.is_none());
+    }
+
+    #[test]
+    fn repeated_answer_followup_skips_non_linux_strategy() {
+        let followup = repeated_answer_followup(
+            AgentRunStrategy::Embedded,
+            &[String::from("repeat me")],
+            "repeat me with extra words to exceed the threshold for testing",
+        );
+        assert!(followup.is_none());
     }
 
     #[test]
