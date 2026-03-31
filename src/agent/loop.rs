@@ -56,6 +56,8 @@ const MAX_REACT_ROUNDS: usize = 10;
 
 /// 工具结果 user 消息前缀；与 `compact_early_tool_rounds` / 摘要逻辑一致。
 const TOOL_RESULTS_PREFIX: &str = "Tool results:\n";
+const MEMORY_GROUNDING_SUMMARY_PREVIEW_CHARS: usize = 160;
+const MEMORY_GROUNDING_LONG_TERM_PREVIEW_CHARS: usize = 240;
 
 /// ReAct 轮间保留完整内容的最近轮数（每轮 assistant + user 各 1 条 = 4 条）。
 const REACT_FULL_ROUNDS_KEPT: usize = 2;
@@ -279,6 +281,52 @@ fn append_tool_evidence_summary_block(
     push_bounded_utf8(dst, "</tool_evidence_summary>", max_bytes)
 }
 
+fn append_memory_grounding_block(dst: &mut String, grounding: &str, max_bytes: usize) -> bool {
+    push_bounded_utf8(dst, "<memory_grounding>\n", max_bytes)
+        || push_bounded_utf8(dst, grounding, max_bytes)
+        || push_bounded_utf8(dst, "\n</memory_grounding>", max_bytes)
+}
+
+fn build_memory_grounding_text(
+    summary_text: Option<&str>,
+    long_term_memory_text: Option<&str>,
+) -> Option<String> {
+    let mut out = String::new();
+    if let Some(summary) = summary_text
+        .map(str::trim)
+        .filter(|summary| !summary.is_empty())
+    {
+        let preview = truncate_content_to_max(summary, MEMORY_GROUNDING_SUMMARY_PREVIEW_CHARS);
+        let _ = writeln!(out, "[summary] {}", preview.as_ref());
+    }
+    if let Some(long_term) = long_term_memory_text {
+        let bullets = extract_long_term_memory_bullets(long_term);
+        if !bullets.is_empty() {
+            let joined = bullets.join(" | ");
+            let preview =
+                truncate_content_to_max(&joined, MEMORY_GROUNDING_LONG_TERM_PREVIEW_CHARS);
+            let _ = writeln!(out, "[long_term] {}", preview.as_ref());
+        }
+    }
+    let trimmed = out.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn extract_long_term_memory_bullets(block: &str) -> Vec<String> {
+    let mut bullets = Vec::new();
+    for line in block.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("- ") {
+            continue;
+        }
+        bullets.push(trimmed.to_string());
+        if bullets.len() >= 3 {
+            break;
+        }
+    }
+    bullets
+}
+
 fn extract_tag_attr<'a>(line: &'a str, attr: &str) -> Option<&'a str> {
     let pattern = format!("{attr}=\"");
     let start = line.find(&pattern)? + pattern.len();
@@ -367,6 +415,29 @@ fn summarize_tool_results(content: &str) -> String {
                 );
                 wrote_any = true;
             }
+            continue;
+        }
+        if line == "<memory_grounding>" {
+            let mut memory = String::new();
+            for next in lines.by_ref() {
+                if next == "</memory_grounding>" {
+                    break;
+                }
+                let trimmed = next.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if !memory.is_empty() {
+                    memory.push(' ');
+                }
+                memory.push_str(trimmed);
+            }
+            let _ = writeln!(
+                out,
+                "[memory] {}",
+                truncate_content_to_max(&memory, 180).as_ref()
+            );
+            wrote_any = true;
             continue;
         }
         if let Some(idx) = line.find("]: ") {
@@ -1602,6 +1673,10 @@ fn run_worker_path(
     // 复用工具错误消息缓冲区，避免错误路径反复分配。
     let mut tool_error_buf = String::with_capacity(256);
     let mut final_content = String::with_capacity(4096);
+    let memory_grounding = build_memory_grounding_text(
+        prompt_memory.summary_text.as_deref(),
+        prompt_memory.long_term_memory_text.as_deref(),
+    );
     // 流式编辑状态（跨 ReAct 轮次共享）。
     let editor = if config.llm_stream
         && config.stream_editor_channel.as_deref() == Some(msg.channel.as_ref())
@@ -2065,6 +2140,22 @@ fn run_worker_path(
                     truncated = true;
                 }
             }
+            if let Some(memory_grounding) = memory_grounding.as_deref() {
+                if !user_content_raw.ends_with('\n') {
+                    let _ = push_bounded_utf8(
+                        &mut user_content_raw,
+                        "\n",
+                        MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
+                    );
+                }
+                if append_memory_grounding_block(
+                    &mut user_content_raw,
+                    memory_grounding,
+                    MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
+                ) {
+                    truncated = true;
+                }
+            }
             if truncated && user_content_raw.len() < MAX_TOOL_RESULTS_USER_MESSAGE_LEN {
                 let _ = push_bounded_utf8(
                     &mut user_content_raw,
@@ -2229,6 +2320,61 @@ mod tests {
         let summary = summarize_tool_results(input);
         assert!(summary.contains("[evidence] - [call_1] read_file: version = 1.2.3"));
         assert!(summary.contains("[evidence] - [call_2] web_search: release date 2026-03-31"));
+    }
+
+    #[test]
+    fn summarize_tool_results_keeps_memory_grounding_summary() {
+        let input = concat!(
+            "Tool results:\n",
+            "<memory_grounding>\n",
+            "[summary] 用户偏好直接回答\n",
+            "[long_term] - [project:current_project] 继续收口长期记忆\n",
+            "</memory_grounding>\n",
+        );
+        let summary = summarize_tool_results(input);
+        assert!(summary.contains("[memory]"));
+        assert!(summary.contains("用户偏好直接回答"));
+        assert!(summary.contains("current_project"));
+    }
+
+    #[test]
+    fn summarize_tool_results_keeps_structured_blocks_together() {
+        let input = concat!(
+            "Tool results:\n",
+            "<tool_result id=\"call_1\" tool=\"read_file\" status=\"ok\">\n",
+            "version = 1.2.3\n",
+            "</tool_result>\n",
+            "<tool_evidence_summary>\n",
+            "- [call_1] read_file: version = 1.2.3\n",
+            "</tool_evidence_summary>\n",
+            "<tool_round_guidance>\n",
+            "[SYSTEM] Use the evidence above to answer directly.\n",
+            "</tool_round_guidance>\n",
+            "<memory_grounding>\n",
+            "[summary] 用户偏好直接回答\n",
+            "[long_term] - [project:current_project] 继续收口长期记忆\n",
+            "</memory_grounding>\n",
+        );
+        let summary = summarize_tool_results(input);
+        assert!(summary.contains("[call_1] read_file status=ok: version = 1.2.3"));
+        assert!(summary.contains("[evidence] - [call_1] read_file: version = 1.2.3"));
+        assert!(summary.contains("[guidance] [SYSTEM] Use the evidence above to answer directly."));
+        assert!(summary.contains("[memory] [summary] 用户偏好直接回答"));
+    }
+
+    #[test]
+    fn build_memory_grounding_text_keeps_summary_and_long_term_bullets() {
+        let grounding = build_memory_grounding_text(
+            Some("用户喜欢直接、技术化的回答。"),
+            Some(
+                "## Long-term memory\n### Active context\n- [project:current_project] 继续收口长期记忆\n### User profile\n- [preference:response_style] 喜欢直接回答",
+            ),
+        )
+        .expect("grounding");
+        assert!(grounding.contains("[summary]"));
+        assert!(grounding.contains("[long_term]"));
+        assert!(grounding.contains("current_project"));
+        assert!(grounding.contains("response_style"));
     }
 
     #[test]
