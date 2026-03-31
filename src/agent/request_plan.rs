@@ -2,9 +2,10 @@
 //! Centralizes runtime tool visibility, native/prompt-guided mode selection,
 //! and request/response assembly helpers so agent loop stays thin.
 
+use super::strategy::AgentRunStrategy;
 use crate::bus::PcMsg;
 use crate::llm::tool_fallback::{append_tool_fallback_instructions, recover_text_tool_calls};
-use crate::llm::{LlmClient, LlmResponse, ToolCallSupport, ToolSpec};
+use crate::llm::{LlmClient, LlmResponse, ToolCallSupport, ToolChoicePolicy, ToolSpec};
 use crate::tools::{ToolPolicyContext, ToolRegistry};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -14,10 +15,18 @@ pub(crate) enum ToolCallMode {
     PromptGuided,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToolUseDemand {
+    Flexible,
+    Preferred,
+    RequiredFirstTurn,
+}
+
 pub(crate) struct AgentRequestPlan<'a> {
     tool_policy: ToolPolicyContext<'a>,
     tool_specs: Vec<ToolSpec>,
     tool_call_mode: ToolCallMode,
+    tool_use_demand: ToolUseDemand,
 }
 
 impl<'a> AgentRequestPlan<'a> {
@@ -25,6 +34,7 @@ impl<'a> AgentRequestPlan<'a> {
         msg: &'a PcMsg,
         registry: &ToolRegistry,
         worker_llm: &(dyn LlmClient + Send + Sync),
+        strategy: AgentRunStrategy,
     ) -> Self {
         let tool_policy = ToolPolicyContext::new(msg.ingress, msg.channel.as_ref());
         let tool_specs = registry.tool_specs_for_llm(&tool_policy);
@@ -36,10 +46,16 @@ impl<'a> AgentRequestPlan<'a> {
                 ToolCallSupport::PromptGuided => ToolCallMode::PromptGuided,
             }
         };
+        let tool_use_demand = if tool_specs.is_empty() {
+            ToolUseDemand::Flexible
+        } else {
+            classify_tool_use_demand(msg, strategy)
+        };
         Self {
             tool_policy,
             tool_specs,
             tool_call_mode,
+            tool_use_demand,
         }
     }
 
@@ -60,9 +76,34 @@ impl<'a> AgentRequestPlan<'a> {
             .then_some(self.tool_specs.as_slice())
     }
 
+    pub(crate) fn tool_choice(&self, round: usize, any_tool_used: bool) -> ToolChoicePolicy {
+        if !self.uses_native_tools() || any_tool_used {
+            return ToolChoicePolicy::Auto;
+        }
+        match self.tool_use_demand {
+            ToolUseDemand::RequiredFirstTurn if round <= 1 => ToolChoicePolicy::Require,
+            _ => ToolChoicePolicy::Auto,
+        }
+    }
+
     pub(crate) fn apply_system_prompt(&self, system: &mut String, max_len: usize) {
         if matches!(self.tool_call_mode, ToolCallMode::PromptGuided) {
             append_tool_fallback_instructions(system, max_len, &self.tool_specs);
+        }
+        let guidance = match self.tool_use_demand {
+            ToolUseDemand::Flexible => None,
+            ToolUseDemand::Preferred => Some(
+                "\n\n## Tool Guidance\nFor this request, prefer gathering concrete data or taking the needed action with tools before giving the final answer. Avoid guessing when a tool can materially improve correctness.",
+            ),
+            ToolUseDemand::RequiredFirstTurn => Some(
+                "\n\n## Tool Guidance\nThis request likely requires checking current state or performing an action. On the first pass, use the provided tool invocation mechanism before giving a final answer unless the available tools clearly cannot satisfy the request.",
+            ),
+        };
+        if let Some(guidance) = guidance {
+            let remain = max_len.saturating_sub(system.len());
+            if guidance.len() <= remain {
+                system.push_str(guidance);
+            }
         }
     }
 
@@ -73,6 +114,195 @@ impl<'a> AgentRequestPlan<'a> {
             response
         }
     }
+
+    pub(crate) fn missing_tool_followup(
+        &self,
+        round: usize,
+        any_tool_used: bool,
+        content: &str,
+    ) -> Option<&'static str> {
+        if any_tool_used || self.tool_call_mode == ToolCallMode::Disabled {
+            return None;
+        }
+        if looks_like_explicit_limitation(content) {
+            return None;
+        }
+        match self.tool_use_demand {
+            ToolUseDemand::Flexible => None,
+            ToolUseDemand::Preferred if round == 0 && content.chars().count() < 96 => Some(
+                "[SYSTEM] This request would be stronger with concrete data or an actual action. If an available tool can materially improve the answer, use it now instead of replying from guesswork.",
+            ),
+            ToolUseDemand::RequiredFirstTurn if round == 0 => Some(
+                "[SYSTEM] This request requires checking current state or performing an action. Do not answer from memory or guesswork. Use the available tool invocation mechanism now, then answer from the result. If no available tool can satisfy the request, explain that limitation explicitly.",
+            ),
+            ToolUseDemand::RequiredFirstTurn if round == 1 && content.chars().count() < 240 => {
+                Some(
+                    "[SYSTEM] You still have not used a tool for a request that needs one. Either call an available tool now or clearly explain why the available tools cannot complete the task.",
+                )
+            }
+            _ => None,
+        }
+    }
+}
+
+fn classify_tool_use_demand(msg: &PcMsg, strategy: AgentRunStrategy) -> ToolUseDemand {
+    if strategy != AgentRunStrategy::LinuxEnhanced || msg.ingress != crate::bus::IngressKind::User {
+        return ToolUseDemand::Flexible;
+    }
+    if msg.is_group {
+        return ToolUseDemand::Flexible;
+    }
+    let content = msg.content.trim();
+    if content.is_empty() {
+        return ToolUseDemand::Flexible;
+    }
+
+    let lower = content.to_ascii_lowercase();
+    let char_count = content.chars().count();
+    let separators = ['\n', ',', '，', '.', '。', '?', '？', ';', '；', ':', '：'];
+    let separator_count = content.chars().filter(|ch| separators.contains(ch)).count();
+
+    let has_path_like = content.contains('/')
+        || content.contains('\\')
+        || content.contains("://")
+        || content.contains("~/")
+        || content.contains('`');
+    let file_markers = [
+        ".rs", ".md", ".json", ".toml", ".yaml", ".yml", ".log", ".txt", ".py", ".sh",
+    ];
+    let operational_markers = [
+        "查看",
+        "看看",
+        "检查",
+        "排查",
+        "分析",
+        "读取",
+        "搜索",
+        "查找",
+        "列出",
+        "运行",
+        "执行",
+        "修复",
+        "修改",
+        "创建",
+        "删除",
+        "文件",
+        "目录",
+        "路径",
+        "日志",
+        "状态",
+        "进程",
+        "端口",
+        "网络",
+        "配置",
+        "几点",
+        "status",
+        "check",
+        "inspect",
+        "read",
+        "search",
+        "find",
+        "list",
+        "run",
+        "execute",
+        "debug",
+        "review",
+        "fix",
+        "edit",
+        "file",
+        "directory",
+        "path",
+        "log",
+        "logs",
+        "process",
+        "port",
+        "network",
+        "config",
+    ];
+    let freshness_markers = [
+        "现在", "当前", "今天", "最新", "latest", "current", "today", "now",
+    ];
+    let freshness_targets = [
+        "几点",
+        "时间",
+        "天气",
+        "温度",
+        "状态",
+        "日志",
+        "版本",
+        "价格",
+        "time",
+        "weather",
+        "temperature",
+        "status",
+        "log",
+        "logs",
+        "version",
+        "price",
+        "news",
+    ];
+    let analysis_markers = [
+        "先",
+        "再",
+        "并且",
+        "同时",
+        "分别",
+        "步骤",
+        "排查",
+        "分析",
+        "review",
+        "analyze",
+        "compare",
+        "investigate",
+        "debug",
+        "plan",
+    ];
+
+    if has_path_like
+        || file_markers.iter().any(|marker| lower.contains(marker))
+        || (freshness_markers
+            .iter()
+            .any(|marker| content.contains(marker) || lower.contains(marker))
+            && freshness_targets
+                .iter()
+                .any(|marker| content.contains(marker) || lower.contains(marker)))
+        || operational_markers
+            .iter()
+            .any(|marker| content.contains(marker) || lower.contains(marker))
+    {
+        return ToolUseDemand::RequiredFirstTurn;
+    }
+
+    let analysis_hits = analysis_markers
+        .iter()
+        .filter(|marker| content.contains(**marker) || lower.contains(**marker))
+        .count();
+    if separator_count >= 2 || analysis_hits >= 2 || char_count >= 120 {
+        ToolUseDemand::Preferred
+    } else {
+        ToolUseDemand::Flexible
+    }
+}
+
+fn looks_like_explicit_limitation(content: &str) -> bool {
+    let lower = content.to_ascii_lowercase();
+    let markers = [
+        "无法",
+        "不能",
+        "没法",
+        "没有",
+        "不支持",
+        "做不到",
+        "can't",
+        "cannot",
+        "unable",
+        "not available",
+        "do not have access",
+        "don't have access",
+    ];
+    markers
+        .iter()
+        .any(|marker| content.contains(marker) || lower.contains(marker))
 }
 
 #[cfg(test)]
@@ -148,7 +378,8 @@ mod tests {
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(VisibleTool));
         let msg = PcMsg::new_inbound("telegram", "chat", "hi", false).expect("pcmsg");
-        let plan = AgentRequestPlan::build(&msg, &registry, &NativeLlm);
+        let plan =
+            AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::LinuxEnhanced);
         assert!(plan.has_tools());
         assert!(plan.uses_native_tools());
         assert_eq!(plan.request_tools().map(|specs| specs.len()), Some(1));
@@ -159,9 +390,83 @@ mod tests {
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(VisibleTool));
         let msg = PcMsg::new_inbound("telegram", "chat", "hi", false).expect("pcmsg");
-        let plan = AgentRequestPlan::build(&msg, &registry, &PromptGuidedLlm);
+        let plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &PromptGuidedLlm,
+            AgentRunStrategy::LinuxEnhanced,
+        );
         assert!(plan.has_tools());
         assert!(!plan.uses_native_tools());
         assert!(plan.request_tools().is_none());
+    }
+
+    #[test]
+    fn operational_requests_require_first_round_tool_for_linux_native_mode() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(VisibleTool));
+        let msg = PcMsg::new_inbound("telegram", "chat", "查看 /tmp/app.log 最近错误", false)
+            .expect("pcmsg");
+        let plan =
+            AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::LinuxEnhanced);
+        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Require);
+        assert_eq!(plan.tool_choice(1, false), ToolChoicePolicy::Require);
+    }
+
+    #[test]
+    fn embedded_mode_keeps_tool_choice_flexible() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(VisibleTool));
+        let msg = PcMsg::new_inbound("telegram", "chat", "查看 /tmp/app.log 最近错误", false)
+            .expect("pcmsg");
+        let plan = AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::Embedded);
+        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Auto);
+    }
+
+    #[test]
+    fn request_plan_emits_missing_tool_followup_for_required_requests() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(VisibleTool));
+        let msg = PcMsg::new_inbound("telegram", "chat", "查看 /tmp/app.log 最近错误", false)
+            .expect("pcmsg");
+        let plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &PromptGuidedLlm,
+            AgentRunStrategy::LinuxEnhanced,
+        );
+        assert!(plan
+            .missing_tool_followup(0, false, "我来总结一下当前情况。")
+            .is_some());
+    }
+
+    #[test]
+    fn explicit_limitation_skips_missing_tool_followup() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(VisibleTool));
+        let msg = PcMsg::new_inbound("telegram", "chat", "查看 /tmp/app.log 最近错误", false)
+            .expect("pcmsg");
+        let plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &PromptGuidedLlm,
+            AgentRunStrategy::LinuxEnhanced,
+        );
+        assert!(plan
+            .missing_tool_followup(0, false, "我无法访问该日志，当前可用工具也不能读取它。")
+            .is_none());
+    }
+
+    #[test]
+    fn conversational_questions_do_not_force_tools() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(VisibleTool));
+        let msg = PcMsg::new_inbound("telegram", "chat", "1+1 等于多少", false).expect("pcmsg");
+        let plan =
+            AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::LinuxEnhanced);
+        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Auto);
+        assert!(plan
+            .missing_tool_followup(0, false, "1+1 等于 2。")
+            .is_none());
     }
 }

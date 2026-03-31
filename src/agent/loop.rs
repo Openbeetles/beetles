@@ -1078,8 +1078,7 @@ fn run_worker_path(
     loc: UiLocale,
 ) -> Result<(WorkerOutcome, Option<u32>, bool, WorkerLatency)> {
     let mut latency = WorkerLatency::default();
-    let llm_tool_choice = ToolChoicePolicy::Auto;
-    let request_plan = AgentRequestPlan::build(msg, registry, worker_llm);
+    let request_plan = AgentRequestPlan::build(msg, registry, worker_llm, config.strategy);
     let has_tools = request_plan.has_tools();
     let mut tool_ctx = HttpClientToolContext {
         http,
@@ -1244,6 +1243,7 @@ fn run_worker_path(
         let response = if config.llm_stream {
             let chat_id_for_cb = msg.chat_id.clone();
             let progress_base = llm_round_start;
+            let llm_tool_choice = request_plan.tool_choice(round, any_tool_used);
             let mut progress_cb = |_delta: &str, accumulated: &str| {
                 crate::platform::task_wdt::feed_current_task();
                 if !first_token_marked && !accumulated.is_empty() {
@@ -1315,6 +1315,7 @@ fn run_worker_path(
                 &mut progress_cb,
             )
         } else {
+            let llm_tool_choice = request_plan.tool_choice(round, any_tool_used);
             worker_llm.chat(
                 &mut tool_ctx,
                 &system,
@@ -1383,18 +1384,17 @@ fn run_worker_path(
                     latency,
                 ));
             }
-            // P1 Enhancement 4: 任务完成检查 - 检测回复是否过短且没用工具（语言无关）。
-            if !any_tool_used && round < MAX_REACT_ROUNDS - 1 && content.len() < 100 {
-                // 回复很短且没用任何工具，可能是敷衍回复，给 LLM 一次机会。
+            if let Some(followup) =
+                request_plan.missing_tool_followup(round, any_tool_used, &content)
+            {
                 messages.push(Message {
                     role: Cow::Borrowed("assistant"),
                     content: content.clone(),
                 });
                 messages.push(Message {
                     role: Cow::Borrowed("user"),
-                    content: "[SYSTEM] Your response is very brief and you haven't used any tools. If the user's query requires gathering information or performing actions, please use appropriate tools to provide a complete answer.".to_string(),
+                    content: followup.to_string(),
                 });
-                // 记录本轮进度（任务未完成，继续下一轮）。
                 progress_history[0] = progress_history[1];
                 progress_history[1] = progress_history[2];
                 progress_history[2] = Some(RoundProgress { new_info: false });
