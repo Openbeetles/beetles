@@ -13,18 +13,18 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use super::{
-    render_long_term_memory_block, LongTermMemoryDraft, LongTermMemoryKind, LongTermMemorySlot,
-    LongTermMemoryStore, SessionMessage, SessionStore, SessionSummaryStore,
+    memory_policy, render_long_term_memory_block, LongTermExtractionPolicy, LongTermMemoryDraft,
+    LongTermMemoryKind, LongTermMemorySlot, LongTermMemoryStore, MemoryProfile, SessionMessage,
+    SessionStore, SessionSummaryStore,
 };
 
 /// 长期记忆提取状态存储路径（相对状态根）。
 pub const REL_PATH_LONG_TERM_EXTRACTION_STATES: &str = "memory/long_term_extraction_states.json";
 pub const LONG_TERM_MEMORY_EXTRACTION_SYSTEM_PROMPT: &str = "You extract durable long-term memory for a personal AI assistant. Return JSON only: an array of objects. Each object must contain op, kind, topic. op must be upsert or delete. kind must be one of preference, profile, relationship, project, task, constraint, fact. topic must be a short stable slot key identifying the same memory across future updates, for example response_style, user_name, current_project, timezone, partner_name. Reuse an existing topic whenever the conversation updates, completes, or corrects that same durable slot. Prefer updating an existing slot over inventing a nearby new topic. For op=upsert, also provide content and optional keywords. For op=delete, omit content and keywords. Use delete when the conversation clearly invalidates or completes an existing durable slot, for example a task is finished, a temporary project focus is no longer active, or a prior fact is explicitly corrected. Use the provided session summary and existing long-term memory as grounding when deciding whether to upsert, delete, or ignore. Keep only the highest-value durable changes, at most 4 items. If there is nothing durable to add, update, or delete, return []. Do not store greetings, one-off troubleshooting steps, transient status, or assistant-only claims.";
-pub const LONG_TERM_MEMORY_EXTRACTION_RECENT_N: usize = 8;
+/// 共享策略允许的 recent 消息窗口上限；实际运行值由 MemoryProfile 决定。
+pub const LONG_TERM_MEMORY_EXTRACTION_RECENT_N: usize = 10;
+/// 单次提取允许的动作数上限；实际运行值由 MemoryProfile 决定。
 pub const LONG_TERM_MEMORY_EXTRACTION_BATCH: usize = 4;
-
-const LONG_TERM_MEMORY_EXTRACTION_TRANSCRIPT_PREVIEW_CHARS: usize = 180;
-const LONG_TERM_MEMORY_EXTRACTION_EXISTING_MEMORY_MAX_LEN: usize = 768;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LongTermMemoryExtractionState {
@@ -75,33 +75,7 @@ pub struct LongTermMemoryExtractionTurnDecision {
     pub should_enqueue: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct LongTermMemoryExtractionPolicy {
-    first_process_min_messages: usize,
-    min_messages_between_requests: usize,
-    force_process_after_messages: usize,
-    low_signal_user_chars: usize,
-    low_signal_user_words: usize,
-    low_signal_reply_chars: usize,
-    substantive_user_chars: usize,
-    substantive_reply_chars: usize,
-    substantive_combined_chars: usize,
-}
-
-const DEFAULT_LONG_TERM_MEMORY_EXTRACTION_POLICY: LongTermMemoryExtractionPolicy =
-    LongTermMemoryExtractionPolicy {
-        first_process_min_messages: 8,
-        min_messages_between_requests: 6,
-        force_process_after_messages: 12,
-        low_signal_user_chars: 6,
-        low_signal_user_words: 2,
-        low_signal_reply_chars: 48,
-        substantive_user_chars: 10,
-        substantive_reply_chars: 32,
-        substantive_combined_chars: 72,
-    };
-
-impl LongTermMemoryExtractionPolicy {
+impl LongTermExtractionPolicy {
     fn is_eligible_turn(self, input: LongTermMemoryExtractionTurnInput<'_>) -> bool {
         if input.ingress != IngressKind::User || input.channel == "cron" {
             return false;
@@ -165,8 +139,9 @@ impl LongTermMemoryExtractionPolicy {
 pub fn evaluate_long_term_memory_extraction_turn(
     input: LongTermMemoryExtractionTurnInput<'_>,
     state: Option<&LongTermMemoryExtractionState>,
+    profile: MemoryProfile,
 ) -> LongTermMemoryExtractionTurnDecision {
-    let policy = DEFAULT_LONG_TERM_MEMORY_EXTRACTION_POLICY;
+    let policy = memory_policy(profile).long_term_extraction;
     let mut next_state = state.cloned().unwrap_or_default();
     if !policy.is_eligible_turn(input) {
         return LongTermMemoryExtractionTurnDecision {
@@ -250,20 +225,19 @@ pub fn build_long_term_memory_extraction_input(
     chat_id: &str,
     recent: &[SessionMessage],
     session_summary: Option<&str>,
+    profile: MemoryProfile,
 ) -> String {
-    let transcript = build_long_term_memory_extraction_transcript(recent);
+    let policy = memory_policy(profile).long_term_extraction;
+    let transcript = build_long_term_memory_extraction_transcript(recent, policy);
     let existing_memory = store
         .recall(
             &transcript,
             Some(chat_id),
-            LONG_TERM_MEMORY_EXTRACTION_BATCH,
+            policy.batch_size.min(LONG_TERM_MEMORY_EXTRACTION_BATCH),
         )
         .ok()
         .and_then(|entries| {
-            render_long_term_memory_block(
-                &entries,
-                LONG_TERM_MEMORY_EXTRACTION_EXISTING_MEMORY_MAX_LEN,
-            )
+            render_long_term_memory_block(&entries, policy.existing_memory_max_len)
         });
 
     let mut input = String::with_capacity(2300);
@@ -424,6 +398,7 @@ pub fn run_long_term_memory_refresh(
     ctx: LongTermMemoryRefreshContext<'_>,
     chat_id: &str,
     pressure: PressureLevel,
+    profile: MemoryProfile,
 ) -> LongTermMemoryRefreshOutcome {
     let previous_state = ctx.extraction_state_store.get(chat_id).ok().flatten();
     if pressure != PressureLevel::Normal {
@@ -433,7 +408,7 @@ pub fn run_long_term_memory_refresh(
         };
     }
 
-    match extract_long_term_memory(http, llm, &ctx, chat_id) {
+    match extract_long_term_memory(http, llm, &ctx, chat_id, profile) {
         Ok(changed_count) => {
             let after_count = ctx.session_store.message_count(chat_id).unwrap_or(0);
             LongTermMemoryRefreshOutcome::Processed {
@@ -453,13 +428,13 @@ pub fn run_long_term_memory_refresh(
     }
 }
 
-fn build_long_term_memory_extraction_transcript(recent: &[SessionMessage]) -> String {
+fn build_long_term_memory_extraction_transcript(
+    recent: &[SessionMessage],
+    policy: LongTermExtractionPolicy,
+) -> String {
     let mut transcript = String::with_capacity(1536);
     for message in recent {
-        let preview = truncate_content_to_max(
-            &message.content,
-            LONG_TERM_MEMORY_EXTRACTION_TRANSCRIPT_PREVIEW_CHARS,
-        );
+        let preview = truncate_content_to_max(&message.content, policy.transcript_preview_chars);
         let _ = writeln!(
             transcript,
             "{}: {}",
@@ -475,10 +450,12 @@ fn extract_long_term_memory(
     llm: &(dyn LlmClient + Send + Sync),
     ctx: &LongTermMemoryRefreshContext<'_>,
     chat_id: &str,
+    profile: MemoryProfile,
 ) -> Result<usize> {
+    let policy = memory_policy(profile).long_term_extraction;
     let recent = ctx
         .session_store
-        .load_recent(chat_id, LONG_TERM_MEMORY_EXTRACTION_RECENT_N)?;
+        .load_recent(chat_id, policy.recent_message_count)?;
     if recent.len() < 2 {
         return Ok(0);
     }
@@ -490,6 +467,7 @@ fn extract_long_term_memory(
             chat_id,
             &recent,
             session_summary.as_deref(),
+            profile,
         ),
     }];
     let response = llm.chat(
@@ -716,6 +694,7 @@ mod tests {
                 pressure: PressureLevel::Normal,
             },
             None,
+            MemoryProfile::Embedded,
         );
         assert!(!system.should_enqueue);
         assert_eq!(system.next_state, LongTermMemoryExtractionState::default());
@@ -733,6 +712,7 @@ mod tests {
                 pressure: PressureLevel::Normal,
             },
             None,
+            MemoryProfile::Embedded,
         );
         assert!(!decision.should_enqueue);
         assert_eq!(
@@ -743,13 +723,18 @@ mod tests {
 
     #[test]
     fn substantive_turn_eventually_enqueues_and_sets_pending() {
-        let first = evaluate_long_term_memory_extraction_turn(substantive_turn_input(4), None);
+        let first = evaluate_long_term_memory_extraction_turn(
+            substantive_turn_input(4),
+            None,
+            MemoryProfile::Embedded,
+        );
         assert!(!first.should_enqueue);
         assert_eq!(first.next_state.dirty_turns, 1);
 
         let second = evaluate_long_term_memory_extraction_turn(
             substantive_turn_input(10),
             Some(&first.next_state),
+            MemoryProfile::Embedded,
         );
         assert!(second.should_enqueue);
         assert_eq!(second.next_state.dirty_turns, 2);
@@ -768,8 +753,11 @@ mod tests {
             last_processed_at_count: 0,
             pending: true,
         };
-        let decision =
-            evaluate_long_term_memory_extraction_turn(substantive_turn_input(16), Some(&state));
+        let decision = evaluate_long_term_memory_extraction_turn(
+            substantive_turn_input(16),
+            Some(&state),
+            MemoryProfile::Embedded,
+        );
         assert!(!decision.should_enqueue);
     }
 
@@ -835,6 +823,7 @@ mod tests {
             "chat-1",
             &recent,
             Some("当前重点是 memory pipeline 收口。"),
+            MemoryProfile::Standard,
         );
 
         assert!(input.contains("## Session summary"));
@@ -1004,6 +993,7 @@ mod tests {
             ctx,
             "chat-1",
             PressureLevel::Cautious,
+            MemoryProfile::Embedded,
         );
 
         match outcome {

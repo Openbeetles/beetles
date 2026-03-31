@@ -4,11 +4,15 @@ use crate::bus::PcMsg;
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
 
+mod context_window;
 mod long_term;
 mod long_term_extraction;
 mod maintenance;
+mod profile;
+mod prompt_context;
 mod session_summary_refresh;
 
+pub use context_window::build_context_messages;
 pub(crate) use long_term::{
     canonicalize_long_term_memory_entry, govern_long_term_memory_entries,
     merge_long_term_memory_entry, score_long_term_memory_recall,
@@ -35,6 +39,14 @@ pub use maintenance::{
     run_post_reply_memory_maintenance, LongTermMemoryRefreshRequestOutcome,
     PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput,
     PostReplyMemoryMaintenanceOutcome,
+};
+pub use profile::MemoryProfile;
+pub(crate) use profile::{
+    memory_policy, shared_long_term_governance_policy, LongTermExtractionPolicy,
+    LongTermRecallPolicy, SessionSummaryPolicy,
+};
+pub use prompt_context::{
+    load_prompt_memory_context, PromptMemoryContext, PromptMemoryContextParams,
 };
 pub use session_summary_refresh::{
     fallback_session_summary, run_session_summary_refresh, should_refresh_session_summary,

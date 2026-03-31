@@ -8,31 +8,14 @@ use crate::util::truncate_content_to_max;
 use std::borrow::Cow;
 use std::fmt::Write as _;
 
-use super::{SessionMessage, SessionStore, SessionSummaryStore};
+use super::{
+    memory_policy, MemoryProfile, SessionMessage, SessionStore, SessionSummaryPolicy,
+    SessionSummaryStore,
+};
 
 const SESSION_SUMMARY_SYSTEM_PROMPT: &str = "You are a conversation summarizer. Compress the following conversation into a concise summary (max 800 chars) preserving key facts, user preferences and pending tasks. Reply with the summary only.";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct SessionSummaryRefreshPolicy {
-    refresh_min_messages: usize,
-    refresh_delta_messages: usize,
-    recent_message_count: usize,
-    fallback_recent_message_count: usize,
-    transcript_preview_chars: usize,
-    fallback_preview_chars: usize,
-}
-
-const DEFAULT_SESSION_SUMMARY_REFRESH_POLICY: SessionSummaryRefreshPolicy =
-    SessionSummaryRefreshPolicy {
-        refresh_min_messages: 20,
-        refresh_delta_messages: 10,
-        recent_message_count: 20,
-        fallback_recent_message_count: 5,
-        transcript_preview_chars: 200,
-        fallback_preview_chars: 100,
-    };
-
-impl SessionSummaryRefreshPolicy {
+impl SessionSummaryPolicy {
     fn should_refresh(self, current_count: usize, last_summary_count: usize) -> bool {
         current_count >= self.refresh_min_messages
             && current_count.saturating_sub(last_summary_count) >= self.refresh_delta_messages
@@ -50,12 +33,18 @@ pub enum SessionSummaryRefreshOutcome {
     Updated { used_fallback: bool },
 }
 
-pub fn should_refresh_session_summary(current_count: usize, last_summary_count: usize) -> bool {
-    DEFAULT_SESSION_SUMMARY_REFRESH_POLICY.should_refresh(current_count, last_summary_count)
+pub fn should_refresh_session_summary(
+    current_count: usize,
+    last_summary_count: usize,
+    profile: MemoryProfile,
+) -> bool {
+    memory_policy(profile)
+        .session_summary
+        .should_refresh(current_count, last_summary_count)
 }
 
-pub fn fallback_session_summary(recent: &[SessionMessage]) -> String {
-    let policy = DEFAULT_SESSION_SUMMARY_REFRESH_POLICY;
+pub fn fallback_session_summary(recent: &[SessionMessage], profile: MemoryProfile) -> String {
+    let policy = memory_policy(profile).session_summary;
     let start = recent
         .len()
         .saturating_sub(policy.fallback_recent_message_count);
@@ -80,7 +69,9 @@ pub fn run_session_summary_refresh(
     ctx: SessionSummaryRefreshContext<'_>,
     chat_id: &str,
     current_count: usize,
+    profile: MemoryProfile,
 ) -> Result<SessionSummaryRefreshOutcome> {
+    let policy = memory_policy(profile).session_summary;
     let last_summary_count = match ctx.session_summary_store.get_with_count(chat_id) {
         Ok(entry) => entry.map(|(_, count)| count).unwrap_or(0),
         Err(error) => {
@@ -92,16 +83,15 @@ pub fn run_session_summary_refresh(
             0
         }
     };
-    if !should_refresh_session_summary(current_count, last_summary_count) {
+    if !should_refresh_session_summary(current_count, last_summary_count, profile) {
         return Ok(SessionSummaryRefreshOutcome::Skipped);
     }
 
-    let recent = ctx.session_store.load_recent(
-        chat_id,
-        DEFAULT_SESSION_SUMMARY_REFRESH_POLICY.recent_message_count,
-    )?;
-    let fallback = fallback_session_summary(&recent);
-    let transcript = build_session_summary_transcript(&recent);
+    let recent = ctx
+        .session_store
+        .load_recent(chat_id, policy.recent_message_count)?;
+    let fallback = fallback_session_summary(&recent, profile);
+    let transcript = build_session_summary_transcript(&recent, policy);
     let messages = [Message {
         role: Cow::Borrowed("user"),
         content: transcript,
@@ -138,13 +128,13 @@ pub fn run_session_summary_refresh(
     Ok(SessionSummaryRefreshOutcome::Updated { used_fallback })
 }
 
-fn build_session_summary_transcript(recent: &[SessionMessage]) -> String {
+fn build_session_summary_transcript(
+    recent: &[SessionMessage],
+    policy: SessionSummaryPolicy,
+) -> String {
     let mut transcript = String::with_capacity(2048);
     for message in recent {
-        let preview = truncate_content_to_max(
-            &message.content,
-            DEFAULT_SESSION_SUMMARY_REFRESH_POLICY.transcript_preview_chars,
-        );
+        let preview = truncate_content_to_max(&message.content, policy.transcript_preview_chars);
         let _ = writeln!(
             transcript,
             "{}: {}",
@@ -268,10 +258,31 @@ mod tests {
 
     #[test]
     fn session_summary_refresh_threshold_is_programmatic() {
-        assert!(!should_refresh_session_summary(19, 0));
-        assert!(!should_refresh_session_summary(20, 15));
-        assert!(should_refresh_session_summary(20, 10));
-        assert!(should_refresh_session_summary(35, 20));
+        assert!(!should_refresh_session_summary(
+            19,
+            0,
+            MemoryProfile::Embedded
+        ));
+        assert!(!should_refresh_session_summary(
+            20,
+            15,
+            MemoryProfile::Embedded
+        ));
+        assert!(should_refresh_session_summary(
+            20,
+            10,
+            MemoryProfile::Embedded
+        ));
+        assert!(should_refresh_session_summary(
+            35,
+            20,
+            MemoryProfile::Embedded
+        ));
+        assert!(should_refresh_session_summary(
+            16,
+            8,
+            MemoryProfile::Standard
+        ));
     }
 
     #[test]
@@ -290,7 +301,7 @@ mod tests {
                 content: "three".to_string(),
             },
         ];
-        let summary = fallback_session_summary(&recent);
+        let summary = fallback_session_summary(&recent, MemoryProfile::Standard);
         assert!(summary.contains("user: one"));
         assert!(summary.contains("assistant: two"));
         assert!(summary.contains("user: three"));
@@ -319,6 +330,7 @@ mod tests {
             },
             "chat-1",
             12,
+            MemoryProfile::Embedded,
         )
         .unwrap();
 
@@ -359,6 +371,7 @@ mod tests {
             },
             "chat-1",
             20,
+            MemoryProfile::Embedded,
         )
         .unwrap();
 
@@ -404,6 +417,7 @@ mod tests {
             },
             "chat-1",
             20,
+            MemoryProfile::Embedded,
         )
         .unwrap();
 

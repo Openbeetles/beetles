@@ -8,6 +8,10 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 
+use super::{
+    memory_policy, shared_long_term_governance_policy, LongTermRecallPolicy, MemoryProfile,
+};
+
 /// 结构化长期记忆存储路径（相对状态根）。
 pub const REL_PATH_LONG_TERM_MEMORIES: &str = "memory/long_term_memories.json";
 /// 长期记忆条目上限；两端平台先共用同一预算，后续可按实现单独扩展。
@@ -27,30 +31,11 @@ const LONG_TERM_MEMORY_TASK_TTL_SECS: u64 = 45 * 86_400;
 /// 长期记忆治理：项目超时后视为陈旧。
 const LONG_TERM_MEMORY_PROJECT_TTL_SECS: u64 = 180 * 86_400;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct LongTermMemoryPolicy {
-    direct_recall_multiplier: usize,
-    fallback_list_multiplier: usize,
-    summary_grounding_max_len: usize,
-    weak_query_short_chars: usize,
-    weak_query_max_chars: usize,
-    weak_query_max_words: usize,
-}
-
-const DEFAULT_LONG_TERM_MEMORY_POLICY: LongTermMemoryPolicy = LongTermMemoryPolicy {
-    direct_recall_multiplier: 2,
-    fallback_list_multiplier: 3,
-    summary_grounding_max_len: 240,
-    weak_query_short_chars: 6,
-    weak_query_max_chars: 12,
-    weak_query_max_words: 2,
-};
-
-impl LongTermMemoryPolicy {
+impl LongTermRecallPolicy {
     fn recall_block_max_len(self, system_max_len: usize) -> usize {
-        let mut block_max_len = (system_max_len / 4).min(MAX_LONG_TERM_MEMORY_BLOCK_LEN);
-        if block_max_len < 192 {
-            block_max_len = system_max_len.min(MAX_LONG_TERM_MEMORY_BLOCK_LEN);
+        let mut block_max_len = (system_max_len / 4).min(self.block_max_len_cap);
+        if block_max_len < self.block_min_len {
+            block_max_len = system_max_len.min(self.block_max_len_cap);
         }
         block_max_len
     }
@@ -443,7 +428,7 @@ pub(crate) fn govern_long_term_memory_entries(
     entries: &mut Vec<LongTermMemoryEntry>,
     now_secs: u64,
 ) -> bool {
-    let policy = DEFAULT_LONG_TERM_MEMORY_POLICY;
+    let policy = shared_long_term_governance_policy();
     let original_len = entries.len();
     entries.retain(|entry| !policy.is_stale(entry, now_secs));
 
@@ -492,8 +477,9 @@ pub fn recall_long_term_memory_block(
     user_query: &str,
     summary_text: Option<&str>,
     system_max_len: usize,
+    profile: MemoryProfile,
 ) -> Option<String> {
-    let policy = DEFAULT_LONG_TERM_MEMORY_POLICY;
+    let policy = memory_policy(profile).long_term_recall;
     let block_max_len = policy.recall_block_max_len(system_max_len);
     let desired = policy.desired_entry_count(block_max_len);
     let recall_query = policy.build_recall_query(user_query, summary_text);
@@ -1134,6 +1120,7 @@ mod tests {
             "继续",
             Some("当前重点是长期记忆和 agent loop"),
             4096,
+            MemoryProfile::Standard,
         )
         .expect("rendered long-term memory block");
 
@@ -1144,7 +1131,8 @@ mod tests {
 
     #[test]
     fn recall_query_uses_summary_grounding_for_weak_queries() {
-        let query = DEFAULT_LONG_TERM_MEMORY_POLICY
+        let query = memory_policy(MemoryProfile::Standard)
+            .long_term_recall
             .build_recall_query("继续", Some("当前重点是长期记忆和 agent loop"));
         assert!(query.contains("继续"));
         assert!(query.contains("长期记忆"));
@@ -1185,7 +1173,9 @@ mod tests {
             },
         ];
 
-        let selected = DEFAULT_LONG_TERM_MEMORY_POLICY.select_entries(candidates, 2);
+        let selected = memory_policy(MemoryProfile::Standard)
+            .long_term_recall
+            .select_entries(candidates, 2);
         assert_eq!(selected.len(), 2);
         assert_eq!(selected[0].topic, "current_focus");
         assert_eq!(selected[1].topic, "response_style");

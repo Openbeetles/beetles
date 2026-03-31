@@ -1064,6 +1064,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             ),
             session_store: Arc::clone(&session_store),
             session_summary_store: Arc::clone(&session_summary_store),
+            memory_profile: platform.memory_profile(),
             get_skill_descriptions,
             session_max_messages: session_max,
             tg_group_activation: Arc::<str>::from(config.tg_group_activation.as_str()),

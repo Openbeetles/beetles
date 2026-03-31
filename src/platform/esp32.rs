@@ -103,6 +103,10 @@ impl Platform for Esp32Platform {
         }
     }
 
+    fn memory_profile(&self) -> crate::memory::MemoryProfile {
+        crate::memory::MemoryProfile::Embedded
+    }
+
     fn init(&self) -> crate::error::Result<()> {
         esp_idf_svc::sys::link_patches();
         esp_idf_svc::log::EspLogger::initialize_default();

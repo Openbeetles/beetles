@@ -9,8 +9,8 @@ use crate::orchestrator::PressureLevel;
 use super::{
     evaluate_long_term_memory_extraction_turn, mark_long_term_memory_extraction_requested,
     persist_long_term_memory_extraction_state, run_session_summary_refresh,
-    LongTermMemoryExtractionStateStore, LongTermMemoryExtractionTurnInput, SessionStore,
-    SessionSummaryRefreshOutcome, SessionSummaryStore,
+    LongTermMemoryExtractionStateStore, LongTermMemoryExtractionTurnInput, MemoryProfile,
+    SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore,
 };
 
 pub struct PostReplyMemoryMaintenanceContext<'a> {
@@ -26,6 +26,7 @@ pub struct PostReplyMemoryMaintenanceInput<'a> {
     pub user_content: &'a str,
     pub reply_content: &'a str,
     pub pressure: PressureLevel,
+    pub memory_profile: MemoryProfile,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,6 +59,7 @@ pub fn run_post_reply_memory_maintenance(
         },
         input.chat_id,
         after_count,
+        input.memory_profile,
     );
 
     let extraction_state = ctx.extraction_state_store.get(input.chat_id).ok().flatten();
@@ -71,6 +73,7 @@ pub fn run_post_reply_memory_maintenance(
             pressure: input.pressure,
         },
         extraction_state.as_ref(),
+        input.memory_profile,
     );
     let mut next_extraction_state = extraction_decision.next_state.clone();
     let extraction_request_outcome = if extraction_decision.should_enqueue {
@@ -284,6 +287,7 @@ mod tests {
                 user_content: "我们在做长期记忆链路收口",
                 reply_content: "这轮会继续拆 coordinator",
                 pressure: PressureLevel::Normal,
+                memory_profile: MemoryProfile::Embedded,
             },
             || true,
         );
@@ -330,6 +334,7 @@ mod tests {
                 user_content: "继续",
                 reply_content: "好，继续。",
                 pressure: PressureLevel::Normal,
+                memory_profile: MemoryProfile::Embedded,
             },
             || panic!("enqueue should not be called"),
         );

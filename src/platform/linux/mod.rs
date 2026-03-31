@@ -87,6 +87,10 @@ impl Platform for LinuxPlatform {
         crate::platform::memory_linux::linux_memory_snapshot()
     }
 
+    fn memory_profile(&self) -> crate::memory::MemoryProfile {
+        crate::memory::MemoryProfile::Standard
+    }
+
     fn init(&self) -> crate::error::Result<()> {
         // Host 须先创建状态根，`nvs/pc_cfg.json` 依赖 `state_mount_path`。
         self.init_spiffs()?;

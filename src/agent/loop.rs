@@ -25,12 +25,12 @@ use crate::error::Result;
 use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
 use crate::llm::{LlmClient, Message, StopReason, ToolChoicePolicy};
 use crate::memory::{
-    recall_long_term_memory_block, run_long_term_memory_refresh, run_post_reply_memory_maintenance,
+    load_prompt_memory_context, run_long_term_memory_refresh, run_post_reply_memory_maintenance,
     EmotionSignalStore, ImportantMessageStore, LongTermMemoryExtractionStateStore,
     LongTermMemoryRefreshContext, LongTermMemoryRefreshOutcome,
     LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore, MemoryStore, PendingRetryStore,
-    PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput, SessionStore,
-    SessionSummaryRefreshOutcome, SessionSummaryStore, TaskContinuationStore,
+    PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput, PromptMemoryContextParams,
+    SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore, TaskContinuationStore,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
@@ -618,6 +618,7 @@ fn run_long_term_memory_refresh_job(
         },
         &msg.chat_id,
         crate::orchestrator::snapshot().pressure,
+        config.memory_profile,
     );
     outcome.persist(
         config.long_term_memory_extraction_state_store.as_ref(),
@@ -794,6 +795,7 @@ pub struct AgentLoopConfig {
         Arc<dyn LongTermMemoryExtractionStateStore + Send + Sync>,
     pub session_store: Arc<dyn SessionStore + Send + Sync>,
     pub session_summary_store: Arc<dyn SessionSummaryStore + Send + Sync>,
+    pub memory_profile: crate::memory::MemoryProfile,
     pub get_skill_descriptions: Arc<dyn Fn() -> String + Send + Sync>,
     pub session_max_messages: usize,
     pub tg_group_activation: Arc<str>,
@@ -1344,6 +1346,7 @@ fn run_agent_loop_lane(
                     user_content: &msg.content,
                     reply_content: &reply_content,
                     pressure: crate::orchestrator::snapshot().pressure,
+                    memory_profile: config.memory_profile,
                 },
                 || match PcMsg::new_system(
                     LONG_TERM_MEMORY_REFRESH_CHANNEL,
@@ -1510,21 +1513,16 @@ fn run_worker_path(
                 None
             }
         });
-    let summary_with_count = config
-        .session_summary_store
-        .get_with_count(&msg.chat_id)
-        .ok()
-        .flatten();
-    let summary_text = summary_with_count.as_ref().map(|(s, _)| s.as_str());
     let budget = crate::orchestrator::current_budget();
     let snapshot = crate::orchestrator::snapshot();
-    let long_term_memory_text = recall_long_term_memory_block(
-        config.long_term_memory_store.as_ref(),
-        &msg.chat_id,
-        &msg.content,
-        summary_text,
-        budget.system_prompt_max,
-    );
+    let prompt_memory = load_prompt_memory_context(PromptMemoryContextParams {
+        chat_id: &msg.chat_id,
+        user_query: &msg.content,
+        system_max_len: budget.system_prompt_max,
+        profile: config.memory_profile,
+        session_summary_store: config.session_summary_store.as_ref(),
+        long_term_memory_store: config.long_term_memory_store.as_ref(),
+    });
     let runtime = RuntimeContext {
         now_secs: crate::util::current_unix_secs(),
         platform: if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
@@ -1558,8 +1556,8 @@ fn run_worker_path(
         group_activation: config.tg_group_activation.as_ref(),
         system_continuation_suffix: suffix.as_deref(),
         emotion_signal_suffix,
-        long_term_memory_text: long_term_memory_text.as_deref(),
-        summary_text,
+        long_term_memory_text: prompt_memory.long_term_memory_text.as_deref(),
+        summary_text: prompt_memory.summary_text.as_deref(),
         runtime: Some(runtime),
         llm_hint: budget.llm_hint,
     })

@@ -1,0 +1,163 @@
+//! 记忆策略档位与共享参数。
+//! Shared memory strategy profiles and policy values.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemoryProfile {
+    Embedded,
+    Standard,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SessionSummaryPolicy {
+    pub refresh_min_messages: usize,
+    pub refresh_delta_messages: usize,
+    pub recent_message_count: usize,
+    pub fallback_recent_message_count: usize,
+    pub transcript_preview_chars: usize,
+    pub fallback_preview_chars: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LongTermRecallPolicy {
+    pub direct_recall_multiplier: usize,
+    pub fallback_list_multiplier: usize,
+    pub summary_grounding_max_len: usize,
+    pub weak_query_short_chars: usize,
+    pub weak_query_max_chars: usize,
+    pub weak_query_max_words: usize,
+    pub block_max_len_cap: usize,
+    pub block_min_len: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LongTermExtractionPolicy {
+    pub first_process_min_messages: usize,
+    pub min_messages_between_requests: usize,
+    pub force_process_after_messages: usize,
+    pub low_signal_user_chars: usize,
+    pub low_signal_user_words: usize,
+    pub low_signal_reply_chars: usize,
+    pub substantive_user_chars: usize,
+    pub substantive_reply_chars: usize,
+    pub substantive_combined_chars: usize,
+    pub recent_message_count: usize,
+    pub transcript_preview_chars: usize,
+    pub existing_memory_max_len: usize,
+    pub batch_size: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MemoryPolicy {
+    pub session_summary: SessionSummaryPolicy,
+    pub long_term_recall: LongTermRecallPolicy,
+    pub long_term_extraction: LongTermExtractionPolicy,
+}
+
+const EMBEDDED_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
+    session_summary: SessionSummaryPolicy {
+        refresh_min_messages: 20,
+        refresh_delta_messages: 10,
+        recent_message_count: 16,
+        fallback_recent_message_count: 4,
+        transcript_preview_chars: 160,
+        fallback_preview_chars: 80,
+    },
+    long_term_recall: LongTermRecallPolicy {
+        direct_recall_multiplier: 2,
+        fallback_list_multiplier: 3,
+        summary_grounding_max_len: 160,
+        weak_query_short_chars: 6,
+        weak_query_max_chars: 12,
+        weak_query_max_words: 2,
+        block_max_len_cap: 768,
+        block_min_len: 160,
+    },
+    long_term_extraction: LongTermExtractionPolicy {
+        first_process_min_messages: 10,
+        min_messages_between_requests: 8,
+        force_process_after_messages: 14,
+        low_signal_user_chars: 6,
+        low_signal_user_words: 2,
+        low_signal_reply_chars: 48,
+        substantive_user_chars: 12,
+        substantive_reply_chars: 36,
+        substantive_combined_chars: 84,
+        recent_message_count: 6,
+        transcript_preview_chars: 140,
+        existing_memory_max_len: 512,
+        batch_size: 3,
+    },
+};
+
+const STANDARD_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
+    session_summary: SessionSummaryPolicy {
+        refresh_min_messages: 16,
+        refresh_delta_messages: 8,
+        recent_message_count: 24,
+        fallback_recent_message_count: 6,
+        transcript_preview_chars: 240,
+        fallback_preview_chars: 120,
+    },
+    long_term_recall: LongTermRecallPolicy {
+        direct_recall_multiplier: 3,
+        fallback_list_multiplier: 4,
+        summary_grounding_max_len: 320,
+        weak_query_short_chars: 8,
+        weak_query_max_chars: 16,
+        weak_query_max_words: 3,
+        block_max_len_cap: 1024,
+        block_min_len: 192,
+    },
+    long_term_extraction: LongTermExtractionPolicy {
+        first_process_min_messages: 6,
+        min_messages_between_requests: 4,
+        force_process_after_messages: 8,
+        low_signal_user_chars: 6,
+        low_signal_user_words: 2,
+        low_signal_reply_chars: 48,
+        substantive_user_chars: 8,
+        substantive_reply_chars: 24,
+        substantive_combined_chars: 56,
+        recent_message_count: 10,
+        transcript_preview_chars: 220,
+        existing_memory_max_len: 1024,
+        batch_size: 4,
+    },
+};
+
+pub(crate) fn memory_policy(profile: MemoryProfile) -> &'static MemoryPolicy {
+    match profile {
+        MemoryProfile::Embedded => &EMBEDDED_MEMORY_POLICY,
+        MemoryProfile::Standard => &STANDARD_MEMORY_POLICY,
+    }
+}
+
+/// 长期记忆持久化治理（TTL / kind budget）当前在两端平台保持统一，
+/// 避免 ESP / Linux 对同一状态文件裁剪出不同结果。
+/// Prompt 注入窗口与提取节奏按 MemoryProfile 分档，但持久化治理口径先共享。
+pub(crate) fn shared_long_term_governance_policy() -> LongTermRecallPolicy {
+    STANDARD_MEMORY_POLICY.long_term_recall
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standard_profile_keeps_larger_memory_windows() {
+        let embedded = memory_policy(MemoryProfile::Embedded);
+        let standard = memory_policy(MemoryProfile::Standard);
+        assert!(
+            standard.session_summary.recent_message_count
+                > embedded.session_summary.recent_message_count
+        );
+        assert!(
+            standard.long_term_recall.block_max_len_cap
+                > embedded.long_term_recall.block_max_len_cap
+        );
+        assert!(
+            standard.long_term_extraction.recent_message_count
+                > embedded.long_term_extraction.recent_message_count
+        );
+    }
+}
