@@ -15,8 +15,8 @@ use crate::error::Result;
 use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
 use crate::llm::{LlmClient, Message, StopReason, ToolChoicePolicy, ToolSpec};
 use crate::memory::{
-    EmotionSignalStore, ImportantMessageStore, MemoryStore, PendingRetryStore, SessionStore,
-    SessionSummaryStore, TaskContinuationStore,
+    EmotionSignalStore, ImportantMessageStore, MemoryStore, PendingRetryStore, SessionMessage,
+    SessionStore, SessionSummaryStore, TaskContinuationStore,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
@@ -56,6 +56,8 @@ const TOOL_REPEAT_NOTE_MANY: &str =
 
 /// 程序性会话摘要：单次轻量 LLM 调用的 system 提示。
 const SUMMARY_SYSTEM: &str = "You are a conversation summarizer. Compress the following conversation into a concise summary (max 800 chars) preserving key facts, user preferences and pending tasks. Reply with the summary only.";
+const SESSION_SUMMARY_MIN_MESSAGES: usize = 20;
+const SESSION_SUMMARY_REFRESH_DELTA: usize = 10;
 
 /// 同一 chat_id 的 "low memory, defer" 日志最少间隔，避免刷屏。
 const LOW_MEM_DEFER_LOG_INTERVAL: Duration = Duration::from_secs(60);
@@ -81,6 +83,30 @@ fn now_unix_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis().min(u64::MAX as u128) as u64)
         .unwrap_or(0)
+}
+
+fn should_refresh_session_summary(current_count: usize, last_summary_count: usize) -> bool {
+    current_count >= SESSION_SUMMARY_MIN_MESSAGES
+        && current_count.saturating_sub(last_summary_count) >= SESSION_SUMMARY_REFRESH_DELTA
+}
+
+fn fallback_session_summary(recent: &[SessionMessage]) -> String {
+    use std::fmt::Write;
+
+    let start = recent.len().saturating_sub(5);
+    let mut fallback = String::with_capacity(640);
+    for (idx, message) in recent[start..].iter().enumerate() {
+        if idx > 0 {
+            fallback.push_str(" | ");
+        }
+        let _ = write!(
+            fallback,
+            "{}: {}",
+            message.role,
+            truncate_content_to_max(&message.content, 100).as_ref()
+        );
+    }
+    truncate_content_to_max(&fallback, SESSION_SUMMARY_MAX_LEN).into_owned()
 }
 
 fn choose_inbound_tx<'a>(
@@ -353,6 +379,7 @@ fn generate_session_summary(
     use std::fmt::Write;
 
     let recent = config.session_store.load_recent(chat_id, 20)?;
+    let fallback = fallback_session_summary(&recent);
     let mut transcript = String::with_capacity(2048);
     for m in &recent {
         let preview = truncate_content_to_max(&m.content, 200);
@@ -384,7 +411,12 @@ fn generate_session_summary(
     ) {
         Ok(resp) => {
             let summary =
-                truncate_content_to_max(&resp.content, SESSION_SUMMARY_MAX_LEN).into_owned();
+                truncate_content_to_max(resp.content.trim(), SESSION_SUMMARY_MAX_LEN).into_owned();
+            let summary = if summary.is_empty() {
+                fallback
+            } else {
+                summary
+            };
             config
                 .session_summary_store
                 .set_with_count(chat_id, &summary, current_count)?;
@@ -396,17 +428,9 @@ fn generate_session_summary(
                 chat_id,
                 e
             );
-            let fallback: String = recent
-                .iter()
-                .rev()
-                .take(5)
-                .map(|m| truncate_content_to_max(&m.content, 100).into_owned())
-                .collect::<Vec<_>>()
-                .join(" | ");
-            let summary = truncate_content_to_max(&fallback, SESSION_SUMMARY_MAX_LEN).into_owned();
             config
                 .session_summary_store
-                .set_with_count(chat_id, &summary, current_count)?;
+                .set_with_count(chat_id, &fallback, current_count)?;
             Ok(())
         }
     }
@@ -971,7 +995,7 @@ fn run_agent_loop_lane(
                 .flatten()
                 .map(|(_, c)| c)
                 .unwrap_or(0);
-            if after_count >= 20 && after_count.saturating_sub(last_summary_count) >= 10 {
+            if should_refresh_session_summary(after_count, last_summary_count) {
                 match generate_session_summary(http, worker_llm, config, &msg.chat_id, after_count)
                 {
                     Ok(()) => log::info!("[agent_summary] updated for {}", msg.chat_id),
@@ -1650,5 +1674,33 @@ mod tests {
         let summary = summarize_tool_results(&input);
         assert!(summary.contains("[120 bytes total]"));
         assert!(summary.contains("[call_1]: aaaa"));
+    }
+
+    #[test]
+    fn session_summary_refresh_threshold_is_programmatic() {
+        assert!(!should_refresh_session_summary(19, 0));
+        assert!(!should_refresh_session_summary(20, 15));
+        assert!(should_refresh_session_summary(20, 10));
+        assert!(should_refresh_session_summary(35, 20));
+    }
+
+    #[test]
+    fn fallback_session_summary_keeps_recent_messages_in_order() {
+        let recent = vec![
+            SessionMessage {
+                role: "user".to_string(),
+                content: "first".to_string(),
+            },
+            SessionMessage {
+                role: "assistant".to_string(),
+                content: "second".to_string(),
+            },
+            SessionMessage {
+                role: "user".to_string(),
+                content: "third".to_string(),
+            },
+        ];
+        let summary = fallback_session_summary(&recent);
+        assert!(summary.contains("user: first | assistant: second | user: third"));
     }
 }

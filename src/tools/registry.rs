@@ -117,7 +117,6 @@ pub fn build_default_registry(
     config: &AppConfig,
     platform: Arc<dyn crate::Platform>,
     remind_at_store: Arc<dyn crate::memory::RemindAtStore + Send + Sync>,
-    session_summary_store: Arc<dyn crate::memory::SessionSummaryStore + Send + Sync>,
     session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
     _memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
     _config_store: Arc<dyn crate::platform::ConfigStore + Send + Sync>,
@@ -137,10 +136,6 @@ pub fn build_default_registry(
     registry.register(Box::new(super::RemindAtTool::new(remind_at_store)));
     registry.register(Box::new(super::RemindListTool::new(
         remind_at_store_for_list,
-    )));
-    registry.register(Box::new(super::UpdateSessionSummaryTool::new(
-        session_summary_store,
-        Arc::clone(&session_store),
     )));
     registry.register(Box::new(super::BoardInfoTool::new(Arc::clone(&platform))));
     registry.register(Box::new(super::KvStoreTool::new(platform.state_fs())));

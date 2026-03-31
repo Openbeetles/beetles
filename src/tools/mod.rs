@@ -42,7 +42,6 @@ pub mod session_manage;
 pub mod shell;
 #[cfg(feature = "tools_diagnostics")]
 pub mod system_control;
-pub mod update_session_summary;
 pub mod voice_input;
 pub mod voice_output;
 #[cfg(feature = "tools_network_extra")]
@@ -86,7 +85,6 @@ pub use session_manage::SessionManageTool;
 pub use shell::ShellTool;
 #[cfg(feature = "tools_diagnostics")]
 pub use system_control::SystemControlTool;
-pub use update_session_summary::UpdateSessionSummaryTool;
 pub use voice_input::VoiceInputTool;
 pub use voice_output::VoiceOutputTool;
 #[cfg(feature = "tools_network_extra")]

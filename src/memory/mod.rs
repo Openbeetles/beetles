@@ -35,7 +35,7 @@ pub const REL_PATH_IMPORTANT_MESSAGE: &str = "memory/important_message.json";
 /// 相对路径：会话摘要（单文件 JSON，chat_id -> { summary, last_summary_at_count }）。
 pub const REL_PATH_SESSION_SUMMARIES: &str = "memory/session_summaries.json";
 
-/// 会话摘要存储。可由 `update_session_summary` 工具或 agent 程序性摘要写入；build_context 将 get 到的摘要注入 messages 首条。实现方按 SESSION_SUMMARY_MAX_LEN 截断。
+/// 会话摘要存储。由 agent 程序性摘要写入；build_context 将 get 到的摘要注入 messages 首条。实现方按 SESSION_SUMMARY_MAX_LEN 截断。
 pub trait SessionSummaryStore: Send + Sync {
     fn get(&self, chat_id: &str) -> Result<Option<String>>;
     fn set(&self, chat_id: &str, summary: &str) -> Result<()>;

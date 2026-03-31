@@ -949,7 +949,6 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             &config,
             Arc::clone(&platform),
             Arc::clone(&remind_at_store),
-            Arc::clone(&session_summary_store),
             Arc::clone(&session_store),
             Arc::clone(&memory_store),
             platform.config_store(),

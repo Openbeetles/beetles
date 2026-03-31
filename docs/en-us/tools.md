@@ -17,7 +17,6 @@ Authoritative registration is [`build_default_registry`](../../src/tools/registr
 | **files** | List or **read** files under storage root; no `..`. | List/read skills, notes, etc. (read-only). |
 | **remind_at** | Schedule a reminder (ISO8601 or Unix seconds + text); fires on the same channel. | “Remind me at …”. |
 | **remind_list** | Upcoming reminders for the current chat (optional limit). | “What reminders did I set?”. |
-| **update_session_summary** | Short summary of the chat for later context. | Used by the Agent at natural breaks. |
 | **board_info** | Chip, heap/PSRAM, uptime, pressure, WiFi, SPIFFS, etc. | “Device status”, memory, storage. |
 | **kv_store** | Persistent KV: `get`/`set`/`delete`/`list_keys`; caps on keys/values/count. | “Remember …”, “what keys are stored?”. |
 | **file_write** | **Write** under storage root (overwrite/append); **protected paths** (e.g. `config/llm.json`, `config/SOUL.md`) cannot be written. | User notes and other non-protected paths. |

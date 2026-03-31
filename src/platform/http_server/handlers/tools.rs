@@ -28,10 +28,6 @@ pub fn body(_ctx: &HandlerContext) -> Result<String, std::io::Error> {
             description: "列出所有待执行的提醒",
         },
         ToolInfo {
-            name: "update_session_summary",
-            description: "更新会话摘要",
-        },
-        ToolInfo {
             name: "board_info",
             description: "获取板型信息",
         },
