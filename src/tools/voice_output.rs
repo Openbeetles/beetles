@@ -6,7 +6,7 @@ use crate::config::AudioSegment;
 use crate::constants::{AUDIO_TTS_MAX_TEXT_LEN, AUDIO_TTS_WRITE_CHUNK_SAMPLES};
 use crate::error::{Error, Result};
 use crate::tools::http_bridge::ToolContextHttpClient;
-use crate::tools::{parse_tool_args, Tool, ToolContext};
+use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
 use crate::Platform;
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
@@ -132,6 +132,10 @@ impl Tool for VoiceOutputTool {
             crate::metrics::record_voice_tool_failure("voice_output");
         }
         result
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::task().with_system_ingress(false)
     }
 }
 

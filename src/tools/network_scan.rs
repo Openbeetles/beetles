@@ -3,7 +3,7 @@
 
 use crate::constants::NETWORK_SCAN_MIN_INTERVAL_MS;
 use crate::error::{Error, Result};
-use crate::tools::{parse_tool_args, Tool, ToolContext};
+use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
 use crate::Platform;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -162,5 +162,9 @@ impl Tool for NetworkScanTool {
         // wifi_scan and wifi_status don't need network, but connectivity_check does.
         // Conservative: return false since most ops don't need it.
         false
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::task().with_system_ingress(false)
     }
 }

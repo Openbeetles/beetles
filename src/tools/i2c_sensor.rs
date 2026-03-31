@@ -4,7 +4,7 @@
 use crate::config::I2cSensorEntry;
 use crate::constants::I2C_SENSOR_RATE_LIMIT_MS;
 use crate::error::{Error, Result};
-use crate::tools::{parse_tool_args, Tool, ToolContext};
+use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
 use crate::Platform;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -222,5 +222,9 @@ impl Tool for I2cSensorTool {
 
     fn requires_network(&self) -> bool {
         false
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::task().with_system_ingress(false)
     }
 }

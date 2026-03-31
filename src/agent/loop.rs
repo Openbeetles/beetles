@@ -555,7 +555,6 @@ fn run_agent_loop_lane(
     bootstrap_pending_retry: bool,
 ) -> Result<()> {
     let worker_lane_tag = worker_lane.as_str();
-    let skill_descriptions = (config.get_skill_descriptions)();
 
     // Track repeated LLM failure for same request body, avoid infinite retry.
     // Key: u64 hash of (channel, chat_id, content) — avoids per-message format! String alloc.
@@ -773,7 +772,6 @@ fn run_agent_loop_lane(
             &msg,
             registry,
             config,
-            &skill_descriptions,
             &mut tool_call_repeat_buf,
             loc,
         );
@@ -1072,7 +1070,6 @@ fn run_worker_path(
     msg: &crate::bus::PcMsg,
     registry: &crate::tools::ToolRegistry,
     config: &AgentLoopConfig,
-    skill_descriptions: &str,
     tool_call_repeat: &mut HashMap<u64, u8>,
     loc: UiLocale,
 ) -> Result<(WorkerOutcome, Option<u32>, bool, WorkerLatency)> {
@@ -1142,13 +1139,14 @@ fn run_worker_path(
         process_memory_kb: snapshot.process_memory_kb,
     };
     let context_start = Instant::now();
+    let skill_descriptions = (config.get_skill_descriptions)();
     let (system, mut messages) = build_context(&super::ContextParams {
         msg,
         memory: config.memory_store.as_ref(),
         session: config.session_store.as_ref(),
         important_message_store: config.important_message_store.as_ref(),
         has_tools,
-        skill_descriptions,
+        skill_descriptions: &skill_descriptions,
         system_max_len: budget.system_prompt_max,
         messages_max_len: budget.messages_max,
         session_max_messages: config.session_max_messages,

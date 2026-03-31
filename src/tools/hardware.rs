@@ -3,7 +3,7 @@
 
 use crate::config::DeviceEntry;
 use crate::error::{Error, Result};
-use crate::tools::{Tool, ToolContext};
+use crate::tools::{Tool, ToolContext, ToolMetadata};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -281,5 +281,9 @@ impl Tool for DeviceControlTool {
 
     fn requires_network(&self) -> bool {
         false
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::task().with_system_ingress(false)
     }
 }
