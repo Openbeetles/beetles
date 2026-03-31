@@ -8,7 +8,7 @@ use crate::constants::{
 use crate::error::{Error, Result};
 use crate::i18n::{tr, Message as UiMessage, SensorWatchThresholdKind};
 use crate::memory::MemoryStore;
-use crate::tools::{parse_tool_args, Tool, ToolContext};
+use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -343,6 +343,10 @@ impl Tool for SensorWatchTool {
                 format!("unknown op: {}", op),
             )),
         }
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::stateful()
     }
 }
 

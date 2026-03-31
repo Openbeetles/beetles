@@ -1,8 +1,8 @@
-//! files 工具：在状态根下列出或读取文件；只读，路径禁止 `..`，结果截断至 MAX_TOOL_RESULT_LEN。
-//! files tool: list or read under state root; read-only, no `..' in path.
+//! files 工具：在状态根下列出、读取或删除文件；路径禁止 `..`，结果截断至 MAX_TOOL_RESULT_LEN。
+//! files tool: list, read, or delete under state root; no `..` in path.
 
 use crate::error::{Error, Result};
-use crate::tools::{parse_tool_args, Tool, ToolContext, MAX_TOOL_RESULT_LEN};
+use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata, MAX_TOOL_RESULT_LEN};
 use crate::util::normalize_state_rel_path;
 use serde_json::json;
 use std::sync::Arc;
@@ -132,5 +132,9 @@ impl Tool for FilesTool {
                 Err(e) => Err(e),
             },
         }
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::stateful()
     }
 }

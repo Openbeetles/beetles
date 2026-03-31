@@ -61,6 +61,11 @@ impl ToolMetadata {
         self
     }
 
+    pub const fn with_system_ingress(mut self, allowed: bool) -> Self {
+        self.allow_in_system_ingress = allowed;
+        self
+    }
+
     pub fn is_exposed_to_llm(self, ctx: &ToolPolicyContext<'_>) -> bool {
         match self.exposure {
             ToolExposure::Admin | ToolExposure::Debug => false,

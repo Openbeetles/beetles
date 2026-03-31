@@ -128,6 +128,7 @@ mod tests {
     struct StatefulTool;
     struct AdminTool;
     struct InternalOnlyTool;
+    struct UserOnlyTaskTool;
 
     impl Tool for VisibleTool {
         fn name(&self) -> &'static str {
@@ -202,6 +203,24 @@ mod tests {
         }
     }
 
+    impl Tool for UserOnlyTaskTool {
+        fn name(&self) -> &'static str {
+            "user_only_task"
+        }
+        fn description(&self) -> &str {
+            "user only task"
+        }
+        fn schema(&self) -> serde_json::Value {
+            json!({"type":"object"})
+        }
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok(String::new())
+        }
+        fn metadata(&self) -> ToolMetadata {
+            ToolMetadata::task().with_system_ingress(false)
+        }
+    }
+
     #[test]
     fn llm_tool_specs_follow_runtime_policy() {
         let mut registry = ToolRegistry::new();
@@ -209,11 +228,15 @@ mod tests {
         registry.register(Box::new(StatefulTool));
         registry.register(Box::new(AdminTool));
         registry.register(Box::new(InternalOnlyTool));
+        registry.register(Box::new(UserOnlyTaskTool));
 
         let user = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
         let user_specs = registry.tool_specs_for_llm_with_max(&user, 4096);
         let user_names: Vec<&str> = user_specs.iter().map(|spec| spec.name.as_str()).collect();
-        assert_eq!(user_names, vec!["visible", "stateful", "internal_only"]);
+        assert_eq!(
+            user_names,
+            vec!["visible", "stateful", "internal_only", "user_only_task"]
+        );
 
         let system = ToolPolicyContext::new(crate::bus::IngressKind::System, "telegram");
         let system_specs = registry.tool_specs_for_llm_with_max(&system, 4096);

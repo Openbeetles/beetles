@@ -5,7 +5,7 @@
 
 use crate::constants::{KV_STORE_MAX_ENTRIES, KV_STORE_MAX_KEY_LEN, KV_STORE_MAX_VALUE_LEN};
 use crate::error::{Error, Result};
-use crate::tools::{parse_tool_args, Tool, ToolContext};
+use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
 use crate::StateFs;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -172,5 +172,9 @@ impl Tool for KvStoreTool {
                 "op must be one of: get, set, delete, list_keys",
             )),
         }
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::stateful()
     }
 }

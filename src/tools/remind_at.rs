@@ -3,7 +3,7 @@
 use crate::error::{Error, Result};
 use crate::i18n::{tr, Message as UiMessage};
 use crate::memory::RemindAtStore;
-use crate::tools::{parse_tool_args, Tool, ToolContext};
+use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
 use crate::util::parse_iso8601;
 use serde_json::{json, Value};
 
@@ -68,6 +68,10 @@ impl Tool for RemindAtTool {
         let at_secs = parse_at_to_unix_secs(at_val)?;
         self.store.add(channel, chat_id, at_secs, context)?;
         Ok(tr(UiMessage::RemindAtSetOk, ctx.user_locale()))
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::stateful()
     }
 }
 
