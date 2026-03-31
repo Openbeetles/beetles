@@ -198,6 +198,9 @@ pub trait Platform: Send + Sync {
     }
     fn memory_store(&self) -> Arc<dyn MemoryStore + Send + Sync>;
     fn long_term_memory_store(&self) -> Arc<dyn LongTermMemoryStore + Send + Sync>;
+    fn long_term_memory_extraction_state_store(
+        &self,
+    ) -> Arc<dyn crate::memory::LongTermMemoryExtractionStateStore + Send + Sync>;
     fn session_store(&self) -> Arc<dyn SessionStore + Send + Sync>;
     fn pending_retry_store(&self) -> Arc<dyn PendingRetryStore + Send + Sync>;
     fn task_continuation_store(&self) -> Arc<dyn TaskContinuationStore + Send + Sync>;

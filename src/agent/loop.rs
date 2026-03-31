@@ -19,17 +19,18 @@ use crate::bus::{
 use crate::constants::{
     AGENT_MARKER_MARK_IMPORTANT, AGENT_MARKER_SIGNAL_COMFORT, AGENT_MARKER_STOP,
     AGENT_RETRY_BASE_MS, AGENT_RETRY_MAX_MS, INBOUND_RECV_TIMEOUT_SECS, MAX_DEFER_RETRIES,
-    MAX_TOOL_RESULTS_USER_MESSAGE_LEN, SESSION_SUMMARY_MAX_LEN,
-    TASK_CONTINUATION_CONTINUE_THRESHOLD_LEN,
+    MAX_TOOL_RESULTS_USER_MESSAGE_LEN, TASK_CONTINUATION_CONTINUE_THRESHOLD_LEN,
 };
 use crate::error::Result;
 use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
 use crate::llm::{LlmClient, Message, StopReason, ToolChoicePolicy};
 use crate::memory::{
-    recall_long_term_memory_block, render_long_term_memory_block, EmotionSignalStore,
-    ImportantMessageStore, LongTermMemoryDraft, LongTermMemoryKind, LongTermMemorySlot,
-    LongTermMemoryStore, MemoryStore, PendingRetryStore, SessionMessage, SessionStore,
-    SessionSummaryStore, TaskContinuationStore,
+    recall_long_term_memory_block, run_long_term_memory_refresh, run_post_reply_memory_maintenance,
+    EmotionSignalStore, ImportantMessageStore, LongTermMemoryExtractionStateStore,
+    LongTermMemoryRefreshContext, LongTermMemoryRefreshOutcome,
+    LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore, MemoryStore, PendingRetryStore,
+    PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput, SessionStore,
+    SessionSummaryRefreshOutcome, SessionSummaryStore, TaskContinuationStore,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
@@ -70,13 +71,6 @@ const LONG_TERM_MEMORY_REFRESH_CHANNEL: &str = "_memory_refresh";
 const PLAN_SYSTEM_SUFFIX: &str = "\n\n## Internal planning\nBefore solving the latest user request, create a short internal execution plan. Return 3-6 concise numbered steps only. Do not answer the user. Do not call tools in this planning step.";
 
 /// 程序性会话摘要：单次轻量 LLM 调用的 system 提示。
-const SUMMARY_SYSTEM: &str = "You are a conversation summarizer. Compress the following conversation into a concise summary (max 800 chars) preserving key facts, user preferences and pending tasks. Reply with the summary only.";
-const LONG_TERM_MEMORY_EXTRACTION_SYSTEM: &str = "You extract durable long-term memory for a personal AI assistant. Return JSON only: an array of objects. Each object must contain op, kind, topic. op must be upsert or delete. kind must be one of preference, profile, relationship, project, task, constraint, fact. topic must be a short stable slot key identifying the same memory across future updates, for example response_style, user_name, current_project, timezone, partner_name. Reuse an existing topic whenever the conversation updates, completes, or corrects that same durable slot. Prefer updating an existing slot over inventing a nearby new topic. For op=upsert, also provide content and optional keywords. For op=delete, omit content and keywords. Use delete when the conversation clearly invalidates or completes an existing durable slot, for example a task is finished, a temporary project focus is no longer active, or a prior fact is explicitly corrected. Use the provided session summary and existing long-term memory as grounding when deciding whether to upsert, delete, or ignore. Keep only the highest-value durable changes, at most 4 items. If there is nothing durable to add, update, or delete, return []. Do not store greetings, one-off troubleshooting steps, transient status, or assistant-only claims.";
-const SESSION_SUMMARY_MIN_MESSAGES: usize = 20;
-const SESSION_SUMMARY_REFRESH_DELTA: usize = 10;
-const LONG_TERM_MEMORY_RECALL_RECENT_N: usize = 8;
-const LONG_TERM_MEMORY_EXTRACTION_BATCH: usize = 4;
-
 /// 同一 chat_id 的 "low memory, defer" 日志最少间隔，避免刷屏。
 const LOW_MEM_DEFER_LOG_INTERVAL: Duration = Duration::from_secs(60);
 static REQ_SEQ: AtomicU32 = AtomicU32::new(1);
@@ -103,30 +97,6 @@ fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn should_refresh_session_summary(current_count: usize, last_summary_count: usize) -> bool {
-    current_count >= SESSION_SUMMARY_MIN_MESSAGES
-        && current_count.saturating_sub(last_summary_count) >= SESSION_SUMMARY_REFRESH_DELTA
-}
-
-fn fallback_session_summary(recent: &[SessionMessage]) -> String {
-    use std::fmt::Write;
-
-    let start = recent.len().saturating_sub(5);
-    let mut fallback = String::with_capacity(640);
-    for (idx, message) in recent[start..].iter().enumerate() {
-        if idx > 0 {
-            fallback.push_str(" | ");
-        }
-        let _ = write!(
-            fallback,
-            "{}: {}",
-            message.role,
-            truncate_content_to_max(&message.content, 100).as_ref()
-        );
-    }
-    truncate_content_to_max(&fallback, SESSION_SUMMARY_MAX_LEN).into_owned()
-}
-
 fn choose_inbound_tx<'a>(
     ingress: IngressKind,
     user_inbound_tx: &'a UserInboundTx,
@@ -140,167 +110,6 @@ fn choose_inbound_tx<'a>(
 
 fn is_long_term_memory_refresh_job(msg: &PcMsg) -> bool {
     msg.ingress == IngressKind::System && msg.channel.as_ref() == LONG_TERM_MEMORY_REFRESH_CHANNEL
-}
-
-fn should_extract_long_term_memory(
-    msg: &PcMsg,
-    reply_content: &str,
-    after_count: usize,
-    pressure: crate::orchestrator::PressureLevel,
-) -> bool {
-    if msg.ingress != IngressKind::User || msg.channel.as_ref() == "cron" {
-        return false;
-    }
-    if pressure != crate::orchestrator::PressureLevel::Normal {
-        return false;
-    }
-    if msg.content.trim().is_empty() || reply_content.trim().is_empty() {
-        return false;
-    }
-    after_count >= 12 && after_count.is_multiple_of(12)
-}
-
-#[derive(Default)]
-struct ParsedLongTermMemoryExtraction {
-    upserts: Vec<LongTermMemoryDraft>,
-    deletes: Vec<LongTermMemorySlot>,
-}
-
-#[derive(serde::Deserialize)]
-struct LongTermMemoryExtractionItem {
-    #[serde(default = "default_long_term_memory_extraction_op")]
-    op: String,
-    kind: LongTermMemoryKind,
-    topic: String,
-    #[serde(default)]
-    content: String,
-    #[serde(default)]
-    keywords: Vec<String>,
-    #[serde(default)]
-    source_chat_id: Option<String>,
-}
-
-enum ParsedLongTermMemoryAction {
-    Upsert(LongTermMemoryDraft),
-    Delete(LongTermMemorySlot),
-}
-
-fn default_long_term_memory_extraction_op() -> String {
-    "upsert".to_string()
-}
-
-fn parse_long_term_memory_extraction(raw: &str, chat_id: &str) -> ParsedLongTermMemoryExtraction {
-    let trimmed = raw.trim();
-    let json_slice = if trimmed.starts_with('[') {
-        trimmed
-    } else {
-        match (trimmed.find('['), trimmed.rfind(']')) {
-            (Some(start), Some(end)) if start < end => &trimmed[start..=end],
-            _ => return ParsedLongTermMemoryExtraction::default(),
-        }
-    };
-    let parsed = serde_json::from_str::<Vec<serde_json::Value>>(json_slice).unwrap_or_default();
-    let mut actions = Vec::with_capacity(parsed.len().min(LONG_TERM_MEMORY_EXTRACTION_BATCH));
-    let mut slot_indexes =
-        HashMap::with_capacity(parsed.len().min(LONG_TERM_MEMORY_EXTRACTION_BATCH));
-    for item in parsed {
-        let Ok(mut parsed_item) = serde_json::from_value::<LongTermMemoryExtractionItem>(item)
-        else {
-            continue;
-        };
-        let action = match parsed_item.op.trim().to_ascii_lowercase().as_str() {
-            "delete" => ParsedLongTermMemoryAction::Delete(LongTermMemorySlot {
-                kind: parsed_item.kind,
-                topic: parsed_item.topic,
-            }),
-            "upsert" => {
-                if parsed_item.source_chat_id.is_none() {
-                    parsed_item.source_chat_id = Some(chat_id.to_string());
-                }
-                ParsedLongTermMemoryAction::Upsert(LongTermMemoryDraft {
-                    kind: parsed_item.kind,
-                    topic: parsed_item.topic,
-                    content: parsed_item.content,
-                    keywords: parsed_item.keywords,
-                    source_chat_id: parsed_item.source_chat_id,
-                })
-            }
-            _ => continue,
-        };
-        let slot_id = match &action {
-            ParsedLongTermMemoryAction::Upsert(draft) => draft.stable_id(),
-            ParsedLongTermMemoryAction::Delete(slot) => slot.stable_id(),
-        };
-        let Some(slot_id) = slot_id else {
-            continue;
-        };
-        if let Some(existing_idx) = slot_indexes.get(&slot_id).copied() {
-            actions[existing_idx] = action;
-        } else {
-            slot_indexes.insert(slot_id, actions.len());
-            actions.push(action);
-        }
-        if actions.len() >= LONG_TERM_MEMORY_EXTRACTION_BATCH {
-            break;
-        }
-    }
-    let mut upserts = Vec::with_capacity(actions.len());
-    let mut deletes = Vec::with_capacity(actions.len());
-    for action in actions {
-        match action {
-            ParsedLongTermMemoryAction::Upsert(draft) => upserts.push(draft),
-            ParsedLongTermMemoryAction::Delete(slot) => deletes.push(slot),
-        }
-    }
-    ParsedLongTermMemoryExtraction { upserts, deletes }
-}
-
-fn build_long_term_memory_extraction_input(
-    config: &AgentLoopConfig,
-    chat_id: &str,
-    recent: &[SessionMessage],
-) -> String {
-    let mut transcript = String::with_capacity(1536);
-    for message in recent {
-        let preview = truncate_content_to_max(&message.content, 180);
-        let _ = writeln!(
-            transcript,
-            "{}: {}",
-            message.role.to_uppercase(),
-            preview.as_ref()
-        );
-    }
-
-    let mut input = String::with_capacity(2300);
-    if let Some(summary) = config
-        .session_summary_store
-        .get(chat_id)
-        .ok()
-        .flatten()
-        .filter(|value| !value.trim().is_empty())
-    {
-        input.push_str("## Session summary\n");
-        input.push_str(summary.trim());
-        input.push_str("\n\n");
-    }
-
-    if let Some(existing_memory) = config
-        .long_term_memory_store
-        .recall(
-            &transcript,
-            Some(chat_id),
-            LONG_TERM_MEMORY_EXTRACTION_BATCH,
-        )
-        .ok()
-        .and_then(|entries| render_long_term_memory_block(&entries, 768))
-    {
-        input.push_str(&existing_memory);
-        input.push_str("\n\n");
-    }
-
-    input.push_str("## Recent conversation\n");
-    input.push_str(transcript.trim());
-    input
 }
 #[derive(Clone, Copy)]
 enum AgentWorkerLane {
@@ -785,141 +594,49 @@ fn handle_llm_gate(
     }
 }
 
-/// 程序性触发：用最近会话生成摘要并 `set_with_count`。LLM 失败时确定性回退，仍落盘。
-fn generate_session_summary(
-    http: &mut dyn PlatformHttpClient,
-    llm: &(dyn LlmClient + Send + Sync),
-    config: &AgentLoopConfig,
-    chat_id: &str,
-    current_count: usize,
-) -> Result<()> {
-    use std::fmt::Write;
-
-    let recent = config.session_store.load_recent(chat_id, 20)?;
-    let fallback = fallback_session_summary(&recent);
-    let mut transcript = String::with_capacity(2048);
-    for m in &recent {
-        let preview = truncate_content_to_max(&m.content, 200);
-        let _ = writeln!(
-            transcript,
-            "{}: {}",
-            m.role.to_uppercase(),
-            preview.as_ref()
-        );
-    }
-    let user_msg = Message {
-        role: Cow::Borrowed("user"),
-        content: transcript,
-    };
-    let messages = [user_msg];
-    let loc = (config.resolve_locale)();
-    let mut ctx = HttpClientToolContext {
-        http,
-        chat_id: Some(Arc::from(chat_id)),
-        channel: Some(Arc::from("system")),
-        locale: loc,
-    };
-    match llm.chat(
-        &mut ctx,
-        SUMMARY_SYSTEM,
-        &messages,
-        None,
-        ToolChoicePolicy::Auto,
-    ) {
-        Ok(resp) => {
-            let summary =
-                truncate_content_to_max(resp.content.trim(), SESSION_SUMMARY_MAX_LEN).into_owned();
-            let summary = if summary.is_empty() {
-                fallback
-            } else {
-                summary
-            };
-            config
-                .session_summary_store
-                .set_with_count(chat_id, &summary, current_count)?;
-            Ok(())
-        }
-        Err(e) => {
-            log::warn!(
-                "[agent_summary] LLM summary failed for chat_id={}: {}",
-                chat_id,
-                e
-            );
-            config
-                .session_summary_store
-                .set_with_count(chat_id, &fallback, current_count)?;
-            Ok(())
-        }
-    }
-}
-
-fn extract_long_term_memory(
-    http: &mut dyn PlatformHttpClient,
-    llm: &(dyn LlmClient + Send + Sync),
-    config: &AgentLoopConfig,
-    chat_id: &str,
-) -> Result<usize> {
-    let recent = config
-        .session_store
-        .load_recent(chat_id, LONG_TERM_MEMORY_RECALL_RECENT_N)?;
-    if recent.len() < 2 {
-        return Ok(0);
-    }
-
-    let messages = [Message {
-        role: Cow::Borrowed("user"),
-        content: build_long_term_memory_extraction_input(config, chat_id, &recent),
-    }];
-    let loc = (config.resolve_locale)();
-    let mut ctx = HttpClientToolContext {
-        http,
-        chat_id: Some(Arc::from(chat_id)),
-        channel: Some(Arc::from("system")),
-        locale: loc,
-    };
-    let response = llm.chat(
-        &mut ctx,
-        LONG_TERM_MEMORY_EXTRACTION_SYSTEM,
-        &messages,
-        None,
-        ToolChoicePolicy::Auto,
-    )?;
-    let extraction = parse_long_term_memory_extraction(response.content.trim(), chat_id);
-    if extraction.upserts.is_empty() && extraction.deletes.is_empty() {
-        return Ok(0);
-    }
-    let mut changed = 0usize;
-    for slot in &extraction.deletes {
-        if config.long_term_memory_store.delete_slot(slot)? {
-            changed += 1;
-        }
-    }
-    if !extraction.upserts.is_empty() {
-        config
-            .long_term_memory_store
-            .upsert_many(&extraction.upserts, crate::util::current_unix_secs())?;
-        changed += extraction.upserts.len();
-    }
-    Ok(changed)
-}
-
 fn run_long_term_memory_refresh_job(
     http: &mut dyn PlatformHttpClient,
     worker_llm: &(dyn LlmClient + Send + Sync),
     config: &AgentLoopConfig,
     msg: &PcMsg,
 ) {
-    if crate::orchestrator::snapshot().pressure != crate::orchestrator::PressureLevel::Normal {
-        return;
-    }
-    match extract_long_term_memory(http, worker_llm, config, &msg.chat_id) {
-        Ok(0) => {}
-        Ok(count) => log::info!(
-            "[agent_memory] long-term memory refreshed for {} (count={})",
-            msg.chat_id,
-            count
-        ),
-        Err(e) => log::warn!("[agent_memory] refresh failed: {}", e),
+    let loc = (config.resolve_locale)();
+    let mut llm_ctx = HttpClientToolContext {
+        http,
+        chat_id: Some(Arc::from(msg.chat_id.as_ref())),
+        channel: Some(Arc::from("system")),
+        locale: loc,
+    };
+    let outcome = run_long_term_memory_refresh(
+        &mut llm_ctx,
+        worker_llm,
+        LongTermMemoryRefreshContext {
+            session_store: config.session_store.as_ref(),
+            session_summary_store: config.session_summary_store.as_ref(),
+            long_term_memory_store: config.long_term_memory_store.as_ref(),
+            extraction_state_store: config.long_term_memory_extraction_state_store.as_ref(),
+        },
+        &msg.chat_id,
+        crate::orchestrator::snapshot().pressure,
+    );
+    outcome.persist(
+        config.long_term_memory_extraction_state_store.as_ref(),
+        &msg.chat_id,
+    );
+    match outcome {
+        LongTermMemoryRefreshOutcome::Processed { changed_count, .. } => {
+            if changed_count > 0 {
+                log::info!(
+                    "[agent_memory] long-term memory refreshed for {} (count={})",
+                    msg.chat_id,
+                    changed_count
+                );
+            }
+        }
+        LongTermMemoryRefreshOutcome::Failed { error, .. } => {
+            log::warn!("[agent_memory] refresh failed: {}", error);
+        }
+        LongTermMemoryRefreshOutcome::Deferred { .. } => {}
     }
 }
 
@@ -1073,6 +790,8 @@ fn resolve_end_turn_followup(ctx: EndTurnFollowupContext<'_>) -> Option<(String,
 pub struct AgentLoopConfig {
     pub memory_store: Arc<dyn MemoryStore + Send + Sync>,
     pub long_term_memory_store: Arc<dyn LongTermMemoryStore + Send + Sync>,
+    pub long_term_memory_extraction_state_store:
+        Arc<dyn LongTermMemoryExtractionStateStore + Send + Sync>,
     pub session_store: Arc<dyn SessionStore + Send + Sync>,
     pub session_summary_store: Arc<dyn SessionSummaryStore + Send + Sync>,
     pub get_skill_descriptions: Arc<dyn Fn() -> String + Send + Sync>,
@@ -1603,50 +1322,74 @@ fn run_agent_loop_lane(
         // Programmatic session summary — only after the reply has been handed off to the
         // outbound path (or streamed successfully).
         if delivered {
-            let after_count = config
-                .session_store
-                .message_count(&msg.chat_id)
-                .unwrap_or(0);
-            let last_summary_count = config
-                .session_summary_store
-                .get_with_count(&msg.chat_id)
-                .ok()
-                .flatten()
-                .map(|(_, c)| c)
-                .unwrap_or(0);
-            if should_refresh_session_summary(after_count, last_summary_count) {
-                match generate_session_summary(http, worker_llm, config, &msg.chat_id, after_count)
-                {
-                    Ok(()) => log::info!("[agent_summary] updated for {}", msg.chat_id),
-                    Err(e) => log::warn!("[agent_summary] failed: {}", e),
-                }
-            }
-            if should_extract_long_term_memory(
-                &msg,
-                &reply_content,
-                after_count,
-                crate::orchestrator::snapshot().pressure,
-            ) {
-                match PcMsg::new_system(LONG_TERM_MEMORY_REFRESH_CHANNEL, msg.chat_id.as_ref(), "")
-                {
-                    Ok(job) => {
-                        match system_inbound_tx.try_send(job) {
-                            Ok(()) => {}
-                            Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                                log::debug!(
+            let loc = (config.resolve_locale)();
+            let mut maintenance_llm_ctx = HttpClientToolContext {
+                http,
+                chat_id: Some(Arc::from(msg.chat_id.as_ref())),
+                channel: Some(Arc::from("system")),
+                locale: loc,
+            };
+            let maintenance_outcome = run_post_reply_memory_maintenance(
+                &mut maintenance_llm_ctx,
+                worker_llm,
+                PostReplyMemoryMaintenanceContext {
+                    session_store: config.session_store.as_ref(),
+                    session_summary_store: config.session_summary_store.as_ref(),
+                    extraction_state_store: config.long_term_memory_extraction_state_store.as_ref(),
+                },
+                PostReplyMemoryMaintenanceInput {
+                    chat_id: &msg.chat_id,
+                    ingress: msg.ingress,
+                    channel: msg.channel.as_ref(),
+                    user_content: &msg.content,
+                    reply_content: &reply_content,
+                    pressure: crate::orchestrator::snapshot().pressure,
+                },
+                || match PcMsg::new_system(
+                    LONG_TERM_MEMORY_REFRESH_CHANNEL,
+                    msg.chat_id.as_ref(),
+                    "",
+                ) {
+                    Ok(job) => match system_inbound_tx.try_send(job) {
+                        Ok(()) => true,
+                        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                            log::debug!(
                                 "[agent_memory] skip refresh enqueue because system queue is full chat_id={}",
                                 msg.chat_id
                             );
-                            }
-                            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                                log::warn!("[agent_memory] refresh enqueue failed: system queue disconnected");
-                            }
+                            false
                         }
-                    }
+                        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                            log::warn!(
+                                "[agent_memory] refresh enqueue failed: system queue disconnected"
+                            );
+                            false
+                        }
+                    },
                     Err(e) => {
                         log::warn!("[agent_memory] refresh job build failed: {}", e);
+                        false
+                    }
+                },
+            );
+            match maintenance_outcome.summary_result {
+                Ok(SessionSummaryRefreshOutcome::Updated { used_fallback }) => {
+                    if used_fallback {
+                        log::info!("[agent_summary] updated for {} (fallback)", msg.chat_id);
+                    } else {
+                        log::info!("[agent_summary] updated for {}", msg.chat_id);
                     }
                 }
+                Ok(SessionSummaryRefreshOutcome::Skipped) => {}
+                Err(e) => log::warn!("[agent_summary] failed: {}", e),
+            }
+            if maintenance_outcome.extraction_request_outcome
+                == LongTermMemoryRefreshRequestOutcome::RequestFailed
+            {
+                log::debug!(
+                    "[agent_memory] refresh request was eligible but not enqueued chat_id={}",
+                    msg.chat_id
+                );
             }
         }
         let total_ms = msg_start.elapsed().as_millis();
@@ -2389,74 +2132,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn long_term_memory_refresh_requires_six_completed_turns_without_explicit_cue() {
-        let msg = PcMsg::new("qq_channel", "chat-1", "hi").unwrap();
-        assert!(!should_extract_long_term_memory(
-            &msg,
-            "先看下链路。",
-            10,
-            crate::orchestrator::PressureLevel::Normal,
-        ));
-        assert!(should_extract_long_term_memory(
-            &msg,
-            "先看下链路。",
-            12,
-            crate::orchestrator::PressureLevel::Normal,
-        ));
-    }
-
-    #[test]
-    fn long_term_memory_refresh_requires_normal_pressure_only() {
-        let msg = PcMsg::new("qq_channel", "chat-1", "hi").unwrap();
-        assert!(!should_extract_long_term_memory(
-            &msg,
-            "ok",
-            12,
-            crate::orchestrator::PressureLevel::Cautious,
-        ));
-        assert!(!should_extract_long_term_memory(
-            &msg,
-            "ok",
-            12,
-            crate::orchestrator::PressureLevel::Critical,
-        ));
-    }
-
-    #[test]
-    fn parse_long_term_memory_extraction_skips_invalid_items_but_keeps_valid_ones() {
-        let raw = r#"
-        [
-          {"op":"upsert","kind":"preference","topic":"response_style","content":"User prefers concise answers.","keywords":["concise"]},
-          {"op":"upsert","kind":"preference","content":"missing topic should be ignored"},
-          {"op":"delete","kind":"task","topic":"current_focus"},
-          {"op":"upsert","kind":"task","topic":"current_focus","content":"Continue memory redesign","keywords":["memory"]}
-        ]
-        "#;
-        let parsed = parse_long_term_memory_extraction(raw, "chat-1");
-        assert_eq!(parsed.upserts.len(), 2);
-        assert_eq!(parsed.deletes.len(), 0);
-        assert_eq!(parsed.upserts[0].topic, "response_style");
-        assert_eq!(parsed.upserts[1].topic, "current_focus");
-    }
-
-    #[test]
-    fn parse_long_term_memory_extraction_keeps_last_action_per_slot() {
-        let raw = r#"
-        [
-          {"op":"delete","kind":"task","topic":"current_focus"},
-          {"op":"upsert","kind":"task","topic":"current_focus","content":"Continue memory redesign","keywords":["memory"]},
-          {"op":"upsert","kind":"profile","topic":"user_name","content":"甲壳虫"},
-          {"op":"delete","kind":"profile","topic":"user_name"}
-        ]
-        "#;
-        let parsed = parse_long_term_memory_extraction(raw, "chat-1");
-        assert_eq!(parsed.upserts.len(), 1);
-        assert_eq!(parsed.deletes.len(), 1);
-        assert_eq!(parsed.upserts[0].topic, "current_focus");
-        assert_eq!(parsed.deletes[0].topic, "user_name");
-    }
-
-    #[test]
     fn summarize_tool_results_keeps_multiline_preview() {
         let input = concat!(
             "Tool results:\n",
@@ -2626,33 +2301,5 @@ mod tests {
         ];
         compact_early_tool_rounds(&mut messages, 1);
         assert_eq!(messages[2].content, original);
-    }
-
-    #[test]
-    fn session_summary_refresh_threshold_is_programmatic() {
-        assert!(!should_refresh_session_summary(19, 0));
-        assert!(!should_refresh_session_summary(20, 15));
-        assert!(should_refresh_session_summary(20, 10));
-        assert!(should_refresh_session_summary(35, 20));
-    }
-
-    #[test]
-    fn fallback_session_summary_keeps_recent_messages_in_order() {
-        let recent = vec![
-            SessionMessage {
-                role: "user".to_string(),
-                content: "first".to_string(),
-            },
-            SessionMessage {
-                role: "assistant".to_string(),
-                content: "second".to_string(),
-            },
-            SessionMessage {
-                role: "user".to_string(),
-                content: "third".to_string(),
-            },
-        ];
-        let summary = fallback_session_summary(&recent);
-        assert!(summary.contains("user: first | assistant: second | user: third"));
     }
 }

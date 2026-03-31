@@ -102,7 +102,7 @@ pub use tools::{HttpRequestTool, ModelConfigTool, ProxyConfigTool, WebSearchTool
 /// 任何 PlatformHttpClient 均可作为 LlmHttpClient 使用。
 /// ToolContext 的实现由 `tools::http_bridge::HttpClientToolContext` 承载（含会话元数据），
 /// 不再提供硬编码 locale 的 blanket impl。
-impl<T: platform::PlatformHttpClient> llm::LlmHttpClient for T {
+impl<T: platform::PlatformHttpClient + ?Sized> llm::LlmHttpClient for T {
     fn do_post(
         &mut self,
         url: &str,

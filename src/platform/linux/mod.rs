@@ -9,9 +9,9 @@ use crate::platform::{
     display_driver::{install_display_state, DisplayState},
     heartbeat_file::read_heartbeat_file,
     spiffs::{
-        spiffs_usage, SpiffsImportantMessageStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
-        SpiffsPendingRetryStore, SpiffsRemindAtStore, SpiffsSessionStore,
-        SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
+        spiffs_usage, SpiffsImportantMessageStore, SpiffsLongTermMemoryExtractionStateStore,
+        SpiffsLongTermMemoryStore, SpiffsMemoryStore, SpiffsPendingRetryStore, SpiffsRemindAtStore,
+        SpiffsSessionStore, SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
         SpiffsTaskContinuationStore,
     },
     NvsConfigStore,
@@ -20,8 +20,9 @@ use crate::{
     config::AppConfig,
     display::{DisplayCommand, DisplayConfig},
     memory::{
-        ImportantMessageStore, LongTermMemoryStore, MemoryStore, PendingRetryStore, RemindAtStore,
-        SessionStore, SessionSummaryStore, TaskContinuationStore,
+        ImportantMessageStore, LongTermMemoryExtractionStateStore, LongTermMemoryStore,
+        MemoryStore, PendingRetryStore, RemindAtStore, SessionStore, SessionSummaryStore,
+        TaskContinuationStore,
     },
 };
 use std::sync::{Arc, Mutex};
@@ -34,6 +35,7 @@ pub struct LinuxPlatform {
     skill_meta_store: Arc<SpiffsSkillMetaStore>,
     memory_store: Arc<SpiffsMemoryStore>,
     long_term_memory_store: Arc<SpiffsLongTermMemoryStore>,
+    long_term_memory_extraction_state_store: Arc<SpiffsLongTermMemoryExtractionStateStore>,
     session_store: Arc<SpiffsSessionStore>,
     pending_retry_store: Arc<SpiffsPendingRetryStore>,
     task_continuation_store: Arc<SpiffsTaskContinuationStore>,
@@ -55,6 +57,9 @@ impl LinuxPlatform {
             skill_meta_store: Arc::new(SpiffsSkillMetaStore),
             memory_store: Arc::new(SpiffsMemoryStore::new()),
             long_term_memory_store: Arc::new(SpiffsLongTermMemoryStore::new()),
+            long_term_memory_extraction_state_store: Arc::new(
+                SpiffsLongTermMemoryExtractionStateStore::new(),
+            ),
             session_store: Arc::new(SpiffsSessionStore::new()),
             pending_retry_store: Arc::new(SpiffsPendingRetryStore::new()),
             task_continuation_store: Arc::new(SpiffsTaskContinuationStore::new()),
@@ -145,6 +150,13 @@ impl Platform for LinuxPlatform {
 
     fn long_term_memory_store(&self) -> Arc<dyn LongTermMemoryStore + Send + Sync> {
         Arc::clone(&self.long_term_memory_store) as Arc<dyn LongTermMemoryStore + Send + Sync>
+    }
+
+    fn long_term_memory_extraction_state_store(
+        &self,
+    ) -> Arc<dyn LongTermMemoryExtractionStateStore + Send + Sync> {
+        Arc::clone(&self.long_term_memory_extraction_state_store)
+            as Arc<dyn LongTermMemoryExtractionStateStore + Send + Sync>
     }
 
     fn session_store(&self) -> Arc<dyn SessionStore + Send + Sync> {

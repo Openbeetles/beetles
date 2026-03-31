@@ -5,6 +5,9 @@ use crate::error::Result;
 use serde::{Deserialize, Serialize};
 
 mod long_term;
+mod long_term_extraction;
+mod maintenance;
+mod session_summary_refresh;
 
 pub(crate) use long_term::{
     canonicalize_long_term_memory_entry, govern_long_term_memory_entries,
@@ -15,6 +18,27 @@ pub use long_term::{
     LongTermMemoryEntry, LongTermMemoryKind, LongTermMemorySlot, LongTermMemoryStore,
     MAX_LONG_TERM_MEMORY_BLOCK_LEN, MAX_LONG_TERM_MEMORY_CONTENT_LEN, MAX_LONG_TERM_MEMORY_ITEMS,
     MAX_LONG_TERM_MEMORY_KEYWORDS, MAX_LONG_TERM_MEMORY_KEYWORD_LEN, REL_PATH_LONG_TERM_MEMORIES,
+};
+pub use long_term_extraction::{
+    apply_long_term_memory_extraction, build_long_term_memory_extraction_input,
+    evaluate_long_term_memory_extraction_turn, mark_long_term_memory_extraction_deferred,
+    mark_long_term_memory_extraction_processed, mark_long_term_memory_extraction_requested,
+    parse_long_term_memory_extraction_response, persist_long_term_memory_extraction_state,
+    run_long_term_memory_refresh, LongTermMemoryExtractionState,
+    LongTermMemoryExtractionStateStore, LongTermMemoryExtractionTurnDecision,
+    LongTermMemoryExtractionTurnInput, LongTermMemoryRefreshContext, LongTermMemoryRefreshOutcome,
+    ParsedLongTermMemoryExtraction, LONG_TERM_MEMORY_EXTRACTION_BATCH,
+    LONG_TERM_MEMORY_EXTRACTION_RECENT_N, LONG_TERM_MEMORY_EXTRACTION_SYSTEM_PROMPT,
+    REL_PATH_LONG_TERM_EXTRACTION_STATES,
+};
+pub use maintenance::{
+    run_post_reply_memory_maintenance, LongTermMemoryRefreshRequestOutcome,
+    PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput,
+    PostReplyMemoryMaintenanceOutcome,
+};
+pub use session_summary_refresh::{
+    fallback_session_summary, run_session_summary_refresh, should_refresh_session_summary,
+    SessionSummaryRefreshContext, SessionSummaryRefreshOutcome,
 };
 
 /// 单次写入内容最大字节数（与 platform::spiffs 上界一致）。实现应拒绝超长写入。
