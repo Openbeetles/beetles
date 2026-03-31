@@ -1,7 +1,7 @@
 //! Process 工具：仅 Linux，列出或终止进程。
 
 use crate::error::{Error, Result};
-use crate::tools::{Tool, ToolContext};
+use crate::tools::{Tool, ToolContext, ToolMetadata};
 use serde_json::Value;
 use std::process::Command;
 
@@ -107,5 +107,9 @@ impl Tool for ProcessTool {
                 message: format!("invalid mode: {}", parsed.mode),
             }),
         }
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::debug()
     }
 }

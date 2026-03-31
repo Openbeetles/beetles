@@ -1,6 +1,7 @@
 //! 工具抽象与注册。核心域不依赖 platform；HTTP 等由 main 注入 ToolContext。
 //! Tool trait and registry; no platform dependency.
 
+mod policy;
 mod registry;
 
 #[cfg(feature = "tools_network_extra")]
@@ -72,6 +73,7 @@ pub use model_config::ModelConfigTool;
 pub use network::NetworkTool;
 #[cfg(feature = "tools_diagnostics")]
 pub use network_scan::NetworkScanTool;
+pub use policy::{ToolExposure, ToolMetadata, ToolPolicyContext};
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use process::ProcessTool;
 #[cfg(feature = "tools_network_extra")]
@@ -185,6 +187,11 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     fn schema(&self) -> Value;
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String>;
+    /// 工具元数据：由统一的 tool policy 在运行时决定是否暴露给 LLM。
+    /// Tool metadata only declares capability/risk shape; runtime exposure is resolved centrally.
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::default()
+    }
     /// 该工具是否需要网络（HTTP/TLS）；orchestrator 在高压力时拒绝网络工具。
     /// Whether this tool requires network (HTTP/TLS); orchestrator denies network tools under high pressure.
     fn requires_network(&self) -> bool {

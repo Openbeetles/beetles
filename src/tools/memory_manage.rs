@@ -3,7 +3,7 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{MemoryStore, MAX_MEMORY_CONTENT_LEN, MAX_SOUL_USER_LEN};
-use crate::tools::{parse_tool_args, Tool, ToolContext};
+use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -146,6 +146,10 @@ impl Tool for MemoryManageTool {
                 format!("unknown op: {}", op),
             )),
         }
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::stateful()
     }
 }
 

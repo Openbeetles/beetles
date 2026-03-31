@@ -13,7 +13,7 @@ use crate::constants::{
 };
 use crate::error::Result;
 use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
-use crate::llm::{LlmClient, Message, StopReason, ToolChoicePolicy, ToolSpec};
+use crate::llm::{LlmClient, Message, StopReason, ToolChoicePolicy};
 use crate::memory::{
     EmotionSignalStore, ImportantMessageStore, MemoryStore, PendingRetryStore, SessionMessage,
     SessionStore, SessionSummaryStore, TaskContinuationStore,
@@ -22,6 +22,7 @@ use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
 use crate::state;
 use crate::tools::http_bridge::HttpClientToolContext;
+use crate::tools::ToolPolicyContext;
 use crate::util::{
     remove_substrings_all_trim, strip_agent_stop_confirmation, truncate_content_to_max,
 };
@@ -463,7 +464,6 @@ pub struct AgentLoopConfig {
     pub memory_store: Arc<dyn MemoryStore + Send + Sync>,
     pub session_store: Arc<dyn SessionStore + Send + Sync>,
     pub session_summary_store: Arc<dyn SessionSummaryStore + Send + Sync>,
-    pub tool_specs: Arc<[ToolSpec]>,
     pub get_skill_descriptions: Arc<dyn Fn() -> String + Send + Sync>,
     pub session_max_messages: usize,
     pub tg_group_activation: Arc<str>,
@@ -555,7 +555,6 @@ fn run_agent_loop_lane(
     bootstrap_pending_retry: bool,
 ) -> Result<()> {
     let worker_lane_tag = worker_lane.as_str();
-    let has_tools = registry.has_tools();
     let skill_descriptions = (config.get_skill_descriptions)();
 
     // Track repeated LLM failure for same request body, avoid infinite retry.
@@ -774,7 +773,6 @@ fn run_agent_loop_lane(
             &msg,
             registry,
             config,
-            has_tools,
             &skill_descriptions,
             &mut tool_call_repeat_buf,
             loc,
@@ -1074,13 +1072,15 @@ fn run_worker_path(
     msg: &crate::bus::PcMsg,
     registry: &crate::tools::ToolRegistry,
     config: &AgentLoopConfig,
-    has_tools: bool,
     skill_descriptions: &str,
     tool_call_repeat: &mut HashMap<u64, u8>,
     loc: UiLocale,
 ) -> Result<(WorkerOutcome, Option<u32>, bool, WorkerLatency)> {
     let mut latency = WorkerLatency::default();
     let llm_tool_choice = ToolChoicePolicy::Auto;
+    let tool_policy = ToolPolicyContext::new(msg.ingress, msg.channel.as_ref());
+    let tool_specs = registry.tool_specs_for_llm(&tool_policy);
+    let has_tools = !tool_specs.is_empty();
     let mut tool_ctx = HttpClientToolContext {
         http,
         chat_id: Some(msg.chat_id.clone()),
@@ -1291,7 +1291,7 @@ fn run_worker_path(
                 &mut tool_ctx,
                 &system,
                 &messages,
-                Some(&config.tool_specs),
+                (!tool_specs.is_empty()).then_some(tool_specs.as_slice()),
                 llm_tool_choice,
                 &mut progress_cb,
             )
@@ -1300,7 +1300,7 @@ fn run_worker_path(
                 &mut tool_ctx,
                 &system,
                 &messages,
-                Some(&config.tool_specs),
+                (!tool_specs.is_empty()).then_some(tool_specs.as_slice()),
                 llm_tool_choice,
             )
         };
@@ -1435,92 +1435,110 @@ fn run_worker_path(
                 }
                 // 工具执行门控
                 let result_owned = {
-                    let needs_net = registry.is_network_tool(&tc.name);
-                    match crate::orchestrator::can_execute_tool_pub(&tc.name, needs_net) {
-                        ToolDecision::Deny { reason } => {
-                            log::info!("[agent_tool] {} denied: {}", tc.name, reason);
-                            crate::util::scrub_credentials(
-                                &serde_json::json!({ "error": reason }).to_string(),
-                            )
-                        }
-                        ToolDecision::Allow => {
-                            let tool_exec_start = Instant::now();
-                            match registry.execute(&tc.name, &tc.input, &mut tool_ctx) {
-                                Ok(s) => {
-                                    latency.tool_exec_ms = latency
-                                        .tool_exec_ms
-                                        .saturating_add(tool_exec_start.elapsed().as_millis());
-                                    metrics::record_tool_call(true);
-                                    round_tool_success = true;
-                                    any_tool_used = true;
-                                    crate::util::scrub_credentials(&s)
-                                }
-                                Err(e) => {
-                                    latency.tool_exec_ms = latency
-                                        .tool_exec_ms
-                                        .saturating_add(tool_exec_start.elapsed().as_millis());
-                                    metrics::record_tool_call(false);
-                                    metrics::record_error_by_stage(e.stage());
-                                    log::error!(
-                                        "[agent_tool] {} execute failed: {} input={:?}",
-                                        tc.name,
-                                        e,
-                                        crate::util::truncate_content_to_max(&tc.input, 200)
-                                            .as_ref()
-                                    );
-                                    state::set_last_error(&e);
-                                    tool_error_buf.clear();
-                                    // 根据错误类型生成具体的引导提示
-                                    let hint = match &e {
-                                        crate::error::Error::Config { message, .. } => {
-                                            if message.contains("not found")
-                                                || message.contains("does not exist")
-                                            {
-                                                " Try a different approach or verify the resource exists."
-                                            } else if message.contains("invalid")
-                                                || message.contains("parse")
-                                            {
-                                                " Check the input format and try with corrected parameters."
-                                            } else {
-                                                " Review the parameters and try a different approach."
+                    if !registry.is_llm_tool_visible(&tc.name, &tool_policy) {
+                        metrics::record_tool_call(false);
+                        crate::util::scrub_credentials(
+                            &serde_json::json!({
+                                "error": format!(
+                                    "tool '{}' is not available in the current runtime context",
+                                    tc.name
+                                )
+                            })
+                            .to_string(),
+                        )
+                    } else {
+                        let needs_net = registry.is_network_tool(&tc.name);
+                        match crate::orchestrator::can_execute_tool_pub(&tc.name, needs_net) {
+                            ToolDecision::Deny { reason } => {
+                                log::info!("[agent_tool] {} denied: {}", tc.name, reason);
+                                crate::util::scrub_credentials(
+                                    &serde_json::json!({ "error": reason }).to_string(),
+                                )
+                            }
+                            ToolDecision::Allow => {
+                                let tool_exec_start = Instant::now();
+                                match registry.execute(&tc.name, &tc.input, &mut tool_ctx) {
+                                    Ok(s) => {
+                                        latency.tool_exec_ms = latency
+                                            .tool_exec_ms
+                                            .saturating_add(tool_exec_start.elapsed().as_millis());
+                                        metrics::record_tool_call(true);
+                                        round_tool_success = true;
+                                        any_tool_used = true;
+                                        crate::util::scrub_credentials(&s)
+                                    }
+                                    Err(e) => {
+                                        latency.tool_exec_ms = latency
+                                            .tool_exec_ms
+                                            .saturating_add(tool_exec_start.elapsed().as_millis());
+                                        metrics::record_tool_call(false);
+                                        metrics::record_error_by_stage(e.stage());
+                                        log::error!(
+                                            "[agent_tool] {} execute failed: {} input={:?}",
+                                            tc.name,
+                                            e,
+                                            crate::util::truncate_content_to_max(&tc.input, 200)
+                                                .as_ref()
+                                        );
+                                        state::set_last_error(&e);
+                                        tool_error_buf.clear();
+                                        // 根据错误类型生成具体的引导提示
+                                        let hint = match &e {
+                                            crate::error::Error::Config { message, .. } => {
+                                                if message.contains("not found")
+                                                    || message.contains("does not exist")
+                                                {
+                                                    " Try a different approach or verify the resource exists."
+                                                } else if message.contains("invalid")
+                                                    || message.contains("parse")
+                                                {
+                                                    " Check the input format and try with corrected parameters."
+                                                } else {
+                                                    " Review the parameters and try a different approach."
+                                                }
                                             }
-                                        }
-                                        crate::error::Error::Http { status_code, .. } => {
-                                            if *status_code == 404 {
-                                                " Resource not found. Verify the URL or identifier."
-                                            } else if *status_code == 403 || *status_code == 401 {
-                                                " Permission denied. This operation may not be allowed."
-                                            } else if *status_code >= 500 {
-                                                " Server error. Try again later or use an alternative method."
-                                            } else {
-                                                " Consider an alternative approach."
+                                            crate::error::Error::Http { status_code, .. } => {
+                                                if *status_code == 404 {
+                                                    " Resource not found. Verify the URL or identifier."
+                                                } else if *status_code == 403 || *status_code == 401
+                                                {
+                                                    " Permission denied. This operation may not be allowed."
+                                                } else if *status_code >= 500 {
+                                                    " Server error. Try again later or use an alternative method."
+                                                } else {
+                                                    " Consider an alternative approach."
+                                                }
                                             }
-                                        }
-                                        crate::error::Error::Io { source, .. } => {
-                                            if source.kind() == std::io::ErrorKind::NotFound {
-                                                " File or resource not found. Check the path."
-                                            } else if source.kind()
-                                                == std::io::ErrorKind::PermissionDenied
-                                            {
-                                                " Permission denied. This operation may not be allowed."
-                                            } else if source.kind() == std::io::ErrorKind::TimedOut
-                                            {
-                                                " Operation timed out. Try with simpler parameters or check connectivity."
-                                            } else {
-                                                " Try a different approach."
+                                            crate::error::Error::Io { source, .. } => {
+                                                if source.kind() == std::io::ErrorKind::NotFound {
+                                                    " File or resource not found. Check the path."
+                                                } else if source.kind()
+                                                    == std::io::ErrorKind::PermissionDenied
+                                                {
+                                                    " Permission denied. This operation may not be allowed."
+                                                } else if source.kind()
+                                                    == std::io::ErrorKind::TimedOut
+                                                {
+                                                    " Operation timed out. Try with simpler parameters or check connectivity."
+                                                } else {
+                                                    " Try a different approach."
+                                                }
                                             }
-                                        }
-                                        _ => {
-                                            if e.is_connect_error() {
-                                                " Connection failed. Check network connectivity or try later."
-                                            } else {
-                                                " Consider an alternative strategy."
+                                            _ => {
+                                                if e.is_connect_error() {
+                                                    " Connection failed. Check network connectivity or try later."
+                                                } else {
+                                                    " Consider an alternative strategy."
+                                                }
                                             }
-                                        }
-                                    };
-                                    let _ =
-                                        write!(&mut tool_error_buf, "[tool error] {}.{}", e, hint);
-                                    crate::util::scrub_credentials(tool_error_buf.as_str())
+                                        };
+                                        let _ = write!(
+                                            &mut tool_error_buf,
+                                            "[tool error] {}.{}",
+                                            e, hint
+                                        );
+                                        crate::util::scrub_credentials(tool_error_buf.as_str())
+                                    }
                                 }
                             }
                         }

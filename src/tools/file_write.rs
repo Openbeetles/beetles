@@ -3,7 +3,7 @@
 
 use crate::constants::FILE_WRITE_MAX_CONTENT_LEN;
 use crate::error::{Error, Result};
-use crate::tools::{parse_tool_args, Tool, ToolContext};
+use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
 use crate::util::normalize_state_rel_path;
 use serde_json::json;
 use std::sync::Arc;
@@ -101,5 +101,9 @@ impl Tool for FileWriteTool {
             "bytes_written": content.len()
         })
         .to_string())
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::stateful()
     }
 }

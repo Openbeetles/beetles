@@ -1,7 +1,7 @@
 //! Env 工具：环境变量访问（get/list）。
 
 use crate::error::{Error, Result};
-use crate::tools::{Tool, ToolContext};
+use crate::tools::{Tool, ToolContext, ToolMetadata};
 use serde_json::json;
 use std::env;
 
@@ -84,5 +84,9 @@ impl Tool for EnvTool {
                 message: format!("invalid mode: {}", parsed.mode),
             }),
         }
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::admin()
     }
 }

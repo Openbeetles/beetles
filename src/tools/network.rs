@@ -1,7 +1,7 @@
 //! Network 工具：仅 Linux，ping 和 curl 功能。
 
 use crate::error::{Error, Result};
-use crate::tools::{Tool, ToolContext};
+use crate::tools::{Tool, ToolContext, ToolMetadata};
 use serde_json::Value;
 use std::process::Command;
 
@@ -139,5 +139,9 @@ impl Tool for NetworkTool {
 
     fn requires_network(&self) -> bool {
         true
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::debug()
     }
 }

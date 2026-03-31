@@ -5,7 +5,7 @@ use crate::constants::{CRON_TASKS_MAX_ENTRIES, CRON_TASK_MAX_ACTION_LEN};
 use crate::error::{Error, Result};
 use crate::memory::MemoryStore;
 use crate::tools::cron::parse_cron_field;
-use crate::tools::{parse_tool_args, Tool, ToolContext};
+use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
@@ -215,6 +215,10 @@ impl Tool for CronManageTool {
                 format!("unknown op: {}", op),
             )),
         }
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::stateful()
     }
 }
 

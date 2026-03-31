@@ -1,7 +1,7 @@
 //! Shell 工具：仅 Linux，白名单命令。
 
 use crate::error::{Error, Result};
-use crate::tools::{Tool, ToolContext};
+use crate::tools::{Tool, ToolContext, ToolMetadata};
 use serde_json::Value;
 use std::process::Command;
 
@@ -84,5 +84,9 @@ impl Tool for ShellTool {
                 message: format!("command failed: {}", stderr),
             })
         }
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::debug()
     }
 }

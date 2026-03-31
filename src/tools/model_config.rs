@@ -2,7 +2,7 @@
 //! model_config tool: runtime LLM model configuration management.
 
 use crate::error::{Error, Result};
-use crate::tools::{parse_tool_args, Tool, ToolContext};
+use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
 use crate::Platform;
 use serde_json::json;
 use std::sync::Arc;
@@ -122,6 +122,10 @@ impl Tool for ModelConfigTool {
                 format!("unknown op: {}", op),
             )),
         }
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::admin()
     }
 }
 

@@ -4,11 +4,12 @@
 use crate::config::AppConfig;
 use crate::error::{Error, Result};
 use crate::llm::ToolSpec as LlmToolSpec;
-use crate::tools::{Tool, MAX_TOOL_ARGS_LEN, MAX_TOOL_RESULT_LEN};
+use crate::tools::{Tool, ToolPolicyContext, MAX_TOOL_ARGS_LEN, MAX_TOOL_RESULT_LEN};
 use crate::util::truncate_to_byte_len;
 use indexmap::IndexMap;
-use std::fmt::Write as _;
 use std::sync::Arc;
+
+pub const DEFAULT_LLM_TOOL_SPECS_MAX_TOTAL_LEN: usize = 32 * 1024;
 
 /// 按 name 注册与派发工具；可生成带总长度上界的 tool specs。IndexMap 保证工具顺序稳定。
 pub struct ToolRegistry {
@@ -43,12 +44,31 @@ impl ToolRegistry {
         self.tools.get(name).is_some_and(|t| t.requires_network())
     }
 
-    /// 生成供 LLM API 使用的 tool specs，总描述长度不超过 max_total_len（字符数）。
-    /// 超限时从尾部丢弃工具。
-    pub fn tool_specs_for_api(&self, max_total_len: usize) -> Vec<LlmToolSpec> {
+    /// 该工具在本次 LLM 请求上下文中是否可见。
+    pub fn is_llm_tool_visible(&self, name: &str, policy: &ToolPolicyContext<'_>) -> bool {
+        self.tools
+            .get(name)
+            .is_some_and(|tool| tool.metadata().is_exposed_to_llm(policy))
+    }
+
+    /// 生成供 LLM 默认调用的 tool specs。
+    pub fn tool_specs_for_llm(&self, policy: &ToolPolicyContext<'_>) -> Vec<LlmToolSpec> {
+        self.tool_specs_for_llm_with_max(policy, DEFAULT_LLM_TOOL_SPECS_MAX_TOTAL_LEN)
+    }
+
+    /// 生成供 LLM 调用的 tool specs，总描述长度不超过 max_total_len（字符数）。
+    /// 只包含当前 policy 上下文下可见的工具；超限时从尾部丢弃工具。
+    pub fn tool_specs_for_llm_with_max(
+        &self,
+        policy: &ToolPolicyContext<'_>,
+        max_total_len: usize,
+    ) -> Vec<LlmToolSpec> {
         let mut out = Vec::with_capacity(self.tools.len());
         let mut len = 0usize;
         for tool in self.tools.values() {
+            if !tool.metadata().is_exposed_to_llm(policy) {
+                continue;
+            }
             let name = tool.name();
             let description = tool.description();
             let parameters = tool.schema();
@@ -66,24 +86,11 @@ impl ToolRegistry {
         out
     }
 
-    /// Whether registry contains any tool.
-    pub fn has_tools(&self) -> bool {
-        !self.tools.is_empty()
-    }
-
-    /// 仅供调试/外部消费：格式化工具说明文本，总长度不超过 max_chars。
-    /// NOTE: agent context 不再注入该文本；工具规格由 LLM API `tools` 参数承载。
-    pub fn format_descriptions_for_system_prompt(&self, max_chars: usize) -> String {
-        let mut s = String::with_capacity(max_chars.min(4096));
-        for tool in self.tools.values() {
-            let before = s.len();
-            let _ = writeln!(&mut s, "- {}: {}", tool.name(), tool.description());
-            if s.len() > max_chars {
-                s.truncate(before);
-                break;
-            }
-        }
-        s
+    /// 当前上下文下是否存在至少一个可暴露给 LLM 的工具。
+    pub fn has_llm_visible_tools(&self, policy: &ToolPolicyContext<'_>) -> bool {
+        self.tools
+            .values()
+            .any(|tool| tool.metadata().is_exposed_to_llm(policy))
     }
 
     /// 按 name 执行工具；args 超限返回 Error::Config；返回值在 Registry 内截断至 MAX_TOOL_RESULT_LEN。
@@ -108,6 +115,115 @@ impl ToolRegistry {
         })?;
         let result = tool.execute(args, ctx)?;
         Ok(truncate_to_byte_len(&result, MAX_TOOL_RESULT_LEN))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::{ToolExposure, ToolMetadata};
+    use serde_json::json;
+
+    struct VisibleTool;
+    struct StatefulTool;
+    struct AdminTool;
+    struct InternalOnlyTool;
+
+    impl Tool for VisibleTool {
+        fn name(&self) -> &'static str {
+            "visible"
+        }
+        fn description(&self) -> &str {
+            "visible tool"
+        }
+        fn schema(&self) -> serde_json::Value {
+            json!({"type":"object","properties":{"x":{"type":"string"}}})
+        }
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok(String::new())
+        }
+    }
+
+    impl Tool for StatefulTool {
+        fn name(&self) -> &'static str {
+            "stateful"
+        }
+        fn description(&self) -> &str {
+            "stateful tool"
+        }
+        fn schema(&self) -> serde_json::Value {
+            json!({"type":"object"})
+        }
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok(String::new())
+        }
+        fn metadata(&self) -> ToolMetadata {
+            ToolMetadata::stateful()
+        }
+    }
+
+    impl Tool for AdminTool {
+        fn name(&self) -> &'static str {
+            "admin"
+        }
+        fn description(&self) -> &str {
+            "admin tool"
+        }
+        fn schema(&self) -> serde_json::Value {
+            json!({"type":"object"})
+        }
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok(String::new())
+        }
+        fn metadata(&self) -> ToolMetadata {
+            ToolMetadata::admin()
+        }
+    }
+
+    impl Tool for InternalOnlyTool {
+        fn name(&self) -> &'static str {
+            "internal_only"
+        }
+        fn description(&self) -> &str {
+            "internal only tool"
+        }
+        fn schema(&self) -> serde_json::Value {
+            json!({"type":"object"})
+        }
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok(String::new())
+        }
+        fn metadata(&self) -> ToolMetadata {
+            ToolMetadata {
+                exposure: ToolExposure::Task,
+                allow_in_system_ingress: false,
+                allow_in_system_channel: true,
+            }
+        }
+    }
+
+    #[test]
+    fn llm_tool_specs_follow_runtime_policy() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(VisibleTool));
+        registry.register(Box::new(StatefulTool));
+        registry.register(Box::new(AdminTool));
+        registry.register(Box::new(InternalOnlyTool));
+
+        let user = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
+        let user_specs = registry.tool_specs_for_llm_with_max(&user, 4096);
+        let user_names: Vec<&str> = user_specs.iter().map(|spec| spec.name.as_str()).collect();
+        assert_eq!(user_names, vec!["visible", "stateful", "internal_only"]);
+
+        let system = ToolPolicyContext::new(crate::bus::IngressKind::System, "telegram");
+        let system_specs = registry.tool_specs_for_llm_with_max(&system, 4096);
+        let system_names: Vec<&str> = system_specs.iter().map(|spec| spec.name.as_str()).collect();
+        assert_eq!(system_names, vec!["visible"]);
+
+        let cron = ToolPolicyContext::new(crate::bus::IngressKind::System, "cron");
+        let specs = registry.tool_specs_for_llm_with_max(&cron, 4096);
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].name, "internal_only");
     }
 }
 

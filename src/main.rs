@@ -994,7 +994,6 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             }
         }
 
-        let tool_specs: Arc<[beetle::llm::ToolSpec]> = registry.tool_specs_for_api(32768).into();
         let skill_meta_store_fn = Arc::clone(&skill_meta_store);
         let skill_storage_fn = Arc::clone(&skill_storage);
         let get_skill_descriptions: Arc<dyn Fn() -> String + Send + Sync> = Arc::new(move || {
@@ -1050,7 +1049,6 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             memory_store: Arc::clone(&memory_store),
             session_store: Arc::clone(&session_store),
             session_summary_store: Arc::clone(&session_summary_store),
-            tool_specs,
             get_skill_descriptions,
             session_max_messages: session_max,
             tg_group_activation: Arc::<str>::from(config.tg_group_activation.as_str()),
