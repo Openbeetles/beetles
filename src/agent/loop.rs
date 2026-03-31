@@ -26,9 +26,10 @@ use crate::error::Result;
 use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
 use crate::llm::{LlmClient, Message, StopReason, ToolChoicePolicy};
 use crate::memory::{
-    render_long_term_memory_block, EmotionSignalStore, ImportantMessageStore, LongTermMemoryDraft,
-    LongTermMemoryKind, LongTermMemorySlot, LongTermMemoryStore, MemoryStore, PendingRetryStore,
-    SessionMessage, SessionStore, SessionSummaryStore, TaskContinuationStore,
+    recall_long_term_memory_block, render_long_term_memory_block, EmotionSignalStore,
+    ImportantMessageStore, LongTermMemoryDraft, LongTermMemoryKind, LongTermMemorySlot,
+    LongTermMemoryStore, MemoryStore, PendingRetryStore, SessionMessage, SessionStore,
+    SessionSummaryStore, TaskContinuationStore,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
@@ -301,27 +302,6 @@ fn build_long_term_memory_extraction_input(
     input.push_str(transcript.trim());
     input
 }
-
-fn recall_long_term_memory_block(
-    store: &dyn LongTermMemoryStore,
-    chat_id: &str,
-    user_query: &str,
-    system_max_len: usize,
-) -> Option<String> {
-    let mut block_max_len = (system_max_len / 4).min(crate::memory::MAX_LONG_TERM_MEMORY_BLOCK_LEN);
-    if block_max_len < 192 {
-        block_max_len = system_max_len.min(crate::memory::MAX_LONG_TERM_MEMORY_BLOCK_LEN);
-    }
-    store
-        .recall(
-            user_query,
-            Some(chat_id),
-            crate::memory::DEFAULT_LONG_TERM_MEMORY_RECALL_LIMIT,
-        )
-        .ok()
-        .and_then(|entries| render_long_term_memory_block(&entries, block_max_len))
-}
-
 #[derive(Clone, Copy)]
 enum AgentWorkerLane {
     User,
@@ -1799,6 +1779,7 @@ fn run_worker_path(
         config.long_term_memory_store.as_ref(),
         &msg.chat_id,
         &msg.content,
+        summary_text,
         budget.system_prompt_max,
     );
     let runtime = RuntimeContext {

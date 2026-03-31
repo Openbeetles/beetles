@@ -11,8 +11,8 @@ pub(crate) use long_term::{
     merge_long_term_memory_entry, score_long_term_memory_recall,
 };
 pub use long_term::{
-    render_long_term_memory_block, LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryKind,
-    LongTermMemorySlot, LongTermMemoryStore, DEFAULT_LONG_TERM_MEMORY_RECALL_LIMIT,
+    recall_long_term_memory_block, render_long_term_memory_block, LongTermMemoryDraft,
+    LongTermMemoryEntry, LongTermMemoryKind, LongTermMemorySlot, LongTermMemoryStore,
     MAX_LONG_TERM_MEMORY_BLOCK_LEN, MAX_LONG_TERM_MEMORY_CONTENT_LEN, MAX_LONG_TERM_MEMORY_ITEMS,
     MAX_LONG_TERM_MEMORY_KEYWORDS, MAX_LONG_TERM_MEMORY_KEYWORD_LEN, REL_PATH_LONG_TERM_MEMORIES,
 };

@@ -3,7 +3,9 @@
 
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 
 /// 结构化长期记忆存储路径（相对状态根）。
@@ -18,14 +20,181 @@ pub const MAX_LONG_TERM_MEMORY_KEYWORDS: usize = 8;
 pub const MAX_LONG_TERM_MEMORY_KEYWORD_LEN: usize = 24;
 /// 单个主题槽位字节上限。
 pub const MAX_LONG_TERM_MEMORY_TOPIC_LEN: usize = 40;
-/// 单次召回默认条数上限。
-pub const DEFAULT_LONG_TERM_MEMORY_RECALL_LIMIT: usize = 4;
 /// 注入 prompt 的长期记忆块上限。
 pub const MAX_LONG_TERM_MEMORY_BLOCK_LEN: usize = 1024;
 /// 长期记忆治理：任务超时后视为陈旧。
 const LONG_TERM_MEMORY_TASK_TTL_SECS: u64 = 45 * 86_400;
 /// 长期记忆治理：项目超时后视为陈旧。
 const LONG_TERM_MEMORY_PROJECT_TTL_SECS: u64 = 180 * 86_400;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LongTermMemoryPolicy {
+    direct_recall_multiplier: usize,
+    fallback_list_multiplier: usize,
+    summary_grounding_max_len: usize,
+    weak_query_short_chars: usize,
+    weak_query_max_chars: usize,
+    weak_query_max_words: usize,
+}
+
+const DEFAULT_LONG_TERM_MEMORY_POLICY: LongTermMemoryPolicy = LongTermMemoryPolicy {
+    direct_recall_multiplier: 2,
+    fallback_list_multiplier: 3,
+    summary_grounding_max_len: 240,
+    weak_query_short_chars: 6,
+    weak_query_max_chars: 12,
+    weak_query_max_words: 2,
+};
+
+impl LongTermMemoryPolicy {
+    fn recall_block_max_len(self, system_max_len: usize) -> usize {
+        let mut block_max_len = (system_max_len / 4).min(MAX_LONG_TERM_MEMORY_BLOCK_LEN);
+        if block_max_len < 192 {
+            block_max_len = system_max_len.min(MAX_LONG_TERM_MEMORY_BLOCK_LEN);
+        }
+        block_max_len
+    }
+
+    fn desired_entry_count(self, block_max_len: usize) -> usize {
+        match block_max_len {
+            0..=255 => 2,
+            256..=511 => 3,
+            512..=767 => 4,
+            _ => 5,
+        }
+    }
+
+    fn direct_recall_limit(self, desired: usize) -> usize {
+        desired.saturating_mul(self.direct_recall_multiplier)
+    }
+
+    fn fallback_list_limit(self, desired: usize) -> usize {
+        desired.saturating_mul(self.fallback_list_multiplier)
+    }
+
+    fn build_recall_query(self, user_query: &str, summary_text: Option<&str>) -> String {
+        let trimmed = user_query.trim();
+        let Some(summary) = summary_text
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return trimmed.to_string();
+        };
+        if !self.is_weak_query(trimmed) {
+            return trimmed.to_string();
+        }
+        let summary = truncate_utf8_bytes(summary, self.summary_grounding_max_len);
+        if trimmed.is_empty() {
+            summary
+        } else {
+            format!("{trimmed}\n\n{summary}")
+        }
+    }
+
+    fn is_weak_query(self, query: &str) -> bool {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return true;
+        }
+        let chars = trimmed.chars().count();
+        if chars <= self.weak_query_short_chars {
+            return true;
+        }
+        chars <= self.weak_query_max_chars
+            && trimmed.split_whitespace().count() <= self.weak_query_max_words
+    }
+
+    fn compare_fallback_entries(
+        self,
+        chat_id: &str,
+        a: &LongTermMemoryEntry,
+        b: &LongTermMemoryEntry,
+    ) -> Ordering {
+        self.fallback_entry_priority(chat_id, b)
+            .cmp(&self.fallback_entry_priority(chat_id, a))
+            .then_with(|| b.updated_at.cmp(&a.updated_at))
+            .then_with(|| b.created_at.cmp(&a.created_at))
+    }
+
+    fn fallback_entry_priority(self, chat_id: &str, entry: &LongTermMemoryEntry) -> (u8, u8) {
+        let same_chat = u8::from(entry.source_chat_id.as_deref() == Some(chat_id));
+        let kind_priority = match entry.kind {
+            LongTermMemoryKind::Task => 6,
+            LongTermMemoryKind::Project => 5,
+            LongTermMemoryKind::Constraint => 4,
+            LongTermMemoryKind::Preference => 3,
+            LongTermMemoryKind::Profile => 2,
+            LongTermMemoryKind::Relationship => 1,
+            LongTermMemoryKind::Fact => 0,
+        };
+        (same_chat, kind_priority)
+    }
+
+    fn select_entries(
+        self,
+        candidates: Vec<LongTermMemoryEntry>,
+        desired: usize,
+    ) -> Vec<LongTermMemoryEntry> {
+        let mut selected = Vec::with_capacity(candidates.len().min(desired));
+        let mut seen_ids = HashSet::with_capacity(candidates.len());
+        let mut seen_topics = HashSet::with_capacity(candidates.len());
+        let mut seen_kinds = HashSet::with_capacity(candidates.len());
+
+        for pass in 0..3 {
+            for entry in &candidates {
+                if selected.len() >= desired || !seen_ids.insert(entry.id.clone()) {
+                    continue;
+                }
+                let topic_key = format!("{}:{}", entry.kind.label(), entry.topic);
+                let kind_key = entry.kind.label();
+                let allow = match pass {
+                    0 => !seen_topics.contains(&topic_key) && !seen_kinds.contains(kind_key),
+                    1 => !seen_topics.contains(&topic_key),
+                    _ => true,
+                };
+                if !allow {
+                    seen_ids.remove(&entry.id);
+                    continue;
+                }
+                seen_topics.insert(topic_key);
+                seen_kinds.insert(kind_key.to_string());
+                selected.push(entry.clone());
+                if selected.len() >= desired {
+                    break;
+                }
+            }
+        }
+        selected
+    }
+
+    fn kind_budget(self, kind: &LongTermMemoryKind) -> usize {
+        match kind {
+            LongTermMemoryKind::Preference => 18,
+            LongTermMemoryKind::Profile => 12,
+            LongTermMemoryKind::Relationship => 8,
+            LongTermMemoryKind::Project => 16,
+            LongTermMemoryKind::Task => 12,
+            LongTermMemoryKind::Constraint => 12,
+            LongTermMemoryKind::Fact => 18,
+        }
+    }
+
+    fn is_stale(self, entry: &LongTermMemoryEntry, now_secs: u64) -> bool {
+        if now_secs == 0 || entry.updated_at == 0 || entry.updated_at > now_secs {
+            return false;
+        }
+        let age_secs = now_secs - entry.updated_at;
+        match entry.kind {
+            LongTermMemoryKind::Task => age_secs > LONG_TERM_MEMORY_TASK_TTL_SECS,
+            LongTermMemoryKind::Project => age_secs > LONG_TERM_MEMORY_PROJECT_TTL_SECS,
+            LongTermMemoryKind::Preference
+            | LongTermMemoryKind::Profile
+            | LongTermMemoryKind::Relationship
+            | LongTermMemoryKind::Constraint
+            | LongTermMemoryKind::Fact => false,
+        }
+    }
+}
 
 /// 长期记忆类别。只保留当前 beetle 真实会用到的 durable 类型。
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -274,8 +443,9 @@ pub(crate) fn govern_long_term_memory_entries(
     entries: &mut Vec<LongTermMemoryEntry>,
     now_secs: u64,
 ) -> bool {
+    let policy = DEFAULT_LONG_TERM_MEMORY_POLICY;
     let original_len = entries.len();
-    entries.retain(|entry| !is_long_term_memory_entry_stale(entry, now_secs));
+    entries.retain(|entry| !policy.is_stale(entry, now_secs));
 
     entries.sort_by(|a, b| {
         b.updated_at
@@ -301,7 +471,7 @@ pub(crate) fn govern_long_term_memory_entries(
             LongTermMemoryKind::Constraint => &mut constraint,
             LongTermMemoryKind::Fact => &mut fact,
         };
-        if *used >= long_term_memory_kind_budget(&entry.kind) {
+        if *used >= policy.kind_budget(&entry.kind) {
             continue;
         }
         *used += 1;
@@ -314,6 +484,40 @@ pub(crate) fn govern_long_term_memory_entries(
     let changed = kept.len() != original_len;
     *entries = kept;
     changed
+}
+
+pub fn recall_long_term_memory_block(
+    store: &dyn LongTermMemoryStore,
+    chat_id: &str,
+    user_query: &str,
+    summary_text: Option<&str>,
+    system_max_len: usize,
+) -> Option<String> {
+    let policy = DEFAULT_LONG_TERM_MEMORY_POLICY;
+    let block_max_len = policy.recall_block_max_len(system_max_len);
+    let desired = policy.desired_entry_count(block_max_len);
+    let recall_query = policy.build_recall_query(user_query, summary_text);
+    let mut candidates = store
+        .recall(
+            &recall_query,
+            Some(chat_id),
+            policy.direct_recall_limit(desired),
+        )
+        .unwrap_or_default();
+    if candidates.len() < desired {
+        let mut fallback = store
+            .list(policy.fallback_list_limit(desired))
+            .unwrap_or_default();
+        fallback.sort_by(|a, b| policy.compare_fallback_entries(chat_id, a, b));
+        for entry in fallback {
+            if candidates.iter().any(|existing| existing.id == entry.id) {
+                continue;
+            }
+            candidates.push(entry);
+        }
+    }
+    let selected = policy.select_entries(candidates, desired);
+    render_long_term_memory_block(&selected, block_max_len)
 }
 
 /// 渲染注入 prompt 的长期记忆块。
@@ -516,34 +720,6 @@ fn push_unique_term(out: &mut Vec<String>, term: &str) {
     out.push(term.to_string());
 }
 
-fn long_term_memory_kind_budget(kind: &LongTermMemoryKind) -> usize {
-    match kind {
-        LongTermMemoryKind::Preference => 18,
-        LongTermMemoryKind::Profile => 12,
-        LongTermMemoryKind::Relationship => 8,
-        LongTermMemoryKind::Project => 16,
-        LongTermMemoryKind::Task => 12,
-        LongTermMemoryKind::Constraint => 12,
-        LongTermMemoryKind::Fact => 18,
-    }
-}
-
-fn is_long_term_memory_entry_stale(entry: &LongTermMemoryEntry, now_secs: u64) -> bool {
-    if now_secs == 0 || entry.updated_at == 0 || entry.updated_at > now_secs {
-        return false;
-    }
-    let age_secs = now_secs - entry.updated_at;
-    match entry.kind {
-        LongTermMemoryKind::Task => age_secs > LONG_TERM_MEMORY_TASK_TTL_SECS,
-        LongTermMemoryKind::Project => age_secs > LONG_TERM_MEMORY_PROJECT_TTL_SECS,
-        LongTermMemoryKind::Preference
-        | LongTermMemoryKind::Profile
-        | LongTermMemoryKind::Relationship
-        | LongTermMemoryKind::Constraint
-        | LongTermMemoryKind::Fact => false,
-    }
-}
-
 fn recall_chat_affinity_bonus(kind: &LongTermMemoryKind) -> u32 {
     match kind {
         LongTermMemoryKind::Task | LongTermMemoryKind::Project => 4,
@@ -583,6 +759,56 @@ fn is_cjk(ch: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Result;
+
+    #[derive(Clone, Default)]
+    struct StubLongTermMemoryStore {
+        recall_entries: Vec<LongTermMemoryEntry>,
+        list_entries: Vec<LongTermMemoryEntry>,
+    }
+
+    impl LongTermMemoryStore for StubLongTermMemoryStore {
+        fn upsert_many(&self, _drafts: &[LongTermMemoryDraft], _now_secs: u64) -> Result<usize> {
+            Ok(0)
+        }
+
+        fn recall(
+            &self,
+            _query: &str,
+            _source_chat_id: Option<&str>,
+            limit: usize,
+        ) -> Result<Vec<LongTermMemoryEntry>> {
+            Ok(self.recall_entries.iter().take(limit).cloned().collect())
+        }
+
+        fn get(&self, id: &str) -> Result<Option<LongTermMemoryEntry>> {
+            Ok(self
+                .recall_entries
+                .iter()
+                .chain(self.list_entries.iter())
+                .find(|entry| entry.id == id)
+                .cloned())
+        }
+
+        fn list(&self, limit: usize) -> Result<Vec<LongTermMemoryEntry>> {
+            Ok(self.list_entries.iter().take(limit).cloned().collect())
+        }
+
+        fn delete(&self, _id: &str) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn delete_slot(&self, _slot: &LongTermMemorySlot) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn count(&self) -> Result<usize> {
+            Ok(self
+                .recall_entries
+                .len()
+                .saturating_add(self.list_entries.len()))
+        }
+    }
 
     #[test]
     fn normalizes_long_term_memory_draft() {
@@ -853,5 +1079,115 @@ mod tests {
         assert_eq!(entries.len(), 12);
         assert_eq!(entries[0].id, "ltm-task-13");
         assert_eq!(entries[11].id, "ltm-task-2");
+    }
+
+    #[test]
+    fn recall_block_uses_fallback_and_deduplicates_entries() {
+        let store = StubLongTermMemoryStore {
+            recall_entries: vec![LongTermMemoryEntry {
+                id: "ltm-task".to_string(),
+                kind: LongTermMemoryKind::Task,
+                topic: "current_focus".to_string(),
+                content: "Continue memory redesign".to_string(),
+                keywords: vec!["memory".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                created_at: 1,
+                updated_at: 10,
+            }],
+            list_entries: vec![
+                LongTermMemoryEntry {
+                    id: "ltm-task".to_string(),
+                    kind: LongTermMemoryKind::Task,
+                    topic: "current_focus".to_string(),
+                    content: "Continue memory redesign".to_string(),
+                    keywords: vec!["memory".to_string()],
+                    source_chat_id: Some("chat-1".to_string()),
+                    created_at: 1,
+                    updated_at: 10,
+                },
+                LongTermMemoryEntry {
+                    id: "ltm-project".to_string(),
+                    kind: LongTermMemoryKind::Project,
+                    topic: "platform_memory".to_string(),
+                    content: "Shared memory policy stays aligned.".to_string(),
+                    keywords: vec!["memory".to_string(), "platform".to_string()],
+                    source_chat_id: Some("chat-1".to_string()),
+                    created_at: 2,
+                    updated_at: 9,
+                },
+                LongTermMemoryEntry {
+                    id: "ltm-pref".to_string(),
+                    kind: LongTermMemoryKind::Preference,
+                    topic: "response_style".to_string(),
+                    content: "User prefers direct technical answers.".to_string(),
+                    keywords: vec!["direct".to_string()],
+                    source_chat_id: None,
+                    created_at: 3,
+                    updated_at: 8,
+                },
+            ],
+        };
+
+        let block = recall_long_term_memory_block(
+            &store,
+            "chat-1",
+            "继续",
+            Some("当前重点是长期记忆和 agent loop"),
+            4096,
+        )
+        .expect("rendered long-term memory block");
+
+        assert_eq!(block.matches("[task:current_focus]").count(), 1);
+        assert!(block.contains("[project:platform_memory]"));
+        assert!(block.contains("[preference:response_style]"));
+    }
+
+    #[test]
+    fn recall_query_uses_summary_grounding_for_weak_queries() {
+        let query = DEFAULT_LONG_TERM_MEMORY_POLICY
+            .build_recall_query("继续", Some("当前重点是长期记忆和 agent loop"));
+        assert!(query.contains("继续"));
+        assert!(query.contains("长期记忆"));
+    }
+
+    #[test]
+    fn select_entries_prefers_diversity_first() {
+        let candidates = vec![
+            LongTermMemoryEntry {
+                id: "ltm-1".to_string(),
+                kind: LongTermMemoryKind::Task,
+                topic: "current_focus".to_string(),
+                content: "Continue memory redesign".to_string(),
+                keywords: vec![],
+                source_chat_id: Some("chat-1".to_string()),
+                created_at: 1,
+                updated_at: 10,
+            },
+            LongTermMemoryEntry {
+                id: "ltm-2".to_string(),
+                kind: LongTermMemoryKind::Task,
+                topic: "next_task".to_string(),
+                content: "Integrate prompt-guided runtime".to_string(),
+                keywords: vec![],
+                source_chat_id: Some("chat-1".to_string()),
+                created_at: 2,
+                updated_at: 9,
+            },
+            LongTermMemoryEntry {
+                id: "ltm-3".to_string(),
+                kind: LongTermMemoryKind::Preference,
+                topic: "response_style".to_string(),
+                content: "User prefers direct technical answers.".to_string(),
+                keywords: vec![],
+                source_chat_id: None,
+                created_at: 3,
+                updated_at: 8,
+            },
+        ];
+
+        let selected = DEFAULT_LONG_TERM_MEMORY_POLICY.select_entries(candidates, 2);
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0].topic, "current_focus");
+        assert_eq!(selected[1].topic, "response_style");
     }
 }
