@@ -1,7 +1,13 @@
 //! Agent ReAct 循环：入站一条 → context → chat（含 tool_use 多轮）→ 会话持久化 → 出站一条。
 //! 仅依赖 trait；HTTP/Tool 由 main 注入同一实现（如 EspHttpClient）。
 use super::request_plan::AgentRequestPlan;
-use super::strategy::{append_execution_plan, should_generate_execution_plan, AgentRunStrategy};
+use super::strategy::{
+    append_execution_plan, build_tool_round_guidance, detect_ping_pong_tool_rounds,
+    should_generate_execution_plan, stalled_end_turn_followup, AgentRunStrategy,
+};
+use super::tool_outcome::{
+    classify_tool_error, denied_tool_assessment, unavailable_tool_assessment, ToolFailureSummary,
+};
 use crate::agent::context::{build_context, RuntimeContext};
 use crate::bus::{
     InboundRx, IngressKind, OutboundTx, PcMsg, SystemInboundTx, UserInboundRx, UserInboundTx,
@@ -56,7 +62,6 @@ const TOOL_REPEAT_NOTE_3: &str =
 const TOOL_REPEAT_NOTE_MANY: &str =
     "[NOTE: identical tool call (repeated many times) - this is clearly not working. Stop repeating the same call. Either find a completely different solution or honestly explain to the user why you're stuck.]\n";
 const PLAN_SYSTEM_SUFFIX: &str = "\n\n## Internal planning\nBefore solving the latest user request, create a short internal execution plan. Return 3-6 concise numbered steps only. Do not answer the user. Do not call tools in this planning step.";
-const REFLECTION_NOTE: &str = "\n\n[SYSTEM] The last tool round did not produce a useful result. Reassess the plan, avoid repeating the same call, and either switch strategy or explain the blocker clearly.";
 
 /// 程序性会话摘要：单次轻量 LLM 调用的 system 提示。
 const SUMMARY_SYSTEM: &str = "You are a conversation summarizer. Compress the following conversation into a concise summary (max 800 chars) preserving key facts, user preferences and pending tasks. Reply with the summary only.";
@@ -181,6 +186,15 @@ fn hash_tool_call(name: &str, args: &str) -> u64 {
     name.hash(&mut h);
     0x9e37_79b9_7f4a_7c15u64.hash(&mut h);
     args.hash(&mut h);
+    h.finish()
+}
+
+fn hash_tool_round(call_keys: &[u64]) -> u64 {
+    let mut h = DefaultHasher::new();
+    call_keys.len().hash(&mut h);
+    for key in call_keys {
+        key.hash(&mut h);
+    }
     h.finish()
 }
 
@@ -1204,6 +1218,9 @@ fn run_worker_path(
     // P1 Enhancement 3: 进度跟踪（最近3轮），用于检测无效循环。
     let mut progress_history: [Option<RoundProgress>; 3] = [None; 3];
     let mut any_tool_used = false; // 本次请求是否使用过任何工具
+    let mut consecutive_stalled_tool_rounds: u8 = 0;
+    let mut stalled_blocker_followup_used = false;
+    let mut recent_stalled_tool_round_signatures: [Option<u64>; 4] = [None; 4];
 
     for round in 0..MAX_REACT_ROUNDS {
         latency.react_rounds = round as u32 + 1;
@@ -1400,6 +1417,27 @@ fn run_worker_path(
                 progress_history[2] = Some(RoundProgress { new_info: false });
                 continue;
             }
+            if !stalled_blocker_followup_used {
+                if let Some(followup) = stalled_end_turn_followup(
+                    config.strategy,
+                    consecutive_stalled_tool_rounds,
+                    &content,
+                ) {
+                    messages.push(Message {
+                        role: Cow::Borrowed("assistant"),
+                        content: content.clone(),
+                    });
+                    messages.push(Message {
+                        role: Cow::Borrowed("user"),
+                        content: followup.to_string(),
+                    });
+                    progress_history[0] = progress_history[1];
+                    progress_history[1] = progress_history[2];
+                    progress_history[2] = Some(RoundProgress { new_info: false });
+                    stalled_blocker_followup_used = true;
+                    continue;
+                }
+            }
 
             final_content = content;
             break;
@@ -1429,6 +1467,9 @@ fn run_worker_path(
             latency.tool_calls = latency.tool_calls.saturating_add(tool_calls.len() as u32);
             // P1 Enhancement 3: 跟踪本轮工具是否有成功。
             let mut round_tool_success = false;
+            let mut round_repeat_count = 0usize;
+            let mut round_call_keys = Vec::with_capacity(tool_calls.len());
+            let mut round_failure_summary = ToolFailureSummary::default();
             for (i, tc) in tool_calls.iter().enumerate() {
                 // 流式编辑：进入每个工具前更新进度（Telegram typing ~5s 过期；此处用 edit 续期可见活跃状态）。
                 if let (Some(ref mid), Some(ed)) = (&stream_msg_id, editor) {
@@ -1454,25 +1495,33 @@ fn run_worker_path(
                     }
                 }
                 // 工具执行门控
-                let result_owned = {
+                let (result_owned, failure_kind) = {
                     if !registry.is_llm_tool_visible(&tc.name, request_plan.policy()) {
                         metrics::record_tool_call(false);
-                        crate::util::scrub_credentials(
-                            &serde_json::json!({
-                                "error": format!(
-                                    "tool '{}' is not available in the current runtime context",
-                                    tc.name
-                                )
-                            })
-                            .to_string(),
+                        let assessment = unavailable_tool_assessment();
+                        (
+                            crate::util::scrub_credentials(
+                                &serde_json::json!({
+                                    "error": format!(
+                                        "tool '{}' is not available in the current runtime context",
+                                        tc.name
+                                    )
+                                })
+                                .to_string(),
+                            ),
+                            Some(assessment.kind),
                         )
                     } else {
                         let needs_net = registry.is_network_tool(&tc.name);
                         match crate::orchestrator::can_execute_tool_pub(&tc.name, needs_net) {
                             ToolDecision::Deny { reason } => {
                                 log::info!("[agent_tool] {} denied: {}", tc.name, reason);
-                                crate::util::scrub_credentials(
-                                    &serde_json::json!({ "error": reason }).to_string(),
+                                let assessment = denied_tool_assessment(reason);
+                                (
+                                    crate::util::scrub_credentials(
+                                        &serde_json::json!({ "error": reason }).to_string(),
+                                    ),
+                                    Some(assessment.kind),
                                 )
                             }
                             ToolDecision::Allow => {
@@ -1485,7 +1534,7 @@ fn run_worker_path(
                                         metrics::record_tool_call(true);
                                         round_tool_success = true;
                                         any_tool_used = true;
-                                        crate::util::scrub_credentials(&s)
+                                        (crate::util::scrub_credentials(&s), None)
                                     }
                                     Err(e) => {
                                         latency.tool_exec_ms = latency
@@ -1502,62 +1551,16 @@ fn run_worker_path(
                                         );
                                         state::set_last_error(&e);
                                         tool_error_buf.clear();
-                                        // 根据错误类型生成具体的引导提示
-                                        let hint = match &e {
-                                            crate::error::Error::Config { message, .. } => {
-                                                if message.contains("not found")
-                                                    || message.contains("does not exist")
-                                                {
-                                                    " Try a different approach or verify the resource exists."
-                                                } else if message.contains("invalid")
-                                                    || message.contains("parse")
-                                                {
-                                                    " Check the input format and try with corrected parameters."
-                                                } else {
-                                                    " Review the parameters and try a different approach."
-                                                }
-                                            }
-                                            crate::error::Error::Http { status_code, .. } => {
-                                                if *status_code == 404 {
-                                                    " Resource not found. Verify the URL or identifier."
-                                                } else if *status_code == 403 || *status_code == 401
-                                                {
-                                                    " Permission denied. This operation may not be allowed."
-                                                } else if *status_code >= 500 {
-                                                    " Server error. Try again later or use an alternative method."
-                                                } else {
-                                                    " Consider an alternative approach."
-                                                }
-                                            }
-                                            crate::error::Error::Io { source, .. } => {
-                                                if source.kind() == std::io::ErrorKind::NotFound {
-                                                    " File or resource not found. Check the path."
-                                                } else if source.kind()
-                                                    == std::io::ErrorKind::PermissionDenied
-                                                {
-                                                    " Permission denied. This operation may not be allowed."
-                                                } else if source.kind()
-                                                    == std::io::ErrorKind::TimedOut
-                                                {
-                                                    " Operation timed out. Try with simpler parameters or check connectivity."
-                                                } else {
-                                                    " Try a different approach."
-                                                }
-                                            }
-                                            _ => {
-                                                if e.is_connect_error() {
-                                                    " Connection failed. Check network connectivity or try later."
-                                                } else {
-                                                    " Consider an alternative strategy."
-                                                }
-                                            }
-                                        };
+                                        let assessment = classify_tool_error(&e);
                                         let _ = write!(
                                             &mut tool_error_buf,
                                             "[tool error] {}.{}",
-                                            e, hint
+                                            e, assessment.hint
                                         );
-                                        crate::util::scrub_credentials(tool_error_buf.as_str())
+                                        (
+                                            crate::util::scrub_credentials(tool_error_buf.as_str()),
+                                            Some(assessment.kind),
+                                        )
                                     }
                                 }
                             }
@@ -1565,10 +1568,15 @@ fn run_worker_path(
                     }
                 };
                 let result_view = result_owned.as_str();
+                if let Some(kind) = failure_kind {
+                    round_failure_summary.record(kind);
+                }
                 let call_key = hash_tool_call(&tc.name, &tc.input);
+                round_call_keys.push(call_key);
                 let n = tool_call_repeat.entry(call_key).or_insert(0);
                 *n = (*n).saturating_add(1);
                 let repeat_note = if *n >= 2 {
+                    round_repeat_count = round_repeat_count.saturating_add(1);
                     Some(match *n {
                         2 => TOOL_REPEAT_NOTE_2,
                         3 => TOOL_REPEAT_NOTE_3,
@@ -1622,10 +1630,31 @@ fn run_worker_path(
                     MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
                 );
             }
-            if config.strategy.enables_reflection_boost() && !round_tool_success {
+            let round_signature = hash_tool_round(&round_call_keys);
+            if round_tool_success {
+                consecutive_stalled_tool_rounds = 0;
+                recent_stalled_tool_round_signatures = [None; 4];
+            } else {
+                consecutive_stalled_tool_rounds = consecutive_stalled_tool_rounds.saturating_add(1);
+                recent_stalled_tool_round_signatures[0] = recent_stalled_tool_round_signatures[1];
+                recent_stalled_tool_round_signatures[1] = recent_stalled_tool_round_signatures[2];
+                recent_stalled_tool_round_signatures[2] = recent_stalled_tool_round_signatures[3];
+                recent_stalled_tool_round_signatures[3] = Some(round_signature);
+            }
+            let ping_pong_detected =
+                detect_ping_pong_tool_rounds(&recent_stalled_tool_round_signatures);
+            if let Some(guidance) = build_tool_round_guidance(
+                config.strategy,
+                round_tool_success,
+                consecutive_stalled_tool_rounds,
+                tool_calls.len(),
+                round_repeat_count,
+                round_failure_summary,
+                ping_pong_detected,
+            ) {
                 let _ = push_bounded_utf8(
                     &mut user_content_raw,
-                    REFLECTION_NOTE,
+                    &guidance,
                     MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
                 );
             }

@@ -5,6 +5,7 @@ mod context;
 mod r#loop;
 mod request_plan;
 mod strategy;
+mod tool_outcome;
 
 pub use context::{
     build_context, ContextParams, DEFAULT_MESSAGES_MAX_LEN, DEFAULT_SYSTEM_MAX_LEN,
