@@ -10,6 +10,7 @@ use std::hash::{Hash, Hasher};
 
 use super::{
     memory_policy, shared_long_term_governance_policy, LongTermRecallPolicy, MemoryProfile,
+    SessionMessage,
 };
 
 /// 结构化长期记忆存储路径（相对状态根）。
@@ -57,23 +58,36 @@ impl LongTermRecallPolicy {
         desired.saturating_mul(self.fallback_list_multiplier)
     }
 
-    fn build_recall_query(self, user_query: &str, summary_text: Option<&str>) -> String {
+    fn build_recall_query(
+        self,
+        user_query: &str,
+        summary_text: Option<&str>,
+        recent_messages: &[SessionMessage],
+    ) -> String {
         let trimmed = user_query.trim();
-        let Some(summary) = summary_text
+        let summary = summary_text
             .map(str::trim)
             .filter(|value| !value.is_empty())
-        else {
-            return trimmed.to_string();
-        };
+            .map(|value| truncate_utf8_bytes(value, self.summary_grounding_max_len));
+        let recent_grounding = build_recent_recall_grounding(
+            recent_messages,
+            self.recent_grounding_message_count,
+            self.recent_grounding_max_len,
+        );
         if !self.is_weak_query(trimmed) {
             return trimmed.to_string();
         }
-        let summary = truncate_utf8_bytes(summary, self.summary_grounding_max_len);
-        if trimmed.is_empty() {
-            summary
-        } else {
-            format!("{trimmed}\n\n{summary}")
+        let mut parts = Vec::with_capacity(3);
+        if !trimmed.is_empty() {
+            parts.push(trimmed.to_string());
         }
+        if !recent_grounding.is_empty() {
+            parts.push(recent_grounding);
+        }
+        if let Some(summary) = summary {
+            parts.push(summary);
+        }
+        parts.join("\n\n")
     }
 
     fn is_weak_query(self, query: &str) -> bool {
@@ -476,13 +490,14 @@ pub fn recall_long_term_memory_block(
     chat_id: &str,
     user_query: &str,
     summary_text: Option<&str>,
+    recent_messages: &[SessionMessage],
     system_max_len: usize,
     profile: MemoryProfile,
 ) -> Option<String> {
     let policy = memory_policy(profile).long_term_recall;
     let block_max_len = policy.recall_block_max_len(system_max_len);
     let desired = policy.desired_entry_count(block_max_len);
-    let recall_query = policy.build_recall_query(user_query, summary_text);
+    let recall_query = policy.build_recall_query(user_query, summary_text, recent_messages);
     let mut candidates = store
         .recall(
             &recall_query,
@@ -516,39 +531,111 @@ pub fn render_long_term_memory_block(
     }
     let mut out = String::with_capacity(max_len.min(MAX_LONG_TERM_MEMORY_BLOCK_LEN));
     out.push_str("## Long-term memory\n");
+    let mut active = Vec::new();
+    let mut personal = Vec::new();
+    let mut facts = Vec::new();
     for entry in entries {
-        let line = if entry.keywords.is_empty() {
-            format!(
-                "- [{}:{}] {}",
-                entry.kind.label(),
-                entry.topic,
-                entry.content
-            )
-        } else {
-            format!(
-                "- [{}:{}] {} (keywords: {})",
-                entry.kind.label(),
-                entry.topic,
-                entry.content,
-                entry.keywords.join(", ")
-            )
-        };
-        let next_len = if out.is_empty() {
-            line.len()
-        } else {
-            out.len().saturating_add(1).saturating_add(line.len())
-        };
-        if next_len > max_len {
-            break;
+        match entry.kind {
+            LongTermMemoryKind::Project
+            | LongTermMemoryKind::Task
+            | LongTermMemoryKind::Constraint => active.push(entry),
+            LongTermMemoryKind::Preference
+            | LongTermMemoryKind::Profile
+            | LongTermMemoryKind::Relationship => personal.push(entry),
+            LongTermMemoryKind::Fact => facts.push(entry),
         }
-        out.push_str(&line);
-        out.push('\n');
     }
+    render_long_term_memory_section(&mut out, "Active context", &active, max_len);
+    render_long_term_memory_section(&mut out, "User profile", &personal, max_len);
+    render_long_term_memory_section(&mut out, "Facts", &facts, max_len);
     if out.trim() == "## Long-term memory" {
         None
     } else {
         Some(out.trim_end().to_string())
     }
+}
+
+fn render_long_term_memory_section(
+    out: &mut String,
+    title: &str,
+    entries: &[&LongTermMemoryEntry],
+    max_len: usize,
+) {
+    if entries.is_empty() {
+        return;
+    }
+    let section_start = out.len();
+    let header = format!("\n### {title}\n");
+    if out.len().saturating_add(header.len()) > max_len {
+        return;
+    }
+    out.push_str(&header);
+    let mut appended = 0usize;
+    for entry in entries {
+        let line_with_keywords = render_long_term_memory_line(entry, true);
+        if out.len().saturating_add(line_with_keywords.len()).saturating_add(1) <= max_len {
+            out.push_str(&line_with_keywords);
+            out.push('\n');
+            appended += 1;
+            continue;
+        }
+        let line_without_keywords = render_long_term_memory_line(entry, false);
+        if out.len().saturating_add(line_without_keywords.len()).saturating_add(1) <= max_len {
+            out.push_str(&line_without_keywords);
+            out.push('\n');
+            appended += 1;
+            continue;
+        }
+        break;
+    }
+    if appended == 0 {
+        out.truncate(section_start);
+    }
+}
+
+fn render_long_term_memory_line(entry: &LongTermMemoryEntry, include_keywords: bool) -> String {
+    if include_keywords && !entry.keywords.is_empty() {
+        format!(
+            "- [{}:{}] {} (keywords: {})",
+            entry.kind.label(),
+            entry.topic,
+            entry.content,
+            entry.keywords.join(", ")
+        )
+    } else {
+        format!(
+            "- [{}:{}] {}",
+            entry.kind.label(),
+            entry.topic,
+            entry.content
+        )
+    }
+}
+
+fn build_recent_recall_grounding(
+    recent_messages: &[SessionMessage],
+    max_messages: usize,
+    max_chars: usize,
+) -> String {
+    if recent_messages.is_empty() || max_messages == 0 || max_chars == 0 {
+        return String::new();
+    }
+    let start = recent_messages.len().saturating_sub(max_messages);
+    let mut out = String::new();
+    for message in &recent_messages[start..] {
+        let role = message.role.trim();
+        let content = message.content.trim();
+        if role.is_empty() || content.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&role.to_uppercase());
+        out.push_str(": ");
+        out.push_str(content);
+    }
+    truncate_utf8_bytes(out.trim(), max_chars)
 }
 
 pub(crate) fn score_long_term_memory_recall(
@@ -1119,23 +1206,43 @@ mod tests {
             "chat-1",
             "继续",
             Some("当前重点是长期记忆和 agent loop"),
+            &[
+                SessionMessage {
+                    role: "assistant".to_string(),
+                    content: "我们正在做长期记忆收口".to_string(),
+                },
+                SessionMessage {
+                    role: "user".to_string(),
+                    content: "继续按这个方向推进".to_string(),
+                },
+            ],
             4096,
             MemoryProfile::Standard,
         )
         .expect("rendered long-term memory block");
 
         assert_eq!(block.matches("[task:current_focus]").count(), 1);
+        assert!(block.contains("### Active context"));
+        assert!(block.contains("### User profile"));
         assert!(block.contains("[project:platform_memory]"));
         assert!(block.contains("[preference:response_style]"));
     }
 
     #[test]
-    fn recall_query_uses_summary_grounding_for_weak_queries() {
+    fn recall_query_uses_summary_and_recent_grounding_for_weak_queries() {
         let query = memory_policy(MemoryProfile::Standard)
             .long_term_recall
-            .build_recall_query("继续", Some("当前重点是长期记忆和 agent loop"));
+            .build_recall_query(
+                "继续",
+                Some("当前重点是长期记忆和 agent loop"),
+                &[SessionMessage {
+                    role: "assistant".to_string(),
+                    content: "上一轮重点是 Linux 侧长期记忆".to_string(),
+                }],
+            );
         assert!(query.contains("继续"));
         assert!(query.contains("长期记忆"));
+        assert!(query.contains("Linux 侧长期记忆"));
     }
 
     #[test]

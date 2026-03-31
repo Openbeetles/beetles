@@ -2,7 +2,8 @@
 //! Shared prompt memory loading for agent context construction.
 
 use super::{
-    recall_long_term_memory_block, LongTermMemoryStore, MemoryProfile, SessionSummaryStore,
+    memory_policy, recall_long_term_memory_block, LongTermMemoryStore, MemoryProfile,
+    SessionStore, SessionSummaryStore,
 };
 
 pub struct PromptMemoryContext {
@@ -15,6 +16,7 @@ pub struct PromptMemoryContextParams<'a> {
     pub user_query: &'a str,
     pub system_max_len: usize,
     pub profile: MemoryProfile,
+    pub session_store: &'a dyn SessionStore,
     pub session_summary_store: &'a dyn SessionSummaryStore,
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
 }
@@ -26,11 +28,21 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         .ok()
         .flatten()
         .map(|(summary, _)| summary);
+    let recent_messages = params
+        .session_store
+        .load_recent(
+            params.chat_id,
+            memory_policy(params.profile)
+                .long_term_recall
+                .recent_grounding_message_count,
+        )
+        .unwrap_or_default();
     let long_term_memory_text = recall_long_term_memory_block(
         params.long_term_memory_store,
         params.chat_id,
         params.user_query,
         summary_text.as_deref(),
+        &recent_messages,
         params.system_max_len,
         params.profile,
     );
@@ -46,9 +58,34 @@ mod tests {
     use crate::error::Result;
     use crate::memory::{
         LongTermMemoryEntry, LongTermMemoryKind, LongTermMemorySlot, LongTermMemoryStore,
-        SessionSummaryStore,
+        SessionMessage, SessionStore, SessionSummaryStore,
     };
     use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct StubSessionStore {
+        recent: Mutex<Vec<SessionMessage>>,
+    }
+
+    impl SessionStore for StubSessionStore {
+        fn append(&self, _chat_id: &str, _role: &str, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn load_recent(&self, _chat_id: &str, limit: usize) -> Result<Vec<SessionMessage>> {
+            let recent = self.recent.lock().unwrap_or_else(|e| e.into_inner());
+            let start = recent.len().saturating_sub(limit);
+            Ok(recent[start..].to_vec())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_chat_ids(&self) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+    }
 
     #[derive(Default)]
     struct StubSessionSummaryStore {
@@ -134,6 +171,18 @@ mod tests {
 
     #[test]
     fn loads_summary_and_uses_it_for_weak_query_recall() {
+        let session_store = StubSessionStore {
+            recent: Mutex::new(vec![
+                SessionMessage {
+                    role: "assistant".to_string(),
+                    content: "我们继续收口甲壳虫的长期记忆".to_string(),
+                },
+                SessionMessage {
+                    role: "user".to_string(),
+                    content: "重点是咖啡偏好和昵称".to_string(),
+                },
+            ]),
+        };
         let summary_store = StubSessionSummaryStore {
             summary: Mutex::new(Some(("user prefers cold brew".to_string(), 6))),
         };
@@ -156,6 +205,7 @@ mod tests {
             user_query: "嗯?",
             system_max_len: 1024,
             profile: MemoryProfile::Standard,
+            session_store: &session_store,
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
         });
@@ -176,5 +226,12 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("user prefers cold brew"));
+        assert!(memory_store
+            .last_query
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_deref()
+            .unwrap_or_default()
+            .contains("重点是咖啡偏好和昵称"));
     }
 }

@@ -11,7 +11,9 @@ use super::tool_outcome::{
     classify_tool_error, denied_tool_assessment, summarize_tool_blocker,
     unavailable_tool_assessment, ToolBlockerSummary, ToolFailureSummary,
 };
-use crate::agent::context::{build_context, RuntimeContext};
+use crate::agent::context::{
+    build_context, estimate_post_memory_system_tail_len, PostMemoryTailParams, RuntimeContext,
+};
 use crate::bus::{
     InboundRx, IngressKind, OutboundTx, PcMsg, SystemInboundTx, UserInboundRx, UserInboundTx,
     MAX_CONTENT_LEN,
@@ -1515,14 +1517,6 @@ fn run_worker_path(
         });
     let budget = crate::orchestrator::current_budget();
     let snapshot = crate::orchestrator::snapshot();
-    let prompt_memory = load_prompt_memory_context(PromptMemoryContextParams {
-        chat_id: &msg.chat_id,
-        user_query: &msg.content,
-        system_max_len: budget.system_prompt_max,
-        profile: config.memory_profile,
-        session_summary_store: config.session_summary_store.as_ref(),
-        long_term_memory_store: config.long_term_memory_store.as_ref(),
-    });
     let runtime = RuntimeContext {
         now_secs: crate::util::current_unix_secs(),
         platform: if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
@@ -1543,6 +1537,25 @@ fn run_worker_path(
     };
     let context_start = Instant::now();
     let skill_descriptions = (config.get_skill_descriptions)();
+    let post_memory_tail_len = estimate_post_memory_system_tail_len(PostMemoryTailParams {
+        has_tools,
+        skill_descriptions: &skill_descriptions,
+        is_group: msg.is_group,
+        group_activation: config.tg_group_activation.as_ref(),
+        system_continuation_suffix: suffix.as_deref(),
+        emotion_signal_suffix,
+        runtime: Some(runtime),
+        llm_hint: budget.llm_hint,
+    });
+    let prompt_memory = load_prompt_memory_context(PromptMemoryContextParams {
+        chat_id: &msg.chat_id,
+        user_query: &msg.content,
+        system_max_len: budget.system_prompt_max.saturating_sub(post_memory_tail_len),
+        profile: config.memory_profile,
+        session_store: config.session_store.as_ref(),
+        session_summary_store: config.session_summary_store.as_ref(),
+        long_term_memory_store: config.long_term_memory_store.as_ref(),
+    });
     let (mut system, mut messages) = build_context(&super::ContextParams {
         msg,
         memory: config.memory_store.as_ref(),

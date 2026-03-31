@@ -14,8 +14,8 @@ use std::fmt::Write as _;
 
 use super::{
     memory_policy, render_long_term_memory_block, LongTermExtractionPolicy, LongTermMemoryDraft,
-    LongTermMemoryKind, LongTermMemorySlot, LongTermMemoryStore, MemoryProfile, SessionMessage,
-    SessionStore, SessionSummaryStore,
+    LongTermMemoryEntry, LongTermMemoryKind, LongTermMemorySlot, LongTermMemoryStore,
+    MemoryProfile, SessionMessage, SessionStore, SessionSummaryStore, MAX_LONG_TERM_MEMORY_ITEMS,
 };
 
 /// 长期记忆提取状态存储路径（相对状态根）。
@@ -236,9 +236,7 @@ pub fn build_long_term_memory_extraction_input(
             policy.batch_size.min(LONG_TERM_MEMORY_EXTRACTION_BATCH),
         )
         .ok()
-        .and_then(|entries| {
-            render_long_term_memory_block(&entries, policy.existing_memory_max_len)
-        });
+        .and_then(|entries| build_extraction_existing_memory_grounding(&entries, policy.existing_memory_max_len));
 
     let mut input = String::with_capacity(2300);
     if let Some(summary) = session_summary
@@ -258,6 +256,32 @@ pub fn build_long_term_memory_extraction_input(
     input.push_str("## Recent conversation\n");
     input.push_str(transcript.trim());
     input
+}
+
+fn build_extraction_existing_memory_grounding(
+    entries: &[LongTermMemoryEntry],
+    max_len: usize,
+) -> Option<String> {
+    let mut out = String::new();
+    out.push_str("## Existing memory slots\n");
+    for entry in entries {
+        let line = format!(
+            "- {}.{} => {}",
+            entry.kind.label(),
+            entry.topic,
+            entry.content
+        );
+        if out.len().saturating_add(line.len()).saturating_add(1) > max_len {
+            break;
+        }
+        out.push_str(&line);
+        out.push('\n');
+    }
+    if out.trim() == "## Existing memory slots" {
+        render_long_term_memory_block(entries, max_len)
+    } else {
+        Some(out.trim_end().to_string())
+    }
 }
 
 pub fn parse_long_term_memory_extraction_response(
@@ -344,6 +368,264 @@ pub fn apply_long_term_memory_extraction(
         changed += store.upsert_many(&extraction.upserts, now_secs)?;
     }
     Ok(changed)
+}
+
+pub fn prepare_long_term_memory_extraction(
+    store: &dyn LongTermMemoryStore,
+    extraction: &ParsedLongTermMemoryExtraction,
+    chat_id: &str,
+) -> ParsedLongTermMemoryExtraction {
+    let existing_entries = store.list(MAX_LONG_TERM_MEMORY_ITEMS).unwrap_or_default();
+    let mut upsert_slots = HashMap::with_capacity(extraction.upserts.len());
+    let mut upserts = Vec::with_capacity(extraction.upserts.len());
+    for draft in &extraction.upserts {
+        let Some(mut normalized) = draft.normalized() else {
+            continue;
+        };
+        if let Some(entry) = resolve_existing_slot_match(store, &existing_entries, &normalized, chat_id)
+        {
+            normalized.topic = entry.topic.clone();
+        }
+        if should_skip_redundant_upsert(&normalized, &existing_entries) {
+            continue;
+        }
+        let Some(slot_id) = normalized.stable_id() else {
+            continue;
+        };
+        if let Some(index) = upsert_slots.get(&slot_id).copied() {
+            upserts[index] = normalized;
+        } else {
+            upsert_slots.insert(slot_id, upserts.len());
+            upserts.push(normalized);
+        }
+    }
+
+    let mut deletes = Vec::with_capacity(extraction.deletes.len());
+    let mut delete_slots = HashMap::with_capacity(extraction.deletes.len());
+    for slot in &extraction.deletes {
+        let Some(normalized) = slot.normalized() else {
+            continue;
+        };
+        let Some(slot_id) = normalized.stable_id() else {
+            continue;
+        };
+        if upsert_slots.contains_key(&slot_id) {
+            continue;
+        }
+        if delete_slots.contains_key(&slot_id) {
+            continue;
+        }
+        delete_slots.insert(slot_id, deletes.len());
+        deletes.push(normalized);
+    }
+
+    ParsedLongTermMemoryExtraction { upserts, deletes }
+}
+
+fn resolve_existing_slot_match<'a>(
+    store: &dyn LongTermMemoryStore,
+    existing_entries: &'a [LongTermMemoryEntry],
+    draft: &LongTermMemoryDraft,
+    chat_id: &str,
+) -> Option<&'a LongTermMemoryEntry> {
+    let current_slot_id = draft.stable_id();
+    if let Some(existing) = existing_entries
+        .iter()
+        .find(|entry| current_slot_id.as_deref() == Some(entry.id.as_str()))
+    {
+        return Some(existing);
+    }
+    let query = build_draft_match_query(draft);
+    let recalled = store
+        .recall(&query, draft.source_chat_id.as_deref().or(Some(chat_id)), 3)
+        .unwrap_or_default();
+    let mut best: Option<(&LongTermMemoryEntry, u32)> = None;
+    for candidate in recalled {
+        let Some(existing) = existing_entries.iter().find(|entry| entry.id == candidate.id) else {
+            continue;
+        };
+        if existing.kind != draft.kind {
+            continue;
+        }
+        let score = draft_entry_affinity_score(draft, existing, chat_id);
+        if score < 8 {
+            continue;
+        }
+        match best {
+            Some((_, best_score)) if best_score >= score => {}
+            _ => best = Some((existing, score)),
+        }
+    }
+    best.map(|(entry, _)| entry)
+}
+
+fn should_skip_redundant_upsert(
+    draft: &LongTermMemoryDraft,
+    existing_entries: &[LongTermMemoryEntry],
+) -> bool {
+    let Some(slot_id) = draft.stable_id() else {
+        return true;
+    };
+    let Some(existing) = existing_entries.iter().find(|entry| entry.id == slot_id) else {
+        return false;
+    };
+    let content_matches =
+        normalize_match_text(&draft.content) == normalize_match_text(&existing.content);
+    if !content_matches {
+        return false;
+    }
+    draft.keywords.iter().all(|keyword| {
+        existing
+            .keywords
+            .iter()
+            .any(|existing_keyword| normalize_match_text(existing_keyword) == normalize_match_text(keyword))
+    })
+}
+
+fn build_draft_match_query(draft: &LongTermMemoryDraft) -> String {
+    let mut out = String::new();
+    out.push_str(draft.topic.trim());
+    if !draft.content.trim().is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(draft.content.trim());
+    }
+    if !draft.keywords.is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&draft.keywords.join(" "));
+    }
+    out
+}
+
+fn draft_entry_affinity_score(
+    draft: &LongTermMemoryDraft,
+    entry: &LongTermMemoryEntry,
+    chat_id: &str,
+) -> u32 {
+    let mut score = 0u32;
+    let draft_topic = normalize_match_text(&draft.topic);
+    let entry_topic = normalize_match_text(&entry.topic);
+    let draft_content = normalize_match_text(&draft.content);
+    let entry_content = normalize_match_text(&entry.content);
+    if !draft_topic.is_empty() && draft_topic == entry_topic {
+        score = score.saturating_add(6);
+    }
+    if !draft_content.is_empty() && draft_content == entry_content {
+        score = score.saturating_add(8);
+    } else if long_text_contains(&draft_content, &entry_content)
+        || long_text_contains(&entry_content, &draft_content)
+    {
+        score = score.saturating_add(5);
+    }
+
+    let draft_terms = collect_affinity_terms(draft);
+    let entry_terms = collect_entry_affinity_terms(entry);
+    let overlap = draft_terms
+        .iter()
+        .filter(|term| entry_terms.contains(*term))
+        .count()
+        .min(4) as u32;
+    score = score.saturating_add(overlap.saturating_mul(2));
+    if entry.source_chat_id.as_deref() == draft.source_chat_id.as_deref()
+        || entry.source_chat_id.as_deref() == Some(chat_id)
+    {
+        score = score.saturating_add(2);
+    }
+    score
+}
+
+fn collect_affinity_terms(draft: &LongTermMemoryDraft) -> Vec<String> {
+    let mut out = collect_terms_from_text(&draft.topic);
+    extend_unique_terms(&mut out, collect_terms_from_text(&draft.content));
+    for keyword in &draft.keywords {
+        extend_unique_terms(&mut out, collect_terms_from_text(keyword));
+    }
+    out
+}
+
+fn collect_entry_affinity_terms(entry: &LongTermMemoryEntry) -> Vec<String> {
+    let mut out = collect_terms_from_text(&entry.topic);
+    extend_unique_terms(&mut out, collect_terms_from_text(&entry.content));
+    for keyword in &entry.keywords {
+        extend_unique_terms(&mut out, collect_terms_from_text(keyword));
+    }
+    out
+}
+
+fn extend_unique_terms(target: &mut Vec<String>, terms: Vec<String>) {
+    for term in terms {
+        if target.iter().any(|existing| existing == &term) {
+            continue;
+        }
+        target.push(term);
+    }
+}
+
+fn collect_terms_from_text(input: &str) -> Vec<String> {
+    let normalized = normalize_match_text(input);
+    let mut out = Vec::new();
+    for segment in normalized.split_whitespace() {
+        push_term(&mut out, segment);
+        if segment.chars().all(is_cjk) {
+            let chars: Vec<char> = segment.chars().collect();
+            for width in [2usize, 3usize] {
+                if chars.len() < width {
+                    continue;
+                }
+                for window in chars.windows(width) {
+                    let candidate: String = window.iter().collect();
+                    push_term(&mut out, &candidate);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn push_term(out: &mut Vec<String>, term: &str) {
+    let trimmed = term.trim();
+    if trimmed.len() < 2 || out.iter().any(|existing| existing == trimmed) {
+        return;
+    }
+    out.push(trimmed.to_string());
+}
+
+fn normalize_match_text(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut prev_space = false;
+    for ch in input.chars() {
+        if ch.is_alphanumeric() || is_cjk(ch) {
+            for lower in ch.to_lowercase() {
+                out.push(lower);
+            }
+            prev_space = false;
+        } else if !prev_space {
+            out.push(' ');
+            prev_space = true;
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn long_text_contains(haystack: &str, needle: &str) -> bool {
+    haystack.chars().count() >= 8 && needle.chars().count() >= 8 && haystack.contains(needle)
+}
+
+fn is_cjk(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x4E00..=0x9FFF
+            | 0x3400..=0x4DBF
+            | 0x20000..=0x2A6DF
+            | 0x2A700..=0x2B73F
+            | 0x2B740..=0x2B81F
+            | 0x2B820..=0x2CEAF
+            | 0xF900..=0xFAFF
+            | 0x2F800..=0x2FA1F
+    )
 }
 
 pub struct LongTermMemoryRefreshContext<'a> {
@@ -477,7 +759,11 @@ fn extract_long_term_memory(
         None,
         ToolChoicePolicy::Auto,
     )?;
-    let extraction = parse_long_term_memory_extraction_response(response.content.trim(), chat_id);
+    let extraction = prepare_long_term_memory_extraction(
+        ctx.long_term_memory_store,
+        &parse_long_term_memory_extraction_response(response.content.trim(), chat_id),
+        chat_id,
+    );
     if extraction.upserts.is_empty() && extraction.deletes.is_empty() {
         return Ok(0);
     }
@@ -828,8 +1114,8 @@ mod tests {
 
         assert!(input.contains("## Session summary"));
         assert!(input.contains("当前重点是 memory pipeline 收口。"));
-        assert!(input.contains("## Long-term memory"));
-        assert!(input.contains("response_style"));
+        assert!(input.contains("## Existing memory slots"));
+        assert!(input.contains("preference.response_style"));
         assert!(input.contains("## Recent conversation"));
         assert!(input.contains("USER: 最近我们在做长期记忆重构。"));
         assert!(input.contains("ASSISTANT: 这轮先把提取输入和解析从 agent loop 里拆出去。"));
@@ -938,6 +1224,75 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn prepare_extraction_reuses_existing_slot_for_nearby_topic() {
+        let store = StubLongTermMemoryStore {
+            recall_entries: vec![LongTermMemoryEntry {
+                id: "ltm-existing".to_string(),
+                kind: LongTermMemoryKind::Project,
+                topic: "current_project".to_string(),
+                content: "We are improving the Beetle memory pipeline on Linux.".to_string(),
+                keywords: vec!["beetle".to_string(), "memory".to_string(), "linux".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                created_at: 1,
+                updated_at: 10,
+            }],
+            ..Default::default()
+        };
+        let extraction = ParsedLongTermMemoryExtraction {
+            upserts: vec![LongTermMemoryDraft {
+                kind: LongTermMemoryKind::Project,
+                topic: "memory_pipeline_focus".to_string(),
+                content: "The Beetle memory pipeline on Linux is the current project focus."
+                    .to_string(),
+                keywords: vec!["beetle".to_string(), "linux".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+            }],
+            deletes: vec![],
+        };
+
+        let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
+
+        assert_eq!(prepared.upserts.len(), 1);
+        assert_eq!(prepared.upserts[0].topic, "current_project");
+    }
+
+    #[test]
+    fn prepare_extraction_drops_delete_when_same_slot_is_upserted() {
+        let store = StubLongTermMemoryStore {
+            recall_entries: vec![LongTermMemoryEntry {
+                id: "ltm-existing".to_string(),
+                kind: LongTermMemoryKind::Task,
+                topic: "current_focus".to_string(),
+                content: "Continue memory redesign".to_string(),
+                keywords: vec!["memory".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                created_at: 1,
+                updated_at: 10,
+            }],
+            ..Default::default()
+        };
+        let extraction = ParsedLongTermMemoryExtraction {
+            upserts: vec![LongTermMemoryDraft {
+                kind: LongTermMemoryKind::Task,
+                topic: "memory_focus".to_string(),
+                content: "Continue memory redesign".to_string(),
+                keywords: vec!["memory".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+            }],
+            deletes: vec![LongTermMemorySlot {
+                kind: LongTermMemoryKind::Task,
+                topic: "current_focus".to_string(),
+            }],
+        };
+
+        let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
+
+        assert_eq!(prepared.upserts.len(), 1);
+        assert_eq!(prepared.upserts[0].topic, "current_focus");
+        assert!(prepared.deletes.is_empty());
     }
 
     #[test]

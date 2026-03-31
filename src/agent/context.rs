@@ -46,6 +46,12 @@ const STRUCTURED_BLOCK: &str = concat!(
     " in your reply."
 );
 
+const TOOL_BEHAVIOR_CONSTRAINT: &str = "\n\nWhen you decide to use a tool, use the provided tool invocation mechanism directly. Never describe or narrate a tool call in plain text without actually invoking it. Before using tools, you may briefly explain your reasoning (1-2 sentences) to help track your thought process.";
+const GROUP_ALWAYS_SILENT_CONSTRAINT: &str =
+    "\n\nIf no response is needed, reply with exactly SILENT and nothing else.";
+const GROUP_MENTION_ONLY_CONSTRAINT: &str =
+    "\n\nYou are in a group; only reply when explicitly mentioned.";
+
 /// build_context 参数聚合，减少函数签名复杂度。
 ///
 /// 所有与资源预算相关的字段（`system_max_len`、`messages_max_len`、`llm_hint`）
@@ -68,6 +74,17 @@ pub struct ContextParams<'a> {
     pub summary_text: Option<&'a str>,
     pub runtime: Option<RuntimeContext>,
     /// orchestrator 在高压力时附加到 system 末尾的提示文字；由调用方从 `budget.llm_hint` 传入。
+    pub llm_hint: &'a str,
+}
+
+pub struct PostMemoryTailParams<'a> {
+    pub has_tools: bool,
+    pub skill_descriptions: &'a str,
+    pub is_group: bool,
+    pub group_activation: &'a str,
+    pub system_continuation_suffix: Option<&'a str>,
+    pub emotion_signal_suffix: Option<&'a str>,
+    pub runtime: Option<RuntimeContext>,
     pub llm_hint: &'a str,
 }
 
@@ -129,6 +146,43 @@ fn append_runtime_context(system: &mut String, max_len: usize, runtime: Option<R
     }
 }
 
+fn estimate_runtime_context_len(runtime: Option<RuntimeContext>) -> usize {
+    let mut out = String::new();
+    append_runtime_context(&mut out, usize::MAX, runtime);
+    out.len()
+}
+
+pub fn estimate_post_memory_system_tail_len(params: PostMemoryTailParams<'_>) -> usize {
+    let mut reserve = 0usize;
+    if !params.skill_descriptions.is_empty() {
+        reserve = reserve
+            .saturating_add("\n\n## Skills\n".len())
+            .saturating_add(params.skill_descriptions.len());
+    }
+    if params.has_tools {
+        reserve = reserve.saturating_add(TOOL_BEHAVIOR_CONSTRAINT.len());
+    }
+    reserve = reserve.saturating_add(estimate_runtime_context_len(params.runtime));
+    if params.is_group {
+        reserve = reserve.saturating_add(match params.group_activation {
+            "always" => GROUP_ALWAYS_SILENT_CONSTRAINT.len(),
+            "mention" => GROUP_MENTION_ONLY_CONSTRAINT.len(),
+            _ => 0,
+        });
+    }
+    if let Some(suffix) = params.system_continuation_suffix {
+        reserve = reserve.saturating_add(2).saturating_add(suffix.len());
+    }
+    reserve = reserve.saturating_add(STRUCTURED_BLOCK.len());
+    if let Some(emotion) = params.emotion_signal_suffix {
+        reserve = reserve.saturating_add(2).saturating_add(emotion.len());
+    }
+    if !params.llm_hint.is_empty() {
+        reserve = reserve.saturating_add(2).saturating_add(params.llm_hint.len());
+    }
+    reserve
+}
+
 /// 根据入站 PcMsg 与 store 构建 (system, messages)，供 LlmClient.chat 使用。
 ///
 /// **system 组成顺序**：SOUL → USER → MEMORY → daily_notes → skill_descriptions → 工具使用约束（有工具时）→ 群组/SILENT 约定；总长 ≤ system_max_len。
@@ -164,18 +218,32 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
             daily_contents.push(c);
         }
     }
-    let base_max = p.system_max_len;
+    let post_memory_tail_len = estimate_post_memory_system_tail_len(PostMemoryTailParams {
+        has_tools: p.has_tools,
+        skill_descriptions: p.skill_descriptions,
+        is_group: p.msg.is_group,
+        group_activation: p.group_activation,
+        system_continuation_suffix: p.system_continuation_suffix,
+        emotion_signal_suffix: p.emotion_signal_suffix,
+        runtime: p.runtime,
+        llm_hint: p.llm_hint,
+    });
+    let base_max = p.system_max_len.saturating_sub(post_memory_tail_len);
     let system_base = build_system_prompt(&soul, &user, &mem, &daily_contents, base_max);
     let mut system = String::with_capacity(p.system_max_len);
     system.push_str(&system_base);
     if let Some(long_term_memory_text) = p.long_term_memory_text {
-        let remain = p.system_max_len.saturating_sub(system.len());
-        if remain > 0 {
+        let remain = p
+            .system_max_len
+            .saturating_sub(system.len())
+            .saturating_sub(post_memory_tail_len);
+        let memory_remain = remain.saturating_sub(2);
+        if memory_remain > 0 {
             system.push_str("\n\n");
-            if long_term_memory_text.len() <= remain {
+            if long_term_memory_text.len() <= memory_remain {
                 system.push_str(long_term_memory_text);
             } else {
-                let mut end = remain;
+                let mut end = memory_remain;
                 while end > 0 && !long_term_memory_text.is_char_boundary(end) {
                     end -= 1;
                 }
@@ -204,10 +272,9 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     // 工具使用行为约束：给模型一个模式无关的硬约束，
     // 具体是原生 tools 还是 prompt-guided 协议，由后续请求装配层决定。
     if p.has_tools {
-        let constraint = "\n\nWhen you decide to use a tool, use the provided tool invocation mechanism directly. Never describe or narrate a tool call in plain text without actually invoking it. Before using tools, you may briefly explain your reasoning (1-2 sentences) to help track your thought process.";
         let remain = p.system_max_len.saturating_sub(system.len());
-        if constraint.len() <= remain {
-            system.push_str(constraint);
+        if TOOL_BEHAVIOR_CONSTRAINT.len() <= remain {
+            system.push_str(TOOL_BEHAVIOR_CONSTRAINT);
         }
     }
     append_runtime_context(&mut system, p.system_max_len, p.runtime);
@@ -215,11 +282,9 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
         let remain = p.system_max_len.saturating_sub(system.len());
         if remain > 64 {
             if p.group_activation == "always" {
-                system.push_str(
-                    "\n\nIf no response is needed, reply with exactly SILENT and nothing else.",
-                );
+                system.push_str(GROUP_ALWAYS_SILENT_CONSTRAINT);
             } else if p.group_activation == "mention" {
-                system.push_str("\n\nYou are in a group; only reply when explicitly mentioned.");
+                system.push_str(GROUP_MENTION_ONLY_CONSTRAINT);
             }
         }
     }
@@ -296,5 +361,22 @@ mod tests {
         assert!(system.contains("Platform: Linux"));
         assert!(system.contains("Pressure: Normal"));
         assert!(!system.contains("Agent:"));
+    }
+
+    #[test]
+    fn post_memory_tail_reserve_covers_dynamic_sections() {
+        let reserve = estimate_post_memory_system_tail_len(PostMemoryTailParams {
+            has_tools: true,
+            skill_descriptions: "shell\nweb_search",
+            is_group: true,
+            group_activation: "mention",
+            system_continuation_suffix: Some("上一轮产出"),
+            emotion_signal_suffix: Some("用户可能需安慰"),
+            runtime: Some(sample_runtime()),
+            llm_hint: "pressure hint",
+        });
+        assert!(reserve >= STRUCTURED_BLOCK.len());
+        assert!(reserve >= TOOL_BEHAVIOR_CONSTRAINT.len());
+        assert!(reserve >= GROUP_MENTION_ONLY_CONSTRAINT.len());
     }
 }
