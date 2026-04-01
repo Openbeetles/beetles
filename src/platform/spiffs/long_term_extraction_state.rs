@@ -79,6 +79,9 @@ impl LongTermMemoryExtractionStateStore for SpiffsLongTermMemoryExtractionStateS
 
     fn set(&self, chat_id: &str, state: &LongTermMemoryExtractionState) -> Result<()> {
         self.with_map_mut(|map| {
+            if map.get(chat_id) == Some(state) {
+                return Ok(());
+            }
             if !map.contains_key(chat_id) && map.len() >= MAX_LONG_TERM_EXTRACTION_STATE_CHATS {
                 let key_to_remove = map.keys().next().cloned();
                 if let Some(key) = key_to_remove {

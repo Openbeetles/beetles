@@ -3,26 +3,24 @@
 //!
 //! Architecture
 //! ───────────
-//! `OnceLock<Mutex<Option<WakeWordInner>>>` holds mutable state: `None` until
-//! `configure()` runs; then `Some`. C engine init and Rust state install happen
-//! under the same mutex to avoid tearing vs the global `beetle_wakenet_*` context.
+//! `OnceLock<WakeWordRuntime>` installs immutable Rust-side config once, while
+//! `ARMED` + `last_trigger_micros` provide lock-free fast-path state checks.
 //! `feed_pcm_i16()` is called from `audio_io_worker` (hot path, every ~20 ms).
 //!
 //! On detection, a `VoiceEvent::WakeDetected` is sent to the voice session thread
 //! which handles capture, STT, and agent injection.
 //!
-//! Safety invariant: the Mutex is only held for the duration of a single feed
-//! call (≤ 1 ms), so contention with the configure path is negligible.
+//! Safety invariant: the WakeNet C engine is still serialized by a dedicated
+//! feed mutex because `beetle_wakenet_feed/reset` are not re-entrant.
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 mod imp {
     use crate::audio::voice_session::VoiceEvent;
     use crate::constants::WAKE_WORD_COOLDOWN_MS;
     use std::ffi::CString;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::mpsc::SyncSender;
     use std::sync::{Mutex, OnceLock};
-    use std::time::{Duration, Instant};
 
     // ── C ABI bindings ────────────────────────────────────────────────────────
 
@@ -37,36 +35,47 @@ mod imp {
 
     // ── state ─────────────────────────────────────────────────────────────────
 
-    struct WakeWordInner {
+    struct WakeWordRuntime {
         /// WakeNet model name as passed to beetle_wakenet_init.
         model_name: String,
         /// Sender to the voice session thread.
         voice_tx: SyncSender<VoiceEvent>,
-        /// Whether the C engine has been successfully initialised.
-        engine_ready: bool,
-        /// Monotonic instant of the last successful trigger (for cooldown).
-        last_trigger: Option<Instant>,
+        /// Monotonic timestamp of the last successful trigger.
+        last_trigger_millis: AtomicU32,
+        /// The C engine is not re-entrant; keep feed/reset serialized.
+        feed_lock: Mutex<()>,
     }
 
     /// Fast-path guard: set to `false` when wake word is disabled or
     /// engine init failed, so `feed_pcm_i16` short-circuits without locking.
     static ARMED: AtomicBool = AtomicBool::new(false);
 
-    static STATE: OnceLock<Mutex<Option<WakeWordInner>>> = OnceLock::new();
+    static RUNTIME: OnceLock<WakeWordRuntime> = OnceLock::new();
 
-    fn state_mutex() -> &'static Mutex<Option<WakeWordInner>> {
-        STATE.get_or_init(|| Mutex::new(None))
+    fn monotonic_millis() -> u32 {
+        let micros = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+        (micros / 1_000) as u32
+    }
+
+    fn within_cooldown(last_trigger_millis: u32, now_millis: u32) -> bool {
+        if last_trigger_millis == 0 {
+            return false;
+        }
+        u64::from(now_millis.wrapping_sub(last_trigger_millis)) < WAKE_WORD_COOLDOWN_MS
     }
 
     // ── public API ────────────────────────────────────────────────────────────
+
+    pub fn is_armed() -> bool {
+        ARMED.load(Ordering::Relaxed)
+    }
 
     /// Initialise the wake-word engine and register the voice event sender.
     ///
     /// Must be called from `run_app`, **after** `MessageBus` is created and
     /// `init_audio` has been called. Subsequent calls log a warning and return.
     pub fn configure(model_name: &str, voice_tx: SyncSender<VoiceEvent>) {
-        let mut guard = state_mutex().lock().unwrap_or_else(|e| e.into_inner());
-        if guard.is_some() {
+        if RUNTIME.get().is_some() {
             log::warn!("[wake_word] configure() called more than once – ignored");
             return;
         }
@@ -94,14 +103,16 @@ mod imp {
             }
         };
 
-        let inner = WakeWordInner {
+        let runtime = WakeWordRuntime {
             model_name: model_name.to_string(),
             voice_tx,
-            engine_ready,
-            last_trigger: None,
+            last_trigger_millis: AtomicU32::new(0),
+            feed_lock: Mutex::new(()),
         };
-
-        *guard = Some(inner);
+        if RUNTIME.set(runtime).is_err() {
+            log::warn!("[wake_word] runtime already configured – ignored");
+            return;
+        }
         ARMED.store(engine_ready, Ordering::Release);
     }
 
@@ -117,33 +128,33 @@ mod imp {
     /// is serialised by the Mutex.
     pub fn feed_pcm_i16(frame: &[i16]) {
         // Hot-path short-circuit (atomic load, no lock).
-        if !ARMED.load(Ordering::Relaxed) {
+        if frame.is_empty() || !is_armed() {
             return;
         }
         // Skip while voice capture or speaker playback is active.
         if crate::orchestrator::is_audio_recording() || crate::orchestrator::is_audio_playing() {
             return;
         }
-
-        let mut st_guard = match state_mutex().lock() {
-            Ok(g) => g,
-            Err(p) => p.into_inner(),
-        };
-
-        let st = match st_guard.as_mut() {
-            Some(s) => s,
+        let runtime = match RUNTIME.get() {
+            Some(runtime) => runtime,
             None => return,
         };
-
-        if !st.engine_ready {
+        let now_millis = monotonic_millis();
+        if within_cooldown(
+            runtime.last_trigger_millis.load(Ordering::Relaxed),
+            now_millis,
+        ) {
             return;
         }
-
-        // Cooldown check.
-        if let Some(t) = st.last_trigger {
-            if t.elapsed() < Duration::from_millis(WAKE_WORD_COOLDOWN_MS) {
-                return;
-            }
+        let _feed_guard = match runtime.feed_lock.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if within_cooldown(
+            runtime.last_trigger_millis.load(Ordering::Relaxed),
+            now_millis,
+        ) {
+            return;
         }
 
         let detected = unsafe {
@@ -151,11 +162,13 @@ mod imp {
         };
 
         if detected {
-            log::info!("[wake_word] triggered keyword={}", st.model_name);
-            st.last_trigger = Some(Instant::now());
+            log::info!("[wake_word] triggered keyword={}", runtime.model_name);
+            runtime
+                .last_trigger_millis
+                .store(now_millis, Ordering::Relaxed);
             unsafe { beetle_wakenet_reset() };
 
-            if let Err(e) = st.voice_tx.try_send(VoiceEvent::WakeDetected) {
+            if let Err(e) = runtime.voice_tx.try_send(VoiceEvent::WakeDetected) {
                 log::warn!("[wake_word] voice event queue full, trigger dropped: {}", e);
             }
         }
@@ -165,4 +178,4 @@ mod imp {
 // ── re-export for ESP targets ─────────────────────────────────────────────────
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub use imp::{configure, feed_pcm_i16};
+pub use imp::{configure, feed_pcm_i16, is_armed};

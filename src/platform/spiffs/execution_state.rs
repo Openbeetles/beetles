@@ -11,7 +11,7 @@ use super::{read_file, state_path_join, write_file};
 
 const MAX_EXECUTION_STATE_CHATS: usize = 32;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct StoredExecutionState(ExecutionState);
 
 fn full_path() -> PathBuf {
@@ -73,12 +73,16 @@ impl ExecutionStateStore for SpiffsExecutionStateStore {
 
     fn set(&self, chat_id: &str, state: &ExecutionState) -> Result<()> {
         self.with_map_mut(|map| {
+            let next_state = StoredExecutionState(state.clone());
+            if map.get(chat_id) == Some(&next_state) {
+                return Ok(());
+            }
             if !map.contains_key(chat_id) && map.len() >= MAX_EXECUTION_STATE_CHATS {
                 if let Some(key_to_remove) = map.keys().next().cloned() {
                     map.remove(&key_to_remove);
                 }
             }
-            map.insert(chat_id.to_string(), StoredExecutionState(state.clone()));
+            map.insert(chat_id.to_string(), next_state);
             Self::persist(map)
         })
     }

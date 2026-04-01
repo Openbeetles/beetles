@@ -7,12 +7,13 @@ use crate::memory::{
     REL_PATH_SESSIONS_DIR,
 };
 use serde_json;
+use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use crate::platform::state_root::state_mount_path;
 
@@ -24,6 +25,8 @@ const TAG: &str = "platform::spiffs::session";
 const MAX_CHAT_ID_FILENAME_LEN: usize = 20;
 const SESSION_FILE_EXT: &str = ".jsonl";
 const CHAT_ID_HEADER_PREFIX: &str = "# chat_id: ";
+/// Legacy count-sidecar suffix; no longer used on the hot path, but cleaned up
+/// on destructive operations so old files do not accumulate forever.
 const COUNT_FILE_EXT: &str = ".c";
 
 fn fnv1a_hash(s: &str) -> u32 {
@@ -135,13 +138,9 @@ fn count_session_message_lines(buf: &[u8]) -> usize {
 }
 
 fn count_path(path: &Path) -> PathBuf {
-    let mut os = OsString::from(path.as_os_str());
-    os.push(COUNT_FILE_EXT);
-    PathBuf::from(os)
-}
-
-fn parse_count_bytes(buf: &[u8]) -> Option<usize> {
-    std::str::from_utf8(buf).ok()?.trim().parse::<usize>().ok()
+    let mut value = path.as_os_str().to_os_string();
+    value.push(COUNT_FILE_EXT);
+    PathBuf::from(value)
 }
 
 fn read_existing_file_unlocked(path: &Path) -> Result<Vec<u8>> {
@@ -165,20 +164,6 @@ fn read_existing_file_unlocked(path: &Path) -> Result<Vec<u8>> {
     file.read_to_end(&mut buf)
         .map_err(|e| Error::io("session_read", e))?;
     Ok(buf)
-}
-
-fn write_count_file_unlocked(path: &Path, count: usize) -> Result<()> {
-    let path_str = path
-        .to_str()
-        .ok_or_else(|| Error::config("session_count_write", "invalid path"))?;
-    let mut file =
-        std::fs::File::create(path_str).map_err(|e| Error::io("session_count_write", e))?;
-    let body = count.to_string();
-    file.write_all(body.as_bytes())
-        .map_err(|e| Error::io("session_count_write", e))?;
-    file.sync_all()
-        .map_err(|e| Error::io("session_count_write", e))?;
-    Ok(())
 }
 
 fn write_session_body_unlocked(path: &Path, data: &[u8]) -> Result<()> {
@@ -230,28 +215,42 @@ fn append_session_line_unlocked(
     Ok(())
 }
 
-fn load_or_init_count_unlocked(path: &Path) -> Result<(usize, Option<Vec<u8>>)> {
-    let count_file = count_path(path);
-    if let Ok(buf) = read_existing_file_unlocked(&count_file) {
-        if let Some(count) = parse_count_bytes(&buf) {
-            return Ok((count.min(MAX_SESSION_ENTRIES), None));
-        }
-    }
-
-    let existing_buf = match read_existing_file_unlocked(path) {
-        Ok(buf) => buf,
-        Err(_) => Vec::new(),
-    };
+fn load_count_snapshot_unlocked(path: &Path) -> (usize, Vec<u8>) {
+    let existing_buf = read_existing_file_unlocked(path).unwrap_or_default();
     let count = count_session_message_lines(&existing_buf).min(MAX_SESSION_ENTRIES);
-    write_count_file_unlocked(&count_file, count)?;
-    Ok((count, Some(existing_buf)))
+    (count, existing_buf)
+}
+
+fn resolve_chat_id_from_session_filename(dir: &mut PathBuf, name: &str) -> Option<String> {
+    if !name.ends_with(SESSION_FILE_EXT) {
+        return None;
+    }
+    let stem = name.trim_end_matches(SESSION_FILE_EXT);
+    if stem.len() != 8 || !stem.chars().all(|c| c.is_ascii_hexdigit()) {
+        return (!stem.is_empty()).then(|| stem.to_string());
+    }
+    dir.push(name);
+    let resolved = read_file(dir.as_path())
+        .ok()
+        .and_then(|buf| {
+            buf.split(|&b| b == b'\n')
+                .next()
+                .and_then(|line| std::str::from_utf8(line).ok())
+                .and_then(parse_chat_id_header)
+        })
+        .or_else(|| (!stem.is_empty()).then(|| stem.to_string()));
+    dir.pop();
+    resolved
 }
 
 /// 列举 chat_id 数量上界（与 MAX_SESSION_ENTRIES 同量级）。
 const MAX_LIST_CHAT_IDS: usize = 128;
 
 /// SessionStore 的 SPIFFS 实现；单会话最多 MAX_SESSION_ENTRIES 条，超限淘汰最旧。
-pub struct SpiffsSessionStore;
+/// Counts are cached in-process so the hot append path only writes the JSONL body.
+pub struct SpiffsSessionStore {
+    counts: Mutex<HashMap<String, usize>>,
+}
 
 impl Default for SpiffsSessionStore {
     fn default() -> Self {
@@ -261,7 +260,9 @@ impl Default for SpiffsSessionStore {
 
 impl SpiffsSessionStore {
     pub fn new() -> Self {
-        SpiffsSessionStore
+        Self {
+            counts: Mutex::new(HashMap::new()),
+        }
     }
 }
 
@@ -286,15 +287,22 @@ impl SessionStore for SpiffsSessionStore {
 
         let (path, write_header) = session_path(chat_id)?;
         with_fs_lock(|| {
-            let count_file = count_path(&path);
-            let (msg_count, existing_buf) = load_or_init_count_unlocked(&path)?;
+            let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+            let (msg_count, existing_buf) = match counts.get(chat_id).copied() {
+                Some(count) => (count, None),
+                None => {
+                    let (count, buf) = load_count_snapshot_unlocked(&path);
+                    counts.insert(chat_id.to_string(), count);
+                    (count, Some(buf))
+                }
+            };
             if msg_count < MAX_SESSION_ENTRIES {
                 let prepend_newline = existing_buf
                     .as_deref()
                     .map(|buf| !buf.is_empty() && !buf.ends_with(b"\n"))
                     .unwrap_or(false);
                 append_session_line_unlocked(&path, write_header, chat_id, prepend_newline, &line)?;
-                write_count_file_unlocked(&count_file, msg_count.saturating_add(1))?;
+                counts.insert(chat_id.to_string(), msg_count.saturating_add(1));
                 return Ok(());
             }
 
@@ -345,7 +353,7 @@ impl SessionStore for SpiffsSessionStore {
                 body.push('\n');
             }
             write_session_body_unlocked(&path, body.as_bytes())?;
-            write_count_file_unlocked(&count_file, messages.len())?;
+            counts.insert(chat_id.to_string(), messages.len());
             Ok(())
         })
     }
@@ -380,15 +388,25 @@ impl SessionStore for SpiffsSessionStore {
 
     fn message_count(&self, chat_id: &str) -> Result<usize> {
         let (path, _) = session_path(chat_id)?;
+        if let Some(count) = self
+            .counts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(chat_id)
+            .copied()
+        {
+            return Ok(count);
+        }
         with_fs_lock(|| {
-            let (count, _) = load_or_init_count_unlocked(&path)?;
+            let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+            let (count, _) = load_count_snapshot_unlocked(&path);
+            counts.insert(chat_id.to_string(), count);
             Ok(count)
         })
     }
 
     fn clear(&self, chat_id: &str) -> Result<()> {
         let (path, write_header) = session_path(chat_id)?;
-        let count_file = count_path(&path);
         if write_header {
             let mut empty = String::from(CHAT_ID_HEADER_PREFIX);
             empty.push_str(chat_id);
@@ -397,7 +415,11 @@ impl SessionStore for SpiffsSessionStore {
         } else {
             write_file(&path, b"")?;
         }
-        let _ = super::remove_file(&count_file);
+        self.counts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(chat_id.to_string(), 0);
+        let _ = super::remove_file(count_path(&path));
         Ok(())
     }
 
@@ -413,28 +435,8 @@ impl SessionStore for SpiffsSessionStore {
         };
         let mut out: Vec<String> = Vec::with_capacity(MAX_LIST_CHAT_IDS.min(names.len()));
         for name in names {
-            if !name.ends_with(SESSION_FILE_EXT) {
+            let Some(chat_id) = resolve_chat_id_from_session_filename(&mut p, &name) else {
                 continue;
-            }
-            let stem = name.trim_end_matches(SESSION_FILE_EXT);
-            // 短 chat_id 直接作文件名，无首行 header，无需读文件；仅 8 位 hex 哈希名需读首行取真实 chat_id
-            let chat_id = if stem.len() == 8 && stem.chars().all(|c| c.is_ascii_hexdigit()) {
-                p.push(&name);
-                let id = if let Ok(buf) = read_file(&p) {
-                    let first_line = buf
-                        .split(|&b| b == b'\n')
-                        .next()
-                        .and_then(|line| std::str::from_utf8(line).ok());
-                    first_line
-                        .and_then(parse_chat_id_header)
-                        .unwrap_or_else(|| stem.to_string())
-                } else {
-                    stem.to_string()
-                };
-                p.pop();
-                id
-            } else {
-                stem.to_string()
             };
             if !chat_id.is_empty() {
                 out.push(chat_id);
@@ -470,7 +472,19 @@ impl SessionStore for SpiffsSessionStore {
                 },
                 Err(_) => false,
             };
-            if stale && super::remove_file(&p).is_ok() {
+            if stale {
+                let chat_id = resolve_chat_id_from_session_filename(&mut p, name);
+                if super::remove_file(&p).is_err() {
+                    p.pop();
+                    continue;
+                }
+                if let Some(chat_id) = chat_id {
+                    self.counts
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(chat_id.as_str());
+                }
+                let _ = super::remove_file(count_path(&p));
                 removed += 1;
                 log::info!("[{}] gc: removed stale session file {:?}", TAG, name);
             }
@@ -484,11 +498,35 @@ impl SessionStore for SpiffsSessionStore {
 
     fn delete(&self, chat_id: &str) -> Result<()> {
         let (path, _) = session_path(chat_id)?;
-        let count_file = count_path(&path);
+        self.counts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(chat_id);
         if path.exists() {
             super::remove_file(&path)?;
         }
-        let _ = super::remove_file(&count_file);
+        let _ = super::remove_file(count_path(&path));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::count_session_message_lines;
+
+    #[test]
+    fn counts_only_message_lines() {
+        let raw = br#"# chat_id: demo
+{"role":"user","content":"hello"}
+
+{"role":"assistant","content":"world"}
+"#;
+        assert_eq!(count_session_message_lines(raw), 2);
+    }
+
+    #[test]
+    fn ignores_non_json_payload_lines() {
+        let raw = b"note\n# chat_id: demo\n{}\nnot-json\n";
+        assert_eq!(count_session_message_lines(raw), 1);
     }
 }

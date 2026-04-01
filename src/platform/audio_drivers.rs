@@ -60,6 +60,9 @@ const I2S_IO_TIMEOUT_MS: u32 = 1000;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const PORT_TICK_PERIOD_MS: u32 = 10;
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+const AUDIO_IDLE_SLEEP_MS: u64 = 20;
+
 /// Check ESP-IDF return code; wrap non-OK as `Error::Esp`.
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn check_esp(stage: &'static str, ret: i32) -> Result<()> {
@@ -610,6 +613,14 @@ fn wait_for_speaker_work_or_stop(shared: &SharedAudioBuffers, timeout: Duration)
         .unwrap_or_else(|e| e.into_inner());
 }
 
+fn should_read_mic_frame(
+    audio_recording: bool,
+    audio_playing: bool,
+    wake_word_armed: bool,
+) -> bool {
+    !audio_playing && (audio_recording || wake_word_armed)
+}
+
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub(crate) struct AudioPipelineState {
     mic_enabled: bool,
@@ -727,6 +738,9 @@ impl AudioPipelineState {
                     let mut progressed = false;
                     let audio_playing = crate::orchestrator::is_audio_playing();
                     let audio_recording = crate::orchestrator::is_audio_recording();
+                    let wake_word_armed = crate::platform::wake_word::is_armed();
+                    let mic_read_needed =
+                        should_read_mic_frame(audio_recording, audio_playing, wake_word_armed);
 
                     if backend.speaker_ready() {
                         if let Some(n) = pop_speaker_frame_if_available(
@@ -741,7 +755,7 @@ impl AudioPipelineState {
                         }
                     }
 
-                    if backend.mic_ready() && !audio_playing {
+                    if backend.mic_ready() && mic_read_needed {
                         match backend.read_mic_frame_pcm16(&mut mic_frame) {
                             Ok(n) if n > 0 => {
                                 // Tee raw PCM to the wake-word engine BEFORE pushing to the
@@ -766,13 +780,17 @@ impl AudioPipelineState {
                     }
                     if !progressed {
                         crate::platform::task_wdt::feed_current_task();
-                        if backend.speaker_ready() && (!backend.mic_ready() || audio_playing) {
+                        if backend.speaker_ready() && (!backend.mic_ready() || !mic_read_needed) {
                             wait_for_speaker_work_or_stop(
                                 worker_shared.as_ref(),
-                                Duration::from_millis(20),
+                                Duration::from_millis(AUDIO_IDLE_SLEEP_MS),
                             );
                         } else {
-                            std::thread::sleep(Duration::from_millis(2));
+                            std::thread::sleep(Duration::from_millis(if mic_read_needed {
+                                2
+                            } else {
+                                AUDIO_IDLE_SLEEP_MS
+                            }));
                         }
                     }
                 }
@@ -864,5 +882,26 @@ impl Drop for AudioPipelineState {
         if let Some(handle) = self.worker.take() {
             let _ = handle.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_read_mic_frame;
+
+    #[test]
+    fn mic_polling_stays_off_when_no_consumer_exists() {
+        assert!(!should_read_mic_frame(false, false, false));
+    }
+
+    #[test]
+    fn mic_polling_turns_on_for_recording_or_wake_word() {
+        assert!(should_read_mic_frame(true, false, false));
+        assert!(should_read_mic_frame(false, false, true));
+    }
+
+    #[test]
+    fn audio_playback_suppresses_mic_polling() {
+        assert!(!should_read_mic_frame(true, true, true));
     }
 }

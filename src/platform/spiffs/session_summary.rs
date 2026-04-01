@@ -13,7 +13,7 @@ use super::{read_file, state_path_join, write_file};
 
 const MAX_SESSION_SUMMARY_CHATS: usize = 32;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct SummaryEntry {
     summary: String,
     last_summary_at_count: usize,
@@ -91,19 +91,20 @@ impl SessionSummaryStore for SpiffsSessionSummaryStore {
 
     fn set_with_count(&self, chat_id: &str, summary: &str, message_count: usize) -> Result<()> {
         self.with_map_mut(|map| {
+            let next_entry = SummaryEntry {
+                summary: truncate_summary(summary),
+                last_summary_at_count: message_count,
+            };
+            if map.get(chat_id) == Some(&next_entry) {
+                return Ok(());
+            }
             if !map.contains_key(chat_id) && map.len() >= MAX_SESSION_SUMMARY_CHATS {
                 let key_to_remove = map.keys().next().cloned();
                 if let Some(k) = key_to_remove {
                     map.remove(&k);
                 }
             }
-            map.insert(
-                chat_id.to_string(),
-                SummaryEntry {
-                    summary: truncate_summary(summary),
-                    last_summary_at_count: message_count,
-                },
-            );
+            map.insert(chat_id.to_string(), next_entry);
             let json = serde_json::to_vec(map)
                 .map_err(|e| Error::config("session_summary_set", e.to_string()))?;
             write_file(full_path(), &json)?;

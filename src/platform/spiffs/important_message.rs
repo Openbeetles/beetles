@@ -85,6 +85,9 @@ impl Default for SpiffsImportantMessageStore {
 impl ImportantMessageStore for SpiffsImportantMessageStore {
     fn set_important_offset_from_end(&self, chat_id: &str, offset_from_end: u32) -> Result<()> {
         self.with_map_mut(|map| {
+            if map.get(chat_id).copied() == Some(offset_from_end) {
+                return Ok(());
+            }
             if !map.contains_key(chat_id) && map.len() >= MAX_IMPORTANT_MESSAGE_CHATS {
                 if let Some(key_to_remove) = map.keys().next().cloned() {
                     map.remove(&key_to_remove);
