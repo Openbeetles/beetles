@@ -374,8 +374,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     let session_store: Arc<dyn SessionStore + Send + Sync> = platform.session_store();
     let pending_retry_store: Arc<dyn beetle::memory::PendingRetryStore + Send + Sync> =
         platform.pending_retry_store();
-    let task_continuation_store: Arc<dyn beetle::memory::TaskContinuationStore + Send + Sync> =
-        platform.task_continuation_store();
+    let execution_state_store: Arc<dyn beetle::memory::ExecutionStateStore + Send + Sync> =
+        platform.execution_state_store();
     let important_message_store: Arc<dyn beetle::memory::ImportantMessageStore + Send + Sync> =
         platform.important_message_store();
     let remind_at_store: Arc<dyn beetle::memory::RemindAtStore + Send + Sync> =
@@ -1064,12 +1064,11 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             ),
             session_store: Arc::clone(&session_store),
             session_summary_store: Arc::clone(&session_summary_store),
+            execution_state_store: Arc::clone(&execution_state_store),
             memory_profile: platform.memory_profile(),
             get_skill_descriptions,
             session_max_messages: session_max,
             tg_group_activation: Arc::<str>::from(config.tg_group_activation.as_str()),
-            task_continuation: Arc::clone(&task_continuation_store),
-            task_continuation_max_rounds: 0u32,
             important_message_store: Arc::clone(&important_message_store),
             emotion_signal_store: Arc::clone(&emotion_signal_store)
                 as Arc<dyn beetle::memory::EmotionSignalStore + Send + Sync>,

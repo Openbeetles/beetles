@@ -53,11 +53,6 @@ pub const MAX_DEFER_RETRIES: u8 = 3;
 /// 工具结果拼成一条 user 消息时，user_content 部分的字节数上限（4 KiB）。
 pub const MAX_TOOL_RESULTS_USER_MESSAGE_LEN: usize = 4 * 1024;
 
-/// 多轮延续：单任务 last_output 最大长度（字节）。set 时由实现方截断。
-pub const TASK_CONTINUATION_MAX_OUTPUT_LEN: usize = 4 * 1024;
-/// 多轮延续：回复超过此长度或含 [CONTINUE] 时写回延续。
-pub const TASK_CONTINUATION_CONTINUE_THRESHOLD_LEN: usize = 500;
-
 /// Agent 结构化输出：模型回复含此时视为用户要求停止，固件终止当轮并只回确认。
 pub const AGENT_MARKER_STOP: &str = "[STOP]";
 /// Agent 结构化输出：固件将当轮 user 消息标为截断时优先保留。

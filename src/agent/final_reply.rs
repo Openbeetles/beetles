@@ -43,7 +43,7 @@ fn strip_internal_reply_artifacts(content: &str) -> String {
             skip_until_tag = Some(end_tag);
             continue;
         }
-        if trimmed == "[tool_use]" || trimmed == "[CONTINUE]" || trimmed == "[compressed]" {
+        if trimmed == "[tool_use]" || trimmed == "[compressed]" {
             continue;
         }
         if trimmed.starts_with("[SYSTEM]") {

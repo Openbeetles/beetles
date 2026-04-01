@@ -49,10 +49,22 @@ pub(crate) struct LongTermExtractionPolicy {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ExecutionStatePolicy {
+    pub recent_message_count: usize,
+    pub transcript_preview_chars: usize,
+    pub existing_state_max_len: usize,
+    pub render_max_len: usize,
+    pub substantive_user_chars: usize,
+    pub substantive_reply_chars: usize,
+    pub substantive_combined_chars: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct MemoryPolicy {
     pub session_summary: SessionSummaryPolicy,
     pub long_term_recall: LongTermRecallPolicy,
     pub long_term_extraction: LongTermExtractionPolicy,
+    pub execution_state: ExecutionStatePolicy,
 }
 
 const EMBEDDED_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
@@ -90,6 +102,15 @@ const EMBEDDED_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
         transcript_preview_chars: 140,
         existing_memory_max_len: 512,
         batch_size: 3,
+    },
+    execution_state: ExecutionStatePolicy {
+        recent_message_count: 6,
+        transcript_preview_chars: 140,
+        existing_state_max_len: 320,
+        render_max_len: 320,
+        substantive_user_chars: 10,
+        substantive_reply_chars: 24,
+        substantive_combined_chars: 56,
     },
 };
 
@@ -129,6 +150,15 @@ const STANDARD_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
         existing_memory_max_len: 1024,
         batch_size: 4,
     },
+    execution_state: ExecutionStatePolicy {
+        recent_message_count: 10,
+        transcript_preview_chars: 220,
+        existing_state_max_len: 512,
+        render_max_len: 512,
+        substantive_user_chars: 8,
+        substantive_reply_chars: 20,
+        substantive_combined_chars: 48,
+    },
 };
 
 pub(crate) fn memory_policy(profile: MemoryProfile) -> &'static MemoryPolicy {
@@ -165,5 +195,6 @@ mod tests {
             standard.long_term_extraction.recent_message_count
                 > embedded.long_term_extraction.recent_message_count
         );
+        assert!(standard.execution_state.render_max_len > embedded.execution_state.render_max_len);
     }
 }

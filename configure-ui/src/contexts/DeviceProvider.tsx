@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getPairingCode } from '../api/endpoints/pairingCode'
-import { fetchCsrfToken } from '../api/client'
+import { clearCsrfToken, fetchCsrfToken } from '../api/client'
 import { resetSystemInfoCache } from '../session/systemInfoCoordinator'
 import {
   resetDeviceRuntimeKind,
@@ -24,6 +24,7 @@ export function DeviceProvider({ children }: { children: React.ReactNode }) {
   const [baseUrl, setBaseUrlState] = useState(getStoredBaseUrl)
   const [pairingCode, setPairingCodeState] = useState(getStoredPairingCode)
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const pollGenerationRef = useRef(0)
   /** 配对轮询元数据：避免每次成功都 GET /api/csrf_token；仅在换机后首次成功或 unreachable→reachable 时预热。 */
   const pollMetaRef = useRef<PollMeta>({ prevConnection: 'none', csrfPrimed: false })
 
@@ -38,11 +39,17 @@ export function DeviceProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   useEffect(() => {
+    clearCsrfToken()
     resetSystemInfoCache()
   }, [baseUrl, pairingCode])
 
-  const applyPairingResult = useCallback((url: string, cancelled: boolean, res: Awaited<ReturnType<typeof getPairingCode>>) => {
-    if (cancelled) return
+  const applyPairingResult = useCallback((
+    url: string,
+    generation: number,
+    cancelled: boolean,
+    res: Awaited<ReturnType<typeof getPairingCode>>,
+  ) => {
+    if (cancelled || generation !== pollGenerationRef.current) return
     const meta = pollMetaRef.current
     if (res.ok && res.data != null) {
       const wasUnreachable = meta.prevConnection === 'unreachable'
@@ -61,6 +68,8 @@ export function DeviceProvider({ children }: { children: React.ReactNode }) {
   // 初次或 baseUrl 变化时检测一次
   useEffect(() => {
     resetDeviceRuntimeKind()
+    const generation = pollGenerationRef.current + 1
+    pollGenerationRef.current = generation
     const url = baseUrl?.trim()
     if (!url) {
       pollMetaRef.current = { prevConnection: 'none', csrfPrimed: false }
@@ -71,7 +80,7 @@ export function DeviceProvider({ children }: { children: React.ReactNode }) {
     setDeviceStatus('checking', null)
     let cancelled = false
     getPairingCode(url).then((res) => {
-      applyPairingResult(url, cancelled, res)
+      applyPairingResult(url, generation, cancelled, res)
     })
     return () => {
       cancelled = true
@@ -82,9 +91,10 @@ export function DeviceProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const url = baseUrl?.trim()
     if (!url) return
+    const generation = pollGenerationRef.current
     const tick = () => {
       getPairingCode(url).then((res) => {
-        applyPairingResult(url, false, res)
+        applyPairingResult(url, generation, false, res)
       })
     }
     pollTimerRef.current = setInterval(tick, CONNECTION_POLL_INTERVAL_MS)

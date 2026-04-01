@@ -5,8 +5,8 @@ use crate::config::{AppConfig, AudioSegment, PinConfig};
 use crate::display::{DisplayCommand, DisplayConfig};
 use crate::error::Result;
 use crate::memory::{
-    ImportantMessageStore, LongTermMemoryStore, MemoryProfile, MemoryStore, PendingRetryStore,
-    RemindAtStore, SessionStore, SessionSummaryStore, TaskContinuationStore,
+    ExecutionStateStore, ImportantMessageStore, LongTermMemoryStore, MemoryProfile, MemoryStore,
+    PendingRetryStore, RemindAtStore, SessionStore, SessionSummaryStore,
 };
 use crate::platform::ResponseBody;
 use serde_json::Value;
@@ -205,7 +205,7 @@ pub trait Platform: Send + Sync {
     ) -> Arc<dyn crate::memory::LongTermMemoryExtractionStateStore + Send + Sync>;
     fn session_store(&self) -> Arc<dyn SessionStore + Send + Sync>;
     fn pending_retry_store(&self) -> Arc<dyn PendingRetryStore + Send + Sync>;
-    fn task_continuation_store(&self) -> Arc<dyn TaskContinuationStore + Send + Sync>;
+    fn execution_state_store(&self) -> Arc<dyn ExecutionStateStore + Send + Sync>;
     fn important_message_store(&self) -> Arc<dyn ImportantMessageStore + Send + Sync>;
     fn remind_at_store(&self) -> Arc<dyn RemindAtStore + Send + Sync>;
     fn session_summary_store(&self) -> Arc<dyn SessionSummaryStore + Send + Sync>;

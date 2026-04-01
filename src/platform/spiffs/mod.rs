@@ -233,6 +233,7 @@ pub fn list_dir(path: impl AsRef<Path>) -> Result<Vec<String>> {
 
 // --- 子模块与对外类型 ---
 
+pub mod execution_state;
 pub mod important_message;
 pub mod long_term_extraction_state;
 pub mod long_term_memory;
@@ -243,8 +244,8 @@ pub mod session;
 pub mod session_summary;
 pub mod skill_meta;
 pub mod skill_storage;
-pub mod task_continuation;
 
+pub use execution_state::SpiffsExecutionStateStore;
 pub use important_message::SpiffsImportantMessageStore;
 pub use long_term_extraction_state::SpiffsLongTermMemoryExtractionStateStore;
 pub use long_term_memory::SpiffsLongTermMemoryStore;
@@ -255,4 +256,3 @@ pub use session::SpiffsSessionStore;
 pub use session_summary::SpiffsSessionSummaryStore;
 pub use skill_meta::SpiffsSkillMetaStore;
 pub use skill_storage::{default_skill_storage_arc, SpiffsSkillStorage};
-pub use task_continuation::SpiffsTaskContinuationStore;

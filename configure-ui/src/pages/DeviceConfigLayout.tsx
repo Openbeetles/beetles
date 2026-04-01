@@ -33,13 +33,19 @@ export function DeviceConfigLayout() {
   const navBlocker = useContext(NavBlockerContext);
 
   useEffect(() => {
+    let cancelled = false;
     const enteredFromOutside =
       prevPathRef.current === null ||
       !prevPathRef.current.startsWith("/device-config");
     if (pathname.startsWith("/device-config") && enteredFromOutside) {
-      setDisclaimerOpen(true);
+      queueMicrotask(() => {
+        if (!cancelled) setDisclaimerOpen(true);
+      });
     }
     prevPathRef.current = pathname;
+    return () => {
+      cancelled = true;
+    };
   }, [pathname]);
 
   useEffect(() => {

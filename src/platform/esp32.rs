@@ -8,10 +8,10 @@ use crate::platform::{
     display_driver::{install_display_state, DisplayState},
     heartbeat_file::read_heartbeat_file,
     spiffs::{
-        spiffs_usage, SpiffsImportantMessageStore, SpiffsLongTermMemoryExtractionStateStore,
-        SpiffsLongTermMemoryStore, SpiffsMemoryStore, SpiffsPendingRetryStore, SpiffsRemindAtStore,
-        SpiffsSessionStore, SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
-        SpiffsTaskContinuationStore,
+        spiffs_usage, SpiffsExecutionStateStore, SpiffsImportantMessageStore,
+        SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
+        SpiffsPendingRetryStore, SpiffsRemindAtStore, SpiffsSessionStore,
+        SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
     },
     NvsConfigStore,
 };
@@ -20,9 +20,9 @@ use crate::{
     config::{AppConfig, AudioSegment},
     display::{DisplayCommand, DisplayConfig},
     memory::{
-        ImportantMessageStore, LongTermMemoryExtractionStateStore, LongTermMemoryStore,
-        MemoryStore, PendingRetryStore, RemindAtStore, SessionStore, SessionSummaryStore,
-        TaskContinuationStore,
+        ExecutionStateStore, ImportantMessageStore, LongTermMemoryExtractionStateStore,
+        LongTermMemoryStore, MemoryStore, PendingRetryStore, RemindAtStore, SessionStore,
+        SessionSummaryStore,
     },
 };
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -40,7 +40,7 @@ pub struct Esp32Platform {
     long_term_memory_extraction_state_store: Arc<SpiffsLongTermMemoryExtractionStateStore>,
     session_store: Arc<SpiffsSessionStore>,
     pending_retry_store: Arc<SpiffsPendingRetryStore>,
-    task_continuation_store: Arc<SpiffsTaskContinuationStore>,
+    execution_state_store: Arc<SpiffsExecutionStateStore>,
     important_message_store: Arc<SpiffsImportantMessageStore>,
     remind_at_store: Arc<SpiffsRemindAtStore>,
     session_summary_store: Arc<SpiffsSessionSummaryStore>,
@@ -67,7 +67,7 @@ impl Esp32Platform {
             ),
             session_store: Arc::new(SpiffsSessionStore::new()),
             pending_retry_store: Arc::new(SpiffsPendingRetryStore::new()),
-            task_continuation_store: Arc::new(SpiffsTaskContinuationStore::new()),
+            execution_state_store: Arc::new(SpiffsExecutionStateStore::new()),
             important_message_store: Arc::new(SpiffsImportantMessageStore::new()),
             remind_at_store: Arc::new(SpiffsRemindAtStore::new()),
             session_summary_store: Arc::new(SpiffsSessionSummaryStore::new()),
@@ -181,8 +181,8 @@ impl Platform for Esp32Platform {
         Arc::clone(&self.pending_retry_store) as Arc<dyn PendingRetryStore + Send + Sync>
     }
 
-    fn task_continuation_store(&self) -> Arc<dyn TaskContinuationStore + Send + Sync> {
-        Arc::clone(&self.task_continuation_store) as Arc<dyn TaskContinuationStore + Send + Sync>
+    fn execution_state_store(&self) -> Arc<dyn ExecutionStateStore + Send + Sync> {
+        Arc::clone(&self.execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>
     }
 
     fn important_message_store(&self) -> Arc<dyn ImportantMessageStore + Send + Sync> {

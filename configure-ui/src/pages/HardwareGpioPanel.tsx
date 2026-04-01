@@ -257,6 +257,7 @@ export function HardwareGpioPanel() {
   } = useConfig();
   const saveFeedback = useSaveFeedback(t);
   const { setDirty } = useUnsaved();
+  const [saveRestartRequired, setSaveRestartRequired] = useState(false);
   const [draftDevices, setDraftDevices] = useState<DeviceEntry[] | null>(null);
   const [draftI2cSensors, setDraftI2cSensors] = useState<
     I2cSensorEntry[] | null
@@ -355,10 +356,12 @@ export function HardwareGpioPanel() {
       return;
     }
     saveFeedback.begin();
+    setSaveRestartRequired(false);
     const result = await saveHardwareConfig(segmentToSave);
     saveFeedback.finishFromResult(result);
     if (result.ok) {
       setDirty(false);
+      setSaveRestartRequired(Boolean(result.restartRequired));
       setDraftDevices(null);
       setDraftI2cSensors(null);
     }
@@ -417,7 +420,9 @@ export function HardwareGpioPanel() {
               status={saveFeedback.status}
               message={
                 saveFeedback.status === "ok"
-                  ? t("hardwareConfig.restartRequired")
+                  ? saveRestartRequired
+                    ? t("hardwareConfig.restartRequired")
+                    : t("common.saveOk")
                   : saveFeedback.error
               }
               autoDismissMs={3000}

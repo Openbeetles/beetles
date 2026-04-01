@@ -26,18 +26,18 @@ use crate::bus::{
 use crate::constants::{
     AGENT_MARKER_MARK_IMPORTANT, AGENT_MARKER_SIGNAL_COMFORT, AGENT_MARKER_STOP,
     AGENT_RETRY_BASE_MS, AGENT_RETRY_MAX_MS, INBOUND_RECV_TIMEOUT_SECS, MAX_DEFER_RETRIES,
-    MAX_TOOL_RESULTS_USER_MESSAGE_LEN, TASK_CONTINUATION_CONTINUE_THRESHOLD_LEN,
+    MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
 };
 use crate::error::Result;
 use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
 use crate::llm::{LlmClient, Message, StopReason, ToolChoicePolicy};
 use crate::memory::{
     load_prompt_memory_context, run_long_term_memory_refresh, run_post_reply_memory_maintenance,
-    EmotionSignalStore, ImportantMessageStore, LongTermMemoryExtractionStateStore,
-    LongTermMemoryRefreshContext, LongTermMemoryRefreshOutcome,
+    EmotionSignalStore, ExecutionStateStore, ImportantMessageStore,
+    LongTermMemoryExtractionStateStore, LongTermMemoryRefreshContext, LongTermMemoryRefreshOutcome,
     LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore, MemoryStore, PendingRetryStore,
     PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput, PromptMemoryContextParams,
-    SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore, TaskContinuationStore,
+    SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
@@ -888,12 +888,11 @@ pub struct AgentLoopConfig {
         Arc<dyn LongTermMemoryExtractionStateStore + Send + Sync>,
     pub session_store: Arc<dyn SessionStore + Send + Sync>,
     pub session_summary_store: Arc<dyn SessionSummaryStore + Send + Sync>,
+    pub execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
     pub memory_profile: crate::memory::MemoryProfile,
     pub get_skill_descriptions: Arc<dyn Fn() -> String + Send + Sync>,
     pub session_max_messages: usize,
     pub tg_group_activation: Arc<str>,
-    pub task_continuation: Arc<dyn TaskContinuationStore + Send + Sync>,
-    pub task_continuation_max_rounds: u32,
     pub important_message_store: Arc<dyn ImportantMessageStore + Send + Sync>,
     pub emotion_signal_store: Arc<dyn EmotionSignalStore + Send + Sync>,
     pub pending_retry: Arc<dyn PendingRetryStore + Send + Sync>,
@@ -1207,7 +1206,7 @@ fn run_agent_loop_lane(
             loc,
         );
 
-        let (outcome, consumed_round, streamed, mut worker_latency) = match final_content {
+        let (outcome, streamed, mut worker_latency) = match final_content {
             Ok(ok) => ok,
             Err(e) => {
                 let llm_ms = msg_start.elapsed().as_millis().saturating_sub(admission_ms);
@@ -1307,32 +1306,6 @@ fn run_agent_loop_lane(
         }
         if !is_interrupt && !reply_content.is_empty() {
             metrics::record_final_answer_call();
-        }
-
-        if !is_interrupt && config.task_continuation_max_rounds > 0 {
-            match consumed_round {
-                Some(round) => {
-                    if round < config.task_continuation_max_rounds
-                        && (reply_content.contains("[CONTINUE]")
-                            || reply_content.len() > TASK_CONTINUATION_CONTINUE_THRESHOLD_LEN)
-                    {
-                        let _ = config.task_continuation.set_task_continuation(
-                            &msg.chat_id,
-                            round + 1,
-                            &reply_content,
-                        );
-                    } else {
-                        let _ = config
-                            .task_continuation
-                            .clear_task_continuation(&msg.chat_id);
-                    }
-                }
-                None => {
-                    let _ = config
-                        .task_continuation
-                        .clear_task_continuation(&msg.chat_id);
-                }
-            }
         }
 
         // SILENT 或 cron 空回复不写 session，直接跳过。
@@ -1436,6 +1409,7 @@ fn run_agent_loop_lane(
                 PostReplyMemoryMaintenanceContext {
                     session_store: config.session_store.as_ref(),
                     session_summary_store: config.session_summary_store.as_ref(),
+                    execution_state_store: config.execution_state_store.as_ref(),
                     extraction_state_store: config.long_term_memory_extraction_state_store.as_ref(),
                 },
                 PostReplyMemoryMaintenanceInput {
@@ -1446,6 +1420,8 @@ fn run_agent_loop_lane(
                     reply_content: &reply_content,
                     pressure: crate::orchestrator::snapshot().pressure,
                     memory_profile: config.memory_profile,
+                    tool_calls: worker_latency.tool_calls,
+                    now_secs: crate::util::current_unix_secs(),
                 },
                 || match PcMsg::new_system(
                     LONG_TERM_MEMORY_REFRESH_CHANNEL,
@@ -1484,6 +1460,16 @@ fn run_agent_loop_lane(
                 }
                 Ok(SessionSummaryRefreshOutcome::Skipped) => {}
                 Err(e) => log::warn!("[agent_summary] failed: {}", e),
+            }
+            match maintenance_outcome.execution_state_result {
+                Ok(crate::memory::ExecutionStateRefreshOutcome::Updated) => {
+                    log::info!("[agent_execution_state] updated for {}", msg.chat_id);
+                }
+                Ok(crate::memory::ExecutionStateRefreshOutcome::Cleared) => {
+                    log::info!("[agent_execution_state] cleared for {}", msg.chat_id);
+                }
+                Ok(crate::memory::ExecutionStateRefreshOutcome::Skipped) => {}
+                Err(e) => log::warn!("[agent_execution_state] failed: {}", e),
             }
             if maintenance_outcome.extraction_request_outcome
                 == LongTermMemoryRefreshRequestOutcome::RequestFailed
@@ -1562,7 +1548,7 @@ fn run_agent_loop_lane(
     Ok(())
 }
 
-/// 完整 context + worker LLM + ReAct 循环，返回 (WorkerOutcome, consumed_round, streamed, latency)。不写 session，由调用方写。
+/// 完整 context + worker LLM + ReAct 循环，返回 (WorkerOutcome, streamed, latency)。不写 session，由调用方写。
 /// streamed=true 表示已通过流式编辑发送到通道，调用方应跳过 outbound_tx。
 #[allow(clippy::too_many_arguments)]
 fn run_worker_path(
@@ -1573,7 +1559,7 @@ fn run_worker_path(
     config: &AgentLoopConfig,
     tool_call_repeat: &mut HashMap<u64, u8>,
     loc: UiLocale,
-) -> Result<(WorkerOutcome, Option<u32>, bool, WorkerLatency)> {
+) -> Result<(WorkerOutcome, bool, WorkerLatency)> {
     let mut latency = WorkerLatency::default();
     let worker_start = Instant::now();
     let request_plan = AgentRequestPlan::build(msg, registry, worker_llm, config.strategy);
@@ -1584,22 +1570,6 @@ fn run_worker_path(
         channel: Some(msg.channel.clone()),
         locale: loc,
     };
-    let (suffix, consumed_round) =
-        match config.task_continuation.get_task_continuation(&msg.chat_id) {
-            Ok(Some((r, out))) => {
-                let _ = config
-                    .task_continuation
-                    .clear_task_continuation(&msg.chat_id);
-                let mut s = String::with_capacity(out.len().saturating_add(48));
-                let _ = write!(
-                    &mut s,
-                    "上一轮产出（第{}轮）：\n{}\n\n本轮请在此基础上继续。",
-                    r, out
-                );
-                (Some(s), Some(r))
-            }
-            _ => (None, None),
-        };
     let emotion_signal_suffix = config
         .emotion_signal_store
         .get_then_clear(&msg.chat_id)
@@ -1639,7 +1609,6 @@ fn run_worker_path(
         skill_descriptions: &skill_descriptions,
         is_group: msg.is_group,
         group_activation: config.tg_group_activation.as_ref(),
-        system_continuation_suffix: suffix.as_deref(),
         emotion_signal_suffix,
         runtime: Some(runtime),
         llm_hint: budget.llm_hint,
@@ -1654,6 +1623,7 @@ fn run_worker_path(
         session_store: config.session_store.as_ref(),
         session_summary_store: config.session_summary_store.as_ref(),
         long_term_memory_store: config.long_term_memory_store.as_ref(),
+        execution_state_store: config.execution_state_store.as_ref(),
     });
     let (mut system, mut messages) = build_context(&super::ContextParams {
         msg,
@@ -1666,8 +1636,8 @@ fn run_worker_path(
         messages_max_len: budget.messages_max,
         session_max_messages: config.session_max_messages,
         group_activation: config.tg_group_activation.as_ref(),
-        system_continuation_suffix: suffix.as_deref(),
         emotion_signal_suffix,
+        execution_state_text: prompt_memory.execution_state_text.as_deref(),
         long_term_memory_text: prompt_memory.long_term_memory_text.as_deref(),
         summary_text: prompt_memory.summary_text.as_deref(),
         runtime: Some(runtime),
@@ -1899,12 +1869,7 @@ fn run_worker_path(
                 } else {
                     false
                 };
-                return Ok((
-                    WorkerOutcome::Interrupt(confirmation),
-                    consumed_round,
-                    streamed,
-                    latency,
-                ));
+                return Ok((WorkerOutcome::Interrupt(confirmation), streamed, latency));
             }
             if let Some((followup, consume_single_use_budget)) =
                 resolve_end_turn_followup(EndTurnFollowupContext {
@@ -2229,12 +2194,7 @@ fn run_worker_path(
             } else {
                 false
             };
-            return Ok((
-                WorkerOutcome::Interrupt(confirmation),
-                consumed_round,
-                streamed,
-                latency,
-            ));
+            return Ok((WorkerOutcome::Interrupt(confirmation), streamed, latency));
         }
         final_content = content;
         break;
@@ -2254,12 +2214,7 @@ fn run_worker_path(
     } else {
         false
     };
-    Ok((
-        WorkerOutcome::Content(final_content),
-        consumed_round,
-        streamed,
-        latency,
-    ))
+    Ok((WorkerOutcome::Content(final_content), streamed, latency))
 }
 
 #[cfg(test)]

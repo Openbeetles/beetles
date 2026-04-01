@@ -144,6 +144,7 @@ export function DisplayConfigPanel() {
   const saveFeedback = useSaveFeedback(t);
   const { setDirty } = useUnsaved();
   const [draft, setDraft] = useState<DisplayConfig | null>(null);
+  const [saveRestartRequired, setSaveRestartRequired] = useState(false);
   const form = draft ?? displayConfig ?? defaultDisplayConfig();
 
   const sectionDesc = useMemo(() => {
@@ -182,10 +183,14 @@ export function DisplayConfigPanel() {
       return;
     }
     saveFeedback.begin();
+    setSaveRestartRequired(false);
     const body = buildSavePayload(form, runtimeKind);
     const result = await saveDisplayConfig(body);
     saveFeedback.finishFromResult(result);
-    if (result.ok) setDirty(false);
+    if (result.ok) {
+      setDirty(false);
+      setSaveRestartRequired(Boolean(result.restartRequired));
+    }
   };
 
   const fieldGridSx = {
@@ -227,7 +232,9 @@ export function DisplayConfigPanel() {
               status={saveFeedback.status}
               message={
                 saveFeedback.status === "ok"
-                  ? t("displayConfig.restartRequired")
+                  ? saveRestartRequired
+                    ? t("displayConfig.restartRequired")
+                    : t("common.saveOk")
                   : saveFeedback.error
               }
               autoDismissMs={3000}

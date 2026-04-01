@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_ERROR, type ApiResult } from "../api/client";
 import type {
   AppConfig,
@@ -51,15 +51,21 @@ async function loadDeviceSegment<T extends object>(args: {
   fetch: () => Promise<ApiResult<T>>;
   applySuccess: (data: T) => void;
   clearData: () => void;
+  isCurrent: () => boolean;
 }): Promise<void> {
-  const { ready, setLoading, setError, fetch, applySuccess, clearData } = args;
+  const { ready, setLoading, setError, fetch, applySuccess, clearData, isCurrent } =
+    args;
   if (!ready) {
+    if (!isCurrent()) return;
+    setLoading(false);
     setError(ERROR_KEY_NO_BASE);
+    clearData();
     return;
   }
   setLoading(true);
   setError(null);
   const res = await fetch();
+  if (!isCurrent()) return;
   setLoading(false);
   if (res.ok && res.data != null && typeof res.data === "object") {
     applySuccess(res.data as T);
@@ -72,6 +78,8 @@ async function loadDeviceSegment<T extends object>(args: {
 export function ConfigProvider({ children }: { children: React.ReactNode }) {
   const { baseUrl, pairingCode } = useDevice();
   const { api, ready, deviceConnected } = useDeviceApi();
+  const deviceSessionKey = `${baseUrl?.trim() ?? ""}\0${(pairingCode ?? "").trim()}`;
+  const deviceSessionKeyRef = useRef(deviceSessionKey);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -99,16 +107,32 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
   const clearCachedConfig = useCallback(() => {
     setConfig(null);
+    setLoading(false);
     setError(null);
     setDisplayConfig(null);
+    setDisplayLoading(false);
     setDisplayError(null);
     setAudioConfig(null);
+    setAudioLoading(false);
     setAudioError(null);
     setHardwareSegment(null);
+    setHardwareLoading(false);
     setHardwareError(null);
   }, []);
 
+  useEffect(() => {
+    deviceSessionKeyRef.current = deviceSessionKey;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) clearCachedConfig();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [deviceSessionKey, clearCachedConfig]);
+
   const loadConfig = useCallback(async () => {
+    const sessionKey = deviceSessionKey;
     await loadDeviceSegment({
       ready,
       setLoading,
@@ -116,8 +140,9 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       fetch: () => api.config.get() as Promise<ApiResult<AppConfig>>,
       applySuccess: (data) => setConfig(data),
       clearData: () => setConfig(null),
+      isCurrent: () => deviceSessionKeyRef.current === sessionKey,
     });
-  }, [api.config, ready]);
+  }, [api.config, deviceSessionKey, ready]);
 
   /**
    * 在“断连但有缓存”场景下尝试刷新：成功则更新缓存，失败保留现有缓存不清空。
@@ -126,8 +151,12 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     ok: boolean;
     error?: string;
   }> => {
+    const sessionKey = deviceSessionKey;
     if (!ready) return { ok: false, error: ERROR_KEY_NO_BASE };
     const res = await api.config.get();
+    if (deviceSessionKeyRef.current !== sessionKey) {
+      return { ok: false, error: undefined };
+    }
     if (res.ok && res.data != null && typeof res.data === "object") {
       setConfig(res.data as AppConfig);
       setError(null);
@@ -135,54 +164,64 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       return { ok: true };
     }
     return { ok: false, error: res.error ?? ERROR_KEY_LOAD_FAILED };
-  }, [api.config, ready]);
+  }, [api.config, deviceSessionKey, ready]);
 
   const saveLlm = useCallback(
     async (
       body: LlmConfigSegment,
     ): Promise<{ ok: boolean; error?: string }> => {
+      const sessionKey = deviceSessionKey;
       const res = await api.config.saveLlm(body);
-      if (res.ok) setConfig((prev) => (prev ? { ...prev, ...body } : null));
+      if (res.ok && deviceSessionKeyRef.current === sessionKey) {
+        setConfig((prev) => (prev ? { ...prev, ...body } : null));
+      }
       const err =
         res.error === API_ERROR.PAIRING_REQUIRED
           ? "device.pairingCodeRequired"
           : res.error;
       return { ok: res.ok ?? false, error: err };
     },
-    [api.config],
+    [api.config, deviceSessionKey],
   );
 
   const saveChannels = useCallback(
     async (
       body: ChannelsConfigSegment,
     ): Promise<{ ok: boolean; error?: string }> => {
+      const sessionKey = deviceSessionKey;
       const res = await api.config.saveChannels(body);
-      if (res.ok) setConfig((prev) => (prev ? { ...prev, ...body } : null));
+      if (res.ok && deviceSessionKeyRef.current === sessionKey) {
+        setConfig((prev) => (prev ? { ...prev, ...body } : null));
+      }
       const err =
         res.error === API_ERROR.PAIRING_REQUIRED
           ? "device.pairingCodeRequired"
           : res.error;
       return { ok: res.ok ?? false, error: err };
     },
-    [api.config],
+    [api.config, deviceSessionKey],
   );
 
   const saveSystem = useCallback(
     async (
       body: SystemConfigSegment,
     ): Promise<{ ok: boolean; error?: string }> => {
+      const sessionKey = deviceSessionKey;
       const res = await api.config.saveSystem(body);
-      if (res.ok) setConfig((prev) => (prev ? { ...prev, ...body } : null));
+      if (res.ok && deviceSessionKeyRef.current === sessionKey) {
+        setConfig((prev) => (prev ? { ...prev, ...body } : null));
+      }
       const err =
         res.error === API_ERROR.PAIRING_REQUIRED
           ? "device.pairingCodeRequired"
           : res.error;
       return { ok: res.ok ?? false, error: err };
     },
-    [api.config],
+    [api.config, deviceSessionKey],
   );
 
   const loadDisplayConfig = useCallback(async () => {
+    const sessionKey = deviceSessionKey;
     await loadDeviceSegment({
       ready,
       setLoading: setDisplayLoading,
@@ -193,15 +232,19 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
           normalizeDisplayConfig(data as Partial<DisplayConfig> & Record<string, unknown>),
         ),
       clearData: () => setDisplayConfig(null),
+      isCurrent: () => deviceSessionKeyRef.current === sessionKey,
     });
-  }, [api.display, ready]);
+  }, [api.display, deviceSessionKey, ready]);
 
   const saveDisplayConfig = useCallback(
     async (
       body: DisplayConfig,
     ): Promise<{ ok: boolean; error?: string; restartRequired?: boolean }> => {
+      const sessionKey = deviceSessionKey;
       const res = await api.display.save(body);
-      if (res.ok) setDisplayConfig(body);
+      if (res.ok && deviceSessionKeyRef.current === sessionKey) {
+        setDisplayConfig(body);
+      }
       const err =
         res.error === API_ERROR.PAIRING_REQUIRED
           ? "device.pairingCodeRequired"
@@ -212,10 +255,11 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         restartRequired: Boolean(res.ok && res.data?.restart_required),
       };
     },
-    [api.display],
+    [api.display, deviceSessionKey],
   );
 
   const loadAudioConfig = useCallback(async () => {
+    const sessionKey = deviceSessionKey;
     await loadDeviceSegment({
       ready,
       setLoading: setAudioLoading,
@@ -223,15 +267,19 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       fetch: () => api.audio.get() as Promise<ApiResult<AudioConfig>>,
       applySuccess: (data) => setAudioConfig(data),
       clearData: () => setAudioConfig(null),
+      isCurrent: () => deviceSessionKeyRef.current === sessionKey,
     });
-  }, [api.audio, ready]);
+  }, [api.audio, deviceSessionKey, ready]);
 
   const saveAudioConfig = useCallback(
     async (
       body: AudioConfig,
     ): Promise<{ ok: boolean; error?: string; restartRequired?: boolean }> => {
+      const sessionKey = deviceSessionKey;
       const res = await api.audio.save(body);
-      if (res.ok) setAudioConfig(body);
+      if (res.ok && deviceSessionKeyRef.current === sessionKey) {
+        setAudioConfig(body);
+      }
       const err =
         res.error === API_ERROR.PAIRING_REQUIRED
           ? "device.pairingCodeRequired"
@@ -242,10 +290,11 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         restartRequired: Boolean(res.ok && res.data?.restart_required),
       };
     },
-    [api.audio],
+    [api.audio, deviceSessionKey],
   );
 
   const loadHardwareConfig = useCallback(async () => {
+    const sessionKey = deviceSessionKey;
     await loadDeviceSegment({
       ready,
       setLoading: setHardwareLoading,
@@ -262,15 +311,19 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         });
       },
       clearData: () => setHardwareSegment(null),
+      isCurrent: () => deviceSessionKeyRef.current === sessionKey,
     });
-  }, [api.hardware, ready]);
+  }, [api.hardware, deviceSessionKey, ready]);
 
   const saveHardwareConfig = useCallback(
     async (
       body: HardwareSegment,
     ): Promise<{ ok: boolean; error?: string; restartRequired?: boolean }> => {
+      const sessionKey = deviceSessionKey;
       const res = await api.hardware.save(body);
-      if (res.ok) setHardwareSegment(body);
+      if (res.ok && deviceSessionKeyRef.current === sessionKey) {
+        setHardwareSegment(body);
+      }
       const err =
         res.error === API_ERROR.PAIRING_REQUIRED
           ? "device.pairingCodeRequired"
@@ -281,7 +334,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         restartRequired: Boolean(res.ok),
       };
     },
-    [api.hardware],
+    [api.hardware, deviceSessionKey],
   );
 
   const value = useMemo(

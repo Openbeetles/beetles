@@ -13,14 +13,22 @@ export const API_ERROR = {
 
 let csrfToken: string | null = null
 
+export function clearCsrfToken(): void {
+  csrfToken = null
+}
+
 export async function fetchCsrfToken(baseUrl: string): Promise<string | null> {
   try {
     const res = await fetch(buildUrl(baseUrl, '/api/csrf_token'))
-    if (!res.ok) return null
+    if (!res.ok) {
+      csrfToken = null
+      return null
+    }
     const data = await res.json()
     csrfToken = data.csrf_token || null
     return csrfToken
   } catch {
+    csrfToken = null
     return null
   }
 }
@@ -45,6 +53,15 @@ export async function request<T = unknown>(
   baseUrl: string,
   path: string,
   options: ApiRequestOptions = {},
+): Promise<ApiResult<T>> {
+  return requestInternal(baseUrl, path, options, 0)
+}
+
+async function requestInternal<T = unknown>(
+  baseUrl: string,
+  path: string,
+  options: ApiRequestOptions,
+  csrfRetryCount: number,
 ): Promise<ApiResult<T>> {
   const { method = 'GET', body, pairingCode } = options
   const url = buildUrl(baseUrl, path)
@@ -77,9 +94,11 @@ export async function request<T = unknown>(
     if (!res.ok) {
       if (res.status === 403 && typeof data === 'object' && data !== null && 'error' in data) {
         const errMsg = String((data as { error: unknown }).error)
-        if (errMsg.includes('CSRF')) {
-          await fetchCsrfToken(baseUrl)
-          return request<T>(baseUrl, path, options)
+        if (errMsg.includes('CSRF') && csrfRetryCount < 1) {
+          const refreshedToken = await fetchCsrfToken(baseUrl)
+          if (refreshedToken) {
+            return requestInternal<T>(baseUrl, path, options, csrfRetryCount + 1)
+          }
         }
       }
       const err = typeof data === 'object' && data !== null && 'error' in data

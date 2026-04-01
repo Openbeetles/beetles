@@ -194,17 +194,15 @@ export function AudioConfigPanel() {
   const { isRevealed, getRevealHandlers } = useRevealedPasswordFields()
   const [draft, setDraft] = useState<AudioConfig | null>(null)
   const [audioTab, setAudioTab] = useState(0)
+  const [saveRestartRequired, setSaveRestartRequired] = useState(false)
   const form = draft ?? audioConfig ?? defaultAudioConfig()
 
   useEffect(() => {
     void loadAudioConfig()
   }, [loadAudioConfig])
 
-  useEffect(() => {
-    if (!form.enabled) setAudioTab(0)
-  }, [form.enabled])
-
   const saveDisabled = saveFeedback.status === 'saving'
+  const activeAudioTab = form.enabled ? audioTab : 0
   const setDraftSafe = (next: AudioConfig) => {
     setDirty(true)
     setDraft(next)
@@ -228,10 +226,14 @@ export function AudioConfigPanel() {
       return
     }
     saveFeedback.begin()
+    setSaveRestartRequired(false)
     const payload = normalizeAudioConfigForSave(form)
     const result = await saveAudioConfig(payload)
     saveFeedback.finishFromResult(result)
-    if (result.ok) setDirty(false)
+    if (result.ok) {
+      setDirty(false)
+      setSaveRestartRequired(Boolean(result.restartRequired))
+    }
   }
 
   const fieldGridSx = {
@@ -312,7 +314,9 @@ export function AudioConfigPanel() {
               status={saveFeedback.status}
               message={
                 saveFeedback.status === 'ok'
-                  ? t('audioConfig.restartRequired')
+                  ? saveRestartRequired
+                    ? t('audioConfig.restartRequired')
+                    : t('common.saveOk')
                   : saveFeedback.error
               }
               autoDismissMs={3000}
@@ -342,7 +346,7 @@ export function AudioConfigPanel() {
           {audioOn ? (
             <>
               <Tabs
-                value={audioTab}
+                value={activeAudioTab}
                 onChange={(_, v) => setAudioTab(v)}
                 variant="scrollable"
                 allowScrollButtonsMobile
@@ -363,7 +367,7 @@ export function AudioConfigPanel() {
                 <Tab label={t('audioConfig.tabMore')} />
               </Tabs>
               <Box sx={{ pt: 2.5 }}>
-                {audioTab === 0 && (
+                {activeAudioTab === 0 && (
               <FormSectionSub title={t('audioConfig.sectionMicrophone')}>
                 <FormControlLabel
                   control={
@@ -549,7 +553,7 @@ export function AudioConfigPanel() {
               </FormSectionSub>
                 )}
 
-                {audioTab === 1 && (
+                {activeAudioTab === 1 && (
               <FormSectionSub title={t('audioConfig.sectionSpeaker')}>
                 <FormControlLabel
                   control={
@@ -741,7 +745,7 @@ export function AudioConfigPanel() {
               </FormSectionSub>
                 )}
 
-                {audioTab === 2 && (
+                {activeAudioTab === 2 && (
                 <>
               {showVadWake ? (
                 <FormSectionSub title={t('audioConfig.sectionVadWakeWord')}>
@@ -1146,7 +1150,7 @@ export function AudioConfigPanel() {
                 </>
                 )}
 
-              {audioTab === 3 && (showAmbientBlock || showLedBlock) ? (
+              {activeAudioTab === 3 && (showAmbientBlock || showLedBlock) ? (
                 <>
                   {showAmbientBlock ? (
                     <FormSectionSub title={t('audioConfig.sectionAmbient')}>

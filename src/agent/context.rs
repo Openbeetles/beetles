@@ -68,8 +68,8 @@ pub struct ContextParams<'a> {
     pub messages_max_len: usize,
     pub session_max_messages: usize,
     pub group_activation: &'a str,
-    pub system_continuation_suffix: Option<&'a str>,
     pub emotion_signal_suffix: Option<&'a str>,
+    pub execution_state_text: Option<&'a str>,
     pub long_term_memory_text: Option<&'a str>,
     pub summary_text: Option<&'a str>,
     pub runtime: Option<RuntimeContext>,
@@ -82,7 +82,6 @@ pub struct PostMemoryTailParams<'a> {
     pub skill_descriptions: &'a str,
     pub is_group: bool,
     pub group_activation: &'a str,
-    pub system_continuation_suffix: Option<&'a str>,
     pub emotion_signal_suffix: Option<&'a str>,
     pub runtime: Option<RuntimeContext>,
     pub llm_hint: &'a str,
@@ -170,9 +169,6 @@ pub fn estimate_post_memory_system_tail_len(params: PostMemoryTailParams<'_>) ->
             _ => 0,
         });
     }
-    if let Some(suffix) = params.system_continuation_suffix {
-        reserve = reserve.saturating_add(2).saturating_add(suffix.len());
-    }
     reserve = reserve.saturating_add(STRUCTURED_BLOCK.len());
     if let Some(emotion) = params.emotion_signal_suffix {
         reserve = reserve.saturating_add(2).saturating_add(emotion.len());
@@ -192,7 +188,6 @@ pub fn estimate_post_memory_system_tail_len(params: PostMemoryTailParams<'_>) ->
 /// **失败降级**：任一源（get_soul/get_user/get_memory/list_daily_note_names）加载失败时降级为空字符串并打日志，不阻塞 build。
 ///
 /// **messages**：历史会话（最近 session_max_messages 条）+ 当前用户 content，总长 ≤ messages_max_len；超限从最旧消息起丢弃。
-/// **system_continuation_suffix**：多轮延续时追加到 system 末尾的上一轮产出说明；若提供则追加后再做最终截断。
 pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     let soul_res = p.memory.get_soul();
     state::set_soul_load_ok(soul_res.is_ok());
@@ -225,7 +220,6 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
         skill_descriptions: p.skill_descriptions,
         is_group: p.msg.is_group,
         group_activation: p.group_activation,
-        system_continuation_suffix: p.system_continuation_suffix,
         emotion_signal_suffix: p.emotion_signal_suffix,
         runtime: p.runtime,
         llm_hint: p.llm_hint,
@@ -234,6 +228,25 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     let system_base = build_system_prompt(&soul, &user, &mem, &daily_contents, base_max);
     let mut system = String::with_capacity(p.system_max_len);
     system.push_str(&system_base);
+    if let Some(execution_state_text) = p.execution_state_text {
+        let remain = p
+            .system_max_len
+            .saturating_sub(system.len())
+            .saturating_sub(post_memory_tail_len);
+        let state_remain = remain.saturating_sub(2);
+        if state_remain > 0 {
+            system.push_str("\n\n");
+            if execution_state_text.len() <= state_remain {
+                system.push_str(execution_state_text);
+            } else {
+                let mut end = state_remain;
+                while end > 0 && !execution_state_text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                system.push_str(&execution_state_text[..end]);
+            }
+        }
+    }
     if let Some(long_term_memory_text) = p.long_term_memory_text {
         let remain = p
             .system_max_len
@@ -289,10 +302,6 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
                 system.push_str(GROUP_MENTION_ONLY_CONSTRAINT);
             }
         }
-    }
-    if let Some(suffix) = p.system_continuation_suffix {
-        system.push_str("\n\n");
-        system.push_str(suffix);
     }
     if system.len().saturating_add(STRUCTURED_BLOCK.len()) <= p.system_max_len {
         system.push_str(STRUCTURED_BLOCK);
@@ -372,7 +381,6 @@ mod tests {
             skill_descriptions: "shell\nweb_search",
             is_group: true,
             group_activation: "mention",
-            system_continuation_suffix: Some("上一轮产出"),
             emotion_signal_suffix: Some("用户可能需安慰"),
             runtime: Some(sample_runtime()),
             llm_hint: "pressure hint",

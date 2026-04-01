@@ -2,13 +2,14 @@
 //! Shared prompt memory loading for agent context construction.
 
 use super::{
-    memory_policy, recall_long_term_memory_block, LongTermMemoryStore, MemoryProfile, SessionStore,
-    SessionSummaryStore,
+    memory_policy, recall_long_term_memory_block, render_execution_state_block,
+    ExecutionStateStore, LongTermMemoryStore, MemoryProfile, SessionStore, SessionSummaryStore,
 };
 
 pub struct PromptMemoryContext {
     pub summary_text: Option<String>,
     pub long_term_memory_text: Option<String>,
+    pub execution_state_text: Option<String>,
 }
 
 pub struct PromptMemoryContextParams<'a> {
@@ -19,6 +20,7 @@ pub struct PromptMemoryContextParams<'a> {
     pub session_store: &'a dyn SessionStore,
     pub session_summary_store: &'a dyn SessionSummaryStore,
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
+    pub execution_state_store: &'a dyn ExecutionStateStore,
 }
 
 pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> PromptMemoryContext {
@@ -46,9 +48,21 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         params.system_max_len,
         params.profile,
     );
+    let execution_state_text = params
+        .execution_state_store
+        .get(params.chat_id)
+        .ok()
+        .flatten()
+        .and_then(|state| {
+            render_execution_state_block(
+                &state,
+                memory_policy(params.profile).execution_state.render_max_len,
+            )
+        });
     PromptMemoryContext {
         summary_text,
         long_term_memory_text,
+        execution_state_text,
     }
 }
 
@@ -57,8 +71,9 @@ mod tests {
     use super::*;
     use crate::error::Result;
     use crate::memory::{
-        LongTermMemoryEntry, LongTermMemoryKind, LongTermMemorySlot, LongTermMemoryStore,
-        SessionMessage, SessionStore, SessionSummaryStore,
+        ExecutionState, ExecutionStateStore, ExecutionStatus, LongTermMemoryEntry,
+        LongTermMemoryKind, LongTermMemorySlot, LongTermMemoryStore, SessionMessage, SessionStore,
+        SessionSummaryStore,
     };
     use std::sync::Mutex;
 
@@ -169,6 +184,25 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct StubExecutionStateStore {
+        state: Mutex<Option<ExecutionState>>,
+    }
+
+    impl ExecutionStateStore for StubExecutionStateStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<ExecutionState>> {
+            Ok(self.state.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _chat_id: &str, _state: &ExecutionState) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn loads_summary_and_uses_it_for_weak_query_recall() {
         let session_store = StubSessionStore {
@@ -199,6 +233,17 @@ mod tests {
             }]),
             last_query: Mutex::new(None),
         };
+        let execution_state_store = StubExecutionStateStore {
+            state: Mutex::new(Some(ExecutionState {
+                status: ExecutionStatus::Active,
+                goal: "收口 prompt memory".to_string(),
+                progress: "已经有 summary".to_string(),
+                blocker: String::new(),
+                next_action: "接 execution state".to_string(),
+                last_output: String::new(),
+                updated_at: 1,
+            })),
+        };
 
         let context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
@@ -208,6 +253,7 @@ mod tests {
             session_store: &session_store,
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
+            execution_state_store: &execution_state_store,
         });
 
         assert_eq!(
@@ -233,5 +279,10 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("重点是咖啡偏好和昵称"));
+        assert!(context
+            .execution_state_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Goal: 收口 prompt memory"));
     }
 }

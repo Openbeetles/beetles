@@ -5,6 +5,7 @@ use crate::error::Result;
 use serde::{Deserialize, Serialize};
 
 mod context_window;
+mod execution_state;
 mod long_term;
 mod long_term_extraction;
 mod maintenance;
@@ -13,6 +14,11 @@ mod prompt_context;
 mod session_summary_refresh;
 
 pub use context_window::build_context_messages;
+pub use execution_state::{
+    render_execution_state_block, run_execution_state_refresh, ExecutionState,
+    ExecutionStateRefreshContext, ExecutionStateRefreshInput, ExecutionStateRefreshOutcome,
+    ExecutionStateStore, ExecutionStatus, EXECUTION_STATE_SYSTEM_PROMPT, REL_PATH_EXECUTION_STATES,
+};
 pub(crate) use long_term::{
     canonicalize_long_term_memory_entry, govern_long_term_memory_entries,
     merge_long_term_memory_entry, score_long_term_memory_recall,
@@ -42,8 +48,8 @@ pub use maintenance::{
 };
 pub use profile::MemoryProfile;
 pub(crate) use profile::{
-    memory_policy, shared_long_term_governance_policy, LongTermExtractionPolicy,
-    LongTermRecallPolicy, SessionSummaryPolicy,
+    memory_policy, shared_long_term_governance_policy, ExecutionStatePolicy,
+    LongTermExtractionPolicy, LongTermRecallPolicy, SessionSummaryPolicy,
 };
 pub use prompt_context::{
     load_prompt_memory_context, PromptMemoryContext, PromptMemoryContextParams,
@@ -77,8 +83,6 @@ pub const REL_PATH_SESSIONS_DIR: &str = "s";
 pub const REL_PATH_HEARTBEAT: &str = "memory/HEARTBEAT.md";
 /// 相对路径：待重试消息（低内存且队列满时落盘，单条 PcMsg JSON）。
 pub const REL_PATH_PENDING_RETRY: &str = "memory/pending_retry.json";
-/// 相对路径：多轮延续状态（单设备单任务，chat_id + round + last_output）。
-pub const REL_PATH_TASK_CONTINUATION: &str = "memory/task_continuation.json";
 /// 相对路径：重要消息偏移（截断时优先保留）；单 chat 单 offset。
 pub const REL_PATH_IMPORTANT_MESSAGE: &str = "memory/important_message.json";
 /// 相对路径：会话摘要（单文件 JSON，chat_id -> { summary, last_summary_at_count }）。
@@ -164,13 +168,6 @@ impl EmotionSignalStore for MemoryEmotionSignalStore {
             })?
             .remove(chat_id))
     }
-}
-
-/// 多轮延续存储。get 返回 (round, last_output)；set 时 last_output 由实现方按 TASK_CONTINUATION_MAX_OUTPUT_LEN 截断。
-pub trait TaskContinuationStore: Send + Sync {
-    fn get_task_continuation(&self, chat_id: &str) -> Result<Option<(u32, String)>>;
-    fn set_task_continuation(&self, chat_id: &str, round: u32, last_output: &str) -> Result<()>;
-    fn clear_task_continuation(&self, chat_id: &str) -> Result<()>;
 }
 
 /// 待重试消息存储。实现由 platform 注入（如 SpiffsPendingRetryStore）。低内存且入队满时落盘，启动或循环前取回重试。

@@ -8,14 +8,17 @@ use crate::orchestrator::PressureLevel;
 
 use super::{
     evaluate_long_term_memory_extraction_turn, mark_long_term_memory_extraction_requested,
-    persist_long_term_memory_extraction_state, run_session_summary_refresh,
-    LongTermMemoryExtractionStateStore, LongTermMemoryExtractionTurnInput, MemoryProfile,
-    SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore,
+    persist_long_term_memory_extraction_state, run_execution_state_refresh,
+    run_session_summary_refresh, ExecutionStateRefreshContext, ExecutionStateRefreshInput,
+    ExecutionStateRefreshOutcome, ExecutionStateStore, LongTermMemoryExtractionStateStore,
+    LongTermMemoryExtractionTurnInput, MemoryProfile, SessionStore, SessionSummaryRefreshOutcome,
+    SessionSummaryStore,
 };
 
 pub struct PostReplyMemoryMaintenanceContext<'a> {
     pub session_store: &'a dyn SessionStore,
     pub session_summary_store: &'a dyn SessionSummaryStore,
+    pub execution_state_store: &'a dyn ExecutionStateStore,
     pub extraction_state_store: &'a dyn LongTermMemoryExtractionStateStore,
 }
 
@@ -27,6 +30,8 @@ pub struct PostReplyMemoryMaintenanceInput<'a> {
     pub reply_content: &'a str,
     pub pressure: PressureLevel,
     pub memory_profile: MemoryProfile,
+    pub tool_calls: u32,
+    pub now_secs: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,6 +44,7 @@ pub enum LongTermMemoryRefreshRequestOutcome {
 pub struct PostReplyMemoryMaintenanceOutcome {
     pub after_count: usize,
     pub summary_result: Result<SessionSummaryRefreshOutcome>,
+    pub execution_state_result: Result<ExecutionStateRefreshOutcome>,
     pub extraction_request_outcome: LongTermMemoryRefreshRequestOutcome,
 }
 
@@ -59,6 +65,26 @@ pub fn run_post_reply_memory_maintenance(
         },
         input.chat_id,
         after_count,
+        input.memory_profile,
+    );
+    let execution_state_result = run_execution_state_refresh(
+        http,
+        llm,
+        ExecutionStateRefreshContext {
+            session_store: ctx.session_store,
+            session_summary_store: ctx.session_summary_store,
+            execution_state_store: ctx.execution_state_store,
+        },
+        ExecutionStateRefreshInput {
+            chat_id: input.chat_id,
+            ingress: input.ingress,
+            channel: input.channel,
+            user_content: input.user_content,
+            reply_content: input.reply_content,
+            pressure: input.pressure,
+            tool_calls: input.tool_calls,
+            now_secs: input.now_secs,
+        },
         input.memory_profile,
     );
 
@@ -97,6 +123,7 @@ pub fn run_post_reply_memory_maintenance(
     PostReplyMemoryMaintenanceOutcome {
         after_count,
         summary_result,
+        execution_state_result,
         extraction_request_outcome,
     }
 }
@@ -107,8 +134,8 @@ mod tests {
     use crate::error::Result;
     use crate::llm::{LlmModelCompat, LlmResponse, Message, StopReason, ToolChoicePolicy};
     use crate::memory::{
-        LongTermMemoryExtractionState, LongTermMemoryExtractionStateStore, SessionMessage,
-        SessionSummaryStore,
+        ExecutionState, ExecutionStateStore, LongTermMemoryExtractionState,
+        LongTermMemoryExtractionStateStore, SessionMessage, SessionSummaryStore,
     };
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -205,6 +232,29 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct StubExecutionStateStore {
+        state: Mutex<Option<ExecutionState>>,
+        clears: Mutex<u32>,
+    }
+
+    impl ExecutionStateStore for StubExecutionStateStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<ExecutionState>> {
+            Ok(self.state.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _chat_id: &str, state: &ExecutionState) -> Result<()> {
+            *self.state.lock().unwrap_or_else(|e| e.into_inner()) = Some(state.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            *self.state.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            *self.clears.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+            Ok(())
+        }
+    }
+
     struct FixedLlmClient;
 
     impl LlmClient for FixedLlmClient {
@@ -215,13 +265,18 @@ mod tests {
         fn chat(
             &self,
             _http: &mut dyn LlmHttpClient,
-            _system: &str,
+            system: &str,
             _messages: &[Message],
             _tools: Option<&[crate::llm::ToolSpec]>,
             _tool_choice: ToolChoicePolicy,
         ) -> Result<LlmResponse> {
+            let content = if system == crate::memory::EXECUTION_STATE_SYSTEM_PROMPT {
+                r#"{"status":"active","goal":"长期记忆链路收口","progress":"继续拆 coordinator","next_action":"接 execution state"}"#
+            } else {
+                "summary"
+            };
             Ok(LlmResponse {
-                content: "summary".to_string(),
+                content: content.to_string(),
                 stop_reason: StopReason::EndTurn,
                 tool_calls: None,
             })
@@ -271,6 +326,7 @@ mod tests {
             })),
             ..Default::default()
         };
+        let execution_state_store = StubExecutionStateStore::default();
         let mut http = DummyHttpClient;
         let outcome = run_post_reply_memory_maintenance(
             &mut http,
@@ -278,6 +334,7 @@ mod tests {
             PostReplyMemoryMaintenanceContext {
                 session_store: &session_store,
                 session_summary_store: &summary_store,
+                execution_state_store: &execution_state_store,
                 extraction_state_store: &extraction_state_store,
             },
             PostReplyMemoryMaintenanceInput {
@@ -288,6 +345,8 @@ mod tests {
                 reply_content: "这轮会继续拆 coordinator",
                 pressure: PressureLevel::Normal,
                 memory_profile: MemoryProfile::Embedded,
+                tool_calls: 1,
+                now_secs: 10,
             },
             || true,
         );
@@ -295,6 +354,10 @@ mod tests {
         assert!(matches!(
             outcome.summary_result,
             Ok(SessionSummaryRefreshOutcome::Skipped)
+        ));
+        assert!(matches!(
+            outcome.execution_state_result,
+            Ok(ExecutionStateRefreshOutcome::Updated)
         ));
         assert_eq!(
             outcome.extraction_request_outcome,
@@ -318,6 +381,7 @@ mod tests {
         };
         let summary_store = StubSessionSummaryStore::default();
         let extraction_state_store = StubExtractionStateStore::default();
+        let execution_state_store = StubExecutionStateStore::default();
         let mut http = DummyHttpClient;
         let outcome = run_post_reply_memory_maintenance(
             &mut http,
@@ -325,6 +389,7 @@ mod tests {
             PostReplyMemoryMaintenanceContext {
                 session_store: &session_store,
                 session_summary_store: &summary_store,
+                execution_state_store: &execution_state_store,
                 extraction_state_store: &extraction_state_store,
             },
             PostReplyMemoryMaintenanceInput {
@@ -335,6 +400,8 @@ mod tests {
                 reply_content: "好，继续。",
                 pressure: PressureLevel::Normal,
                 memory_profile: MemoryProfile::Embedded,
+                tool_calls: 0,
+                now_secs: 20,
             },
             || panic!("enqueue should not be called"),
         );
@@ -342,6 +409,10 @@ mod tests {
         assert!(matches!(
             outcome.summary_result,
             Ok(SessionSummaryRefreshOutcome::Skipped)
+        ));
+        assert!(matches!(
+            outcome.execution_state_result,
+            Ok(ExecutionStateRefreshOutcome::Skipped)
         ));
         assert_eq!(
             outcome.extraction_request_outcome,
