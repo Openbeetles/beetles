@@ -246,6 +246,7 @@ pub mod session;
 pub mod session_summary;
 pub mod skill_meta;
 pub mod skill_storage;
+pub mod task_store;
 
 pub use calendar_credentials::SpiffsCalendarProviderCredentialStore;
 pub use calendar_store::SpiffsCalendarStore;
@@ -260,3 +261,4 @@ pub use session::SpiffsSessionStore;
 pub use session_summary::SpiffsSessionSummaryStore;
 pub use skill_meta::SpiffsSkillMetaStore;
 pub use skill_storage::{default_skill_storage_arc, SpiffsSkillStorage};
+pub use task_store::SpiffsTaskStore;

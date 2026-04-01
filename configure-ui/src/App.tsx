@@ -18,6 +18,7 @@ import {
   SoulUserUserPanel,
 } from './pages/soul-user'
 import { SkillsPage } from './pages/SkillsPage'
+import { ToolsPage } from './pages/ToolsPage'
 import { DeviceConfigLayout } from './pages/DeviceConfigLayout'
 import { DisplayConfigPanel } from './pages/DisplayConfigPanel'
 import { AudioConfigPanel } from './pages/AudioConfigPanel'
@@ -61,6 +62,7 @@ function App() {
             <Route path="user" element={<SoulUserUserPanel />} />
           </Route>
           <Route path="/skills" element={<SkillsPage />} />
+          <Route path="/tools" element={<ToolsPage />} />
           <Route path="*" element={<PlaceholderPage />} />
         </Route>
       </Routes>

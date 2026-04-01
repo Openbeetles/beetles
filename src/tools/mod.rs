@@ -66,6 +66,7 @@ pub mod session_manage;
 pub mod shell;
 #[cfg(feature = "tools_diagnostics")]
 pub mod system_control;
+pub mod task;
 pub mod voice_input;
 pub mod voice_output;
 #[cfg(all(
@@ -137,6 +138,7 @@ pub use session_manage::SessionManageTool;
 pub use shell::ShellTool;
 #[cfg(feature = "tools_diagnostics")]
 pub use system_control::SystemControlTool;
+pub use task::TaskTool;
 pub use voice_input::VoiceInputTool;
 pub use voice_output::VoiceOutputTool;
 #[cfg(all(

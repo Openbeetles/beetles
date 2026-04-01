@@ -25,6 +25,7 @@ pub mod llm;
 pub mod memory;
 pub mod platform;
 pub mod state;
+pub mod task;
 pub mod tools;
 
 #[cfg(feature = "cli")]
@@ -89,8 +90,8 @@ pub use platform::{
 pub use platform::{ConfigStore, MemorySnapshot, Platform, SkillStorage, StateFs};
 pub use tools::{
     build_default_registry, CalendarTool, FileEditTool, FileWriteTool, FilesTool, GetTimeTool,
-    KvStoreTool, RemindAtTool, Tool, ToolContext, ToolExposure, ToolMetadata, ToolPolicyContext,
-    ToolRegistry, VoiceInputTool, VoiceOutputTool,
+    KvStoreTool, RemindAtTool, TaskTool, Tool, ToolContext, ToolExposure, ToolMetadata,
+    ToolPolicyContext, ToolRegistry, VoiceInputTool, VoiceOutputTool,
 };
 #[cfg(feature = "tools_diagnostics")]
 pub use tools::{

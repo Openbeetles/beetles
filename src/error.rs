@@ -126,9 +126,29 @@ impl Error {
     /// 是否为连接层失败（TLS 握手超时、socket 连接失败等）。
     /// 此类错误短时间重试大概率仍会失败，应快速失败而非级联阻塞。
     pub fn is_connect_error(&self) -> bool {
+        match self {
+            Error::Io { stage, .. } | Error::Other { stage, .. } => matches!(
+                *stage,
+                "http_post_request" | "http_get_request" | "http_client_replace" | "http_read"
+            ),
+            _ => false,
+        }
+    }
+
+    pub fn http_status_code(&self) -> Option<u16> {
+        match self {
+            Error::Http { status_code, .. } => Some(*status_code),
+            _ => None,
+        }
+    }
+
+    pub fn is_retryable_upstream(&self) -> bool {
+        if self.is_tls_admission() || self.is_connect_error() {
+            return true;
+        }
         matches!(
-            self.stage(),
-            "http_post_request" | "http_get_request" | "http_client_replace"
+            self.http_status_code(),
+            Some(408 | 409 | 425 | 429) | Some(500..=599)
         )
     }
 
@@ -148,3 +168,28 @@ impl Error {
 
 /// 简化 `Result<T, Error>` 类型别名。
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[test]
+    fn http_status_is_not_classified_as_connect_error() {
+        let err = Error::Http {
+            status_code: 400,
+            stage: "http_post_request",
+        };
+        assert!(!err.is_connect_error());
+        assert_eq!(err.http_status_code(), Some(400));
+        assert!(!err.is_retryable_upstream());
+    }
+
+    #[test]
+    fn retryable_http_statuses_are_marked_retryable() {
+        let err = Error::Http {
+            status_code: 429,
+            stage: "llm_http_status",
+        };
+        assert!(err.is_retryable_upstream());
+    }
+}

@@ -12,7 +12,7 @@ use crate::platform::{
         SpiffsExecutionStateStore, SpiffsImportantMessageStore,
         SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
         SpiffsPendingRetryStore, SpiffsRemindAtStore, SpiffsSessionStore,
-        SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
+        SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage, SpiffsTaskStore,
     },
     NvsConfigStore,
 };
@@ -26,6 +26,7 @@ use crate::{
         LongTermMemoryStore, MemoryStore, PendingRetryStore, RemindAtStore, SessionStore,
         SessionSummaryStore,
     },
+    task::TaskStore,
 };
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::sync::{Arc, Mutex, RwLock};
@@ -44,6 +45,7 @@ pub struct Esp32Platform {
     pending_retry_store: Arc<SpiffsPendingRetryStore>,
     calendar_store: Arc<SpiffsCalendarStore>,
     calendar_provider_credential_store: Arc<SpiffsCalendarProviderCredentialStore>,
+    task_store: Arc<SpiffsTaskStore>,
     execution_state_store: Arc<SpiffsExecutionStateStore>,
     important_message_store: Arc<SpiffsImportantMessageStore>,
     remind_at_store: Arc<SpiffsRemindAtStore>,
@@ -75,6 +77,7 @@ impl Esp32Platform {
             calendar_provider_credential_store: Arc::new(
                 SpiffsCalendarProviderCredentialStore::new(),
             ),
+            task_store: Arc::new(SpiffsTaskStore::new()),
             execution_state_store: Arc::new(SpiffsExecutionStateStore::new()),
             important_message_store: Arc::new(SpiffsImportantMessageStore::new()),
             remind_at_store: Arc::new(SpiffsRemindAtStore::new()),
@@ -198,6 +201,10 @@ impl Platform for Esp32Platform {
     ) -> Arc<dyn CalendarProviderCredentialStore + Send + Sync> {
         Arc::clone(&self.calendar_provider_credential_store)
             as Arc<dyn CalendarProviderCredentialStore + Send + Sync>
+    }
+
+    fn task_store(&self) -> Arc<dyn TaskStore + Send + Sync> {
+        Arc::clone(&self.task_store) as Arc<dyn TaskStore + Send + Sync>
     }
 
     fn execution_state_store(&self) -> Arc<dyn ExecutionStateStore + Send + Sync> {

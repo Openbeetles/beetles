@@ -29,11 +29,11 @@ where
             }
             Err(e) => {
                 crate::platform::task_wdt::feed_current_task();
-                let is_conn = e.is_connect_error();
+                let retryable = e.is_retryable_upstream();
                 last_err = Some(e);
-                if is_conn {
+                if !retryable {
                     log::warn!(
-                        "[{}] attempt {} failed (connect error), skipping retry",
+                        "[{}] attempt {} failed (non-retryable), skipping retry",
                         tag,
                         attempt + 1,
                     );

@@ -1,12 +1,13 @@
 //! Agent ReAct 循环：入站一条 → context → chat（含 tool_use 多轮）→ 会话持久化 → 出站一条。
 //! 仅依赖 trait；HTTP/Tool 由 main 注入同一实现（如 EspHttpClient）。
+use super::delivery::DeliverySession;
 use super::final_reply::finalize_user_visible_reply;
 use super::request_plan::AgentRequestPlan;
 use super::strategy::{
     append_execution_plan, blocker_end_turn_followup, build_success_tool_round_guidance,
-    build_tool_round_guidance, detect_ping_pong_tool_rounds, final_answer_followup,
-    repeated_answer_followup, should_generate_execution_plan, stalled_end_turn_followup,
-    AgentRunStrategy, SuccessfulToolRoundSummary,
+    build_tool_round_guidance, detect_ping_pong_tool_rounds, empty_final_answer_followup,
+    final_answer_followup, repeated_answer_followup, should_generate_execution_plan,
+    stalled_end_turn_followup, AgentRunStrategy, SuccessfulToolRoundSummary,
 };
 use super::tool_guidance::{
     build_success_tool_execution_guidance, record_successful_tool_result,
@@ -16,6 +17,7 @@ use super::tool_outcome::{
     classify_tool_error, denied_tool_assessment, summarize_tool_blocker,
     unavailable_tool_assessment, ToolBlockerSummary, ToolFailureSummary,
 };
+use super::StreamEditor;
 use crate::agent::context::{
     build_context, estimate_post_memory_system_tail_len, PostMemoryTailParams, RuntimeContext,
 };
@@ -78,6 +80,7 @@ const ASSISTANT_COMPACT_PREVIEW_CHARS: usize = 160;
 const ASSISTANT_COMPACT_TAIL_CHARS: usize = 48;
 const LONG_TERM_MEMORY_REFRESH_CHANNEL: &str = "_memory_refresh";
 const PLAN_SYSTEM_SUFFIX: &str = "\n\n## Internal planning\nBefore solving the latest user request, create a short internal execution plan. Return 3-6 concise numbered steps only. Do not answer the user. Do not call tools in this planning step.";
+const FINAL_RECOVERY_SYSTEM_SUFFIX: &str = "\n\n## Final delivery\nThe tool-execution budget for this turn is exhausted. Do not call any tool. Using only the completed tool results and current conclusions already present in this conversation, produce the final user-facing answer now. Do not output execution transcripts, numbered step logs, or future-step sections.";
 
 /// 程序性会话摘要：单次轻量 LLM 调用的 system 提示。
 /// 同一 chat_id 的 "low memory, defer" 日志最少间隔，避免刷屏。
@@ -740,15 +743,6 @@ pub enum WorkerOutcome {
     Interrupt(String),
 }
 
-/// 流式编辑器：LLM 流式输出期间，发送占位消息并逐步编辑内容。
-/// 实现方内部自行创建/管理 HTTP 连接，不占用 agent 的 LLM HTTP 连接。
-pub trait StreamEditor {
-    /// 发送初始占位消息，返回 message_id（用于后续编辑）。
-    fn send_initial(&self, chat_id: &str, content: &str) -> Result<Option<String>>;
-    /// 编辑已发送的消息。
-    fn edit(&self, chat_id: &str, message_id: &str, content: &str) -> Result<()>;
-}
-
 /// 单轮进度指标，用于检测 agent 是否陷入无效循环。
 #[derive(Clone, Copy)]
 struct RoundProgress {
@@ -802,10 +796,12 @@ fn enqueue_end_turn_followup(
     content: &str,
     followup: &str,
 ) {
-    messages.push(Message {
-        role: Cow::Borrowed("assistant"),
-        content: content.to_string(),
-    });
+    if !content.trim().is_empty() {
+        messages.push(Message {
+            role: Cow::Borrowed("assistant"),
+            content: content.to_string(),
+        });
+    }
     messages.push(Message {
         role: Cow::Borrowed("user"),
         content: followup.to_string(),
@@ -878,6 +874,56 @@ fn resolve_end_turn_followup(ctx: EndTurnFollowupContext<'_>) -> Option<(String,
         ctx.content,
     )
     .map(|followup| (followup.to_string(), true))
+}
+
+fn run_final_answer_recovery_round(
+    worker_llm: &(dyn LlmClient + Send + Sync),
+    tool_ctx: &mut HttpClientToolContext<'_>,
+    system: &str,
+    messages: &[Message],
+    llm_stream: bool,
+    latency: &mut WorkerLatency,
+) -> Result<String> {
+    let recovery_system = format!("{}{}", system, FINAL_RECOVERY_SYSTEM_SUFFIX);
+    let t0 = metrics::record_llm_call_start();
+    let llm_round_start = Instant::now();
+    let response = if llm_stream {
+        let mut ignore_progress = |_delta: &str, _accumulated: &str| {
+            crate::platform::task_wdt::feed_current_task();
+        };
+        worker_llm.chat_with_progress(
+            tool_ctx,
+            &recovery_system,
+            messages,
+            None,
+            ToolChoicePolicy::Auto,
+            &mut ignore_progress,
+        )
+    } else {
+        worker_llm.chat(
+            tool_ctx,
+            &recovery_system,
+            messages,
+            None,
+            ToolChoicePolicy::Auto,
+        )
+    };
+    match response {
+        Ok(response) => {
+            metrics::record_llm_call_end(t0);
+            latency.react_rounds = latency.react_rounds.saturating_add(1);
+            latency.llm_round_total_ms = latency
+                .llm_round_total_ms
+                .saturating_add(llm_round_start.elapsed().as_millis());
+            Ok(response.content)
+        }
+        Err(e) => {
+            metrics::record_llm_call_end(t0);
+            metrics::record_llm_error();
+            metrics::record_error_by_stage("agent_chat");
+            Err(e.with_stage("agent_chat"))
+        }
+    }
 }
 
 /// Agent 循环的存储与运行参数，由 main 构建并传入 run_agent_loop，减少参数数量。
@@ -1200,6 +1246,8 @@ fn run_agent_loop_lane(
             http,
             worker_llm,
             &msg,
+            &outbound_tx,
+            &req_id,
             registry,
             config,
             &mut tool_call_repeat_buf,
@@ -1226,13 +1274,12 @@ fn run_agent_loop_lane(
                 );
                 state::set_last_error(&e);
 
-                let is_conn = e.is_connect_error();
                 let (counter, _) = llm_failure_count
                     .entry(msg_key)
                     .or_insert((0, Instant::now()));
                 *counter = counter.saturating_add(1);
 
-                if *counter < 3 && !is_conn {
+                if *counter < 3 && e.is_retryable_upstream() {
                     let mut retry_msg = msg.clone();
                     retry_msg.enqueue_ts_ms = now_unix_ms();
                     let inbound_tx =
@@ -1291,6 +1338,13 @@ fn run_agent_loop_lane(
         };
         if !is_interrupt {
             reply_content = finalize_user_visible_reply(config.strategy, &reply_content);
+        }
+        if !is_interrupt
+            && reply_content.trim().is_empty()
+            && msg.ingress == IngressKind::User
+            && msg.channel.as_ref() != "cron"
+        {
+            reply_content = tr(UiMessage::AgentNoFinalReply, loc);
         }
         let mark_important = !is_interrupt && reply_content.contains(AGENT_MARKER_MARK_IMPORTANT);
         let signal_comfort = !is_interrupt && reply_content.contains(AGENT_MARKER_SIGNAL_COMFORT);
@@ -1555,6 +1609,8 @@ fn run_worker_path(
     http: &mut dyn PlatformHttpClient,
     worker_llm: &(dyn LlmClient + Send + Sync),
     msg: &crate::bus::PcMsg,
+    outbound_tx: &OutboundTx,
+    req_id: &str,
     registry: &crate::tools::ToolRegistry,
     config: &AgentLoopConfig,
     tool_call_repeat: &mut HashMap<u64, u8>,
@@ -1683,12 +1739,7 @@ fn run_worker_path(
     } else {
         None
     };
-    let mut stream_msg_id: Option<String> = None;
-    let mut last_edit_time = Instant::now();
-    let mut stream_edit_disabled = false; // send_initial 失败后禁用流式编辑
-    let mut stream_edit_fail_count: u8 = 0; // edit 连续失败计数
-    const EDIT_THROTTLE_MS: u64 = 500;
-    const MAX_EDIT_FAILURES: u8 = 3;
+    let mut delivery = DeliverySession::new(msg, req_id, outbound_tx, editor, loc);
     // P1 Enhancement 3: 进度跟踪（最近3轮），用于检测无效循环。
     let mut progress_history: [Option<RoundProgress>; 3] = [None; 3];
     let mut any_tool_used = false; // 本次请求是否使用过任何工具
@@ -1730,8 +1781,9 @@ fn run_worker_path(
         let t0 = metrics::record_llm_call_start();
         let llm_round_start = Instant::now();
         let mut first_token_marked = latency.ttft_ms.is_some();
+        let round_system = system.clone();
+        let round_tools = request_plan.request_tools();
         let response = if config.llm_stream {
-            let chat_id_for_cb = msg.chat_id.clone();
             let progress_base = worker_start;
             let llm_tool_choice = request_plan.tool_choice(round, any_tool_used);
             let mut progress_cb = |_delta: &str, accumulated: &str| {
@@ -1740,67 +1792,19 @@ fn run_worker_path(
                     latency.ttft_ms = Some(progress_base.elapsed().as_millis());
                     first_token_marked = true;
                 }
-                let Some(ed) = editor else { return };
-                // Critical 压力下跳过流式编辑，节省 HTTP 连接与堆开销。
-                if stream_edit_disabled
-                    || matches!(
-                        crate::orchestrator::current_pressure(),
-                        crate::orchestrator::PressureLevel::Critical
-                    )
-                {
+                if matches!(
+                    crate::orchestrator::current_pressure(),
+                    crate::orchestrator::PressureLevel::Critical
+                ) {
                     return;
                 }
-                let now = Instant::now();
-
-                if stream_msg_id.is_none() {
-                    // 首次收到文本：发送占位消息并记录 message_id。
-                    match ed.send_initial(&chat_id_for_cb, accumulated) {
-                        Ok(Some(id)) => {
-                            stream_msg_id = Some(id);
-                            last_edit_time = now;
-                        }
-                        Ok(None) => {}
-                        Err(e) => {
-                            log::warn!(
-                                "[agent_stream] send_initial failed, disabling stream edit: {}",
-                                e
-                            );
-                            stream_edit_disabled = true;
-                        }
-                    }
-                } else if now.duration_since(last_edit_time)
-                    >= Duration::from_millis(EDIT_THROTTLE_MS)
-                {
-                    if let Some(ref mid) = stream_msg_id {
-                        if let Err(e) = ed.edit(&chat_id_for_cb, mid, accumulated) {
-                            stream_edit_fail_count += 1;
-                            if log::log_enabled!(log::Level::Debug) {
-                                log::debug!(
-                                    "[agent_stream] edit failed ({}/{}): {}",
-                                    stream_edit_fail_count,
-                                    MAX_EDIT_FAILURES,
-                                    e
-                                );
-                            }
-                            if stream_edit_fail_count >= MAX_EDIT_FAILURES {
-                                log::warn!(
-                                    "[agent_stream] edit failed {} times, disabling stream edit",
-                                    MAX_EDIT_FAILURES
-                                );
-                                stream_edit_disabled = true;
-                            }
-                        } else {
-                            stream_edit_fail_count = 0;
-                        }
-                        last_edit_time = now;
-                    }
-                }
+                delivery.on_stream_delta(accumulated);
             };
             worker_llm.chat_with_progress(
                 &mut tool_ctx,
-                &system,
+                &round_system,
                 &messages,
-                request_plan.request_tools(),
+                round_tools,
                 llm_tool_choice,
                 &mut progress_cb,
             )
@@ -1808,9 +1812,9 @@ fn run_worker_path(
             let llm_tool_choice = request_plan.tool_choice(round, any_tool_used);
             worker_llm.chat(
                 &mut tool_ctx,
-                &system,
+                &round_system,
                 &messages,
-                request_plan.request_tools(),
+                round_tools,
                 llm_tool_choice,
             )
         };
@@ -1860,16 +1864,14 @@ fn run_worker_path(
             if content.contains(AGENT_MARKER_STOP) {
                 let confirmation = strip_agent_stop_confirmation(&content);
                 mark_ttft_if_visible(&mut latency, worker_start, &confirmation);
-                // 流式编辑：更新为清理后的确认文案，避免用户看到原始标记。
-                let streamed = if let (Some(ref mid), Some(ed)) = (&stream_msg_id, editor) {
-                    if !confirmation.is_empty() {
-                        let _ = ed.edit(&msg.chat_id, mid, &confirmation);
-                    }
-                    true
-                } else {
-                    false
-                };
+                let streamed = delivery.finalize(&confirmation);
                 return Ok((WorkerOutcome::Interrupt(confirmation), streamed, latency));
+            }
+            if let Some(followup) =
+                empty_final_answer_followup(config.strategy, any_tool_used, &content)
+            {
+                enqueue_end_turn_followup(&mut messages, &mut progress_history, &content, followup);
+                continue;
             }
             if let Some((followup, consume_single_use_budget)) =
                 resolve_end_turn_followup(EndTurnFollowupContext {
@@ -1907,6 +1909,10 @@ fn run_worker_path(
                 final_content = response.content;
                 break;
             }
+            if !response.content.trim().is_empty() && response.content.trim() != "[tool_use]" {
+                mark_ttft_if_visible(&mut latency, worker_start, &response.content);
+                delivery.emit_partial(&response.content);
+            }
             messages.push(Message {
                 role: Cow::Borrowed("assistant"),
                 // Anthropic API 要求 tool_use 轮的 assistant content 非空；空时用占位符。
@@ -1932,29 +1938,24 @@ fn run_worker_path(
             let mut omitted_evidence_count = 0usize;
             let mut round_observations = SuccessfulToolRoundObservations::default();
             for (i, tc) in tool_calls.iter().enumerate() {
-                // 流式编辑：进入每个工具前更新进度（Telegram typing ~5s 过期；此处用 edit 续期可见活跃状态）。
-                if let (Some(ref mid), Some(ed)) = (&stream_msg_id, editor) {
-                    if !stream_edit_disabled {
-                        let progress = if tool_calls.len() == 1 {
-                            tr(
-                                UiMessage::ToolProgressSingle {
-                                    name: tc.name.clone(),
-                                },
-                                loc,
-                            )
-                        } else {
-                            tr(
-                                UiMessage::ToolProgress {
-                                    name: tc.name.clone(),
-                                    index: i,
-                                    total: tool_calls.len(),
-                                },
-                                loc,
-                            )
-                        };
-                        let _ = ed.edit(&msg.chat_id, mid, &progress);
-                    }
-                }
+                let progress = if tool_calls.len() == 1 {
+                    tr(
+                        UiMessage::ToolProgressSingle {
+                            name: tc.name.clone(),
+                        },
+                        loc,
+                    )
+                } else {
+                    tr(
+                        UiMessage::ToolProgress {
+                            name: tc.name.clone(),
+                            index: i,
+                            total: tool_calls.len(),
+                        },
+                        loc,
+                    )
+                };
+                delivery.emit_progress(&progress);
                 // 工具执行门控
                 let (result_owned, failure_kind) = {
                     if !registry.is_llm_tool_visible(&tc.name, request_plan.policy()) {
@@ -2177,49 +2178,86 @@ fn run_worker_path(
         let content = response.content;
         if content.contains(AGENT_MARKER_STOP) {
             let confirmation = strip_agent_stop_confirmation(&content);
-            let streamed = if let (Some(ref mid), Some(ed)) = (&stream_msg_id, editor) {
-                if !confirmation.is_empty() {
-                    if let Err(e) = ed.edit(&msg.chat_id, mid, &confirmation) {
-                        log::warn!(
-                            "[agent_stream] final interrupt edit failed, fallback outbound: {}",
-                            e
-                        );
-                        false
-                    } else {
-                        true
-                    }
-                } else {
-                    true
-                }
-            } else {
-                false
-            };
+            let streamed = delivery.finalize(&confirmation);
             return Ok((WorkerOutcome::Interrupt(confirmation), streamed, latency));
         }
         final_content = content;
         break;
     }
-    // 流式编辑：最终确认发送完整内容（工具执行中已通过 per-tool 进度 edit 续期可见性）。
-    let streamed = if let (Some(ref mid), Some(ed)) = (&stream_msg_id, editor) {
-        if !final_content.is_empty() {
-            if let Err(e) = ed.edit(&msg.chat_id, mid, &final_content) {
-                log::warn!("[agent_stream] final edit failed, fallback outbound: {}", e);
-                false
-            } else {
-                true
-            }
-        } else {
-            true
-        }
-    } else {
-        false
-    };
+    if final_content.trim().is_empty() && any_tool_used {
+        final_content = run_final_answer_recovery_round(
+            worker_llm,
+            &mut tool_ctx,
+            &system,
+            &messages,
+            config.llm_stream,
+            &mut latency,
+        )?;
+    }
+    let streamed = delivery.finalize(&final_content);
     Ok((WorkerOutcome::Content(final_content), streamed, latency))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Result;
+    use crate::llm::{LlmHttpClient, LlmModelCompat, LlmResponse, StopReason, ToolChoicePolicy};
+    use crate::platform::{PlatformHttpClient, ResponseBody};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct DummyPlatformHttp;
+
+    impl PlatformHttpClient for DummyPlatformHttp {
+        fn get(&mut self, _url: &str, _headers: &[(&str, &str)]) -> Result<(u16, ResponseBody)> {
+            Ok((200, ResponseBody::Heap(Vec::new())))
+        }
+
+        fn post(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> Result<(u16, ResponseBody)> {
+            Ok((200, ResponseBody::Heap(Vec::new())))
+        }
+    }
+
+    #[derive(Clone)]
+    struct ObservedRecoveryRequest {
+        system: String,
+        tool_count: usize,
+    }
+
+    struct RecoveryStubLlm {
+        observed: Arc<Mutex<Vec<ObservedRecoveryRequest>>>,
+        response: LlmResponse,
+    }
+
+    impl LlmClient for RecoveryStubLlm {
+        fn model_compat(&self) -> LlmModelCompat {
+            LlmModelCompat::default()
+        }
+
+        fn chat(
+            &self,
+            _http: &mut dyn LlmHttpClient,
+            system: &str,
+            _messages: &[Message],
+            tools: Option<&[crate::llm::ToolSpec]>,
+            _tool_choice: ToolChoicePolicy,
+        ) -> Result<LlmResponse> {
+            self.observed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(ObservedRecoveryRequest {
+                    system: system.to_string(),
+                    tool_count: tools.map_or(0, |specs| specs.len()),
+                });
+            Ok(self.response.clone())
+        }
+    }
 
     #[test]
     fn summarize_tool_results_keeps_multiline_preview() {
@@ -2446,5 +2484,53 @@ mod tests {
         ];
         compact_early_tool_rounds(&mut messages, 1);
         assert_eq!(messages[2].content, original);
+    }
+
+    #[test]
+    fn final_answer_recovery_round_disables_tools_and_uses_recovery_suffix() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = RecoveryStubLlm {
+            observed: Arc::clone(&observed),
+            response: LlmResponse {
+                content: "最终答案".to_string(),
+                stop_reason: StopReason::EndTurn,
+                tool_calls: None,
+            },
+        };
+        let mut http = DummyPlatformHttp;
+        let mut tool_ctx = HttpClientToolContext {
+            http: &mut http,
+            chat_id: Some(Arc::from("chat-1")),
+            channel: Some(Arc::from("qq_channel")),
+            locale: UiLocale::Zh,
+        };
+        let messages = vec![Message {
+            role: Cow::Borrowed("user"),
+            content: concat!(
+                "Tool results:\n",
+                "<tool_result id=\"call_1\" tool=\"get_time\" status=\"ok\">\n",
+                "2026-04-01T06:45:39Z\n",
+                "</tool_result>\n",
+            )
+            .to_string(),
+        }];
+        let mut latency = WorkerLatency::default();
+
+        let content = run_final_answer_recovery_round(
+            &llm,
+            &mut tool_ctx,
+            "base system",
+            &messages,
+            false,
+            &mut latency,
+        )
+        .expect("recovery round should succeed");
+
+        assert_eq!(content, "最终答案");
+        assert_eq!(latency.react_rounds, 1);
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].tool_count, 0);
+        assert!(observed[0].system.contains(FINAL_RECOVERY_SYSTEM_SUFFIX));
     }
 }

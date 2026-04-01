@@ -253,6 +253,14 @@ fn status_field<'a>(status: &'a str, key: &str) -> Option<&'a str> {
     })
 }
 
+fn parse_i32_field(value: Option<&str>) -> Option<i32> {
+    value?.split_whitespace().next()?.parse().ok()
+}
+
+fn parse_u32_field(value: Option<&str>) -> Option<u32> {
+    value?.split_whitespace().next()?.parse().ok()
+}
+
 fn parse_kb_field(value: Option<&str>) -> Option<u64> {
     value?.split_whitespace().next()?.parse().ok()
 }
@@ -267,7 +275,9 @@ fn parse_cmdline_bytes(raw: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_cmdline_bytes, parse_kb_field, status_field};
+    use super::{
+        parse_cmdline_bytes, parse_i32_field, parse_kb_field, parse_u32_field, status_field,
+    };
 
     #[test]
     fn parse_cmdline_collapses_null_delimiters() {
@@ -286,6 +296,8 @@ VmRSS:\t1234 kB\n\
 VmSize:\t4321 kB\n";
         assert_eq!(status_field(sample, "Name:"), Some("bash"));
         assert_eq!(status_field(sample, "State:"), Some("S (sleeping)"));
+        assert_eq!(parse_i32_field(status_field(sample, "PPid:")), Some(1));
+        assert_eq!(parse_u32_field(status_field(sample, "Threads:")), Some(4));
         assert_eq!(parse_kb_field(status_field(sample, "VmRSS:")), Some(1234));
         assert_eq!(parse_kb_field(status_field(sample, "VmSize:")), Some(4321));
     }

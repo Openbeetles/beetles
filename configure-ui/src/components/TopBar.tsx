@@ -42,6 +42,7 @@ const PATH_TO_META: Record<string, { titleKey: string; descKey: string }> = {
     descKey: "soulUser.pageDesc",
   },
   "/skills": { titleKey: "skills.pageTitle", descKey: "skills.pageDesc" },
+  "/tools": { titleKey: "tools.pageTitle", descKey: "tools.pageDesc" },
 };
 
 function metaForPathname(pathname: string) {

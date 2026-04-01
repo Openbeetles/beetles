@@ -2,9 +2,9 @@
 
 use super::http_bridge::ToolContextHttpClient;
 use crate::calendar::{
-    normalize_calendar_event, CalendarEvent, CalendarEventStatus, CalendarProvider,
-    CalendarProviderCredentialStatus, CalendarProviderCredentialStore, CalendarProviderRegistry,
-    CalendarQuery, CalendarService, CalendarStore, CALENDAR_PROVIDER_LOCAL,
+    normalize_calendar_event, CalendarEvent, CalendarEventStatus, CalendarProviderCredentialStatus,
+    CalendarProviderCredentialStore, CalendarProviderRegistry, CalendarQuery, CalendarService,
+    CalendarStore, CALENDAR_PROVIDER_LOCAL,
 };
 
 use crate::error::{Error, Result};
@@ -398,7 +398,8 @@ fn event_to_json(event: CalendarEvent) -> Value {
 mod tests {
     use super::*;
     use crate::calendar::{
-        CalendarOperation, CalendarProviderCredential, CalendarProviderCredentialStore,
+        CalendarOperation, CalendarProvider, CalendarProviderCredential,
+        CalendarProviderCredentialStore,
     };
     use std::collections::HashMap;
     use std::sync::Mutex;

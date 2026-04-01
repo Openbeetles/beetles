@@ -374,6 +374,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     let session_store: Arc<dyn SessionStore + Send + Sync> = platform.session_store();
     let pending_retry_store: Arc<dyn beetle::memory::PendingRetryStore + Send + Sync> =
         platform.pending_retry_store();
+    let task_store: Arc<dyn beetle::task::TaskStore + Send + Sync> = platform.task_store();
     let execution_state_store: Arc<dyn beetle::memory::ExecutionStateStore + Send + Sync> =
         platform.execution_state_store();
     let important_message_store: Arc<dyn beetle::memory::ImportantMessageStore + Send + Sync> =
@@ -507,6 +508,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             i2c_sensors: config.i2c_sensors.clone(),
         }),
         remind_store: Arc::clone(&remind_at_store),
+        task_store: Arc::clone(&task_store),
     });
     // bg_timer: merged cron + heartbeat + remind into one thread (saves ~20KB SRAM).
 

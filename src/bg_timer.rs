@@ -8,6 +8,7 @@ use crate::cron::{CronTickState, SensorWatchContext};
 use crate::heartbeat::HeartbeatTickState;
 use crate::i18n::Locale;
 use crate::memory::{MemoryStore, RemindAtStore, SessionStore};
+use crate::task::TaskStore;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,6 +39,7 @@ pub struct BgTimerContext {
 
     // remind
     pub remind_store: Arc<dyn RemindAtStore + Send + Sync>,
+    pub task_store: Arc<dyn TaskStore + Send + Sync>,
 }
 
 /// 启动 bg_timer 后台线程（内部 spawn，立即返回）。
@@ -73,7 +75,7 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
                     );
                 }
 
-                // cron + remind: every 6 ticks (60s)
+                // cron + remind + task due: every 6 ticks (60s)
                 if tick.is_multiple_of(CRON_REMIND_DIVISOR) {
                     crate::cron::cron_tick(
                         &ctx.system_inbound_tx,
@@ -88,12 +90,18 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
                         &ctx.system_inbound_tx,
                         &ctx.resolve_locale,
                     );
+
+                    crate::task::task_due_tick(
+                        ctx.task_store.as_ref(),
+                        &ctx.system_inbound_tx,
+                        &ctx.resolve_locale,
+                    );
                 }
             }
         },
     );
     log::info!(
-        "[{}] bg_timer started (tick {}s, heartbeat every {}s, cron/remind every {}s)",
+        "[{}] bg_timer started (tick {}s, heartbeat every {}s, cron/remind/task every {}s)",
         TAG,
         TICK_INTERVAL_SECS,
         TICK_INTERVAL_SECS * HEARTBEAT_DIVISOR as u64,

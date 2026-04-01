@@ -20,6 +20,7 @@ impl ToolInfo {
 fn tool_infos() -> Vec<ToolInfo> {
     let mut tools = vec![
         ToolInfo::new("get_time"),
+        ToolInfo::new("task"),
         ToolInfo::new("calendar"),
         ToolInfo::new("files"),
         ToolInfo::new("file_write"),
@@ -86,6 +87,7 @@ mod tests {
             .collect();
         assert!(names.contains(&"file_write"));
         assert!(names.contains(&"file_edit"));
+        assert!(names.contains(&"task"));
         assert!(names.contains(&"calendar"));
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         assert!(names.contains(&"document_search"));

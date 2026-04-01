@@ -172,13 +172,13 @@ pub(crate) fn build_success_tool_round_guidance(
     }
     if failure_summary.failed_calls == 0 {
         return Some(
-            "\n\n[SYSTEM] You now have concrete tool results. If they answer the user's request, respond directly from those results. Do not call more tools unless a specific unanswered gap remains."
+            "\n\n[SYSTEM] You now have concrete tool results. If they answer the user's request, respond directly from those results. If more work is still required, call the next tool immediately instead of narrating a future plan. If you end the turn, deliver only completed results and current conclusions. Do not output execution transcripts, numbered step logs, or pending next-step sections for the user."
                 .to_string(),
         );
     }
     if failure_summary.failed_calls < total_calls {
         return Some(
-            "\n\n[SYSTEM] Some tool calls succeeded and already produced useful evidence. Prioritize those successful results in your answer. Only call more tools if a specific missing fact still matters."
+            "\n\n[SYSTEM] Some tool calls succeeded and already produced useful evidence. Prioritize those successful results in your answer. Only call more tools if a specific missing fact still matters. If you end the turn, deliver only completed results and current conclusions. Do not include execution transcripts, numbered step logs, or future-plan sections."
                 .to_string(),
         );
     }
@@ -248,7 +248,16 @@ pub(crate) fn final_answer_followup(
         return None;
     }
     let recent_successful_round = recent_successful_round?;
-    if content_signals_blocker(content) || !content_looks_generic_after_tool_success(content) {
+    if content_signals_blocker(content) {
+        return None;
+    }
+    if content_looks_like_process_transcript(content) {
+        return Some(
+            "[SYSTEM] Your draft reads like an execution transcript instead of a final user-facing answer. Do not show numbered step logs, progress headings, or future-plan sections. Either call the next tool now, or rewrite the answer to contain only completed results and the current conclusion."
+                .to_string(),
+        );
+    }
+    if !content_looks_generic_after_tool_success(content) {
         return None;
     }
     Some(
@@ -261,6 +270,19 @@ pub(crate) fn final_answer_followup(
             recent_successful_round.successful_calls
         )
         },
+    )
+}
+
+pub(crate) fn empty_final_answer_followup(
+    strategy: AgentRunStrategy,
+    any_tool_used: bool,
+    content: &str,
+) -> Option<&'static str> {
+    if strategy != AgentRunStrategy::LinuxEnhanced || !any_tool_used || !content.trim().is_empty() {
+        return None;
+    }
+    Some(
+        "[SYSTEM] Your current draft is empty. Provide a user-facing final answer from the completed tool results now. Do not emit an empty reply. Do not output progress logs, numbered execution steps, or future-plan sections.",
     )
 }
 
@@ -381,6 +403,59 @@ fn content_has_concrete_anchor(content: &str) -> bool {
         || content.contains('/')
         || content.contains('\\')
         || file_markers.iter().any(|marker| lower.contains(marker))
+}
+
+fn content_looks_like_process_transcript(content: &str) -> bool {
+    let mut heading_count = 0usize;
+    let mut rule_count = 0usize;
+    let mut enumerated_count = 0usize;
+    let mut emphasized_heading_count = 0usize;
+
+    for line in content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        if line.starts_with('#') {
+            heading_count += 1;
+            continue;
+        }
+        if line.len() >= 3 && line.chars().all(|ch| ch == '-') {
+            rule_count += 1;
+            continue;
+        }
+        if is_enumerated_visual_line(line) {
+            enumerated_count += 1;
+            continue;
+        }
+        if line.starts_with("**") && line.ends_with("**") && line.chars().count() <= 48 {
+            emphasized_heading_count += 1;
+        }
+    }
+
+    heading_count >= 2
+        || emphasized_heading_count >= 2
+        || (heading_count >= 1 && rule_count >= 1)
+        || (heading_count >= 1 && enumerated_count >= 2)
+        || enumerated_count >= 3
+}
+
+fn is_enumerated_visual_line(line: &str) -> bool {
+    let Some(first) = line.chars().next() else {
+        return false;
+    };
+    if first.is_ascii_digit() {
+        let rest = &line[first.len_utf8()..];
+        return rest.starts_with(". ") || rest.starts_with(") ");
+    }
+    let Some(close) = line.find(']') else {
+        return false;
+    };
+    if !line.starts_with('[') || close > 6 {
+        return false;
+    }
+    let prefix = &line[1..close];
+    !prefix.is_empty() && prefix.chars().all(|ch| ch.is_ascii_digit())
 }
 
 fn normalize_repetition_text(content: &str) -> String {
@@ -643,6 +718,20 @@ mod tests {
     }
 
     #[test]
+    fn final_answer_followup_rewrites_process_transcript_after_tool_success() {
+        let followup = final_answer_followup(
+            AgentRunStrategy::LinuxEnhanced,
+            Some(SuccessfulToolRoundSummary {
+                total_calls: 1,
+                successful_calls: 1,
+            }),
+            "## Multi-step run\n\n### Result\nDone.\n\n---\n\n### Next\nContinue scanning.",
+        )
+        .expect("followup");
+        assert!(followup.contains("execution transcript"));
+    }
+
+    #[test]
     fn final_answer_followup_keeps_concrete_short_answers() {
         let followup = final_answer_followup(
             AgentRunStrategy::LinuxEnhanced,
@@ -653,6 +742,13 @@ mod tests {
             "当前版本是 1.2.3。",
         );
         assert!(followup.is_none());
+    }
+
+    #[test]
+    fn process_transcript_detection_ignores_plain_direct_answer() {
+        assert!(!content_looks_like_process_transcript(
+            "当前版本是 1.2.3，配置目录在 /var/lib/beetle/config。"
+        ));
     }
 
     #[test]
@@ -680,6 +776,18 @@ mod tests {
         )
         .expect("followup");
         assert!(followup.contains("2 useful result(s)"));
+    }
+
+    #[test]
+    fn empty_final_answer_followup_requires_non_empty_user_facing_result() {
+        let followup =
+            empty_final_answer_followup(AgentRunStrategy::LinuxEnhanced, true, "").expect("text");
+        assert!(followup.contains("Do not emit an empty reply"));
+    }
+
+    #[test]
+    fn empty_final_answer_followup_skips_without_tool_progress() {
+        assert!(empty_final_answer_followup(AgentRunStrategy::LinuxEnhanced, false, "").is_none());
     }
 
     #[test]

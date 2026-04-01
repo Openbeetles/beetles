@@ -61,7 +61,7 @@ pub use spiffs::{
     default_skill_storage_arc, init_spiffs, spiffs_base_string, spiffs_usage,
     SpiffsCalendarProviderCredentialStore, SpiffsCalendarStore,
     SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
-    SpiffsSessionStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
+    SpiffsSessionStore, SpiffsSkillMetaStore, SpiffsSkillStorage, SpiffsTaskStore,
 };
 pub use state_root::state_mount_path;
 pub use wifi::{

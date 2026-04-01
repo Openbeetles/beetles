@@ -10,6 +10,7 @@ use crate::memory::{
     PendingRetryStore, RemindAtStore, SessionStore, SessionSummaryStore,
 };
 use crate::platform::ResponseBody;
+use crate::task::TaskStore;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -210,6 +211,7 @@ pub trait Platform: Send + Sync {
     fn calendar_provider_credential_store(
         &self,
     ) -> Arc<dyn CalendarProviderCredentialStore + Send + Sync>;
+    fn task_store(&self) -> Arc<dyn TaskStore + Send + Sync>;
     fn execution_state_store(&self) -> Arc<dyn ExecutionStateStore + Send + Sync>;
     fn important_message_store(&self) -> Arc<dyn ImportantMessageStore + Send + Sync>;
     fn remind_at_store(&self) -> Arc<dyn RemindAtStore + Send + Sync>;

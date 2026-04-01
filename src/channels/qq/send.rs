@@ -275,6 +275,12 @@ fn send_one_qq<H: ChannelHttpClient>(
     msg_id: Option<&str>,
 ) -> crate::error::Result<()> {
     const TAG: &str = "qq_send";
+    if content.trim().is_empty() {
+        return Err(crate::error::Error::config(
+            "qq_send_empty",
+            "refusing to send empty QQ message",
+        ));
+    }
     let send_start = std::time::Instant::now();
     let url = build_qq_message_url(chat_id);
     let v2 = is_v2_chat(chat_id);

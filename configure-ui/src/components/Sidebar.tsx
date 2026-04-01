@@ -8,6 +8,7 @@ import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import ChatBubbleOutlineRounded from "@mui/icons-material/ChatBubbleOutlineRounded";
 import ExtensionOutlined from "@mui/icons-material/ExtensionOutlined";
+import HandymanOutlined from "@mui/icons-material/HandymanOutlined";
 import HistoryOutlined from "@mui/icons-material/HistoryOutlined";
 import LinkRounded from "@mui/icons-material/LinkRounded";
 import PaletteOutlined from "@mui/icons-material/PaletteOutlined";
@@ -55,6 +56,7 @@ const NAV_ITEMS: { path: string; labelKey: string; icon: ReactElement }[] = [
   },
   { path: "/soul-user", labelKey: "nav.soulUser", icon: <PaletteOutlined /> },
   { path: "/skills", labelKey: "nav.skills", icon: <ExtensionOutlined /> },
+  { path: "/tools", labelKey: "nav.tools", icon: <HandymanOutlined /> },
   {
     path: "/device-config",
     labelKey: "nav.deviceConfig",

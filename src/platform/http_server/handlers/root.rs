@@ -21,6 +21,7 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         "GET /api/diagnose",
         "GET /api/system_info",
         "GET /api/channel_connectivity",
+        "GET /api/tools",
         "GET /api/soul",
         "GET /api/user",
         "POST /api/soul",

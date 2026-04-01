@@ -48,10 +48,13 @@ fn build_agent(proxy_url: Option<&str>, stage: &'static str) -> Result<ureq::Age
     Ok(b.build())
 }
 
-fn ureq_to_other(e: ureq::Error, stage: &'static str) -> Error {
-    Error::Other {
-        source: Box::new(std::io::Error::other(e.to_string())),
-        stage,
+fn ureq_to_error(e: ureq::Error, stage: &'static str) -> Error {
+    match e {
+        ureq::Error::Status(status_code, _) => Error::Http { status_code, stage },
+        other => Error::Other {
+            source: Box::new(std::io::Error::other(other.to_string())),
+            stage,
+        },
     }
 }
 
@@ -166,7 +169,7 @@ impl EspHttpClient {
             let req = apply_headers(agent.get(url), headers);
             let resp = req
                 .call()
-                .map_err(|e| ureq_to_other(e, "http_get_request"))?;
+                .map_err(|e| ureq_to_error(e, "http_get_request"))?;
             let status = resp.status();
             let reader = resp.into_reader();
             let body = read_response_body_from_reader(reader)?;
@@ -185,7 +188,7 @@ impl EspHttpClient {
             let req = apply_headers(agent.request(method, url), headers);
             let resp = req
                 .send_bytes(body)
-                .map_err(|e| ureq_to_other(e, "http_post_request"))?;
+                .map_err(|e| ureq_to_error(e, "http_post_request"))?;
             let status = resp.status();
             let reader = resp.into_reader();
             let rb = read_response_body_from_reader(reader)?;
@@ -198,7 +201,7 @@ impl EspHttpClient {
             let req = apply_headers(agent.delete(url), headers);
             let resp = req
                 .call()
-                .map_err(|e| ureq_to_other(e, "http_post_request"))?;
+                .map_err(|e| ureq_to_error(e, "http_post_request"))?;
             let status = resp.status();
             let reader = resp.into_reader();
             let body = read_response_body_from_reader(reader)?;
@@ -273,7 +276,7 @@ impl EspHttpClient {
         let req = apply_headers(self.agent.post(url), headers);
         let resp = req
             .send_bytes(body)
-            .map_err(|e| ureq_to_other(e, "http_post_request"))?;
+            .map_err(|e| ureq_to_error(e, "http_post_request"))?;
         let status = resp.status();
         let mut reader = resp.into_reader();
         let max_len = max_response_bytes
