@@ -224,8 +224,74 @@ pub trait SessionStore: Send + Sync {
 }
 
 /// 系统提示聚合：SOUL + USER + MEMORY + 近期每日笔记，总长度不超过 max_len。
-/// 截断策略：从「每日笔记」部分从旧到新丢弃，再若仍超则从尾部截断整体。
+/// 截断策略：按字符边界逐段追加；预算不足时在当前段截断并停止后续拼装。
 /// 纯函数，供 agent::context 使用；可 host 单测。
+fn push_bounded_char_boundary(out: &mut String, input: &str, max_len: usize) -> bool {
+    let remaining = max_len.saturating_sub(out.len());
+    if remaining == 0 {
+        return false;
+    }
+    if input.len() <= remaining {
+        out.push_str(input);
+        return true;
+    }
+    let mut end = remaining;
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end > 0 {
+        out.push_str(&input[..end]);
+    }
+    false
+}
+
+pub(crate) fn append_system_prompt_base(
+    out: &mut String,
+    soul: &str,
+    user: &str,
+    memory: &str,
+    max_len: usize,
+) {
+    const SEP: &str = "\n\n";
+    out.clear();
+    let base_hint = soul
+        .len()
+        .saturating_add(user.len())
+        .saturating_add(memory.len())
+        .saturating_add(SEP.len() * 2);
+    if out.capacity() < base_hint.min(max_len) {
+        out.reserve(base_hint.min(max_len) - out.capacity());
+    }
+    if !push_bounded_char_boundary(out, soul.trim(), max_len) {
+        return;
+    }
+    if !push_bounded_char_boundary(out, SEP, max_len) {
+        return;
+    }
+    if !push_bounded_char_boundary(out, user.trim(), max_len) {
+        return;
+    }
+    if !push_bounded_char_boundary(out, SEP, max_len) {
+        return;
+    }
+    let _ = push_bounded_char_boundary(out, memory.trim(), max_len);
+}
+
+pub(crate) fn append_system_prompt_daily_note(
+    out: &mut String,
+    note: &str,
+    max_len: usize,
+) -> bool {
+    const SEP: &str = "\n\n";
+    if out.len() >= max_len {
+        return false;
+    }
+    if !push_bounded_char_boundary(out, SEP, max_len) {
+        return false;
+    }
+    push_bounded_char_boundary(out, note.trim(), max_len)
+}
+
 pub fn build_system_prompt(
     soul: &str,
     user: &str,
@@ -233,35 +299,12 @@ pub fn build_system_prompt(
     daily_notes: &[String],
     max_len: usize,
 ) -> String {
-    const SEP: &str = "\n\n";
     let mut out = String::with_capacity(max_len.min(soul.len() + user.len() + memory.len() + 512));
-    out.push_str(soul.trim());
-    out.push_str(SEP);
-    out.push_str(user.trim());
-    out.push_str(SEP);
-    out.push_str(memory.trim());
+    append_system_prompt_base(&mut out, soul, user, memory, max_len);
     for note in daily_notes {
-        if out.len() >= max_len {
+        if !append_system_prompt_daily_note(&mut out, note, max_len) {
             break;
         }
-        out.push_str(SEP);
-        let note = note.trim();
-        let remaining = max_len.saturating_sub(out.len());
-        if note.len() <= remaining {
-            out.push_str(note);
-        } else {
-            let mut end = remaining;
-            while end > 0 && !note.is_char_boundary(end) {
-                end -= 1;
-            }
-            if end > 0 {
-                out.push_str(&note[..end]);
-            }
-            break;
-        }
-    }
-    if out.len() > max_len {
-        out.truncate(max_len);
     }
     out
 }

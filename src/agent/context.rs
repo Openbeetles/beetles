@@ -5,7 +5,8 @@ use crate::bus::PcMsg;
 use crate::error::Result;
 use crate::llm::Message;
 use crate::memory::{
-    build_context_messages, build_system_prompt, ImportantMessageStore, MemoryStore, SessionStore,
+    append_system_prompt_base, append_system_prompt_daily_note, build_context_messages,
+    ImportantMessageStore, MemoryStore, SessionStore,
 };
 use crate::state;
 use std::fmt::Write as _;
@@ -95,7 +96,57 @@ fn push_if_fits(system: &mut String, addition: &str, max_len: usize) -> bool {
     true
 }
 
-fn append_runtime_context(system: &mut String, max_len: usize, runtime: Option<RuntimeContext>) {
+fn push_char_boundary_truncated(out: &mut String, input: &str, max_len: usize) -> bool {
+    let remaining = max_len.saturating_sub(out.len());
+    if remaining == 0 {
+        return false;
+    }
+    if input.len() <= remaining {
+        out.push_str(input);
+        return true;
+    }
+    let mut end = remaining;
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end > 0 {
+        out.push_str(&input[..end]);
+    }
+    false
+}
+
+fn append_capped_section(system: &mut String, prefix: &str, content: &str, max_len: usize) -> bool {
+    if content.is_empty() {
+        return false;
+    }
+    let remain = max_len.saturating_sub(system.len());
+    if remain <= prefix.len() {
+        return false;
+    }
+    system.push_str(prefix);
+    push_char_boundary_truncated(system, content, max_len)
+}
+
+fn push_scratch_if_fits<F>(
+    system: &mut String,
+    max_len: usize,
+    scratch: &mut String,
+    build: F,
+) -> bool
+where
+    F: FnOnce(&mut String),
+{
+    scratch.clear();
+    build(scratch);
+    push_if_fits(system, scratch, max_len)
+}
+
+fn append_runtime_context(
+    system: &mut String,
+    max_len: usize,
+    runtime: Option<RuntimeContext>,
+    scratch: &mut String,
+) {
     let Some(runtime) = runtime else {
         return;
     };
@@ -105,49 +156,50 @@ fn append_runtime_context(system: &mut String, max_len: usize, runtime: Option<R
     let (y, mo, d, h, mi, s_sec) = crate::util::epoch_to_ymdhms(runtime.now_secs);
     let weekday = crate::util::weekday_name(runtime.now_secs / 86400);
 
-    let mut header = String::with_capacity(72);
-    let _ = write!(
-        header,
-        "\n\n## Runtime\nUTC: {:04}-{:02}-{:02} {} {:02}:{:02}:{:02}\nPlatform: {}",
-        y, mo, d, weekday, h, mi, s_sec, runtime.platform
-    );
-    if !push_if_fits(system, &header, max_len) {
+    if !push_scratch_if_fits(system, max_len, scratch, |buf| {
+        let _ = write!(
+            buf,
+            "\n\n## Runtime\nUTC: {:04}-{:02}-{:02} {} {:02}:{:02}:{:02}\nPlatform: {}",
+            y, mo, d, weekday, h, mi, s_sec, runtime.platform
+        );
+    }) {
         return;
     }
 
-    let mut pressure_line = String::with_capacity(64);
-    let _ = write!(pressure_line, "\nPressure: {:?}", runtime.pressure);
-    if !push_if_fits(system, &pressure_line, max_len) {
+    if !push_scratch_if_fits(system, max_len, scratch, |buf| {
+        let _ = write!(buf, "\nPressure: {:?}", runtime.pressure);
+    }) {
         return;
     }
 
-    let mut queue_line = String::with_capacity(48);
-    let _ = write!(
-        queue_line,
-        "\nAgent: tasks={} queues={}/{}",
-        runtime.active_agent_tasks, runtime.inbound_depth, runtime.outbound_depth
-    );
-    let _ = push_if_fits(system, &queue_line, max_len);
+    let _ = push_scratch_if_fits(system, max_len, scratch, |buf| {
+        let _ = write!(
+            buf,
+            "\nAgent: tasks={} queues={}/{}",
+            runtime.active_agent_tasks, runtime.inbound_depth, runtime.outbound_depth
+        );
+    });
 
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     {
-        let mut linux_block = String::with_capacity(96);
-        let _ = write!(
-            linux_block,
-            "\nLinux: cpu={:.0}% load={:.2}/{:.2}/{:.2} rss={}KB",
-            runtime.cpu_usage_percent,
-            runtime.load_average.0,
-            runtime.load_average.1,
-            runtime.load_average.2,
-            runtime.process_memory_kb
-        );
-        let _ = push_if_fits(system, &linux_block, max_len);
+        let _ = push_scratch_if_fits(system, max_len, scratch, |buf| {
+            let _ = write!(
+                buf,
+                "\nLinux: cpu={:.0}% load={:.2}/{:.2}/{:.2} rss={}KB",
+                runtime.cpu_usage_percent,
+                runtime.load_average.0,
+                runtime.load_average.1,
+                runtime.load_average.2,
+                runtime.process_memory_kb
+            );
+        });
     }
 }
 
 fn estimate_runtime_context_len(runtime: Option<RuntimeContext>) -> usize {
-    let mut out = String::new();
-    append_runtime_context(&mut out, usize::MAX, runtime);
+    let mut out = String::with_capacity(192);
+    let mut scratch = String::with_capacity(96);
+    append_runtime_context(&mut out, usize::MAX, runtime, &mut scratch);
     out.len()
 }
 
@@ -184,7 +236,7 @@ pub fn estimate_post_memory_system_tail_len(params: PostMemoryTailParams<'_>) ->
 /// 根据入站 PcMsg 与 store 构建 (system, messages)，供 LlmClient.chat 使用。
 ///
 /// **system 组成顺序**：SOUL → USER → MEMORY → daily_notes → skill_descriptions → 工具使用约束（有工具时）→ 群组/SILENT 约定；总长 ≤ system_max_len。
-/// **截断策略**：base_max 直接使用 `system_max_len` 构造 system_base；skills/约束追加后若超限则按字符边界截断。
+/// **截断策略**：base prompt 在单个 `String` 中按预算直接构造；skills/约束追加后若超限则按字符边界截断。
 /// **失败降级**：任一源（get_soul/get_user/get_memory/list_daily_note_names）加载失败时降级为空字符串并打日志，不阻塞 build。
 ///
 /// **messages**：历史会话（最近 session_max_messages 条）+ 当前用户 content，总长 ≤ messages_max_len；超限从最旧消息起丢弃。
@@ -205,16 +257,6 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
         log::warn!("[context] get_memory failed: {}", e);
         String::new()
     });
-    let names = p
-        .memory
-        .list_daily_note_names(DAILY_RECENT_N)
-        .unwrap_or_else(|_| vec![]);
-    let mut daily_contents: Vec<String> = Vec::with_capacity(names.len());
-    for name in &names {
-        if let Ok(c) = p.memory.get_daily_note(name) {
-            daily_contents.push(c);
-        }
-    }
     let post_memory_tail_len = estimate_post_memory_system_tail_len(PostMemoryTailParams {
         has_tools: p.has_tools,
         skill_descriptions: p.skill_descriptions,
@@ -225,64 +267,43 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
         llm_hint: p.llm_hint,
     });
     let base_max = p.system_max_len.saturating_sub(post_memory_tail_len);
-    let system_base = build_system_prompt(&soul, &user, &mem, &daily_contents, base_max);
     let mut system = String::with_capacity(p.system_max_len);
-    system.push_str(&system_base);
-    if let Some(execution_state_text) = p.execution_state_text {
-        let remain = p
-            .system_max_len
-            .saturating_sub(system.len())
-            .saturating_sub(post_memory_tail_len);
-        let state_remain = remain.saturating_sub(2);
-        if state_remain > 0 {
-            system.push_str("\n\n");
-            if execution_state_text.len() <= state_remain {
-                system.push_str(execution_state_text);
-            } else {
-                let mut end = state_remain;
-                while end > 0 && !execution_state_text.is_char_boundary(end) {
-                    end -= 1;
+    let mut section_scratch = String::with_capacity(96);
+    append_system_prompt_base(&mut system, &soul, &user, &mem, base_max);
+    if system.len() < base_max {
+        let names = p
+            .memory
+            .list_daily_note_names(DAILY_RECENT_N)
+            .unwrap_or_else(|_| vec![]);
+        for name in &names {
+            if system.len() >= base_max {
+                break;
+            }
+            if let Ok(content) = p.memory.get_daily_note(name) {
+                if !append_system_prompt_daily_note(&mut system, &content, base_max) {
+                    break;
                 }
-                system.push_str(&execution_state_text[..end]);
             }
         }
     }
+    if let Some(execution_state_text) = p.execution_state_text {
+        let max_section_len = p.system_max_len.saturating_sub(post_memory_tail_len);
+        let _ = append_capped_section(&mut system, "\n\n", execution_state_text, max_section_len);
+    }
     if let Some(long_term_memory_text) = p.long_term_memory_text {
-        let remain = p
-            .system_max_len
-            .saturating_sub(system.len())
-            .saturating_sub(post_memory_tail_len);
-        let memory_remain = remain.saturating_sub(2);
-        if memory_remain > 0 {
-            system.push_str("\n\n");
-            if long_term_memory_text.len() <= memory_remain {
-                system.push_str(long_term_memory_text);
-            } else {
-                let mut end = memory_remain;
-                while end > 0 && !long_term_memory_text.is_char_boundary(end) {
-                    end -= 1;
-                }
-                system.push_str(&long_term_memory_text[..end]);
-            }
-        }
+        let max_section_len = p.system_max_len.saturating_sub(post_memory_tail_len);
+        let _ = append_capped_section(&mut system, "\n\n", long_term_memory_text, max_section_len);
     }
     // NOTE: tool_descriptions 不再注入 system prompt。工具规格已通过 API `tools` 参数
     // 以结构化 JSON schema 传递；在 system prompt 中重复文字版描述会导致部分模型
     // （尤其 OpenAI 兼容的国产模型）退化为"用文字说要调工具"而不走 tool_use 路径。
     if !p.skill_descriptions.is_empty() {
-        let remain = p.system_max_len.saturating_sub(system.len());
-        if remain > 0 {
-            system.push_str("\n\n## Skills\n");
-            if p.skill_descriptions.len() <= remain {
-                system.push_str(p.skill_descriptions);
-            } else {
-                let mut end = remain;
-                while end > 0 && !p.skill_descriptions.is_char_boundary(end) {
-                    end -= 1;
-                }
-                system.push_str(&p.skill_descriptions[..end]);
-            }
-        }
+        let _ = append_capped_section(
+            &mut system,
+            "\n\n## Skills\n",
+            p.skill_descriptions,
+            p.system_max_len,
+        );
     }
     // 工具使用行为约束：给模型一个模式无关的硬约束，
     // 具体是原生 tools 还是 prompt-guided 协议，由后续请求装配层决定。
@@ -292,7 +313,12 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
             system.push_str(TOOL_BEHAVIOR_CONSTRAINT);
         }
     }
-    append_runtime_context(&mut system, p.system_max_len, p.runtime);
+    append_runtime_context(
+        &mut system,
+        p.system_max_len,
+        p.runtime,
+        &mut section_scratch,
+    );
     if p.msg.is_group {
         let remain = p.system_max_len.saturating_sub(system.len());
         if remain > 64 {
@@ -307,18 +333,10 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
         system.push_str(STRUCTURED_BLOCK);
     }
     if let Some(em) = p.emotion_signal_suffix {
-        system.push_str("\n\n");
-        system.push_str(em);
+        let _ = append_capped_section(&mut system, "\n\n", em, p.system_max_len);
     }
-    if !p.llm_hint.is_empty()
-        && system
-            .len()
-            .saturating_add(p.llm_hint.len())
-            .saturating_add(2)
-            <= p.system_max_len
-    {
-        system.push_str("\n\n");
-        system.push_str(p.llm_hint);
+    if !p.llm_hint.is_empty() {
+        let _ = append_capped_section(&mut system, "\n\n", p.llm_hint, p.system_max_len);
     }
     if system.len() > p.system_max_len {
         let mut end = p.system_max_len;
@@ -367,11 +385,24 @@ mod tests {
         let core =
             "\n\n## Runtime\nUTC: 2026-03-31 Tuesday 12:34:56\nPlatform: Linux\nPressure: Normal";
         let mut system = String::new();
-        append_runtime_context(&mut system, core.len(), Some(runtime));
+        let mut scratch = String::new();
+        append_runtime_context(&mut system, core.len(), Some(runtime), &mut scratch);
         assert!(system.contains("UTC: 2026-03-31 Tuesday 12:34:56"));
         assert!(system.contains("Platform: Linux"));
         assert!(system.contains("Pressure: Normal"));
         assert!(!system.contains("Agent:"));
+    }
+
+    #[test]
+    fn capped_section_skips_prefix_when_only_header_would_fit() {
+        let mut system = String::from("base");
+        assert!(!append_capped_section(
+            &mut system,
+            "\n\n## Skills\n",
+            "shell",
+            "base".len() + "\n\n## Skills\n".len()
+        ));
+        assert_eq!(system, "base");
     }
 
     #[test]
