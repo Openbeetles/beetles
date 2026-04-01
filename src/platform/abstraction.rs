@@ -219,6 +219,14 @@ pub trait Platform: Send + Sync {
     fn skill_storage(&self) -> Arc<dyn SkillStorage + Send + Sync>;
     fn skill_meta_store(&self) -> Arc<dyn SkillMetaStore + Send + Sync>;
     fn create_http_client(&self, config: &AppConfig) -> Result<Box<dyn PlatformHttpClient>>;
+    /// 创建面向用户可见交付面的 HTTP client（如流式编辑/状态更新）。
+    /// 默认沿用普通 client；资源更紧的平台可覆写为更高优先级。
+    fn create_interactive_http_client(
+        &self,
+        config: &AppConfig,
+    ) -> Result<Box<dyn PlatformHttpClient>> {
+        self.create_http_client(config)
+    }
     fn spiffs_usage(&self) -> Option<(usize, usize)>;
     fn read_heartbeat_file(&self) -> Result<String>;
 

@@ -244,6 +244,24 @@ impl Platform for Esp32Platform {
         }
     }
 
+    fn create_interactive_http_client(
+        &self,
+        config: &AppConfig,
+    ) -> crate::error::Result<Box<dyn crate::platform::PlatformHttpClient>> {
+        if !config.proxy_url.trim().is_empty() {
+            Ok(Box::new(
+                crate::platform::EspHttpClient::new_with_config_and_priority(
+                    config,
+                    crate::orchestrator::Priority::High,
+                )?,
+            ))
+        } else {
+            Ok(Box::new(crate::platform::EspHttpClient::new_with_priority(
+                crate::orchestrator::Priority::High,
+            )?))
+        }
+    }
+
     fn spiffs_usage(&self) -> Option<(usize, usize)> {
         spiffs_usage()
     }

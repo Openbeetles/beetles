@@ -1030,7 +1030,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                 let cfg = Arc::clone(&config);
                 let make_http: Arc<
                     dyn Fn() -> beetle::Result<Box<dyn beetle::PlatformHttpClient>> + Send + Sync,
-                > = Arc::new(move || pf.create_http_client(cfg.as_ref()));
+                > = Arc::new(move || pf.create_interactive_http_client(cfg.as_ref()));
                 match config.enabled_channel.as_str() {
                     "telegram" if !config.tg_token.trim().is_empty() => {
                         Some(Arc::new(TelegramStreamEditor {

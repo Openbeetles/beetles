@@ -2,6 +2,7 @@ use crate::bus::{IngressKind, OutboundTx, PcMsg};
 use crate::error::Result;
 use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
 use crate::metrics;
+use crate::runtime::spawn_planned;
 use crate::util::truncate_content_to_max;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -12,6 +13,7 @@ const MAX_QUEUED_VISIBLE_UPDATES: u8 = 4;
 const MIN_PARTIAL_VISIBLE_CHARS: usize = 8;
 const MAX_QUEUED_PROGRESS_CHARS: usize = 120;
 const MAX_QUEUED_PARTIAL_CHARS: usize = 240;
+const WAITING_NOTICE_STACK_SIZE: usize = 8192;
 
 /// 流式编辑器：LLM 流式输出期间，发送占位消息并逐步编辑内容。
 /// 实现方内部自行创建/管理 HTTP 连接，不占用 agent 的 LLM HTTP 连接。
@@ -433,9 +435,10 @@ fn spawn_waiting_notice(
     let channel = channel.to_string();
     let chat_id = chat_id.to_string();
     let req_id = req_id.to_string();
-    let spawn_res = std::thread::Builder::new()
-        .name("agent_waiting_notice".to_string())
-        .spawn(move || {
+    spawn_planned(
+        "agent_waiting_notice",
+        WAITING_NOTICE_STACK_SIZE,
+        move || {
             std::thread::sleep(waiting_notice_delay());
             if worker_shared
                 .waiting_notice_canceled
@@ -456,10 +459,8 @@ fn spawn_waiting_notice(
                     .visible_updates_sent
                     .fetch_sub(1, Ordering::Relaxed);
             }
-        });
-    if let Err(e) = spawn_res {
-        log::warn!("[agent_delivery] failed to spawn waiting notice: {}", e);
-    }
+        },
+    );
     shared
 }
 

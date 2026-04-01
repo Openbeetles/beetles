@@ -234,6 +234,13 @@ impl Platform for LinuxPlatform {
         }
     }
 
+    fn create_interactive_http_client(
+        &self,
+        config: &AppConfig,
+    ) -> crate::error::Result<Box<dyn crate::platform::PlatformHttpClient>> {
+        self.create_http_client(config)
+    }
+
     fn spiffs_usage(&self) -> Option<(usize, usize)> {
         spiffs_usage()
     }

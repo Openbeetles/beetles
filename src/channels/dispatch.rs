@@ -5,6 +5,7 @@ use crate::bus::{OutboundRx, MAX_CONTENT_LEN};
 use crate::config::AppConfig;
 use crate::error::Result;
 use crate::metrics;
+use crate::orchestrator::AdmissionDecision;
 use crate::platform::PlatformHttpClient;
 use crate::util::{truncate_content_to_max, STACK_CHANNEL_SENDER};
 use std::collections::HashMap;
@@ -115,6 +116,98 @@ fn record_channel_ok(channel: &str) {
     crate::orchestrator::record_channel_result_pub(channel, true);
 }
 
+fn replay_cooldown_buffer_with<FH, FS>(
+    cooldown_buffer: &mut VecDeque<crate::bus::PcMsg>,
+    mut is_in_cooldown: FH,
+    mut send: FS,
+) where
+    FH: FnMut(&str) -> bool,
+    FS: FnMut(&crate::bus::PcMsg) -> bool,
+{
+    let mut i = 0;
+    while i < cooldown_buffer.len() {
+        let Some(buffered) = cooldown_buffer.get(i) else {
+            break;
+        };
+        if is_in_cooldown(buffered.channel.as_ref()) {
+            i += 1;
+            continue;
+        }
+        let Some(buffered) = cooldown_buffer.remove(i) else {
+            break;
+        };
+        if send(&buffered) {
+            continue;
+        }
+        cooldown_buffer.insert(i, buffered);
+        break;
+    }
+}
+
+fn dispatch_via_sink(
+    tag: &str,
+    sinks: &ChannelSinks,
+    msg: &crate::bus::PcMsg,
+    content: &str,
+) -> bool {
+    let Some(sink) = sinks.get(&msg.channel) else {
+        log::warn!("[{}] no sink for channel={}", tag, msg.channel);
+        return false;
+    };
+
+    crate::platform::task_wdt::feed_current_task();
+
+    if let AdmissionDecision::Defer { delay_ms } =
+        crate::orchestrator::should_accept_outbound_pub(&msg.channel)
+    {
+        log::info!("[{}] outbound deferred {}ms (pressure)", tag, delay_ms);
+        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        crate::platform::task_wdt::feed_current_task();
+    }
+    let background_yield = crate::orchestrator::background_outbound_yield_ms_pub();
+    if background_yield > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(background_yield));
+        crate::platform::task_wdt::feed_current_task();
+    }
+
+    let mut last_err = None;
+    for attempt in 0..SEND_RETRY {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(SEND_RETRY_DELAY_MS));
+            crate::platform::task_wdt::feed_current_task();
+        }
+        match sink.send_with_req(&msg.chat_id, content, msg.req_id.as_deref()) {
+            Ok(()) => {
+                log::info!(
+                    "[latency][dispatch] req_id={} channel={} attempt={} status=ok",
+                    msg.req_id.as_deref().unwrap_or("-"),
+                    msg.channel,
+                    attempt + 1
+                );
+                record_channel_ok(&msg.channel);
+                metrics::record_dispatch_send(true);
+                return true;
+            }
+            Err(e) => {
+                last_err = Some(e);
+            }
+        }
+    }
+    if let Some(e) = last_err {
+        record_channel_fail(&msg.channel);
+        metrics::record_dispatch_send(false);
+        metrics::record_error_by_stage("channel_dispatch");
+        log::warn!(
+            "[{}] req_id={} channel={} send failed after retries: {}",
+            tag,
+            msg.req_id.as_deref().unwrap_or("-"),
+            msg.channel,
+            e
+        );
+    }
+    false
+}
+
 /// 熔断冷却期暂存的消息上限，防止无限积累。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const COOLDOWN_BUFFER_MAX: usize = 16;
@@ -126,8 +219,11 @@ const COOLDOWN_BUFFER_MAX: usize = 64;
 pub fn run_dispatch(outbound_rx: OutboundRx, sinks: Arc<ChannelSinks>) {
     const TAG: &str = "channel_dispatch";
     let mut cooldown_buffer: VecDeque<crate::bus::PcMsg> = VecDeque::new();
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    crate::platform::task_wdt::register_current_task_to_task_wdt();
 
     loop {
+        crate::platform::task_wdt::feed_current_task();
         let msg = match outbound_rx.recv() {
             Ok(m) => m,
             Err(e) => {
@@ -142,42 +238,10 @@ pub fn run_dispatch(outbound_rx: OutboundRx, sinks: Arc<ChannelSinks>) {
         }
 
         // Replay buffered messages whose channel is out of cooldown
-        let mut i = 0;
-        while i < cooldown_buffer.len() {
-            if is_channel_in_cooldown(&cooldown_buffer[i].channel) {
-                i += 1;
-                continue;
-            }
-            if let Some(buffered) = cooldown_buffer.swap_remove_back(i) {
-                let bc = truncate_content_to_max(&buffered.content, MAX_CONTENT_LEN);
-                if let Some(sink) = sinks.get(buffered.channel.as_ref()) {
-                    if sink
-                        .send_with_req(&buffered.chat_id, &bc, buffered.req_id.as_deref())
-                        .is_ok()
-                    {
-                        record_channel_ok(&buffered.channel);
-                        metrics::record_dispatch_send(true);
-                    } else {
-                        record_channel_fail(&buffered.channel);
-                        metrics::record_dispatch_send(false);
-                        log::warn!(
-                            "[{}] req_id={} channel={} cooldown replay failed",
-                            TAG,
-                            buffered.req_id.as_deref().unwrap_or("-"),
-                            buffered.channel
-                        );
-                    }
-                } else {
-                    log::warn!(
-                        "[{}] no sink for channel={}, message kept in cooldown buffer",
-                        TAG,
-                        buffered.channel
-                    );
-                    cooldown_buffer.push_back(buffered);
-                    i += 1;
-                }
-            }
-        }
+        replay_cooldown_buffer_with(&mut cooldown_buffer, is_channel_in_cooldown, |buffered| {
+            let buffered_content = truncate_content_to_max(&buffered.content, MAX_CONTENT_LEN);
+            dispatch_via_sink(TAG, sinks.as_ref(), buffered, &buffered_content)
+        });
 
         if is_channel_in_cooldown(&msg.channel) {
             if cooldown_buffer.len() < COOLDOWN_BUFFER_MAX {
@@ -194,57 +258,64 @@ pub fn run_dispatch(outbound_rx: OutboundRx, sinks: Arc<ChannelSinks>) {
             }
             continue;
         }
-        if let Some(sink) = sinks.get(&msg.channel) {
-            // 出站门禁：Critical 压力下延迟，让堆有恢复时间
-            // Outbound admission: defer under Critical pressure to allow heap recovery
-            if let crate::orchestrator::AdmissionDecision::Defer { delay_ms } =
-                crate::orchestrator::should_accept_outbound_pub(&msg.channel)
-            {
-                log::info!("[{}] outbound deferred {}ms (pressure)", TAG, delay_ms);
-                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-            }
-            let background_yield = crate::orchestrator::background_outbound_yield_ms_pub();
-            if background_yield > 0 {
-                std::thread::sleep(std::time::Duration::from_millis(background_yield));
-            }
-            let mut last_err = None;
-            for attempt in 0..SEND_RETRY {
-                if attempt > 0 {
-                    std::thread::sleep(Duration::from_millis(SEND_RETRY_DELAY_MS));
-                }
-                match sink.send_with_req(&msg.chat_id, &content, msg.req_id.as_deref()) {
-                    Ok(()) => {
-                        last_err = None;
-                        log::info!(
-                            "[latency][dispatch] req_id={} channel={} attempt={} status=ok",
-                            msg.req_id.as_deref().unwrap_or("-"),
-                            msg.channel,
-                            attempt + 1
-                        );
-                        record_channel_ok(&msg.channel);
-                        metrics::record_dispatch_send(true);
-                        break;
-                    }
-                    Err(e) => {
-                        last_err = Some(e);
-                    }
-                }
-            }
-            if let Some(e) = last_err {
-                record_channel_fail(&msg.channel);
-                metrics::record_dispatch_send(false);
-                metrics::record_error_by_stage("channel_dispatch");
-                log::warn!(
-                    "[{}] req_id={} channel={} send failed after retries: {}",
-                    TAG,
-                    msg.req_id.as_deref().unwrap_or("-"),
-                    msg.channel,
-                    e
-                );
-            }
-        } else {
-            log::warn!("[{}] no sink for channel={}", TAG, msg.channel);
-        }
+        let _ = dispatch_via_sink(TAG, sinks.as_ref(), &msg, &content);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replay_cooldown_buffer_with;
+    use crate::bus::PcMsg;
+    use std::collections::VecDeque;
+
+    fn build_msg(channel: &str, chat_id: &str, content: &str) -> PcMsg {
+        PcMsg::new(channel, chat_id, content).expect("pcmsg")
+    }
+
+    #[test]
+    fn replay_cooldown_buffer_preserves_fifo_for_ready_messages() {
+        let mut buffer = VecDeque::from(vec![
+            build_msg("blocked", "chat-1", "first-blocked"),
+            build_msg("ready", "chat-2", "first-ready"),
+            build_msg("ready", "chat-2", "second-ready"),
+        ]);
+        let mut replayed = Vec::new();
+
+        replay_cooldown_buffer_with(
+            &mut buffer,
+            |channel| channel == "blocked",
+            |msg| {
+                replayed.push(msg.content.clone());
+                true
+            },
+        );
+
+        assert_eq!(replayed, vec!["first-ready", "second-ready"]);
+        assert_eq!(buffer.len(), 1);
+        assert_eq!(buffer[0].content, "first-blocked");
+    }
+
+    #[test]
+    fn replay_cooldown_buffer_reinserts_failed_message_in_place() {
+        let mut buffer = VecDeque::from(vec![
+            build_msg("ready", "chat-1", "first-ready"),
+            build_msg("ready", "chat-1", "second-ready"),
+        ]);
+        let mut attempts = 0usize;
+
+        replay_cooldown_buffer_with(
+            &mut buffer,
+            |_channel| false,
+            |_msg| {
+                attempts += 1;
+                false
+            },
+        );
+
+        assert_eq!(attempts, 1);
+        assert_eq!(buffer.len(), 2);
+        assert_eq!(buffer[0].content, "first-ready");
+        assert_eq!(buffer[1].content, "second-ready");
     }
 }
 

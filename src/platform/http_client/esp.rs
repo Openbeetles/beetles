@@ -98,8 +98,13 @@ impl EspHttpClient {
 
     /// 新建客户端；若 config.proxy_url 非空则解析为 host:port 并标记使用 proxy（CONNECT 隧道未实现时请求会失败）。
     pub fn new_with_config(config: &AppConfig) -> Result<Self> {
+        Self::new_with_config_and_priority(config, Priority::Normal)
+    }
+
+    /// 新建客户端并显式指定优先级。
+    pub fn new_with_config_and_priority(config: &AppConfig, priority: Priority) -> Result<Self> {
         let proxy = parse_proxy_url_to_host_port(config.proxy_url.trim());
-        Self::new_optional_proxy(proxy, Priority::Normal)
+        Self::new_optional_proxy(proxy, priority)
     }
 
     fn default_http_config() -> HttpConfig {
