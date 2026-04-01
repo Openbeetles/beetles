@@ -8,7 +8,8 @@ use crate::platform::{
     display_driver::{install_display_state, DisplayState},
     heartbeat_file::read_heartbeat_file,
     spiffs::{
-        spiffs_usage, SpiffsExecutionStateStore, SpiffsImportantMessageStore,
+        spiffs_usage, SpiffsCalendarProviderCredentialStore, SpiffsCalendarStore,
+        SpiffsExecutionStateStore, SpiffsImportantMessageStore,
         SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
         SpiffsPendingRetryStore, SpiffsRemindAtStore, SpiffsSessionStore,
         SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
@@ -17,6 +18,7 @@ use crate::platform::{
 };
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::{
+    calendar::{CalendarProviderCredentialStore, CalendarStore},
     config::{AppConfig, AudioSegment},
     display::{DisplayCommand, DisplayConfig},
     memory::{
@@ -40,6 +42,8 @@ pub struct Esp32Platform {
     long_term_memory_extraction_state_store: Arc<SpiffsLongTermMemoryExtractionStateStore>,
     session_store: Arc<SpiffsSessionStore>,
     pending_retry_store: Arc<SpiffsPendingRetryStore>,
+    calendar_store: Arc<SpiffsCalendarStore>,
+    calendar_provider_credential_store: Arc<SpiffsCalendarProviderCredentialStore>,
     execution_state_store: Arc<SpiffsExecutionStateStore>,
     important_message_store: Arc<SpiffsImportantMessageStore>,
     remind_at_store: Arc<SpiffsRemindAtStore>,
@@ -67,6 +71,10 @@ impl Esp32Platform {
             ),
             session_store: Arc::new(SpiffsSessionStore::new()),
             pending_retry_store: Arc::new(SpiffsPendingRetryStore::new()),
+            calendar_store: Arc::new(SpiffsCalendarStore::new()),
+            calendar_provider_credential_store: Arc::new(
+                SpiffsCalendarProviderCredentialStore::new(),
+            ),
             execution_state_store: Arc::new(SpiffsExecutionStateStore::new()),
             important_message_store: Arc::new(SpiffsImportantMessageStore::new()),
             remind_at_store: Arc::new(SpiffsRemindAtStore::new()),
@@ -179,6 +187,17 @@ impl Platform for Esp32Platform {
 
     fn pending_retry_store(&self) -> Arc<dyn PendingRetryStore + Send + Sync> {
         Arc::clone(&self.pending_retry_store) as Arc<dyn PendingRetryStore + Send + Sync>
+    }
+
+    fn calendar_store(&self) -> Arc<dyn CalendarStore + Send + Sync> {
+        Arc::clone(&self.calendar_store) as Arc<dyn CalendarStore + Send + Sync>
+    }
+
+    fn calendar_provider_credential_store(
+        &self,
+    ) -> Arc<dyn CalendarProviderCredentialStore + Send + Sync> {
+        Arc::clone(&self.calendar_provider_credential_store)
+            as Arc<dyn CalendarProviderCredentialStore + Send + Sync>
     }
 
     fn execution_state_store(&self) -> Arc<dyn ExecutionStateStore + Send + Sync> {

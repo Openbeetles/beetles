@@ -59,6 +59,7 @@ pub use response_body::ResponseBody;
 pub use sntp::init_sntp;
 pub use spiffs::{
     default_skill_storage_arc, init_spiffs, spiffs_base_string, spiffs_usage,
+    SpiffsCalendarProviderCredentialStore, SpiffsCalendarStore,
     SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
     SpiffsSessionStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
 };

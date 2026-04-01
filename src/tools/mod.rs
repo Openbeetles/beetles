@@ -8,6 +8,7 @@ mod state_file_guard;
 #[cfg(feature = "tools_network_extra")]
 pub mod analyze_image;
 pub mod board_info;
+pub mod calendar;
 pub mod cron;
 pub mod cron_manage;
 #[cfg(all(
@@ -78,6 +79,7 @@ pub mod web_search;
 #[cfg(feature = "tools_network_extra")]
 pub use analyze_image::AnalyzeImageTool;
 pub use board_info::BoardInfoTool;
+pub use calendar::CalendarTool;
 pub use cron_manage::CronManageTool;
 #[cfg(all(
     feature = "tools_network_extra",

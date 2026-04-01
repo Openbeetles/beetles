@@ -15,6 +15,7 @@ pub mod agent;
 pub mod audio;
 pub mod bg_timer;
 pub mod bus;
+pub mod calendar;
 pub mod channels;
 pub mod config;
 pub mod display;
@@ -87,9 +88,9 @@ pub use platform::{
 };
 pub use platform::{ConfigStore, MemorySnapshot, Platform, SkillStorage, StateFs};
 pub use tools::{
-    build_default_registry, FileEditTool, FileWriteTool, FilesTool, GetTimeTool, KvStoreTool,
-    RemindAtTool, Tool, ToolContext, ToolExposure, ToolMetadata, ToolPolicyContext, ToolRegistry,
-    VoiceInputTool, VoiceOutputTool,
+    build_default_registry, CalendarTool, FileEditTool, FileWriteTool, FilesTool, GetTimeTool,
+    KvStoreTool, RemindAtTool, Tool, ToolContext, ToolExposure, ToolMetadata, ToolPolicyContext,
+    ToolRegistry, VoiceInputTool, VoiceOutputTool,
 };
 #[cfg(feature = "tools_diagnostics")]
 pub use tools::{
@@ -175,5 +176,50 @@ impl<T: platform::PlatformHttpClient + ?Sized> channels::ChannelHttpClient for T
     }
     fn reset_connection_for_retry(&mut self) {
         platform::PlatformHttpClient::reset_connection_for_retry(self);
+    }
+}
+
+impl<T: platform::PlatformHttpClient + ?Sized> calendar::CalendarHttpClient for T {
+    fn get_with_headers(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<(u16, platform::ResponseBody)> {
+        platform::PlatformHttpClient::get(self, url, headers)
+    }
+
+    fn post_with_headers(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> Result<(u16, platform::ResponseBody)> {
+        platform::PlatformHttpClient::post(self, url, headers, body)
+    }
+
+    fn patch_with_headers(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> Result<(u16, platform::ResponseBody)> {
+        platform::PlatformHttpClient::patch(self, url, headers, body)
+    }
+
+    fn put_with_headers(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> Result<(u16, platform::ResponseBody)> {
+        platform::PlatformHttpClient::put(self, url, headers, body)
+    }
+
+    fn delete_with_headers(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<(u16, platform::ResponseBody)> {
+        platform::PlatformHttpClient::delete(self, url, headers)
     }
 }

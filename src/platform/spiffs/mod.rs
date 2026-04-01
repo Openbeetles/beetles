@@ -233,6 +233,8 @@ pub fn list_dir(path: impl AsRef<Path>) -> Result<Vec<String>> {
 
 // --- 子模块与对外类型 ---
 
+pub mod calendar_credentials;
+pub mod calendar_store;
 pub mod execution_state;
 pub mod important_message;
 pub mod long_term_extraction_state;
@@ -245,6 +247,8 @@ pub mod session_summary;
 pub mod skill_meta;
 pub mod skill_storage;
 
+pub use calendar_credentials::SpiffsCalendarProviderCredentialStore;
+pub use calendar_store::SpiffsCalendarStore;
 pub use execution_state::SpiffsExecutionStateStore;
 pub use important_message::SpiffsImportantMessageStore;
 pub use long_term_extraction_state::SpiffsLongTermMemoryExtractionStateStore;

@@ -1,6 +1,7 @@
 //! 平台抽象 trait：ConfigStore、SkillStorage、PlatformHttpClient、Platform。
 //! 核心域与 main 仅依赖这些 trait，便于后续支持多种硬件。
 
+use crate::calendar::{CalendarProviderCredentialStore, CalendarStore};
 use crate::config::{AppConfig, AudioSegment, PinConfig};
 use crate::display::{DisplayCommand, DisplayConfig};
 use crate::error::Result;
@@ -205,6 +206,10 @@ pub trait Platform: Send + Sync {
     ) -> Arc<dyn crate::memory::LongTermMemoryExtractionStateStore + Send + Sync>;
     fn session_store(&self) -> Arc<dyn SessionStore + Send + Sync>;
     fn pending_retry_store(&self) -> Arc<dyn PendingRetryStore + Send + Sync>;
+    fn calendar_store(&self) -> Arc<dyn CalendarStore + Send + Sync>;
+    fn calendar_provider_credential_store(
+        &self,
+    ) -> Arc<dyn CalendarProviderCredentialStore + Send + Sync>;
     fn execution_state_store(&self) -> Arc<dyn ExecutionStateStore + Send + Sync>;
     fn important_message_store(&self) -> Arc<dyn ImportantMessageStore + Send + Sync>;
     fn remind_at_store(&self) -> Arc<dyn RemindAtStore + Send + Sync>;

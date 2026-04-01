@@ -135,6 +135,10 @@ pub fn build_default_registry(
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(super::GetTimeTool));
     registry.register(Box::new(super::EnvTool));
+    registry.register(Box::new(super::CalendarTool::new(
+        platform.calendar_store(),
+        platform.calendar_provider_credential_store(),
+    )));
     registry.register(Box::new(super::FilesTool::new(platform.state_fs())));
     registry.register(Box::new(super::FileEditTool::new(platform.state_fs())));
     #[cfg(all(
