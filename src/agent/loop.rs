@@ -819,10 +819,17 @@ fn enqueue_end_turn_followup(
     progress_history[2] = Some(RoundProgress { new_info: false });
 }
 
-fn collect_recent_assistant_messages(messages: &[Message], limit: usize) -> Vec<String> {
-    let mut recent = Vec::with_capacity(limit);
+fn collect_recent_assistant_messages<'a>(
+    messages: &'a [Message],
+    limit: usize,
+    out: &mut Vec<&'a str>,
+) {
+    out.clear();
+    if out.capacity() < limit {
+        out.reserve(limit - out.capacity());
+    }
     for message in messages.iter().rev() {
-        if recent.len() >= limit {
+        if out.len() >= limit {
             break;
         }
         if message.role.as_ref() != "assistant" {
@@ -832,9 +839,19 @@ fn collect_recent_assistant_messages(messages: &[Message], limit: usize) -> Vec<
         if content.is_empty() || content == "[tool_use]" {
             continue;
         }
-        recent.push(content.to_string());
+        out.push(content);
     }
-    recent
+}
+
+fn prepare_system_with_suffix<'a>(base: &str, suffix: &str, scratch: &'a mut String) -> &'a str {
+    scratch.clear();
+    let required = base.len().saturating_add(suffix.len());
+    if scratch.capacity() < required {
+        scratch.reserve(required - scratch.capacity());
+    }
+    scratch.push_str(base);
+    scratch.push_str(suffix);
+    scratch.as_str()
 }
 
 struct EndTurnFollowupContext<'a> {
@@ -865,7 +882,8 @@ fn resolve_end_turn_followup(ctx: EndTurnFollowupContext<'_>) -> Option<(String,
     ) {
         return Some((followup, true));
     }
-    let recent_assistant_messages = collect_recent_assistant_messages(ctx.messages, 3);
+    let mut recent_assistant_messages = Vec::with_capacity(3);
+    collect_recent_assistant_messages(ctx.messages, 3, &mut recent_assistant_messages);
     if let Some(followup) =
         repeated_answer_followup(ctx.strategy, &recent_assistant_messages, ctx.content)
     {
@@ -891,8 +909,10 @@ fn run_final_answer_recovery_round(
     messages: &[Message],
     llm_stream: bool,
     latency: &mut WorkerLatency,
+    system_scratch: &mut String,
 ) -> Result<String> {
-    let recovery_system = format!("{}{}", system, FINAL_RECOVERY_SYSTEM_SUFFIX);
+    let recovery_system =
+        prepare_system_with_suffix(system, FINAL_RECOVERY_SYSTEM_SUFFIX, system_scratch);
     let t0 = metrics::record_llm_call_start();
     let llm_round_start = Instant::now();
     let response = if llm_stream {
@@ -901,7 +921,7 @@ fn run_final_answer_recovery_round(
         };
         worker_llm.chat_with_progress(
             tool_ctx,
-            &recovery_system,
+            recovery_system,
             messages,
             None,
             ToolChoicePolicy::Auto,
@@ -910,7 +930,7 @@ fn run_final_answer_recovery_round(
     } else {
         worker_llm.chat(
             tool_ctx,
-            &recovery_system,
+            recovery_system,
             messages,
             None,
             ToolChoicePolicy::Auto,
@@ -1737,13 +1757,16 @@ fn run_worker_path(
     .map_err(|e| e.with_stage("agent_context"))?;
     latency.context_ms = context_start.elapsed().as_millis();
     request_plan.apply_system_prompt(&mut system, budget.system_prompt_max);
+    let mut system_scratch =
+        String::with_capacity(system.len().saturating_add(PLAN_SYSTEM_SUFFIX.len()));
     if config.strategy.enables_preplanning()
         && should_generate_execution_plan(msg, has_tools, snapshot.pressure)
     {
-        let planning_system = format!("{}{}", system, PLAN_SYSTEM_SUFFIX);
+        let planning_system =
+            prepare_system_with_suffix(&system, PLAN_SYSTEM_SUFFIX, &mut system_scratch);
         match worker_llm.chat(
             &mut tool_ctx,
-            &planning_system,
+            planning_system,
             &messages,
             None,
             ToolChoicePolicy::Auto,
@@ -1762,10 +1785,10 @@ fn run_worker_path(
     // 复用工具错误消息缓冲区，避免错误路径反复分配。
     let mut tool_error_buf = String::with_capacity(256);
     let mut final_content = String::with_capacity(4096);
-    let memory_grounding = build_memory_grounding_text(
-        prompt_memory.summary_text.as_deref(),
-        prompt_memory.long_term_memory_text.as_deref(),
-    );
+    let mut memory_grounding: Option<String> = None;
+    let mut tool_result_user_content = String::with_capacity(1024);
+    let mut round_call_keys = Vec::with_capacity(4);
+    let mut round_evidence_lines = Vec::with_capacity(MAX_TOOL_EVIDENCE_ITEMS);
     // 流式编辑状态（跨 ReAct 轮次共享）。
     let editor = if config.llm_stream
         && config.stream_editor_channel.as_deref() == Some(msg.channel.as_ref())
@@ -1826,7 +1849,6 @@ fn run_worker_path(
         let t0 = metrics::record_llm_call_start();
         let llm_round_start = Instant::now();
         let mut first_token_marked = latency.ttft_ms.is_some();
-        let round_system = system.clone();
         let round_tools = request_plan.request_tools();
         let response = if config.llm_stream {
             let progress_base = worker_start;
@@ -1847,7 +1869,7 @@ fn run_worker_path(
             };
             worker_llm.chat_with_progress(
                 &mut tool_ctx,
-                &round_system,
+                &system,
                 &messages,
                 round_tools,
                 llm_tool_choice,
@@ -1857,7 +1879,7 @@ fn run_worker_path(
             let llm_tool_choice = request_plan.tool_choice(round, any_tool_used);
             worker_llm.chat(
                 &mut tool_ctx,
-                &round_system,
+                &system,
                 &messages,
                 round_tools,
                 llm_tool_choice,
@@ -1970,16 +1992,22 @@ fn run_worker_path(
             let mut cap =
                 MAX_TOOL_RESULTS_USER_MESSAGE_LEN.min(tool_calls.len().saturating_mul(192));
             cap = cap.max(TOOL_RESULTS_PREFIX.len());
-            let mut user_content_raw = String::with_capacity(cap);
-            user_content_raw.push_str(TOOL_RESULTS_PREFIX);
+            tool_result_user_content.clear();
+            if tool_result_user_content.capacity() < cap {
+                tool_result_user_content.reserve(cap - tool_result_user_content.capacity());
+            }
+            tool_result_user_content.push_str(TOOL_RESULTS_PREFIX);
             let mut truncated = false;
             latency.tool_calls = latency.tool_calls.saturating_add(tool_calls.len() as u32);
             // P1 Enhancement 3: 跟踪本轮工具是否有成功。
             let mut round_tool_success = false;
             let mut round_repeat_count = 0usize;
-            let mut round_call_keys = Vec::with_capacity(tool_calls.len());
+            round_call_keys.clear();
+            if round_call_keys.capacity() < tool_calls.len() {
+                round_call_keys.reserve(tool_calls.len() - round_call_keys.capacity());
+            }
             let mut round_failure_summary = ToolFailureSummary::default();
-            let mut round_evidence_lines = Vec::with_capacity(tool_calls.len().min(4));
+            round_evidence_lines.clear();
             let mut omitted_evidence_count = 0usize;
             let mut round_observations = SuccessfulToolRoundObservations::default();
             for (i, tc) in tool_calls.iter().enumerate() {
@@ -2172,7 +2200,7 @@ fn run_worker_path(
                 crate::platform::task_wdt::feed_current_task();
                 if i > 0
                     && push_bounded_utf8(
-                        &mut user_content_raw,
+                        &mut tool_result_user_content,
                         "\n",
                         MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
                     )
@@ -2181,7 +2209,7 @@ fn run_worker_path(
                     break;
                 }
                 if append_tool_result_block(
-                    &mut user_content_raw,
+                    &mut tool_result_user_content,
                     ToolResultBlock {
                         call_id: &tc.id,
                         tool_name: &tc.name,
@@ -2197,15 +2225,15 @@ fn run_worker_path(
                 }
             }
             if !round_evidence_lines.is_empty() {
-                if !user_content_raw.ends_with('\n') {
+                if !tool_result_user_content.ends_with('\n') {
                     let _ = push_bounded_utf8(
-                        &mut user_content_raw,
+                        &mut tool_result_user_content,
                         "\n",
                         MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
                     );
                 }
                 if append_tool_evidence_summary_block(
-                    &mut user_content_raw,
+                    &mut tool_result_user_content,
                     &round_evidence_lines,
                     omitted_evidence_count,
                     MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
@@ -2242,47 +2270,53 @@ fn run_worker_path(
                 )
             };
             if let Some(guidance) = round_guidance {
-                if !user_content_raw.ends_with('\n') {
+                if !tool_result_user_content.ends_with('\n') {
                     let _ = push_bounded_utf8(
-                        &mut user_content_raw,
+                        &mut tool_result_user_content,
                         "\n",
                         MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
                     );
                 }
                 if append_tool_round_guidance_block(
-                    &mut user_content_raw,
+                    &mut tool_result_user_content,
                     &guidance,
                     MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
                 ) {
                     truncated = true;
                 }
             }
+            if memory_grounding.is_none() {
+                memory_grounding = build_memory_grounding_text(
+                    prompt_memory.summary_text.as_deref(),
+                    prompt_memory.long_term_memory_text.as_deref(),
+                );
+            }
             if let Some(memory_grounding) = memory_grounding.as_deref() {
-                if !user_content_raw.ends_with('\n') {
+                if !tool_result_user_content.ends_with('\n') {
                     let _ = push_bounded_utf8(
-                        &mut user_content_raw,
+                        &mut tool_result_user_content,
                         "\n",
                         MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
                     );
                 }
                 if append_memory_grounding_block(
-                    &mut user_content_raw,
+                    &mut tool_result_user_content,
                     memory_grounding,
                     MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
                 ) {
                     truncated = true;
                 }
             }
-            if truncated && user_content_raw.len() < MAX_TOOL_RESULTS_USER_MESSAGE_LEN {
+            if truncated && tool_result_user_content.len() < MAX_TOOL_RESULTS_USER_MESSAGE_LEN {
                 let _ = push_bounded_utf8(
-                    &mut user_content_raw,
+                    &mut tool_result_user_content,
                     "\n[truncated]",
                     MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
                 );
             }
             messages.push(Message {
                 role: Cow::Borrowed("user"),
-                content: user_content_raw,
+                content: std::mem::take(&mut tool_result_user_content),
             });
             // P1 Enhancement 3: 记录本轮进度（ToolUse 路径）。
             progress_history[0] = progress_history[1];
@@ -2310,6 +2344,7 @@ fn run_worker_path(
             &messages,
             config.llm_stream,
             &mut latency,
+            &mut system_scratch,
         )?;
     }
     let streamed = delivery.finalize(&final_content);
@@ -2904,6 +2939,7 @@ mod tests {
             .to_string(),
         }];
         let mut latency = WorkerLatency::default();
+        let mut system_scratch = String::new();
 
         let content = run_final_answer_recovery_round(
             &llm,
@@ -2912,6 +2948,7 @@ mod tests {
             &messages,
             false,
             &mut latency,
+            &mut system_scratch,
         )
         .expect("recovery round should succeed");
 

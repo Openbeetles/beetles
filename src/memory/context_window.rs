@@ -7,6 +7,26 @@ use std::borrow::Cow;
 
 use super::{ImportantMessageStore, SessionStore};
 
+fn build_context_summary_message(summary: &str) -> String {
+    let trimmed = summary.trim();
+    let mut out = String::with_capacity(trimmed.len().saturating_add(32));
+    out.push_str("[CONTEXT_SUMMARY]\n");
+    out.push_str(trimmed);
+    out.push_str("\n[/CONTEXT_SUMMARY]");
+    out
+}
+
+fn push_context_message(messages: &mut Vec<Message>, role: Cow<'static, str>, content: String) {
+    if let Some(last) = messages.last_mut() {
+        if last.role.as_ref() == role.as_ref() && !last.content.starts_with("[CONTEXT_SUMMARY]") {
+            last.content.push('\n');
+            last.content.push_str(&content);
+            return;
+        }
+    }
+    messages.push(Message { role, content });
+}
+
 pub fn build_context_messages(
     session: &dyn SessionStore,
     important_message_store: &dyn ImportantMessageStore,
@@ -24,17 +44,13 @@ pub fn build_context_messages(
     if let Some(summary) = summary_text {
         messages.push(Message {
             role: Cow::Borrowed("user"),
-            content: format!("[CONTEXT_SUMMARY]\n{}\n[/CONTEXT_SUMMARY]", summary),
+            content: build_context_summary_message(summary),
         });
     }
-    messages.extend(recent.into_iter().map(|m| Message {
-        role: Cow::Owned(m.role),
-        content: m.content,
-    }));
-    messages.push(Message {
-        role: Cow::Borrowed("user"),
-        content: msg.content.clone(),
-    });
+    for m in recent {
+        push_context_message(&mut messages, Cow::Owned(m.role), m.content);
+    }
+    push_context_message(&mut messages, Cow::Borrowed("user"), msg.content.clone());
 
     let important_offset = important_message_store
         .get_important_offset(&msg.chat_id)

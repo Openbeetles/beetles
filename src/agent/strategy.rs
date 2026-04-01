@@ -288,7 +288,7 @@ pub(crate) fn empty_final_answer_followup(
 
 pub(crate) fn repeated_answer_followup(
     strategy: AgentRunStrategy,
-    recent_assistant_messages: &[String],
+    recent_assistant_messages: &[&str],
     content: &str,
 ) -> Option<&'static str> {
     if strategy != AgentRunStrategy::LinuxEnhanced || recent_assistant_messages.is_empty() {
@@ -794,9 +794,7 @@ mod tests {
     fn repeated_answer_followup_flags_repeated_assistant_text() {
         let followup = repeated_answer_followup(
             AgentRunStrategy::LinuxEnhanced,
-            &[String::from(
-                "目前结论是查看 /tmp/result.json，然后按 phase_b 继续执行。",
-            )],
+            &["目前结论是查看 /tmp/result.json，然后按 phase_b 继续执行。"],
             "目前结论是查看 /tmp/result.json，然后按 phase_b 继续执行。",
         );
         assert!(followup.is_some());
@@ -806,7 +804,7 @@ mod tests {
     fn repeated_answer_followup_skips_new_content() {
         let followup = repeated_answer_followup(
             AgentRunStrategy::LinuxEnhanced,
-            &[String::from("先检查日志，再确认模型分区。")],
+            &["先检查日志，再确认模型分区。"],
             "新的问题在于 Linux 侧 agent loop 的最终收口还不够硬。",
         );
         assert!(followup.is_none());
@@ -816,7 +814,7 @@ mod tests {
     fn repeated_answer_followup_skips_non_linux_strategy() {
         let followup = repeated_answer_followup(
             AgentRunStrategy::Embedded,
-            &[String::from("repeat me")],
+            &["repeat me"],
             "repeat me with extra words to exceed the threshold for testing",
         );
         assert!(followup.is_none());

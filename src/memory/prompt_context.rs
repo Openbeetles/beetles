@@ -24,30 +24,30 @@ pub struct PromptMemoryContextParams<'a> {
 }
 
 pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> PromptMemoryContext {
+    let recall_policy = memory_policy(params.profile).long_term_recall;
     let summary_text = params
         .session_summary_store
         .get_with_count(params.chat_id)
         .ok()
         .flatten()
         .map(|(summary, _)| summary);
-    let recent_messages = params
-        .session_store
-        .load_recent(
+    let long_term_memory_text = if params.system_max_len < recall_policy.block_min_len {
+        None
+    } else {
+        let recent_messages = params
+            .session_store
+            .load_recent(params.chat_id, recall_policy.recent_grounding_message_count)
+            .unwrap_or_default();
+        recall_long_term_memory_block(
+            params.long_term_memory_store,
             params.chat_id,
-            memory_policy(params.profile)
-                .long_term_recall
-                .recent_grounding_message_count,
+            params.user_query,
+            summary_text.as_deref(),
+            &recent_messages,
+            params.system_max_len,
+            params.profile,
         )
-        .unwrap_or_default();
-    let long_term_memory_text = recall_long_term_memory_block(
-        params.long_term_memory_store,
-        params.chat_id,
-        params.user_query,
-        summary_text.as_deref(),
-        &recent_messages,
-        params.system_max_len,
-        params.profile,
-    );
+    };
     let execution_state_text = params
         .execution_state_store
         .get(params.chat_id)
@@ -284,5 +284,54 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("Goal: 收口 prompt memory"));
+    }
+
+    #[test]
+    fn skips_long_term_recall_when_system_budget_is_below_block_threshold() {
+        let session_store = StubSessionStore {
+            recent: Mutex::new(vec![SessionMessage {
+                role: "user".to_string(),
+                content: "记一下我喜欢冷萃".to_string(),
+            }]),
+        };
+        let summary_store = StubSessionSummaryStore {
+            summary: Mutex::new(Some(("user prefers cold brew".to_string(), 3))),
+        };
+        let memory_store = StubLongTermMemoryStore {
+            entries: Mutex::new(vec![LongTermMemoryEntry {
+                id: "pref-coffee".to_string(),
+                kind: LongTermMemoryKind::Preference,
+                topic: "coffee".to_string(),
+                content: "Likes cold brew".to_string(),
+                keywords: vec!["coffee".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                created_at: 1,
+                updated_at: 1,
+            }]),
+            last_query: Mutex::new(None),
+        };
+        let execution_state_store = StubExecutionStateStore::default();
+
+        let context = load_prompt_memory_context(PromptMemoryContextParams {
+            chat_id: "chat-1",
+            user_query: "嗯?",
+            system_max_len: 80,
+            profile: MemoryProfile::Embedded,
+            session_store: &session_store,
+            session_summary_store: &summary_store,
+            long_term_memory_store: &memory_store,
+            execution_state_store: &execution_state_store,
+        });
+
+        assert_eq!(
+            context.summary_text.as_deref(),
+            Some("user prefers cold brew")
+        );
+        assert!(context.long_term_memory_text.is_none());
+        assert!(memory_store
+            .last_query
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_none());
     }
 }
