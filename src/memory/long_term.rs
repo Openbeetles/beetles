@@ -408,19 +408,25 @@ pub fn merge_long_term_memory_entry(
         return false;
     };
     let mut changed = false;
-    let mut merged_keywords = normalized.keywords.clone();
-    for keyword in &existing.keywords {
-        if merged_keywords.iter().any(|item| item == keyword) {
-            continue;
-        }
-        merged_keywords.push(keyword.clone());
-    }
-    merged_keywords.truncate(MAX_LONG_TERM_MEMORY_KEYWORDS);
-
-    if existing.content != normalized.content {
+    let content_changed = existing.content != normalized.content;
+    if content_changed {
         existing.content = normalized.content;
         changed = true;
     }
+
+    let merged_keywords = if content_changed {
+        normalized.keywords.clone()
+    } else {
+        let mut merged_keywords = existing.keywords.clone();
+        for keyword in &normalized.keywords {
+            if merged_keywords.iter().any(|item| item == keyword) {
+                continue;
+            }
+            merged_keywords.push(keyword.clone());
+        }
+        merged_keywords.truncate(MAX_LONG_TERM_MEMORY_KEYWORDS);
+        merged_keywords
+    };
     if existing.keywords != merged_keywords {
         existing.keywords = merged_keywords;
         changed = true;
@@ -573,14 +579,24 @@ fn render_long_term_memory_section(
     let mut appended = 0usize;
     for entry in entries {
         let line_with_keywords = render_long_term_memory_line(entry, true);
-        if out.len().saturating_add(line_with_keywords.len()).saturating_add(1) <= max_len {
+        if out
+            .len()
+            .saturating_add(line_with_keywords.len())
+            .saturating_add(1)
+            <= max_len
+        {
             out.push_str(&line_with_keywords);
             out.push('\n');
             appended += 1;
             continue;
         }
         let line_without_keywords = render_long_term_memory_line(entry, false);
-        if out.len().saturating_add(line_without_keywords.len()).saturating_add(1) <= max_len {
+        if out
+            .len()
+            .saturating_add(line_without_keywords.len())
+            .saturating_add(1)
+            <= max_len
+        {
             out.push_str(&line_without_keywords);
             out.push('\n');
             appended += 1;
@@ -1048,7 +1064,7 @@ mod tests {
 
         assert!(merge_long_term_memory_entry(&mut entry, &draft, 20));
         assert_eq!(entry.content, "User now prefers detailed answers.");
-        assert_eq!(entry.keywords, vec!["detailed", "concise"]);
+        assert_eq!(entry.keywords, vec!["detailed"]);
         assert_eq!(entry.source_chat_id.as_deref(), Some("chat-b"));
         assert_eq!(entry.created_at, 10);
         assert_eq!(entry.updated_at, 20);
@@ -1076,6 +1092,31 @@ mod tests {
 
         assert!(merge_long_term_memory_entry(&mut entry, &draft, 20));
         assert_eq!(entry.source_chat_id.as_deref(), Some("chat-a"));
+    }
+
+    #[test]
+    fn merge_long_term_memory_entry_merges_keywords_when_content_is_unchanged() {
+        let mut entry = LongTermMemoryEntry {
+            id: "ltm-1".to_string(),
+            kind: LongTermMemoryKind::Fact,
+            topic: "primary_llm".to_string(),
+            content: "当前主模型是 OpenAI。".to_string(),
+            keywords: vec!["openai".to_string()],
+            source_chat_id: Some("chat-a".to_string()),
+            created_at: 10,
+            updated_at: 10,
+        };
+        let draft = LongTermMemoryDraft {
+            kind: LongTermMemoryKind::Fact,
+            topic: "primary_llm".to_string(),
+            content: "当前主模型是 OpenAI。".to_string(),
+            keywords: vec!["模型".to_string()],
+            source_chat_id: Some("chat-a".to_string()),
+        };
+
+        assert!(merge_long_term_memory_entry(&mut entry, &draft, 20));
+        assert_eq!(entry.keywords, vec!["openai", "模型"]);
+        assert_eq!(entry.content, "当前主模型是 OpenAI。");
     }
 
     #[test]

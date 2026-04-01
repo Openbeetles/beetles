@@ -9,7 +9,7 @@ use crate::orchestrator::PressureLevel;
 use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use super::{
@@ -20,7 +20,7 @@ use super::{
 
 /// 长期记忆提取状态存储路径（相对状态根）。
 pub const REL_PATH_LONG_TERM_EXTRACTION_STATES: &str = "memory/long_term_extraction_states.json";
-pub const LONG_TERM_MEMORY_EXTRACTION_SYSTEM_PROMPT: &str = "You extract durable long-term memory for a personal AI assistant. Return JSON only: an array of objects. Each object must contain op, kind, topic. op must be upsert or delete. kind must be one of preference, profile, relationship, project, task, constraint, fact. topic must be a short stable slot key identifying the same memory across future updates, for example response_style, user_name, current_project, timezone, partner_name. Reuse an existing topic whenever the conversation updates, completes, or corrects that same durable slot. Prefer updating an existing slot over inventing a nearby new topic. For op=upsert, also provide content and optional keywords. For op=delete, omit content and keywords. Use delete when the conversation clearly invalidates or completes an existing durable slot, for example a task is finished, a temporary project focus is no longer active, or a prior fact is explicitly corrected. Use the provided session summary and existing long-term memory as grounding when deciding whether to upsert, delete, or ignore. Keep only the highest-value durable changes, at most 4 items. If there is nothing durable to add, update, or delete, return []. Do not store greetings, one-off troubleshooting steps, transient status, or assistant-only claims.";
+pub const LONG_TERM_MEMORY_EXTRACTION_SYSTEM_PROMPT: &str = "You extract durable long-term memory for a personal AI assistant. Return JSON only: an array of objects. Each object must contain op, kind, topic. op must be upsert or delete. kind must be one of preference, profile, relationship, project, task, constraint, fact. topic must be a short stable slot key identifying the same memory across future updates, for example response_style, user_name, current_project, timezone, partner_name. Reuse an existing topic whenever the conversation updates, completes, or corrects that same durable slot. Prefer updating an existing slot over inventing a nearby new topic. For op=upsert, also provide content and optional keywords. For op=delete, omit content and keywords. Use delete when the conversation clearly invalidates or completes an existing durable slot, for example a task is finished, a temporary project focus is no longer active, or a prior fact is explicitly corrected. Store only durable user profile facts, stable preferences, durable constraints, ongoing project/task state, and durable external facts. Do not store greetings, one-off troubleshooting steps, short acknowledgements, temporary moods, assistant plans for the next single turn, or assistant-only claims. When project/task context shifts, update the existing active slot instead of creating a parallel near-duplicate slot. Use the provided session summary and existing long-term memory as grounding when deciding whether to upsert, delete, or ignore. Keep only the highest-value durable changes, at most 4 items. If there is nothing durable to add, update, or delete, return [].";
 /// 共享策略允许的 recent 消息窗口上限；实际运行值由 MemoryProfile 决定。
 pub const LONG_TERM_MEMORY_EXTRACTION_RECENT_N: usize = 10;
 /// 单次提取允许的动作数上限；实际运行值由 MemoryProfile 决定。
@@ -236,7 +236,9 @@ pub fn build_long_term_memory_extraction_input(
             policy.batch_size.min(LONG_TERM_MEMORY_EXTRACTION_BATCH),
         )
         .ok()
-        .and_then(|entries| build_extraction_existing_memory_grounding(&entries, policy.existing_memory_max_len));
+        .and_then(|entries| {
+            build_extraction_existing_memory_grounding(&entries, policy.existing_memory_max_len)
+        });
 
     let mut input = String::with_capacity(2300);
     if let Some(summary) = session_summary
@@ -377,21 +379,25 @@ pub fn prepare_long_term_memory_extraction(
 ) -> ParsedLongTermMemoryExtraction {
     let existing_entries = store.list(MAX_LONG_TERM_MEMORY_ITEMS).unwrap_or_default();
     let mut upsert_slots = HashMap::with_capacity(extraction.upserts.len());
+    let mut protected_slots = HashSet::with_capacity(extraction.upserts.len());
     let mut upserts = Vec::with_capacity(extraction.upserts.len());
     for draft in &extraction.upserts {
         let Some(mut normalized) = draft.normalized() else {
             continue;
         };
-        if let Some(entry) = resolve_existing_slot_match(store, &existing_entries, &normalized, chat_id)
-        {
-            normalized.topic = entry.topic.clone();
-        }
-        if should_skip_redundant_upsert(&normalized, &existing_entries) {
+        if !should_keep_durable_draft(&normalized) {
             continue;
+        }
+        if let Some(entry) = resolve_existing_slot_match(&existing_entries, &normalized, chat_id) {
+            normalized.topic = entry.topic.clone();
         }
         let Some(slot_id) = normalized.stable_id() else {
             continue;
         };
+        protected_slots.insert(slot_id.clone());
+        if should_skip_redundant_upsert(&normalized, &existing_entries) {
+            continue;
+        }
         if let Some(index) = upsert_slots.get(&slot_id).copied() {
             upserts[index] = normalized;
         } else {
@@ -400,7 +406,7 @@ pub fn prepare_long_term_memory_extraction(
         }
     }
 
-    let mut deletes = Vec::with_capacity(extraction.deletes.len());
+    let mut deletes = Vec::with_capacity(extraction.deletes.len().saturating_add(upserts.len()));
     let mut delete_slots = HashMap::with_capacity(extraction.deletes.len());
     for slot in &extraction.deletes {
         let Some(normalized) = slot.normalized() else {
@@ -409,7 +415,7 @@ pub fn prepare_long_term_memory_extraction(
         let Some(slot_id) = normalized.stable_id() else {
             continue;
         };
-        if upsert_slots.contains_key(&slot_id) {
+        if protected_slots.contains(&slot_id) {
             continue;
         }
         if delete_slots.contains_key(&slot_id) {
@@ -418,12 +424,37 @@ pub fn prepare_long_term_memory_extraction(
         delete_slots.insert(slot_id, deletes.len());
         deletes.push(normalized);
     }
+    for draft in &upserts {
+        let Some(draft_slot_id) = draft.stable_id() else {
+            continue;
+        };
+        let primary_entry = existing_entries
+            .iter()
+            .find(|entry| entry_slot_id(entry).as_deref() == Some(draft_slot_id.as_str()));
+        for entry in &existing_entries {
+            if !should_delete_superseded_entry(entry, draft, primary_entry, &draft_slot_id, chat_id)
+            {
+                continue;
+            }
+            let slot = LongTermMemorySlot {
+                kind: entry.kind.clone(),
+                topic: entry.topic.clone(),
+            };
+            let Some(slot_id) = slot.stable_id() else {
+                continue;
+            };
+            if delete_slots.contains_key(&slot_id) {
+                continue;
+            }
+            delete_slots.insert(slot_id, deletes.len());
+            deletes.push(slot);
+        }
+    }
 
     ParsedLongTermMemoryExtraction { upserts, deletes }
 }
 
 fn resolve_existing_slot_match<'a>(
-    store: &dyn LongTermMemoryStore,
     existing_entries: &'a [LongTermMemoryEntry],
     draft: &LongTermMemoryDraft,
     chat_id: &str,
@@ -431,19 +462,16 @@ fn resolve_existing_slot_match<'a>(
     let current_slot_id = draft.stable_id();
     if let Some(existing) = existing_entries
         .iter()
-        .find(|entry| current_slot_id.as_deref() == Some(entry.id.as_str()))
+        .find(|entry| current_slot_id.as_deref() == entry_slot_id(entry).as_deref())
     {
         return Some(existing);
     }
-    let query = build_draft_match_query(draft);
-    let recalled = store
-        .recall(&query, draft.source_chat_id.as_deref().or(Some(chat_id)), 3)
-        .unwrap_or_default();
+    if let Some(existing) = resolve_singleton_active_context_slot(existing_entries, draft, chat_id)
+    {
+        return Some(existing);
+    }
     let mut best: Option<(&LongTermMemoryEntry, u32)> = None;
-    for candidate in recalled {
-        let Some(existing) = existing_entries.iter().find(|entry| entry.id == candidate.id) else {
-            continue;
-        };
+    for existing in existing_entries {
         if existing.kind != draft.kind {
             continue;
         }
@@ -459,6 +487,178 @@ fn resolve_existing_slot_match<'a>(
     best.map(|(entry, _)| entry)
 }
 
+fn resolve_singleton_active_context_slot<'a>(
+    existing_entries: &'a [LongTermMemoryEntry],
+    draft: &LongTermMemoryDraft,
+    chat_id: &str,
+) -> Option<&'a LongTermMemoryEntry> {
+    if !matches!(
+        draft.kind,
+        LongTermMemoryKind::Project | LongTermMemoryKind::Task
+    ) {
+        return None;
+    }
+    let mut candidates = existing_entries.iter().filter(|entry| {
+        entry.kind == draft.kind && entry_matches_chat_scope(entry, draft, chat_id)
+    });
+    let first = candidates.next()?;
+    if candidates.next().is_some() {
+        return None;
+    }
+    Some(first)
+}
+
+fn should_keep_durable_draft(draft: &LongTermMemoryDraft) -> bool {
+    let content = draft.content.trim();
+    if content.is_empty() {
+        return false;
+    }
+    if !content.chars().any(|ch| ch.is_alphanumeric() || is_cjk(ch)) {
+        return false;
+    }
+
+    let normalized_content = normalize_match_text(content);
+    if normalized_content.is_empty() {
+        return false;
+    }
+    if normalized_content == normalize_match_text(&draft.topic) {
+        return false;
+    }
+    if normalized_content
+        .chars()
+        .all(|ch| ch.is_ascii_digit() || ch.is_whitespace())
+    {
+        return false;
+    }
+    if allows_short_cjk_preference_or_constraint(draft, content) {
+        return true;
+    }
+
+    let non_space_chars = content.chars().filter(|ch| !ch.is_whitespace()).count();
+    let term_count = collect_terms_from_text(content).len();
+    let min_chars = minimum_durable_content_chars(&draft.kind);
+    let min_terms = minimum_durable_term_count(&draft.kind);
+    if non_space_chars < min_chars {
+        return false;
+    }
+    if term_count < min_terms && draft.keywords.is_empty() {
+        return false;
+    }
+    true
+}
+
+fn minimum_durable_content_chars(kind: &LongTermMemoryKind) -> usize {
+    match kind {
+        LongTermMemoryKind::Profile | LongTermMemoryKind::Relationship => 2,
+        LongTermMemoryKind::Preference | LongTermMemoryKind::Constraint => 4,
+        LongTermMemoryKind::Fact => 6,
+        LongTermMemoryKind::Project | LongTermMemoryKind::Task => 8,
+    }
+}
+
+fn minimum_durable_term_count(kind: &LongTermMemoryKind) -> usize {
+    match kind {
+        LongTermMemoryKind::Profile | LongTermMemoryKind::Relationship => 1,
+        LongTermMemoryKind::Preference
+        | LongTermMemoryKind::Project
+        | LongTermMemoryKind::Task
+        | LongTermMemoryKind::Constraint => 2,
+        LongTermMemoryKind::Fact => 1,
+    }
+}
+
+fn allows_short_cjk_preference_or_constraint(draft: &LongTermMemoryDraft, content: &str) -> bool {
+    if !matches!(
+        draft.kind,
+        LongTermMemoryKind::Preference | LongTermMemoryKind::Constraint
+    ) {
+        return false;
+    }
+    let mut cjk_chars = 0usize;
+    for ch in content.chars() {
+        if ch.is_whitespace() || ch.is_ascii_punctuation() {
+            continue;
+        }
+        if !is_cjk(ch) {
+            return false;
+        }
+        cjk_chars += 1;
+    }
+    (3..=8).contains(&cjk_chars)
+}
+
+fn should_delete_superseded_entry(
+    entry: &LongTermMemoryEntry,
+    draft: &LongTermMemoryDraft,
+    primary_entry: Option<&LongTermMemoryEntry>,
+    draft_slot_id: &str,
+    chat_id: &str,
+) -> bool {
+    if entry.kind != draft.kind {
+        return false;
+    }
+    if entry_slot_id(entry).as_deref() == Some(draft_slot_id) {
+        return false;
+    }
+    if !entry_matches_chat_scope(entry, draft, chat_id) {
+        return false;
+    }
+    let Some(primary_entry) = primary_entry else {
+        return false;
+    };
+    if !entries_are_parallel_duplicates(primary_entry, entry) {
+        return false;
+    }
+    draft_entry_affinity_score(draft, entry, chat_id) >= 8
+}
+
+fn entry_slot_id(entry: &LongTermMemoryEntry) -> Option<String> {
+    LongTermMemorySlot {
+        kind: entry.kind.clone(),
+        topic: entry.topic.clone(),
+    }
+    .stable_id()
+}
+
+fn entry_matches_chat_scope(
+    entry: &LongTermMemoryEntry,
+    draft: &LongTermMemoryDraft,
+    chat_id: &str,
+) -> bool {
+    entry_scope_rank(entry, draft, chat_id) > 0
+}
+
+fn entry_scope_rank(entry: &LongTermMemoryEntry, draft: &LongTermMemoryDraft, chat_id: &str) -> u8 {
+    let target_chat = draft.source_chat_id.as_deref().unwrap_or(chat_id);
+    match entry.source_chat_id.as_deref() {
+        Some(source_chat_id) if source_chat_id == target_chat => 2,
+        None => 1,
+        _ => 0,
+    }
+}
+
+fn entries_are_parallel_duplicates(
+    primary: &LongTermMemoryEntry,
+    candidate: &LongTermMemoryEntry,
+) -> bool {
+    if primary.kind != candidate.kind {
+        return false;
+    }
+    if entry_slot_id(primary) == entry_slot_id(candidate) {
+        return false;
+    }
+    let primary_content = normalize_match_text(&primary.content);
+    let candidate_content = normalize_match_text(&candidate.content);
+    if primary_content.is_empty() || candidate_content.is_empty() {
+        return false;
+    }
+    if primary_content == candidate_content {
+        return true;
+    }
+    long_text_contains(&primary_content, &candidate_content)
+        || long_text_contains(&candidate_content, &primary_content)
+}
+
 fn should_skip_redundant_upsert(
     draft: &LongTermMemoryDraft,
     existing_entries: &[LongTermMemoryEntry],
@@ -466,7 +666,10 @@ fn should_skip_redundant_upsert(
     let Some(slot_id) = draft.stable_id() else {
         return true;
     };
-    let Some(existing) = existing_entries.iter().find(|entry| entry.id == slot_id) else {
+    let Some(existing) = existing_entries
+        .iter()
+        .find(|entry| entry_slot_id(entry).as_deref() == Some(slot_id.as_str()))
+    else {
         return false;
     };
     let content_matches =
@@ -475,29 +678,10 @@ fn should_skip_redundant_upsert(
         return false;
     }
     draft.keywords.iter().all(|keyword| {
-        existing
-            .keywords
-            .iter()
-            .any(|existing_keyword| normalize_match_text(existing_keyword) == normalize_match_text(keyword))
+        existing.keywords.iter().any(|existing_keyword| {
+            normalize_match_text(existing_keyword) == normalize_match_text(keyword)
+        })
     })
-}
-
-fn build_draft_match_query(draft: &LongTermMemoryDraft) -> String {
-    let mut out = String::new();
-    out.push_str(draft.topic.trim());
-    if !draft.content.trim().is_empty() {
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str(draft.content.trim());
-    }
-    if !draft.keywords.is_empty() {
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str(&draft.keywords.join(" "));
-    }
-    out
 }
 
 fn draft_entry_affinity_score(
@@ -533,6 +717,8 @@ fn draft_entry_affinity_score(
         || entry.source_chat_id.as_deref() == Some(chat_id)
     {
         score = score.saturating_add(2);
+    } else if entry.source_chat_id.is_none() {
+        score = score.saturating_add(1);
     }
     score
 }
@@ -1234,7 +1420,11 @@ mod tests {
                 kind: LongTermMemoryKind::Project,
                 topic: "current_project".to_string(),
                 content: "We are improving the Beetle memory pipeline on Linux.".to_string(),
-                keywords: vec!["beetle".to_string(), "memory".to_string(), "linux".to_string()],
+                keywords: vec![
+                    "beetle".to_string(),
+                    "memory".to_string(),
+                    "linux".to_string(),
+                ],
                 source_chat_id: Some("chat-1".to_string()),
                 created_at: 1,
                 updated_at: 10,
@@ -1257,6 +1447,96 @@ mod tests {
 
         assert_eq!(prepared.upserts.len(), 1);
         assert_eq!(prepared.upserts[0].topic, "current_project");
+    }
+
+    #[test]
+    fn prepare_extraction_drops_short_non_durable_fact() {
+        let store = StubLongTermMemoryStore::default();
+        let extraction = ParsedLongTermMemoryExtraction {
+            upserts: vec![LongTermMemoryDraft {
+                kind: LongTermMemoryKind::Fact,
+                topic: "tmp".to_string(),
+                content: "ok".to_string(),
+                keywords: vec![],
+                source_chat_id: Some("chat-1".to_string()),
+            }],
+            deletes: vec![],
+        };
+
+        let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
+
+        assert!(prepared.upserts.is_empty());
+        assert!(prepared.deletes.is_empty());
+    }
+
+    #[test]
+    fn prepare_extraction_keeps_short_profile_value() {
+        let store = StubLongTermMemoryStore::default();
+        let extraction = ParsedLongTermMemoryExtraction {
+            upserts: vec![LongTermMemoryDraft {
+                kind: LongTermMemoryKind::Profile,
+                topic: "user_name".to_string(),
+                content: "甲壳虫".to_string(),
+                keywords: vec![],
+                source_chat_id: Some("chat-1".to_string()),
+            }],
+            deletes: vec![],
+        };
+
+        let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
+
+        assert_eq!(prepared.upserts.len(), 1);
+        assert_eq!(prepared.upserts[0].content, "甲壳虫");
+    }
+
+    #[test]
+    fn prepare_extraction_keeps_multilingual_preference() {
+        let store = StubLongTermMemoryStore::default();
+        let extraction = ParsedLongTermMemoryExtraction {
+            upserts: vec![LongTermMemoryDraft {
+                kind: LongTermMemoryKind::Preference,
+                topic: "response_language".to_string(),
+                content: "用户偏好中文和 English 混合回答。".to_string(),
+                keywords: vec!["中文".to_string(), "english".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+            }],
+            deletes: vec![],
+        };
+
+        let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
+
+        assert_eq!(prepared.upserts.len(), 1);
+        assert_eq!(prepared.upserts[0].topic, "response_language");
+    }
+
+    #[test]
+    fn prepare_extraction_keeps_short_cjk_preference_and_constraint() {
+        let store = StubLongTermMemoryStore::default();
+        let extraction = ParsedLongTermMemoryExtraction {
+            upserts: vec![
+                LongTermMemoryDraft {
+                    kind: LongTermMemoryKind::Preference,
+                    topic: "response_style".to_string(),
+                    content: "别废话".to_string(),
+                    keywords: vec![],
+                    source_chat_id: Some("chat-1".to_string()),
+                },
+                LongTermMemoryDraft {
+                    kind: LongTermMemoryKind::Constraint,
+                    topic: "network_access".to_string(),
+                    content: "别联网".to_string(),
+                    keywords: vec![],
+                    source_chat_id: Some("chat-1".to_string()),
+                },
+            ],
+            deletes: vec![],
+        };
+
+        let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
+
+        assert_eq!(prepared.upserts.len(), 2);
+        assert_eq!(prepared.upserts[0].content, "别废话");
+        assert_eq!(prepared.upserts[1].content, "别联网");
     }
 
     #[test]
@@ -1290,9 +1570,195 @@ mod tests {
 
         let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
 
-        assert_eq!(prepared.upserts.len(), 1);
-        assert_eq!(prepared.upserts[0].topic, "current_focus");
+        assert!(prepared.upserts.is_empty());
         assert!(prepared.deletes.is_empty());
+    }
+
+    #[test]
+    fn prepare_extraction_reuses_single_active_project_slot_on_context_switch() {
+        let store = StubLongTermMemoryStore {
+            recall_entries: vec![LongTermMemoryEntry {
+                id: "ltm-project".to_string(),
+                kind: LongTermMemoryKind::Project,
+                topic: "current_project".to_string(),
+                content: "当前项目是收口 ESP 侧长期记忆。".to_string(),
+                keywords: vec!["esp".to_string(), "记忆".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                created_at: 1,
+                updated_at: 20,
+            }],
+            ..Default::default()
+        };
+        let extraction = ParsedLongTermMemoryExtraction {
+            upserts: vec![LongTermMemoryDraft {
+                kind: LongTermMemoryKind::Project,
+                topic: "linux_agent_loop".to_string(),
+                content: "当前项目切到 Linux 侧 agent loop 和长期记忆收口。".to_string(),
+                keywords: vec!["linux".to_string(), "agent".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+            }],
+            deletes: vec![],
+        };
+
+        let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
+
+        assert_eq!(prepared.upserts.len(), 1);
+        assert_eq!(prepared.upserts[0].topic, "current_project");
+    }
+
+    #[test]
+    fn prepare_extraction_reuses_legacy_unscoped_project_slot() {
+        let store = StubLongTermMemoryStore {
+            recall_entries: vec![LongTermMemoryEntry {
+                id: "ltm-legacy".to_string(),
+                kind: LongTermMemoryKind::Project,
+                topic: "current_project".to_string(),
+                content: "当前项目是 Beetle 长期记忆收口。".to_string(),
+                keywords: vec!["beetle".to_string()],
+                source_chat_id: None,
+                created_at: 1,
+                updated_at: 10,
+            }],
+            ..Default::default()
+        };
+        let extraction = ParsedLongTermMemoryExtraction {
+            upserts: vec![LongTermMemoryDraft {
+                kind: LongTermMemoryKind::Project,
+                topic: "memory_work".to_string(),
+                content: "当前项目切到 Beetle Linux 侧长期记忆收口。".to_string(),
+                keywords: vec!["linux".to_string(), "beetle".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+            }],
+            deletes: vec![],
+        };
+
+        let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
+
+        assert_eq!(prepared.upserts.len(), 1);
+        assert_eq!(prepared.upserts[0].topic, "current_project");
+    }
+
+    #[test]
+    fn prepare_extraction_adds_delete_for_parallel_conflicting_slot() {
+        let store = StubLongTermMemoryStore {
+            recall_entries: vec![
+                LongTermMemoryEntry {
+                    id: "ltm-1".to_string(),
+                    kind: LongTermMemoryKind::Preference,
+                    topic: "response_style".to_string(),
+                    content: "用户偏好直接、简洁的回答。".to_string(),
+                    keywords: vec!["直接".to_string()],
+                    source_chat_id: Some("chat-1".to_string()),
+                    created_at: 1,
+                    updated_at: 10,
+                },
+                LongTermMemoryEntry {
+                    id: "ltm-2".to_string(),
+                    kind: LongTermMemoryKind::Preference,
+                    topic: "reply_style".to_string(),
+                    content: "用户偏好直接、简洁的回答。".to_string(),
+                    keywords: vec!["简洁".to_string()],
+                    source_chat_id: Some("chat-1".to_string()),
+                    created_at: 2,
+                    updated_at: 9,
+                },
+            ],
+            ..Default::default()
+        };
+        let extraction = ParsedLongTermMemoryExtraction {
+            upserts: vec![LongTermMemoryDraft {
+                kind: LongTermMemoryKind::Preference,
+                topic: "response_style_new".to_string(),
+                content: "用户现在偏好更详细、但仍直接的回答。".to_string(),
+                keywords: vec!["详细".to_string(), "直接".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+            }],
+            deletes: vec![],
+        };
+
+        let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
+
+        assert_eq!(prepared.upserts.len(), 1);
+        assert_eq!(prepared.upserts[0].topic, "response_style");
+        assert_eq!(prepared.deletes.len(), 1);
+        assert_eq!(prepared.deletes[0].topic, "reply_style");
+    }
+
+    #[test]
+    fn prepare_extraction_does_not_delete_distinct_preference_slots() {
+        let store = StubLongTermMemoryStore {
+            recall_entries: vec![
+                LongTermMemoryEntry {
+                    id: "ltm-1".to_string(),
+                    kind: LongTermMemoryKind::Preference,
+                    topic: "response_style".to_string(),
+                    content: "用户偏好直接回答。".to_string(),
+                    keywords: vec!["直接".to_string()],
+                    source_chat_id: Some("chat-1".to_string()),
+                    created_at: 1,
+                    updated_at: 10,
+                },
+                LongTermMemoryEntry {
+                    id: "ltm-2".to_string(),
+                    kind: LongTermMemoryKind::Preference,
+                    topic: "response_language".to_string(),
+                    content: "用户偏好中文回答。".to_string(),
+                    keywords: vec!["中文".to_string()],
+                    source_chat_id: Some("chat-1".to_string()),
+                    created_at: 2,
+                    updated_at: 9,
+                },
+            ],
+            ..Default::default()
+        };
+        let extraction = ParsedLongTermMemoryExtraction {
+            upserts: vec![LongTermMemoryDraft {
+                kind: LongTermMemoryKind::Preference,
+                topic: "response_style_new".to_string(),
+                content: "用户现在偏好更详细、但仍直接的回答。".to_string(),
+                keywords: vec!["详细".to_string(), "直接".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+            }],
+            deletes: vec![],
+        };
+
+        let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
+
+        assert_eq!(prepared.upserts.len(), 1);
+        assert_eq!(prepared.upserts[0].topic, "response_style");
+        assert!(prepared.deletes.is_empty());
+    }
+
+    #[test]
+    fn prepare_extraction_maps_corrected_fact_to_existing_slot() {
+        let store = StubLongTermMemoryStore {
+            recall_entries: vec![LongTermMemoryEntry {
+                id: "ltm-fact".to_string(),
+                kind: LongTermMemoryKind::Fact,
+                topic: "primary_llm".to_string(),
+                content: "当前主模型是 Gemini。".to_string(),
+                keywords: vec!["gemini".to_string(), "模型".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                created_at: 1,
+                updated_at: 10,
+            }],
+            ..Default::default()
+        };
+        let extraction = ParsedLongTermMemoryExtraction {
+            upserts: vec![LongTermMemoryDraft {
+                kind: LongTermMemoryKind::Fact,
+                topic: "main_model_provider".to_string(),
+                content: "当前主模型改为 OpenAI。".to_string(),
+                keywords: vec!["openai".to_string(), "模型".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+            }],
+            deletes: vec![],
+        };
+
+        let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
+
+        assert_eq!(prepared.upserts.len(), 1);
+        assert_eq!(prepared.upserts[0].topic, "primary_llm");
     }
 
     #[test]
