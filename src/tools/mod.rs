@@ -9,6 +9,21 @@ pub mod analyze_image;
 pub mod board_info;
 pub mod cron;
 pub mod cron_manage;
+#[cfg(all(
+    feature = "tools_network_extra",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub mod document_extract;
+#[cfg(all(
+    feature = "tools_network_extra",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub mod document_read;
+#[cfg(all(
+    feature = "tools_network_extra",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub mod document_search;
 pub mod env;
 pub mod file_write;
 pub mod files;
@@ -31,6 +46,11 @@ pub mod model_config;
 pub mod network;
 #[cfg(feature = "tools_diagnostics")]
 pub mod network_scan;
+#[cfg(all(
+    feature = "tools_network_extra",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub mod pdf_read;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod process;
 #[cfg(feature = "tools_network_extra")]
@@ -45,6 +65,11 @@ pub mod shell;
 pub mod system_control;
 pub mod voice_input;
 pub mod voice_output;
+#[cfg(all(
+    feature = "tools_network_extra",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub mod web_fetch;
 #[cfg(feature = "tools_network_extra")]
 pub mod web_search;
 
@@ -52,6 +77,21 @@ pub mod web_search;
 pub use analyze_image::AnalyzeImageTool;
 pub use board_info::BoardInfoTool;
 pub use cron_manage::CronManageTool;
+#[cfg(all(
+    feature = "tools_network_extra",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub use document_extract::DocumentExtractTool;
+#[cfg(all(
+    feature = "tools_network_extra",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub use document_read::DocumentReadTool;
+#[cfg(all(
+    feature = "tools_network_extra",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub use document_search::DocumentSearchTool;
 pub use env::EnvTool;
 pub use file_write::FileWriteTool;
 pub use files::FilesTool;
@@ -73,6 +113,11 @@ pub use model_config::ModelConfigTool;
 pub use network::NetworkTool;
 #[cfg(feature = "tools_diagnostics")]
 pub use network_scan::NetworkScanTool;
+#[cfg(all(
+    feature = "tools_network_extra",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub use pdf_read::PdfReadTool;
 pub use policy::{ToolExposure, ToolMetadata, ToolPolicyContext};
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use process::ProcessTool;
@@ -89,6 +134,11 @@ pub use shell::ShellTool;
 pub use system_control::SystemControlTool;
 pub use voice_input::VoiceInputTool;
 pub use voice_output::VoiceOutputTool;
+#[cfg(all(
+    feature = "tools_network_extra",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub use web_fetch::WebFetchTool;
 #[cfg(feature = "tools_network_extra")]
 pub use web_search::WebSearchTool;
 

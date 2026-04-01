@@ -136,8 +136,37 @@ pub fn build_default_registry(
     registry.register(Box::new(super::GetTimeTool));
     registry.register(Box::new(super::EnvTool));
     registry.register(Box::new(super::FilesTool::new(platform.state_fs())));
+    #[cfg(all(
+        feature = "tools_network_extra",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    registry.register(Box::new(super::DocumentSearchTool::new(
+        platform.state_fs(),
+    )));
+    #[cfg(all(
+        feature = "tools_network_extra",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    registry.register(Box::new(super::DocumentReadTool::new(platform.state_fs())));
+    #[cfg(all(
+        feature = "tools_network_extra",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    registry.register(Box::new(super::DocumentExtractTool::new(
+        platform.state_fs(),
+    )));
     #[cfg(feature = "tools_network_extra")]
     registry.register(Box::new(super::WebSearchTool::new(config)));
+    #[cfg(all(
+        feature = "tools_network_extra",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    registry.register(Box::new(super::WebFetchTool));
+    #[cfg(all(
+        feature = "tools_network_extra",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    registry.register(Box::new(super::PdfReadTool));
     #[cfg(feature = "tools_network_extra")]
     registry.register(Box::new(super::AnalyzeImageTool::new(config)));
     let remind_at_store_for_list = Arc::clone(&remind_at_store);

@@ -96,6 +96,13 @@ pub use tools::{
     CronManageTool, DeviceControlTool, I2cDeviceTool, I2cSensorTool, MemoryManageTool,
     NetworkScanTool, SensorWatchTool, SessionManageTool, SystemControlTool,
 };
+#[cfg(all(
+    feature = "tools_network_extra",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub use tools::{
+    DocumentExtractTool, DocumentReadTool, DocumentSearchTool, PdfReadTool, WebFetchTool,
+};
 #[cfg(feature = "tools_network_extra")]
 pub use tools::{HttpRequestTool, ModelConfigTool, ProxyConfigTool, WebSearchTool};
 

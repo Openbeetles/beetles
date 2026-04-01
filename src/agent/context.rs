@@ -178,7 +178,9 @@ pub fn estimate_post_memory_system_tail_len(params: PostMemoryTailParams<'_>) ->
         reserve = reserve.saturating_add(2).saturating_add(emotion.len());
     }
     if !params.llm_hint.is_empty() {
-        reserve = reserve.saturating_add(2).saturating_add(params.llm_hint.len());
+        reserve = reserve
+            .saturating_add(2)
+            .saturating_add(params.llm_hint.len());
     }
     reserve
 }

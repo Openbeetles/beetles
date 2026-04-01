@@ -2,8 +2,8 @@
 //! Shared prompt memory loading for agent context construction.
 
 use super::{
-    memory_policy, recall_long_term_memory_block, LongTermMemoryStore, MemoryProfile,
-    SessionStore, SessionSummaryStore,
+    memory_policy, recall_long_term_memory_block, LongTermMemoryStore, MemoryProfile, SessionStore,
+    SessionSummaryStore,
 };
 
 pub struct PromptMemoryContext {

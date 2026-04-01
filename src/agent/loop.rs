@@ -1621,7 +1621,9 @@ fn run_worker_path(
     let prompt_memory = load_prompt_memory_context(PromptMemoryContextParams {
         chat_id: &msg.chat_id,
         user_query: &msg.content,
-        system_max_len: budget.system_prompt_max.saturating_sub(post_memory_tail_len),
+        system_max_len: budget
+            .system_prompt_max
+            .saturating_sub(post_memory_tail_len),
         profile: config.memory_profile,
         session_store: config.session_store.as_ref(),
         session_summary_store: config.session_summary_store.as_ref(),

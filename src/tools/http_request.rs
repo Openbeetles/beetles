@@ -113,7 +113,7 @@ impl Tool for HttpRequestTool {
 }
 
 /// Check if a URL targets a private/internal IP address (SSRF protection).
-fn is_private_url(url: &str) -> bool {
+pub(crate) fn is_private_url(url: &str) -> bool {
     // Extract host from URL
     let url_lower = url.to_lowercase();
     let after_scheme = if let Some(rest) = url_lower.strip_prefix("https://") {
@@ -179,4 +179,23 @@ fn parse_ipv4(host: &str) -> Option<[u8; 4]> {
         octets[i] = part.parse().ok()?;
     }
     Some(octets)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_private_url;
+
+    #[test]
+    fn blocks_private_and_non_http_urls() {
+        assert!(is_private_url("http://127.0.0.1/test"));
+        assert!(is_private_url("https://192.168.1.8/api"));
+        assert!(is_private_url("ftp://example.com/file"));
+        assert!(is_private_url("not a url"));
+    }
+
+    #[test]
+    fn allows_public_http_urls() {
+        assert!(!is_private_url("https://example.com"));
+        assert!(!is_private_url("http://8.8.8.8/resolve"));
+    }
 }

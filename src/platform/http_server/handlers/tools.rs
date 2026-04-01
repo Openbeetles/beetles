@@ -8,8 +8,7 @@ struct ToolInfo {
     description: &'static str,
 }
 
-/// 生成工具列表 JSON body。
-pub fn body(_ctx: &HandlerContext) -> Result<String, std::io::Error> {
+fn tool_infos() -> Vec<ToolInfo> {
     let mut tools = vec![
         ToolInfo {
             name: "get_time",
@@ -17,7 +16,11 @@ pub fn body(_ctx: &HandlerContext) -> Result<String, std::io::Error> {
         },
         ToolInfo {
             name: "files",
-            description: "文件系统操作（读取、写入、列出文件）",
+            description: "文件系统操作（读取、列出、删除文件）",
+        },
+        ToolInfo {
+            name: "file_write",
+            description: "向存储写入或追加文件",
         },
         ToolInfo {
             name: "remind_at",
@@ -39,6 +42,21 @@ pub fn body(_ctx: &HandlerContext) -> Result<String, std::io::Error> {
 
     #[cfg(feature = "tools_network_extra")]
     {
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        tools.push(ToolInfo {
+            name: "document_search",
+            description: "存储内文档检索",
+        });
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        tools.push(ToolInfo {
+            name: "document_read",
+            description: "统一文档读取",
+        });
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        tools.push(ToolInfo {
+            name: "document_extract",
+            description: "文档定向提取",
+        });
         tools.push(ToolInfo {
             name: "web_search",
             description: "网络搜索",
@@ -89,5 +107,35 @@ pub fn body(_ctx: &HandlerContext) -> Result<String, std::io::Error> {
         });
     }
 
-    serde_json::to_string(&tools).map_err(std::io::Error::other)
+    tools
+}
+
+/// 生成工具列表 JSON body。
+pub fn body(_ctx: &HandlerContext) -> Result<String, std::io::Error> {
+    serde_json::to_string(&tool_infos()).map_err(std::io::Error::other)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tool_infos;
+    use serde_json::Value;
+
+    #[test]
+    fn tools_api_hides_internal_document_read_helpers() {
+        let payload = serde_json::to_string(&tool_infos()).unwrap();
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+        let names: Vec<&str> = parsed
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item.get("name").and_then(Value::as_str))
+            .collect();
+        assert!(names.contains(&"file_write"));
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        assert!(names.contains(&"document_search"));
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        assert!(names.contains(&"document_extract"));
+        assert!(!names.contains(&"web_fetch"));
+        assert!(!names.contains(&"pdf_read"));
+    }
 }

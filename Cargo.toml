@@ -71,6 +71,7 @@ esp-idf-svc = "0.52.1"
 [target.'cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))'.dependencies]
 libc = "0.2"
 env_logger = "0.11"
+pdf-extract = "0.10"
 # CLI 系统（仅 Linux）
 clap = { version = "4.5", features = ["derive", "cargo"] }
 # Step 7.2：Linux 配置 API（同步 HTTP，无 tokio）
