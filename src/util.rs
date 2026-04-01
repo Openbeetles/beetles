@@ -693,7 +693,8 @@ pub fn is_private_url(url: &str) -> bool {
 // | dispatch                              | (inline 4096)          | 4 KB  | 4 KB  | ← no TLS/HTTP, recv+queue only
 // | bg_timer                              | (inline 6144)          | 6 KB  | 6 KB  | ← no TLS, MetricsSnapshot 352B peak
 // | heartbeat, cli_repl                  | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS
-// | voice_session                         | STACK_VOICE_SESSION    | 8 KB  | 64 KB | ← STT + TTS HTTPS
+// | voice_session                         | STACK_VOICE_CONTROL    | 6 KB  | 8 KB  | ← scheduler only
+// | voice_session_worker                  | STACK_VOICE_SESSION    | 8 KB  | 64 KB | ← STT + TTS HTTPS
 // ---------------------------------------------------------------------------
 
 /// Linux（含嵌入式）：TLS 栈远大于 ESP 的 16KB，但不必拉到桌面级上百 KB；
@@ -727,6 +728,12 @@ pub const STACK_CHANNEL_SENDER: usize = 8192;
 pub const STACK_CHANNEL_SENDER: usize = LINUX_RUSTLS_THREAD_STACK;
 
 /// `voice_session`：语音会话线程，STT + TTS 均需 HTTPS。
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub const STACK_VOICE_CONTROL: usize = 6144;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub const STACK_VOICE_CONTROL: usize = 8192;
+
+/// `voice_session_worker`：语音会话重活线程，STT + TTS 均需 HTTPS。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub const STACK_VOICE_SESSION: usize = 8192;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]

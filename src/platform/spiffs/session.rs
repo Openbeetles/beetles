@@ -189,8 +189,7 @@ fn write_session_body_unlocked(path: &Path, data: &[u8]) -> Result<()> {
     let mut file = std::fs::File::create(path_str).map_err(|e| Error::io("session_write", e))?;
     file.write_all(data)
         .map_err(|e| Error::io("session_write", e))?;
-    file.sync_all()
-        .map_err(|e| Error::io("session_write", e))?;
+    file.sync_all().map_err(|e| Error::io("session_write", e))?;
     Ok(())
 }
 

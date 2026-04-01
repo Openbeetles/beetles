@@ -588,6 +588,29 @@ struct SharedAudioBuffers {
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn pop_speaker_frame_if_available(shared: &SharedAudioBuffers, out: &mut [i16]) -> Option<usize> {
+    let mut guard = shared.speaker.lock().unwrap_or_else(|e| e.into_inner());
+    let n = guard.pop_into(out);
+    if n == 0 {
+        return None;
+    }
+    shared.speaker_cv.notify_one();
+    Some(n)
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn wait_for_speaker_work_or_stop(shared: &SharedAudioBuffers, timeout: Duration) {
+    let guard = shared.speaker.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.len() > 0 || shared.stop.load(Ordering::Relaxed) {
+        return;
+    }
+    let _ = shared
+        .speaker_cv
+        .wait_timeout(guard, timeout)
+        .unwrap_or_else(|e| e.into_inner());
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub(crate) struct AudioPipelineState {
     mic_enabled: bool,
     speaker_enabled: bool,
@@ -702,7 +725,23 @@ impl AudioPipelineState {
                         break;
                     }
                     let mut progressed = false;
-                    if backend.mic_ready() {
+                    let audio_playing = crate::orchestrator::is_audio_playing();
+                    let audio_recording = crate::orchestrator::is_audio_recording();
+
+                    if backend.speaker_ready() {
+                        if let Some(n) = pop_speaker_frame_if_available(
+                            worker_shared.as_ref(),
+                            &mut speaker_frame,
+                        ) {
+                            if let Err(e) = backend.write_speaker_frame_pcm16(&speaker_frame[..n]) {
+                                log::warn!("[audio] speaker frame write failed: {}", e);
+                            } else {
+                                progressed = true;
+                            }
+                        }
+                    }
+
+                    if backend.mic_ready() && !audio_playing {
                         match backend.read_mic_frame_pcm16(&mut mic_frame) {
                             Ok(n) if n > 0 => {
                                 // Tee raw PCM to the wake-word engine BEFORE pushing to the
@@ -711,10 +750,12 @@ impl AudioPipelineState {
                                 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
                                 crate::platform::wake_word::feed_pcm_i16(&mic_frame[..n]);
 
-                                let mut guard =
-                                    worker_shared.mic.lock().unwrap_or_else(|e| e.into_inner());
-                                guard.push_slice_drop_oldest(&mic_frame[..n]);
-                                worker_shared.mic_cv.notify_all();
+                                if audio_recording {
+                                    let mut guard =
+                                        worker_shared.mic.lock().unwrap_or_else(|e| e.into_inner());
+                                    guard.push_slice_drop_oldest(&mic_frame[..n]);
+                                    worker_shared.mic_cv.notify_one();
+                                }
                                 progressed = true;
                             }
                             Ok(_) => {}
@@ -723,25 +764,16 @@ impl AudioPipelineState {
                             }
                         }
                     }
-                    if backend.speaker_ready() {
-                        let mut guard = worker_shared
-                            .speaker
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner());
-                        let n = guard.pop_into(&mut speaker_frame);
-                        if n > 0 {
-                            worker_shared.speaker_cv.notify_all();
-                            drop(guard);
-                            if let Err(e) = backend.write_speaker_frame_pcm16(&speaker_frame[..n]) {
-                                log::warn!("[audio] speaker frame write failed: {}", e);
-                            } else {
-                                progressed = true;
-                            }
-                        }
-                    }
                     if !progressed {
                         crate::platform::task_wdt::feed_current_task();
-                        std::thread::sleep(Duration::from_millis(2));
+                        if backend.speaker_ready() && (!backend.mic_ready() || audio_playing) {
+                            wait_for_speaker_work_or_stop(
+                                worker_shared.as_ref(),
+                                Duration::from_millis(20),
+                            );
+                        } else {
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
                     }
                 }
             })
@@ -817,7 +849,7 @@ impl AudioPipelineState {
             }
             let n = guard.push_slice_blocking(&buf[written..]);
             written += n;
-            self.shared.speaker_cv.notify_all();
+            self.shared.speaker_cv.notify_one();
         }
         Ok(())
     }

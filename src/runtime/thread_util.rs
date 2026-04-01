@@ -25,6 +25,10 @@ pub fn thread_plan(name: &str) -> ThreadPlan {
             core: Some(SpawnCore::Core1),
             role: HttpThreadRole::Background,
         },
+        "voice_session" | "voice_session_worker" => ThreadPlan {
+            core: Some(SpawnCore::Core1),
+            role: HttpThreadRole::Background,
+        },
         "display"
         | "cron"
         | "heartbeat"

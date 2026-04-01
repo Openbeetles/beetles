@@ -9,6 +9,8 @@ use beetle::memory::{MemoryStore, SessionStore};
 #[cfg(feature = "feishu")]
 use beetle::run_feishu_ws_loop;
 use beetle::runtime::{execute_stream_http_op, spawn_planned, thread_plan};
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use beetle::util::STACK_VOICE_CONTROL;
 use beetle::util::{STACK_AGENT_LOOP, STACK_CHANNEL_SENDER, STACK_CHANNEL_WS};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use beetle::Esp32Platform;
@@ -981,23 +983,19 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                 > = Arc::new(move || vs_pf.create_http_client(vs_cfg.as_ref()));
                 let vs_inbound_tx = user_inbound_tx.clone();
                 let vs_prompt = audio_cfg.wake_word.wake_prompt.clone();
-                spawn_planned(
-                    "voice_session",
-                    beetle::util::STACK_VOICE_SESSION,
-                    move || {
-                        beetle::audio::voice_session::run_voice_session(
-                            beetle::audio::voice_session::VoiceSessionConfig {
-                                platform: vs_platform,
-                                audio_cfg: vs_audio,
-                                baidu_token: vs_token,
-                                make_http: vs_make_http,
-                                inbound_tx: vs_inbound_tx,
-                                wake_prompt: vs_prompt,
-                            },
-                            voice_rx,
-                        );
-                    },
-                );
+                spawn_planned("voice_session", STACK_VOICE_CONTROL, move || {
+                    beetle::audio::voice_session::run_voice_session(
+                        beetle::audio::voice_session::VoiceSessionConfig {
+                            platform: vs_platform,
+                            audio_cfg: vs_audio,
+                            baidu_token: vs_token,
+                            make_http: vs_make_http,
+                            inbound_tx: vs_inbound_tx,
+                            wake_prompt: vs_prompt,
+                        },
+                        voice_rx,
+                    );
+                });
                 beetle::platform::wake_word::configure(model_name.as_str(), voice_tx);
             }
         }

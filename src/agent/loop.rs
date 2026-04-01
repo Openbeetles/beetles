@@ -49,6 +49,7 @@ use crate::util::{
     remove_substrings_all_trim, strip_agent_stop_confirmation, truncate_content_to_max,
 };
 use crate::PlatformHttpClient;
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -79,6 +80,9 @@ const MAX_TOOL_EVIDENCE_ITEMS: usize = 4;
 const ASSISTANT_COMPACT_PREVIEW_CHARS: usize = 160;
 const ASSISTANT_COMPACT_TAIL_CHARS: usize = 48;
 const LONG_TERM_MEMORY_REFRESH_CHANNEL: &str = "_memory_refresh";
+const POST_REPLY_MAINTENANCE_CHANNEL: &str = "_post_reply_maintenance";
+const POST_REPLY_MAINTENANCE_USER_PREVIEW_CHARS: usize = 512;
+const POST_REPLY_MAINTENANCE_REPLY_PREVIEW_CHARS: usize = 768;
 const PLAN_SYSTEM_SUFFIX: &str = "\n\n## Internal planning\nBefore solving the latest user request, create a short internal execution plan. Return 3-6 concise numbered steps only. Do not answer the user. Do not call tools in this planning step.";
 const FINAL_RECOVERY_SYSTEM_SUFFIX: &str = "\n\n## Final delivery\nThe tool-execution budget for this turn is exhausted. Do not call any tool. Using only the completed tool results and current conclusions already present in this conversation, produce the final user-facing answer now. Do not output execution transcripts, numbered step logs, or future-step sections.";
 
@@ -122,6 +126,41 @@ fn choose_inbound_tx<'a>(
 
 fn is_long_term_memory_refresh_job(msg: &PcMsg) -> bool {
     msg.ingress == IngressKind::System && msg.channel.as_ref() == LONG_TERM_MEMORY_REFRESH_CHANNEL
+}
+
+fn is_post_reply_maintenance_job(msg: &PcMsg) -> bool {
+    msg.ingress == IngressKind::System && msg.channel.as_ref() == POST_REPLY_MAINTENANCE_CHANNEL
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PostReplyMaintenanceJobPayload {
+    ingress: IngressKind,
+    source_channel: String,
+    user_content: String,
+    reply_content: String,
+    tool_calls: u32,
+    now_secs: u64,
+}
+
+impl PostReplyMaintenanceJobPayload {
+    fn from_turn(msg: &PcMsg, reply_content: &str, tool_calls: u32) -> Self {
+        Self {
+            ingress: msg.ingress,
+            source_channel: msg.channel.to_string(),
+            user_content: truncate_content_to_max(
+                &msg.content,
+                POST_REPLY_MAINTENANCE_USER_PREVIEW_CHARS,
+            )
+            .into_owned(),
+            reply_content: truncate_content_to_max(
+                reply_content,
+                POST_REPLY_MAINTENANCE_REPLY_PREVIEW_CHARS,
+            )
+            .into_owned(),
+            tool_calls,
+            now_secs: crate::util::current_unix_secs(),
+        }
+    }
 }
 #[derive(Clone, Copy)]
 enum AgentWorkerLane {
@@ -735,6 +774,155 @@ fn run_long_term_memory_refresh_job(
     }
 }
 
+fn enqueue_post_reply_maintenance_job(
+    system_inbound_tx: &SystemInboundTx,
+    msg: &PcMsg,
+    reply_content: &str,
+    tool_calls: u32,
+) -> bool {
+    let payload = PostReplyMaintenanceJobPayload::from_turn(msg, reply_content, tool_calls);
+    let body = match serde_json::to_string(&payload) {
+        Ok(body) => body,
+        Err(error) => {
+            log::warn!(
+                "[agent_memory] maintenance job serialize failed chat_id={}: {}",
+                msg.chat_id,
+                error
+            );
+            return false;
+        }
+    };
+    let job = match PcMsg::new_system(POST_REPLY_MAINTENANCE_CHANNEL, msg.chat_id.as_ref(), body) {
+        Ok(job) => job,
+        Err(error) => {
+            log::warn!(
+                "[agent_memory] maintenance job build failed chat_id={}: {}",
+                msg.chat_id,
+                error
+            );
+            return false;
+        }
+    };
+    match system_inbound_tx.try_send(job) {
+        Ok(()) => true,
+        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+            log::debug!(
+                "[agent_memory] skip maintenance enqueue because system queue is full chat_id={}",
+                msg.chat_id
+            );
+            false
+        }
+        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+            log::warn!("[agent_memory] maintenance enqueue failed: system queue disconnected");
+            false
+        }
+    }
+}
+
+fn run_post_reply_maintenance_job(
+    http: &mut dyn PlatformHttpClient,
+    worker_llm: &(dyn LlmClient + Send + Sync),
+    config: &AgentLoopConfig,
+    system_inbound_tx: &SystemInboundTx,
+    msg: &PcMsg,
+) {
+    let payload: PostReplyMaintenanceJobPayload = match serde_json::from_str(&msg.content) {
+        Ok(payload) => payload,
+        Err(error) => {
+            log::warn!(
+                "[agent_memory] maintenance job decode failed chat_id={}: {}",
+                msg.chat_id,
+                error
+            );
+            return;
+        }
+    };
+    let loc = (config.resolve_locale)();
+    let mut llm_ctx = HttpClientToolContext {
+        http,
+        chat_id: Some(Arc::from(msg.chat_id.as_ref())),
+        channel: Some(Arc::from("system")),
+        outbound_tx: None,
+        req_id: None,
+        supports_current_chat_primary_reply: false,
+        supports_explicit_outbound_message: false,
+        outbound_message_budget: 0,
+        outbound_message_count: 0,
+        current_primary_message_delivered: false,
+        locale: loc,
+    };
+    let maintenance_outcome = run_post_reply_memory_maintenance(
+        &mut llm_ctx,
+        worker_llm,
+        PostReplyMemoryMaintenanceContext {
+            session_store: config.session_store.as_ref(),
+            session_summary_store: config.session_summary_store.as_ref(),
+            execution_state_store: config.execution_state_store.as_ref(),
+            extraction_state_store: config.long_term_memory_extraction_state_store.as_ref(),
+        },
+        PostReplyMemoryMaintenanceInput {
+            chat_id: &msg.chat_id,
+            ingress: payload.ingress,
+            channel: &payload.source_channel,
+            user_content: &payload.user_content,
+            reply_content: &payload.reply_content,
+            pressure: crate::orchestrator::snapshot().pressure,
+            memory_profile: config.memory_profile,
+            tool_calls: payload.tool_calls,
+            now_secs: payload.now_secs,
+        },
+        || match PcMsg::new_system(LONG_TERM_MEMORY_REFRESH_CHANNEL, msg.chat_id.as_ref(), "") {
+            Ok(job) => match system_inbound_tx.try_send(job) {
+                Ok(()) => true,
+                Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                    log::debug!(
+                        "[agent_memory] skip refresh enqueue because system queue is full chat_id={}",
+                        msg.chat_id
+                    );
+                    false
+                }
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    log::warn!("[agent_memory] refresh enqueue failed: system queue disconnected");
+                    false
+                }
+            },
+            Err(error) => {
+                log::warn!("[agent_memory] refresh job build failed: {}", error);
+                false
+            }
+        },
+    );
+    match maintenance_outcome.summary_result {
+        Ok(SessionSummaryRefreshOutcome::Updated { used_fallback }) => {
+            if used_fallback {
+                log::info!("[agent_summary] updated for {} (fallback)", msg.chat_id);
+            } else {
+                log::info!("[agent_summary] updated for {}", msg.chat_id);
+            }
+        }
+        Ok(SessionSummaryRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_summary] failed: {}", error),
+    }
+    match maintenance_outcome.execution_state_result {
+        Ok(crate::memory::ExecutionStateRefreshOutcome::Updated) => {
+            log::info!("[agent_execution_state] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::ExecutionStateRefreshOutcome::Cleared) => {
+            log::info!("[agent_execution_state] cleared for {}", msg.chat_id);
+        }
+        Ok(crate::memory::ExecutionStateRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_execution_state] failed: {}", error),
+    }
+    if maintenance_outcome.extraction_request_outcome
+        == LongTermMemoryRefreshRequestOutcome::RequestFailed
+    {
+        log::debug!(
+            "[agent_memory] refresh request was eligible but not enqueued chat_id={}",
+            msg.chat_id
+        );
+    }
+}
+
 /// run_worker_path 返回：正常内容或用户要求停止时的确认文案。
 pub enum WorkerOutcome {
     Content(String),
@@ -1097,6 +1285,11 @@ fn run_agent_loop_lane(
         }
         if is_long_term_memory_refresh_job(&msg) {
             run_long_term_memory_refresh_job(http, worker_llm, config, &msg);
+            metrics::record_system_message_done(false);
+            continue;
+        }
+        if is_post_reply_maintenance_job(&msg) {
+            run_post_reply_maintenance_job(http, worker_llm, config, &system_inbound_tx, &msg);
             metrics::record_system_message_done(false);
             continue;
         }
@@ -1474,99 +1667,20 @@ fn run_agent_loop_lane(
             .saturating_add(worker_latency.tool_exec_ms)
             .saturating_add(worker_latency.session_write_ms);
 
-        // Programmatic session summary — only after the reply has been handed off to the
-        // outbound path (or streamed successfully).
-        if delivered {
-            let loc = (config.resolve_locale)();
-            let mut maintenance_llm_ctx = HttpClientToolContext {
-                http,
-                chat_id: Some(Arc::from(msg.chat_id.as_ref())),
-                channel: Some(Arc::from("system")),
-                outbound_tx: None,
-                req_id: None,
-                supports_current_chat_primary_reply: false,
-                supports_explicit_outbound_message: false,
-                outbound_message_budget: 0,
-                outbound_message_count: 0,
-                current_primary_message_delivered: false,
-                locale: loc,
-            };
-            let maintenance_outcome = run_post_reply_memory_maintenance(
-                &mut maintenance_llm_ctx,
-                worker_llm,
-                PostReplyMemoryMaintenanceContext {
-                    session_store: config.session_store.as_ref(),
-                    session_summary_store: config.session_summary_store.as_ref(),
-                    execution_state_store: config.execution_state_store.as_ref(),
-                    extraction_state_store: config.long_term_memory_extraction_state_store.as_ref(),
-                },
-                PostReplyMemoryMaintenanceInput {
-                    chat_id: &msg.chat_id,
-                    ingress: msg.ingress,
-                    channel: msg.channel.as_ref(),
-                    user_content: &msg.content,
-                    reply_content: &reply_content,
-                    pressure: crate::orchestrator::snapshot().pressure,
-                    memory_profile: config.memory_profile,
-                    tool_calls: worker_latency.tool_calls,
-                    now_secs: crate::util::current_unix_secs(),
-                },
-                || match PcMsg::new_system(
-                    LONG_TERM_MEMORY_REFRESH_CHANNEL,
-                    msg.chat_id.as_ref(),
-                    "",
-                ) {
-                    Ok(job) => match system_inbound_tx.try_send(job) {
-                        Ok(()) => true,
-                        Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                            log::debug!(
-                                "[agent_memory] skip refresh enqueue because system queue is full chat_id={}",
-                                msg.chat_id
-                            );
-                            false
-                        }
-                        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                            log::warn!(
-                                "[agent_memory] refresh enqueue failed: system queue disconnected"
-                            );
-                            false
-                        }
-                    },
-                    Err(e) => {
-                        log::warn!("[agent_memory] refresh job build failed: {}", e);
-                        false
-                    }
-                },
+        // Post-reply maintenance is best-effort and runs on the system queue so the
+        // interactive lane can hand the reply off without paying for another LLM/storage pass.
+        if delivered
+            && !enqueue_post_reply_maintenance_job(
+                &system_inbound_tx,
+                &msg,
+                &reply_content,
+                worker_latency.tool_calls,
+            )
+        {
+            log::debug!(
+                "[agent_memory] post-reply maintenance job skipped chat_id={}",
+                msg.chat_id
             );
-            match maintenance_outcome.summary_result {
-                Ok(SessionSummaryRefreshOutcome::Updated { used_fallback }) => {
-                    if used_fallback {
-                        log::info!("[agent_summary] updated for {} (fallback)", msg.chat_id);
-                    } else {
-                        log::info!("[agent_summary] updated for {}", msg.chat_id);
-                    }
-                }
-                Ok(SessionSummaryRefreshOutcome::Skipped) => {}
-                Err(e) => log::warn!("[agent_summary] failed: {}", e),
-            }
-            match maintenance_outcome.execution_state_result {
-                Ok(crate::memory::ExecutionStateRefreshOutcome::Updated) => {
-                    log::info!("[agent_execution_state] updated for {}", msg.chat_id);
-                }
-                Ok(crate::memory::ExecutionStateRefreshOutcome::Cleared) => {
-                    log::info!("[agent_execution_state] cleared for {}", msg.chat_id);
-                }
-                Ok(crate::memory::ExecutionStateRefreshOutcome::Skipped) => {}
-                Err(e) => log::warn!("[agent_execution_state] failed: {}", e),
-            }
-            if maintenance_outcome.extraction_request_outcome
-                == LongTermMemoryRefreshRequestOutcome::RequestFailed
-            {
-                log::debug!(
-                    "[agent_memory] refresh request was eligible but not enqueued chat_id={}",
-                    msg.chat_id
-                );
-            }
         }
         let total_ms = msg_start.elapsed().as_millis();
         let post_reply_ms = total_ms.saturating_sub(reply_handoff_ms);
