@@ -19,6 +19,9 @@ pub use execution_state::{
     ExecutionStateRefreshContext, ExecutionStateRefreshInput, ExecutionStateRefreshOutcome,
     ExecutionStateStore, ExecutionStatus, EXECUTION_STATE_SYSTEM_PROMPT, REL_PATH_EXECUTION_STATES,
 };
+pub(crate) use execution_state::{
+    run_execution_state_refresh_with_state, should_refresh_execution_state,
+};
 pub(crate) use long_term::{
     canonicalize_long_term_memory_entry, govern_long_term_memory_entries,
     merge_long_term_memory_entry, score_long_term_memory_recall,
@@ -57,6 +60,9 @@ pub use prompt_context::{
 pub use session_summary_refresh::{
     fallback_session_summary, run_session_summary_refresh, should_refresh_session_summary,
     SessionSummaryRefreshContext, SessionSummaryRefreshOutcome,
+};
+pub(crate) use session_summary_refresh::{
+    load_session_summary_snapshot, run_session_summary_refresh_with_snapshot,
 };
 
 /// 单次写入内容最大字节数（与 platform::spiffs 上界一致）。实现应拒绝超长写入。

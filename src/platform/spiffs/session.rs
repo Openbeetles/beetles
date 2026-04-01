@@ -7,11 +7,16 @@ use crate::memory::{
     REL_PATH_SESSIONS_DIR,
 };
 use serde_json;
+use std::collections::VecDeque;
+use std::ffi::OsString;
+use std::fs::OpenOptions;
+use std::io::{Read, Write};
+use std::path::Path;
 use std::path::PathBuf;
 
 use crate::platform::state_root::state_mount_path;
 
-use super::{list_dir, read_file, write_file};
+use super::{list_dir, read_file, with_fs_lock, write_file, MAX_WRITE_SIZE};
 
 const TAG: &str = "platform::spiffs::session";
 
@@ -19,6 +24,7 @@ const TAG: &str = "platform::spiffs::session";
 const MAX_CHAT_ID_FILENAME_LEN: usize = 20;
 const SESSION_FILE_EXT: &str = ".jsonl";
 const CHAT_ID_HEADER_PREFIX: &str = "# chat_id: ";
+const COUNT_FILE_EXT: &str = ".c";
 
 fn fnv1a_hash(s: &str) -> u32 {
     let mut h: u32 = 2166136261;
@@ -128,6 +134,120 @@ fn count_session_message_lines(buf: &[u8]) -> usize {
     n
 }
 
+fn count_path(path: &Path) -> PathBuf {
+    let mut os = OsString::from(path.as_os_str());
+    os.push(COUNT_FILE_EXT);
+    PathBuf::from(os)
+}
+
+fn parse_count_bytes(buf: &[u8]) -> Option<usize> {
+    std::str::from_utf8(buf).ok()?.trim().parse::<usize>().ok()
+}
+
+fn read_existing_file_unlocked(path: &Path) -> Result<Vec<u8>> {
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| Error::config("session_read", "invalid path"))?;
+    let mut file = std::fs::File::open(path_str).map_err(|e| Error::io("session_read", e))?;
+    let capacity = file
+        .metadata()
+        .ok()
+        .and_then(|meta| usize::try_from(meta.len()).ok())
+        .map(|len| len.min(MAX_WRITE_SIZE))
+        .unwrap_or(0);
+    let mut buf = if capacity >= super::PSRAM_FILE_THRESHOLD {
+        super::psram_vec_with_capacity(capacity)
+    } else if capacity > 0 {
+        Vec::with_capacity(capacity)
+    } else {
+        Vec::new()
+    };
+    file.read_to_end(&mut buf)
+        .map_err(|e| Error::io("session_read", e))?;
+    Ok(buf)
+}
+
+fn write_count_file_unlocked(path: &Path, count: usize) -> Result<()> {
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| Error::config("session_count_write", "invalid path"))?;
+    let mut file =
+        std::fs::File::create(path_str).map_err(|e| Error::io("session_count_write", e))?;
+    let body = count.to_string();
+    file.write_all(body.as_bytes())
+        .map_err(|e| Error::io("session_count_write", e))?;
+    file.sync_all()
+        .map_err(|e| Error::io("session_count_write", e))?;
+    Ok(())
+}
+
+fn write_session_body_unlocked(path: &Path, data: &[u8]) -> Result<()> {
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| Error::config("session_write", "invalid path"))?;
+    let _ = std::fs::remove_file(path_str);
+    let mut file = std::fs::File::create(path_str).map_err(|e| Error::io("session_write", e))?;
+    file.write_all(data)
+        .map_err(|e| Error::io("session_write", e))?;
+    file.sync_all()
+        .map_err(|e| Error::io("session_write", e))?;
+    Ok(())
+}
+
+fn append_session_line_unlocked(
+    path: &Path,
+    write_header: bool,
+    chat_id: &str,
+    prepend_newline: bool,
+    line: &str,
+) -> Result<()> {
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| Error::config("session_append", "invalid path"))?;
+    let file_len = std::fs::metadata(path_str)
+        .ok()
+        .and_then(|meta| usize::try_from(meta.len()).ok())
+        .unwrap_or(0);
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path_str)
+        .map_err(|e| Error::io("session_append", e))?;
+    if file_len == 0 && write_header {
+        file.write_all(CHAT_ID_HEADER_PREFIX.as_bytes())
+            .and_then(|_| file.write_all(chat_id.as_bytes()))
+            .and_then(|_| file.write_all(b"\n"))
+            .map_err(|e| Error::io("session_append", e))?;
+    }
+    if file_len > 0 && prepend_newline {
+        file.write_all(b"\n")
+            .map_err(|e| Error::io("session_append", e))?;
+    }
+    file.write_all(line.as_bytes())
+        .and_then(|_| file.write_all(b"\n"))
+        .map_err(|e| Error::io("session_append", e))?;
+    file.sync_all()
+        .map_err(|e| Error::io("session_append", e))?;
+    Ok(())
+}
+
+fn load_or_init_count_unlocked(path: &Path) -> Result<(usize, Option<Vec<u8>>)> {
+    let count_file = count_path(path);
+    if let Ok(buf) = read_existing_file_unlocked(&count_file) {
+        if let Some(count) = parse_count_bytes(&buf) {
+            return Ok((count.min(MAX_SESSION_ENTRIES), None));
+        }
+    }
+
+    let existing_buf = match read_existing_file_unlocked(path) {
+        Ok(buf) => buf,
+        Err(_) => Vec::new(),
+    };
+    let count = count_session_message_lines(&existing_buf).min(MAX_SESSION_ENTRIES);
+    write_count_file_unlocked(&count_file, count)?;
+    Ok((count, Some(existing_buf)))
+}
+
 /// 列举 chat_id 数量上界（与 MAX_SESSION_ENTRIES 同量级）。
 const MAX_LIST_CHAT_IDS: usize = 128;
 
@@ -166,86 +286,78 @@ impl SessionStore for SpiffsSessionStore {
         }
 
         let (path, write_header) = session_path(chat_id)?;
+        with_fs_lock(|| {
+            let count_file = count_path(&path);
+            let (msg_count, existing_buf) = load_or_init_count_unlocked(&path)?;
+            if msg_count < MAX_SESSION_ENTRIES {
+                let prepend_newline = existing_buf
+                    .as_deref()
+                    .map(|buf| !buf.is_empty() && !buf.ends_with(b"\n"))
+                    .unwrap_or(false);
+                append_session_line_unlocked(&path, write_header, chat_id, prepend_newline, &line)?;
+                write_count_file_unlocked(&count_file, msg_count.saturating_add(1))?;
+                return Ok(());
+            }
 
-        // Fast path: 未满环时直接追加一行，避免整文件 JSON 解析/重序列化。
-        let existing_buf = read_file(&path).unwrap_or_default();
-        let msg_count = count_session_message_lines(&existing_buf);
-        if msg_count < MAX_SESSION_ENTRIES {
-            let out_cap = existing_buf.len() + line.len() + 2;
-            let mut out = if out_cap >= super::PSRAM_FILE_THRESHOLD {
-                super::psram_vec_with_capacity(out_cap)
-            } else {
-                Vec::with_capacity(out_cap)
-            };
-            if existing_buf.is_empty() {
-                if write_header {
-                    out.extend_from_slice(CHAT_ID_HEADER_PREFIX.as_bytes());
-                    out.extend_from_slice(chat_id.as_bytes());
-                    out.push(b'\n');
-                }
-                out.extend_from_slice(line.as_bytes());
-                return write_file(&path, &out);
-            }
-            out.extend_from_slice(&existing_buf);
-            if !existing_buf.ends_with(b"\n") {
-                out.push(b'\n');
-            }
-            out.extend_from_slice(line.as_bytes());
-            return write_file(&path, &out);
-        }
-
-        // Slow path: 已满，需解析、淘汰最旧、整文件重写。
-        let mut messages: Vec<SessionMessage> = Vec::with_capacity(MAX_SESSION_ENTRIES);
-        let mut first = true;
-        for raw_line in existing_buf.split(|&b| b == b'\n') {
-            if raw_line.is_empty() {
-                continue;
-            }
-            if let Ok(s) = std::str::from_utf8(raw_line) {
-                if first && parse_chat_id_header(s).is_some() {
-                    first = false;
+            // Slow path: 已满，需解析、淘汰最旧、整文件重写。
+            let existing_buf = existing_buf
+                .unwrap_or_else(|| read_existing_file_unlocked(&path).unwrap_or_default());
+            let mut messages: Vec<SessionMessage> = Vec::with_capacity(MAX_SESSION_ENTRIES);
+            let mut first = true;
+            for raw_line in existing_buf.split(|&b| b == b'\n') {
+                if raw_line.is_empty() {
                     continue;
                 }
-                first = false;
-                if let Some(m) = parse_jsonl_line(s) {
-                    messages.push(m);
+                if let Ok(s) = std::str::from_utf8(raw_line) {
+                    if first && parse_chat_id_header(s).is_some() {
+                        first = false;
+                        continue;
+                    }
+                    first = false;
+                    if let Some(m) = parse_jsonl_line(s) {
+                        messages.push(m);
+                    }
                 }
             }
-        }
 
-        messages.push(msg);
-        if messages.len() > MAX_SESSION_ENTRIES {
-            messages.drain(0..(messages.len() - MAX_SESSION_ENTRIES));
-        }
+            messages.push(msg);
+            if messages.len() > MAX_SESSION_ENTRIES {
+                messages.drain(0..(messages.len() - MAX_SESSION_ENTRIES));
+            }
 
-        let cap = messages
-            .len()
-            .saturating_mul(MAX_SESSION_MESSAGE_LEN.saturating_add(1))
-            .saturating_add(if write_header {
-                CHAT_ID_HEADER_PREFIX.len() + chat_id.len() + 2
-            } else {
-                0
-            });
-        let mut body = String::with_capacity(cap);
-        if write_header {
-            body.push_str(CHAT_ID_HEADER_PREFIX);
-            body.push_str(chat_id);
-            body.push('\n');
-        }
-        for (i, m) in messages.iter().enumerate() {
-            if i > 0 {
+            let cap = messages
+                .len()
+                .saturating_mul(MAX_SESSION_MESSAGE_LEN.saturating_add(1))
+                .saturating_add(if write_header {
+                    CHAT_ID_HEADER_PREFIX.len() + chat_id.len() + 2
+                } else {
+                    0
+                })
+                .saturating_add(1);
+            let mut body = String::with_capacity(cap);
+            if write_header {
+                body.push_str(CHAT_ID_HEADER_PREFIX);
+                body.push_str(chat_id);
                 body.push('\n');
             }
-            let json_line = serde_json::to_string(m).unwrap_or_default();
-            body.push_str(&json_line);
-        }
-        write_file(&path, body.as_bytes())
+            for m in &messages {
+                let json_line = serde_json::to_string(m).unwrap_or_default();
+                body.push_str(&json_line);
+                body.push('\n');
+            }
+            write_session_body_unlocked(&path, body.as_bytes())?;
+            write_count_file_unlocked(&count_file, messages.len())?;
+            Ok(())
+        })
     }
 
     fn load_recent(&self, chat_id: &str, n: usize) -> Result<Vec<SessionMessage>> {
         let (path, _) = session_path(chat_id)?;
         let cap = n.min(MAX_SESSION_ENTRIES);
-        let mut all: Vec<SessionMessage> = Vec::with_capacity(MAX_SESSION_ENTRIES);
+        if cap == 0 {
+            return Ok(Vec::new());
+        }
+        let mut recent: VecDeque<SessionMessage> = VecDeque::with_capacity(cap);
         if let Ok(buf) = read_file(&path) {
             for raw_line in buf.split(|&b| b == b'\n') {
                 if raw_line.is_empty() {
@@ -256,34 +368,38 @@ impl SessionStore for SpiffsSessionStore {
                         continue;
                     }
                     if let Some(m) = parse_jsonl_line(s) {
-                        all.push(m);
+                        if recent.len() == cap {
+                            recent.pop_front();
+                        }
+                        recent.push_back(m);
                     }
                 }
             }
         }
-        let skip = all.len().saturating_sub(cap);
-        Ok(all.split_off(skip))
+        Ok(recent.into_iter().collect())
     }
 
     fn message_count(&self, chat_id: &str) -> Result<usize> {
         let (path, _) = session_path(chat_id)?;
-        let buf = match read_file(&path) {
-            Ok(buf) => buf,
-            Err(_) => return Ok(0),
-        };
-        Ok(count_session_message_lines(&buf))
+        with_fs_lock(|| {
+            let (count, _) = load_or_init_count_unlocked(&path)?;
+            Ok(count)
+        })
     }
 
     fn clear(&self, chat_id: &str) -> Result<()> {
         let (path, write_header) = session_path(chat_id)?;
+        let count_file = count_path(&path);
         if write_header {
             let mut empty = String::from(CHAT_ID_HEADER_PREFIX);
             empty.push_str(chat_id);
             empty.push('\n');
-            write_file(&path, empty.as_bytes())
+            write_file(&path, empty.as_bytes())?;
         } else {
-            write_file(&path, b"")
+            write_file(&path, b"")?;
         }
+        let _ = super::remove_file(&count_file);
+        Ok(())
     }
 
     fn list_chat_ids(&self) -> Result<Vec<String>> {
@@ -369,9 +485,11 @@ impl SessionStore for SpiffsSessionStore {
 
     fn delete(&self, chat_id: &str) -> Result<()> {
         let (path, _) = session_path(chat_id)?;
+        let count_file = count_path(&path);
         if path.exists() {
             super::remove_file(&path)?;
         }
+        let _ = super::remove_file(&count_file);
         Ok(())
     }
 }

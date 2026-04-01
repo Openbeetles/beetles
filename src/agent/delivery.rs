@@ -5,7 +5,8 @@ use crate::metrics;
 use crate::runtime::spawn_planned;
 use crate::util::truncate_content_to_max;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc, OnceLock, Weak};
+use std::time::{Duration, Instant};
 
 const EDIT_THROTTLE_MS: u64 = 500;
 const MAX_EDIT_FAILURES: u8 = 3;
@@ -58,6 +59,20 @@ struct QueuedDelivery<'a> {
 struct QueuedDeliveryShared {
     visible_updates_sent: AtomicU8,
     waiting_notice_canceled: AtomicBool,
+}
+
+struct WaitingNoticeJob {
+    due_at: Instant,
+    outbound_tx: OutboundTx,
+    channel: Arc<str>,
+    chat_id: Arc<str>,
+    req_id: String,
+    waiting_notice: String,
+    shared: Weak<QueuedDeliveryShared>,
+}
+
+struct WaitingNoticeScheduler {
+    tx: mpsc::Sender<WaitingNoticeJob>,
 }
 
 impl<'a> DeliverySession<'a> {
@@ -431,35 +446,117 @@ fn spawn_waiting_notice(
         visible_updates_sent: AtomicU8::new(0),
         waiting_notice_canceled: AtomicBool::new(false),
     });
-    let worker_shared = Arc::clone(&shared);
-    let req_id = req_id.to_string();
-    spawn_planned(
-        "agent_waiting_notice",
-        WAITING_NOTICE_STACK_SIZE,
-        move || {
-            std::thread::sleep(waiting_notice_delay());
-            if worker_shared
-                .waiting_notice_canceled
-                .load(Ordering::Relaxed)
-            {
-                return;
-            }
-            if !try_claim_shared_visible_slot(&worker_shared) {
-                return;
-            }
-            if !should_send_waiting_notice_after_claim(&worker_shared) {
-                return;
-            }
-            if send_visible_update(&outbound_tx, &channel, &chat_id, &req_id, &waiting_notice)
-                .is_err()
-            {
-                worker_shared
-                    .visible_updates_sent
-                    .fetch_sub(1, Ordering::Relaxed);
-            }
-        },
-    );
+    waiting_notice_scheduler().schedule(WaitingNoticeJob {
+        due_at: Instant::now() + waiting_notice_delay(),
+        outbound_tx,
+        channel,
+        chat_id,
+        req_id: req_id.to_string(),
+        waiting_notice,
+        shared: Arc::downgrade(&shared),
+    });
     shared
+}
+
+fn waiting_notice_scheduler() -> &'static WaitingNoticeScheduler {
+    static SCHEDULER: OnceLock<WaitingNoticeScheduler> = OnceLock::new();
+    SCHEDULER.get_or_init(WaitingNoticeScheduler::new)
+}
+
+impl WaitingNoticeScheduler {
+    fn new() -> Self {
+        let (tx, rx) = mpsc::channel::<WaitingNoticeJob>();
+        spawn_planned(
+            "agent_waiting_notice",
+            WAITING_NOTICE_STACK_SIZE,
+            move || {
+                run_waiting_notice_scheduler(rx);
+            },
+        );
+        Self { tx }
+    }
+
+    fn schedule(&self, job: WaitingNoticeJob) {
+        if let Err(error) = self.tx.send(job) {
+            log::warn!("[agent_delivery] waiting notice schedule failed: {}", error);
+        }
+    }
+}
+
+fn run_waiting_notice_scheduler(rx: mpsc::Receiver<WaitingNoticeJob>) {
+    let mut pending: Vec<WaitingNoticeJob> = Vec::new();
+    loop {
+        match next_waiting_notice_event(&rx, &mut pending) {
+            WaitingNoticeEvent::New(job) => pending.push(job),
+            WaitingNoticeEvent::TimerFired => {}
+            WaitingNoticeEvent::Closed => break,
+        }
+        fire_due_waiting_notices(&mut pending);
+    }
+}
+
+enum WaitingNoticeEvent {
+    New(WaitingNoticeJob),
+    TimerFired,
+    Closed,
+}
+
+fn next_waiting_notice_event(
+    rx: &mpsc::Receiver<WaitingNoticeJob>,
+    pending: &mut [WaitingNoticeJob],
+) -> WaitingNoticeEvent {
+    if pending.is_empty() {
+        return match rx.recv() {
+            Ok(job) => WaitingNoticeEvent::New(job),
+            Err(_) => WaitingNoticeEvent::Closed,
+        };
+    }
+    let now = Instant::now();
+    let timeout = pending
+        .iter()
+        .map(|job| job.due_at.saturating_duration_since(now))
+        .min()
+        .unwrap_or_else(|| Duration::from_secs(1));
+    match rx.recv_timeout(timeout) {
+        Ok(job) => WaitingNoticeEvent::New(job),
+        Err(mpsc::RecvTimeoutError::Timeout) => WaitingNoticeEvent::TimerFired,
+        Err(mpsc::RecvTimeoutError::Disconnected) => WaitingNoticeEvent::Closed,
+    }
+}
+
+fn fire_due_waiting_notices(pending: &mut Vec<WaitingNoticeJob>) {
+    let now = Instant::now();
+    let mut index = 0usize;
+    while index < pending.len() {
+        if pending[index].due_at > now {
+            index += 1;
+            continue;
+        }
+        let job = pending.swap_remove(index);
+        let Some(shared) = job.shared.upgrade() else {
+            continue;
+        };
+        if shared.waiting_notice_canceled.load(Ordering::Relaxed) {
+            continue;
+        }
+        if !try_claim_shared_visible_slot(&shared) {
+            continue;
+        }
+        if !should_send_waiting_notice_after_claim(&shared) {
+            continue;
+        }
+        if send_visible_update(
+            &job.outbound_tx,
+            &job.channel,
+            &job.chat_id,
+            &job.req_id,
+            &job.waiting_notice,
+        )
+        .is_err()
+        {
+            shared.visible_updates_sent.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
 }
 
 fn try_claim_shared_visible_slot(shared: &QueuedDeliveryShared) -> bool {
@@ -493,12 +590,12 @@ fn should_send_waiting_notice_after_claim(shared: &QueuedDeliveryShared) -> bool
 
 #[cfg(test)]
 fn waiting_notice_delay() -> std::time::Duration {
-    std::time::Duration::from_millis(20)
+    Duration::from_millis(20)
 }
 
 #[cfg(not(test))]
 fn waiting_notice_delay() -> std::time::Duration {
-    std::time::Duration::from_millis(3000)
+    Duration::from_millis(3000)
 }
 
 fn current_unix_ms() -> u64 {

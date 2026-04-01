@@ -7,12 +7,13 @@ use crate::llm::{LlmClient, LlmHttpClient};
 use crate::orchestrator::PressureLevel;
 
 use super::{
-    evaluate_long_term_memory_extraction_turn, mark_long_term_memory_extraction_requested,
-    persist_long_term_memory_extraction_state, run_execution_state_refresh,
-    run_session_summary_refresh, ExecutionStateRefreshContext, ExecutionStateRefreshInput,
-    ExecutionStateRefreshOutcome, ExecutionStateStore, LongTermMemoryExtractionStateStore,
-    LongTermMemoryExtractionTurnInput, MemoryProfile, SessionStore, SessionSummaryRefreshOutcome,
-    SessionSummaryStore,
+    evaluate_long_term_memory_extraction_turn, load_session_summary_snapshot,
+    mark_long_term_memory_extraction_requested, memory_policy,
+    persist_long_term_memory_extraction_state, run_execution_state_refresh_with_state,
+    run_session_summary_refresh_with_snapshot, should_refresh_execution_state,
+    ExecutionStateRefreshContext, ExecutionStateRefreshInput, ExecutionStateRefreshOutcome,
+    ExecutionStateStore, LongTermMemoryExtractionStateStore, LongTermMemoryExtractionTurnInput,
+    MemoryProfile, SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore,
 };
 
 pub struct PostReplyMemoryMaintenanceContext<'a> {
@@ -56,7 +57,49 @@ pub fn run_post_reply_memory_maintenance(
     mut enqueue_long_term_refresh: impl FnMut() -> bool,
 ) -> PostReplyMemoryMaintenanceOutcome {
     let after_count = ctx.session_store.message_count(input.chat_id).unwrap_or(0);
-    let summary_result = run_session_summary_refresh(
+    let initial_summary_snapshot =
+        load_session_summary_snapshot(ctx.session_summary_store, input.chat_id);
+    let execution_state = ctx.execution_state_store.get(input.chat_id);
+    let summary_should_refresh = super::should_refresh_session_summary(
+        after_count,
+        initial_summary_snapshot.last_summary_count,
+        input.memory_profile,
+    );
+    let execution_should_refresh = execution_state
+        .as_ref()
+        .map(|state| {
+            should_refresh_execution_state(
+                ExecutionStateRefreshInput {
+                    chat_id: input.chat_id,
+                    ingress: input.ingress,
+                    channel: input.channel,
+                    user_content: input.user_content,
+                    reply_content: input.reply_content,
+                    pressure: input.pressure,
+                    tool_calls: input.tool_calls,
+                    now_secs: input.now_secs,
+                },
+                state.is_some(),
+                input.memory_profile,
+            )
+        })
+        .unwrap_or(false);
+    let shared_recent = if summary_should_refresh && execution_should_refresh {
+        let summary_policy = memory_policy(input.memory_profile).session_summary;
+        let execution_policy = memory_policy(input.memory_profile).execution_state;
+        ctx.session_store
+            .load_recent(
+                input.chat_id,
+                summary_policy
+                    .recent_message_count
+                    .max(execution_policy.recent_message_count),
+            )
+            .ok()
+    } else {
+        None
+    };
+
+    let (summary_result, summary_snapshot) = match run_session_summary_refresh_with_snapshot(
         http,
         llm,
         super::SessionSummaryRefreshContext {
@@ -66,27 +109,38 @@ pub fn run_post_reply_memory_maintenance(
         input.chat_id,
         after_count,
         input.memory_profile,
-    );
-    let execution_state_result = run_execution_state_refresh(
-        http,
-        llm,
-        ExecutionStateRefreshContext {
-            session_store: ctx.session_store,
-            session_summary_store: ctx.session_summary_store,
-            execution_state_store: ctx.execution_state_store,
-        },
-        ExecutionStateRefreshInput {
-            chat_id: input.chat_id,
-            ingress: input.ingress,
-            channel: input.channel,
-            user_content: input.user_content,
-            reply_content: input.reply_content,
-            pressure: input.pressure,
-            tool_calls: input.tool_calls,
-            now_secs: input.now_secs,
-        },
-        input.memory_profile,
-    );
+        initial_summary_snapshot.clone(),
+        shared_recent.as_deref(),
+    ) {
+        Ok((outcome, snapshot)) => (Ok(outcome), snapshot),
+        Err(error) => (Err(error), initial_summary_snapshot),
+    };
+    let execution_state_result = match execution_state {
+        Ok(existing_state) => run_execution_state_refresh_with_state(
+            http,
+            llm,
+            ExecutionStateRefreshContext {
+                session_store: ctx.session_store,
+                session_summary_store: ctx.session_summary_store,
+                execution_state_store: ctx.execution_state_store,
+            },
+            ExecutionStateRefreshInput {
+                chat_id: input.chat_id,
+                ingress: input.ingress,
+                channel: input.channel,
+                user_content: input.user_content,
+                reply_content: input.reply_content,
+                pressure: input.pressure,
+                tool_calls: input.tool_calls,
+                now_secs: input.now_secs,
+            },
+            input.memory_profile,
+            existing_state,
+            summary_snapshot.summary_text.as_deref(),
+            shared_recent.as_deref(),
+        ),
+        Err(error) => Err(error),
+    };
 
     let extraction_state = ctx.extraction_state_store.get(input.chat_id).ok().flatten();
     let extraction_decision = evaluate_long_term_memory_extraction_turn(
@@ -144,6 +198,7 @@ mod tests {
     struct StubSessionStore {
         recent: Vec<SessionMessage>,
         count: usize,
+        load_recent_calls: Mutex<u32>,
     }
 
     impl SessionStore for StubSessionStore {
@@ -152,6 +207,10 @@ mod tests {
         }
 
         fn load_recent(&self, _chat_id: &str, limit: usize) -> Result<Vec<SessionMessage>> {
+            *self
+                .load_recent_calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) += 1;
             Ok(self.recent.iter().take(limit).cloned().collect())
         }
 
@@ -311,6 +370,7 @@ mod tests {
                 },
             ],
             count: 10,
+            ..Default::default()
         };
         let summary_store = StubSessionSummaryStore {
             fail_get_with_count: true,
@@ -378,6 +438,7 @@ mod tests {
         let session_store = StubSessionStore {
             recent: vec![],
             count: 8,
+            ..Default::default()
         };
         let summary_store = StubSessionSummaryStore::default();
         let extraction_state_store = StubExtractionStateStore::default();
@@ -423,5 +484,74 @@ mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .is_none());
+    }
+
+    #[test]
+    fn maintenance_reuses_recent_window_when_summary_and_execution_both_refresh() {
+        let session_store = StubSessionStore {
+            recent: vec![
+                SessionMessage {
+                    role: "user".to_string(),
+                    content: "先把 Linux 和 ESP 的构建链都过一遍".to_string(),
+                },
+                SessionMessage {
+                    role: "assistant".to_string(),
+                    content: "我会先整理维护链，再统一 build 验证".to_string(),
+                },
+                SessionMessage {
+                    role: "user".to_string(),
+                    content: "继续把 post-reply memory maintenance 收紧".to_string(),
+                },
+                SessionMessage {
+                    role: "assistant".to_string(),
+                    content: "这轮会合并 session summary 和 execution state 的重复读取".to_string(),
+                },
+            ],
+            count: 24,
+            ..Default::default()
+        };
+        let summary_store = StubSessionSummaryStore::default();
+        let extraction_state_store = StubExtractionStateStore::default();
+        let execution_state_store = StubExecutionStateStore::default();
+        let mut http = DummyHttpClient;
+
+        let outcome = run_post_reply_memory_maintenance(
+            &mut http,
+            &FixedLlmClient,
+            PostReplyMemoryMaintenanceContext {
+                session_store: &session_store,
+                session_summary_store: &summary_store,
+                execution_state_store: &execution_state_store,
+                extraction_state_store: &extraction_state_store,
+            },
+            PostReplyMemoryMaintenanceInput {
+                chat_id: "chat-1",
+                ingress: IngressKind::User,
+                channel: "qq_channel",
+                user_content: "继续把 post-reply memory maintenance 收紧",
+                reply_content: "这轮会合并 session summary 和 execution state 的重复读取",
+                pressure: PressureLevel::Normal,
+                memory_profile: MemoryProfile::Embedded,
+                tool_calls: 1,
+                now_secs: 42,
+            },
+            || false,
+        );
+
+        assert!(matches!(
+            outcome.summary_result,
+            Ok(SessionSummaryRefreshOutcome::Updated { .. })
+        ));
+        assert!(matches!(
+            outcome.execution_state_result,
+            Ok(ExecutionStateRefreshOutcome::Updated)
+        ));
+        assert_eq!(
+            *session_store
+                .load_recent_calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+            1
+        );
     }
 }

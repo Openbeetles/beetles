@@ -1004,12 +1004,22 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
 
         let skill_meta_store_fn = Arc::clone(&skill_meta_store);
         let skill_storage_fn = Arc::clone(&skill_storage);
+        let skill_prompt_cache = Arc::new(Mutex::new((None::<String>, Instant::now())));
         let get_skill_descriptions: Arc<dyn Fn() -> String + Send + Sync> = Arc::new(move || {
-            beetle::skills::build_skill_descriptions_for_system_prompt(
+            const SKILL_PROMPT_CACHE_TTL: Duration = Duration::from_secs(5);
+            let mut guard = skill_prompt_cache.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(rendered) = guard.0.as_ref() {
+                if guard.1.elapsed() < SKILL_PROMPT_CACHE_TTL {
+                    return rendered.clone();
+                }
+            }
+            let rendered = beetle::skills::build_skill_descriptions_for_system_prompt(
                 skill_meta_store_fn.as_ref(),
                 skill_storage_fn.as_ref(),
                 8192,
-            )
+            );
+            *guard = (Some(rendered.clone()), Instant::now());
+            rendered
         });
         let session_max = config.session_max_messages.clamp(1, 128) as usize;
         let agent_user_inbound_tx = user_inbound_tx;

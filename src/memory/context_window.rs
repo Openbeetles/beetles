@@ -34,11 +34,18 @@ pub fn build_context_messages(
     session_max_messages: usize,
     messages_max_len: usize,
     summary_text: Option<&str>,
+    recent_override: Option<&[super::SessionMessage]>,
 ) -> Vec<Message> {
     let n = session_max_messages.clamp(1, 128);
-    let recent = session
-        .load_recent(&msg.chat_id, n)
-        .unwrap_or_else(|_| vec![]);
+    let owned_recent;
+    let recent = if let Some(recent_override) = recent_override {
+        recent_override
+    } else {
+        owned_recent = session
+            .load_recent(&msg.chat_id, n)
+            .unwrap_or_else(|_| vec![]);
+        owned_recent.as_slice()
+    };
     let cap = recent.len() + if summary_text.is_some() { 2 } else { 1 };
     let mut messages: Vec<Message> = Vec::with_capacity(cap);
     if let Some(summary) = summary_text {
@@ -47,7 +54,7 @@ pub fn build_context_messages(
             content: build_context_summary_message(summary),
         });
     }
-    for m in recent {
+    for m in recent.iter().cloned() {
         push_context_message(&mut messages, Cow::Owned(m.role), m.content);
     }
     push_context_message(&mut messages, Cow::Borrowed("user"), msg.content.clone());

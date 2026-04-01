@@ -45,6 +45,14 @@ fn lock_host_spiffs() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
+pub(crate) fn with_fs_lock<R>(f: impl FnOnce() -> Result<R>) -> Result<R> {
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    let _guard = lock_spiffs();
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    let _guard = lock_host_spiffs();
+    f()
+}
+
 /// 单次写入最大字节数：ESP 与 SPIFFS 分区一致；host/Linux 放宽至 1MiB（仍与 orchestrator 上界策略独立）。
 /// Max write size: ESP SPIFFS bound; host allows 1MiB single-file writes (still bounded).
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -131,37 +139,35 @@ fn psram_vec_with_capacity(cap: usize) -> Vec<u8> {
 /// 有 metadata 时预分配 capacity，减少 read_to_end 的多次 realloc。
 /// 大文件（>= 8KB）优先使用 PSRAM 分配。
 pub fn read_file(path: impl AsRef<Path>) -> Result<Vec<u8>> {
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    let _guard = lock_spiffs();
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    let _guard = lock_host_spiffs();
-    let p = path.as_ref();
-    let path_str = p
-        .to_str()
-        .ok_or_else(|| Error::config("spiffs_read", "invalid path"))?;
-    let mut f = std::fs::File::open(path_str).map_err(|e| Error::io("spiffs_read", e))?;
-    let capacity = f
-        .metadata()
-        .ok()
-        .and_then(|m| m.len().try_into().ok())
-        .map(|len: usize| len.min(MAX_WRITE_SIZE))
-        .unwrap_or(0);
-    let mut buf = if capacity >= PSRAM_FILE_THRESHOLD {
-        psram_vec_with_capacity(capacity)
-    } else if capacity > 0 {
-        Vec::with_capacity(capacity)
-    } else {
-        Vec::new()
-    };
-    f.read_to_end(&mut buf)
-        .map_err(|e| Error::io("spiffs_read", e))?;
-    if buf.len() > MAX_WRITE_SIZE {
-        return Err(Error::config(
-            "spiffs_read",
-            format!("file size {} exceeds {}", buf.len(), MAX_WRITE_SIZE),
-        ));
-    }
-    Ok(buf)
+    with_fs_lock(|| {
+        let p = path.as_ref();
+        let path_str = p
+            .to_str()
+            .ok_or_else(|| Error::config("spiffs_read", "invalid path"))?;
+        let mut f = std::fs::File::open(path_str).map_err(|e| Error::io("spiffs_read", e))?;
+        let capacity = f
+            .metadata()
+            .ok()
+            .and_then(|m| m.len().try_into().ok())
+            .map(|len: usize| len.min(MAX_WRITE_SIZE))
+            .unwrap_or(0);
+        let mut buf = if capacity >= PSRAM_FILE_THRESHOLD {
+            psram_vec_with_capacity(capacity)
+        } else if capacity > 0 {
+            Vec::with_capacity(capacity)
+        } else {
+            Vec::new()
+        };
+        f.read_to_end(&mut buf)
+            .map_err(|e| Error::io("spiffs_read", e))?;
+        if buf.len() > MAX_WRITE_SIZE {
+            return Err(Error::config(
+                "spiffs_read",
+                format!("file size {} exceeds {}", buf.len(), MAX_WRITE_SIZE),
+            ));
+        }
+        Ok(buf)
+    })
 }
 
 /// 写字节到文件。超过 MAX_WRITE_SIZE 返回错误。
@@ -174,27 +180,28 @@ pub fn write_file(path: impl AsRef<Path>, data: &[u8]) -> Result<()> {
         ));
     }
     let p = path.as_ref();
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    {
-        let path_str = p
-            .to_str()
-            .ok_or_else(|| Error::config("spiffs_write", "invalid path"))?;
-        let _guard = lock_spiffs();
-        // ESP-IDF SPIFFS+VFS：部分环境下 `create` 短写不会缩短对象长度，文件尾残留旧字节，
-        // 导致 JSON 解析报 trailing characters。先删再建与截断等价且更可靠。
-        // ESP-IDF SPIFFS+VFS: shorter writes may not shrink the object; stale tail breaks JSON parse.
-        let _ = std::fs::remove_file(path_str);
-        let mut f = std::fs::File::create(path_str).map_err(|e| Error::io("spiffs_write", e))?;
-        f.write_all(data)
-            .map_err(|e| Error::io("spiffs_write", e))?;
-        f.sync_all().map_err(|e| Error::io("spiffs_write", e))?;
-        Ok(())
-    }
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    {
-        let _guard = lock_host_spiffs();
-        crate::platform::fs_atomic::atomic_write(p, data)
-    }
+    with_fs_lock(|| {
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        {
+            let path_str = p
+                .to_str()
+                .ok_or_else(|| Error::config("spiffs_write", "invalid path"))?;
+            // ESP-IDF SPIFFS+VFS：部分环境下 `create` 短写不会缩短对象长度，文件尾残留旧字节，
+            // 导致 JSON 解析报 trailing characters。先删再建与截断等价且更可靠。
+            // ESP-IDF SPIFFS+VFS: shorter writes may not shrink the object; stale tail breaks JSON parse.
+            let _ = std::fs::remove_file(path_str);
+            let mut f =
+                std::fs::File::create(path_str).map_err(|e| Error::io("spiffs_write", e))?;
+            f.write_all(data)
+                .map_err(|e| Error::io("spiffs_write", e))?;
+            f.sync_all().map_err(|e| Error::io("spiffs_write", e))?;
+            Ok(())
+        }
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        {
+            crate::platform::fs_atomic::atomic_write(p, data)
+        }
+    })
 }
 
 /// 删除文件。仅删除文件，不删目录。用于技能删除等。

@@ -3,13 +3,15 @@
 
 use super::{
     memory_policy, recall_long_term_memory_block, render_execution_state_block,
-    ExecutionStateStore, LongTermMemoryStore, MemoryProfile, SessionStore, SessionSummaryStore,
+    ExecutionStateStore, LongTermMemoryStore, MemoryProfile, SessionMessage, SessionStore,
+    SessionSummaryStore,
 };
 
 pub struct PromptMemoryContext {
     pub summary_text: Option<String>,
     pub long_term_memory_text: Option<String>,
     pub execution_state_text: Option<String>,
+    pub recent_messages: Vec<SessionMessage>,
 }
 
 pub struct PromptMemoryContextParams<'a> {
@@ -25,6 +27,7 @@ pub struct PromptMemoryContextParams<'a> {
 
 pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> PromptMemoryContext {
     let recall_policy = memory_policy(params.profile).long_term_recall;
+    let mut recent_messages = Vec::new();
     let summary_text = params
         .session_summary_store
         .get_with_count(params.chat_id)
@@ -34,7 +37,7 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
     let long_term_memory_text = if params.system_max_len < recall_policy.block_min_len {
         None
     } else {
-        let recent_messages = params
+        recent_messages = params
             .session_store
             .load_recent(params.chat_id, recall_policy.recent_grounding_message_count)
             .unwrap_or_default();
@@ -63,6 +66,7 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         summary_text,
         long_term_memory_text,
         execution_state_text,
+        recent_messages,
     }
 }
 

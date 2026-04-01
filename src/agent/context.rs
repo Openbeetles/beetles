@@ -6,7 +6,7 @@ use crate::error::Result;
 use crate::llm::Message;
 use crate::memory::{
     append_system_prompt_base, append_system_prompt_daily_note, build_context_messages,
-    ImportantMessageStore, MemoryStore, SessionStore,
+    ImportantMessageStore, MemoryStore, SessionMessage, SessionStore,
 };
 use crate::state;
 use std::fmt::Write as _;
@@ -73,6 +73,7 @@ pub struct ContextParams<'a> {
     pub execution_state_text: Option<&'a str>,
     pub long_term_memory_text: Option<&'a str>,
     pub summary_text: Option<&'a str>,
+    pub recent_messages: Option<&'a [SessionMessage]>,
     pub runtime: Option<RuntimeContext>,
     /// orchestrator 在高压力时附加到 system 末尾的提示文字；由调用方从 `budget.llm_hint` 传入。
     pub llm_hint: &'a str,
@@ -353,6 +354,7 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
         p.session_max_messages,
         p.messages_max_len,
         p.summary_text,
+        p.recent_messages,
     );
 
     Ok((system, messages))

@@ -27,6 +27,12 @@ pub struct SessionSummaryRefreshContext<'a> {
     pub session_summary_store: &'a dyn SessionSummaryStore,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SessionSummarySnapshot {
+    pub summary_text: Option<String>,
+    pub last_summary_count: usize,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionSummaryRefreshOutcome {
     Skipped,
@@ -71,27 +77,68 @@ pub fn run_session_summary_refresh(
     current_count: usize,
     profile: MemoryProfile,
 ) -> Result<SessionSummaryRefreshOutcome> {
-    let policy = memory_policy(profile).session_summary;
-    let last_summary_count = match ctx.session_summary_store.get_with_count(chat_id) {
-        Ok(entry) => entry.map(|(_, count)| count).unwrap_or(0),
+    let snapshot = load_session_summary_snapshot(ctx.session_summary_store, chat_id);
+    run_session_summary_refresh_with_snapshot(
+        http,
+        llm,
+        ctx,
+        chat_id,
+        current_count,
+        profile,
+        snapshot,
+        None,
+    )
+    .map(|(outcome, _)| outcome)
+}
+
+pub(crate) fn load_session_summary_snapshot(
+    store: &dyn SessionSummaryStore,
+    chat_id: &str,
+) -> SessionSummarySnapshot {
+    match store.get_with_count(chat_id) {
+        Ok(entry) => entry.map_or_else(SessionSummarySnapshot::default, |(summary_text, count)| {
+            SessionSummarySnapshot {
+                summary_text: Some(summary_text),
+                last_summary_count: count,
+            }
+        }),
         Err(error) => {
             log::warn!(
                 "[agent_summary] failed to read summary metadata for chat_id={}: {}",
                 chat_id,
                 error
             );
-            0
+            SessionSummarySnapshot::default()
         }
-    };
-    if !should_refresh_session_summary(current_count, last_summary_count, profile) {
-        return Ok(SessionSummaryRefreshOutcome::Skipped);
+    }
+}
+
+pub(crate) fn run_session_summary_refresh_with_snapshot(
+    http: &mut dyn LlmHttpClient,
+    llm: &(dyn LlmClient + Send + Sync),
+    ctx: SessionSummaryRefreshContext<'_>,
+    chat_id: &str,
+    current_count: usize,
+    profile: MemoryProfile,
+    snapshot: SessionSummarySnapshot,
+    recent_override: Option<&[SessionMessage]>,
+) -> Result<(SessionSummaryRefreshOutcome, SessionSummarySnapshot)> {
+    let policy = memory_policy(profile).session_summary;
+    if !should_refresh_session_summary(current_count, snapshot.last_summary_count, profile) {
+        return Ok((SessionSummaryRefreshOutcome::Skipped, snapshot));
     }
 
-    let recent = ctx
-        .session_store
-        .load_recent(chat_id, policy.recent_message_count)?;
-    let fallback = fallback_session_summary(&recent, profile);
-    let transcript = build_session_summary_transcript(&recent, policy);
+    let owned_recent;
+    let recent = if let Some(preloaded) = recent_override {
+        session_summary_recent_window(preloaded, policy.recent_message_count)
+    } else {
+        owned_recent = ctx
+            .session_store
+            .load_recent(chat_id, policy.recent_message_count)?;
+        owned_recent.as_slice()
+    };
+    let fallback = fallback_session_summary(recent, profile);
+    let transcript = build_session_summary_transcript(recent, policy);
     let messages = [Message {
         role: Cow::Borrowed("user"),
         content: transcript,
@@ -125,7 +172,18 @@ pub fn run_session_summary_refresh(
 
     ctx.session_summary_store
         .set_with_count(chat_id, &summary, current_count)?;
-    Ok(SessionSummaryRefreshOutcome::Updated { used_fallback })
+    Ok((
+        SessionSummaryRefreshOutcome::Updated { used_fallback },
+        SessionSummarySnapshot {
+            summary_text: Some(summary),
+            last_summary_count: current_count,
+        },
+    ))
+}
+
+fn session_summary_recent_window(recent: &[SessionMessage], limit: usize) -> &[SessionMessage] {
+    let start = recent.len().saturating_sub(limit);
+    &recent[start..]
 }
 
 fn build_session_summary_transcript(

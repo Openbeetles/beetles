@@ -140,6 +140,16 @@ impl ExecutionStatePolicy {
     }
 }
 
+pub(crate) fn should_refresh_execution_state(
+    input: ExecutionStateRefreshInput<'_>,
+    has_existing_state: bool,
+    profile: MemoryProfile,
+) -> bool {
+    memory_policy(profile)
+        .execution_state
+        .should_refresh(input, has_existing_state)
+}
+
 pub fn render_execution_state_block(state: &ExecutionState, max_len: usize) -> Option<String> {
     let normalized = normalize_execution_state(state.clone(), state.updated_at)?;
     if !should_persist_execution_state(&normalized) {
@@ -178,12 +188,7 @@ pub fn run_execution_state_refresh(
     input: ExecutionStateRefreshInput<'_>,
     profile: MemoryProfile,
 ) -> Result<ExecutionStateRefreshOutcome> {
-    let policy = memory_policy(profile).execution_state;
     let existing_state = ctx.execution_state_store.get(input.chat_id)?;
-    if !policy.should_refresh(input, existing_state.is_some()) {
-        return Ok(ExecutionStateRefreshOutcome::Skipped);
-    }
-
     let summary_text = match ctx.session_summary_store.get_with_count(input.chat_id) {
         Ok(entry) => entry.map(|(summary, _)| summary),
         Err(error) => {
@@ -195,15 +200,44 @@ pub fn run_execution_state_refresh(
             None
         }
     };
-    let recent = ctx
-        .session_store
-        .load_recent(input.chat_id, policy.recent_message_count)?;
-    let refresh_input = build_execution_state_refresh_input(
-        existing_state.as_ref(),
+    run_execution_state_refresh_with_state(
+        http,
+        llm,
+        ctx,
+        input,
+        profile,
+        existing_state,
         summary_text.as_deref(),
-        &recent,
-        policy,
-    );
+        None,
+    )
+}
+
+pub(crate) fn run_execution_state_refresh_with_state(
+    http: &mut dyn LlmHttpClient,
+    llm: &(dyn LlmClient + Send + Sync),
+    ctx: ExecutionStateRefreshContext<'_>,
+    input: ExecutionStateRefreshInput<'_>,
+    profile: MemoryProfile,
+    existing_state: Option<ExecutionState>,
+    summary_text: Option<&str>,
+    recent_override: Option<&[SessionMessage]>,
+) -> Result<ExecutionStateRefreshOutcome> {
+    let policy = memory_policy(profile).execution_state;
+    if !should_refresh_execution_state(input, existing_state.is_some(), profile) {
+        return Ok(ExecutionStateRefreshOutcome::Skipped);
+    }
+
+    let owned_recent;
+    let recent = if let Some(preloaded) = recent_override {
+        execution_state_recent_window(preloaded, policy.recent_message_count)
+    } else {
+        owned_recent = ctx
+            .session_store
+            .load_recent(input.chat_id, policy.recent_message_count)?;
+        owned_recent.as_slice()
+    };
+    let refresh_input =
+        build_execution_state_refresh_input(existing_state.as_ref(), summary_text, recent, policy);
     let messages = [Message {
         role: Cow::Borrowed("user"),
         content: refresh_input,
@@ -241,6 +275,11 @@ pub fn run_execution_state_refresh(
             Ok(ExecutionStateRefreshOutcome::Cleared)
         }
     }
+}
+
+fn execution_state_recent_window(recent: &[SessionMessage], limit: usize) -> &[SessionMessage] {
+    let start = recent.len().saturating_sub(limit);
+    &recent[start..]
 }
 
 fn should_capture_last_output(reply_content: &str) -> bool {
