@@ -2,9 +2,11 @@
 //! Agent: context build and ReAct loop; trait-only, no platform.
 
 mod context;
+mod final_reply;
 mod r#loop;
 mod request_plan;
 mod strategy;
+mod tool_guidance;
 mod tool_outcome;
 
 pub use context::{

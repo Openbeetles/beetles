@@ -278,7 +278,7 @@ fn send_one_qq<H: ChannelHttpClient>(
     let send_start = std::time::Instant::now();
     let url = build_qq_message_url(chat_id);
     let v2 = is_v2_chat(chat_id);
-    let chunks = crate::channels::chunk::chunk_str_by_char_count(content, QQ_MAX_MESSAGE_LEN);
+    let chunks = crate::channels::chunk::chunk_text_by_char_count(content, QQ_MAX_MESSAGE_LEN);
     for (i, chunk) in chunks.iter().enumerate() {
         let mut body_obj = serde_json::json!({ "content": chunk });
         if v2 {

@@ -117,7 +117,7 @@ impl Tool for NetworkScanTool {
     }
 
     fn description(&self) -> &'static str {
-        "WiFi scanning and network diagnostics. Op: wifi_scan (scan nearby APs), wifi_status (current connection info), connectivity_check (HTTP reachability test with latency)."
+        "WiFi-specific diagnostics. Op: wifi_scan (scan nearby APs), wifi_status (current WiFi connection info), connectivity_check (HTTP reachability test with latency). Prefer this for AP discovery or WiFi station checks. For general Linux interfaces, DNS, routes, resolve, ping, or HTTP probe, use the network tool."
     }
 
     fn schema(&self) -> Value {
@@ -126,11 +126,11 @@ impl Tool for NetworkScanTool {
             "properties": {
                 "op": {
                     "type": "string",
-                    "description": "Operation: wifi_scan|wifi_status|connectivity_check"
+                    "description": "Operation: wifi_scan | wifi_status | connectivity_check"
                 },
                 "host": {
                     "type": "string",
-                    "description": "URL for connectivity_check (default: http://captive.apple.com)"
+                    "description": "URL for connectivity_check only (default: http://captive.apple.com)"
                 }
             },
             "required": ["op"]

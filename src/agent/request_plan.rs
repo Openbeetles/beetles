@@ -105,6 +105,12 @@ impl<'a> AgentRequestPlan<'a> {
                 system.push_str(guidance);
             }
         }
+        if let Some(guidance) = self.linux_inspection_guidance() {
+            let remain = max_len.saturating_sub(system.len());
+            if guidance.len() <= remain {
+                system.push_str(&guidance);
+            }
+        }
     }
 
     pub(crate) fn recover_response(&self, response: LlmResponse) -> LlmResponse {
@@ -142,6 +148,56 @@ impl<'a> AgentRequestPlan<'a> {
             }
             _ => None,
         }
+    }
+}
+
+impl AgentRequestPlan<'_> {
+    fn linux_inspection_guidance(&self) -> Option<String> {
+        if self.tool_use_demand == ToolUseDemand::Flexible {
+            return None;
+        }
+        let has_board_info = self.tool_specs.iter().any(|tool| tool.name == "board_info");
+        let has_process = self.tool_specs.iter().any(|tool| tool.name == "process");
+        let has_network = self.tool_specs.iter().any(|tool| tool.name == "network");
+        let has_network_scan = self
+            .tool_specs
+            .iter()
+            .any(|tool| tool.name == "network_scan");
+        if !has_process && !has_network {
+            return None;
+        }
+        if !has_board_info && !has_network_scan {
+            let mut guidance = String::from(
+                "\n\n## Linux Inspection Guidance\nWhen diagnosing a Linux host, prefer the most specific available tool instead of overloading a general snapshot.",
+            );
+            if has_process {
+                guidance.push_str(" Use process for one specific process or service.");
+            }
+            if has_network {
+                guidance.push_str(
+                    " Use network for interfaces, DNS, routes, resolve, ping, and HTTP reachability.",
+                );
+            }
+            return Some(guidance);
+        }
+        let mut guidance = String::from(
+            "\n\n## Linux Inspection Guidance\nWhen diagnosing a Linux host, prefer the most specific available tool instead of overloading the general snapshot.",
+        );
+        if has_board_info {
+            guidance.push_str(" Use board_info for whole-host status and resource pressure.");
+        }
+        if has_process {
+            guidance.push_str(" Use process for one specific process or service.");
+        }
+        if has_network {
+            guidance.push_str(
+                " Use network for interfaces, DNS, routes, resolve, ping, and HTTP reachability.",
+            );
+        }
+        if has_network_scan {
+            guidance.push_str(" Use network_scan only for WiFi/AP scan or WiFi station checks.");
+        }
+        Some(guidance)
     }
 }
 
@@ -309,11 +365,16 @@ fn looks_like_explicit_limitation(content: &str) -> bool {
 mod tests {
     use super::*;
     use crate::llm::{LlmHttpClient, LlmModelCompat, Message, StopReason, ToolChoicePolicy};
-    use crate::tools::Tool;
+    use crate::tools::{Tool, ToolMetadata};
     use crate::Result;
     use serde_json::json;
 
     struct VisibleTool;
+    struct NamedTool {
+        name: &'static str,
+        description: &'static str,
+        metadata: ToolMetadata,
+    }
     struct NativeLlm;
     struct PromptGuidedLlm;
 
@@ -332,6 +393,28 @@ mod tests {
 
         fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
             Ok(String::new())
+        }
+    }
+
+    impl Tool for NamedTool {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn description(&self) -> &str {
+            self.description
+        }
+
+        fn schema(&self) -> serde_json::Value {
+            json!({"type":"object"})
+        }
+
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn metadata(&self) -> ToolMetadata {
+            self.metadata
         }
     }
 
@@ -468,5 +551,83 @@ mod tests {
         assert!(plan
             .missing_tool_followup(0, false, "1+1 等于 2。")
             .is_none());
+    }
+
+    #[test]
+    fn linux_inspection_tools_add_specialized_guidance() {
+        let mut registry = ToolRegistry::new();
+        for (name, description) in [
+            ("board_info", "whole host status"),
+            ("process", "process inspection"),
+            ("network", "network inspection"),
+            ("network_scan", "wifi diagnostics"),
+        ] {
+            registry.register(Box::new(NamedTool {
+                name,
+                description,
+                metadata: ToolMetadata::task(),
+            }));
+        }
+        let msg = PcMsg::new_inbound("telegram", "chat", "查看系统状态并排查网络问题", false)
+            .expect("pcmsg");
+        let plan =
+            AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::LinuxEnhanced);
+        let mut system = String::new();
+        plan.apply_system_prompt(&mut system, 4096);
+        assert!(system.contains("Linux Inspection Guidance"));
+        assert!(system.contains("board_info"));
+        assert!(system.contains("process"));
+        assert!(system.contains("network_scan only for WiFi/AP scan"));
+    }
+
+    #[test]
+    fn linux_inspection_guidance_works_with_only_process_and_network() {
+        let mut registry = ToolRegistry::new();
+        for (name, description) in [
+            ("process", "process inspection"),
+            ("network", "network inspection"),
+        ] {
+            registry.register(Box::new(NamedTool {
+                name,
+                description,
+                metadata: ToolMetadata::task(),
+            }));
+        }
+        let msg =
+            PcMsg::new_inbound("telegram", "chat", "检查当前服务和网络状态", false).expect("pcmsg");
+        let plan =
+            AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::LinuxEnhanced);
+        let mut system = String::new();
+        plan.apply_system_prompt(&mut system, 4096);
+        assert!(system.contains("Linux Inspection Guidance"));
+        assert!(system.contains("Use process for one specific process or service."));
+        assert!(system.contains(
+            "Use network for interfaces, DNS, routes, resolve, ping, and HTTP reachability."
+        ));
+        assert!(!system.contains("board_info"));
+        assert!(!system.contains("network_scan"));
+    }
+
+    #[test]
+    fn linux_inspection_guidance_skips_general_conversation() {
+        let mut registry = ToolRegistry::new();
+        for (name, description) in [
+            ("board_info", "whole host status"),
+            ("process", "process inspection"),
+            ("network", "network inspection"),
+            ("network_scan", "wifi diagnostics"),
+        ] {
+            registry.register(Box::new(NamedTool {
+                name,
+                description,
+                metadata: ToolMetadata::task(),
+            }));
+        }
+        let msg = PcMsg::new_inbound("telegram", "chat", "今天过得怎么样", false).expect("pcmsg");
+        let plan =
+            AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::LinuxEnhanced);
+        let mut system = String::new();
+        plan.apply_system_prompt(&mut system, 4096);
+        assert!(!system.contains("Linux Inspection Guidance"));
     }
 }

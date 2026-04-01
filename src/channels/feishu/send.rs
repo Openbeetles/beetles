@@ -77,9 +77,7 @@ fn send_feishu_message<H: ChannelHttpClient>(
 ) {
     const TAG: &str = "feishu_send";
     let auth_val = format!("Bearer {}", token);
-    for chunk in
-        crate::channels::chunk::chunk_str_by_char_count_iter(content, FEISHU_MAX_MESSAGE_LEN)
-    {
+    for chunk in crate::channels::chunk::chunk_text_by_char_count(content, FEISHU_MAX_MESSAGE_LEN) {
         let text_json = serde_json::json!({ "text": chunk });
         let content_str =
             serde_json::to_string(&text_json).unwrap_or_else(|_| "{\"text\":\"\"}".to_string());

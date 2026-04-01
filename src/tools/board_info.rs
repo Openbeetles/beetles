@@ -22,7 +22,7 @@ impl Tool for BoardInfoTool {
         "board_info"
     }
     fn description(&self) -> &'static str {
-        "Return device/system status JSON. ESP: chip, heap, IDF, SPIFFS. Linux: platform \"linux\" plus cpu_model, cpu_cores, mem_*, distro_pretty/distro_id, kernel_release, hostname, arch, storage, os (/proc/version), uptime, pressure, WiFi STA. Non-Linux: platform is the OS name (e.g. macos, windows) with fewer fields. Use for device status, distro, CPU/RAM, disk."
+        "Return a whole-device or whole-host status snapshot as JSON. ESP: chip, heap, IDF, SPIFFS. Linux: platform \"linux\" plus cpu_model, cpu_cores, mem_*, distro_pretty/distro_id, kernel_release, hostname, arch, storage, os (/proc/version), uptime, pressure, and WiFi STA state. Use this for overall system status, resource pressure, distro, CPU/RAM, and storage. For one specific process or detailed Linux network diagnostics, prefer the dedicated process or network tools."
     }
     fn schema(&self) -> serde_json::Value {
         json!({ "type": "object", "properties": {} })

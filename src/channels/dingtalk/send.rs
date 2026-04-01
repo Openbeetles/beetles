@@ -69,7 +69,8 @@ pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
 
 fn send_one_dingtalk<H: ChannelHttpClient>(http: &mut H, webhook_url: &str, content: &str) {
     const TAG: &str = "dingtalk_send";
-    let chunks = crate::channels::chunk::chunk_str_by_char_count(content, DINGTALK_MAX_MESSAGE_LEN);
+    let chunks =
+        crate::channels::chunk::chunk_text_by_char_count(content, DINGTALK_MAX_MESSAGE_LEN);
     for chunk in chunks {
         let body = serde_json::json!({
             "msgtype": "text",

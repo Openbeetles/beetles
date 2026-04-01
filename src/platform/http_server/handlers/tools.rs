@@ -36,7 +36,7 @@ fn tool_infos() -> Vec<ToolInfo> {
         },
         ToolInfo {
             name: "board_info",
-            description: "获取板型信息",
+            description: "整机/整机主机状态快照（CPU/RAM/存储/WiFi STA 等总体信息）",
         },
         ToolInfo {
             name: "kv_store",
@@ -95,7 +95,7 @@ fn tool_infos() -> Vec<ToolInfo> {
         });
         tools.push(ToolInfo {
             name: "system_control",
-            description: "系统控制",
+            description: "系统管理动作与状态存储信息（管理员能力）",
         });
         tools.push(ToolInfo {
             name: "cron_manage",
@@ -107,7 +107,19 @@ fn tool_infos() -> Vec<ToolInfo> {
         });
         tools.push(ToolInfo {
             name: "network_scan",
-            description: "网络扫描",
+            description: "WiFi/AP 扫描与 WiFi 连通性检查，不用于通用 Linux 网络诊断",
+        });
+    }
+
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    {
+        tools.push(ToolInfo {
+            name: "process",
+            description: "Linux 进程检查（列表/单 PID 详情）",
+        });
+        tools.push(ToolInfo {
+            name: "network",
+            description: "Linux 网络检查与探测（接口/DNS/路由/解析/Ping/HTTP 探测）",
         });
     }
 
@@ -140,7 +152,39 @@ mod tests {
         assert!(names.contains(&"document_search"));
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         assert!(names.contains(&"document_extract"));
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        assert!(names.contains(&"process"));
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        assert!(names.contains(&"network"));
         assert!(!names.contains(&"web_fetch"));
         assert!(!names.contains(&"pdf_read"));
+    }
+
+    #[test]
+    fn tools_api_descriptions_match_linux_tool_boundaries() {
+        let tools = tool_infos();
+        let board_info = tools.iter().find(|tool| tool.name == "board_info").unwrap();
+        assert!(board_info.description.contains("状态快照"));
+
+        #[cfg(feature = "tools_diagnostics")]
+        {
+            let network_scan = tools
+                .iter()
+                .find(|tool| tool.name == "network_scan")
+                .unwrap();
+            assert!(network_scan.description.contains("WiFi/AP 扫描"));
+            assert!(network_scan
+                .description
+                .contains("不用于通用 Linux 网络诊断"));
+        }
+
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        {
+            let process = tools.iter().find(|tool| tool.name == "process").unwrap();
+            assert!(process.description.contains("单 PID 详情"));
+
+            let network = tools.iter().find(|tool| tool.name == "network").unwrap();
+            assert!(network.description.contains("接口/DNS/路由/解析/Ping/HTTP"));
+        }
     }
 }

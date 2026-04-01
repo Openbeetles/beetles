@@ -1,11 +1,16 @@
 //! Agent ReAct 循环：入站一条 → context → chat（含 tool_use 多轮）→ 会话持久化 → 出站一条。
 //! 仅依赖 trait；HTTP/Tool 由 main 注入同一实现（如 EspHttpClient）。
+use super::final_reply::finalize_user_visible_reply;
 use super::request_plan::AgentRequestPlan;
 use super::strategy::{
     append_execution_plan, blocker_end_turn_followup, build_success_tool_round_guidance,
     build_tool_round_guidance, detect_ping_pong_tool_rounds, final_answer_followup,
     repeated_answer_followup, should_generate_execution_plan, stalled_end_turn_followup,
     AgentRunStrategy, SuccessfulToolRoundSummary,
+};
+use super::tool_guidance::{
+    build_success_tool_execution_guidance, record_successful_tool_result,
+    SuccessfulToolRoundObservations,
 };
 use super::tool_outcome::{
     classify_tool_error, denied_tool_assessment, summarize_tool_blocker,
@@ -256,6 +261,21 @@ fn append_tool_round_guidance_block(dst: &mut String, guidance: &str, max_bytes:
     push_bounded_utf8(dst, "<tool_round_guidance>\n", max_bytes)
         || push_bounded_utf8(dst, guidance, max_bytes)
         || push_bounded_utf8(dst, "\n</tool_round_guidance>", max_bytes)
+}
+
+fn merge_tool_round_guidance(primary: Option<String>, extra: Option<String>) -> Option<String> {
+    match (primary, extra) {
+        (Some(mut primary), Some(extra)) => {
+            if !primary.ends_with('\n') {
+                primary.push('\n');
+            }
+            primary.push_str(extra.trim());
+            Some(primary)
+        }
+        (Some(primary), None) => Some(primary),
+        (None, Some(extra)) => Some(extra),
+        (None, None) => None,
+    }
 }
 
 fn append_tool_evidence_summary_block(
@@ -1270,6 +1290,9 @@ fn run_agent_loop_lane(
                 (s, false)
             }
         };
+        if !is_interrupt {
+            reply_content = finalize_user_visible_reply(config.strategy, &reply_content);
+        }
         let mark_important = !is_interrupt && reply_content.contains(AGENT_MARKER_MARK_IMPORTANT);
         let signal_comfort = !is_interrupt && reply_content.contains(AGENT_MARKER_SIGNAL_COMFORT);
         if mark_important || signal_comfort {
@@ -1281,6 +1304,9 @@ fn run_agent_loop_lane(
                 let _ = config.emotion_signal_store.set(&msg.chat_id, "comfort");
             }
             reply_content = truncate_content_to_max(&reply_content, MAX_CONTENT_LEN).into_owned();
+        }
+        if !is_interrupt && !reply_content.is_empty() {
+            metrics::record_final_answer_call();
         }
 
         if !is_interrupt && config.task_continuation_max_rounds > 0 {
@@ -1939,6 +1965,7 @@ fn run_worker_path(
             let mut round_failure_summary = ToolFailureSummary::default();
             let mut round_evidence_lines = Vec::with_capacity(tool_calls.len().min(4));
             let mut omitted_evidence_count = 0usize;
+            let mut round_observations = SuccessfulToolRoundObservations::default();
             for (i, tc) in tool_calls.iter().enumerate() {
                 // 流式编辑：进入每个工具前更新进度（Telegram typing ~5s 过期；此处用 edit 续期可见活跃状态）。
                 if let (Some(ref mid), Some(ed)) = (&stream_msg_id, editor) {
@@ -2040,6 +2067,7 @@ fn run_worker_path(
                 if let Some(kind) = failure_kind {
                     round_failure_summary.record(kind);
                 } else if config.strategy == AgentRunStrategy::LinuxEnhanced {
+                    record_successful_tool_result(&mut round_observations, &tc.name, result_view);
                     if round_evidence_lines.len() < MAX_TOOL_EVIDENCE_ITEMS {
                         if let Some(line) = build_tool_evidence_line(&tc.id, &tc.name, result_view)
                         {
@@ -2110,10 +2138,13 @@ fn run_worker_path(
             );
             let ping_pong_detected = recent_tool_round.ping_pong_detected();
             let round_guidance = if round_tool_success {
-                build_success_tool_round_guidance(
-                    config.strategy,
-                    tool_calls.len(),
-                    round_failure_summary,
+                merge_tool_round_guidance(
+                    build_success_tool_round_guidance(
+                        config.strategy,
+                        tool_calls.len(),
+                        round_failure_summary,
+                    ),
+                    build_success_tool_execution_guidance(config.strategy, &round_observations),
                 )
             } else {
                 build_tool_round_guidance(
