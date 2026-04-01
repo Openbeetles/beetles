@@ -15,12 +15,14 @@ use esp_idf_svc::wifi::{BlockingWifi, EspWifi};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const TAG: &str = "platform::wifi";
 const SCAN_RESP_TIMEOUT: Duration = Duration::from_secs(WIFI_SCAN_TIMEOUT_SECS);
 const SCAN_RETRY: u32 = 3;
 const SCAN_RETRY_DELAY: Duration = Duration::from_millis(400);
+/// 扫描结果短期缓存，避免配置页连续刷新时重复打 WiFi 驱动。
+const SCAN_CACHE_TTL_MS: u64 = 10_000;
 /// STA 状态轮询间隔（毫秒）。
 const STA_POLL_INTERVAL_MS: u64 = 5_000;
 /// 发起 connect() 后的冷却期（毫秒）：给 WiFi 驱动足够时间完成 auth/assoc/DHCP，
@@ -28,6 +30,8 @@ const STA_POLL_INTERVAL_MS: u64 = 5_000;
 const STA_RECONNECT_COOLDOWN_MS: u64 = 15_000;
 /// WiFi STA 是否已连接且获得 IP；由 WiFi 线程写入，WSS/HTTP 线程读取。
 static WIFI_STA_CONNECTED: AtomicBool = AtomicBool::new(false);
+/// 当前启动是否期望 STA 出站网络；纯 SoftAP 配网模式下为 false，避免全局等待卡死。
+static WIFI_STA_EXPECTED: AtomicBool = AtomicBool::new(false);
 static WIFI_STA_IP: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 /// 其他线程查询 WiFi STA 是否就绪（已连接且有 IP）。
@@ -50,10 +54,22 @@ pub fn wifi_sta_ip() -> Option<String> {
 /// 须在首次 `feed_current_task` 前将当前任务加入 TWDT（`main` 中本函数早于 `register_current_task_to_task_wdt` 的其它调用点）。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub fn wait_for_network_ready() {
+    if !WIFI_STA_EXPECTED.load(Ordering::Relaxed) {
+        return;
+    }
     crate::platform::task_wdt::register_current_task_to_task_wdt();
+    let deadline = Instant::now() + Duration::from_secs(WIFI_ESP_CONNECT_MAIN_WAIT_SECS);
     while !is_wifi_sta_connected() {
         crate::platform::task_wdt::feed_current_task();
-        std::thread::sleep(Duration::from_secs(2));
+        if Instant::now() >= deadline {
+            log::warn!(
+                "[{}] wait_for_network_ready timed out after {}s; continuing startup without STA",
+                TAG,
+                WIFI_ESP_CONNECT_MAIN_WAIT_SECS
+            );
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
     }
 }
 
@@ -73,6 +89,7 @@ const SOFTAP_SSID: &str = "Beetle";
 const SOFTAP_PASSWORD: &str = "";
 
 /// 通道内扫描结果：成功为列表，失败为错误字符串（避免与 crate::error::Result 混淆）。
+#[derive(Clone)]
 enum ScanResponse {
     Ok(Vec<WifiApEntry>),
     Err(String),
@@ -83,6 +100,7 @@ enum ScanResponse {
 pub struct WifiScanHandle {
     req_tx: mpsc::Sender<()>,
     resp_rx: Arc<Mutex<mpsc::Receiver<ScanResponse>>>,
+    cache: Arc<Mutex<Option<(Instant, Vec<WifiApEntry>)>>>,
 }
 
 /// 向设备请求一次 WiFi 扫描的 trait；由 Platform::wifi_scan() 返回。
@@ -92,13 +110,25 @@ pub trait WifiScan: Send + Sync {
 
 impl WifiScan for WifiScanHandle {
     fn request_scan(&self) -> Result<Vec<WifiApEntry>> {
+        if let Ok(cache) = self.cache.lock() {
+            if let Some((cached_at, list)) = cache.as_ref() {
+                if cached_at.elapsed() < Duration::from_millis(SCAN_CACHE_TTL_MS) {
+                    return Ok(list.clone());
+                }
+            }
+        }
         let _ = self.req_tx.send(());
         let guard = self.resp_rx.lock().map_err(|e| Error::Other {
             source: Box::new(std::io::Error::other(e.to_string())),
             stage: "wifi_scan_lock",
         })?;
         match guard.recv_timeout(SCAN_RESP_TIMEOUT) {
-            Ok(ScanResponse::Ok(list)) => Ok(list),
+            Ok(ScanResponse::Ok(list)) => {
+                if let Ok(mut cache) = self.cache.lock() {
+                    *cache = Some((Instant::now(), list.clone()));
+                }
+                Ok(list)
+            }
             Ok(ScanResponse::Err(msg)) => Err(Error::config("wifi_scan", msg)),
             Err(mpsc::RecvTimeoutError::Timeout) => Err(Error::config("wifi_scan", "scan timeout")),
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(Error::Other {
@@ -118,6 +148,11 @@ impl WifiScan for WifiScanHandle {
 pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
     let ssid = config.wifi_ssid.clone();
     let pass = config.wifi_pass.clone();
+    let has_sta = !ssid.trim().is_empty();
+    WIFI_STA_EXPECTED.store(has_sta, Ordering::Relaxed);
+    if !has_sta {
+        clear_sta_ip_cache();
+    }
 
     let (tx, rx) = mpsc::channel();
     let (scan_req_tx, scan_req_rx) = mpsc::channel();
@@ -138,6 +173,7 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
             Ok(Some(WifiScanHandle {
                 req_tx: scan_req_tx,
                 resp_rx: Arc::new(Mutex::new(scan_resp_rx)),
+                cache: Arc::new(Mutex::new(None)),
             }))
         }
         Ok(Err(e)) => Err(e),
@@ -191,100 +227,129 @@ fn run_scan_loop(
     has_sta: bool,
     initial_cooldown: bool,
 ) {
-    use std::time::Instant;
     let mut cooldown_until: Option<Instant> = if initial_cooldown {
         Some(Instant::now() + Duration::from_millis(STA_RECONNECT_COOLDOWN_MS))
     } else {
         None
     };
+    let mut next_sta_poll = Instant::now();
 
     loop {
-        // -- STA 保活 --
-        if has_sta {
-            let sta_l2 = wifi.wifi().driver().is_sta_connected().unwrap_or(false);
-            let sta_ip_ok = read_sta_ipv4_string()
-                .map(|s| s != "0.0.0.0")
-                .unwrap_or(false);
-            let sta_link_up = sta_l2 || sta_ip_ok;
+        if has_sta && Instant::now() >= next_sta_poll {
+            poll_sta_link(wifi, &mut cooldown_until);
+            next_sta_poll = Instant::now() + Duration::from_millis(STA_POLL_INTERVAL_MS);
+            continue;
+        }
 
-            // 状态刷新（不受 cooldown 影响，让其他线程立即感知）
-            if sta_ip_ok {
-                if !WIFI_STA_CONNECTED.load(Ordering::Relaxed) {
-                    log::info!("[{}] STA connected (detected in poll)", TAG);
-                }
-                WIFI_STA_CONNECTED.store(true, Ordering::Relaxed);
-                update_sta_ip_cache();
-            } else {
-                if WIFI_STA_CONNECTED.load(Ordering::Relaxed) && !sta_link_up {
-                    log::warn!("[{}] STA disconnected, will reconnect", TAG);
-                }
-                WIFI_STA_CONNECTED.store(false, Ordering::Relaxed);
+        let recv_result = if has_sta {
+            let wait = next_sta_poll.saturating_duration_since(Instant::now());
+            scan_req_rx.recv_timeout(wait)
+        } else {
+            match scan_req_rx.recv() {
+                Ok(req) => Ok(req),
+                Err(_) => Err(mpsc::RecvTimeoutError::Disconnected),
             }
+        };
 
-            // 重连决策（受 cooldown 限制）
-            let in_cooldown = cooldown_until.is_some_and(|t| Instant::now() < t);
-            if !in_cooldown {
-                if sta_link_up {
-                    cooldown_until = None;
+        match recv_result {
+            Ok(()) => {
+                let mut pending_requests = 1usize;
+                while scan_req_rx.try_recv().is_ok() {
+                    pending_requests += 1;
+                }
+                let result = perform_wifi_scan(wifi);
+                for _ in 0..pending_requests {
+                    let _ = scan_resp_tx.send(result.clone());
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if has_sta {
+                    std::thread::sleep(Duration::from_millis(200));
                 } else {
-                    if let Ok(mut g) = WIFI_STA_IP.get_or_init(|| Mutex::new(None)).lock() {
-                        *g = None;
-                    }
-                    match wifi.connect() {
-                        Ok(()) => {
-                            log::info!(
-                                "[{}] STA connect() issued, cooldown {}ms",
-                                TAG,
-                                STA_RECONNECT_COOLDOWN_MS
-                            );
-                        }
-                        Err(e) => {
-                            log::warn!("[{}] STA connect() failed: {}", TAG, e);
-                        }
-                    }
-                    cooldown_until =
-                        Some(Instant::now() + Duration::from_millis(STA_RECONNECT_COOLDOWN_MS));
+                    break;
                 }
             }
         }
-
-        // -- 扫描请求 --
-        if scan_req_rx.try_recv().is_ok() {
-            let result = (|| {
-                let mut last_err_msg = String::new();
-                for attempt in 0..SCAN_RETRY {
-                    match wifi.scan() {
-                        Ok(aps) => {
-                            let mut entries: Vec<WifiApEntry> = aps
-                                .into_iter()
-                                .map(|ap| WifiApEntry {
-                                    ssid: ap.ssid.as_str().to_string(),
-                                    rssi: ap.signal_strength,
-                                })
-                                .collect();
-                            entries.sort_by(|a, b| b.rssi.cmp(&a.rssi));
-                            return ScanResponse::Ok(entries);
-                        }
-                        Err(e) => {
-                            last_err_msg = e.to_string();
-                            if attempt + 1 < SCAN_RETRY {
-                                std::thread::sleep(SCAN_RETRY_DELAY);
-                            }
-                        }
-                    }
-                }
-                let hint = if last_err_msg.contains("FAIL") || last_err_msg.contains("STATE") {
-                    " (WiFi busy, try again later)"
-                } else {
-                    ""
-                };
-                ScanResponse::Err(format!("{}{}", last_err_msg, hint))
-            })();
-            let _ = scan_resp_tx.send(result);
-        }
-
-        std::thread::park_timeout(Duration::from_millis(STA_POLL_INTERVAL_MS));
     }
+}
+
+fn poll_sta_link(wifi: &mut BlockingWifi<EspWifi>, cooldown_until: &mut Option<Instant>) {
+    let sta_l2 = wifi.wifi().driver().is_sta_connected().unwrap_or(false);
+    let sta_ip_ok = read_sta_ipv4_string()
+        .map(|s| s != "0.0.0.0")
+        .unwrap_or(false);
+    let sta_link_up = sta_l2 || sta_ip_ok;
+
+    if sta_ip_ok {
+        if !WIFI_STA_CONNECTED.load(Ordering::Relaxed) {
+            log::info!("[{}] STA connected (detected in poll)", TAG);
+        }
+        WIFI_STA_CONNECTED.store(true, Ordering::Relaxed);
+        update_sta_ip_cache();
+    } else {
+        if WIFI_STA_CONNECTED.load(Ordering::Relaxed) && !sta_link_up {
+            log::warn!("[{}] STA disconnected, will reconnect", TAG);
+        }
+        WIFI_STA_CONNECTED.store(false, Ordering::Relaxed);
+    }
+
+    let in_cooldown = cooldown_until.is_some_and(|t| Instant::now() < t);
+    if in_cooldown {
+        return;
+    }
+    if sta_link_up {
+        *cooldown_until = None;
+        return;
+    }
+
+    if let Ok(mut g) = WIFI_STA_IP.get_or_init(|| Mutex::new(None)).lock() {
+        *g = None;
+    }
+    match wifi.connect() {
+        Ok(()) => {
+            log::info!(
+                "[{}] STA connect() issued, cooldown {}ms",
+                TAG,
+                STA_RECONNECT_COOLDOWN_MS
+            );
+        }
+        Err(e) => {
+            log::warn!("[{}] STA connect() failed: {}", TAG, e);
+        }
+    }
+    *cooldown_until = Some(Instant::now() + Duration::from_millis(STA_RECONNECT_COOLDOWN_MS));
+}
+
+fn perform_wifi_scan(wifi: &mut BlockingWifi<EspWifi>) -> ScanResponse {
+    let mut last_err_msg = String::new();
+    for attempt in 0..SCAN_RETRY {
+        match wifi.scan() {
+            Ok(aps) => {
+                let mut entries: Vec<WifiApEntry> = aps
+                    .into_iter()
+                    .map(|ap| WifiApEntry {
+                        ssid: ap.ssid.as_str().to_string(),
+                        rssi: ap.signal_strength,
+                    })
+                    .collect();
+                entries.sort_by(|a, b| b.rssi.cmp(&a.rssi));
+                return ScanResponse::Ok(entries);
+            }
+            Err(e) => {
+                last_err_msg = e.to_string();
+                if attempt + 1 < SCAN_RETRY {
+                    std::thread::sleep(SCAN_RETRY_DELAY);
+                }
+            }
+        }
+    }
+    let hint = if last_err_msg.contains("FAIL") || last_err_msg.contains("STATE") {
+        " (WiFi busy, try again later)"
+    } else {
+        ""
+    };
+    ScanResponse::Err(format!("{}{}", last_err_msg, hint))
 }
 
 /// 成功启动后必须让本线程常驻不退出，否则 wifi 被 drop 会关闭热点。

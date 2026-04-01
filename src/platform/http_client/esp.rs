@@ -200,7 +200,10 @@ impl EspHttpClient {
                 stage: "http_get_submit",
             })?;
             let status = response.status();
-            match read_response_body(&mut response) {
+            let content_length_hint = response
+                .header("Content-Length")
+                .and_then(|v| v.trim().parse::<usize>().ok());
+            match read_response_body(&mut response, content_length_hint) {
                 Ok(body) => Ok((status, body)),
                 Err(e) => {
                     drain_response(&mut response);
@@ -238,7 +241,10 @@ impl EspHttpClient {
                 stage: "http_post_submit",
             })?;
             let status = response.status();
-            match read_response_body(&mut response) {
+            let content_length_hint = response
+                .header("Content-Length")
+                .and_then(|v| v.trim().parse::<usize>().ok());
+            match read_response_body(&mut response, content_length_hint) {
                 Ok(resp_body) => Ok((status, resp_body)),
                 Err(e) => {
                     drain_response(&mut response);
@@ -359,6 +365,8 @@ impl EspHttpClient {
 
 /// 首次分配块大小，避免无 PSRAM 时单次分配过大；后续按 read 循环 grow 至 budget.response_body_max。
 const INITIAL_RESPONSE_BODY_CAP: usize = 8 * 1024;
+/// 仅在已知响应长度且达到该阈值时，才预分配 PSRAM 响应体缓冲，避免几十字节 JSON 也吃整块大 buffer。
+const PSRAM_RESPONSE_PREALLOC_THRESHOLD: usize = 8 * 1024;
 
 /// 最多 drain 的字节数，防止无限读取恶意超长响应。
 const MAX_DRAIN_BYTES: usize = 512 * 1024;
@@ -386,44 +394,44 @@ where
 
 /// S3 上优先从 PSRAM 分配整块读入，返回 ResponseBody（Drop 时释放 PSRAM），无堆拷贝；否则用 Vec 按块增长。
 /// 最大长度由 orchestrator::current_budget().response_body_max 决定，压力高时自动缩减。
-fn read_response_body<R: Read>(r: &mut R) -> Result<ResponseBody>
+fn read_response_body<R: Read>(
+    r: &mut R,
+    content_length_hint: Option<usize>,
+) -> Result<ResponseBody>
 where
     R::Error: std::error::Error + 'static,
 {
-    fn inner<R: Read>(r: &mut R) -> Result<ResponseBody>
-    where
-        R::Error: std::error::Error + 'static,
-    {
-        let max_len = crate::orchestrator::current_budget().response_body_max;
-        #[cfg(target_arch = "xtensa")]
-        if let Some(psram_ptr) = alloc_spiram_buffer(max_len) {
-            return read_response_body_into_psram(psram_ptr, max_len, r);
+    let max_len = crate::orchestrator::current_budget().response_body_max;
+    let hinted_len = content_length_hint.map(|len| len.min(max_len));
+    #[cfg(target_arch = "xtensa")]
+    if let Some(prealloc_len) = hinted_len.filter(|len| *len >= PSRAM_RESPONSE_PREALLOC_THRESHOLD) {
+        if let Some(psram_ptr) = alloc_spiram_buffer(prealloc_len) {
+            return read_response_body_into_psram(psram_ptr, prealloc_len, r);
         }
-
-        let mut out = Vec::with_capacity(INITIAL_RESPONSE_BODY_CAP.min(max_len));
-        let mut buf = [0u8; RESPONSE_READ_CHUNK];
-        loop {
-            let n = read_with_retry(r, &mut buf)?;
-            if n == 0 {
-                break;
-            }
-            let remain = max_len.saturating_sub(out.len());
-            if remain == 0 {
-                log::warn!("[{}] response body truncated at {} bytes", TAG, max_len);
-                drain_response(r);
-                break;
-            }
-            let take = n.min(remain);
-            out.extend_from_slice(&buf[..take]);
-            if take < n {
-                drain_response(r);
-                break;
-            }
-        }
-        Ok(ResponseBody::Heap(out))
     }
 
-    inner(r)
+    let initial_cap = hinted_len.unwrap_or(INITIAL_RESPONSE_BODY_CAP).min(max_len);
+    let mut out = Vec::with_capacity(initial_cap);
+    let mut buf = [0u8; RESPONSE_READ_CHUNK];
+    loop {
+        let n = read_with_retry(r, &mut buf)?;
+        if n == 0 {
+            break;
+        }
+        let remain = max_len.saturating_sub(out.len());
+        if remain == 0 {
+            log::warn!("[{}] response body truncated at {} bytes", TAG, max_len);
+            drain_response(r);
+            break;
+        }
+        let take = n.min(remain);
+        out.extend_from_slice(&buf[..take]);
+        if take < n {
+            drain_response(r);
+            break;
+        }
+    }
+    Ok(ResponseBody::Heap(out))
 }
 
 /// 将响应体读入 PSRAM 块，返回 ResponseBody（Drop 时 free），不 to_vec。仅 xtensa。
@@ -431,7 +439,7 @@ where
 #[cfg(target_arch = "xtensa")]
 fn read_response_body_into_psram<R: Read>(
     ptr: *mut u8,
-    max_len: usize,
+    buf_cap: usize,
     r: &mut R,
 ) -> Result<ResponseBody>
 where
@@ -452,9 +460,9 @@ where
         if n == 0 {
             break;
         }
-        let remain = max_len.saturating_sub(len);
+        let remain = buf_cap.saturating_sub(len);
         if remain == 0 {
-            log::warn!("[{}] response body truncated at {} bytes", TAG, max_len);
+            log::warn!("[{}] response body truncated at {} bytes", TAG, buf_cap);
             drain_response(r);
             break;
         }
