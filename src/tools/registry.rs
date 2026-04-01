@@ -4,7 +4,9 @@
 use crate::config::AppConfig;
 use crate::error::{Error, Result};
 use crate::llm::ToolSpec as LlmToolSpec;
-use crate::tools::{Tool, ToolPolicyContext, MAX_TOOL_ARGS_LEN, MAX_TOOL_RESULT_LEN};
+use crate::tools::{
+    Tool, ToolExecutionOutcome, ToolPolicyContext, MAX_TOOL_ARGS_LEN, MAX_TOOL_RESULT_LEN,
+};
 use crate::util::truncate_to_byte_len;
 use indexmap::IndexMap;
 use std::sync::Arc;
@@ -99,7 +101,7 @@ impl ToolRegistry {
         name: &str,
         args: &str,
         ctx: &mut dyn crate::tools::ToolContext,
-    ) -> Result<String> {
+    ) -> Result<ToolExecutionOutcome> {
         if args.len() > MAX_TOOL_ARGS_LEN {
             return Err(Error::config(
                 "tool_execute",
@@ -113,8 +115,9 @@ impl ToolRegistry {
             )),
             stage: "tool_execute",
         })?;
-        let result = tool.execute(args, ctx)?;
-        Ok(truncate_to_byte_len(&result, MAX_TOOL_RESULT_LEN))
+        let mut outcome = tool.execute_outcome(args, ctx)?;
+        outcome.content = truncate_to_byte_len(&outcome.content, MAX_TOOL_RESULT_LEN);
+        Ok(outcome)
     }
 }
 
@@ -135,6 +138,7 @@ pub fn build_default_registry(
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(super::GetTimeTool));
     registry.register(Box::new(super::EnvTool));
+    registry.register(Box::new(super::MessageTool));
     registry.register(Box::new(super::TaskTool::new(
         platform.task_store(),
         platform.calendar_store(),
@@ -296,6 +300,8 @@ mod tests {
     struct AdminTool;
     struct InternalOnlyTool;
     struct UserOnlyTaskTool;
+    struct OutcomeTool;
+    struct StubToolContext;
 
     impl Tool for VisibleTool {
         fn name(&self) -> &'static str {
@@ -388,6 +394,52 @@ mod tests {
         }
     }
 
+    impl Tool for OutcomeTool {
+        fn name(&self) -> &'static str {
+            "outcome"
+        }
+        fn description(&self) -> &str {
+            "outcome tool"
+        }
+        fn schema(&self) -> serde_json::Value {
+            json!({"type":"object"})
+        }
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok("legacy".to_string())
+        }
+        fn execute_outcome(
+            &self,
+            _args: &str,
+            _ctx: &mut dyn crate::tools::ToolContext,
+        ) -> Result<ToolExecutionOutcome> {
+            Ok(ToolExecutionOutcome::text("outcome body")
+                .with_current_chat_reply("tool delivered reply"))
+        }
+    }
+
+    impl crate::tools::ToolContext for StubToolContext {
+        fn get_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+        ) -> Result<(u16, crate::platform::ResponseBody)> {
+            unreachable!()
+        }
+
+        fn post_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> Result<(u16, crate::platform::ResponseBody)> {
+            unreachable!()
+        }
+
+        fn user_locale(&self) -> crate::i18n::Locale {
+            crate::i18n::Locale::Zh
+        }
+    }
+
     #[test]
     fn llm_tool_specs_follow_runtime_policy() {
         let mut registry = ToolRegistry::new();
@@ -414,5 +466,23 @@ mod tests {
         let specs = registry.tool_specs_for_llm_with_max(&cron, 4096);
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].name, "internal_only");
+    }
+
+    #[test]
+    fn registry_execute_preserves_structured_outcome() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(OutcomeTool));
+        let mut ctx = StubToolContext;
+        let outcome = registry
+            .execute("outcome", "{}", &mut ctx)
+            .expect("execute");
+        assert_eq!(outcome.content, "outcome body");
+        assert_eq!(
+            outcome
+                .current_chat_reply
+                .as_ref()
+                .map(|reply| reply.content.as_str()),
+            Some("tool delivered reply")
+        );
     }
 }

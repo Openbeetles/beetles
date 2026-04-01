@@ -12,6 +12,7 @@ use crate::error::Result;
 use crate::i18n::Locale;
 use crate::platform::{PlatformHttpClient, ResponseBody};
 use crate::tools::ToolContext;
+use crate::{bus::PcMsg, metrics};
 use std::sync::Arc;
 
 /// 正向适配器：`PlatformHttpClient + 会话元数据` → `PlatformHttpClient + ToolContext`。
@@ -28,6 +29,20 @@ pub(crate) struct HttpClientToolContext<'a> {
     pub(crate) chat_id: Option<Arc<str>>,
     /// 当前入站消息的通道名称（如 `"telegram"`）；系统内部路径为 `None`。
     pub(crate) channel: Option<Arc<str>>,
+    /// 当前请求的 outbound 发送端；仅 agent 对话主链提供。
+    pub(crate) outbound_tx: Option<&'a crate::bus::OutboundTx>,
+    /// 当前请求 req_id；用于贯通 dispatch/sender 时延日志。
+    pub(crate) req_id: Option<&'a str>,
+    /// 当前运行时是否允许工具声明“当前聊天主答复已由工具交付”。
+    pub(crate) supports_current_chat_primary_reply: bool,
+    /// 当前运行时是否允许工具向显式指定的其他聊天发消息。
+    pub(crate) supports_explicit_outbound_message: bool,
+    /// 单轮工具外发消息总额度；用于抑制模型刷屏。
+    pub(crate) outbound_message_budget: u8,
+    /// 当前轮已占用的工具外发消息额度。
+    pub(crate) outbound_message_count: u8,
+    /// 当前轮是否已经声明过一次 current+primary 主答复。
+    pub(crate) current_primary_message_delivered: bool,
     /// 当前用户界面语言；来自设备 NVS，不硬编码。
     pub(crate) locale: Locale,
 }
@@ -125,6 +140,68 @@ impl ToolContext for HttpClientToolContext<'_> {
 
     fn current_channel(&self) -> Option<&str> {
         self.channel.as_deref()
+    }
+
+    fn supports_current_chat_primary_reply(&self) -> bool {
+        self.supports_current_chat_primary_reply
+    }
+
+    fn supports_explicit_outbound_message(&self) -> bool {
+        self.supports_explicit_outbound_message
+    }
+
+    fn claim_outbound_message_delivery(
+        &mut self,
+        target_is_current: bool,
+        primary: bool,
+    ) -> Result<()> {
+        if !target_is_current && !self.supports_explicit_outbound_message {
+            return Err(crate::error::Error::config(
+                "tool_message",
+                "explicit outbound target is not allowed in this runtime context",
+            ));
+        }
+        if primary && target_is_current {
+            if self.current_primary_message_delivered {
+                return Err(crate::error::Error::config(
+                    "tool_message",
+                    "current-chat primary reply has already been claimed in this turn",
+                ));
+            }
+            self.current_primary_message_delivered = true;
+        }
+        if self.outbound_message_count >= self.outbound_message_budget {
+            return Err(crate::error::Error::config(
+                "tool_message",
+                "tool outbound message budget exhausted for this turn",
+            ));
+        }
+        self.outbound_message_count = self.outbound_message_count.saturating_add(1);
+        Ok(())
+    }
+
+    fn send_outbound_message(&mut self, channel: &str, chat_id: &str, content: &str) -> Result<()> {
+        let outbound_tx = self.outbound_tx.ok_or_else(|| {
+            crate::error::Error::config(
+                "tool_outbound_message",
+                "outbound sender is not available in this runtime context",
+            )
+        })?;
+        let mut msg = PcMsg::new(channel, chat_id, content)?;
+        msg.req_id = self.req_id.map(|id| id.to_string());
+        match outbound_tx.try_send(msg) {
+            Ok(()) => {
+                metrics::record_message_out();
+                Ok(())
+            }
+            Err(e) => {
+                metrics::record_outbound_enqueue_fail();
+                Err(crate::error::Error::config(
+                    "tool_outbound_message",
+                    format!("outbound enqueue failed: {}", e),
+                ))
+            }
+        }
     }
 
     fn user_locale(&self) -> Locale {

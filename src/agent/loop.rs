@@ -701,6 +701,13 @@ fn run_long_term_memory_refresh_job(
         http,
         chat_id: Some(Arc::from(msg.chat_id.as_ref())),
         channel: Some(Arc::from("system")),
+        outbound_tx: None,
+        req_id: None,
+        supports_current_chat_primary_reply: false,
+        supports_explicit_outbound_message: false,
+        outbound_message_budget: 0,
+        outbound_message_count: 0,
+        current_primary_message_delivered: false,
         locale: loc,
     };
     let outcome = run_long_term_memory_refresh(
@@ -740,6 +747,7 @@ fn run_long_term_memory_refresh_job(
 /// run_worker_path 返回：正常内容或用户要求停止时的确认文案。
 pub enum WorkerOutcome {
     Content(String),
+    Delivered(String),
     Interrupt(String),
 }
 
@@ -1316,27 +1324,37 @@ fn run_agent_loop_lane(
                 continue;
             }
         };
-        let (mut reply_content, is_interrupt) = match outcome {
-            WorkerOutcome::Interrupt(confirm) => {
-                let cow = truncate_content_to_max(&confirm, MAX_CONTENT_LEN);
-                let s = if let std::borrow::Cow::Borrowed(_) = &cow {
-                    confirm
-                } else {
-                    cow.into_owned()
-                };
-                (s, true)
-            }
-            WorkerOutcome::Content(s) => {
-                let cow = truncate_content_to_max(&s, MAX_CONTENT_LEN);
-                let s = if let std::borrow::Cow::Borrowed(_) = &cow {
-                    s
-                } else {
-                    cow.into_owned()
-                };
-                (s, false)
-            }
-        };
-        if !is_interrupt {
+        let (mut reply_content, is_interrupt, reply_already_delivered, apply_finalizer) =
+            match outcome {
+                WorkerOutcome::Interrupt(confirm) => {
+                    let cow = truncate_content_to_max(&confirm, MAX_CONTENT_LEN);
+                    let s = if let std::borrow::Cow::Borrowed(_) = &cow {
+                        confirm
+                    } else {
+                        cow.into_owned()
+                    };
+                    (s, true, false, false)
+                }
+                WorkerOutcome::Content(s) => {
+                    let cow = truncate_content_to_max(&s, MAX_CONTENT_LEN);
+                    let s = if let std::borrow::Cow::Borrowed(_) = &cow {
+                        s
+                    } else {
+                        cow.into_owned()
+                    };
+                    (s, false, false, true)
+                }
+                WorkerOutcome::Delivered(s) => {
+                    let cow = truncate_content_to_max(&s, MAX_CONTENT_LEN);
+                    let s = if let std::borrow::Cow::Borrowed(_) = &cow {
+                        s
+                    } else {
+                        cow.into_owned()
+                    };
+                    (s, false, true, false)
+                }
+            };
+        if !is_interrupt && apply_finalizer {
             reply_content = finalize_user_visible_reply(config.strategy, &reply_content);
         }
         if !is_interrupt
@@ -1397,9 +1415,12 @@ fn run_agent_loop_lane(
         llm_failure_count.remove(&msg_key);
         defer_tracker.remove(&msg_key);
 
-        // 流式编辑已发送到通道时，跳过 outbound_tx 避免重复发送。
+        // 已由 delivery 侧直接交付到通道时，跳过 outbound_tx 避免重复发送。
         let outbound_start = Instant::now();
-        let delivered = if !streamed {
+        let delivered = if reply_already_delivered {
+            crate::platform::task_wdt::feed_current_task();
+            true
+        } else if !streamed {
             let out = PcMsg {
                 channel: msg.channel.clone(),
                 chat_id: msg.chat_id.clone(),
@@ -1455,6 +1476,13 @@ fn run_agent_loop_lane(
                 http,
                 chat_id: Some(Arc::from(msg.chat_id.as_ref())),
                 channel: Some(Arc::from("system")),
+                outbound_tx: None,
+                req_id: None,
+                supports_current_chat_primary_reply: false,
+                supports_explicit_outbound_message: false,
+                outbound_message_budget: 0,
+                outbound_message_count: 0,
+                current_primary_message_delivered: false,
                 locale: loc,
             };
             let maintenance_outcome = run_post_reply_memory_maintenance(
@@ -1624,6 +1652,13 @@ fn run_worker_path(
         http,
         chat_id: Some(msg.chat_id.clone()),
         channel: Some(msg.channel.clone()),
+        outbound_tx: Some(outbound_tx),
+        req_id: Some(req_id),
+        supports_current_chat_primary_reply: false,
+        supports_explicit_outbound_message: false,
+        outbound_message_budget: 2,
+        outbound_message_count: 0,
+        current_primary_message_delivered: false,
         locale: loc,
     };
     let emotion_signal_suffix = config
@@ -1739,28 +1774,38 @@ fn run_worker_path(
     } else {
         None
     };
+    tool_ctx.supports_current_chat_primary_reply =
+        msg.ingress == IngressKind::User && msg.channel.as_ref() != "voice";
     let mut delivery = DeliverySession::new(msg, req_id, outbound_tx, editor, loc);
     // P1 Enhancement 3: 进度跟踪（最近3轮），用于检测无效循环。
     let mut progress_history: [Option<RoundProgress>; 3] = [None; 3];
     let mut any_tool_used = false; // 本次请求是否使用过任何工具
     let mut end_turn_followup_used = false;
     let mut recent_tool_round = RecentToolRoundState::default();
+    let mut delivered_current_chat_reply: Option<String> = None;
 
     for round in 0..MAX_REACT_ROUNDS {
         latency.react_rounds = round as u32 + 1;
         // Inter-round pressure check: skip first round (already gated by caller).
+        // Use stale-refresh instead of unconditional resample so the runtime
+        // does not thrash the global snapshot between tightly packed rounds.
         if round > 0 {
-            crate::orchestrator::update_heap_state();
-            match crate::orchestrator::can_call_llm_pub() {
-                LlmDecision::Proceed => {}
-                LlmDecision::RetryLater { .. } | LlmDecision::Degrade { .. } => {
-                    if final_content.is_empty() {
-                        final_content = tr(UiMessage::LowMemoryUserDefer, loc);
-                    } else {
-                        final_content.push_str("\n\n");
-                        final_content.push_str(&tr(UiMessage::StreamLowMemoryOmitted, loc));
+            match crate::orchestrator::refresh_heap_if_stale() {
+                crate::orchestrator::PressureLevel::Normal => {}
+                crate::orchestrator::PressureLevel::Cautious
+                | crate::orchestrator::PressureLevel::Critical => {
+                    match crate::orchestrator::can_call_llm_pub() {
+                        LlmDecision::Proceed => {}
+                        LlmDecision::RetryLater { .. } | LlmDecision::Degrade { .. } => {
+                            if final_content.is_empty() {
+                                final_content = tr(UiMessage::LowMemoryUserDefer, loc);
+                            } else {
+                                final_content.push_str("\n\n");
+                                final_content.push_str(&tr(UiMessage::StreamLowMemoryOmitted, loc));
+                            }
+                            break;
+                        }
                     }
-                    break;
                 }
             }
         }
@@ -1957,7 +2002,7 @@ fn run_worker_path(
                 };
                 delivery.emit_progress(&progress);
                 // 工具执行门控
-                let (result_owned, failure_kind) = {
+                let (result_owned, failure_kind, delivered_reply) = {
                     if !registry.is_llm_tool_visible(&tc.name, request_plan.policy()) {
                         metrics::record_tool_call(false);
                         let assessment = unavailable_tool_assessment();
@@ -1972,6 +2017,7 @@ fn run_worker_path(
                                 .to_string(),
                             ),
                             Some(assessment.kind),
+                            None,
                         )
                     } else {
                         let needs_net = registry.is_network_tool(&tc.name);
@@ -1984,19 +2030,87 @@ fn run_worker_path(
                                         &serde_json::json!({ "error": reason }).to_string(),
                                     ),
                                     Some(assessment.kind),
+                                    None,
                                 )
                             }
                             ToolDecision::Allow => {
                                 let tool_exec_start = Instant::now();
                                 match registry.execute(&tc.name, &tc.input, &mut tool_ctx) {
-                                    Ok(s) => {
+                                    Ok(outcome) => {
                                         latency.tool_exec_ms = latency
                                             .tool_exec_ms
                                             .saturating_add(tool_exec_start.elapsed().as_millis());
-                                        metrics::record_tool_call(true);
-                                        round_tool_success = true;
-                                        any_tool_used = true;
-                                        (crate::util::scrub_credentials(&s), None)
+                                        if let Some(reply) = outcome.current_chat_reply {
+                                            match delivery.deliver_current_primary(&reply.content) {
+                                                Ok(true) => {
+                                                    metrics::record_tool_call(true);
+                                                    round_tool_success = true;
+                                                    any_tool_used = true;
+                                                    (
+                                                        crate::util::scrub_credentials(
+                                                            &outcome.content,
+                                                        ),
+                                                        None,
+                                                        Some(reply.content),
+                                                    )
+                                                }
+                                                Ok(false) => {
+                                                    metrics::record_tool_call(false);
+                                                    let assessment = classify_tool_error(
+                                                        &crate::error::Error::config(
+                                                            "current_chat_delivery",
+                                                            "current-chat primary reply was empty or not deliverable",
+                                                        ),
+                                                    );
+                                                    tool_error_buf.clear();
+                                                    let _ = write!(
+                                                        &mut tool_error_buf,
+                                                        "[tool error] failed to deliver current-chat primary reply.{}",
+                                                        assessment.hint
+                                                    );
+                                                    (
+                                                        crate::util::scrub_credentials(
+                                                            tool_error_buf.as_str(),
+                                                        ),
+                                                        Some(assessment.kind),
+                                                        None,
+                                                    )
+                                                }
+                                                Err(e) => {
+                                                    metrics::record_tool_call(false);
+                                                    metrics::record_error_by_stage(e.stage());
+                                                    log::error!(
+                                                        "[agent_tool] {} current-chat delivery failed: {}",
+                                                        tc.name,
+                                                        e
+                                                    );
+                                                    state::set_last_error(&e);
+                                                    let assessment = classify_tool_error(&e);
+                                                    tool_error_buf.clear();
+                                                    let _ = write!(
+                                                        &mut tool_error_buf,
+                                                        "[tool error] {}.{}",
+                                                        e, assessment.hint
+                                                    );
+                                                    (
+                                                        crate::util::scrub_credentials(
+                                                            tool_error_buf.as_str(),
+                                                        ),
+                                                        Some(assessment.kind),
+                                                        None,
+                                                    )
+                                                }
+                                            }
+                                        } else {
+                                            metrics::record_tool_call(true);
+                                            round_tool_success = true;
+                                            any_tool_used = true;
+                                            (
+                                                crate::util::scrub_credentials(&outcome.content),
+                                                None,
+                                                None,
+                                            )
+                                        }
                                     }
                                     Err(e) => {
                                         latency.tool_exec_ms = latency
@@ -2022,6 +2136,7 @@ fn run_worker_path(
                                         (
                                             crate::util::scrub_credentials(tool_error_buf.as_str()),
                                             Some(assessment.kind),
+                                            None,
                                         )
                                     }
                                 }
@@ -2029,6 +2144,9 @@ fn run_worker_path(
                         }
                     }
                 };
+                if let Some(reply) = delivered_reply {
+                    delivered_current_chat_reply = Some(reply);
+                }
                 let result_view = result_owned.as_str();
                 if let Some(kind) = failure_kind {
                     round_failure_summary.record(kind);
@@ -2184,7 +2302,7 @@ fn run_worker_path(
         final_content = content;
         break;
     }
-    if final_content.trim().is_empty() && any_tool_used {
+    if final_content.trim().is_empty() && any_tool_used && delivered_current_chat_reply.is_none() {
         final_content = run_final_answer_recovery_round(
             worker_llm,
             &mut tool_ctx,
@@ -2195,7 +2313,12 @@ fn run_worker_path(
         )?;
     }
     let streamed = delivery.finalize(&final_content);
-    Ok((WorkerOutcome::Content(final_content), streamed, latency))
+    let outcome = if let Some(reply) = delivered_current_chat_reply {
+        WorkerOutcome::Delivered(reply)
+    } else {
+        WorkerOutcome::Content(final_content)
+    };
+    Ok((outcome, streamed, latency))
 }
 
 #[cfg(test)]
@@ -2203,7 +2326,14 @@ mod tests {
     use super::*;
     use crate::error::Result;
     use crate::llm::{LlmHttpClient, LlmModelCompat, LlmResponse, StopReason, ToolChoicePolicy};
+    use crate::memory::{
+        EmotionSignalStore, ExecutionState, ExecutionStateStore, ImportantMessageStore,
+        LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryExtractionState,
+        LongTermMemoryExtractionStateStore, LongTermMemorySlot, LongTermMemoryStore, MemoryStore,
+        PendingRetryStore, SessionMessage, SessionStore, SessionSummaryStore,
+    };
     use crate::platform::{PlatformHttpClient, ResponseBody};
+    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
@@ -2256,6 +2386,258 @@ mod tests {
                     tool_count: tools.map_or(0, |specs| specs.len()),
                 });
             Ok(self.response.clone())
+        }
+    }
+
+    #[derive(Default)]
+    struct EmptyMemoryStore;
+
+    impl MemoryStore for EmptyMemoryStore {
+        fn get_memory(&self) -> Result<String> {
+            Ok(String::new())
+        }
+        fn set_memory(&self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+        fn get_soul(&self) -> Result<String> {
+            Ok(String::new())
+        }
+        fn set_soul(&self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+        fn get_user(&self) -> Result<String> {
+            Ok(String::new())
+        }
+        fn set_user(&self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+        fn list_daily_note_names(&self, _recent_n: usize) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn get_daily_note(&self, _name: &str) -> Result<String> {
+            Ok(String::new())
+        }
+        fn write_daily_note(&self, _name: &str, _content: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubSessionStore {
+        entries: Mutex<HashMap<String, Vec<SessionMessage>>>,
+    }
+
+    impl SessionStore for StubSessionStore {
+        fn append(&self, chat_id: &str, role: &str, content: &str) -> Result<()> {
+            self.entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(chat_id.to_string())
+                .or_default()
+                .push(SessionMessage {
+                    role: role.to_string(),
+                    content: content.to_string(),
+                });
+            Ok(())
+        }
+
+        fn load_recent(&self, chat_id: &str, n: usize) -> Result<Vec<SessionMessage>> {
+            let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            let values = entries.get(chat_id).cloned().unwrap_or_default();
+            let start = values.len().saturating_sub(n);
+            Ok(values[start..].to_vec())
+        }
+
+        fn clear(&self, chat_id: &str) -> Result<()> {
+            self.entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(chat_id);
+            Ok(())
+        }
+
+        fn list_chat_ids(&self) -> Result<Vec<String>> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .keys()
+                .cloned()
+                .collect())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubSessionSummaryStore;
+
+    impl SessionSummaryStore for StubSessionSummaryStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+        fn set(&self, _chat_id: &str, _summary: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubExecutionStateStore;
+
+    impl ExecutionStateStore for StubExecutionStateStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<ExecutionState>> {
+            Ok(None)
+        }
+        fn set(&self, _chat_id: &str, _state: &ExecutionState) -> Result<()> {
+            Ok(())
+        }
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubLongTermMemoryStore;
+
+    impl LongTermMemoryStore for StubLongTermMemoryStore {
+        fn upsert_many(&self, _drafts: &[LongTermMemoryDraft], _now_secs: u64) -> Result<usize> {
+            Ok(0)
+        }
+        fn recall(
+            &self,
+            _query: &str,
+            _source_chat_id: Option<&str>,
+            _limit: usize,
+        ) -> Result<Vec<LongTermMemoryEntry>> {
+            Ok(Vec::new())
+        }
+        fn get(&self, _id: &str) -> Result<Option<LongTermMemoryEntry>> {
+            Ok(None)
+        }
+        fn list(&self, _limit: usize) -> Result<Vec<LongTermMemoryEntry>> {
+            Ok(Vec::new())
+        }
+        fn delete(&self, _id: &str) -> Result<bool> {
+            Ok(false)
+        }
+        fn delete_slot(&self, _slot: &LongTermMemorySlot) -> Result<bool> {
+            Ok(false)
+        }
+        fn count(&self) -> Result<usize> {
+            Ok(0)
+        }
+    }
+
+    #[derive(Default)]
+    struct StubLongTermMemoryExtractionStateStore;
+
+    impl LongTermMemoryExtractionStateStore for StubLongTermMemoryExtractionStateStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<LongTermMemoryExtractionState>> {
+            Ok(None)
+        }
+        fn set(&self, _chat_id: &str, _state: &LongTermMemoryExtractionState) -> Result<()> {
+            Ok(())
+        }
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubImportantMessageStore;
+
+    impl ImportantMessageStore for StubImportantMessageStore {
+        fn set_important_offset_from_end(
+            &self,
+            _chat_id: &str,
+            _offset_from_end: u32,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn get_important_offset(&self, _chat_id: &str) -> Result<Option<u32>> {
+            Ok(None)
+        }
+        fn clear_important(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubPendingRetryStore;
+
+    impl PendingRetryStore for StubPendingRetryStore {
+        fn save_pending_retry(&self, _msg: &PcMsg) -> Result<()> {
+            Ok(())
+        }
+        fn load_pending_retry(&self) -> Result<Option<PcMsg>> {
+            Ok(None)
+        }
+        fn clear_pending_retry(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubEmotionSignalStore;
+
+    impl EmotionSignalStore for StubEmotionSignalStore {
+        fn set(&self, _chat_id: &str, _signal: &str) -> Result<()> {
+            Ok(())
+        }
+        fn get_then_clear(&self, _chat_id: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+    }
+
+    struct SequenceStubLlm {
+        responses: Mutex<Vec<LlmResponse>>,
+    }
+
+    impl LlmClient for SequenceStubLlm {
+        fn model_compat(&self) -> LlmModelCompat {
+            LlmModelCompat::default()
+        }
+
+        fn chat(
+            &self,
+            _http: &mut dyn LlmHttpClient,
+            _system: &str,
+            _messages: &[Message],
+            _tools: Option<&[crate::llm::ToolSpec]>,
+            _tool_choice: ToolChoicePolicy,
+        ) -> Result<LlmResponse> {
+            let mut responses = self.responses.lock().unwrap_or_else(|e| e.into_inner());
+            if responses.is_empty() {
+                return Ok(LlmResponse {
+                    content: String::new(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                });
+            }
+            Ok(responses.remove(0))
+        }
+    }
+
+    fn test_agent_loop_config() -> AgentLoopConfig {
+        AgentLoopConfig {
+            memory_store: Arc::new(EmptyMemoryStore),
+            long_term_memory_store: Arc::new(StubLongTermMemoryStore),
+            long_term_memory_extraction_state_store: Arc::new(
+                StubLongTermMemoryExtractionStateStore,
+            ),
+            session_store: Arc::new(StubSessionStore::default()),
+            session_summary_store: Arc::new(StubSessionSummaryStore),
+            execution_state_store: Arc::new(StubExecutionStateStore),
+            memory_profile: crate::memory::MemoryProfile::Embedded,
+            get_skill_descriptions: Arc::new(String::new),
+            session_max_messages: 16,
+            tg_group_activation: Arc::from(""),
+            important_message_store: Arc::new(StubImportantMessageStore),
+            emotion_signal_store: Arc::new(StubEmotionSignalStore),
+            pending_retry: Arc::new(StubPendingRetryStore),
+            strategy: AgentRunStrategy::Embedded,
+            llm_stream: false,
+            stream_editor: None,
+            stream_editor_channel: None,
+            resolve_locale: Arc::new(|| UiLocale::Zh),
         }
     }
 
@@ -2502,6 +2884,13 @@ mod tests {
             http: &mut http,
             chat_id: Some(Arc::from("chat-1")),
             channel: Some(Arc::from("qq_channel")),
+            outbound_tx: None,
+            req_id: None,
+            supports_current_chat_primary_reply: false,
+            supports_explicit_outbound_message: false,
+            outbound_message_budget: 0,
+            outbound_message_count: 0,
+            current_primary_message_delivered: false,
             locale: UiLocale::Zh,
         };
         let messages = vec![Message {
@@ -2532,5 +2921,57 @@ mod tests {
         assert_eq!(observed.len(), 1);
         assert_eq!(observed[0].tool_count, 0);
         assert!(observed[0].system.contains(FINAL_RECOVERY_SYSTEM_SUFFIX));
+    }
+
+    #[test]
+    fn run_worker_path_suppresses_final_reply_after_message_tool_primary_delivery() {
+        let llm = SequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: "[tool_use]".to_string(),
+                    stop_reason: StopReason::ToolUse,
+                    tool_calls: Some(vec![crate::llm::ToolCall {
+                        id: "call_1".to_string(),
+                        name: "message".to_string(),
+                        input: r#"{"content":"工具主答复","delivery_kind":"primary"}"#.to_string(),
+                    }]),
+                },
+                LlmResponse {
+                    content: String::new(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = crate::tools::ToolRegistry::new();
+        registry.register(Box::new(crate::tools::MessageTool));
+        let config = test_agent_loop_config();
+        let msg =
+            PcMsg::new_inbound("qq_channel", "chat-1", "测试多轮发送", false).expect("message");
+        let mut repeat = HashMap::new();
+
+        let (outcome, delivered_inline, _latency) = run_worker_path(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-1",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("worker path");
+
+        assert!(matches!(outcome, WorkerOutcome::Delivered(ref text) if text == "工具主答复"));
+        assert!(delivered_inline);
+        let first = outbound_rx.try_recv().expect("visible update");
+        let second = outbound_rx.try_recv().expect("primary reply");
+        let contents = [first.content.as_str(), second.content.as_str()];
+        assert!(contents.contains(&"正在执行 message…"));
+        assert!(contents.contains(&"工具主答复"));
+        assert!(outbound_rx.try_recv().is_err());
     }
 }

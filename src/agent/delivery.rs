@@ -39,6 +39,7 @@ struct EditDelivery<'a> {
     last_edit_at: std::time::Instant,
     edit_disabled: bool,
     edit_failures: u8,
+    primary_delivered: bool,
     last_visible_text: String,
 }
 
@@ -47,6 +48,7 @@ struct QueuedDelivery<'a> {
     channel: &'a str,
     chat_id: &'a str,
     req_id: &'a str,
+    primary_delivered: bool,
     last_visible_text: String,
     shared: Arc<QueuedDeliveryShared>,
 }
@@ -74,6 +76,7 @@ impl<'a> DeliverySession<'a> {
                 last_edit_at: std::time::Instant::now(),
                 edit_disabled: false,
                 edit_failures: 0,
+                primary_delivered: false,
                 last_visible_text: String::new(),
             })
         } else {
@@ -82,6 +85,7 @@ impl<'a> DeliverySession<'a> {
                 channel: msg.channel.as_ref(),
                 chat_id: msg.chat_id.as_ref(),
                 req_id,
+                primary_delivered: false,
                 last_visible_text: String::new(),
                 shared: spawn_waiting_notice(
                     outbound_tx.clone(),
@@ -135,9 +139,22 @@ impl<'a> DeliverySession<'a> {
             DeliveryMode::Edit(ref mut delivery) => delivery.finalize(_final_content),
             DeliveryMode::Queued(ref mut delivery) => {
                 delivery.cancel_waiting_notice();
-                false
+                delivery.primary_delivered
             }
             DeliveryMode::Silent => false,
+        }
+    }
+
+    /// 直接向当前聊天交付主答复，并进入“本轮已交付”状态，后续 progress/finalize 不再重复发。
+    pub(crate) fn deliver_current_primary(&mut self, content: &str) -> Result<bool> {
+        let text = normalize_visible_update(content, crate::bus::MAX_CONTENT_LEN);
+        if text.is_empty() {
+            return Ok(false);
+        }
+        match self.mode {
+            DeliveryMode::Edit(ref mut delivery) => delivery.deliver_current_primary(&text),
+            DeliveryMode::Queued(ref mut delivery) => delivery.deliver_current_primary(&text),
+            DeliveryMode::Silent => Ok(false),
         }
     }
 }
@@ -152,7 +169,7 @@ impl Drop for DeliverySession<'_> {
 
 impl<'a> EditDelivery<'a> {
     fn on_stream_delta(&mut self, accumulated: &str) {
-        if self.edit_disabled || accumulated.trim().is_empty() {
+        if self.edit_disabled || self.primary_delivered || accumulated.trim().is_empty() {
             return;
         }
         if self.message_id.is_none() {
@@ -166,7 +183,7 @@ impl<'a> EditDelivery<'a> {
     }
 
     fn force_visible_update(&mut self, content: &str) {
-        if self.edit_disabled {
+        if self.edit_disabled || self.primary_delivered {
             return;
         }
         if self.message_id.is_none() {
@@ -177,6 +194,9 @@ impl<'a> EditDelivery<'a> {
     }
 
     fn finalize(&mut self, final_content: &str) -> bool {
+        if self.primary_delivered {
+            return true;
+        }
         if self.message_id.is_none() {
             if final_content.trim().is_empty() {
                 return false;
@@ -186,6 +206,25 @@ impl<'a> EditDelivery<'a> {
             self.edit_existing(final_content);
         }
         self.message_id.is_some() && !self.edit_disabled
+    }
+
+    fn deliver_current_primary(&mut self, content: &str) -> Result<bool> {
+        if self.primary_delivered {
+            return Ok(true);
+        }
+        if self.message_id.is_none() {
+            self.send_initial(content);
+        } else {
+            self.edit_existing(content);
+        }
+        if self.edit_disabled || self.last_visible_text != content {
+            return Err(crate::error::Error::config(
+                "current_chat_delivery",
+                "failed to deliver current-chat primary reply via stream editor",
+            ));
+        }
+        self.primary_delivered = true;
+        Ok(true)
     }
 
     fn send_initial(&mut self, content: &str) {
@@ -256,6 +295,9 @@ impl<'a> QueuedDelivery<'a> {
     }
 
     fn emit(&mut self, content: &str) {
+        if self.primary_delivered {
+            return;
+        }
         let normalized = normalize_visible_update(content, crate::bus::MAX_CONTENT_LEN);
         if normalized.is_empty() || normalized == self.last_visible_text {
             return;
@@ -280,6 +322,29 @@ impl<'a> QueuedDelivery<'a> {
                     .fetch_sub(1, Ordering::Relaxed);
             }
         }
+    }
+
+    fn deliver_current_primary(&mut self, content: &str) -> Result<bool> {
+        if self.primary_delivered {
+            return Ok(true);
+        }
+        self.cancel_waiting_notice();
+        send_visible_update(
+            self.outbound_tx,
+            self.channel,
+            self.chat_id,
+            self.req_id,
+            content,
+        )
+        .map_err(|()| {
+            crate::error::Error::config(
+                "current_chat_delivery",
+                "failed to enqueue current-chat primary reply",
+            )
+        })?;
+        self.last_visible_text = content.to_string();
+        self.primary_delivered = true;
+        Ok(true)
     }
 
     fn try_claim_visible_slot(&self) -> bool {
@@ -381,6 +446,9 @@ fn spawn_waiting_notice(
             if !try_claim_shared_visible_slot(&worker_shared) {
                 return;
             }
+            if !should_send_waiting_notice_after_claim(&worker_shared) {
+                return;
+            }
             if send_visible_update(&outbound_tx, &channel, &chat_id, &req_id, &waiting_notice)
                 .is_err()
             {
@@ -416,6 +484,14 @@ fn try_claim_shared_visible_slot(shared: &QueuedDeliveryShared) -> bool {
     }
 }
 
+fn should_send_waiting_notice_after_claim(shared: &QueuedDeliveryShared) -> bool {
+    if shared.waiting_notice_canceled.load(Ordering::Relaxed) {
+        shared.visible_updates_sent.fetch_sub(1, Ordering::Relaxed);
+        return false;
+    }
+    true
+}
+
 #[cfg(test)]
 fn waiting_notice_delay() -> std::time::Duration {
     std::time::Duration::from_millis(20)
@@ -423,7 +499,7 @@ fn waiting_notice_delay() -> std::time::Duration {
 
 #[cfg(not(test))]
 fn waiting_notice_delay() -> std::time::Duration {
-    std::time::Duration::from_millis(2500)
+    std::time::Duration::from_millis(3000)
 }
 
 fn current_unix_ms() -> u64 {
@@ -529,6 +605,56 @@ mod tests {
     }
 
     #[test]
+    fn queued_delivery_primary_current_suppresses_followup_finalize() {
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg("qq_channel");
+        let mut delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
+
+        let delivered = delivery
+            .deliver_current_primary("主答复")
+            .expect("primary current");
+        assert!(delivered);
+        assert!(delivery.finalize("最终答案"));
+
+        let first = outbound_rx.try_recv().expect("primary reply");
+        assert_eq!(first.content, "主答复");
+        assert!(outbound_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn edit_delivery_primary_current_reuses_edit_lane() {
+        let (outbound_tx, _outbound_rx, _) = new_inbound_channel(4);
+        let msg = build_msg("telegram");
+        let editor = StubEditor::default();
+        let mut delivery =
+            DeliverySession::new(&msg, "req-1", &outbound_tx, Some(&editor), UiLocale::Zh);
+
+        delivery.emit_progress("处理中");
+        let delivered = delivery
+            .deliver_current_primary("主答复")
+            .expect("primary current");
+        assert!(delivered);
+        assert!(delivery.finalize("不应重复"));
+
+        assert_eq!(
+            editor
+                .sends
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_slice(),
+            ["处理中"]
+        );
+        assert_eq!(
+            editor
+                .edits
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_slice(),
+            ["主答复"]
+        );
+    }
+
+    #[test]
     fn queued_delivery_sends_waiting_notice_for_long_think() {
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
@@ -564,5 +690,21 @@ mod tests {
         std::thread::sleep(waiting_notice_delay() + std::time::Duration::from_millis(20));
 
         assert!(outbound_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn waiting_notice_rechecks_cancel_after_claim() {
+        let shared = Arc::new(QueuedDeliveryShared {
+            visible_updates_sent: AtomicU8::new(0),
+            waiting_notice_canceled: AtomicBool::new(false),
+        });
+
+        assert!(try_claim_shared_visible_slot(&shared));
+        shared
+            .waiting_notice_canceled
+            .store(true, Ordering::Relaxed);
+
+        assert!(!should_send_waiting_notice_after_claim(&shared));
+        assert_eq!(shared.visible_updates_sent.load(Ordering::Relaxed), 0);
     }
 }

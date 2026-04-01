@@ -43,6 +43,7 @@ pub mod i2c_sensor;
 pub mod kv_store;
 #[cfg(feature = "tools_diagnostics")]
 pub mod memory_manage;
+pub mod message;
 #[cfg(feature = "tools_network_extra")]
 pub mod model_config;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -113,6 +114,7 @@ pub use i2c_sensor::I2cSensorTool;
 pub use kv_store::KvStoreTool;
 #[cfg(feature = "tools_diagnostics")]
 pub use memory_manage::MemoryManageTool;
+pub use message::MessageTool;
 #[cfg(feature = "tools_network_extra")]
 pub use model_config::ModelConfigTool;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -167,6 +169,45 @@ pub fn parse_tool_args(args: &str, stage: &'static str) -> Result<Map<String, Va
 pub const MAX_TOOL_ARGS_LEN: usize = 8 * 1024;
 /// 单次 execute 返回值最大长度（字符）。超限截断或返回 Error::Config。
 pub const MAX_TOOL_RESULT_LEN: usize = 16 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolCurrentChatReply {
+    pub content: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ToolExecutionOutcome {
+    pub content: String,
+    pub current_chat_reply: Option<ToolCurrentChatReply>,
+}
+
+impl ToolExecutionOutcome {
+    pub fn text(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            current_chat_reply: None,
+        }
+    }
+
+    pub fn with_current_chat_reply(mut self, content: impl Into<String>) -> Self {
+        self.current_chat_reply = Some(ToolCurrentChatReply {
+            content: content.into(),
+        });
+        self
+    }
+}
+
+impl From<String> for ToolExecutionOutcome {
+    fn from(value: String) -> Self {
+        Self::text(value)
+    }
+}
+
+impl From<&str> for ToolExecutionOutcome {
+    fn from(value: &str) -> Self {
+        Self::text(value)
+    }
+}
 
 /// 工具执行时注入的上下文；HTTP 等由 lib 实现（如 EspHttpClient）。
 /// 当前会话的 chat_id/channel 供 remind_at 等工具使用；默认 None，agent 循环内用 wrapper 注入。
@@ -234,6 +275,31 @@ pub trait ToolContext {
     fn current_channel(&self) -> Option<&str> {
         None
     }
+    /// 当前运行时是否允许工具声明“当前聊天主答复已由工具交付”。
+    /// 目前仅在不会与编辑型交付通道冲突的运行时开启。
+    fn supports_current_chat_primary_reply(&self) -> bool {
+        false
+    }
+    /// 当前运行时是否允许工具把消息发往非当前聊天的显式目标。
+    fn supports_explicit_outbound_message(&self) -> bool {
+        false
+    }
+    /// 为本轮工具侧外发消息预留一次发送额度；运行时可在这里做限流、去重和权限裁决。
+    fn claim_outbound_message_delivery(
+        &mut self,
+        _target_is_current: bool,
+        _primary: bool,
+    ) -> Result<()> {
+        Ok(())
+    }
+    /// 将一条用户可见消息送入统一 outbound 主干。默认表示当前运行时不支持该能力。
+    fn send_outbound_message(&mut self, channel: &str, chat_id: &str, content: &str) -> Result<()> {
+        let _ = (channel, chat_id, content);
+        Err(Error::config(
+            "tool_outbound_message",
+            "outbound message sending is not available in this runtime context",
+        ))
+    }
     /// 当前用户界面语言（来自设备 NVS），供工具返回人话时使用。
     fn user_locale(&self) -> crate::i18n::Locale;
 }
@@ -244,6 +310,13 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     fn schema(&self) -> Value;
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String>;
+    fn execute_outcome(
+        &self,
+        args: &str,
+        ctx: &mut dyn ToolContext,
+    ) -> Result<ToolExecutionOutcome> {
+        self.execute(args, ctx).map(ToolExecutionOutcome::text)
+    }
     /// 工具元数据：由统一的 tool policy 在运行时决定是否暴露给 LLM。
     /// Tool metadata only declares capability/risk shape; runtime exposure is resolved centrally.
     fn metadata(&self) -> ToolMetadata {

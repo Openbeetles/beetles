@@ -8,6 +8,7 @@ use crate::config::{parse_proxy_url_to_host_port, AppConfig};
 use crate::error::{Error, Result};
 use crate::orchestrator::Priority;
 use crate::platform::ResponseBody;
+use ureq::OrAnyStatus;
 
 const TAG: &str = "platform::http_client";
 /// 连接超时（毫秒），与 ESP `REQUEST_TIMEOUT_MS` 一致。
@@ -48,13 +49,10 @@ fn build_agent(proxy_url: Option<&str>, stage: &'static str) -> Result<ureq::Age
     Ok(b.build())
 }
 
-fn ureq_to_error(e: ureq::Error, stage: &'static str) -> Error {
-    match e {
-        ureq::Error::Status(status_code, _) => Error::Http { status_code, stage },
-        other => Error::Other {
-            source: Box::new(std::io::Error::other(other.to_string())),
-            stage,
-        },
+fn transport_to_error(e: ureq::Transport, stage: &'static str) -> Error {
+    Error::Other {
+        source: Box::new(std::io::Error::other(e.to_string())),
+        stage,
     }
 }
 
@@ -169,7 +167,8 @@ impl EspHttpClient {
             let req = apply_headers(agent.get(url), headers);
             let resp = req
                 .call()
-                .map_err(|e| ureq_to_error(e, "http_get_request"))?;
+                .or_any_status()
+                .map_err(|e| transport_to_error(e, "http_get_request"))?;
             let status = resp.status();
             let reader = resp.into_reader();
             let body = read_response_body_from_reader(reader)?;
@@ -188,7 +187,8 @@ impl EspHttpClient {
             let req = apply_headers(agent.request(method, url), headers);
             let resp = req
                 .send_bytes(body)
-                .map_err(|e| ureq_to_error(e, "http_post_request"))?;
+                .or_any_status()
+                .map_err(|e| transport_to_error(e, "http_post_request"))?;
             let status = resp.status();
             let reader = resp.into_reader();
             let rb = read_response_body_from_reader(reader)?;
@@ -201,7 +201,8 @@ impl EspHttpClient {
             let req = apply_headers(agent.delete(url), headers);
             let resp = req
                 .call()
-                .map_err(|e| ureq_to_error(e, "http_post_request"))?;
+                .or_any_status()
+                .map_err(|e| transport_to_error(e, "http_post_request"))?;
             let status = resp.status();
             let reader = resp.into_reader();
             let body = read_response_body_from_reader(reader)?;
@@ -276,7 +277,8 @@ impl EspHttpClient {
         let req = apply_headers(self.agent.post(url), headers);
         let resp = req
             .send_bytes(body)
-            .map_err(|e| ureq_to_error(e, "http_post_request"))?;
+            .or_any_status()
+            .map_err(|e| transport_to_error(e, "http_post_request"))?;
         let status = resp.status();
         let mut reader = resp.into_reader();
         let max_len = max_response_bytes
