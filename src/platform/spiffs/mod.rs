@@ -11,6 +11,7 @@ use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
 /// 兼容旧名：状态根路径字符串。ESP 上为 `/spiffs`；host 上为 `state_mount_path()` 的运行时值。
 /// Legacy name for state root path string.
@@ -46,11 +47,16 @@ fn lock_host_spiffs() -> std::sync::MutexGuard<'static, ()> {
 }
 
 pub(crate) fn with_fs_lock<R>(f: impl FnOnce() -> Result<R>) -> Result<R> {
+    let wait_start = Instant::now();
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     let _guard = lock_spiffs();
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     let _guard = lock_host_spiffs();
-    f()
+    crate::metrics::record_spiffs_lock_wait_us(wait_start.elapsed().as_micros());
+    let hold_start = Instant::now();
+    let result = f();
+    crate::metrics::record_spiffs_lock_hold_us(hold_start.elapsed().as_micros());
+    result
 }
 
 /// 单次写入最大字节数：ESP 与 SPIFFS 分区一致；host/Linux 放宽至 1MiB（仍与 orchestrator 上界策略独立）。
@@ -240,6 +246,7 @@ pub fn list_dir(path: impl AsRef<Path>) -> Result<Vec<String>> {
 
 // --- 子模块与对外类型 ---
 
+pub(crate) mod cached_json;
 pub mod calendar_credentials;
 pub mod calendar_store;
 pub mod execution_state;

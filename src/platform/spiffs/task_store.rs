@@ -1,19 +1,19 @@
 //! SPIFFS / state-root backed task store.
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::task::{
     filter_tasks, normalize_task_item, TaskItem, TaskQuery, TaskStore, REL_PATH_TASKS,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
 
-use super::{read_file, state_path_join, write_file};
+use super::cached_json::{load_json_or_default, CachedJsonFileStore, StoreOp};
+use super::state_path_join;
 
 const MAX_TASK_ITEMS: usize = 256;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct StoredTaskItem(TaskItem);
 
 fn full_path() -> PathBuf {
@@ -21,44 +21,20 @@ fn full_path() -> PathBuf {
 }
 
 pub struct SpiffsTaskStore {
-    cache: Mutex<Option<HashMap<String, StoredTaskItem>>>,
+    store: CachedJsonFileStore<HashMap<String, StoredTaskItem>>,
 }
 
 impl SpiffsTaskStore {
     pub fn new() -> Self {
         Self {
-            cache: Mutex::new(None),
+            store: CachedJsonFileStore::new(
+                full_path(),
+                load_json_or_default,
+                "task_store_cache_lock",
+                "task_store_cache",
+                "task_store_persist",
+            ),
         }
-    }
-
-    fn load_map_from_disk() -> HashMap<String, StoredTaskItem> {
-        match read_file(full_path()) {
-            Ok(buf) if buf.len() > 2 => serde_json::from_slice(&buf).unwrap_or_default(),
-            _ => HashMap::new(),
-        }
-    }
-
-    fn with_map_mut<R>(
-        &self,
-        f: impl FnOnce(&mut HashMap<String, StoredTaskItem>) -> Result<R>,
-    ) -> Result<R> {
-        let mut guard = self
-            .cache
-            .lock()
-            .map_err(|e| Error::config("task_store_cache_lock", e.to_string()))?;
-        if guard.is_none() {
-            *guard = Some(Self::load_map_from_disk());
-        }
-        let map = guard
-            .as_mut()
-            .ok_or_else(|| Error::config("task_store_cache", "cache not initialized"))?;
-        f(map)
-    }
-
-    fn persist(map: &HashMap<String, StoredTaskItem>) -> Result<()> {
-        let json =
-            serde_json::to_vec(map).map_err(|e| Error::config("task_store_set", e.to_string()))?;
-        write_file(full_path(), &json)
     }
 
     fn trim_if_needed(map: &mut HashMap<String, StoredTaskItem>) {
@@ -84,54 +60,55 @@ impl Default for SpiffsTaskStore {
 
 impl TaskStore for SpiffsTaskStore {
     fn list(&self, channel: &str, chat_id: &str, query: TaskQuery) -> Result<Vec<TaskItem>> {
-        self.with_map_mut(|map| {
+        self.store.with_cached_mut(|map| {
             let tasks = map
                 .values()
                 .filter(|item| item.0.channel == channel && item.0.chat_id == chat_id)
                 .map(|item| item.0.clone())
                 .collect::<Vec<_>>();
-            Ok(filter_tasks(tasks, query))
+            Ok(StoreOp::clean(filter_tasks(tasks, query)))
         })
     }
 
     fn get(&self, channel: &str, chat_id: &str, id: &str) -> Result<Option<TaskItem>> {
-        self.with_map_mut(|map| {
-            Ok(map.get(id).and_then(|item| {
+        self.store.with_cached_mut(|map| {
+            Ok(StoreOp::clean(map.get(id).and_then(|item| {
                 (item.0.channel == channel && item.0.chat_id == chat_id).then(|| item.0.clone())
-            }))
+            })))
         })
     }
 
     fn upsert(&self, task: &TaskItem) -> Result<()> {
-        self.with_map_mut(|map| {
+        self.store.with_cached_mut(|map| {
             let normalized = normalize_task_item(task.clone())?;
-            map.insert(normalized.id.clone(), StoredTaskItem(normalized));
+            let next_item = StoredTaskItem(normalized);
+            if map.get(&next_item.0.id) == Some(&next_item) {
+                return Ok(StoreOp::clean(()));
+            }
+            map.insert(next_item.0.id.clone(), next_item);
             Self::trim_if_needed(map);
-            Self::persist(map)
+            Ok(StoreOp::dirty(()))
         })
     }
 
     fn delete(&self, channel: &str, chat_id: &str, id: &str) -> Result<bool> {
-        self.with_map_mut(|map| {
+        self.store.with_cached_mut(|map| {
             let matched = map
                 .get(id)
                 .map(|item| item.0.channel == channel && item.0.chat_id == chat_id)
                 .unwrap_or(false);
             if !matched {
-                return Ok(false);
+                return Ok(StoreOp::clean(false));
             }
             let removed = map.remove(id).is_some();
-            if removed {
-                Self::persist(map)?;
-            }
-            Ok(removed)
+            Ok(StoreOp::with_dirty(removed, removed))
         })
     }
 
     fn claim_due(&self, now_unix_secs: u64, limit: usize) -> Result<Vec<TaskItem>> {
-        self.with_map_mut(|map| {
+        self.store.with_cached_mut(|map| {
             if limit == 0 {
-                return Ok(Vec::new());
+                return Ok(StoreOp::clean(Vec::new()));
             }
             let mut due = map
                 .values()
@@ -154,15 +131,14 @@ impl TaskStore for SpiffsTaskStore {
                 due.truncate(limit);
             }
             if due.is_empty() {
-                return Ok(Vec::new());
+                return Ok(StoreOp::clean(Vec::new()));
             }
             for task in &due {
                 if let Some(item) = map.get_mut(&task.id) {
                     item.0.due_notified_at_unix_secs = now_unix_secs;
                 }
             }
-            Self::persist(map)?;
-            Ok(due)
+            Ok(StoreOp::dirty(due))
         })
     }
 }

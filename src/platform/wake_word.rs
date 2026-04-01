@@ -21,6 +21,7 @@ mod imp {
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::mpsc::SyncSender;
     use std::sync::{Mutex, OnceLock};
+    use std::time::Instant;
 
     // ── C ABI bindings ────────────────────────────────────────────────────────
 
@@ -131,8 +132,10 @@ mod imp {
         if frame.is_empty() || !is_armed() {
             return;
         }
+        crate::metrics::record_wake_word_feed_call();
         // Skip while voice capture or speaker playback is active.
         if crate::orchestrator::is_audio_recording() || crate::orchestrator::is_audio_playing() {
+            crate::metrics::record_wake_word_feed_skip_busy();
             return;
         }
         let runtime = match RUNTIME.get() {
@@ -144,6 +147,7 @@ mod imp {
             runtime.last_trigger_millis.load(Ordering::Relaxed),
             now_millis,
         ) {
+            crate::metrics::record_wake_word_feed_skip_cooldown();
             return;
         }
         let _feed_guard = match runtime.feed_lock.lock() {
@@ -154,14 +158,18 @@ mod imp {
             runtime.last_trigger_millis.load(Ordering::Relaxed),
             now_millis,
         ) {
+            crate::metrics::record_wake_word_feed_skip_cooldown();
             return;
         }
 
+        let feed_start = Instant::now();
         let detected = unsafe {
             beetle_wakenet_feed(frame.as_ptr(), frame.len() as i32) == BEETLE_WN_DETECTED
         };
+        crate::metrics::record_wake_word_feed_us(feed_start.elapsed().as_micros());
 
         if detected {
+            crate::metrics::record_wake_word_feed_detect();
             log::info!("[wake_word] triggered keyword={}", runtime.model_name);
             runtime
                 .last_trigger_millis

@@ -136,6 +136,11 @@ pub(crate) fn heartbeat_tick(
     );
     let baseline = crate::metrics::snapshot().to_baseline_log_line();
     log::info!("[{}] {}", TAG, baseline);
+    log::info!(
+        "[{}] {}",
+        TAG,
+        crate::runtime::thread_registry::format_baseline_log_line()
+    );
 
     let content = read_heartbeat();
     let Some(task_content) = first_pending_task(&content) else {

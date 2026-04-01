@@ -1,13 +1,13 @@
 //! SPIFFS 实现的执行状态存储。单文件 memory/execution_states.json。
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::memory::{ExecutionState, ExecutionStateStore, REL_PATH_EXECUTION_STATES};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
 
-use super::{read_file, state_path_join, write_file};
+use super::cached_json::{load_json_or_default, CachedJsonFileStore, StoreOp};
+use super::state_path_join;
 
 const MAX_EXECUTION_STATE_CHATS: usize = 32;
 
@@ -19,44 +19,20 @@ fn full_path() -> PathBuf {
 }
 
 pub struct SpiffsExecutionStateStore {
-    cache: Mutex<Option<HashMap<String, StoredExecutionState>>>,
+    store: CachedJsonFileStore<HashMap<String, StoredExecutionState>>,
 }
 
 impl SpiffsExecutionStateStore {
     pub fn new() -> Self {
         Self {
-            cache: Mutex::new(None),
+            store: CachedJsonFileStore::new(
+                full_path(),
+                load_json_or_default,
+                "execution_state_cache_lock",
+                "execution_state_cache",
+                "execution_state_persist",
+            ),
         }
-    }
-
-    fn load_map_from_disk() -> HashMap<String, StoredExecutionState> {
-        match read_file(full_path()) {
-            Ok(buf) if buf.len() > 2 => serde_json::from_slice(&buf).unwrap_or_default(),
-            _ => HashMap::new(),
-        }
-    }
-
-    fn with_map_mut<R>(
-        &self,
-        f: impl FnOnce(&mut HashMap<String, StoredExecutionState>) -> Result<R>,
-    ) -> Result<R> {
-        let mut guard = self
-            .cache
-            .lock()
-            .map_err(|e| Error::config("execution_state_cache_lock", e.to_string()))?;
-        if guard.is_none() {
-            *guard = Some(Self::load_map_from_disk());
-        }
-        let map = guard
-            .as_mut()
-            .ok_or_else(|| Error::config("execution_state_cache", "cache not initialized"))?;
-        f(map)
-    }
-
-    fn persist(map: &HashMap<String, StoredExecutionState>) -> Result<()> {
-        let json = serde_json::to_vec(map)
-            .map_err(|e| Error::config("execution_state_set", e.to_string()))?;
-        write_file(full_path(), &json)
     }
 }
 
@@ -68,14 +44,18 @@ impl Default for SpiffsExecutionStateStore {
 
 impl ExecutionStateStore for SpiffsExecutionStateStore {
     fn get(&self, chat_id: &str) -> Result<Option<ExecutionState>> {
-        self.with_map_mut(|map| Ok(map.get(chat_id).map(|state| state.0.clone())))
+        self.store.with_cached_mut(|map| {
+            Ok(StoreOp::clean(
+                map.get(chat_id).map(|state| state.0.clone()),
+            ))
+        })
     }
 
     fn set(&self, chat_id: &str, state: &ExecutionState) -> Result<()> {
-        self.with_map_mut(|map| {
+        self.store.with_cached_mut(|map| {
             let next_state = StoredExecutionState(state.clone());
             if map.get(chat_id) == Some(&next_state) {
-                return Ok(());
+                return Ok(StoreOp::clean(()));
             }
             if !map.contains_key(chat_id) && map.len() >= MAX_EXECUTION_STATE_CHATS {
                 if let Some(key_to_remove) = map.keys().next().cloned() {
@@ -83,16 +63,16 @@ impl ExecutionStateStore for SpiffsExecutionStateStore {
                 }
             }
             map.insert(chat_id.to_string(), next_state);
-            Self::persist(map)
+            Ok(StoreOp::dirty(()))
         })
     }
 
     fn clear(&self, chat_id: &str) -> Result<()> {
-        self.with_map_mut(|map| {
+        self.store.with_cached_mut(|map| {
             if map.remove(chat_id).is_some() {
-                Self::persist(map)?;
+                return Ok(StoreOp::dirty(()));
             }
-            Ok(())
+            Ok(StoreOp::clean(()))
         })
     }
 }

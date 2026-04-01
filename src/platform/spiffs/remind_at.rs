@@ -1,12 +1,13 @@
 //! SPIFFS 实现的到点提醒存储。单文件 memory/remind_at.json，按 at 排序，条数/context 上界见 constants。
 
 use crate::constants::{REMIND_AT_MAX_CONTEXT_LEN, REMIND_AT_MAX_ENTRIES};
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::memory::RemindAtStore;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::{read_file, state_path_join, write_file};
+use super::cached_json::{load_json_or_default, CachedJsonFileStore, StoreOp};
+use super::state_path_join;
 
 const REL_PATH_REMIND_AT: &str = "memory/remind_at.json";
 
@@ -33,11 +34,21 @@ fn truncate_context(s: &str) -> String {
 }
 
 /// 单文件，JSON 数组；add 时按 at 排序并保留最多 REMIND_AT_MAX_ENTRIES 条。
-pub struct SpiffsRemindAtStore;
+pub struct SpiffsRemindAtStore {
+    store: CachedJsonFileStore<Vec<RemindEntry>>,
+}
 
 impl SpiffsRemindAtStore {
     pub fn new() -> Self {
-        SpiffsRemindAtStore
+        Self {
+            store: CachedJsonFileStore::new(
+                full_path(),
+                load_json_or_default,
+                "remind_at_cache_lock",
+                "remind_at_cache",
+                "remind_at_persist",
+            ),
+        }
     }
 }
 
@@ -49,55 +60,36 @@ impl Default for SpiffsRemindAtStore {
 
 impl RemindAtStore for SpiffsRemindAtStore {
     fn add(&self, channel: &str, chat_id: &str, at_unix_secs: u64, context: &str) -> Result<()> {
-        let path = full_path();
-        let mut list: Vec<RemindEntry> = match read_file(&path) {
-            Ok(buf) => {
-                if buf.len() <= 2 {
-                    vec![]
-                } else {
-                    serde_json::from_slice(&buf).unwrap_or_default()
-                }
+        self.store.with_cached_mut(|list| {
+            list.push(RemindEntry {
+                channel: channel.to_string(),
+                chat_id: chat_id.to_string(),
+                at_unix_secs,
+                context: truncate_context(context),
+            });
+            list.sort_by_key(|entry| entry.at_unix_secs);
+            if list.len() > REMIND_AT_MAX_ENTRIES {
+                list.truncate(REMIND_AT_MAX_ENTRIES);
             }
-            Err(_) => vec![],
-        };
-        list.push(RemindEntry {
-            channel: channel.to_string(),
-            chat_id: chat_id.to_string(),
-            at_unix_secs,
-            context: truncate_context(context),
-        });
-        list.sort_by_key(|e| e.at_unix_secs);
-        if list.len() > REMIND_AT_MAX_ENTRIES {
-            list.truncate(REMIND_AT_MAX_ENTRIES);
-        }
-        let json =
-            serde_json::to_vec(&list).map_err(|e| Error::config("remind_at_add", e.to_string()))?;
-        write_file(path, &json)
+            Ok(StoreOp::dirty(()))
+        })
     }
 
     fn pop_due(&self, now_unix_secs: u64) -> Result<Option<(String, String, String)>> {
-        let path = full_path();
-        let buf = match read_file(&path) {
-            Ok(b) => b,
-            Err(_) => return Ok(None),
-        };
-        if buf.len() <= 2 {
-            return Ok(None);
-        }
-        let mut list: Vec<RemindEntry> = match serde_json::from_slice(&buf) {
-            Ok(l) => l,
-            Err(_) => return Ok(None),
-        };
-        let pos = list.iter().position(|e| e.at_unix_secs <= now_unix_secs);
-        let Some(idx) = pos else {
-            return Ok(None);
-        };
-        let removed = list.remove(idx);
-        let out = (removed.channel, removed.chat_id, removed.context);
-        let json =
-            serde_json::to_vec(&list).map_err(|e| Error::config("remind_at_pop", e.to_string()))?;
-        let _ = write_file(&path, &json);
-        Ok(Some(out))
+        self.store.with_cached_mut(|list| {
+            let pos = list
+                .iter()
+                .position(|entry| entry.at_unix_secs <= now_unix_secs);
+            let Some(idx) = pos else {
+                return Ok(StoreOp::clean(None));
+            };
+            let removed = list.remove(idx);
+            Ok(StoreOp::dirty(Some((
+                removed.channel,
+                removed.chat_id,
+                removed.context,
+            ))))
+        })
     }
 
     fn list_upcoming(
@@ -110,25 +102,20 @@ impl RemindAtStore for SpiffsRemindAtStore {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let path = full_path();
-        let buf = match read_file(&path) {
-            Ok(b) => b,
-            Err(_) => return Ok(Vec::new()),
-        };
-        if buf.len() <= 2 {
-            return Ok(Vec::new());
-        }
-        let list: Vec<RemindEntry> = serde_json::from_slice(&buf)
-            .map_err(|e| Error::config("remind_at_list", e.to_string()))?;
-        let mut out = Vec::new();
-        for e in list {
-            if e.channel == channel && e.chat_id == chat_id && e.at_unix_secs >= now_unix_secs {
-                out.push((e.at_unix_secs, e.context));
-                if out.len() >= limit {
-                    break;
+        self.store.with_cached_mut(|list| {
+            let mut out = Vec::new();
+            for entry in list.iter() {
+                if entry.channel == channel
+                    && entry.chat_id == chat_id
+                    && entry.at_unix_secs >= now_unix_secs
+                {
+                    out.push((entry.at_unix_secs, entry.context.clone()));
+                    if out.len() >= limit {
+                        break;
+                    }
                 }
             }
-        }
-        Ok(out)
+            Ok(StoreOp::clean(out))
+        })
     }
 }

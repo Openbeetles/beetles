@@ -4,6 +4,7 @@
 use super::HandlerContext;
 use crate::metrics;
 use crate::orchestrator;
+use crate::runtime;
 use crate::state;
 use std::sync::atomic::Ordering;
 
@@ -21,6 +22,7 @@ struct HealthBody {
     display: DisplayHealth,
     metrics: metrics::MetricsSnapshot,
     resource: orchestrator::ResourceSnapshot,
+    threads: runtime::ThreadRegistrySnapshot,
 }
 
 /// 生成 health JSON body（含 metrics 与 resource 快照，无敏感信息）。
@@ -41,6 +43,7 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         },
         metrics: metrics::snapshot(),
         resource: orchestrator::snapshot(),
+        threads: runtime::thread_registry::snapshot(),
     };
     serde_json::to_string(&payload).map_err(std::io::Error::other)
 }

@@ -732,6 +732,7 @@ impl AudioPipelineState {
                 let mut mic_frame = vec![0i16; 320];
                 let mut speaker_frame = vec![0i16; 1024];
                 loop {
+                    crate::metrics::record_audio_worker_turn();
                     if worker_shared.stop.load(Ordering::Relaxed) {
                         break;
                     }
@@ -756,8 +757,10 @@ impl AudioPipelineState {
                     }
 
                     if backend.mic_ready() && mic_read_needed {
+                        crate::metrics::record_audio_mic_poll_turn();
                         match backend.read_mic_frame_pcm16(&mut mic_frame) {
                             Ok(n) if n > 0 => {
+                                crate::metrics::record_audio_mic_frame_read();
                                 // Tee raw PCM to the wake-word engine BEFORE pushing to the
                                 // shared ring buffer.  This avoids contention with voice_input
                                 // which pops from the ring buffer on demand.
@@ -772,13 +775,16 @@ impl AudioPipelineState {
                                 }
                                 progressed = true;
                             }
-                            Ok(_) => {}
+                            Ok(_) => {
+                                crate::metrics::record_audio_mic_zero_read();
+                            }
                             Err(e) => {
                                 log::debug!("[audio] mic read frame failed: {}", e);
                             }
                         }
                     }
                     if !progressed {
+                        crate::metrics::record_audio_worker_idle_turn();
                         crate::platform::task_wdt::feed_current_task();
                         if backend.speaker_ready() && (!backend.mic_ready() || !mic_read_needed) {
                             wait_for_speaker_work_or_stop(

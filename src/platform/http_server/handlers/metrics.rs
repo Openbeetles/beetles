@@ -62,6 +62,26 @@ pub fn body_prometheus(_ctx: &HandlerContext) -> Result<String, std::io::Error> 
         "beetle_errors_channel_dispatch_total {}\n",
         snap.errors_channel_dispatch
     ));
+    buf.push_str(&format!(
+        "beetle_audio_worker_turns_total {}\n",
+        snap.audio_worker_turns_total
+    ));
+    buf.push_str(&format!(
+        "beetle_audio_worker_idle_turns_total {}\n",
+        snap.audio_worker_idle_turns_total
+    ));
+    buf.push_str(&format!(
+        "beetle_wake_word_feed_calls_total {}\n",
+        snap.wake_word_feed_calls_total
+    ));
+    buf.push_str(&format!(
+        "beetle_spiffs_lock_ops_total {}\n",
+        snap.spiffs_lock_ops_total
+    ));
+    buf.push_str(&format!(
+        "beetle_spiffs_lock_contention_total {}\n",
+        snap.spiffs_lock_contention_total
+    ));
 
     Ok(buf)
 }

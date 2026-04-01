@@ -9,6 +9,7 @@ use crate::state;
 use std::io::{self, BufRead, Write};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Instant;
 
 const TAG: &str = "cli";
 
@@ -80,6 +81,8 @@ pub fn run_command(ctx: &CliContext, line: &str) -> String {
         "heap_info" => cmd_heap_info(ctx),
         "restart" => cmd_restart(ctx),
         "health" => cmd_health(ctx),
+        "baseline" => cmd_baseline(ctx),
+        "spiffs_stress" => cmd_spiffs_stress(ctx, args),
         "config_show" => cmd_config_show(ctx),
         "config_reset" => cmd_config_reset(ctx, args),
         "help" | "?" => cmd_help(),
@@ -223,9 +226,119 @@ fn cmd_health(ctx: &CliContext) -> String {
         .map(|a| a.load(Ordering::Relaxed).to_string())
         .unwrap_or_else(|| "N/A".into());
     let last_err = state::get_last_error().unwrap_or_else(|| "none".into());
+    let thread_snapshot = crate::runtime::thread_registry::snapshot();
+    let metrics = crate::metrics::snapshot();
     format!(
-        "health:\n  wifi: {}\n  inbound_depth: {}\n  outbound_depth: {}\n  last_error: {}\n",
-        wifi, inbound, outbound, last_err
+        "health:\n  wifi: {}\n  inbound_depth: {}\n  outbound_depth: {}\n  last_error: {}\n  threads_alive: {}\n  spiffs_lock_ops: {}\n  spiffs_lock_contention: {}\n",
+        wifi,
+        inbound,
+        outbound,
+        last_err,
+        thread_snapshot.alive_threads,
+        metrics.spiffs_lock_ops_total,
+        metrics.spiffs_lock_contention_total,
+    )
+}
+
+fn cmd_baseline(ctx: &CliContext) -> String {
+    let resource = crate::orchestrator::snapshot();
+    let metrics = crate::metrics::snapshot();
+    let thread_line = crate::runtime::thread_registry::format_baseline_log_line();
+    format!(
+        "baseline:\n  pressure: {:?}\n  heap_internal: {}\n  heap_spiram: {}\n  active_http: {}\n  active_agent_tasks: {}\n  metrics: {}\n  threads: {}\n",
+        resource.pressure,
+        resource.heap_free_internal,
+        resource.heap_free_spiram,
+        resource.active_http_count,
+        resource.active_agent_tasks,
+        metrics.to_baseline_log_line(),
+        thread_line,
+    )
+}
+
+fn cmd_spiffs_stress(ctx: &CliContext, args: Vec<&str>) -> String {
+    const DEFAULT_WORKERS: usize = 4;
+    const DEFAULT_ROUNDS: usize = 64;
+    const DEFAULT_PAYLOAD_BYTES: usize = 1024;
+    const MAX_WORKERS: usize = 16;
+    const MAX_ROUNDS: usize = 1024;
+    const MAX_PAYLOAD_BYTES: usize = 16 * 1024;
+
+    let workers = args
+        .first()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_WORKERS)
+        .clamp(1, MAX_WORKERS);
+    let rounds = args
+        .get(1)
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_ROUNDS)
+        .clamp(1, MAX_ROUNDS);
+    let payload_bytes = args
+        .get(2)
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_PAYLOAD_BYTES)
+        .clamp(64, MAX_PAYLOAD_BYTES);
+
+    let fs = ctx.platform.state_fs();
+    let before = crate::metrics::snapshot();
+    let start = Instant::now();
+    let mut handles = Vec::with_capacity(workers);
+
+    for worker_id in 0..workers {
+        let state_fs = Arc::clone(&fs);
+        let name = format!("spiffs_stress_{}", worker_id);
+        let handle = std::thread::Builder::new()
+            .name(name)
+            .stack_size(4096)
+            .spawn(move || -> crate::error::Result<()> {
+                let rel_path = format!("diag/spiffs_stress_{}.bin", worker_id);
+                let fill = b'a'.saturating_add((worker_id % 26) as u8);
+                let payload = vec![fill; payload_bytes];
+                for round in 0..rounds {
+                    state_fs.write(&rel_path, &payload)?;
+                    let _ = state_fs.read(&rel_path)?;
+                    if round % 8 == 7 {
+                        let _ = state_fs.remove(&rel_path);
+                    }
+                }
+                let _ = state_fs.remove(&rel_path);
+                Ok(())
+            });
+        match handle {
+            Ok(handle) => handles.push(handle),
+            Err(e) => {
+                return format!("spiffs_stress spawn error: {}\n", e);
+            }
+        }
+    }
+
+    for handle in handles {
+        match handle.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return format!("spiffs_stress worker error: {}\n", e),
+            Err(_) => return "spiffs_stress worker panicked\n".into(),
+        }
+    }
+
+    let elapsed_ms = start.elapsed().as_millis();
+    let after = crate::metrics::snapshot();
+    format!(
+        "spiffs_stress:\n  workers: {}\n  rounds: {}\n  payload_bytes: {}\n  elapsed_ms: {}\n  lock_ops_delta: {}\n  contention_delta: {}\n  wait_total_us_delta: {}\n  hold_total_us_delta: {}\n",
+        workers,
+        rounds,
+        payload_bytes,
+        elapsed_ms,
+        after.spiffs_lock_ops_total.saturating_sub(before.spiffs_lock_ops_total),
+        after
+            .spiffs_lock_contention_total
+            .saturating_sub(before.spiffs_lock_contention_total),
+        after
+            .spiffs_lock_wait_total_us
+            .saturating_sub(before.spiffs_lock_wait_total_us),
+        after
+            .spiffs_lock_hold_total_us
+            .saturating_sub(before.spiffs_lock_hold_total_us),
     )
 }
 
@@ -236,7 +349,7 @@ fn cmd_help() -> String {
         ""
     };
     format!(
-        "Commands:\n  wifi_status      - WiFi connection status\n  memory_read     - Read MEMORY.md\n  memory_write <content> - Write MEMORY.md (audit)\n  session_list    - List all sessions\n  session_clear <chat_id> - Clear session (audit)\n  heap_info       - Heap usage\n  restart         - Restart device\n  health          - WiFi, queue depth, last error\n  config_show     - Show full config\n  config_reset yes - Reset config to env defaults (audit)\n{}  help|?          - This help\n",
+        "Commands:\n  wifi_status      - WiFi connection status\n  memory_read     - Read MEMORY.md\n  memory_write <content> - Write MEMORY.md (audit)\n  session_list    - List all sessions\n  session_clear <chat_id> - Clear session (audit)\n  heap_info       - Heap usage\n  restart         - Restart device\n  health          - WiFi, queue depth, last error\n  baseline        - Resource, metrics, thread baseline\n  spiffs_stress [workers] [rounds] [payload_bytes] - Stress SPIFFS lock and report deltas\n  config_show     - Show full config\n  config_reset yes - Reset config to env defaults (audit)\n{}  help|?          - This help\n",
         ota_line
     )
 }

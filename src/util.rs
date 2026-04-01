@@ -812,6 +812,7 @@ where
     let core_target = core;
     let wrapped = move || {
         crate::orchestrator::set_current_http_thread_role(role);
+        crate::runtime::thread_registry::register_thread(&tag, stack_size, core_target, role);
         log::info!(
             "[thread] started name={} core_target={:?} role={:?}",
             tag,
@@ -836,6 +837,7 @@ where
         {
             f();
         }
+        crate::runtime::thread_registry::mark_thread_stopped(&tag);
     };
     let spawn_res = crate::platform::task_affinity::spawn_named_with_affinity(
         tag_for_spawn,
