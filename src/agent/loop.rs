@@ -608,14 +608,13 @@ fn try_send_outbound(outbound_tx: &OutboundTx, msg: PcMsg, log_prefix: &str) -> 
 }
 
 enum GateResult {
-    Proceed,
+    Proceed(PcMsg),
     Skipped,
 }
 
 #[allow(clippy::too_many_arguments)]
 fn handle_llm_gate(
-    msg: &PcMsg,
-    req_id: &str,
+    mut msg: PcMsg,
     loc: UiLocale,
     user_inbound_tx: &UserInboundTx,
     system_inbound_tx: &SystemInboundTx,
@@ -624,17 +623,16 @@ fn handle_llm_gate(
 ) -> GateResult {
     crate::orchestrator::refresh_heap_if_stale();
     match crate::orchestrator::can_call_llm_pub() {
-        LlmDecision::Proceed => GateResult::Proceed,
+        LlmDecision::Proceed => GateResult::Proceed(msg),
         LlmDecision::RetryLater { delay_ms } => {
-            let mut retry_msg = msg.clone();
-            retry_msg.enqueue_ts_ms = now_unix_ms();
-            let inbound_tx =
-                choose_inbound_tx(retry_msg.ingress, user_inbound_tx, system_inbound_tx);
-            match inbound_tx.try_send(retry_msg) {
+            let is_system = msg.ingress == IngressKind::System;
+            msg.enqueue_ts_ms = now_unix_ms();
+            let inbound_tx = choose_inbound_tx(msg.ingress, user_inbound_tx, system_inbound_tx);
+            match inbound_tx.try_send(msg) {
                 Ok(()) => {}
                 Err(std::sync::mpsc::TrySendError::Full(m)) => {
                     let _ = config.pending_retry.save_pending_retry(&m);
-                    let suffix = if msg.ingress == IngressKind::System {
+                    let suffix = if m.ingress == IngressKind::System {
                         "(system)"
                     } else {
                         ""
@@ -646,11 +644,7 @@ fn handle_llm_gate(
                     );
                 }
                 Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                    let suffix = if msg.ingress == IngressKind::System {
-                        "(system)"
-                    } else {
-                        ""
-                    };
+                    let suffix = if is_system { "(system)" } else { "" };
                     log::error!(
                         "[agent] inbound_tx disconnected during retry-later{}",
                         suffix
@@ -664,12 +658,9 @@ fn handle_llm_gate(
         LlmDecision::Degrade { reason } => {
             if msg.ingress == IngressKind::System {
                 log::info!("[agent] system task degraded, retry later: {}", reason);
-                let mut retry_msg = msg.clone();
-                retry_msg.enqueue_ts_ms = now_unix_ms();
-                let inbound_tx =
-                    choose_inbound_tx(retry_msg.ingress, user_inbound_tx, system_inbound_tx);
-                if let Err(std::sync::mpsc::TrySendError::Full(m)) = inbound_tx.try_send(retry_msg)
-                {
+                msg.enqueue_ts_ms = now_unix_ms();
+                let inbound_tx = choose_inbound_tx(msg.ingress, user_inbound_tx, system_inbound_tx);
+                if let Err(std::sync::mpsc::TrySendError::Full(m)) = inbound_tx.try_send(msg) {
                     let _ = config.pending_retry.save_pending_retry(&m);
                 }
             } else {
@@ -678,7 +669,7 @@ fn handle_llm_gate(
                     channel: msg.channel.clone(),
                     chat_id: msg.chat_id.clone(),
                     content: tr(UiMessage::LowMemoryUserDefer, loc),
-                    req_id: Some(req_id.to_owned()),
+                    req_id: Some(msg.req_id.as_deref().unwrap_or_default().to_owned()),
                     ingress: IngressKind::User,
                     enqueue_ts_ms: now_unix_ms(),
                     is_group: false,
@@ -1098,7 +1089,6 @@ fn run_agent_loop_lane(
         if msg.req_id.is_none() {
             msg.req_id = Some(next_req_id(&msg.channel, &msg.chat_id));
         }
-        let req_id = msg.req_id.clone().unwrap_or_default();
         let queue_wait_ms = now_unix_ms().saturating_sub(msg.enqueue_ts_ms) as u128;
         if msg.ingress == IngressKind::System {
             metrics::record_system_queue_wait_ms(queue_wait_ms);
@@ -1140,7 +1130,7 @@ fn run_agent_loop_lane(
                 channel: msg.channel.clone(),
                 chat_id: msg.chat_id.clone(),
                 content: tr(UiMessage::NodeMaintenance, loc),
-                req_id: Some(req_id.clone()),
+                req_id: Some(msg.req_id.as_deref().unwrap_or_default().to_owned()),
                 ingress: IngressKind::User,
                 enqueue_ts_ms: now_unix_ms(),
                 is_group: false,
@@ -1172,7 +1162,7 @@ fn run_agent_loop_lane(
                             channel: msg.channel.clone(),
                             chat_id: msg.chat_id.clone(),
                             content: tr(UiMessage::LowMemoryUserDefer, loc),
-                            req_id: Some(req_id.clone()),
+                            req_id: Some(msg.req_id.as_deref().unwrap_or_default().to_owned()),
                             ingress: IngressKind::User,
                             enqueue_ts_ms: now_unix_ms(),
                             is_group: false,
@@ -1187,7 +1177,7 @@ fn run_agent_loop_lane(
                         channel: msg.channel.clone(),
                         chat_id: msg.chat_id.clone(),
                         content: tr(UiMessage::LowMemoryUserDefer, loc),
-                        req_id: Some(req_id.clone()),
+                        req_id: Some(msg.req_id.as_deref().unwrap_or_default().to_owned()),
                         ingress: IngressKind::User,
                         enqueue_ts_ms: now_unix_ms(),
                         is_group: false,
@@ -1249,20 +1239,17 @@ fn run_agent_loop_lane(
         // LLM 门控先于任务槽位获取与 typing 提示，确保：
         // 1. RetryLater 睡眠期间 active_agent_tasks 不被错误计为 1；
         // 2. typing 仅在真正进入 LLM 路径时才发送，避免产生空响应。
-        if matches!(
-            handle_llm_gate(
-                &msg,
-                &req_id,
-                loc,
-                &user_inbound_tx,
-                &system_inbound_tx,
-                &outbound_tx,
-                config,
-            ),
-            GateResult::Skipped
+        msg = match handle_llm_gate(
+            msg,
+            loc,
+            &user_inbound_tx,
+            &system_inbound_tx,
+            &outbound_tx,
+            config,
         ) {
-            continue;
-        }
+            GateResult::Proceed(msg) => msg,
+            GateResult::Skipped => continue,
+        };
 
         // Gate 通过后获取任务槽位：Guard Drop 时自动递减，覆盖整个任务生命周期（含工具调用、会话写入、回复发送）。
         // Acquire task slot only after gate passes; guard auto-decrements on drop.
@@ -1275,7 +1262,7 @@ fn run_agent_loop_lane(
             worker_llm,
             &msg,
             &outbound_tx,
-            &req_id,
+            msg.req_id.as_deref().unwrap_or_default(),
             registry,
             config,
             &mut tool_call_repeat_buf,
@@ -1293,7 +1280,7 @@ fn run_agent_loop_lane(
                 log::warn!(
                     "[latency][agent:{}] req_id={} channel={} chat_id={} admission_ms={} llm_ms={} total_ms={} status=llm_error",
                     worker_lane_tag,
-                    req_id,
+                    msg.req_id.as_deref().unwrap_or_default(),
                     msg.channel,
                     msg.chat_id,
                     admission_ms,
@@ -1308,17 +1295,16 @@ fn run_agent_loop_lane(
                 *counter = counter.saturating_add(1);
 
                 if *counter < 3 && e.is_retryable_upstream() {
-                    let mut retry_msg = msg.clone();
-                    retry_msg.enqueue_ts_ms = now_unix_ms();
+                    msg.enqueue_ts_ms = now_unix_ms();
                     let inbound_tx =
-                        choose_inbound_tx(retry_msg.ingress, &user_inbound_tx, &system_inbound_tx);
-                    match inbound_tx.try_send(retry_msg) {
+                        choose_inbound_tx(msg.ingress, &user_inbound_tx, &system_inbound_tx);
+                    match inbound_tx.try_send(msg) {
                         Ok(()) => {}
-                        Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                            let _ = config.pending_retry.save_pending_retry(&msg);
+                        Err(std::sync::mpsc::TrySendError::Full(m)) => {
+                            let _ = config.pending_retry.save_pending_retry(&m);
                             log::warn!(
                                 "[agent] llm retry: inbound full, pending_retry saved chat_id={}",
-                                msg.chat_id
+                                m.chat_id
                             );
                         }
                         Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
@@ -1335,7 +1321,7 @@ fn run_agent_loop_lane(
                     channel: msg.channel.clone(),
                     chat_id: msg.chat_id.clone(),
                     content: tr(UiMessage::NodeMaintenance, loc),
-                    req_id: Some(req_id.clone()),
+                    req_id: Some(msg.req_id.as_deref().unwrap_or_default().to_owned()),
                     ingress: IngressKind::User,
                     enqueue_ts_ms: now_unix_ms(),
                     is_group: false,
@@ -1445,7 +1431,7 @@ fn run_agent_loop_lane(
                 channel: msg.channel.clone(),
                 chat_id: msg.chat_id.clone(),
                 content: reply_content.clone(),
-                req_id: Some(req_id.clone()),
+                req_id: Some(msg.req_id.as_deref().unwrap_or_default().to_owned()),
                 ingress: IngressKind::User,
                 enqueue_ts_ms: now_unix_ms(),
                 is_group: false,
@@ -1603,7 +1589,7 @@ fn run_agent_loop_lane(
             log::warn!(
                 "[latency][agent:{}] req_id={} channel={} chat_id={} admission_ms={} context_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={} level=slow",
                 worker_lane_tag,
-                req_id,
+                msg.req_id.as_deref().unwrap_or_default(),
                 msg.channel,
                 msg.chat_id,
                 admission_ms,
@@ -1626,7 +1612,7 @@ fn run_agent_loop_lane(
             log::info!(
                 "[latency][agent:{}] req_id={} channel={} chat_id={} admission_ms={} context_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={}",
                 worker_lane_tag,
-                req_id,
+                msg.req_id.as_deref().unwrap_or_default(),
                 msg.channel,
                 msg.chat_id,
                 admission_ms,

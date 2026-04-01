@@ -30,7 +30,6 @@ mod imp {
         fn beetle_wakenet_init(model_name: *const std::os::raw::c_char) -> i32;
         fn beetle_wakenet_feed(pcm: *const i16, samples: i32) -> i32;
         fn beetle_wakenet_reset();
-        fn beetle_wakenet_destroy();
     }
 
     const BEETLE_WN_OK: i32 = 0;

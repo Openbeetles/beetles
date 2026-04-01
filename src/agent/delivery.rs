@@ -47,8 +47,8 @@ struct EditDelivery<'a> {
 
 struct QueuedDelivery<'a> {
     outbound_tx: &'a OutboundTx,
-    channel: &'a str,
-    chat_id: &'a str,
+    channel: &'a std::sync::Arc<str>,
+    chat_id: &'a std::sync::Arc<str>,
     req_id: &'a str,
     primary_delivered: bool,
     last_visible_text: String,
@@ -84,15 +84,15 @@ impl<'a> DeliverySession<'a> {
         } else {
             DeliveryMode::Queued(QueuedDelivery {
                 outbound_tx,
-                channel: msg.channel.as_ref(),
-                chat_id: msg.chat_id.as_ref(),
+                channel: &msg.channel,
+                chat_id: &msg.chat_id,
                 req_id,
                 primary_delivered: false,
                 last_visible_text: String::new(),
                 shared: spawn_waiting_notice(
                     outbound_tx.clone(),
-                    msg.channel.as_ref(),
-                    msg.chat_id.as_ref(),
+                    Arc::clone(&msg.channel),
+                    Arc::clone(&msg.chat_id),
                     req_id,
                     tr(UiMessage::AgentStillWorking, loc),
                 ),
@@ -380,14 +380,14 @@ fn normalize_visible_update(content: &str, max_chars: usize) -> String {
 
 fn send_visible_update(
     outbound_tx: &OutboundTx,
-    channel: &str,
-    chat_id: &str,
+    channel: &std::sync::Arc<str>,
+    chat_id: &std::sync::Arc<str>,
     req_id: &str,
     content: &str,
 ) -> std::result::Result<(), ()> {
     let msg = PcMsg {
-        channel: std::sync::Arc::from(channel),
-        chat_id: std::sync::Arc::from(chat_id),
+        channel: Arc::clone(channel),
+        chat_id: Arc::clone(chat_id),
         content: content.to_string(),
         req_id: Some(req_id.to_string()),
         ingress: IngressKind::User,
@@ -422,8 +422,8 @@ fn send_visible_update(
 
 fn spawn_waiting_notice(
     outbound_tx: OutboundTx,
-    channel: &str,
-    chat_id: &str,
+    channel: Arc<str>,
+    chat_id: Arc<str>,
     req_id: &str,
     waiting_notice: String,
 ) -> Arc<QueuedDeliveryShared> {
@@ -432,8 +432,6 @@ fn spawn_waiting_notice(
         waiting_notice_canceled: AtomicBool::new(false),
     });
     let worker_shared = Arc::clone(&shared);
-    let channel = channel.to_string();
-    let chat_id = chat_id.to_string();
     let req_id = req_id.to_string();
     spawn_planned(
         "agent_waiting_notice",
