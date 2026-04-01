@@ -3,6 +3,7 @@
 
 mod policy;
 mod registry;
+mod state_file_guard;
 
 #[cfg(feature = "tools_network_extra")]
 pub mod analyze_image;
@@ -25,6 +26,7 @@ pub mod document_read;
 ))]
 pub mod document_search;
 pub mod env;
+pub mod file_edit;
 pub mod file_write;
 pub mod files;
 pub mod get_time;
@@ -93,6 +95,7 @@ pub use document_read::DocumentReadTool;
 ))]
 pub use document_search::DocumentSearchTool;
 pub use env::EnvTool;
+pub use file_edit::FileEditTool;
 pub use file_write::FileWriteTool;
 pub use files::FilesTool;
 pub use get_time::GetTimeTool;

@@ -87,9 +87,9 @@ pub use platform::{
 };
 pub use platform::{ConfigStore, MemorySnapshot, Platform, SkillStorage, StateFs};
 pub use tools::{
-    build_default_registry, FileWriteTool, FilesTool, GetTimeTool, KvStoreTool, RemindAtTool, Tool,
-    ToolContext, ToolExposure, ToolMetadata, ToolPolicyContext, ToolRegistry, VoiceInputTool,
-    VoiceOutputTool,
+    build_default_registry, FileEditTool, FileWriteTool, FilesTool, GetTimeTool, KvStoreTool,
+    RemindAtTool, Tool, ToolContext, ToolExposure, ToolMetadata, ToolPolicyContext, ToolRegistry,
+    VoiceInputTool, VoiceOutputTool,
 };
 #[cfg(feature = "tools_diagnostics")]
 pub use tools::{

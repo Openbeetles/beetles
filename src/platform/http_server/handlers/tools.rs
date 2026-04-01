@@ -23,6 +23,10 @@ fn tool_infos() -> Vec<ToolInfo> {
             description: "向存储写入或追加文件",
         },
         ToolInfo {
+            name: "file_edit",
+            description: "对文本文件做定向局部改写",
+        },
+        ToolInfo {
             name: "remind_at",
             description: "设置定时提醒",
         },
@@ -131,6 +135,7 @@ mod tests {
             .filter_map(|item| item.get("name").and_then(Value::as_str))
             .collect();
         assert!(names.contains(&"file_write"));
+        assert!(names.contains(&"file_edit"));
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         assert!(names.contains(&"document_search"));
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]

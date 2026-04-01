@@ -2,24 +2,14 @@
 //! files tool: list, read, or delete under state root; no `..` in path.
 
 use crate::error::{Error, Result};
+use crate::tools::state_file_guard::{ensure_state_path_mutable, normalize_state_tool_path};
 use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata, MAX_TOOL_RESULT_LEN};
-use crate::util::normalize_state_rel_path;
 use serde_json::json;
 use std::sync::Arc;
 
 const MAX_LIST_ENTRIES: usize = 256;
 /// read 模式下单文件原始字节上限（UTF-8 校验前），避免超大 Vec。
 const MAX_READ_RAW_BYTES: usize = MAX_TOOL_RESULT_LEN * 2;
-
-/// 受保护路径黑名单：禁止通过工具删除的关键文件。
-const PROTECTED_PATHS: &[&str] = &[
-    "config/llm.json",
-    "config/channels.json",
-    "config/wifi.json",
-    "config/SOUL.md",
-    "config/USER.md",
-    "memory/MEMORY.md",
-];
 
 pub struct FilesTool {
     state_fs: Arc<dyn crate::StateFs + Send + Sync>,
@@ -36,7 +26,7 @@ impl Tool for FilesTool {
         "files"
     }
     fn description(&self) -> &'static str {
-        "List, read, or delete files from storage (SPIFFS). Args: path (string), mode (optional: 'list', 'read', or 'delete', default 'read'). Read returns content truncated to limit; list returns entry names, max 256; delete removes the file."
+        "List, read, or delete files under storage. Args: path (string), mode (optional: 'list', 'read', or 'delete', default 'read'). Read returns content truncated to limit; list returns entry names, max 256; delete removes the file."
     }
     fn schema(&self) -> serde_json::Value {
         json!({
@@ -61,12 +51,14 @@ impl Tool for FilesTool {
             .trim()
             .to_lowercase();
 
-        let rel = normalize_state_rel_path(path_arg)
-            .map_err(|_| Error::config("tool_files", "invalid path"))?;
+        let rel = normalize_state_tool_path(path_arg, "tool_files")?;
 
         if mode == "list" {
-            let entries = self.state_fs.list_dir(&rel)?;
-            let truncated = entries.len() >= MAX_LIST_ENTRIES;
+            let mut entries = self.state_fs.list_dir(&rel)?;
+            let truncated = entries.len() > MAX_LIST_ENTRIES;
+            if truncated {
+                entries.truncate(MAX_LIST_ENTRIES);
+            }
             let out = json!({
                 "mode": "list",
                 "path": path_arg,
@@ -78,9 +70,7 @@ impl Tool for FilesTool {
         }
 
         if mode == "delete" {
-            if PROTECTED_PATHS.contains(&rel.as_str()) {
-                return Err(Error::config("tool_files", "cannot delete protected file"));
-            }
+            ensure_state_path_mutable(&rel, "tool_files")?;
             self.state_fs.remove(&rel)?;
             let out = json!({
                 "mode": "delete",
@@ -136,5 +126,80 @@ impl Tool for FilesTool {
 
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::stateful()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FilesTool;
+    use crate::error::Result;
+    use crate::i18n::Locale;
+    use crate::platform::{ResponseBody, StateFs};
+    use crate::tools::{Tool, ToolContext};
+    use serde_json::Value;
+    use std::sync::Arc;
+
+    struct MockStateFs {
+        entries: Vec<String>,
+    }
+
+    impl StateFs for MockStateFs {
+        fn read(&self, _rel_path: &str) -> Result<Option<Vec<u8>>> {
+            Ok(None)
+        }
+
+        fn write(&self, _rel_path: &str, _data: &[u8]) -> Result<()> {
+            unreachable!()
+        }
+
+        fn remove(&self, _rel_path: &str) -> Result<()> {
+            unreachable!()
+        }
+
+        fn list_dir(&self, _rel_path: &str) -> Result<Vec<String>> {
+            Ok(self.entries.clone())
+        }
+    }
+
+    struct MockToolContext;
+
+    impl ToolContext for MockToolContext {
+        fn get_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+        ) -> Result<(u16, ResponseBody)> {
+            unreachable!()
+        }
+
+        fn post_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> Result<(u16, ResponseBody)> {
+            unreachable!()
+        }
+
+        fn user_locale(&self) -> Locale {
+            Locale::Zh
+        }
+    }
+
+    #[test]
+    fn list_mode_truncates_to_declared_limit() {
+        let entries = (0..300).map(|i| format!("entry-{i:03}.txt")).collect();
+        let tool = FilesTool::new(Arc::new(MockStateFs { entries }));
+
+        let result = tool
+            .execute(r#"{"path":"notes","mode":"list"}"#, &mut MockToolContext)
+            .unwrap();
+        let value: Value = serde_json::from_str(&result).unwrap();
+        let items = value["entries"].as_array().unwrap();
+
+        assert_eq!(items.len(), 256);
+        assert_eq!(items[0].as_str(), Some("entry-000.txt"));
+        assert_eq!(items[255].as_str(), Some("entry-255.txt"));
+        assert_eq!(value["truncated"].as_bool(), Some(true));
     }
 }

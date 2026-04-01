@@ -96,9 +96,10 @@ pub fn handle_webhook(
                     (gid, ct, mid)
                 }
                 "C2C_MESSAGE_CREATE" => {
-                    // 私聊消息：chat_id = "c2c:{guild_id}"（私信频道 ID，发消息用 /dms/{guild_id}/messages）
-                    let gid = d
-                        .get("guild_id")
+                    // C2C 单聊：与 WSS/发送链路保持一致，统一用 author.user_openid 作为 chat_id。
+                    let uid = d
+                        .get("author")
+                        .and_then(|a| a.get("user_openid"))
                         .and_then(|v| v.as_str())
                         .map(|s| format!("c2c:{}", s));
                     let ct = d
@@ -106,7 +107,7 @@ pub fn handle_webhook(
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
                     let mid = d.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    (gid, ct, mid)
+                    (uid, ct, mid)
                 }
                 _ => (None, None, None),
             };
@@ -135,4 +136,95 @@ pub fn handle_webhook(
     }
 
     Ok(QqHandlerResult::EventHandled)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bus::new_inbound_channel;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    fn sign_event(secret: &str, timestamp: &str, body: &[u8]) -> String {
+        sign_qq_url_verify(secret, timestamp, std::str::from_utf8(body).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn c2c_webhook_uses_user_openid_chat_id() {
+        let secret = "qq-test-secret";
+        let timestamp = "1711936800";
+        let body = serde_json::json!({
+            "op": 0,
+            "t": "C2C_MESSAGE_CREATE",
+            "d": {
+                "id": "msg-1",
+                "guild_id": "guild-legacy",
+                "content": "hello",
+                "author": {
+                    "user_openid": "user-openid-42"
+                }
+            }
+        });
+        let body_bytes = serde_json::to_vec(&body).unwrap();
+        let signature = sign_event(secret, timestamp, &body_bytes);
+        let (inbound_tx, inbound_rx, _) = new_inbound_channel(4);
+        let cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
+
+        let result = handle_webhook(
+            &body_bytes,
+            Some(timestamp),
+            Some(&signature),
+            "",
+            secret,
+            &inbound_tx,
+            Arc::clone(&cache),
+        )
+        .unwrap();
+
+        assert!(matches!(result, QqHandlerResult::EventHandled));
+        let msg = inbound_rx.try_recv().unwrap();
+        assert_eq!(msg.channel.as_ref(), "qq_channel");
+        assert_eq!(msg.chat_id.as_ref(), "c2c:user-openid-42");
+        assert_eq!(msg.content, "hello");
+        let cached = cache.lock().unwrap();
+        assert_eq!(
+            cached.get("c2c:user-openid-42").map(|(id, _)| id.as_str()),
+            Some("msg-1")
+        );
+        assert!(!cached.contains_key("c2c:guild-legacy"));
+    }
+
+    #[test]
+    fn c2c_webhook_requires_user_openid_for_dispatch() {
+        let secret = "qq-test-secret";
+        let timestamp = "1711936800";
+        let body = serde_json::json!({
+            "op": 0,
+            "t": "C2C_MESSAGE_CREATE",
+            "d": {
+                "id": "msg-2",
+                "guild_id": "guild-only",
+                "content": "hello"
+            }
+        });
+        let body_bytes = serde_json::to_vec(&body).unwrap();
+        let signature = sign_event(secret, timestamp, &body_bytes);
+        let (inbound_tx, inbound_rx, _) = new_inbound_channel(4);
+        let cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
+
+        let result = handle_webhook(
+            &body_bytes,
+            Some(timestamp),
+            Some(&signature),
+            "",
+            secret,
+            &inbound_tx,
+            Arc::clone(&cache),
+        )
+        .unwrap();
+
+        assert!(matches!(result, QqHandlerResult::EventHandled));
+        assert!(inbound_rx.try_recv().is_err());
+        assert!(cache.lock().unwrap().is_empty());
+    }
 }

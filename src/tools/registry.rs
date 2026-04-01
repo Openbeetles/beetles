@@ -136,6 +136,7 @@ pub fn build_default_registry(
     registry.register(Box::new(super::GetTimeTool));
     registry.register(Box::new(super::EnvTool));
     registry.register(Box::new(super::FilesTool::new(platform.state_fs())));
+    registry.register(Box::new(super::FileEditTool::new(platform.state_fs())));
     #[cfg(all(
         feature = "tools_network_extra",
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
