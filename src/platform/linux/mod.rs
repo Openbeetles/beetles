@@ -15,7 +15,7 @@ use crate::platform::{
         SpiffsMemoryStore, SpiffsPendingRetryStore, SpiffsPrivateDocStore,
         SpiffsPrivateGardenStore, SpiffsRemindAtStore, SpiffsSelfContinuityStore,
         SpiffsSelfModelStore, SpiffsSessionStore, SpiffsSessionSummaryStore, SpiffsSkillMetaStore,
-        SpiffsSkillStorage, SpiffsTaskStore, SpiffsTurnLedgerStore,
+        SpiffsSkillStorage, SpiffsTaskStore, SpiffsTurnLedgerStore, SpiffsWorldSenseStore,
     },
     NvsConfigStore,
 };
@@ -27,7 +27,7 @@ use crate::{
         AutonomyStrategyStore, ExecutionStateStore, ImportantMessageStore, InnerLifeStore,
         LongTermMemoryExtractionStateStore, LongTermMemoryStore, MemoryStore, PendingRetryStore,
         PrivateDocStore, PrivateGardenStore, RemindAtStore, SelfContinuityStore, SelfModelStore,
-        SessionStore, SessionSummaryStore, TurnLedgerStore,
+        SessionStore, SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
     },
     task::TaskStore,
 };
@@ -49,6 +49,7 @@ pub struct LinuxPlatform {
     task_store: Arc<SpiffsTaskStore>,
     execution_state_store: Arc<SpiffsExecutionStateStore>,
     self_model_store: Arc<SpiffsSelfModelStore>,
+    world_sense_store: Arc<SpiffsWorldSenseStore>,
     autonomy_strategy_store: Arc<SpiffsAutonomyStrategyStore>,
     inner_life_store: Arc<SpiffsInnerLifeStore>,
     self_continuity_store: Arc<SpiffsSelfContinuityStore>,
@@ -85,6 +86,7 @@ impl LinuxPlatform {
             task_store: Arc::new(SpiffsTaskStore::new()),
             execution_state_store: Arc::new(SpiffsExecutionStateStore::new()),
             self_model_store: Arc::new(SpiffsSelfModelStore::new()),
+            world_sense_store: Arc::new(SpiffsWorldSenseStore::new()),
             autonomy_strategy_store: Arc::new(SpiffsAutonomyStrategyStore::new()),
             inner_life_store: Arc::new(SpiffsInnerLifeStore::new()),
             self_continuity_store: Arc::new(SpiffsSelfContinuityStore::new()),
@@ -220,6 +222,10 @@ impl Platform for LinuxPlatform {
 
     fn self_model_store(&self) -> Arc<dyn SelfModelStore + Send + Sync> {
         Arc::clone(&self.self_model_store) as Arc<dyn SelfModelStore + Send + Sync>
+    }
+
+    fn world_sense_store(&self) -> Arc<dyn WorldSenseStore + Send + Sync> {
+        Arc::clone(&self.world_sense_store) as Arc<dyn WorldSenseStore + Send + Sync>
     }
 
     fn autonomy_strategy_store(&self) -> Arc<dyn AutonomyStrategyStore + Send + Sync> {

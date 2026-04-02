@@ -24,6 +24,7 @@ mod self_runtime;
 mod self_state;
 mod session_summary_refresh;
 mod turn_ledger;
+mod world_sense;
 
 pub(crate) use autonomy_strategy::estimate_autonomy_strategy_chars;
 pub(crate) use autonomy_strategy::{
@@ -114,7 +115,7 @@ pub(crate) use profile::{
     memory_policy, shared_long_term_governance_policy, AutonomyStrategyPolicy,
     ExecutionStatePolicy, InnerLifePolicy, InternalMemoryRoutingPolicy, LongTermExtractionPolicy,
     LongTermRecallPolicy, PrivateDocsPolicy, PrivateGardenGovernancePolicy, SelfContinuityPolicy,
-    SelfModelPolicy, SessionSummaryPolicy,
+    SelfModelPolicy, SessionSummaryPolicy, WorldSensePolicy,
 };
 pub use prompt_context::{
     load_prompt_memory_context, PromptMemoryContext, PromptMemoryContextParams,
@@ -154,6 +155,13 @@ pub use turn_ledger::{
     build_turn_ledger_start, normalize_turn_preview, normalize_turn_reason, TurnDeliveryLedger,
     TurnLedger, TurnLedgerStatus, TurnLedgerStore, REL_PATH_TURN_LEDGERS,
 };
+pub(crate) use world_sense::run_world_sense_refresh_with_state;
+pub use world_sense::{
+    build_world_snapshot, render_world_sense_block, render_world_snapshot_block,
+    run_world_sense_refresh, world_snapshot_fingerprint, WorldSense, WorldSenseRefreshContext,
+    WorldSenseRefreshInput, WorldSenseRefreshOutcome, WorldSnapshot, WorldSnapshotContext,
+    WORLD_SENSE_SYSTEM_PROMPT, WORLD_SENSE_TOTAL_CHAR_LIMIT,
+};
 
 /// 单次写入内容最大字节数（与 platform::spiffs 上界一致）。实现应拒绝超长写入。
 pub const MAX_MEMORY_CONTENT_LEN: usize = 256 * 1024;
@@ -185,6 +193,8 @@ pub const REL_PATH_IMPORTANT_MESSAGE: &str = "memory/important_message.json";
 pub const REL_PATH_SESSION_SUMMARIES: &str = "memory/session_summaries.json";
 /// 相对路径：Self Model（单文件 JSON，chat_id -> private subjective continuity）。
 pub const REL_PATH_SELF_MODELS: &str = "memory/self_models.json";
+/// 相对路径：World Sense（单文件 JSON，chat_id -> outer situational layer）。
+pub const REL_PATH_WORLD_SENSE: &str = "memory/world_sense.json";
 /// 相对路径：Autonomy Strategy（单文件 JSON，chat_id -> model-managed autonomy policy）。
 pub const REL_PATH_AUTONOMY_STRATEGIES: &str = "memory/autonomy_strategies.json";
 /// 相对路径：Inner Life（单文件 JSON，chat_id -> active subjective inward layer）。
@@ -216,6 +226,13 @@ pub trait SessionSummaryStore: Send + Sync {
 pub trait SelfModelStore: Send + Sync {
     fn get(&self, chat_id: &str) -> Result<Option<SelfModel>>;
     fn set(&self, chat_id: &str, model: &SelfModel) -> Result<()>;
+    fn clear(&self, chat_id: &str) -> Result<()>;
+}
+
+/// LLM 世界感知层。保存模型自己压缩的外部处境感觉。
+pub trait WorldSenseStore: Send + Sync {
+    fn get(&self, chat_id: &str) -> Result<Option<WorldSense>>;
+    fn set(&self, chat_id: &str, world_sense: &WorldSense) -> Result<()>;
     fn clear(&self, chat_id: &str) -> Result<()>;
 }
 

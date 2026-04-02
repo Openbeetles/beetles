@@ -280,6 +280,7 @@ pub mod skill_meta;
 pub mod skill_storage;
 pub mod task_store;
 pub mod turn_ledger;
+pub mod world_sense;
 pub use turn_ledger::SpiffsTurnLedgerStore;
 
 pub use autonomy_strategy::SpiffsAutonomyStrategyStore;
@@ -302,3 +303,4 @@ pub use session_summary::SpiffsSessionSummaryStore;
 pub use skill_meta::SpiffsSkillMetaStore;
 pub use skill_storage::{default_skill_storage_arc, SpiffsSkillStorage};
 pub use task_store::SpiffsTaskStore;
+pub use world_sense::SpiffsWorldSenseStore;

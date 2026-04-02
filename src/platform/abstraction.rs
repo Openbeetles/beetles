@@ -9,7 +9,7 @@ use crate::memory::{
     AutonomyStrategyStore, ExecutionStateStore, ImportantMessageStore, InnerLifeStore,
     LongTermMemoryStore, MemoryProfile, MemoryStore, PendingRetryStore, PrivateDocStore,
     PrivateGardenStore, RemindAtStore, SelfContinuityStore, SelfModelStore, SessionStore,
-    SessionSummaryStore, TurnLedgerStore,
+    SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
 };
 use crate::platform::ResponseBody;
 use crate::task::TaskStore;
@@ -216,6 +216,7 @@ pub trait Platform: Send + Sync {
     fn task_store(&self) -> Arc<dyn TaskStore + Send + Sync>;
     fn execution_state_store(&self) -> Arc<dyn ExecutionStateStore + Send + Sync>;
     fn self_model_store(&self) -> Arc<dyn SelfModelStore + Send + Sync>;
+    fn world_sense_store(&self) -> Arc<dyn WorldSenseStore + Send + Sync>;
     fn autonomy_strategy_store(&self) -> Arc<dyn AutonomyStrategyStore + Send + Sync>;
     fn inner_life_store(&self) -> Arc<dyn InnerLifeStore + Send + Sync>;
     fn self_continuity_store(&self) -> Arc<dyn SelfContinuityStore + Send + Sync>;

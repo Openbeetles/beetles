@@ -41,10 +41,10 @@ use crate::memory::{
     LongTermMemoryRefreshContext, LongTermMemoryRefreshOutcome,
     LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore, MemoryStore, PendingRetryStore,
     PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput, PrivateDocStore,
-    PrivateGardenStore, PromptMemoryContextParams, SelfContinuityStore, SelfModelStore,
-    SelfRuntimeContext, SelfRuntimeOutcome, SessionStore, SessionSummaryRefreshOutcome,
-    SessionSummaryStore, TurnDeliveryLedger, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
-    SELF_RUNTIME_CHANNEL,
+    PrivateGardenStore, PromptMemoryContextParams, RemindAtStore, SelfContinuityStore,
+    SelfModelStore, SelfRuntimeContext, SelfRuntimeOutcome, SessionStore,
+    SessionSummaryRefreshOutcome, SessionSummaryStore, TurnDeliveryLedger, TurnLedger,
+    TurnLedgerStatus, TurnLedgerStore, WorldSenseStore, SELF_RUNTIME_CHANNEL,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
@@ -1137,11 +1137,14 @@ fn run_self_runtime_job(
             session_summary_store: config.session_summary_store.as_ref(),
             execution_state_store: config.execution_state_store.as_ref(),
             self_model_store: config.self_model_store.as_ref(),
+            world_sense_store: config.world_sense_store.as_ref(),
             autonomy_strategy_store: config.autonomy_strategy_store.as_ref(),
             private_doc_store: config.private_doc_store.as_ref(),
             private_garden_store: config.private_garden_store.as_ref(),
             inner_life_store: config.inner_life_store.as_ref(),
             self_continuity_store: config.self_continuity_store.as_ref(),
+            remind_store: config.remind_store.as_ref(),
+            task_store: config.task_store.as_ref(),
         },
         &msg.chat_id,
         &payload,
@@ -1159,6 +1162,16 @@ fn run_self_runtime_job(
             (!decision.self_continuity_intent.trim().is_empty()).then_some(decision.self_continuity_intent.as_str()),
             (!decision.private_garden_intent.trim().is_empty()).then_some(decision.private_garden_intent.as_str()),
         );
+    }
+    match outcome.world_sense_result {
+        Ok(crate::memory::WorldSenseRefreshOutcome::Updated) => {
+            log::info!("[agent_world_sense] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::WorldSenseRefreshOutcome::Cleared) => {
+            log::info!("[agent_world_sense] cleared for {}", msg.chat_id);
+        }
+        Ok(crate::memory::WorldSenseRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_world_sense] failed: {}", error),
     }
     match outcome.autonomy_strategy_result {
         Ok(crate::memory::AutonomyStrategyRefreshOutcome::Updated) => {
@@ -1429,6 +1442,7 @@ pub struct AgentLoopConfig {
     pub session_summary_store: Arc<dyn SessionSummaryStore + Send + Sync>,
     pub execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
     pub self_model_store: Arc<dyn SelfModelStore + Send + Sync>,
+    pub world_sense_store: Arc<dyn WorldSenseStore + Send + Sync>,
     pub autonomy_strategy_store: Arc<dyn AutonomyStrategyStore + Send + Sync>,
     pub inner_life_store: Arc<dyn InnerLifeStore + Send + Sync>,
     pub self_continuity_store: Arc<dyn SelfContinuityStore + Send + Sync>,
@@ -1441,6 +1455,8 @@ pub struct AgentLoopConfig {
     pub tg_group_activation: Arc<str>,
     pub important_message_store: Arc<dyn ImportantMessageStore + Send + Sync>,
     pub emotion_signal_store: Arc<dyn EmotionSignalStore + Send + Sync>,
+    pub remind_store: Arc<dyn RemindAtStore + Send + Sync>,
+    pub task_store: Arc<dyn crate::task::TaskStore + Send + Sync>,
     pub pending_retry: Arc<dyn PendingRetryStore + Send + Sync>,
     pub strategy: AgentRunStrategy,
     /// 全局 LLM 流式模式；true 时 agent 使用 chat_with_progress 回调。
@@ -2246,6 +2262,7 @@ fn run_worker_path(
         .saturating_sub(post_memory_tail_len);
     let mut prompt_memory = load_prompt_memory_context(PromptMemoryContextParams {
         chat_id: &msg.chat_id,
+        current_channel: &msg.channel,
         user_query: &msg.content,
         system_max_len: prompt_memory_system_budget,
         now_secs: runtime.now_secs,
@@ -2257,11 +2274,14 @@ fn run_worker_path(
         long_term_memory_store: config.long_term_memory_store.as_ref(),
         execution_state_store: config.execution_state_store.as_ref(),
         self_model_store: config.self_model_store.as_ref(),
+        world_sense_store: config.world_sense_store.as_ref(),
         autonomy_strategy_store: config.autonomy_strategy_store.as_ref(),
         inner_life_store: config.inner_life_store.as_ref(),
         self_continuity_store: config.self_continuity_store.as_ref(),
         private_doc_store: config.private_doc_store.as_ref(),
         private_garden_store: config.private_garden_store.as_ref(),
+        remind_store: config.remind_store.as_ref(),
+        task_store: config.task_store.as_ref(),
     });
     let (mut system, mut messages) = build_context(&super::ContextParams {
         msg,
@@ -2276,6 +2296,8 @@ fn run_worker_path(
         group_activation: config.tg_group_activation.as_ref(),
         emotion_signal_suffix,
         execution_state_text: prompt_memory.execution_state_text.as_deref(),
+        world_snapshot_text: prompt_memory.world_snapshot_text.as_deref(),
+        world_sense_text: prompt_memory.world_sense_text.as_deref(),
         self_state_text: prompt_memory.self_state_text.as_deref(),
         self_model_text: prompt_memory.self_model_text.as_deref(),
         autonomy_strategy_text: prompt_memory.autonomy_strategy_text.as_deref(),
@@ -3139,6 +3161,23 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct StubWorldSenseStore;
+
+    impl WorldSenseStore for StubWorldSenseStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<crate::memory::WorldSense>> {
+            Ok(None)
+        }
+
+        fn set(&self, _chat_id: &str, _world_sense: &crate::memory::WorldSense) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
     struct StubAutonomyStrategyStore;
 
     impl AutonomyStrategyStore for StubAutonomyStrategyStore {
@@ -3244,6 +3283,74 @@ mod tests {
             _now_secs: u64,
         ) -> Result<Option<PrivateGardenDocRecord>> {
             unreachable!()
+        }
+    }
+
+    #[derive(Default)]
+    struct StubRemindAtStore;
+
+    impl crate::memory::RemindAtStore for StubRemindAtStore {
+        fn add(
+            &self,
+            _channel: &str,
+            _chat_id: &str,
+            _at_unix_secs: u64,
+            _context: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn pop_due(&self, _now_unix_secs: u64) -> Result<Option<(String, String, String)>> {
+            Ok(None)
+        }
+
+        fn list_upcoming(
+            &self,
+            _channel: &str,
+            _chat_id: &str,
+            _now_unix_secs: u64,
+            _limit: usize,
+        ) -> Result<Vec<(u64, String)>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubTaskStore;
+
+    impl crate::task::TaskStore for StubTaskStore {
+        fn list(
+            &self,
+            _channel: &str,
+            _chat_id: &str,
+            _query: crate::task::TaskQuery,
+        ) -> Result<Vec<crate::task::TaskItem>> {
+            Ok(Vec::new())
+        }
+
+        fn get(
+            &self,
+            _channel: &str,
+            _chat_id: &str,
+            _id: &str,
+        ) -> Result<Option<crate::task::TaskItem>> {
+            Ok(None)
+        }
+
+        fn upsert(&self, _task: &crate::task::TaskItem) -> Result<()> {
+            Ok(())
+        }
+
+        fn delete(&self, _channel: &str, _chat_id: &str, _id: &str) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn claim_due(
+            &self,
+            _now_unix_secs: u64,
+            _limit: usize,
+        ) -> Result<Vec<crate::task::TaskItem>> {
+            Ok(Vec::new())
         }
     }
 
@@ -3396,6 +3503,7 @@ mod tests {
             session_summary_store: Arc::new(StubSessionSummaryStore),
             execution_state_store: Arc::new(StubExecutionStateStore),
             self_model_store: Arc::new(StubSelfModelStore),
+            world_sense_store: Arc::new(StubWorldSenseStore),
             autonomy_strategy_store: Arc::new(StubAutonomyStrategyStore),
             inner_life_store: Arc::new(StubInnerLifeStore),
             self_continuity_store: Arc::new(StubSelfContinuityStore),
@@ -3408,6 +3516,8 @@ mod tests {
             tg_group_activation: Arc::from(""),
             important_message_store: Arc::new(StubImportantMessageStore),
             emotion_signal_store: Arc::new(StubEmotionSignalStore),
+            remind_store: Arc::new(StubRemindAtStore),
+            task_store: Arc::new(StubTaskStore),
             pending_retry: Arc::new(StubPendingRetryStore),
             strategy: AgentRunStrategy::Embedded,
             llm_stream: false,

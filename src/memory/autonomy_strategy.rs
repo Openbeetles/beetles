@@ -12,11 +12,12 @@ use std::fmt::Write as _;
 use super::{
     build_self_state, memory_policy, render_execution_state_block, render_inner_life_block,
     render_private_doc_workspace_block, render_private_garden_block, render_self_continuity_block,
-    render_self_model_block, render_self_state_block, AutonomyStrategyPolicy,
-    AutonomyStrategyStore, ExecutionState, ExecutionStateStore, InnerLife, InnerLifeStore,
-    MemoryProfile, PrivateDocStore, PrivateDocWorkspace, PrivateGardenStore, SelfContinuity,
-    SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
-    SessionSummaryStore,
+    render_self_model_block, render_self_state_block, render_world_sense_block,
+    render_world_snapshot_block, AutonomyStrategyPolicy, AutonomyStrategyStore, ExecutionState,
+    ExecutionStateStore, InnerLife, InnerLifeStore, MemoryProfile, PrivateDocStore,
+    PrivateDocWorkspace, PrivateGardenStore, SelfContinuity, SelfContinuityStore, SelfModel,
+    SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore, WorldSense, WorldSenseStore,
+    WorldSnapshot,
 };
 
 pub const AUTONOMY_STRATEGY_SYSTEM_PROMPT: &str = "You maintain the assistant's private autonomy strategy. Return JSON only: either null or one object with fields current_mode, active_priorities, write_policy, next_focus, cadence_reason, idle_enabled, idle_interval_secs. This layer is not a transcript summary. It is your own short-term self-governance policy: what kind of inward work matters now, how aggressively to write or compress, what should be focused next, and how often autonomous upkeep should wake during idle time. Keep it compact, concrete, and self-directed.";
@@ -87,6 +88,7 @@ pub struct AutonomyStrategyRefreshContext<'a> {
     pub self_continuity_store: &'a dyn SelfContinuityStore,
     pub private_doc_store: &'a dyn PrivateDocStore,
     pub private_garden_store: &'a dyn PrivateGardenStore,
+    pub world_sense_store: &'a dyn WorldSenseStore,
     pub autonomy_strategy_store: &'a dyn AutonomyStrategyStore,
 }
 
@@ -218,6 +220,7 @@ pub fn run_autonomy_strategy_refresh(
     let self_continuity = ctx.self_continuity_store.get(input.chat_id)?;
     let private_docs = ctx.private_doc_store.get(input.chat_id)?;
     let private_garden_docs = ctx.private_garden_store.list(input.chat_id, usize::MAX)?;
+    let world_sense = ctx.world_sense_store.get(input.chat_id)?;
     run_autonomy_strategy_refresh_with_state(
         http,
         llm,
@@ -232,6 +235,8 @@ pub fn run_autonomy_strategy_refresh(
         self_continuity.as_ref(),
         private_docs.as_ref(),
         &private_garden_docs,
+        world_sense.as_ref(),
+        None,
         None,
         None,
     )
@@ -252,6 +257,8 @@ pub(crate) fn run_autonomy_strategy_refresh_with_state(
     self_continuity: Option<&SelfContinuity>,
     private_docs: Option<&PrivateDocWorkspace>,
     private_garden_docs: &[crate::memory::PrivateGardenDocRecord],
+    world_sense: Option<&WorldSense>,
+    world_snapshot: Option<&WorldSnapshot>,
     decision_override: Option<bool>,
     recent_override: Option<&[SessionMessage]>,
 ) -> Result<AutonomyStrategyRefreshOutcome> {
@@ -282,6 +289,8 @@ pub(crate) fn run_autonomy_strategy_refresh_with_state(
         self_continuity,
         private_docs,
         private_garden_docs,
+        world_sense,
+        world_snapshot,
         input.now_secs,
         profile,
         recent,
@@ -351,6 +360,8 @@ fn build_autonomy_strategy_refresh_input(
     self_continuity: Option<&SelfContinuity>,
     private_docs: Option<&PrivateDocWorkspace>,
     private_garden_docs: &[crate::memory::PrivateGardenDocRecord],
+    world_sense: Option<&WorldSense>,
+    world_snapshot: Option<&WorldSnapshot>,
     now_secs: u64,
     profile: MemoryProfile,
     recent: &[SessionMessage],
@@ -372,6 +383,11 @@ fn build_autonomy_strategy_refresh_input(
     ) {
         input.push_str(self_state_text.trim());
         input.push_str("\n\n");
+    }
+    if let Some(block) = world_snapshot
+        .and_then(|snapshot| render_world_snapshot_block(snapshot, policy.grounding_max_len))
+    {
+        let _ = writeln!(input, "\n{}\n", block);
     }
     if let Some(summary_text) = summary_text.filter(|s| !s.trim().is_empty()) {
         let summary = truncate_content_to_max(summary_text.trim(), policy.grounding_max_len);
@@ -399,6 +415,11 @@ fn build_autonomy_strategy_refresh_input(
     }
     if let Some(block) = self_continuity
         .and_then(|continuity| render_self_continuity_block(continuity, policy.grounding_max_len))
+    {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if let Some(block) = world_sense
+        .and_then(|world_sense| render_world_sense_block(world_sense, policy.grounding_max_len))
     {
         let _ = writeln!(input, "\n{}\n", block);
     }

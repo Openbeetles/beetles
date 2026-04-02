@@ -1,13 +1,17 @@
 //! Prompt 侧共享记忆读装配。
 //! Shared prompt memory loading for agent context construction.
 
+use crate::task::TaskStore;
+
 use super::{
-    build_self_state, memory_policy, recall_long_term_memory_block, render_autonomy_strategy_block,
-    render_execution_state_block, render_inner_life_block, render_private_doc_workspace_block,
-    render_private_garden_block, render_self_continuity_block, render_self_model_block,
-    render_self_state_block, AutonomyStrategyStore, ExecutionStateStore, InnerLifeStore,
-    LongTermMemoryStore, MemoryProfile, PrivateDocStore, PrivateGardenStore, SelfContinuityStore,
-    SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
+    build_self_state, build_world_snapshot, memory_policy, recall_long_term_memory_block,
+    render_autonomy_strategy_block, render_execution_state_block, render_inner_life_block,
+    render_private_doc_workspace_block, render_private_garden_block, render_self_continuity_block,
+    render_self_model_block, render_self_state_block, render_world_sense_block,
+    render_world_snapshot_block, AutonomyStrategyStore, ExecutionStateStore, InnerLifeStore,
+    LongTermMemoryStore, MemoryProfile, PrivateDocStore, PrivateGardenStore, RemindAtStore,
+    SelfContinuityStore, SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
+    WorldSenseStore, WorldSnapshotContext,
 };
 
 pub struct PromptMemoryContext {
@@ -15,6 +19,8 @@ pub struct PromptMemoryContext {
     pub message_summary_text: Option<String>,
     pub long_term_memory_text: Option<String>,
     pub execution_state_text: Option<String>,
+    pub world_snapshot_text: Option<String>,
+    pub world_sense_text: Option<String>,
     pub self_state_text: Option<String>,
     pub self_model_text: Option<String>,
     pub autonomy_strategy_text: Option<String>,
@@ -27,6 +33,7 @@ pub struct PromptMemoryContext {
 
 pub struct PromptMemoryContextParams<'a> {
     pub chat_id: &'a str,
+    pub current_channel: &'a str,
     pub user_query: &'a str,
     pub system_max_len: usize,
     pub now_secs: u64,
@@ -38,11 +45,14 @@ pub struct PromptMemoryContextParams<'a> {
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
     pub self_model_store: &'a dyn SelfModelStore,
+    pub world_sense_store: &'a dyn WorldSenseStore,
     pub autonomy_strategy_store: &'a dyn AutonomyStrategyStore,
     pub inner_life_store: &'a dyn InnerLifeStore,
     pub self_continuity_store: &'a dyn SelfContinuityStore,
     pub private_doc_store: &'a dyn PrivateDocStore,
     pub private_garden_store: &'a dyn PrivateGardenStore,
+    pub remind_store: &'a dyn RemindAtStore,
+    pub task_store: &'a dyn TaskStore,
 }
 
 pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> PromptMemoryContext {
@@ -87,6 +97,30 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
             memory_policy(params.profile).self_model.render_max_len,
         )
     });
+    let self_continuity = params
+        .self_continuity_store
+        .get(params.chat_id)
+        .ok()
+        .flatten();
+    let world_snapshot = build_world_snapshot(WorldSnapshotContext {
+        chat_id: params.chat_id,
+        source_channel: params.current_channel,
+        now_secs: params.now_secs,
+        self_continuity: self_continuity.as_ref(),
+        remind_store: params.remind_store,
+        task_store: params.task_store,
+    });
+    let world_snapshot_text = render_world_snapshot_block(
+        &world_snapshot,
+        memory_policy(params.profile).world_sense.snapshot_max_len,
+    );
+    let world_sense = params.world_sense_store.get(params.chat_id).ok().flatten();
+    let world_sense_text = world_sense.as_ref().and_then(|world_sense| {
+        render_world_sense_block(
+            world_sense,
+            memory_policy(params.profile).world_sense.render_max_len,
+        )
+    });
     let autonomy_strategy = params
         .autonomy_strategy_store
         .get(params.chat_id)
@@ -107,11 +141,6 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
             memory_policy(params.profile).inner_life.render_max_len,
         )
     });
-    let self_continuity = params
-        .self_continuity_store
-        .get(params.chat_id)
-        .ok()
-        .flatten();
     let self_continuity_text = self_continuity.as_ref().and_then(|self_continuity| {
         render_self_continuity_block(
             self_continuity,
@@ -176,6 +205,8 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         message_summary_text,
         long_term_memory_text,
         execution_state_text,
+        world_snapshot_text,
+        world_sense_text,
         self_state_text,
         self_model_text,
         autonomy_strategy_text,
@@ -197,8 +228,9 @@ mod tests {
         LongTermMemorySlot, LongTermMemoryStore, PrivateDocEntry, PrivateDocStore,
         PrivateDocWorkspace, PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenStore,
         SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage,
-        SessionStore, SessionSummaryStore,
+        SessionStore, SessionSummaryStore, WorldSense, WorldSenseStore,
     };
+    use crate::task::{TaskItem, TaskQuery, TaskStore};
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -258,6 +290,27 @@ mod tests {
     struct StubLongTermMemoryStore {
         entries: Mutex<Vec<LongTermMemoryEntry>>,
         last_query: Mutex<Option<String>>,
+    }
+
+    #[derive(Default)]
+    struct StubWorldSenseStore {
+        value: Mutex<Option<WorldSense>>,
+    }
+
+    impl WorldSenseStore for StubWorldSenseStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<WorldSense>> {
+            Ok(self.value.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _chat_id: &str, world_sense: &WorldSense) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(world_sense.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
     }
 
     #[derive(Default)]
@@ -497,6 +550,60 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct StubRemindAtStore;
+
+    impl crate::memory::RemindAtStore for StubRemindAtStore {
+        fn add(
+            &self,
+            _channel: &str,
+            _chat_id: &str,
+            _at_unix_secs: u64,
+            _context: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn pop_due(&self, _now_unix_secs: u64) -> Result<Option<(String, String, String)>> {
+            Ok(None)
+        }
+
+        fn list_upcoming(
+            &self,
+            _channel: &str,
+            _chat_id: &str,
+            _now_unix_secs: u64,
+            _limit: usize,
+        ) -> Result<Vec<(u64, String)>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubTaskStore;
+
+    impl TaskStore for StubTaskStore {
+        fn list(&self, _channel: &str, _chat_id: &str, _query: TaskQuery) -> Result<Vec<TaskItem>> {
+            Ok(Vec::new())
+        }
+
+        fn get(&self, _channel: &str, _chat_id: &str, _id: &str) -> Result<Option<TaskItem>> {
+            Ok(None)
+        }
+
+        fn upsert(&self, _task: &TaskItem) -> Result<()> {
+            Ok(())
+        }
+
+        fn delete(&self, _channel: &str, _chat_id: &str, _id: &str) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn claim_due(&self, _now_unix_secs: u64, _limit: usize) -> Result<Vec<TaskItem>> {
+            Ok(Vec::new())
+        }
+    }
+
     #[test]
     fn loads_summary_and_uses_it_for_weak_query_recall() {
         let session_store = StubSessionStore {
@@ -545,6 +652,17 @@ mod tests {
                 relationship_state: String::new(),
                 private_notes: String::new(),
                 updated_at: 1,
+            })),
+        };
+        let world_sense_store = StubWorldSenseStore {
+            value: Mutex::new(Some(WorldSense {
+                current_scene: "Quiet evening with a live user thread.".to_string(),
+                body_state: "System is stable.".to_string(),
+                social_field: "The user is engaged in direct chat.".to_string(),
+                world_changes: "The conversation recently became active.".to_string(),
+                external_focus: "Track user-facing commitments.".to_string(),
+                source_fingerprint: 1,
+                updated_at: 4,
             })),
         };
         let autonomy_strategy_store = StubAutonomyStrategyStore {
@@ -600,9 +718,12 @@ mod tests {
                 revision: 1,
             }]),
         };
+        let remind_store = StubRemindAtStore;
+        let task_store = StubTaskStore;
 
         let context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
+            current_channel: "qq_channel",
             user_query: "嗯?",
             system_max_len: 1024,
             now_secs: 100,
@@ -614,11 +735,14 @@ mod tests {
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
             self_model_store: &self_model_store,
+            world_sense_store: &world_sense_store,
             autonomy_strategy_store: &autonomy_strategy_store,
             inner_life_store: &inner_life_store,
             self_continuity_store: &self_continuity_store,
             private_doc_store: &private_doc_store,
             private_garden_store: &private_garden_store,
+            remind_store: &remind_store,
+            task_store: &task_store,
         });
 
         assert_eq!(
@@ -650,6 +774,16 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("Goal: 收口 prompt memory"));
+        assert!(context
+            .world_snapshot_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## World Snapshot"));
+        assert!(context
+            .world_sense_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## World Sense"));
         assert!(context
             .self_state_text
             .as_deref()
@@ -713,14 +847,18 @@ mod tests {
         };
         let execution_state_store = StubExecutionStateStore::default();
         let self_model_store = StubSelfModelStore::default();
+        let world_sense_store = StubWorldSenseStore::default();
         let autonomy_strategy_store = StubAutonomyStrategyStore::default();
         let inner_life_store = StubInnerLifeStore::default();
         let self_continuity_store = StubSelfContinuityStore::default();
         let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
+        let remind_store = StubRemindAtStore;
+        let task_store = StubTaskStore;
 
         let context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
+            current_channel: "qq_channel",
             user_query: "嗯?",
             system_max_len: 80,
             now_secs: 100,
@@ -732,11 +870,14 @@ mod tests {
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
             self_model_store: &self_model_store,
+            world_sense_store: &world_sense_store,
             autonomy_strategy_store: &autonomy_strategy_store,
             inner_life_store: &inner_life_store,
             self_continuity_store: &self_continuity_store,
             private_doc_store: &private_doc_store,
             private_garden_store: &private_garden_store,
+            remind_store: &remind_store,
+            task_store: &task_store,
         });
 
         assert_eq!(
@@ -781,6 +922,17 @@ mod tests {
                 relationship_state: String::new(),
                 private_notes: String::new(),
                 updated_at: 1,
+            })),
+        };
+        let world_sense_store = StubWorldSenseStore {
+            value: Mutex::new(Some(WorldSense {
+                current_scene: "Fast path but still inside an active chat.".to_string(),
+                body_state: "System feels light.".to_string(),
+                social_field: "The user is still present.".to_string(),
+                world_changes: "Nothing disruptive has happened.".to_string(),
+                external_focus: "Stay ready for the next user move.".to_string(),
+                source_fingerprint: 2,
+                updated_at: 5,
             })),
         };
         let autonomy_strategy_store = StubAutonomyStrategyStore {
@@ -836,9 +988,12 @@ mod tests {
                 revision: 2,
             }]),
         };
+        let remind_store = StubRemindAtStore;
+        let task_store = StubTaskStore;
 
         let context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
+            current_channel: "qq_channel",
             user_query: "继续",
             system_max_len: 1024,
             now_secs: 100,
@@ -850,11 +1005,14 @@ mod tests {
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
             self_model_store: &self_model_store,
+            world_sense_store: &world_sense_store,
             autonomy_strategy_store: &autonomy_strategy_store,
             inner_life_store: &inner_life_store,
             self_continuity_store: &self_continuity_store,
             private_doc_store: &private_doc_store,
             private_garden_store: &private_garden_store,
+            remind_store: &remind_store,
+            task_store: &task_store,
         });
 
         assert_eq!(context.summary_text.as_deref(), Some("summary"));

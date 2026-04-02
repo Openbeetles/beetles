@@ -4,25 +4,30 @@ use crate::bus::{IngressKind, PcMsg, SystemInboundTx};
 use crate::error::Result;
 use crate::llm::{LlmClient, LlmHttpClient, Message, ToolChoicePolicy};
 use crate::orchestrator::PressureLevel;
+use crate::task::TaskStore;
 use crate::util::{current_unix_secs, scrub_credentials, truncate_content_to_max};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    autonomy_idle_interval_secs, memory_policy, render_autonomy_strategy_block,
-    render_execution_state_block, render_inner_life_block, render_internal_memory_topology_block,
-    render_private_doc_workspace_block, render_private_garden_block, render_self_continuity_block,
-    render_self_model_block, run_autonomy_strategy_refresh_with_state,
-    run_inner_life_refresh_with_state, run_private_garden_governance_with_state,
-    run_self_continuity_refresh_with_state, touch_self_continuity_runtime,
+    autonomy_idle_interval_secs, build_world_snapshot, memory_policy,
+    render_autonomy_strategy_block, render_execution_state_block, render_inner_life_block,
+    render_internal_memory_topology_block, render_private_doc_workspace_block,
+    render_private_garden_block, render_self_continuity_block, render_self_model_block,
+    render_world_sense_block, render_world_snapshot_block,
+    run_autonomy_strategy_refresh_with_state, run_inner_life_refresh_with_state,
+    run_private_garden_governance_with_state, run_self_continuity_refresh_with_state,
+    run_world_sense_refresh_with_state, touch_self_continuity_runtime,
     AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome,
     AutonomyStrategyStore, ExecutionStateStore, InnerLifeRefreshContext, InnerLifeRefreshInput,
     InnerLifeRefreshOutcome, InnerLifeStore, InternalMemoryLayerFocus, MemoryProfile,
     PrivateDocStore, PrivateGardenGovernanceContext, PrivateGardenGovernanceInput,
-    PrivateGardenGovernanceOutcome, PrivateGardenStore, SelfContinuityRefreshContext,
-    SelfContinuityRefreshInput, SelfContinuityRefreshOutcome, SelfContinuityStore, SelfModelStore,
-    SessionStore, SessionSummaryStore,
+    PrivateGardenGovernanceOutcome, PrivateGardenStore, RemindAtStore,
+    SelfContinuityRefreshContext, SelfContinuityRefreshInput, SelfContinuityRefreshOutcome,
+    SelfContinuityStore, SelfModelStore, SessionStore, SessionSummaryStore,
+    WorldSenseRefreshContext, WorldSenseRefreshInput, WorldSenseRefreshOutcome, WorldSenseStore,
+    WorldSnapshotContext,
 };
 
 pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's private inward space. Respect the current autonomy strategy unless the latest context clearly requires a change in emphasis. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_self_continuity, self_continuity_intent, refresh_private_garden, private_garden_intent. Use true only when the corresponding layer should be updated now. Keep intents short and concrete. Favor autonomy, but do not churn memory without gain.";
@@ -76,11 +81,15 @@ pub struct SelfRuntimeContext<'a> {
     pub private_garden_store: &'a dyn PrivateGardenStore,
     pub inner_life_store: &'a dyn InnerLifeStore,
     pub self_continuity_store: &'a dyn SelfContinuityStore,
+    pub world_sense_store: &'a dyn WorldSenseStore,
     pub autonomy_strategy_store: &'a dyn AutonomyStrategyStore,
+    pub remind_store: &'a dyn RemindAtStore,
+    pub task_store: &'a dyn TaskStore,
 }
 
 pub struct SelfRuntimeOutcome {
     pub decision: Option<SelfRuntimeDecision>,
+    pub world_sense_result: Result<WorldSenseRefreshOutcome>,
     pub autonomy_strategy_result: Result<AutonomyStrategyRefreshOutcome>,
     pub inner_life_result: Result<InnerLifeRefreshOutcome>,
     pub self_continuity_result: Result<SelfContinuityRefreshOutcome>,
@@ -261,6 +270,7 @@ pub fn run_self_runtime(
         .unwrap_or_default();
     let inner_life = ctx.inner_life_store.get(chat_id).ok().flatten();
     let self_continuity = ctx.self_continuity_store.get(chat_id).ok().flatten();
+    let world_sense = ctx.world_sense_store.get(chat_id).ok().flatten();
     let autonomy_strategy = ctx.autonomy_strategy_store.get(chat_id).ok().flatten();
     if payload.trigger == SelfRuntimeTrigger::PostReply {
         let _ = touch_self_continuity_runtime(
@@ -271,6 +281,14 @@ pub fn run_self_runtime(
             false,
         );
     }
+    let world_snapshot = build_world_snapshot(WorldSnapshotContext {
+        chat_id,
+        source_channel: &payload.source_channel,
+        now_secs: payload.now_secs,
+        self_continuity: self_continuity.as_ref(),
+        remind_store: ctx.remind_store,
+        task_store: ctx.task_store,
+    });
     let recent = ctx
         .session_store
         .load_recent(
@@ -278,6 +296,7 @@ pub fn run_self_runtime(
             memory_policy(profile)
                 .self_runtime
                 .recent_message_count
+                .max(memory_policy(profile).world_sense.recent_message_count)
                 .max(
                     memory_policy(profile)
                         .autonomy_strategy
@@ -292,6 +311,72 @@ pub fn run_self_runtime(
                 ),
         )
         .unwrap_or_default();
+    let world_policy = memory_policy(profile).world_sense;
+    let world_snapshot_changed = world_sense.as_ref().is_some_and(|existing| {
+        existing.source_fingerprint != crate::memory::world_snapshot_fingerprint(&world_snapshot)
+    });
+    let world_sense_should_refresh = world_sense.is_none()
+        || world_snapshot_changed
+        || (payload.trigger == SelfRuntimeTrigger::PostReply
+            && world_policy.should_refresh(
+                WorldSenseRefreshInput {
+                    chat_id,
+                    ingress: IngressKind::User,
+                    channel: &payload.source_channel,
+                    user_content: &payload.user_content,
+                    reply_content: &payload.reply_content,
+                    pressure: PressureLevel::Normal,
+                    tool_calls: payload.tool_calls,
+                    now_secs: payload.now_secs,
+                },
+                world_sense.is_some(),
+            ))
+        || world_sense.as_ref().is_some_and(|world_sense| {
+            payload.now_secs.saturating_sub(world_sense.updated_at)
+                >= world_policy.refresh_interval_secs
+        });
+    let world_sense_result = run_world_sense_refresh_with_state(
+        http,
+        llm,
+        WorldSenseRefreshContext {
+            session_store: ctx.session_store,
+            session_summary_store: ctx.session_summary_store,
+            execution_state_store: ctx.execution_state_store,
+            self_continuity_store: ctx.self_continuity_store,
+            autonomy_strategy_store: ctx.autonomy_strategy_store,
+            world_sense_store: ctx.world_sense_store,
+            remind_store: ctx.remind_store,
+            task_store: ctx.task_store,
+        },
+        WorldSenseRefreshInput {
+            chat_id,
+            ingress: match payload.trigger {
+                SelfRuntimeTrigger::PostReply => IngressKind::User,
+                SelfRuntimeTrigger::IdleTick => IngressKind::System,
+            },
+            channel: &payload.source_channel,
+            user_content: &payload.user_content,
+            reply_content: &payload.reply_content,
+            pressure: PressureLevel::Normal,
+            tool_calls: payload.tool_calls,
+            now_secs: payload.now_secs,
+        },
+        profile,
+        world_sense.clone(),
+        &world_snapshot,
+        summary_text.as_deref(),
+        execution_state.as_ref(),
+        self_continuity.as_ref(),
+        autonomy_strategy.as_ref(),
+        Some(world_sense_should_refresh),
+        Some(recent.as_slice()),
+    );
+    let refreshed_world_sense = ctx
+        .world_sense_store
+        .get(chat_id)
+        .ok()
+        .flatten()
+        .or(world_sense.clone());
     let autonomy_policy = memory_policy(profile).autonomy_strategy;
     let autonomy_strategy_should_refresh = autonomy_strategy.is_none()
         || (payload.trigger == SelfRuntimeTrigger::PostReply
@@ -324,6 +409,7 @@ pub fn run_self_runtime(
             self_continuity_store: ctx.self_continuity_store,
             private_doc_store: ctx.private_doc_store,
             private_garden_store: ctx.private_garden_store,
+            world_sense_store: ctx.world_sense_store,
             autonomy_strategy_store: ctx.autonomy_strategy_store,
         },
         AutonomyStrategyRefreshInput {
@@ -348,6 +434,8 @@ pub fn run_self_runtime(
         self_continuity.as_ref(),
         private_docs.as_ref(),
         &private_garden_docs,
+        refreshed_world_sense.as_ref(),
+        Some(&world_snapshot),
         Some(autonomy_strategy_should_refresh),
         Some(recent.as_slice()),
     );
@@ -368,6 +456,8 @@ pub fn run_self_runtime(
         &private_garden_docs,
         inner_life.as_ref(),
         self_continuity.as_ref(),
+        refreshed_world_sense.as_ref(),
+        &world_snapshot,
         refreshed_autonomy_strategy.as_ref(),
         profile,
         ctx.session_store,
@@ -377,6 +467,7 @@ pub fn run_self_runtime(
         Err(error) => {
             return SelfRuntimeOutcome {
                 decision: None,
+                world_sense_result,
                 autonomy_strategy_result,
                 inner_life_result: Err(error),
                 self_continuity_result: Ok(SelfContinuityRefreshOutcome::Skipped),
@@ -515,6 +606,7 @@ pub fn run_self_runtime(
 
     SelfRuntimeOutcome {
         decision,
+        world_sense_result,
         autonomy_strategy_result,
         inner_life_result,
         self_continuity_result,
@@ -534,6 +626,8 @@ fn decide_self_runtime(
     private_garden_docs: &[crate::memory::PrivateGardenDocRecord],
     inner_life: Option<&crate::memory::InnerLife>,
     self_continuity: Option<&crate::memory::SelfContinuity>,
+    world_sense: Option<&crate::memory::WorldSense>,
+    world_snapshot: &crate::memory::WorldSnapshot,
     autonomy_strategy: Option<&crate::memory::AutonomyStrategy>,
     profile: MemoryProfile,
     session_store: &dyn SessionStore,
@@ -586,6 +680,12 @@ fn decide_self_runtime(
     }) {
         let _ = writeln!(input, "\n{}\n", block);
     }
+    if let Some(block) = render_world_snapshot_block(
+        world_snapshot,
+        memory_policy(profile).world_sense.snapshot_max_len,
+    ) {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
     if let Some(block) = render_internal_memory_topology_block(
         self_model,
         private_docs,
@@ -614,6 +714,11 @@ fn decide_self_runtime(
     }
     if let Some(block) = self_continuity
         .and_then(|continuity| render_self_continuity_block(continuity, policy.grounding_max_len))
+    {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if let Some(block) = world_sense
+        .and_then(|world_sense| render_world_sense_block(world_sense, policy.grounding_max_len))
     {
         let _ = writeln!(input, "\n{}\n", block);
     }

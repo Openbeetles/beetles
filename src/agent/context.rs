@@ -71,6 +71,8 @@ pub struct ContextParams<'a> {
     pub group_activation: &'a str,
     pub emotion_signal_suffix: Option<&'a str>,
     pub execution_state_text: Option<&'a str>,
+    pub world_snapshot_text: Option<&'a str>,
+    pub world_sense_text: Option<&'a str>,
     pub self_state_text: Option<&'a str>,
     pub self_model_text: Option<&'a str>,
     pub autonomy_strategy_text: Option<&'a str>,
@@ -145,6 +147,8 @@ fn section_with_separator_len(content: Option<&str>) -> usize {
 
 fn reserve_priority_memory_budget(
     execution_state_text: Option<&str>,
+    world_snapshot_text: Option<&str>,
+    world_sense_text: Option<&str>,
     self_state_text: Option<&str>,
     self_model_text: Option<&str>,
     autonomy_strategy_text: Option<&str>,
@@ -157,6 +161,10 @@ fn reserve_priority_memory_budget(
 ) -> usize {
     let execution_reserve = section_with_separator_len(execution_state_text).min(base_max);
     let remaining = base_max.saturating_sub(execution_reserve);
+    let world_snapshot_reserve = section_with_separator_len(world_snapshot_text).min(remaining / 4);
+    let remaining = remaining.saturating_sub(world_snapshot_reserve);
+    let world_sense_reserve = section_with_separator_len(world_sense_text).min(remaining / 4);
+    let remaining = remaining.saturating_sub(world_sense_reserve);
     let self_state_reserve = section_with_separator_len(self_state_text).min(remaining / 4);
     let remaining = remaining.saturating_sub(self_state_reserve);
     let self_model_reserve = section_with_separator_len(self_model_text).min(remaining / 4);
@@ -176,6 +184,8 @@ fn reserve_priority_memory_budget(
     let remaining = remaining.saturating_sub(private_garden_reserve);
     let long_term_reserve = section_with_separator_len(long_term_memory_text).min(remaining);
     execution_reserve
+        .saturating_add(world_snapshot_reserve)
+        .saturating_add(world_sense_reserve)
         .saturating_add(self_state_reserve)
         .saturating_add(self_model_reserve)
         .saturating_add(autonomy_strategy_reserve)
@@ -328,6 +338,8 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     let base_max = p.system_max_len.saturating_sub(post_memory_tail_len);
     let priority_memory_reserve = reserve_priority_memory_budget(
         p.execution_state_text,
+        p.world_snapshot_text,
+        p.world_sense_text,
         p.self_state_text,
         p.self_model_text,
         p.autonomy_strategy_text,
@@ -344,6 +356,12 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     append_system_prompt_base(&mut system, &soul, &user, &mem, base_prompt_budget);
     if let Some(execution_state_text) = p.execution_state_text {
         let _ = append_capped_section(&mut system, "\n\n", execution_state_text, base_max);
+    }
+    if let Some(world_snapshot_text) = p.world_snapshot_text {
+        let _ = append_capped_section(&mut system, "\n\n", world_snapshot_text, base_max);
+    }
+    if let Some(world_sense_text) = p.world_sense_text {
+        let _ = append_capped_section(&mut system, "\n\n", world_sense_text, base_max);
     }
     if let Some(self_state_text) = p.self_state_text {
         let _ = append_capped_section(&mut system, "\n\n", self_state_text, base_max);
@@ -644,12 +662,16 @@ mod tests {
             important_message_store: &important,
             has_tools: false,
             skill_descriptions: "",
-            system_max_len: 680,
+            system_max_len: 860,
             messages_max_len: 256,
             session_max_messages: 8,
             group_activation: "always",
             emotion_signal_suffix: None,
             execution_state_text: Some("## Execution State\nGoal: close current task"),
+            world_snapshot_text: Some(
+                "## World Snapshot\nOuter scene now: Wednesday 18:00-18:59, evening.",
+            ),
+            world_sense_text: Some("## World Sense\nCurrent scene: quiet but active chat."),
             self_state_text: Some("## Self State\nMemory pressure: Cautious"),
             self_model_text: Some("## Self Continuity\nAnchor: still the same beetle"),
             autonomy_strategy_text: Some("## Autonomy Strategy\nCurrent mode: consolidate"),
@@ -671,6 +693,8 @@ mod tests {
         .expect("context");
 
         assert!(system.contains("## Execution State"));
+        assert!(system.contains("## World Snapshot"));
+        assert!(system.contains("## World Sense"));
         assert!(system.contains("## Self State"));
         assert!(system.contains("## Self Continuity"));
         assert!(system.contains("## Autonomy Strategy"));
@@ -707,6 +731,8 @@ mod tests {
             group_activation: "always",
             emotion_signal_suffix: None,
             execution_state_text: None,
+            world_snapshot_text: None,
+            world_sense_text: None,
             self_state_text: None,
             self_model_text: None,
             autonomy_strategy_text: None,

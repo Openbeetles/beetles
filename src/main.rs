@@ -430,6 +430,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         platform.execution_state_store();
     let self_model_store: Arc<dyn beetle::memory::SelfModelStore + Send + Sync> =
         platform.self_model_store();
+    let world_sense_store: Arc<dyn beetle::memory::WorldSenseStore + Send + Sync> =
+        platform.world_sense_store();
     let autonomy_strategy_store: Arc<dyn beetle::memory::AutonomyStrategyStore + Send + Sync> =
         platform.autonomy_strategy_store();
     let inner_life_store: Arc<dyn beetle::memory::InnerLifeStore + Send + Sync> =
@@ -1151,6 +1153,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             session_summary_store: Arc::clone(&session_summary_store),
             execution_state_store: Arc::clone(&execution_state_store),
             self_model_store: Arc::clone(&self_model_store),
+            world_sense_store: Arc::clone(&world_sense_store),
             autonomy_strategy_store: Arc::clone(&autonomy_strategy_store),
             inner_life_store: Arc::clone(&inner_life_store),
             self_continuity_store: Arc::clone(&self_continuity_store),
@@ -1164,6 +1167,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             important_message_store: Arc::clone(&important_message_store),
             emotion_signal_store: Arc::clone(&emotion_signal_store)
                 as Arc<dyn beetle::memory::EmotionSignalStore + Send + Sync>,
+            remind_store: Arc::clone(&remind_at_store),
+            task_store: Arc::clone(&task_store),
             pending_retry: Arc::clone(&pending_retry_store),
             strategy: agent_strategy,
             llm_stream: config.llm_stream,
