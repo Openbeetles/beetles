@@ -523,8 +523,33 @@ pub fn recall_long_term_memory_block(
             candidates.push(entry);
         }
     }
+    reorder_recall_candidates_for_chat(chat_id, &mut candidates);
     let selected = policy.select_entries(candidates, desired);
     render_long_term_memory_block(&selected, block_max_len)
+}
+
+fn reorder_recall_candidates_for_chat(chat_id: &str, candidates: &mut [LongTermMemoryEntry]) {
+    candidates.sort_by_key(|entry| recall_scope_priority(chat_id, entry));
+}
+
+fn recall_scope_priority(chat_id: &str, entry: &LongTermMemoryEntry) -> u8 {
+    let same_chat = entry.source_chat_id.as_deref() == Some(chat_id);
+    match (same_chat, &entry.kind) {
+        (true, LongTermMemoryKind::Project)
+        | (true, LongTermMemoryKind::Task)
+        | (true, LongTermMemoryKind::Constraint) => 0,
+        (true, LongTermMemoryKind::Preference)
+        | (true, LongTermMemoryKind::Profile)
+        | (true, LongTermMemoryKind::Relationship) => 1,
+        (false, LongTermMemoryKind::Preference)
+        | (false, LongTermMemoryKind::Profile)
+        | (false, LongTermMemoryKind::Relationship) => 2,
+        (true, LongTermMemoryKind::Fact) => 3,
+        (false, LongTermMemoryKind::Fact) => 4,
+        (false, LongTermMemoryKind::Project)
+        | (false, LongTermMemoryKind::Task)
+        | (false, LongTermMemoryKind::Constraint) => 5,
+    }
 }
 
 /// 渲染注入 prompt 的长期记忆块。
@@ -1284,6 +1309,62 @@ mod tests {
         assert!(query.contains("继续"));
         assert!(query.contains("长期记忆"));
         assert!(query.contains("Linux 侧长期记忆"));
+    }
+
+    #[test]
+    fn recall_block_prefers_same_chat_active_context_over_other_chat_projects() {
+        let store = StubLongTermMemoryStore {
+            recall_entries: vec![
+                LongTermMemoryEntry {
+                    id: "ltm-other-project".to_string(),
+                    kind: LongTermMemoryKind::Project,
+                    topic: "other_project".to_string(),
+                    content: "Other chat project with strong memory keywords.".to_string(),
+                    keywords: vec!["memory".to_string(), "linux".to_string()],
+                    source_chat_id: Some("chat-2".to_string()),
+                    created_at: 1,
+                    updated_at: 10,
+                },
+                LongTermMemoryEntry {
+                    id: "ltm-current-task".to_string(),
+                    kind: LongTermMemoryKind::Task,
+                    topic: "current_focus".to_string(),
+                    content: "Current chat is closing the memory pipeline.".to_string(),
+                    keywords: vec!["memory".to_string(), "pipeline".to_string()],
+                    source_chat_id: Some("chat-1".to_string()),
+                    created_at: 2,
+                    updated_at: 9,
+                },
+                LongTermMemoryEntry {
+                    id: "ltm-pref".to_string(),
+                    kind: LongTermMemoryKind::Preference,
+                    topic: "response_style".to_string(),
+                    content: "User prefers direct technical answers.".to_string(),
+                    keywords: vec!["direct".to_string()],
+                    source_chat_id: None,
+                    created_at: 3,
+                    updated_at: 8,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let block = recall_long_term_memory_block(
+            &store,
+            "chat-1",
+            "memory",
+            Some("当前重点是 memory pipeline"),
+            &[SessionMessage {
+                role: "user".to_string(),
+                content: "继续把 memory pipeline 收掉".to_string(),
+            }],
+            220,
+            MemoryProfile::Standard,
+        )
+        .expect("rendered block");
+
+        assert!(block.contains("[task:current_focus]"));
+        assert!(!block.contains("[project:other_project]"));
     }
 
     #[test]

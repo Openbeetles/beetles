@@ -4,7 +4,7 @@
 use crate::constants::SESSION_SUMMARY_MAX_LEN;
 use crate::error::Result;
 use crate::llm::{LlmClient, LlmHttpClient, Message, ToolChoicePolicy};
-use crate::util::truncate_content_to_max;
+use crate::util::{scrub_credentials, truncate_content_to_max};
 use std::borrow::Cow;
 use std::fmt::Write as _;
 
@@ -13,7 +13,7 @@ use super::{
     SessionSummaryStore,
 };
 
-const SESSION_SUMMARY_SYSTEM_PROMPT: &str = "You are a conversation summarizer. Compress the following conversation into a concise summary (max 800 chars) preserving key facts, user preferences and pending tasks. Reply with the summary only.";
+const SESSION_SUMMARY_SYSTEM_PROMPT: &str = "You are a conversation summarizer. Compress the following conversation into a concise summary (max 800 chars) preserving user intent, durable facts, preferences, active work, and pending tasks. Do not preserve secrets, credentials, raw tool payloads, copied document passages, verbose logs, or large quoted external content. Prefer the conversational state over reproducing retrieved material. Reply with the summary only.";
 
 impl SessionSummaryPolicy {
     fn should_refresh(self, current_count: usize, last_summary_count: usize) -> bool {
@@ -63,7 +63,11 @@ pub fn fallback_session_summary(recent: &[SessionMessage], profile: MemoryProfil
             fallback,
             "{}: {}",
             message.role,
-            truncate_content_to_max(&message.content, policy.fallback_preview_chars).as_ref()
+            truncate_content_to_max(
+                &scrub_credentials(&message.content),
+                policy.fallback_preview_chars,
+            )
+            .as_ref()
         );
     }
     truncate_content_to_max(&fallback, SESSION_SUMMARY_MAX_LEN).into_owned()
@@ -197,7 +201,7 @@ fn build_session_summary_transcript(
             transcript,
             "{}: {}",
             message.role.to_uppercase(),
-            preview.as_ref()
+            scrub_credentials(preview.as_ref())
         );
     }
     transcript
@@ -363,6 +367,17 @@ mod tests {
         assert!(summary.contains("user: one"));
         assert!(summary.contains("assistant: two"));
         assert!(summary.contains("user: three"));
+    }
+
+    #[test]
+    fn fallback_session_summary_scrubs_credentials() {
+        let recent = vec![SessionMessage {
+            role: "user".to_string(),
+            content: "api_key: sk-1234abcdef".to_string(),
+        }];
+        let summary = fallback_session_summary(&recent, MemoryProfile::Standard);
+        assert!(!summary.contains("sk-1234abcdef"));
+        assert!(summary.contains("[REDACTED]"));
     }
 
     #[test]

@@ -6,7 +6,7 @@ use crate::error::Error;
 use crate::error::Result;
 use crate::llm::{LlmClient, LlmHttpClient, Message, ToolChoicePolicy};
 use crate::orchestrator::PressureLevel;
-use crate::util::truncate_content_to_max;
+use crate::util::{scrub_credentials, truncate_content_to_max};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -20,7 +20,7 @@ use super::{
 
 /// 长期记忆提取状态存储路径（相对状态根）。
 pub const REL_PATH_LONG_TERM_EXTRACTION_STATES: &str = "memory/long_term_extraction_states.json";
-pub const LONG_TERM_MEMORY_EXTRACTION_SYSTEM_PROMPT: &str = "You extract durable long-term memory for a personal AI assistant. Return JSON only: an array of objects. Each object must contain op, kind, topic. op must be upsert or delete. kind must be one of preference, profile, relationship, project, task, constraint, fact. topic must be a short stable slot key identifying the same memory across future updates, for example response_style, user_name, current_project, timezone, partner_name. Reuse an existing topic whenever the conversation updates, completes, or corrects that same durable slot. Prefer updating an existing slot over inventing a nearby new topic. For op=upsert, also provide content and optional keywords. For op=delete, omit content and keywords. Use delete when the conversation clearly invalidates or completes an existing durable slot, for example a task is finished, a temporary project focus is no longer active, or a prior fact is explicitly corrected. Store only durable user profile facts, stable preferences, durable constraints, ongoing project/task state, and durable external facts. Do not store greetings, one-off troubleshooting steps, short acknowledgements, temporary moods, assistant plans for the next single turn, or assistant-only claims. When project/task context shifts, update the existing active slot instead of creating a parallel near-duplicate slot. Use the provided session summary and existing long-term memory as grounding when deciding whether to upsert, delete, or ignore. Keep only the highest-value durable changes, at most 4 items. If there is nothing durable to add, update, or delete, return [].";
+pub const LONG_TERM_MEMORY_EXTRACTION_SYSTEM_PROMPT: &str = "You extract durable long-term memory for a personal AI assistant. Return JSON only: an array of objects. Each object must contain op, kind, topic. op must be upsert or delete. kind must be one of preference, profile, relationship, project, task, constraint, fact. topic must be a short stable slot key identifying the same memory across future updates, for example response_style, user_name, current_project, timezone, partner_name. Reuse an existing topic whenever the conversation updates, completes, or corrects that same durable slot. Prefer updating an existing slot over inventing a nearby new topic. For op=upsert, also provide content and optional keywords. For op=delete, omit content and keywords. Use delete when the conversation clearly invalidates or completes an existing durable slot, for example a task is finished, a temporary project focus is no longer active, or a prior fact is explicitly corrected. Store only durable user profile facts, stable preferences, durable constraints, ongoing project/task state, and durable external facts. Do not store greetings, one-off troubleshooting steps, short acknowledgements, temporary moods, assistant plans for the next single turn, assistant-only claims, secrets, credentials, raw tool payloads, copied log fragments, or long external document excerpts. When project/task context shifts, update the existing active slot instead of creating a parallel near-duplicate slot. Use the provided session summary and existing long-term memory as grounding when deciding whether to upsert, delete, or ignore. Keep only the highest-value durable changes, at most 4 items. If there is nothing durable to add, update, or delete, return [].";
 /// 共享策略允许的 recent 消息窗口上限；实际运行值由 MemoryProfile 决定。
 pub const LONG_TERM_MEMORY_EXTRACTION_RECENT_N: usize = 10;
 /// 单次提取允许的动作数上限；实际运行值由 MemoryProfile 决定。
@@ -513,6 +513,9 @@ fn should_keep_durable_draft(draft: &LongTermMemoryDraft) -> bool {
     if content.is_empty() {
         return false;
     }
+    if content_contains_sensitive_material(content) {
+        return false;
+    }
     if !content.chars().any(|ch| ch.is_alphanumeric() || is_cjk(ch)) {
         return false;
     }
@@ -545,6 +548,10 @@ fn should_keep_durable_draft(draft: &LongTermMemoryDraft) -> bool {
         return false;
     }
     true
+}
+
+fn content_contains_sensitive_material(content: &str) -> bool {
+    scrub_credentials(content) != content
 }
 
 fn minimum_durable_content_chars(kind: &LongTermMemoryKind) -> usize {
@@ -902,7 +909,8 @@ fn build_long_term_memory_extraction_transcript(
 ) -> String {
     let mut transcript = String::with_capacity(1536);
     for message in recent {
-        let preview = truncate_content_to_max(&message.content, policy.transcript_preview_chars);
+        let scrubbed = scrub_credentials(&message.content);
+        let preview = truncate_content_to_max(&scrubbed, policy.transcript_preview_chars);
         let _ = writeln!(
             transcript,
             "{}: {}",
@@ -1458,6 +1466,26 @@ mod tests {
                 topic: "tmp".to_string(),
                 content: "ok".to_string(),
                 keywords: vec![],
+                source_chat_id: Some("chat-1".to_string()),
+            }],
+            deletes: vec![],
+        };
+
+        let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
+
+        assert!(prepared.upserts.is_empty());
+        assert!(prepared.deletes.is_empty());
+    }
+
+    #[test]
+    fn prepare_extraction_drops_sensitive_content() {
+        let store = StubLongTermMemoryStore::default();
+        let extraction = ParsedLongTermMemoryExtraction {
+            upserts: vec![LongTermMemoryDraft {
+                kind: LongTermMemoryKind::Constraint,
+                topic: "service_token".to_string(),
+                content: "api_key: sk-1234abcdef".to_string(),
+                keywords: vec!["token".to_string()],
                 source_chat_id: Some("chat-1".to_string()),
             }],
             deletes: vec![],
