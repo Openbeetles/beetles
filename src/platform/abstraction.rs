@@ -7,7 +7,7 @@ use crate::display::{DisplayCommand, DisplayConfig};
 use crate::error::Result;
 use crate::memory::{
     ExecutionStateStore, ImportantMessageStore, LongTermMemoryStore, MemoryProfile, MemoryStore,
-    PendingRetryStore, RemindAtStore, SessionStore, SessionSummaryStore,
+    PendingRetryStore, RemindAtStore, SessionStore, SessionSummaryStore, TurnLedgerStore,
 };
 use crate::platform::ResponseBody;
 use crate::task::TaskStore;
@@ -216,6 +216,7 @@ pub trait Platform: Send + Sync {
     fn important_message_store(&self) -> Arc<dyn ImportantMessageStore + Send + Sync>;
     fn remind_at_store(&self) -> Arc<dyn RemindAtStore + Send + Sync>;
     fn session_summary_store(&self) -> Arc<dyn SessionSummaryStore + Send + Sync>;
+    fn turn_ledger_store(&self) -> Arc<dyn TurnLedgerStore + Send + Sync>;
     fn skill_storage(&self) -> Arc<dyn SkillStorage + Send + Sync>;
     fn skill_meta_store(&self) -> Arc<dyn SkillMetaStore + Send + Sync>;
     fn create_http_client(&self, config: &AppConfig) -> Result<Box<dyn PlatformHttpClient>>;

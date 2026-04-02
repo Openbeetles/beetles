@@ -12,6 +12,7 @@ mod maintenance;
 mod profile;
 mod prompt_context;
 mod session_summary_refresh;
+mod turn_ledger;
 
 pub use context_window::build_context_messages;
 pub use execution_state::{
@@ -63,6 +64,10 @@ pub use session_summary_refresh::{
 };
 pub(crate) use session_summary_refresh::{
     load_session_summary_snapshot, run_session_summary_refresh_with_snapshot,
+};
+pub use turn_ledger::{
+    build_turn_ledger_start, normalize_turn_preview, normalize_turn_reason, TurnDeliveryLedger,
+    TurnLedger, TurnLedgerStatus, TurnLedgerStore, REL_PATH_TURN_LEDGERS,
 };
 
 /// 单次写入内容最大字节数（与 platform::spiffs 上界一致）。实现应拒绝超长写入。

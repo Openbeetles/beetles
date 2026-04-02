@@ -1,6 +1,6 @@
 //! Agent ReAct 循环：入站一条 → context → chat（含 tool_use 多轮）→ 会话持久化 → 出站一条。
 //! 仅依赖 trait；HTTP/Tool 由 main 注入同一实现（如 EspHttpClient）。
-use super::delivery::DeliverySession;
+use super::delivery::{DeliveryReport, DeliverySession};
 use super::final_reply::finalize_user_visible_reply;
 use super::request_plan::AgentRequestPlan;
 use super::strategy::{
@@ -34,12 +34,14 @@ use crate::error::Result;
 use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
 use crate::llm::{LlmClient, Message, StopReason, ToolChoicePolicy};
 use crate::memory::{
-    load_prompt_memory_context, run_long_term_memory_refresh, run_post_reply_memory_maintenance,
+    build_turn_ledger_start, load_prompt_memory_context, normalize_turn_preview,
+    normalize_turn_reason, run_long_term_memory_refresh, run_post_reply_memory_maintenance,
     EmotionSignalStore, ExecutionStateStore, ImportantMessageStore,
     LongTermMemoryExtractionStateStore, LongTermMemoryRefreshContext, LongTermMemoryRefreshOutcome,
     LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore, MemoryStore, PendingRetryStore,
     PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput, PromptMemoryContextParams,
-    SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore,
+    SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore, TurnDeliveryLedger,
+    TurnLedger, TurnLedgerStatus, TurnLedgerStore,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
@@ -188,9 +190,44 @@ struct WorkerLatency {
     tool_calls: u32,
 }
 
+struct WorkerRunTelemetry {
+    streamed: bool,
+    latency: WorkerLatency,
+    delivery: DeliveryReport,
+    any_tool_used: bool,
+    used_final_answer_recovery: bool,
+}
+
 fn mark_ttft_if_visible(latency: &mut WorkerLatency, worker_start: Instant, content: &str) {
     if latency.ttft_ms.is_none() && !content.trim().is_empty() {
         latency.ttft_ms = Some(worker_start.elapsed().as_millis());
+    }
+}
+
+fn persist_turn_ledger(
+    store: &dyn TurnLedgerStore,
+    chat_id: &str,
+    ledger: &TurnLedger,
+    stage: &str,
+) {
+    if let Err(error) = store.set(chat_id, ledger) {
+        log::warn!(
+            "[agent_turn] failed to persist ledger stage={} chat_id={}: {}",
+            stage,
+            chat_id,
+            error
+        );
+    }
+}
+
+fn build_turn_delivery_ledger(report: DeliveryReport) -> TurnDeliveryLedger {
+    TurnDeliveryLedger {
+        waiting_notice_sent: report.waiting_notice_sent,
+        progress_updates_sent: report.progress_updates_sent,
+        partial_updates_sent: report.partial_updates_sent,
+        current_primary_delivered: report.current_primary_delivered,
+        finalize_streamed: report.finalize_streamed,
+        visible_text_updates_sent: report.visible_text_updates_sent,
     }
 }
 
@@ -1142,6 +1179,7 @@ pub struct AgentLoopConfig {
     pub session_store: Arc<dyn SessionStore + Send + Sync>,
     pub session_summary_store: Arc<dyn SessionSummaryStore + Send + Sync>,
     pub execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
+    pub turn_ledger_store: Arc<dyn TurnLedgerStore + Send + Sync>,
     pub memory_profile: crate::memory::MemoryProfile,
     pub get_skill_descriptions: Arc<dyn Fn() -> String + Send + Sync>,
     pub session_max_messages: usize,
@@ -1447,6 +1485,20 @@ fn run_agent_loop_lane(
         // Gate 通过后获取任务槽位：Guard Drop 时自动递减，覆盖整个任务生命周期（含工具调用、会话写入、回复发送）。
         // Acquire task slot only after gate passes; guard auto-decrements on drop.
         let _agent_task_guard = crate::orchestrator::begin_agent_task();
+        let turn_started_at_ms = now_unix_ms();
+        let mut turn_ledger = build_turn_ledger_start(
+            msg.req_id.as_deref().unwrap_or_default(),
+            &msg.channel,
+            msg.ingress,
+            &msg.content,
+            turn_started_at_ms,
+        );
+        persist_turn_ledger(
+            config.turn_ledger_store.as_ref(),
+            &msg.chat_id,
+            &turn_ledger,
+            "start",
+        );
         if let Some(ref mut f) = typing_notifier {
             f(&msg.channel, &msg.chat_id, http);
         }
@@ -1462,11 +1514,24 @@ fn run_agent_loop_lane(
             loc,
         );
 
-        let (outcome, streamed, mut worker_latency) = match final_content {
+        let (outcome, telemetry) = match final_content {
             Ok(ok) => ok,
             Err(e) => {
                 let llm_ms = msg_start.elapsed().as_millis().saturating_sub(admission_ms);
                 let total_ms = msg_start.elapsed().as_millis();
+                turn_ledger.status = TurnLedgerStatus::Failed;
+                turn_ledger.reason = normalize_turn_reason(e.stage());
+                turn_ledger.updated_at_ms = now_unix_ms();
+                turn_ledger.finished_at_ms = turn_ledger.updated_at_ms;
+                turn_ledger.total_ms = total_ms.min(u64::MAX as u128) as u64;
+                turn_ledger.reply_preview =
+                    normalize_turn_preview(&tr(UiMessage::NodeMaintenance, loc));
+                persist_turn_ledger(
+                    config.turn_ledger_store.as_ref(),
+                    &msg.chat_id,
+                    &turn_ledger,
+                    "error",
+                );
                 crate::platform::task_wdt::feed_current_task();
                 metrics::record_error_by_stage(e.stage());
                 log::warn!("[agent:{}] chat loop failed: {}", worker_lane_tag, e);
@@ -1523,6 +1588,13 @@ fn run_agent_loop_lane(
                 continue;
             }
         };
+        let WorkerRunTelemetry {
+            streamed,
+            latency: mut worker_latency,
+            delivery,
+            any_tool_used,
+            used_final_answer_recovery,
+        } = telemetry;
         let (mut reply_content, is_interrupt, reply_already_delivered, apply_finalizer) =
             match outcome {
                 WorkerOutcome::Interrupt(confirm) => {
@@ -1684,6 +1756,39 @@ fn run_agent_loop_lane(
         }
         let total_ms = msg_start.elapsed().as_millis();
         let post_reply_ms = total_ms.saturating_sub(reply_handoff_ms);
+        turn_ledger.status = if is_interrupt {
+            TurnLedgerStatus::Interrupted
+        } else {
+            TurnLedgerStatus::Answered
+        };
+        turn_ledger.reason = normalize_turn_reason(if is_interrupt {
+            "interrupt"
+        } else if reply_already_delivered || delivery.current_primary_delivered {
+            "current_primary"
+        } else if used_final_answer_recovery {
+            "final_recovery"
+        } else {
+            "final_answer"
+        });
+        turn_ledger.reply_preview = normalize_turn_preview(&reply_content);
+        turn_ledger.updated_at_ms = now_unix_ms();
+        turn_ledger.finished_at_ms = turn_ledger.updated_at_ms;
+        turn_ledger.react_rounds = worker_latency.react_rounds;
+        turn_ledger.tool_calls = worker_latency.tool_calls;
+        turn_ledger.any_tool_used = any_tool_used;
+        turn_ledger.final_answer_recovered = used_final_answer_recovery;
+        turn_ledger.final_reply_delivered = delivered;
+        turn_ledger.reply_handoff_ms = reply_handoff_ms.min(u64::MAX as u128) as u64;
+        turn_ledger.post_reply_ms = post_reply_ms.min(u64::MAX as u128) as u64;
+        turn_ledger.total_ms = total_ms.min(u64::MAX as u128) as u64;
+        turn_ledger.ttft_ms = worker_latency.ttft_ms.unwrap_or(0).min(u64::MAX as u128) as u64;
+        turn_ledger.delivery = build_turn_delivery_ledger(delivery);
+        persist_turn_ledger(
+            config.turn_ledger_store.as_ref(),
+            &msg.chat_id,
+            &turn_ledger,
+            "finish",
+        );
         metrics::record_react_rounds(worker_latency.react_rounds);
         metrics::record_tool_calls_last(worker_latency.tool_calls);
         metrics::record_ttft_ms(worker_latency.ttft_ms.unwrap_or(0));
@@ -1750,8 +1855,8 @@ fn run_agent_loop_lane(
     Ok(())
 }
 
-/// 完整 context + worker LLM + ReAct 循环，返回 (WorkerOutcome, streamed, latency)。不写 session，由调用方写。
-/// streamed=true 表示已通过流式编辑发送到通道，调用方应跳过 outbound_tx。
+/// 完整 context + worker LLM + ReAct 循环，返回 (WorkerOutcome, telemetry)。不写 session，由调用方写。
+/// telemetry.streamed=true 表示已通过流式编辑发送到通道，调用方应跳过 outbound_tx。
 #[allow(clippy::too_many_arguments)]
 fn run_worker_path(
     http: &mut dyn PlatformHttpClient,
@@ -1763,7 +1868,7 @@ fn run_worker_path(
     config: &AgentLoopConfig,
     tool_call_repeat: &mut HashMap<u64, u8>,
     loc: UiLocale,
-) -> Result<(WorkerOutcome, bool, WorkerLatency)> {
+) -> Result<(WorkerOutcome, WorkerRunTelemetry)> {
     let mut latency = WorkerLatency::default();
     let worker_start = Instant::now();
     let request_plan = AgentRequestPlan::build(msg, registry, worker_llm, config.strategy);
@@ -1908,6 +2013,7 @@ fn run_worker_path(
     let mut end_turn_followup_used = false;
     let mut recent_tool_round = RecentToolRoundState::default();
     let mut delivered_current_chat_reply: Option<String> = None;
+    let mut used_final_answer_recovery = false;
 
     for round in 0..MAX_REACT_ROUNDS {
         latency.react_rounds = round as u32 + 1;
@@ -2034,7 +2140,14 @@ fn run_worker_path(
                 let confirmation = strip_agent_stop_confirmation(&content);
                 mark_ttft_if_visible(&mut latency, worker_start, &confirmation);
                 let streamed = delivery.finalize(&confirmation);
-                return Ok((WorkerOutcome::Interrupt(confirmation), streamed, latency));
+                let telemetry = WorkerRunTelemetry {
+                    streamed,
+                    latency,
+                    delivery: delivery.report(),
+                    any_tool_used,
+                    used_final_answer_recovery,
+                };
+                return Ok((WorkerOutcome::Interrupt(confirmation), telemetry));
             }
             if let Some(followup) =
                 empty_final_answer_followup(config.strategy, any_tool_used, &content)
@@ -2433,12 +2546,20 @@ fn run_worker_path(
         if content.contains(AGENT_MARKER_STOP) {
             let confirmation = strip_agent_stop_confirmation(&content);
             let streamed = delivery.finalize(&confirmation);
-            return Ok((WorkerOutcome::Interrupt(confirmation), streamed, latency));
+            let telemetry = WorkerRunTelemetry {
+                streamed,
+                latency,
+                delivery: delivery.report(),
+                any_tool_used,
+                used_final_answer_recovery,
+            };
+            return Ok((WorkerOutcome::Interrupt(confirmation), telemetry));
         }
         final_content = content;
         break;
     }
     if final_content.trim().is_empty() && any_tool_used && delivered_current_chat_reply.is_none() {
+        used_final_answer_recovery = true;
         final_content = run_final_answer_recovery_round(
             worker_llm,
             &mut tool_ctx,
@@ -2455,7 +2576,16 @@ fn run_worker_path(
     } else {
         WorkerOutcome::Content(final_content)
     };
-    Ok((outcome, streamed, latency))
+    Ok((
+        outcome,
+        WorkerRunTelemetry {
+            streamed,
+            latency,
+            delivery: delivery.report(),
+            any_tool_used,
+            used_final_answer_recovery,
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -2467,7 +2597,8 @@ mod tests {
         EmotionSignalStore, ExecutionState, ExecutionStateStore, ImportantMessageStore,
         LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryExtractionState,
         LongTermMemoryExtractionStateStore, LongTermMemorySlot, LongTermMemoryStore, MemoryStore,
-        PendingRetryStore, SessionMessage, SessionStore, SessionSummaryStore,
+        PendingRetryStore, SessionMessage, SessionStore, SessionSummaryStore, TurnLedger,
+        TurnLedgerStore,
     };
     use crate::platform::{PlatformHttpClient, ResponseBody};
     use std::collections::HashMap;
@@ -2724,6 +2855,22 @@ mod tests {
         }
     }
 
+    struct StubTurnLedgerStore;
+
+    impl TurnLedgerStore for StubTurnLedgerStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<TurnLedger>> {
+            Ok(None)
+        }
+
+        fn set(&self, _chat_id: &str, _ledger: &TurnLedger) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
     struct SequenceStubLlm {
         responses: Mutex<Vec<LlmResponse>>,
     }
@@ -2763,6 +2910,7 @@ mod tests {
             session_store: Arc::new(StubSessionStore::default()),
             session_summary_store: Arc::new(StubSessionSummaryStore),
             execution_state_store: Arc::new(StubExecutionStateStore),
+            turn_ledger_store: Arc::new(StubTurnLedgerStore),
             memory_profile: crate::memory::MemoryProfile::Embedded,
             get_skill_descriptions: Arc::new(String::new),
             session_max_messages: 16,
@@ -3091,7 +3239,7 @@ mod tests {
             PcMsg::new_inbound("qq_channel", "chat-1", "测试多轮发送", false).expect("message");
         let mut repeat = HashMap::new();
 
-        let (outcome, delivered_inline, _latency) = run_worker_path(
+        let (outcome, telemetry) = run_worker_path(
             &mut http,
             &llm,
             &msg,
@@ -3105,7 +3253,8 @@ mod tests {
         .expect("worker path");
 
         assert!(matches!(outcome, WorkerOutcome::Delivered(ref text) if text == "工具主答复"));
-        assert!(delivered_inline);
+        assert!(telemetry.streamed);
+        assert!(telemetry.delivery.current_primary_delivered);
         let first = outbound_rx.try_recv().expect("visible update");
         let second = outbound_rx.try_recv().expect("primary reply");
         let contents = [first.content.as_str(), second.content.as_str()];

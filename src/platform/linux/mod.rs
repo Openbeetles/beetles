@@ -14,6 +14,7 @@ use crate::platform::{
         SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
         SpiffsPendingRetryStore, SpiffsRemindAtStore, SpiffsSessionStore,
         SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage, SpiffsTaskStore,
+        SpiffsTurnLedgerStore,
     },
     NvsConfigStore,
 };
@@ -24,7 +25,7 @@ use crate::{
     memory::{
         ExecutionStateStore, ImportantMessageStore, LongTermMemoryExtractionStateStore,
         LongTermMemoryStore, MemoryStore, PendingRetryStore, RemindAtStore, SessionStore,
-        SessionSummaryStore,
+        SessionSummaryStore, TurnLedgerStore,
     },
     task::TaskStore,
 };
@@ -48,6 +49,7 @@ pub struct LinuxPlatform {
     important_message_store: Arc<SpiffsImportantMessageStore>,
     remind_at_store: Arc<SpiffsRemindAtStore>,
     session_summary_store: Arc<SpiffsSessionSummaryStore>,
+    turn_ledger_store: Arc<SpiffsTurnLedgerStore>,
     wifi_scan_handle: Mutex<Option<Arc<dyn crate::platform::WifiScan + Send + Sync>>>,
     display_state: Mutex<Option<DisplayState>>,
 }
@@ -77,6 +79,7 @@ impl LinuxPlatform {
             important_message_store: Arc::new(SpiffsImportantMessageStore::new()),
             remind_at_store: Arc::new(SpiffsRemindAtStore::new()),
             session_summary_store: Arc::new(SpiffsSessionSummaryStore::new()),
+            turn_ledger_store: Arc::new(SpiffsTurnLedgerStore::new()),
             wifi_scan_handle: Mutex::new(None),
             display_state: Mutex::new(None),
         }
@@ -211,6 +214,10 @@ impl Platform for LinuxPlatform {
 
     fn session_summary_store(&self) -> Arc<dyn SessionSummaryStore + Send + Sync> {
         Arc::clone(&self.session_summary_store) as Arc<dyn SessionSummaryStore + Send + Sync>
+    }
+
+    fn turn_ledger_store(&self) -> Arc<dyn TurnLedgerStore + Send + Sync> {
+        Arc::clone(&self.turn_ledger_store) as Arc<dyn TurnLedgerStore + Send + Sync>
     }
 
     fn skill_storage(&self) -> Arc<dyn crate::platform::SkillStorage + Send + Sync> {

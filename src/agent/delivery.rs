@@ -25,6 +25,16 @@ pub trait StreamEditor {
     fn edit(&self, chat_id: &str, message_id: &str, content: &str) -> Result<()>;
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DeliveryReport {
+    pub waiting_notice_sent: bool,
+    pub progress_updates_sent: u8,
+    pub partial_updates_sent: u8,
+    pub current_primary_delivered: bool,
+    pub finalize_streamed: bool,
+    pub visible_text_updates_sent: u8,
+}
+
 pub(crate) struct DeliverySession<'a> {
     mode: DeliveryMode<'a>,
 }
@@ -44,6 +54,7 @@ struct EditDelivery<'a> {
     edit_failures: u8,
     primary_delivered: bool,
     last_visible_text: String,
+    report: DeliveryReport,
 }
 
 struct QueuedDelivery<'a> {
@@ -53,12 +64,14 @@ struct QueuedDelivery<'a> {
     req_id: &'a str,
     primary_delivered: bool,
     last_visible_text: String,
+    report: DeliveryReport,
     shared: Arc<QueuedDeliveryShared>,
 }
 
 struct QueuedDeliveryShared {
     visible_updates_sent: AtomicU8,
     waiting_notice_canceled: AtomicBool,
+    waiting_notice_sent: AtomicBool,
 }
 
 struct WaitingNoticeJob {
@@ -95,6 +108,7 @@ impl<'a> DeliverySession<'a> {
                 edit_failures: 0,
                 primary_delivered: false,
                 last_visible_text: String::new(),
+                report: DeliveryReport::default(),
             })
         } else {
             DeliveryMode::Queued(QueuedDelivery {
@@ -104,6 +118,7 @@ impl<'a> DeliverySession<'a> {
                 req_id,
                 primary_delivered: false,
                 last_visible_text: String::new(),
+                report: DeliveryReport::default(),
                 shared: spawn_waiting_notice(
                     outbound_tx.clone(),
                     Arc::clone(&msg.channel),
@@ -114,6 +129,14 @@ impl<'a> DeliverySession<'a> {
             })
         };
         Self { mode }
+    }
+
+    pub(crate) fn report(&self) -> DeliveryReport {
+        match self.mode {
+            DeliveryMode::Silent => DeliveryReport::default(),
+            DeliveryMode::Edit(ref delivery) => delivery.report,
+            DeliveryMode::Queued(ref delivery) => delivery.report(),
+        }
     }
 
     pub(crate) fn on_stream_delta(&mut self, accumulated: &str) {
@@ -129,8 +152,10 @@ impl<'a> DeliverySession<'a> {
             return;
         }
         match self.mode {
-            DeliveryMode::Edit(ref mut delivery) => delivery.force_visible_update(&text),
-            DeliveryMode::Queued(ref mut delivery) => delivery.emit(&text),
+            DeliveryMode::Edit(ref mut delivery) => {
+                delivery.force_visible_update(&text, true, false)
+            }
+            DeliveryMode::Queued(ref mut delivery) => delivery.emit(&text, true, false),
             DeliveryMode::Silent => {}
         }
     }
@@ -141,7 +166,9 @@ impl<'a> DeliverySession<'a> {
             return;
         }
         match self.mode {
-            DeliveryMode::Edit(ref mut delivery) => delivery.force_visible_update(&text),
+            DeliveryMode::Edit(ref mut delivery) => {
+                delivery.force_visible_update(&text, false, true)
+            }
             // Non-edit channels cannot revise previously sent text, so exposing ToolUse-time
             // assistant drafts here tends to leak unfinished step plans to the user.
             // Keep queued delivery runtime-controlled: waiting notice + tool progress + final answer.
@@ -199,9 +226,15 @@ impl<'a> EditDelivery<'a> {
         self.edit_existing(accumulated);
     }
 
-    fn force_visible_update(&mut self, content: &str) {
+    fn force_visible_update(&mut self, content: &str, is_progress: bool, is_partial: bool) {
         if self.edit_disabled || self.primary_delivered {
             return;
+        }
+        if is_progress {
+            self.report.progress_updates_sent = self.report.progress_updates_sent.saturating_add(1);
+        }
+        if is_partial {
+            self.report.partial_updates_sent = self.report.partial_updates_sent.saturating_add(1);
         }
         if self.message_id.is_none() {
             self.send_initial(content);
@@ -222,7 +255,9 @@ impl<'a> EditDelivery<'a> {
         } else if !final_content.trim().is_empty() {
             self.edit_existing(final_content);
         }
-        self.message_id.is_some() && !self.edit_disabled
+        let streamed = self.message_id.is_some() && !self.edit_disabled;
+        self.report.finalize_streamed = streamed;
+        streamed
     }
 
     fn deliver_current_primary(&mut self, content: &str) -> Result<bool> {
@@ -241,6 +276,7 @@ impl<'a> EditDelivery<'a> {
             ));
         }
         self.primary_delivered = true;
+        self.report.current_primary_delivered = true;
         Ok(true)
     }
 
@@ -255,6 +291,8 @@ impl<'a> EditDelivery<'a> {
                 self.last_visible_text = normalized;
                 self.last_edit_at = std::time::Instant::now();
                 self.edit_failures = 0;
+                self.report.visible_text_updates_sent =
+                    self.report.visible_text_updates_sent.saturating_add(1);
             }
             Ok(None) => {}
             Err(e) => {
@@ -311,13 +349,19 @@ impl<'a> QueuedDelivery<'a> {
             .store(true, Ordering::Relaxed);
     }
 
-    fn emit(&mut self, content: &str) {
+    fn emit(&mut self, content: &str, is_progress: bool, is_partial: bool) {
         if self.primary_delivered {
             return;
         }
         let normalized = normalize_visible_update(content, crate::bus::MAX_CONTENT_LEN);
         if normalized.is_empty() || normalized == self.last_visible_text {
             return;
+        }
+        if is_progress {
+            self.report.progress_updates_sent = self.report.progress_updates_sent.saturating_add(1);
+        }
+        if is_partial {
+            self.report.partial_updates_sent = self.report.partial_updates_sent.saturating_add(1);
         }
         self.cancel_waiting_notice();
         if !self.try_claim_visible_slot() {
@@ -332,6 +376,8 @@ impl<'a> QueuedDelivery<'a> {
         ) {
             Ok(()) => {
                 self.last_visible_text = normalized;
+                self.report.visible_text_updates_sent =
+                    self.report.visible_text_updates_sent.saturating_add(1);
             }
             Err(()) => {
                 self.shared
@@ -361,6 +407,7 @@ impl<'a> QueuedDelivery<'a> {
         })?;
         self.last_visible_text = content.to_string();
         self.primary_delivered = true;
+        self.report.current_primary_delivered = true;
         Ok(true)
     }
 
@@ -384,6 +431,12 @@ impl<'a> QueuedDelivery<'a> {
                 return true;
             }
         }
+    }
+
+    fn report(&self) -> DeliveryReport {
+        let mut report = self.report;
+        report.waiting_notice_sent = self.shared.waiting_notice_sent.load(Ordering::Relaxed);
+        report
     }
 }
 
@@ -445,6 +498,7 @@ fn spawn_waiting_notice(
     let shared = Arc::new(QueuedDeliveryShared {
         visible_updates_sent: AtomicU8::new(0),
         waiting_notice_canceled: AtomicBool::new(false),
+        waiting_notice_sent: AtomicBool::new(false),
     });
     waiting_notice_scheduler().schedule(WaitingNoticeJob {
         due_at: Instant::now() + waiting_notice_delay(),
@@ -555,6 +609,8 @@ fn fire_due_waiting_notices(pending: &mut Vec<WaitingNoticeJob>) {
         .is_err()
         {
             shared.visible_updates_sent.fetch_sub(1, Ordering::Relaxed);
+        } else {
+            shared.waiting_notice_sent.store(true, Ordering::Relaxed);
         }
     }
 }
@@ -683,6 +739,15 @@ mod tests {
 
         assert!(streamed);
         assert_eq!(
+            delivery.report(),
+            DeliveryReport {
+                progress_updates_sent: 1,
+                finalize_streamed: true,
+                visible_text_updates_sent: 1,
+                ..DeliveryReport::default()
+            }
+        );
+        assert_eq!(
             editor
                 .sends
                 .lock()
@@ -711,6 +776,13 @@ mod tests {
             .expect("primary current");
         assert!(delivered);
         assert!(delivery.finalize("最终答案"));
+        assert_eq!(
+            delivery.report(),
+            DeliveryReport {
+                current_primary_delivered: true,
+                ..DeliveryReport::default()
+            }
+        );
 
         let first = outbound_rx.try_recv().expect("primary reply");
         assert_eq!(first.content, "主答复");
@@ -754,12 +826,13 @@ mod tests {
     fn queued_delivery_sends_waiting_notice_for_long_think() {
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
-        let _delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
+        let delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
 
         std::thread::sleep(waiting_notice_delay() + std::time::Duration::from_millis(20));
 
         let first = outbound_rx.try_recv().expect("waiting notice");
         assert_eq!(first.content, "还在处理，请稍等 ⏳");
+        assert!(delivery.report().waiting_notice_sent);
     }
 
     #[test]
@@ -793,6 +866,7 @@ mod tests {
         let shared = Arc::new(QueuedDeliveryShared {
             visible_updates_sent: AtomicU8::new(0),
             waiting_notice_canceled: AtomicBool::new(false),
+            waiting_notice_sent: AtomicBool::new(false),
         });
 
         assert!(try_claim_shared_visible_slot(&shared));
