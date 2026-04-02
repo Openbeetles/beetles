@@ -35,8 +35,15 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         "POST /api/restart",
         "POST /api/config_reset",
         "POST /api/webhook",
-        "POST /api/feishu/event",
     ];
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    {
+        endpoints.push("POST /api/feishu/event");
+        endpoints.push("POST /api/dingtalk/webhook");
+        endpoints.push("GET /api/wecom/webhook");
+        endpoints.push("POST /api/wecom/webhook");
+        endpoints.push("POST /api/webhook/qq");
+    }
     if cfg!(feature = "ota") {
         endpoints.push("GET /api/ota/check");
         endpoints.push("POST /api/ota");

@@ -56,13 +56,10 @@ pub mod config_page;
 pub mod config_reset;
 pub mod csrf_token;
 pub mod diagnose;
-pub mod dingtalk_webhook;
-pub mod feishu_event;
 pub mod health;
 pub mod memory;
 pub mod metrics;
 pub mod pairing;
-pub mod qq_webhook;
 pub mod resource;
 pub mod restart;
 pub mod root;
@@ -73,8 +70,16 @@ pub mod system_info;
 pub mod tools;
 pub mod user;
 pub mod webhook;
-pub mod wecom_webhook;
 pub mod wifi_scan;
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub mod dingtalk_webhook;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub mod feishu_event;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub mod qq_webhook;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub mod wecom_webhook;
 
 #[cfg(feature = "ota")]
 pub mod ota;

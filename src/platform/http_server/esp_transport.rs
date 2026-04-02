@@ -18,15 +18,11 @@ use esp_idf_svc::http::server::EspHttpServer;
 use std::sync::Arc;
 use std::time::Duration;
 
-const FEISHU_EVENT_BODY_MAX: usize = 64 * 1024;
-
 #[derive(Clone, Copy)]
 pub(super) enum EspBodyMode {
     None,
     Utf8(usize),
     Utf8SoulUser,
-    Feishu,
-    QqBinary,
 }
 
 fn method_as_str(m: Method) -> &'static str {
@@ -59,20 +55,6 @@ fn collect_headers(req: &impl Headers) -> Vec<(String, String)> {
         }
     }
     v
-}
-
-/// Allocate a zeroed `Vec<u8>` backed by PSRAM when available (ESP32-S3).
-/// Falls back to normal heap on non-xtensa or PSRAM exhaustion.
-/// Safe to drop: `Esp32Alloc::dealloc` uses `heap_caps_free` for both regions.
-fn psram_backed_vec_u8(len: usize) -> Vec<u8> {
-    if let Some(ptr) = crate::platform::heap::alloc_spiram_buffer(len) {
-        unsafe {
-            std::ptr::write_bytes(ptr, 0, len);
-            Vec::from_raw_parts(ptr, len, len)
-        }
-    } else {
-        vec![0u8; len]
-    }
 }
 
 #[inline(never)]
@@ -111,38 +93,6 @@ fn read_body_esp<C: Connection>(
                     Err(ApiResponse::err_400(&msg))
                 }
             }
-        }
-        EspBodyMode::Feishu => {
-            match common::read_body_utf8_impl(req, req.content_len(), FEISHU_EVENT_BODY_MAX) {
-                Ok(s) => Ok(s.into_bytes()),
-                Err(BodyReadError::ReadFailed) => {
-                    let loc = crate::i18n::locale_from_store(store);
-                    let msg = crate::i18n::tr(crate::i18n::Message::BodyReadFailed, loc);
-                    Err(ApiResponse::err_500(&msg))
-                }
-                Err(BodyReadError::InvalidUtf8) => {
-                    let loc = crate::i18n::locale_from_store(store);
-                    let msg = crate::i18n::tr(crate::i18n::Message::InvalidUtf8, loc);
-                    Err(ApiResponse::err_400(&msg))
-                }
-            }
-        }
-        EspBodyMode::QqBinary => {
-            let max_len = req
-                .content_len()
-                .map(|u| u.min(crate::channels::QQ_WEBHOOK_BODY_MAX as u64) as usize)
-                .unwrap_or(crate::channels::QQ_WEBHOOK_BODY_MAX);
-            let mut buf = psram_backed_vec_u8(max_len);
-            let n = match embedded_io::Read::read(req, &mut buf) {
-                Ok(n) => n,
-                Err(_) => {
-                    let loc = crate::i18n::locale_from_store(store);
-                    let msg = crate::i18n::tr(crate::i18n::Message::BodyReadFailed, loc);
-                    return Err(ApiResponse::err_500(&msg));
-                }
-            };
-            buf.truncate(n);
-            Ok(buf)
         }
     }
 }
@@ -915,84 +865,6 @@ pub(super) fn register_all_esp_routes(
         config_store,
         EspBodyMode::None
     );
-
-    esp_route!(
-        server,
-        "/api/feishu/event",
-        Post,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::Feishu
-    );
-    esp_route!(
-        server,
-        "/api/feishu/event",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/dingtalk/webhook",
-        Post,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN)
-    );
-    esp_route!(
-        server,
-        "/api/dingtalk/webhook",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/wecom/webhook",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/wecom/webhook",
-        Post,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN)
-    );
-    esp_route!(
-        server,
-        "/api/wecom/webhook",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    if env.qq_webhook_enabled {
-        esp_route!(
-            server,
-            "/api/webhook/qq",
-            Post,
-            ctx,
-            env,
-            config_store,
-            EspBodyMode::QqBinary
-        );
-    }
 
     #[cfg(feature = "ota")]
     {

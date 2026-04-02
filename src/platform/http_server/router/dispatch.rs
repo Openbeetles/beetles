@@ -696,18 +696,21 @@ pub fn dispatch(
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
         }
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         ("POST", "/api/feishu/event") => {
             let body_str = utf8_body(&incoming.body)?;
             let r = handlers::feishu_event::post(ctx, &env.inbound_tx, body_str)
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
         }
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         ("POST", "/api/dingtalk/webhook") => {
             let body_str = utf8_body(&incoming.body)?;
             let r = handlers::dingtalk_webhook::post(&env.inbound_tx, body_str)
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
         }
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         ("GET", "/api/wecom/webhook") => {
             let config = ctx.config();
             let r = handlers::wecom_webhook::get_verify(uri, &config.wecom_token);
@@ -718,12 +721,14 @@ pub fn dispatch(
                 r.body.to_vec(),
             ))
         }
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         ("POST", "/api/wecom/webhook") => {
             let body_str = utf8_body(&incoming.body)?;
             let r = handlers::wecom_webhook::post(ctx, uri, &env.inbound_tx, body_str)
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
         }
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         ("POST", "/api/webhook/qq") => {
             if !env.qq_webhook_enabled {
                 return Ok(OutgoingResponse::json(
