@@ -3,8 +3,10 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    LongTermMemoryDraft, LongTermMemoryKind, LongTermMemorySlot, LongTermMemoryStore, MemoryStore,
-    MAX_MEMORY_CONTENT_LEN, MAX_SOUL_USER_LEN,
+    LongTermMemoryConfidence, LongTermMemoryDraft, LongTermMemoryFreshness, LongTermMemoryKind,
+    LongTermMemorySlot, LongTermMemorySourceScope, LongTermMemorySourceType,
+    LongTermMemoryStaleHint, LongTermMemoryStore, MemoryStore, MAX_MEMORY_CONTENT_LEN,
+    MAX_SOUL_USER_LEN,
 };
 use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
 use serde_json::json;
@@ -46,7 +48,12 @@ impl Tool for MemoryManageTool {
                 "id": { "type": "string", "description": "Structured long-term memory id for get_long_term/delete_long_term" },
                 "topic": { "type": "string", "description": "Structured long-term memory stable topic key, e.g. response_style or current_project" },
                 "kind": { "type": "string", "description": "Structured long-term memory kind: preference|profile|relationship|project|task|constraint|fact" },
-                "keywords": { "type": "array", "items": { "type": "string" }, "description": "Structured long-term memory keywords" }
+                "keywords": { "type": "array", "items": { "type": "string" }, "description": "Structured long-term memory keywords" },
+                "source_type": { "type": "string", "description": "Structured long-term memory source type: conversation|manual_tool|system_runtime|external_observation" },
+                "source_scope": { "type": "string", "description": "Structured long-term memory source scope: chat|user|world" },
+                "confidence": { "type": "string", "description": "Structured long-term memory confidence: low|medium|high" },
+                "freshness": { "type": "string", "description": "Structured long-term memory freshness: stable|dynamic|volatile" },
+                "stale_hint": { "type": "string", "description": "Structured long-term memory stale hint: none|review_before_use|verify_against_current_state" }
             },
             "required": ["op"]
         })
@@ -192,17 +199,50 @@ impl Tool for MemoryManageTool {
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
+                let source_type = obj
+                    .get("source_type")
+                    .and_then(|x| x.as_str())
+                    .map(parse_long_term_source_type)
+                    .transpose()?;
+                let source_scope = obj
+                    .get("source_scope")
+                    .and_then(|x| x.as_str())
+                    .map(parse_long_term_source_scope)
+                    .transpose()?;
+                let confidence = obj
+                    .get("confidence")
+                    .and_then(|x| x.as_str())
+                    .map(parse_long_term_confidence)
+                    .transpose()?;
+                let freshness = obj
+                    .get("freshness")
+                    .and_then(|x| x.as_str())
+                    .map(parse_long_term_freshness)
+                    .transpose()?;
+                let stale_hint = obj
+                    .get("stale_hint")
+                    .and_then(|x| x.as_str())
+                    .map(parse_long_term_stale_hint)
+                    .transpose()?;
                 let draft = LongTermMemoryDraft {
                     kind,
                     topic: topic.to_string(),
                     content: content.to_string(),
                     keywords,
                     source_chat_id: None,
+                    source_type: Some(source_type.unwrap_or(LongTermMemorySourceType::ManualTool)),
+                    source_scope,
+                    confidence,
+                    freshness,
+                    stale_hint,
                 };
-                let total = self
+                let changed_count = self
                     .long_term_store
                     .upsert_many(&[draft], crate::util::current_unix_secs())?;
-                Ok(json!({"op": "upsert_long_term", "ok": true, "total": total}).to_string())
+                Ok(
+                    json!({"op": "upsert_long_term", "ok": true, "changed_count": changed_count})
+                        .to_string(),
+                )
             }
             "delete_long_term" => {
                 let id = obj
@@ -268,6 +308,67 @@ fn parse_long_term_kind(kind: &str) -> Result<LongTermMemoryKind> {
         _ => Err(Error::config(
             "tool_memory_manage",
             "invalid kind: expected preference|profile|relationship|project|task|constraint|fact",
+        )),
+    }
+}
+
+fn parse_long_term_source_type(raw: &str) -> Result<LongTermMemorySourceType> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "conversation" => Ok(LongTermMemorySourceType::Conversation),
+        "manual_tool" => Ok(LongTermMemorySourceType::ManualTool),
+        "system_runtime" => Ok(LongTermMemorySourceType::SystemRuntime),
+        "external_observation" => Ok(LongTermMemorySourceType::ExternalObservation),
+        _ => Err(Error::config(
+            "tool_memory_manage",
+            "invalid source_type: expected conversation|manual_tool|system_runtime|external_observation",
+        )),
+    }
+}
+
+fn parse_long_term_source_scope(raw: &str) -> Result<LongTermMemorySourceScope> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "chat" => Ok(LongTermMemorySourceScope::Chat),
+        "user" => Ok(LongTermMemorySourceScope::User),
+        "world" => Ok(LongTermMemorySourceScope::World),
+        _ => Err(Error::config(
+            "tool_memory_manage",
+            "invalid source_scope: expected chat|user|world",
+        )),
+    }
+}
+
+fn parse_long_term_confidence(raw: &str) -> Result<LongTermMemoryConfidence> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "low" => Ok(LongTermMemoryConfidence::Low),
+        "medium" => Ok(LongTermMemoryConfidence::Medium),
+        "high" => Ok(LongTermMemoryConfidence::High),
+        _ => Err(Error::config(
+            "tool_memory_manage",
+            "invalid confidence: expected low|medium|high",
+        )),
+    }
+}
+
+fn parse_long_term_freshness(raw: &str) -> Result<LongTermMemoryFreshness> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "stable" => Ok(LongTermMemoryFreshness::Stable),
+        "dynamic" => Ok(LongTermMemoryFreshness::Dynamic),
+        "volatile" => Ok(LongTermMemoryFreshness::Volatile),
+        _ => Err(Error::config(
+            "tool_memory_manage",
+            "invalid freshness: expected stable|dynamic|volatile",
+        )),
+    }
+}
+
+fn parse_long_term_stale_hint(raw: &str) -> Result<LongTermMemoryStaleHint> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "none" => Ok(LongTermMemoryStaleHint::None),
+        "review_before_use" => Ok(LongTermMemoryStaleHint::ReviewBeforeUse),
+        "verify_against_current_state" => Ok(LongTermMemoryStaleHint::VerifyAgainstCurrentState),
+        _ => Err(Error::config(
+            "tool_memory_manage",
+            "invalid stale_hint: expected none|review_before_use|verify_against_current_state",
         )),
     }
 }

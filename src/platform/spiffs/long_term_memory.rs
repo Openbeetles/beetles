@@ -4,9 +4,9 @@
 use crate::error::{Error, Result};
 use crate::memory::{
     canonicalize_long_term_memory_entry, govern_long_term_memory_entries,
-    merge_long_term_memory_entry, score_long_term_memory_recall, LongTermMemoryDraft,
-    LongTermMemoryEntry, LongTermMemorySlot, LongTermMemoryStore, MAX_LONG_TERM_MEMORY_ITEMS,
-    REL_PATH_LONG_TERM_MEMORIES,
+    long_term_memory_entry_from_draft, merge_long_term_memory_entry, score_long_term_memory_recall,
+    touch_long_term_memory_usage, LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemorySlot,
+    LongTermMemoryStore, MAX_LONG_TERM_MEMORY_ITEMS, REL_PATH_LONG_TERM_MEMORIES,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -82,6 +82,7 @@ impl LongTermMemoryStore for SpiffsLongTermMemoryStore {
     fn upsert_many(&self, drafts: &[LongTermMemoryDraft], now_secs: u64) -> Result<usize> {
         self.with_entries_mut(|entries| {
             let mut changed = false;
+            let mut changed_count = 0usize;
             for draft in drafts {
                 let Some(normalized) = draft.normalized() else {
                     continue;
@@ -90,21 +91,20 @@ impl LongTermMemoryStore for SpiffsLongTermMemoryStore {
                     continue;
                 };
                 if let Some(existing) = entries.iter_mut().find(|entry| entry.id == id) {
-                    changed |= merge_long_term_memory_entry(existing, &normalized, now_secs);
+                    if merge_long_term_memory_entry(existing, &normalized, now_secs) {
+                        changed = true;
+                        changed_count += 1;
+                    }
                     continue;
                 }
 
-                entries.push(LongTermMemoryEntry {
-                    id,
-                    kind: normalized.kind,
-                    topic: normalized.topic,
-                    content: normalized.content,
-                    keywords: normalized.keywords,
-                    source_chat_id: normalized.source_chat_id,
-                    created_at: now_secs,
-                    updated_at: now_secs,
-                });
+                let Some(entry) = long_term_memory_entry_from_draft(&normalized, id, now_secs)
+                else {
+                    continue;
+                };
+                entries.push(entry);
                 changed = true;
+                changed_count += 1;
             }
 
             changed |= govern_long_term_memory_entries(entries, now_secs);
@@ -113,7 +113,7 @@ impl LongTermMemoryStore for SpiffsLongTermMemoryStore {
                 entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
                 Self::persist(entries)?;
             }
-            Ok(entries.len())
+            Ok(changed_count)
         })
     }
 
@@ -126,25 +126,62 @@ impl LongTermMemoryStore for SpiffsLongTermMemoryStore {
         let limit = limit.clamp(1, MAX_LONG_TERM_MEMORY_ITEMS);
         let now_secs = crate::util::current_unix_secs();
         self.with_entries_mut(|entries| {
-            let mut scored: Vec<(u32, LongTermMemoryEntry)> = entries
+            let mut scored: Vec<(u32, String)> = entries
                 .iter()
                 .filter_map(|entry| {
                     let score =
                         score_long_term_memory_recall(query, source_chat_id, now_secs, entry);
-                    (score > 0).then(|| (score, entry.clone()))
+                    (score > 0).then(|| (score, entry.id.clone()))
                 })
                 .collect();
             scored.sort_by(|a, b| {
-                b.0.cmp(&a.0)
-                    .then_with(|| b.1.updated_at.cmp(&a.1.updated_at))
+                b.0.cmp(&a.0).then_with(|| {
+                    let left = entries
+                        .iter()
+                        .find(|entry| entry.id == a.1)
+                        .map(|entry| entry.updated_at)
+                        .unwrap_or(0);
+                    let right = entries
+                        .iter()
+                        .find(|entry| entry.id == b.1)
+                        .map(|entry| entry.updated_at)
+                        .unwrap_or(0);
+                    right.cmp(&left)
+                })
             });
             scored.truncate(limit);
-            Ok(scored.into_iter().map(|(_, entry)| entry).collect())
+            let mut touched = false;
+            let selected_ids: Vec<String> = scored.into_iter().map(|(_, id)| id).collect();
+            let mut out = Vec::with_capacity(selected_ids.len());
+            for selected_id in selected_ids {
+                if let Some(entry) = entries.iter_mut().find(|entry| entry.id == selected_id) {
+                    touched |= touch_long_term_memory_usage(entry, now_secs);
+                    out.push(entry.clone());
+                }
+            }
+            if touched {
+                Self::persist(entries)?;
+            }
+            Ok(out)
         })
     }
 
     fn get(&self, id: &str) -> Result<Option<LongTermMemoryEntry>> {
-        self.with_entries_mut(|entries| Ok(entries.iter().find(|entry| entry.id == id).cloned()))
+        let now_secs = crate::util::current_unix_secs();
+        self.with_entries_mut(|entries| {
+            let mut touched = false;
+            let item = entries
+                .iter_mut()
+                .find(|entry| entry.id == id)
+                .map(|entry| {
+                    touched = touch_long_term_memory_usage(entry, now_secs);
+                    entry.clone()
+                });
+            if touched {
+                Self::persist(entries)?;
+            }
+            Ok(item)
+        })
     }
 
     fn list(&self, limit: usize) -> Result<Vec<LongTermMemoryEntry>> {

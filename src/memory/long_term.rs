@@ -31,6 +31,8 @@ pub const MAX_LONG_TERM_MEMORY_BLOCK_LEN: usize = 1024;
 const LONG_TERM_MEMORY_TASK_TTL_SECS: u64 = 45 * 86_400;
 /// 长期记忆治理：项目超时后视为陈旧。
 const LONG_TERM_MEMORY_PROJECT_TTL_SECS: u64 = 180 * 86_400;
+/// 召回触达后更新 last_used_at 的最小间隔，避免每轮都刷盘。
+const LONG_TERM_MEMORY_TOUCH_INTERVAL_SECS: u64 = 6 * 3_600;
 
 impl LongTermRecallPolicy {
     fn recall_block_max_len(self, system_max_len: usize) -> usize {
@@ -183,7 +185,7 @@ impl LongTermRecallPolicy {
             return false;
         }
         let age_secs = now_secs - entry.updated_at;
-        match entry.kind {
+        (match entry.kind {
             LongTermMemoryKind::Task => age_secs > LONG_TERM_MEMORY_TASK_TTL_SECS,
             LongTermMemoryKind::Project => age_secs > LONG_TERM_MEMORY_PROJECT_TTL_SECS,
             LongTermMemoryKind::Preference
@@ -191,7 +193,8 @@ impl LongTermRecallPolicy {
             | LongTermMemoryKind::Relationship
             | LongTermMemoryKind::Constraint
             | LongTermMemoryKind::Fact => false,
-        }
+        }) || matches!(entry.freshness, LongTermMemoryFreshness::Volatile)
+            && age_secs > LONG_TERM_MEMORY_PROJECT_TTL_SECS
     }
 }
 
@@ -222,6 +225,139 @@ impl LongTermMemoryKind {
     }
 }
 
+/// 当前记忆内容的置信度。
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum LongTermMemoryConfidence {
+    Low,
+    #[default]
+    Medium,
+    High,
+}
+
+impl LongTermMemoryConfidence {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Low => "low confidence",
+            Self::Medium => "medium confidence",
+            Self::High => "high confidence",
+        }
+    }
+
+    fn recall_bonus(self) -> u32 {
+        match self {
+            Self::Low => 0,
+            Self::Medium => 2,
+            Self::High => 4,
+        }
+    }
+}
+
+/// 记忆来源类型：当前内容最近一次由什么来源形成。
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum LongTermMemorySourceType {
+    #[default]
+    Conversation,
+    ManualTool,
+    SystemRuntime,
+    ExternalObservation,
+}
+
+impl LongTermMemorySourceType {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Conversation => "conversation source",
+            Self::ManualTool => "manual source",
+            Self::SystemRuntime => "system source",
+            Self::ExternalObservation => "external source",
+        }
+    }
+}
+
+/// 记忆适用范围：这条记录更应该被视为当前 chat、跨 chat 用户画像，还是外部世界事实。
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum LongTermMemorySourceScope {
+    Chat,
+    #[default]
+    User,
+    World,
+}
+
+impl LongTermMemorySourceScope {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Chat => "chat scope",
+            Self::User => "user scope",
+            Self::World => "world scope",
+        }
+    }
+}
+
+/// 记忆的新鲜度类别：决定召回时是否更应提示复核。
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum LongTermMemoryFreshness {
+    #[default]
+    Stable,
+    Dynamic,
+    Volatile,
+}
+
+impl LongTermMemoryFreshness {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Dynamic => "dynamic",
+            Self::Volatile => "volatile",
+        }
+    }
+
+    fn aging_after_secs(self) -> u64 {
+        match self {
+            Self::Stable => 90 * 86_400,
+            Self::Dynamic => 14 * 86_400,
+            Self::Volatile => 3 * 86_400,
+        }
+    }
+
+    fn stale_after_secs(self) -> u64 {
+        match self {
+            Self::Stable => 365 * 86_400,
+            Self::Dynamic => 90 * 86_400,
+            Self::Volatile => 21 * 86_400,
+        }
+    }
+}
+
+/// 召回侧对模型的 stale 提示倾向。
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum LongTermMemoryStaleHint {
+    #[default]
+    None,
+    ReviewBeforeUse,
+    VerifyAgainstCurrentState,
+}
+
+impl LongTermMemoryStaleHint {
+    pub fn label(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::ReviewBeforeUse => Some("review before use"),
+            Self::VerifyAgainstCurrentState => Some("verify against current state"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LongTermMemoryAgeState {
+    Current,
+    Aging,
+    Stale,
+}
+
 /// 持久化后的长期记忆条目。
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LongTermMemoryEntry {
@@ -232,9 +368,21 @@ pub struct LongTermMemoryEntry {
     pub content: String,
     pub keywords: Vec<String>,
     pub source_chat_id: Option<String>,
+    #[serde(default)]
+    pub source_type: LongTermMemorySourceType,
+    #[serde(default)]
+    pub source_scope: LongTermMemorySourceScope,
+    #[serde(default)]
+    pub confidence: LongTermMemoryConfidence,
+    #[serde(default)]
+    pub freshness: LongTermMemoryFreshness,
+    #[serde(default)]
+    pub stale_hint: LongTermMemoryStaleHint,
     pub created_at: u64,
     #[serde(default)]
     pub updated_at: u64,
+    #[serde(default)]
+    pub last_used_at: u64,
 }
 
 /// 待写入的长期记忆草稿。
@@ -247,6 +395,16 @@ pub struct LongTermMemoryDraft {
     pub keywords: Vec<String>,
     #[serde(default)]
     pub source_chat_id: Option<String>,
+    #[serde(default)]
+    pub source_type: Option<LongTermMemorySourceType>,
+    #[serde(default)]
+    pub source_scope: Option<LongTermMemorySourceScope>,
+    #[serde(default)]
+    pub confidence: Option<LongTermMemoryConfidence>,
+    #[serde(default)]
+    pub freshness: Option<LongTermMemoryFreshness>,
+    #[serde(default)]
+    pub stale_hint: Option<LongTermMemoryStaleHint>,
 }
 
 /// 长期记忆槽位键，用于更新/删除同一条结构化记忆。
@@ -293,6 +451,11 @@ impl LongTermMemoryDraft {
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(str::to_string),
+            source_type: self.source_type,
+            source_scope: self.source_scope,
+            confidence: self.confidence,
+            freshness: self.freshness,
+            stale_hint: self.stale_hint,
         })
     }
 
@@ -332,6 +495,143 @@ fn stable_id_for_kind_topic(kind: &LongTermMemoryKind, topic: &str) -> Option<St
     id.push_str("ltm-");
     id.push_str(&format!("{:016x}", hasher.finish()));
     Some(id)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LongTermMemoryResolvedMeta {
+    source_type: LongTermMemorySourceType,
+    source_scope: LongTermMemorySourceScope,
+    confidence: LongTermMemoryConfidence,
+    freshness: LongTermMemoryFreshness,
+    stale_hint: LongTermMemoryStaleHint,
+}
+
+fn infer_long_term_memory_source_scope(
+    kind: &LongTermMemoryKind,
+    source_chat_id: Option<&str>,
+    requested: Option<LongTermMemorySourceScope>,
+) -> LongTermMemorySourceScope {
+    match requested {
+        Some(LongTermMemorySourceScope::Chat) if source_chat_id.is_some() => {
+            LongTermMemorySourceScope::Chat
+        }
+        Some(LongTermMemorySourceScope::Chat) => match kind {
+            LongTermMemoryKind::Project | LongTermMemoryKind::Task => {
+                LongTermMemorySourceScope::User
+            }
+            LongTermMemoryKind::Fact => LongTermMemorySourceScope::World,
+            LongTermMemoryKind::Preference
+            | LongTermMemoryKind::Profile
+            | LongTermMemoryKind::Relationship
+            | LongTermMemoryKind::Constraint => LongTermMemorySourceScope::User,
+        },
+        Some(scope) => scope,
+        None => match kind {
+            LongTermMemoryKind::Project | LongTermMemoryKind::Task if source_chat_id.is_some() => {
+                LongTermMemorySourceScope::Chat
+            }
+            LongTermMemoryKind::Fact => LongTermMemorySourceScope::World,
+            LongTermMemoryKind::Preference
+            | LongTermMemoryKind::Profile
+            | LongTermMemoryKind::Relationship
+            | LongTermMemoryKind::Constraint
+            | LongTermMemoryKind::Project
+            | LongTermMemoryKind::Task => LongTermMemorySourceScope::User,
+        },
+    }
+}
+
+fn infer_long_term_memory_confidence(
+    kind: &LongTermMemoryKind,
+    source_type: LongTermMemorySourceType,
+    requested: Option<LongTermMemoryConfidence>,
+) -> LongTermMemoryConfidence {
+    requested.unwrap_or(match source_type {
+        LongTermMemorySourceType::ManualTool => LongTermMemoryConfidence::High,
+        LongTermMemorySourceType::ExternalObservation => LongTermMemoryConfidence::Medium,
+        LongTermMemorySourceType::SystemRuntime => LongTermMemoryConfidence::Medium,
+        LongTermMemorySourceType::Conversation => match kind {
+            LongTermMemoryKind::Preference
+            | LongTermMemoryKind::Profile
+            | LongTermMemoryKind::Constraint => LongTermMemoryConfidence::High,
+            LongTermMemoryKind::Relationship
+            | LongTermMemoryKind::Project
+            | LongTermMemoryKind::Task
+            | LongTermMemoryKind::Fact => LongTermMemoryConfidence::Medium,
+        },
+    })
+}
+
+fn infer_long_term_memory_freshness(
+    kind: &LongTermMemoryKind,
+    requested: Option<LongTermMemoryFreshness>,
+) -> LongTermMemoryFreshness {
+    requested.unwrap_or(match kind {
+        LongTermMemoryKind::Task => LongTermMemoryFreshness::Volatile,
+        LongTermMemoryKind::Project
+        | LongTermMemoryKind::Relationship
+        | LongTermMemoryKind::Fact => LongTermMemoryFreshness::Dynamic,
+        LongTermMemoryKind::Preference
+        | LongTermMemoryKind::Profile
+        | LongTermMemoryKind::Constraint => LongTermMemoryFreshness::Stable,
+    })
+}
+
+fn infer_long_term_memory_stale_hint(
+    freshness: LongTermMemoryFreshness,
+    requested: Option<LongTermMemoryStaleHint>,
+) -> LongTermMemoryStaleHint {
+    requested.unwrap_or(match freshness {
+        LongTermMemoryFreshness::Stable => LongTermMemoryStaleHint::None,
+        LongTermMemoryFreshness::Dynamic => LongTermMemoryStaleHint::ReviewBeforeUse,
+        LongTermMemoryFreshness::Volatile => LongTermMemoryStaleHint::VerifyAgainstCurrentState,
+    })
+}
+
+fn resolve_long_term_memory_meta(draft: &LongTermMemoryDraft) -> LongTermMemoryResolvedMeta {
+    let source_type = draft
+        .source_type
+        .unwrap_or(LongTermMemorySourceType::Conversation);
+    let source_scope = infer_long_term_memory_source_scope(
+        &draft.kind,
+        draft.source_chat_id.as_deref(),
+        draft.source_scope,
+    );
+    let freshness = infer_long_term_memory_freshness(&draft.kind, draft.freshness);
+    let confidence = infer_long_term_memory_confidence(&draft.kind, source_type, draft.confidence);
+    let stale_hint = infer_long_term_memory_stale_hint(freshness, draft.stale_hint);
+    LongTermMemoryResolvedMeta {
+        source_type,
+        source_scope,
+        confidence,
+        freshness,
+        stale_hint,
+    }
+}
+
+pub(crate) fn long_term_memory_entry_from_draft(
+    draft: &LongTermMemoryDraft,
+    id: String,
+    now_secs: u64,
+) -> Option<LongTermMemoryEntry> {
+    let normalized = draft.normalized()?;
+    let meta = resolve_long_term_memory_meta(&normalized);
+    Some(LongTermMemoryEntry {
+        id,
+        kind: normalized.kind,
+        topic: normalized.topic,
+        content: normalized.content,
+        keywords: normalized.keywords,
+        source_chat_id: normalized.source_chat_id,
+        source_type: meta.source_type,
+        source_scope: meta.source_scope,
+        confidence: meta.confidence,
+        freshness: meta.freshness,
+        stale_hint: meta.stale_hint,
+        created_at: now_secs,
+        updated_at: now_secs,
+        last_used_at: 0,
+    })
 }
 
 /// 结构化长期记忆存储接口。实现负责持久化、去重与轻量召回。
@@ -396,7 +696,80 @@ pub fn canonicalize_long_term_memory_entry(
     if entry.updated_at == 0 {
         entry.updated_at = entry.created_at;
     }
+    let source_scope = infer_long_term_memory_source_scope(
+        &entry.kind,
+        entry.source_chat_id.as_deref(),
+        Some(entry.source_scope),
+    );
+    let freshness = infer_long_term_memory_freshness(&entry.kind, Some(entry.freshness));
+    let source_type = entry.source_type;
+    let confidence =
+        infer_long_term_memory_confidence(&entry.kind, source_type, Some(entry.confidence));
+    entry.source_type = source_type;
+    entry.source_scope = source_scope;
+    entry.confidence = confidence;
+    entry.freshness = freshness;
+    entry.stale_hint = infer_long_term_memory_stale_hint(freshness, Some(entry.stale_hint));
     Some(entry)
+}
+
+fn age_state_for_entry(entry: &LongTermMemoryEntry, now_secs: u64) -> LongTermMemoryAgeState {
+    if now_secs == 0 || entry.updated_at == 0 || entry.updated_at > now_secs {
+        return LongTermMemoryAgeState::Current;
+    }
+    let age_secs = now_secs - entry.updated_at;
+    if age_secs >= entry.freshness.stale_after_secs() {
+        LongTermMemoryAgeState::Stale
+    } else if age_secs >= entry.freshness.aging_after_secs() {
+        LongTermMemoryAgeState::Aging
+    } else {
+        LongTermMemoryAgeState::Current
+    }
+}
+
+fn effective_stale_hint(entry: &LongTermMemoryEntry, now_secs: u64) -> LongTermMemoryStaleHint {
+    match age_state_for_entry(entry, now_secs) {
+        LongTermMemoryAgeState::Current => entry.stale_hint,
+        LongTermMemoryAgeState::Aging => match entry.stale_hint {
+            LongTermMemoryStaleHint::None => LongTermMemoryStaleHint::ReviewBeforeUse,
+            hint => hint,
+        },
+        LongTermMemoryAgeState::Stale => LongTermMemoryStaleHint::VerifyAgainstCurrentState,
+    }
+}
+
+fn render_age_hint(entry: &LongTermMemoryEntry, now_secs: u64) -> Option<String> {
+    if now_secs == 0 || entry.updated_at == 0 || entry.updated_at > now_secs {
+        return None;
+    }
+    let age_secs = now_secs - entry.updated_at;
+    let value = match age_secs {
+        0..=86_400 => "updated today".to_string(),
+        86_401..=604_800 => format!("updated {}d ago", age_secs / 86_400),
+        604_801..=5_184_000 => format!("updated {}w ago", age_secs / 604_800),
+        _ => format!("updated {}mo ago", age_secs / 2_592_000),
+    };
+    Some(value)
+}
+
+fn maybe_touch_last_used(entry: &mut LongTermMemoryEntry, now_secs: u64) -> bool {
+    if now_secs == 0 {
+        return false;
+    }
+    if entry.last_used_at > 0
+        && now_secs.saturating_sub(entry.last_used_at) < LONG_TERM_MEMORY_TOUCH_INTERVAL_SECS
+    {
+        return false;
+    }
+    if entry.last_used_at == now_secs {
+        return false;
+    }
+    entry.last_used_at = now_secs;
+    true
+}
+
+pub(crate) fn touch_long_term_memory_usage(entry: &mut LongTermMemoryEntry, now_secs: u64) -> bool {
+    maybe_touch_last_used(entry, now_secs)
 }
 
 pub fn merge_long_term_memory_entry(
@@ -407,6 +780,7 @@ pub fn merge_long_term_memory_entry(
     let Some(normalized) = draft.normalized() else {
         return false;
     };
+    let meta = resolve_long_term_memory_meta(&normalized);
     let mut changed = false;
     let content_changed = existing.content != normalized.content;
     if content_changed {
@@ -436,6 +810,26 @@ pub fn merge_long_term_memory_entry(
             existing.source_chat_id = Some(source_chat_id);
             changed = true;
         }
+    }
+    if existing.source_type != meta.source_type {
+        existing.source_type = meta.source_type;
+        changed = true;
+    }
+    if existing.source_scope != meta.source_scope {
+        existing.source_scope = meta.source_scope;
+        changed = true;
+    }
+    if existing.confidence != meta.confidence {
+        existing.confidence = meta.confidence;
+        changed = true;
+    }
+    if existing.freshness != meta.freshness {
+        existing.freshness = meta.freshness;
+        changed = true;
+    }
+    if existing.stale_hint != meta.stale_hint {
+        existing.stale_hint = meta.stale_hint;
+        changed = true;
     }
     if existing.updated_at != now_secs {
         existing.updated_at = now_secs;
@@ -500,6 +894,7 @@ pub fn recall_long_term_memory_block(
     system_max_len: usize,
     profile: MemoryProfile,
 ) -> Option<String> {
+    let now_secs = crate::util::current_unix_secs();
     let policy = memory_policy(profile).long_term_recall;
     let block_max_len = policy.recall_block_max_len(system_max_len);
     let desired = policy.desired_entry_count(block_max_len);
@@ -525,7 +920,7 @@ pub fn recall_long_term_memory_block(
     }
     reorder_recall_candidates_for_chat(chat_id, &mut candidates);
     let selected = policy.select_entries(candidates, desired);
-    render_long_term_memory_block(&selected, block_max_len)
+    render_long_term_memory_block_with_now(&selected, block_max_len, now_secs)
 }
 
 fn reorder_recall_candidates_for_chat(chat_id: &str, candidates: &mut [LongTermMemoryEntry]) {
@@ -534,6 +929,9 @@ fn reorder_recall_candidates_for_chat(chat_id: &str, candidates: &mut [LongTermM
 
 fn recall_scope_priority(chat_id: &str, entry: &LongTermMemoryEntry) -> u8 {
     let same_chat = entry.source_chat_id.as_deref() == Some(chat_id);
+    if matches!(entry.source_scope, LongTermMemorySourceScope::Chat) && !same_chat {
+        return 6;
+    }
     match (same_chat, &entry.kind) {
         (true, LongTermMemoryKind::Project)
         | (true, LongTermMemoryKind::Task)
@@ -557,6 +955,14 @@ pub fn render_long_term_memory_block(
     entries: &[LongTermMemoryEntry],
     max_len: usize,
 ) -> Option<String> {
+    render_long_term_memory_block_with_now(entries, max_len, crate::util::current_unix_secs())
+}
+
+pub(crate) fn render_long_term_memory_block_with_now(
+    entries: &[LongTermMemoryEntry],
+    max_len: usize,
+    now_secs: u64,
+) -> Option<String> {
     if entries.is_empty() || max_len < 32 {
         return None;
     }
@@ -576,9 +982,9 @@ pub fn render_long_term_memory_block(
             LongTermMemoryKind::Fact => facts.push(entry),
         }
     }
-    render_long_term_memory_section(&mut out, "Active context", &active, max_len);
-    render_long_term_memory_section(&mut out, "User profile", &personal, max_len);
-    render_long_term_memory_section(&mut out, "Facts", &facts, max_len);
+    render_long_term_memory_section(&mut out, "Active context", &active, max_len, now_secs);
+    render_long_term_memory_section(&mut out, "User profile", &personal, max_len, now_secs);
+    render_long_term_memory_section(&mut out, "Facts", &facts, max_len, now_secs);
     if out.trim() == "## Long-term memory" {
         None
     } else {
@@ -591,6 +997,7 @@ fn render_long_term_memory_section(
     title: &str,
     entries: &[&LongTermMemoryEntry],
     max_len: usize,
+    now_secs: u64,
 ) {
     if entries.is_empty() {
         return;
@@ -603,7 +1010,7 @@ fn render_long_term_memory_section(
     out.push_str(&header);
     let mut appended = 0usize;
     for entry in entries {
-        let line_with_keywords = render_long_term_memory_line(entry, true);
+        let line_with_keywords = render_long_term_memory_line(entry, true, now_secs);
         if out
             .len()
             .saturating_add(line_with_keywords.len())
@@ -615,7 +1022,7 @@ fn render_long_term_memory_section(
             appended += 1;
             continue;
         }
-        let line_without_keywords = render_long_term_memory_line(entry, false);
+        let line_without_keywords = render_long_term_memory_line(entry, false, now_secs);
         if out
             .len()
             .saturating_add(line_without_keywords.len())
@@ -634,21 +1041,45 @@ fn render_long_term_memory_section(
     }
 }
 
-fn render_long_term_memory_line(entry: &LongTermMemoryEntry, include_keywords: bool) -> String {
+fn render_long_term_memory_line(
+    entry: &LongTermMemoryEntry,
+    include_keywords: bool,
+    now_secs: u64,
+) -> String {
+    let mut tags = vec![
+        entry.confidence.label().to_string(),
+        entry.source_scope.label().to_string(),
+    ];
+    if !matches!(entry.freshness, LongTermMemoryFreshness::Stable) {
+        tags.push(entry.freshness.label().to_string());
+    }
+    if let Some(label) = effective_stale_hint(entry, now_secs).label() {
+        tags.push(label.to_string());
+    }
+    if matches!(
+        age_state_for_entry(entry, now_secs),
+        LongTermMemoryAgeState::Aging | LongTermMemoryAgeState::Stale
+    ) {
+        if let Some(age_hint) = render_age_hint(entry, now_secs) {
+            tags.push(age_hint);
+        }
+    }
     if include_keywords && !entry.keywords.is_empty() {
         format!(
-            "- [{}:{}] {} (keywords: {})",
+            "- [{}:{}] {} ({}, keywords: {})",
             entry.kind.label(),
             entry.topic,
             entry.content,
+            tags.join("; "),
             entry.keywords.join(", ")
         )
     } else {
         format!(
-            "- [{}:{}] {}",
+            "- [{}:{}] {} ({})",
             entry.kind.label(),
             entry.topic,
-            entry.content
+            entry.content,
+            tags.join("; ")
         )
     }
 }
@@ -723,7 +1154,25 @@ pub(crate) fn score_long_term_memory_recall(
     if source_chat_id.is_some_and(|chat_id| entry.source_chat_id.as_deref() == Some(chat_id)) {
         score = score.saturating_add(recall_chat_affinity_bonus(&entry.kind));
     }
-    score.saturating_add(recall_recency_bonus(now_secs, entry.updated_at))
+    score = score.saturating_add(entry.confidence.recall_bonus());
+    score = score.saturating_add(recall_recency_bonus(now_secs, entry.updated_at));
+    score = score.saturating_add(recall_last_used_bonus(now_secs, entry.last_used_at));
+    if matches!(entry.source_scope, LongTermMemorySourceScope::User)
+        && matches!(
+            entry.kind,
+            LongTermMemoryKind::Preference
+                | LongTermMemoryKind::Profile
+                | LongTermMemoryKind::Relationship
+                | LongTermMemoryKind::Constraint
+        )
+    {
+        score = score.saturating_add(2);
+    }
+    match age_state_for_entry(entry, now_secs) {
+        LongTermMemoryAgeState::Current => score,
+        LongTermMemoryAgeState::Aging => score.saturating_sub(2),
+        LongTermMemoryAgeState::Stale => score.saturating_sub(5),
+    }
 }
 
 fn truncate_utf8_bytes(input: &str, max_bytes: usize) -> String {
@@ -856,6 +1305,17 @@ fn recall_recency_bonus(now_secs: u64, updated_at: u64) -> u32 {
     }
 }
 
+fn recall_last_used_bonus(now_secs: u64, last_used_at: u64) -> u32 {
+    if now_secs == 0 || last_used_at == 0 || last_used_at > now_secs {
+        return 0;
+    }
+    match now_secs - last_used_at {
+        0..=604_800 => 2,
+        604_801..=5_184_000 => 1,
+        _ => 0,
+    }
+}
+
 fn is_cjk(ch: char) -> bool {
     matches!(
         ch as u32,
@@ -924,19 +1384,65 @@ mod tests {
         }
     }
 
+    fn test_draft(
+        kind: LongTermMemoryKind,
+        topic: &str,
+        content: &str,
+        keywords: Vec<&str>,
+        source_chat_id: Option<&str>,
+    ) -> LongTermMemoryDraft {
+        LongTermMemoryDraft {
+            kind,
+            topic: topic.to_string(),
+            content: content.to_string(),
+            keywords: keywords.into_iter().map(str::to_string).collect(),
+            source_chat_id: source_chat_id.map(str::to_string),
+            source_type: None,
+            source_scope: None,
+            confidence: None,
+            freshness: None,
+            stale_hint: None,
+        }
+    }
+
+    fn test_entry(
+        id: &str,
+        kind: LongTermMemoryKind,
+        topic: &str,
+        content: &str,
+        keywords: Vec<&str>,
+        source_chat_id: Option<&str>,
+        created_at: u64,
+        updated_at: u64,
+    ) -> LongTermMemoryEntry {
+        canonicalize_long_term_memory_entry(LongTermMemoryEntry {
+            id: id.to_string(),
+            kind,
+            topic: topic.to_string(),
+            content: content.to_string(),
+            keywords: keywords.into_iter().map(str::to_string).collect(),
+            source_chat_id: source_chat_id.map(str::to_string),
+            source_type: LongTermMemorySourceType::Conversation,
+            source_scope: LongTermMemorySourceScope::User,
+            confidence: LongTermMemoryConfidence::Medium,
+            freshness: LongTermMemoryFreshness::Stable,
+            stale_hint: LongTermMemoryStaleHint::None,
+            created_at,
+            updated_at,
+            last_used_at: 0,
+        })
+        .unwrap()
+    }
+
     #[test]
     fn normalizes_long_term_memory_draft() {
-        let draft = LongTermMemoryDraft {
-            kind: LongTermMemoryKind::Preference,
-            topic: "response_style".to_string(),
-            content: "  User prefers concise answers.  ".to_string(),
-            keywords: vec![
-                " concise ".to_string(),
-                "STYLE".to_string(),
-                "STYLE".to_string(),
-            ],
-            source_chat_id: Some(" chat ".to_string()),
-        };
+        let draft = test_draft(
+            LongTermMemoryKind::Preference,
+            "response_style",
+            "  User prefers concise answers.  ",
+            vec![" concise ", "STYLE", "STYLE"],
+            Some(" chat "),
+        );
 
         let normalized = draft.normalized().unwrap();
         assert_eq!(normalized.topic, "response_style");
@@ -947,26 +1453,26 @@ mod tests {
 
     #[test]
     fn stable_id_is_deterministic() {
-        let draft = LongTermMemoryDraft {
-            kind: LongTermMemoryKind::Project,
-            topic: "current_project".to_string(),
-            content: "We are building Beetle on ESP and Linux".to_string(),
-            keywords: vec!["beetle".to_string()],
-            source_chat_id: None,
-        };
+        let draft = test_draft(
+            LongTermMemoryKind::Project,
+            "current_project",
+            "We are building Beetle on ESP and Linux",
+            vec!["beetle"],
+            None,
+        );
 
         assert_eq!(draft.stable_id(), draft.stable_id());
     }
 
     #[test]
     fn slot_stable_id_matches_draft_slot() {
-        let draft = LongTermMemoryDraft {
-            kind: LongTermMemoryKind::Profile,
-            topic: "user_name".to_string(),
-            content: "甲壳虫".to_string(),
-            keywords: vec![],
-            source_chat_id: None,
-        };
+        let draft = test_draft(
+            LongTermMemoryKind::Profile,
+            "user_name",
+            "甲壳虫",
+            vec![],
+            None,
+        );
         let slot = LongTermMemorySlot {
             kind: LongTermMemoryKind::Profile,
             topic: "user_name".to_string(),
@@ -977,16 +1483,16 @@ mod tests {
 
     #[test]
     fn recall_score_matches_cjk_terms() {
-        let entry = LongTermMemoryEntry {
-            id: "ltm-1".to_string(),
-            kind: LongTermMemoryKind::Project,
-            topic: "长期记忆设计".to_string(),
-            content: "当前项目重点是长期记忆与 Linux 体验".to_string(),
-            keywords: vec!["长期记忆".to_string(), "linux".to_string()],
-            source_chat_id: None,
-            created_at: 0,
-            updated_at: 0,
-        };
+        let entry = test_entry(
+            "ltm-1",
+            LongTermMemoryKind::Project,
+            "长期记忆设计",
+            "当前项目重点是长期记忆与 Linux 体验",
+            vec!["长期记忆", "linux"],
+            None,
+            0,
+            0,
+        );
 
         assert!(score_long_term_memory_recall("记忆这块怎么设计", None, 0, &entry) > 0);
     }
@@ -994,16 +1500,16 @@ mod tests {
     #[test]
     fn renders_long_term_memory_block() {
         let block = render_long_term_memory_block(
-            &[LongTermMemoryEntry {
-                id: "ltm-1".to_string(),
-                kind: LongTermMemoryKind::Preference,
-                topic: "response_style".to_string(),
-                content: "User prefers direct technical answers.".to_string(),
-                keywords: vec!["direct".to_string(), "technical".to_string()],
-                source_chat_id: None,
-                created_at: 0,
-                updated_at: 0,
-            }],
+            &[test_entry(
+                "ltm-1",
+                LongTermMemoryKind::Preference,
+                "response_style",
+                "User prefers direct technical answers.",
+                vec!["direct", "technical"],
+                None,
+                0,
+                0,
+            )],
             256,
         )
         .unwrap();
@@ -1021,8 +1527,14 @@ mod tests {
             content: "甲壳虫".to_string(),
             keywords: vec!["名字".to_string()],
             source_chat_id: None,
+            source_type: LongTermMemorySourceType::Conversation,
+            source_scope: LongTermMemorySourceScope::User,
+            confidence: LongTermMemoryConfidence::Medium,
+            freshness: LongTermMemoryFreshness::Stable,
+            stale_hint: LongTermMemoryStaleHint::None,
             created_at: 42,
             updated_at: 0,
+            last_used_at: 0,
         })
         .unwrap();
 
@@ -1039,8 +1551,14 @@ mod tests {
             content: "User lives in Shenzhen".to_string(),
             keywords: vec!["location".to_string()],
             source_chat_id: None,
+            source_type: LongTermMemorySourceType::Conversation,
+            source_scope: LongTermMemorySourceScope::User,
+            confidence: LongTermMemoryConfidence::Medium,
+            freshness: LongTermMemoryFreshness::Stable,
+            stale_hint: LongTermMemoryStaleHint::None,
             created_at: 1,
             updated_at: 0,
+            last_used_at: 0,
         })
         .unwrap();
 
@@ -1049,43 +1567,43 @@ mod tests {
 
     #[test]
     fn stable_id_uses_topic_so_same_slot_can_update() {
-        let a = LongTermMemoryDraft {
-            kind: LongTermMemoryKind::Preference,
-            topic: "response_style".to_string(),
-            content: "User prefers concise answers.".to_string(),
-            keywords: vec!["concise".to_string()],
-            source_chat_id: None,
-        };
-        let b = LongTermMemoryDraft {
-            kind: LongTermMemoryKind::Preference,
-            topic: "response_style".to_string(),
-            content: "User now prefers detailed answers.".to_string(),
-            keywords: vec!["detailed".to_string()],
-            source_chat_id: None,
-        };
+        let a = test_draft(
+            LongTermMemoryKind::Preference,
+            "response_style",
+            "User prefers concise answers.",
+            vec!["concise"],
+            None,
+        );
+        let b = test_draft(
+            LongTermMemoryKind::Preference,
+            "response_style",
+            "User now prefers detailed answers.",
+            vec!["detailed"],
+            None,
+        );
 
         assert_eq!(a.stable_id(), b.stable_id());
     }
 
     #[test]
     fn merge_long_term_memory_entry_overwrites_same_slot_content() {
-        let mut entry = LongTermMemoryEntry {
-            id: "ltm-1".to_string(),
-            kind: LongTermMemoryKind::Preference,
-            topic: "response_style".to_string(),
-            content: "User prefers concise answers.".to_string(),
-            keywords: vec!["concise".to_string()],
-            source_chat_id: Some("chat-a".to_string()),
-            created_at: 10,
-            updated_at: 10,
-        };
-        let draft = LongTermMemoryDraft {
-            kind: LongTermMemoryKind::Preference,
-            topic: "response_style".to_string(),
-            content: "User now prefers detailed answers.".to_string(),
-            keywords: vec!["detailed".to_string()],
-            source_chat_id: Some("chat-b".to_string()),
-        };
+        let mut entry = test_entry(
+            "ltm-1",
+            LongTermMemoryKind::Preference,
+            "response_style",
+            "User prefers concise answers.",
+            vec!["concise"],
+            Some("chat-a"),
+            10,
+            10,
+        );
+        let draft = test_draft(
+            LongTermMemoryKind::Preference,
+            "response_style",
+            "User now prefers detailed answers.",
+            vec!["detailed"],
+            Some("chat-b"),
+        );
 
         assert!(merge_long_term_memory_entry(&mut entry, &draft, 20));
         assert_eq!(entry.content, "User now prefers detailed answers.");
@@ -1097,23 +1615,23 @@ mod tests {
 
     #[test]
     fn merge_long_term_memory_entry_preserves_source_chat_when_draft_has_none() {
-        let mut entry = LongTermMemoryEntry {
-            id: "ltm-1".to_string(),
-            kind: LongTermMemoryKind::Project,
-            topic: "current_project".to_string(),
-            content: "Current project is Beetle memory.".to_string(),
-            keywords: vec!["beetle".to_string()],
-            source_chat_id: Some("chat-a".to_string()),
-            created_at: 10,
-            updated_at: 10,
-        };
-        let draft = LongTermMemoryDraft {
-            kind: LongTermMemoryKind::Project,
-            topic: "current_project".to_string(),
-            content: "Current project is Beetle runtime.".to_string(),
-            keywords: vec!["runtime".to_string()],
-            source_chat_id: None,
-        };
+        let mut entry = test_entry(
+            "ltm-1",
+            LongTermMemoryKind::Project,
+            "current_project",
+            "Current project is Beetle memory.",
+            vec!["beetle"],
+            Some("chat-a"),
+            10,
+            10,
+        );
+        let draft = test_draft(
+            LongTermMemoryKind::Project,
+            "current_project",
+            "Current project is Beetle runtime.",
+            vec!["runtime"],
+            None,
+        );
 
         assert!(merge_long_term_memory_entry(&mut entry, &draft, 20));
         assert_eq!(entry.source_chat_id.as_deref(), Some("chat-a"));
@@ -1121,23 +1639,23 @@ mod tests {
 
     #[test]
     fn merge_long_term_memory_entry_merges_keywords_when_content_is_unchanged() {
-        let mut entry = LongTermMemoryEntry {
-            id: "ltm-1".to_string(),
-            kind: LongTermMemoryKind::Fact,
-            topic: "primary_llm".to_string(),
-            content: "当前主模型是 OpenAI。".to_string(),
-            keywords: vec!["openai".to_string()],
-            source_chat_id: Some("chat-a".to_string()),
-            created_at: 10,
-            updated_at: 10,
-        };
-        let draft = LongTermMemoryDraft {
-            kind: LongTermMemoryKind::Fact,
-            topic: "primary_llm".to_string(),
-            content: "当前主模型是 OpenAI。".to_string(),
-            keywords: vec!["模型".to_string()],
-            source_chat_id: Some("chat-a".to_string()),
-        };
+        let mut entry = test_entry(
+            "ltm-1",
+            LongTermMemoryKind::Fact,
+            "primary_llm",
+            "当前主模型是 OpenAI。",
+            vec!["openai"],
+            Some("chat-a"),
+            10,
+            10,
+        );
+        let draft = test_draft(
+            LongTermMemoryKind::Fact,
+            "primary_llm",
+            "当前主模型是 OpenAI。",
+            vec!["模型"],
+            Some("chat-a"),
+        );
 
         assert!(merge_long_term_memory_entry(&mut entry, &draft, 20));
         assert_eq!(entry.keywords, vec!["openai", "模型"]);
@@ -1146,16 +1664,16 @@ mod tests {
 
     #[test]
     fn recall_score_prefers_same_chat_and_recent_updates_after_match() {
-        let base = LongTermMemoryEntry {
-            id: "ltm-1".to_string(),
-            kind: LongTermMemoryKind::Project,
-            topic: "current_project".to_string(),
-            content: "Current project is Beetle long-term memory.".to_string(),
-            keywords: vec!["beetle".to_string(), "memory".to_string()],
-            source_chat_id: Some("chat-a".to_string()),
-            created_at: 10,
-            updated_at: 90,
-        };
+        let base = test_entry(
+            "ltm-1",
+            LongTermMemoryKind::Project,
+            "current_project",
+            "Current project is Beetle long-term memory.",
+            vec!["beetle", "memory"],
+            Some("chat-a"),
+            10,
+            90,
+        );
         let mut older = base.clone();
         older.source_chat_id = Some("chat-b".to_string());
         older.updated_at = 10;
@@ -1168,26 +1686,26 @@ mod tests {
     #[test]
     fn governance_prunes_stale_task_entries() {
         let mut entries = vec![
-            LongTermMemoryEntry {
-                id: "ltm-task".to_string(),
-                kind: LongTermMemoryKind::Task,
-                topic: "current_task".to_string(),
-                content: "Continue old task".to_string(),
-                keywords: vec![],
-                source_chat_id: None,
-                created_at: 1,
-                updated_at: 1,
-            },
-            LongTermMemoryEntry {
-                id: "ltm-pref".to_string(),
-                kind: LongTermMemoryKind::Preference,
-                topic: "response_style".to_string(),
-                content: "Prefer direct answers".to_string(),
-                keywords: vec![],
-                source_chat_id: None,
-                created_at: 1,
-                updated_at: 1,
-            },
+            test_entry(
+                "ltm-task",
+                LongTermMemoryKind::Task,
+                "current_task",
+                "Continue old task",
+                vec![],
+                None,
+                1,
+                1,
+            ),
+            test_entry(
+                "ltm-pref",
+                LongTermMemoryKind::Preference,
+                "response_style",
+                "Prefer direct answers",
+                vec![],
+                None,
+                1,
+                1,
+            ),
         ];
 
         assert!(govern_long_term_memory_entries(
@@ -1202,16 +1720,16 @@ mod tests {
     fn governance_keeps_newest_entries_within_kind_budget() {
         let mut entries = Vec::new();
         for idx in 0..14u64 {
-            entries.push(LongTermMemoryEntry {
-                id: format!("ltm-task-{idx}"),
-                kind: LongTermMemoryKind::Task,
-                topic: format!("task_{idx}"),
-                content: format!("Task {idx}"),
-                keywords: vec![],
-                source_chat_id: None,
-                created_at: idx,
-                updated_at: idx,
-            });
+            entries.push(test_entry(
+                &format!("ltm-task-{idx}"),
+                LongTermMemoryKind::Task,
+                &format!("task_{idx}"),
+                &format!("Task {idx}"),
+                vec![],
+                None,
+                idx,
+                idx,
+            ));
         }
 
         assert!(govern_long_term_memory_entries(&mut entries, 0));
@@ -1223,47 +1741,47 @@ mod tests {
     #[test]
     fn recall_block_uses_fallback_and_deduplicates_entries() {
         let store = StubLongTermMemoryStore {
-            recall_entries: vec![LongTermMemoryEntry {
-                id: "ltm-task".to_string(),
-                kind: LongTermMemoryKind::Task,
-                topic: "current_focus".to_string(),
-                content: "Continue memory redesign".to_string(),
-                keywords: vec!["memory".to_string()],
-                source_chat_id: Some("chat-1".to_string()),
-                created_at: 1,
-                updated_at: 10,
-            }],
+            recall_entries: vec![test_entry(
+                "ltm-task",
+                LongTermMemoryKind::Task,
+                "current_focus",
+                "Continue memory redesign",
+                vec!["memory"],
+                Some("chat-1"),
+                1,
+                10,
+            )],
             list_entries: vec![
-                LongTermMemoryEntry {
-                    id: "ltm-task".to_string(),
-                    kind: LongTermMemoryKind::Task,
-                    topic: "current_focus".to_string(),
-                    content: "Continue memory redesign".to_string(),
-                    keywords: vec!["memory".to_string()],
-                    source_chat_id: Some("chat-1".to_string()),
-                    created_at: 1,
-                    updated_at: 10,
-                },
-                LongTermMemoryEntry {
-                    id: "ltm-project".to_string(),
-                    kind: LongTermMemoryKind::Project,
-                    topic: "platform_memory".to_string(),
-                    content: "Shared memory policy stays aligned.".to_string(),
-                    keywords: vec!["memory".to_string(), "platform".to_string()],
-                    source_chat_id: Some("chat-1".to_string()),
-                    created_at: 2,
-                    updated_at: 9,
-                },
-                LongTermMemoryEntry {
-                    id: "ltm-pref".to_string(),
-                    kind: LongTermMemoryKind::Preference,
-                    topic: "response_style".to_string(),
-                    content: "User prefers direct technical answers.".to_string(),
-                    keywords: vec!["direct".to_string()],
-                    source_chat_id: None,
-                    created_at: 3,
-                    updated_at: 8,
-                },
+                test_entry(
+                    "ltm-task",
+                    LongTermMemoryKind::Task,
+                    "current_focus",
+                    "Continue memory redesign",
+                    vec!["memory"],
+                    Some("chat-1"),
+                    1,
+                    10,
+                ),
+                test_entry(
+                    "ltm-project",
+                    LongTermMemoryKind::Project,
+                    "platform_memory",
+                    "Shared memory policy stays aligned.",
+                    vec!["memory", "platform"],
+                    Some("chat-1"),
+                    2,
+                    9,
+                ),
+                test_entry(
+                    "ltm-pref",
+                    LongTermMemoryKind::Preference,
+                    "response_style",
+                    "User prefers direct technical answers.",
+                    vec!["direct"],
+                    None,
+                    3,
+                    8,
+                ),
             ],
         };
 
@@ -1315,36 +1833,36 @@ mod tests {
     fn recall_block_prefers_same_chat_active_context_over_other_chat_projects() {
         let store = StubLongTermMemoryStore {
             recall_entries: vec![
-                LongTermMemoryEntry {
-                    id: "ltm-other-project".to_string(),
-                    kind: LongTermMemoryKind::Project,
-                    topic: "other_project".to_string(),
-                    content: "Other chat project with strong memory keywords.".to_string(),
-                    keywords: vec!["memory".to_string(), "linux".to_string()],
-                    source_chat_id: Some("chat-2".to_string()),
-                    created_at: 1,
-                    updated_at: 10,
-                },
-                LongTermMemoryEntry {
-                    id: "ltm-current-task".to_string(),
-                    kind: LongTermMemoryKind::Task,
-                    topic: "current_focus".to_string(),
-                    content: "Current chat is closing the memory pipeline.".to_string(),
-                    keywords: vec!["memory".to_string(), "pipeline".to_string()],
-                    source_chat_id: Some("chat-1".to_string()),
-                    created_at: 2,
-                    updated_at: 9,
-                },
-                LongTermMemoryEntry {
-                    id: "ltm-pref".to_string(),
-                    kind: LongTermMemoryKind::Preference,
-                    topic: "response_style".to_string(),
-                    content: "User prefers direct technical answers.".to_string(),
-                    keywords: vec!["direct".to_string()],
-                    source_chat_id: None,
-                    created_at: 3,
-                    updated_at: 8,
-                },
+                test_entry(
+                    "ltm-other-project",
+                    LongTermMemoryKind::Project,
+                    "other_project",
+                    "Other chat project with strong memory keywords.",
+                    vec!["memory", "linux"],
+                    Some("chat-2"),
+                    1,
+                    10,
+                ),
+                test_entry(
+                    "ltm-current-task",
+                    LongTermMemoryKind::Task,
+                    "current_focus",
+                    "Current chat is closing the memory pipeline.",
+                    vec!["memory", "pipeline"],
+                    Some("chat-1"),
+                    2,
+                    9,
+                ),
+                test_entry(
+                    "ltm-pref",
+                    LongTermMemoryKind::Preference,
+                    "response_style",
+                    "User prefers direct technical answers.",
+                    vec!["direct"],
+                    None,
+                    3,
+                    8,
+                ),
             ],
             ..Default::default()
         };
@@ -1370,36 +1888,36 @@ mod tests {
     #[test]
     fn select_entries_prefers_diversity_first() {
         let candidates = vec![
-            LongTermMemoryEntry {
-                id: "ltm-1".to_string(),
-                kind: LongTermMemoryKind::Task,
-                topic: "current_focus".to_string(),
-                content: "Continue memory redesign".to_string(),
-                keywords: vec![],
-                source_chat_id: Some("chat-1".to_string()),
-                created_at: 1,
-                updated_at: 10,
-            },
-            LongTermMemoryEntry {
-                id: "ltm-2".to_string(),
-                kind: LongTermMemoryKind::Task,
-                topic: "next_task".to_string(),
-                content: "Integrate prompt-guided runtime".to_string(),
-                keywords: vec![],
-                source_chat_id: Some("chat-1".to_string()),
-                created_at: 2,
-                updated_at: 9,
-            },
-            LongTermMemoryEntry {
-                id: "ltm-3".to_string(),
-                kind: LongTermMemoryKind::Preference,
-                topic: "response_style".to_string(),
-                content: "User prefers direct technical answers.".to_string(),
-                keywords: vec![],
-                source_chat_id: None,
-                created_at: 3,
-                updated_at: 8,
-            },
+            test_entry(
+                "ltm-1",
+                LongTermMemoryKind::Task,
+                "current_focus",
+                "Continue memory redesign",
+                vec![],
+                Some("chat-1"),
+                1,
+                10,
+            ),
+            test_entry(
+                "ltm-2",
+                LongTermMemoryKind::Task,
+                "next_task",
+                "Integrate prompt-guided runtime",
+                vec![],
+                Some("chat-1"),
+                2,
+                9,
+            ),
+            test_entry(
+                "ltm-3",
+                LongTermMemoryKind::Preference,
+                "response_style",
+                "User prefers direct technical answers.",
+                vec![],
+                None,
+                3,
+                8,
+            ),
         ];
 
         let selected = memory_policy(MemoryProfile::Standard)

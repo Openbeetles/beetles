@@ -62,13 +62,16 @@ pub(crate) use internal_memory_topology::{
 };
 pub(crate) use long_term::{
     canonicalize_long_term_memory_entry, govern_long_term_memory_entries,
-    merge_long_term_memory_entry, score_long_term_memory_recall,
+    long_term_memory_entry_from_draft, merge_long_term_memory_entry, score_long_term_memory_recall,
+    touch_long_term_memory_usage,
 };
 pub use long_term::{
-    recall_long_term_memory_block, render_long_term_memory_block, LongTermMemoryDraft,
-    LongTermMemoryEntry, LongTermMemoryKind, LongTermMemorySlot, LongTermMemoryStore,
-    MAX_LONG_TERM_MEMORY_BLOCK_LEN, MAX_LONG_TERM_MEMORY_CONTENT_LEN, MAX_LONG_TERM_MEMORY_ITEMS,
-    MAX_LONG_TERM_MEMORY_KEYWORDS, MAX_LONG_TERM_MEMORY_KEYWORD_LEN, REL_PATH_LONG_TERM_MEMORIES,
+    recall_long_term_memory_block, render_long_term_memory_block, LongTermMemoryConfidence,
+    LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryFreshness, LongTermMemoryKind,
+    LongTermMemorySlot, LongTermMemorySourceScope, LongTermMemorySourceType,
+    LongTermMemoryStaleHint, LongTermMemoryStore, MAX_LONG_TERM_MEMORY_BLOCK_LEN,
+    MAX_LONG_TERM_MEMORY_CONTENT_LEN, MAX_LONG_TERM_MEMORY_ITEMS, MAX_LONG_TERM_MEMORY_KEYWORDS,
+    MAX_LONG_TERM_MEMORY_KEYWORD_LEN, REL_PATH_LONG_TERM_MEMORIES,
 };
 pub use long_term_extraction::{
     apply_long_term_memory_extraction, build_long_term_memory_extraction_input,

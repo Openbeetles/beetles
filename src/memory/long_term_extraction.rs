@@ -14,8 +14,10 @@ use std::fmt::Write as _;
 
 use super::{
     memory_policy, render_long_term_memory_block, LongTermExtractionPolicy, LongTermMemoryDraft,
-    LongTermMemoryEntry, LongTermMemoryKind, LongTermMemorySlot, LongTermMemoryStore,
-    MemoryProfile, SessionMessage, SessionStore, SessionSummaryStore, MAX_LONG_TERM_MEMORY_ITEMS,
+    LongTermMemoryEntry, LongTermMemoryFreshness, LongTermMemoryKind, LongTermMemorySlot,
+    LongTermMemorySourceScope, LongTermMemorySourceType, LongTermMemoryStaleHint,
+    LongTermMemoryStore, MemoryProfile, SessionMessage, SessionStore, SessionSummaryStore,
+    MAX_LONG_TERM_MEMORY_ITEMS,
 };
 
 /// 长期记忆提取状态存储路径（相对状态根）。
@@ -213,6 +215,16 @@ struct LongTermMemoryExtractionItem {
     keywords: Vec<String>,
     #[serde(default)]
     source_chat_id: Option<String>,
+    #[serde(default)]
+    source_type: Option<LongTermMemorySourceType>,
+    #[serde(default)]
+    source_scope: Option<LongTermMemorySourceScope>,
+    #[serde(default)]
+    confidence: Option<super::LongTermMemoryConfidence>,
+    #[serde(default)]
+    freshness: Option<LongTermMemoryFreshness>,
+    #[serde(default)]
+    stale_hint: Option<LongTermMemoryStaleHint>,
 }
 
 enum ParsedLongTermMemoryAction {
@@ -271,11 +283,22 @@ fn build_extraction_existing_memory_grounding(
     let mut out = String::new();
     out.push_str("## Existing memory slots\n");
     for entry in entries {
+        let mut meta = vec![
+            entry.confidence.label().to_string(),
+            entry.source_scope.label().to_string(),
+        ];
+        if !matches!(entry.freshness, LongTermMemoryFreshness::Stable) {
+            meta.push(entry.freshness.label().to_string());
+        }
+        if let Some(label) = entry.stale_hint.label() {
+            meta.push(label.to_string());
+        }
         let line = format!(
-            "- {}.{} => {}",
+            "- {}.{} => {} ({})",
             entry.kind.label(),
             entry.topic,
-            entry.content
+            entry.content,
+            meta.join("; ")
         );
         if out.len().saturating_add(line.len()).saturating_add(1) > max_len {
             break;
@@ -327,6 +350,13 @@ pub fn parse_long_term_memory_extraction_response(
                     content: parsed_item.content,
                     keywords: parsed_item.keywords,
                     source_chat_id: parsed_item.source_chat_id,
+                    source_type: parsed_item
+                        .source_type
+                        .or(Some(LongTermMemorySourceType::Conversation)),
+                    source_scope: parsed_item.source_scope,
+                    confidence: parsed_item.confidence,
+                    freshness: parsed_item.freshness,
+                    stale_hint: parsed_item.stale_hint,
                 })
             }
             _ => continue,
@@ -1167,6 +1197,56 @@ mod tests {
         }
     }
 
+    fn test_draft(
+        kind: LongTermMemoryKind,
+        topic: &str,
+        content: &str,
+        keywords: Vec<&str>,
+        source_chat_id: Option<&str>,
+    ) -> LongTermMemoryDraft {
+        LongTermMemoryDraft {
+            kind,
+            topic: topic.to_string(),
+            content: content.to_string(),
+            keywords: keywords.into_iter().map(str::to_string).collect(),
+            source_chat_id: source_chat_id.map(str::to_string),
+            source_type: None,
+            source_scope: None,
+            confidence: None,
+            freshness: None,
+            stale_hint: None,
+        }
+    }
+
+    fn test_entry(
+        id: &str,
+        kind: LongTermMemoryKind,
+        topic: &str,
+        content: &str,
+        keywords: Vec<&str>,
+        source_chat_id: Option<&str>,
+        created_at: u64,
+        updated_at: u64,
+    ) -> LongTermMemoryEntry {
+        crate::memory::canonicalize_long_term_memory_entry(LongTermMemoryEntry {
+            id: id.to_string(),
+            kind,
+            topic: topic.to_string(),
+            content: content.to_string(),
+            keywords: keywords.into_iter().map(str::to_string).collect(),
+            source_chat_id: source_chat_id.map(str::to_string),
+            source_type: LongTermMemorySourceType::Conversation,
+            source_scope: LongTermMemorySourceScope::User,
+            confidence: crate::memory::LongTermMemoryConfidence::Medium,
+            freshness: LongTermMemoryFreshness::Stable,
+            stale_hint: LongTermMemoryStaleHint::None,
+            created_at,
+            updated_at,
+            last_used_at: 0,
+        })
+        .unwrap()
+    }
+
     #[test]
     fn system_and_cron_turns_never_enqueue_extraction() {
         let system = evaluate_long_term_memory_extraction_turn(
@@ -1282,16 +1362,16 @@ mod tests {
     #[test]
     fn build_extraction_input_includes_summary_memory_and_recent_conversation() {
         let store = StubLongTermMemoryStore {
-            recall_entries: vec![LongTermMemoryEntry {
-                id: "pref:response_style".to_string(),
-                kind: LongTermMemoryKind::Preference,
-                topic: "response_style".to_string(),
-                content: "User prefers concise, direct answers.".to_string(),
-                keywords: vec!["concise".to_string()],
-                source_chat_id: Some("chat-1".to_string()),
-                created_at: 10,
-                updated_at: 20,
-            }],
+            recall_entries: vec![test_entry(
+                "pref:response_style",
+                LongTermMemoryKind::Preference,
+                "response_style",
+                "User prefers concise, direct answers.",
+                vec!["concise"],
+                Some("chat-1"),
+                10,
+                20,
+            )],
             ..Default::default()
         };
         let recent = vec![
@@ -1363,13 +1443,13 @@ mod tests {
             ..Default::default()
         };
         let extraction = ParsedLongTermMemoryExtraction {
-            upserts: vec![LongTermMemoryDraft {
-                kind: LongTermMemoryKind::Project,
-                topic: "current_project".to_string(),
-                content: "Rebuild the memory pipeline.".to_string(),
-                keywords: vec!["memory".to_string()],
-                source_chat_id: Some("chat-1".to_string()),
-            }],
+            upserts: vec![test_draft(
+                LongTermMemoryKind::Project,
+                "current_project",
+                "Rebuild the memory pipeline.",
+                vec!["memory"],
+                Some("chat-1"),
+            )],
             deletes: vec![LongTermMemorySlot {
                 kind: LongTermMemoryKind::Task,
                 topic: "old_focus".to_string(),
@@ -1404,13 +1484,13 @@ mod tests {
             ..Default::default()
         };
         let extraction = ParsedLongTermMemoryExtraction {
-            upserts: vec![LongTermMemoryDraft {
-                kind: LongTermMemoryKind::Fact,
-                topic: "release_phase".to_string(),
-                content: "Long-term extraction pipeline is shared.".to_string(),
-                keywords: vec![],
-                source_chat_id: Some("chat-1".to_string()),
-            }],
+            upserts: vec![test_draft(
+                LongTermMemoryKind::Fact,
+                "release_phase",
+                "Long-term extraction pipeline is shared.",
+                vec![],
+                Some("chat-1"),
+            )],
             deletes: vec![],
         };
 
@@ -1430,31 +1510,26 @@ mod tests {
     #[test]
     fn prepare_extraction_reuses_existing_slot_for_nearby_topic() {
         let store = StubLongTermMemoryStore {
-            recall_entries: vec![LongTermMemoryEntry {
-                id: "ltm-existing".to_string(),
-                kind: LongTermMemoryKind::Project,
-                topic: "current_project".to_string(),
-                content: "We are improving the Beetle memory pipeline on Linux.".to_string(),
-                keywords: vec![
-                    "beetle".to_string(),
-                    "memory".to_string(),
-                    "linux".to_string(),
-                ],
-                source_chat_id: Some("chat-1".to_string()),
-                created_at: 1,
-                updated_at: 10,
-            }],
+            recall_entries: vec![test_entry(
+                "ltm-existing",
+                LongTermMemoryKind::Project,
+                "current_project",
+                "We are improving the Beetle memory pipeline on Linux.",
+                vec!["beetle", "memory", "linux"],
+                Some("chat-1"),
+                1,
+                10,
+            )],
             ..Default::default()
         };
         let extraction = ParsedLongTermMemoryExtraction {
-            upserts: vec![LongTermMemoryDraft {
-                kind: LongTermMemoryKind::Project,
-                topic: "memory_pipeline_focus".to_string(),
-                content: "The Beetle memory pipeline on Linux is the current project focus."
-                    .to_string(),
-                keywords: vec!["beetle".to_string(), "linux".to_string()],
-                source_chat_id: Some("chat-1".to_string()),
-            }],
+            upserts: vec![test_draft(
+                LongTermMemoryKind::Project,
+                "memory_pipeline_focus",
+                "The Beetle memory pipeline on Linux is the current project focus.",
+                vec!["beetle", "linux"],
+                Some("chat-1"),
+            )],
             deletes: vec![],
         };
 
@@ -1468,13 +1543,13 @@ mod tests {
     fn prepare_extraction_drops_short_non_durable_fact() {
         let store = StubLongTermMemoryStore::default();
         let extraction = ParsedLongTermMemoryExtraction {
-            upserts: vec![LongTermMemoryDraft {
-                kind: LongTermMemoryKind::Fact,
-                topic: "tmp".to_string(),
-                content: "ok".to_string(),
-                keywords: vec![],
-                source_chat_id: Some("chat-1".to_string()),
-            }],
+            upserts: vec![test_draft(
+                LongTermMemoryKind::Fact,
+                "tmp",
+                "ok",
+                vec![],
+                Some("chat-1"),
+            )],
             deletes: vec![],
         };
 
@@ -1488,13 +1563,13 @@ mod tests {
     fn prepare_extraction_drops_sensitive_content() {
         let store = StubLongTermMemoryStore::default();
         let extraction = ParsedLongTermMemoryExtraction {
-            upserts: vec![LongTermMemoryDraft {
-                kind: LongTermMemoryKind::Constraint,
-                topic: "service_token".to_string(),
-                content: "api_key: sk-1234abcdef".to_string(),
-                keywords: vec!["token".to_string()],
-                source_chat_id: Some("chat-1".to_string()),
-            }],
+            upserts: vec![test_draft(
+                LongTermMemoryKind::Constraint,
+                "service_token",
+                "api_key: sk-1234abcdef",
+                vec!["token"],
+                Some("chat-1"),
+            )],
             deletes: vec![],
         };
 
@@ -1508,13 +1583,13 @@ mod tests {
     fn prepare_extraction_keeps_short_profile_value() {
         let store = StubLongTermMemoryStore::default();
         let extraction = ParsedLongTermMemoryExtraction {
-            upserts: vec![LongTermMemoryDraft {
-                kind: LongTermMemoryKind::Profile,
-                topic: "user_name".to_string(),
-                content: "甲壳虫".to_string(),
-                keywords: vec![],
-                source_chat_id: Some("chat-1".to_string()),
-            }],
+            upserts: vec![test_draft(
+                LongTermMemoryKind::Profile,
+                "user_name",
+                "甲壳虫",
+                vec![],
+                Some("chat-1"),
+            )],
             deletes: vec![],
         };
 
@@ -1528,13 +1603,13 @@ mod tests {
     fn prepare_extraction_keeps_multilingual_preference() {
         let store = StubLongTermMemoryStore::default();
         let extraction = ParsedLongTermMemoryExtraction {
-            upserts: vec![LongTermMemoryDraft {
-                kind: LongTermMemoryKind::Preference,
-                topic: "response_language".to_string(),
-                content: "用户偏好中文和 English 混合回答。".to_string(),
-                keywords: vec!["中文".to_string(), "english".to_string()],
-                source_chat_id: Some("chat-1".to_string()),
-            }],
+            upserts: vec![test_draft(
+                LongTermMemoryKind::Preference,
+                "response_language",
+                "用户偏好中文和 English 混合回答。",
+                vec!["中文", "english"],
+                Some("chat-1"),
+            )],
             deletes: vec![],
         };
 
@@ -1549,20 +1624,20 @@ mod tests {
         let store = StubLongTermMemoryStore::default();
         let extraction = ParsedLongTermMemoryExtraction {
             upserts: vec![
-                LongTermMemoryDraft {
-                    kind: LongTermMemoryKind::Preference,
-                    topic: "response_style".to_string(),
-                    content: "别废话".to_string(),
-                    keywords: vec![],
-                    source_chat_id: Some("chat-1".to_string()),
-                },
-                LongTermMemoryDraft {
-                    kind: LongTermMemoryKind::Constraint,
-                    topic: "network_access".to_string(),
-                    content: "别联网".to_string(),
-                    keywords: vec![],
-                    source_chat_id: Some("chat-1".to_string()),
-                },
+                test_draft(
+                    LongTermMemoryKind::Preference,
+                    "response_style",
+                    "别废话",
+                    vec![],
+                    Some("chat-1"),
+                ),
+                test_draft(
+                    LongTermMemoryKind::Constraint,
+                    "network_access",
+                    "别联网",
+                    vec![],
+                    Some("chat-1"),
+                ),
             ],
             deletes: vec![],
         };
@@ -1577,26 +1652,26 @@ mod tests {
     #[test]
     fn prepare_extraction_drops_delete_when_same_slot_is_upserted() {
         let store = StubLongTermMemoryStore {
-            recall_entries: vec![LongTermMemoryEntry {
-                id: "ltm-existing".to_string(),
-                kind: LongTermMemoryKind::Task,
-                topic: "current_focus".to_string(),
-                content: "Continue memory redesign".to_string(),
-                keywords: vec!["memory".to_string()],
-                source_chat_id: Some("chat-1".to_string()),
-                created_at: 1,
-                updated_at: 10,
-            }],
+            recall_entries: vec![test_entry(
+                "ltm-existing",
+                LongTermMemoryKind::Task,
+                "current_focus",
+                "Continue memory redesign",
+                vec!["memory"],
+                Some("chat-1"),
+                1,
+                10,
+            )],
             ..Default::default()
         };
         let extraction = ParsedLongTermMemoryExtraction {
-            upserts: vec![LongTermMemoryDraft {
-                kind: LongTermMemoryKind::Task,
-                topic: "memory_focus".to_string(),
-                content: "Continue memory redesign".to_string(),
-                keywords: vec!["memory".to_string()],
-                source_chat_id: Some("chat-1".to_string()),
-            }],
+            upserts: vec![test_draft(
+                LongTermMemoryKind::Task,
+                "memory_focus",
+                "Continue memory redesign",
+                vec!["memory"],
+                Some("chat-1"),
+            )],
             deletes: vec![LongTermMemorySlot {
                 kind: LongTermMemoryKind::Task,
                 topic: "current_focus".to_string(),
@@ -1612,26 +1687,26 @@ mod tests {
     #[test]
     fn prepare_extraction_reuses_single_active_project_slot_on_context_switch() {
         let store = StubLongTermMemoryStore {
-            recall_entries: vec![LongTermMemoryEntry {
-                id: "ltm-project".to_string(),
-                kind: LongTermMemoryKind::Project,
-                topic: "current_project".to_string(),
-                content: "当前项目是收口 ESP 侧长期记忆。".to_string(),
-                keywords: vec!["esp".to_string(), "记忆".to_string()],
-                source_chat_id: Some("chat-1".to_string()),
-                created_at: 1,
-                updated_at: 20,
-            }],
+            recall_entries: vec![test_entry(
+                "ltm-project",
+                LongTermMemoryKind::Project,
+                "current_project",
+                "当前项目是收口 ESP 侧长期记忆。",
+                vec!["esp", "记忆"],
+                Some("chat-1"),
+                1,
+                20,
+            )],
             ..Default::default()
         };
         let extraction = ParsedLongTermMemoryExtraction {
-            upserts: vec![LongTermMemoryDraft {
-                kind: LongTermMemoryKind::Project,
-                topic: "linux_agent_loop".to_string(),
-                content: "当前项目切到 Linux 侧 agent loop 和长期记忆收口。".to_string(),
-                keywords: vec!["linux".to_string(), "agent".to_string()],
-                source_chat_id: Some("chat-1".to_string()),
-            }],
+            upserts: vec![test_draft(
+                LongTermMemoryKind::Project,
+                "linux_agent_loop",
+                "当前项目切到 Linux 侧 agent loop 和长期记忆收口。",
+                vec!["linux", "agent"],
+                Some("chat-1"),
+            )],
             deletes: vec![],
         };
 
@@ -1644,26 +1719,26 @@ mod tests {
     #[test]
     fn prepare_extraction_reuses_legacy_unscoped_project_slot() {
         let store = StubLongTermMemoryStore {
-            recall_entries: vec![LongTermMemoryEntry {
-                id: "ltm-legacy".to_string(),
-                kind: LongTermMemoryKind::Project,
-                topic: "current_project".to_string(),
-                content: "当前项目是 Beetle 长期记忆收口。".to_string(),
-                keywords: vec!["beetle".to_string()],
-                source_chat_id: None,
-                created_at: 1,
-                updated_at: 10,
-            }],
+            recall_entries: vec![test_entry(
+                "ltm-legacy",
+                LongTermMemoryKind::Project,
+                "current_project",
+                "当前项目是 Beetle 长期记忆收口。",
+                vec!["beetle"],
+                None,
+                1,
+                10,
+            )],
             ..Default::default()
         };
         let extraction = ParsedLongTermMemoryExtraction {
-            upserts: vec![LongTermMemoryDraft {
-                kind: LongTermMemoryKind::Project,
-                topic: "memory_work".to_string(),
-                content: "当前项目切到 Beetle Linux 侧长期记忆收口。".to_string(),
-                keywords: vec!["linux".to_string(), "beetle".to_string()],
-                source_chat_id: Some("chat-1".to_string()),
-            }],
+            upserts: vec![test_draft(
+                LongTermMemoryKind::Project,
+                "memory_work",
+                "当前项目切到 Beetle Linux 侧长期记忆收口。",
+                vec!["linux", "beetle"],
+                Some("chat-1"),
+            )],
             deletes: vec![],
         };
 
@@ -1677,37 +1752,37 @@ mod tests {
     fn prepare_extraction_adds_delete_for_parallel_conflicting_slot() {
         let store = StubLongTermMemoryStore {
             recall_entries: vec![
-                LongTermMemoryEntry {
-                    id: "ltm-1".to_string(),
-                    kind: LongTermMemoryKind::Preference,
-                    topic: "response_style".to_string(),
-                    content: "用户偏好直接、简洁的回答。".to_string(),
-                    keywords: vec!["直接".to_string()],
-                    source_chat_id: Some("chat-1".to_string()),
-                    created_at: 1,
-                    updated_at: 10,
-                },
-                LongTermMemoryEntry {
-                    id: "ltm-2".to_string(),
-                    kind: LongTermMemoryKind::Preference,
-                    topic: "reply_style".to_string(),
-                    content: "用户偏好直接、简洁的回答。".to_string(),
-                    keywords: vec!["简洁".to_string()],
-                    source_chat_id: Some("chat-1".to_string()),
-                    created_at: 2,
-                    updated_at: 9,
-                },
+                test_entry(
+                    "ltm-1",
+                    LongTermMemoryKind::Preference,
+                    "response_style",
+                    "用户偏好直接、简洁的回答。",
+                    vec!["直接"],
+                    Some("chat-1"),
+                    1,
+                    10,
+                ),
+                test_entry(
+                    "ltm-2",
+                    LongTermMemoryKind::Preference,
+                    "reply_style",
+                    "用户偏好直接、简洁的回答。",
+                    vec!["简洁"],
+                    Some("chat-1"),
+                    2,
+                    9,
+                ),
             ],
             ..Default::default()
         };
         let extraction = ParsedLongTermMemoryExtraction {
-            upserts: vec![LongTermMemoryDraft {
-                kind: LongTermMemoryKind::Preference,
-                topic: "response_style_new".to_string(),
-                content: "用户现在偏好更详细、但仍直接的回答。".to_string(),
-                keywords: vec!["详细".to_string(), "直接".to_string()],
-                source_chat_id: Some("chat-1".to_string()),
-            }],
+            upserts: vec![test_draft(
+                LongTermMemoryKind::Preference,
+                "response_style_new",
+                "用户现在偏好更详细、但仍直接的回答。",
+                vec!["详细", "直接"],
+                Some("chat-1"),
+            )],
             deletes: vec![],
         };
 
@@ -1723,37 +1798,37 @@ mod tests {
     fn prepare_extraction_does_not_delete_distinct_preference_slots() {
         let store = StubLongTermMemoryStore {
             recall_entries: vec![
-                LongTermMemoryEntry {
-                    id: "ltm-1".to_string(),
-                    kind: LongTermMemoryKind::Preference,
-                    topic: "response_style".to_string(),
-                    content: "用户偏好直接回答。".to_string(),
-                    keywords: vec!["直接".to_string()],
-                    source_chat_id: Some("chat-1".to_string()),
-                    created_at: 1,
-                    updated_at: 10,
-                },
-                LongTermMemoryEntry {
-                    id: "ltm-2".to_string(),
-                    kind: LongTermMemoryKind::Preference,
-                    topic: "response_language".to_string(),
-                    content: "用户偏好中文回答。".to_string(),
-                    keywords: vec!["中文".to_string()],
-                    source_chat_id: Some("chat-1".to_string()),
-                    created_at: 2,
-                    updated_at: 9,
-                },
+                test_entry(
+                    "ltm-1",
+                    LongTermMemoryKind::Preference,
+                    "response_style",
+                    "用户偏好直接回答。",
+                    vec!["直接"],
+                    Some("chat-1"),
+                    1,
+                    10,
+                ),
+                test_entry(
+                    "ltm-2",
+                    LongTermMemoryKind::Preference,
+                    "response_language",
+                    "用户偏好中文回答。",
+                    vec!["中文"],
+                    Some("chat-1"),
+                    2,
+                    9,
+                ),
             ],
             ..Default::default()
         };
         let extraction = ParsedLongTermMemoryExtraction {
-            upserts: vec![LongTermMemoryDraft {
-                kind: LongTermMemoryKind::Preference,
-                topic: "response_style_new".to_string(),
-                content: "用户现在偏好更详细、但仍直接的回答。".to_string(),
-                keywords: vec!["详细".to_string(), "直接".to_string()],
-                source_chat_id: Some("chat-1".to_string()),
-            }],
+            upserts: vec![test_draft(
+                LongTermMemoryKind::Preference,
+                "response_style_new",
+                "用户现在偏好更详细、但仍直接的回答。",
+                vec!["详细", "直接"],
+                Some("chat-1"),
+            )],
             deletes: vec![],
         };
 
@@ -1767,26 +1842,26 @@ mod tests {
     #[test]
     fn prepare_extraction_maps_corrected_fact_to_existing_slot() {
         let store = StubLongTermMemoryStore {
-            recall_entries: vec![LongTermMemoryEntry {
-                id: "ltm-fact".to_string(),
-                kind: LongTermMemoryKind::Fact,
-                topic: "primary_llm".to_string(),
-                content: "当前主模型是 Gemini。".to_string(),
-                keywords: vec!["gemini".to_string(), "模型".to_string()],
-                source_chat_id: Some("chat-1".to_string()),
-                created_at: 1,
-                updated_at: 10,
-            }],
+            recall_entries: vec![test_entry(
+                "ltm-fact",
+                LongTermMemoryKind::Fact,
+                "primary_llm",
+                "当前主模型是 Gemini。",
+                vec!["gemini", "模型"],
+                Some("chat-1"),
+                1,
+                10,
+            )],
             ..Default::default()
         };
         let extraction = ParsedLongTermMemoryExtraction {
-            upserts: vec![LongTermMemoryDraft {
-                kind: LongTermMemoryKind::Fact,
-                topic: "main_model_provider".to_string(),
-                content: "当前主模型改为 OpenAI。".to_string(),
-                keywords: vec!["openai".to_string(), "模型".to_string()],
-                source_chat_id: Some("chat-1".to_string()),
-            }],
+            upserts: vec![test_draft(
+                LongTermMemoryKind::Fact,
+                "main_model_provider",
+                "当前主模型改为 OpenAI。",
+                vec!["openai", "模型"],
+                Some("chat-1"),
+            )],
             deletes: vec![],
         };
 
