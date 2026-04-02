@@ -1022,6 +1022,22 @@ fn run_post_reply_maintenance_job(
         Ok(crate::memory::ExecutionStateRefreshOutcome::Skipped) => {}
         Err(error) => log::warn!("[agent_execution_state] failed: {}", error),
     }
+    match maintenance_outcome.internal_memory_routing_result {
+        Ok(Some(decision)) => {
+            log::info!(
+                "[agent_internal_memory_routing] {} self_model={} private_docs={} private_garden={} self_model_intent={:?} private_docs_intent={:?} private_garden_intent={:?}",
+                msg.chat_id,
+                decision.refresh_self_model,
+                decision.refresh_private_docs,
+                decision.refresh_private_garden,
+                decision.self_model_intent.as_deref(),
+                decision.private_docs_intent.as_deref(),
+                decision.private_garden_intent.as_deref()
+            );
+        }
+        Ok(None) => {}
+        Err(error) => log::warn!("[agent_internal_memory_routing] failed: {}", error),
+    }
     match maintenance_outcome.self_model_result {
         Ok(crate::memory::SelfModelRefreshOutcome::Updated) => {
             log::info!("[agent_self_model] updated for {}", msg.chat_id);
@@ -1037,11 +1053,16 @@ fn run_post_reply_maintenance_job(
         Err(error) => log::warn!("[agent_private_docs] failed: {}", error),
     }
     match maintenance_outcome.private_garden_result {
-        Ok(crate::memory::PrivateGardenGovernanceOutcome::Updated { writes, deletes }) => {
+        Ok(crate::memory::PrivateGardenGovernanceOutcome::Updated {
+            writes,
+            moves,
+            deletes,
+        }) => {
             log::info!(
-                "[agent_private_garden] updated for {} (writes={}, deletes={})",
+                "[agent_private_garden] updated for {} (writes={}, moves={}, deletes={})",
                 msg.chat_id,
                 writes,
+                moves,
                 deletes
             );
         }
@@ -3001,6 +3022,16 @@ mod tests {
         }
 
         fn delete(&self, _chat_id: &str, _doc_path: &str) -> Result<bool> {
+            unreachable!()
+        }
+
+        fn move_doc(
+            &self,
+            _chat_id: &str,
+            _from_path: &str,
+            _to_path: &str,
+            _now_secs: u64,
+        ) -> Result<Option<PrivateGardenDocRecord>> {
             unreachable!()
         }
     }

@@ -226,7 +226,7 @@ impl AgentRequestPlan<'_> {
             .iter()
             .any(|tool| tool.name == "private_garden")
             .then_some(
-                "\n\n## Internal Memory Governance\nYour internal memory has layers with different roles. Keep kernel-facing private memory compact, stable, and repeatedly useful. Use `private_garden` for exploratory drafts, temporary organization, and self-owned working material. Before writing new private content, prefer reading or listing what already exists, then update or merge in place instead of appending a history trail. When self-state reports Cautious or Tight pressure, consolidate or prune before creating more. If a garden insight becomes stable and load-bearing, distill it into the governed kernel later rather than duplicating the same material across both layers.",
+                "\n\n## Internal Memory Governance\nYour internal memory has layers with different roles. Keep kernel-facing private memory compact, stable, and repeatedly useful. Use `private_garden` for exploratory drafts, temporary organization, and self-owned working material. Before writing new private content, prefer reading, listing, or inspecting the current garden shape so you can update, merge, move, or prune in place instead of appending a history trail. When self-state reports Cautious or Tight pressure, consolidate or prune before creating more. If a garden insight becomes stable and load-bearing, distill it into the governed kernel later rather than duplicating the same material across both layers.",
             )
     }
 }
@@ -691,6 +691,6 @@ mod tests {
         plan.apply_system_prompt(&mut system, 4096);
         assert!(system.contains("Internal Memory Governance"));
         assert!(system.contains("private_garden"));
-        assert!(system.contains("update or merge in place"));
+        assert!(system.contains("update, merge, move, or prune in place"));
     }
 }

@@ -10,11 +10,12 @@ use super::{
     evaluate_long_term_memory_extraction_turn, load_session_summary_snapshot,
     mark_long_term_memory_extraction_requested, memory_policy,
     persist_long_term_memory_extraction_state, run_execution_state_refresh_with_state,
-    run_private_doc_workspace_refresh_with_state, run_private_garden_governance_with_state,
-    run_self_model_refresh_with_state, run_session_summary_refresh_with_snapshot,
-    should_refresh_execution_state, should_refresh_private_doc_workspace,
-    should_refresh_private_garden, should_refresh_self_model, ExecutionStateRefreshContext,
-    ExecutionStateRefreshInput, ExecutionStateRefreshOutcome, ExecutionStateStore,
+    run_internal_memory_routing_with_state, run_private_doc_workspace_refresh_with_state,
+    run_private_garden_governance_with_state, run_self_model_refresh_with_state,
+    run_session_summary_refresh_with_snapshot, should_refresh_execution_state,
+    should_refresh_private_doc_workspace, should_refresh_private_garden, should_refresh_self_model,
+    ExecutionStateRefreshContext, ExecutionStateRefreshInput, ExecutionStateRefreshOutcome,
+    ExecutionStateStore, InternalMemoryRoutingDecision, InternalMemoryRoutingInput,
     LongTermMemoryExtractionStateStore, LongTermMemoryExtractionTurnInput, MemoryProfile,
     PrivateDocStore, PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
     PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
@@ -57,6 +58,7 @@ pub struct PostReplyMemoryMaintenanceOutcome {
     pub after_count: usize,
     pub summary_result: Result<SessionSummaryRefreshOutcome>,
     pub execution_state_result: Result<ExecutionStateRefreshOutcome>,
+    pub internal_memory_routing_result: Result<Option<InternalMemoryRoutingDecision>>,
     pub self_model_result: Result<SelfModelRefreshOutcome>,
     pub private_doc_result: Result<PrivateDocWorkspaceRefreshOutcome>,
     pub private_garden_result: Result<PrivateGardenGovernanceOutcome>,
@@ -186,12 +188,27 @@ pub fn run_post_reply_memory_maintenance(
                         memory_policy(input.memory_profile)
                             .private_garden_governance
                             .recent_message_count,
+                    )
+                    .max(
+                        memory_policy(input.memory_profile)
+                            .internal_memory_routing
+                            .recent_message_count,
                     ),
             )
             .ok()
     } else {
         None
     };
+    let routing_recent = shared_recent.clone().or_else(|| {
+        ctx.session_store
+            .load_recent(
+                input.chat_id,
+                memory_policy(input.memory_profile)
+                    .internal_memory_routing
+                    .recent_message_count,
+            )
+            .ok()
+    });
 
     let (summary_result, summary_snapshot) = match run_session_summary_refresh_with_snapshot(
         http,
@@ -246,6 +263,49 @@ pub fn run_post_reply_memory_maintenance(
             None
         }
     };
+    let internal_memory_routing_result = match &private_garden_docs {
+        Ok(existing_garden_docs) => run_internal_memory_routing_with_state(
+            http,
+            llm,
+            InternalMemoryRoutingInput {
+                chat_id: input.chat_id,
+                ingress: input.ingress,
+                channel: input.channel,
+                user_content: input.user_content,
+                reply_content: input.reply_content,
+                pressure: input.pressure,
+                tool_calls: input.tool_calls,
+                now_secs: input.now_secs,
+            },
+            input.memory_profile,
+            summary_snapshot.summary_text.as_deref(),
+            latest_execution_state.as_ref(),
+            self_model.as_ref().ok().and_then(|model| model.as_ref()),
+            private_docs
+                .as_ref()
+                .ok()
+                .and_then(|workspace| workspace.as_ref()),
+            existing_garden_docs,
+            routing_recent.as_deref().unwrap_or(&[]),
+        ),
+        Err(error) => Err(crate::error::Error::config(
+            "agent_internal_memory_routing",
+            error.to_string(),
+        )),
+    };
+    let fallback_internal_memory_decision = InternalMemoryRoutingDecision {
+        refresh_self_model: self_model_should_refresh,
+        self_model_intent: None,
+        refresh_private_docs: private_doc_should_refresh,
+        private_docs_intent: None,
+        refresh_private_garden: private_garden_should_refresh,
+        private_garden_intent: None,
+    };
+    let internal_memory_decision = match &internal_memory_routing_result {
+        Ok(Some(decision)) => decision.clone(),
+        Ok(None) => InternalMemoryRoutingDecision::default(),
+        Err(_) => fallback_internal_memory_decision,
+    };
     let self_model_result = match self_model {
         Ok(existing_model) => run_self_model_refresh_with_state(
             http,
@@ -270,6 +330,13 @@ pub fn run_post_reply_memory_maintenance(
             existing_model,
             summary_snapshot.summary_text.as_deref(),
             latest_execution_state.as_ref(),
+            private_docs
+                .as_ref()
+                .ok()
+                .and_then(|workspace| workspace.as_ref()),
+            private_garden_docs.as_deref().unwrap_or(&[]),
+            internal_memory_decision.self_model_intent.as_deref(),
+            Some(internal_memory_decision.refresh_self_model),
             shared_recent.as_deref(),
         ),
         Err(error) => Err(error),
@@ -311,6 +378,9 @@ pub fn run_post_reply_memory_maintenance(
             summary_snapshot.summary_text.as_deref(),
             latest_execution_state.as_ref(),
             latest_self_model.as_ref(),
+            private_garden_docs.as_deref().unwrap_or(&[]),
+            internal_memory_decision.private_docs_intent.as_deref(),
+            Some(internal_memory_decision.refresh_private_docs),
             shared_recent.as_deref(),
         ),
         Err(error) => Err(error),
@@ -353,6 +423,8 @@ pub fn run_post_reply_memory_maintenance(
             latest_execution_state.as_ref(),
             latest_self_model.as_ref(),
             latest_private_workspace.as_ref(),
+            internal_memory_decision.private_garden_intent.as_deref(),
+            Some(internal_memory_decision.refresh_private_garden),
             shared_recent.as_deref(),
         ),
         Err(error) => Err(error),
@@ -395,6 +467,7 @@ pub fn run_post_reply_memory_maintenance(
         after_count,
         summary_result,
         execution_state_result,
+        internal_memory_routing_result,
         self_model_result,
         private_doc_result,
         private_garden_result,
@@ -653,9 +726,38 @@ mod tests {
                 .remove(doc_path)
                 .is_some())
         }
+
+        fn move_doc(
+            &self,
+            _chat_id: &str,
+            from_path: &str,
+            to_path: &str,
+            now_secs: u64,
+        ) -> Result<Option<PrivateGardenDocRecord>> {
+            let mut docs = self.docs.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(doc) = docs.remove(from_path) else {
+                return Ok(None);
+            };
+            let moved = PrivateGardenDoc {
+                path: to_path.to_string(),
+                content: doc.content,
+                updated_at: now_secs,
+                revision: doc.revision.saturating_add(1),
+            };
+            docs.insert(to_path.to_string(), moved.clone());
+            Ok(Some(PrivateGardenDocRecord {
+                path: moved.path,
+                updated_at: moved.updated_at,
+                revision: moved.revision,
+                bytes: moved.content.len(),
+                preview: crate::memory::build_private_garden_preview(&moved.content),
+            }))
+        }
     }
 
     struct FixedLlmClient;
+
+    struct RouterSuppressingLlmClient;
 
     impl LlmClient for FixedLlmClient {
         fn model_compat(&self) -> LlmModelCompat {
@@ -672,6 +774,8 @@ mod tests {
         ) -> Result<LlmResponse> {
             let content = if system == crate::memory::EXECUTION_STATE_SYSTEM_PROMPT {
                 r#"{"status":"active","goal":"长期记忆链路收口","progress":"继续拆 coordinator","next_action":"接 execution state"}"#
+            } else if system == crate::memory::INTERNAL_MEMORY_ROUTING_SYSTEM_PROMPT {
+                r#"{"refresh_self_model":true,"self_model_intent":"沉淀最近形成的稳定自我连续性","refresh_private_docs":true,"private_docs_intent":"把持续有效的 inward plan 收到 governed docs","refresh_private_garden":true,"private_garden_intent":"整理仍然处于探索阶段的草稿和目录结构"}"#
             } else if system == crate::memory::SELF_MODEL_SYSTEM_PROMPT {
                 r#"{"continuity_anchor":"我还在沿着同一条收口线前进","self_narrative":"现在我把共享事实层和私有层分开维护","relationship_state":"和这个用户维持着共同推进架构的关系感","private_notes":"下一轮继续收紧 self-model 的写入边界"}"#
             } else if system == crate::memory::PRIVATE_DOC_WORKSPACE_SYSTEM_PROMPT {
@@ -680,6 +784,34 @@ mod tests {
                 r#"{"writes":[{"path":"journal/current.md","content":"把当前内部工作收束成一份持续维护的私有笔记。"}],"deletes":["scratch/stale.md"]}"#
             } else {
                 "summary"
+            };
+            Ok(LlmResponse {
+                content: content.to_string(),
+                stop_reason: StopReason::EndTurn,
+                tool_calls: None,
+            })
+        }
+    }
+
+    impl LlmClient for RouterSuppressingLlmClient {
+        fn model_compat(&self) -> LlmModelCompat {
+            LlmModelCompat::default()
+        }
+
+        fn chat(
+            &self,
+            _http: &mut dyn LlmHttpClient,
+            system: &str,
+            _messages: &[Message],
+            _tools: Option<&[crate::llm::ToolSpec]>,
+            _tool_choice: ToolChoicePolicy,
+        ) -> Result<LlmResponse> {
+            let content = if system == crate::memory::EXECUTION_STATE_SYSTEM_PROMPT {
+                r#"{"status":"active","goal":"继续推进","progress":"maintenance router","next_action":"只更新 execution state"}"#
+            } else if system == crate::memory::INTERNAL_MEMORY_ROUTING_SYSTEM_PROMPT {
+                "null"
+            } else {
+                r#"{"continuity_anchor":"should not run"}"#
             };
             Ok(LlmResponse {
                 content: content.to_string(),
@@ -772,6 +904,17 @@ mod tests {
         assert!(matches!(
             outcome.execution_state_result,
             Ok(ExecutionStateRefreshOutcome::Updated)
+        ));
+        assert!(matches!(
+            outcome.internal_memory_routing_result,
+            Ok(Some(InternalMemoryRoutingDecision {
+                refresh_self_model: true,
+                self_model_intent: Some(_),
+                refresh_private_docs: true,
+                private_docs_intent: Some(_),
+                refresh_private_garden: true,
+                private_garden_intent: Some(_),
+            }))
         ));
         assert!(matches!(
             outcome.self_model_result,
@@ -957,6 +1100,76 @@ mod tests {
                 .unwrap_or_else(|e| e.into_inner()),
             1
         );
+    }
+
+    #[test]
+    fn maintenance_router_can_suppress_private_memory_writes() {
+        let session_store = StubSessionStore {
+            recent: vec![
+                SessionMessage {
+                    role: "user".to_string(),
+                    content: "继续把自我空间治理收紧".to_string(),
+                },
+                SessionMessage {
+                    role: "assistant".to_string(),
+                    content: "这轮会先把治理入口抽象出来".to_string(),
+                },
+            ],
+            count: 18,
+            ..Default::default()
+        };
+        let summary_store = StubSessionSummaryStore::default();
+        let extraction_state_store = StubExtractionStateStore::default();
+        let execution_state_store = StubExecutionStateStore::default();
+        let self_model_store = StubSelfModelStore::default();
+        let private_doc_store = StubPrivateDocStore::default();
+        let private_garden_store = StubPrivateGardenStore::default();
+        let mut http = DummyHttpClient;
+
+        let outcome = run_post_reply_memory_maintenance(
+            &mut http,
+            &RouterSuppressingLlmClient,
+            PostReplyMemoryMaintenanceContext {
+                session_store: &session_store,
+                session_summary_store: &summary_store,
+                execution_state_store: &execution_state_store,
+                self_model_store: &self_model_store,
+                private_doc_store: &private_doc_store,
+                private_garden_store: &private_garden_store,
+                extraction_state_store: &extraction_state_store,
+            },
+            PostReplyMemoryMaintenanceInput {
+                chat_id: "chat-1",
+                ingress: IngressKind::User,
+                channel: "qq_channel",
+                user_content: "继续把自我空间治理收紧",
+                reply_content: "这轮会先把治理入口抽象出来",
+                pressure: PressureLevel::Normal,
+                memory_profile: MemoryProfile::Embedded,
+                tool_calls: 1,
+                external_content_used: false,
+                now_secs: 88,
+            },
+            || false,
+        );
+
+        assert!(matches!(outcome.internal_memory_routing_result, Ok(None)));
+        assert!(matches!(
+            outcome.execution_state_result,
+            Ok(ExecutionStateRefreshOutcome::Updated)
+        ));
+        assert!(matches!(
+            outcome.self_model_result,
+            Ok(SelfModelRefreshOutcome::Skipped)
+        ));
+        assert!(matches!(
+            outcome.private_doc_result,
+            Ok(PrivateDocWorkspaceRefreshOutcome::Skipped)
+        ));
+        assert!(matches!(
+            outcome.private_garden_result,
+            Ok(PrivateGardenGovernanceOutcome::Skipped)
+        ));
     }
 
     #[test]

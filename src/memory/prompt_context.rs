@@ -91,18 +91,13 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         .private_garden_store
         .list(params.chat_id, usize::MAX)
         .unwrap_or_default();
-    let private_garden_text = {
-        let mut recent_docs = all_private_garden_docs.clone();
-        recent_docs.truncate(
-            memory_policy(params.profile)
-                .private_garden
-                .recent_doc_count,
-        );
-        render_private_garden_block(
-            &recent_docs,
-            memory_policy(params.profile).private_garden.render_max_len,
-        )
-    };
+    let private_garden_text = render_private_garden_block(
+        &all_private_garden_docs,
+        memory_policy(params.profile)
+            .private_garden
+            .recent_doc_count,
+        memory_policy(params.profile).private_garden.render_max_len,
+    );
     let self_state_text = render_self_state_block(
         &build_self_state(
             self_model.as_ref(),
@@ -380,6 +375,16 @@ mod tests {
         }
 
         fn delete(&self, _chat_id: &str, _doc_path: &str) -> Result<bool> {
+            unreachable!()
+        }
+
+        fn move_doc(
+            &self,
+            _chat_id: &str,
+            _from_path: &str,
+            _to_path: &str,
+            _now_secs: u64,
+        ) -> Result<Option<PrivateGardenDocRecord>> {
             unreachable!()
         }
     }

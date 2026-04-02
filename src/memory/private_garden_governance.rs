@@ -12,15 +12,17 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use super::{
-    build_self_state, memory_policy, normalize_private_garden_doc_path,
-    render_execution_state_block, render_private_doc_workspace_block, render_self_model_block,
-    render_self_state_block, ExecutionState, ExecutionStateStore, MemoryProfile, PrivateDocStore,
-    PrivateDocWorkspace, PrivateGardenDoc, PrivateGardenGovernancePolicy, PrivateGardenStore,
-    SelfModel, SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
-    PRIVATE_GARDEN_MAX_DOC_BYTES,
+    build_private_garden_preview, build_private_garden_usage, build_self_state, memory_policy,
+    normalize_private_garden_doc_path, render_execution_state_block,
+    render_internal_memory_topology_block, render_private_doc_workspace_block,
+    render_self_model_block, render_self_state_block, summarize_private_garden_directories,
+    ExecutionState, ExecutionStateStore, InternalMemoryLayerFocus, MemoryProfile, PrivateDocStore,
+    PrivateDocWorkspace, PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenGovernancePolicy,
+    PrivateGardenStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
+    SessionSummaryStore, PRIVATE_GARDEN_MAX_DOC_BYTES,
 };
 
-pub const PRIVATE_GARDEN_GOVERNANCE_SYSTEM_PROMPT: &str = "You govern a persistent AI assistant's private garden: a free-form, self-owned internal workspace. Return JSON only: either null, or one object with optional writes and deletes fields. writes must be an array of objects {path, content}; each write replaces the full document body at that path. deletes must be an array of document paths to remove. Use this workspace for private drafts, internal organization, and exploratory self-work, not shared factual memory. Keep documents current by rewriting or merging in place instead of accumulating a history trail. Create new docs only when they materially improve continuity or organization. Delete stale, duplicated, or low-value scratch material when useful. Do not copy raw tool payloads, logs, large quotes, secrets, or transcript fragments. Do not duplicate stable kernel material that already belongs in the governed private self-model or typed private docs. Return null when no garden change is worth making.";
+pub const PRIVATE_GARDEN_GOVERNANCE_SYSTEM_PROMPT: &str = "You govern a persistent AI assistant's private garden: a free-form, self-owned internal workspace. Return JSON only: either null, or one object with optional writes, moves, and deletes fields. writes must be an array of objects {path, content}; each write replaces the full document body at that path. moves must be an array of objects {from_path, to_path} for reorganizing or renaming existing documents. deletes must be an array of document paths to remove. Use this workspace for private drafts, internal organization, and exploratory self-work, not shared factual memory. Keep documents current by rewriting, merging, or relocating in place instead of accumulating a history trail. Create new docs only when they materially improve continuity or organization. Delete stale, duplicated, or low-value scratch material when useful. Do not copy raw tool payloads, logs, large quotes, secrets, or transcript fragments. Do not duplicate stable kernel material that already belongs in the governed private self-model or typed private docs. Return null when no garden change is worth making.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PrivateGardenGovernanceInput<'a> {
@@ -46,13 +48,19 @@ pub struct PrivateGardenGovernanceContext<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PrivateGardenGovernanceOutcome {
     Skipped,
-    Updated { writes: usize, deletes: usize },
+    Updated {
+        writes: usize,
+        moves: usize,
+        deletes: usize,
+    },
 }
 
 #[derive(Default, Deserialize)]
 struct RawPrivateGardenGovernanceResponse {
     #[serde(default)]
     writes: Vec<RawPrivateGardenWrite>,
+    #[serde(default)]
+    moves: Vec<RawPrivateGardenMove>,
     #[serde(default)]
     deletes: Vec<String>,
 }
@@ -63,10 +71,22 @@ struct RawPrivateGardenWrite {
     content: String,
 }
 
+#[derive(Deserialize)]
+struct RawPrivateGardenMove {
+    from_path: String,
+    to_path: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PrivateGardenWriteAction {
     path: String,
     content: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PrivateGardenMoveAction {
+    from_path: String,
+    to_path: String,
 }
 
 struct PrivateGardenSnapshot {
@@ -178,6 +198,8 @@ pub fn run_private_garden_governance(
         self_model.as_ref(),
         private_workspace.as_ref(),
         None,
+        None,
+        None,
     )
 }
 
@@ -191,10 +213,14 @@ pub(crate) fn run_private_garden_governance_with_state(
     execution_state: Option<&ExecutionState>,
     self_model: Option<&SelfModel>,
     private_workspace: Option<&PrivateDocWorkspace>,
+    routing_intent: Option<&str>,
+    decision_override: Option<bool>,
     recent_override: Option<&[SessionMessage]>,
 ) -> Result<PrivateGardenGovernanceOutcome> {
     let snapshot = load_private_garden_snapshot(ctx.private_garden_store, input.chat_id)?;
-    if !should_refresh_private_garden(input, !snapshot.records.is_empty(), profile) {
+    if !decision_override.unwrap_or_else(|| {
+        should_refresh_private_garden(input, !snapshot.records.is_empty(), profile)
+    }) {
         return Ok(PrivateGardenGovernanceOutcome::Skipped);
     }
 
@@ -214,6 +240,7 @@ pub(crate) fn run_private_garden_governance_with_state(
         execution_state,
         self_model,
         private_workspace,
+        routing_intent,
         &snapshot,
         recent,
         input.now_secs,
@@ -237,13 +264,21 @@ pub(crate) fn run_private_garden_governance_with_state(
             else {
                 return Ok(PrivateGardenGovernanceOutcome::Skipped);
             };
-            let (writes, deletes) =
+            let (writes, moves, deletes) =
                 normalize_private_garden_governance_actions(raw, &snapshot.docs, policy);
-            if writes.is_empty() && deletes.is_empty() {
+            if writes.is_empty() && moves.is_empty() && deletes.is_empty() {
                 return Ok(PrivateGardenGovernanceOutcome::Skipped);
             }
             for path in &deletes {
                 let _ = ctx.private_garden_store.delete(input.chat_id, path)?;
+            }
+            for move_action in &moves {
+                let _ = ctx.private_garden_store.move_doc(
+                    input.chat_id,
+                    &move_action.from_path,
+                    &move_action.to_path,
+                    input.now_secs,
+                )?;
             }
             for write in &writes {
                 let _ = ctx.private_garden_store.write(
@@ -255,6 +290,7 @@ pub(crate) fn run_private_garden_governance_with_state(
             }
             Ok(PrivateGardenGovernanceOutcome::Updated {
                 writes: writes.len(),
+                moves: moves.len(),
                 deletes: deletes.len(),
             })
         }
@@ -303,6 +339,7 @@ fn build_private_garden_governance_input(
     execution_state: Option<&ExecutionState>,
     self_model: Option<&SelfModel>,
     private_workspace: Option<&PrivateDocWorkspace>,
+    routing_intent: Option<&str>,
     snapshot: &PrivateGardenSnapshot,
     recent: &[SessionMessage],
     now_secs: u64,
@@ -321,6 +358,18 @@ fn build_private_garden_governance_input(
         memory_policy(profile).self_state.render_max_len,
     ) {
         input.push_str(self_state_text.trim());
+        input.push_str("\n\n");
+    }
+    if let Some(topology_text) = render_internal_memory_topology_block(
+        self_model,
+        private_workspace,
+        snapshot.records.as_slice(),
+        now_secs,
+        profile,
+        InternalMemoryLayerFocus::PrivateGarden,
+        policy.grounding_max_len.saturating_mul(2),
+    ) {
+        input.push_str(topology_text.trim());
         input.push_str("\n\n");
     }
     input.push_str("## Shared Grounding\n");
@@ -348,6 +397,14 @@ fn build_private_garden_governance_input(
         input.push_str(block.trim());
         input.push('\n');
     }
+    if let Some(intent) = routing_intent
+        .map(str::trim)
+        .filter(|intent| !intent.is_empty())
+    {
+        input.push_str("\n## Routing Intent\n");
+        input.push_str(intent);
+        input.push('\n');
+    }
     input.push_str("\n## Existing Private Garden\n");
     input.push_str(&render_private_garden_docs_snapshot(
         snapshot.docs.as_slice(),
@@ -360,6 +417,9 @@ fn build_private_garden_governance_input(
         "- Keep the garden current; rewrite or merge in place instead of storing a timeline.\n",
     );
     input.push_str("- Prefer stable paths when updating existing working material.\n");
+    input.push_str(
+        "- Use moves when renaming or regrouping existing docs would keep the workspace cleaner.\n",
+    );
     input.push_str("- Delete stale or overlapping scratch docs when they no longer help.\n");
     input.push_str(
         "- Only create a new doc when it materially improves private continuity or organization.\n",
@@ -378,8 +438,44 @@ fn render_private_garden_docs_snapshot(
     if docs.is_empty() {
         return "None.\n".to_string();
     }
+    let records = docs
+        .iter()
+        .map(|doc| PrivateGardenDocRecord {
+            path: doc.path.clone(),
+            updated_at: doc.updated_at,
+            revision: doc.revision,
+            bytes: doc.content.len(),
+            preview: build_private_garden_preview(&doc.content),
+        })
+        .collect::<Vec<_>>();
+    let usage = build_private_garden_usage(&records);
+    let directories = summarize_private_garden_directories(&records, 4);
     let mut out = String::with_capacity(policy.existing_docs_max_chars.saturating_add(128));
-    let mut remaining = policy.existing_docs_max_chars;
+    let _ = writeln!(
+        out,
+        "Workspace: {}/{} docs used ({} free), {}/{} bytes used ({} free).",
+        usage.docs_used,
+        usage.docs_limit,
+        usage.docs_free,
+        usage.bytes_used,
+        usage.bytes_limit,
+        usage.bytes_free
+    );
+    if !directories.is_empty() {
+        out.push_str("Folders: ");
+        for (idx, dir) in directories.iter().enumerate() {
+            if idx > 0 {
+                out.push_str("; ");
+            }
+            let _ = write!(
+                out,
+                "{} ({} docs, {} bytes)",
+                dir.path, dir.doc_count, dir.bytes
+            );
+        }
+        out.push_str("\n\n");
+    }
+    let mut remaining = policy.existing_docs_max_chars.saturating_sub(out.len());
     for doc in docs.iter().take(policy.existing_doc_count) {
         if remaining == 0 {
             break;
@@ -438,11 +534,19 @@ fn normalize_private_garden_governance_actions(
     raw: RawPrivateGardenGovernanceResponse,
     existing_docs: &[PrivateGardenDoc],
     policy: PrivateGardenGovernancePolicy,
-) -> (Vec<PrivateGardenWriteAction>, Vec<String>) {
+) -> (
+    Vec<PrivateGardenWriteAction>,
+    Vec<PrivateGardenMoveAction>,
+    Vec<String>,
+) {
     let existing_map = existing_docs
         .iter()
         .map(|doc| (doc.path.as_str(), doc.content.as_str()))
         .collect::<HashMap<_, _>>();
+    let existing_paths = existing_docs
+        .iter()
+        .map(|doc| doc.path.clone())
+        .collect::<HashSet<_>>();
     let mut writes_by_path = HashMap::<String, String>::new();
     for write in raw.writes.into_iter().take(policy.max_writes) {
         let Ok(path) = normalize_private_garden_doc_path(&write.path) else {
@@ -461,6 +565,33 @@ fn normalize_private_garden_governance_actions(
         }
         writes_by_path.insert(path, content);
     }
+    let mut moves = Vec::new();
+    let mut claimed_sources = HashSet::new();
+    let mut claimed_targets = HashSet::new();
+    for raw_move in raw.moves.into_iter().take(policy.max_moves) {
+        let Ok(from_path) = normalize_private_garden_doc_path(&raw_move.from_path) else {
+            continue;
+        };
+        let Ok(to_path) = normalize_private_garden_doc_path(&raw_move.to_path) else {
+            continue;
+        };
+        if from_path == to_path
+            || !existing_paths.contains(&from_path)
+            || claimed_sources.contains(&from_path)
+            || claimed_targets.contains(&to_path)
+            || writes_by_path.contains_key(&from_path)
+            || writes_by_path.contains_key(&to_path)
+        {
+            continue;
+        }
+        claimed_sources.insert(from_path.clone());
+        claimed_targets.insert(to_path.clone());
+        moves.push(PrivateGardenMoveAction { from_path, to_path });
+    }
+    let move_sources = moves
+        .iter()
+        .map(|action| action.from_path.clone())
+        .collect::<HashSet<_>>();
     let write_paths = writes_by_path.keys().cloned().collect::<HashSet<_>>();
     let mut deletes = Vec::new();
     let mut seen_deletes = HashSet::new();
@@ -468,7 +599,10 @@ fn normalize_private_garden_governance_actions(
         let Ok(path) = normalize_private_garden_doc_path(&raw_path) else {
             continue;
         };
-        if write_paths.contains(&path) || !existing_map.contains_key(path.as_str()) {
+        if write_paths.contains(&path)
+            || move_sources.contains(&path)
+            || !existing_map.contains_key(path.as_str())
+        {
             continue;
         }
         if seen_deletes.insert(path.clone()) {
@@ -479,9 +613,14 @@ fn normalize_private_garden_governance_actions(
         .into_iter()
         .map(|(path, content)| PrivateGardenWriteAction { path, content })
         .collect::<Vec<_>>();
+    moves.sort_by(|a, b| {
+        a.from_path
+            .cmp(&b.from_path)
+            .then_with(|| a.to_path.cmp(&b.to_path))
+    });
     writes.sort_by(|a, b| a.path.cmp(&b.path));
     deletes.sort();
-    (writes, deletes)
+    (writes, moves, deletes)
 }
 
 #[cfg(test)]
@@ -489,6 +628,7 @@ mod tests {
     use super::*;
     use crate::error::Result;
     use crate::llm::{LlmModelCompat, LlmResponse, StopReason};
+    use crate::memory::PrivateGardenDocRecord;
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -662,6 +802,33 @@ mod tests {
                 .remove(doc_path)
                 .is_some())
         }
+
+        fn move_doc(
+            &self,
+            _chat_id: &str,
+            from_path: &str,
+            to_path: &str,
+            now_secs: u64,
+        ) -> Result<Option<PrivateGardenDocRecord>> {
+            let mut docs = self.docs.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(doc) = docs.remove(from_path) else {
+                return Ok(None);
+            };
+            let moved = PrivateGardenDoc {
+                path: to_path.to_string(),
+                content: doc.content,
+                updated_at: now_secs,
+                revision: doc.revision.saturating_add(1),
+            };
+            docs.insert(to_path.to_string(), moved.clone());
+            Ok(Some(PrivateGardenDocRecord {
+                path: moved.path,
+                updated_at: moved.updated_at,
+                revision: moved.revision,
+                bytes: moved.content.len(),
+                preview: super::super::build_private_garden_preview(&moved.content),
+            }))
+        }
     }
 
     struct FixedLlmClient;
@@ -680,7 +847,7 @@ mod tests {
             _tool_choice: ToolChoicePolicy,
         ) -> Result<LlmResponse> {
             Ok(LlmResponse {
-                content: r#"{"writes":[{"path":"journal/active.md","content":"把之前分散的想法收束成一份当前工作笔记。"}],"deletes":["scratch/old.md"]}"#.to_string(),
+                content: r#"{"writes":[{"path":"journal/active.md","content":"把之前分散的想法收束成一份当前工作笔记。"}],"moves":[{"from_path":"drafts/live.md","to_path":"journal/live.md"}],"deletes":["scratch/old.md"]}"#.to_string(),
                 stop_reason: StopReason::EndTurn,
                 tool_calls: None,
             })
@@ -719,6 +886,9 @@ mod tests {
         private_garden_store
             .write("chat-1", "scratch/old.md", "过时草稿", 1)
             .unwrap();
+        private_garden_store
+            .write("chat-1", "drafts/live.md", "活跃草稿", 2)
+            .unwrap();
         let mut http = DummyHttpClient;
         let outcome = run_private_garden_governance(
             &mut http,
@@ -749,6 +919,7 @@ mod tests {
             outcome,
             PrivateGardenGovernanceOutcome::Updated {
                 writes: 1,
+                moves: 1,
                 deletes: 1
             }
         );
@@ -760,6 +931,43 @@ mod tests {
             .read("chat-1", "journal/active.md")
             .unwrap()
             .is_some());
+        assert!(private_garden_store
+            .read("chat-1", "journal/live.md")
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn private_garden_governance_input_includes_routing_intent() {
+        let input = build_private_garden_governance_input(
+            Some("summary"),
+            None,
+            None,
+            None,
+            Some("把探索性内容继续留在 garden，并顺手整理目录结构"),
+            &PrivateGardenSnapshot {
+                records: vec![PrivateGardenDocRecord {
+                    path: "journal/active.md".to_string(),
+                    updated_at: 1,
+                    revision: 1,
+                    bytes: 16,
+                    preview: "preview".to_string(),
+                }],
+                docs: vec![PrivateGardenDoc {
+                    path: "journal/active.md".to_string(),
+                    content: "活跃草稿".to_string(),
+                    updated_at: 1,
+                    revision: 1,
+                }],
+            },
+            &[],
+            10,
+            MemoryProfile::Embedded,
+            memory_policy(MemoryProfile::Embedded).private_garden_governance,
+        );
+
+        assert!(input.contains("## Routing Intent"));
+        assert!(input.contains("继续留在 garden"));
     }
 
     #[test]
@@ -770,7 +978,7 @@ mod tests {
             updated_at: 1,
             revision: 1,
         }];
-        let (writes, deletes) = normalize_private_garden_governance_actions(
+        let (writes, moves, deletes) = normalize_private_garden_governance_actions(
             RawPrivateGardenGovernanceResponse {
                 writes: vec![
                     RawPrivateGardenWrite {
@@ -784,6 +992,16 @@ mod tests {
                     RawPrivateGardenWrite {
                         path: "../escape".to_string(),
                         content: "bad".to_string(),
+                    },
+                ],
+                moves: vec![
+                    RawPrivateGardenMove {
+                        from_path: "journal/active.md".to_string(),
+                        to_path: "journal/renamed.md".to_string(),
+                    },
+                    RawPrivateGardenMove {
+                        from_path: "journal/missing.md".to_string(),
+                        to_path: "journal/skip.md".to_string(),
                     },
                 ],
                 deletes: vec![
@@ -803,6 +1021,13 @@ mod tests {
                 content: "next".to_string(),
             }]
         );
-        assert_eq!(deletes, vec!["journal/active.md".to_string()]);
+        assert_eq!(
+            moves,
+            vec![PrivateGardenMoveAction {
+                from_path: "journal/active.md".to_string(),
+                to_path: "journal/renamed.md".to_string(),
+            }]
+        );
+        assert!(deletes.is_empty());
     }
 }

@@ -1,13 +1,17 @@
 //! private_garden 工具：当前 chat 作用域内的自由内部工作区。
 
 use crate::error::{Error, Result};
-use crate::memory::PrivateGardenStore;
+use crate::memory::{
+    build_private_garden_usage, summarize_private_garden_directories, PrivateGardenStore,
+    PRIVATE_GARDEN_MAX_DOCS_PER_CHAT,
+};
 use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
 use crate::util::current_unix_secs;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
 const PRIVATE_GARDEN_MAX_LIST_LIMIT: usize = 8;
+const PRIVATE_GARDEN_MAX_TREE_LIMIT: usize = PRIVATE_GARDEN_MAX_DOCS_PER_CHAT;
 const PRIVATE_GARDEN_MAX_CONTENT_LEN: usize = 8 * 1024;
 
 pub struct PrivateGardenTool {
@@ -35,12 +39,20 @@ impl Tool for PrivateGardenTool {
             "properties": {
                 "op": {
                     "type": "string",
-                    "enum": ["list", "read", "write", "delete"],
-                    "description": "Operation to perform inside the current chat's private garden. Use list/read before write when you need to inspect or reorganize existing material."
+                    "enum": ["list", "tree", "read", "write", "move", "delete"],
+                    "description": "Operation to perform inside the current chat's private garden. Use list/tree/read before write or move when you need to inspect or reorganize existing material."
                 },
                 "path": {
                     "type": "string",
                     "description": "Relative document path, e.g. journal/afterglow.md."
+                },
+                "from_path": {
+                    "type": "string",
+                    "description": "Existing relative document path to move from."
+                },
+                "to_path": {
+                    "type": "string",
+                    "description": "Target relative document path to move to."
                 },
                 "content": {
                     "type": "string",
@@ -48,7 +60,7 @@ impl Tool for PrivateGardenTool {
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Max docs to list; default 4, max 8."
+                    "description": "Max docs to list; for list default 4 max 8, for tree default 16 max 16."
                 }
             },
             "required": ["op"]
@@ -77,6 +89,24 @@ impl Tool for PrivateGardenTool {
                 Ok(json!({
                     "ok": true,
                     "op": "list",
+                    "docs": docs,
+                })
+                .to_string())
+            }
+            "tree" => {
+                let limit = obj
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(PRIVATE_GARDEN_MAX_TREE_LIMIT as u64)
+                    .clamp(1, PRIVATE_GARDEN_MAX_TREE_LIMIT as u64)
+                    as usize;
+                let all_docs = self.store.list(chat_id, usize::MAX)?;
+                let docs = all_docs.iter().take(limit).cloned().collect::<Vec<_>>();
+                Ok(json!({
+                    "ok": true,
+                    "op": "tree",
+                    "usage": build_private_garden_usage(&all_docs),
+                    "directories": summarize_private_garden_directories(&all_docs, 8),
                     "docs": docs,
                 })
                 .to_string())
@@ -119,6 +149,27 @@ impl Tool for PrivateGardenTool {
                 })
                 .to_string())
             }
+            "move" => {
+                let from_path = obj
+                    .get("from_path")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Error::config("tool_private_garden", "missing from_path"))?;
+                let to_path = obj
+                    .get("to_path")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Error::config("tool_private_garden", "missing to_path"))?;
+                let moved =
+                    self.store
+                        .move_doc(chat_id, from_path, to_path, current_unix_secs())?;
+                Ok(json!({
+                    "ok": true,
+                    "op": "move",
+                    "from_path": from_path,
+                    "to_path": to_path,
+                    "doc": moved,
+                })
+                .to_string())
+            }
             "delete" => {
                 let path = obj
                     .get("path")
@@ -135,7 +186,7 @@ impl Tool for PrivateGardenTool {
             }
             _ => Err(Error::config(
                 "tool_private_garden",
-                "op must be list, read, write, or delete",
+                "op must be list, tree, read, write, move, or delete",
             )),
         }
     }
@@ -223,6 +274,34 @@ mod tests {
             docs.retain(|doc| doc.path != doc_path);
             Ok(docs.len() != before)
         }
+
+        fn move_doc(
+            &self,
+            _chat_id: &str,
+            from_path: &str,
+            to_path: &str,
+            now_secs: u64,
+        ) -> Result<Option<PrivateGardenDocRecord>> {
+            let mut docs = self.docs.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(doc) = docs.iter().find(|doc| doc.path == from_path).cloned() else {
+                return Ok(None);
+            };
+            docs.retain(|existing| existing.path != from_path && existing.path != to_path);
+            let moved = PrivateGardenDoc {
+                path: to_path.to_string(),
+                content: doc.content,
+                updated_at: now_secs,
+                revision: doc.revision.saturating_add(1),
+            };
+            docs.push(moved.clone());
+            Ok(Some(PrivateGardenDocRecord {
+                path: moved.path,
+                updated_at: moved.updated_at,
+                revision: moved.revision,
+                bytes: moved.content.len(),
+                preview: moved.content,
+            }))
+        }
     }
 
     struct StubToolContext {
@@ -281,5 +360,61 @@ mod tests {
             .execute(r#"{"op":"list","limit":2}"#, &mut ctx)
             .unwrap();
         assert!(listed.contains("journal/afterglow.md"));
+    }
+
+    #[test]
+    fn private_garden_tool_moves_current_chat_docs() {
+        let store = Arc::new(StubPrivateGardenStore::default());
+        let tool = PrivateGardenTool::new(store);
+        let mut ctx = StubToolContext {
+            chat_id: Some("chat-1".to_string()),
+        };
+
+        tool.execute(
+            r#"{"op":"write","path":"drafts/idea.md","content":"把自由空间交给模型自己整理"}"#,
+            &mut ctx,
+        )
+        .unwrap();
+
+        let moved = tool
+            .execute(
+                r#"{"op":"move","from_path":"drafts/idea.md","to_path":"journal/idea.md"}"#,
+                &mut ctx,
+            )
+            .unwrap();
+        assert!(moved.contains("\"op\":\"move\""));
+        assert!(moved.contains("journal/idea.md"));
+
+        let read = tool
+            .execute(r#"{"op":"read","path":"journal/idea.md"}"#, &mut ctx)
+            .unwrap();
+        assert!(read.contains("把自由空间交给模型自己整理"));
+    }
+
+    #[test]
+    fn private_garden_tool_reports_tree_shape() {
+        let store = Arc::new(StubPrivateGardenStore::default());
+        let tool = PrivateGardenTool::new(store);
+        let mut ctx = StubToolContext {
+            chat_id: Some("chat-1".to_string()),
+        };
+
+        tool.execute(
+            r#"{"op":"write","path":"journal/now.md","content":"当前关注自主治理"}"#,
+            &mut ctx,
+        )
+        .unwrap();
+        tool.execute(
+            r#"{"op":"write","path":"scratch/raw.md","content":"临时草稿"}"#,
+            &mut ctx,
+        )
+        .unwrap();
+
+        let tree = tool.execute(r#"{"op":"tree"}"#, &mut ctx).unwrap();
+        assert!(tree.contains("\"op\":\"tree\""));
+        assert!(tree.contains("\"usage\""));
+        assert!(tree.contains("\"directories\""));
+        assert!(tree.contains("journal"));
+        assert!(tree.contains("scratch"));
     }
 }

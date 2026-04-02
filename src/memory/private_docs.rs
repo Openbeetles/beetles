@@ -11,8 +11,9 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    memory_policy, render_execution_state_block, render_self_model_block, ExecutionState,
-    ExecutionStateStore, MemoryProfile, PrivateDocStore, PrivateDocsPolicy, SelfModel,
+    memory_policy, render_execution_state_block, render_internal_memory_topology_block,
+    render_self_model_block, ExecutionState, ExecutionStateStore, InternalMemoryLayerFocus,
+    MemoryProfile, PrivateDocStore, PrivateDocsPolicy, PrivateGardenDocRecord, SelfModel,
     SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
 };
 
@@ -251,6 +252,9 @@ pub fn run_private_doc_workspace_refresh(
         summary_text.as_deref(),
         execution_state.as_ref(),
         self_model.as_ref(),
+        &[],
+        None,
+        None,
         None,
     )
 }
@@ -265,10 +269,15 @@ pub(crate) fn run_private_doc_workspace_refresh_with_state(
     summary_text: Option<&str>,
     execution_state: Option<&ExecutionState>,
     self_model: Option<&SelfModel>,
+    private_garden_docs: &[PrivateGardenDocRecord],
+    routing_intent: Option<&str>,
+    decision_override: Option<bool>,
     recent_override: Option<&[SessionMessage]>,
 ) -> Result<PrivateDocWorkspaceRefreshOutcome> {
     let policy = memory_policy(profile).private_docs;
-    if !should_refresh_private_doc_workspace(input, existing_workspace.is_some(), profile) {
+    if !decision_override.unwrap_or_else(|| {
+        should_refresh_private_doc_workspace(input, existing_workspace.is_some(), profile)
+    }) {
         return Ok(PrivateDocWorkspaceRefreshOutcome::Skipped);
     }
 
@@ -286,6 +295,10 @@ pub(crate) fn run_private_doc_workspace_refresh_with_state(
         summary_text,
         execution_state,
         self_model,
+        private_garden_docs,
+        routing_intent,
+        input.now_secs,
+        profile,
         recent,
         policy,
     );
@@ -334,6 +347,10 @@ fn build_private_doc_workspace_refresh_input(
     summary_text: Option<&str>,
     execution_state: Option<&ExecutionState>,
     self_model: Option<&SelfModel>,
+    private_garden_docs: &[PrivateGardenDocRecord],
+    routing_intent: Option<&str>,
+    now_secs: u64,
+    profile: MemoryProfile,
     recent: &[SessionMessage],
     policy: PrivateDocsPolicy,
 ) -> String {
@@ -362,6 +379,27 @@ fn build_private_doc_workspace_refresh_input(
         .and_then(|model| render_self_model_block(model, policy.factual_grounding_max_len))
     {
         input.push_str(block.trim());
+        input.push('\n');
+    }
+    if let Some(block) = render_internal_memory_topology_block(
+        self_model,
+        existing_workspace,
+        private_garden_docs,
+        now_secs,
+        profile,
+        InternalMemoryLayerFocus::PrivateDocs,
+        policy.factual_grounding_max_len.saturating_mul(2),
+    ) {
+        input.push('\n');
+        input.push_str(block.trim());
+        input.push('\n');
+    }
+    if let Some(intent) = routing_intent
+        .map(str::trim)
+        .filter(|intent| !intent.is_empty())
+    {
+        input.push_str("\n## Routing Intent\n");
+        input.push_str(intent);
         input.push('\n');
     }
     input.push_str("\n## Recent Transcript\n");
@@ -675,6 +713,25 @@ mod tests {
         assert!(block.contains("## Inner Workspace"));
         assert!(block.contains("Inner journal"));
         assert!(block.contains("Private plan"));
+    }
+
+    #[test]
+    fn private_docs_refresh_input_includes_routing_intent() {
+        let input = build_private_doc_workspace_refresh_input(
+            None,
+            Some("summary"),
+            None,
+            None,
+            &[],
+            Some("把持续有效的 inward plan 收到 governed docs，不要和 self_model 重复"),
+            10,
+            MemoryProfile::Embedded,
+            &[],
+            memory_policy(MemoryProfile::Embedded).private_docs,
+        );
+
+        assert!(input.contains("## Routing Intent"));
+        assert!(input.contains("governed docs"));
     }
 
     #[test]

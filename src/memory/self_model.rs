@@ -12,9 +12,10 @@ use std::collections::HashSet;
 use std::fmt::Write as _;
 
 use super::{
-    memory_policy, render_execution_state_block, ExecutionState, ExecutionStateStore,
-    MemoryProfile, SelfModelPolicy, SelfModelStore, SessionMessage, SessionStore,
-    SessionSummaryStore,
+    memory_policy, render_execution_state_block, render_internal_memory_topology_block,
+    ExecutionState, ExecutionStateStore, InternalMemoryLayerFocus, MemoryProfile,
+    PrivateDocWorkspace, PrivateGardenDocRecord, SelfModelPolicy, SelfModelStore, SessionMessage,
+    SessionStore, SessionSummaryStore,
 };
 
 pub const SELF_MODEL_SYSTEM_PROMPT: &str = "You maintain a compact private self-model for a persistent embodied AI assistant. Return JSON only: either null or one object with fields continuity_anchor, self_narrative, relationship_state, private_notes. This store is subjective and private: it preserves continuity, inner stance, and relationship feel, but it must not replace factual memory. Use shared facts only as grounding. If a fact is uncertain, leave it out. Keep fields concise, concrete, and continuity-preserving; first-person is allowed when natural. Avoid roleplay scripts, slogans, generic assistant boilerplate, secrets, raw tool payloads, copied logs, and large quotes. Return null only when there is still no meaningful self-continuity worth storing.";
@@ -202,6 +203,10 @@ pub fn run_self_model_refresh(
         summary_text.as_deref(),
         execution_state.as_ref(),
         None,
+        &[],
+        None,
+        None,
+        None,
     )
 }
 
@@ -214,10 +219,16 @@ pub(crate) fn run_self_model_refresh_with_state(
     existing_model: Option<SelfModel>,
     summary_text: Option<&str>,
     execution_state: Option<&ExecutionState>,
+    private_workspace: Option<&PrivateDocWorkspace>,
+    private_garden_docs: &[PrivateGardenDocRecord],
+    routing_intent: Option<&str>,
+    decision_override: Option<bool>,
     recent_override: Option<&[SessionMessage]>,
 ) -> Result<SelfModelRefreshOutcome> {
     let policy = memory_policy(profile).self_model;
-    if !should_refresh_self_model(input, existing_model.is_some(), profile) {
+    if !decision_override
+        .unwrap_or_else(|| should_refresh_self_model(input, existing_model.is_some(), profile))
+    {
         return Ok(SelfModelRefreshOutcome::Skipped);
     }
 
@@ -234,6 +245,11 @@ pub(crate) fn run_self_model_refresh_with_state(
         existing_model.as_ref(),
         summary_text,
         execution_state,
+        private_workspace,
+        private_garden_docs,
+        routing_intent,
+        input.now_secs,
+        profile,
         recent,
         policy,
     );
@@ -283,6 +299,11 @@ fn build_self_model_refresh_input(
     existing_model: Option<&SelfModel>,
     summary_text: Option<&str>,
     execution_state: Option<&ExecutionState>,
+    private_workspace: Option<&PrivateDocWorkspace>,
+    private_garden_docs: &[PrivateGardenDocRecord],
+    routing_intent: Option<&str>,
+    now_secs: u64,
+    profile: MemoryProfile,
     recent: &[SessionMessage],
     policy: SelfModelPolicy,
 ) -> String {
@@ -305,6 +326,27 @@ fn build_self_model_refresh_input(
         .and_then(|state| render_execution_state_block(state, policy.factual_grounding_max_len))
     {
         input.push_str(block.trim());
+        input.push('\n');
+    }
+    if let Some(block) = render_internal_memory_topology_block(
+        existing_model,
+        private_workspace,
+        private_garden_docs,
+        now_secs,
+        profile,
+        InternalMemoryLayerFocus::SelfModel,
+        policy.factual_grounding_max_len.saturating_mul(2),
+    ) {
+        input.push('\n');
+        input.push_str(block.trim());
+        input.push('\n');
+    }
+    if let Some(intent) = routing_intent
+        .map(str::trim)
+        .filter(|intent| !intent.is_empty())
+    {
+        input.push_str("\n## Routing Intent\n");
+        input.push_str(intent);
         input.push('\n');
     }
     input.push_str("\n## Recent Transcript\n");
@@ -588,6 +630,25 @@ mod tests {
         .unwrap();
         assert!(block.contains("## Self Continuity"));
         assert!(block.contains("explicit facts win"));
+    }
+
+    #[test]
+    fn self_model_refresh_input_includes_routing_intent() {
+        let input = build_self_model_refresh_input(
+            None,
+            Some("summary"),
+            None,
+            None,
+            &[],
+            Some("沉淀最近形成的稳定自我定位，不要把草稿整理写进这里"),
+            10,
+            MemoryProfile::Embedded,
+            &[],
+            memory_policy(MemoryProfile::Embedded).self_model,
+        );
+
+        assert!(input.contains("## Routing Intent"));
+        assert!(input.contains("稳定自我定位"));
     }
 
     #[test]

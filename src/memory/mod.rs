@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 
 mod context_window;
 mod execution_state;
+mod internal_memory_routing;
+mod internal_memory_topology;
 mod long_term;
 mod long_term_extraction;
 mod maintenance;
@@ -27,6 +29,14 @@ pub use execution_state::{
 };
 pub(crate) use execution_state::{
     run_execution_state_refresh_with_state, should_refresh_execution_state,
+};
+pub(crate) use internal_memory_routing::run_internal_memory_routing_with_state;
+pub use internal_memory_routing::{
+    InternalMemoryRoutingDecision, InternalMemoryRoutingInput,
+    INTERNAL_MEMORY_ROUTING_SYSTEM_PROMPT,
+};
+pub(crate) use internal_memory_topology::{
+    render_internal_memory_topology_block, InternalMemoryLayerFocus,
 };
 pub(crate) use long_term::{
     canonicalize_long_term_memory_entry, govern_long_term_memory_entries,
@@ -67,9 +77,10 @@ pub(crate) use private_docs::{
 };
 pub(crate) use private_garden::build_private_garden_preview;
 pub use private_garden::{
-    normalize_private_garden_doc_path, render_private_garden_block, PrivateGardenDoc,
-    PrivateGardenDocRecord, PRIVATE_GARDEN_MAX_DOCS_PER_CHAT, PRIVATE_GARDEN_MAX_DOC_BYTES,
-    PRIVATE_GARDEN_TOTAL_BYTE_LIMIT,
+    build_private_garden_usage, normalize_private_garden_doc_path, render_private_garden_block,
+    summarize_private_garden_directories, PrivateGardenDirectorySummary, PrivateGardenDoc,
+    PrivateGardenDocRecord, PrivateGardenUsage, PRIVATE_GARDEN_MAX_DOCS_PER_CHAT,
+    PRIVATE_GARDEN_MAX_DOC_BYTES, PRIVATE_GARDEN_TOTAL_BYTE_LIMIT,
 };
 pub use private_garden_governance::{
     run_private_garden_governance, PrivateGardenGovernanceContext, PrivateGardenGovernanceInput,
@@ -81,7 +92,7 @@ pub(crate) use private_garden_governance::{
 pub use profile::MemoryProfile;
 pub(crate) use profile::{
     memory_policy, shared_long_term_governance_policy, ExecutionStatePolicy,
-    LongTermExtractionPolicy, LongTermRecallPolicy, PrivateDocsPolicy,
+    InternalMemoryRoutingPolicy, LongTermExtractionPolicy, LongTermRecallPolicy, PrivateDocsPolicy,
     PrivateGardenGovernancePolicy, SelfModelPolicy, SessionSummaryPolicy,
 };
 pub use prompt_context::{
@@ -187,6 +198,13 @@ pub trait PrivateGardenStore: Send + Sync {
         content: &str,
         now_secs: u64,
     ) -> Result<PrivateGardenDocRecord>;
+    fn move_doc(
+        &self,
+        chat_id: &str,
+        from_path: &str,
+        to_path: &str,
+        now_secs: u64,
+    ) -> Result<Option<PrivateGardenDocRecord>>;
     fn delete(&self, chat_id: &str, doc_path: &str) -> Result<bool>;
 }
 

@@ -202,6 +202,67 @@ impl PrivateGardenStore for SpiffsPrivateGardenStore {
         })
     }
 
+    fn move_doc(
+        &self,
+        chat_id: &str,
+        from_path: &str,
+        to_path: &str,
+        now_secs: u64,
+    ) -> Result<Option<PrivateGardenDocRecord>> {
+        let from_path = normalize_private_garden_doc_path(from_path)?;
+        let to_path = normalize_private_garden_doc_path(to_path)?;
+        if from_path == to_path {
+            return self.read(chat_id, &from_path).map(|doc| {
+                doc.map(|doc| PrivateGardenDocRecord {
+                    path: doc.path,
+                    updated_at: doc.updated_at,
+                    revision: doc.revision,
+                    bytes: doc.content.len(),
+                    preview: build_private_garden_preview(&doc.content),
+                })
+            });
+        }
+        self.index.with_cached_mut(|index| {
+            let Some(chat) = index.chats.get_mut(chat_id) else {
+                return Ok(StoreOp::clean(None));
+            };
+            let Some(from_idx) = chat.docs.iter().position(|doc| doc.path == from_path) else {
+                return Ok(StoreOp::clean(None));
+            };
+            let rel_from_path = chat_doc_rel_path(chat_id, &from_path);
+            let buf = match read_file(state_path_join(&rel_from_path)) {
+                Ok(buf) => buf,
+                Err(Error::Other { .. }) | Err(Error::Io { .. }) => {
+                    return Ok(StoreOp::clean(None));
+                }
+                Err(error) => return Err(error),
+            };
+            let content = String::from_utf8(buf).map_err(|_| {
+                Error::config("private_garden_move", "stored document is not valid UTF-8")
+            })?;
+            let rel_to_path = chat_doc_rel_path(chat_id, &to_path);
+            write_file(state_path_join(&rel_to_path), content.as_bytes())?;
+            let _ = remove_file(state_path_join(&rel_from_path));
+            let removed = chat.docs.remove(from_idx);
+            if let Some(existing_to_idx) = chat.docs.iter().position(|doc| doc.path == to_path) {
+                chat.docs.remove(existing_to_idx);
+            }
+
+            let next = PrivateGardenDocRecord {
+                path: to_path,
+                updated_at: now_secs,
+                revision: removed.revision.saturating_add(1),
+                bytes: content.len(),
+                preview: build_private_garden_preview(&content),
+            };
+            chat.docs.push(next.clone());
+            if chat.docs.is_empty() {
+                index.chats.remove(chat_id);
+            }
+            Ok(StoreOp::dirty(Some(next)))
+        })
+    }
+
     fn delete(&self, chat_id: &str, doc_path: &str) -> Result<bool> {
         let doc_path = normalize_private_garden_doc_path(doc_path)?;
         self.index.with_cached_mut(|index| {
