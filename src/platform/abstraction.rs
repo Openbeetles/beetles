@@ -7,9 +7,9 @@ use crate::display::{DisplayCommand, DisplayConfig};
 use crate::error::Result;
 use crate::memory::{
     AutonomyStrategyStore, ExecutionStateStore, ImportantMessageStore, InnerLifeStore,
-    LongTermMemoryStore, MemoryProfile, MemoryStore, PendingRetryStore, PrivateDocStore,
-    PrivateGardenStore, RemindAtStore, SelfContinuityStore, SelfModelStore, SessionStore,
-    SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
+    LongTermMemoryStore, MemoryProfile, MemoryStore, MentalPrivacyStore, PendingRetryStore,
+    PrivateDocStore, PrivateGardenStore, RemindAtStore, SelfContinuityStore, SelfModelStore,
+    SessionStore, SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
 };
 use crate::platform::ResponseBody;
 use crate::task::TaskStore;
@@ -222,6 +222,7 @@ pub trait Platform: Send + Sync {
     fn self_continuity_store(&self) -> Arc<dyn SelfContinuityStore + Send + Sync>;
     fn private_doc_store(&self) -> Arc<dyn PrivateDocStore + Send + Sync>;
     fn private_garden_store(&self) -> Arc<dyn PrivateGardenStore + Send + Sync>;
+    fn mental_privacy_store(&self) -> Arc<dyn MentalPrivacyStore + Send + Sync>;
     fn important_message_store(&self) -> Arc<dyn ImportantMessageStore + Send + Sync>;
     fn remind_at_store(&self) -> Arc<dyn RemindAtStore + Send + Sync>;
     fn session_summary_store(&self) -> Arc<dyn SessionSummaryStore + Send + Sync>;

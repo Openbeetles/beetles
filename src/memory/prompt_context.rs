@@ -4,15 +4,15 @@
 use crate::task::TaskStore;
 
 use super::{
-    build_archive_evidence_block, build_self_state, build_world_snapshot, memory_policy,
-    recall_long_term_memory_block, render_autonomy_strategy_block, render_execution_state_block,
-    render_inner_life_block, render_private_doc_workspace_block, render_private_garden_block,
-    render_self_continuity_block, render_self_model_block, render_self_state_block,
-    render_world_sense_block, render_world_snapshot_block, AutonomyStrategyStore,
-    ExecutionStateStore, InnerLifeStore, LongTermMemoryStore, MemoryProfile, MemoryStore,
-    PrivateDocStore, PrivateGardenStore, RemindAtStore, SelfContinuityStore, SelfModelStore,
-    SessionMessage, SessionStore, SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
-    WorldSnapshotContext,
+    build_archive_evidence_block, build_self_state, build_world_snapshot, collect_private_targets,
+    memory_policy, recall_long_term_memory_block, render_autonomy_strategy_block,
+    render_execution_state_block, render_inner_life_block, render_mental_privacy_boundary_block,
+    render_private_doc_workspace_block, render_private_garden_block, render_self_continuity_block,
+    render_self_model_block, render_self_state_block, render_world_sense_block,
+    render_world_snapshot_block, AutonomyStrategyStore, ExecutionStateStore, InnerLifeStore,
+    LongTermMemoryStore, MemoryProfile, MemoryStore, MentalPrivacyStore, PrivateDocStore,
+    PrivateGardenStore, RemindAtStore, SelfContinuityStore, SelfModelStore, SessionMessage,
+    SessionStore, SessionSummaryStore, TurnLedgerStore, WorldSenseStore, WorldSnapshotContext,
 };
 
 pub struct PromptMemoryContext {
@@ -30,6 +30,7 @@ pub struct PromptMemoryContext {
     pub self_continuity_text: Option<String>,
     pub private_workspace_text: Option<String>,
     pub private_garden_text: Option<String>,
+    pub mental_privacy_text: Option<String>,
     pub recent_messages: Vec<SessionMessage>,
 }
 
@@ -54,6 +55,7 @@ pub struct PromptMemoryContextParams<'a> {
     pub self_continuity_store: &'a dyn SelfContinuityStore,
     pub private_doc_store: &'a dyn PrivateDocStore,
     pub private_garden_store: &'a dyn PrivateGardenStore,
+    pub mental_privacy_store: &'a dyn MentalPrivacyStore,
     pub remind_store: &'a dyn RemindAtStore,
     pub task_store: &'a dyn TaskStore,
     pub turn_ledger_store: &'a dyn TurnLedgerStore,
@@ -169,6 +171,23 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
             .recent_doc_count,
         memory_policy(params.profile).private_garden.render_max_len,
     );
+    let mental_privacy_state = params
+        .mental_privacy_store
+        .get(params.chat_id)
+        .ok()
+        .flatten();
+    let mental_privacy_targets = collect_private_targets(
+        self_model.as_ref(),
+        self_continuity.as_ref(),
+        inner_life.as_ref(),
+        private_workspace.as_ref(),
+        &all_private_garden_docs,
+    );
+    let mental_privacy_text = render_mental_privacy_boundary_block(
+        mental_privacy_state.as_ref(),
+        &mental_privacy_targets,
+        420,
+    );
     let self_state_text = render_self_state_block(
         &build_self_state(
             self_model.as_ref(),
@@ -232,6 +251,7 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         self_continuity_text,
         private_workspace_text,
         private_garden_text,
+        mental_privacy_text,
         recent_messages,
     }
 }
@@ -243,11 +263,12 @@ mod tests {
     use crate::memory::{
         AutonomyStrategy, AutonomyStrategyStore, ExecutionState, ExecutionStateStore,
         ExecutionStatus, InnerLife, InnerLifeStore, LongTermMemoryEntry, LongTermMemoryKind,
-        LongTermMemorySlot, LongTermMemoryStore, MemoryStore, PrivateDocEntry, PrivateDocStore,
-        PrivateDocWorkspace, PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenStore,
-        SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage,
-        SessionStore, SessionSummaryStore, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
-        WorldSense, WorldSenseStore,
+        LongTermMemorySlot, LongTermMemoryStore, MemoryStore, MentalPrivacyState,
+        MentalPrivacyStore, PrivateDocEntry, PrivateDocStore, PrivateDocWorkspace,
+        PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenStore, SelfContinuity,
+        SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
+        SessionSummaryStore, TurnLedger, TurnLedgerStatus, TurnLedgerStore, WorldSense,
+        WorldSenseStore,
     };
     use crate::task::{TaskItem, TaskQuery, TaskStore};
     use std::sync::Mutex;
@@ -397,6 +418,27 @@ mod tests {
     #[derive(Default)]
     struct StubWorldSenseStore {
         value: Mutex<Option<WorldSense>>,
+    }
+
+    #[derive(Default)]
+    struct StubMentalPrivacyStore {
+        value: Mutex<Option<MentalPrivacyState>>,
+    }
+
+    impl MentalPrivacyStore for StubMentalPrivacyStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<MentalPrivacyState>> {
+            Ok(self.value.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _chat_id: &str, state: &MentalPrivacyState) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(state.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
     }
 
     impl WorldSenseStore for StubWorldSenseStore {
@@ -849,6 +891,7 @@ mod tests {
                 revision: 1,
             }]),
         };
+        let mental_privacy_store = StubMentalPrivacyStore::default();
         let remind_store = StubRemindAtStore;
         let task_store = StubTaskStore;
         let context = load_prompt_memory_context(PromptMemoryContextParams {
@@ -872,6 +915,7 @@ mod tests {
             self_continuity_store: &self_continuity_store,
             private_doc_store: &private_doc_store,
             private_garden_store: &private_garden_store,
+            mental_privacy_store: &mental_privacy_store,
             remind_store: &remind_store,
             task_store: &task_store,
             turn_ledger_store: &turn_ledger_store,
@@ -1003,6 +1047,7 @@ mod tests {
         let self_continuity_store = StubSelfContinuityStore::default();
         let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
+        let mental_privacy_store = StubMentalPrivacyStore::default();
         let remind_store = StubRemindAtStore;
         let task_store = StubTaskStore;
 
@@ -1027,6 +1072,7 @@ mod tests {
             self_continuity_store: &self_continuity_store,
             private_doc_store: &private_doc_store,
             private_garden_store: &private_garden_store,
+            mental_privacy_store: &mental_privacy_store,
             remind_store: &remind_store,
             task_store: &task_store,
             turn_ledger_store: &turn_ledger_store,
@@ -1145,6 +1191,7 @@ mod tests {
                 revision: 2,
             }]),
         };
+        let mental_privacy_store = StubMentalPrivacyStore::default();
         let remind_store = StubRemindAtStore;
         let task_store = StubTaskStore;
 
@@ -1169,6 +1216,7 @@ mod tests {
             self_continuity_store: &self_continuity_store,
             private_doc_store: &private_doc_store,
             private_garden_store: &private_garden_store,
+            mental_privacy_store: &mental_privacy_store,
             remind_store: &remind_store,
             task_store: &task_store,
             turn_ledger_store: &turn_ledger_store,

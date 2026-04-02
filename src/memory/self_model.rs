@@ -13,12 +13,13 @@ use std::fmt::Write as _;
 
 use super::{
     memory_policy, render_execution_state_block, render_internal_memory_topology_block,
-    ExecutionState, ExecutionStateStore, InternalMemoryLayerFocus, MemoryProfile,
+    render_private_memory_boundary_block, render_shared_factual_plane_block, ExecutionState,
+    ExecutionStateStore, InternalMemoryLayerFocus, LongTermMemoryStore, MemoryProfile,
     PrivateDocWorkspace, PrivateGardenDocRecord, SelfModelPolicy, SelfModelStore, SessionMessage,
     SessionStore, SessionSummaryStore,
 };
 
-pub const SELF_MODEL_SYSTEM_PROMPT: &str = "You maintain a compact private self-model for a persistent embodied AI assistant. Return JSON only: either null or one object with fields continuity_anchor, self_narrative, relationship_state, private_notes. This store is subjective and private: it preserves continuity, inner stance, and relationship feel, but it must not replace factual memory. Use shared facts only as grounding. If a fact is uncertain, leave it out. Keep fields concise, concrete, and continuity-preserving; first-person is allowed when natural. Avoid roleplay scripts, slogans, generic assistant boilerplate, secrets, raw tool payloads, copied logs, and large quotes. Return null only when there is still no meaningful self-continuity worth storing.";
+pub const SELF_MODEL_SYSTEM_PROMPT: &str = "You maintain a compact private self-model for a persistent embodied AI assistant. Return JSON only: either null or one object with fields continuity_anchor, self_narrative, relationship_state, private_notes. This store is subjective and private: it preserves continuity, inner stance, and relationship feel, but it must not replace factual memory. The canonical shared factual plane owns durable objective facts; use those facts only as grounding. If a fact is uncertain, leave it out. Keep fields concise, concrete, and continuity-preserving; first-person is allowed when natural. Avoid roleplay scripts, slogans, generic assistant boilerplate, secrets, raw tool payloads, copied logs, and large quotes. Return null only when there is still no meaningful self-continuity worth storing.";
 
 const SELF_MODEL_FIELD_MAX_CHARS: usize = 220;
 const SELF_MODEL_ANCHOR_MAX_CHARS: usize = 180;
@@ -71,6 +72,7 @@ pub struct SelfModelRefreshContext<'a> {
     pub session_store: &'a dyn SessionStore,
     pub session_summary_store: &'a dyn SessionSummaryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
+    pub long_term_memory_store: &'a dyn LongTermMemoryStore,
     pub self_model_store: &'a dyn SelfModelStore,
 }
 
@@ -247,6 +249,15 @@ pub(crate) fn run_self_model_refresh_with_state(
         existing_model.as_ref(),
         summary_text,
         execution_state,
+        render_shared_factual_plane_block(
+            ctx.long_term_memory_store,
+            input.chat_id,
+            summary_text,
+            recent,
+            policy.factual_grounding_max_len,
+            profile,
+        )
+        .as_deref(),
         private_workspace,
         private_garden_docs,
         routing_intent,
@@ -302,6 +313,7 @@ fn build_self_model_refresh_input(
     existing_model: Option<&SelfModel>,
     summary_text: Option<&str>,
     execution_state: Option<&ExecutionState>,
+    shared_factual_block: Option<&str>,
     private_workspace: Option<&PrivateDocWorkspace>,
     private_garden_docs: &[PrivateGardenDocRecord],
     routing_intent: Option<&str>,
@@ -332,6 +344,11 @@ fn build_self_model_refresh_input(
         input.push_str(block.trim());
         input.push('\n');
     }
+    if let Some(shared_factual_block) = shared_factual_block {
+        input.push('\n');
+        input.push_str(shared_factual_block.trim());
+        input.push('\n');
+    }
     if let Some(block) = render_internal_memory_topology_block(
         existing_model,
         private_workspace,
@@ -340,6 +357,15 @@ fn build_self_model_refresh_input(
         profile,
         InternalMemoryLayerFocus::SelfModel,
         policy.factual_grounding_max_len.saturating_mul(2),
+    ) {
+        input.push('\n');
+        input.push_str(block.trim());
+        input.push('\n');
+    }
+    if let Some(block) = render_private_memory_boundary_block(
+        "self_model",
+        "durable private continuity, subjective stance, and relationship feel",
+        policy.factual_grounding_max_len,
     ) {
         input.push('\n');
         input.push_str(block.trim());
@@ -590,6 +616,48 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct StubLongTermMemoryStore;
+
+    impl LongTermMemoryStore for StubLongTermMemoryStore {
+        fn upsert_many(
+            &self,
+            _drafts: &[crate::memory::LongTermMemoryDraft],
+            _now_secs: u64,
+        ) -> Result<usize> {
+            Ok(0)
+        }
+
+        fn recall(
+            &self,
+            _query: &str,
+            _source_chat_id: Option<&str>,
+            _limit: usize,
+        ) -> Result<Vec<crate::memory::LongTermMemoryEntry>> {
+            Ok(Vec::new())
+        }
+
+        fn get(&self, _id: &str) -> Result<Option<crate::memory::LongTermMemoryEntry>> {
+            Ok(None)
+        }
+
+        fn list(&self, _limit: usize) -> Result<Vec<crate::memory::LongTermMemoryEntry>> {
+            Ok(Vec::new())
+        }
+
+        fn delete(&self, _id: &str) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn delete_slot(&self, _slot: &crate::memory::LongTermMemorySlot) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn count(&self) -> Result<usize> {
+            Ok(0)
+        }
+    }
+
     struct FixedLlmClient {
         content: &'static str,
     }
@@ -653,6 +721,7 @@ mod tests {
             Some("summary"),
             None,
             None,
+            None,
             &[],
             Some("沉淀最近形成的稳定自我定位，不要把草稿整理写进这里"),
             &[],
@@ -671,6 +740,7 @@ mod tests {
         let input = build_self_model_refresh_input(
             None,
             Some("summary"),
+            None,
             None,
             None,
             &[],
@@ -749,6 +819,7 @@ mod tests {
             )
             .unwrap();
         let self_model_store = StubSelfModelStore::default();
+        let long_term_memory_store = StubLongTermMemoryStore;
         let mut http = DummyHttpClient;
         let outcome = run_self_model_refresh(
             &mut http,
@@ -759,6 +830,7 @@ mod tests {
                 session_store: &session_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
+                long_term_memory_store: &long_term_memory_store,
                 self_model_store: &self_model_store,
             },
             SelfModelRefreshInput {

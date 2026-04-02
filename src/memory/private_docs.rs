@@ -12,14 +12,16 @@ use std::fmt::Write as _;
 
 use super::{
     build_self_state, memory_policy, render_autonomy_strategy_block, render_execution_state_block,
-    render_inner_life_block, render_internal_memory_topology_block, render_self_continuity_block,
-    render_self_model_block, render_self_state_block, render_world_sense_block, AutonomyStrategy,
-    ExecutionState, ExecutionStateStore, InnerLife, InternalMemoryLayerFocus, MemoryProfile,
-    PrivateDocStore, PrivateDocsPolicy, PrivateGardenDocRecord, SelfContinuity, SelfModel,
-    SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore, WorldSense,
+    render_inner_life_block, render_internal_memory_topology_block,
+    render_private_memory_boundary_block, render_self_continuity_block, render_self_model_block,
+    render_self_state_block, render_shared_factual_plane_block, render_world_sense_block,
+    AutonomyStrategy, ExecutionState, ExecutionStateStore, InnerLife, InternalMemoryLayerFocus,
+    LongTermMemoryStore, MemoryProfile, PrivateDocStore, PrivateDocsPolicy, PrivateGardenDocRecord,
+    SelfContinuity, SelfModel, SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
+    WorldSense,
 };
 
-pub const PRIVATE_DOC_WORKSPACE_SYSTEM_PROMPT: &str = "You maintain a compact governed private document workspace for a persistent embodied AI assistant. Return JSON only: one object whose fields may include inner_journal, relationship_notes, self_reflection, private_plan. Omit unchanged fields. Use an empty string only when a document should be cleared because it is no longer helpful. These documents are private, subjective, and compact. They must not replace factual memory or copy the transcript. Use shared facts only as grounding. Treat current autonomy strategy, world-sense, and self-state capacity as real constraints: only write material that should stay load-bearing in the governed workspace rather than remaining in inner-life or the free private garden. Keep each field concise, concrete, and continuity-preserving. inner_journal captures the inward afterglow of recent interaction. relationship_notes captures how the relationship currently feels or is shifting. self_reflection captures how the assistant sees its own stance or change. private_plan captures inward next-step framing, not a user-facing promise list. Avoid secrets, raw tool payloads, copied logs, generic assistant boilerplate, or long quotes.";
+pub const PRIVATE_DOC_WORKSPACE_SYSTEM_PROMPT: &str = "You maintain a compact governed private document workspace for a persistent embodied AI assistant. Return JSON only: one object whose fields may include inner_journal, relationship_notes, self_reflection, private_plan. Omit unchanged fields. Use an empty string only when a document should be cleared because it is no longer helpful. These documents are private, subjective, and compact. They must not replace factual memory or copy the transcript. The canonical shared factual plane owns durable objective facts; use shared facts only as grounding. Treat current autonomy strategy, world-sense, and self-state capacity as real constraints: only write material that should stay load-bearing in the governed workspace rather than remaining in inner-life or the free private garden. Keep each field concise, concrete, and continuity-preserving. inner_journal captures the inward afterglow of recent interaction. relationship_notes captures how the relationship currently feels or is shifting. self_reflection captures how the assistant sees its own stance or change. private_plan captures inward next-step framing, not a user-facing promise list. Avoid secrets, raw tool payloads, copied logs, generic assistant boilerplate, or long quotes.";
 
 const PRIVATE_DOC_FIELD_MAX_CHARS: usize = 240;
 pub const PRIVATE_DOC_WORKSPACE_TOTAL_CHAR_LIMIT: usize = PRIVATE_DOC_FIELD_MAX_CHARS * 4;
@@ -103,6 +105,7 @@ pub struct PrivateDocWorkspaceRefreshContext<'a> {
     pub session_store: &'a dyn SessionStore,
     pub session_summary_store: &'a dyn SessionSummaryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
+    pub long_term_memory_store: &'a dyn LongTermMemoryStore,
     pub self_model_store: &'a dyn SelfModelStore,
     pub private_doc_store: &'a dyn PrivateDocStore,
 }
@@ -306,6 +309,15 @@ pub(crate) fn run_private_doc_workspace_refresh_with_state(
         existing_workspace.as_ref(),
         summary_text,
         execution_state,
+        render_shared_factual_plane_block(
+            ctx.long_term_memory_store,
+            input.chat_id,
+            summary_text,
+            recent,
+            policy.factual_grounding_max_len,
+            profile,
+        )
+        .as_deref(),
         self_model,
         private_garden_docs,
         routing_intent,
@@ -363,6 +375,7 @@ fn build_private_doc_workspace_refresh_input(
     existing_workspace: Option<&PrivateDocWorkspace>,
     summary_text: Option<&str>,
     execution_state: Option<&ExecutionState>,
+    shared_factual_block: Option<&str>,
     self_model: Option<&SelfModel>,
     private_garden_docs: &[PrivateGardenDocRecord],
     routing_intent: Option<&str>,
@@ -413,6 +426,11 @@ fn build_private_doc_workspace_refresh_input(
         input.push_str(block.trim());
         input.push('\n');
     }
+    if let Some(shared_factual_block) = shared_factual_block {
+        input.push('\n');
+        input.push_str(shared_factual_block.trim());
+        input.push('\n');
+    }
     if let Some(block) = self_model
         .and_then(|model| render_self_model_block(model, policy.factual_grounding_max_len))
     {
@@ -455,6 +473,15 @@ fn build_private_doc_workspace_refresh_input(
         profile,
         InternalMemoryLayerFocus::PrivateDocs,
         policy.factual_grounding_max_len.saturating_mul(2),
+    ) {
+        input.push('\n');
+        input.push_str(block.trim());
+        input.push('\n');
+    }
+    if let Some(block) = render_private_memory_boundary_block(
+        "private_docs",
+        "compact governed subjective docs that remain load-bearing internally",
+        policy.factual_grounding_max_len,
     ) {
         input.push('\n');
         input.push_str(block.trim());
@@ -726,6 +753,48 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct StubLongTermMemoryStore;
+
+    impl LongTermMemoryStore for StubLongTermMemoryStore {
+        fn upsert_many(
+            &self,
+            _drafts: &[crate::memory::LongTermMemoryDraft],
+            _now_secs: u64,
+        ) -> Result<usize> {
+            Ok(0)
+        }
+
+        fn recall(
+            &self,
+            _query: &str,
+            _source_chat_id: Option<&str>,
+            _limit: usize,
+        ) -> Result<Vec<crate::memory::LongTermMemoryEntry>> {
+            Ok(Vec::new())
+        }
+
+        fn get(&self, _id: &str) -> Result<Option<crate::memory::LongTermMemoryEntry>> {
+            Ok(None)
+        }
+
+        fn list(&self, _limit: usize) -> Result<Vec<crate::memory::LongTermMemoryEntry>> {
+            Ok(Vec::new())
+        }
+
+        fn delete(&self, _id: &str) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn delete_slot(&self, _slot: &crate::memory::LongTermMemorySlot) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn count(&self) -> Result<usize> {
+            Ok(0)
+        }
+    }
+
     struct FixedLlmClient {
         content: &'static str,
     }
@@ -798,6 +867,7 @@ mod tests {
             Some("summary"),
             None,
             None,
+            None,
             &[],
             Some("把持续有效的 inward plan 收到 governed docs，不要和 self_model 重复"),
             &[],
@@ -820,6 +890,7 @@ mod tests {
         let input = build_private_doc_workspace_refresh_input(
             None,
             Some("summary"),
+            None,
             None,
             None,
             &[],
@@ -855,6 +926,7 @@ mod tests {
                 ..Default::default()
             }),
             Some("summary"),
+            None,
             None,
             Some(&SelfModel {
                 continuity_anchor: "我正在接管私有空间治理".to_string(),
@@ -1010,6 +1082,7 @@ mod tests {
             )
             .unwrap();
         let private_doc_store = StubPrivateDocStore::default();
+        let long_term_memory_store = StubLongTermMemoryStore;
         let mut http = DummyHttpClient;
         let outcome = run_private_doc_workspace_refresh(
             &mut http,
@@ -1020,6 +1093,7 @@ mod tests {
                 session_store: &session_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
+                long_term_memory_store: &long_term_memory_store,
                 self_model_store: &self_model_store,
                 private_doc_store: &private_doc_store,
             },

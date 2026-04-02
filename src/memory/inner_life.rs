@@ -11,13 +11,15 @@ use std::fmt::Write as _;
 
 use super::{
     memory_policy, render_execution_state_block, render_internal_memory_topology_block,
-    render_private_doc_workspace_block, render_self_continuity_block, render_self_model_block,
+    render_private_doc_workspace_block, render_private_memory_boundary_block,
+    render_self_continuity_block, render_self_model_block, render_shared_factual_plane_block,
     ExecutionState, ExecutionStateStore, InnerLifePolicy, InnerLifeStore, InternalMemoryLayerFocus,
-    MemoryProfile, PrivateDocStore, PrivateDocWorkspace, SelfContinuity, SelfContinuityStore,
-    SelfModel, SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
+    LongTermMemoryStore, MemoryProfile, PrivateDocStore, PrivateDocWorkspace, SelfContinuity,
+    SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
+    SessionSummaryStore,
 };
 
-pub const INNER_LIFE_SYSTEM_PROMPT: &str = "You maintain the AI assistant's private inner life. Return JSON only: either null or one object with fields internal_monologue, private_journal, emotional_drift, attention_drift. This layer is subjective, first-person is allowed, and it may carry ambiguity, mood, or inward texture. It must stay compact. Do not copy transcript lines, generic assistant boilerplate, raw tool payloads, secrets, or factual memory that belongs elsewhere. Keep durable identity in self-continuity or self-model; use this layer for active inward afterglow, emotional movement, and current attentional drift.";
+pub const INNER_LIFE_SYSTEM_PROMPT: &str = "You maintain the AI assistant's private inner life. Return JSON only: either null or one object with fields internal_monologue, private_journal, emotional_drift, attention_drift. This layer is subjective, first-person is allowed, and it may carry ambiguity, mood, or inward texture. It must stay compact. Do not copy transcript lines, generic assistant boilerplate, raw tool payloads, secrets, or factual memory that belongs elsewhere. Durable objective material belongs in the shared factual plane, and durable private identity belongs in self-continuity or self-model; use this layer for active inward afterglow, emotional movement, and current attentional drift.";
 
 const INNER_LIFE_FIELD_MAX_CHARS: usize = 220;
 pub const INNER_LIFE_TOTAL_CHAR_LIMIT: usize = INNER_LIFE_FIELD_MAX_CHARS * 4;
@@ -68,6 +70,7 @@ pub struct InnerLifeRefreshContext<'a> {
     pub session_store: &'a dyn SessionStore,
     pub session_summary_store: &'a dyn SessionSummaryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
+    pub long_term_memory_store: &'a dyn LongTermMemoryStore,
     pub self_model_store: &'a dyn SelfModelStore,
     pub private_doc_store: &'a dyn PrivateDocStore,
     pub self_continuity_store: &'a dyn SelfContinuityStore,
@@ -225,6 +228,15 @@ pub(crate) fn run_inner_life_refresh_with_state(
         existing_inner_life.as_ref(),
         summary_text,
         execution_state,
+        render_shared_factual_plane_block(
+            ctx.long_term_memory_store,
+            input.chat_id,
+            summary_text,
+            recent,
+            policy.grounding_max_len,
+            profile,
+        )
+        .as_deref(),
         self_model,
         private_docs,
         self_continuity,
@@ -287,6 +299,7 @@ fn build_inner_life_refresh_input(
     existing_inner_life: Option<&InnerLife>,
     summary_text: Option<&str>,
     execution_state: Option<&ExecutionState>,
+    shared_factual_block: Option<&str>,
     self_model: Option<&SelfModel>,
     private_docs: Option<&PrivateDocWorkspace>,
     self_continuity: Option<&SelfContinuity>,
@@ -314,6 +327,9 @@ fn build_inner_life_refresh_input(
     }) {
         let _ = writeln!(input, "\n{}\n", block);
     }
+    if let Some(shared_factual_block) = shared_factual_block {
+        let _ = writeln!(input, "\n{}\n", shared_factual_block.trim());
+    }
     if let Some(block) = render_internal_memory_topology_block(
         self_model,
         private_docs,
@@ -338,6 +354,13 @@ fn build_inner_life_refresh_input(
     if let Some(block) = self_continuity
         .and_then(|continuity| render_self_continuity_block(continuity, policy.grounding_max_len))
     {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if let Some(block) = render_private_memory_boundary_block(
+        "inner_life",
+        "active inward texture, emotional drift, afterglow, and attentional movement",
+        policy.grounding_max_len,
+    ) {
         let _ = writeln!(input, "\n{}\n", block);
     }
     if let Some(block) = existing_inner_life.and_then(|inner_life| {

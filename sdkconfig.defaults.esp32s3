@@ -34,7 +34,35 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 # 不启用此选项会导致 "No matching trusted root certificate found"。heap 增量 ~700B，可忽略。
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
 
-CONFIG_HTTPD_WS_SUPPORT=y
+# Current firmware does not expose server-side WebSocket endpoints on the ESP
+# config API; keep HTTP only to avoid linking unused ws server support.
+# CONFIG_HTTPD_WS_SUPPORT is not set
+
+# Release-size build: drop on-device GDB stub and dynamic log plumbing.
+# These only help local debugging and do not affect runtime business logic.
+# CONFIG_ESP_GDBSTUB_ENABLED is not set
+# Strip per-tag runtime log cache/list machinery first; this is what keeps
+# LOG_DYNAMIC_LEVEL_CONTROL alive in IDF 6.0.
+CONFIG_LOG_TAG_LEVEL_IMPL_NONE=y
+# CONFIG_LOG_DYNAMIC_LEVEL_CONTROL is not set
+# CONFIG_LOG_IN_IRAM is not set
+
+# mbedTLS size trims that preserve current usage:
+# - app code only uses TLS client mode
+# - trust comes from crt bundle attach
+# - no client cert/key generation, CSR/CRL parsing, or TLS server mode in app code
+# CONFIG_MBEDTLS_ERROR_STRINGS is not set
+CONFIG_MBEDTLS_X509_REMOVE_INFO=y
+# CONFIG_MBEDTLS_PEM_WRITE_C is not set
+# WPA supplicant (WPA3/EAP) exports DER keys through mbedTLS PK write helpers.
+CONFIG_MBEDTLS_PK_WRITE_C=y
+# CONFIG_MBEDTLS_X509_CRL_PARSE_C is not set
+# CONFIG_MBEDTLS_X509_CSR_PARSE_C is not set
+CONFIG_MBEDTLS_TLS_CLIENT_ONLY=y
+# CONFIG_MBEDTLS_SSL_CACHE_C is not set
+# CONFIG_MBEDTLS_SSL_RENEGOTIATION is not set
+# CONFIG_MBEDTLS_CLIENT_SSL_SESSION_TICKETS is not set
+# CONFIG_MBEDTLS_SERVER_SSL_SESSION_TICKETS is not set
 
 CONFIG_PARTITION_TABLE_CUSTOM=y
 # CMake 工程根目录为 esp-idf-sys 的 out/，相对路径需指向仓库根目录的 partitions.csv（见 IDF partition_table/project_include.cmake）。

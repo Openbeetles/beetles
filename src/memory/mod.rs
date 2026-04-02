@@ -15,6 +15,7 @@ mod internal_memory_topology;
 mod long_term;
 mod long_term_extraction;
 mod maintenance;
+mod mental_privacy;
 mod private_docs;
 mod private_garden;
 mod private_garden_governance;
@@ -25,6 +26,7 @@ mod self_model;
 mod self_runtime;
 mod self_state;
 mod session_summary_refresh;
+mod shared_factual_plane;
 mod turn_ledger;
 mod world_sense;
 
@@ -101,6 +103,18 @@ pub use maintenance::{
     PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput,
     PostReplyMemoryMaintenanceOutcome,
 };
+pub(crate) use mental_privacy::{
+    collect_private_targets, render_mental_privacy_boundary_block, run_mental_privacy_review,
+};
+pub use mental_privacy::{
+    MentalPrivacyConsentLog, MentalPrivacyEnvelope, MentalPrivacyLayer,
+    MentalPrivacyOwnerAccessMode, MentalPrivacyQuotePolicy, MentalPrivacyRequester,
+    MentalPrivacyReviewContext, MentalPrivacyReviewInput, MentalPrivacyReviewOutcome,
+    MentalPrivacyShareAction, MentalPrivacyState, MentalPrivacyStore, MentalPrivacyVisibility,
+    MENTAL_PRIVACY_SYSTEM_CONSTRAINT, MENTAL_PRIVACY_TARGET_INNER_LIFE,
+    MENTAL_PRIVACY_TARGET_SELF_CONTINUITY, MENTAL_PRIVACY_TARGET_SELF_MODEL,
+    REL_PATH_MENTAL_PRIVACY_STATES,
+};
 pub(crate) use private_docs::estimate_private_doc_workspace_chars;
 pub use private_docs::{
     render_private_doc_workspace_block, run_private_doc_workspace_refresh, PrivateDocEntry,
@@ -165,6 +179,9 @@ pub use session_summary_refresh::{
 };
 pub(crate) use session_summary_refresh::{
     load_session_summary_snapshot, run_session_summary_refresh_with_snapshot,
+};
+pub(crate) use shared_factual_plane::{
+    render_private_memory_boundary_block, render_shared_factual_plane_block,
 };
 pub use turn_ledger::{
     build_turn_ledger_start, normalize_turn_preview, normalize_turn_reason, TurnDeliveryLedger,

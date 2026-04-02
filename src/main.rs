@@ -442,6 +442,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         platform.private_doc_store();
     let private_garden_store: Arc<dyn beetle::memory::PrivateGardenStore + Send + Sync> =
         platform.private_garden_store();
+    let mental_privacy_store: Arc<dyn beetle::memory::MentalPrivacyStore + Send + Sync> =
+        platform.mental_privacy_store();
     let important_message_store: Arc<dyn beetle::memory::ImportantMessageStore + Send + Sync> =
         platform.important_message_store();
     let remind_at_store: Arc<dyn beetle::memory::RemindAtStore + Send + Sync> =
@@ -1160,6 +1162,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             self_continuity_store: Arc::clone(&self_continuity_store),
             private_doc_store: Arc::clone(&private_doc_store),
             private_garden_store: Arc::clone(&private_garden_store),
+            mental_privacy_store: Arc::clone(&mental_privacy_store),
             turn_ledger_store: Arc::clone(&turn_ledger_store),
             memory_profile: platform.memory_profile(),
             get_skill_descriptions,

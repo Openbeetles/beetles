@@ -36,13 +36,14 @@ use crate::llm::{LlmClient, Message, StopReason, ToolChoicePolicy};
 use crate::memory::{
     build_turn_ledger_start, load_prompt_memory_context, memory_policy, normalize_turn_preview,
     normalize_turn_reason, recall_long_term_memory_block, run_long_term_memory_refresh,
-    run_post_reply_memory_maintenance, run_self_runtime, AutonomyStrategyStore, EmotionSignalStore,
-    ExecutionStateStore, ImportantMessageStore, InnerLifeStore, LongTermMemoryExtractionStateStore,
-    LongTermMemoryRefreshContext, LongTermMemoryRefreshOutcome,
-    LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore, MemoryStore, PendingRetryStore,
-    PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput, PrivateDocStore,
-    PrivateGardenStore, PromptMemoryContextParams, RemindAtStore, SelfContinuityStore,
-    SelfModelStore, SelfRuntimeContext, SelfRuntimeOutcome, SessionStore,
+    run_mental_privacy_review, run_post_reply_memory_maintenance, run_self_runtime,
+    AutonomyStrategyStore, EmotionSignalStore, ExecutionStateStore, ImportantMessageStore,
+    InnerLifeStore, LongTermMemoryExtractionStateStore, LongTermMemoryRefreshContext,
+    LongTermMemoryRefreshOutcome, LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore,
+    MemoryStore, MentalPrivacyReviewContext, MentalPrivacyReviewInput, MentalPrivacyStore,
+    PendingRetryStore, PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput,
+    PrivateDocStore, PrivateGardenStore, PromptMemoryContextParams, RemindAtStore,
+    SelfContinuityStore, SelfModelStore, SelfRuntimeContext, SelfRuntimeOutcome, SessionStore,
     SessionSummaryRefreshOutcome, SessionSummaryStore, TurnDeliveryLedger, TurnLedger,
     TurnLedgerStatus, TurnLedgerStore, WorldSenseStore, SELF_RUNTIME_CHANNEL,
 };
@@ -971,6 +972,7 @@ fn run_post_reply_maintenance_job(
             session_store: config.session_store.as_ref(),
             session_summary_store: config.session_summary_store.as_ref(),
             execution_state_store: config.execution_state_store.as_ref(),
+            long_term_memory_store: config.long_term_memory_store.as_ref(),
             self_model_store: config.self_model_store.as_ref(),
             private_doc_store: config.private_doc_store.as_ref(),
             private_garden_store: config.private_garden_store.as_ref(),
@@ -1138,6 +1140,7 @@ fn run_self_runtime_job(
             session_store: config.session_store.as_ref(),
             session_summary_store: config.session_summary_store.as_ref(),
             execution_state_store: config.execution_state_store.as_ref(),
+            long_term_memory_store: config.long_term_memory_store.as_ref(),
             self_model_store: config.self_model_store.as_ref(),
             world_sense_store: config.world_sense_store.as_ref(),
             autonomy_strategy_store: config.autonomy_strategy_store.as_ref(),
@@ -1459,6 +1462,7 @@ pub struct AgentLoopConfig {
     pub self_continuity_store: Arc<dyn SelfContinuityStore + Send + Sync>,
     pub private_doc_store: Arc<dyn PrivateDocStore + Send + Sync>,
     pub private_garden_store: Arc<dyn PrivateGardenStore + Send + Sync>,
+    pub mental_privacy_store: Arc<dyn MentalPrivacyStore + Send + Sync>,
     pub turn_ledger_store: Arc<dyn TurnLedgerStore + Send + Sync>,
     pub memory_profile: crate::memory::MemoryProfile,
     pub get_skill_descriptions: Arc<dyn Fn() -> String + Send + Sync>,
@@ -1935,6 +1939,49 @@ fn run_agent_loop_lane(
         if !is_interrupt && apply_finalizer {
             reply_content = finalize_user_visible_reply(config.strategy, &reply_content);
         }
+        if !is_interrupt && msg.ingress == IngressKind::User && !reply_content.trim().is_empty() {
+            let t0 = metrics::record_llm_call_start();
+            let mut privacy_http = HttpClientToolContext {
+                http,
+                chat_id: Some(msg.chat_id.clone()),
+                channel: Some(msg.channel.clone()),
+                supports_current_chat_outbound_message: false,
+                supports_current_chat_primary_reply: false,
+                supports_explicit_outbound_message: false,
+                outbound_message_budget: 0,
+                outbound_message_count: 0,
+                current_primary_message_delivered: false,
+                locale: loc,
+            };
+            match run_mental_privacy_review(
+                &mut privacy_http,
+                worker_llm,
+                MentalPrivacyReviewContext {
+                    mental_privacy_store: config.mental_privacy_store.as_ref(),
+                    self_model_store: config.self_model_store.as_ref(),
+                    self_continuity_store: config.self_continuity_store.as_ref(),
+                    inner_life_store: config.inner_life_store.as_ref(),
+                    private_doc_store: config.private_doc_store.as_ref(),
+                    private_garden_store: config.private_garden_store.as_ref(),
+                },
+                MentalPrivacyReviewInput {
+                    chat_id: &msg.chat_id,
+                    user_content: &msg.content,
+                    draft_reply: &reply_content,
+                    now_secs: crate::util::current_unix_secs(),
+                },
+            ) {
+                Ok(review) => {
+                    metrics::record_llm_call_end(t0);
+                    reply_content = review.reply_content;
+                }
+                Err(error) => {
+                    metrics::record_llm_call_end(t0);
+                    metrics::record_llm_error();
+                    log::warn!("[agent_mental_privacy] review failed: {}", error);
+                }
+            }
+        }
         if !is_interrupt
             && reply_content.trim().is_empty()
             && msg.ingress == IngressKind::User
@@ -2292,6 +2339,7 @@ fn run_worker_path(
         self_continuity_store: config.self_continuity_store.as_ref(),
         private_doc_store: config.private_doc_store.as_ref(),
         private_garden_store: config.private_garden_store.as_ref(),
+        mental_privacy_store: config.mental_privacy_store.as_ref(),
         remind_store: config.remind_store.as_ref(),
         task_store: config.task_store.as_ref(),
         turn_ledger_store: config.turn_ledger_store.as_ref(),
@@ -2318,6 +2366,7 @@ fn run_worker_path(
         self_continuity_text: prompt_memory.self_continuity_text.as_deref(),
         private_workspace_text: prompt_memory.private_workspace_text.as_deref(),
         private_garden_text: prompt_memory.private_garden_text.as_deref(),
+        mental_privacy_text: prompt_memory.mental_privacy_text.as_deref(),
         long_term_memory_text: prompt_memory.long_term_memory_text.as_deref(),
         archive_evidence_text: prompt_memory.archive_evidence_text.as_deref(),
         summary_text: prompt_memory.message_summary_text.as_deref(),
@@ -2975,8 +3024,9 @@ mod tests {
         EmotionSignalStore, ExecutionState, ExecutionStateStore, ImportantMessageStore,
         LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryExtractionState,
         LongTermMemoryExtractionStateStore, LongTermMemorySlot, LongTermMemoryStore, MemoryStore,
-        PendingRetryStore, PrivateGardenDoc, PrivateGardenDocRecord, SessionMessage, SessionStore,
-        SessionSummaryStore, TurnLedger, TurnLedgerStore,
+        MentalPrivacyState, MentalPrivacyStore, PendingRetryStore, PrivateGardenDoc,
+        PrivateGardenDocRecord, SessionMessage, SessionStore, SessionSummaryStore, TurnLedger,
+        TurnLedgerStore,
     };
     use crate::platform::{PlatformHttpClient, ResponseBody};
     use std::collections::HashMap;
@@ -3301,6 +3351,23 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct StubMentalPrivacyStore;
+
+    impl MentalPrivacyStore for StubMentalPrivacyStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<MentalPrivacyState>> {
+            Ok(None)
+        }
+
+        fn set(&self, _chat_id: &str, _state: &MentalPrivacyState) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
     struct StubRemindAtStore;
 
     impl crate::memory::RemindAtStore for StubRemindAtStore {
@@ -3523,6 +3590,7 @@ mod tests {
             self_continuity_store: Arc::new(StubSelfContinuityStore),
             private_doc_store: Arc::new(StubPrivateDocStore),
             private_garden_store: Arc::new(StubPrivateGardenStore),
+            mental_privacy_store: Arc::new(StubMentalPrivacyStore),
             turn_ledger_store: Arc::new(StubTurnLedgerStore),
             memory_profile: crate::memory::MemoryProfile::Embedded,
             get_skill_descriptions: Arc::new(String::new),

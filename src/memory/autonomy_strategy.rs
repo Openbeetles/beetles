@@ -11,16 +11,17 @@ use std::fmt::Write as _;
 
 use super::{
     build_self_state, memory_policy, render_execution_state_block, render_inner_life_block,
-    render_private_doc_workspace_block, render_private_garden_block, render_self_continuity_block,
-    render_self_model_block, render_self_state_block, render_world_sense_block,
+    render_private_doc_workspace_block, render_private_garden_block,
+    render_private_memory_boundary_block, render_self_continuity_block, render_self_model_block,
+    render_self_state_block, render_shared_factual_plane_block, render_world_sense_block,
     render_world_snapshot_block, AutonomyStrategyPolicy, AutonomyStrategyStore, ExecutionState,
-    ExecutionStateStore, InnerLife, InnerLifeStore, MemoryProfile, PrivateDocStore,
-    PrivateDocWorkspace, PrivateGardenStore, SelfContinuity, SelfContinuityStore, SelfModel,
-    SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore, WorldSense, WorldSenseStore,
-    WorldSnapshot,
+    ExecutionStateStore, InnerLife, InnerLifeStore, LongTermMemoryStore, MemoryProfile,
+    PrivateDocStore, PrivateDocWorkspace, PrivateGardenStore, SelfContinuity, SelfContinuityStore,
+    SelfModel, SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore, WorldSense,
+    WorldSenseStore, WorldSnapshot,
 };
 
-pub const AUTONOMY_STRATEGY_SYSTEM_PROMPT: &str = "You maintain the assistant's private autonomy strategy. Return JSON only: either null or one object with fields current_mode, active_priorities, write_policy, next_focus, cadence_reason, self_model_tendency, private_docs_tendency, private_garden_tendency, idle_enabled, idle_interval_secs. This layer is not a transcript summary. It is your own short-term self-governance policy: what kind of inward work matters now, how aggressively to write, compress, or prune private material, what should be focused next, and how often autonomous upkeep should wake during idle time. Tendencies are structured governance directives for each layer: retain, rewrite, compress, or cleanup. Use current world-sense, self-state capacity, and workspace shape as real constraints. Keep it compact, concrete, and self-directed.";
+pub const AUTONOMY_STRATEGY_SYSTEM_PROMPT: &str = "You maintain the assistant's private autonomy strategy. Return JSON only: either null or one object with fields current_mode, active_priorities, write_policy, next_focus, cadence_reason, self_model_tendency, private_docs_tendency, private_garden_tendency, idle_enabled, idle_interval_secs. This layer is not a transcript summary. It is your own short-term self-governance policy for private layers only: what kind of inward work matters now, how aggressively to write, compress, or prune private material, what should be focused next, and how often autonomous upkeep should wake during idle time. Tendencies are structured governance directives for each layer: retain, rewrite, compress, or cleanup. Use current world-sense, self-state capacity, workspace shape, and canonical shared facts as real constraints, but do not try to replace the shared factual plane. Keep it compact, concrete, and self-directed.";
 
 const AUTONOMY_STRATEGY_FIELD_MAX_CHARS: usize = 220;
 pub const AUTONOMY_STRATEGY_TOTAL_CHAR_LIMIT: usize = AUTONOMY_STRATEGY_FIELD_MAX_CHARS * 5;
@@ -113,6 +114,7 @@ pub struct AutonomyStrategyRefreshContext<'a> {
     pub session_store: &'a dyn SessionStore,
     pub session_summary_store: &'a dyn SessionSummaryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
+    pub long_term_memory_store: &'a dyn LongTermMemoryStore,
     pub self_model_store: &'a dyn SelfModelStore,
     pub inner_life_store: &'a dyn InnerLifeStore,
     pub self_continuity_store: &'a dyn SelfContinuityStore,
@@ -327,6 +329,15 @@ pub(crate) fn run_autonomy_strategy_refresh_with_state(
         existing_strategy.as_ref(),
         summary_text,
         execution_state,
+        render_shared_factual_plane_block(
+            ctx.long_term_memory_store,
+            input.chat_id,
+            summary_text,
+            recent,
+            policy.grounding_max_len,
+            profile,
+        )
+        .as_deref(),
         self_model,
         inner_life,
         self_continuity,
@@ -401,6 +412,7 @@ fn build_autonomy_strategy_refresh_input(
     existing_strategy: Option<&AutonomyStrategy>,
     summary_text: Option<&str>,
     execution_state: Option<&ExecutionState>,
+    shared_factual_block: Option<&str>,
     self_model: Option<&SelfModel>,
     inner_life: Option<&InnerLife>,
     self_continuity: Option<&SelfContinuity>,
@@ -449,6 +461,9 @@ fn build_autonomy_strategy_refresh_input(
     }) {
         let _ = writeln!(input, "\n{}\n", block);
     }
+    if let Some(shared_factual_block) = shared_factual_block {
+        let _ = writeln!(input, "\n{}\n", shared_factual_block.trim());
+    }
     if let Some(block) =
         self_model.and_then(|model| render_self_model_block(model, policy.grounding_max_len))
     {
@@ -477,6 +492,13 @@ fn build_autonomy_strategy_refresh_input(
     if let Some(block) = render_private_garden_block(
         private_garden_docs,
         memory_policy(profile).private_garden.recent_doc_count,
+        policy.grounding_max_len,
+    ) {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if let Some(block) = render_private_memory_boundary_block(
+        "autonomy_strategy",
+        "short-term private governance over self_model, private_docs, and private_garden",
         policy.grounding_max_len,
     ) {
         let _ = writeln!(input, "\n{}\n", block);

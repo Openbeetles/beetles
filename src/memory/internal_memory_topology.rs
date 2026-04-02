@@ -48,6 +48,9 @@ pub(crate) fn render_internal_memory_topology_block(
     out.push_str(
         "Layer roles: self_model = durable private continuity and stance; private_docs = compact governed inward notes; private_garden = free-form drafts, workspace organization, and temporary self-work.\n",
     );
+    out.push_str(
+        "Shared factual plane sits outside this topology and remains canonical for durable evidence-backed facts.\n",
+    );
     let _ = writeln!(
         out,
         "Pressure: {:?}; posture: {:?}; bottleneck: {:?}.",

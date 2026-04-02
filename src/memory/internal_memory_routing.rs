@@ -12,12 +12,13 @@ use std::fmt::Write as _;
 
 use super::{
     memory_policy, normalize_private_garden_doc_path, render_execution_state_block,
-    render_internal_memory_topology_block, ExecutionState, InternalMemoryLayerFocus,
-    InternalMemoryRoutingPolicy, MemoryProfile, PrivateDocWorkspace, PrivateGardenDocRecord,
-    SelfModel, SessionMessage,
+    render_internal_memory_topology_block, render_private_memory_boundary_block,
+    render_shared_factual_plane_block, ExecutionState, InternalMemoryLayerFocus,
+    InternalMemoryRoutingPolicy, LongTermMemoryStore, MemoryProfile, PrivateDocWorkspace,
+    PrivateGardenDocRecord, SelfModel, SessionMessage,
 };
 
-pub const INTERNAL_MEMORY_ROUTING_SYSTEM_PROMPT: &str = "You decide whether a persistent embodied AI assistant should refresh each private internal memory layer after the latest turn. Return JSON only: either null, or one object with boolean fields refresh_self_model, refresh_private_docs, refresh_private_garden, plus optional self_model_intent, private_docs_intent, private_garden_intent, self_model_sources, private_docs_sources, and private_garden_cleanup_paths. Choose true only when that layer should be rewritten now. If a layer is true, provide a short intent describing what that layer should capture so downstream writers avoid overlap. self_model_sources and private_docs_sources are optional short descriptors of material being distilled or promoted, such as private_docs.inner_journal or private_garden:journal/current.md. private_garden_cleanup_paths are optional garden-relative document paths that can be deleted after successful upstream promotion. self_model is for durable private continuity and stance. private_docs is for compact governed subjective docs. private_garden is for free-form self-owned drafts, organization, and exploratory internal work. Use self-state pressure and current workspace shape to avoid unnecessary writes. If nothing should change, return null.";
+pub const INTERNAL_MEMORY_ROUTING_SYSTEM_PROMPT: &str = "You decide whether a persistent embodied AI assistant should refresh each private internal memory layer after the latest turn. Return JSON only: either null, or one object with boolean fields refresh_self_model, refresh_private_docs, refresh_private_garden, plus optional self_model_intent, private_docs_intent, private_garden_intent, self_model_sources, private_docs_sources, and private_garden_cleanup_paths. Choose true only when that layer should be rewritten now. This router governs private layers only; durable objective facts remain in the shared factual plane. If a layer is true, provide a short intent describing what that layer should capture so downstream writers avoid overlap. self_model_sources and private_docs_sources are optional short descriptors of material being distilled or promoted, such as private_docs.inner_journal or private_garden:journal/current.md. private_garden_cleanup_paths are optional garden-relative document paths that can be deleted after successful upstream promotion. self_model is for durable private continuity and stance. private_docs is for compact governed subjective docs. private_garden is for free-form self-owned drafts, organization, and exploratory internal work. Use self-state pressure and current workspace shape to avoid unnecessary writes. If nothing should change, return null.";
 const ROUTING_INTENT_MAX_CHARS: usize = 160;
 const ROUTING_SOURCE_MAX_CHARS: usize = 96;
 const ROUTING_MAX_SOURCES_PER_LAYER: usize = 4;
@@ -102,6 +103,7 @@ pub(crate) fn should_route_internal_memory_turn(
 pub(crate) fn run_internal_memory_routing_with_state(
     http: &mut dyn LlmHttpClient,
     llm: &(dyn LlmClient + Send + Sync),
+    long_term_memory_store: &dyn LongTermMemoryStore,
     input: InternalMemoryRoutingInput<'_>,
     profile: MemoryProfile,
     summary_text: Option<&str>,
@@ -119,6 +121,15 @@ pub(crate) fn run_internal_memory_routing_with_state(
     let routing_input = build_internal_memory_routing_input(
         summary_text,
         execution_state,
+        render_shared_factual_plane_block(
+            long_term_memory_store,
+            input.chat_id,
+            summary_text,
+            recent,
+            policy.grounding_max_len,
+            profile,
+        )
+        .as_deref(),
         self_model,
         private_workspace,
         private_garden_docs,
@@ -151,6 +162,7 @@ fn internal_memory_recent_window(recent: &[SessionMessage], limit: usize) -> &[S
 fn build_internal_memory_routing_input(
     summary_text: Option<&str>,
     execution_state: Option<&ExecutionState>,
+    shared_factual_block: Option<&str>,
     self_model: Option<&SelfModel>,
     private_workspace: Option<&PrivateDocWorkspace>,
     private_garden_docs: &[PrivateGardenDocRecord],
@@ -182,6 +194,20 @@ fn build_internal_memory_routing_input(
     if let Some(block) = execution_state
         .and_then(|state| render_execution_state_block(state, policy.grounding_max_len))
     {
+        input.push_str(block.trim());
+        input.push('\n');
+    }
+    if let Some(shared_factual_block) = shared_factual_block {
+        input.push('\n');
+        input.push_str(shared_factual_block.trim());
+        input.push('\n');
+    }
+    if let Some(block) = render_private_memory_boundary_block(
+        "internal_memory_router",
+        "deciding whether private layers need refresh while leaving objective facts in the shared plane",
+        policy.grounding_max_len,
+    ) {
+        input.push('\n');
         input.push_str(block.trim());
         input.push('\n');
     }
@@ -358,6 +384,7 @@ mod tests {
         let rendered = build_internal_memory_routing_input(
             Some("summary"),
             None,
+            None,
             Some(&SelfModel {
                 continuity_anchor: "anchor".to_string(),
                 self_narrative: String::new(),
@@ -381,8 +408,8 @@ mod tests {
 
         assert!(rendered.contains("## Internal Memory Topology"));
         assert!(rendered.contains("Pressure:"));
+        assert!(rendered.contains("self_model: anchor=anchor"));
         assert!(rendered.contains("private_garden:"));
         assert!(rendered.contains("1/16 docs"));
-        assert!(rendered.contains("journal/now.md"));
     }
 }

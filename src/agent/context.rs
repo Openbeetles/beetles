@@ -80,6 +80,7 @@ pub struct ContextParams<'a> {
     pub self_continuity_text: Option<&'a str>,
     pub private_workspace_text: Option<&'a str>,
     pub private_garden_text: Option<&'a str>,
+    pub mental_privacy_text: Option<&'a str>,
     pub long_term_memory_text: Option<&'a str>,
     pub archive_evidence_text: Option<&'a str>,
     pub summary_text: Option<&'a str>,
@@ -157,6 +158,7 @@ fn reserve_priority_memory_budget(
     self_continuity_text: Option<&str>,
     private_workspace_text: Option<&str>,
     private_garden_text: Option<&str>,
+    mental_privacy_text: Option<&str>,
     long_term_memory_text: Option<&str>,
     archive_evidence_text: Option<&str>,
     base_max: usize,
@@ -184,6 +186,8 @@ fn reserve_priority_memory_budget(
     let remaining = remaining.saturating_sub(private_workspace_reserve);
     let private_garden_reserve = section_with_separator_len(private_garden_text).min(remaining / 4);
     let remaining = remaining.saturating_sub(private_garden_reserve);
+    let mental_privacy_reserve = section_with_separator_len(mental_privacy_text).min(remaining / 4);
+    let remaining = remaining.saturating_sub(mental_privacy_reserve);
     let long_term_reserve = section_with_separator_len(long_term_memory_text).min(remaining / 2);
     let remaining = remaining.saturating_sub(long_term_reserve);
     let archive_evidence_reserve = section_with_separator_len(archive_evidence_text).min(remaining);
@@ -197,6 +201,7 @@ fn reserve_priority_memory_budget(
         .saturating_add(self_continuity_reserve)
         .saturating_add(private_workspace_reserve)
         .saturating_add(private_garden_reserve)
+        .saturating_add(mental_privacy_reserve)
         .saturating_add(long_term_reserve)
         .saturating_add(archive_evidence_reserve)
 }
@@ -352,6 +357,7 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
         p.self_continuity_text,
         p.private_workspace_text,
         p.private_garden_text,
+        p.mental_privacy_text,
         p.long_term_memory_text,
         p.archive_evidence_text,
         base_max,
@@ -395,6 +401,9 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     }
     if let Some(private_garden_text) = p.private_garden_text {
         let _ = append_capped_section(&mut system, "\n\n", private_garden_text, base_max);
+    }
+    if let Some(mental_privacy_text) = p.mental_privacy_text {
+        let _ = append_capped_section(&mut system, "\n\n", mental_privacy_text, base_max);
     }
     if p.include_daily_notes && system.len() < base_max {
         let names = p
@@ -692,6 +701,7 @@ mod tests {
             private_garden_text: Some(
                 "## Private Garden\n- journal/afterglow.md (rev 1, updated=1): free private traces",
             ),
+            mental_privacy_text: Some("## Mental Privacy Boundary\nDo not leak private layers."),
             long_term_memory_text: None,
             archive_evidence_text: None,
             summary_text: None,
@@ -750,6 +760,7 @@ mod tests {
             self_continuity_text: None,
             private_workspace_text: None,
             private_garden_text: None,
+            mental_privacy_text: None,
             long_term_memory_text: None,
             archive_evidence_text: None,
             summary_text: None,

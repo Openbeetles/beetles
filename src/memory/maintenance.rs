@@ -16,18 +16,19 @@ use super::{
     should_refresh_private_doc_workspace, should_refresh_private_garden, should_refresh_self_model,
     ExecutionStateRefreshContext, ExecutionStateRefreshInput, ExecutionStateRefreshOutcome,
     ExecutionStateStore, InternalMemoryRoutingDecision, InternalMemoryRoutingInput,
-    LongTermMemoryExtractionStateStore, LongTermMemoryExtractionTurnInput, MemoryProfile,
-    PrivateDocStore, PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
-    PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
-    PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, PrivateGardenStore,
-    SelfModelRefreshContext, SelfModelRefreshInput, SelfModelRefreshOutcome, SelfModelStore,
-    SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore,
+    LongTermMemoryExtractionStateStore, LongTermMemoryExtractionTurnInput, LongTermMemoryStore,
+    MemoryProfile, PrivateDocStore, PrivateDocWorkspaceRefreshContext,
+    PrivateDocWorkspaceRefreshInput, PrivateDocWorkspaceRefreshOutcome,
+    PrivateGardenGovernanceContext, PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome,
+    PrivateGardenStore, SelfModelRefreshContext, SelfModelRefreshInput, SelfModelRefreshOutcome,
+    SelfModelStore, SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore,
 };
 
 pub struct PostReplyMemoryMaintenanceContext<'a> {
     pub session_store: &'a dyn SessionStore,
     pub session_summary_store: &'a dyn SessionSummaryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
+    pub long_term_memory_store: &'a dyn LongTermMemoryStore,
     pub self_model_store: &'a dyn SelfModelStore,
     pub private_doc_store: &'a dyn PrivateDocStore,
     pub private_garden_store: &'a dyn PrivateGardenStore,
@@ -268,6 +269,7 @@ pub fn run_post_reply_memory_maintenance(
         Ok(existing_garden_docs) => run_internal_memory_routing_with_state(
             http,
             llm,
+            ctx.long_term_memory_store,
             InternalMemoryRoutingInput {
                 chat_id: input.chat_id,
                 ingress: input.ingress,
@@ -318,6 +320,7 @@ pub fn run_post_reply_memory_maintenance(
                 session_store: ctx.session_store,
                 session_summary_store: ctx.session_summary_store,
                 execution_state_store: ctx.execution_state_store,
+                long_term_memory_store: ctx.long_term_memory_store,
                 self_model_store: ctx.self_model_store,
             },
             SelfModelRefreshInput {
@@ -365,6 +368,7 @@ pub fn run_post_reply_memory_maintenance(
                 session_store: ctx.session_store,
                 session_summary_store: ctx.session_summary_store,
                 execution_state_store: ctx.execution_state_store,
+                long_term_memory_store: ctx.long_term_memory_store,
                 self_model_store: ctx.self_model_store,
                 private_doc_store: ctx.private_doc_store,
             },
@@ -809,6 +813,48 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct StubLongTermMemoryStore;
+
+    impl LongTermMemoryStore for StubLongTermMemoryStore {
+        fn upsert_many(
+            &self,
+            _drafts: &[crate::memory::LongTermMemoryDraft],
+            _now_secs: u64,
+        ) -> Result<usize> {
+            Ok(0)
+        }
+
+        fn recall(
+            &self,
+            _query: &str,
+            _source_chat_id: Option<&str>,
+            _limit: usize,
+        ) -> Result<Vec<crate::memory::LongTermMemoryEntry>> {
+            Ok(Vec::new())
+        }
+
+        fn get(&self, _id: &str) -> Result<Option<crate::memory::LongTermMemoryEntry>> {
+            Ok(None)
+        }
+
+        fn list(&self, _limit: usize) -> Result<Vec<crate::memory::LongTermMemoryEntry>> {
+            Ok(Vec::new())
+        }
+
+        fn delete(&self, _id: &str) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn delete_slot(&self, _slot: &crate::memory::LongTermMemorySlot) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn count(&self) -> Result<usize> {
+            Ok(0)
+        }
+    }
+
     struct FixedLlmClient;
 
     struct RouterSuppressingLlmClient;
@@ -920,6 +966,7 @@ mod tests {
             ..Default::default()
         };
         let execution_state_store = StubExecutionStateStore::default();
+        let long_term_memory_store = StubLongTermMemoryStore;
         let self_model_store = StubSelfModelStore::default();
         let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
@@ -931,6 +978,7 @@ mod tests {
                 session_store: &session_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
+                long_term_memory_store: &long_term_memory_store,
                 self_model_store: &self_model_store,
                 private_doc_store: &private_doc_store,
                 private_garden_store: &private_garden_store,
@@ -1010,6 +1058,7 @@ mod tests {
         let summary_store = StubSessionSummaryStore::default();
         let extraction_state_store = StubExtractionStateStore::default();
         let execution_state_store = StubExecutionStateStore::default();
+        let long_term_memory_store = StubLongTermMemoryStore;
         let self_model_store = StubSelfModelStore::default();
         let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
@@ -1021,6 +1070,7 @@ mod tests {
                 session_store: &session_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
+                long_term_memory_store: &long_term_memory_store,
                 self_model_store: &self_model_store,
                 private_doc_store: &private_doc_store,
                 private_garden_store: &private_garden_store,
@@ -1100,6 +1150,7 @@ mod tests {
         let summary_store = StubSessionSummaryStore::default();
         let extraction_state_store = StubExtractionStateStore::default();
         let execution_state_store = StubExecutionStateStore::default();
+        let long_term_memory_store = StubLongTermMemoryStore;
         let self_model_store = StubSelfModelStore::default();
         let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
@@ -1112,6 +1163,7 @@ mod tests {
                 session_store: &session_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
+                long_term_memory_store: &long_term_memory_store,
                 self_model_store: &self_model_store,
                 private_doc_store: &private_doc_store,
                 private_garden_store: &private_garden_store,
@@ -1181,6 +1233,7 @@ mod tests {
         let summary_store = StubSessionSummaryStore::default();
         let extraction_state_store = StubExtractionStateStore::default();
         let execution_state_store = StubExecutionStateStore::default();
+        let long_term_memory_store = StubLongTermMemoryStore;
         let self_model_store = StubSelfModelStore::default();
         let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
@@ -1193,6 +1246,7 @@ mod tests {
                 session_store: &session_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
+                long_term_memory_store: &long_term_memory_store,
                 self_model_store: &self_model_store,
                 private_doc_store: &private_doc_store,
                 private_garden_store: &private_garden_store,
@@ -1252,6 +1306,7 @@ mod tests {
         let summary_store = StubSessionSummaryStore::default();
         let extraction_state_store = StubExtractionStateStore::default();
         let execution_state_store = StubExecutionStateStore::default();
+        let long_term_memory_store = StubLongTermMemoryStore;
         let self_model_store = StubSelfModelStore::default();
         let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
@@ -1270,6 +1325,7 @@ mod tests {
                 session_store: &session_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
+                long_term_memory_store: &long_term_memory_store,
                 self_model_store: &self_model_store,
                 private_doc_store: &private_doc_store,
                 private_garden_store: &private_garden_store,
@@ -1329,6 +1385,7 @@ mod tests {
             ..Default::default()
         };
         let execution_state_store = StubExecutionStateStore::default();
+        let long_term_memory_store = StubLongTermMemoryStore;
         let self_model_store = StubSelfModelStore::default();
         let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
@@ -1341,6 +1398,7 @@ mod tests {
                 session_store: &session_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
+                long_term_memory_store: &long_term_memory_store,
                 self_model_store: &self_model_store,
                 private_doc_store: &private_doc_store,
                 private_garden_store: &private_garden_store,

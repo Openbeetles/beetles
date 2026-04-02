@@ -11,10 +11,11 @@ use crate::platform::{
         spiffs_usage, SpiffsAutonomyStrategyStore, SpiffsCalendarProviderCredentialStore,
         SpiffsCalendarStore, SpiffsExecutionStateStore, SpiffsImportantMessageStore,
         SpiffsInnerLifeStore, SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore,
-        SpiffsMemoryStore, SpiffsPendingRetryStore, SpiffsPrivateDocStore,
-        SpiffsPrivateGardenStore, SpiffsRemindAtStore, SpiffsSelfContinuityStore,
-        SpiffsSelfModelStore, SpiffsSessionStore, SpiffsSessionSummaryStore, SpiffsSkillMetaStore,
-        SpiffsSkillStorage, SpiffsTaskStore, SpiffsTurnLedgerStore, SpiffsWorldSenseStore,
+        SpiffsMemoryStore, SpiffsMentalPrivacyStore, SpiffsPendingRetryStore,
+        SpiffsPrivateDocStore, SpiffsPrivateGardenStore, SpiffsRemindAtStore,
+        SpiffsSelfContinuityStore, SpiffsSelfModelStore, SpiffsSessionStore,
+        SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage, SpiffsTaskStore,
+        SpiffsTurnLedgerStore, SpiffsWorldSenseStore,
     },
     NvsConfigStore,
 };
@@ -25,9 +26,9 @@ use crate::{
     display::{DisplayCommand, DisplayConfig},
     memory::{
         AutonomyStrategyStore, ExecutionStateStore, ImportantMessageStore, InnerLifeStore,
-        LongTermMemoryExtractionStateStore, LongTermMemoryStore, MemoryStore, PendingRetryStore,
-        PrivateDocStore, PrivateGardenStore, RemindAtStore, SelfContinuityStore, SelfModelStore,
-        SessionStore, SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
+        LongTermMemoryExtractionStateStore, LongTermMemoryStore, MemoryStore, MentalPrivacyStore,
+        PendingRetryStore, PrivateDocStore, PrivateGardenStore, RemindAtStore, SelfContinuityStore,
+        SelfModelStore, SessionStore, SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
     },
     task::TaskStore,
 };
@@ -57,6 +58,7 @@ pub struct Esp32Platform {
     self_continuity_store: Arc<SpiffsSelfContinuityStore>,
     private_doc_store: Arc<SpiffsPrivateDocStore>,
     private_garden_store: Arc<SpiffsPrivateGardenStore>,
+    mental_privacy_store: Arc<SpiffsMentalPrivacyStore>,
     important_message_store: Arc<SpiffsImportantMessageStore>,
     remind_at_store: Arc<SpiffsRemindAtStore>,
     session_summary_store: Arc<SpiffsSessionSummaryStore>,
@@ -97,6 +99,7 @@ impl Esp32Platform {
             self_continuity_store: Arc::new(SpiffsSelfContinuityStore::new()),
             private_doc_store: Arc::new(SpiffsPrivateDocStore::new()),
             private_garden_store: Arc::new(SpiffsPrivateGardenStore::new()),
+            mental_privacy_store: Arc::new(SpiffsMentalPrivacyStore::new()),
             important_message_store: Arc::new(SpiffsImportantMessageStore::new()),
             remind_at_store: Arc::new(SpiffsRemindAtStore::new()),
             session_summary_store: Arc::new(SpiffsSessionSummaryStore::new()),
@@ -256,6 +259,10 @@ impl Platform for Esp32Platform {
 
     fn private_garden_store(&self) -> Arc<dyn PrivateGardenStore + Send + Sync> {
         Arc::clone(&self.private_garden_store) as Arc<dyn PrivateGardenStore + Send + Sync>
+    }
+
+    fn mental_privacy_store(&self) -> Arc<dyn MentalPrivacyStore + Send + Sync> {
+        Arc::clone(&self.mental_privacy_store) as Arc<dyn MentalPrivacyStore + Send + Sync>
     }
 
     fn important_message_store(&self) -> Arc<dyn ImportantMessageStore + Send + Sync> {

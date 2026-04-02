@@ -14,15 +14,16 @@ use super::{
     autonomy_idle_interval_secs, build_self_state, build_world_snapshot, memory_policy,
     render_autonomy_strategy_block, render_execution_state_block, render_inner_life_block,
     render_internal_memory_topology_block, render_private_doc_workspace_block,
-    render_private_garden_block, render_self_continuity_block, render_self_model_block,
-    render_self_state_block, render_world_sense_block, render_world_snapshot_block,
+    render_private_garden_block, render_private_memory_boundary_block,
+    render_self_continuity_block, render_self_model_block, render_self_state_block,
+    render_shared_factual_plane_block, render_world_sense_block, render_world_snapshot_block,
     run_autonomy_strategy_refresh_with_state, run_inner_life_refresh_with_state,
     run_private_doc_workspace_refresh_with_state, run_private_garden_governance_with_state,
     run_self_continuity_refresh_with_state, run_world_sense_refresh_with_state,
     touch_self_continuity_runtime, AutonomyGovernanceTendency, AutonomyStrategyRefreshContext,
     AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome, AutonomyStrategyStore,
     ExecutionStateStore, InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome,
-    InnerLifeStore, InternalMemoryLayerFocus, MemoryProfile, PrivateDocStore,
+    InnerLifeStore, InternalMemoryLayerFocus, LongTermMemoryStore, MemoryProfile, PrivateDocStore,
     PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
     PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
     PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, PrivateGardenStore,
@@ -33,7 +34,7 @@ use super::{
     WorldSnapshotContext,
 };
 
-pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's private inward space. Respect the current autonomy strategy unless the latest world state or self-state clearly requires a different emphasis. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_private_docs, private_docs_intent, refresh_self_continuity, self_continuity_intent, refresh_private_garden, private_garden_intent. Use true only when that layer should change now. private_docs is the governed inner workspace; private_garden is the free-form private workspace. Use self-state capacity, world-sense, and current autonomy strategy to decide whether to write, compress, reorganize, or leave memory untouched. Keep intents short and concrete. Favor autonomy, but do not churn memory without gain.";
+pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's private inward space. Respect the current autonomy strategy unless the latest world state or self-state clearly requires a different emphasis. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_private_docs, private_docs_intent, refresh_self_continuity, self_continuity_intent, refresh_private_garden, private_garden_intent. Use true only when that layer should change now. This runtime governs private layers only; durable objective facts remain in the shared factual plane. private_docs is the governed inner workspace; private_garden is the free-form private workspace. Use self-state capacity, world-sense, current autonomy strategy, and canonical shared facts to decide whether to write, compress, reorganize, or leave memory untouched. Keep intents short and concrete. Favor autonomy, but do not churn memory without gain.";
 pub const SELF_RUNTIME_CHANNEL: &str = "_self_runtime";
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -83,6 +84,7 @@ pub struct SelfRuntimeContext<'a> {
     pub session_store: &'a dyn SessionStore,
     pub session_summary_store: &'a dyn SessionSummaryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
+    pub long_term_memory_store: &'a dyn LongTermMemoryStore,
     pub self_model_store: &'a dyn SelfModelStore,
     pub private_doc_store: &'a dyn PrivateDocStore,
     pub private_garden_store: &'a dyn PrivateGardenStore,
@@ -418,6 +420,7 @@ pub fn run_self_runtime(
             session_store: ctx.session_store,
             session_summary_store: ctx.session_summary_store,
             execution_state_store: ctx.execution_state_store,
+            long_term_memory_store: ctx.long_term_memory_store,
             self_model_store: ctx.self_model_store,
             inner_life_store: ctx.inner_life_store,
             self_continuity_store: ctx.self_continuity_store,
@@ -472,6 +475,7 @@ pub fn run_self_runtime(
     let decision = match decide_self_runtime(
         http,
         llm,
+        ctx.long_term_memory_store,
         payload,
         summary_text.as_deref(),
         execution_state.as_ref(),
@@ -517,6 +521,7 @@ pub fn run_self_runtime(
                 session_store: ctx.session_store,
                 session_summary_store: ctx.session_summary_store,
                 execution_state_store: ctx.execution_state_store,
+                long_term_memory_store: ctx.long_term_memory_store,
                 self_model_store: ctx.self_model_store,
                 private_doc_store: ctx.private_doc_store,
                 self_continuity_store: ctx.self_continuity_store,
@@ -560,6 +565,7 @@ pub fn run_self_runtime(
                 session_store: ctx.session_store,
                 session_summary_store: ctx.session_summary_store,
                 execution_state_store: ctx.execution_state_store,
+                long_term_memory_store: ctx.long_term_memory_store,
                 self_model_store: ctx.self_model_store,
                 private_doc_store: ctx.private_doc_store,
             },
@@ -844,6 +850,7 @@ fn default_runtime_governance_intent(
 fn decide_self_runtime(
     http: &mut dyn LlmHttpClient,
     llm: &(dyn LlmClient + Send + Sync),
+    long_term_memory_store: &dyn LongTermMemoryStore,
     payload: &SelfRuntimeJobPayload,
     summary_text: Option<&str>,
     execution_state: Option<&crate::memory::ExecutionState>,
@@ -904,6 +911,16 @@ fn decide_self_runtime(
                 .min(memory_policy(profile).execution_state.render_max_len),
         )
     }) {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if let Some(block) = render_shared_factual_plane_block(
+        long_term_memory_store,
+        chat_id,
+        summary_text,
+        &recent,
+        policy.grounding_max_len,
+        profile,
+    ) {
         let _ = writeln!(input, "\n{}\n", block);
     }
     if let Some(block) = render_world_snapshot_block(
@@ -971,6 +988,13 @@ fn decide_self_runtime(
     if let Some(block) = render_private_garden_block(
         private_garden_docs,
         memory_policy(profile).private_garden.recent_doc_count,
+        policy.grounding_max_len,
+    ) {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if let Some(block) = render_private_memory_boundary_block(
+        "self_runtime",
+        "governing private inward writes while keeping objective facts in the shared plane",
         policy.grounding_max_len,
     ) {
         let _ = writeln!(input, "\n{}\n", block);

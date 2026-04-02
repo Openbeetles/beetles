@@ -192,7 +192,7 @@ impl Tool for PrivateGardenTool {
     }
 
     fn metadata(&self) -> ToolMetadata {
-        ToolMetadata::stateful()
+        ToolMetadata::stateful().with_system_ingress(true)
     }
 }
 
