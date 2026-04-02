@@ -1,0 +1,556 @@
+//! 自治运行层：由 LLM 决定是否经营自己的内在空间。
+
+use crate::bus::{IngressKind, PcMsg, SystemInboundTx};
+use crate::error::Result;
+use crate::llm::{LlmClient, LlmHttpClient, Message, ToolChoicePolicy};
+use crate::orchestrator::PressureLevel;
+use crate::util::{current_unix_secs, scrub_credentials, truncate_content_to_max};
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
+use std::fmt::Write as _;
+
+use super::{
+    memory_policy, render_execution_state_block, render_inner_life_block,
+    render_internal_memory_topology_block, render_private_doc_workspace_block,
+    render_private_garden_block, render_self_continuity_block, render_self_model_block,
+    run_inner_life_refresh_with_state, run_private_garden_governance_with_state,
+    run_self_continuity_refresh_with_state, touch_self_continuity_runtime, ExecutionStateStore,
+    InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome, InnerLifeStore,
+    InternalMemoryLayerFocus, MemoryProfile, PrivateDocStore, PrivateGardenGovernanceContext,
+    PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, PrivateGardenStore,
+    SelfContinuityRefreshContext, SelfContinuityRefreshInput, SelfContinuityRefreshOutcome,
+    SelfContinuityStore, SelfModelStore, SessionStore, SessionSummaryStore,
+};
+
+pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's private inward space. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_self_continuity, self_continuity_intent, refresh_private_garden, private_garden_intent. Use true only when the corresponding layer should be updated now. Keep intents short and concrete. Favor autonomy, but do not churn memory without gain.";
+pub const SELF_RUNTIME_CHANNEL: &str = "_self_runtime";
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SelfRuntimeTrigger {
+    PostReply,
+    IdleTick,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SelfRuntimeJobPayload {
+    pub trigger: SelfRuntimeTrigger,
+    #[serde(default)]
+    pub source_channel: String,
+    #[serde(default)]
+    pub user_content: String,
+    #[serde(default)]
+    pub reply_content: String,
+    #[serde(default)]
+    pub tool_calls: u32,
+    #[serde(default)]
+    pub external_content_used: bool,
+    pub now_secs: u64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+pub struct SelfRuntimeDecision {
+    #[serde(default)]
+    pub refresh_inner_life: bool,
+    #[serde(default)]
+    pub inner_life_intent: String,
+    #[serde(default)]
+    pub refresh_self_continuity: bool,
+    #[serde(default)]
+    pub self_continuity_intent: String,
+    #[serde(default)]
+    pub refresh_private_garden: bool,
+    #[serde(default)]
+    pub private_garden_intent: String,
+}
+
+pub struct SelfRuntimeContext<'a> {
+    pub session_store: &'a dyn SessionStore,
+    pub session_summary_store: &'a dyn SessionSummaryStore,
+    pub execution_state_store: &'a dyn ExecutionStateStore,
+    pub self_model_store: &'a dyn SelfModelStore,
+    pub private_doc_store: &'a dyn PrivateDocStore,
+    pub private_garden_store: &'a dyn PrivateGardenStore,
+    pub inner_life_store: &'a dyn InnerLifeStore,
+    pub self_continuity_store: &'a dyn SelfContinuityStore,
+}
+
+pub struct SelfRuntimeOutcome {
+    pub decision: Option<SelfRuntimeDecision>,
+    pub inner_life_result: Result<InnerLifeRefreshOutcome>,
+    pub self_continuity_result: Result<SelfContinuityRefreshOutcome>,
+    pub private_garden_result: Result<PrivateGardenGovernanceOutcome>,
+}
+
+pub fn enqueue_self_runtime_post_reply(
+    system_inbound_tx: &SystemInboundTx,
+    chat_id: &str,
+    source_channel: &str,
+    user_content: &str,
+    reply_content: &str,
+    tool_calls: u32,
+    external_content_used: bool,
+) -> bool {
+    enqueue_self_runtime_job(
+        system_inbound_tx,
+        chat_id,
+        SelfRuntimeJobPayload {
+            trigger: SelfRuntimeTrigger::PostReply,
+            source_channel: source_channel.to_string(),
+            user_content: truncate_content_to_max(user_content, 512).into_owned(),
+            reply_content: truncate_content_to_max(reply_content, 768).into_owned(),
+            tool_calls,
+            external_content_used,
+            now_secs: current_unix_secs(),
+        },
+    )
+}
+
+pub fn enqueue_self_runtime_idle_tick(system_inbound_tx: &SystemInboundTx, chat_id: &str) -> bool {
+    enqueue_self_runtime_job(
+        system_inbound_tx,
+        chat_id,
+        SelfRuntimeJobPayload {
+            trigger: SelfRuntimeTrigger::IdleTick,
+            source_channel: "self_runtime_idle".to_string(),
+            user_content: String::new(),
+            reply_content: String::new(),
+            tool_calls: 0,
+            external_content_used: false,
+            now_secs: current_unix_secs(),
+        },
+    )
+}
+
+fn enqueue_self_runtime_job(
+    system_inbound_tx: &SystemInboundTx,
+    chat_id: &str,
+    payload: SelfRuntimeJobPayload,
+) -> bool {
+    let body = match serde_json::to_string(&payload) {
+        Ok(body) => body,
+        Err(error) => {
+            log::warn!(
+                "[self_runtime] serialize job failed chat_id={}: {}",
+                chat_id,
+                error
+            );
+            return false;
+        }
+    };
+    let job = match PcMsg::new_system(SELF_RUNTIME_CHANNEL, chat_id, body) {
+        Ok(job) => job,
+        Err(error) => {
+            log::warn!(
+                "[self_runtime] build job failed chat_id={}: {}",
+                chat_id,
+                error
+            );
+            return false;
+        }
+    };
+    match system_inbound_tx.try_send(job) {
+        Ok(()) => true,
+        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+            log::debug!(
+                "[self_runtime] skip enqueue because system queue is full chat_id={}",
+                chat_id
+            );
+            false
+        }
+        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+            log::warn!("[self_runtime] enqueue failed: system queue disconnected");
+            false
+        }
+    }
+}
+
+pub fn self_runtime_tick(
+    system_inbound_tx: &SystemInboundTx,
+    session_store: &dyn SessionStore,
+    self_continuity_store: &dyn SelfContinuityStore,
+    profile: MemoryProfile,
+    now_secs: u64,
+) {
+    let policy = memory_policy(profile).self_runtime;
+    let chat_ids = match session_store.list_chat_ids() {
+        Ok(chat_ids) => chat_ids,
+        Err(error) => {
+            log::warn!("[self_runtime] failed to list chat ids: {}", error);
+            return;
+        }
+    };
+    let mut enqueued = 0usize;
+    for chat_id in chat_ids {
+        if enqueued >= policy.max_jobs_per_tick {
+            break;
+        }
+        let continuity = match self_continuity_store.get(&chat_id) {
+            Ok(value) => value,
+            Err(error) => {
+                log::warn!(
+                    "[self_runtime] failed to read continuity for {}: {}",
+                    chat_id,
+                    error
+                );
+                continue;
+            }
+        };
+        let active = continuity
+            .as_ref()
+            .map(|c| c.last_user_turn_at)
+            .unwrap_or(0);
+        if active > 0 && now_secs.saturating_sub(active) > policy.active_chat_window_secs {
+            continue;
+        }
+        let last_autonomy = continuity
+            .as_ref()
+            .map(|c| c.last_autonomy_run_at)
+            .unwrap_or(0);
+        if last_autonomy > 0
+            && now_secs.saturating_sub(last_autonomy) < policy.idle_tick_interval_secs
+        {
+            continue;
+        }
+        if enqueue_self_runtime_idle_tick(system_inbound_tx, &chat_id) {
+            enqueued += 1;
+        }
+    }
+}
+
+pub fn run_self_runtime(
+    http: &mut dyn LlmHttpClient,
+    llm: &(dyn LlmClient + Send + Sync),
+    ctx: SelfRuntimeContext<'_>,
+    chat_id: &str,
+    payload: &SelfRuntimeJobPayload,
+    profile: MemoryProfile,
+) -> SelfRuntimeOutcome {
+    let summary_text = ctx
+        .session_summary_store
+        .get_with_count(chat_id)
+        .ok()
+        .flatten()
+        .map(|(summary, _)| summary);
+    let execution_state = ctx.execution_state_store.get(chat_id).ok().flatten();
+    let self_model = ctx.self_model_store.get(chat_id).ok().flatten();
+    let private_docs = ctx.private_doc_store.get(chat_id).ok().flatten();
+    let private_garden_docs = ctx
+        .private_garden_store
+        .list(chat_id, usize::MAX)
+        .unwrap_or_default();
+    let inner_life = ctx.inner_life_store.get(chat_id).ok().flatten();
+    let self_continuity = ctx.self_continuity_store.get(chat_id).ok().flatten();
+    if payload.trigger == SelfRuntimeTrigger::PostReply {
+        let _ = touch_self_continuity_runtime(
+            ctx.self_continuity_store,
+            chat_id,
+            payload.now_secs,
+            true,
+            false,
+        );
+    }
+    let decision = match decide_self_runtime(
+        http,
+        llm,
+        payload,
+        summary_text.as_deref(),
+        execution_state.as_ref(),
+        self_model.as_ref(),
+        private_docs.as_ref(),
+        &private_garden_docs,
+        inner_life.as_ref(),
+        self_continuity.as_ref(),
+        profile,
+        ctx.session_store,
+        chat_id,
+    ) {
+        Ok(decision) => Some(decision),
+        Err(error) => {
+            return SelfRuntimeOutcome {
+                decision: None,
+                inner_life_result: Err(error),
+                self_continuity_result: Ok(SelfContinuityRefreshOutcome::Skipped),
+                private_garden_result: Ok(PrivateGardenGovernanceOutcome::Skipped),
+            };
+        }
+    };
+
+    let recent = ctx
+        .session_store
+        .load_recent(
+            chat_id,
+            memory_policy(profile)
+                .self_runtime
+                .recent_message_count
+                .max(memory_policy(profile).inner_life.recent_message_count)
+                .max(memory_policy(profile).self_continuity.recent_message_count)
+                .max(
+                    memory_policy(profile)
+                        .private_garden_governance
+                        .recent_message_count,
+                ),
+        )
+        .unwrap_or_default();
+
+    let decision_ref = decision.as_ref();
+    let inner_life_result = if decision_ref.is_some_and(|d| d.refresh_inner_life) {
+        run_inner_life_refresh_with_state(
+            http,
+            llm,
+            InnerLifeRefreshContext {
+                session_store: ctx.session_store,
+                session_summary_store: ctx.session_summary_store,
+                execution_state_store: ctx.execution_state_store,
+                self_model_store: ctx.self_model_store,
+                private_doc_store: ctx.private_doc_store,
+                self_continuity_store: ctx.self_continuity_store,
+                inner_life_store: ctx.inner_life_store,
+            },
+            InnerLifeRefreshInput {
+                chat_id,
+                ingress: IngressKind::System,
+                channel: SELF_RUNTIME_CHANNEL,
+                user_content: &payload.user_content,
+                reply_content: &payload.reply_content,
+                pressure: PressureLevel::Normal,
+                tool_calls: payload.tool_calls,
+                now_secs: payload.now_secs,
+            },
+            profile,
+            inner_life.clone(),
+            summary_text.as_deref(),
+            execution_state.as_ref(),
+            self_model.as_ref(),
+            private_docs.as_ref(),
+            self_continuity.as_ref(),
+            Some(true),
+            Some(recent.as_slice()),
+        )
+    } else {
+        Ok(InnerLifeRefreshOutcome::Skipped)
+    };
+
+    let refreshed_inner_life = ctx
+        .inner_life_store
+        .get(chat_id)
+        .ok()
+        .flatten()
+        .or(inner_life);
+    let self_continuity_result = if decision_ref.is_some_and(|d| d.refresh_self_continuity) {
+        run_self_continuity_refresh_with_state(
+            http,
+            llm,
+            SelfContinuityRefreshContext {
+                session_store: ctx.session_store,
+                session_summary_store: ctx.session_summary_store,
+                execution_state_store: ctx.execution_state_store,
+                self_model_store: ctx.self_model_store,
+                private_doc_store: ctx.private_doc_store,
+                inner_life_store: ctx.inner_life_store,
+                self_continuity_store: ctx.self_continuity_store,
+            },
+            SelfContinuityRefreshInput {
+                chat_id,
+                ingress: IngressKind::System,
+                channel: SELF_RUNTIME_CHANNEL,
+                user_content: &payload.user_content,
+                reply_content: &payload.reply_content,
+                pressure: PressureLevel::Normal,
+                tool_calls: payload.tool_calls,
+                now_secs: payload.now_secs,
+            },
+            profile,
+            self_continuity.clone(),
+            summary_text.as_deref(),
+            execution_state.as_ref(),
+            self_model.as_ref(),
+            private_docs.as_ref(),
+            refreshed_inner_life.as_ref(),
+            Some(true),
+            Some(recent.as_slice()),
+        )
+    } else {
+        Ok(SelfContinuityRefreshOutcome::Skipped)
+    };
+
+    let private_garden_result = if decision_ref.is_some_and(|d| d.refresh_private_garden) {
+        run_private_garden_governance_with_state(
+            http,
+            llm,
+            PrivateGardenGovernanceContext {
+                session_store: ctx.session_store,
+                session_summary_store: ctx.session_summary_store,
+                execution_state_store: ctx.execution_state_store,
+                self_model_store: ctx.self_model_store,
+                private_doc_store: ctx.private_doc_store,
+                private_garden_store: ctx.private_garden_store,
+            },
+            PrivateGardenGovernanceInput {
+                chat_id,
+                ingress: IngressKind::System,
+                channel: SELF_RUNTIME_CHANNEL,
+                user_content: &payload.user_content,
+                reply_content: &payload.reply_content,
+                pressure: PressureLevel::Normal,
+                tool_calls: payload.tool_calls,
+                now_secs: payload.now_secs,
+            },
+            profile,
+            summary_text.as_deref(),
+            execution_state.as_ref(),
+            self_model.as_ref(),
+            private_docs.as_ref(),
+            decision_ref.and_then(|d| {
+                (!d.private_garden_intent.trim().is_empty())
+                    .then_some(d.private_garden_intent.as_str())
+            }),
+            &[],
+            Some(true),
+            Some(recent.as_slice()),
+        )
+    } else {
+        Ok(PrivateGardenGovernanceOutcome::Skipped)
+    };
+
+    let _ = touch_self_continuity_runtime(
+        ctx.self_continuity_store,
+        chat_id,
+        payload.now_secs,
+        false,
+        true,
+    );
+
+    SelfRuntimeOutcome {
+        decision,
+        inner_life_result,
+        self_continuity_result,
+        private_garden_result,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decide_self_runtime(
+    http: &mut dyn LlmHttpClient,
+    llm: &(dyn LlmClient + Send + Sync),
+    payload: &SelfRuntimeJobPayload,
+    summary_text: Option<&str>,
+    execution_state: Option<&crate::memory::ExecutionState>,
+    self_model: Option<&crate::memory::SelfModel>,
+    private_docs: Option<&crate::memory::PrivateDocWorkspace>,
+    private_garden_docs: &[crate::memory::PrivateGardenDocRecord],
+    inner_life: Option<&crate::memory::InnerLife>,
+    self_continuity: Option<&crate::memory::SelfContinuity>,
+    profile: MemoryProfile,
+    session_store: &dyn SessionStore,
+    chat_id: &str,
+) -> Result<SelfRuntimeDecision> {
+    let policy = memory_policy(profile).self_runtime;
+    let recent = session_store.load_recent(chat_id, policy.recent_message_count)?;
+    let mut input = String::with_capacity(2048);
+    let _ = writeln!(input, "Trigger: {:?}", payload.trigger);
+    if !payload.source_channel.trim().is_empty() {
+        let _ = writeln!(input, "Source channel: {}", payload.source_channel.trim());
+    }
+    if !payload.user_content.trim().is_empty() {
+        let _ = writeln!(
+            input,
+            "Latest user: {}",
+            scrub_credentials(
+                truncate_content_to_max(
+                    payload.user_content.trim(),
+                    policy.transcript_preview_chars
+                )
+                .as_ref()
+            )
+        );
+    }
+    if !payload.reply_content.trim().is_empty() {
+        let _ = writeln!(
+            input,
+            "Latest reply: {}",
+            scrub_credentials(
+                truncate_content_to_max(
+                    payload.reply_content.trim(),
+                    policy.transcript_preview_chars
+                )
+                .as_ref()
+            )
+        );
+    }
+    if let Some(summary_text) = summary_text.filter(|s| !s.trim().is_empty()) {
+        let summary = truncate_content_to_max(summary_text.trim(), policy.grounding_max_len);
+        let _ = writeln!(input, "Summary: {}", scrub_credentials(summary.as_ref()));
+    }
+    if let Some(block) = execution_state.and_then(|state| {
+        render_execution_state_block(
+            state,
+            policy
+                .grounding_max_len
+                .min(memory_policy(profile).execution_state.render_max_len),
+        )
+    }) {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if let Some(block) = render_internal_memory_topology_block(
+        self_model,
+        private_docs,
+        private_garden_docs,
+        payload.now_secs,
+        profile,
+        InternalMemoryLayerFocus::Router,
+        policy.grounding_max_len,
+    ) {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if let Some(block) =
+        self_model.and_then(|model| render_self_model_block(model, policy.grounding_max_len))
+    {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if let Some(block) = private_docs.and_then(|workspace| {
+        render_private_doc_workspace_block(workspace, policy.grounding_max_len)
+    }) {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if let Some(block) = inner_life
+        .and_then(|inner_life| render_inner_life_block(inner_life, policy.grounding_max_len))
+    {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if let Some(block) = self_continuity
+        .and_then(|continuity| render_self_continuity_block(continuity, policy.grounding_max_len))
+    {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if let Some(block) = render_private_garden_block(
+        private_garden_docs,
+        memory_policy(profile).private_garden.recent_doc_count,
+        policy.grounding_max_len,
+    ) {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    input.push_str("Recent transcript:\n");
+    for message in recent {
+        let preview = truncate_content_to_max(&message.content, policy.transcript_preview_chars);
+        let _ = writeln!(
+            input,
+            "- {}: {}",
+            message.role,
+            scrub_credentials(preview.as_ref())
+        );
+    }
+    let messages = [Message {
+        role: Cow::Borrowed("user"),
+        content: input,
+    }];
+    let response = llm.chat(
+        http,
+        SELF_RUNTIME_SYSTEM_PROMPT,
+        &messages,
+        None,
+        ToolChoicePolicy::Auto,
+    )?;
+    serde_json::from_str(response.content.trim())
+        .map_err(|error| crate::error::Error::config("self_runtime_parse", error.to_string()))
+}

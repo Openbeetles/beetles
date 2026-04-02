@@ -36,12 +36,14 @@ use crate::llm::{LlmClient, Message, StopReason, ToolChoicePolicy};
 use crate::memory::{
     build_turn_ledger_start, load_prompt_memory_context, memory_policy, normalize_turn_preview,
     normalize_turn_reason, recall_long_term_memory_block, run_long_term_memory_refresh,
-    run_post_reply_memory_maintenance, EmotionSignalStore, ExecutionStateStore,
-    ImportantMessageStore, LongTermMemoryExtractionStateStore, LongTermMemoryRefreshContext,
+    run_post_reply_memory_maintenance, run_self_runtime, EmotionSignalStore,
+    ExecutionStateStore, ImportantMessageStore, InnerLifeStore,
+    LongTermMemoryExtractionStateStore, LongTermMemoryRefreshContext,
     LongTermMemoryRefreshOutcome, LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore,
     MemoryStore, PendingRetryStore, PostReplyMemoryMaintenanceContext,
     PostReplyMemoryMaintenanceInput, PrivateDocStore, PrivateGardenStore,
-    PromptMemoryContextParams, SelfModelStore, SessionStore, SessionSummaryRefreshOutcome,
+    PromptMemoryContextParams, SelfContinuityStore, SelfModelStore, SelfRuntimeContext,
+    SelfRuntimeOutcome, SELF_RUNTIME_CHANNEL, SessionStore, SessionSummaryRefreshOutcome,
     SessionSummaryStore, TurnDeliveryLedger, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
 };
 use crate::metrics;
@@ -134,6 +136,10 @@ fn is_long_term_memory_refresh_job(msg: &PcMsg) -> bool {
 
 fn is_post_reply_maintenance_job(msg: &PcMsg) -> bool {
     msg.ingress == IngressKind::System && msg.channel.as_ref() == POST_REPLY_MAINTENANCE_CHANNEL
+}
+
+fn is_self_runtime_job(msg: &PcMsg) -> bool {
+    msg.ingress == IngressKind::System && msg.channel.as_ref() == SELF_RUNTIME_CHANNEL
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1093,6 +1099,105 @@ fn run_post_reply_maintenance_job(
     }
 }
 
+fn run_self_runtime_job(
+    http: &mut dyn PlatformHttpClient,
+    worker_llm: &(dyn LlmClient + Send + Sync),
+    config: &AgentLoopConfig,
+    msg: &PcMsg,
+) {
+    let payload: crate::memory::SelfRuntimeJobPayload = match serde_json::from_str(&msg.content) {
+        Ok(payload) => payload,
+        Err(error) => {
+            log::warn!(
+                "[self_runtime] decode failed chat_id={}: {}",
+                msg.chat_id,
+                error
+            );
+            return;
+        }
+    };
+    let loc = (config.resolve_locale)();
+    let mut llm_ctx = HttpClientToolContext {
+        http,
+        chat_id: Some(Arc::from(msg.chat_id.as_ref())),
+        channel: Some(Arc::from("system")),
+        supports_current_chat_outbound_message: false,
+        supports_current_chat_primary_reply: false,
+        supports_explicit_outbound_message: false,
+        outbound_message_budget: 0,
+        outbound_message_count: 0,
+        current_primary_message_delivered: false,
+        locale: loc,
+    };
+    let outcome: SelfRuntimeOutcome = run_self_runtime(
+        &mut llm_ctx,
+        worker_llm,
+        SelfRuntimeContext {
+            session_store: config.session_store.as_ref(),
+            session_summary_store: config.session_summary_store.as_ref(),
+            execution_state_store: config.execution_state_store.as_ref(),
+            self_model_store: config.self_model_store.as_ref(),
+            private_doc_store: config.private_doc_store.as_ref(),
+            private_garden_store: config.private_garden_store.as_ref(),
+            inner_life_store: config.inner_life_store.as_ref(),
+            self_continuity_store: config.self_continuity_store.as_ref(),
+        },
+        &msg.chat_id,
+        &payload,
+        config.memory_profile,
+    );
+    if let Some(decision) = outcome.decision.as_ref() {
+        log::info!(
+            "[self_runtime] {} trigger={:?} inner_life={} self_continuity={} private_garden={} inner_life_intent={:?} self_continuity_intent={:?} private_garden_intent={:?}",
+            msg.chat_id,
+            payload.trigger,
+            decision.refresh_inner_life,
+            decision.refresh_self_continuity,
+            decision.refresh_private_garden,
+            (!decision.inner_life_intent.trim().is_empty()).then_some(decision.inner_life_intent.as_str()),
+            (!decision.self_continuity_intent.trim().is_empty()).then_some(decision.self_continuity_intent.as_str()),
+            (!decision.private_garden_intent.trim().is_empty()).then_some(decision.private_garden_intent.as_str()),
+        );
+    }
+    match outcome.inner_life_result {
+        Ok(crate::memory::InnerLifeRefreshOutcome::Updated) => {
+            log::info!("[agent_inner_life] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::InnerLifeRefreshOutcome::Cleared) => {
+            log::info!("[agent_inner_life] cleared for {}", msg.chat_id);
+        }
+        Ok(crate::memory::InnerLifeRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_inner_life] failed: {}", error),
+    }
+    match outcome.self_continuity_result {
+        Ok(crate::memory::SelfContinuityRefreshOutcome::Updated) => {
+            log::info!("[agent_self_continuity] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::SelfContinuityRefreshOutcome::Cleared) => {
+            log::info!("[agent_self_continuity] cleared for {}", msg.chat_id);
+        }
+        Ok(crate::memory::SelfContinuityRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_self_continuity] failed: {}", error),
+    }
+    match outcome.private_garden_result {
+        Ok(crate::memory::PrivateGardenGovernanceOutcome::Updated {
+            writes,
+            moves,
+            deletes,
+        }) => {
+            log::info!(
+                "[self_runtime_private_garden] updated for {} (writes={}, moves={}, deletes={})",
+                msg.chat_id,
+                writes,
+                moves,
+                deletes
+            );
+        }
+        Ok(crate::memory::PrivateGardenGovernanceOutcome::Skipped) => {}
+        Err(error) => log::warn!("[self_runtime_private_garden] failed: {}", error),
+    }
+}
+
 /// run_worker_path 返回：正常内容或用户要求停止时的确认文案。
 pub enum WorkerOutcome {
     Content(String),
@@ -1313,6 +1418,8 @@ pub struct AgentLoopConfig {
     pub session_summary_store: Arc<dyn SessionSummaryStore + Send + Sync>,
     pub execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
     pub self_model_store: Arc<dyn SelfModelStore + Send + Sync>,
+    pub inner_life_store: Arc<dyn InnerLifeStore + Send + Sync>,
+    pub self_continuity_store: Arc<dyn SelfContinuityStore + Send + Sync>,
     pub private_doc_store: Arc<dyn PrivateDocStore + Send + Sync>,
     pub private_garden_store: Arc<dyn PrivateGardenStore + Send + Sync>,
     pub turn_ledger_store: Arc<dyn TurnLedgerStore + Send + Sync>,
@@ -1464,6 +1571,11 @@ fn run_agent_loop_lane(
         }
         if is_post_reply_maintenance_job(&msg) {
             run_post_reply_maintenance_job(http, worker_llm, config, &system_inbound_tx, &msg);
+            metrics::record_system_message_done(false);
+            continue;
+        }
+        if is_self_runtime_job(&msg) {
+            run_self_runtime_job(http, worker_llm, config, &msg);
             metrics::record_system_message_done(false);
             continue;
         }
@@ -1911,6 +2023,22 @@ fn run_agent_loop_lane(
                 msg.chat_id
             );
         }
+        if delivered
+            && !crate::memory::enqueue_self_runtime_post_reply(
+                &system_inbound_tx,
+                msg.chat_id.as_ref(),
+                msg.channel.as_ref(),
+                &msg.content,
+                &reply_content,
+                worker_latency.tool_calls,
+                external_content_used,
+            )
+        {
+            log::debug!(
+                "[self_runtime] post-reply job skipped chat_id={}",
+                msg.chat_id
+            );
+        }
         let total_ms = msg_start.elapsed().as_millis();
         let post_reply_ms = total_ms.saturating_sub(reply_handoff_ms);
         turn_ledger.status = if is_interrupt {
@@ -2117,6 +2245,8 @@ fn run_worker_path(
         long_term_memory_store: config.long_term_memory_store.as_ref(),
         execution_state_store: config.execution_state_store.as_ref(),
         self_model_store: config.self_model_store.as_ref(),
+        inner_life_store: config.inner_life_store.as_ref(),
+        self_continuity_store: config.self_continuity_store.as_ref(),
         private_doc_store: config.private_doc_store.as_ref(),
         private_garden_store: config.private_garden_store.as_ref(),
     });
@@ -2135,6 +2265,8 @@ fn run_worker_path(
         execution_state_text: prompt_memory.execution_state_text.as_deref(),
         self_state_text: prompt_memory.self_state_text.as_deref(),
         self_model_text: prompt_memory.self_model_text.as_deref(),
+        inner_life_text: prompt_memory.inner_life_text.as_deref(),
+        self_continuity_text: prompt_memory.self_continuity_text.as_deref(),
         private_workspace_text: prompt_memory.private_workspace_text.as_deref(),
         private_garden_text: prompt_memory.private_garden_text.as_deref(),
         long_term_memory_text: prompt_memory.long_term_memory_text.as_deref(),
@@ -2993,6 +3125,44 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct StubInnerLifeStore;
+
+    impl InnerLifeStore for StubInnerLifeStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<crate::memory::InnerLife>> {
+            Ok(None)
+        }
+
+        fn set(&self, _chat_id: &str, _inner_life: &crate::memory::InnerLife) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubSelfContinuityStore;
+
+    impl SelfContinuityStore for StubSelfContinuityStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<crate::memory::SelfContinuity>> {
+            Ok(None)
+        }
+
+        fn set(
+            &self,
+            _chat_id: &str,
+            _continuity: &crate::memory::SelfContinuity,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
     struct StubPrivateDocStore;
 
     impl PrivateDocStore for StubPrivateDocStore {
@@ -3199,6 +3369,8 @@ mod tests {
             session_summary_store: Arc::new(StubSessionSummaryStore),
             execution_state_store: Arc::new(StubExecutionStateStore),
             self_model_store: Arc::new(StubSelfModelStore),
+            inner_life_store: Arc::new(StubInnerLifeStore),
+            self_continuity_store: Arc::new(StubSelfContinuityStore),
             private_doc_store: Arc::new(StubPrivateDocStore),
             private_garden_store: Arc::new(StubPrivateGardenStore),
             turn_ledger_store: Arc::new(StubTurnLedgerStore),

@@ -73,6 +73,8 @@ pub struct ContextParams<'a> {
     pub execution_state_text: Option<&'a str>,
     pub self_state_text: Option<&'a str>,
     pub self_model_text: Option<&'a str>,
+    pub inner_life_text: Option<&'a str>,
+    pub self_continuity_text: Option<&'a str>,
     pub private_workspace_text: Option<&'a str>,
     pub private_garden_text: Option<&'a str>,
     pub long_term_memory_text: Option<&'a str>,
@@ -144,6 +146,8 @@ fn reserve_priority_memory_budget(
     execution_state_text: Option<&str>,
     self_state_text: Option<&str>,
     self_model_text: Option<&str>,
+    inner_life_text: Option<&str>,
+    self_continuity_text: Option<&str>,
     private_workspace_text: Option<&str>,
     private_garden_text: Option<&str>,
     long_term_memory_text: Option<&str>,
@@ -155,6 +159,11 @@ fn reserve_priority_memory_budget(
     let remaining = remaining.saturating_sub(self_state_reserve);
     let self_model_reserve = section_with_separator_len(self_model_text).min(remaining / 4);
     let remaining = remaining.saturating_sub(self_model_reserve);
+    let inner_life_reserve = section_with_separator_len(inner_life_text).min(remaining / 4);
+    let remaining = remaining.saturating_sub(inner_life_reserve);
+    let self_continuity_reserve =
+        section_with_separator_len(self_continuity_text).min(remaining / 4);
+    let remaining = remaining.saturating_sub(self_continuity_reserve);
     let private_workspace_reserve =
         section_with_separator_len(private_workspace_text).min(remaining / 4);
     let remaining = remaining.saturating_sub(private_workspace_reserve);
@@ -164,6 +173,8 @@ fn reserve_priority_memory_budget(
     execution_reserve
         .saturating_add(self_state_reserve)
         .saturating_add(self_model_reserve)
+        .saturating_add(inner_life_reserve)
+        .saturating_add(self_continuity_reserve)
         .saturating_add(private_workspace_reserve)
         .saturating_add(private_garden_reserve)
         .saturating_add(long_term_reserve)
@@ -313,6 +324,8 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
         p.execution_state_text,
         p.self_state_text,
         p.self_model_text,
+        p.inner_life_text,
+        p.self_continuity_text,
         p.private_workspace_text,
         p.private_garden_text,
         p.long_term_memory_text,
@@ -333,6 +346,12 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     }
     if let Some(self_model_text) = p.self_model_text {
         let _ = append_capped_section(&mut system, "\n\n", self_model_text, base_max);
+    }
+    if let Some(inner_life_text) = p.inner_life_text {
+        let _ = append_capped_section(&mut system, "\n\n", inner_life_text, base_max);
+    }
+    if let Some(self_continuity_text) = p.self_continuity_text {
+        let _ = append_capped_section(&mut system, "\n\n", self_continuity_text, base_max);
     }
     if let Some(private_workspace_text) = p.private_workspace_text {
         let _ = append_capped_section(&mut system, "\n\n", private_workspace_text, base_max);
@@ -623,6 +642,8 @@ mod tests {
             execution_state_text: Some("## Execution State\nGoal: close current task"),
             self_state_text: Some("## Self State\nMemory pressure: Cautious"),
             self_model_text: Some("## Self Continuity\nAnchor: still the same beetle"),
+            inner_life_text: Some("## Inner Life\nInternal monologue: keep moving"),
+            self_continuity_text: Some("## Self Continuity Extended\nWake anchor: same thread"),
             private_workspace_text: Some(
                 "## Inner Workspace\nPrivate plan: keep the inner layer coherent",
             ),
@@ -641,8 +662,9 @@ mod tests {
         assert!(system.contains("## Execution State"));
         assert!(system.contains("## Self State"));
         assert!(system.contains("## Self Continuity"));
+        assert!(system.contains("## Inner Life"));
+        assert!(system.contains("## Self Continuity Extended"));
         assert!(system.contains("## Inner Workspace"));
-        assert!(system.contains("## Private Garden"));
     }
 
     #[test]
@@ -675,6 +697,8 @@ mod tests {
             execution_state_text: None,
             self_state_text: None,
             self_model_text: None,
+            inner_life_text: None,
+            self_continuity_text: None,
             private_workspace_text: None,
             private_garden_text: None,
             long_term_memory_text: None,

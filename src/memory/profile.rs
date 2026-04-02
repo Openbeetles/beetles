@@ -72,6 +72,30 @@ pub(crate) struct SelfModelPolicy {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct InnerLifePolicy {
+    pub recent_message_count: usize,
+    pub transcript_preview_chars: usize,
+    pub existing_inner_life_max_len: usize,
+    pub grounding_max_len: usize,
+    pub render_max_len: usize,
+    pub substantive_user_chars: usize,
+    pub substantive_reply_chars: usize,
+    pub substantive_combined_chars: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SelfContinuityPolicy {
+    pub recent_message_count: usize,
+    pub transcript_preview_chars: usize,
+    pub existing_continuity_max_len: usize,
+    pub grounding_max_len: usize,
+    pub render_max_len: usize,
+    pub substantive_user_chars: usize,
+    pub substantive_reply_chars: usize,
+    pub substantive_combined_chars: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PrivateDocsPolicy {
     pub recent_message_count: usize,
     pub transcript_preview_chars: usize,
@@ -116,6 +140,16 @@ pub(crate) struct InternalMemoryRoutingPolicy {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SelfRuntimePolicy {
+    pub recent_message_count: usize,
+    pub transcript_preview_chars: usize,
+    pub grounding_max_len: usize,
+    pub idle_tick_interval_secs: u64,
+    pub active_chat_window_secs: u64,
+    pub max_jobs_per_tick: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SelfStatePolicy {
     pub render_max_len: usize,
     pub cautious_usage_percent: u8,
@@ -130,10 +164,13 @@ pub(crate) struct MemoryPolicy {
     pub long_term_extraction: LongTermExtractionPolicy,
     pub execution_state: ExecutionStatePolicy,
     pub self_model: SelfModelPolicy,
+    pub inner_life: InnerLifePolicy,
+    pub self_continuity: SelfContinuityPolicy,
     pub private_docs: PrivateDocsPolicy,
     pub private_garden: PrivateGardenPolicy,
     pub private_garden_governance: PrivateGardenGovernancePolicy,
     pub internal_memory_routing: InternalMemoryRoutingPolicy,
+    pub self_runtime: SelfRuntimePolicy,
     pub self_state: SelfStatePolicy,
 }
 
@@ -192,6 +229,26 @@ const EMBEDDED_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
         substantive_reply_chars: 20,
         substantive_combined_chars: 48,
     },
+    inner_life: InnerLifePolicy {
+        recent_message_count: 6,
+        transcript_preview_chars: 140,
+        existing_inner_life_max_len: 480,
+        grounding_max_len: 220,
+        render_max_len: 420,
+        substantive_user_chars: 8,
+        substantive_reply_chars: 20,
+        substantive_combined_chars: 48,
+    },
+    self_continuity: SelfContinuityPolicy {
+        recent_message_count: 6,
+        transcript_preview_chars: 140,
+        existing_continuity_max_len: 420,
+        grounding_max_len: 220,
+        render_max_len: 360,
+        substantive_user_chars: 8,
+        substantive_reply_chars: 20,
+        substantive_combined_chars: 48,
+    },
     private_docs: PrivateDocsPolicy {
         recent_message_count: 6,
         transcript_preview_chars: 140,
@@ -227,6 +284,14 @@ const EMBEDDED_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
         substantive_user_chars: 8,
         substantive_reply_chars: 20,
         substantive_combined_chars: 48,
+    },
+    self_runtime: SelfRuntimePolicy {
+        recent_message_count: 6,
+        transcript_preview_chars: 140,
+        grounding_max_len: 220,
+        idle_tick_interval_secs: 20 * 60,
+        active_chat_window_secs: 24 * 60 * 60,
+        max_jobs_per_tick: 2,
     },
     self_state: SelfStatePolicy {
         render_max_len: 280,
@@ -291,6 +356,26 @@ const STANDARD_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
         substantive_reply_chars: 18,
         substantive_combined_chars: 40,
     },
+    inner_life: InnerLifePolicy {
+        recent_message_count: 10,
+        transcript_preview_chars: 220,
+        existing_inner_life_max_len: 768,
+        grounding_max_len: 320,
+        render_max_len: 640,
+        substantive_user_chars: 6,
+        substantive_reply_chars: 18,
+        substantive_combined_chars: 40,
+    },
+    self_continuity: SelfContinuityPolicy {
+        recent_message_count: 10,
+        transcript_preview_chars: 220,
+        existing_continuity_max_len: 640,
+        grounding_max_len: 320,
+        render_max_len: 512,
+        substantive_user_chars: 6,
+        substantive_reply_chars: 18,
+        substantive_combined_chars: 40,
+    },
     private_docs: PrivateDocsPolicy {
         recent_message_count: 10,
         transcript_preview_chars: 220,
@@ -326,6 +411,14 @@ const STANDARD_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
         substantive_user_chars: 6,
         substantive_reply_chars: 18,
         substantive_combined_chars: 40,
+    },
+    self_runtime: SelfRuntimePolicy {
+        recent_message_count: 10,
+        transcript_preview_chars: 220,
+        grounding_max_len: 320,
+        idle_tick_interval_secs: 10 * 60,
+        active_chat_window_secs: 48 * 60 * 60,
+        max_jobs_per_tick: 4,
     },
     self_state: SelfStatePolicy {
         render_max_len: 360,
@@ -371,6 +464,10 @@ mod tests {
         );
         assert!(standard.execution_state.render_max_len > embedded.execution_state.render_max_len);
         assert!(standard.self_model.render_max_len > embedded.self_model.render_max_len);
+        assert!(standard.inner_life.render_max_len > embedded.inner_life.render_max_len);
+        assert!(
+            standard.self_continuity.render_max_len > embedded.self_continuity.render_max_len
+        );
         assert!(standard.private_docs.render_max_len > embedded.private_docs.render_max_len);
         assert!(standard.private_garden.render_max_len > embedded.private_garden.render_max_len);
         assert!(
@@ -380,6 +477,9 @@ mod tests {
         assert!(
             standard.internal_memory_routing.recent_message_count
                 > embedded.internal_memory_routing.recent_message_count
+        );
+        assert!(
+            standard.self_runtime.max_jobs_per_tick > embedded.self_runtime.max_jobs_per_tick
         );
         assert!(standard.self_state.render_max_len > embedded.self_state.render_max_len);
     }

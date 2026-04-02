@@ -6,9 +6,10 @@ use crate::config::{AppConfig, AudioSegment, PinConfig};
 use crate::display::{DisplayCommand, DisplayConfig};
 use crate::error::Result;
 use crate::memory::{
-    ExecutionStateStore, ImportantMessageStore, LongTermMemoryStore, MemoryProfile, MemoryStore,
-    PendingRetryStore, PrivateDocStore, PrivateGardenStore, RemindAtStore, SelfModelStore,
-    SessionStore, SessionSummaryStore, TurnLedgerStore,
+    ExecutionStateStore, ImportantMessageStore, InnerLifeStore, LongTermMemoryStore,
+    MemoryProfile, MemoryStore, PendingRetryStore, PrivateDocStore, PrivateGardenStore,
+    RemindAtStore, SelfContinuityStore, SelfModelStore, SessionStore, SessionSummaryStore,
+    TurnLedgerStore,
 };
 use crate::platform::ResponseBody;
 use crate::task::TaskStore;
@@ -215,6 +216,8 @@ pub trait Platform: Send + Sync {
     fn task_store(&self) -> Arc<dyn TaskStore + Send + Sync>;
     fn execution_state_store(&self) -> Arc<dyn ExecutionStateStore + Send + Sync>;
     fn self_model_store(&self) -> Arc<dyn SelfModelStore + Send + Sync>;
+    fn inner_life_store(&self) -> Arc<dyn InnerLifeStore + Send + Sync>;
+    fn self_continuity_store(&self) -> Arc<dyn SelfContinuityStore + Send + Sync>;
     fn private_doc_store(&self) -> Arc<dyn PrivateDocStore + Send + Sync>;
     fn private_garden_store(&self) -> Arc<dyn PrivateGardenStore + Send + Sync>;
     fn important_message_store(&self) -> Arc<dyn ImportantMessageStore + Send + Sync>;

@@ -35,6 +35,8 @@ pub(crate) fn render_internal_memory_topology_block(
     let state = build_self_state(
         self_model,
         private_workspace,
+        None,
+        None,
         private_garden_docs,
         now_secs,
         profile,

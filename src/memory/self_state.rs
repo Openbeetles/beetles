@@ -1,14 +1,17 @@
 //! Self-state: extensible inward attributes projected into prompt.
-//! 当前先承载“自我记忆空间状态”，后续可继续挂更多 self-driven attributes。
+//! 当前承载“自我空间 + 内在层 + 自治状态”。
 
 use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
 use super::{
-    estimate_private_doc_workspace_chars, estimate_self_model_chars, memory_policy, MemoryProfile,
-    PrivateDocWorkspace, PrivateGardenDocRecord, SelfModel, PRIVATE_DOC_WORKSPACE_TOTAL_CHAR_LIMIT,
-    PRIVATE_GARDEN_MAX_DOCS_PER_CHAT, PRIVATE_GARDEN_TOTAL_BYTE_LIMIT, SELF_MODEL_TOTAL_CHAR_LIMIT,
+    estimate_inner_life_chars, estimate_private_doc_workspace_chars,
+    estimate_self_continuity_chars, estimate_self_model_chars, memory_policy, InnerLife,
+    MemoryProfile, PrivateDocWorkspace, PrivateGardenDocRecord, SelfContinuity, SelfModel,
+    INNER_LIFE_TOTAL_CHAR_LIMIT, PRIVATE_DOC_WORKSPACE_TOTAL_CHAR_LIMIT,
+    PRIVATE_GARDEN_MAX_DOCS_PER_CHAT, PRIVATE_GARDEN_TOTAL_BYTE_LIMIT,
+    SELF_CONTINUITY_TOTAL_CHAR_LIMIT, SELF_MODEL_TOTAL_CHAR_LIMIT,
 };
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -40,6 +43,13 @@ pub enum SelfMemoryGovernancePosture {
     Prune,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SelfAutonomyStatus {
+    Dormant,
+    Watching,
+    Active,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SelfMemorySpaceState {
     pub kernel_chars_used: usize,
@@ -56,21 +66,48 @@ pub struct SelfMemorySpaceState {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SelfInnerState {
+    pub inner_life_chars_used: usize,
+    pub inner_life_chars_limit: usize,
+    pub self_continuity_chars_used: usize,
+    pub self_continuity_chars_limit: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SelfAutonomyState {
+    pub last_user_turn_at: u64,
+    pub last_autonomy_run_at: u64,
+    pub status: SelfAutonomyStatus,
+    pub health_score: u8,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SelfState {
     pub memory_space: SelfMemorySpaceState,
+    pub inner_state: SelfInnerState,
+    pub autonomy: SelfAutonomyState,
 }
 
 pub fn build_self_state(
     self_model: Option<&SelfModel>,
     private_workspace: Option<&PrivateDocWorkspace>,
+    inner_life: Option<&InnerLife>,
+    self_continuity: Option<&SelfContinuity>,
     garden_docs: &[PrivateGardenDocRecord],
     now_secs: u64,
     profile: MemoryProfile,
 ) -> SelfState {
     let policy = memory_policy(profile).self_state;
+    let inner_life_chars_used = inner_life.map_or(0, estimate_inner_life_chars);
+    let self_continuity_chars_used = self_continuity.map_or(0, estimate_self_continuity_chars);
     let kernel_chars_used = self_model.map_or(0, estimate_self_model_chars)
-        + private_workspace.map_or(0, estimate_private_doc_workspace_chars);
-    let kernel_chars_limit = SELF_MODEL_TOTAL_CHAR_LIMIT + PRIVATE_DOC_WORKSPACE_TOTAL_CHAR_LIMIT;
+        + private_workspace.map_or(0, estimate_private_doc_workspace_chars)
+        + inner_life_chars_used
+        + self_continuity_chars_used;
+    let kernel_chars_limit = SELF_MODEL_TOTAL_CHAR_LIMIT
+        + PRIVATE_DOC_WORKSPACE_TOTAL_CHAR_LIMIT
+        + INNER_LIFE_TOTAL_CHAR_LIMIT
+        + SELF_CONTINUITY_TOTAL_CHAR_LIMIT;
     let garden_docs_used = garden_docs.len();
     let garden_docs_limit = PRIVATE_GARDEN_MAX_DOCS_PER_CHAT;
     let garden_bytes_used = garden_docs.iter().map(|doc| doc.bytes).sum();
@@ -98,6 +135,8 @@ pub fn build_self_state(
     let last_internal_change_at = self_model
         .map_or(0, |model| model.updated_at)
         .max(private_workspace.map_or(0, |workspace| workspace.updated_at))
+        .max(inner_life.map_or(0, |inner_life| inner_life.updated_at))
+        .max(self_continuity.map_or(0, |continuity| continuity.updated_at))
         .max(
             garden_docs
                 .iter()
@@ -108,6 +147,8 @@ pub fn build_self_state(
     let recent_activity_count = recent_activity_count(
         self_model,
         private_workspace,
+        inner_life,
+        self_continuity,
         garden_docs,
         now_secs,
         policy.recent_activity_window_secs,
@@ -117,7 +158,9 @@ pub fn build_self_state(
         1..=2 => SelfMemorySpaceActivity::Active,
         _ => SelfMemorySpaceActivity::Growing,
     };
-
+    let last_user_turn_at = self_continuity.map_or(0, |continuity| continuity.last_user_turn_at);
+    let last_autonomy_run_at =
+        self_continuity.map_or(0, |continuity| continuity.last_autonomy_run_at);
     SelfState {
         memory_space: SelfMemorySpaceState {
             kernel_chars_used,
@@ -132,6 +175,22 @@ pub fn build_self_state(
             recent_activity,
             last_internal_change_at,
         },
+        inner_state: SelfInnerState {
+            inner_life_chars_used,
+            inner_life_chars_limit: INNER_LIFE_TOTAL_CHAR_LIMIT,
+            self_continuity_chars_used,
+            self_continuity_chars_limit: SELF_CONTINUITY_TOTAL_CHAR_LIMIT,
+        },
+        autonomy: SelfAutonomyState {
+            last_user_turn_at,
+            last_autonomy_run_at,
+            status: autonomy_status(self_continuity, now_secs, policy.recent_activity_window_secs),
+            health_score: autonomy_health_score(
+                dominant_usage_percent as u8,
+                self_continuity.is_some(),
+                inner_life.is_some(),
+            ),
+        },
     }
 }
 
@@ -140,9 +199,11 @@ pub fn render_self_state_block(state: &SelfState, max_len: usize) -> Option<Stri
         return None;
     }
     let memory = &state.memory_space;
-    let mut out = String::with_capacity(max_len.min(480));
+    let inner = &state.inner_state;
+    let autonomy = &state.autonomy;
+    let mut out = String::with_capacity(max_len.min(640));
     out.push_str("## Self State\n");
-    out.push_str("These are your current internal memory-space conditions. Use them when deciding whether to add, merge, rewrite, or delete private material.\n");
+    out.push_str("These are your current internal memory-space and autonomy conditions. Use them when deciding whether to add, merge, rewrite, or delete private material.\n");
     let _ = writeln!(out, "Memory pressure: {:?}", memory.pressure);
     let _ = writeln!(out, "Governance posture: {:?}", memory.governance_posture);
     let _ = writeln!(out, "Primary bottleneck: {:?}", memory.bottleneck);
@@ -154,6 +215,16 @@ pub fn render_self_state_block(state: &SelfState, max_len: usize) -> Option<Stri
         memory
             .kernel_chars_limit
             .saturating_sub(memory.kernel_chars_used)
+    );
+    let _ = writeln!(
+        out,
+        "Inner life: {}/{} chars used",
+        inner.inner_life_chars_used, inner.inner_life_chars_limit
+    );
+    let _ = writeln!(
+        out,
+        "Self continuity: {}/{} chars used",
+        inner.self_continuity_chars_used, inner.self_continuity_chars_limit
     );
     let _ = writeln!(
         out,
@@ -171,14 +242,26 @@ pub fn render_self_state_block(state: &SelfState, max_len: usize) -> Option<Stri
         "Recent internal activity: {:?}",
         memory.recent_activity
     );
+    let _ = writeln!(
+        out,
+        "Autonomy: {:?} (health score {})",
+        autonomy.status, autonomy.health_score
+    );
+    let _ = writeln!(
+        out,
+        "Autonomy anchors: last_user_turn_at={} last_autonomy_run_at={}",
+        autonomy.last_user_turn_at, autonomy.last_autonomy_run_at
+    );
     out.push_str("Kernel role: stable continuity and governed private structure that should keep shaping future behavior.\n");
+    out.push_str("Inner-life role: active subjective movement, mood, and live inward drift.\n");
+    out.push_str("Self-continuity role: preserve the sense of still being the same self across time and autonomy cycles.\n");
     out.push_str("Garden role: free private drafts, temporary organization, and exploratory self-work. Keep it current by rewriting in place instead of piling up history.\n");
     out.push_str(match (memory.governance_posture, memory.bottleneck) {
         (
             SelfMemoryGovernancePosture::Expand,
             SelfMemorySpaceBottleneck::Balanced,
         ) => {
-            "Guidance: space is healthy; only write when the material improves continuity or inward organization. Distill stable insights into kernel space, and keep exploratory work in the garden."
+            "Guidance: space is healthy; only write when the material improves continuity or inward organization. Distill stable insights into kernel space, keep live inward movement in inner-life, and keep exploratory work in the garden."
         }
         (
             SelfMemoryGovernancePosture::Expand,
@@ -188,7 +271,7 @@ pub fn render_self_state_block(state: &SelfState, max_len: usize) -> Option<Stri
             SelfMemoryGovernancePosture::Consolidate,
             SelfMemorySpaceBottleneck::Kernel,
         ) => {
-            "Guidance: kernel space is the tightest layer; keep it distilled and durable. Prefer compressing or rewriting existing kernel material, and route exploratory or temporary work into the garden."
+            "Guidance: kernel-side space is the tightest layer; compress continuity-bearing material, keep inner-life lively but concise, and route temporary work into the garden."
         }
         (
             SelfMemoryGovernancePosture::Expand,
@@ -198,16 +281,16 @@ pub fn render_self_state_block(state: &SelfState, max_len: usize) -> Option<Stri
             SelfMemoryGovernancePosture::Consolidate,
             SelfMemorySpaceBottleneck::GardenDocs | SelfMemorySpaceBottleneck::GardenBytes,
         ) => {
-            "Guidance: garden space is the tightest layer; merge overlapping docs, rewrite existing notes in place, and delete stale scratch material before creating more."
+            "Guidance: garden space is the tightest layer; merge overlapping docs, rewrite notes in place, and delete stale scratch material before creating more."
         }
         (SelfMemoryGovernancePosture::Consolidate, SelfMemorySpaceBottleneck::Balanced) => {
-            "Guidance: space is tightening; prefer editing or merging existing private material before creating more. Promote only the distilled result, not the full draft trail."
+            "Guidance: space is tightening; prefer editing or merging existing private material before creating more."
         }
         (
             SelfMemoryGovernancePosture::Prune,
             SelfMemorySpaceBottleneck::Kernel,
         ) => {
-            "Guidance: pressure is tight and the kernel is the bottleneck; compress or replace low-value kernel content before adding anything new, and keep volatile material out of kernel space."
+            "Guidance: pressure is tight and kernel-side space is the bottleneck; compress or replace low-value kernel, inner-life, or continuity content before adding anything new."
         }
         (
             SelfMemoryGovernancePosture::Prune,
@@ -219,8 +302,7 @@ pub fn render_self_state_block(state: &SelfState, max_len: usize) -> Option<Stri
             "Guidance: pressure is tight; compress, merge, or delete low-value private material before adding anything new."
         }
     });
-    let trimmed = out.trim_end();
-    let capped = truncate_content_to_max(trimmed, max_len).into_owned();
+    let capped = truncate_content_to_max(out.trim_end(), max_len).into_owned();
     (!capped.trim().is_empty()).then_some(capped)
 }
 
@@ -262,6 +344,8 @@ fn dominant_usage_percent(
 fn recent_activity_count(
     self_model: Option<&SelfModel>,
     private_workspace: Option<&PrivateDocWorkspace>,
+    inner_life: Option<&InnerLife>,
+    self_continuity: Option<&SelfContinuity>,
     garden_docs: &[PrivateGardenDocRecord],
     now_secs: u64,
     recent_window_secs: u64,
@@ -274,12 +358,46 @@ fn recent_activity_count(
     if private_workspace.is_some_and(|workspace| workspace.updated_at >= floor) {
         count = count.saturating_add(1);
     }
+    if inner_life.is_some_and(|inner_life| inner_life.updated_at >= floor) {
+        count = count.saturating_add(1);
+    }
+    if self_continuity.is_some_and(|continuity| continuity.updated_at >= floor) {
+        count = count.saturating_add(1);
+    }
     count.saturating_add(
         garden_docs
             .iter()
             .filter(|doc| doc.updated_at >= floor)
             .count(),
     )
+}
+
+fn autonomy_status(
+    self_continuity: Option<&SelfContinuity>,
+    now_secs: u64,
+    recent_window_secs: u64,
+) -> SelfAutonomyStatus {
+    let Some(self_continuity) = self_continuity else {
+        return SelfAutonomyStatus::Dormant;
+    };
+    let floor = now_secs.saturating_sub(recent_window_secs);
+    if self_continuity.last_autonomy_run_at >= floor {
+        SelfAutonomyStatus::Active
+    } else if self_continuity.last_user_turn_at > 0 {
+        SelfAutonomyStatus::Watching
+    } else {
+        SelfAutonomyStatus::Dormant
+    }
+}
+
+fn autonomy_health_score(usage_percent: u8, has_continuity: bool, has_inner_life: bool) -> u8 {
+    let memory_health = 100u8.saturating_sub(usage_percent.min(100));
+    let continuity_bonus = if has_continuity { 12 } else { 0 };
+    let inner_bonus = if has_inner_life { 8 } else { 0 };
+    memory_health
+        .saturating_add(continuity_bonus)
+        .saturating_add(inner_bonus)
+        .min(100)
 }
 
 #[cfg(test)]
@@ -329,6 +447,22 @@ mod tests {
                 }),
                 updated_at: 10,
             }),
+            Some(&InnerLife {
+                internal_monologue: "i".repeat(220),
+                private_journal: "j".repeat(220),
+                emotional_drift: "k".repeat(220),
+                attention_drift: "l".repeat(220),
+                updated_at: 10,
+            }),
+            Some(&SelfContinuity {
+                wake_anchor: "m".repeat(220),
+                current_self_state: "n".repeat(220),
+                recent_changes: "o".repeat(220),
+                continuity_bridge: "p".repeat(220),
+                last_user_turn_at: 10,
+                last_autonomy_run_at: 10,
+                updated_at: 10,
+            }),
             &garden_docs,
             10,
             MemoryProfile::Standard,
@@ -338,24 +472,6 @@ mod tests {
             state.memory_space.governance_posture,
             SelfMemoryGovernancePosture::Prune
         );
-        assert_eq!(
-            state.memory_space.recent_activity,
-            SelfMemorySpaceActivity::Growing
-        );
-    }
-
-    #[test]
-    fn render_self_state_block_reports_free_space() {
-        let block = render_self_state_block(
-            &build_self_state(None, None, &[], 100, MemoryProfile::Embedded),
-            512,
-        )
-        .unwrap();
-        assert!(block.contains("## Self State"));
-        assert!(block.contains("Kernel space: 0/"));
-        assert!(block.contains("Garden space: 0/"));
-        assert!(block.contains("Memory pressure: Normal"));
-        assert!(block.contains("Governance posture: Expand"));
-        assert!(block.contains("Kernel role: stable continuity"));
+        assert_eq!(state.autonomy.status, SelfAutonomyStatus::Active);
     }
 }

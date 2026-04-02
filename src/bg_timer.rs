@@ -7,7 +7,7 @@ use crate::bus::SystemInboundTx;
 use crate::cron::{CronTickState, SensorWatchContext};
 use crate::heartbeat::HeartbeatTickState;
 use crate::i18n::Locale;
-use crate::memory::{MemoryStore, RemindAtStore, SessionStore};
+use crate::memory::{MemoryProfile, MemoryStore, RemindAtStore, SelfContinuityStore, SessionStore};
 use crate::task::TaskStore;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
@@ -32,6 +32,8 @@ pub struct BgTimerContext {
     pub system_inbound_depth: Arc<AtomicUsize>,
     pub outbound_depth: Arc<AtomicUsize>,
     pub session_store: Arc<dyn SessionStore + Send + Sync>,
+    pub memory_profile: MemoryProfile,
+    pub self_continuity_store: Arc<dyn SelfContinuityStore + Send + Sync>,
 
     // cron
     pub memory_store: Option<Arc<dyn MemoryStore + Send + Sync>>,
@@ -95,6 +97,14 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
                         ctx.task_store.as_ref(),
                         &ctx.system_inbound_tx,
                         &ctx.resolve_locale,
+                    );
+
+                    crate::memory::self_runtime_tick(
+                        &ctx.system_inbound_tx,
+                        ctx.session_store.as_ref(),
+                        ctx.self_continuity_store.as_ref(),
+                        ctx.memory_profile,
+                        crate::util::current_unix_secs(),
                     );
                 }
             }

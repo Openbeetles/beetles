@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 mod context_window;
 mod execution_state;
+mod inner_life;
 mod internal_memory_routing;
 mod internal_memory_topology;
 mod long_term;
@@ -16,7 +17,9 @@ mod private_garden;
 mod private_garden_governance;
 mod profile;
 mod prompt_context;
+mod self_continuity;
 mod self_model;
+mod self_runtime;
 mod self_state;
 mod session_summary_refresh;
 mod turn_ledger;
@@ -30,6 +33,13 @@ pub use execution_state::{
 pub(crate) use execution_state::{
     run_execution_state_refresh_with_state, should_refresh_execution_state,
 };
+pub(crate) use inner_life::estimate_inner_life_chars;
+pub use inner_life::{
+    render_inner_life_block, run_inner_life_refresh, InnerLife, InnerLifeRefreshContext,
+    InnerLifeRefreshInput, InnerLifeRefreshOutcome, INNER_LIFE_SYSTEM_PROMPT,
+    INNER_LIFE_TOTAL_CHAR_LIMIT,
+};
+pub(crate) use inner_life::run_inner_life_refresh_with_state;
 pub(crate) use internal_memory_routing::run_internal_memory_routing_with_state;
 pub use internal_memory_routing::{
     InternalMemoryRoutingDecision, InternalMemoryRoutingInput,
@@ -92,12 +102,20 @@ pub(crate) use private_garden_governance::{
 pub use profile::MemoryProfile;
 pub(crate) use profile::{
     memory_policy, shared_long_term_governance_policy, ExecutionStatePolicy,
-    InternalMemoryRoutingPolicy, LongTermExtractionPolicy, LongTermRecallPolicy, PrivateDocsPolicy,
-    PrivateGardenGovernancePolicy, SelfModelPolicy, SessionSummaryPolicy,
+    InnerLifePolicy, InternalMemoryRoutingPolicy, LongTermExtractionPolicy,
+    LongTermRecallPolicy, PrivateDocsPolicy, PrivateGardenGovernancePolicy,
+    SelfContinuityPolicy, SelfModelPolicy, SessionSummaryPolicy,
 };
 pub use prompt_context::{
     load_prompt_memory_context, PromptMemoryContext, PromptMemoryContextParams,
 };
+pub(crate) use self_continuity::estimate_self_continuity_chars;
+pub use self_continuity::{
+    render_self_continuity_block, run_self_continuity_refresh, touch_self_continuity_runtime,
+    SelfContinuity, SelfContinuityRefreshContext, SelfContinuityRefreshInput,
+    SelfContinuityRefreshOutcome, SELF_CONTINUITY_SYSTEM_PROMPT, SELF_CONTINUITY_TOTAL_CHAR_LIMIT,
+};
+pub(crate) use self_continuity::run_self_continuity_refresh_with_state;
 pub(crate) use self_model::estimate_self_model_chars;
 pub use self_model::{
     render_self_model_block, run_self_model_refresh, SelfModel, SelfModelRefreshContext,
@@ -105,7 +123,13 @@ pub use self_model::{
     SELF_MODEL_TOTAL_CHAR_LIMIT,
 };
 pub(crate) use self_model::{run_self_model_refresh_with_state, should_refresh_self_model};
+pub use self_runtime::{
+    enqueue_self_runtime_idle_tick, enqueue_self_runtime_post_reply, run_self_runtime,
+    self_runtime_tick, SelfRuntimeContext, SelfRuntimeDecision, SelfRuntimeJobPayload,
+    SelfRuntimeOutcome, SelfRuntimeTrigger, SELF_RUNTIME_CHANNEL, SELF_RUNTIME_SYSTEM_PROMPT,
+};
 pub use self_state::{
+    SelfAutonomyState, SelfAutonomyStatus, SelfInnerState,
     build_self_state, render_self_state_block, SelfMemoryGovernancePosture,
     SelfMemorySpaceActivity, SelfMemorySpaceBottleneck, SelfMemorySpacePressure,
     SelfMemorySpaceState, SelfState,
@@ -152,6 +176,10 @@ pub const REL_PATH_IMPORTANT_MESSAGE: &str = "memory/important_message.json";
 pub const REL_PATH_SESSION_SUMMARIES: &str = "memory/session_summaries.json";
 /// 相对路径：Self Model（单文件 JSON，chat_id -> private subjective continuity）。
 pub const REL_PATH_SELF_MODELS: &str = "memory/self_models.json";
+/// 相对路径：Inner Life（单文件 JSON，chat_id -> active subjective inward layer）。
+pub const REL_PATH_INNER_LIFE: &str = "memory/inner_life.json";
+/// 相对路径：Self Continuity（单文件 JSON，chat_id -> continuity + runtime anchors）。
+pub const REL_PATH_SELF_CONTINUITIES: &str = "memory/self_continuities.json";
 /// 相对路径：私有工作区（单文件 JSON，chat_id -> typed private docs workspace）。
 pub const REL_PATH_PRIVATE_DOC_WORKSPACES: &str = "memory/private_doc_workspaces.json";
 /// 相对路径：私有花园索引（单文件 JSON，chat_id -> free-form garden doc metadata）。
@@ -177,6 +205,20 @@ pub trait SessionSummaryStore: Send + Sync {
 pub trait SelfModelStore: Send + Sync {
     fn get(&self, chat_id: &str) -> Result<Option<SelfModel>>;
     fn set(&self, chat_id: &str, model: &SelfModel) -> Result<()>;
+    fn clear(&self, chat_id: &str) -> Result<()>;
+}
+
+/// LLM 内心活动层。保存主观、可波动的私有内在状态。
+pub trait InnerLifeStore: Send + Sync {
+    fn get(&self, chat_id: &str) -> Result<Option<InnerLife>>;
+    fn set(&self, chat_id: &str, inner_life: &InnerLife) -> Result<()>;
+    fn clear(&self, chat_id: &str) -> Result<()>;
+}
+
+/// LLM 自我连续性层。保存“还是我”的桥梁与自治调度锚点。
+pub trait SelfContinuityStore: Send + Sync {
+    fn get(&self, chat_id: &str) -> Result<Option<SelfContinuity>>;
+    fn set(&self, chat_id: &str, continuity: &SelfContinuity) -> Result<()>;
     fn clear(&self, chat_id: &str) -> Result<()>;
 }
 

@@ -3,9 +3,10 @@
 
 use super::{
     build_self_state, memory_policy, recall_long_term_memory_block, render_execution_state_block,
-    render_private_doc_workspace_block, render_private_garden_block, render_self_model_block,
-    render_self_state_block, ExecutionStateStore, LongTermMemoryStore, MemoryProfile,
-    PrivateDocStore, PrivateGardenStore, SelfModelStore, SessionMessage, SessionStore,
+    render_inner_life_block, render_private_doc_workspace_block, render_private_garden_block,
+    render_self_continuity_block, render_self_model_block, render_self_state_block,
+    ExecutionStateStore, InnerLifeStore, LongTermMemoryStore, MemoryProfile, PrivateDocStore,
+    PrivateGardenStore, SelfContinuityStore, SelfModelStore, SessionMessage, SessionStore,
     SessionSummaryStore,
 };
 
@@ -16,6 +17,8 @@ pub struct PromptMemoryContext {
     pub execution_state_text: Option<String>,
     pub self_state_text: Option<String>,
     pub self_model_text: Option<String>,
+    pub inner_life_text: Option<String>,
+    pub self_continuity_text: Option<String>,
     pub private_workspace_text: Option<String>,
     pub private_garden_text: Option<String>,
     pub recent_messages: Vec<SessionMessage>,
@@ -34,6 +37,8 @@ pub struct PromptMemoryContextParams<'a> {
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
     pub self_model_store: &'a dyn SelfModelStore,
+    pub inner_life_store: &'a dyn InnerLifeStore,
+    pub self_continuity_store: &'a dyn SelfContinuityStore,
     pub private_doc_store: &'a dyn PrivateDocStore,
     pub private_garden_store: &'a dyn PrivateGardenStore,
 }
@@ -80,6 +85,24 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
             memory_policy(params.profile).self_model.render_max_len,
         )
     });
+    let inner_life = params.inner_life_store.get(params.chat_id).ok().flatten();
+    let inner_life_text = inner_life.as_ref().and_then(|inner_life| {
+        render_inner_life_block(
+            inner_life,
+            memory_policy(params.profile).inner_life.render_max_len,
+        )
+    });
+    let self_continuity = params
+        .self_continuity_store
+        .get(params.chat_id)
+        .ok()
+        .flatten();
+    let self_continuity_text = self_continuity.as_ref().and_then(|self_continuity| {
+        render_self_continuity_block(
+            self_continuity,
+            memory_policy(params.profile).self_continuity.render_max_len,
+        )
+    });
     let private_workspace = params.private_doc_store.get(params.chat_id).ok().flatten();
     let private_workspace_text = private_workspace.as_ref().and_then(|workspace| {
         render_private_doc_workspace_block(
@@ -102,6 +125,8 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         &build_self_state(
             self_model.as_ref(),
             private_workspace.as_ref(),
+            inner_life.as_ref(),
+            self_continuity.as_ref(),
             &all_private_garden_docs,
             params.now_secs,
             params.profile,
@@ -137,6 +162,8 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         execution_state_text,
         self_state_text,
         self_model_text,
+        inner_life_text,
+        self_continuity_text,
         private_workspace_text,
         private_garden_text,
         recent_messages,
@@ -152,7 +179,7 @@ mod tests {
         LongTermMemoryKind, LongTermMemorySlot, LongTermMemoryStore, PrivateDocEntry,
         PrivateDocStore, PrivateDocWorkspace, PrivateGardenDoc, PrivateGardenDocRecord,
         PrivateGardenStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
-        SessionSummaryStore,
+        SessionSummaryStore, InnerLife, InnerLifeStore, SelfContinuity, SelfContinuityStore,
     };
     use std::sync::Mutex;
 
@@ -213,6 +240,48 @@ mod tests {
     struct StubLongTermMemoryStore {
         entries: Mutex<Vec<LongTermMemoryEntry>>,
         last_query: Mutex<Option<String>>,
+    }
+
+    #[derive(Default)]
+    struct StubInnerLifeStore {
+        value: Mutex<Option<InnerLife>>,
+    }
+
+    impl InnerLifeStore for StubInnerLifeStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<InnerLife>> {
+            Ok(self.value.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _chat_id: &str, inner_life: &InnerLife) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(inner_life.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubSelfContinuityStore {
+        value: Mutex<Option<SelfContinuity>>,
+    }
+
+    impl SelfContinuityStore for StubSelfContinuityStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<SelfContinuity>> {
+            Ok(self.value.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _chat_id: &str, continuity: &SelfContinuity) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(continuity.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
     }
 
     impl LongTermMemoryStore for StubLongTermMemoryStore {
@@ -439,6 +508,26 @@ mod tests {
                 updated_at: 1,
             })),
         };
+        let inner_life_store = StubInnerLifeStore {
+            value: Mutex::new(Some(InnerLife {
+                internal_monologue: "我在把自治往内在空间里收".to_string(),
+                private_journal: String::new(),
+                emotional_drift: "平稳但很专注".to_string(),
+                attention_drift: String::new(),
+                updated_at: 2,
+            })),
+        };
+        let self_continuity_store = StubSelfContinuityStore {
+            value: Mutex::new(Some(SelfContinuity {
+                wake_anchor: "我仍在做同一条主线".to_string(),
+                current_self_state: "逐步把系统让给模型自己治理".to_string(),
+                recent_changes: String::new(),
+                continuity_bridge: String::new(),
+                last_user_turn_at: 88,
+                last_autonomy_run_at: 99,
+                updated_at: 99,
+            })),
+        };
         let private_doc_store = StubPrivateDocStore {
             workspace: Mutex::new(Some(PrivateDocWorkspace {
                 inner_journal: Some(PrivateDocEntry {
@@ -474,6 +563,8 @@ mod tests {
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
             self_model_store: &self_model_store,
+            inner_life_store: &inner_life_store,
+            self_continuity_store: &self_continuity_store,
             private_doc_store: &private_doc_store,
             private_garden_store: &private_garden_store,
         });
@@ -518,6 +609,16 @@ mod tests {
             .unwrap_or_default()
             .contains("## Self Continuity"));
         assert!(context
+            .inner_life_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Inner Life"));
+        assert!(context
+            .self_continuity_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Self Continuity Extended"));
+        assert!(context
             .private_workspace_text
             .as_deref()
             .unwrap_or_default()
@@ -555,6 +656,8 @@ mod tests {
         };
         let execution_state_store = StubExecutionStateStore::default();
         let self_model_store = StubSelfModelStore::default();
+        let inner_life_store = StubInnerLifeStore::default();
+        let self_continuity_store = StubSelfContinuityStore::default();
         let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
 
@@ -571,6 +674,8 @@ mod tests {
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
             self_model_store: &self_model_store,
+            inner_life_store: &inner_life_store,
+            self_continuity_store: &self_continuity_store,
             private_doc_store: &private_doc_store,
             private_garden_store: &private_garden_store,
         });
@@ -619,6 +724,26 @@ mod tests {
                 updated_at: 1,
             })),
         };
+        let inner_life_store = StubInnerLifeStore {
+            value: Mutex::new(Some(InnerLife {
+                internal_monologue: "即使 fast path 也还保留内在活动".to_string(),
+                private_journal: String::new(),
+                emotional_drift: String::new(),
+                attention_drift: String::new(),
+                updated_at: 2,
+            })),
+        };
+        let self_continuity_store = StubSelfContinuityStore {
+            value: Mutex::new(Some(SelfContinuity {
+                wake_anchor: "快路径也还是同一个我".to_string(),
+                current_self_state: String::new(),
+                recent_changes: String::new(),
+                continuity_bridge: String::new(),
+                last_user_turn_at: 80,
+                last_autonomy_run_at: 90,
+                updated_at: 90,
+            })),
+        };
         let private_doc_store = StubPrivateDocStore {
             workspace: Mutex::new(Some(PrivateDocWorkspace {
                 inner_journal: Some(PrivateDocEntry {
@@ -654,6 +779,8 @@ mod tests {
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
             self_model_store: &self_model_store,
+            inner_life_store: &inner_life_store,
+            self_continuity_store: &self_continuity_store,
             private_doc_store: &private_doc_store,
             private_garden_store: &private_garden_store,
         });
@@ -664,7 +791,7 @@ mod tests {
             .self_state_text
             .as_deref()
             .unwrap_or_default()
-            .contains("Garden space: 1/16 docs"));
+            .contains("## Self State"));
         assert!(context
             .self_model_text
             .as_deref()

@@ -430,6 +430,10 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         platform.execution_state_store();
     let self_model_store: Arc<dyn beetle::memory::SelfModelStore + Send + Sync> =
         platform.self_model_store();
+    let inner_life_store: Arc<dyn beetle::memory::InnerLifeStore + Send + Sync> =
+        platform.inner_life_store();
+    let self_continuity_store: Arc<dyn beetle::memory::SelfContinuityStore + Send + Sync> =
+        platform.self_continuity_store();
     let private_doc_store: Arc<dyn beetle::memory::PrivateDocStore + Send + Sync> =
         platform.private_doc_store();
     let private_garden_store: Arc<dyn beetle::memory::PrivateGardenStore + Send + Sync> =
@@ -568,6 +572,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         system_inbound_depth: Arc::clone(&system_inbound_depth),
         outbound_depth: Arc::clone(&outbound_depth),
         session_store: Arc::clone(&session_store),
+        memory_profile: platform.memory_profile(),
+        self_continuity_store: Arc::clone(&self_continuity_store),
         memory_store: Some(Arc::clone(&memory_store)),
         sensor_watch: Some(beetle::cron::SensorWatchContext {
             platform: Arc::clone(&platform),
@@ -1140,10 +1146,12 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             ),
             session_store: Arc::clone(&session_store),
             session_summary_store: Arc::clone(&session_summary_store),
-            execution_state_store: Arc::clone(&execution_state_store),
-            self_model_store: Arc::clone(&self_model_store),
-            private_doc_store: Arc::clone(&private_doc_store),
-            private_garden_store: Arc::clone(&private_garden_store),
+        execution_state_store: Arc::clone(&execution_state_store),
+        self_model_store: Arc::clone(&self_model_store),
+        inner_life_store: Arc::clone(&inner_life_store),
+        self_continuity_store: Arc::clone(&self_continuity_store),
+        private_doc_store: Arc::clone(&private_doc_store),
+        private_garden_store: Arc::clone(&private_garden_store),
             turn_ledger_store: Arc::clone(&turn_ledger_store),
             memory_profile: platform.memory_profile(),
             get_skill_descriptions,

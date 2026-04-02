@@ -11,10 +11,12 @@ use crate::platform::{
     spiffs::{
         spiffs_usage, SpiffsCalendarProviderCredentialStore, SpiffsCalendarStore,
         SpiffsExecutionStateStore, SpiffsImportantMessageStore,
-        SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
-        SpiffsPendingRetryStore, SpiffsPrivateDocStore, SpiffsPrivateGardenStore,
-        SpiffsRemindAtStore, SpiffsSelfModelStore, SpiffsSessionStore, SpiffsSessionSummaryStore,
-        SpiffsSkillMetaStore, SpiffsSkillStorage, SpiffsTaskStore, SpiffsTurnLedgerStore,
+        SpiffsInnerLifeStore, SpiffsLongTermMemoryExtractionStateStore,
+        SpiffsLongTermMemoryStore, SpiffsMemoryStore, SpiffsPendingRetryStore,
+        SpiffsPrivateDocStore, SpiffsPrivateGardenStore, SpiffsRemindAtStore,
+        SpiffsSelfContinuityStore, SpiffsSelfModelStore, SpiffsSessionStore,
+        SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage, SpiffsTaskStore,
+        SpiffsTurnLedgerStore,
     },
     NvsConfigStore,
 };
@@ -23,9 +25,10 @@ use crate::{
     config::AppConfig,
     display::{DisplayCommand, DisplayConfig},
     memory::{
-        ExecutionStateStore, ImportantMessageStore, LongTermMemoryExtractionStateStore,
-        LongTermMemoryStore, MemoryStore, PendingRetryStore, PrivateDocStore, PrivateGardenStore,
-        RemindAtStore, SelfModelStore, SessionStore, SessionSummaryStore, TurnLedgerStore,
+        ExecutionStateStore, ImportantMessageStore, InnerLifeStore,
+        LongTermMemoryExtractionStateStore, LongTermMemoryStore, MemoryStore, PendingRetryStore,
+        PrivateDocStore, PrivateGardenStore, RemindAtStore, SelfContinuityStore,
+        SelfModelStore, SessionStore, SessionSummaryStore, TurnLedgerStore,
     },
     task::TaskStore,
 };
@@ -47,6 +50,8 @@ pub struct LinuxPlatform {
     task_store: Arc<SpiffsTaskStore>,
     execution_state_store: Arc<SpiffsExecutionStateStore>,
     self_model_store: Arc<SpiffsSelfModelStore>,
+    inner_life_store: Arc<SpiffsInnerLifeStore>,
+    self_continuity_store: Arc<SpiffsSelfContinuityStore>,
     private_doc_store: Arc<SpiffsPrivateDocStore>,
     private_garden_store: Arc<SpiffsPrivateGardenStore>,
     important_message_store: Arc<SpiffsImportantMessageStore>,
@@ -80,6 +85,8 @@ impl LinuxPlatform {
             task_store: Arc::new(SpiffsTaskStore::new()),
             execution_state_store: Arc::new(SpiffsExecutionStateStore::new()),
             self_model_store: Arc::new(SpiffsSelfModelStore::new()),
+            inner_life_store: Arc::new(SpiffsInnerLifeStore::new()),
+            self_continuity_store: Arc::new(SpiffsSelfContinuityStore::new()),
             private_doc_store: Arc::new(SpiffsPrivateDocStore::new()),
             private_garden_store: Arc::new(SpiffsPrivateGardenStore::new()),
             important_message_store: Arc::new(SpiffsImportantMessageStore::new()),
@@ -212,6 +219,14 @@ impl Platform for LinuxPlatform {
 
     fn self_model_store(&self) -> Arc<dyn SelfModelStore + Send + Sync> {
         Arc::clone(&self.self_model_store) as Arc<dyn SelfModelStore + Send + Sync>
+    }
+
+    fn inner_life_store(&self) -> Arc<dyn InnerLifeStore + Send + Sync> {
+        Arc::clone(&self.inner_life_store) as Arc<dyn InnerLifeStore + Send + Sync>
+    }
+
+    fn self_continuity_store(&self) -> Arc<dyn SelfContinuityStore + Send + Sync> {
+        Arc::clone(&self.self_continuity_store) as Arc<dyn SelfContinuityStore + Send + Sync>
     }
 
     fn private_doc_store(&self) -> Arc<dyn PrivateDocStore + Send + Sync> {
