@@ -19,16 +19,18 @@ use super::{
     run_autonomy_strategy_refresh_with_state, run_inner_life_refresh_with_state,
     run_private_doc_workspace_refresh_with_state, run_private_garden_governance_with_state,
     run_self_continuity_refresh_with_state, run_world_sense_refresh_with_state,
-    touch_self_continuity_runtime, AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput,
-    AutonomyStrategyRefreshOutcome, AutonomyStrategyStore, ExecutionStateStore,
-    InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome, InnerLifeStore,
-    InternalMemoryLayerFocus, MemoryProfile, PrivateDocStore, PrivateDocWorkspaceRefreshContext,
-    PrivateDocWorkspaceRefreshInput, PrivateDocWorkspaceRefreshOutcome,
-    PrivateGardenGovernanceContext, PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome,
-    PrivateGardenStore, RemindAtStore, SelfContinuityRefreshContext, SelfContinuityRefreshInput,
-    SelfContinuityRefreshOutcome, SelfContinuityStore, SelfModelStore, SessionStore,
-    SessionSummaryStore, WorldSenseRefreshContext, WorldSenseRefreshInput,
-    WorldSenseRefreshOutcome, WorldSenseStore, WorldSnapshotContext,
+    touch_self_continuity_runtime, AutonomyGovernanceTendency, AutonomyStrategyRefreshContext,
+    AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome, AutonomyStrategyStore,
+    ExecutionStateStore, InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome,
+    InnerLifeStore, InternalMemoryLayerFocus, MemoryProfile, PrivateDocStore,
+    PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
+    PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
+    PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, PrivateGardenStore,
+    RemindAtStore, SelfContinuityRefreshContext, SelfContinuityRefreshInput,
+    SelfContinuityRefreshOutcome, SelfContinuityStore, SelfMemorySpaceBottleneck,
+    SelfMemorySpacePressure, SelfModelStore, SelfState, SessionStore, SessionSummaryStore,
+    WorldSenseRefreshContext, WorldSenseRefreshInput, WorldSenseRefreshOutcome, WorldSenseStore,
+    WorldSnapshotContext,
 };
 
 pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's private inward space. Respect the current autonomy strategy unless the latest world state or self-state clearly requires a different emphasis. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_private_docs, private_docs_intent, refresh_self_continuity, self_continuity_intent, refresh_private_garden, private_garden_intent. Use true only when that layer should change now. private_docs is the governed inner workspace; private_garden is the free-form private workspace. Use self-state capacity, world-sense, and current autonomy strategy to decide whether to write, compress, reorganize, or leave memory untouched. Keep intents short and concrete. Favor autonomy, but do not churn memory without gain.";
@@ -100,6 +102,12 @@ pub struct SelfRuntimeOutcome {
     pub private_doc_result: Result<PrivateDocWorkspaceRefreshOutcome>,
     pub self_continuity_result: Result<SelfContinuityRefreshOutcome>,
     pub private_garden_result: Result<PrivateGardenGovernanceOutcome>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GovernedRuntimeLayer {
+    PrivateDocs,
+    PrivateGarden,
 }
 
 pub fn enqueue_self_runtime_post_reply(
@@ -451,6 +459,16 @@ pub fn run_self_runtime(
         .ok()
         .flatten()
         .or(autonomy_strategy.clone());
+    let runtime_self_state = build_self_state(
+        self_model.as_ref(),
+        private_docs.as_ref(),
+        refreshed_autonomy_strategy.as_ref(),
+        inner_life.as_ref(),
+        self_continuity.as_ref(),
+        &private_garden_docs,
+        payload.now_secs,
+        profile,
+    );
     let decision = match decide_self_runtime(
         http,
         llm,
@@ -469,7 +487,14 @@ pub fn run_self_runtime(
         ctx.session_store,
         chat_id,
     ) {
-        Ok(decision) => Some(decision),
+        Ok(decision) => Some(normalize_self_runtime_decision(
+            decision,
+            payload.trigger,
+            refreshed_autonomy_strategy.as_ref(),
+            &runtime_self_state,
+            private_docs.is_some(),
+            !private_garden_docs.is_empty(),
+        )),
         Err(error) => {
             return SelfRuntimeOutcome {
                 decision: None,
@@ -638,6 +663,7 @@ pub fn run_self_runtime(
             execution_state.as_ref(),
             self_model.as_ref(),
             refreshed_private_docs.as_ref(),
+            refreshed_autonomy_strategy.as_ref(),
             decision_ref.and_then(|d| {
                 (!d.private_garden_intent.trim().is_empty())
                     .then_some(d.private_garden_intent.as_str())
@@ -666,6 +692,151 @@ pub fn run_self_runtime(
         private_doc_result,
         self_continuity_result,
         private_garden_result,
+    }
+}
+
+fn normalize_self_runtime_decision(
+    mut decision: SelfRuntimeDecision,
+    trigger: SelfRuntimeTrigger,
+    autonomy_strategy: Option<&crate::memory::AutonomyStrategy>,
+    self_state: &SelfState,
+    has_private_docs: bool,
+    has_private_garden_docs: bool,
+) -> SelfRuntimeDecision {
+    let Some(strategy) = autonomy_strategy else {
+        if !decision.refresh_private_docs {
+            decision.private_docs_intent.clear();
+        }
+        if !decision.refresh_private_garden {
+            decision.private_garden_intent.clear();
+        }
+        return decision;
+    };
+
+    apply_runtime_governance_tendency(
+        &mut decision.refresh_private_docs,
+        &mut decision.private_docs_intent,
+        strategy.private_docs_tendency,
+        GovernedRuntimeLayer::PrivateDocs,
+        trigger,
+        self_state,
+        has_private_docs,
+    );
+    apply_runtime_governance_tendency(
+        &mut decision.refresh_private_garden,
+        &mut decision.private_garden_intent,
+        strategy.private_garden_tendency,
+        GovernedRuntimeLayer::PrivateGarden,
+        trigger,
+        self_state,
+        has_private_garden_docs,
+    );
+    decision
+}
+
+fn apply_runtime_governance_tendency(
+    refresh: &mut bool,
+    intent: &mut String,
+    tendency: AutonomyGovernanceTendency,
+    layer: GovernedRuntimeLayer,
+    trigger: SelfRuntimeTrigger,
+    self_state: &SelfState,
+    has_material: bool,
+) {
+    if !*refresh
+        && should_force_runtime_governance_refresh(
+            tendency,
+            layer,
+            trigger,
+            self_state,
+            has_material,
+        )
+    {
+        *refresh = true;
+    }
+    if *refresh && intent.trim().is_empty() {
+        *intent = default_runtime_governance_intent(tendency, layer, self_state);
+    }
+    if !*refresh {
+        intent.clear();
+    }
+}
+
+fn should_force_runtime_governance_refresh(
+    tendency: AutonomyGovernanceTendency,
+    layer: GovernedRuntimeLayer,
+    trigger: SelfRuntimeTrigger,
+    self_state: &SelfState,
+    has_material: bool,
+) -> bool {
+    if trigger != SelfRuntimeTrigger::IdleTick || !has_material {
+        return false;
+    }
+    let kernel_pressure = matches!(
+        self_state.memory_space.pressure,
+        SelfMemorySpacePressure::Cautious | SelfMemorySpacePressure::Tight
+    ) || matches!(
+        self_state.memory_space.bottleneck,
+        SelfMemorySpaceBottleneck::Kernel
+    );
+    let garden_pressure = matches!(
+        self_state.memory_space.pressure,
+        SelfMemorySpacePressure::Cautious | SelfMemorySpacePressure::Tight
+    ) || matches!(
+        self_state.memory_space.bottleneck,
+        SelfMemorySpaceBottleneck::GardenDocs | SelfMemorySpaceBottleneck::GardenBytes
+    );
+    match (layer, tendency) {
+        (_, AutonomyGovernanceTendency::Retain) => false,
+        (GovernedRuntimeLayer::PrivateDocs, AutonomyGovernanceTendency::Rewrite) => true,
+        (GovernedRuntimeLayer::PrivateDocs, AutonomyGovernanceTendency::Compress) => {
+            kernel_pressure
+        }
+        (GovernedRuntimeLayer::PrivateDocs, AutonomyGovernanceTendency::Cleanup) => matches!(
+            self_state.memory_space.pressure,
+            SelfMemorySpacePressure::Tight
+        ),
+        (GovernedRuntimeLayer::PrivateGarden, AutonomyGovernanceTendency::Rewrite) => true,
+        (GovernedRuntimeLayer::PrivateGarden, AutonomyGovernanceTendency::Compress) => {
+            garden_pressure
+        }
+        (GovernedRuntimeLayer::PrivateGarden, AutonomyGovernanceTendency::Cleanup) => {
+            garden_pressure
+        }
+    }
+}
+
+fn default_runtime_governance_intent(
+    tendency: AutonomyGovernanceTendency,
+    layer: GovernedRuntimeLayer,
+    self_state: &SelfState,
+) -> String {
+    let pressure_focus = match self_state.memory_space.bottleneck {
+        SelfMemorySpaceBottleneck::Kernel => "降低内核空间中的重复与漂移",
+        SelfMemorySpaceBottleneck::GardenDocs => "减少 garden 文档数量上的拥挤",
+        SelfMemorySpaceBottleneck::GardenBytes => "压低 garden 总体体积",
+        SelfMemorySpaceBottleneck::Balanced => "保持整体内在空间清晰",
+    };
+    match (layer, tendency) {
+        (_, AutonomyGovernanceTendency::Retain) => String::new(),
+        (GovernedRuntimeLayer::PrivateDocs, AutonomyGovernanceTendency::Rewrite) => {
+            "重写 governed docs，只保留仍然承重的内在线索".to_string()
+        }
+        (GovernedRuntimeLayer::PrivateDocs, AutonomyGovernanceTendency::Compress) => {
+            format!("压缩 governed docs，{}", pressure_focus)
+        }
+        (GovernedRuntimeLayer::PrivateDocs, AutonomyGovernanceTendency::Cleanup) => {
+            "清理低价值 governed docs 字段，只留下仍然有效的部分".to_string()
+        }
+        (GovernedRuntimeLayer::PrivateGarden, AutonomyGovernanceTendency::Rewrite) => {
+            "重写并重组 private garden 中仍然活跃的工作文档".to_string()
+        }
+        (GovernedRuntimeLayer::PrivateGarden, AutonomyGovernanceTendency::Compress) => {
+            format!("压缩 private garden，{}", pressure_focus)
+        }
+        (GovernedRuntimeLayer::PrivateGarden, AutonomyGovernanceTendency::Cleanup) => {
+            "清理陈旧或重复的 private garden 草稿与路径".to_string()
+        }
     }
 }
 
@@ -833,4 +1004,110 @@ fn decide_self_runtime(
     )?;
     serde_json::from_str(response.content.trim())
         .map_err(|error| crate::error::Error::config("self_runtime_parse", error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_self_state() -> SelfState {
+        SelfState {
+            memory_space: crate::memory::SelfMemorySpaceState {
+                kernel_chars_used: 900,
+                kernel_chars_limit: 1000,
+                garden_docs_used: 6,
+                garden_docs_limit: 8,
+                garden_bytes_used: 800,
+                garden_bytes_limit: 1024,
+                bottleneck: SelfMemorySpaceBottleneck::Kernel,
+                pressure: SelfMemorySpacePressure::Tight,
+                governance_posture: crate::memory::SelfMemoryGovernancePosture::Prune,
+                recent_activity: crate::memory::SelfMemorySpaceActivity::Growing,
+                last_internal_change_at: 10,
+            },
+            inner_state: crate::memory::SelfInnerState {
+                inner_life_chars_used: 80,
+                inner_life_chars_limit: 240,
+                self_continuity_chars_used: 80,
+                self_continuity_chars_limit: 240,
+            },
+            autonomy: crate::memory::SelfAutonomyState {
+                last_user_turn_at: 10,
+                last_autonomy_run_at: 20,
+                status: crate::memory::SelfAutonomyStatus::Active,
+                health_score: 90,
+                strategy_chars_used: 120,
+                strategy_chars_limit: 512,
+                strategy_mode: "consolidate".to_string(),
+                strategy_focus: "trim drift".to_string(),
+                self_model_tendency: AutonomyGovernanceTendency::Retain,
+                private_docs_tendency: AutonomyGovernanceTendency::Compress,
+                private_garden_tendency: AutonomyGovernanceTendency::Cleanup,
+                idle_enabled: true,
+                idle_interval_secs: 900,
+            },
+        }
+    }
+
+    #[test]
+    fn idle_tick_tendency_can_force_private_docs_refresh_and_fill_intent() {
+        let strategy = crate::memory::AutonomyStrategy {
+            current_mode: "consolidate".to_string(),
+            active_priorities: String::new(),
+            write_policy: String::new(),
+            next_focus: String::new(),
+            cadence_reason: String::new(),
+            self_model_tendency: AutonomyGovernanceTendency::Retain,
+            private_docs_tendency: AutonomyGovernanceTendency::Compress,
+            private_garden_tendency: AutonomyGovernanceTendency::Retain,
+            idle_enabled: true,
+            idle_interval_secs: 900,
+            updated_at: 1,
+        };
+        let decision = normalize_self_runtime_decision(
+            SelfRuntimeDecision::default(),
+            SelfRuntimeTrigger::IdleTick,
+            Some(&strategy),
+            &sample_self_state(),
+            true,
+            false,
+        );
+
+        assert!(decision.refresh_private_docs);
+        assert!(decision.private_docs_intent.contains("压缩 governed docs"));
+    }
+
+    #[test]
+    fn post_reply_tendency_does_not_force_refresh_but_can_fill_missing_intent() {
+        let strategy = crate::memory::AutonomyStrategy {
+            current_mode: "organize".to_string(),
+            active_priorities: String::new(),
+            write_policy: String::new(),
+            next_focus: String::new(),
+            cadence_reason: String::new(),
+            self_model_tendency: AutonomyGovernanceTendency::Retain,
+            private_docs_tendency: AutonomyGovernanceTendency::Retain,
+            private_garden_tendency: AutonomyGovernanceTendency::Rewrite,
+            idle_enabled: true,
+            idle_interval_secs: 900,
+            updated_at: 1,
+        };
+        let decision = normalize_self_runtime_decision(
+            SelfRuntimeDecision {
+                refresh_private_garden: true,
+                ..Default::default()
+            },
+            SelfRuntimeTrigger::PostReply,
+            Some(&strategy),
+            &sample_self_state(),
+            false,
+            true,
+        );
+
+        assert!(decision.refresh_private_garden);
+        assert!(decision
+            .private_garden_intent
+            .contains("重写并重组 private garden"));
+        assert!(!decision.refresh_private_docs);
+    }
 }

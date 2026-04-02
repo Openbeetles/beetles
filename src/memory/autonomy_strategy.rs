@@ -20,10 +20,31 @@ use super::{
     WorldSnapshot,
 };
 
-pub const AUTONOMY_STRATEGY_SYSTEM_PROMPT: &str = "You maintain the assistant's private autonomy strategy. Return JSON only: either null or one object with fields current_mode, active_priorities, write_policy, next_focus, cadence_reason, idle_enabled, idle_interval_secs. This layer is not a transcript summary. It is your own short-term self-governance policy: what kind of inward work matters now, how aggressively to write, compress, or prune private material, what should be focused next, and how often autonomous upkeep should wake during idle time. Use current world-sense, self-state capacity, and workspace shape as real constraints. Keep it compact, concrete, and self-directed.";
+pub const AUTONOMY_STRATEGY_SYSTEM_PROMPT: &str = "You maintain the assistant's private autonomy strategy. Return JSON only: either null or one object with fields current_mode, active_priorities, write_policy, next_focus, cadence_reason, self_model_tendency, private_docs_tendency, private_garden_tendency, idle_enabled, idle_interval_secs. This layer is not a transcript summary. It is your own short-term self-governance policy: what kind of inward work matters now, how aggressively to write, compress, or prune private material, what should be focused next, and how often autonomous upkeep should wake during idle time. Tendencies are structured governance directives for each layer: retain, rewrite, compress, or cleanup. Use current world-sense, self-state capacity, and workspace shape as real constraints. Keep it compact, concrete, and self-directed.";
 
 const AUTONOMY_STRATEGY_FIELD_MAX_CHARS: usize = 220;
 pub const AUTONOMY_STRATEGY_TOTAL_CHAR_LIMIT: usize = AUTONOMY_STRATEGY_FIELD_MAX_CHARS * 5;
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomyGovernanceTendency {
+    #[default]
+    Retain,
+    Rewrite,
+    Compress,
+    Cleanup,
+}
+
+impl AutonomyGovernanceTendency {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Retain => "retain",
+            Self::Rewrite => "rewrite",
+            Self::Compress => "compress",
+            Self::Cleanup => "cleanup",
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AutonomyStrategy {
@@ -37,6 +58,12 @@ pub struct AutonomyStrategy {
     pub next_focus: String,
     #[serde(default)]
     pub cadence_reason: String,
+    #[serde(default)]
+    pub self_model_tendency: AutonomyGovernanceTendency,
+    #[serde(default)]
+    pub private_docs_tendency: AutonomyGovernanceTendency,
+    #[serde(default)]
+    pub private_garden_tendency: AutonomyGovernanceTendency,
     #[serde(default = "default_idle_enabled")]
     pub idle_enabled: bool,
     #[serde(default)]
@@ -65,6 +92,9 @@ pub(crate) fn estimate_autonomy_strategy_chars(strategy: &AutonomyStrategy) -> u
         + strategy.write_policy.chars().count()
         + strategy.next_focus.chars().count()
         + strategy.cadence_reason.chars().count()
+        + strategy.self_model_tendency.as_str().chars().count()
+        + strategy.private_docs_tendency.as_str().chars().count()
+        + strategy.private_garden_tendency.as_str().chars().count()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,6 +141,12 @@ struct RawAutonomyStrategy {
     next_focus: String,
     #[serde(default)]
     cadence_reason: String,
+    #[serde(default)]
+    self_model_tendency: AutonomyGovernanceTendency,
+    #[serde(default)]
+    private_docs_tendency: AutonomyGovernanceTendency,
+    #[serde(default)]
+    private_garden_tendency: AutonomyGovernanceTendency,
     #[serde(default = "default_idle_enabled")]
     idle_enabled: bool,
     #[serde(default)]
@@ -176,6 +212,13 @@ pub fn render_autonomy_strategy_block(
     if !normalized.cadence_reason.is_empty() {
         let _ = writeln!(out, "Cadence reason: {}", normalized.cadence_reason);
     }
+    let _ = writeln!(
+        out,
+        "Governance tendencies: self_model={} private_docs={} private_garden={}",
+        normalized.self_model_tendency.as_str(),
+        normalized.private_docs_tendency.as_str(),
+        normalized.private_garden_tendency.as_str()
+    );
     let _ = writeln!(
         out,
         "Idle autonomy: enabled={} interval_secs={}",
@@ -325,6 +368,9 @@ pub(crate) fn run_autonomy_strategy_refresh_with_state(
             write_policy: raw.write_policy,
             next_focus: raw.next_focus,
             cadence_reason: raw.cadence_reason,
+            self_model_tendency: raw.self_model_tendency,
+            private_docs_tendency: raw.private_docs_tendency,
+            private_garden_tendency: raw.private_garden_tendency,
             idle_enabled: raw.idle_enabled,
             idle_interval_secs: raw.idle_interval_secs,
             updated_at: input.now_secs,
@@ -496,6 +542,9 @@ mod tests {
                 write_policy: "rewrite before append".to_string(),
                 next_focus: "compress private docs".to_string(),
                 cadence_reason: "active internal cleanup".to_string(),
+                self_model_tendency: AutonomyGovernanceTendency::Compress,
+                private_docs_tendency: AutonomyGovernanceTendency::Rewrite,
+                private_garden_tendency: AutonomyGovernanceTendency::Cleanup,
                 idle_enabled: true,
                 idle_interval_secs: 900,
                 updated_at: 1,
@@ -504,6 +553,7 @@ mod tests {
         )
         .unwrap();
         assert!(block.contains("Current mode"));
+        assert!(block.contains("Governance tendencies:"));
         assert!(block.contains("Idle autonomy: enabled=true"));
     }
 }

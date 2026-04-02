@@ -450,6 +450,7 @@ pub fn run_post_reply_memory_maintenance(
             latest_execution_state.as_ref(),
             latest_self_model.as_ref(),
             latest_private_workspace.as_ref(),
+            None,
             internal_memory_decision.private_garden_intent.as_deref(),
             if private_garden_upstream_cleanup_result
                 .as_ref()

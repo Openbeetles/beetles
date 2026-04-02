@@ -31,9 +31,10 @@ pub(crate) use autonomy_strategy::{
     autonomy_idle_interval_secs, run_autonomy_strategy_refresh_with_state,
 };
 pub use autonomy_strategy::{
-    render_autonomy_strategy_block, run_autonomy_strategy_refresh, AutonomyStrategy,
-    AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome,
-    AUTONOMY_STRATEGY_SYSTEM_PROMPT, AUTONOMY_STRATEGY_TOTAL_CHAR_LIMIT,
+    render_autonomy_strategy_block, run_autonomy_strategy_refresh, AutonomyGovernanceTendency,
+    AutonomyStrategy, AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput,
+    AutonomyStrategyRefreshOutcome, AUTONOMY_STRATEGY_SYSTEM_PROMPT,
+    AUTONOMY_STRATEGY_TOTAL_CHAR_LIMIT,
 };
 pub use context_window::build_context_messages;
 pub use execution_state::{

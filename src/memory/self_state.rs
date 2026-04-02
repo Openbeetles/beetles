@@ -8,9 +8,9 @@ use std::fmt::Write as _;
 use super::{
     estimate_autonomy_strategy_chars, estimate_inner_life_chars,
     estimate_private_doc_workspace_chars, estimate_self_continuity_chars,
-    estimate_self_model_chars, memory_policy, AutonomyStrategy, InnerLife, MemoryProfile,
-    PrivateDocWorkspace, PrivateGardenDocRecord, SelfContinuity, SelfModel,
-    AUTONOMY_STRATEGY_TOTAL_CHAR_LIMIT, INNER_LIFE_TOTAL_CHAR_LIMIT,
+    estimate_self_model_chars, memory_policy, AutonomyGovernanceTendency, AutonomyStrategy,
+    InnerLife, MemoryProfile, PrivateDocWorkspace, PrivateGardenDocRecord, SelfContinuity,
+    SelfModel, AUTONOMY_STRATEGY_TOTAL_CHAR_LIMIT, INNER_LIFE_TOTAL_CHAR_LIMIT,
     PRIVATE_DOC_WORKSPACE_TOTAL_CHAR_LIMIT, PRIVATE_GARDEN_MAX_DOCS_PER_CHAT,
     PRIVATE_GARDEN_TOTAL_BYTE_LIMIT, SELF_CONTINUITY_TOTAL_CHAR_LIMIT, SELF_MODEL_TOTAL_CHAR_LIMIT,
 };
@@ -84,6 +84,9 @@ pub struct SelfAutonomyState {
     pub strategy_chars_limit: usize,
     pub strategy_mode: String,
     pub strategy_focus: String,
+    pub self_model_tendency: AutonomyGovernanceTendency,
+    pub private_docs_tendency: AutonomyGovernanceTendency,
+    pub private_garden_tendency: AutonomyGovernanceTendency,
     pub idle_enabled: bool,
     pub idle_interval_secs: u64,
 }
@@ -216,6 +219,18 @@ pub fn build_self_state(
             strategy_focus: autonomy_strategy
                 .map(|strategy| strategy.next_focus.trim().to_string())
                 .unwrap_or_default(),
+            self_model_tendency: autonomy_strategy
+                .map_or(AutonomyGovernanceTendency::Retain, |strategy| {
+                    strategy.self_model_tendency
+                }),
+            private_docs_tendency: autonomy_strategy
+                .map_or(AutonomyGovernanceTendency::Retain, |strategy| {
+                    strategy.private_docs_tendency
+                }),
+            private_garden_tendency: autonomy_strategy
+                .map_or(AutonomyGovernanceTendency::Retain, |strategy| {
+                    strategy.private_garden_tendency
+                }),
             idle_enabled: autonomy_strategy.is_none_or(|strategy| strategy.idle_enabled),
             idle_interval_secs: autonomy_strategy.map_or(0, |strategy| strategy.idle_interval_secs),
         },
@@ -291,6 +306,13 @@ pub fn render_self_state_block(state: &SelfState, max_len: usize) -> Option<Stri
     if !autonomy.strategy_focus.is_empty() {
         let _ = writeln!(out, "Autonomy next focus: {}", autonomy.strategy_focus);
     }
+    let _ = writeln!(
+        out,
+        "Autonomy tendencies: self_model={} private_docs={} private_garden={}",
+        autonomy.self_model_tendency.as_str(),
+        autonomy.private_docs_tendency.as_str(),
+        autonomy.private_garden_tendency.as_str()
+    );
     let _ = writeln!(
         out,
         "Autonomy idle policy: enabled={} interval_secs={}",
@@ -508,6 +530,9 @@ mod tests {
                 write_policy: "rewrite before append".to_string(),
                 next_focus: "keep only one active scratch thread".to_string(),
                 cadence_reason: "space is tight".to_string(),
+                self_model_tendency: AutonomyGovernanceTendency::Compress,
+                private_docs_tendency: AutonomyGovernanceTendency::Rewrite,
+                private_garden_tendency: AutonomyGovernanceTendency::Cleanup,
                 idle_enabled: true,
                 idle_interval_secs: 120,
                 updated_at: 10,

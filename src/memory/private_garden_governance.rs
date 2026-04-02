@@ -13,13 +13,14 @@ use std::fmt::Write as _;
 
 use super::{
     build_private_garden_preview, build_private_garden_usage, build_self_state, memory_policy,
-    normalize_private_garden_doc_path, render_execution_state_block,
-    render_internal_memory_topology_block, render_private_doc_workspace_block,
-    render_self_model_block, render_self_state_block, summarize_private_garden_directories,
-    ExecutionState, ExecutionStateStore, InternalMemoryLayerFocus, MemoryProfile, PrivateDocStore,
-    PrivateDocWorkspace, PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenGovernancePolicy,
-    PrivateGardenStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
-    SessionSummaryStore, PRIVATE_GARDEN_MAX_DOC_BYTES,
+    normalize_private_garden_doc_path, render_autonomy_strategy_block,
+    render_execution_state_block, render_internal_memory_topology_block,
+    render_private_doc_workspace_block, render_self_model_block, render_self_state_block,
+    summarize_private_garden_directories, AutonomyStrategy, ExecutionState, ExecutionStateStore,
+    InternalMemoryLayerFocus, MemoryProfile, PrivateDocStore, PrivateDocWorkspace,
+    PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenGovernancePolicy, PrivateGardenStore,
+    SelfModel, SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
+    PRIVATE_GARDEN_MAX_DOC_BYTES,
 };
 
 pub const PRIVATE_GARDEN_GOVERNANCE_SYSTEM_PROMPT: &str = "You govern a persistent AI assistant's private garden: a free-form, self-owned internal workspace. Return JSON only: either null, or one object with optional writes, moves, and deletes fields. writes must be an array of objects {path, content}; each write replaces the full document body at that path. moves must be an array of objects {from_path, to_path} for reorganizing or renaming existing documents. deletes must be an array of document paths to remove. Use this workspace for private drafts, internal organization, and exploratory self-work, not shared factual memory. Keep documents current by rewriting, merging, or relocating in place instead of accumulating a history trail. Create new docs only when they materially improve continuity or organization. Delete stale, duplicated, or low-value scratch material when useful. Do not copy raw tool payloads, logs, large quotes, secrets, or transcript fragments. Do not duplicate stable kernel material that already belongs in the governed private self-model or typed private docs. Return null when no garden change is worth making.";
@@ -198,6 +199,7 @@ pub fn run_private_garden_governance(
         self_model.as_ref(),
         private_workspace.as_ref(),
         None,
+        None,
         &[],
         None,
         None,
@@ -214,6 +216,7 @@ pub(crate) fn run_private_garden_governance_with_state(
     execution_state: Option<&ExecutionState>,
     self_model: Option<&SelfModel>,
     private_workspace: Option<&PrivateDocWorkspace>,
+    autonomy_strategy: Option<&AutonomyStrategy>,
     routing_intent: Option<&str>,
     upstream_cleanup_paths: &[String],
     decision_override: Option<bool>,
@@ -242,6 +245,7 @@ pub(crate) fn run_private_garden_governance_with_state(
         execution_state,
         self_model,
         private_workspace,
+        autonomy_strategy,
         routing_intent,
         upstream_cleanup_paths,
         &snapshot,
@@ -342,6 +346,7 @@ fn build_private_garden_governance_input(
     execution_state: Option<&ExecutionState>,
     self_model: Option<&SelfModel>,
     private_workspace: Option<&PrivateDocWorkspace>,
+    autonomy_strategy: Option<&AutonomyStrategy>,
     routing_intent: Option<&str>,
     upstream_cleanup_paths: &[String],
     snapshot: &PrivateGardenSnapshot,
@@ -355,7 +360,7 @@ fn build_private_garden_governance_input(
         &build_self_state(
             self_model,
             private_workspace,
-            None,
+            autonomy_strategy,
             None,
             None,
             snapshot.records.as_slice(),
@@ -401,6 +406,13 @@ fn build_private_garden_governance_input(
     if let Some(block) = private_workspace.and_then(|workspace| {
         render_private_doc_workspace_block(workspace, policy.grounding_max_len)
     }) {
+        input.push_str(block.trim());
+        input.push('\n');
+    }
+    if let Some(block) = autonomy_strategy
+        .and_then(|strategy| render_autonomy_strategy_block(strategy, policy.grounding_max_len))
+    {
+        input.push('\n');
         input.push_str(block.trim());
         input.push('\n');
     }
@@ -962,6 +974,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             Some("把探索性内容继续留在 garden，并顺手整理目录结构"),
             &[],
             &PrivateGardenSnapshot {
@@ -993,6 +1006,7 @@ mod tests {
     fn private_garden_governance_input_includes_upstream_cleanup_context() {
         let input = build_private_garden_governance_input(
             Some("summary"),
+            None,
             None,
             None,
             None,
