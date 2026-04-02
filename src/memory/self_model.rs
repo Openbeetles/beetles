@@ -205,6 +205,7 @@ pub fn run_self_model_refresh(
         None,
         &[],
         None,
+        &[],
         None,
         None,
     )
@@ -222,6 +223,7 @@ pub(crate) fn run_self_model_refresh_with_state(
     private_workspace: Option<&PrivateDocWorkspace>,
     private_garden_docs: &[PrivateGardenDocRecord],
     routing_intent: Option<&str>,
+    migration_sources: &[String],
     decision_override: Option<bool>,
     recent_override: Option<&[SessionMessage]>,
 ) -> Result<SelfModelRefreshOutcome> {
@@ -248,6 +250,7 @@ pub(crate) fn run_self_model_refresh_with_state(
         private_workspace,
         private_garden_docs,
         routing_intent,
+        migration_sources,
         input.now_secs,
         profile,
         recent,
@@ -302,6 +305,7 @@ fn build_self_model_refresh_input(
     private_workspace: Option<&PrivateDocWorkspace>,
     private_garden_docs: &[PrivateGardenDocRecord],
     routing_intent: Option<&str>,
+    migration_sources: &[String],
     now_secs: u64,
     profile: MemoryProfile,
     recent: &[SessionMessage],
@@ -348,6 +352,16 @@ fn build_self_model_refresh_input(
         input.push_str("\n## Routing Intent\n");
         input.push_str(intent);
         input.push('\n');
+    }
+    if !migration_sources.is_empty() {
+        input.push_str("\n## Migration Hints\n");
+        for source in migration_sources {
+            let source = source.trim();
+            if source.is_empty() {
+                continue;
+            }
+            let _ = writeln!(input, "- {}", source);
+        }
     }
     input.push_str("\n## Recent Transcript\n");
     input.push_str(&build_self_model_transcript(recent, policy));
@@ -641,6 +655,7 @@ mod tests {
             None,
             &[],
             Some("沉淀最近形成的稳定自我定位，不要把草稿整理写进这里"),
+            &[],
             10,
             MemoryProfile::Embedded,
             &[],
@@ -649,6 +664,30 @@ mod tests {
 
         assert!(input.contains("## Routing Intent"));
         assert!(input.contains("稳定自我定位"));
+    }
+
+    #[test]
+    fn self_model_refresh_input_includes_migration_hints() {
+        let input = build_self_model_refresh_input(
+            None,
+            Some("summary"),
+            None,
+            None,
+            &[],
+            Some("沉淀稳定连续性"),
+            &[
+                "private_docs.inner_journal".to_string(),
+                "private_garden:journal/current.md".to_string(),
+            ],
+            10,
+            MemoryProfile::Embedded,
+            &[],
+            memory_policy(MemoryProfile::Embedded).self_model,
+        );
+
+        assert!(input.contains("## Migration Hints"));
+        assert!(input.contains("private_docs.inner_journal"));
+        assert!(input.contains("private_garden:journal/current.md"));
     }
 
     #[test]

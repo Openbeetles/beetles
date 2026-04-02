@@ -8,7 +8,7 @@ use crate::orchestrator::PressureLevel;
 
 use super::{
     evaluate_long_term_memory_extraction_turn, load_session_summary_snapshot,
-    mark_long_term_memory_extraction_requested, memory_policy,
+    mark_long_term_memory_extraction_requested, memory_policy, normalize_private_garden_doc_path,
     persist_long_term_memory_extraction_state, run_execution_state_refresh_with_state,
     run_internal_memory_routing_with_state, run_private_doc_workspace_refresh_with_state,
     run_private_garden_governance_with_state, run_self_model_refresh_with_state,
@@ -61,6 +61,7 @@ pub struct PostReplyMemoryMaintenanceOutcome {
     pub internal_memory_routing_result: Result<Option<InternalMemoryRoutingDecision>>,
     pub self_model_result: Result<SelfModelRefreshOutcome>,
     pub private_doc_result: Result<PrivateDocWorkspaceRefreshOutcome>,
+    pub private_garden_upstream_cleanup_result: Result<usize>,
     pub private_garden_result: Result<PrivateGardenGovernanceOutcome>,
     pub extraction_request_outcome: LongTermMemoryRefreshRequestOutcome,
 }
@@ -296,10 +297,13 @@ pub fn run_post_reply_memory_maintenance(
     let fallback_internal_memory_decision = InternalMemoryRoutingDecision {
         refresh_self_model: self_model_should_refresh,
         self_model_intent: None,
+        self_model_sources: Vec::new(),
         refresh_private_docs: private_doc_should_refresh,
         private_docs_intent: None,
+        private_docs_sources: Vec::new(),
         refresh_private_garden: private_garden_should_refresh,
         private_garden_intent: None,
+        private_garden_cleanup_paths: Vec::new(),
     };
     let internal_memory_decision = match &internal_memory_routing_result {
         Ok(Some(decision)) => decision.clone(),
@@ -336,6 +340,7 @@ pub fn run_post_reply_memory_maintenance(
                 .and_then(|workspace| workspace.as_ref()),
             private_garden_docs.as_deref().unwrap_or(&[]),
             internal_memory_decision.self_model_intent.as_deref(),
+            internal_memory_decision.self_model_sources.as_slice(),
             Some(internal_memory_decision.refresh_self_model),
             shared_recent.as_deref(),
         ),
@@ -380,11 +385,29 @@ pub fn run_post_reply_memory_maintenance(
             latest_self_model.as_ref(),
             private_garden_docs.as_deref().unwrap_or(&[]),
             internal_memory_decision.private_docs_intent.as_deref(),
+            internal_memory_decision.private_docs_sources.as_slice(),
             Some(internal_memory_decision.refresh_private_docs),
             shared_recent.as_deref(),
         ),
         Err(error) => Err(error),
     };
+    let private_garden_upstream_cleanup_result =
+        if matches!(self_model_result, Ok(SelfModelRefreshOutcome::Updated))
+            || matches!(
+                private_doc_result,
+                Ok(PrivateDocWorkspaceRefreshOutcome::Updated)
+            )
+        {
+            cleanup_promoted_private_garden_docs(
+                ctx.private_garden_store,
+                input.chat_id,
+                internal_memory_decision
+                    .private_garden_cleanup_paths
+                    .as_slice(),
+            )
+        } else {
+            Ok(0)
+        };
     let latest_private_workspace = match ctx.private_doc_store.get(input.chat_id) {
         Ok(workspace) => workspace,
         Err(error) => {
@@ -424,6 +447,16 @@ pub fn run_post_reply_memory_maintenance(
             latest_self_model.as_ref(),
             latest_private_workspace.as_ref(),
             internal_memory_decision.private_garden_intent.as_deref(),
+            if private_garden_upstream_cleanup_result
+                .as_ref()
+                .is_ok_and(|deleted| *deleted > 0)
+            {
+                internal_memory_decision
+                    .private_garden_cleanup_paths
+                    .as_slice()
+            } else {
+                &[]
+            },
             Some(internal_memory_decision.refresh_private_garden),
             shared_recent.as_deref(),
         ),
@@ -470,9 +503,25 @@ pub fn run_post_reply_memory_maintenance(
         internal_memory_routing_result,
         self_model_result,
         private_doc_result,
+        private_garden_upstream_cleanup_result,
         private_garden_result,
         extraction_request_outcome,
     }
+}
+
+fn cleanup_promoted_private_garden_docs(
+    store: &dyn PrivateGardenStore,
+    chat_id: &str,
+    paths: &[String],
+) -> Result<usize> {
+    let mut deleted = 0usize;
+    for path in paths {
+        let normalized = normalize_private_garden_doc_path(path)?;
+        if store.delete(chat_id, &normalized)? {
+            deleted = deleted.saturating_add(1);
+        }
+    }
+    Ok(deleted)
 }
 
 #[cfg(test)]
@@ -775,7 +824,7 @@ mod tests {
             let content = if system == crate::memory::EXECUTION_STATE_SYSTEM_PROMPT {
                 r#"{"status":"active","goal":"长期记忆链路收口","progress":"继续拆 coordinator","next_action":"接 execution state"}"#
             } else if system == crate::memory::INTERNAL_MEMORY_ROUTING_SYSTEM_PROMPT {
-                r#"{"refresh_self_model":true,"self_model_intent":"沉淀最近形成的稳定自我连续性","refresh_private_docs":true,"private_docs_intent":"把持续有效的 inward plan 收到 governed docs","refresh_private_garden":true,"private_garden_intent":"整理仍然处于探索阶段的草稿和目录结构"}"#
+                r#"{"refresh_self_model":true,"self_model_intent":"沉淀最近形成的稳定自我连续性","self_model_sources":["private_docs.inner_journal"],"refresh_private_docs":true,"private_docs_intent":"把持续有效的 inward plan 收到 governed docs","private_docs_sources":["private_garden:journal/promoted.md"],"refresh_private_garden":true,"private_garden_intent":"整理仍然处于探索阶段的草稿和目录结构","private_garden_cleanup_paths":["journal/promoted.md"]}"#
             } else if system == crate::memory::SELF_MODEL_SYSTEM_PROMPT {
                 r#"{"continuity_anchor":"我还在沿着同一条收口线前进","self_narrative":"现在我把共享事实层和私有层分开维护","relationship_state":"和这个用户维持着共同推进架构的关系感","private_notes":"下一轮继续收紧 self-model 的写入边界"}"#
             } else if system == crate::memory::PRIVATE_DOC_WORKSPACE_SYSTEM_PROMPT {
@@ -910,10 +959,13 @@ mod tests {
             Ok(Some(InternalMemoryRoutingDecision {
                 refresh_self_model: true,
                 self_model_intent: Some(_),
+                self_model_sources: _,
                 refresh_private_docs: true,
                 private_docs_intent: Some(_),
+                private_docs_sources: _,
                 refresh_private_garden: true,
                 private_garden_intent: Some(_),
+                private_garden_cleanup_paths: _,
             }))
         ));
         assert!(matches!(
@@ -924,6 +976,7 @@ mod tests {
             outcome.private_doc_result,
             Ok(PrivateDocWorkspaceRefreshOutcome::Updated)
         ));
+        assert_eq!(outcome.private_garden_upstream_cleanup_result.unwrap(), 0);
         assert!(matches!(
             outcome.private_garden_result,
             Ok(PrivateGardenGovernanceOutcome::Updated { .. })
@@ -999,6 +1052,7 @@ mod tests {
             outcome.private_doc_result,
             Ok(PrivateDocWorkspaceRefreshOutcome::Skipped)
         ));
+        assert_eq!(outcome.private_garden_upstream_cleanup_result.unwrap(), 0);
         assert!(matches!(
             outcome.private_garden_result,
             Ok(PrivateGardenGovernanceOutcome::Skipped)
@@ -1089,6 +1143,7 @@ mod tests {
             outcome.private_doc_result,
             Ok(PrivateDocWorkspaceRefreshOutcome::Updated)
         ));
+        assert_eq!(outcome.private_garden_upstream_cleanup_result.unwrap(), 0);
         assert!(matches!(
             outcome.private_garden_result,
             Ok(PrivateGardenGovernanceOutcome::Updated { .. })
@@ -1166,10 +1221,79 @@ mod tests {
             outcome.private_doc_result,
             Ok(PrivateDocWorkspaceRefreshOutcome::Skipped)
         ));
+        assert_eq!(outcome.private_garden_upstream_cleanup_result.unwrap(), 0);
         assert!(matches!(
             outcome.private_garden_result,
             Ok(PrivateGardenGovernanceOutcome::Skipped)
         ));
+    }
+
+    #[test]
+    fn maintenance_cleans_promoted_private_garden_docs_before_governance() {
+        let session_store = StubSessionStore {
+            recent: vec![
+                SessionMessage {
+                    role: "user".to_string(),
+                    content: "把稳定内容收到内核里，剩下的继续整理".to_string(),
+                },
+                SessionMessage {
+                    role: "assistant".to_string(),
+                    content: "这轮会把已经稳定的草稿上提，然后清掉重复 garden 文档".to_string(),
+                },
+            ],
+            count: 16,
+            ..Default::default()
+        };
+        let summary_store = StubSessionSummaryStore::default();
+        let extraction_state_store = StubExtractionStateStore::default();
+        let execution_state_store = StubExecutionStateStore::default();
+        let self_model_store = StubSelfModelStore::default();
+        let private_doc_store = StubPrivateDocStore::default();
+        let private_garden_store = StubPrivateGardenStore::default();
+        private_garden_store
+            .write("chat-1", "journal/promoted.md", "已经足够稳定，准备上提", 1)
+            .unwrap();
+        private_garden_store
+            .write("chat-1", "scratch/stale.md", "旧草稿", 1)
+            .unwrap();
+        let mut http = DummyHttpClient;
+
+        let outcome = run_post_reply_memory_maintenance(
+            &mut http,
+            &FixedLlmClient,
+            PostReplyMemoryMaintenanceContext {
+                session_store: &session_store,
+                session_summary_store: &summary_store,
+                execution_state_store: &execution_state_store,
+                self_model_store: &self_model_store,
+                private_doc_store: &private_doc_store,
+                private_garden_store: &private_garden_store,
+                extraction_state_store: &extraction_state_store,
+            },
+            PostReplyMemoryMaintenanceInput {
+                chat_id: "chat-1",
+                ingress: IngressKind::User,
+                channel: "qq_channel",
+                user_content: "把稳定内容收到内核里，剩下的继续整理",
+                reply_content: "这轮会把已经稳定的草稿上提，然后清掉重复 garden 文档",
+                pressure: PressureLevel::Normal,
+                memory_profile: MemoryProfile::Embedded,
+                tool_calls: 1,
+                external_content_used: false,
+                now_secs: 30,
+            },
+            || false,
+        );
+
+        assert_eq!(outcome.private_garden_upstream_cleanup_result.unwrap(), 1);
+        assert!(private_garden_store
+            .read("chat-1", "journal/promoted.md")
+            .unwrap()
+            .is_none());
+        assert!(private_garden_store
+            .read("chat-1", "scratch/stale.md")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

@@ -1025,14 +1025,17 @@ fn run_post_reply_maintenance_job(
     match maintenance_outcome.internal_memory_routing_result {
         Ok(Some(decision)) => {
             log::info!(
-                "[agent_internal_memory_routing] {} self_model={} private_docs={} private_garden={} self_model_intent={:?} private_docs_intent={:?} private_garden_intent={:?}",
+                "[agent_internal_memory_routing] {} self_model={} private_docs={} private_garden={} self_model_intent={:?} self_model_sources={:?} private_docs_intent={:?} private_docs_sources={:?} private_garden_intent={:?} private_garden_cleanup_paths={:?}",
                 msg.chat_id,
                 decision.refresh_self_model,
                 decision.refresh_private_docs,
                 decision.refresh_private_garden,
                 decision.self_model_intent.as_deref(),
+                decision.self_model_sources.as_slice(),
                 decision.private_docs_intent.as_deref(),
-                decision.private_garden_intent.as_deref()
+                decision.private_docs_sources.as_slice(),
+                decision.private_garden_intent.as_deref(),
+                decision.private_garden_cleanup_paths.as_slice()
             );
         }
         Ok(None) => {}
@@ -1051,6 +1054,17 @@ fn run_post_reply_maintenance_job(
         }
         Ok(crate::memory::PrivateDocWorkspaceRefreshOutcome::Skipped) => {}
         Err(error) => log::warn!("[agent_private_docs] failed: {}", error),
+    }
+    match maintenance_outcome.private_garden_upstream_cleanup_result {
+        Ok(0) => {}
+        Ok(deleted) => {
+            log::info!(
+                "[agent_private_garden_cleanup] removed {} promoted docs for {}",
+                deleted,
+                msg.chat_id
+            );
+        }
+        Err(error) => log::warn!("[agent_private_garden_cleanup] failed: {}", error),
     }
     match maintenance_outcome.private_garden_result {
         Ok(crate::memory::PrivateGardenGovernanceOutcome::Updated {

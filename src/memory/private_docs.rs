@@ -254,6 +254,7 @@ pub fn run_private_doc_workspace_refresh(
         self_model.as_ref(),
         &[],
         None,
+        &[],
         None,
         None,
     )
@@ -271,6 +272,7 @@ pub(crate) fn run_private_doc_workspace_refresh_with_state(
     self_model: Option<&SelfModel>,
     private_garden_docs: &[PrivateGardenDocRecord],
     routing_intent: Option<&str>,
+    migration_sources: &[String],
     decision_override: Option<bool>,
     recent_override: Option<&[SessionMessage]>,
 ) -> Result<PrivateDocWorkspaceRefreshOutcome> {
@@ -297,6 +299,7 @@ pub(crate) fn run_private_doc_workspace_refresh_with_state(
         self_model,
         private_garden_docs,
         routing_intent,
+        migration_sources,
         input.now_secs,
         profile,
         recent,
@@ -349,6 +352,7 @@ fn build_private_doc_workspace_refresh_input(
     self_model: Option<&SelfModel>,
     private_garden_docs: &[PrivateGardenDocRecord],
     routing_intent: Option<&str>,
+    migration_sources: &[String],
     now_secs: u64,
     profile: MemoryProfile,
     recent: &[SessionMessage],
@@ -401,6 +405,16 @@ fn build_private_doc_workspace_refresh_input(
         input.push_str("\n## Routing Intent\n");
         input.push_str(intent);
         input.push('\n');
+    }
+    if !migration_sources.is_empty() {
+        input.push_str("\n## Migration Hints\n");
+        for source in migration_sources {
+            let source = source.trim();
+            if source.is_empty() {
+                continue;
+            }
+            let _ = writeln!(input, "- {}", source);
+        }
     }
     input.push_str("\n## Recent Transcript\n");
     input.push_str(&build_private_docs_transcript(recent, policy));
@@ -724,6 +738,7 @@ mod tests {
             None,
             &[],
             Some("把持续有效的 inward plan 收到 governed docs，不要和 self_model 重复"),
+            &[],
             10,
             MemoryProfile::Embedded,
             &[],
@@ -732,6 +747,30 @@ mod tests {
 
         assert!(input.contains("## Routing Intent"));
         assert!(input.contains("governed docs"));
+    }
+
+    #[test]
+    fn private_docs_refresh_input_includes_migration_hints() {
+        let input = build_private_doc_workspace_refresh_input(
+            None,
+            Some("summary"),
+            None,
+            None,
+            &[],
+            Some("把更稳定的 inward work 收入 governed docs"),
+            &[
+                "private_garden:journal/current.md".to_string(),
+                "private_garden:notes/plan.md".to_string(),
+            ],
+            10,
+            MemoryProfile::Embedded,
+            &[],
+            memory_policy(MemoryProfile::Embedded).private_docs,
+        );
+
+        assert!(input.contains("## Migration Hints"));
+        assert!(input.contains("private_garden:journal/current.md"));
+        assert!(input.contains("private_garden:notes/plan.md"));
     }
 
     #[test]

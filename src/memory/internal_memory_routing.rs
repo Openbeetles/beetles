@@ -11,13 +11,17 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    memory_policy, render_execution_state_block, render_internal_memory_topology_block,
-    ExecutionState, InternalMemoryLayerFocus, InternalMemoryRoutingPolicy, MemoryProfile,
-    PrivateDocWorkspace, PrivateGardenDocRecord, SelfModel, SessionMessage,
+    memory_policy, normalize_private_garden_doc_path, render_execution_state_block,
+    render_internal_memory_topology_block, ExecutionState, InternalMemoryLayerFocus,
+    InternalMemoryRoutingPolicy, MemoryProfile, PrivateDocWorkspace, PrivateGardenDocRecord,
+    SelfModel, SessionMessage,
 };
 
-pub const INTERNAL_MEMORY_ROUTING_SYSTEM_PROMPT: &str = "You decide whether a persistent embodied AI assistant should refresh each private internal memory layer after the latest turn. Return JSON only: either null, or one object with boolean fields refresh_self_model, refresh_private_docs, refresh_private_garden, plus optional self_model_intent, private_docs_intent, and private_garden_intent strings. Choose true only when that layer should be rewritten now. If a layer is true, provide a short intent describing what that layer should capture so downstream writers avoid overlap. self_model is for durable private continuity and stance. private_docs is for compact governed subjective docs. private_garden is for free-form self-owned drafts, organization, and exploratory internal work. Use self-state pressure and current workspace shape to avoid unnecessary writes. If nothing should change, return null.";
+pub const INTERNAL_MEMORY_ROUTING_SYSTEM_PROMPT: &str = "You decide whether a persistent embodied AI assistant should refresh each private internal memory layer after the latest turn. Return JSON only: either null, or one object with boolean fields refresh_self_model, refresh_private_docs, refresh_private_garden, plus optional self_model_intent, private_docs_intent, private_garden_intent, self_model_sources, private_docs_sources, and private_garden_cleanup_paths. Choose true only when that layer should be rewritten now. If a layer is true, provide a short intent describing what that layer should capture so downstream writers avoid overlap. self_model_sources and private_docs_sources are optional short descriptors of material being distilled or promoted, such as private_docs.inner_journal or private_garden:journal/current.md. private_garden_cleanup_paths are optional garden-relative document paths that can be deleted after successful upstream promotion. self_model is for durable private continuity and stance. private_docs is for compact governed subjective docs. private_garden is for free-form self-owned drafts, organization, and exploratory internal work. Use self-state pressure and current workspace shape to avoid unnecessary writes. If nothing should change, return null.";
 const ROUTING_INTENT_MAX_CHARS: usize = 160;
+const ROUTING_SOURCE_MAX_CHARS: usize = 96;
+const ROUTING_MAX_SOURCES_PER_LAYER: usize = 4;
+const ROUTING_MAX_GARDEN_CLEANUP_PATHS: usize = 6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InternalMemoryRoutingInput<'a> {
@@ -35,10 +39,13 @@ pub struct InternalMemoryRoutingInput<'a> {
 pub struct InternalMemoryRoutingDecision {
     pub refresh_self_model: bool,
     pub self_model_intent: Option<String>,
+    pub self_model_sources: Vec<String>,
     pub refresh_private_docs: bool,
     pub private_docs_intent: Option<String>,
+    pub private_docs_sources: Vec<String>,
     pub refresh_private_garden: bool,
     pub private_garden_intent: Option<String>,
+    pub private_garden_cleanup_paths: Vec<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -48,13 +55,19 @@ struct RawInternalMemoryRoutingDecision {
     #[serde(default)]
     self_model_intent: Option<String>,
     #[serde(default)]
+    self_model_sources: Vec<String>,
+    #[serde(default)]
     refresh_private_docs: bool,
     #[serde(default)]
     private_docs_intent: Option<String>,
     #[serde(default)]
+    private_docs_sources: Vec<String>,
+    #[serde(default)]
     refresh_private_garden: bool,
     #[serde(default)]
     private_garden_intent: Option<String>,
+    #[serde(default)]
+    private_garden_cleanup_paths: Vec<String>,
 }
 
 pub(crate) fn should_route_internal_memory_turn(
@@ -182,6 +195,8 @@ fn build_internal_memory_routing_input(
     );
     input.push_str("- Choose private_garden for exploratory notes, reorganization, temporary drafts, or self-owned workspace cleanup.\n");
     input.push_str("- When a layer is true, give it a short intent that clarifies what belongs there and therefore should stay out of the other layers.\n");
+    input.push_str("- If self_model or private_docs is distilling material from another internal layer, include short source descriptors so downstream writers know what is being promoted.\n");
+    input.push_str("- If a garden document becomes redundant after successful upstream promotion, include its garden-relative path in private_garden_cleanup_paths.\n");
     input.push_str("- Multiple true values are allowed only when multiple layers genuinely need different updates.\n");
     input
 }
@@ -215,15 +230,26 @@ fn parse_internal_memory_routing_response(raw: &str) -> Option<InternalMemoryRou
             parsed.self_model_intent,
             parsed.refresh_self_model,
         ),
+        self_model_sources: normalize_routing_sources(
+            parsed.self_model_sources,
+            parsed.refresh_self_model,
+        ),
         refresh_private_docs: parsed.refresh_private_docs,
         private_docs_intent: normalize_routing_intent(
             parsed.private_docs_intent,
+            parsed.refresh_private_docs,
+        ),
+        private_docs_sources: normalize_routing_sources(
+            parsed.private_docs_sources,
             parsed.refresh_private_docs,
         ),
         refresh_private_garden: parsed.refresh_private_garden,
         private_garden_intent: normalize_routing_intent(
             parsed.private_garden_intent,
             parsed.refresh_private_garden,
+        ),
+        private_garden_cleanup_paths: normalize_private_garden_cleanup_paths(
+            parsed.private_garden_cleanup_paths,
         ),
     };
     (decision.refresh_self_model
@@ -244,6 +270,45 @@ fn normalize_routing_intent(raw: Option<String>, enabled: bool) -> Option<String
     Some(truncate_content_to_max(trimmed, ROUTING_INTENT_MAX_CHARS).into_owned())
 }
 
+fn normalize_routing_sources(raw: Vec<String>, enabled: bool) -> Vec<String> {
+    if !enabled {
+        return Vec::new();
+    }
+    let mut normalized = Vec::new();
+    for source in raw {
+        let trimmed = source.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let source = truncate_content_to_max(trimmed, ROUTING_SOURCE_MAX_CHARS).into_owned();
+        if normalized.contains(&source) {
+            continue;
+        }
+        normalized.push(source);
+        if normalized.len() >= ROUTING_MAX_SOURCES_PER_LAYER {
+            break;
+        }
+    }
+    normalized
+}
+
+fn normalize_private_garden_cleanup_paths(raw: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for path in raw {
+        let Ok(path) = normalize_private_garden_doc_path(&path) else {
+            continue;
+        };
+        if normalized.contains(&path) {
+            continue;
+        }
+        normalized.push(path);
+        if normalized.len() >= ROUTING_MAX_GARDEN_CLEANUP_PATHS {
+            break;
+        }
+    }
+    normalized
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,7 +323,7 @@ mod tests {
     #[test]
     fn routing_parser_keeps_true_targets() {
         let parsed = parse_internal_memory_routing_response(
-            r#"{"refresh_self_model":true,"self_model_intent":"沉淀最近形成的持续自我定位","refresh_private_docs":false,"private_docs_intent":"should drop","refresh_private_garden":true,"private_garden_intent":"把当前草稿整理成更稳定的目录结构"}"#,
+            r#"{"refresh_self_model":true,"self_model_intent":"沉淀最近形成的持续自我定位","self_model_sources":["private_docs.inner_journal","private_garden:journal/current.md"],"refresh_private_docs":false,"private_docs_intent":"should drop","private_docs_sources":["private_garden:notes/skip.md"],"refresh_private_garden":true,"private_garden_intent":"把当前草稿整理成更稳定的目录结构","private_garden_cleanup_paths":["journal/current.md","../escape","journal/current.md"]}"#,
         )
         .unwrap();
 
@@ -269,10 +334,22 @@ mod tests {
             parsed.self_model_intent.as_deref(),
             Some("沉淀最近形成的持续自我定位")
         );
+        assert_eq!(
+            parsed.self_model_sources,
+            vec![
+                "private_docs.inner_journal".to_string(),
+                "private_garden:journal/current.md".to_string()
+            ]
+        );
         assert!(parsed.private_docs_intent.is_none());
+        assert!(parsed.private_docs_sources.is_empty());
         assert_eq!(
             parsed.private_garden_intent.as_deref(),
             Some("把当前草稿整理成更稳定的目录结构")
+        );
+        assert_eq!(
+            parsed.private_garden_cleanup_paths,
+            vec!["journal/current.md".to_string()]
         );
     }
 

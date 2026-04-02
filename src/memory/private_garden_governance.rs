@@ -198,6 +198,7 @@ pub fn run_private_garden_governance(
         self_model.as_ref(),
         private_workspace.as_ref(),
         None,
+        &[],
         None,
         None,
     )
@@ -214,6 +215,7 @@ pub(crate) fn run_private_garden_governance_with_state(
     self_model: Option<&SelfModel>,
     private_workspace: Option<&PrivateDocWorkspace>,
     routing_intent: Option<&str>,
+    upstream_cleanup_paths: &[String],
     decision_override: Option<bool>,
     recent_override: Option<&[SessionMessage]>,
 ) -> Result<PrivateGardenGovernanceOutcome> {
@@ -241,6 +243,7 @@ pub(crate) fn run_private_garden_governance_with_state(
         self_model,
         private_workspace,
         routing_intent,
+        upstream_cleanup_paths,
         &snapshot,
         recent,
         input.now_secs,
@@ -340,6 +343,7 @@ fn build_private_garden_governance_input(
     self_model: Option<&SelfModel>,
     private_workspace: Option<&PrivateDocWorkspace>,
     routing_intent: Option<&str>,
+    upstream_cleanup_paths: &[String],
     snapshot: &PrivateGardenSnapshot,
     recent: &[SessionMessage],
     now_secs: u64,
@@ -404,6 +408,17 @@ fn build_private_garden_governance_input(
         input.push_str("\n## Routing Intent\n");
         input.push_str(intent);
         input.push('\n');
+    }
+    if !upstream_cleanup_paths.is_empty() {
+        input.push_str("\n## Upstream Promotions Already Applied\n");
+        input.push_str("These garden docs were already promoted upstream and deleted before this governance pass:\n");
+        for path in upstream_cleanup_paths {
+            let path = path.trim();
+            if path.is_empty() {
+                continue;
+            }
+            let _ = writeln!(input, "- {}", path);
+        }
     }
     input.push_str("\n## Existing Private Garden\n");
     input.push_str(&render_private_garden_docs_snapshot(
@@ -945,6 +960,7 @@ mod tests {
             None,
             None,
             Some("把探索性内容继续留在 garden，并顺手整理目录结构"),
+            &[],
             &PrivateGardenSnapshot {
                 records: vec![PrivateGardenDocRecord {
                     path: "journal/active.md".to_string(),
@@ -968,6 +984,44 @@ mod tests {
 
         assert!(input.contains("## Routing Intent"));
         assert!(input.contains("继续留在 garden"));
+    }
+
+    #[test]
+    fn private_garden_governance_input_includes_upstream_cleanup_context() {
+        let input = build_private_garden_governance_input(
+            Some("summary"),
+            None,
+            None,
+            None,
+            Some("继续整理剩余探索内容"),
+            &[
+                "journal/promoted.md".to_string(),
+                "notes/merged.md".to_string(),
+            ],
+            &PrivateGardenSnapshot {
+                records: vec![PrivateGardenDocRecord {
+                    path: "journal/active.md".to_string(),
+                    updated_at: 1,
+                    revision: 1,
+                    bytes: 16,
+                    preview: "preview".to_string(),
+                }],
+                docs: vec![PrivateGardenDoc {
+                    path: "journal/active.md".to_string(),
+                    content: "活跃草稿".to_string(),
+                    updated_at: 1,
+                    revision: 1,
+                }],
+            },
+            &[],
+            10,
+            MemoryProfile::Embedded,
+            memory_policy(MemoryProfile::Embedded).private_garden_governance,
+        );
+
+        assert!(input.contains("## Upstream Promotions Already Applied"));
+        assert!(input.contains("journal/promoted.md"));
+        assert!(input.contains("notes/merged.md"));
     }
 
     #[test]
