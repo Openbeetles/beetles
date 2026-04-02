@@ -59,6 +59,20 @@ pub(crate) fn with_fs_lock<R>(f: impl FnOnce() -> Result<R>) -> Result<R> {
     result
 }
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn with_fs_lock_value<R>(f: impl FnOnce() -> R) -> R {
+    let wait_start = Instant::now();
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    let _guard = lock_spiffs();
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    let _guard = lock_host_spiffs();
+    crate::metrics::record_spiffs_lock_wait_us(wait_start.elapsed().as_micros());
+    let hold_start = Instant::now();
+    let result = f();
+    crate::metrics::record_spiffs_lock_hold_us(hold_start.elapsed().as_micros());
+    result
+}
+
 /// 单次写入最大字节数：ESP 与 SPIFFS 分区一致；host/Linux 放宽至 1MiB（仍与 orchestrator 上界策略独立）。
 /// Max write size: ESP SPIFFS bound; host allows 1MiB single-file writes (still bounded).
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -112,16 +126,18 @@ pub fn init_spiffs() -> Result<()> {
 pub fn spiffs_usage() -> Option<(usize, usize)> {
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     {
-        let _guard = lock_spiffs();
-        let mut total: usize = 0;
-        let mut used: usize = 0;
-        let ret =
-            unsafe { esp_idf_svc::sys::esp_spiffs_info(std::ptr::null(), &mut total, &mut used) };
-        if ret == 0 {
-            Some((total, used))
-        } else {
-            None
-        }
+        with_fs_lock_value(|| {
+            let mut total: usize = 0;
+            let mut used: usize = 0;
+            let ret = unsafe {
+                esp_idf_svc::sys::esp_spiffs_info(std::ptr::null(), &mut total, &mut used)
+            };
+            if ret == 0 {
+                Some((total, used))
+            } else {
+                None
+            }
+        })
     }
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     {
@@ -212,36 +228,32 @@ pub fn write_file(path: impl AsRef<Path>, data: &[u8]) -> Result<()> {
 
 /// 删除文件。仅删除文件，不删目录。用于技能删除等。
 pub fn remove_file(path: impl AsRef<Path>) -> Result<()> {
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    let _guard = lock_spiffs();
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    let _guard = lock_host_spiffs();
-    let p = path.as_ref();
-    let path_str = p
-        .to_str()
-        .ok_or_else(|| Error::config("spiffs_remove", "invalid path"))?;
-    std::fs::remove_file(path_str).map_err(|e| Error::io("spiffs_remove", e))?;
-    Ok(())
+    let p = path.as_ref().to_path_buf();
+    with_fs_lock(|| {
+        let path_str = p
+            .to_str()
+            .ok_or_else(|| Error::config("spiffs_remove", "invalid path"))?;
+        std::fs::remove_file(path_str).map_err(|e| Error::io("spiffs_remove", e))?;
+        Ok(())
+    })
 }
 
 /// 列目录条目（仅一层）。路径如 /spiffs/config。
 pub fn list_dir(path: impl AsRef<Path>) -> Result<Vec<String>> {
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    let _guard = lock_spiffs();
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    let _guard = lock_host_spiffs();
-    let p = path.as_ref();
-    let path_str = p
-        .to_str()
-        .ok_or_else(|| Error::config("spiffs_list", "invalid path"))?;
-    let mut names = Vec::new();
-    for e in std::fs::read_dir(path_str).map_err(|e| Error::io("spiffs_list", e))? {
-        let e = e.map_err(|e| Error::io("spiffs_list", e))?;
-        if let Some(s) = e.file_name().to_str() {
-            names.push(s.to_string());
+    let p = path.as_ref().to_path_buf();
+    with_fs_lock(|| {
+        let path_str = p
+            .to_str()
+            .ok_or_else(|| Error::config("spiffs_list", "invalid path"))?;
+        let mut names = Vec::new();
+        for e in std::fs::read_dir(path_str).map_err(|e| Error::io("spiffs_list", e))? {
+            let e = e.map_err(|e| Error::io("spiffs_list", e))?;
+            if let Some(s) = e.file_name().to_str() {
+                names.push(s.to_string());
+            }
         }
-    }
-    Ok(names)
+        Ok(names)
+    })
 }
 
 // --- 子模块与对外类型 ---

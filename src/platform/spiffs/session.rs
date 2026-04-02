@@ -245,11 +245,15 @@ fn resolve_chat_id_from_session_filename(dir: &mut PathBuf, name: &str) -> Optio
 
 /// 列举 chat_id 数量上界（与 MAX_SESSION_ENTRIES 同量级）。
 const MAX_LIST_CHAT_IDS: usize = 128;
+/// 活跃会话 recent-cache 的 chat 数量上界，避免在 ESP 上无限放大 RAM 占用。
+const RECENT_CACHE_CHAT_LIMIT: usize = 16;
 
 /// SessionStore 的 SPIFFS 实现；单会话最多 MAX_SESSION_ENTRIES 条，超限淘汰最旧。
 /// Counts are cached in-process so the hot append path only writes the JSONL body.
 pub struct SpiffsSessionStore {
     counts: Mutex<HashMap<String, usize>>,
+    chat_ids: Mutex<Option<Vec<String>>>,
+    recent: Mutex<HashMap<String, VecDeque<SessionMessage>>>,
 }
 
 impl Default for SpiffsSessionStore {
@@ -262,7 +266,107 @@ impl SpiffsSessionStore {
     pub fn new() -> Self {
         Self {
             counts: Mutex::new(HashMap::new()),
+            chat_ids: Mutex::new(None),
+            recent: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn ensure_chat_ids_loaded(&self) -> Result<Vec<String>> {
+        if let Some(cached) = self
+            .chat_ids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .cloned()
+        {
+            return Ok(cached);
+        }
+
+        let mut p = state_mount_path();
+        p.push(REL_PATH_SESSIONS_DIR);
+        let names = match list_dir(&p) {
+            Ok(n) => n,
+            Err(e) => {
+                log::warn!("[{}] list_dir {:?} failed: {}", TAG, p, e);
+                return Ok(Vec::new());
+            }
+        };
+        let mut resolved: Vec<String> = Vec::with_capacity(MAX_LIST_CHAT_IDS.min(names.len()));
+        for name in names {
+            let Some(chat_id) = resolve_chat_id_from_session_filename(&mut p, &name) else {
+                continue;
+            };
+            if !chat_id.is_empty() {
+                resolved.push(chat_id);
+                if resolved.len() >= MAX_LIST_CHAT_IDS {
+                    break;
+                }
+            }
+        }
+
+        let mut guard = self.chat_ids.lock().unwrap_or_else(|e| e.into_inner());
+        let cached = guard.get_or_insert_with(|| resolved.clone());
+        Ok(cached.clone())
+    }
+
+    fn note_chat_id_present(&self, chat_id: &str) {
+        let mut guard = self.chat_ids.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(ids) = guard.as_mut() {
+            let exists = ids.iter().any(|id| id == chat_id);
+            if !exists && ids.len() < MAX_LIST_CHAT_IDS {
+                ids.push(chat_id.to_string());
+            }
+        }
+    }
+
+    fn note_chat_id_removed(&self, chat_id: &str) {
+        let mut guard = self.chat_ids.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(ids) = guard.as_mut() {
+            ids.retain(|id| id != chat_id);
+        }
+    }
+
+    fn load_recent_snapshot_unlocked(path: &Path, cap: usize) -> Result<VecDeque<SessionMessage>> {
+        let cap = cap.min(MAX_SESSION_ENTRIES);
+        if cap == 0 {
+            return Ok(VecDeque::new());
+        }
+        let buf = read_existing_file_unlocked(path).unwrap_or_default();
+        Ok(Self::recent_from_buf(&buf, cap))
+    }
+
+    fn recent_from_buf(buf: &[u8], cap: usize) -> VecDeque<SessionMessage> {
+        let mut recent = VecDeque::with_capacity(cap);
+        for raw_line in buf.split(|&b| b == b'\n') {
+            if raw_line.is_empty() {
+                continue;
+            }
+            if let Ok(s) = std::str::from_utf8(raw_line) {
+                if parse_chat_id_header(s).is_some() {
+                    continue;
+                }
+                if let Some(m) = parse_jsonl_line(s) {
+                    if recent.len() == cap {
+                        recent.pop_front();
+                    }
+                    recent.push_back(m);
+                }
+            }
+        }
+        recent
+    }
+
+    fn upsert_recent_cache(
+        recent_cache: &mut HashMap<String, VecDeque<SessionMessage>>,
+        chat_id: &str,
+        recent: VecDeque<SessionMessage>,
+    ) {
+        if !recent_cache.contains_key(chat_id) && recent_cache.len() >= RECENT_CACHE_CHAT_LIMIT {
+            if let Some(evict_key) = recent_cache.keys().next().cloned() {
+                recent_cache.remove(&evict_key);
+            }
+        }
+        recent_cache.insert(chat_id.to_string(), recent);
     }
 }
 
@@ -288,6 +392,7 @@ impl SessionStore for SpiffsSessionStore {
         let (path, write_header) = session_path(chat_id)?;
         with_fs_lock(|| {
             let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+            let mut recent_cache = self.recent.lock().unwrap_or_else(|e| e.into_inner());
             let (msg_count, existing_buf) = match counts.get(chat_id).copied() {
                 Some(count) => (count, None),
                 None => {
@@ -302,34 +407,34 @@ impl SessionStore for SpiffsSessionStore {
                     .map(|buf| !buf.is_empty() && !buf.ends_with(b"\n"))
                     .unwrap_or(false);
                 append_session_line_unlocked(&path, write_header, chat_id, prepend_newline, &line)?;
+                if let Some(recent) = recent_cache.get_mut(chat_id) {
+                    if recent.len() == MAX_SESSION_ENTRIES {
+                        recent.pop_front();
+                    }
+                    recent.push_back(msg.clone());
+                }
                 counts.insert(chat_id.to_string(), msg_count.saturating_add(1));
+                drop(recent_cache);
+                drop(counts);
+                self.note_chat_id_present(chat_id);
                 return Ok(());
             }
 
-            // Slow path: 已满，需解析、淘汰最旧、整文件重写。
-            let existing_buf = existing_buf
-                .unwrap_or_else(|| read_existing_file_unlocked(&path).unwrap_or_default());
-            let mut messages: Vec<SessionMessage> = Vec::with_capacity(MAX_SESSION_ENTRIES);
-            let mut first = true;
-            for raw_line in existing_buf.split(|&b| b == b'\n') {
-                if raw_line.is_empty() {
-                    continue;
-                }
-                if let Ok(s) = std::str::from_utf8(raw_line) {
-                    if first && parse_chat_id_header(s).is_some() {
-                        first = false;
-                        continue;
-                    }
-                    first = false;
-                    if let Some(m) = parse_jsonl_line(s) {
-                        messages.push(m);
-                    }
-                }
-            }
-
-            messages.push(msg);
-            if messages.len() > MAX_SESSION_ENTRIES {
-                messages.drain(0..(messages.len() - MAX_SESSION_ENTRIES));
+            // Slow path: 触顶时优先走 recent-cache，避免每次都全文件解析。
+            let mut messages = if let Some(recent) = recent_cache.get(chat_id) {
+                recent.clone()
+            } else {
+                let loaded = if let Some(buf) = existing_buf.as_deref() {
+                    Self::recent_from_buf(buf, MAX_SESSION_ENTRIES)
+                } else {
+                    Self::load_recent_snapshot_unlocked(&path, MAX_SESSION_ENTRIES)?
+                };
+                Self::upsert_recent_cache(&mut recent_cache, chat_id, loaded.clone());
+                loaded
+            };
+            messages.push_back(msg.clone());
+            while messages.len() > MAX_SESSION_ENTRIES {
+                messages.pop_front();
             }
 
             let cap = messages
@@ -347,13 +452,17 @@ impl SessionStore for SpiffsSessionStore {
                 body.push_str(chat_id);
                 body.push('\n');
             }
-            for m in &messages {
+            for m in messages.iter() {
                 let json_line = serde_json::to_string(m).unwrap_or_default();
                 body.push_str(&json_line);
                 body.push('\n');
             }
             write_session_body_unlocked(&path, body.as_bytes())?;
+            Self::upsert_recent_cache(&mut recent_cache, chat_id, messages.clone());
             counts.insert(chat_id.to_string(), messages.len());
+            drop(recent_cache);
+            drop(counts);
+            self.note_chat_id_present(chat_id);
             Ok(())
         })
     }
@@ -364,29 +473,35 @@ impl SessionStore for SpiffsSessionStore {
         if cap == 0 {
             return Ok(Vec::new());
         }
-        let mut recent: VecDeque<SessionMessage> = VecDeque::with_capacity(cap);
-        if let Ok(buf) = read_file(&path) {
-            for raw_line in buf.split(|&b| b == b'\n') {
-                if raw_line.is_empty() {
-                    continue;
-                }
-                if let Ok(s) = std::str::from_utf8(raw_line) {
-                    if parse_chat_id_header(s).is_some() {
-                        continue;
-                    }
-                    if let Some(m) = parse_jsonl_line(s) {
-                        if recent.len() == cap {
-                            recent.pop_front();
-                        }
-                        recent.push_back(m);
-                    }
-                }
-            }
+        if let Some(recent) = self
+            .recent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(chat_id)
+            .cloned()
+        {
+            let start = recent.len().saturating_sub(cap);
+            return Ok(recent.into_iter().skip(start).collect());
+        }
+        let recent = Self::load_recent_snapshot_unlocked(&path, cap)?;
+        if cap == MAX_SESSION_ENTRIES {
+            let mut recent_cache = self.recent.lock().unwrap_or_else(|e| e.into_inner());
+            Self::upsert_recent_cache(&mut recent_cache, chat_id, recent.clone());
         }
         Ok(recent.into_iter().collect())
     }
 
     fn message_count(&self, chat_id: &str) -> Result<usize> {
+        if let Some(recent) = self
+            .recent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(chat_id)
+        {
+            if recent.len() == MAX_SESSION_ENTRIES {
+                return Ok(MAX_SESSION_ENTRIES);
+            }
+        }
         let (path, _) = session_path(chat_id)?;
         if let Some(count) = self
             .counts
@@ -419,33 +534,16 @@ impl SessionStore for SpiffsSessionStore {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(chat_id.to_string(), 0);
+        self.recent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(chat_id);
         let _ = super::remove_file(count_path(&path));
         Ok(())
     }
 
     fn list_chat_ids(&self) -> Result<Vec<String>> {
-        let mut p = state_mount_path();
-        p.push(REL_PATH_SESSIONS_DIR);
-        let names = match list_dir(&p) {
-            Ok(n) => n,
-            Err(e) => {
-                log::warn!("[{}] list_dir {:?} failed: {}", TAG, p, e);
-                return Ok(Vec::new());
-            }
-        };
-        let mut out: Vec<String> = Vec::with_capacity(MAX_LIST_CHAT_IDS.min(names.len()));
-        for name in names {
-            let Some(chat_id) = resolve_chat_id_from_session_filename(&mut p, &name) else {
-                continue;
-            };
-            if !chat_id.is_empty() {
-                out.push(chat_id);
-                if out.len() >= MAX_LIST_CHAT_IDS {
-                    break;
-                }
-            }
-        }
-        Ok(out)
+        self.ensure_chat_ids_loaded()
     }
 
     fn gc_stale(&self, max_age_secs: u64) -> Result<usize> {
@@ -483,6 +581,11 @@ impl SessionStore for SpiffsSessionStore {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .remove(chat_id.as_str());
+                    self.recent
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(chat_id.as_str());
+                    self.note_chat_id_removed(&chat_id);
                 }
                 let _ = super::remove_file(count_path(&p));
                 removed += 1;
@@ -502,6 +605,11 @@ impl SessionStore for SpiffsSessionStore {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(chat_id);
+        self.recent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(chat_id);
+        self.note_chat_id_removed(chat_id);
         if path.exists() {
             super::remove_file(&path)?;
         }

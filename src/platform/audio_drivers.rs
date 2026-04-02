@@ -8,13 +8,15 @@ use crate::error::{Error, Result};
 #[cfg(target_arch = "xtensa")]
 use crate::platform::heap::{alloc_spiram_buffer, free_spiram_buffer};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use crate::runtime::thread_plan;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::sync::{Arc, Condvar, Mutex};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::thread::JoinHandle;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
 // I2S handle wrapper types
@@ -725,13 +727,18 @@ impl AudioPipelineState {
         let mic_enabled = backend.mic_ready();
         let speaker_enabled = backend.speaker_ready();
         let worker_shared = Arc::clone(&shared);
-        let worker = std::thread::Builder::new()
-            .name("audio_io_worker".to_string())
-            .stack_size(8192)
-            .spawn(move || {
+        let worker_plan = thread_plan("audio_io_worker");
+        let worker = crate::util::spawn_guarded_with_profile_handle(
+            "audio_io_worker",
+            8192,
+            worker_plan.core,
+            worker_plan.role,
+            move || {
+                crate::platform::task_wdt::register_current_task_to_task_wdt();
                 let mut mic_frame = vec![0i16; 320];
                 let mut speaker_frame = vec![0i16; 1024];
                 loop {
+                    let loop_start = Instant::now();
                     crate::metrics::record_audio_worker_turn();
                     if worker_shared.stop.load(Ordering::Relaxed) {
                         break;
@@ -748,9 +755,13 @@ impl AudioPipelineState {
                             worker_shared.as_ref(),
                             &mut speaker_frame,
                         ) {
+                            let speaker_write_start = Instant::now();
                             if let Err(e) = backend.write_speaker_frame_pcm16(&speaker_frame[..n]) {
                                 log::warn!("[audio] speaker frame write failed: {}", e);
                             } else {
+                                crate::metrics::record_audio_speaker_write_us(
+                                    speaker_write_start.elapsed().as_micros(),
+                                );
                                 progressed = true;
                             }
                         }
@@ -758,8 +769,12 @@ impl AudioPipelineState {
 
                     if backend.mic_ready() && mic_read_needed {
                         crate::metrics::record_audio_mic_poll_turn();
+                        let mic_read_start = Instant::now();
                         match backend.read_mic_frame_pcm16(&mut mic_frame) {
                             Ok(n) if n > 0 => {
+                                crate::metrics::record_audio_mic_read_us(
+                                    mic_read_start.elapsed().as_micros(),
+                                );
                                 crate::metrics::record_audio_mic_frame_read();
                                 // Tee raw PCM to the wake-word engine BEFORE pushing to the
                                 // shared ring buffer.  This avoids contention with voice_input
@@ -776,9 +791,15 @@ impl AudioPipelineState {
                                 progressed = true;
                             }
                             Ok(_) => {
+                                crate::metrics::record_audio_mic_read_us(
+                                    mic_read_start.elapsed().as_micros(),
+                                );
                                 crate::metrics::record_audio_mic_zero_read();
                             }
                             Err(e) => {
+                                crate::metrics::record_audio_mic_read_us(
+                                    mic_read_start.elapsed().as_micros(),
+                                );
                                 log::debug!("[audio] mic read frame failed: {}", e);
                             }
                         }
@@ -799,11 +820,11 @@ impl AudioPipelineState {
                             }));
                         }
                     }
+                    crate::metrics::record_audio_loop_us(loop_start.elapsed().as_micros());
                 }
-            })
-            .map_err(|e| {
-                Error::config("audio_init", format!("spawn audio worker failed: {}", e))
-            })?;
+            },
+        )
+        .map_err(|e| Error::config("audio_init", format!("spawn audio worker failed: {}", e)))?;
 
         Ok(Self {
             mic_enabled,
