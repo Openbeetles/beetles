@@ -67,6 +67,7 @@ pub struct LongTermMemoryExtractionTurnInput<'a> {
     pub reply_content: &'a str,
     pub after_count: usize,
     pub pressure: PressureLevel,
+    pub external_content_used: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,6 +82,9 @@ impl LongTermExtractionPolicy {
             return false;
         }
         if input.pressure != PressureLevel::Normal {
+            return false;
+        }
+        if input.external_content_used {
             return false;
         }
         !input.user_content.trim().is_empty() && !input.reply_content.trim().is_empty()
@@ -1159,6 +1163,7 @@ mod tests {
             reply_content: "明白，这轮我会先审查调用链，然后把提取调度、脏标记和冷却状态统一收口。",
             after_count,
             pressure: PressureLevel::Normal,
+            external_content_used: false,
         }
     }
 
@@ -1172,6 +1177,7 @@ mod tests {
                 reply_content: "ok",
                 after_count: 12,
                 pressure: PressureLevel::Normal,
+                external_content_used: false,
             },
             None,
             MemoryProfile::Embedded,
@@ -1190,6 +1196,7 @@ mod tests {
                 reply_content: "好，继续。",
                 after_count: 8,
                 pressure: PressureLevel::Normal,
+                external_content_used: false,
             },
             None,
             MemoryProfile::Embedded,

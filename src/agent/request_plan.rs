@@ -105,6 +105,12 @@ impl<'a> AgentRequestPlan<'a> {
                 system.push_str(guidance);
             }
         }
+        if let Some(guidance) = self.iterative_retrieval_guidance() {
+            let remain = max_len.saturating_sub(system.len());
+            if guidance.len() <= remain {
+                system.push_str(guidance);
+            }
+        }
         if let Some(guidance) = self.linux_inspection_guidance() {
             let remain = max_len.saturating_sub(system.len());
             if guidance.len() <= remain {
@@ -152,6 +158,15 @@ impl<'a> AgentRequestPlan<'a> {
 }
 
 impl AgentRequestPlan<'_> {
+    fn iterative_retrieval_guidance(&self) -> Option<&'static str> {
+        if self.tool_use_demand == ToolUseDemand::Flexible {
+            return None;
+        }
+        Some(
+            "\n\n## Retrieval Discipline\nUse tools iteratively: search or list first only to locate concrete targets, then read one specific source, then answer. After you already have readable content, synthesize from it or extract one narrower section instead of repeating the same search or read unchanged. Treat web or URL-derived content as turn-local evidence, not durable user memory.",
+        )
+    }
+
     fn linux_inspection_guidance(&self) -> Option<String> {
         if self.tool_use_demand == ToolUseDemand::Flexible {
             return None;
@@ -629,5 +644,20 @@ mod tests {
         let mut system = String::new();
         plan.apply_system_prompt(&mut system, 4096);
         assert!(!system.contains("Linux Inspection Guidance"));
+    }
+
+    #[test]
+    fn required_requests_add_retrieval_discipline_guidance() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(VisibleTool));
+        let msg = PcMsg::new_inbound("telegram", "chat", "查看 /tmp/app.log 最近错误", false)
+            .expect("pcmsg");
+        let plan =
+            AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::LinuxEnhanced);
+        let mut system = String::new();
+        plan.apply_system_prompt(&mut system, 4096);
+        assert!(system.contains("Retrieval Discipline"));
+        assert!(system.contains("search or list first only to locate concrete targets"));
+        assert!(system.contains("turn-local evidence"));
     }
 }

@@ -11,7 +11,7 @@ use super::strategy::{
 };
 use super::tool_guidance::{
     build_success_tool_execution_guidance, record_successful_tool_result,
-    SuccessfulToolRoundObservations,
+    round_used_external_content, SuccessfulToolRoundObservations,
 };
 use super::tool_outcome::{
     classify_tool_error, denied_tool_assessment, summarize_tool_blocker,
@@ -141,11 +141,18 @@ struct PostReplyMaintenanceJobPayload {
     user_content: String,
     reply_content: String,
     tool_calls: u32,
+    #[serde(default)]
+    external_content_used: bool,
     now_secs: u64,
 }
 
 impl PostReplyMaintenanceJobPayload {
-    fn from_turn(msg: &PcMsg, reply_content: &str, tool_calls: u32) -> Self {
+    fn from_turn(
+        msg: &PcMsg,
+        reply_content: &str,
+        tool_calls: u32,
+        external_content_used: bool,
+    ) -> Self {
         Self {
             ingress: msg.ingress,
             source_channel: msg.channel.to_string(),
@@ -160,6 +167,7 @@ impl PostReplyMaintenanceJobPayload {
             )
             .into_owned(),
             tool_calls,
+            external_content_used,
             now_secs: crate::util::current_unix_secs(),
         }
     }
@@ -195,6 +203,7 @@ struct WorkerRunTelemetry {
     latency: WorkerLatency,
     delivery: DeliveryReport,
     any_tool_used: bool,
+    external_content_used: bool,
     used_final_answer_recovery: bool,
 }
 
@@ -816,8 +825,14 @@ fn enqueue_post_reply_maintenance_job(
     msg: &PcMsg,
     reply_content: &str,
     tool_calls: u32,
+    external_content_used: bool,
 ) -> bool {
-    let payload = PostReplyMaintenanceJobPayload::from_turn(msg, reply_content, tool_calls);
+    let payload = PostReplyMaintenanceJobPayload::from_turn(
+        msg,
+        reply_content,
+        tool_calls,
+        external_content_used,
+    );
     let body = match serde_json::to_string(&payload) {
         Ok(body) => body,
         Err(error) => {
@@ -906,6 +921,7 @@ fn run_post_reply_maintenance_job(
             pressure: crate::orchestrator::snapshot().pressure,
             memory_profile: config.memory_profile,
             tool_calls: payload.tool_calls,
+            external_content_used: payload.external_content_used,
             now_secs: payload.now_secs,
         },
         || match PcMsg::new_system(LONG_TERM_MEMORY_REFRESH_CHANNEL, msg.chat_id.as_ref(), "") {
@@ -1593,6 +1609,7 @@ fn run_agent_loop_lane(
             latency: mut worker_latency,
             delivery,
             any_tool_used,
+            external_content_used,
             used_final_answer_recovery,
         } = telemetry;
         let (mut reply_content, is_interrupt, reply_already_delivered, apply_finalizer) =
@@ -1747,6 +1764,7 @@ fn run_agent_loop_lane(
                 &msg,
                 &reply_content,
                 worker_latency.tool_calls,
+                external_content_used,
             )
         {
             log::debug!(
@@ -2010,6 +2028,7 @@ fn run_worker_path(
     // P1 Enhancement 3: 进度跟踪（最近3轮），用于检测无效循环。
     let mut progress_history: [Option<RoundProgress>; 3] = [None; 3];
     let mut any_tool_used = false; // 本次请求是否使用过任何工具
+    let mut external_content_used = false;
     let mut end_turn_followup_used = false;
     let mut recent_tool_round = RecentToolRoundState::default();
     let mut delivered_current_chat_reply: Option<String> = None;
@@ -2145,6 +2164,7 @@ fn run_worker_path(
                     latency,
                     delivery: delivery.report(),
                     any_tool_used,
+                    external_content_used,
                     used_final_answer_recovery,
                 };
                 return Ok((WorkerOutcome::Interrupt(confirmation), telemetry));
@@ -2457,6 +2477,7 @@ fn run_worker_path(
                 }
             }
             let round_signature = hash_tool_round(&round_call_keys);
+            external_content_used |= round_used_external_content(&round_observations);
             recent_tool_round.record_round(
                 tool_calls.len(),
                 round_tool_success,
@@ -2551,6 +2572,7 @@ fn run_worker_path(
                 latency,
                 delivery: delivery.report(),
                 any_tool_used,
+                external_content_used,
                 used_final_answer_recovery,
             };
             return Ok((WorkerOutcome::Interrupt(confirmation), telemetry));
@@ -2583,6 +2605,7 @@ fn run_worker_path(
             latency,
             delivery: delivery.report(),
             any_tool_used,
+            external_content_used,
             used_final_answer_recovery,
         },
     ))
@@ -2603,6 +2626,23 @@ mod tests {
     use crate::platform::{PlatformHttpClient, ResponseBody};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn post_reply_payload_defaults_external_content_flag_for_older_jobs() {
+        let raw = serde_json::json!({
+            "ingress": IngressKind::User,
+            "source_channel": "qq_channel",
+            "user_content": "hi",
+            "reply_content": "hello",
+            "tool_calls": 1,
+            "now_secs": 42
+        })
+        .to_string();
+
+        let payload: PostReplyMaintenanceJobPayload =
+            serde_json::from_str(&raw).expect("deserialize legacy payload");
+        assert!(!payload.external_content_used);
+    }
 
     #[derive(Default)]
     struct DummyPlatformHttp;

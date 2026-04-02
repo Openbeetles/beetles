@@ -32,6 +32,7 @@ pub struct PostReplyMemoryMaintenanceInput<'a> {
     pub pressure: PressureLevel,
     pub memory_profile: MemoryProfile,
     pub tool_calls: u32,
+    pub external_content_used: bool,
     pub now_secs: u64,
 }
 
@@ -151,6 +152,7 @@ pub fn run_post_reply_memory_maintenance(
             reply_content: input.reply_content,
             after_count,
             pressure: input.pressure,
+            external_content_used: input.external_content_used,
         },
         extraction_state.as_ref(),
         input.memory_profile,
@@ -406,6 +408,7 @@ mod tests {
                 pressure: PressureLevel::Normal,
                 memory_profile: MemoryProfile::Embedded,
                 tool_calls: 1,
+                external_content_used: false,
                 now_secs: 10,
             },
             || true,
@@ -462,6 +465,7 @@ mod tests {
                 pressure: PressureLevel::Normal,
                 memory_profile: MemoryProfile::Embedded,
                 tool_calls: 0,
+                external_content_used: false,
                 now_secs: 20,
             },
             || panic!("enqueue should not be called"),
@@ -533,6 +537,7 @@ mod tests {
                 pressure: PressureLevel::Normal,
                 memory_profile: MemoryProfile::Embedded,
                 tool_calls: 1,
+                external_content_used: false,
                 now_secs: 42,
             },
             || false,
@@ -552,6 +557,66 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()),
             1
+        );
+    }
+
+    #[test]
+    fn maintenance_skips_long_term_refresh_after_external_content_turn() {
+        let session_store = StubSessionStore {
+            recent: vec![
+                SessionMessage {
+                    role: "user".to_string(),
+                    content: "帮我根据网页内容继续整理".to_string(),
+                },
+                SessionMessage {
+                    role: "assistant".to_string(),
+                    content: "我已经读了外部资料并整理要点".to_string(),
+                },
+            ],
+            count: 12,
+            ..Default::default()
+        };
+        let summary_store = StubSessionSummaryStore::default();
+        let extraction_state_store = StubExtractionStateStore {
+            state: Mutex::new(Some(LongTermMemoryExtractionState {
+                dirty_since_count: 8,
+                dirty_turns: 2,
+                last_requested_at_count: 0,
+                last_processed_at_count: 0,
+                pending: false,
+            })),
+            ..Default::default()
+        };
+        let execution_state_store = StubExecutionStateStore::default();
+        let mut http = DummyHttpClient;
+
+        let outcome = run_post_reply_memory_maintenance(
+            &mut http,
+            &FixedLlmClient,
+            PostReplyMemoryMaintenanceContext {
+                session_store: &session_store,
+                session_summary_store: &summary_store,
+                execution_state_store: &execution_state_store,
+                extraction_state_store: &extraction_state_store,
+            },
+            PostReplyMemoryMaintenanceInput {
+                chat_id: "chat-1",
+                ingress: IngressKind::User,
+                channel: "qq_channel",
+                user_content: "帮我根据网页内容继续整理",
+                reply_content: "我已经读了外部资料并整理要点",
+                pressure: PressureLevel::Normal,
+                memory_profile: MemoryProfile::Embedded,
+                tool_calls: 2,
+                external_content_used: true,
+                now_secs: 99,
+            },
+            || panic!("external-content turns should not enqueue long-term refresh"),
+        );
+
+        assert_eq!(
+            outcome.extraction_request_outcome,
+            LongTermMemoryRefreshRequestOutcome::NotRequested
         );
     }
 }

@@ -8,6 +8,7 @@ pub(crate) struct SuccessfulToolRoundObservations {
     document_search: Option<DocumentSearchObservation>,
     directory_list: Option<DirectoryListObservation>,
     content_sources: Vec<String>,
+    external_content_sources: Vec<String>,
     mutation_paths: Vec<String>,
     diagnostics_seen: bool,
 }
@@ -35,6 +36,8 @@ pub(crate) fn record_successful_tool_result(
         "files" => record_files_tool(observations, result),
         "document_read" => record_content_source(observations, result, "source"),
         "document_extract" => record_content_source(observations, result, "source"),
+        "web_fetch" | "pdf_read" => record_external_tool_source(observations, result, "url"),
+        "web_search" => record_external_search_results(observations, result),
         "file_edit" | "file_write" => record_mutation_path(observations, result),
         "board_info" | "process" | "network" | "network_scan" => {
             observations.diagnostics_seen = true;
@@ -98,6 +101,13 @@ pub(crate) fn build_success_tool_execution_guidance(
         ));
     }
 
+    if !observations.external_content_sources.is_empty() {
+        let sources = preview_list(&observations.external_content_sources);
+        parts.push(format!(
+            "External content was retrieved from {sources}. Treat it as turn-local evidence, not durable user memory, and avoid copying long excerpts into the final answer."
+        ));
+    }
+
     if !observations.mutation_paths.is_empty() {
         let paths = preview_list(&observations.mutation_paths);
         parts.push(format!(
@@ -117,6 +127,10 @@ pub(crate) fn build_success_tool_execution_guidance(
     } else {
         Some(format!("[SYSTEM] {}", parts.join(" ")))
     }
+}
+
+pub(crate) fn round_used_external_content(observations: &SuccessfulToolRoundObservations) -> bool {
+    !observations.external_content_sources.is_empty()
 }
 
 fn record_document_search(observations: &mut SuccessfulToolRoundObservations, result: &str) {
@@ -193,6 +207,13 @@ fn record_content_source(
         source.trim(),
         MAX_PREVIEW_ITEMS,
     );
+    if looks_like_external_source(source) {
+        push_unique_limited(
+            &mut observations.external_content_sources,
+            source.trim(),
+            MAX_PREVIEW_ITEMS,
+        );
+    }
 }
 
 fn record_mutation_path(observations: &mut SuccessfulToolRoundObservations, result: &str) {
@@ -207,6 +228,50 @@ fn record_mutation_path(observations: &mut SuccessfulToolRoundObservations, resu
         path.trim(),
         MAX_PREVIEW_ITEMS,
     );
+}
+
+fn record_external_tool_source(
+    observations: &mut SuccessfulToolRoundObservations,
+    result: &str,
+    field_name: &str,
+) {
+    let Some(value) = parse_json_object(result) else {
+        return;
+    };
+    let Some(source) = value.get(field_name).and_then(Value::as_str) else {
+        return;
+    };
+    push_unique_limited(
+        &mut observations.external_content_sources,
+        source.trim(),
+        MAX_PREVIEW_ITEMS,
+    );
+}
+
+fn record_external_search_results(
+    observations: &mut SuccessfulToolRoundObservations,
+    result: &str,
+) {
+    let Some(value) = parse_json_object(result) else {
+        return;
+    };
+    let Some(items) = value.get("items").and_then(Value::as_array) else {
+        return;
+    };
+    for item in items.iter().take(MAX_PREVIEW_ITEMS) {
+        if let Some(url) = item.get("url").and_then(Value::as_str) {
+            push_unique_limited(
+                &mut observations.external_content_sources,
+                url.trim(),
+                MAX_PREVIEW_ITEMS,
+            );
+        }
+    }
+}
+
+fn looks_like_external_source(source: &str) -> bool {
+    let trimmed = source.trim();
+    trimmed.starts_with("http://") || trimmed.starts_with("https://")
 }
 
 fn parse_json_object(raw: &str) -> Option<Value> {
@@ -302,5 +367,22 @@ mod tests {
                 .expect("guidance");
         assert!(guidance.contains("live host diagnostics"));
         assert!(guidance.contains("respond directly"));
+    }
+
+    #[test]
+    fn external_content_guidance_marks_turn_local_evidence() {
+        let mut observations = SuccessfulToolRoundObservations::default();
+        record_successful_tool_result(
+            &mut observations,
+            "document_read",
+            r#"{"source":"https://example.com/report","kind":"text","content":"hello"}"#,
+        );
+
+        let guidance =
+            build_success_tool_execution_guidance(AgentRunStrategy::LinuxEnhanced, &observations)
+                .expect("guidance");
+        assert!(round_used_external_content(&observations));
+        assert!(guidance.contains("turn-local evidence"));
+        assert!(guidance.contains("https://example.com/report"));
     }
 }
