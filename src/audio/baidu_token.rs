@@ -3,7 +3,6 @@
 
 use crate::error::{Error, Result};
 use crate::platform::PlatformHttpClient;
-use serde_json::Value;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -23,6 +22,24 @@ struct CachedState {
     api_key: String,
     token: String,
     expires_at: Instant,
+}
+
+#[derive(serde::Deserialize)]
+struct BaiduTokenSuccessResponse {
+    #[serde(default)]
+    access_token: Option<String>,
+    #[serde(default)]
+    expires_in: Option<u64>,
+}
+
+#[derive(serde::Deserialize)]
+struct BaiduTokenErrorResponse {
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    error_description: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
 }
 
 impl BaiduTokenCache {
@@ -116,26 +133,25 @@ fn fetch_access_token(
             format!("token http status {}: {}", status, detail),
         ));
     }
-    let v: Value = serde_json::from_slice(body_buf.as_slice())
+    let v: BaiduTokenSuccessResponse = serde_json::from_slice(body_buf.as_slice())
         .map_err(|e| Error::config("baidu_token_parse", e.to_string()))?;
     let token = v
-        .get("access_token")
-        .and_then(|x| x.as_str())
+        .access_token
         .ok_or_else(|| Error::config("baidu_token", "missing access_token"))?
         .to_string();
-    let expires_in = v.get("expires_in").and_then(|x| x.as_u64());
+    let expires_in = v.expires_in;
     Ok((token, expires_in))
 }
 
 /// 非 200 时从响应体提取可读说明（脱敏、截断）；便于区分 invalid_client 与网关页。
 fn format_baidu_oauth_failure_detail(status: u16, body: &[u8]) -> String {
     const MAX: usize = 280;
-    if let Ok(v) = serde_json::from_slice::<Value>(body) {
-        let err = v.get("error").and_then(|x| x.as_str()).unwrap_or("");
+    if let Ok(v) = serde_json::from_slice::<BaiduTokenErrorResponse>(body) {
+        let err = v.error.as_deref().unwrap_or("");
         let desc = v
-            .get("error_description")
-            .and_then(|x| x.as_str())
-            .or_else(|| v.get("message").and_then(|x| x.as_str()))
+            .error_description
+            .as_deref()
+            .or(v.message.as_deref())
             .unwrap_or("");
         if !err.is_empty() || !desc.is_empty() {
             let mut s = format!("{}{}{}", err, if err.is_empty() { "" } else { ": " }, desc);

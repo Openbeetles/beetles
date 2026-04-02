@@ -24,6 +24,7 @@ $buildArgs = $args | Where-Object {
 }
 
 $buildTarget = "xtensa-esp32s3-espidf"
+$buildProfile = "release-size"
 $buildFeatures = ""
 if ($env:BOARD) {
   if ($env:BOARD -notmatch '^[a-z0-9-]+$') {
@@ -87,6 +88,7 @@ function Write-BuildStatus {
   Write-Host "  Chip (for flash): $(if ($flashChipDerived) { $flashChipDerived } else { '(N/A)' })"
   Write-Host "  Partition table:   $partitionTable"
   Write-Host "  Features:          $(if ($buildFeatures) { $buildFeatures } else { '(none)' })"
+  Write-Host "  Profile:           $buildProfile"
   if ($BeforeFlash -and $ChosenPort) {
     Write-Host "  Serial port:        $ChosenPort"
     Write-Host "  Partition table:    $(if ($partitionTableForFlash) { $partitionTableForFlash } else { $partitionCsv })"
@@ -172,7 +174,7 @@ if ($env:OS -eq "Windows_NT" -and -not $env:CARGO_TARGET_DIR -and -not $env:PC_O
 # 烧录时从此目录找二进制（与 CARGO_TARGET_DIR 一致）
 $effectiveTargetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $BuildRoot "target" }
 # 烧录时显式传入分区表与 bootloader。优先用本次构建生成的 partition-table.bin（与 bootloader 同源，含 spiffs），避免传 CSV 时解析/格式导致未写入正确表
-$releaseDir = Join-Path $effectiveTargetDir "$buildTarget\release"
+$releaseDir = Join-Path $effectiveTargetDir "$buildTarget\$buildProfile"
 $bootloaderBin = Join-Path $releaseDir "bootloader.bin"
 $partitionTableBin = Join-Path $releaseDir "partition-table.bin"
 $partitionCsv = Join-Path $BuildRoot $partitionTable
@@ -484,13 +486,14 @@ if ($env:OS -eq "Windows_NT") {
         Write-Host "  Target: $buildTarget  |  Root: $BuildRoot" -ForegroundColor Gray
         $argStr = ($releaseArgs | ForEach-Object { "`"$_`"" }) -join " "
         $libLine = if ($sdkLib) { "set `"LIB=$sdkLib;%LIB%`"" } else { "" }
+        $cargoBuildCmd = if ($buildProfile -eq "release") { "cargo build --release $argStr" } else { "cargo build --profile $buildProfile $argStr" }
         $bat = @"
 @echo off
 set "VSCMD_SKIP_SENDTELEMETRY=1"
 call "$devBat"
 $libLine
 cd /d "$BuildRoot"
-cargo build --release $argStr
+$cargoBuildCmd
 "@
         $batFile = Join-Path $env:TEMP "pc_cargo_build.bat"
         $bat | Out-File -FilePath $batFile -Encoding ASCII
@@ -498,7 +501,7 @@ cargo build --release $argStr
           & cmd /c "`"$batFile`""
           $buildExit = $LASTEXITCODE
           if ($buildExit -eq 0 -and $doFlash) {
-            $bin = Join-Path $effectiveTargetDir "$buildTarget\release\beetle.exe"
+            $bin = Join-Path $effectiveTargetDir "$buildTarget\$buildProfile\beetle.exe"
             if (-not (Test-Path $bin)) {
               Write-Error "Binary not found: $bin"
               exit 1
@@ -569,10 +572,14 @@ switch ($partitionTable) {
 Write-Host ""
 Write-Host "========== Step: Building release ==========" -ForegroundColor Cyan
 Write-Host "  Target: $buildTarget  |  Root: $BuildRoot" -ForegroundColor Gray
-cargo build --release @releaseArgs
+if ($buildProfile -eq "release") {
+  cargo build --release @releaseArgs
+} else {
+  cargo build --profile $buildProfile @releaseArgs
+}
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if ($doFlash) {
-  $bin = Join-Path $effectiveTargetDir "$buildTarget\release\beetle.exe"
+  $bin = Join-Path $effectiveTargetDir "$buildTarget\$buildProfile\beetle.exe"
   if (-not (Test-Path $bin)) {
     Write-Error "Binary not found: $bin"
     exit 1

@@ -86,6 +86,7 @@ NO_MONITOR=""
 NO_DEPLOY_PROMPT=""
 FLASH_NO_ERASE=""
 BUILD_METHOD="${BUILD_METHOD:-auto}" # auto | docker | local
+BUILD_PROFILE="release"
 BUILD_ARGS=()
 for arg in "$@"; do
   case "$arg" in
@@ -829,6 +830,7 @@ else
   # --- BOARD => target/features from board_presets.toml ---
   BUILD_TARGET="xtensa-esp32s3-espidf"
   BUILD_FEATURES=""
+  BUILD_PROFILE="release-size"
 fi
 if [[ -n "${BOARD:-}" ]]; then
   if [[ ! "$BOARD" =~ ^[a-z0-9-]+$ ]]; then
@@ -892,6 +894,7 @@ echo "  BOARD (optional):  ${BOARD:-(not set)}"
 echo "  Partition table:   $PARTITION_TABLE"
 echo "  Chip (for flash):  ${FLASH_CHIP:-(N/A)}"
 echo "  Features:          ${BUILD_FEATURES:-(none)}"
+echo "  Profile:           $BUILD_PROFILE"
 echo ""
 
 # --- clean: cargo clean then exit (no short-path on Mac/Linux) ---
@@ -906,7 +909,7 @@ fi
 
 # effectiveTargetDir (same as build.ps1)
 EFFECTIVE_TARGET_DIR="${CARGO_TARGET_DIR:-$SCRIPT_ROOT/target}"
-RELEASE_DIR="$EFFECTIVE_TARGET_DIR/$BUILD_TARGET/release"
+RELEASE_DIR="$EFFECTIVE_TARGET_DIR/$BUILD_TARGET/$BUILD_PROFILE"
 BIN="$RELEASE_DIR/beetle"
 BOOTLOADER_BIN="$RELEASE_DIR/bootloader.bin"
 PARTITION_TABLE_BIN="$RELEASE_DIR/partition-table.bin"
@@ -1418,7 +1421,11 @@ if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then
     exit 1
   fi
 else
-  cargo build --release "${RELEASE_ARGS[@]}"
+  if [[ "$BUILD_PROFILE" == "release" ]]; then
+    cargo build --release "${RELEASE_ARGS[@]}"
+  else
+    cargo build --profile "$BUILD_PROFILE" "${RELEASE_ARGS[@]}"
+  fi
 fi
 
 # --- After build: deploy prompt or --flash (ESP only) ---

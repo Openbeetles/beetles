@@ -8,6 +8,16 @@ use super::send::event_body_to_pcmsg;
 
 const TAG: &str = "feishu_event";
 
+#[derive(serde::Deserialize)]
+struct FeishuHttpEventEnvelope {
+    #[serde(default)]
+    r#type: Option<String>,
+    #[serde(default)]
+    challenge: Option<String>,
+    #[serde(default)]
+    encrypt: Option<String>,
+}
+
 /// 事件处理结果，由 handler 转为 ApiResponse 写响应。
 #[derive(Debug)]
 pub enum FeishuEventResponse {
@@ -27,7 +37,7 @@ pub fn handle_http_event(
         return FeishuEventResponse::Err404("feishu not configured");
     }
 
-    let v: serde_json::Value = match serde_json::from_str(body) {
+    let v: FeishuHttpEventEnvelope = match serde_json::from_str(body) {
         Ok(x) => x,
         Err(e) => {
             log::warn!("[{}] parse json: {}", TAG, e);
@@ -35,13 +45,16 @@ pub fn handle_http_event(
         }
     };
 
-    if v.get("type").and_then(|t| t.as_str()) == Some("url_verification") {
-        let challenge = v.get("challenge").and_then(|c| c.as_str()).unwrap_or("");
-        let out = serde_json::json!({ "challenge": challenge }).to_string();
+    if v.r#type.as_deref() == Some("url_verification") {
+        let challenge = v.challenge.as_deref().unwrap_or("");
+        let mut out = String::with_capacity(challenge.len() + 24);
+        out.push_str("{\"challenge\":");
+        crate::util::push_json_string_escaped(&mut out, challenge);
+        out.push('}');
         return FeishuEventResponse::Ok200Json(out);
     }
 
-    if v.get("encrypt").is_some() {
+    if v.encrypt.is_some() {
         log::warn!(
             "[{}] encrypted payload not supported, returning error to trigger retry",
             TAG

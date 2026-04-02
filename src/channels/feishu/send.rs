@@ -69,6 +69,26 @@ pub fn acquire_tenant_token<H: ChannelHttpClient>(
     }
 }
 
+fn build_feishu_text_body(receive_id: Option<&str>, content: &str) -> Vec<u8> {
+    let mut inner = String::with_capacity(content.len() + 16);
+    inner.push('{');
+    inner.push_str("\"text\":");
+    crate::util::push_json_string_escaped(&mut inner, content);
+    inner.push('}');
+
+    let mut body = String::with_capacity(inner.len() + receive_id.map_or(32, |id| id.len() + 32));
+    body.push('{');
+    if let Some(chat_id) = receive_id {
+        body.push_str("\"receive_id\":");
+        crate::util::push_json_string_escaped(&mut body, chat_id);
+        body.push(',');
+    }
+    body.push_str("\"msg_type\":\"text\",\"content\":");
+    crate::util::push_json_string_escaped(&mut body, &inner);
+    body.push('}');
+    body.into_bytes()
+}
+
 fn send_feishu_message<H: ChannelHttpClient>(
     http: &mut H,
     token: &str,
@@ -78,21 +98,7 @@ fn send_feishu_message<H: ChannelHttpClient>(
     const TAG: &str = "feishu_send";
     let auth_val = format!("Bearer {}", token);
     for chunk in crate::channels::chunk::chunk_text_by_char_count(content, FEISHU_MAX_MESSAGE_LEN) {
-        let text_json = serde_json::json!({ "text": chunk });
-        let content_str =
-            serde_json::to_string(&text_json).unwrap_or_else(|_| "{\"text\":\"\"}".to_string());
-        let body = serde_json::json!({
-            "receive_id": chat_id,
-            "msg_type": "text",
-            "content": content_str,
-        });
-        let body_bytes = match serde_json::to_vec(&body) {
-            Ok(b) => b,
-            Err(e) => {
-                log::warn!("[{}] send json: {}", TAG, e);
-                continue;
-            }
-        };
+        let body_bytes = build_feishu_text_body(Some(chat_id), &chunk);
         let headers = [
             ("Authorization", auth_val.as_str()),
             ("Content-Type", "application/json; charset=utf-8"),
@@ -234,18 +240,7 @@ pub fn send_and_get_id<H: ChannelHttpClient>(
     chat_id: &str,
     content: &str,
 ) -> crate::error::Result<Option<String>> {
-    let text_json = serde_json::json!({ "text": content });
-    let content_str =
-        serde_json::to_string(&text_json).unwrap_or_else(|_| "{\"text\":\"\"}".to_string());
-    let body = serde_json::json!({
-        "receive_id": chat_id,
-        "msg_type": "text",
-        "content": content_str,
-    });
-    let body_bytes = serde_json::to_vec(&body).map_err(|e| crate::error::Error::Other {
-        source: Box::new(e),
-        stage: "feishu_send",
-    })?;
+    let body_bytes = build_feishu_text_body(Some(chat_id), content);
     let auth_val = format!("Bearer {}", token);
     let headers = [
         ("Authorization", auth_val.as_str()),
@@ -288,17 +283,7 @@ pub fn edit_message<H: ChannelHttpClient>(
     message_id: &str,
     content: &str,
 ) -> crate::error::Result<()> {
-    let text_json = serde_json::json!({ "text": content });
-    let content_str =
-        serde_json::to_string(&text_json).unwrap_or_else(|_| "{\"text\":\"\"}".to_string());
-    let body = serde_json::json!({
-        "msg_type": "text",
-        "content": content_str,
-    });
-    let body_bytes = serde_json::to_vec(&body).map_err(|e| crate::error::Error::Other {
-        source: Box::new(e),
-        stage: "feishu_edit",
-    })?;
+    let body_bytes = build_feishu_text_body(None, content);
     let url = format!(
         "https://open.feishu.cn/open-apis/im/v1/messages/{}",
         message_id

@@ -18,6 +18,39 @@ pub enum QqHandlerResult {
     EventHandled,
 }
 
+#[derive(serde::Deserialize)]
+struct QqWebhookEnvelope {
+    op: u64,
+    #[serde(default)]
+    t: Option<String>,
+    #[serde(default)]
+    d: Option<QqWebhookData>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct QqWebhookData {
+    #[serde(default)]
+    plain_token: Option<String>,
+    #[serde(default)]
+    event_ts: Option<String>,
+    #[serde(default)]
+    channel_id: Option<String>,
+    #[serde(default)]
+    group_openid: Option<String>,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    author: Option<QqWebhookAuthor>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct QqWebhookAuthor {
+    #[serde(default)]
+    user_openid: Option<String>,
+}
+
 /// 处理 QQ 回调 body，完成验签/解析/入队；不读 HTTP Header，由调用方传入 timestamp 与 signature。
 /// 返回 Ok(result) 时由调用方写 200；Err 时写 401/413 等。
 pub fn handle_webhook(
@@ -32,25 +65,19 @@ pub fn handle_webhook(
     if body.len() > QQ_WEBHOOK_BODY_MAX {
         return Err(Error::config("qq_webhook", "body too large"));
     }
-    let value: serde_json::Value =
+    let value: QqWebhookEnvelope =
         serde_json::from_slice(body).map_err(|e| Error::config("qq_json", e.to_string()))?;
-    let op = value.get("op").and_then(|v| v.as_u64()).unwrap_or(99);
 
-    if op == 13 {
+    if value.op == 13 {
         let d = value
-            .get("d")
-            .and_then(|v| v.as_object())
+            .d
+            .as_ref()
             .ok_or_else(|| Error::config("qq_op13", "missing d"))?;
         let plain_token = d
-            .get("plain_token")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::config("qq_op13", "missing plain_token"))?
-            .to_string();
-        let event_ts = d
-            .get("event_ts")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+            .plain_token
+            .clone()
+            .ok_or_else(|| Error::config("qq_op13", "missing plain_token"))?;
+        let event_ts = d.event_ts.as_deref().unwrap_or("").to_string();
         let signature = sign_qq_url_verify(secret, &event_ts, &plain_token)?;
         return Ok(QqHandlerResult::UrlVerification {
             plain_token,
@@ -58,55 +85,40 @@ pub fn handle_webhook(
         });
     }
 
-    if op == 0 {
+    if value.op == 0 {
         let ts = signature_timestamp
             .ok_or_else(|| Error::config("qq_op0", "missing X-Signature-Timestamp"))?;
         let sig = signature_ed25519
             .ok_or_else(|| Error::config("qq_op0", "missing X-Signature-Ed25519"))?;
         verify_qq_signature(secret, ts, body, sig)?;
 
-        let t = value.get("t").and_then(|v| v.as_str()).unwrap_or("");
-        let d = value.get("d").and_then(|v| v.as_object());
+        let t = value.t.as_deref().unwrap_or("");
+        let d = value.d.as_ref();
         if let Some(d) = d {
             let (chat_id, content, msg_id) = match t {
                 "AT_MESSAGE_CREATE" => {
                     // 频道消息：chat_id = channel_id
-                    let ch = d
-                        .get("channel_id")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let ct = d
-                        .get("content")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let mid = d.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let ch = d.channel_id.clone();
+                    let ct = d.content.clone();
+                    let mid = d.id.clone();
                     (ch, ct, mid)
                 }
                 "GROUP_AT_MESSAGE_CREATE" => {
                     // 群聊 @ 消息：chat_id = "group:{group_openid}"
-                    let gid = d
-                        .get("group_openid")
-                        .and_then(|v| v.as_str())
-                        .map(|s| format!("group:{}", s));
-                    let ct = d
-                        .get("content")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let mid = d.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let gid = d.group_openid.as_deref().map(|s| format!("group:{}", s));
+                    let ct = d.content.clone();
+                    let mid = d.id.clone();
                     (gid, ct, mid)
                 }
                 "C2C_MESSAGE_CREATE" => {
                     // C2C 单聊：与 WSS/发送链路保持一致，统一用 author.user_openid 作为 chat_id。
                     let uid = d
-                        .get("author")
-                        .and_then(|a| a.get("user_openid"))
-                        .and_then(|v| v.as_str())
+                        .author
+                        .as_ref()
+                        .and_then(|a| a.user_openid.as_deref())
                         .map(|s| format!("c2c:{}", s));
-                    let ct = d
-                        .get("content")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let mid = d.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let ct = d.content.clone();
+                    let mid = d.id.clone();
                     (uid, ct, mid)
                 }
                 _ => (None, None, None),

@@ -29,6 +29,56 @@ const PUBLIC_GUILD_MESSAGES_INTENT: u64 = 1 << 30;
 /// 群聊与私聊 intent（GROUP_AT_MESSAGE_CREATE + C2C_MESSAGE_CREATE）
 const GROUP_AND_C2C_INTENT: u64 = 1 << 25;
 
+#[derive(serde::Deserialize)]
+struct QqGatewayEnvelope {
+    op: u64,
+    #[serde(default)]
+    s: Option<u64>,
+    #[serde(default)]
+    t: Option<String>,
+    #[serde(default)]
+    d: Option<QqGatewayData>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct QqGatewayData {
+    #[serde(default)]
+    heartbeat_interval: Option<u64>,
+    #[serde(default)]
+    channel_id: Option<String>,
+    #[serde(default)]
+    group_openid: Option<String>,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    author: Option<QqGatewayAuthor>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct QqGatewayAuthor {
+    #[serde(default)]
+    user_openid: Option<String>,
+}
+
+fn build_identify_payload(token: &str) -> Vec<u8> {
+    let auth = format!("QQBot {}", token);
+    let mut payload = String::with_capacity(auth.len() + 160);
+    payload.push_str("{\"op\":");
+    payload.push_str(&QQ_OP_IDENTIFY.to_string());
+    payload.push_str(",\"d\":{\"token\":");
+    crate::util::push_json_string_escaped(&mut payload, &auth);
+    payload.push_str(",\"intents\":");
+    payload.push_str(&(PUBLIC_GUILD_MESSAGES_INTENT | GROUP_AND_C2C_INTENT).to_string());
+    payload.push_str(",\"shard\":[0,1],\"properties\":{\"$os\":\"linux\",\"$browser\":\"my_library\",\"$device\":\"my_library\"}}}");
+    payload.into_bytes()
+}
+
+fn build_heartbeat_payload(seq: u64) -> Vec<u8> {
+    format!("{{\"op\":{},\"d\":{}}}", QQ_OP_HEARTBEAT, seq).into_bytes()
+}
+
 fn get_qq_access_token<H: ChannelHttpClient + ?Sized>(
     http: &mut H,
     app_id: &str,
@@ -158,37 +208,26 @@ impl WssGatewayDriver for QqWssDriver {
     }
 
     fn on_hello(&mut self, first_message: &[u8]) -> Result<WssSessionState> {
-        let value: serde_json::Value =
+        let value: QqGatewayEnvelope =
             serde_json::from_slice(first_message).map_err(|e| Error::Other {
                 source: Box::new(e),
                 stage: "qq_ws_hello",
             })?;
-        let op = value.get("op").and_then(|v| v.as_u64()).unwrap_or(0);
-        if op != QQ_OP_HELLO {
+        if value.op != QQ_OP_HELLO {
             return Ok(WssSessionState {
                 heartbeat_interval_ms: 45_000,
                 identify_payload: None,
             });
         }
         let interval = value
-            .get("d")
-            .and_then(|d| d.get("heartbeat_interval"))
-            .and_then(|v| v.as_u64())
+            .d
+            .as_ref()
+            .and_then(|d| d.heartbeat_interval)
             .unwrap_or(45_000);
         let identify_payload = self
             .cached_token
             .as_ref()
-            .and_then(|token| {
-                let d = serde_json::json!({
-                    "token": format!("QQBot {}", token),
-                    "intents": PUBLIC_GUILD_MESSAGES_INTENT | GROUP_AND_C2C_INTENT,
-                    "shard": [0u64, 1u64],
-                    "properties": { "$os": "linux", "$browser": "my_library", "$device": "my_library" }
-                });
-                serde_json::to_vec(&serde_json::json!({ "op": QQ_OP_IDENTIFY, "d": d }))
-                    .map_err(|e| log::error!("[{}] identify serialize failed: {}", TAG, e))
-                    .ok()
-            })
+            .map(|token| build_identify_payload(token))
             .filter(|v| !v.is_empty());
         log::info!("[{}] hello ok, heartbeat_interval_ms={}", TAG, interval);
         Ok(WssSessionState {
@@ -198,28 +237,26 @@ impl WssGatewayDriver for QqWssDriver {
     }
 
     fn on_recv(&mut self, data: &[u8]) -> Result<WssRecvAction> {
-        let value: serde_json::Value = match serde_json::from_slice(data) {
+        let value: QqGatewayEnvelope = match serde_json::from_slice(data) {
             Ok(v) => v,
             Err(_) => return Ok(WssRecvAction::Ignore),
         };
-        let op = value.get("op").and_then(|v| v.as_u64()).unwrap_or(99);
-        let s = value.get("s").and_then(|v| v.as_u64());
-        if let Some(seq) = s {
+        if let Some(seq) = value.s {
             self.last_seq = Some(seq);
         }
-        log::debug!("[{}] recv op={} s={:?}", TAG, op, s);
-        match op {
+        log::debug!("[{}] recv op={} s={:?}", TAG, value.op, value.s);
+        match value.op {
             QQ_OP_DISPATCH => {
-                let t = value.get("t").and_then(|v| v.as_str()).unwrap_or("");
+                let t = value.t.as_deref().unwrap_or("");
                 log::debug!("[{}] dispatch t={}", TAG, t);
-                let d = value.get("d").and_then(|v| v.as_object());
+                let d = value.d.as_ref();
                 match t {
                     AT_MESSAGE_CREATE => {
                         // 频道消息：chat_id = channel_id
                         if let Some(d) = d {
-                            let channel_id = d.get("channel_id").and_then(|v| v.as_str());
-                            let content = d.get("content").and_then(|v| v.as_str());
-                            let msg_id = d.get("id").and_then(|v| v.as_str());
+                            let channel_id = d.channel_id.as_deref();
+                            let content = d.content.as_deref();
+                            let msg_id = d.id.as_deref();
                             if let (Some(ch), Some(content)) = (channel_id, content) {
                                 if !ch.is_empty() && !content.is_empty() {
                                     if let Some(mid) = msg_id {
@@ -235,9 +272,9 @@ impl WssGatewayDriver for QqWssDriver {
                     GROUP_AT_MESSAGE_CREATE => {
                         // 群聊 @ 消息：chat_id = "group:{group_openid}"
                         if let Some(d) = d {
-                            let group_openid = d.get("group_openid").and_then(|v| v.as_str());
-                            let content = d.get("content").and_then(|v| v.as_str());
-                            let msg_id = d.get("id").and_then(|v| v.as_str());
+                            let group_openid = d.group_openid.as_deref();
+                            let content = d.content.as_deref();
+                            let msg_id = d.id.as_deref();
                             if let (Some(gid), Some(content)) = (group_openid, content) {
                                 if !gid.is_empty() && !content.is_empty() {
                                     let chat_id = format!("group:{}", gid);
@@ -254,12 +291,10 @@ impl WssGatewayDriver for QqWssDriver {
                     C2C_MESSAGE_CREATE => {
                         // C2C 单聊：用 author.user_openid 标识对方，chat_id = "c2c:{user_openid}"
                         if let Some(d) = d {
-                            let user_openid = d
-                                .get("author")
-                                .and_then(|a| a.get("user_openid"))
-                                .and_then(|v| v.as_str());
-                            let content = d.get("content").and_then(|v| v.as_str());
-                            let msg_id = d.get("id").and_then(|v| v.as_str());
+                            let user_openid =
+                                d.author.as_ref().and_then(|a| a.user_openid.as_deref());
+                            let content = d.content.as_deref();
+                            let msg_id = d.id.as_deref();
                             if let (Some(uid), Some(content)) = (user_openid, content) {
                                 if !uid.is_empty() && !content.is_empty() {
                                     let chat_id = format!("c2c:{}", uid);
@@ -293,12 +328,7 @@ impl WssGatewayDriver for QqWssDriver {
     fn build_heartbeat(&self, seq: Option<u64>) -> Result<Vec<u8>> {
         let d = seq.unwrap_or(0);
         log::debug!("[{}] build_heartbeat seq={}", TAG, d);
-        serde_json::to_vec(&serde_json::json!({ "op": QQ_OP_HEARTBEAT, "d": d })).map_err(|e| {
-            Error::Other {
-                source: Box::new(e),
-                stage: "qq_ws_heartbeat",
-            }
-        })
+        Ok(build_heartbeat_payload(d))
     }
 }
 

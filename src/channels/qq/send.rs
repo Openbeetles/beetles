@@ -265,6 +265,24 @@ fn is_v2_chat(chat_id: &str) -> bool {
     chat_id.starts_with("group:") || chat_id.starts_with("c2c:")
 }
 
+fn build_qq_send_body(content: &str, msg_id: Option<&str>, msg_seq: Option<usize>) -> Vec<u8> {
+    let mut body = String::with_capacity(content.len() + msg_id.map_or(32, |id| id.len() + 32));
+    body.push('{');
+    body.push_str("\"content\":");
+    crate::util::push_json_string_escaped(&mut body, content);
+    if let Some(seq) = msg_seq {
+        let mut seq_buf = [0u8; 20];
+        body.push_str(",\"msg_type\":0,\"msg_seq\":");
+        body.push_str(crate::util::usize_to_decimal_buf(&mut seq_buf, seq));
+    }
+    if let Some(id) = msg_id {
+        body.push_str(",\"msg_id\":");
+        crate::util::push_json_string_escaped(&mut body, id);
+    }
+    body.push('}');
+    body.into_bytes()
+}
+
 /// 发送单条 QQ 消息（含自动分片）。返回 `Ok(())` 表示所有分片都成功（HTTP 2xx）。
 /// 任一分片 HTTP 失败或 4xx+ 即返回 `Err`，供 sender loop 决定重试/熔断。
 fn send_one_qq<H: ChannelHttpClient>(
@@ -286,19 +304,11 @@ fn send_one_qq<H: ChannelHttpClient>(
     let v2 = is_v2_chat(chat_id);
     let chunks = crate::channels::chunk::chunk_text_by_char_count(content, QQ_MAX_MESSAGE_LEN);
     for (i, chunk) in chunks.iter().enumerate() {
-        let mut body_obj = serde_json::json!({ "content": chunk });
-        if v2 {
-            body_obj["msg_type"] = serde_json::json!(0);
-            body_obj["msg_seq"] = serde_json::json!(i + 1);
-        }
-        if i == 0 {
-            if let Some(id) = msg_id {
-                body_obj["msg_id"] = serde_json::json!(id);
-            }
-        }
-        let body_bytes = serde_json::to_vec(&body_obj).map_err(|e| {
-            crate::error::Error::config("qq_send_json", format!("serialize failed: {}", e))
-        })?;
+        let body_bytes = build_qq_send_body(
+            chunk,
+            if i == 0 { msg_id } else { None },
+            if v2 { Some(i + 1) } else { None },
+        );
         let auth_header = format!("QQBot {}", token);
         let mut cl_buf = [0u8; 20];
         let content_length = crate::util::usize_to_decimal_buf(&mut cl_buf, body_bytes.len());

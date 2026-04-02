@@ -6,10 +6,19 @@ use crate::config::AudioSttConfig;
 use crate::error::{Error, Result};
 use crate::platform::{PlatformHttpClient, ResponseBody};
 use base64::Engine;
-use serde_json::Value;
 use std::io::Write;
 
 const BAIDU_STT_DEFAULT_URL: &str = "https://vop.baidu.com/server_api";
+
+#[derive(serde::Deserialize)]
+struct BaiduAsrResponse {
+    #[serde(default)]
+    err_no: Option<i64>,
+    #[serde(default)]
+    err_msg: Option<String>,
+    #[serde(default)]
+    result: Option<Vec<String>>,
+}
 
 pub fn transcribe_pcm16(
     http: &mut dyn PlatformHttpClient,
@@ -115,24 +124,21 @@ fn parse_asr_response(status: u16, body: ResponseBody) -> Result<String> {
             format!("asr http status {}", status),
         ));
     }
-    let v: Value = serde_json::from_slice(body.as_slice())
+    let v: BaiduAsrResponse = serde_json::from_slice(body.as_slice())
         .map_err(|e| Error::config("stt_baidu_parse", e.to_string()))?;
-    let err_no = v.get("err_no").and_then(|x| x.as_i64()).unwrap_or(-1);
+    let err_no = v.err_no.unwrap_or(-1);
     if err_no != 0 {
-        let err_msg = v
-            .get("err_msg")
-            .and_then(|x| x.as_str())
-            .unwrap_or("unknown asr error");
+        let err_msg = v.err_msg.as_deref().unwrap_or("unknown asr error");
         return Err(Error::config(
             "stt_baidu_request",
             format!("baidu asr error {}: {}", err_no, err_msg),
         ));
     }
     let first = v
-        .get("result")
-        .and_then(|x| x.as_array())
+        .result
+        .as_ref()
         .and_then(|arr| arr.first())
-        .and_then(|x| x.as_str())
+        .map(String::as_str)
         .ok_or_else(|| Error::config("stt_baidu_parse", "missing result text"))?;
     Ok(first.trim().to_string())
 }

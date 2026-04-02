@@ -9,7 +9,6 @@ use crate::channels::wss_gateway::{
 use crate::channels::ChannelHttpClient;
 use crate::error::{Error, Result};
 use crate::memory::PendingRetryStore;
-use prost::Message;
 
 use super::frame::pbbp2;
 use super::send::event_body_to_pcmsg;
@@ -22,6 +21,18 @@ const HEADER_TYPE: &str = "type";
 const MESSAGE_TYPE_EVENT: &str = "event";
 const FEISHU_HEARTBEAT_MS: u64 = 120_000;
 const DEDUP_CACHE_CAPACITY: usize = 32;
+
+#[derive(serde::Deserialize)]
+struct FeishuEventPayload {
+    #[serde(default)]
+    header: Option<FeishuEventHeader>,
+}
+
+#[derive(serde::Deserialize)]
+struct FeishuEventHeader {
+    #[serde(default)]
+    event_id: Option<String>,
+}
 
 /// 固定容量环形去重缓存；O(n) 查找但 n ≤ 32，无堆碎片。
 struct DeduplicateRing {
@@ -55,12 +66,11 @@ impl DeduplicateRing {
 }
 
 fn extract_event_id(payload_str: &str) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(payload_str).ok()?;
-    v.get("header")
-        .and_then(|h| h.get("event_id"))
-        .and_then(|e| e.as_str())
+    serde_json::from_str::<FeishuEventPayload>(payload_str)
+        .ok()?
+        .header?
+        .event_id
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
 }
 
 pub fn get_ws_url(
@@ -138,12 +148,7 @@ fn encode_control_frame(header_type: &str, log_id: u64, log_id_new: &str) -> Res
         payload: Vec::new(),
         log_id_new: log_id_new.to_string(),
     };
-    let mut buf = Vec::with_capacity(64);
-    frame.encode(&mut buf).map_err(|e| Error::Other {
-        source: Box::new(e),
-        stage: "feishu_ws_frame_encode",
-    })?;
-    Ok(buf)
+    Ok(frame.encode_to_vec())
 }
 
 fn build_ping_frame() -> Result<Vec<u8>> {
@@ -172,7 +177,7 @@ impl WssGatewayDriver for FeishuWssDriver {
     }
 
     fn on_recv(&mut self, data: &[u8]) -> Result<WssRecvAction> {
-        let frame = match pbbp2::Frame::decode(bytes::Bytes::copy_from_slice(data)) {
+        let frame = match pbbp2::Frame::decode(data) {
             Ok(f) => f,
             Err(_) => {
                 log::debug!("[{}] pbbp2 decode ignore", TAG);

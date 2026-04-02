@@ -150,6 +150,32 @@ pub fn percent_encode_query(s: &str) -> String {
     out
 }
 
+/// 向现有 `String` 追加一个 JSON string literal（含外层双引号）。
+/// 适合固定结构 JSON 手写拼装，避免 `json!` / `Value` 热路径开销。
+pub fn push_json_string_escaped(out: &mut String, s: &str) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            c if c <= '\u{1f}' => {
+                let code = c as u32 as u8;
+                out.push_str("\\u00");
+                out.push(HEX[(code >> 4) as usize] as char);
+                out.push(HEX[(code & 0x0f) as usize] as char);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
 /// URL query percent-decode：`%XX` → 单字节，`+` → 空格，其余保留。与 `percent_encode_query` 对称。
 pub fn percent_decode_query(s: &str) -> String {
     let bytes = s.as_bytes();
@@ -935,6 +961,13 @@ mod scrub_credentials_tests {
     fn does_not_redact_plain_error_text_with_sensitive_words() {
         let s = scrub_credentials("error: authorization header missing");
         assert_eq!(s, "error: authorization header missing");
+    }
+
+    #[test]
+    fn push_json_string_escaped_handles_quotes_and_controls() {
+        let mut out = String::new();
+        push_json_string_escaped(&mut out, "a\"\n\t\\b");
+        assert_eq!(out, "\"a\\\"\\n\\t\\\\b\"");
     }
 }
 
