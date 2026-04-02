@@ -3,7 +3,9 @@
 use crate::memory::{MemoryStore, SessionMessage, TurnLedgerStore};
 use crate::util::truncate_content_to_max;
 
-use super::MemoryProfile;
+use super::{
+    archive_match_score, collect_archive_match_terms, pick_archive_excerpt, MemoryProfile,
+};
 
 const MAX_ARCHIVE_EVIDENCE_BLOCK_LEN: usize = 768;
 const MIN_ARCHIVE_EVIDENCE_BLOCK_LEN: usize = 220;
@@ -54,7 +56,7 @@ pub fn build_archive_evidence_block(
     }
 
     let terms = collect_archive_match_terms(query);
-    let weak_query = terms.is_empty() && query.trim().chars().count() <= 8;
+    let weak_query = terms.is_empty() || query.trim().chars().count() <= 8;
     let mut candidates =
         Vec::with_capacity(max_messages.saturating_add(max_notes).saturating_add(1));
 
@@ -65,7 +67,7 @@ pub fn build_archive_evidence_block(
             continue;
         }
         let preview = truncate_content_to_max(content, line_chars).to_string();
-        let score = archive_match_score(&preview, &terms).saturating_add(3);
+        let score = archive_match_score(&preview, message.role.as_str(), &terms).saturating_add(3);
         if !weak_query && score <= 3 {
             continue;
         }
@@ -92,7 +94,7 @@ pub fn build_archive_evidence_block(
         if excerpt.is_empty() {
             continue;
         }
-        let score = archive_match_score(&excerpt, &terms).saturating_add(2);
+        let score = archive_match_score(&excerpt, &name, &terms).saturating_add(2);
         if !weak_query && score <= 2 {
             continue;
         }
@@ -120,7 +122,8 @@ pub fn build_archive_evidence_block(
         .join("; ");
         if !preview.is_empty() {
             let preview = truncate_content_to_max(&preview, line_chars).to_string();
-            let score = archive_match_score(&preview, &terms).saturating_add(2);
+            let score =
+                archive_match_score(&preview, ledger.status.label(), &terms).saturating_add(2);
             if weak_query || score > 2 {
                 candidates.push(ArchiveEvidenceCandidate {
                     score,
@@ -167,80 +170,4 @@ pub fn build_archive_evidence_block(
         appended += 1;
     }
     (appended > 0).then(|| out.trim_end().to_string())
-}
-
-fn archive_match_score(content: &str, terms: &[String]) -> u32 {
-    if terms.is_empty() {
-        return 1;
-    }
-    let normalized = normalize_archive_match_text(content);
-    let mut score = 0u32;
-    for term in terms {
-        if normalized.contains(term) {
-            score = score.saturating_add(3);
-        }
-    }
-    score
-}
-
-fn pick_archive_excerpt(content: &str, terms: &[String], max_chars: usize) -> String {
-    if content.trim().is_empty() {
-        return String::new();
-    }
-    if !terms.is_empty() {
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let normalized = normalize_archive_match_text(trimmed);
-            if terms.iter().any(|term| normalized.contains(term)) {
-                return truncate_content_to_max(trimmed, max_chars).to_string();
-            }
-        }
-    }
-    truncate_content_to_max(content.trim(), max_chars).to_string()
-}
-
-fn collect_archive_match_terms(query: &str) -> Vec<String> {
-    let normalized = normalize_archive_match_text(query);
-    let mut terms = Vec::new();
-    for part in normalized.split_whitespace() {
-        if part.chars().count() < 2 || terms.iter().any(|item| item == part) {
-            continue;
-        }
-        terms.push(part.to_string());
-    }
-    terms
-}
-
-fn normalize_archive_match_text(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut prev_space = false;
-    for ch in input.chars() {
-        if ch.is_alphanumeric() || is_cjk(ch) {
-            for lower in ch.to_lowercase() {
-                out.push(lower);
-            }
-            prev_space = false;
-        } else if !prev_space {
-            out.push(' ');
-            prev_space = true;
-        }
-    }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn is_cjk(ch: char) -> bool {
-    matches!(
-        ch as u32,
-        0x4E00..=0x9FFF
-            | 0x3400..=0x4DBF
-            | 0x20000..=0x2A6DF
-            | 0x2A700..=0x2B73F
-            | 0x2B740..=0x2B81F
-            | 0x2B820..=0x2CEAF
-            | 0xF900..=0xFAFF
-            | 0x2F800..=0x2FA1F
-    )
 }

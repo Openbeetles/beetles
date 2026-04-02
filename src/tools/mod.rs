@@ -41,8 +41,10 @@ pub mod i2c_device;
 #[cfg(feature = "tools_diagnostics")]
 pub mod i2c_sensor;
 pub mod kv_store;
+pub mod memory_get;
 #[cfg(feature = "tools_diagnostics")]
 pub mod memory_manage;
+pub mod memory_search;
 pub mod message;
 #[cfg(feature = "tools_network_extra")]
 pub mod model_config;
@@ -113,8 +115,10 @@ pub use i2c_device::I2cDeviceTool;
 #[cfg(feature = "tools_diagnostics")]
 pub use i2c_sensor::I2cSensorTool;
 pub use kv_store::KvStoreTool;
+pub use memory_get::MemoryGetTool;
 #[cfg(feature = "tools_diagnostics")]
 pub use memory_manage::MemoryManageTool;
+pub use memory_search::MemorySearchTool;
 pub use message::MessageTool;
 #[cfg(feature = "tools_network_extra")]
 pub use model_config::ModelConfigTool;

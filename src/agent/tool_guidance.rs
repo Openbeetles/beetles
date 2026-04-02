@@ -6,8 +6,10 @@ const MAX_PREVIEW_ITEMS: usize = 2;
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SuccessfulToolRoundObservations {
     document_search: Option<DocumentSearchObservation>,
+    archive_search: Option<ArchiveSearchObservation>,
     directory_list: Option<DirectoryListObservation>,
     content_sources: Vec<String>,
+    archive_content_sources: Vec<String>,
     external_content_sources: Vec<String>,
     mutation_paths: Vec<String>,
     diagnostics_seen: bool,
@@ -26,6 +28,13 @@ struct DirectoryListObservation {
     entry_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ArchiveSearchObservation {
+    query: Option<String>,
+    citations: Vec<String>,
+    hit_count: usize,
+}
+
 pub(crate) fn record_successful_tool_result(
     observations: &mut SuccessfulToolRoundObservations,
     tool_name: &str,
@@ -33,6 +42,8 @@ pub(crate) fn record_successful_tool_result(
 ) {
     match tool_name {
         "document_search" => record_document_search(observations, result),
+        "memory_search" => record_archive_search(observations, result),
+        "memory_get" => record_archive_record(observations, result),
         "files" => record_files_tool(observations, result),
         "document_read" => record_content_source(observations, result, "source"),
         "document_extract" => record_content_source(observations, result, "source"),
@@ -81,6 +92,30 @@ pub(crate) fn build_success_tool_execution_guidance(
         }
     }
 
+    if let Some(search) = observations
+        .archive_search
+        .as_ref()
+        .filter(|_| !content_ready)
+    {
+        if search.hit_count == 0 {
+            parts.push(
+                "memory_search returned no archive hits. Do not repeat the same query unchanged. Broaden or narrow the search, switch sources, or explain that retained archive evidence did not match."
+                    .to_string(),
+            );
+        } else {
+            let citations = preview_list(&search.citations);
+            let query = search
+                .query
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .map(|value| format!(" for query \"{value}\""))
+                .unwrap_or_default();
+            parts.push(format!(
+                "memory_search already found archive hit(s){query}: {citations}. Inspect one cited record with memory_get before searching again."
+            ));
+        }
+    }
+
     if let Some(listing) = observations
         .directory_list
         .as_ref()
@@ -105,6 +140,13 @@ pub(crate) fn build_success_tool_execution_guidance(
         let sources = preview_list(&observations.external_content_sources);
         parts.push(format!(
             "External content was retrieved from {sources}. Treat it as turn-local evidence, not durable user memory, and avoid copying long excerpts into the final answer."
+        ));
+    }
+
+    if !observations.archive_content_sources.is_empty() {
+        let sources = preview_list(&observations.archive_content_sources);
+        parts.push(format!(
+            "Archive records were opened from {sources}. Treat them as archival evidence rather than canonical shared memory, and distill only stable verified conclusions if you later update memory."
         ));
     }
 
@@ -158,6 +200,34 @@ fn record_document_search(observations: &mut SuccessfulToolRoundObservations, re
         query,
         matched_paths,
         match_count: matches.len(),
+    });
+}
+
+fn record_archive_search(observations: &mut SuccessfulToolRoundObservations, result: &str) {
+    let Some(value) = parse_json_object(result) else {
+        return;
+    };
+    let query = value
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let hits = value
+        .get("hits")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut citations = Vec::new();
+    for item in hits.iter().take(MAX_PREVIEW_ITEMS) {
+        if let Some(citation) = item.get("citation").and_then(Value::as_str) {
+            push_unique_limited(&mut citations, citation.trim(), MAX_PREVIEW_ITEMS);
+        }
+    }
+    observations.archive_search = Some(ArchiveSearchObservation {
+        query,
+        citations,
+        hit_count: hits.len(),
     });
 }
 
@@ -269,6 +339,45 @@ fn record_external_search_results(
     }
 }
 
+fn record_archive_record(observations: &mut SuccessfulToolRoundObservations, result: &str) {
+    let Some(value) = parse_json_object(result) else {
+        return;
+    };
+    let Some(record) = value.get("record").filter(|record| !record.is_null()) else {
+        return;
+    };
+    let citation = record
+        .get("citation")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let content = record
+        .get("content")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let Some(citation) = citation else {
+        return;
+    };
+    push_unique_limited(
+        &mut observations.content_sources,
+        citation,
+        MAX_PREVIEW_ITEMS,
+    );
+    push_unique_limited(
+        &mut observations.archive_content_sources,
+        citation,
+        MAX_PREVIEW_ITEMS,
+    );
+    if content.is_some() && looks_like_external_source(citation) {
+        push_unique_limited(
+            &mut observations.external_content_sources,
+            citation,
+            MAX_PREVIEW_ITEMS,
+        );
+    }
+}
+
 fn looks_like_external_source(source: &str) -> bool {
     let trimmed = source.trim();
     trimmed.starts_with("http://") || trimmed.starts_with("https://")
@@ -335,6 +444,38 @@ mod tests {
                 .expect("guidance");
         assert!(guidance.contains("readable content from docs/guide.md"));
         assert!(!guidance.contains("Inspect one matched path"));
+    }
+
+    #[test]
+    fn archive_search_guidance_points_to_memory_get() {
+        let mut observations = SuccessfulToolRoundObservations::default();
+        record_successful_tool_result(
+            &mut observations,
+            "memory_search",
+            r#"{"query":"network","hits":[{"citation":"transcript:chat-a#message=1"},{"citation":"daily_note:2026-04-02.md"}]}"#,
+        );
+
+        let guidance =
+            build_success_tool_execution_guidance(AgentRunStrategy::LinuxEnhanced, &observations)
+                .expect("guidance");
+        assert!(guidance.contains("memory_search already found archive hit(s)"));
+        assert!(guidance.contains("memory_get"));
+    }
+
+    #[test]
+    fn archive_record_guidance_marks_noncanonical_evidence() {
+        let mut observations = SuccessfulToolRoundObservations::default();
+        record_successful_tool_result(
+            &mut observations,
+            "memory_get",
+            r#"{"record":{"citation":"transcript:chat-a#message=1","content":"hello"}} "#,
+        );
+
+        let guidance =
+            build_success_tool_execution_guidance(AgentRunStrategy::LinuxEnhanced, &observations)
+                .expect("guidance");
+        assert!(guidance.contains("readable content from transcript:chat-a#message=1"));
+        assert!(guidance.contains("archival evidence"));
     }
 
     #[test]

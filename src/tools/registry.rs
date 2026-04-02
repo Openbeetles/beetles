@@ -128,8 +128,9 @@ pub fn build_default_registry(
     platform: Arc<dyn crate::Platform>,
     remind_at_store: Arc<dyn crate::memory::RemindAtStore + Send + Sync>,
     session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
-    _memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
-    _long_term_memory_store: Arc<dyn crate::memory::LongTermMemoryStore + Send + Sync>,
+    memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
+    long_term_memory_store: Arc<dyn crate::memory::LongTermMemoryStore + Send + Sync>,
+    turn_ledger_store: Arc<dyn crate::memory::TurnLedgerStore + Send + Sync>,
     private_garden_store: Arc<dyn crate::memory::PrivateGardenStore + Send + Sync>,
     _config_store: Arc<dyn crate::platform::ConfigStore + Send + Sync>,
 ) -> (
@@ -194,6 +195,16 @@ pub fn build_default_registry(
     registry.register(Box::new(super::PrivateGardenTool::new(
         private_garden_store,
     )));
+    registry.register(Box::new(super::MemorySearchTool::new(
+        Arc::clone(&session_store),
+        Arc::clone(&memory_store),
+        Arc::clone(&turn_ledger_store),
+    )));
+    registry.register(Box::new(super::MemoryGetTool::new(
+        Arc::clone(&session_store),
+        Arc::clone(&memory_store),
+        Arc::clone(&turn_ledger_store),
+    )));
     #[cfg(feature = "tools_diagnostics")]
     if !config.hardware_devices.is_empty() {
         registry.register(Box::new(super::DeviceControlTool::new(
@@ -204,8 +215,8 @@ pub fn build_default_registry(
     // --- New tools ---
     #[cfg(feature = "tools_diagnostics")]
     registry.register(Box::new(super::MemoryManageTool::new(
-        Arc::clone(&_memory_store),
-        Arc::clone(&_long_term_memory_store),
+        Arc::clone(&memory_store),
+        Arc::clone(&long_term_memory_store),
     )));
     #[cfg(feature = "tools_network_extra")]
     registry.register(Box::new(super::HttpRequestTool));
@@ -218,7 +229,7 @@ pub fn build_default_registry(
     ))));
     #[cfg(feature = "tools_diagnostics")]
     registry.register(Box::new(super::CronManageTool::new(Arc::clone(
-        &_memory_store,
+        &memory_store,
     ))));
     #[cfg(feature = "tools_network_extra")]
     registry.register(Box::new(super::ProxyConfigTool::new(_config_store)));
@@ -229,7 +240,7 @@ pub fn build_default_registry(
     #[cfg(feature = "tools_diagnostics")]
     if !config.hardware_devices.is_empty() || !config.i2c_sensors.is_empty() {
         registry.register(Box::new(super::SensorWatchTool::new(
-            Arc::clone(&_memory_store),
+            Arc::clone(&memory_store),
             config.hardware_devices.clone(),
             config.i2c_sensors.clone(),
         )));

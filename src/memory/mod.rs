@@ -5,6 +5,7 @@ use crate::error::Result;
 use serde::{Deserialize, Serialize};
 
 mod archive_plane;
+mod archive_search;
 mod autonomy_strategy;
 mod context_window;
 mod execution_state;
@@ -28,6 +29,14 @@ mod turn_ledger;
 mod world_sense;
 
 pub use archive_plane::build_archive_evidence_block;
+pub use archive_search::{
+    archive_get_default_content_len, get_archive_record, search_archive_records, ArchiveRecord,
+    ArchiveRecordLocator, ArchiveRecordSource, ArchiveSearchHit, ArchiveSearchQuery,
+    MAX_ARCHIVE_GET_CONTENT_LEN, MAX_ARCHIVE_SEARCH_LIMIT,
+};
+pub(crate) use archive_search::{
+    archive_match_score, collect_archive_match_terms, pick_archive_excerpt,
+};
 pub(crate) use autonomy_strategy::estimate_autonomy_strategy_chars;
 pub(crate) use autonomy_strategy::{
     autonomy_idle_interval_secs, run_autonomy_strategy_refresh_with_state,

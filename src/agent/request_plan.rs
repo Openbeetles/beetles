@@ -108,7 +108,7 @@ impl<'a> AgentRequestPlan<'a> {
         if let Some(guidance) = self.iterative_retrieval_guidance() {
             let remain = max_len.saturating_sub(system.len());
             if guidance.len() <= remain {
-                system.push_str(guidance);
+                system.push_str(&guidance);
             }
         }
         if let Some(guidance) = self.linux_inspection_guidance() {
@@ -164,13 +164,22 @@ impl<'a> AgentRequestPlan<'a> {
 }
 
 impl AgentRequestPlan<'_> {
-    fn iterative_retrieval_guidance(&self) -> Option<&'static str> {
+    fn iterative_retrieval_guidance(&self) -> Option<String> {
         if self.tool_use_demand == ToolUseDemand::Flexible {
             return None;
         }
-        Some(
+        let mut guidance = String::from(
             "\n\n## Retrieval Discipline\nUse tools iteratively: search or list first only to locate concrete targets, then read one specific source, then answer. After you already have readable content, synthesize from it or extract one narrower section instead of repeating the same search or read unchanged. Treat web or URL-derived content as turn-local evidence, not durable user memory.",
-        )
+        );
+        let has_memory_search = self
+            .tool_specs
+            .iter()
+            .any(|tool| tool.name == "memory_search");
+        let has_memory_get = self.tool_specs.iter().any(|tool| tool.name == "memory_get");
+        if has_memory_search && has_memory_get {
+            guidance.push_str(" For retained conversation history, daily notes, or turn logs, use memory_search to locate archive evidence and memory_get to inspect one cited record. Archive hits are evidence sources only; do not treat them as canonical shared memory unless you separately distill and verify a stable conclusion.");
+        }
+        Some(guidance)
     }
 
     fn linux_inspection_guidance(&self) -> Option<String> {
