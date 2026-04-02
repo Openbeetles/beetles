@@ -1152,13 +1152,15 @@ fn run_self_runtime_job(
     );
     if let Some(decision) = outcome.decision.as_ref() {
         log::info!(
-            "[self_runtime] {} trigger={:?} inner_life={} self_continuity={} private_garden={} inner_life_intent={:?} self_continuity_intent={:?} private_garden_intent={:?}",
+            "[self_runtime] {} trigger={:?} inner_life={} private_docs={} self_continuity={} private_garden={} inner_life_intent={:?} private_docs_intent={:?} self_continuity_intent={:?} private_garden_intent={:?}",
             msg.chat_id,
             payload.trigger,
             decision.refresh_inner_life,
+            decision.refresh_private_docs,
             decision.refresh_self_continuity,
             decision.refresh_private_garden,
             (!decision.inner_life_intent.trim().is_empty()).then_some(decision.inner_life_intent.as_str()),
+            (!decision.private_docs_intent.trim().is_empty()).then_some(decision.private_docs_intent.as_str()),
             (!decision.self_continuity_intent.trim().is_empty()).then_some(decision.self_continuity_intent.as_str()),
             (!decision.private_garden_intent.trim().is_empty()).then_some(decision.private_garden_intent.as_str()),
         );
@@ -1192,6 +1194,13 @@ fn run_self_runtime_job(
         }
         Ok(crate::memory::InnerLifeRefreshOutcome::Skipped) => {}
         Err(error) => log::warn!("[agent_inner_life] failed: {}", error),
+    }
+    match outcome.private_doc_result {
+        Ok(crate::memory::PrivateDocWorkspaceRefreshOutcome::Updated) => {
+            log::info!("[self_runtime_private_docs] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::PrivateDocWorkspaceRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[self_runtime_private_docs] failed: {}", error),
     }
     match outcome.self_continuity_result {
         Ok(crate::memory::SelfContinuityRefreshOutcome::Updated) => {

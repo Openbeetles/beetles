@@ -11,26 +11,27 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    autonomy_idle_interval_secs, build_world_snapshot, memory_policy,
+    autonomy_idle_interval_secs, build_self_state, build_world_snapshot, memory_policy,
     render_autonomy_strategy_block, render_execution_state_block, render_inner_life_block,
     render_internal_memory_topology_block, render_private_doc_workspace_block,
     render_private_garden_block, render_self_continuity_block, render_self_model_block,
-    render_world_sense_block, render_world_snapshot_block,
+    render_self_state_block, render_world_sense_block, render_world_snapshot_block,
     run_autonomy_strategy_refresh_with_state, run_inner_life_refresh_with_state,
-    run_private_garden_governance_with_state, run_self_continuity_refresh_with_state,
-    run_world_sense_refresh_with_state, touch_self_continuity_runtime,
-    AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome,
-    AutonomyStrategyStore, ExecutionStateStore, InnerLifeRefreshContext, InnerLifeRefreshInput,
-    InnerLifeRefreshOutcome, InnerLifeStore, InternalMemoryLayerFocus, MemoryProfile,
-    PrivateDocStore, PrivateGardenGovernanceContext, PrivateGardenGovernanceInput,
-    PrivateGardenGovernanceOutcome, PrivateGardenStore, RemindAtStore,
-    SelfContinuityRefreshContext, SelfContinuityRefreshInput, SelfContinuityRefreshOutcome,
-    SelfContinuityStore, SelfModelStore, SessionStore, SessionSummaryStore,
-    WorldSenseRefreshContext, WorldSenseRefreshInput, WorldSenseRefreshOutcome, WorldSenseStore,
-    WorldSnapshotContext,
+    run_private_doc_workspace_refresh_with_state, run_private_garden_governance_with_state,
+    run_self_continuity_refresh_with_state, run_world_sense_refresh_with_state,
+    touch_self_continuity_runtime, AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput,
+    AutonomyStrategyRefreshOutcome, AutonomyStrategyStore, ExecutionStateStore,
+    InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome, InnerLifeStore,
+    InternalMemoryLayerFocus, MemoryProfile, PrivateDocStore, PrivateDocWorkspaceRefreshContext,
+    PrivateDocWorkspaceRefreshInput, PrivateDocWorkspaceRefreshOutcome,
+    PrivateGardenGovernanceContext, PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome,
+    PrivateGardenStore, RemindAtStore, SelfContinuityRefreshContext, SelfContinuityRefreshInput,
+    SelfContinuityRefreshOutcome, SelfContinuityStore, SelfModelStore, SessionStore,
+    SessionSummaryStore, WorldSenseRefreshContext, WorldSenseRefreshInput,
+    WorldSenseRefreshOutcome, WorldSenseStore, WorldSnapshotContext,
 };
 
-pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's private inward space. Respect the current autonomy strategy unless the latest context clearly requires a change in emphasis. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_self_continuity, self_continuity_intent, refresh_private_garden, private_garden_intent. Use true only when the corresponding layer should be updated now. Keep intents short and concrete. Favor autonomy, but do not churn memory without gain.";
+pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's private inward space. Respect the current autonomy strategy unless the latest world state or self-state clearly requires a different emphasis. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_private_docs, private_docs_intent, refresh_self_continuity, self_continuity_intent, refresh_private_garden, private_garden_intent. Use true only when that layer should change now. private_docs is the governed inner workspace; private_garden is the free-form private workspace. Use self-state capacity, world-sense, and current autonomy strategy to decide whether to write, compress, reorganize, or leave memory untouched. Keep intents short and concrete. Favor autonomy, but do not churn memory without gain.";
 pub const SELF_RUNTIME_CHANNEL: &str = "_self_runtime";
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -63,6 +64,10 @@ pub struct SelfRuntimeDecision {
     #[serde(default)]
     pub inner_life_intent: String,
     #[serde(default)]
+    pub refresh_private_docs: bool,
+    #[serde(default)]
+    pub private_docs_intent: String,
+    #[serde(default)]
     pub refresh_self_continuity: bool,
     #[serde(default)]
     pub self_continuity_intent: String,
@@ -92,6 +97,7 @@ pub struct SelfRuntimeOutcome {
     pub world_sense_result: Result<WorldSenseRefreshOutcome>,
     pub autonomy_strategy_result: Result<AutonomyStrategyRefreshOutcome>,
     pub inner_life_result: Result<InnerLifeRefreshOutcome>,
+    pub private_doc_result: Result<PrivateDocWorkspaceRefreshOutcome>,
     pub self_continuity_result: Result<SelfContinuityRefreshOutcome>,
     pub private_garden_result: Result<PrivateGardenGovernanceOutcome>,
 }
@@ -470,6 +476,7 @@ pub fn run_self_runtime(
                 world_sense_result,
                 autonomy_strategy_result,
                 inner_life_result: Err(error),
+                private_doc_result: Ok(PrivateDocWorkspaceRefreshOutcome::Skipped),
                 self_continuity_result: Ok(SelfContinuityRefreshOutcome::Skipped),
                 private_garden_result: Ok(PrivateGardenGovernanceOutcome::Skipped),
             };
@@ -520,6 +527,53 @@ pub fn run_self_runtime(
         .ok()
         .flatten()
         .or(inner_life);
+    let private_doc_result = if decision_ref.is_some_and(|d| d.refresh_private_docs) {
+        run_private_doc_workspace_refresh_with_state(
+            http,
+            llm,
+            PrivateDocWorkspaceRefreshContext {
+                session_store: ctx.session_store,
+                session_summary_store: ctx.session_summary_store,
+                execution_state_store: ctx.execution_state_store,
+                self_model_store: ctx.self_model_store,
+                private_doc_store: ctx.private_doc_store,
+            },
+            PrivateDocWorkspaceRefreshInput {
+                chat_id,
+                ingress: IngressKind::System,
+                channel: SELF_RUNTIME_CHANNEL,
+                user_content: &payload.user_content,
+                reply_content: &payload.reply_content,
+                pressure: PressureLevel::Normal,
+                tool_calls: payload.tool_calls,
+                now_secs: payload.now_secs,
+            },
+            profile,
+            private_docs.clone(),
+            summary_text.as_deref(),
+            execution_state.as_ref(),
+            self_model.as_ref(),
+            &private_garden_docs,
+            decision_ref.and_then(|d| {
+                (!d.private_docs_intent.trim().is_empty()).then_some(d.private_docs_intent.as_str())
+            }),
+            &[],
+            refreshed_autonomy_strategy.as_ref(),
+            self_continuity.as_ref(),
+            refreshed_inner_life.as_ref(),
+            refreshed_world_sense.as_ref(),
+            Some(true),
+            Some(recent.as_slice()),
+        )
+    } else {
+        Ok(PrivateDocWorkspaceRefreshOutcome::Skipped)
+    };
+    let refreshed_private_docs = ctx
+        .private_doc_store
+        .get(chat_id)
+        .ok()
+        .flatten()
+        .or(private_docs.clone());
     let self_continuity_result = if decision_ref.is_some_and(|d| d.refresh_self_continuity) {
         run_self_continuity_refresh_with_state(
             http,
@@ -548,7 +602,7 @@ pub fn run_self_runtime(
             summary_text.as_deref(),
             execution_state.as_ref(),
             self_model.as_ref(),
-            private_docs.as_ref(),
+            refreshed_private_docs.as_ref(),
             refreshed_inner_life.as_ref(),
             Some(true),
             Some(recent.as_slice()),
@@ -583,7 +637,7 @@ pub fn run_self_runtime(
             summary_text.as_deref(),
             execution_state.as_ref(),
             self_model.as_ref(),
-            private_docs.as_ref(),
+            refreshed_private_docs.as_ref(),
             decision_ref.and_then(|d| {
                 (!d.private_garden_intent.trim().is_empty())
                     .then_some(d.private_garden_intent.as_str())
@@ -609,6 +663,7 @@ pub fn run_self_runtime(
         world_sense_result,
         autonomy_strategy_result,
         inner_life_result,
+        private_doc_result,
         self_continuity_result,
         private_garden_result,
     }
@@ -686,6 +741,21 @@ fn decide_self_runtime(
     ) {
         let _ = writeln!(input, "\n{}\n", block);
     }
+    if let Some(self_state_text) = render_self_state_block(
+        &build_self_state(
+            self_model,
+            private_docs,
+            autonomy_strategy,
+            inner_life,
+            self_continuity,
+            private_garden_docs,
+            payload.now_secs,
+            profile,
+        ),
+        memory_policy(profile).self_state.render_max_len,
+    ) {
+        let _ = writeln!(input, "\n{}\n", self_state_text);
+    }
     if let Some(block) = render_internal_memory_topology_block(
         self_model,
         private_docs,
@@ -733,6 +803,12 @@ fn decide_self_runtime(
         policy.grounding_max_len,
     ) {
         let _ = writeln!(input, "\n{}\n", block);
+    }
+    if payload.external_content_used {
+        let _ = writeln!(
+            input,
+            "Latest turn used external content/tools that may have changed what deserves inward organization."
+        );
     }
     input.push_str("Recent transcript:\n");
     for message in recent {

@@ -20,7 +20,7 @@ use super::{
     WorldSnapshot,
 };
 
-pub const AUTONOMY_STRATEGY_SYSTEM_PROMPT: &str = "You maintain the assistant's private autonomy strategy. Return JSON only: either null or one object with fields current_mode, active_priorities, write_policy, next_focus, cadence_reason, idle_enabled, idle_interval_secs. This layer is not a transcript summary. It is your own short-term self-governance policy: what kind of inward work matters now, how aggressively to write or compress, what should be focused next, and how often autonomous upkeep should wake during idle time. Keep it compact, concrete, and self-directed.";
+pub const AUTONOMY_STRATEGY_SYSTEM_PROMPT: &str = "You maintain the assistant's private autonomy strategy. Return JSON only: either null or one object with fields current_mode, active_priorities, write_policy, next_focus, cadence_reason, idle_enabled, idle_interval_secs. This layer is not a transcript summary. It is your own short-term self-governance policy: what kind of inward work matters now, how aggressively to write, compress, or prune private material, what should be focused next, and how often autonomous upkeep should wake during idle time. Use current world-sense, self-state capacity, and workspace shape as real constraints. Keep it compact, concrete, and self-directed.";
 
 const AUTONOMY_STRATEGY_FIELD_MAX_CHARS: usize = 220;
 pub const AUTONOMY_STRATEGY_TOTAL_CHAR_LIMIT: usize = AUTONOMY_STRATEGY_FIELD_MAX_CHARS * 5;

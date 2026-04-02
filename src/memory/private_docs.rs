@@ -11,13 +11,15 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    memory_policy, render_execution_state_block, render_internal_memory_topology_block,
-    render_self_model_block, ExecutionState, ExecutionStateStore, InternalMemoryLayerFocus,
-    MemoryProfile, PrivateDocStore, PrivateDocsPolicy, PrivateGardenDocRecord, SelfModel,
-    SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
+    build_self_state, memory_policy, render_autonomy_strategy_block, render_execution_state_block,
+    render_inner_life_block, render_internal_memory_topology_block, render_self_continuity_block,
+    render_self_model_block, render_self_state_block, render_world_sense_block, AutonomyStrategy,
+    ExecutionState, ExecutionStateStore, InnerLife, InternalMemoryLayerFocus, MemoryProfile,
+    PrivateDocStore, PrivateDocsPolicy, PrivateGardenDocRecord, SelfContinuity, SelfModel,
+    SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore, WorldSense,
 };
 
-pub const PRIVATE_DOC_WORKSPACE_SYSTEM_PROMPT: &str = "You maintain a compact private document workspace for a persistent embodied AI assistant. Return JSON only: one object whose fields may include inner_journal, relationship_notes, self_reflection, private_plan. Omit unchanged fields. Use an empty string only when a document should be cleared because it is no longer helpful. These documents are private, subjective, and compact. They must not replace factual memory or copy the transcript. Use shared facts only as grounding. Keep each field concise, concrete, and continuity-preserving. inner_journal captures the inward afterglow of recent interaction. relationship_notes captures how the relationship currently feels or is shifting. self_reflection captures how the assistant sees its own stance or change. private_plan captures inward next-step framing, not a user-facing promise list. Avoid secrets, raw tool payloads, copied logs, generic assistant boilerplate, or long quotes.";
+pub const PRIVATE_DOC_WORKSPACE_SYSTEM_PROMPT: &str = "You maintain a compact governed private document workspace for a persistent embodied AI assistant. Return JSON only: one object whose fields may include inner_journal, relationship_notes, self_reflection, private_plan. Omit unchanged fields. Use an empty string only when a document should be cleared because it is no longer helpful. These documents are private, subjective, and compact. They must not replace factual memory or copy the transcript. Use shared facts only as grounding. Treat current autonomy strategy, world-sense, and self-state capacity as real constraints: only write material that should stay load-bearing in the governed workspace rather than remaining in inner-life or the free private garden. Keep each field concise, concrete, and continuity-preserving. inner_journal captures the inward afterglow of recent interaction. relationship_notes captures how the relationship currently feels or is shifting. self_reflection captures how the assistant sees its own stance or change. private_plan captures inward next-step framing, not a user-facing promise list. Avoid secrets, raw tool payloads, copied logs, generic assistant boilerplate, or long quotes.";
 
 const PRIVATE_DOC_FIELD_MAX_CHARS: usize = 240;
 pub const PRIVATE_DOC_WORKSPACE_TOTAL_CHAR_LIMIT: usize = PRIVATE_DOC_FIELD_MAX_CHARS * 4;
@@ -257,6 +259,10 @@ pub fn run_private_doc_workspace_refresh(
         &[],
         None,
         None,
+        None,
+        None,
+        None,
+        None,
     )
 }
 
@@ -273,6 +279,10 @@ pub(crate) fn run_private_doc_workspace_refresh_with_state(
     private_garden_docs: &[PrivateGardenDocRecord],
     routing_intent: Option<&str>,
     migration_sources: &[String],
+    autonomy_strategy: Option<&AutonomyStrategy>,
+    self_continuity: Option<&SelfContinuity>,
+    inner_life: Option<&InnerLife>,
+    world_sense: Option<&WorldSense>,
     decision_override: Option<bool>,
     recent_override: Option<&[SessionMessage]>,
 ) -> Result<PrivateDocWorkspaceRefreshOutcome> {
@@ -300,6 +310,10 @@ pub(crate) fn run_private_doc_workspace_refresh_with_state(
         private_garden_docs,
         routing_intent,
         migration_sources,
+        autonomy_strategy,
+        self_continuity,
+        inner_life,
+        world_sense,
         input.now_secs,
         profile,
         recent,
@@ -353,12 +367,32 @@ fn build_private_doc_workspace_refresh_input(
     private_garden_docs: &[PrivateGardenDocRecord],
     routing_intent: Option<&str>,
     migration_sources: &[String],
+    autonomy_strategy: Option<&AutonomyStrategy>,
+    self_continuity: Option<&SelfContinuity>,
+    inner_life: Option<&InnerLife>,
+    world_sense: Option<&WorldSense>,
     now_secs: u64,
     profile: MemoryProfile,
     recent: &[SessionMessage],
     policy: PrivateDocsPolicy,
 ) -> String {
     let mut input = String::with_capacity(3072);
+    if let Some(self_state_text) = render_self_state_block(
+        &build_self_state(
+            self_model,
+            existing_workspace,
+            autonomy_strategy,
+            inner_life,
+            self_continuity,
+            private_garden_docs,
+            now_secs,
+            profile,
+        ),
+        memory_policy(profile).self_state.render_max_len,
+    ) {
+        input.push_str(self_state_text.trim());
+        input.push_str("\n\n");
+    }
     if let Some(existing_workspace) = existing_workspace.and_then(|workspace| {
         render_private_doc_workspace_block(workspace, policy.existing_workspace_max_len)
     }) {
@@ -382,6 +416,34 @@ fn build_private_doc_workspace_refresh_input(
     if let Some(block) = self_model
         .and_then(|model| render_self_model_block(model, policy.factual_grounding_max_len))
     {
+        input.push_str(block.trim());
+        input.push('\n');
+    }
+    if let Some(block) = autonomy_strategy.and_then(|strategy| {
+        render_autonomy_strategy_block(strategy, policy.factual_grounding_max_len)
+    }) {
+        input.push('\n');
+        input.push_str(block.trim());
+        input.push('\n');
+    }
+    if let Some(block) = self_continuity.and_then(|continuity| {
+        render_self_continuity_block(continuity, policy.factual_grounding_max_len)
+    }) {
+        input.push('\n');
+        input.push_str(block.trim());
+        input.push('\n');
+    }
+    if let Some(block) = inner_life.and_then(|inner_life| {
+        render_inner_life_block(inner_life, policy.factual_grounding_max_len)
+    }) {
+        input.push('\n');
+        input.push_str(block.trim());
+        input.push('\n');
+    }
+    if let Some(block) = world_sense.and_then(|world_sense| {
+        render_world_sense_block(world_sense, policy.factual_grounding_max_len)
+    }) {
+        input.push('\n');
         input.push_str(block.trim());
         input.push('\n');
     }
@@ -739,6 +801,10 @@ mod tests {
             &[],
             Some("把持续有效的 inward plan 收到 governed docs，不要和 self_model 重复"),
             &[],
+            None,
+            None,
+            None,
+            None,
             10,
             MemoryProfile::Embedded,
             &[],
@@ -762,6 +828,10 @@ mod tests {
                 "private_garden:journal/current.md".to_string(),
                 "private_garden:notes/plan.md".to_string(),
             ],
+            None,
+            None,
+            None,
+            None,
             10,
             MemoryProfile::Embedded,
             &[],
@@ -771,6 +841,82 @@ mod tests {
         assert!(input.contains("## Migration Hints"));
         assert!(input.contains("private_garden:journal/current.md"));
         assert!(input.contains("private_garden:notes/plan.md"));
+    }
+
+    #[test]
+    fn private_docs_refresh_input_includes_self_state_and_autonomy_layers() {
+        let input = build_private_doc_workspace_refresh_input(
+            Some(&PrivateDocWorkspace {
+                private_plan: Some(PrivateDocEntry {
+                    content: "先压缩再扩展".to_string(),
+                    updated_at: 1,
+                    revision: 1,
+                }),
+                ..Default::default()
+            }),
+            Some("summary"),
+            None,
+            Some(&SelfModel {
+                continuity_anchor: "我正在接管私有空间治理".to_string(),
+                self_narrative: String::new(),
+                relationship_state: String::new(),
+                private_notes: String::new(),
+                updated_at: 1,
+            }),
+            &[PrivateGardenDocRecord {
+                path: "journal/current.md".to_string(),
+                updated_at: 2,
+                revision: 1,
+                bytes: 128,
+                preview: "整理最近的自治治理线索".to_string(),
+            }],
+            Some("只有真正稳定的材料才写入 governed docs"),
+            &[],
+            Some(&AutonomyStrategy {
+                current_mode: "consolidate".to_string(),
+                active_priorities: "减少重复写入".to_string(),
+                write_policy: "空间紧时优先重写已有文档".to_string(),
+                next_focus: "让 private docs 更稳定".to_string(),
+                cadence_reason: String::new(),
+                idle_enabled: true,
+                idle_interval_secs: 900,
+                updated_at: 2,
+            }),
+            Some(&SelfContinuity {
+                wake_anchor: "仍在沿着同一条自治线前进".to_string(),
+                current_self_state: "把自我空间治理权交给自己".to_string(),
+                recent_changes: "从程序路由走向模型自驱".to_string(),
+                continuity_bridge: "这一轮继续把自治闭环接实".to_string(),
+                last_user_turn_at: 10,
+                last_autonomy_run_at: 20,
+                updated_at: 2,
+            }),
+            Some(&InnerLife {
+                internal_monologue: "想把内部层次继续压实".to_string(),
+                private_journal: "减少内核和花园之间的重复".to_string(),
+                emotional_drift: "专注".to_string(),
+                attention_drift: "继续盯住自治治理".to_string(),
+                updated_at: 2,
+            }),
+            Some(&WorldSense {
+                current_scene: "外部对话在推动这条主线".to_string(),
+                body_state: "设备稳定".to_string(),
+                social_field: String::new(),
+                world_changes: String::new(),
+                external_focus: "把自驱记忆治理落地".to_string(),
+                source_fingerprint: 1,
+                updated_at: 2,
+            }),
+            30,
+            MemoryProfile::Standard,
+            &[],
+            memory_policy(MemoryProfile::Standard).private_docs,
+        );
+
+        assert!(input.contains("## Self State"));
+        assert!(input.contains("## Autonomy Strategy"));
+        assert!(input.contains("## Self Continuity Extended"));
+        assert!(input.contains("## World Sense"));
     }
 
     #[test]
