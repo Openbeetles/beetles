@@ -1,6 +1,6 @@
 //! Agent ReAct 循环：入站一条 → context → chat（含 tool_use 多轮）→ 会话持久化 → 出站一条。
 //! 仅依赖 trait；HTTP/Tool 由 main 注入同一实现（如 EspHttpClient）。
-use super::delivery::{DeliveryReport, DeliverySession};
+use super::delivery::{DeliveryReport, DeliverySession, ToolIntentDelivery};
 use super::final_reply::finalize_user_visible_reply;
 use super::request_plan::AgentRequestPlan;
 use super::strategy::{
@@ -34,19 +34,21 @@ use crate::error::Result;
 use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
 use crate::llm::{LlmClient, Message, StopReason, ToolChoicePolicy};
 use crate::memory::{
-    build_turn_ledger_start, load_prompt_memory_context, normalize_turn_preview,
-    normalize_turn_reason, run_long_term_memory_refresh, run_post_reply_memory_maintenance,
-    EmotionSignalStore, ExecutionStateStore, ImportantMessageStore,
-    LongTermMemoryExtractionStateStore, LongTermMemoryRefreshContext, LongTermMemoryRefreshOutcome,
-    LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore, MemoryStore, PendingRetryStore,
-    PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput, PromptMemoryContextParams,
-    SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore, TurnDeliveryLedger,
-    TurnLedger, TurnLedgerStatus, TurnLedgerStore,
+    build_turn_ledger_start, load_prompt_memory_context, memory_policy, normalize_turn_preview,
+    normalize_turn_reason, recall_long_term_memory_block, run_long_term_memory_refresh,
+    run_post_reply_memory_maintenance, EmotionSignalStore, ExecutionStateStore,
+    ImportantMessageStore, LongTermMemoryExtractionStateStore, LongTermMemoryRefreshContext,
+    LongTermMemoryRefreshOutcome, LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore,
+    MemoryStore, PendingRetryStore, PostReplyMemoryMaintenanceContext,
+    PostReplyMemoryMaintenanceInput, PrivateDocStore, PrivateGardenStore,
+    PromptMemoryContextParams, SelfModelStore, SessionStore, SessionSummaryRefreshOutcome,
+    SessionSummaryStore, TurnDeliveryLedger, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
 use crate::state;
 use crate::tools::http_bridge::HttpClientToolContext;
+use crate::tools::{ToolOutboundDeliveryKind, ToolOutboundIntent, ToolOutboundTarget};
 use crate::util::{
     remove_substrings_all_trim, strip_agent_stop_confirmation, truncate_content_to_max,
 };
@@ -234,9 +236,62 @@ fn build_turn_delivery_ledger(report: DeliveryReport) -> TurnDeliveryLedger {
         waiting_notice_sent: report.waiting_notice_sent,
         progress_updates_sent: report.progress_updates_sent,
         partial_updates_sent: report.partial_updates_sent,
+        tool_outbound_intents_seen: report.tool_outbound_intents_seen,
+        tool_visible_updates_sent: report.tool_visible_updates_sent,
+        explicit_outbound_sent: report.explicit_outbound_sent,
+        tool_outbound_suppressed: report.tool_outbound_suppressed,
         current_primary_delivered: report.current_primary_delivered,
         finalize_streamed: report.finalize_streamed,
         visible_text_updates_sent: report.visible_text_updates_sent,
+    }
+}
+
+fn tool_intent_target_attr(intent: &ToolOutboundIntent) -> &'static str {
+    match intent.target {
+        ToolOutboundTarget::CurrentChat => "current",
+        ToolOutboundTarget::Explicit { .. } => "explicit",
+    }
+}
+
+fn tool_intent_delivery_attr(intent: &ToolOutboundIntent) -> &'static str {
+    match intent.delivery_kind {
+        ToolOutboundDeliveryKind::Supplemental => "supplemental",
+        ToolOutboundDeliveryKind::Primary => "primary",
+    }
+}
+
+fn log_tool_intent_result(
+    tool_name: &str,
+    intent: &ToolOutboundIntent,
+    result: ToolIntentDelivery,
+) {
+    let target = tool_intent_target_attr(intent);
+    let delivery_kind = tool_intent_delivery_attr(intent);
+    match result {
+        ToolIntentDelivery::CurrentPrimary => {
+            log::info!(
+                "[agent_tool] {} outbound intent accepted target={} delivery_kind={} result=current_primary",
+                tool_name,
+                target,
+                delivery_kind
+            );
+        }
+        ToolIntentDelivery::VisibleUpdate => {
+            log::debug!(
+                "[agent_tool] {} outbound intent accepted target={} delivery_kind={} result=visible_update",
+                tool_name,
+                target,
+                delivery_kind
+            );
+        }
+        ToolIntentDelivery::Suppressed => {
+            log::debug!(
+                "[agent_tool] {} outbound intent suppressed target={} delivery_kind={}",
+                tool_name,
+                target,
+                delivery_kind
+            );
+        }
     }
 }
 
@@ -777,8 +832,7 @@ fn run_long_term_memory_refresh_job(
         http,
         chat_id: Some(Arc::from(msg.chat_id.as_ref())),
         channel: Some(Arc::from("system")),
-        outbound_tx: None,
-        req_id: None,
+        supports_current_chat_outbound_message: false,
         supports_current_chat_primary_reply: false,
         supports_explicit_outbound_message: false,
         outbound_message_budget: 0,
@@ -894,8 +948,7 @@ fn run_post_reply_maintenance_job(
         http,
         chat_id: Some(Arc::from(msg.chat_id.as_ref())),
         channel: Some(Arc::from("system")),
-        outbound_tx: None,
-        req_id: None,
+        supports_current_chat_outbound_message: false,
         supports_current_chat_primary_reply: false,
         supports_explicit_outbound_message: false,
         outbound_message_budget: 0,
@@ -910,6 +963,8 @@ fn run_post_reply_maintenance_job(
             session_store: config.session_store.as_ref(),
             session_summary_store: config.session_summary_store.as_ref(),
             execution_state_store: config.execution_state_store.as_ref(),
+            self_model_store: config.self_model_store.as_ref(),
+            private_doc_store: config.private_doc_store.as_ref(),
             extraction_state_store: config.long_term_memory_extraction_state_store.as_ref(),
         },
         PostReplyMemoryMaintenanceInput {
@@ -965,6 +1020,20 @@ fn run_post_reply_maintenance_job(
         }
         Ok(crate::memory::ExecutionStateRefreshOutcome::Skipped) => {}
         Err(error) => log::warn!("[agent_execution_state] failed: {}", error),
+    }
+    match maintenance_outcome.self_model_result {
+        Ok(crate::memory::SelfModelRefreshOutcome::Updated) => {
+            log::info!("[agent_self_model] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::SelfModelRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_self_model] failed: {}", error),
+    }
+    match maintenance_outcome.private_doc_result {
+        Ok(crate::memory::PrivateDocWorkspaceRefreshOutcome::Updated) => {
+            log::info!("[agent_private_docs] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::PrivateDocWorkspaceRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_private_docs] failed: {}", error),
     }
     if maintenance_outcome.extraction_request_outcome
         == LongTermMemoryRefreshRequestOutcome::RequestFailed
@@ -1195,6 +1264,9 @@ pub struct AgentLoopConfig {
     pub session_store: Arc<dyn SessionStore + Send + Sync>,
     pub session_summary_store: Arc<dyn SessionSummaryStore + Send + Sync>,
     pub execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
+    pub self_model_store: Arc<dyn SelfModelStore + Send + Sync>,
+    pub private_doc_store: Arc<dyn PrivateDocStore + Send + Sync>,
+    pub private_garden_store: Arc<dyn PrivateGardenStore + Send + Sync>,
     pub turn_ledger_store: Arc<dyn TurnLedgerStore + Send + Sync>,
     pub memory_profile: crate::memory::MemoryProfile,
     pub get_skill_descriptions: Arc<dyn Fn() -> String + Send + Sync>,
@@ -1518,6 +1590,19 @@ fn run_agent_loop_lane(
         if let Some(ref mut f) = typing_notifier {
             f(&msg.channel, &msg.chat_id, http);
         }
+        let worker_prepare_ms = msg_start.elapsed().as_millis().saturating_sub(admission_ms);
+        if worker_prepare_ms >= 1000 {
+            log::warn!(
+                "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} status=pre_worker_slow",
+                worker_lane_tag,
+                msg.req_id.as_deref().unwrap_or_default(),
+                msg.channel,
+                msg.chat_id,
+                queue_wait_ms,
+                admission_ms,
+                worker_prepare_ms
+            );
+        }
         let final_content = run_worker_path(
             http,
             worker_llm,
@@ -1533,7 +1618,11 @@ fn run_agent_loop_lane(
         let (outcome, telemetry) = match final_content {
             Ok(ok) => ok,
             Err(e) => {
-                let llm_ms = msg_start.elapsed().as_millis().saturating_sub(admission_ms);
+                let llm_ms = msg_start
+                    .elapsed()
+                    .as_millis()
+                    .saturating_sub(admission_ms)
+                    .saturating_sub(worker_prepare_ms);
                 let total_ms = msg_start.elapsed().as_millis();
                 turn_ledger.status = TurnLedgerStatus::Failed;
                 turn_ledger.reason = normalize_turn_reason(e.stage());
@@ -1552,12 +1641,14 @@ fn run_agent_loop_lane(
                 metrics::record_error_by_stage(e.stage());
                 log::warn!("[agent:{}] chat loop failed: {}", worker_lane_tag, e);
                 log::warn!(
-                    "[latency][agent:{}] req_id={} channel={} chat_id={} admission_ms={} llm_ms={} total_ms={} status=llm_error",
+                    "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} llm_ms={} total_ms={} status=llm_error",
                     worker_lane_tag,
                     msg.req_id.as_deref().unwrap_or_default(),
                     msg.channel,
                     msg.chat_id,
+                    queue_wait_ms,
                     admission_ms,
+                    worker_prepare_ms,
                     llm_ms,
                     total_ms
                 );
@@ -1824,12 +1915,14 @@ fn run_agent_loop_lane(
         }
         if total_ms >= LATENCY_WARN_MS {
             log::warn!(
-                "[latency][agent:{}] req_id={} channel={} chat_id={} admission_ms={} context_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={} level=slow",
+                "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} context_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={} level=slow",
                 worker_lane_tag,
                 msg.req_id.as_deref().unwrap_or_default(),
                 msg.channel,
                 msg.chat_id,
+                queue_wait_ms,
                 admission_ms,
+                worker_prepare_ms,
                 worker_latency.context_ms,
                 worker_latency.llm_round_total_ms,
                 worker_latency.tool_exec_ms,
@@ -1847,12 +1940,14 @@ fn run_agent_loop_lane(
             );
         } else {
             log::info!(
-                "[latency][agent:{}] req_id={} channel={} chat_id={} admission_ms={} context_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={}",
+                "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} context_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={}",
                 worker_lane_tag,
                 msg.req_id.as_deref().unwrap_or_default(),
                 msg.channel,
                 msg.chat_id,
+                queue_wait_ms,
                 admission_ms,
+                worker_prepare_ms,
                 worker_latency.context_ms,
                 worker_latency.llm_round_total_ms,
                 worker_latency.tool_exec_ms,
@@ -1895,8 +1990,7 @@ fn run_worker_path(
         http,
         chat_id: Some(msg.chat_id.clone()),
         channel: Some(msg.channel.clone()),
-        outbound_tx: Some(outbound_tx),
-        req_id: Some(req_id),
+        supports_current_chat_outbound_message: false,
         supports_current_chat_primary_reply: false,
         supports_explicit_outbound_message: false,
         outbound_message_budget: 2,
@@ -1904,6 +1998,17 @@ fn run_worker_path(
         current_primary_message_delivered: false,
         locale: loc,
     };
+    let editor = if config.llm_stream
+        && config.stream_editor_channel.as_deref() == Some(msg.channel.as_ref())
+    {
+        config.stream_editor.as_deref()
+    } else {
+        None
+    };
+    tool_ctx.supports_current_chat_outbound_message =
+        msg.ingress == IngressKind::User && msg.channel.as_ref() != "voice";
+    tool_ctx.supports_current_chat_primary_reply = tool_ctx.supports_current_chat_outbound_message;
+    let mut delivery = DeliverySession::new(msg, req_id, outbound_tx, editor, loc);
     let emotion_signal_suffix = config
         .emotion_signal_store
         .get_then_clear(&msg.chat_id)
@@ -1918,6 +2023,7 @@ fn run_worker_path(
         });
     let budget = crate::orchestrator::current_budget();
     let snapshot = crate::orchestrator::snapshot();
+    let interactive_fast_path = msg.ingress == IngressKind::User && msg.channel.as_ref() != "voice";
     let runtime = RuntimeContext {
         now_secs: crate::util::current_unix_secs(),
         platform: if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
@@ -1947,17 +2053,23 @@ fn run_worker_path(
         runtime: Some(runtime),
         llm_hint: budget.llm_hint,
     });
-    let prompt_memory = load_prompt_memory_context(PromptMemoryContextParams {
+    let prompt_memory_system_budget = budget
+        .system_prompt_max
+        .saturating_sub(post_memory_tail_len);
+    let mut prompt_memory = load_prompt_memory_context(PromptMemoryContextParams {
         chat_id: &msg.chat_id,
         user_query: &msg.content,
-        system_max_len: budget
-            .system_prompt_max
-            .saturating_sub(post_memory_tail_len),
+        system_max_len: prompt_memory_system_budget,
         profile: config.memory_profile,
+        recent_messages_limit: config.session_max_messages,
+        load_long_term_memory: !interactive_fast_path,
         session_store: config.session_store.as_ref(),
         session_summary_store: config.session_summary_store.as_ref(),
         long_term_memory_store: config.long_term_memory_store.as_ref(),
         execution_state_store: config.execution_state_store.as_ref(),
+        self_model_store: config.self_model_store.as_ref(),
+        private_doc_store: config.private_doc_store.as_ref(),
+        private_garden_store: config.private_garden_store.as_ref(),
     });
     let (mut system, mut messages) = build_context(&super::ContextParams {
         msg,
@@ -1972,11 +2084,15 @@ fn run_worker_path(
         group_activation: config.tg_group_activation.as_ref(),
         emotion_signal_suffix,
         execution_state_text: prompt_memory.execution_state_text.as_deref(),
+        self_model_text: prompt_memory.self_model_text.as_deref(),
+        private_workspace_text: prompt_memory.private_workspace_text.as_deref(),
+        private_garden_text: prompt_memory.private_garden_text.as_deref(),
         long_term_memory_text: prompt_memory.long_term_memory_text.as_deref(),
         summary_text: prompt_memory.message_summary_text.as_deref(),
         recent_messages: (!prompt_memory.recent_messages.is_empty())
             .then_some(prompt_memory.recent_messages.as_slice()),
         runtime: Some(runtime),
+        include_daily_notes: !interactive_fast_path,
         llm_hint: budget.llm_hint,
     })
     .map_err(|e| e.with_stage("agent_context"))?;
@@ -2014,17 +2130,6 @@ fn run_worker_path(
     let mut tool_result_user_content = String::with_capacity(1024);
     let mut round_call_keys = Vec::with_capacity(4);
     let mut round_evidence_lines = Vec::with_capacity(MAX_TOOL_EVIDENCE_ITEMS);
-    // 流式编辑状态（跨 ReAct 轮次共享）。
-    let editor = if config.llm_stream
-        && config.stream_editor_channel.as_deref() == Some(msg.channel.as_ref())
-    {
-        config.stream_editor.as_deref()
-    } else {
-        None
-    };
-    tool_ctx.supports_current_chat_primary_reply =
-        msg.ingress == IngressKind::User && msg.channel.as_ref() != "voice";
-    let mut delivery = DeliverySession::new(msg, req_id, outbound_tx, editor, loc);
     // P1 Enhancement 3: 进度跟踪（最近3轮），用于检测无效循环。
     let mut progress_history: [Option<RoundProgress>; 3] = [None; 3];
     let mut any_tool_used = false; // 本次请求是否使用过任何工具
@@ -2303,67 +2408,61 @@ fn run_worker_path(
                                         latency.tool_exec_ms = latency
                                             .tool_exec_ms
                                             .saturating_add(tool_exec_start.elapsed().as_millis());
-                                        if let Some(reply) = outcome.current_chat_reply {
-                                            match delivery.deliver_current_primary(&reply.content) {
-                                                Ok(true) => {
-                                                    metrics::record_tool_call(true);
-                                                    round_tool_success = true;
-                                                    any_tool_used = true;
-                                                    (
-                                                        crate::util::scrub_credentials(
-                                                            &outcome.content,
-                                                        ),
-                                                        None,
-                                                        Some(reply.content),
-                                                    )
+                                        let mut delivered_reply = None;
+                                        let mut outbound_error = None;
+                                        for intent in &outcome.outbound_intents {
+                                            match delivery.deliver_tool_outbound_intent(intent) {
+                                                Ok(ToolIntentDelivery::CurrentPrimary) => {
+                                                    log_tool_intent_result(
+                                                        &tc.name,
+                                                        intent,
+                                                        ToolIntentDelivery::CurrentPrimary,
+                                                    );
+                                                    delivered_reply = Some(intent.content.clone());
                                                 }
-                                                Ok(false) => {
-                                                    metrics::record_tool_call(false);
-                                                    let assessment = classify_tool_error(
-                                                        &crate::error::Error::config(
-                                                            "current_chat_delivery",
-                                                            "current-chat primary reply was empty or not deliverable",
-                                                        ),
+                                                Ok(ToolIntentDelivery::VisibleUpdate) => {
+                                                    log_tool_intent_result(
+                                                        &tc.name,
+                                                        intent,
+                                                        ToolIntentDelivery::VisibleUpdate,
                                                     );
-                                                    tool_error_buf.clear();
-                                                    let _ = write!(
-                                                        &mut tool_error_buf,
-                                                        "[tool error] failed to deliver current-chat primary reply.{}",
-                                                        assessment.hint
+                                                }
+                                                Ok(ToolIntentDelivery::Suppressed) => {
+                                                    log_tool_intent_result(
+                                                        &tc.name,
+                                                        intent,
+                                                        ToolIntentDelivery::Suppressed,
                                                     );
-                                                    (
-                                                        crate::util::scrub_credentials(
-                                                            tool_error_buf.as_str(),
-                                                        ),
-                                                        Some(assessment.kind),
-                                                        None,
-                                                    )
                                                 }
                                                 Err(e) => {
-                                                    metrics::record_tool_call(false);
-                                                    metrics::record_error_by_stage(e.stage());
-                                                    log::error!(
-                                                        "[agent_tool] {} current-chat delivery failed: {}",
-                                                        tc.name,
-                                                        e
-                                                    );
-                                                    state::set_last_error(&e);
-                                                    let assessment = classify_tool_error(&e);
-                                                    tool_error_buf.clear();
-                                                    let _ = write!(
-                                                        &mut tool_error_buf,
-                                                        "[tool error] {}.{}",
-                                                        e, assessment.hint
-                                                    );
-                                                    (
-                                                        crate::util::scrub_credentials(
-                                                            tool_error_buf.as_str(),
-                                                        ),
-                                                        Some(assessment.kind),
-                                                        None,
-                                                    )
+                                                    outbound_error = Some(e);
+                                                    break;
                                                 }
                                             }
+                                        }
+                                        if let Some(e) = outbound_error {
+                                            metrics::record_tool_call(false);
+                                            metrics::record_error_by_stage(e.stage());
+                                            log::error!(
+                                                "[agent_tool] {} outbound intent delivery failed: {}",
+                                                tc.name,
+                                                e
+                                            );
+                                            state::set_last_error(&e);
+                                            let assessment = classify_tool_error(&e);
+                                            tool_error_buf.clear();
+                                            let _ = write!(
+                                                &mut tool_error_buf,
+                                                "[tool error] {}.{}",
+                                                e, assessment.hint
+                                            );
+                                            (
+                                                crate::util::scrub_credentials(
+                                                    tool_error_buf.as_str(),
+                                                ),
+                                                Some(assessment.kind),
+                                                None,
+                                            )
                                         } else {
                                             metrics::record_tool_call(true);
                                             round_tool_success = true;
@@ -2371,7 +2470,7 @@ fn run_worker_path(
                                             (
                                                 crate::util::scrub_credentials(&outcome.content),
                                                 None,
-                                                None,
+                                                delivered_reply,
                                             )
                                         }
                                     }
@@ -2522,6 +2621,30 @@ fn run_worker_path(
                 }
             }
             if memory_grounding.is_none() {
+                if prompt_memory.long_term_memory_text.is_none()
+                    && interactive_fast_path
+                    && prompt_memory_system_budget
+                        >= memory_policy(config.memory_profile)
+                            .long_term_recall
+                            .block_min_len
+                {
+                    let recall_recent_count = memory_policy(config.memory_profile)
+                        .long_term_recall
+                        .recent_grounding_message_count;
+                    let recent_start = prompt_memory
+                        .recent_messages
+                        .len()
+                        .saturating_sub(recall_recent_count);
+                    prompt_memory.long_term_memory_text = recall_long_term_memory_block(
+                        config.long_term_memory_store.as_ref(),
+                        &msg.chat_id,
+                        &msg.content,
+                        prompt_memory.summary_text.as_deref(),
+                        &prompt_memory.recent_messages[recent_start..],
+                        prompt_memory_system_budget,
+                        config.memory_profile,
+                    );
+                }
                 memory_grounding = build_memory_grounding_text(
                     prompt_memory.summary_text.as_deref(),
                     prompt_memory.long_term_memory_text.as_deref(),
@@ -2620,8 +2743,8 @@ mod tests {
         EmotionSignalStore, ExecutionState, ExecutionStateStore, ImportantMessageStore,
         LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryExtractionState,
         LongTermMemoryExtractionStateStore, LongTermMemorySlot, LongTermMemoryStore, MemoryStore,
-        PendingRetryStore, SessionMessage, SessionStore, SessionSummaryStore, TurnLedger,
-        TurnLedgerStore,
+        PendingRetryStore, PrivateGardenDoc, PrivateGardenDocRecord, SessionMessage, SessionStore,
+        SessionSummaryStore, TurnLedger, TurnLedgerStore,
     };
     use crate::platform::{PlatformHttpClient, ResponseBody};
     use std::collections::HashMap;
@@ -2803,6 +2926,71 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct StubSelfModelStore;
+
+    impl SelfModelStore for StubSelfModelStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<crate::memory::SelfModel>> {
+            Ok(None)
+        }
+
+        fn set(&self, _chat_id: &str, _model: &crate::memory::SelfModel) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubPrivateDocStore;
+
+    impl PrivateDocStore for StubPrivateDocStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<crate::memory::PrivateDocWorkspace>> {
+            Ok(None)
+        }
+
+        fn set(
+            &self,
+            _chat_id: &str,
+            _workspace: &crate::memory::PrivateDocWorkspace,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubPrivateGardenStore;
+
+    impl PrivateGardenStore for StubPrivateGardenStore {
+        fn list(&self, _chat_id: &str, _limit: usize) -> Result<Vec<PrivateGardenDocRecord>> {
+            Ok(Vec::new())
+        }
+
+        fn read(&self, _chat_id: &str, _doc_path: &str) -> Result<Option<PrivateGardenDoc>> {
+            Ok(None)
+        }
+
+        fn write(
+            &self,
+            _chat_id: &str,
+            _doc_path: &str,
+            _content: &str,
+            _now_secs: u64,
+        ) -> Result<PrivateGardenDocRecord> {
+            unreachable!()
+        }
+
+        fn delete(&self, _chat_id: &str, _doc_path: &str) -> Result<bool> {
+            unreachable!()
+        }
+    }
+
+    #[derive(Default)]
     struct StubLongTermMemoryStore;
 
     impl LongTermMemoryStore for StubLongTermMemoryStore {
@@ -2950,6 +3138,9 @@ mod tests {
             session_store: Arc::new(StubSessionStore::default()),
             session_summary_store: Arc::new(StubSessionSummaryStore),
             execution_state_store: Arc::new(StubExecutionStateStore),
+            self_model_store: Arc::new(StubSelfModelStore),
+            private_doc_store: Arc::new(StubPrivateDocStore),
+            private_garden_store: Arc::new(StubPrivateGardenStore),
             turn_ledger_store: Arc::new(StubTurnLedgerStore),
             memory_profile: crate::memory::MemoryProfile::Embedded,
             get_skill_descriptions: Arc::new(String::new),
@@ -3209,8 +3400,7 @@ mod tests {
             http: &mut http,
             chat_id: Some(Arc::from("chat-1")),
             channel: Some(Arc::from("qq_channel")),
-            outbound_tx: None,
-            req_id: None,
+            supports_current_chat_outbound_message: false,
             supports_current_chat_primary_reply: false,
             supports_explicit_outbound_message: false,
             outbound_message_budget: 0,

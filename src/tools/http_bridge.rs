@@ -12,7 +12,6 @@ use crate::error::Result;
 use crate::i18n::Locale;
 use crate::platform::{PlatformHttpClient, ResponseBody};
 use crate::tools::ToolContext;
-use crate::{bus::PcMsg, metrics};
 use std::sync::Arc;
 
 /// 正向适配器：`PlatformHttpClient + 会话元数据` → `PlatformHttpClient + ToolContext`。
@@ -29,10 +28,8 @@ pub(crate) struct HttpClientToolContext<'a> {
     pub(crate) chat_id: Option<Arc<str>>,
     /// 当前入站消息的通道名称（如 `"telegram"`）；系统内部路径为 `None`。
     pub(crate) channel: Option<Arc<str>>,
-    /// 当前请求的 outbound 发送端；仅 agent 对话主链提供。
-    pub(crate) outbound_tx: Option<&'a crate::bus::OutboundTx>,
-    /// 当前请求 req_id；用于贯通 dispatch/sender 时延日志。
-    pub(crate) req_id: Option<&'a str>,
+    /// 当前运行时是否允许工具向当前聊天提交用户可见消息意图。
+    pub(crate) supports_current_chat_outbound_message: bool,
     /// 当前运行时是否允许工具声明“当前聊天主答复已由工具交付”。
     pub(crate) supports_current_chat_primary_reply: bool,
     /// 当前运行时是否允许工具向显式指定的其他聊天发消息。
@@ -142,6 +139,10 @@ impl ToolContext for HttpClientToolContext<'_> {
         self.channel.as_deref()
     }
 
+    fn supports_current_chat_outbound_message(&self) -> bool {
+        self.supports_current_chat_outbound_message
+    }
+
     fn supports_current_chat_primary_reply(&self) -> bool {
         self.supports_current_chat_primary_reply
     }
@@ -178,30 +179,6 @@ impl ToolContext for HttpClientToolContext<'_> {
         }
         self.outbound_message_count = self.outbound_message_count.saturating_add(1);
         Ok(())
-    }
-
-    fn send_outbound_message(&mut self, channel: &str, chat_id: &str, content: &str) -> Result<()> {
-        let outbound_tx = self.outbound_tx.ok_or_else(|| {
-            crate::error::Error::config(
-                "tool_outbound_message",
-                "outbound sender is not available in this runtime context",
-            )
-        })?;
-        let mut msg = PcMsg::new(channel, chat_id, content)?;
-        msg.req_id = self.req_id.map(|id| id.to_string());
-        match outbound_tx.try_send(msg) {
-            Ok(()) => {
-                metrics::record_message_out();
-                Ok(())
-            }
-            Err(e) => {
-                metrics::record_outbound_enqueue_fail();
-                Err(crate::error::Error::config(
-                    "tool_outbound_message",
-                    format!("outbound enqueue failed: {}", e),
-                ))
-            }
-        }
     }
 
     fn user_locale(&self) -> Locale {

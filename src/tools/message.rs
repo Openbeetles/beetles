@@ -1,5 +1,8 @@
 use crate::error::{Error, Result};
-use crate::tools::{parse_tool_args, Tool, ToolContext, ToolExecutionOutcome, ToolMetadata};
+use crate::tools::{
+    parse_tool_args, Tool, ToolContext, ToolExecutionOutcome, ToolMetadata,
+    ToolOutboundDeliveryKind, ToolOutboundIntent, ToolOutboundTarget,
+};
 use serde_json::{json, Value};
 
 pub struct MessageTool;
@@ -120,6 +123,12 @@ impl Tool for MessageTool {
                 ));
             }
         };
+        if current_target && !ctx.supports_current_chat_outbound_message() {
+            return Err(Error::config(
+                "tool_message",
+                "current-chat outbound delivery is not supported in this runtime context",
+            ));
+        }
         if primary && current_target && !ctx.supports_current_chat_primary_reply() {
             return Err(Error::config(
                 "tool_message",
@@ -142,20 +151,25 @@ impl Tool for MessageTool {
             "channel": channel,
             "chat_id": chat_id,
             "sent_chars": content.chars().count(),
-            "delivered_by_runtime": primary && current_target,
+            "submitted_to_runtime": true,
         })
         .to_string();
 
-        if !(primary && current_target) {
-            ctx.send_outbound_message(&channel, &chat_id, content)?;
-        }
-
-        let outcome = ToolExecutionOutcome::text(summary);
-        if primary && current_target {
-            Ok(outcome.with_current_chat_reply(content))
-        } else {
-            Ok(outcome)
-        }
+        Ok(
+            ToolExecutionOutcome::text(summary).with_outbound_intent(ToolOutboundIntent {
+                target: if current_target {
+                    ToolOutboundTarget::CurrentChat
+                } else {
+                    ToolOutboundTarget::Explicit { channel, chat_id }
+                },
+                delivery_kind: if primary {
+                    ToolOutboundDeliveryKind::Primary
+                } else {
+                    ToolOutboundDeliveryKind::Supplemental
+                },
+                content: content.to_string(),
+            }),
+        )
     }
 
     fn metadata(&self) -> ToolMetadata {
@@ -166,19 +180,18 @@ impl Tool for MessageTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::new_inbound_channel;
     use crate::platform::ResponseBody;
     use crate::tools::ToolContext;
 
     struct StubToolContext {
         current_channel: Option<String>,
         current_chat_id: Option<String>,
+        supports_current_chat_outbound_message: bool,
         supports_current_chat_primary_reply: bool,
         supports_explicit_outbound_message: bool,
         outbound_message_budget: u8,
         outbound_message_count: u8,
         current_primary_message_delivered: bool,
-        outbound_tx: crate::bus::OutboundTx,
     }
 
     impl ToolContext for StubToolContext {
@@ -205,6 +218,10 @@ mod tests {
 
         fn current_channel(&self) -> Option<&str> {
             self.current_channel.as_deref()
+        }
+
+        fn supports_current_chat_outbound_message(&self) -> bool {
+            self.supports_current_chat_outbound_message
         }
 
         fn supports_current_chat_primary_reply(&self) -> bool {
@@ -245,18 +262,6 @@ mod tests {
             Ok(())
         }
 
-        fn send_outbound_message(
-            &mut self,
-            channel: &str,
-            chat_id: &str,
-            content: &str,
-        ) -> Result<()> {
-            let msg = crate::bus::PcMsg::new(channel, chat_id, content)?;
-            self.outbound_tx
-                .try_send(msg)
-                .map_err(|e| Error::config("tool_message_test", e.to_string()))
-        }
-
         fn user_locale(&self) -> crate::i18n::Locale {
             crate::i18n::Locale::Zh
         }
@@ -264,16 +269,15 @@ mod tests {
 
     #[test]
     fn primary_current_message_marks_current_chat_reply() {
-        let (outbound_tx, outbound_rx, _) = new_inbound_channel(4);
         let mut ctx = StubToolContext {
             current_channel: Some("qq_channel".to_string()),
             current_chat_id: Some("chat-1".to_string()),
+            supports_current_chat_outbound_message: true,
             supports_current_chat_primary_reply: true,
             supports_explicit_outbound_message: false,
             outbound_message_budget: 2,
             outbound_message_count: 0,
             current_primary_message_delivered: false,
-            outbound_tx,
         };
         let tool = MessageTool;
         let outcome = tool
@@ -281,27 +285,26 @@ mod tests {
             .expect("message tool");
 
         assert_eq!(
-            outcome
-                .current_chat_reply
-                .as_ref()
-                .map(|reply| reply.content.as_str()),
-            Some("done")
+            outcome.outbound_intents.as_slice(),
+            &[ToolOutboundIntent {
+                target: ToolOutboundTarget::CurrentChat,
+                delivery_kind: ToolOutboundDeliveryKind::Primary,
+                content: "done".to_string(),
+            }]
         );
-        assert!(outbound_rx.try_recv().is_err());
     }
 
     #[test]
     fn supplemental_explicit_message_does_not_mark_current_chat_reply() {
-        let (outbound_tx, outbound_rx, _) = new_inbound_channel(4);
         let mut ctx = StubToolContext {
             current_channel: Some("qq_channel".to_string()),
             current_chat_id: Some("chat-1".to_string()),
+            supports_current_chat_outbound_message: true,
             supports_current_chat_primary_reply: false,
             supports_explicit_outbound_message: true,
             outbound_message_budget: 2,
             outbound_message_count: 0,
             current_primary_message_delivered: false,
-            outbound_tx,
         };
         let tool = MessageTool;
         let outcome = tool
@@ -311,25 +314,30 @@ mod tests {
             )
             .expect("message tool");
 
-        assert!(outcome.current_chat_reply.is_none());
-        let outbound = outbound_rx.try_recv().expect("outbound");
-        assert_eq!(outbound.channel.as_ref(), "telegram");
-        assert_eq!(outbound.chat_id.as_ref(), "chat-2");
-        assert_eq!(outbound.content, "ping");
+        assert_eq!(
+            outcome.outbound_intents.as_slice(),
+            &[ToolOutboundIntent {
+                target: ToolOutboundTarget::Explicit {
+                    channel: "telegram".to_string(),
+                    chat_id: "chat-2".to_string(),
+                },
+                delivery_kind: ToolOutboundDeliveryKind::Supplemental,
+                content: "ping".to_string(),
+            }]
+        );
     }
 
     #[test]
     fn primary_current_message_rejects_unsupported_runtime() {
-        let (outbound_tx, _outbound_rx, _) = new_inbound_channel(4);
         let mut ctx = StubToolContext {
             current_channel: Some("qq_channel".to_string()),
             current_chat_id: Some("chat-1".to_string()),
+            supports_current_chat_outbound_message: true,
             supports_current_chat_primary_reply: false,
             supports_explicit_outbound_message: false,
             outbound_message_budget: 2,
             outbound_message_count: 0,
             current_primary_message_delivered: false,
-            outbound_tx,
         };
         let tool = MessageTool;
         let err = tool
@@ -340,16 +348,15 @@ mod tests {
 
     #[test]
     fn explicit_message_rejects_runtime_without_explicit_permission() {
-        let (outbound_tx, _outbound_rx, _) = new_inbound_channel(4);
         let mut ctx = StubToolContext {
             current_channel: Some("qq_channel".to_string()),
             current_chat_id: Some("chat-1".to_string()),
+            supports_current_chat_outbound_message: false,
             supports_current_chat_primary_reply: false,
             supports_explicit_outbound_message: false,
             outbound_message_budget: 2,
             outbound_message_count: 0,
             current_primary_message_delivered: false,
-            outbound_tx,
         };
         let tool = MessageTool;
         let err = tool
@@ -363,16 +370,15 @@ mod tests {
 
     #[test]
     fn message_tool_enforces_per_turn_budget() {
-        let (outbound_tx, outbound_rx, _) = new_inbound_channel(4);
         let mut ctx = StubToolContext {
             current_channel: Some("qq_channel".to_string()),
             current_chat_id: Some("chat-1".to_string()),
+            supports_current_chat_outbound_message: true,
             supports_current_chat_primary_reply: true,
             supports_explicit_outbound_message: true,
             outbound_message_budget: 1,
             outbound_message_count: 0,
             current_primary_message_delivered: false,
-            outbound_tx,
         };
         let tool = MessageTool;
 
@@ -386,6 +392,28 @@ mod tests {
             .expect_err("second message should hit budget");
 
         assert_eq!(err.stage(), "tool_message");
-        assert!(outbound_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn current_message_rejects_runtime_without_current_support() {
+        let mut ctx = StubToolContext {
+            current_channel: Some("qq_channel".to_string()),
+            current_chat_id: Some("chat-1".to_string()),
+            supports_current_chat_outbound_message: false,
+            supports_current_chat_primary_reply: false,
+            supports_explicit_outbound_message: false,
+            outbound_message_budget: 2,
+            outbound_message_count: 0,
+            current_primary_message_delivered: false,
+        };
+        let tool = MessageTool;
+        let err = tool
+            .execute_outcome(
+                r#"{"content":"status","delivery_kind":"supplemental"}"#,
+                &mut ctx,
+            )
+            .expect_err("current message should fail");
+
+        assert_eq!(err.stage(), "tool_message");
     }
 }

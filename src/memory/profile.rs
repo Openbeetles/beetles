@@ -60,11 +60,44 @@ pub(crate) struct ExecutionStatePolicy {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SelfModelPolicy {
+    pub recent_message_count: usize,
+    pub transcript_preview_chars: usize,
+    pub existing_model_max_len: usize,
+    pub factual_grounding_max_len: usize,
+    pub render_max_len: usize,
+    pub substantive_user_chars: usize,
+    pub substantive_reply_chars: usize,
+    pub substantive_combined_chars: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PrivateDocsPolicy {
+    pub recent_message_count: usize,
+    pub transcript_preview_chars: usize,
+    pub existing_workspace_max_len: usize,
+    pub factual_grounding_max_len: usize,
+    pub render_max_len: usize,
+    pub substantive_user_chars: usize,
+    pub substantive_reply_chars: usize,
+    pub substantive_combined_chars: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PrivateGardenPolicy {
+    pub recent_doc_count: usize,
+    pub render_max_len: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct MemoryPolicy {
     pub session_summary: SessionSummaryPolicy,
     pub long_term_recall: LongTermRecallPolicy,
     pub long_term_extraction: LongTermExtractionPolicy,
     pub execution_state: ExecutionStatePolicy,
+    pub self_model: SelfModelPolicy,
+    pub private_docs: PrivateDocsPolicy,
+    pub private_garden: PrivateGardenPolicy,
 }
 
 const EMBEDDED_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
@@ -111,6 +144,30 @@ const EMBEDDED_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
         substantive_user_chars: 10,
         substantive_reply_chars: 24,
         substantive_combined_chars: 56,
+    },
+    self_model: SelfModelPolicy {
+        recent_message_count: 6,
+        transcript_preview_chars: 140,
+        existing_model_max_len: 320,
+        factual_grounding_max_len: 220,
+        render_max_len: 320,
+        substantive_user_chars: 8,
+        substantive_reply_chars: 20,
+        substantive_combined_chars: 48,
+    },
+    private_docs: PrivateDocsPolicy {
+        recent_message_count: 6,
+        transcript_preview_chars: 140,
+        existing_workspace_max_len: 480,
+        factual_grounding_max_len: 220,
+        render_max_len: 420,
+        substantive_user_chars: 8,
+        substantive_reply_chars: 20,
+        substantive_combined_chars: 48,
+    },
+    private_garden: PrivateGardenPolicy {
+        recent_doc_count: 2,
+        render_max_len: 320,
     },
 };
 
@@ -159,6 +216,30 @@ const STANDARD_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
         substantive_reply_chars: 20,
         substantive_combined_chars: 48,
     },
+    self_model: SelfModelPolicy {
+        recent_message_count: 10,
+        transcript_preview_chars: 220,
+        existing_model_max_len: 512,
+        factual_grounding_max_len: 320,
+        render_max_len: 512,
+        substantive_user_chars: 6,
+        substantive_reply_chars: 18,
+        substantive_combined_chars: 40,
+    },
+    private_docs: PrivateDocsPolicy {
+        recent_message_count: 10,
+        transcript_preview_chars: 220,
+        existing_workspace_max_len: 768,
+        factual_grounding_max_len: 320,
+        render_max_len: 640,
+        substantive_user_chars: 6,
+        substantive_reply_chars: 18,
+        substantive_combined_chars: 40,
+    },
+    private_garden: PrivateGardenPolicy {
+        recent_doc_count: 4,
+        render_max_len: 512,
+    },
 };
 
 pub(crate) fn memory_policy(profile: MemoryProfile) -> &'static MemoryPolicy {
@@ -196,5 +277,8 @@ mod tests {
                 > embedded.long_term_extraction.recent_message_count
         );
         assert!(standard.execution_state.render_max_len > embedded.execution_state.render_max_len);
+        assert!(standard.self_model.render_max_len > embedded.self_model.render_max_len);
+        assert!(standard.private_docs.render_max_len > embedded.private_docs.render_max_len);
+        assert!(standard.private_garden.render_max_len > embedded.private_garden.render_max_len);
     }
 }

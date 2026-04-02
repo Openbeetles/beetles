@@ -71,10 +71,14 @@ pub struct ContextParams<'a> {
     pub group_activation: &'a str,
     pub emotion_signal_suffix: Option<&'a str>,
     pub execution_state_text: Option<&'a str>,
+    pub self_model_text: Option<&'a str>,
+    pub private_workspace_text: Option<&'a str>,
+    pub private_garden_text: Option<&'a str>,
     pub long_term_memory_text: Option<&'a str>,
     pub summary_text: Option<&'a str>,
     pub recent_messages: Option<&'a [SessionMessage]>,
     pub runtime: Option<RuntimeContext>,
+    pub include_daily_notes: bool,
     /// orchestrator 在高压力时附加到 system 末尾的提示文字；由调用方从 `budget.llm_hint` 传入。
     pub llm_hint: &'a str,
 }
@@ -137,13 +141,27 @@ fn section_with_separator_len(content: Option<&str>) -> usize {
 
 fn reserve_priority_memory_budget(
     execution_state_text: Option<&str>,
+    self_model_text: Option<&str>,
+    private_workspace_text: Option<&str>,
+    private_garden_text: Option<&str>,
     long_term_memory_text: Option<&str>,
     base_max: usize,
 ) -> usize {
     let execution_reserve = section_with_separator_len(execution_state_text).min(base_max);
     let remaining = base_max.saturating_sub(execution_reserve);
-    let long_term_reserve = section_with_separator_len(long_term_memory_text).min(remaining / 2);
-    execution_reserve.saturating_add(long_term_reserve)
+    let self_model_reserve = section_with_separator_len(self_model_text).min(remaining / 3);
+    let remaining = remaining.saturating_sub(self_model_reserve);
+    let private_workspace_reserve =
+        section_with_separator_len(private_workspace_text).min(remaining / 3);
+    let remaining = remaining.saturating_sub(private_workspace_reserve);
+    let private_garden_reserve = section_with_separator_len(private_garden_text).min(remaining / 3);
+    let remaining = remaining.saturating_sub(private_garden_reserve);
+    let long_term_reserve = section_with_separator_len(long_term_memory_text).min(remaining);
+    execution_reserve
+        .saturating_add(self_model_reserve)
+        .saturating_add(private_workspace_reserve)
+        .saturating_add(private_garden_reserve)
+        .saturating_add(long_term_reserve)
 }
 
 fn push_scratch_if_fits<F>(
@@ -286,8 +304,14 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
         llm_hint: p.llm_hint,
     });
     let base_max = p.system_max_len.saturating_sub(post_memory_tail_len);
-    let priority_memory_reserve =
-        reserve_priority_memory_budget(p.execution_state_text, p.long_term_memory_text, base_max);
+    let priority_memory_reserve = reserve_priority_memory_budget(
+        p.execution_state_text,
+        p.self_model_text,
+        p.private_workspace_text,
+        p.private_garden_text,
+        p.long_term_memory_text,
+        base_max,
+    );
     let base_prompt_budget = base_max.saturating_sub(priority_memory_reserve);
     let mut system = String::with_capacity(p.system_max_len);
     let mut section_scratch = String::with_capacity(96);
@@ -298,7 +322,16 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     if let Some(long_term_memory_text) = p.long_term_memory_text {
         let _ = append_capped_section(&mut system, "\n\n", long_term_memory_text, base_max);
     }
-    if system.len() < base_max {
+    if let Some(self_model_text) = p.self_model_text {
+        let _ = append_capped_section(&mut system, "\n\n", self_model_text, base_max);
+    }
+    if let Some(private_workspace_text) = p.private_workspace_text {
+        let _ = append_capped_section(&mut system, "\n\n", private_workspace_text, base_max);
+    }
+    if let Some(private_garden_text) = p.private_garden_text {
+        let _ = append_capped_section(&mut system, "\n\n", private_garden_text, base_max);
+    }
+    if p.include_daily_notes && system.len() < base_max {
         let names = p
             .memory
             .list_daily_note_names(DAILY_RECENT_N)
@@ -552,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn build_context_prioritizes_execution_state_over_daily_notes_under_tight_budget() {
+    fn build_context_reserves_priority_memory_under_tight_budget() {
         let msg = PcMsg::new_inbound("telegram", "chat-1", "继续", false).expect("pcmsg");
         let memory = StubMemoryStore {
             soul: "SOUL".to_string(),
@@ -573,21 +606,74 @@ mod tests {
             important_message_store: &important,
             has_tools: false,
             skill_descriptions: "",
-            system_max_len: 380,
+            system_max_len: 560,
             messages_max_len: 256,
             session_max_messages: 8,
             group_activation: "always",
             emotion_signal_suffix: None,
             execution_state_text: Some("## Execution State\nGoal: close current task"),
+            self_model_text: Some("## Self Continuity\nAnchor: still the same beetle"),
+            private_workspace_text: Some(
+                "## Inner Workspace\nPrivate plan: keep the inner layer coherent",
+            ),
+            private_garden_text: Some(
+                "## Private Garden\n- journal/afterglow.md (rev 1, updated=1): free private traces",
+            ),
             long_term_memory_text: None,
             summary_text: None,
             recent_messages: None,
             runtime: None,
+            include_daily_notes: true,
             llm_hint: "",
         })
         .expect("context");
 
         assert!(system.contains("## Execution State"));
+        assert!(system.contains("## Self Continuity"));
+        assert!(system.contains("## Inner Workspace"));
+        assert!(system.contains("## Private Garden"));
+    }
+
+    #[test]
+    fn build_context_can_skip_daily_notes_for_fast_path() {
+        let msg = PcMsg::new_inbound("telegram", "chat-1", "继续", false).expect("pcmsg");
+        let memory = StubMemoryStore {
+            soul: "SOUL".to_string(),
+            user: "USER".to_string(),
+            memory: "MEMORY".to_string(),
+            daily_notes: vec![(
+                "2026-04-02.md".to_string(),
+                "## Daily Note\nshould stay out of fast path".to_string(),
+            )],
+        };
+        let session = StubSessionStore;
+        let important = StubImportantMessageStore::default();
+
+        let (system, _) = build_context(&ContextParams {
+            msg: &msg,
+            memory: &memory,
+            session: &session,
+            important_message_store: &important,
+            has_tools: false,
+            skill_descriptions: "",
+            system_max_len: 512,
+            messages_max_len: 256,
+            session_max_messages: 8,
+            group_activation: "always",
+            emotion_signal_suffix: None,
+            execution_state_text: None,
+            self_model_text: None,
+            private_workspace_text: None,
+            private_garden_text: None,
+            long_term_memory_text: None,
+            summary_text: None,
+            recent_messages: None,
+            runtime: None,
+            include_daily_notes: false,
+            llm_hint: "",
+        })
+        .expect("context");
+
         assert!(!system.contains("## Daily Note"));
     }
 }

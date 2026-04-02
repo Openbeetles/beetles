@@ -3,6 +3,7 @@ use crate::error::Result;
 use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
 use crate::metrics;
 use crate::runtime::spawn_planned;
+use crate::tools::{ToolOutboundDeliveryKind, ToolOutboundIntent, ToolOutboundTarget};
 use crate::util::truncate_content_to_max;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{mpsc, Arc, OnceLock, Weak};
@@ -30,6 +31,10 @@ pub(crate) struct DeliveryReport {
     pub waiting_notice_sent: bool,
     pub progress_updates_sent: u8,
     pub partial_updates_sent: u8,
+    pub tool_outbound_intents_seen: u8,
+    pub tool_visible_updates_sent: u8,
+    pub explicit_outbound_sent: u8,
+    pub tool_outbound_suppressed: u8,
     pub current_primary_delivered: bool,
     pub finalize_streamed: bool,
     pub visible_text_updates_sent: u8,
@@ -37,6 +42,8 @@ pub(crate) struct DeliveryReport {
 
 pub(crate) struct DeliverySession<'a> {
     mode: DeliveryMode<'a>,
+    outbound_tx: &'a OutboundTx,
+    req_id: &'a str,
 }
 
 enum DeliveryMode<'a> {
@@ -52,7 +59,7 @@ struct EditDelivery<'a> {
     last_edit_at: std::time::Instant,
     edit_disabled: bool,
     edit_failures: u8,
-    primary_delivered: bool,
+    lifecycle: DeliveryLifecycle,
     last_visible_text: String,
     report: DeliveryReport,
 }
@@ -62,10 +69,30 @@ struct QueuedDelivery<'a> {
     channel: &'a std::sync::Arc<str>,
     chat_id: &'a std::sync::Arc<str>,
     req_id: &'a str,
-    primary_delivered: bool,
+    lifecycle: DeliveryLifecycle,
     last_visible_text: String,
     report: DeliveryReport,
     shared: Arc<QueuedDeliveryShared>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeliveryLifecycle {
+    Open,
+    CurrentPrimaryDelivered,
+    Finalized,
+}
+
+impl DeliveryLifecycle {
+    fn is_closed(self) -> bool {
+        !matches!(self, Self::Open)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ToolIntentDelivery {
+    Suppressed,
+    VisibleUpdate,
+    CurrentPrimary,
 }
 
 struct QueuedDeliveryShared {
@@ -106,7 +133,7 @@ impl<'a> DeliverySession<'a> {
                 last_edit_at: std::time::Instant::now(),
                 edit_disabled: false,
                 edit_failures: 0,
-                primary_delivered: false,
+                lifecycle: DeliveryLifecycle::Open,
                 last_visible_text: String::new(),
                 report: DeliveryReport::default(),
             })
@@ -116,7 +143,7 @@ impl<'a> DeliverySession<'a> {
                 channel: &msg.channel,
                 chat_id: &msg.chat_id,
                 req_id,
-                primary_delivered: false,
+                lifecycle: DeliveryLifecycle::Open,
                 last_visible_text: String::new(),
                 report: DeliveryReport::default(),
                 shared: spawn_waiting_notice(
@@ -128,7 +155,11 @@ impl<'a> DeliverySession<'a> {
                 ),
             })
         };
-        Self { mode }
+        Self {
+            mode,
+            outbound_tx,
+            req_id,
+        }
     }
 
     pub(crate) fn report(&self) -> DeliveryReport {
@@ -183,7 +214,7 @@ impl<'a> DeliverySession<'a> {
             DeliveryMode::Edit(ref mut delivery) => delivery.finalize(_final_content),
             DeliveryMode::Queued(ref mut delivery) => {
                 delivery.cancel_waiting_notice();
-                delivery.primary_delivered
+                delivery.finalize()
             }
             DeliveryMode::Silent => false,
         }
@@ -201,6 +232,134 @@ impl<'a> DeliverySession<'a> {
             DeliveryMode::Silent => Ok(false),
         }
     }
+
+    pub(crate) fn deliver_tool_outbound_intent(
+        &mut self,
+        intent: &ToolOutboundIntent,
+    ) -> Result<ToolIntentDelivery> {
+        self.bump_tool_intent_seen();
+        let text = normalize_visible_update(&intent.content, crate::bus::MAX_CONTENT_LEN);
+        if text.is_empty() {
+            self.bump_tool_intent_suppressed();
+            return Ok(ToolIntentDelivery::Suppressed);
+        }
+        match &intent.target {
+            ToolOutboundTarget::CurrentChat => match intent.delivery_kind {
+                ToolOutboundDeliveryKind::Primary => {
+                    if self.deliver_current_primary(&text)? {
+                        self.bump_tool_visible_update(false);
+                        Ok(ToolIntentDelivery::CurrentPrimary)
+                    } else {
+                        self.bump_tool_intent_suppressed();
+                        Ok(ToolIntentDelivery::Suppressed)
+                    }
+                }
+                ToolOutboundDeliveryKind::Supplemental => match self.mode {
+                    DeliveryMode::Edit(ref mut delivery) => {
+                        if delivery.deliver_current_supplemental(&text)? {
+                            self.bump_tool_visible_update(false);
+                            Ok(ToolIntentDelivery::VisibleUpdate)
+                        } else {
+                            self.bump_tool_intent_suppressed();
+                            Ok(ToolIntentDelivery::Suppressed)
+                        }
+                    }
+                    DeliveryMode::Queued(ref mut delivery) => {
+                        if delivery.deliver_current_supplemental(&text) {
+                            self.bump_tool_visible_update(false);
+                            Ok(ToolIntentDelivery::VisibleUpdate)
+                        } else {
+                            self.bump_tool_intent_suppressed();
+                            Ok(ToolIntentDelivery::Suppressed)
+                        }
+                    }
+                    DeliveryMode::Silent => {
+                        self.bump_tool_intent_suppressed();
+                        Ok(ToolIntentDelivery::Suppressed)
+                    }
+                },
+            },
+            ToolOutboundTarget::Explicit { channel, chat_id } => {
+                if self.is_closed() {
+                    self.bump_tool_intent_suppressed();
+                    return Ok(ToolIntentDelivery::Suppressed);
+                }
+                send_visible_update_explicit(
+                    self.outbound_tx,
+                    channel,
+                    chat_id,
+                    self.req_id,
+                    &text,
+                )
+                .map_err(|()| {
+                    crate::error::Error::config(
+                        "tool_outbound_message",
+                        "failed to enqueue explicit outbound message",
+                    )
+                })?;
+                self.bump_tool_visible_update(true);
+                Ok(ToolIntentDelivery::VisibleUpdate)
+            }
+        }
+    }
+
+    fn is_closed(&self) -> bool {
+        match self.mode {
+            DeliveryMode::Silent => true,
+            DeliveryMode::Edit(ref delivery) => delivery.lifecycle.is_closed(),
+            DeliveryMode::Queued(ref delivery) => delivery.lifecycle.is_closed(),
+        }
+    }
+
+    fn bump_tool_intent_seen(&mut self) {
+        match self.mode {
+            DeliveryMode::Silent => {}
+            DeliveryMode::Edit(ref mut delivery) => {
+                delivery.report.tool_outbound_intents_seen =
+                    delivery.report.tool_outbound_intents_seen.saturating_add(1);
+            }
+            DeliveryMode::Queued(ref mut delivery) => {
+                delivery.report.tool_outbound_intents_seen =
+                    delivery.report.tool_outbound_intents_seen.saturating_add(1);
+            }
+        }
+    }
+
+    fn bump_tool_visible_update(&mut self, explicit: bool) {
+        match self.mode {
+            DeliveryMode::Silent => {}
+            DeliveryMode::Edit(ref mut delivery) => {
+                delivery.report.tool_visible_updates_sent =
+                    delivery.report.tool_visible_updates_sent.saturating_add(1);
+                if explicit {
+                    delivery.report.explicit_outbound_sent =
+                        delivery.report.explicit_outbound_sent.saturating_add(1);
+                }
+            }
+            DeliveryMode::Queued(ref mut delivery) => {
+                delivery.report.tool_visible_updates_sent =
+                    delivery.report.tool_visible_updates_sent.saturating_add(1);
+                if explicit {
+                    delivery.report.explicit_outbound_sent =
+                        delivery.report.explicit_outbound_sent.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    fn bump_tool_intent_suppressed(&mut self) {
+        match self.mode {
+            DeliveryMode::Silent => {}
+            DeliveryMode::Edit(ref mut delivery) => {
+                delivery.report.tool_outbound_suppressed =
+                    delivery.report.tool_outbound_suppressed.saturating_add(1);
+            }
+            DeliveryMode::Queued(ref mut delivery) => {
+                delivery.report.tool_outbound_suppressed =
+                    delivery.report.tool_outbound_suppressed.saturating_add(1);
+            }
+        }
+    }
 }
 
 impl Drop for DeliverySession<'_> {
@@ -213,7 +372,7 @@ impl Drop for DeliverySession<'_> {
 
 impl<'a> EditDelivery<'a> {
     fn on_stream_delta(&mut self, accumulated: &str) {
-        if self.edit_disabled || self.primary_delivered || accumulated.trim().is_empty() {
+        if self.edit_disabled || self.lifecycle.is_closed() || accumulated.trim().is_empty() {
             return;
         }
         if self.message_id.is_none() {
@@ -227,7 +386,7 @@ impl<'a> EditDelivery<'a> {
     }
 
     fn force_visible_update(&mut self, content: &str, is_progress: bool, is_partial: bool) {
-        if self.edit_disabled || self.primary_delivered {
+        if self.edit_disabled || self.lifecycle.is_closed() {
             return;
         }
         if is_progress {
@@ -244,8 +403,11 @@ impl<'a> EditDelivery<'a> {
     }
 
     fn finalize(&mut self, final_content: &str) -> bool {
-        if self.primary_delivered {
+        if self.lifecycle == DeliveryLifecycle::CurrentPrimaryDelivered {
             return true;
+        }
+        if self.lifecycle == DeliveryLifecycle::Finalized {
+            return self.report.finalize_streamed;
         }
         if self.message_id.is_none() {
             if final_content.trim().is_empty() {
@@ -256,13 +418,17 @@ impl<'a> EditDelivery<'a> {
             self.edit_existing(final_content);
         }
         let streamed = self.message_id.is_some() && !self.edit_disabled;
+        self.lifecycle = DeliveryLifecycle::Finalized;
         self.report.finalize_streamed = streamed;
         streamed
     }
 
     fn deliver_current_primary(&mut self, content: &str) -> Result<bool> {
-        if self.primary_delivered {
+        if self.lifecycle == DeliveryLifecycle::CurrentPrimaryDelivered {
             return Ok(true);
+        }
+        if self.lifecycle == DeliveryLifecycle::Finalized {
+            return Ok(false);
         }
         if self.message_id.is_none() {
             self.send_initial(content);
@@ -275,8 +441,30 @@ impl<'a> EditDelivery<'a> {
                 "failed to deliver current-chat primary reply via stream editor",
             ));
         }
-        self.primary_delivered = true;
+        self.lifecycle = DeliveryLifecycle::CurrentPrimaryDelivered;
         self.report.current_primary_delivered = true;
+        Ok(true)
+    }
+
+    fn deliver_current_supplemental(&mut self, content: &str) -> Result<bool> {
+        if self.lifecycle.is_closed() {
+            return Ok(false);
+        }
+        let before = self.last_visible_text.clone();
+        if self.message_id.is_none() {
+            self.send_initial(content);
+        } else {
+            self.edit_existing(content);
+        }
+        if self.last_visible_text == before {
+            if self.edit_disabled {
+                return Err(crate::error::Error::config(
+                    "current_chat_delivery",
+                    "failed to deliver current-chat supplemental update via stream editor",
+                ));
+            }
+            return Ok(false);
+        }
         Ok(true)
     }
 
@@ -350,7 +538,7 @@ impl<'a> QueuedDelivery<'a> {
     }
 
     fn emit(&mut self, content: &str, is_progress: bool, is_partial: bool) {
-        if self.primary_delivered {
+        if self.lifecycle.is_closed() {
             return;
         }
         let normalized = normalize_visible_update(content, crate::bus::MAX_CONTENT_LEN);
@@ -388,8 +576,11 @@ impl<'a> QueuedDelivery<'a> {
     }
 
     fn deliver_current_primary(&mut self, content: &str) -> Result<bool> {
-        if self.primary_delivered {
+        if self.lifecycle == DeliveryLifecycle::CurrentPrimaryDelivered {
             return Ok(true);
+        }
+        if self.lifecycle == DeliveryLifecycle::Finalized {
+            return Ok(false);
         }
         self.cancel_waiting_notice();
         send_visible_update(
@@ -406,9 +597,29 @@ impl<'a> QueuedDelivery<'a> {
             )
         })?;
         self.last_visible_text = content.to_string();
-        self.primary_delivered = true;
+        self.lifecycle = DeliveryLifecycle::CurrentPrimaryDelivered;
         self.report.current_primary_delivered = true;
         Ok(true)
+    }
+
+    fn deliver_current_supplemental(&mut self, content: &str) -> bool {
+        if self.lifecycle.is_closed() {
+            return false;
+        }
+        let before = self.last_visible_text.clone();
+        self.emit(content, false, false);
+        self.last_visible_text != before
+    }
+
+    fn finalize(&mut self) -> bool {
+        match self.lifecycle {
+            DeliveryLifecycle::CurrentPrimaryDelivered => true,
+            DeliveryLifecycle::Finalized => false,
+            DeliveryLifecycle::Open => {
+                self.lifecycle = DeliveryLifecycle::Finalized;
+                false
+            }
+        }
     }
 
     fn try_claim_visible_slot(&self) -> bool {
@@ -480,6 +691,52 @@ fn send_visible_update(
             metrics::record_outbound_enqueue_fail();
             log::error!(
                 "[agent_delivery] visible update dropped: outbound disconnected channel={} chat_id={}",
+                channel,
+                chat_id
+            );
+            Err(())
+        }
+    }
+}
+
+fn send_visible_update_explicit(
+    outbound_tx: &OutboundTx,
+    channel: &str,
+    chat_id: &str,
+    req_id: &str,
+    content: &str,
+) -> std::result::Result<(), ()> {
+    let mut msg = match PcMsg::new(channel, chat_id, content) {
+        Ok(msg) => msg,
+        Err(error) => {
+            log::warn!(
+                "[agent_delivery] explicit visible update rejected channel={} chat_id={}: {}",
+                channel,
+                chat_id,
+                error
+            );
+            return Err(());
+        }
+    };
+    msg.req_id = Some(req_id.to_string());
+    match outbound_tx.try_send(msg) {
+        Ok(()) => {
+            metrics::record_message_out();
+            Ok(())
+        }
+        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+            metrics::record_outbound_enqueue_fail();
+            log::warn!(
+                "[agent_delivery] explicit visible update dropped: outbound queue full channel={} chat_id={}",
+                channel,
+                chat_id
+            );
+            Err(())
+        }
+        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+            metrics::record_outbound_enqueue_fail();
+            log::error!(
+                "[agent_delivery] explicit visible update dropped: outbound disconnected channel={} chat_id={}",
                 channel,
                 chat_id
             );
@@ -665,6 +922,7 @@ fn current_unix_ms() -> u64 {
 mod tests {
     use super::*;
     use crate::bus::new_inbound_channel;
+    use crate::tools::{ToolOutboundDeliveryKind, ToolOutboundIntent, ToolOutboundTarget};
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -787,6 +1045,89 @@ mod tests {
         let first = outbound_rx.try_recv().expect("primary reply");
         assert_eq!(first.content, "主答复");
         assert!(outbound_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn queued_delivery_accepts_current_supplemental_tool_intent() {
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg("qq_channel");
+        let mut delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
+
+        let outcome = delivery
+            .deliver_tool_outbound_intent(&ToolOutboundIntent {
+                target: ToolOutboundTarget::CurrentChat,
+                delivery_kind: ToolOutboundDeliveryKind::Supplemental,
+                content: "补充说明".to_string(),
+            })
+            .expect("supplemental intent");
+
+        assert_eq!(outcome, ToolIntentDelivery::VisibleUpdate);
+        let outbound = outbound_rx.try_recv().expect("outbound");
+        assert_eq!(outbound.content, "补充说明");
+        assert_eq!(delivery.report().tool_outbound_intents_seen, 1);
+        assert_eq!(delivery.report().tool_visible_updates_sent, 1);
+        assert_eq!(delivery.report().tool_outbound_suppressed, 0);
+    }
+
+    #[test]
+    fn queued_delivery_suppresses_tool_intents_after_primary_close() {
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg("qq_channel");
+        let mut delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
+
+        let first = delivery
+            .deliver_tool_outbound_intent(&ToolOutboundIntent {
+                target: ToolOutboundTarget::CurrentChat,
+                delivery_kind: ToolOutboundDeliveryKind::Primary,
+                content: "主答复".to_string(),
+            })
+            .expect("primary intent");
+        let second = delivery
+            .deliver_tool_outbound_intent(&ToolOutboundIntent {
+                target: ToolOutboundTarget::Explicit {
+                    channel: "telegram".to_string(),
+                    chat_id: "chat-2".to_string(),
+                },
+                delivery_kind: ToolOutboundDeliveryKind::Supplemental,
+                content: "不应再发送".to_string(),
+            })
+            .expect("suppressed explicit intent");
+
+        assert_eq!(first, ToolIntentDelivery::CurrentPrimary);
+        assert_eq!(second, ToolIntentDelivery::Suppressed);
+        let outbound = outbound_rx.try_recv().expect("primary reply");
+        assert_eq!(outbound.content, "主答复");
+        assert!(outbound_rx.try_recv().is_err());
+        assert_eq!(delivery.report().tool_outbound_intents_seen, 2);
+        assert_eq!(delivery.report().tool_visible_updates_sent, 1);
+        assert_eq!(delivery.report().tool_outbound_suppressed, 1);
+    }
+
+    #[test]
+    fn queued_delivery_routes_explicit_tool_intent_through_runtime() {
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg("qq_channel");
+        let mut delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
+
+        let outcome = delivery
+            .deliver_tool_outbound_intent(&ToolOutboundIntent {
+                target: ToolOutboundTarget::Explicit {
+                    channel: "telegram".to_string(),
+                    chat_id: "chat-2".to_string(),
+                },
+                delivery_kind: ToolOutboundDeliveryKind::Supplemental,
+                content: "显式外发".to_string(),
+            })
+            .expect("explicit intent");
+
+        assert_eq!(outcome, ToolIntentDelivery::VisibleUpdate);
+        let outbound = outbound_rx.try_recv().expect("outbound");
+        assert_eq!(outbound.channel.as_ref(), "telegram");
+        assert_eq!(outbound.chat_id.as_ref(), "chat-2");
+        assert_eq!(outbound.content, "显式外发");
+        assert_eq!(delivery.report().tool_outbound_intents_seen, 1);
+        assert_eq!(delivery.report().tool_visible_updates_sent, 1);
+        assert_eq!(delivery.report().explicit_outbound_sent, 1);
     }
 
     #[test]

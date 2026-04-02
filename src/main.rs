@@ -273,10 +273,14 @@ fn handle_status_command(platform: &Arc<dyn Platform>, json: bool, chat_id: Opti
                     println!("Recent turn total_ms: {}", ledger.total_ms);
                     println!("Recent turn tool_calls: {}", ledger.tool_calls);
                     println!(
-                        "Recent turn delivery: waiting_notice_sent={} progress_updates_sent={} partial_updates_sent={} current_primary_delivered={} finalize_streamed={}",
+                        "Recent turn delivery: waiting_notice_sent={} progress_updates_sent={} partial_updates_sent={} tool_outbound_intents_seen={} tool_visible_updates_sent={} explicit_outbound_sent={} tool_outbound_suppressed={} current_primary_delivered={} finalize_streamed={}",
                         ledger.delivery.waiting_notice_sent,
                         ledger.delivery.progress_updates_sent,
                         ledger.delivery.partial_updates_sent,
+                        ledger.delivery.tool_outbound_intents_seen,
+                        ledger.delivery.tool_visible_updates_sent,
+                        ledger.delivery.explicit_outbound_sent,
+                        ledger.delivery.tool_outbound_suppressed,
                         ledger.delivery.current_primary_delivered,
                         ledger.delivery.finalize_streamed
                     );
@@ -424,6 +428,12 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     let task_store: Arc<dyn beetle::task::TaskStore + Send + Sync> = platform.task_store();
     let execution_state_store: Arc<dyn beetle::memory::ExecutionStateStore + Send + Sync> =
         platform.execution_state_store();
+    let self_model_store: Arc<dyn beetle::memory::SelfModelStore + Send + Sync> =
+        platform.self_model_store();
+    let private_doc_store: Arc<dyn beetle::memory::PrivateDocStore + Send + Sync> =
+        platform.private_doc_store();
+    let private_garden_store: Arc<dyn beetle::memory::PrivateGardenStore + Send + Sync> =
+        platform.private_garden_store();
     let important_message_store: Arc<dyn beetle::memory::ImportantMessageStore + Send + Sync> =
         platform.important_message_store();
     let remind_at_store: Arc<dyn beetle::memory::RemindAtStore + Send + Sync> =
@@ -1016,6 +1026,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             Arc::clone(&session_store),
             Arc::clone(&memory_store),
             Arc::clone(&long_term_memory_store),
+            Arc::clone(&private_garden_store),
             platform.config_store(),
         );
         let registry = Arc::new(registry);
@@ -1130,6 +1141,9 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             session_store: Arc::clone(&session_store),
             session_summary_store: Arc::clone(&session_summary_store),
             execution_state_store: Arc::clone(&execution_state_store),
+            self_model_store: Arc::clone(&self_model_store),
+            private_doc_store: Arc::clone(&private_doc_store),
+            private_garden_store: Arc::clone(&private_garden_store),
             turn_ledger_store: Arc::clone(&turn_ledger_store),
             memory_profile: platform.memory_profile(),
             get_skill_descriptions,

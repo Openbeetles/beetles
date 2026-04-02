@@ -55,6 +55,7 @@ pub mod network_scan;
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 pub mod pdf_read;
+pub mod private_garden;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod process;
 #[cfg(feature = "tools_network_extra")]
@@ -127,6 +128,7 @@ pub use network_scan::NetworkScanTool;
 ))]
 pub use pdf_read::PdfReadTool;
 pub use policy::{ToolExposure, ToolMetadata, ToolPolicyContext};
+pub use private_garden::PrivateGardenTool;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use process::ProcessTool;
 #[cfg(feature = "tools_network_extra")]
@@ -171,26 +173,47 @@ pub const MAX_TOOL_ARGS_LEN: usize = 8 * 1024;
 pub const MAX_TOOL_RESULT_LEN: usize = 16 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ToolCurrentChatReply {
+pub enum ToolOutboundTarget {
+    CurrentChat,
+    Explicit { channel: String, chat_id: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolOutboundDeliveryKind {
+    Supplemental,
+    Primary,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolOutboundIntent {
+    pub target: ToolOutboundTarget,
+    pub delivery_kind: ToolOutboundDeliveryKind,
     pub content: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct ToolExecutionOutcome {
     pub content: String,
-    pub current_chat_reply: Option<ToolCurrentChatReply>,
+    pub outbound_intents: Vec<ToolOutboundIntent>,
 }
 
 impl ToolExecutionOutcome {
     pub fn text(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
-            current_chat_reply: None,
+            outbound_intents: Vec::new(),
         }
     }
 
+    pub fn with_outbound_intent(mut self, intent: ToolOutboundIntent) -> Self {
+        self.outbound_intents.push(intent);
+        self
+    }
+
     pub fn with_current_chat_reply(mut self, content: impl Into<String>) -> Self {
-        self.current_chat_reply = Some(ToolCurrentChatReply {
+        self.outbound_intents.push(ToolOutboundIntent {
+            target: ToolOutboundTarget::CurrentChat,
+            delivery_kind: ToolOutboundDeliveryKind::Primary,
             content: content.into(),
         });
         self
@@ -277,6 +300,11 @@ pub trait ToolContext {
     }
     /// 当前运行时是否允许工具声明“当前聊天主答复已由工具交付”。
     /// 目前仅在不会与编辑型交付通道冲突的运行时开启。
+    fn supports_current_chat_outbound_message(&self) -> bool {
+        false
+    }
+    /// 当前运行时是否允许工具声明“当前聊天主答复已由工具交付”。
+    /// 目前仅在不会与编辑型交付通道冲突的运行时开启。
     fn supports_current_chat_primary_reply(&self) -> bool {
         false
     }
@@ -291,14 +319,6 @@ pub trait ToolContext {
         _primary: bool,
     ) -> Result<()> {
         Ok(())
-    }
-    /// 将一条用户可见消息送入统一 outbound 主干。默认表示当前运行时不支持该能力。
-    fn send_outbound_message(&mut self, channel: &str, chat_id: &str, content: &str) -> Result<()> {
-        let _ = (channel, chat_id, content);
-        Err(Error::config(
-            "tool_outbound_message",
-            "outbound message sending is not available in this runtime context",
-        ))
     }
     /// 当前用户界面语言（来自设备 NVS），供工具返回人话时使用。
     fn user_locale(&self) -> crate::i18n::Locale;

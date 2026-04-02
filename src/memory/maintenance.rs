@@ -10,16 +10,23 @@ use super::{
     evaluate_long_term_memory_extraction_turn, load_session_summary_snapshot,
     mark_long_term_memory_extraction_requested, memory_policy,
     persist_long_term_memory_extraction_state, run_execution_state_refresh_with_state,
+    run_private_doc_workspace_refresh_with_state, run_self_model_refresh_with_state,
     run_session_summary_refresh_with_snapshot, should_refresh_execution_state,
-    ExecutionStateRefreshContext, ExecutionStateRefreshInput, ExecutionStateRefreshOutcome,
-    ExecutionStateStore, LongTermMemoryExtractionStateStore, LongTermMemoryExtractionTurnInput,
-    MemoryProfile, SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore,
+    should_refresh_private_doc_workspace, should_refresh_self_model, ExecutionStateRefreshContext,
+    ExecutionStateRefreshInput, ExecutionStateRefreshOutcome, ExecutionStateStore,
+    LongTermMemoryExtractionStateStore, LongTermMemoryExtractionTurnInput, MemoryProfile,
+    PrivateDocStore, PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
+    PrivateDocWorkspaceRefreshOutcome, SelfModelRefreshContext, SelfModelRefreshInput,
+    SelfModelRefreshOutcome, SelfModelStore, SessionStore, SessionSummaryRefreshOutcome,
+    SessionSummaryStore,
 };
 
 pub struct PostReplyMemoryMaintenanceContext<'a> {
     pub session_store: &'a dyn SessionStore,
     pub session_summary_store: &'a dyn SessionSummaryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
+    pub self_model_store: &'a dyn SelfModelStore,
+    pub private_doc_store: &'a dyn PrivateDocStore,
     pub extraction_state_store: &'a dyn LongTermMemoryExtractionStateStore,
 }
 
@@ -47,6 +54,8 @@ pub struct PostReplyMemoryMaintenanceOutcome {
     pub after_count: usize,
     pub summary_result: Result<SessionSummaryRefreshOutcome>,
     pub execution_state_result: Result<ExecutionStateRefreshOutcome>,
+    pub self_model_result: Result<SelfModelRefreshOutcome>,
+    pub private_doc_result: Result<PrivateDocWorkspaceRefreshOutcome>,
     pub extraction_request_outcome: LongTermMemoryRefreshRequestOutcome,
 }
 
@@ -61,6 +70,8 @@ pub fn run_post_reply_memory_maintenance(
     let initial_summary_snapshot =
         load_session_summary_snapshot(ctx.session_summary_store, input.chat_id);
     let execution_state = ctx.execution_state_store.get(input.chat_id);
+    let self_model = ctx.self_model_store.get(input.chat_id);
+    let private_docs = ctx.private_doc_store.get(input.chat_id);
     let summary_should_refresh = super::should_refresh_session_summary(
         after_count,
         initial_summary_snapshot.last_summary_count,
@@ -85,15 +96,67 @@ pub fn run_post_reply_memory_maintenance(
             )
         })
         .unwrap_or(false);
-    let shared_recent = if summary_should_refresh && execution_should_refresh {
+    let self_model_should_refresh = self_model
+        .as_ref()
+        .map(|model| {
+            should_refresh_self_model(
+                SelfModelRefreshInput {
+                    chat_id: input.chat_id,
+                    ingress: input.ingress,
+                    channel: input.channel,
+                    user_content: input.user_content,
+                    reply_content: input.reply_content,
+                    pressure: input.pressure,
+                    tool_calls: input.tool_calls,
+                    now_secs: input.now_secs,
+                },
+                model.is_some(),
+                input.memory_profile,
+            )
+        })
+        .unwrap_or(false);
+    let private_doc_should_refresh = private_docs
+        .as_ref()
+        .map(|workspace| {
+            should_refresh_private_doc_workspace(
+                PrivateDocWorkspaceRefreshInput {
+                    chat_id: input.chat_id,
+                    ingress: input.ingress,
+                    channel: input.channel,
+                    user_content: input.user_content,
+                    reply_content: input.reply_content,
+                    pressure: input.pressure,
+                    tool_calls: input.tool_calls,
+                    now_secs: input.now_secs,
+                },
+                workspace.is_some(),
+                input.memory_profile,
+            )
+        })
+        .unwrap_or(false);
+    let shared_recent = if [
+        summary_should_refresh,
+        execution_should_refresh,
+        self_model_should_refresh,
+        private_doc_should_refresh,
+    ]
+    .into_iter()
+    .filter(|enabled| *enabled)
+    .count()
+        >= 2
+    {
         let summary_policy = memory_policy(input.memory_profile).session_summary;
         let execution_policy = memory_policy(input.memory_profile).execution_state;
+        let self_model_policy = memory_policy(input.memory_profile).self_model;
+        let private_docs_policy = memory_policy(input.memory_profile).private_docs;
         ctx.session_store
             .load_recent(
                 input.chat_id,
                 summary_policy
                     .recent_message_count
-                    .max(execution_policy.recent_message_count),
+                    .max(execution_policy.recent_message_count)
+                    .max(self_model_policy.recent_message_count)
+                    .max(private_docs_policy.recent_message_count),
             )
             .ok()
     } else {
@@ -142,6 +205,86 @@ pub fn run_post_reply_memory_maintenance(
         ),
         Err(error) => Err(error),
     };
+    let latest_execution_state = match ctx.execution_state_store.get(input.chat_id) {
+        Ok(state) => state,
+        Err(error) => {
+            log::warn!(
+                "[agent_self_model] failed to reload execution state for chat_id={}: {}",
+                input.chat_id,
+                error
+            );
+            None
+        }
+    };
+    let self_model_result = match self_model {
+        Ok(existing_model) => run_self_model_refresh_with_state(
+            http,
+            llm,
+            SelfModelRefreshContext {
+                session_store: ctx.session_store,
+                session_summary_store: ctx.session_summary_store,
+                execution_state_store: ctx.execution_state_store,
+                self_model_store: ctx.self_model_store,
+            },
+            SelfModelRefreshInput {
+                chat_id: input.chat_id,
+                ingress: input.ingress,
+                channel: input.channel,
+                user_content: input.user_content,
+                reply_content: input.reply_content,
+                pressure: input.pressure,
+                tool_calls: input.tool_calls,
+                now_secs: input.now_secs,
+            },
+            input.memory_profile,
+            existing_model,
+            summary_snapshot.summary_text.as_deref(),
+            latest_execution_state.as_ref(),
+            shared_recent.as_deref(),
+        ),
+        Err(error) => Err(error),
+    };
+    let latest_self_model = match ctx.self_model_store.get(input.chat_id) {
+        Ok(model) => model,
+        Err(error) => {
+            log::warn!(
+                "[agent_private_docs] failed to reload self model for chat_id={}: {}",
+                input.chat_id,
+                error
+            );
+            None
+        }
+    };
+    let private_doc_result = match private_docs {
+        Ok(existing_workspace) => run_private_doc_workspace_refresh_with_state(
+            http,
+            llm,
+            PrivateDocWorkspaceRefreshContext {
+                session_store: ctx.session_store,
+                session_summary_store: ctx.session_summary_store,
+                execution_state_store: ctx.execution_state_store,
+                self_model_store: ctx.self_model_store,
+                private_doc_store: ctx.private_doc_store,
+            },
+            PrivateDocWorkspaceRefreshInput {
+                chat_id: input.chat_id,
+                ingress: input.ingress,
+                channel: input.channel,
+                user_content: input.user_content,
+                reply_content: input.reply_content,
+                pressure: input.pressure,
+                tool_calls: input.tool_calls,
+                now_secs: input.now_secs,
+            },
+            input.memory_profile,
+            existing_workspace,
+            summary_snapshot.summary_text.as_deref(),
+            latest_execution_state.as_ref(),
+            latest_self_model.as_ref(),
+            shared_recent.as_deref(),
+        ),
+        Err(error) => Err(error),
+    };
 
     let extraction_state = ctx.extraction_state_store.get(input.chat_id).ok().flatten();
     let extraction_decision = evaluate_long_term_memory_extraction_turn(
@@ -180,6 +323,8 @@ pub fn run_post_reply_memory_maintenance(
         after_count,
         summary_result,
         execution_state_result,
+        self_model_result,
+        private_doc_result,
         extraction_request_outcome,
     }
 }
@@ -191,7 +336,8 @@ mod tests {
     use crate::llm::{LlmModelCompat, LlmResponse, Message, StopReason, ToolChoicePolicy};
     use crate::memory::{
         ExecutionState, ExecutionStateStore, LongTermMemoryExtractionState,
-        LongTermMemoryExtractionStateStore, SessionMessage, SessionSummaryStore,
+        LongTermMemoryExtractionStateStore, PrivateDocStore, PrivateDocWorkspace, SelfModel,
+        SelfModelStore, SessionMessage, SessionSummaryStore,
     };
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -316,6 +462,48 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct StubSelfModelStore {
+        state: Mutex<Option<SelfModel>>,
+    }
+
+    impl SelfModelStore for StubSelfModelStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<SelfModel>> {
+            Ok(self.state.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _chat_id: &str, model: &SelfModel) -> Result<()> {
+            *self.state.lock().unwrap_or_else(|e| e.into_inner()) = Some(model.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            *self.state.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubPrivateDocStore {
+        state: Mutex<Option<PrivateDocWorkspace>>,
+    }
+
+    impl PrivateDocStore for StubPrivateDocStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<PrivateDocWorkspace>> {
+            Ok(self.state.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _chat_id: &str, workspace: &PrivateDocWorkspace) -> Result<()> {
+            *self.state.lock().unwrap_or_else(|e| e.into_inner()) = Some(workspace.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            *self.state.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
     struct FixedLlmClient;
 
     impl LlmClient for FixedLlmClient {
@@ -333,6 +521,10 @@ mod tests {
         ) -> Result<LlmResponse> {
             let content = if system == crate::memory::EXECUTION_STATE_SYSTEM_PROMPT {
                 r#"{"status":"active","goal":"长期记忆链路收口","progress":"继续拆 coordinator","next_action":"接 execution state"}"#
+            } else if system == crate::memory::SELF_MODEL_SYSTEM_PROMPT {
+                r#"{"continuity_anchor":"我还在沿着同一条收口线前进","self_narrative":"现在我把共享事实层和私有层分开维护","relationship_state":"和这个用户维持着共同推进架构的关系感","private_notes":"下一轮继续收紧 self-model 的写入边界"}"#
+            } else if system == crate::memory::PRIVATE_DOC_WORKSPACE_SYSTEM_PROMPT {
+                r#"{"inner_journal":"这轮开始把内部空间整理成可治理文档","private_plan":"继续收紧 private docs 的写入与投影边界"}"#
             } else {
                 "summary"
             };
@@ -389,6 +581,8 @@ mod tests {
             ..Default::default()
         };
         let execution_state_store = StubExecutionStateStore::default();
+        let self_model_store = StubSelfModelStore::default();
+        let private_doc_store = StubPrivateDocStore::default();
         let mut http = DummyHttpClient;
         let outcome = run_post_reply_memory_maintenance(
             &mut http,
@@ -397,6 +591,8 @@ mod tests {
                 session_store: &session_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
+                self_model_store: &self_model_store,
+                private_doc_store: &private_doc_store,
                 extraction_state_store: &extraction_state_store,
             },
             PostReplyMemoryMaintenanceInput {
@@ -422,6 +618,14 @@ mod tests {
             outcome.execution_state_result,
             Ok(ExecutionStateRefreshOutcome::Updated)
         ));
+        assert!(matches!(
+            outcome.self_model_result,
+            Ok(SelfModelRefreshOutcome::Updated)
+        ));
+        assert!(matches!(
+            outcome.private_doc_result,
+            Ok(PrivateDocWorkspaceRefreshOutcome::Updated)
+        ));
         assert_eq!(
             outcome.extraction_request_outcome,
             LongTermMemoryRefreshRequestOutcome::Requested
@@ -446,6 +650,8 @@ mod tests {
         let summary_store = StubSessionSummaryStore::default();
         let extraction_state_store = StubExtractionStateStore::default();
         let execution_state_store = StubExecutionStateStore::default();
+        let self_model_store = StubSelfModelStore::default();
+        let private_doc_store = StubPrivateDocStore::default();
         let mut http = DummyHttpClient;
         let outcome = run_post_reply_memory_maintenance(
             &mut http,
@@ -454,6 +660,8 @@ mod tests {
                 session_store: &session_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
+                self_model_store: &self_model_store,
+                private_doc_store: &private_doc_store,
                 extraction_state_store: &extraction_state_store,
             },
             PostReplyMemoryMaintenanceInput {
@@ -478,6 +686,14 @@ mod tests {
         assert!(matches!(
             outcome.execution_state_result,
             Ok(ExecutionStateRefreshOutcome::Skipped)
+        ));
+        assert!(matches!(
+            outcome.self_model_result,
+            Ok(SelfModelRefreshOutcome::Skipped)
+        ));
+        assert!(matches!(
+            outcome.private_doc_result,
+            Ok(PrivateDocWorkspaceRefreshOutcome::Skipped)
         ));
         assert_eq!(
             outcome.extraction_request_outcome,
@@ -517,6 +733,8 @@ mod tests {
         let summary_store = StubSessionSummaryStore::default();
         let extraction_state_store = StubExtractionStateStore::default();
         let execution_state_store = StubExecutionStateStore::default();
+        let self_model_store = StubSelfModelStore::default();
+        let private_doc_store = StubPrivateDocStore::default();
         let mut http = DummyHttpClient;
 
         let outcome = run_post_reply_memory_maintenance(
@@ -526,6 +744,8 @@ mod tests {
                 session_store: &session_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
+                self_model_store: &self_model_store,
+                private_doc_store: &private_doc_store,
                 extraction_state_store: &extraction_state_store,
             },
             PostReplyMemoryMaintenanceInput {
@@ -550,6 +770,14 @@ mod tests {
         assert!(matches!(
             outcome.execution_state_result,
             Ok(ExecutionStateRefreshOutcome::Updated)
+        ));
+        assert!(matches!(
+            outcome.self_model_result,
+            Ok(SelfModelRefreshOutcome::Updated)
+        ));
+        assert!(matches!(
+            outcome.private_doc_result,
+            Ok(PrivateDocWorkspaceRefreshOutcome::Updated)
         ));
         assert_eq!(
             *session_store
@@ -588,6 +816,8 @@ mod tests {
             ..Default::default()
         };
         let execution_state_store = StubExecutionStateStore::default();
+        let self_model_store = StubSelfModelStore::default();
+        let private_doc_store = StubPrivateDocStore::default();
         let mut http = DummyHttpClient;
 
         let outcome = run_post_reply_memory_maintenance(
@@ -597,6 +827,8 @@ mod tests {
                 session_store: &session_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
+                self_model_store: &self_model_store,
+                private_doc_store: &private_doc_store,
                 extraction_state_store: &extraction_state_store,
             },
             PostReplyMemoryMaintenanceInput {

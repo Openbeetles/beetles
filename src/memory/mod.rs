@@ -9,8 +9,11 @@ mod execution_state;
 mod long_term;
 mod long_term_extraction;
 mod maintenance;
+mod private_docs;
+mod private_garden;
 mod profile;
 mod prompt_context;
+mod self_model;
 mod session_summary_refresh;
 mod turn_ledger;
 
@@ -50,14 +53,33 @@ pub use maintenance::{
     PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput,
     PostReplyMemoryMaintenanceOutcome,
 };
+pub use private_docs::{
+    render_private_doc_workspace_block, run_private_doc_workspace_refresh, PrivateDocEntry,
+    PrivateDocWorkspace, PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
+    PrivateDocWorkspaceRefreshOutcome, PRIVATE_DOC_WORKSPACE_SYSTEM_PROMPT,
+};
+pub(crate) use private_docs::{
+    run_private_doc_workspace_refresh_with_state, should_refresh_private_doc_workspace,
+};
+pub(crate) use private_garden::build_private_garden_preview;
+pub use private_garden::{
+    normalize_private_garden_doc_path, render_private_garden_block, PrivateGardenDoc,
+    PrivateGardenDocRecord,
+};
 pub use profile::MemoryProfile;
 pub(crate) use profile::{
     memory_policy, shared_long_term_governance_policy, ExecutionStatePolicy,
-    LongTermExtractionPolicy, LongTermRecallPolicy, SessionSummaryPolicy,
+    LongTermExtractionPolicy, LongTermRecallPolicy, PrivateDocsPolicy, SelfModelPolicy,
+    SessionSummaryPolicy,
 };
 pub use prompt_context::{
     load_prompt_memory_context, PromptMemoryContext, PromptMemoryContextParams,
 };
+pub use self_model::{
+    render_self_model_block, run_self_model_refresh, SelfModel, SelfModelRefreshContext,
+    SelfModelRefreshInput, SelfModelRefreshOutcome, SELF_MODEL_SYSTEM_PROMPT,
+};
+pub(crate) use self_model::{run_self_model_refresh_with_state, should_refresh_self_model};
 pub use session_summary_refresh::{
     fallback_session_summary, run_session_summary_refresh, should_refresh_session_summary,
     SessionSummaryRefreshContext, SessionSummaryRefreshOutcome,
@@ -98,6 +120,14 @@ pub const REL_PATH_PENDING_RETRY: &str = "memory/pending_retry.json";
 pub const REL_PATH_IMPORTANT_MESSAGE: &str = "memory/important_message.json";
 /// 相对路径：会话摘要（单文件 JSON，chat_id -> { summary, last_summary_at_count }）。
 pub const REL_PATH_SESSION_SUMMARIES: &str = "memory/session_summaries.json";
+/// 相对路径：Self Model（单文件 JSON，chat_id -> private subjective continuity）。
+pub const REL_PATH_SELF_MODELS: &str = "memory/self_models.json";
+/// 相对路径：私有工作区（单文件 JSON，chat_id -> typed private docs workspace）。
+pub const REL_PATH_PRIVATE_DOC_WORKSPACES: &str = "memory/private_doc_workspaces.json";
+/// 相对路径：私有花园索引（单文件 JSON，chat_id -> free-form garden doc metadata）。
+pub const REL_PATH_PRIVATE_GARDEN_INDEX: &str = "memory/private_garden_index.json";
+/// 相对路径：私有花园正文目录（chat_id 子目录下存自由文档）。
+pub const REL_PATH_PRIVATE_GARDEN_DIR: &str = "memory/private_garden";
 
 /// 会话摘要存储。由 agent 程序性摘要写入；build_context 将 get 到的摘要注入 messages 首条。实现方按 SESSION_SUMMARY_MAX_LEN 截断。
 pub trait SessionSummaryStore: Send + Sync {
@@ -111,6 +141,34 @@ pub trait SessionSummaryStore: Send + Sync {
     fn get_with_count(&self, chat_id: &str) -> Result<Option<(String, usize)>> {
         self.get(chat_id).map(|opt| opt.map(|s| (s, 0)))
     }
+}
+
+/// Self Model 存储。保存每个 chat 的私有主观连续性层，不与事实层混写。
+pub trait SelfModelStore: Send + Sync {
+    fn get(&self, chat_id: &str) -> Result<Option<SelfModel>>;
+    fn set(&self, chat_id: &str, model: &SelfModel) -> Result<()>;
+    fn clear(&self, chat_id: &str) -> Result<()>;
+}
+
+/// LLM 私有文档工作区。仅保存主观内部文档，不回写共享事实层。
+pub trait PrivateDocStore: Send + Sync {
+    fn get(&self, chat_id: &str) -> Result<Option<PrivateDocWorkspace>>;
+    fn set(&self, chat_id: &str, workspace: &PrivateDocWorkspace) -> Result<()>;
+    fn clear(&self, chat_id: &str) -> Result<()>;
+}
+
+/// LLM 私有花园。自由文档工作区，仍由程序保证 chat scope / 路径合法 / 配额。
+pub trait PrivateGardenStore: Send + Sync {
+    fn list(&self, chat_id: &str, limit: usize) -> Result<Vec<PrivateGardenDocRecord>>;
+    fn read(&self, chat_id: &str, doc_path: &str) -> Result<Option<PrivateGardenDoc>>;
+    fn write(
+        &self,
+        chat_id: &str,
+        doc_path: &str,
+        content: &str,
+        now_secs: u64,
+    ) -> Result<PrivateGardenDocRecord>;
+    fn delete(&self, chat_id: &str, doc_path: &str) -> Result<bool>;
 }
 
 /// 重要消息存储。offset_from_end=1 表示最后一条 user 消息。供 build_context 截断时优先保留。

@@ -130,6 +130,7 @@ pub fn build_default_registry(
     session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
     _memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
     _long_term_memory_store: Arc<dyn crate::memory::LongTermMemoryStore + Send + Sync>,
+    private_garden_store: Arc<dyn crate::memory::PrivateGardenStore + Send + Sync>,
     _config_store: Arc<dyn crate::platform::ConfigStore + Send + Sync>,
 ) -> (
     ToolRegistry,
@@ -190,6 +191,9 @@ pub fn build_default_registry(
     )));
     registry.register(Box::new(super::BoardInfoTool::new(Arc::clone(&platform))));
     registry.register(Box::new(super::KvStoreTool::new(platform.state_fs())));
+    registry.register(Box::new(super::PrivateGardenTool::new(
+        private_garden_store,
+    )));
     #[cfg(feature = "tools_diagnostics")]
     if !config.hardware_devices.is_empty() {
         registry.register(Box::new(super::DeviceControlTool::new(
@@ -478,11 +482,12 @@ mod tests {
             .expect("execute");
         assert_eq!(outcome.content, "outcome body");
         assert_eq!(
-            outcome
-                .current_chat_reply
-                .as_ref()
-                .map(|reply| reply.content.as_str()),
-            Some("tool delivered reply")
+            outcome.outbound_intents.as_slice(),
+            &[crate::tools::ToolOutboundIntent {
+                target: crate::tools::ToolOutboundTarget::CurrentChat,
+                delivery_kind: crate::tools::ToolOutboundDeliveryKind::Primary,
+                content: "tool delivered reply".to_string(),
+            }]
         );
     }
 }

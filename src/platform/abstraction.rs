@@ -7,7 +7,8 @@ use crate::display::{DisplayCommand, DisplayConfig};
 use crate::error::Result;
 use crate::memory::{
     ExecutionStateStore, ImportantMessageStore, LongTermMemoryStore, MemoryProfile, MemoryStore,
-    PendingRetryStore, RemindAtStore, SessionStore, SessionSummaryStore, TurnLedgerStore,
+    PendingRetryStore, PrivateDocStore, PrivateGardenStore, RemindAtStore, SelfModelStore,
+    SessionStore, SessionSummaryStore, TurnLedgerStore,
 };
 use crate::platform::ResponseBody;
 use crate::task::TaskStore;
@@ -213,6 +214,9 @@ pub trait Platform: Send + Sync {
     ) -> Arc<dyn CalendarProviderCredentialStore + Send + Sync>;
     fn task_store(&self) -> Arc<dyn TaskStore + Send + Sync>;
     fn execution_state_store(&self) -> Arc<dyn ExecutionStateStore + Send + Sync>;
+    fn self_model_store(&self) -> Arc<dyn SelfModelStore + Send + Sync>;
+    fn private_doc_store(&self) -> Arc<dyn PrivateDocStore + Send + Sync>;
+    fn private_garden_store(&self) -> Arc<dyn PrivateGardenStore + Send + Sync>;
     fn important_message_store(&self) -> Arc<dyn ImportantMessageStore + Send + Sync>;
     fn remind_at_store(&self) -> Arc<dyn RemindAtStore + Send + Sync>;
     fn session_summary_store(&self) -> Arc<dyn SessionSummaryStore + Send + Sync>;

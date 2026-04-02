@@ -11,9 +11,9 @@ use crate::platform::{
         spiffs_usage, SpiffsCalendarProviderCredentialStore, SpiffsCalendarStore,
         SpiffsExecutionStateStore, SpiffsImportantMessageStore,
         SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
-        SpiffsPendingRetryStore, SpiffsRemindAtStore, SpiffsSessionStore,
-        SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage, SpiffsTaskStore,
-        SpiffsTurnLedgerStore,
+        SpiffsPendingRetryStore, SpiffsPrivateDocStore, SpiffsPrivateGardenStore,
+        SpiffsRemindAtStore, SpiffsSelfModelStore, SpiffsSessionStore, SpiffsSessionSummaryStore,
+        SpiffsSkillMetaStore, SpiffsSkillStorage, SpiffsTaskStore, SpiffsTurnLedgerStore,
     },
     NvsConfigStore,
 };
@@ -24,8 +24,8 @@ use crate::{
     display::{DisplayCommand, DisplayConfig},
     memory::{
         ExecutionStateStore, ImportantMessageStore, LongTermMemoryExtractionStateStore,
-        LongTermMemoryStore, MemoryStore, PendingRetryStore, RemindAtStore, SessionStore,
-        SessionSummaryStore, TurnLedgerStore,
+        LongTermMemoryStore, MemoryStore, PendingRetryStore, PrivateDocStore, PrivateGardenStore,
+        RemindAtStore, SelfModelStore, SessionStore, SessionSummaryStore, TurnLedgerStore,
     },
     task::TaskStore,
 };
@@ -48,6 +48,9 @@ pub struct Esp32Platform {
     calendar_provider_credential_store: Arc<SpiffsCalendarProviderCredentialStore>,
     task_store: Arc<SpiffsTaskStore>,
     execution_state_store: Arc<SpiffsExecutionStateStore>,
+    self_model_store: Arc<SpiffsSelfModelStore>,
+    private_doc_store: Arc<SpiffsPrivateDocStore>,
+    private_garden_store: Arc<SpiffsPrivateGardenStore>,
     important_message_store: Arc<SpiffsImportantMessageStore>,
     remind_at_store: Arc<SpiffsRemindAtStore>,
     session_summary_store: Arc<SpiffsSessionSummaryStore>,
@@ -81,6 +84,9 @@ impl Esp32Platform {
             ),
             task_store: Arc::new(SpiffsTaskStore::new()),
             execution_state_store: Arc::new(SpiffsExecutionStateStore::new()),
+            self_model_store: Arc::new(SpiffsSelfModelStore::new()),
+            private_doc_store: Arc::new(SpiffsPrivateDocStore::new()),
+            private_garden_store: Arc::new(SpiffsPrivateGardenStore::new()),
             important_message_store: Arc::new(SpiffsImportantMessageStore::new()),
             remind_at_store: Arc::new(SpiffsRemindAtStore::new()),
             session_summary_store: Arc::new(SpiffsSessionSummaryStore::new()),
@@ -212,6 +218,18 @@ impl Platform for Esp32Platform {
 
     fn execution_state_store(&self) -> Arc<dyn ExecutionStateStore + Send + Sync> {
         Arc::clone(&self.execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>
+    }
+
+    fn self_model_store(&self) -> Arc<dyn SelfModelStore + Send + Sync> {
+        Arc::clone(&self.self_model_store) as Arc<dyn SelfModelStore + Send + Sync>
+    }
+
+    fn private_doc_store(&self) -> Arc<dyn PrivateDocStore + Send + Sync> {
+        Arc::clone(&self.private_doc_store) as Arc<dyn PrivateDocStore + Send + Sync>
+    }
+
+    fn private_garden_store(&self) -> Arc<dyn PrivateGardenStore + Send + Sync> {
+        Arc::clone(&self.private_garden_store) as Arc<dyn PrivateGardenStore + Send + Sync>
     }
 
     fn important_message_store(&self) -> Arc<dyn ImportantMessageStore + Send + Sync> {

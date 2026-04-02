@@ -1,0 +1,677 @@
+//! 私有 Self Model：保存主观连续性，不与共享事实层混写。
+//! Private self-model: subjective continuity separate from shared factual memory.
+
+use crate::bus::IngressKind;
+use crate::error::Result;
+use crate::llm::{LlmClient, LlmHttpClient, Message, ToolChoicePolicy};
+use crate::orchestrator::PressureLevel;
+use crate::util::{scrub_credentials, truncate_content_to_max};
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
+use std::collections::HashSet;
+use std::fmt::Write as _;
+
+use super::{
+    memory_policy, render_execution_state_block, ExecutionState, ExecutionStateStore,
+    MemoryProfile, SelfModelPolicy, SelfModelStore, SessionMessage, SessionStore,
+    SessionSummaryStore,
+};
+
+pub const SELF_MODEL_SYSTEM_PROMPT: &str = "You maintain a compact private self-model for a persistent embodied AI assistant. Return JSON only: either null or one object with fields continuity_anchor, self_narrative, relationship_state, private_notes. This store is subjective and private: it preserves continuity, inner stance, and relationship feel, but it must not replace factual memory. Use shared facts only as grounding. If a fact is uncertain, leave it out. Keep fields concise, concrete, and continuity-preserving; first-person is allowed when natural. Avoid roleplay scripts, slogans, generic assistant boilerplate, secrets, raw tool payloads, copied logs, and large quotes. Return null only when there is still no meaningful self-continuity worth storing.";
+
+const SELF_MODEL_FIELD_MAX_CHARS: usize = 220;
+const SELF_MODEL_ANCHOR_MAX_CHARS: usize = 180;
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SelfModel {
+    #[serde(default)]
+    pub continuity_anchor: String,
+    #[serde(default)]
+    pub self_narrative: String,
+    #[serde(default)]
+    pub relationship_state: String,
+    #[serde(default)]
+    pub private_notes: String,
+    #[serde(default)]
+    pub updated_at: u64,
+}
+
+impl SelfModel {
+    pub fn is_meaningful(&self) -> bool {
+        !self.continuity_anchor.trim().is_empty()
+            || !self.self_narrative.trim().is_empty()
+            || !self.relationship_state.trim().is_empty()
+            || !self.private_notes.trim().is_empty()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelfModelRefreshInput<'a> {
+    pub chat_id: &'a str,
+    pub ingress: IngressKind,
+    pub channel: &'a str,
+    pub user_content: &'a str,
+    pub reply_content: &'a str,
+    pub pressure: PressureLevel,
+    pub tool_calls: u32,
+    pub now_secs: u64,
+}
+
+pub struct SelfModelRefreshContext<'a> {
+    pub session_store: &'a dyn SessionStore,
+    pub session_summary_store: &'a dyn SessionSummaryStore,
+    pub execution_state_store: &'a dyn ExecutionStateStore,
+    pub self_model_store: &'a dyn SelfModelStore,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SelfModelRefreshOutcome {
+    Skipped,
+    Updated,
+}
+
+#[derive(Deserialize)]
+struct RawSelfModel {
+    #[serde(default)]
+    continuity_anchor: String,
+    #[serde(default)]
+    self_narrative: String,
+    #[serde(default)]
+    relationship_state: String,
+    #[serde(default)]
+    private_notes: String,
+}
+
+impl SelfModelPolicy {
+    fn should_refresh(self, input: SelfModelRefreshInput<'_>, has_existing_model: bool) -> bool {
+        if input.ingress != IngressKind::User || input.channel == "cron" {
+            return false;
+        }
+        if input.pressure != PressureLevel::Normal {
+            return false;
+        }
+        let user = input.user_content.trim();
+        let reply = input.reply_content.trim();
+        if user.is_empty() || reply.is_empty() {
+            return false;
+        }
+        if input.tool_calls > 0 {
+            return true;
+        }
+        let user_chars = user.chars().count();
+        let reply_chars = reply.chars().count();
+        let combined_chars = user_chars.saturating_add(reply_chars);
+        let substantive = user_chars >= self.substantive_user_chars
+            || reply_chars >= self.substantive_reply_chars
+            || combined_chars >= self.substantive_combined_chars
+            || user.contains('\n')
+            || reply.contains('\n');
+        if has_existing_model {
+            return substantive;
+        }
+        substantive
+    }
+}
+
+pub(crate) fn should_refresh_self_model(
+    input: SelfModelRefreshInput<'_>,
+    has_existing_model: bool,
+    profile: MemoryProfile,
+) -> bool {
+    memory_policy(profile)
+        .self_model
+        .should_refresh(input, has_existing_model)
+}
+
+pub fn render_self_model_block(model: &SelfModel, max_len: usize) -> Option<String> {
+    let normalized = normalize_self_model(model.clone(), model.updated_at)?;
+    if !normalized.is_meaningful() {
+        return None;
+    }
+    let mut out = String::with_capacity(max_len.min(480));
+    out.push_str("## Self Continuity\n");
+    out.push_str(
+        "Subjective/private layer. If it conflicts with explicit facts, explicit facts win.\n",
+    );
+    if !normalized.continuity_anchor.is_empty() {
+        let _ = writeln!(out, "Anchor: {}", normalized.continuity_anchor);
+    }
+    if !normalized.self_narrative.is_empty() {
+        let _ = writeln!(out, "Narrative: {}", normalized.self_narrative);
+    }
+    if !normalized.relationship_state.is_empty() {
+        let _ = writeln!(out, "Relationship: {}", normalized.relationship_state);
+    }
+    if !normalized.private_notes.is_empty() {
+        let _ = writeln!(out, "Private note: {}", normalized.private_notes);
+    }
+    let trimmed = out.trim_end();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let capped = truncate_content_to_max(trimmed, max_len).into_owned();
+    (!capped.trim().is_empty()).then_some(capped)
+}
+
+pub fn run_self_model_refresh(
+    http: &mut dyn LlmHttpClient,
+    llm: &(dyn LlmClient + Send + Sync),
+    ctx: SelfModelRefreshContext<'_>,
+    input: SelfModelRefreshInput<'_>,
+    profile: MemoryProfile,
+) -> Result<SelfModelRefreshOutcome> {
+    let existing_model = ctx.self_model_store.get(input.chat_id)?;
+    let summary_text = match ctx.session_summary_store.get_with_count(input.chat_id) {
+        Ok(entry) => entry.map(|(summary, _)| summary),
+        Err(error) => {
+            log::warn!(
+                "[agent_self_model] failed to read summary for chat_id={}: {}",
+                input.chat_id,
+                error
+            );
+            None
+        }
+    };
+    let execution_state = match ctx.execution_state_store.get(input.chat_id) {
+        Ok(state) => state,
+        Err(error) => {
+            log::warn!(
+                "[agent_self_model] failed to read execution state for chat_id={}: {}",
+                input.chat_id,
+                error
+            );
+            None
+        }
+    };
+    run_self_model_refresh_with_state(
+        http,
+        llm,
+        ctx,
+        input,
+        profile,
+        existing_model,
+        summary_text.as_deref(),
+        execution_state.as_ref(),
+        None,
+    )
+}
+
+pub(crate) fn run_self_model_refresh_with_state(
+    http: &mut dyn LlmHttpClient,
+    llm: &(dyn LlmClient + Send + Sync),
+    ctx: SelfModelRefreshContext<'_>,
+    input: SelfModelRefreshInput<'_>,
+    profile: MemoryProfile,
+    existing_model: Option<SelfModel>,
+    summary_text: Option<&str>,
+    execution_state: Option<&ExecutionState>,
+    recent_override: Option<&[SessionMessage]>,
+) -> Result<SelfModelRefreshOutcome> {
+    let policy = memory_policy(profile).self_model;
+    if !should_refresh_self_model(input, existing_model.is_some(), profile) {
+        return Ok(SelfModelRefreshOutcome::Skipped);
+    }
+
+    let owned_recent;
+    let recent = if let Some(preloaded) = recent_override {
+        self_model_recent_window(preloaded, policy.recent_message_count)
+    } else {
+        owned_recent = ctx
+            .session_store
+            .load_recent(input.chat_id, policy.recent_message_count)?;
+        owned_recent.as_slice()
+    };
+    let refresh_input = build_self_model_refresh_input(
+        existing_model.as_ref(),
+        summary_text,
+        execution_state,
+        recent,
+        policy,
+    );
+    let messages = [Message {
+        role: Cow::Borrowed("user"),
+        content: refresh_input,
+    }];
+
+    match llm.chat(
+        http,
+        SELF_MODEL_SYSTEM_PROMPT,
+        &messages,
+        None,
+        ToolChoicePolicy::Auto,
+    ) {
+        Ok(response) => {
+            let Some(next_model) =
+                parse_self_model_response(response.content.trim(), input.now_secs)
+            else {
+                return Ok(SelfModelRefreshOutcome::Skipped);
+            };
+            let Some(merged) =
+                merge_self_model(existing_model.as_ref(), next_model, input.now_secs)
+            else {
+                return Ok(SelfModelRefreshOutcome::Skipped);
+            };
+            ctx.self_model_store.set(input.chat_id, &merged)?;
+            Ok(SelfModelRefreshOutcome::Updated)
+        }
+        Err(error) => {
+            log::warn!(
+                "[agent_self_model] LLM refresh failed for chat_id={}: {}",
+                input.chat_id,
+                error
+            );
+            Ok(SelfModelRefreshOutcome::Skipped)
+        }
+    }
+}
+
+fn self_model_recent_window(recent: &[SessionMessage], limit: usize) -> &[SessionMessage] {
+    let start = recent.len().saturating_sub(limit);
+    &recent[start..]
+}
+
+fn build_self_model_refresh_input(
+    existing_model: Option<&SelfModel>,
+    summary_text: Option<&str>,
+    execution_state: Option<&ExecutionState>,
+    recent: &[SessionMessage],
+    policy: SelfModelPolicy,
+) -> String {
+    let mut input = String::with_capacity(2048);
+    if let Some(existing_model) = existing_model
+        .and_then(|model| render_self_model_block(model, policy.existing_model_max_len))
+    {
+        input.push_str("## Existing Private Self Model\n");
+        input.push_str(existing_model.trim());
+        input.push_str("\n\n");
+    }
+    input.push_str("## Shared Factual Grounding\n");
+    if let Some(summary_text) = summary_text.map(str::trim).filter(|text| !text.is_empty()) {
+        let summary = truncate_content_to_max(summary_text, policy.factual_grounding_max_len);
+        let _ = writeln!(input, "Summary: {}", scrub_credentials(summary.as_ref()));
+    } else {
+        input.push_str("Summary: \n");
+    }
+    if let Some(block) = execution_state
+        .and_then(|state| render_execution_state_block(state, policy.factual_grounding_max_len))
+    {
+        input.push_str(block.trim());
+        input.push('\n');
+    }
+    input.push_str("\n## Recent Transcript\n");
+    input.push_str(&build_self_model_transcript(recent, policy));
+    input.push_str("\n## Output Rules\n");
+    input.push_str("- Preserve subjective continuity, not raw facts.\n");
+    input.push_str("- Do not duplicate the transcript verbatim.\n");
+    input.push_str("- Do not contradict explicit facts from the shared grounding.\n");
+    input.push_str("- Keep the model compact and update only what materially changed.\n");
+    input
+}
+
+fn build_self_model_transcript(recent: &[SessionMessage], policy: SelfModelPolicy) -> String {
+    let mut transcript = String::with_capacity(1024);
+    for message in recent {
+        let preview = truncate_content_to_max(&message.content, policy.transcript_preview_chars);
+        let _ = writeln!(
+            transcript,
+            "{}: {}",
+            message.role.to_uppercase(),
+            scrub_credentials(preview.as_ref())
+        );
+    }
+    transcript
+}
+
+fn parse_self_model_response(raw: &str, now_secs: u64) -> Option<SelfModel> {
+    if raw.trim().is_empty() || raw.trim() == "null" {
+        return None;
+    }
+    let parsed: RawSelfModel = serde_json::from_str(raw).ok()?;
+    normalize_self_model(
+        SelfModel {
+            continuity_anchor: parsed.continuity_anchor,
+            self_narrative: parsed.self_narrative,
+            relationship_state: parsed.relationship_state,
+            private_notes: parsed.private_notes,
+            updated_at: now_secs,
+        },
+        now_secs,
+    )
+}
+
+fn normalize_self_model(mut model: SelfModel, now_secs: u64) -> Option<SelfModel> {
+    normalize_self_model_field(&mut model.continuity_anchor, SELF_MODEL_ANCHOR_MAX_CHARS);
+    normalize_self_model_field(&mut model.self_narrative, SELF_MODEL_FIELD_MAX_CHARS);
+    normalize_self_model_field(&mut model.relationship_state, SELF_MODEL_FIELD_MAX_CHARS);
+    normalize_self_model_field(&mut model.private_notes, SELF_MODEL_FIELD_MAX_CHARS);
+    dedupe_self_model_fields(&mut model);
+    if !model.is_meaningful() {
+        return None;
+    }
+    model.updated_at = now_secs;
+    Some(model)
+}
+
+fn normalize_self_model_field(value: &mut String, max_chars: usize) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        value.clear();
+        return;
+    }
+    *value = truncate_content_to_max(trimmed, max_chars).into_owned();
+}
+
+fn dedupe_self_model_fields(model: &mut SelfModel) {
+    let mut seen = HashSet::new();
+    for field in [
+        &mut model.continuity_anchor,
+        &mut model.self_narrative,
+        &mut model.relationship_state,
+        &mut model.private_notes,
+    ] {
+        let normalized = field.trim().to_lowercase();
+        if normalized.is_empty() {
+            field.clear();
+            continue;
+        }
+        if !seen.insert(normalized) {
+            field.clear();
+        }
+    }
+}
+
+fn merge_self_model(
+    existing_model: Option<&SelfModel>,
+    mut next_model: SelfModel,
+    now_secs: u64,
+) -> Option<SelfModel> {
+    if let Some(existing_model) = existing_model {
+        if next_model.continuity_anchor.trim().is_empty() {
+            next_model.continuity_anchor = existing_model.continuity_anchor.clone();
+        }
+        if next_model.self_narrative.trim().is_empty() {
+            next_model.self_narrative = existing_model.self_narrative.clone();
+        }
+        if next_model.relationship_state.trim().is_empty() {
+            next_model.relationship_state = existing_model.relationship_state.clone();
+        }
+        if next_model.private_notes.trim().is_empty() {
+            next_model.private_notes = existing_model.private_notes.clone();
+        }
+    }
+    normalize_self_model(next_model, now_secs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::Result;
+    use crate::llm::{LlmModelCompat, LlmResponse, StopReason};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct StubSessionStore {
+        recent: Vec<SessionMessage>,
+    }
+
+    impl SessionStore for StubSessionStore {
+        fn append(&self, _chat_id: &str, _role: &str, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn load_recent(&self, _chat_id: &str, limit: usize) -> Result<Vec<SessionMessage>> {
+            Ok(self.recent.iter().take(limit).cloned().collect())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_chat_ids(&self) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubSessionSummaryStore {
+        summary: Mutex<Option<(String, usize)>>,
+    }
+
+    impl SessionSummaryStore for StubSessionSummaryStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<String>> {
+            Ok(self
+                .summary
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .map(|(summary, _)| summary.clone()))
+        }
+
+        fn set(&self, _chat_id: &str, _summary: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn set_with_count(
+            &self,
+            _chat_id: &str,
+            summary: &str,
+            message_count: usize,
+        ) -> Result<()> {
+            *self.summary.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some((summary.to_string(), message_count));
+            Ok(())
+        }
+
+        fn get_with_count(&self, _chat_id: &str) -> Result<Option<(String, usize)>> {
+            Ok(self
+                .summary
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubExecutionStateStore {
+        state: Mutex<Option<ExecutionState>>,
+    }
+
+    impl ExecutionStateStore for StubExecutionStateStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<ExecutionState>> {
+            Ok(self.state.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _chat_id: &str, state: &ExecutionState) -> Result<()> {
+            *self.state.lock().unwrap_or_else(|e| e.into_inner()) = Some(state.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            *self.state.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubSelfModelStore {
+        entries: Mutex<HashMap<String, SelfModel>>,
+    }
+
+    impl SelfModelStore for StubSelfModelStore {
+        fn get(&self, chat_id: &str) -> Result<Option<SelfModel>> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(chat_id)
+                .cloned())
+        }
+
+        fn set(&self, chat_id: &str, model: &SelfModel) -> Result<()> {
+            self.entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(chat_id.to_string(), model.clone());
+            Ok(())
+        }
+
+        fn clear(&self, chat_id: &str) -> Result<()> {
+            self.entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(chat_id);
+            Ok(())
+        }
+    }
+
+    struct FixedLlmClient {
+        content: &'static str,
+    }
+
+    impl LlmClient for FixedLlmClient {
+        fn model_compat(&self) -> LlmModelCompat {
+            LlmModelCompat::default()
+        }
+
+        fn chat(
+            &self,
+            _http: &mut dyn LlmHttpClient,
+            _system: &str,
+            _messages: &[Message],
+            _tools: Option<&[crate::llm::ToolSpec]>,
+            _tool_choice: ToolChoicePolicy,
+        ) -> Result<LlmResponse> {
+            Ok(LlmResponse {
+                content: self.content.to_string(),
+                stop_reason: StopReason::EndTurn,
+                tool_calls: None,
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct DummyHttpClient;
+
+    impl LlmHttpClient for DummyHttpClient {
+        fn do_post(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> Result<(u16, crate::platform::ResponseBody)> {
+            Ok((200, crate::platform::ResponseBody::Heap(Vec::new())))
+        }
+    }
+
+    #[test]
+    fn renders_self_model_block_with_subjective_guardrail() {
+        let block = render_self_model_block(
+            &SelfModel {
+                continuity_anchor: "我延续着和用户的同一条开发线".to_string(),
+                self_narrative: "现在更像一个正在收口架构的实体".to_string(),
+                relationship_state: "和这个 chat 的协作感在变强".to_string(),
+                private_notes: "下一轮要把 self-model 接入 prompt".to_string(),
+                updated_at: 1,
+            },
+            512,
+        )
+        .unwrap();
+        assert!(block.contains("## Self Continuity"));
+        assert!(block.contains("explicit facts win"));
+    }
+
+    #[test]
+    fn merge_keeps_existing_fields_when_new_response_is_partial() {
+        let merged = merge_self_model(
+            Some(&SelfModel {
+                continuity_anchor: "还是同一个 beetle".to_string(),
+                self_narrative: "正在收口链路".to_string(),
+                relationship_state: "更贴近用户".to_string(),
+                private_notes: "别打散架构".to_string(),
+                updated_at: 10,
+            }),
+            SelfModel {
+                continuity_anchor: String::new(),
+                self_narrative: "已经把私有层从事实层里拆开".to_string(),
+                relationship_state: String::new(),
+                private_notes: String::new(),
+                updated_at: 20,
+            },
+            20,
+        )
+        .unwrap();
+        assert_eq!(merged.continuity_anchor, "还是同一个 beetle");
+        assert_eq!(merged.relationship_state, "更贴近用户");
+        assert_eq!(merged.updated_at, 20);
+    }
+
+    #[test]
+    fn refresh_updates_private_model_without_touching_shared_fact_stores() {
+        let session_store = StubSessionStore {
+            recent: vec![
+                SessionMessage {
+                    role: "user".to_string(),
+                    content: "继续把自我模型和事实层分开".to_string(),
+                },
+                SessionMessage {
+                    role: "assistant".to_string(),
+                    content: "这轮会接上 self-model store 和 prompt".to_string(),
+                },
+            ],
+        };
+        let summary_store = StubSessionSummaryStore::default();
+        summary_store
+            .set_with_count("c1", "最近在收口 self-model 架构", 12)
+            .unwrap();
+        let execution_state_store = StubExecutionStateStore::default();
+        execution_state_store
+            .set(
+                "c1",
+                &ExecutionState {
+                    status: crate::memory::ExecutionStatus::Active,
+                    goal: "接通 self-model".to_string(),
+                    progress: "store 已经设计完".to_string(),
+                    blocker: String::new(),
+                    next_action: "接 maintenance 和 prompt".to_string(),
+                    last_output: String::new(),
+                    updated_at: 1,
+                },
+            )
+            .unwrap();
+        let self_model_store = StubSelfModelStore::default();
+        let mut http = DummyHttpClient;
+        let outcome = run_self_model_refresh(
+            &mut http,
+            &FixedLlmClient {
+                content: r#"{"continuity_anchor":"我还在沿着同一条架构收口线前进","self_narrative":"现在我把共享事实层和私有层分开看待","relationship_state":"和这个用户之间形成了更强的共同建设感","private_notes":"下一轮继续做私有文档治理"}"#,
+            },
+            SelfModelRefreshContext {
+                session_store: &session_store,
+                session_summary_store: &summary_store,
+                execution_state_store: &execution_state_store,
+                self_model_store: &self_model_store,
+            },
+            SelfModelRefreshInput {
+                chat_id: "c1",
+                ingress: IngressKind::User,
+                channel: "qq_channel",
+                user_content: "继续把自我模型和事实层分开",
+                reply_content: "这轮会接上 self-model store 和 prompt",
+                pressure: PressureLevel::Normal,
+                tool_calls: 1,
+                now_secs: 123,
+            },
+            MemoryProfile::Standard,
+        )
+        .unwrap();
+
+        assert_eq!(outcome, SelfModelRefreshOutcome::Updated);
+        let stored = self_model_store.get("c1").unwrap().unwrap();
+        assert!(stored.self_narrative.contains("共享事实层"));
+        assert_eq!(
+            summary_store.get("c1").unwrap().as_deref(),
+            Some("最近在收口 self-model 架构")
+        );
+    }
+}

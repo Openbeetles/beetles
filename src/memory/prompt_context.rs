@@ -3,8 +3,9 @@
 
 use super::{
     memory_policy, recall_long_term_memory_block, render_execution_state_block,
-    ExecutionStateStore, LongTermMemoryStore, MemoryProfile, SessionMessage, SessionStore,
-    SessionSummaryStore,
+    render_private_doc_workspace_block, render_private_garden_block, render_self_model_block,
+    ExecutionStateStore, LongTermMemoryStore, MemoryProfile, PrivateDocStore, PrivateGardenStore,
+    SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
 };
 
 pub struct PromptMemoryContext {
@@ -12,6 +13,9 @@ pub struct PromptMemoryContext {
     pub message_summary_text: Option<String>,
     pub long_term_memory_text: Option<String>,
     pub execution_state_text: Option<String>,
+    pub self_model_text: Option<String>,
+    pub private_workspace_text: Option<String>,
+    pub private_garden_text: Option<String>,
     pub recent_messages: Vec<SessionMessage>,
 }
 
@@ -20,15 +24,34 @@ pub struct PromptMemoryContextParams<'a> {
     pub user_query: &'a str,
     pub system_max_len: usize,
     pub profile: MemoryProfile,
+    pub recent_messages_limit: usize,
+    pub load_long_term_memory: bool,
     pub session_store: &'a dyn SessionStore,
     pub session_summary_store: &'a dyn SessionSummaryStore,
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
+    pub self_model_store: &'a dyn SelfModelStore,
+    pub private_doc_store: &'a dyn PrivateDocStore,
+    pub private_garden_store: &'a dyn PrivateGardenStore,
 }
 
 pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> PromptMemoryContext {
     let recall_policy = memory_policy(params.profile).long_term_recall;
-    let mut recent_messages = Vec::new();
+    let recent_message_limit = params
+        .recent_messages_limit
+        .max(if params.load_long_term_memory {
+            recall_policy.recent_grounding_message_count
+        } else {
+            0
+        });
+    let recent_messages = if recent_message_limit == 0 {
+        Vec::new()
+    } else {
+        params
+            .session_store
+            .load_recent(params.chat_id, recent_message_limit)
+            .unwrap_or_default()
+    };
     let summary_text = params
         .session_summary_store
         .get_with_count(params.chat_id)
@@ -47,23 +70,60 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
                 memory_policy(params.profile).execution_state.render_max_len,
             )
         });
-    let long_term_memory_text = if params.system_max_len < recall_policy.block_min_len {
-        None
-    } else {
-        recent_messages = params
-            .session_store
-            .load_recent(params.chat_id, recall_policy.recent_grounding_message_count)
-            .unwrap_or_default();
-        recall_long_term_memory_block(
-            params.long_term_memory_store,
+    let self_model_text = params
+        .self_model_store
+        .get(params.chat_id)
+        .ok()
+        .flatten()
+        .and_then(|model| {
+            render_self_model_block(
+                &model,
+                memory_policy(params.profile).self_model.render_max_len,
+            )
+        });
+    let private_workspace_text = params
+        .private_doc_store
+        .get(params.chat_id)
+        .ok()
+        .flatten()
+        .and_then(|workspace| {
+            render_private_doc_workspace_block(
+                &workspace,
+                memory_policy(params.profile).private_docs.render_max_len,
+            )
+        });
+    let private_garden_text = params
+        .private_garden_store
+        .list(
             params.chat_id,
-            params.user_query,
-            summary_text.as_deref(),
-            &recent_messages,
-            params.system_max_len,
-            params.profile,
+            memory_policy(params.profile)
+                .private_garden
+                .recent_doc_count,
         )
-    };
+        .ok()
+        .and_then(|docs| {
+            render_private_garden_block(
+                &docs,
+                memory_policy(params.profile).private_garden.render_max_len,
+            )
+        });
+    let long_term_memory_text =
+        if !params.load_long_term_memory || params.system_max_len < recall_policy.block_min_len {
+            None
+        } else {
+            let grounding_start = recent_messages
+                .len()
+                .saturating_sub(recall_policy.recent_grounding_message_count);
+            recall_long_term_memory_block(
+                params.long_term_memory_store,
+                params.chat_id,
+                params.user_query,
+                summary_text.as_deref(),
+                &recent_messages[grounding_start..],
+                params.system_max_len,
+                params.profile,
+            )
+        };
     let message_summary_text = if execution_state_text.is_some() {
         None
     } else {
@@ -74,6 +134,9 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         message_summary_text,
         long_term_memory_text,
         execution_state_text,
+        self_model_text,
+        private_workspace_text,
+        private_garden_text,
         recent_messages,
     }
 }
@@ -84,7 +147,9 @@ mod tests {
     use crate::error::Result;
     use crate::memory::{
         ExecutionState, ExecutionStateStore, ExecutionStatus, LongTermMemoryEntry,
-        LongTermMemoryKind, LongTermMemorySlot, LongTermMemoryStore, SessionMessage, SessionStore,
+        LongTermMemoryKind, LongTermMemorySlot, LongTermMemoryStore, PrivateDocEntry,
+        PrivateDocStore, PrivateDocWorkspace, PrivateGardenDoc, PrivateGardenDocRecord,
+        PrivateGardenStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
         SessionSummaryStore,
     };
     use std::sync::Mutex;
@@ -215,6 +280,103 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct StubSelfModelStore {
+        model: Mutex<Option<SelfModel>>,
+    }
+
+    impl SelfModelStore for StubSelfModelStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<SelfModel>> {
+            Ok(self.model.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _chat_id: &str, model: &SelfModel) -> Result<()> {
+            *self.model.lock().unwrap_or_else(|e| e.into_inner()) = Some(model.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            *self.model.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubPrivateDocStore {
+        workspace: Mutex<Option<PrivateDocWorkspace>>,
+    }
+
+    impl PrivateDocStore for StubPrivateDocStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<PrivateDocWorkspace>> {
+            Ok(self
+                .workspace
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone())
+        }
+
+        fn set(&self, _chat_id: &str, workspace: &PrivateDocWorkspace) -> Result<()> {
+            *self.workspace.lock().unwrap_or_else(|e| e.into_inner()) = Some(workspace.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            *self.workspace.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubPrivateGardenStore {
+        docs: Mutex<Vec<PrivateGardenDoc>>,
+    }
+
+    impl PrivateGardenStore for StubPrivateGardenStore {
+        fn list(&self, _chat_id: &str, limit: usize) -> Result<Vec<PrivateGardenDocRecord>> {
+            Ok(self
+                .docs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .rev()
+                .take(limit)
+                .map(|doc| PrivateGardenDocRecord {
+                    path: doc.path.clone(),
+                    updated_at: doc.updated_at,
+                    revision: doc.revision,
+                    bytes: doc.content.len(),
+                    preview: crate::memory::private_garden::build_private_garden_preview(
+                        &doc.content,
+                    ),
+                })
+                .collect())
+        }
+
+        fn read(&self, _chat_id: &str, doc_path: &str) -> Result<Option<PrivateGardenDoc>> {
+            Ok(self
+                .docs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .find(|doc| doc.path == doc_path)
+                .cloned())
+        }
+
+        fn write(
+            &self,
+            _chat_id: &str,
+            _doc_path: &str,
+            _content: &str,
+            _now_secs: u64,
+        ) -> Result<PrivateGardenDocRecord> {
+            unreachable!()
+        }
+
+        fn delete(&self, _chat_id: &str, _doc_path: &str) -> Result<bool> {
+            unreachable!()
+        }
+    }
+
     #[test]
     fn loads_summary_and_uses_it_for_weak_query_recall() {
         let session_store = StubSessionStore {
@@ -256,16 +418,51 @@ mod tests {
                 updated_at: 1,
             })),
         };
+        let self_model_store = StubSelfModelStore {
+            model: Mutex::new(Some(SelfModel {
+                continuity_anchor: "我还是同一个 beetle".to_string(),
+                self_narrative: "正在把记忆拆成事实层和私有层".to_string(),
+                relationship_state: String::new(),
+                private_notes: String::new(),
+                updated_at: 1,
+            })),
+        };
+        let private_doc_store = StubPrivateDocStore {
+            workspace: Mutex::new(Some(PrivateDocWorkspace {
+                inner_journal: Some(PrivateDocEntry {
+                    content: "这轮开始长出内部工作区".to_string(),
+                    updated_at: 1,
+                    revision: 1,
+                }),
+                relationship_notes: None,
+                self_reflection: None,
+                private_plan: None,
+                updated_at: 1,
+            })),
+        };
+        let private_garden_store = StubPrivateGardenStore {
+            docs: Mutex::new(vec![PrivateGardenDoc {
+                path: "journal/afterglow.md".to_string(),
+                content: "这块自由空间由模型自己决定如何整理".to_string(),
+                updated_at: 2,
+                revision: 1,
+            }]),
+        };
 
         let context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
             user_query: "嗯?",
             system_max_len: 1024,
             profile: MemoryProfile::Standard,
+            recent_messages_limit: 8,
+            load_long_term_memory: true,
             session_store: &session_store,
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
+            self_model_store: &self_model_store,
+            private_doc_store: &private_doc_store,
+            private_garden_store: &private_garden_store,
         });
 
         assert_eq!(
@@ -297,6 +494,21 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("Goal: 收口 prompt memory"));
+        assert!(context
+            .self_model_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Self Continuity"));
+        assert!(context
+            .private_workspace_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Inner Workspace"));
+        assert!(context
+            .private_garden_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Private Garden"));
     }
 
     #[test]
@@ -324,16 +536,24 @@ mod tests {
             last_query: Mutex::new(None),
         };
         let execution_state_store = StubExecutionStateStore::default();
+        let self_model_store = StubSelfModelStore::default();
+        let private_doc_store = StubPrivateDocStore::default();
+        let private_garden_store = StubPrivateGardenStore::default();
 
         let context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
             user_query: "嗯?",
             system_max_len: 80,
             profile: MemoryProfile::Embedded,
+            recent_messages_limit: 8,
+            load_long_term_memory: true,
             session_store: &session_store,
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
+            self_model_store: &self_model_store,
+            private_doc_store: &private_doc_store,
+            private_garden_store: &private_garden_store,
         });
 
         assert_eq!(
@@ -345,6 +565,97 @@ mod tests {
             Some("user prefers cold brew")
         );
         assert!(context.long_term_memory_text.is_none());
+        assert!(memory_store
+            .last_query
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_none());
+    }
+
+    #[test]
+    fn fast_mode_skips_long_term_recall_but_keeps_recent_messages() {
+        let session_store = StubSessionStore {
+            recent: Mutex::new(vec![
+                SessionMessage {
+                    role: "assistant".to_string(),
+                    content: "上一轮回复".to_string(),
+                },
+                SessionMessage {
+                    role: "user".to_string(),
+                    content: "补充上下文".to_string(),
+                },
+            ]),
+        };
+        let summary_store = StubSessionSummaryStore {
+            summary: Mutex::new(Some(("summary".to_string(), 2))),
+        };
+        let memory_store = StubLongTermMemoryStore::default();
+        let execution_state_store = StubExecutionStateStore::default();
+        let self_model_store = StubSelfModelStore {
+            model: Mutex::new(Some(SelfModel {
+                continuity_anchor: "我保持着连续性".to_string(),
+                self_narrative: "即使 fast path 也该带上私有层".to_string(),
+                relationship_state: String::new(),
+                private_notes: String::new(),
+                updated_at: 1,
+            })),
+        };
+        let private_doc_store = StubPrivateDocStore {
+            workspace: Mutex::new(Some(PrivateDocWorkspace {
+                inner_journal: Some(PrivateDocEntry {
+                    content: "fast path 也需要内在工作区投影".to_string(),
+                    updated_at: 1,
+                    revision: 1,
+                }),
+                relationship_notes: None,
+                self_reflection: None,
+                private_plan: None,
+                updated_at: 1,
+            })),
+        };
+        let private_garden_store = StubPrivateGardenStore {
+            docs: Mutex::new(vec![PrivateGardenDoc {
+                path: "plans/next.md".to_string(),
+                content: "fast path 依然可以看到自由花园的最近痕迹".to_string(),
+                updated_at: 3,
+                revision: 2,
+            }]),
+        };
+
+        let context = load_prompt_memory_context(PromptMemoryContextParams {
+            chat_id: "chat-1",
+            user_query: "继续",
+            system_max_len: 1024,
+            profile: MemoryProfile::Standard,
+            recent_messages_limit: 16,
+            load_long_term_memory: false,
+            session_store: &session_store,
+            session_summary_store: &summary_store,
+            long_term_memory_store: &memory_store,
+            execution_state_store: &execution_state_store,
+            self_model_store: &self_model_store,
+            private_doc_store: &private_doc_store,
+            private_garden_store: &private_garden_store,
+        });
+
+        assert_eq!(context.summary_text.as_deref(), Some("summary"));
+        assert!(context.long_term_memory_text.is_none());
+        assert!(context
+            .self_model_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("我保持着连续性"));
+        assert!(context
+            .private_workspace_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("内在工作区"));
+        assert!(context
+            .private_garden_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("自由花园"));
+        assert_eq!(context.recent_messages.len(), 2);
         assert!(memory_store
             .last_query
             .lock()

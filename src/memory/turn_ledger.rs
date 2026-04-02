@@ -29,6 +29,14 @@ pub struct TurnDeliveryLedger {
     #[serde(default)]
     pub partial_updates_sent: u8,
     #[serde(default)]
+    pub tool_outbound_intents_seen: u8,
+    #[serde(default)]
+    pub tool_visible_updates_sent: u8,
+    #[serde(default)]
+    pub explicit_outbound_sent: u8,
+    #[serde(default)]
+    pub tool_outbound_suppressed: u8,
+    #[serde(default)]
     pub current_primary_delivered: bool,
     #[serde(default)]
     pub finalize_streamed: bool,
