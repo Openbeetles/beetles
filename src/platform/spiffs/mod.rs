@@ -258,6 +258,7 @@ pub fn list_dir(path: impl AsRef<Path>) -> Result<Vec<String>> {
 
 // --- 子模块与对外类型 ---
 
+pub mod autonomy_strategy;
 pub(crate) mod cached_json;
 pub mod calendar_credentials;
 pub mod calendar_store;
@@ -283,6 +284,7 @@ pub use turn_ledger::SpiffsTurnLedgerStore;
 
 pub use calendar_credentials::SpiffsCalendarProviderCredentialStore;
 pub use calendar_store::SpiffsCalendarStore;
+pub use autonomy_strategy::SpiffsAutonomyStrategyStore;
 pub use execution_state::SpiffsExecutionStateStore;
 pub use important_message::SpiffsImportantMessageStore;
 pub use inner_life::SpiffsInnerLifeStore;

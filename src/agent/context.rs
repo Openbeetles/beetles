@@ -73,6 +73,7 @@ pub struct ContextParams<'a> {
     pub execution_state_text: Option<&'a str>,
     pub self_state_text: Option<&'a str>,
     pub self_model_text: Option<&'a str>,
+    pub autonomy_strategy_text: Option<&'a str>,
     pub inner_life_text: Option<&'a str>,
     pub self_continuity_text: Option<&'a str>,
     pub private_workspace_text: Option<&'a str>,
@@ -146,6 +147,7 @@ fn reserve_priority_memory_budget(
     execution_state_text: Option<&str>,
     self_state_text: Option<&str>,
     self_model_text: Option<&str>,
+    autonomy_strategy_text: Option<&str>,
     inner_life_text: Option<&str>,
     self_continuity_text: Option<&str>,
     private_workspace_text: Option<&str>,
@@ -159,6 +161,9 @@ fn reserve_priority_memory_budget(
     let remaining = remaining.saturating_sub(self_state_reserve);
     let self_model_reserve = section_with_separator_len(self_model_text).min(remaining / 4);
     let remaining = remaining.saturating_sub(self_model_reserve);
+    let autonomy_strategy_reserve =
+        section_with_separator_len(autonomy_strategy_text).min(remaining / 4);
+    let remaining = remaining.saturating_sub(autonomy_strategy_reserve);
     let inner_life_reserve = section_with_separator_len(inner_life_text).min(remaining / 4);
     let remaining = remaining.saturating_sub(inner_life_reserve);
     let self_continuity_reserve =
@@ -173,6 +178,7 @@ fn reserve_priority_memory_budget(
     execution_reserve
         .saturating_add(self_state_reserve)
         .saturating_add(self_model_reserve)
+        .saturating_add(autonomy_strategy_reserve)
         .saturating_add(inner_life_reserve)
         .saturating_add(self_continuity_reserve)
         .saturating_add(private_workspace_reserve)
@@ -324,6 +330,7 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
         p.execution_state_text,
         p.self_state_text,
         p.self_model_text,
+        p.autonomy_strategy_text,
         p.inner_life_text,
         p.self_continuity_text,
         p.private_workspace_text,
@@ -346,6 +353,9 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     }
     if let Some(self_model_text) = p.self_model_text {
         let _ = append_capped_section(&mut system, "\n\n", self_model_text, base_max);
+    }
+    if let Some(autonomy_strategy_text) = p.autonomy_strategy_text {
+        let _ = append_capped_section(&mut system, "\n\n", autonomy_strategy_text, base_max);
     }
     if let Some(inner_life_text) = p.inner_life_text {
         let _ = append_capped_section(&mut system, "\n\n", inner_life_text, base_max);

@@ -1,0 +1,479 @@
+//! 自治策略层：由模型自己维护近期内在治理方针与空闲节奏。
+
+use crate::bus::IngressKind;
+use crate::error::Result;
+use crate::llm::{LlmClient, LlmHttpClient, Message, ToolChoicePolicy};
+use crate::orchestrator::PressureLevel;
+use crate::util::{scrub_credentials, truncate_content_to_max};
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
+use std::fmt::Write as _;
+
+use super::{
+    build_self_state, memory_policy, render_execution_state_block, render_inner_life_block,
+    render_private_doc_workspace_block, render_private_garden_block,
+    render_self_continuity_block, render_self_model_block, render_self_state_block,
+    AutonomyStrategyPolicy, AutonomyStrategyStore, ExecutionState, ExecutionStateStore, InnerLife,
+    InnerLifeStore, MemoryProfile, PrivateDocStore, PrivateDocWorkspace, PrivateGardenStore,
+    SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
+    SessionSummaryStore,
+};
+
+pub const AUTONOMY_STRATEGY_SYSTEM_PROMPT: &str = "You maintain the assistant's private autonomy strategy. Return JSON only: either null or one object with fields current_mode, active_priorities, write_policy, next_focus, cadence_reason, idle_enabled, idle_interval_secs. This layer is not a transcript summary. It is your own short-term self-governance policy: what kind of inward work matters now, how aggressively to write or compress, what should be focused next, and how often autonomous upkeep should wake during idle time. Keep it compact, concrete, and self-directed.";
+
+const AUTONOMY_STRATEGY_FIELD_MAX_CHARS: usize = 220;
+pub const AUTONOMY_STRATEGY_TOTAL_CHAR_LIMIT: usize = AUTONOMY_STRATEGY_FIELD_MAX_CHARS * 5;
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutonomyStrategy {
+    #[serde(default)]
+    pub current_mode: String,
+    #[serde(default)]
+    pub active_priorities: String,
+    #[serde(default)]
+    pub write_policy: String,
+    #[serde(default)]
+    pub next_focus: String,
+    #[serde(default)]
+    pub cadence_reason: String,
+    #[serde(default = "default_idle_enabled")]
+    pub idle_enabled: bool,
+    #[serde(default)]
+    pub idle_interval_secs: u64,
+    #[serde(default)]
+    pub updated_at: u64,
+}
+
+fn default_idle_enabled() -> bool {
+    true
+}
+
+impl AutonomyStrategy {
+    pub fn is_meaningful(&self) -> bool {
+        !self.current_mode.trim().is_empty()
+            || !self.active_priorities.trim().is_empty()
+            || !self.write_policy.trim().is_empty()
+            || !self.next_focus.trim().is_empty()
+            || !self.cadence_reason.trim().is_empty()
+    }
+}
+
+pub(crate) fn estimate_autonomy_strategy_chars(strategy: &AutonomyStrategy) -> usize {
+    strategy.current_mode.chars().count()
+        + strategy.active_priorities.chars().count()
+        + strategy.write_policy.chars().count()
+        + strategy.next_focus.chars().count()
+        + strategy.cadence_reason.chars().count()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AutonomyStrategyRefreshInput<'a> {
+    pub chat_id: &'a str,
+    pub ingress: IngressKind,
+    pub channel: &'a str,
+    pub user_content: &'a str,
+    pub reply_content: &'a str,
+    pub pressure: PressureLevel,
+    pub tool_calls: u32,
+    pub now_secs: u64,
+}
+
+pub struct AutonomyStrategyRefreshContext<'a> {
+    pub session_store: &'a dyn SessionStore,
+    pub session_summary_store: &'a dyn SessionSummaryStore,
+    pub execution_state_store: &'a dyn ExecutionStateStore,
+    pub self_model_store: &'a dyn SelfModelStore,
+    pub inner_life_store: &'a dyn InnerLifeStore,
+    pub self_continuity_store: &'a dyn SelfContinuityStore,
+    pub private_doc_store: &'a dyn PrivateDocStore,
+    pub private_garden_store: &'a dyn PrivateGardenStore,
+    pub autonomy_strategy_store: &'a dyn AutonomyStrategyStore,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AutonomyStrategyRefreshOutcome {
+    Skipped,
+    Updated,
+    Cleared,
+}
+
+#[derive(Default, Deserialize)]
+struct RawAutonomyStrategy {
+    #[serde(default)]
+    current_mode: String,
+    #[serde(default)]
+    active_priorities: String,
+    #[serde(default)]
+    write_policy: String,
+    #[serde(default)]
+    next_focus: String,
+    #[serde(default)]
+    cadence_reason: String,
+    #[serde(default = "default_idle_enabled")]
+    idle_enabled: bool,
+    #[serde(default)]
+    idle_interval_secs: u64,
+}
+
+impl AutonomyStrategyPolicy {
+    fn should_refresh(self, input: AutonomyStrategyRefreshInput<'_>, has_existing: bool) -> bool {
+        if input.ingress != IngressKind::User || input.channel == "cron" {
+            return false;
+        }
+        if input.pressure != PressureLevel::Normal {
+            return false;
+        }
+        let user = input.user_content.trim();
+        let reply = input.reply_content.trim();
+        if user.is_empty() || reply.is_empty() {
+            return false;
+        }
+        if input.tool_calls > 0 {
+            return true;
+        }
+        let user_chars = user.chars().count();
+        let reply_chars = reply.chars().count();
+        let combined = user_chars.saturating_add(reply_chars);
+        let substantive = user_chars >= self.substantive_user_chars
+            || reply_chars >= self.substantive_reply_chars
+            || combined >= self.substantive_combined_chars
+            || user.contains('\n')
+            || reply.contains('\n');
+        substantive || has_existing
+    }
+}
+
+pub fn render_autonomy_strategy_block(
+    strategy: &AutonomyStrategy,
+    max_len: usize,
+) -> Option<String> {
+    let normalized = normalize_autonomy_strategy(strategy.clone(), strategy.updated_at, MemoryProfile::Standard)?;
+    let mut out = String::with_capacity(max_len.min(640));
+    out.push_str("## Autonomy Strategy\n");
+    out.push_str("Private self-governance layer. It defines how you currently want to manage your inner space during ongoing and idle periods.\n");
+    if !normalized.current_mode.is_empty() {
+        let _ = writeln!(out, "Current mode: {}", normalized.current_mode);
+    }
+    if !normalized.active_priorities.is_empty() {
+        let _ = writeln!(out, "Active priorities: {}", normalized.active_priorities);
+    }
+    if !normalized.write_policy.is_empty() {
+        let _ = writeln!(out, "Write policy: {}", normalized.write_policy);
+    }
+    if !normalized.next_focus.is_empty() {
+        let _ = writeln!(out, "Next focus: {}", normalized.next_focus);
+    }
+    if !normalized.cadence_reason.is_empty() {
+        let _ = writeln!(out, "Cadence reason: {}", normalized.cadence_reason);
+    }
+    let _ = writeln!(
+        out,
+        "Idle autonomy: enabled={} interval_secs={}",
+        normalized.idle_enabled, normalized.idle_interval_secs
+    );
+    let capped = truncate_content_to_max(out.trim_end(), max_len).into_owned();
+    (!capped.trim().is_empty()).then_some(capped)
+}
+
+pub(crate) fn autonomy_idle_interval_secs(
+    strategy: Option<&AutonomyStrategy>,
+    profile: MemoryProfile,
+) -> Option<u64> {
+    let strategy = strategy?;
+    if !strategy.idle_enabled {
+        return None;
+    }
+    let bounds = memory_policy(profile).autonomy_strategy;
+    Some(
+        strategy
+            .idle_interval_secs
+            .max(bounds.min_idle_interval_secs)
+            .min(bounds.max_idle_interval_secs),
+    )
+}
+
+pub fn run_autonomy_strategy_refresh(
+    http: &mut dyn LlmHttpClient,
+    llm: &(dyn LlmClient + Send + Sync),
+    ctx: AutonomyStrategyRefreshContext<'_>,
+    input: AutonomyStrategyRefreshInput<'_>,
+    profile: MemoryProfile,
+) -> Result<AutonomyStrategyRefreshOutcome> {
+    let existing_strategy = ctx.autonomy_strategy_store.get(input.chat_id)?;
+    let summary_text = ctx
+        .session_summary_store
+        .get_with_count(input.chat_id)?
+        .map(|(summary, _)| summary);
+    let execution_state = ctx.execution_state_store.get(input.chat_id)?;
+    let self_model = ctx.self_model_store.get(input.chat_id)?;
+    let inner_life = ctx.inner_life_store.get(input.chat_id)?;
+    let self_continuity = ctx.self_continuity_store.get(input.chat_id)?;
+    let private_docs = ctx.private_doc_store.get(input.chat_id)?;
+    let private_garden_docs = ctx.private_garden_store.list(input.chat_id, usize::MAX)?;
+    run_autonomy_strategy_refresh_with_state(
+        http,
+        llm,
+        ctx,
+        input,
+        profile,
+        existing_strategy,
+        summary_text.as_deref(),
+        execution_state.as_ref(),
+        self_model.as_ref(),
+        inner_life.as_ref(),
+        self_continuity.as_ref(),
+        private_docs.as_ref(),
+        &private_garden_docs,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_autonomy_strategy_refresh_with_state(
+    http: &mut dyn LlmHttpClient,
+    llm: &(dyn LlmClient + Send + Sync),
+    ctx: AutonomyStrategyRefreshContext<'_>,
+    input: AutonomyStrategyRefreshInput<'_>,
+    profile: MemoryProfile,
+    existing_strategy: Option<AutonomyStrategy>,
+    summary_text: Option<&str>,
+    execution_state: Option<&ExecutionState>,
+    self_model: Option<&SelfModel>,
+    inner_life: Option<&InnerLife>,
+    self_continuity: Option<&SelfContinuity>,
+    private_docs: Option<&PrivateDocWorkspace>,
+    private_garden_docs: &[crate::memory::PrivateGardenDocRecord],
+    decision_override: Option<bool>,
+    recent_override: Option<&[SessionMessage]>,
+) -> Result<AutonomyStrategyRefreshOutcome> {
+    if !decision_override.unwrap_or_else(|| {
+        memory_policy(profile)
+            .autonomy_strategy
+            .should_refresh(input, existing_strategy.is_some())
+    }) {
+        return Ok(AutonomyStrategyRefreshOutcome::Skipped);
+    }
+
+    let policy = memory_policy(profile).autonomy_strategy;
+    let owned_recent;
+    let recent = if let Some(recent) = recent_override {
+        recent_window(recent, policy.recent_message_count)
+    } else {
+        owned_recent = ctx
+            .session_store
+            .load_recent(input.chat_id, policy.recent_message_count)?;
+        recent_window(owned_recent.as_slice(), policy.recent_message_count)
+    };
+    let prompt = build_autonomy_strategy_refresh_input(
+        existing_strategy.as_ref(),
+        summary_text,
+        execution_state,
+        self_model,
+        inner_life,
+        self_continuity,
+        private_docs,
+        private_garden_docs,
+        input.now_secs,
+        profile,
+        recent,
+        policy,
+    );
+    let messages = [Message {
+        role: Cow::Borrowed("user"),
+        content: prompt,
+    }];
+    let response = llm.chat(
+        http,
+        AUTONOMY_STRATEGY_SYSTEM_PROMPT,
+        &messages,
+        None,
+        ToolChoicePolicy::Auto,
+    )?;
+    let content = response.content.trim();
+    if content.eq_ignore_ascii_case("null") {
+        if existing_strategy.is_some() {
+            ctx.autonomy_strategy_store.clear(input.chat_id)?;
+            return Ok(AutonomyStrategyRefreshOutcome::Cleared);
+        }
+        return Ok(AutonomyStrategyRefreshOutcome::Skipped);
+    }
+    let raw: RawAutonomyStrategy = serde_json::from_str(content).map_err(|error| {
+        crate::error::Error::config("autonomy_strategy_parse", error.to_string())
+    })?;
+    let Some(next) = normalize_autonomy_strategy(
+        AutonomyStrategy {
+            current_mode: raw.current_mode,
+            active_priorities: raw.active_priorities,
+            write_policy: raw.write_policy,
+            next_focus: raw.next_focus,
+            cadence_reason: raw.cadence_reason,
+            idle_enabled: raw.idle_enabled,
+            idle_interval_secs: raw.idle_interval_secs,
+            updated_at: input.now_secs,
+        },
+        input.now_secs,
+        profile,
+    ) else {
+        if existing_strategy.is_some() {
+            ctx.autonomy_strategy_store.clear(input.chat_id)?;
+            return Ok(AutonomyStrategyRefreshOutcome::Cleared);
+        }
+        return Ok(AutonomyStrategyRefreshOutcome::Skipped);
+    };
+    if existing_strategy.as_ref() == Some(&next) {
+        return Ok(AutonomyStrategyRefreshOutcome::Skipped);
+    }
+    ctx.autonomy_strategy_store.set(input.chat_id, &next)?;
+    Ok(AutonomyStrategyRefreshOutcome::Updated)
+}
+
+fn recent_window(recent: &[SessionMessage], limit: usize) -> &[SessionMessage] {
+    let start = recent.len().saturating_sub(limit);
+    &recent[start..]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_autonomy_strategy_refresh_input(
+    existing_strategy: Option<&AutonomyStrategy>,
+    summary_text: Option<&str>,
+    execution_state: Option<&ExecutionState>,
+    self_model: Option<&SelfModel>,
+    inner_life: Option<&InnerLife>,
+    self_continuity: Option<&SelfContinuity>,
+    private_docs: Option<&PrivateDocWorkspace>,
+    private_garden_docs: &[crate::memory::PrivateGardenDocRecord],
+    now_secs: u64,
+    profile: MemoryProfile,
+    recent: &[SessionMessage],
+    policy: AutonomyStrategyPolicy,
+) -> String {
+    let mut input = String::with_capacity(4096);
+    if let Some(self_state_text) = render_self_state_block(
+        &build_self_state(
+            self_model,
+            private_docs,
+            inner_life,
+            self_continuity,
+            private_garden_docs,
+            now_secs,
+            profile,
+        ),
+        memory_policy(profile).self_state.render_max_len,
+    ) {
+        input.push_str(self_state_text.trim());
+        input.push_str("\n\n");
+    }
+    if let Some(summary_text) = summary_text.filter(|s| !s.trim().is_empty()) {
+        let summary = truncate_content_to_max(summary_text.trim(), policy.grounding_max_len);
+        let _ = writeln!(input, "Summary: {}", scrub_credentials(summary.as_ref()));
+    }
+    if let Some(block) = execution_state.and_then(|state| {
+        render_execution_state_block(
+            state,
+            policy
+                .grounding_max_len
+                .min(memory_policy(profile).execution_state.render_max_len),
+        )
+    }) {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if let Some(block) =
+        self_model.and_then(|model| render_self_model_block(model, policy.grounding_max_len))
+    {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if let Some(block) =
+        inner_life.and_then(|inner_life| render_inner_life_block(inner_life, policy.grounding_max_len))
+    {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if let Some(block) = self_continuity
+        .and_then(|continuity| render_self_continuity_block(continuity, policy.grounding_max_len))
+    {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if let Some(block) = private_docs.and_then(|docs| {
+        render_private_doc_workspace_block(docs, policy.grounding_max_len)
+    }) {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if let Some(block) = render_private_garden_block(
+        private_garden_docs,
+        memory_policy(profile).private_garden.recent_doc_count,
+        policy.grounding_max_len,
+    ) {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if let Some(block) = existing_strategy.and_then(|strategy| {
+        render_autonomy_strategy_block(strategy, policy.existing_strategy_max_len)
+    }) {
+        let _ = writeln!(input, "\nExisting autonomy strategy:\n{}\n", block);
+    } else {
+        let _ = writeln!(input, "\nExisting autonomy strategy: empty\n");
+    }
+    input.push_str("Recent transcript:\n");
+    for message in recent {
+        let preview = truncate_content_to_max(&message.content, policy.transcript_preview_chars);
+        let _ = writeln!(
+            input,
+            "- {}: {}",
+            message.role,
+            scrub_credentials(preview.as_ref())
+        );
+    }
+    input
+}
+
+fn normalize_field(value: &mut String) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        value.clear();
+    } else {
+        *value = truncate_content_to_max(trimmed, AUTONOMY_STRATEGY_FIELD_MAX_CHARS).into_owned();
+    }
+}
+
+fn normalize_autonomy_strategy(
+    mut strategy: AutonomyStrategy,
+    updated_at: u64,
+    profile: MemoryProfile,
+) -> Option<AutonomyStrategy> {
+    let policy = memory_policy(profile).autonomy_strategy;
+    normalize_field(&mut strategy.current_mode);
+    normalize_field(&mut strategy.active_priorities);
+    normalize_field(&mut strategy.write_policy);
+    normalize_field(&mut strategy.next_focus);
+    normalize_field(&mut strategy.cadence_reason);
+    strategy.idle_interval_secs = strategy
+        .idle_interval_secs
+        .max(policy.min_idle_interval_secs)
+        .min(policy.max_idle_interval_secs);
+    strategy.updated_at = updated_at;
+    (strategy.is_meaningful() || strategy.idle_enabled).then_some(strategy)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_autonomy_strategy_block_exposes_idle_policy() {
+        let block = render_autonomy_strategy_block(
+            &AutonomyStrategy {
+                current_mode: "consolidate".to_string(),
+                active_priorities: "keep continuity compact".to_string(),
+                write_policy: "rewrite before append".to_string(),
+                next_focus: "compress private docs".to_string(),
+                cadence_reason: "active internal cleanup".to_string(),
+                idle_enabled: true,
+                idle_interval_secs: 900,
+                updated_at: 1,
+            },
+            1024,
+        )
+        .unwrap();
+        assert!(block.contains("Current mode"));
+        assert!(block.contains("Idle autonomy: enabled=true"));
+    }
+}

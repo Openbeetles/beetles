@@ -430,6 +430,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         platform.execution_state_store();
     let self_model_store: Arc<dyn beetle::memory::SelfModelStore + Send + Sync> =
         platform.self_model_store();
+    let autonomy_strategy_store: Arc<dyn beetle::memory::AutonomyStrategyStore + Send + Sync> =
+        platform.autonomy_strategy_store();
     let inner_life_store: Arc<dyn beetle::memory::InnerLifeStore + Send + Sync> =
         platform.inner_life_store();
     let self_continuity_store: Arc<dyn beetle::memory::SelfContinuityStore + Send + Sync> =
@@ -573,6 +575,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         outbound_depth: Arc::clone(&outbound_depth),
         session_store: Arc::clone(&session_store),
         memory_profile: platform.memory_profile(),
+        autonomy_strategy_store: Arc::clone(&autonomy_strategy_store),
         self_continuity_store: Arc::clone(&self_continuity_store),
         memory_store: Some(Arc::clone(&memory_store)),
         sensor_watch: Some(beetle::cron::SensorWatchContext {
@@ -1148,6 +1151,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             session_summary_store: Arc::clone(&session_summary_store),
         execution_state_store: Arc::clone(&execution_state_store),
         self_model_store: Arc::clone(&self_model_store),
+        autonomy_strategy_store: Arc::clone(&autonomy_strategy_store),
         inner_life_store: Arc::clone(&inner_life_store),
         self_continuity_store: Arc::clone(&self_continuity_store),
         private_doc_store: Arc::clone(&private_doc_store),

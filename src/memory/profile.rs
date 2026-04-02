@@ -72,6 +72,21 @@ pub(crate) struct SelfModelPolicy {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AutonomyStrategyPolicy {
+    pub recent_message_count: usize,
+    pub transcript_preview_chars: usize,
+    pub existing_strategy_max_len: usize,
+    pub grounding_max_len: usize,
+    pub render_max_len: usize,
+    pub substantive_user_chars: usize,
+    pub substantive_reply_chars: usize,
+    pub substantive_combined_chars: usize,
+    pub min_idle_interval_secs: u64,
+    pub max_idle_interval_secs: u64,
+    pub refresh_interval_secs: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct InnerLifePolicy {
     pub recent_message_count: usize,
     pub transcript_preview_chars: usize,
@@ -164,6 +179,7 @@ pub(crate) struct MemoryPolicy {
     pub long_term_extraction: LongTermExtractionPolicy,
     pub execution_state: ExecutionStatePolicy,
     pub self_model: SelfModelPolicy,
+    pub autonomy_strategy: AutonomyStrategyPolicy,
     pub inner_life: InnerLifePolicy,
     pub self_continuity: SelfContinuityPolicy,
     pub private_docs: PrivateDocsPolicy,
@@ -228,6 +244,19 @@ const EMBEDDED_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
         substantive_user_chars: 8,
         substantive_reply_chars: 20,
         substantive_combined_chars: 48,
+    },
+    autonomy_strategy: AutonomyStrategyPolicy {
+        recent_message_count: 6,
+        transcript_preview_chars: 140,
+        existing_strategy_max_len: 540,
+        grounding_max_len: 220,
+        render_max_len: 420,
+        substantive_user_chars: 8,
+        substantive_reply_chars: 20,
+        substantive_combined_chars: 48,
+        min_idle_interval_secs: 8 * 60,
+        max_idle_interval_secs: 40 * 60,
+        refresh_interval_secs: 6 * 60 * 60,
     },
     inner_life: InnerLifePolicy {
         recent_message_count: 6,
@@ -356,6 +385,19 @@ const STANDARD_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
         substantive_reply_chars: 18,
         substantive_combined_chars: 40,
     },
+    autonomy_strategy: AutonomyStrategyPolicy {
+        recent_message_count: 10,
+        transcript_preview_chars: 220,
+        existing_strategy_max_len: 768,
+        grounding_max_len: 320,
+        render_max_len: 640,
+        substantive_user_chars: 6,
+        substantive_reply_chars: 18,
+        substantive_combined_chars: 40,
+        min_idle_interval_secs: 5 * 60,
+        max_idle_interval_secs: 30 * 60,
+        refresh_interval_secs: 4 * 60 * 60,
+    },
     inner_life: InnerLifePolicy {
         recent_message_count: 10,
         transcript_preview_chars: 220,
@@ -464,6 +506,10 @@ mod tests {
         );
         assert!(standard.execution_state.render_max_len > embedded.execution_state.render_max_len);
         assert!(standard.self_model.render_max_len > embedded.self_model.render_max_len);
+        assert!(
+            standard.autonomy_strategy.render_max_len
+                > embedded.autonomy_strategy.render_max_len
+        );
         assert!(standard.inner_life.render_max_len > embedded.inner_life.render_max_len);
         assert!(
             standard.self_continuity.render_max_len > embedded.self_continuity.render_max_len

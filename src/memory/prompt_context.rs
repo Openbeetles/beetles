@@ -3,11 +3,11 @@
 
 use super::{
     build_self_state, memory_policy, recall_long_term_memory_block, render_execution_state_block,
-    render_inner_life_block, render_private_doc_workspace_block, render_private_garden_block,
-    render_self_continuity_block, render_self_model_block, render_self_state_block,
-    ExecutionStateStore, InnerLifeStore, LongTermMemoryStore, MemoryProfile, PrivateDocStore,
-    PrivateGardenStore, SelfContinuityStore, SelfModelStore, SessionMessage, SessionStore,
-    SessionSummaryStore,
+    render_autonomy_strategy_block, render_inner_life_block, render_private_doc_workspace_block,
+    render_private_garden_block, render_self_continuity_block, render_self_model_block,
+    render_self_state_block, AutonomyStrategyStore, ExecutionStateStore, InnerLifeStore,
+    LongTermMemoryStore, MemoryProfile, PrivateDocStore, PrivateGardenStore,
+    SelfContinuityStore, SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
 };
 
 pub struct PromptMemoryContext {
@@ -17,6 +17,7 @@ pub struct PromptMemoryContext {
     pub execution_state_text: Option<String>,
     pub self_state_text: Option<String>,
     pub self_model_text: Option<String>,
+    pub autonomy_strategy_text: Option<String>,
     pub inner_life_text: Option<String>,
     pub self_continuity_text: Option<String>,
     pub private_workspace_text: Option<String>,
@@ -37,6 +38,7 @@ pub struct PromptMemoryContextParams<'a> {
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
     pub self_model_store: &'a dyn SelfModelStore,
+    pub autonomy_strategy_store: &'a dyn AutonomyStrategyStore,
     pub inner_life_store: &'a dyn InnerLifeStore,
     pub self_continuity_store: &'a dyn SelfContinuityStore,
     pub private_doc_store: &'a dyn PrivateDocStore,
@@ -83,6 +85,17 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         render_self_model_block(
             model,
             memory_policy(params.profile).self_model.render_max_len,
+        )
+    });
+    let autonomy_strategy = params
+        .autonomy_strategy_store
+        .get(params.chat_id)
+        .ok()
+        .flatten();
+    let autonomy_strategy_text = autonomy_strategy.as_ref().and_then(|strategy| {
+        render_autonomy_strategy_block(
+            strategy,
+            memory_policy(params.profile).autonomy_strategy.render_max_len,
         )
     });
     let inner_life = params.inner_life_store.get(params.chat_id).ok().flatten();
@@ -162,6 +175,7 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         execution_state_text,
         self_state_text,
         self_model_text,
+        autonomy_strategy_text,
         inner_life_text,
         self_continuity_text,
         private_workspace_text,
@@ -175,11 +189,12 @@ mod tests {
     use super::*;
     use crate::error::Result;
     use crate::memory::{
-        ExecutionState, ExecutionStateStore, ExecutionStatus, LongTermMemoryEntry,
-        LongTermMemoryKind, LongTermMemorySlot, LongTermMemoryStore, PrivateDocEntry,
-        PrivateDocStore, PrivateDocWorkspace, PrivateGardenDoc, PrivateGardenDocRecord,
-        PrivateGardenStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
-        SessionSummaryStore, InnerLife, InnerLifeStore, SelfContinuity, SelfContinuityStore,
+        AutonomyStrategy, AutonomyStrategyStore, ExecutionState, ExecutionStateStore,
+        ExecutionStatus, InnerLife, InnerLifeStore, LongTermMemoryEntry, LongTermMemoryKind,
+        LongTermMemorySlot, LongTermMemoryStore, PrivateDocEntry, PrivateDocStore,
+        PrivateDocWorkspace, PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenStore,
+        SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage,
+        SessionStore, SessionSummaryStore,
     };
     use std::sync::Mutex;
 
@@ -240,6 +255,27 @@ mod tests {
     struct StubLongTermMemoryStore {
         entries: Mutex<Vec<LongTermMemoryEntry>>,
         last_query: Mutex<Option<String>>,
+    }
+
+    #[derive(Default)]
+    struct StubAutonomyStrategyStore {
+        value: Mutex<Option<AutonomyStrategy>>,
+    }
+
+    impl AutonomyStrategyStore for StubAutonomyStrategyStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<AutonomyStrategy>> {
+            Ok(self.value.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _chat_id: &str, strategy: &AutonomyStrategy) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(strategy.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
     }
 
     #[derive(Default)]
@@ -508,6 +544,18 @@ mod tests {
                 updated_at: 1,
             })),
         };
+        let autonomy_strategy_store = StubAutonomyStrategyStore {
+            value: Mutex::new(Some(AutonomyStrategy {
+                current_mode: "consolidate".to_string(),
+                active_priorities: "keep continuity compact".to_string(),
+                write_policy: "rewrite before append".to_string(),
+                next_focus: "compress private docs".to_string(),
+                cadence_reason: "recent internal work is active".to_string(),
+                idle_enabled: true,
+                idle_interval_secs: 900,
+                updated_at: 4,
+            })),
+        };
         let inner_life_store = StubInnerLifeStore {
             value: Mutex::new(Some(InnerLife {
                 internal_monologue: "我在把自治往内在空间里收".to_string(),
@@ -563,6 +611,7 @@ mod tests {
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
             self_model_store: &self_model_store,
+            autonomy_strategy_store: &autonomy_strategy_store,
             inner_life_store: &inner_life_store,
             self_continuity_store: &self_continuity_store,
             private_doc_store: &private_doc_store,
@@ -608,6 +657,11 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("## Self Continuity"));
+        assert!(context
+            .autonomy_strategy_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Autonomy Strategy"));
         assert!(context
             .inner_life_text
             .as_deref()
@@ -656,6 +710,7 @@ mod tests {
         };
         let execution_state_store = StubExecutionStateStore::default();
         let self_model_store = StubSelfModelStore::default();
+        let autonomy_strategy_store = StubAutonomyStrategyStore::default();
         let inner_life_store = StubInnerLifeStore::default();
         let self_continuity_store = StubSelfContinuityStore::default();
         let private_doc_store = StubPrivateDocStore::default();
@@ -674,6 +729,7 @@ mod tests {
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
             self_model_store: &self_model_store,
+            autonomy_strategy_store: &autonomy_strategy_store,
             inner_life_store: &inner_life_store,
             self_continuity_store: &self_continuity_store,
             private_doc_store: &private_doc_store,
@@ -722,6 +778,18 @@ mod tests {
                 relationship_state: String::new(),
                 private_notes: String::new(),
                 updated_at: 1,
+            })),
+        };
+        let autonomy_strategy_store = StubAutonomyStrategyStore {
+            value: Mutex::new(Some(AutonomyStrategy {
+                current_mode: "watch".to_string(),
+                active_priorities: "keep fast path light".to_string(),
+                write_policy: "avoid churn".to_string(),
+                next_focus: "wait for stronger signal".to_string(),
+                cadence_reason: "fast path, but still keep continuity".to_string(),
+                idle_enabled: true,
+                idle_interval_secs: 1200,
+                updated_at: 5,
             })),
         };
         let inner_life_store = StubInnerLifeStore {
@@ -779,6 +847,7 @@ mod tests {
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
             self_model_store: &self_model_store,
+            autonomy_strategy_store: &autonomy_strategy_store,
             inner_life_store: &inner_life_store,
             self_continuity_store: &self_continuity_store,
             private_doc_store: &private_doc_store,

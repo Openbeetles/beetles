@@ -4,6 +4,7 @@ use crate::bus::PcMsg;
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
 
+mod autonomy_strategy;
 mod context_window;
 mod execution_state;
 mod inner_life;
@@ -25,6 +26,16 @@ mod session_summary_refresh;
 mod turn_ledger;
 
 pub use context_window::build_context_messages;
+pub(crate) use autonomy_strategy::estimate_autonomy_strategy_chars;
+pub use autonomy_strategy::{
+    render_autonomy_strategy_block, run_autonomy_strategy_refresh, AutonomyStrategy,
+    AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput,
+    AutonomyStrategyRefreshOutcome, AutonomyStrategyStore, AUTONOMY_STRATEGY_SYSTEM_PROMPT,
+    AUTONOMY_STRATEGY_TOTAL_CHAR_LIMIT,
+};
+pub(crate) use autonomy_strategy::{
+    autonomy_idle_interval_secs, run_autonomy_strategy_refresh_with_state,
+};
 pub use execution_state::{
     render_execution_state_block, run_execution_state_refresh, ExecutionState,
     ExecutionStateRefreshContext, ExecutionStateRefreshInput, ExecutionStateRefreshOutcome,
@@ -102,7 +113,7 @@ pub(crate) use private_garden_governance::{
 pub use profile::MemoryProfile;
 pub(crate) use profile::{
     memory_policy, shared_long_term_governance_policy, ExecutionStatePolicy,
-    InnerLifePolicy, InternalMemoryRoutingPolicy, LongTermExtractionPolicy,
+    AutonomyStrategyPolicy, InnerLifePolicy, InternalMemoryRoutingPolicy, LongTermExtractionPolicy,
     LongTermRecallPolicy, PrivateDocsPolicy, PrivateGardenGovernancePolicy,
     SelfContinuityPolicy, SelfModelPolicy, SessionSummaryPolicy,
 };
@@ -176,6 +187,8 @@ pub const REL_PATH_IMPORTANT_MESSAGE: &str = "memory/important_message.json";
 pub const REL_PATH_SESSION_SUMMARIES: &str = "memory/session_summaries.json";
 /// 相对路径：Self Model（单文件 JSON，chat_id -> private subjective continuity）。
 pub const REL_PATH_SELF_MODELS: &str = "memory/self_models.json";
+/// 相对路径：Autonomy Strategy（单文件 JSON，chat_id -> model-managed autonomy policy）。
+pub const REL_PATH_AUTONOMY_STRATEGIES: &str = "memory/autonomy_strategies.json";
 /// 相对路径：Inner Life（单文件 JSON，chat_id -> active subjective inward layer）。
 pub const REL_PATH_INNER_LIFE: &str = "memory/inner_life.json";
 /// 相对路径：Self Continuity（单文件 JSON，chat_id -> continuity + runtime anchors）。
@@ -205,6 +218,13 @@ pub trait SessionSummaryStore: Send + Sync {
 pub trait SelfModelStore: Send + Sync {
     fn get(&self, chat_id: &str) -> Result<Option<SelfModel>>;
     fn set(&self, chat_id: &str, model: &SelfModel) -> Result<()>;
+    fn clear(&self, chat_id: &str) -> Result<()>;
+}
+
+/// LLM 自治策略层。保存模型自己维护的近期自治方针与空闲节奏。
+pub trait AutonomyStrategyStore: Send + Sync {
+    fn get(&self, chat_id: &str) -> Result<Option<AutonomyStrategy>>;
+    fn set(&self, chat_id: &str, strategy: &AutonomyStrategy) -> Result<()>;
     fn clear(&self, chat_id: &str) -> Result<()>;
 }
 

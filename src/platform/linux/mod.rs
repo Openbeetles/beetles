@@ -9,7 +9,7 @@ use crate::platform::{
     display_driver::{install_display_state, DisplayState},
     heartbeat_file::read_heartbeat_file,
     spiffs::{
-        spiffs_usage, SpiffsCalendarProviderCredentialStore, SpiffsCalendarStore,
+        spiffs_usage, SpiffsAutonomyStrategyStore, SpiffsCalendarProviderCredentialStore, SpiffsCalendarStore,
         SpiffsExecutionStateStore, SpiffsImportantMessageStore,
         SpiffsInnerLifeStore, SpiffsLongTermMemoryExtractionStateStore,
         SpiffsLongTermMemoryStore, SpiffsMemoryStore, SpiffsPendingRetryStore,
@@ -25,7 +25,7 @@ use crate::{
     config::AppConfig,
     display::{DisplayCommand, DisplayConfig},
     memory::{
-        ExecutionStateStore, ImportantMessageStore, InnerLifeStore,
+        AutonomyStrategyStore, ExecutionStateStore, ImportantMessageStore, InnerLifeStore,
         LongTermMemoryExtractionStateStore, LongTermMemoryStore, MemoryStore, PendingRetryStore,
         PrivateDocStore, PrivateGardenStore, RemindAtStore, SelfContinuityStore,
         SelfModelStore, SessionStore, SessionSummaryStore, TurnLedgerStore,
@@ -50,6 +50,7 @@ pub struct LinuxPlatform {
     task_store: Arc<SpiffsTaskStore>,
     execution_state_store: Arc<SpiffsExecutionStateStore>,
     self_model_store: Arc<SpiffsSelfModelStore>,
+    autonomy_strategy_store: Arc<SpiffsAutonomyStrategyStore>,
     inner_life_store: Arc<SpiffsInnerLifeStore>,
     self_continuity_store: Arc<SpiffsSelfContinuityStore>,
     private_doc_store: Arc<SpiffsPrivateDocStore>,
@@ -85,6 +86,7 @@ impl LinuxPlatform {
             task_store: Arc::new(SpiffsTaskStore::new()),
             execution_state_store: Arc::new(SpiffsExecutionStateStore::new()),
             self_model_store: Arc::new(SpiffsSelfModelStore::new()),
+            autonomy_strategy_store: Arc::new(SpiffsAutonomyStrategyStore::new()),
             inner_life_store: Arc::new(SpiffsInnerLifeStore::new()),
             self_continuity_store: Arc::new(SpiffsSelfContinuityStore::new()),
             private_doc_store: Arc::new(SpiffsPrivateDocStore::new()),
@@ -219,6 +221,10 @@ impl Platform for LinuxPlatform {
 
     fn self_model_store(&self) -> Arc<dyn SelfModelStore + Send + Sync> {
         Arc::clone(&self.self_model_store) as Arc<dyn SelfModelStore + Send + Sync>
+    }
+
+    fn autonomy_strategy_store(&self) -> Arc<dyn AutonomyStrategyStore + Send + Sync> {
+        Arc::clone(&self.autonomy_strategy_store) as Arc<dyn AutonomyStrategyStore + Send + Sync>
     }
 
     fn inner_life_store(&self) -> Arc<dyn InnerLifeStore + Send + Sync> {
