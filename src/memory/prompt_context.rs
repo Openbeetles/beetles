@@ -9,6 +9,7 @@ use super::{
 
 pub struct PromptMemoryContext {
     pub summary_text: Option<String>,
+    pub message_summary_text: Option<String>,
     pub long_term_memory_text: Option<String>,
     pub execution_state_text: Option<String>,
     pub recent_messages: Vec<SessionMessage>,
@@ -33,7 +34,19 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         .get_with_count(params.chat_id)
         .ok()
         .flatten()
-        .map(|(summary, _)| summary);
+        .map(|(summary, _)| summary.trim().to_string())
+        .filter(|summary| !summary.is_empty());
+    let execution_state_text = params
+        .execution_state_store
+        .get(params.chat_id)
+        .ok()
+        .flatten()
+        .and_then(|state| {
+            render_execution_state_block(
+                &state,
+                memory_policy(params.profile).execution_state.render_max_len,
+            )
+        });
     let long_term_memory_text = if params.system_max_len < recall_policy.block_min_len {
         None
     } else {
@@ -51,19 +64,14 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
             params.profile,
         )
     };
-    let execution_state_text = params
-        .execution_state_store
-        .get(params.chat_id)
-        .ok()
-        .flatten()
-        .and_then(|state| {
-            render_execution_state_block(
-                &state,
-                memory_policy(params.profile).execution_state.render_max_len,
-            )
-        });
+    let message_summary_text = if execution_state_text.is_some() {
+        None
+    } else {
+        summary_text.clone()
+    };
     PromptMemoryContext {
         summary_text,
+        message_summary_text,
         long_term_memory_text,
         execution_state_text,
         recent_messages,
@@ -264,6 +272,7 @@ mod tests {
             context.summary_text.as_deref(),
             Some("user prefers cold brew")
         );
+        assert!(context.message_summary_text.is_none());
         assert!(context
             .long_term_memory_text
             .as_deref()
@@ -329,6 +338,10 @@ mod tests {
 
         assert_eq!(
             context.summary_text.as_deref(),
+            Some("user prefers cold brew")
+        );
+        assert_eq!(
+            context.message_summary_text.as_deref(),
             Some("user prefers cold brew")
         );
         assert!(context.long_term_memory_text.is_none());

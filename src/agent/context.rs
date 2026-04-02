@@ -128,6 +128,24 @@ fn append_capped_section(system: &mut String, prefix: &str, content: &str, max_l
     push_char_boundary_truncated(system, content, max_len)
 }
 
+fn section_with_separator_len(content: Option<&str>) -> usize {
+    content
+        .map(str::trim)
+        .filter(|content| !content.is_empty())
+        .map_or(0, |content| 2usize.saturating_add(content.len()))
+}
+
+fn reserve_priority_memory_budget(
+    execution_state_text: Option<&str>,
+    long_term_memory_text: Option<&str>,
+    base_max: usize,
+) -> usize {
+    let execution_reserve = section_with_separator_len(execution_state_text).min(base_max);
+    let remaining = base_max.saturating_sub(execution_reserve);
+    let long_term_reserve = section_with_separator_len(long_term_memory_text).min(remaining / 2);
+    execution_reserve.saturating_add(long_term_reserve)
+}
+
 fn push_scratch_if_fits<F>(
     system: &mut String,
     max_len: usize,
@@ -268,9 +286,18 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
         llm_hint: p.llm_hint,
     });
     let base_max = p.system_max_len.saturating_sub(post_memory_tail_len);
+    let priority_memory_reserve =
+        reserve_priority_memory_budget(p.execution_state_text, p.long_term_memory_text, base_max);
+    let base_prompt_budget = base_max.saturating_sub(priority_memory_reserve);
     let mut system = String::with_capacity(p.system_max_len);
     let mut section_scratch = String::with_capacity(96);
-    append_system_prompt_base(&mut system, &soul, &user, &mem, base_max);
+    append_system_prompt_base(&mut system, &soul, &user, &mem, base_prompt_budget);
+    if let Some(execution_state_text) = p.execution_state_text {
+        let _ = append_capped_section(&mut system, "\n\n", execution_state_text, base_max);
+    }
+    if let Some(long_term_memory_text) = p.long_term_memory_text {
+        let _ = append_capped_section(&mut system, "\n\n", long_term_memory_text, base_max);
+    }
     if system.len() < base_max {
         let names = p
             .memory
@@ -286,14 +313,6 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
                 }
             }
         }
-    }
-    if let Some(execution_state_text) = p.execution_state_text {
-        let max_section_len = p.system_max_len.saturating_sub(post_memory_tail_len);
-        let _ = append_capped_section(&mut system, "\n\n", execution_state_text, max_section_len);
-    }
-    if let Some(long_term_memory_text) = p.long_term_memory_text {
-        let max_section_len = p.system_max_len.saturating_sub(post_memory_tail_len);
-        let _ = append_capped_section(&mut system, "\n\n", long_term_memory_text, max_section_len);
     }
     // NOTE: tool_descriptions 不再注入 system prompt。工具规格已通过 API `tools` 参数
     // 以结构化 JSON schema 传递；在 system prompt 中重复文字版描述会导致部分模型
@@ -363,6 +382,115 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::PcMsg;
+    use crate::error::Result;
+    use crate::memory::{ImportantMessageStore, MemoryStore, SessionStore};
+    use std::sync::Mutex;
+
+    struct StubMemoryStore {
+        soul: String,
+        user: String,
+        memory: String,
+        daily_notes: Vec<(String, String)>,
+    }
+
+    impl MemoryStore for StubMemoryStore {
+        fn get_memory(&self) -> Result<String> {
+            Ok(self.memory.clone())
+        }
+
+        fn set_memory(&self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_soul(&self) -> Result<String> {
+            Ok(self.soul.clone())
+        }
+
+        fn set_soul(&self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_user(&self) -> Result<String> {
+            Ok(self.user.clone())
+        }
+
+        fn set_user(&self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_daily_note_names(&self, recent_n: usize) -> Result<Vec<String>> {
+            Ok(self
+                .daily_notes
+                .iter()
+                .take(recent_n)
+                .map(|(name, _)| name.clone())
+                .collect())
+        }
+
+        fn get_daily_note(&self, name: &str) -> Result<String> {
+            Ok(self
+                .daily_notes
+                .iter()
+                .find(|(candidate, _)| candidate == name)
+                .map(|(_, content)| content.clone())
+                .unwrap_or_default())
+        }
+
+        fn write_daily_note(&self, _name: &str, _content: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubSessionStore;
+
+    impl SessionStore for StubSessionStore {
+        fn append(&self, _chat_id: &str, _role: &str, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn load_recent(
+            &self,
+            _chat_id: &str,
+            _n: usize,
+        ) -> Result<Vec<crate::memory::SessionMessage>> {
+            Ok(Vec::new())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_chat_ids(&self) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubImportantMessageStore {
+        offset: Mutex<Option<u32>>,
+    }
+
+    impl ImportantMessageStore for StubImportantMessageStore {
+        fn set_important_offset_from_end(
+            &self,
+            _chat_id: &str,
+            offset_from_end: u32,
+        ) -> Result<()> {
+            *self.offset.lock().unwrap_or_else(|e| e.into_inner()) = Some(offset_from_end);
+            Ok(())
+        }
+
+        fn get_important_offset(&self, _chat_id: &str) -> Result<Option<u32>> {
+            Ok(*self.offset.lock().unwrap_or_else(|e| e.into_inner()))
+        }
+
+        fn clear_important(&self, _chat_id: &str) -> Result<()> {
+            *self.offset.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
 
     fn sample_runtime() -> RuntimeContext {
         RuntimeContext {
@@ -421,5 +549,45 @@ mod tests {
         assert!(reserve >= STRUCTURED_BLOCK.len());
         assert!(reserve >= TOOL_BEHAVIOR_CONSTRAINT.len());
         assert!(reserve >= GROUP_MENTION_ONLY_CONSTRAINT.len());
+    }
+
+    #[test]
+    fn build_context_prioritizes_execution_state_over_daily_notes_under_tight_budget() {
+        let msg = PcMsg::new_inbound("telegram", "chat-1", "继续", false).expect("pcmsg");
+        let memory = StubMemoryStore {
+            soul: "SOUL".to_string(),
+            user: "USER".to_string(),
+            memory: "MEMORY".to_string(),
+            daily_notes: vec![(
+                "2026-04-02.md".to_string(),
+                "## Daily Note\nthis note is intentionally long and should be dropped before execution state because it keeps going and going and going".to_string(),
+            )],
+        };
+        let session = StubSessionStore;
+        let important = StubImportantMessageStore::default();
+
+        let (system, _) = build_context(&ContextParams {
+            msg: &msg,
+            memory: &memory,
+            session: &session,
+            important_message_store: &important,
+            has_tools: false,
+            skill_descriptions: "",
+            system_max_len: 380,
+            messages_max_len: 256,
+            session_max_messages: 8,
+            group_activation: "always",
+            emotion_signal_suffix: None,
+            execution_state_text: Some("## Execution State\nGoal: close current task"),
+            long_term_memory_text: None,
+            summary_text: None,
+            recent_messages: None,
+            runtime: None,
+            llm_hint: "",
+        })
+        .expect("context");
+
+        assert!(system.contains("## Execution State"));
+        assert!(!system.contains("## Daily Note"));
     }
 }

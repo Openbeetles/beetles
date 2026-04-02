@@ -236,8 +236,16 @@ pub(crate) fn run_execution_state_refresh_with_state(
             .load_recent(input.chat_id, policy.recent_message_count)?;
         owned_recent.as_slice()
     };
-    let refresh_input =
-        build_execution_state_refresh_input(existing_state.as_ref(), summary_text, recent, policy);
+    let refresh_input = build_execution_state_refresh_input(
+        existing_state.as_ref(),
+        if existing_state.is_some() {
+            None
+        } else {
+            summary_text
+        },
+        recent,
+        policy,
+    );
     let messages = [Message {
         role: Cow::Borrowed("user"),
         content: refresh_input,
@@ -1007,5 +1015,28 @@ mod tests {
         assert_eq!(outcome, ExecutionStateRefreshOutcome::Skipped);
         let stored = execution_store.get("chat-1").unwrap().unwrap();
         assert_eq!(stored.goal, "收口 execution state");
+    }
+
+    #[test]
+    fn refresh_input_omits_summary_when_existing_state_is_present() {
+        let input = build_execution_state_refresh_input(
+            Some(&ExecutionState {
+                status: ExecutionStatus::Active,
+                goal: "收口 execution state".to_string(),
+                progress: "已经接上 store".to_string(),
+                blocker: String::new(),
+                next_action: "整理上下文预算".to_string(),
+                last_output: String::new(),
+                updated_at: 1,
+            }),
+            None,
+            &[SessionMessage {
+                role: "user".to_string(),
+                content: "继续处理 execution state".to_string(),
+            }],
+            memory_policy(MemoryProfile::Embedded).execution_state,
+        );
+        assert!(input.contains("## Execution State"));
+        assert!(!input.contains("## Session Summary"));
     }
 }

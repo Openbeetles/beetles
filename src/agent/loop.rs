@@ -1973,7 +1973,7 @@ fn run_worker_path(
         emotion_signal_suffix,
         execution_state_text: prompt_memory.execution_state_text.as_deref(),
         long_term_memory_text: prompt_memory.long_term_memory_text.as_deref(),
-        summary_text: prompt_memory.summary_text.as_deref(),
+        summary_text: prompt_memory.message_summary_text.as_deref(),
         recent_messages: (!prompt_memory.recent_messages.is_empty())
             .then_some(prompt_memory.recent_messages.as_slice()),
         runtime: Some(runtime),
