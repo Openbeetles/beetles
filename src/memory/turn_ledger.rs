@@ -20,6 +20,17 @@ pub enum TurnLedgerStatus {
     Failed,
 }
 
+impl TurnLedgerStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Answered => "answered",
+            Self::Interrupted => "interrupted",
+            Self::Failed => "failed",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TurnDeliveryLedger {
     #[serde(default)]

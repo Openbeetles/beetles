@@ -4,20 +4,22 @@
 use crate::task::TaskStore;
 
 use super::{
-    build_self_state, build_world_snapshot, memory_policy, recall_long_term_memory_block,
-    render_autonomy_strategy_block, render_execution_state_block, render_inner_life_block,
-    render_private_doc_workspace_block, render_private_garden_block, render_self_continuity_block,
-    render_self_model_block, render_self_state_block, render_world_sense_block,
-    render_world_snapshot_block, AutonomyStrategyStore, ExecutionStateStore, InnerLifeStore,
-    LongTermMemoryStore, MemoryProfile, PrivateDocStore, PrivateGardenStore, RemindAtStore,
-    SelfContinuityStore, SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
-    WorldSenseStore, WorldSnapshotContext,
+    build_archive_evidence_block, build_self_state, build_world_snapshot, memory_policy,
+    recall_long_term_memory_block, render_autonomy_strategy_block, render_execution_state_block,
+    render_inner_life_block, render_private_doc_workspace_block, render_private_garden_block,
+    render_self_continuity_block, render_self_model_block, render_self_state_block,
+    render_world_sense_block, render_world_snapshot_block, AutonomyStrategyStore,
+    ExecutionStateStore, InnerLifeStore, LongTermMemoryStore, MemoryProfile, MemoryStore,
+    PrivateDocStore, PrivateGardenStore, RemindAtStore, SelfContinuityStore, SelfModelStore,
+    SessionMessage, SessionStore, SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
+    WorldSnapshotContext,
 };
 
 pub struct PromptMemoryContext {
     pub summary_text: Option<String>,
     pub message_summary_text: Option<String>,
     pub long_term_memory_text: Option<String>,
+    pub archive_evidence_text: Option<String>,
     pub execution_state_text: Option<String>,
     pub world_snapshot_text: Option<String>,
     pub world_sense_text: Option<String>,
@@ -41,6 +43,7 @@ pub struct PromptMemoryContextParams<'a> {
     pub recent_messages_limit: usize,
     pub load_long_term_memory: bool,
     pub session_store: &'a dyn SessionStore,
+    pub memory_store: &'a dyn MemoryStore,
     pub session_summary_store: &'a dyn SessionSummaryStore,
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
@@ -53,6 +56,7 @@ pub struct PromptMemoryContextParams<'a> {
     pub private_garden_store: &'a dyn PrivateGardenStore,
     pub remind_store: &'a dyn RemindAtStore,
     pub task_store: &'a dyn TaskStore,
+    pub turn_ledger_store: &'a dyn TurnLedgerStore,
 }
 
 pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> PromptMemoryContext {
@@ -195,6 +199,19 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
                 params.profile,
             )
         };
+    let archive_evidence_text = if !params.load_long_term_memory {
+        None
+    } else {
+        build_archive_evidence_block(
+            &recent_messages,
+            params.memory_store,
+            params.turn_ledger_store,
+            params.chat_id,
+            params.user_query,
+            params.system_max_len,
+            params.profile,
+        )
+    };
     let message_summary_text = if execution_state_text.is_some() {
         None
     } else {
@@ -204,6 +221,7 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         summary_text,
         message_summary_text,
         long_term_memory_text,
+        archive_evidence_text,
         execution_state_text,
         world_snapshot_text,
         world_sense_text,
@@ -225,10 +243,11 @@ mod tests {
     use crate::memory::{
         AutonomyStrategy, AutonomyStrategyStore, ExecutionState, ExecutionStateStore,
         ExecutionStatus, InnerLife, InnerLifeStore, LongTermMemoryEntry, LongTermMemoryKind,
-        LongTermMemorySlot, LongTermMemoryStore, PrivateDocEntry, PrivateDocStore,
+        LongTermMemorySlot, LongTermMemoryStore, MemoryStore, PrivateDocEntry, PrivateDocStore,
         PrivateDocWorkspace, PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenStore,
         SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage,
-        SessionStore, SessionSummaryStore, WorldSense, WorldSenseStore,
+        SessionStore, SessionSummaryStore, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
+        WorldSense, WorldSenseStore,
     };
     use crate::task::{TaskItem, TaskQuery, TaskStore};
     use std::sync::Mutex;
@@ -290,6 +309,89 @@ mod tests {
     struct StubLongTermMemoryStore {
         entries: Mutex<Vec<LongTermMemoryEntry>>,
         last_query: Mutex<Option<String>>,
+    }
+
+    #[derive(Default)]
+    struct StubMemoryStore {
+        daily_notes: Mutex<Vec<(String, String)>>,
+    }
+
+    impl MemoryStore for StubMemoryStore {
+        fn get_memory(&self) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn set_memory(&self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_soul(&self) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn set_soul(&self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_user(&self) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn set_user(&self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_daily_note_names(&self, recent_n: usize) -> Result<Vec<String>> {
+            Ok(self
+                .daily_notes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .rev()
+                .take(recent_n)
+                .map(|(name, _)| name.clone())
+                .collect())
+        }
+
+        fn get_daily_note(&self, name: &str) -> Result<String> {
+            Ok(self
+                .daily_notes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .find(|(candidate, _)| candidate == name)
+                .map(|(_, content)| content.clone())
+                .unwrap_or_default())
+        }
+
+        fn write_daily_note(&self, _name: &str, _content: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubTurnLedgerStore {
+        ledger: Mutex<Option<TurnLedger>>,
+    }
+
+    impl TurnLedgerStore for StubTurnLedgerStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<TurnLedger>> {
+            Ok(self
+                .ledger
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone())
+        }
+
+        fn set(&self, _chat_id: &str, ledger: &TurnLedger) -> Result<()> {
+            *self.ledger.lock().unwrap_or_else(|e| e.into_inner()) = Some(ledger.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            *self.ledger.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
     }
 
     #[derive(Default)]
@@ -636,9 +738,26 @@ mod tests {
                 stale_hint: crate::memory::LongTermMemoryStaleHint::None,
                 created_at: 1,
                 updated_at: 1,
+                observed_at: 1,
+                source_revision: 6,
                 last_used_at: 0,
             }]),
             last_query: Mutex::new(None),
+        };
+        let archive_memory_store = StubMemoryStore {
+            daily_notes: Mutex::new(vec![(
+                "2026-04-02.md".to_string(),
+                "Coffee notes: the user still prefers cold brew over hot espresso.".to_string(),
+            )]),
+        };
+        let turn_ledger_store = StubTurnLedgerStore {
+            ledger: Mutex::new(Some(TurnLedger {
+                status: TurnLedgerStatus::Answered,
+                reason: "memory grounding".to_string(),
+                user_preview: "重点是咖啡偏好和昵称".to_string(),
+                reply_preview: "会优先保留冷萃偏好".to_string(),
+                ..TurnLedger::default()
+            })),
         };
         let execution_state_store = StubExecutionStateStore {
             state: Mutex::new(Some(ExecutionState {
@@ -729,7 +848,6 @@ mod tests {
         };
         let remind_store = StubRemindAtStore;
         let task_store = StubTaskStore;
-
         let context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
             current_channel: "qq_channel",
@@ -740,6 +858,7 @@ mod tests {
             recent_messages_limit: 8,
             load_long_term_memory: true,
             session_store: &session_store,
+            memory_store: &archive_memory_store,
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
@@ -752,6 +871,7 @@ mod tests {
             private_garden_store: &private_garden_store,
             remind_store: &remind_store,
             task_store: &task_store,
+            turn_ledger_store: &turn_ledger_store,
         });
 
         assert_eq!(
@@ -764,6 +884,11 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("Likes cold brew"));
+        assert!(context
+            .archive_evidence_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Archive evidence"));
         assert!(memory_store
             .last_query
             .lock()
@@ -856,10 +981,14 @@ mod tests {
                 stale_hint: crate::memory::LongTermMemoryStaleHint::None,
                 created_at: 1,
                 updated_at: 1,
+                observed_at: 1,
+                source_revision: 3,
                 last_used_at: 0,
             }]),
             last_query: Mutex::new(None),
         };
+        let archive_memory_store = StubMemoryStore::default();
+        let turn_ledger_store = StubTurnLedgerStore::default();
         let execution_state_store = StubExecutionStateStore::default();
         let self_model_store = StubSelfModelStore::default();
         let world_sense_store = StubWorldSenseStore::default();
@@ -881,6 +1010,7 @@ mod tests {
             recent_messages_limit: 8,
             load_long_term_memory: true,
             session_store: &session_store,
+            memory_store: &archive_memory_store,
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
@@ -893,6 +1023,7 @@ mod tests {
             private_garden_store: &private_garden_store,
             remind_store: &remind_store,
             task_store: &task_store,
+            turn_ledger_store: &turn_ledger_store,
         });
 
         assert_eq!(
@@ -929,6 +1060,8 @@ mod tests {
             summary: Mutex::new(Some(("summary".to_string(), 2))),
         };
         let memory_store = StubLongTermMemoryStore::default();
+        let archive_memory_store = StubMemoryStore::default();
+        let turn_ledger_store = StubTurnLedgerStore::default();
         let execution_state_store = StubExecutionStateStore::default();
         let self_model_store = StubSelfModelStore {
             model: Mutex::new(Some(SelfModel {
@@ -1019,6 +1152,7 @@ mod tests {
             recent_messages_limit: 16,
             load_long_term_memory: false,
             session_store: &session_store,
+            memory_store: &archive_memory_store,
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
@@ -1031,6 +1165,7 @@ mod tests {
             private_garden_store: &private_garden_store,
             remind_store: &remind_store,
             task_store: &task_store,
+            turn_ledger_store: &turn_ledger_store,
         });
 
         assert_eq!(context.summary_text.as_deref(), Some("summary"));

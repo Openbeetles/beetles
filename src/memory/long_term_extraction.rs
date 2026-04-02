@@ -13,16 +13,16 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use super::{
-    memory_policy, render_long_term_memory_block, LongTermExtractionPolicy, LongTermMemoryDraft,
-    LongTermMemoryEntry, LongTermMemoryFreshness, LongTermMemoryKind, LongTermMemorySlot,
-    LongTermMemorySourceScope, LongTermMemorySourceType, LongTermMemoryStaleHint,
-    LongTermMemoryStore, MemoryProfile, SessionMessage, SessionStore, SessionSummaryStore,
-    MAX_LONG_TERM_MEMORY_ITEMS,
+    build_archive_evidence_block, memory_policy, render_long_term_memory_block,
+    LongTermExtractionPolicy, LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryFreshness,
+    LongTermMemoryKind, LongTermMemorySlot, LongTermMemorySourceScope, LongTermMemorySourceType,
+    LongTermMemoryStaleHint, LongTermMemoryStore, MemoryProfile, MemoryStore, SessionMessage,
+    SessionStore, SessionSummaryStore, TurnLedgerStore, MAX_LONG_TERM_MEMORY_ITEMS,
 };
 
 /// 长期记忆提取状态存储路径（相对状态根）。
 pub const REL_PATH_LONG_TERM_EXTRACTION_STATES: &str = "memory/long_term_extraction_states.json";
-pub const LONG_TERM_MEMORY_EXTRACTION_SYSTEM_PROMPT: &str = "You extract durable long-term memory for a personal AI assistant. Return JSON only: an array of objects. Each object must contain op, kind, topic. op must be upsert or delete. kind must be one of preference, profile, relationship, project, task, constraint, fact. topic must be a short stable slot key identifying the same memory across future updates, for example response_style, user_name, current_project, timezone, partner_name. Reuse an existing topic whenever the conversation updates, completes, or corrects that same durable slot. Prefer updating an existing slot over inventing a nearby new topic. For op=upsert, also provide content and optional keywords. For op=delete, omit content and keywords. Use delete when the conversation clearly invalidates or completes an existing durable slot, for example a task is finished, a temporary project focus is no longer active, or a prior fact is explicitly corrected. Store only durable user profile facts, stable preferences, durable constraints, ongoing project/task state, and durable external facts. Do not store greetings, one-off troubleshooting steps, short acknowledgements, temporary moods, assistant plans for the next single turn, assistant-only claims, secrets, credentials, raw tool payloads, copied log fragments, or long external document excerpts. When project/task context shifts, update the existing active slot instead of creating a parallel near-duplicate slot. Use the provided session summary and existing long-term memory as grounding when deciding whether to upsert, delete, or ignore. Keep only the highest-value durable changes, at most 4 items. If there is nothing durable to add, update, or delete, return [].";
+pub const LONG_TERM_MEMORY_EXTRACTION_SYSTEM_PROMPT: &str = "You extract durable long-term memory for a personal AI assistant. Return JSON only: an array of objects. Each object must contain op, kind, topic. op must be upsert or delete. kind must be one of preference, profile, relationship, project, task, constraint, fact. topic must be a short stable slot key identifying the same memory across future updates, for example response_style, user_name, current_project, timezone, partner_name. Reuse an existing topic whenever the conversation updates, completes, or corrects that same durable slot. Prefer updating an existing slot over inventing a nearby new topic. For op=upsert, also provide content and optional keywords. For op=delete, omit content and keywords. Use delete when the conversation clearly invalidates or completes an existing durable slot, for example a task is finished, a temporary project focus is no longer active, or a prior fact is explicitly corrected. Store only durable user profile facts, stable preferences, durable constraints, ongoing project/task state, and durable external facts. Do not store greetings, one-off troubleshooting steps, short acknowledgements, temporary moods, assistant plans for the next single turn, assistant-only claims, secrets, credentials, raw tool payloads, copied log fragments, or long external document excerpts. Treat archive evidence sources as supporting records rather than canonical memory: they may justify a durable conclusion, but they are not themselves a fact slot. Prefer newer transcript evidence over older archive fragments when they disagree. When project/task context shifts, update the existing active slot instead of creating a parallel near-duplicate slot. Use the provided session summary, existing long-term memory, and archive evidence as grounding when deciding whether to upsert, delete, or ignore. Keep only the highest-value durable changes, at most 4 items. If there is nothing durable to add, update, or delete, return [].";
 /// 共享策略允许的 recent 消息窗口上限；实际运行值由 MemoryProfile 决定。
 pub const LONG_TERM_MEMORY_EXTRACTION_RECENT_N: usize = 10;
 /// 单次提取允许的动作数上限；实际运行值由 MemoryProfile 决定。
@@ -241,6 +241,7 @@ pub fn build_long_term_memory_extraction_input(
     chat_id: &str,
     recent: &[SessionMessage],
     session_summary: Option<&str>,
+    archive_evidence: Option<&str>,
     profile: MemoryProfile,
 ) -> String {
     let policy = memory_policy(profile).long_term_extraction;
@@ -271,6 +272,14 @@ pub fn build_long_term_memory_extraction_input(
         input.push_str("\n\n");
     }
 
+    if let Some(archive_evidence) = archive_evidence
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        input.push_str(archive_evidence);
+        input.push_str("\n\n");
+    }
+
     input.push_str("## Recent conversation\n");
     input.push_str(transcript.trim());
     input
@@ -284,6 +293,7 @@ fn build_extraction_existing_memory_grounding(
     out.push_str("## Existing memory slots\n");
     for entry in entries {
         let mut meta = vec![
+            entry.source_type.label().to_string(),
             entry.confidence.label().to_string(),
             entry.source_scope.label().to_string(),
         ];
@@ -357,6 +367,8 @@ pub fn parse_long_term_memory_extraction_response(
                     confidence: parsed_item.confidence,
                     freshness: parsed_item.freshness,
                     stale_hint: parsed_item.stale_hint,
+                    observed_at: None,
+                    source_revision: None,
                 })
             }
             _ => continue,
@@ -856,10 +868,12 @@ fn is_cjk(ch: char) -> bool {
 }
 
 pub struct LongTermMemoryRefreshContext<'a> {
+    pub memory_store: &'a dyn MemoryStore,
     pub session_store: &'a dyn SessionStore,
     pub session_summary_store: &'a dyn SessionSummaryStore,
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
     pub extraction_state_store: &'a dyn LongTermMemoryExtractionStateStore,
+    pub turn_ledger_store: &'a dyn TurnLedgerStore,
 }
 
 pub enum LongTermMemoryRefreshOutcome {
@@ -970,6 +984,24 @@ fn extract_long_term_memory(
         return Ok(0);
     }
     let session_summary = ctx.session_summary_store.get(chat_id).ok().flatten();
+    let archive_query = recent
+        .iter()
+        .rev()
+        .find(|message| message.role.eq_ignore_ascii_case("user"))
+        .map(|message| message.content.as_str())
+        .unwrap_or("");
+    let archive_evidence = build_archive_evidence_block(
+        &recent,
+        ctx.memory_store,
+        ctx.turn_ledger_store,
+        chat_id,
+        archive_query,
+        memory_policy(profile)
+            .long_term_recall
+            .block_max_len_cap
+            .min(768),
+        profile,
+    );
     let messages = [Message {
         role: Cow::Borrowed("user"),
         content: build_long_term_memory_extraction_input(
@@ -977,6 +1009,7 @@ fn extract_long_term_memory(
             chat_id,
             &recent,
             session_summary.as_deref(),
+            archive_evidence.as_deref(),
             profile,
         ),
     }];
@@ -987,19 +1020,23 @@ fn extract_long_term_memory(
         None,
         ToolChoicePolicy::Auto,
     )?;
-    let extraction = prepare_long_term_memory_extraction(
+    let mut extraction = prepare_long_term_memory_extraction(
         ctx.long_term_memory_store,
         &parse_long_term_memory_extraction_response(response.content.trim(), chat_id),
         chat_id,
     );
+    let now_secs = crate::util::current_unix_secs();
+    let source_revision = ctx.session_store.message_count(chat_id).unwrap_or(0) as u64;
+    for draft in &mut extraction.upserts {
+        draft.observed_at.get_or_insert(now_secs);
+        if source_revision > 0 {
+            draft.source_revision.get_or_insert(source_revision);
+        }
+    }
     if extraction.upserts.is_empty() && extraction.deletes.is_empty() {
         return Ok(0);
     }
-    apply_long_term_memory_extraction(
-        ctx.long_term_memory_store,
-        &extraction,
-        crate::util::current_unix_secs(),
-    )
+    apply_long_term_memory_extraction(ctx.long_term_memory_store, &extraction, now_secs)
 }
 
 pub fn persist_long_term_memory_extraction_state(
@@ -1027,7 +1064,9 @@ mod tests {
     use super::*;
     use crate::error::Result;
     use crate::llm::{LlmModelCompat, LlmResponse};
-    use crate::memory::LongTermMemoryEntry;
+    use crate::memory::{
+        LongTermMemoryEntry, MemoryStore, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
+    };
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -1101,6 +1140,79 @@ mod tests {
         }
 
         fn set(&self, _chat_id: &str, _summary: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubMemoryStore {
+        daily_notes: Vec<(String, String)>,
+    }
+
+    impl MemoryStore for StubMemoryStore {
+        fn get_memory(&self) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn set_memory(&self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_soul(&self) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn set_soul(&self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_user(&self) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn set_user(&self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_daily_note_names(&self, recent_n: usize) -> Result<Vec<String>> {
+            Ok(self
+                .daily_notes
+                .iter()
+                .rev()
+                .take(recent_n)
+                .map(|(name, _)| name.clone())
+                .collect())
+        }
+
+        fn get_daily_note(&self, name: &str) -> Result<String> {
+            Ok(self
+                .daily_notes
+                .iter()
+                .find(|(candidate, _)| candidate == name)
+                .map(|(_, content)| content.clone())
+                .unwrap_or_default())
+        }
+
+        fn write_daily_note(&self, _name: &str, _content: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubTurnLedgerStore {
+        ledger: Option<TurnLedger>,
+    }
+
+    impl TurnLedgerStore for StubTurnLedgerStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<TurnLedger>> {
+            Ok(self.ledger.clone())
+        }
+
+        fn set(&self, _chat_id: &str, _ledger: &TurnLedger) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
             Ok(())
         }
     }
@@ -1215,6 +1327,8 @@ mod tests {
             confidence: None,
             freshness: None,
             stale_hint: None,
+            observed_at: None,
+            source_revision: None,
         }
     }
 
@@ -1242,6 +1356,8 @@ mod tests {
             stale_hint: LongTermMemoryStaleHint::None,
             created_at,
             updated_at,
+            observed_at: updated_at.max(created_at),
+            source_revision: 0,
             last_used_at: 0,
         })
         .unwrap()
@@ -1384,12 +1500,37 @@ mod tests {
                 content: "这轮先把提取输入和解析从 agent loop 里拆出去。".to_string(),
             },
         ];
+        let archive_memory_store = StubMemoryStore {
+            daily_notes: vec![(
+                "2026-04-02.md".to_string(),
+                "Daily note: memory pipeline 收口仍是今天的主线。".to_string(),
+            )],
+        };
+        let turn_ledger_store = StubTurnLedgerStore {
+            ledger: Some(TurnLedger {
+                status: TurnLedgerStatus::Answered,
+                reason: "memory grounding".to_string(),
+                user_preview: "最近我们在做长期记忆重构。".to_string(),
+                reply_preview: "这轮先把提取输入和解析从 agent loop 里拆出去。".to_string(),
+                ..TurnLedger::default()
+            }),
+        };
+        let archive_evidence = build_archive_evidence_block(
+            &recent,
+            &archive_memory_store,
+            &turn_ledger_store,
+            "chat-1",
+            "memory pipeline",
+            768,
+            MemoryProfile::Standard,
+        );
 
         let input = build_long_term_memory_extraction_input(
             &store,
             "chat-1",
             &recent,
             Some("当前重点是 memory pipeline 收口。"),
+            archive_evidence.as_deref(),
             MemoryProfile::Standard,
         );
 
@@ -1397,6 +1538,7 @@ mod tests {
         assert!(input.contains("当前重点是 memory pipeline 收口。"));
         assert!(input.contains("## Existing memory slots"));
         assert!(input.contains("preference.response_style"));
+        assert!(input.contains("## Archive evidence"));
         assert!(input.contains("## Recent conversation"));
         assert!(input.contains("USER: 最近我们在做长期记忆重构。"));
         assert!(input.contains("ASSISTANT: 这轮先把提取输入和解析从 agent loop 里拆出去。"));
@@ -1901,6 +2043,8 @@ mod tests {
         let session_store = StubSessionStore::default();
         let summary_store = StubSessionSummaryStore::default();
         let memory_store = StubLongTermMemoryStore::default();
+        let archive_memory_store = StubMemoryStore::default();
+        let turn_ledger_store = StubTurnLedgerStore::default();
         let extraction_state_store = StubLongTermMemoryExtractionStateStore {
             state: Mutex::new(Some(LongTermMemoryExtractionState {
                 dirty_since_count: 4,
@@ -1912,10 +2056,12 @@ mod tests {
             ..Default::default()
         };
         let ctx = LongTermMemoryRefreshContext {
+            memory_store: &archive_memory_store,
             session_store: &session_store,
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             extraction_state_store: &extraction_state_store,
+            turn_ledger_store: &turn_ledger_store,
         };
         let mut http = DummyHttpClient;
         let outcome = run_long_term_memory_refresh(

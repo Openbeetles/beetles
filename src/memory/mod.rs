@@ -4,6 +4,7 @@ use crate::bus::PcMsg;
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
 
+mod archive_plane;
 mod autonomy_strategy;
 mod context_window;
 mod execution_state;
@@ -26,6 +27,7 @@ mod session_summary_refresh;
 mod turn_ledger;
 mod world_sense;
 
+pub use archive_plane::build_archive_evidence_block;
 pub(crate) use autonomy_strategy::estimate_autonomy_strategy_chars;
 pub(crate) use autonomy_strategy::{
     autonomy_idle_interval_secs, run_autonomy_strategy_refresh_with_state,

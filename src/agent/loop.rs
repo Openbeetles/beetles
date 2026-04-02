@@ -850,10 +850,12 @@ fn run_long_term_memory_refresh_job(
         &mut llm_ctx,
         worker_llm,
         LongTermMemoryRefreshContext {
+            memory_store: config.memory_store.as_ref(),
             session_store: config.session_store.as_ref(),
             session_summary_store: config.session_summary_store.as_ref(),
             long_term_memory_store: config.long_term_memory_store.as_ref(),
             extraction_state_store: config.long_term_memory_extraction_state_store.as_ref(),
+            turn_ledger_store: config.turn_ledger_store.as_ref(),
         },
         &msg.chat_id,
         crate::orchestrator::snapshot().pressure,
@@ -2279,6 +2281,7 @@ fn run_worker_path(
         recent_messages_limit: config.session_max_messages,
         load_long_term_memory: !interactive_fast_path,
         session_store: config.session_store.as_ref(),
+        memory_store: config.memory_store.as_ref(),
         session_summary_store: config.session_summary_store.as_ref(),
         long_term_memory_store: config.long_term_memory_store.as_ref(),
         execution_state_store: config.execution_state_store.as_ref(),
@@ -2291,6 +2294,7 @@ fn run_worker_path(
         private_garden_store: config.private_garden_store.as_ref(),
         remind_store: config.remind_store.as_ref(),
         task_store: config.task_store.as_ref(),
+        turn_ledger_store: config.turn_ledger_store.as_ref(),
     });
     let (mut system, mut messages) = build_context(&super::ContextParams {
         msg,
@@ -2315,11 +2319,12 @@ fn run_worker_path(
         private_workspace_text: prompt_memory.private_workspace_text.as_deref(),
         private_garden_text: prompt_memory.private_garden_text.as_deref(),
         long_term_memory_text: prompt_memory.long_term_memory_text.as_deref(),
+        archive_evidence_text: prompt_memory.archive_evidence_text.as_deref(),
         summary_text: prompt_memory.message_summary_text.as_deref(),
         recent_messages: (!prompt_memory.recent_messages.is_empty())
             .then_some(prompt_memory.recent_messages.as_slice()),
         runtime: Some(runtime),
-        include_daily_notes: !interactive_fast_path,
+        include_daily_notes: false,
         llm_hint: budget.llm_hint,
     })
     .map_err(|e| e.with_stage("agent_context"))?;

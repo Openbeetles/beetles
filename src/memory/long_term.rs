@@ -113,6 +113,7 @@ impl LongTermRecallPolicy {
     ) -> Ordering {
         self.fallback_entry_priority(chat_id, b)
             .cmp(&self.fallback_entry_priority(chat_id, a))
+            .then_with(|| entry_observed_at(b).cmp(&entry_observed_at(a)))
             .then_with(|| b.updated_at.cmp(&a.updated_at))
             .then_with(|| b.created_at.cmp(&a.created_at))
     }
@@ -181,10 +182,11 @@ impl LongTermRecallPolicy {
     }
 
     fn is_stale(self, entry: &LongTermMemoryEntry, now_secs: u64) -> bool {
-        if now_secs == 0 || entry.updated_at == 0 || entry.updated_at > now_secs {
+        let observed_at = entry_observed_at(entry);
+        if now_secs == 0 || observed_at == 0 || observed_at > now_secs {
             return false;
         }
-        let age_secs = now_secs - entry.updated_at;
+        let age_secs = now_secs - observed_at;
         (match entry.kind {
             LongTermMemoryKind::Task => age_secs > LONG_TERM_MEMORY_TASK_TTL_SECS,
             LongTermMemoryKind::Project => age_secs > LONG_TERM_MEMORY_PROJECT_TTL_SECS,
@@ -238,9 +240,9 @@ pub enum LongTermMemoryConfidence {
 impl LongTermMemoryConfidence {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Low => "low confidence",
-            Self::Medium => "medium confidence",
-            Self::High => "high confidence",
+            Self::Low => "confidence=low",
+            Self::Medium => "confidence=medium",
+            Self::High => "confidence=high",
         }
     }
 
@@ -267,10 +269,10 @@ pub enum LongTermMemorySourceType {
 impl LongTermMemorySourceType {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Conversation => "conversation source",
-            Self::ManualTool => "manual source",
-            Self::SystemRuntime => "system source",
-            Self::ExternalObservation => "external source",
+            Self::Conversation => "conversation",
+            Self::ManualTool => "manual tool",
+            Self::SystemRuntime => "system runtime",
+            Self::ExternalObservation => "external observation",
         }
     }
 }
@@ -288,9 +290,9 @@ pub enum LongTermMemorySourceScope {
 impl LongTermMemorySourceScope {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Chat => "chat scope",
-            Self::User => "user scope",
-            Self::World => "world scope",
+            Self::Chat => "scope=chat",
+            Self::User => "scope=user",
+            Self::World => "scope=world",
         }
     }
 }
@@ -345,8 +347,28 @@ impl LongTermMemoryStaleHint {
     pub fn label(self) -> Option<&'static str> {
         match self {
             Self::None => None,
-            Self::ReviewBeforeUse => Some("review before use"),
-            Self::VerifyAgainstCurrentState => Some("verify against current state"),
+            Self::ReviewBeforeUse => Some("review"),
+            Self::VerifyAgainstCurrentState => Some("verify current"),
+        }
+    }
+}
+
+/// 召回给主模型的主证据态标签。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LongTermMemoryEvidenceState {
+    StableFact,
+    RecentState,
+    PossiblyStale,
+    NeedsReview,
+}
+
+impl LongTermMemoryEvidenceState {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::StableFact => "stable fact",
+            Self::RecentState => "recent state",
+            Self::PossiblyStale => "possibly stale",
+            Self::NeedsReview => "needs review",
         }
     }
 }
@@ -382,6 +404,10 @@ pub struct LongTermMemoryEntry {
     #[serde(default)]
     pub updated_at: u64,
     #[serde(default)]
+    pub observed_at: u64,
+    #[serde(default)]
+    pub source_revision: u64,
+    #[serde(default)]
     pub last_used_at: u64,
 }
 
@@ -405,6 +431,10 @@ pub struct LongTermMemoryDraft {
     pub freshness: Option<LongTermMemoryFreshness>,
     #[serde(default)]
     pub stale_hint: Option<LongTermMemoryStaleHint>,
+    #[serde(default)]
+    pub observed_at: Option<u64>,
+    #[serde(default)]
+    pub source_revision: Option<u64>,
 }
 
 /// 长期记忆槽位键，用于更新/删除同一条结构化记忆。
@@ -456,6 +486,8 @@ impl LongTermMemoryDraft {
             confidence: self.confidence,
             freshness: self.freshness,
             stale_hint: self.stale_hint,
+            observed_at: self.observed_at.filter(|value| *value > 0),
+            source_revision: self.source_revision.filter(|value| *value > 0),
         })
     }
 
@@ -630,6 +662,8 @@ pub(crate) fn long_term_memory_entry_from_draft(
         stale_hint: meta.stale_hint,
         created_at: now_secs,
         updated_at: now_secs,
+        observed_at: draft.observed_at.unwrap_or(now_secs),
+        source_revision: draft.source_revision.unwrap_or(0),
         last_used_at: 0,
     })
 }
@@ -696,6 +730,9 @@ pub fn canonicalize_long_term_memory_entry(
     if entry.updated_at == 0 {
         entry.updated_at = entry.created_at;
     }
+    if entry.observed_at == 0 {
+        entry.observed_at = entry.updated_at.max(entry.created_at);
+    }
     let source_scope = infer_long_term_memory_source_scope(
         &entry.kind,
         entry.source_chat_id.as_deref(),
@@ -714,10 +751,11 @@ pub fn canonicalize_long_term_memory_entry(
 }
 
 fn age_state_for_entry(entry: &LongTermMemoryEntry, now_secs: u64) -> LongTermMemoryAgeState {
-    if now_secs == 0 || entry.updated_at == 0 || entry.updated_at > now_secs {
+    let observed_at = entry_observed_at(entry);
+    if now_secs == 0 || observed_at == 0 || observed_at > now_secs {
         return LongTermMemoryAgeState::Current;
     }
-    let age_secs = now_secs - entry.updated_at;
+    let age_secs = now_secs - observed_at;
     if age_secs >= entry.freshness.stale_after_secs() {
         LongTermMemoryAgeState::Stale
     } else if age_secs >= entry.freshness.aging_after_secs() {
@@ -739,10 +777,11 @@ fn effective_stale_hint(entry: &LongTermMemoryEntry, now_secs: u64) -> LongTermM
 }
 
 fn render_age_hint(entry: &LongTermMemoryEntry, now_secs: u64) -> Option<String> {
-    if now_secs == 0 || entry.updated_at == 0 || entry.updated_at > now_secs {
+    let observed_at = entry_observed_at(entry);
+    if now_secs == 0 || observed_at == 0 || observed_at > now_secs {
         return None;
     }
-    let age_secs = now_secs - entry.updated_at;
+    let age_secs = now_secs - observed_at;
     let value = match age_secs {
         0..=86_400 => "updated today".to_string(),
         86_401..=604_800 => format!("updated {}d ago", age_secs / 86_400),
@@ -772,6 +811,68 @@ pub(crate) fn touch_long_term_memory_usage(entry: &mut LongTermMemoryEntry, now_
     maybe_touch_last_used(entry, now_secs)
 }
 
+fn entry_observed_at(entry: &LongTermMemoryEntry) -> u64 {
+    entry
+        .observed_at
+        .max(entry.updated_at)
+        .max(entry.created_at)
+}
+
+fn evidence_state_for_entry(
+    entry: &LongTermMemoryEntry,
+    now_secs: u64,
+) -> LongTermMemoryEvidenceState {
+    let age_state = age_state_for_entry(entry, now_secs);
+    let effective_hint = effective_stale_hint(entry, now_secs);
+    if matches!(
+        effective_hint,
+        LongTermMemoryStaleHint::VerifyAgainstCurrentState
+    ) || matches!(age_state, LongTermMemoryAgeState::Stale)
+    {
+        return LongTermMemoryEvidenceState::NeedsReview;
+    }
+    if matches!(age_state, LongTermMemoryAgeState::Aging) {
+        return LongTermMemoryEvidenceState::PossiblyStale;
+    }
+    if matches!(entry.freshness, LongTermMemoryFreshness::Stable)
+        && matches!(
+            entry.kind,
+            LongTermMemoryKind::Preference
+                | LongTermMemoryKind::Profile
+                | LongTermMemoryKind::Relationship
+                | LongTermMemoryKind::Constraint
+                | LongTermMemoryKind::Fact
+        )
+    {
+        return LongTermMemoryEvidenceState::StableFact;
+    }
+    LongTermMemoryEvidenceState::RecentState
+}
+
+fn confidence_rank(confidence: LongTermMemoryConfidence) -> u8 {
+    match confidence {
+        LongTermMemoryConfidence::Low => 0,
+        LongTermMemoryConfidence::Medium => 1,
+        LongTermMemoryConfidence::High => 2,
+    }
+}
+
+fn draft_is_older_than_existing(
+    existing: &LongTermMemoryEntry,
+    incoming_observed_at: u64,
+    incoming_source_revision: u64,
+) -> bool {
+    if incoming_source_revision > 0
+        && existing.source_revision > 0
+        && incoming_source_revision < existing.source_revision
+    {
+        return true;
+    }
+    incoming_observed_at > 0
+        && existing.observed_at > 0
+        && incoming_observed_at < existing.observed_at
+}
+
 pub fn merge_long_term_memory_entry(
     existing: &mut LongTermMemoryEntry,
     draft: &LongTermMemoryDraft,
@@ -782,13 +883,22 @@ pub fn merge_long_term_memory_entry(
     };
     let meta = resolve_long_term_memory_meta(&normalized);
     let mut changed = false;
+    let incoming_observed_at = normalized.observed_at.unwrap_or(now_secs);
+    let incoming_source_revision = normalized.source_revision.unwrap_or(0);
+    let incoming_is_older =
+        draft_is_older_than_existing(existing, incoming_observed_at, incoming_source_revision);
     let content_changed = existing.content != normalized.content;
-    if content_changed {
+    let can_replace_content = !incoming_is_older
+        && confidence_rank(meta.confidence) >= confidence_rank(existing.confidence);
+    if content_changed && !can_replace_content {
+        return false;
+    }
+    if content_changed && can_replace_content {
         existing.content = normalized.content;
         changed = true;
     }
 
-    let merged_keywords = if content_changed {
+    let merged_keywords = if content_changed && can_replace_content {
         normalized.keywords.clone()
     } else {
         let mut merged_keywords = existing.keywords.clone();
@@ -805,33 +915,41 @@ pub fn merge_long_term_memory_entry(
         existing.keywords = merged_keywords;
         changed = true;
     }
-    if let Some(source_chat_id) = normalized.source_chat_id {
+    if let Some(source_chat_id) = normalized.source_chat_id.filter(|_| !incoming_is_older) {
         if existing.source_chat_id.as_deref() != Some(source_chat_id.as_str()) {
             existing.source_chat_id = Some(source_chat_id);
             changed = true;
         }
     }
-    if existing.source_type != meta.source_type {
+    if !incoming_is_older && existing.source_type != meta.source_type {
         existing.source_type = meta.source_type;
         changed = true;
     }
-    if existing.source_scope != meta.source_scope {
+    if !incoming_is_older && existing.source_scope != meta.source_scope {
         existing.source_scope = meta.source_scope;
         changed = true;
     }
-    if existing.confidence != meta.confidence {
+    if !incoming_is_older && existing.confidence != meta.confidence {
         existing.confidence = meta.confidence;
         changed = true;
     }
-    if existing.freshness != meta.freshness {
+    if !incoming_is_older && existing.freshness != meta.freshness {
         existing.freshness = meta.freshness;
         changed = true;
     }
-    if existing.stale_hint != meta.stale_hint {
+    if !incoming_is_older && existing.stale_hint != meta.stale_hint {
         existing.stale_hint = meta.stale_hint;
         changed = true;
     }
-    if existing.updated_at != now_secs {
+    if !incoming_is_older && existing.observed_at != incoming_observed_at {
+        existing.observed_at = incoming_observed_at;
+        changed = true;
+    }
+    if !incoming_is_older && existing.source_revision != incoming_source_revision {
+        existing.source_revision = incoming_source_revision;
+        changed = true;
+    }
+    if changed && existing.updated_at != now_secs {
         existing.updated_at = now_secs;
         changed = true;
     }
@@ -847,8 +965,9 @@ pub(crate) fn govern_long_term_memory_entries(
     entries.retain(|entry| !policy.is_stale(entry, now_secs));
 
     entries.sort_by(|a, b| {
-        b.updated_at
-            .cmp(&a.updated_at)
+        entry_observed_at(b)
+            .cmp(&entry_observed_at(a))
+            .then_with(|| b.updated_at.cmp(&a.updated_at))
             .then_with(|| b.created_at.cmp(&a.created_at))
     });
 
@@ -1047,8 +1166,12 @@ fn render_long_term_memory_line(
     now_secs: u64,
 ) -> String {
     let mut tags = vec![
-        entry.confidence.label().to_string(),
+        evidence_state_for_entry(entry, now_secs)
+            .label()
+            .to_string(),
+        format!("source: {}", entry.source_type.label()),
         entry.source_scope.label().to_string(),
+        entry.confidence.label().to_string(),
     ];
     if !matches!(entry.freshness, LongTermMemoryFreshness::Stable) {
         tags.push(entry.freshness.label().to_string());
@@ -1155,7 +1278,7 @@ pub(crate) fn score_long_term_memory_recall(
         score = score.saturating_add(recall_chat_affinity_bonus(&entry.kind));
     }
     score = score.saturating_add(entry.confidence.recall_bonus());
-    score = score.saturating_add(recall_recency_bonus(now_secs, entry.updated_at));
+    score = score.saturating_add(recall_recency_bonus(now_secs, entry_observed_at(entry)));
     score = score.saturating_add(recall_last_used_bonus(now_secs, entry.last_used_at));
     if matches!(entry.source_scope, LongTermMemorySourceScope::User)
         && matches!(
@@ -1402,6 +1525,8 @@ mod tests {
             confidence: None,
             freshness: None,
             stale_hint: None,
+            observed_at: None,
+            source_revision: None,
         }
     }
 
@@ -1429,6 +1554,8 @@ mod tests {
             stale_hint: LongTermMemoryStaleHint::None,
             created_at,
             updated_at,
+            observed_at: updated_at.max(created_at),
+            source_revision: 0,
             last_used_at: 0,
         })
         .unwrap()
@@ -1534,6 +1661,8 @@ mod tests {
             stale_hint: LongTermMemoryStaleHint::None,
             created_at: 42,
             updated_at: 0,
+            observed_at: 0,
+            source_revision: 0,
             last_used_at: 0,
         })
         .unwrap();
@@ -1558,6 +1687,8 @@ mod tests {
             stale_hint: LongTermMemoryStaleHint::None,
             created_at: 1,
             updated_at: 0,
+            observed_at: 0,
+            source_revision: 0,
             last_used_at: 0,
         })
         .unwrap();
@@ -1660,6 +1791,69 @@ mod tests {
         assert!(merge_long_term_memory_entry(&mut entry, &draft, 20));
         assert_eq!(entry.keywords, vec!["openai", "模型"]);
         assert_eq!(entry.content, "当前主模型是 OpenAI。");
+    }
+
+    #[test]
+    fn merge_long_term_memory_entry_rejects_lower_confidence_overwrite() {
+        let mut entry = test_entry(
+            "ltm-1",
+            LongTermMemoryKind::Fact,
+            "timezone",
+            "User timezone is Asia/Shanghai.",
+            vec!["timezone"],
+            Some("chat-a"),
+            10,
+            10,
+        );
+        entry.confidence = LongTermMemoryConfidence::High;
+        entry.source_revision = 8;
+        entry.observed_at = 10;
+        let mut draft = test_draft(
+            LongTermMemoryKind::Fact,
+            "timezone",
+            "User timezone is UTC.",
+            vec!["utc"],
+            Some("chat-a"),
+        );
+        draft.confidence = Some(LongTermMemoryConfidence::Low);
+        draft.observed_at = Some(20);
+        draft.source_revision = Some(9);
+
+        assert!(!merge_long_term_memory_entry(&mut entry, &draft, 20));
+        assert_eq!(entry.content, "User timezone is Asia/Shanghai.");
+        assert_eq!(entry.confidence, LongTermMemoryConfidence::High);
+        assert_eq!(entry.source_revision, 8);
+    }
+
+    #[test]
+    fn merge_long_term_memory_entry_rejects_older_revision_overwrite() {
+        let mut entry = test_entry(
+            "ltm-1",
+            LongTermMemoryKind::Project,
+            "current_project",
+            "Current project is Beetle runtime.",
+            vec!["runtime"],
+            Some("chat-a"),
+            10,
+            10,
+        );
+        entry.source_revision = 12;
+        entry.observed_at = 30;
+        let mut draft = test_draft(
+            LongTermMemoryKind::Project,
+            "current_project",
+            "Current project is Beetle memory.",
+            vec!["memory"],
+            Some("chat-a"),
+        );
+        draft.confidence = Some(LongTermMemoryConfidence::High);
+        draft.observed_at = Some(20);
+        draft.source_revision = Some(10);
+
+        assert!(!merge_long_term_memory_entry(&mut entry, &draft, 40));
+        assert_eq!(entry.content, "Current project is Beetle runtime.");
+        assert_eq!(entry.source_revision, 12);
+        assert_eq!(entry.observed_at, 30);
     }
 
     #[test]

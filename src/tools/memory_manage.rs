@@ -235,6 +235,8 @@ impl Tool for MemoryManageTool {
                     confidence,
                     freshness,
                     stale_hint,
+                    observed_at: None,
+                    source_revision: None,
                 };
                 let changed_count = self
                     .long_term_store
