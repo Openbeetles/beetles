@@ -51,10 +51,10 @@ export function ToolsPage() {
 
   useEffect(() => {
     if (!ready) return;
-    const id = setTimeout(() => {
-      load();
+    const id = window.setTimeout(() => {
+      void load();
     }, 0);
-    return () => clearTimeout(id);
+    return () => window.clearTimeout(id);
   }, [ready, load]);
 
   return (

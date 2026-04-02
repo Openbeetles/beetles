@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import FormControl from "@mui/material/FormControl";
@@ -28,6 +28,7 @@ import { SettingsSection } from "../components/SettingsSection";
 import { useConfig } from "../hooks/useConfig";
 import { useConfigPageLoad } from "../hooks/useConfigPageLoad";
 import { useSaveFeedback } from "../hooks/useSaveFeedback";
+import { useSyncedState } from "../hooks/useSyncedState";
 import { useUnsaved } from "../hooks/useUnsaved";
 import { useRevealedPasswordFields } from "../hooks/useRevealedPassword";
 import type { LlmSource } from "../types/appConfig";
@@ -62,6 +63,12 @@ function normalizeProvider(provider: string): LlmProviderValue {
 }
 
 type SourceFormRow = LlmSource & { provider: LlmProviderValue };
+type LlmDraftState = {
+  sources: SourceFormRow[];
+  routerIndex: number | null;
+  workerIndex: number | null;
+  llmStream: boolean;
+};
 
 function toSourceRows(sources: LlmSource[]): SourceFormRow[] {
   return sources.map((s) => ({
@@ -143,24 +150,19 @@ export function AIConfigPage() {
   const { t } = useTranslation();
   const { config, loadConfig, saveLlm, loading, error } = useConfig();
   const { setDirty } = useUnsaved();
-  const [sources, setSources] = useState<SourceFormRow[]>([]);
-  const [routerIndex, setRouterIndex] = useState<number | null>(null);
-  const [workerIndex, setWorkerIndex] = useState<number | null>(null);
-  const [llmStream, setLlmStream] = useState(false);
   const [removeSourceIndex, setRemoveSourceIndex] = useState<number | null>(null);
   const saveFeedback = useSaveFeedback(t);
   const { isRevealed, getRevealHandlers } = useRevealedPasswordFields();
 
   useConfigPageLoad({ hasConfig: config !== null, loading, loadConfig });
-
-  useEffect(() => {
+  const syncedDraft = useMemo<LlmDraftState>(() => {
     if (!config) {
-      queueMicrotask(() => {
-        setSources([]);
-        setRouterIndex(null);
-        setWorkerIndex(null);
-      });
-      return;
+      return {
+        sources: [],
+        routerIndex: null,
+        workerIndex: null,
+        llmStream: false,
+      };
     }
     const list =
       config.llm_sources?.length > 0
@@ -173,26 +175,30 @@ export function AIConfigPage() {
               api_url: config.api_url || "",
             },
           ];
-    const sync = () => {
-      setSources(toSourceRows(list));
-      setRouterIndex(config.llm_router_source_index ?? null);
-      setWorkerIndex(config.llm_worker_source_index ?? null);
-      setLlmStream(config.llm_stream ?? false);
+    return {
+      sources: toSourceRows(list),
+      routerIndex: config.llm_router_source_index ?? null,
+      workerIndex: config.llm_worker_source_index ?? null,
+      llmStream: config.llm_stream ?? false,
     };
-    queueMicrotask(sync);
   }, [config]);
+  const [draft, setDraft] = useSyncedState(syncedDraft);
+  const { sources, routerIndex, workerIndex, llmStream } = draft;
 
   const addSource = () => {
     setDirty(true);
-    setSources((prev) => [
+    setDraft((prev) => ({
       ...prev,
-      {
-        provider: DEFAULT_LLM_PROVIDER,
-        api_key: "",
-        model: "",
-        api_url: defaultApiUrlForProvider(DEFAULT_LLM_PROVIDER),
-      },
-    ]);
+      sources: [
+        ...prev.sources,
+        {
+          provider: DEFAULT_LLM_PROVIDER,
+          api_key: "",
+          model: "",
+          api_url: defaultApiUrlForProvider(DEFAULT_LLM_PROVIDER),
+        },
+      ],
+    }));
   };
 
   const requestRemoveSource = (i: number) => {
@@ -202,31 +208,34 @@ export function AIConfigPage() {
   const confirmRemoveSource = () => {
     if (removeSourceIndex == null) return;
     setDirty(true);
-    setSources((prev) => prev.filter((_, j) => j !== removeSourceIndex));
+    setDraft((prev) => ({
+      ...prev,
+      sources: prev.sources.filter((_, j) => j !== removeSourceIndex),
+    }));
     setRemoveSourceIndex(null);
   };
 
   const updateSource = (i: number, field: keyof LlmSource, value: string) => {
     setDirty(true);
-    setSources((prev) => {
-      const next = [...prev];
+    setDraft((prev) => {
+      const next = [...prev.sources];
       next[i] = { ...next[i], [field]: value };
-      return next;
+      return { ...prev, sources: next };
     });
   };
 
   const changeProvider = (i: number, newProviderRaw: string) => {
     const newP = normalizeProvider(newProviderRaw);
     setDirty(true);
-    setSources((prev) => {
-      const next = [...prev];
+    setDraft((prev) => {
+      const next = [...prev.sources];
       const cur = next[i];
       next[i] = {
         ...cur,
         provider: newP,
         api_url: apiUrlAfterProviderChange(cur.api_url, cur.provider, newP),
       };
-      return next;
+      return { ...prev, sources: next };
     });
   };
 
@@ -323,7 +332,10 @@ export function AIConfigPage() {
                 checked={llmStream}
                 onChange={(e) => {
                   setDirty(true);
-                  setLlmStream(e.target.checked);
+                  setDraft((prev) => ({
+                    ...prev,
+                    llmStream: e.target.checked,
+                  }));
                 }}
               />
             }
@@ -461,9 +473,11 @@ export function AIConfigPage() {
                 onChange={(e) => {
                   setDirty(true);
                   const v = e.target.value;
-                  setRouterIndex(
-                    v === "" ? null : Math.max(0, parseInt(v, 10) || 0),
-                  );
+                  setDraft((prev) => ({
+                    ...prev,
+                    routerIndex:
+                      v === "" ? null : Math.max(0, parseInt(v, 10) || 0),
+                  }));
                 }}
                 size="small"
                 sx={{ minWidth: 280, flex: 1 }}
@@ -487,9 +501,11 @@ export function AIConfigPage() {
                 onChange={(e) => {
                   setDirty(true);
                   const v = e.target.value;
-                  setWorkerIndex(
-                    v === "" ? null : Math.max(0, parseInt(v, 10) || 0),
-                  );
+                  setDraft((prev) => ({
+                    ...prev,
+                    workerIndex:
+                      v === "" ? null : Math.max(0, parseInt(v, 10) || 0),
+                  }));
                 }}
                 size="small"
                 sx={{ minWidth: 280, flex: 1 }}

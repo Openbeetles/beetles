@@ -73,10 +73,10 @@ export function SkillsPage() {
 
   useEffect(() => {
     if (!ready) return;
-    const id = setTimeout(() => {
-      loadList();
+    const id = window.setTimeout(() => {
+      void loadList();
     }, 0);
-    return () => clearTimeout(id);
+    return () => window.clearTimeout(id);
   }, [ready, loadList]);
 
   const handleToggleEnabled = async (name: string, enabled: boolean) => {

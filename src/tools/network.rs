@@ -3,7 +3,9 @@
 use crate::error::{Error, Result};
 use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
 use serde_json::{json, Value};
-use std::net::{Ipv4Addr, ToSocketAddrs};
+#[cfg(any(target_os = "linux", test))]
+use std::net::Ipv4Addr;
+use std::net::ToSocketAddrs;
 use std::time::Instant;
 
 #[cfg(target_os = "linux")]
@@ -300,6 +302,7 @@ fn read_trimmed(path: String) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn parse_resolv_conf(raw: &str) -> (Vec<String>, Vec<String>, Vec<String>) {
     let mut nameservers = Vec::new();
     let mut search = Vec::new();
@@ -327,6 +330,7 @@ fn parse_resolv_conf(raw: &str) -> (Vec<String>, Vec<String>, Vec<String>) {
     (nameservers, search, options)
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn parse_default_route(raw: &str) -> Option<Value> {
     for line in raw.lines().skip(1) {
         let columns: Vec<&str> = line.split_whitespace().collect();
@@ -348,11 +352,13 @@ fn parse_default_route(raw: &str) -> Option<Value> {
     None
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn decode_ipv4_hex_le(raw: &str) -> Option<String> {
     let value = u32::from_str_radix(raw, 16).ok()?;
     Some(Ipv4Addr::from(value.to_le_bytes()).to_string())
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn parse_ping_summary(stdout: &str) -> Value {
     let mut transmitted = None;
     let mut received = None;
@@ -385,6 +391,7 @@ fn parse_ping_summary(stdout: &str) -> Value {
     })
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn extract_numbers(raw: &str) -> Vec<f64> {
     let mut out = Vec::new();
     let mut current = String::new();

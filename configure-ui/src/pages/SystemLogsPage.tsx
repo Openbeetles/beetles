@@ -73,10 +73,10 @@ export function SystemLogsPage() {
       });
       return;
     }
-    // 避免在 effect 主体中同步触发 setState（触发 react-hooks 规则）
-    queueMicrotask(() => {
-      loadLogs();
-    });
+    const id = window.setTimeout(() => {
+      void loadLogs();
+    }, 0);
+    return () => window.clearTimeout(id);
   }, [ready, loadLogs]);
 
   const severityColor = (s: string) => {

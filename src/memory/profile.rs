@@ -90,6 +90,29 @@ pub(crate) struct PrivateGardenPolicy {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PrivateGardenGovernancePolicy {
+    pub recent_message_count: usize,
+    pub transcript_preview_chars: usize,
+    pub grounding_max_len: usize,
+    pub existing_doc_count: usize,
+    pub existing_doc_max_chars: usize,
+    pub existing_docs_max_chars: usize,
+    pub substantive_user_chars: usize,
+    pub substantive_reply_chars: usize,
+    pub substantive_combined_chars: usize,
+    pub max_writes: usize,
+    pub max_deletes: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SelfStatePolicy {
+    pub render_max_len: usize,
+    pub cautious_usage_percent: u8,
+    pub tight_usage_percent: u8,
+    pub recent_activity_window_secs: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct MemoryPolicy {
     pub session_summary: SessionSummaryPolicy,
     pub long_term_recall: LongTermRecallPolicy,
@@ -98,6 +121,8 @@ pub(crate) struct MemoryPolicy {
     pub self_model: SelfModelPolicy,
     pub private_docs: PrivateDocsPolicy,
     pub private_garden: PrivateGardenPolicy,
+    pub private_garden_governance: PrivateGardenGovernancePolicy,
+    pub self_state: SelfStatePolicy,
 }
 
 const EMBEDDED_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
@@ -168,6 +193,25 @@ const EMBEDDED_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
     private_garden: PrivateGardenPolicy {
         recent_doc_count: 2,
         render_max_len: 320,
+    },
+    private_garden_governance: PrivateGardenGovernancePolicy {
+        recent_message_count: 6,
+        transcript_preview_chars: 140,
+        grounding_max_len: 220,
+        existing_doc_count: 4,
+        existing_doc_max_chars: 180,
+        existing_docs_max_chars: 640,
+        substantive_user_chars: 8,
+        substantive_reply_chars: 20,
+        substantive_combined_chars: 48,
+        max_writes: 2,
+        max_deletes: 2,
+    },
+    self_state: SelfStatePolicy {
+        render_max_len: 280,
+        cautious_usage_percent: 65,
+        tight_usage_percent: 85,
+        recent_activity_window_secs: 6 * 60 * 60,
     },
 };
 
@@ -240,6 +284,25 @@ const STANDARD_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
         recent_doc_count: 4,
         render_max_len: 512,
     },
+    private_garden_governance: PrivateGardenGovernancePolicy {
+        recent_message_count: 10,
+        transcript_preview_chars: 220,
+        grounding_max_len: 320,
+        existing_doc_count: 6,
+        existing_doc_max_chars: 260,
+        existing_docs_max_chars: 1280,
+        substantive_user_chars: 6,
+        substantive_reply_chars: 18,
+        substantive_combined_chars: 40,
+        max_writes: 3,
+        max_deletes: 3,
+    },
+    self_state: SelfStatePolicy {
+        render_max_len: 360,
+        cautious_usage_percent: 65,
+        tight_usage_percent: 85,
+        recent_activity_window_secs: 12 * 60 * 60,
+    },
 };
 
 pub(crate) fn memory_policy(profile: MemoryProfile) -> &'static MemoryPolicy {
@@ -280,5 +343,10 @@ mod tests {
         assert!(standard.self_model.render_max_len > embedded.self_model.render_max_len);
         assert!(standard.private_docs.render_max_len > embedded.private_docs.render_max_len);
         assert!(standard.private_garden.render_max_len > embedded.private_garden.render_max_len);
+        assert!(
+            standard.private_garden_governance.existing_docs_max_chars
+                > embedded.private_garden_governance.existing_docs_max_chars
+        );
+        assert!(standard.self_state.render_max_len > embedded.self_state.render_max_len);
     }
 }

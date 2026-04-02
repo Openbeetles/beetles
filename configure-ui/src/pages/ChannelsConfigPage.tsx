@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -20,6 +19,7 @@ import { useConfigPageLoad } from "../hooks/useConfigPageLoad";
 import { useSaveFeedback } from "../hooks/useSaveFeedback";
 import { useUnsaved } from "../hooks/useUnsaved";
 import { useRevealedPasswordFields } from "../hooks/useRevealedPassword";
+import { useSyncedNullableState } from "../hooks/useSyncedNullableState";
 import { ENABLED_CHANNEL_OPTIONS } from "../types/appConfig";
 import type { AppConfig } from "../types/appConfig";
 
@@ -48,17 +48,9 @@ export function ChannelsConfigPage() {
   const { t } = useTranslation();
   const { config, loadConfig, saveChannels, loading, error } = useConfig();
   const { setDirty } = useUnsaved();
-  const [form, setForm] = useState<AppConfig | null>(null);
+  const [form, setForm] = useSyncedNullableState<AppConfig>(config);
   const saveFeedback = useSaveFeedback(t);
   useConfigPageLoad({ hasConfig: config !== null, loading, loadConfig });
-
-  useEffect(() => {
-    if (!config) {
-      queueMicrotask(() => setForm(null));
-      return;
-    }
-    queueMicrotask(() => setForm(config));
-  }, [config]);
 
   const { isRevealed, getRevealHandlers } = useRevealedPasswordFields();
 

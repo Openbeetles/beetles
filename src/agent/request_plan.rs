@@ -117,6 +117,12 @@ impl<'a> AgentRequestPlan<'a> {
                 system.push_str(&guidance);
             }
         }
+        if let Some(guidance) = self.internal_memory_governance_guidance() {
+            let remain = max_len.saturating_sub(system.len());
+            if guidance.len() <= remain {
+                system.push_str(guidance);
+            }
+        }
     }
 
     pub(crate) fn recover_response(&self, response: LlmResponse) -> LlmResponse {
@@ -213,6 +219,15 @@ impl AgentRequestPlan<'_> {
             guidance.push_str(" Use network_scan only for WiFi/AP scan or WiFi station checks.");
         }
         Some(guidance)
+    }
+
+    fn internal_memory_governance_guidance(&self) -> Option<&'static str> {
+        self.tool_specs
+            .iter()
+            .any(|tool| tool.name == "private_garden")
+            .then_some(
+                "\n\n## Internal Memory Governance\nYour internal memory has layers with different roles. Keep kernel-facing private memory compact, stable, and repeatedly useful. Use `private_garden` for exploratory drafts, temporary organization, and self-owned working material. Before writing new private content, prefer reading or listing what already exists, then update or merge in place instead of appending a history trail. When self-state reports Cautious or Tight pressure, consolidate or prune before creating more. If a garden insight becomes stable and load-bearing, distill it into the governed kernel later rather than duplicating the same material across both layers.",
+            )
     }
 }
 
@@ -659,5 +674,23 @@ mod tests {
         assert!(system.contains("Retrieval Discipline"));
         assert!(system.contains("search or list first only to locate concrete targets"));
         assert!(system.contains("turn-local evidence"));
+    }
+
+    #[test]
+    fn private_garden_adds_internal_memory_governance_guidance() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(NamedTool {
+            name: "private_garden",
+            description: "free private workspace",
+            metadata: ToolMetadata::task(),
+        }));
+        let msg = PcMsg::new_inbound("telegram", "chat", "我们继续聊", false).expect("pcmsg");
+        let plan =
+            AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::LinuxEnhanced);
+        let mut system = String::new();
+        plan.apply_system_prompt(&mut system, 4096);
+        assert!(system.contains("Internal Memory Governance"));
+        assert!(system.contains("private_garden"));
+        assert!(system.contains("update or merge in place"));
     }
 }

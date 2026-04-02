@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -22,6 +22,7 @@ import { useSaveFeedback } from "../hooks/useSaveFeedback";
 import { useDevice } from "../hooks/useDevice";
 import { useRevealedPassword } from "../hooks/useRevealedPassword";
 import { useUnsaved } from "../hooks/useUnsaved";
+import { useSyncedNullableState } from "../hooks/useSyncedNullableState";
 import type { WifiApEntry } from "../api/endpoints/system";
 import type { AppConfig } from "../types/appConfig";
 
@@ -60,7 +61,7 @@ export function SystemConfigPage() {
   const { api } = useDeviceApi();
   const { config, loadConfig, saveSystem, loading, error } = useConfig();
   const { setDirty } = useUnsaved();
-  const [form, setForm] = useState<AppConfig | null>(null);
+  const [form, setForm] = useSyncedNullableState<AppConfig>(config);
   const [wifiScanList, setWifiScanList] = useState<WifiApEntry[] | null>(null);
   const [wifiScanLoading, setWifiScanLoading] = useState(false);
   const [wifiScanError, setWifiScanError] = useState("");
@@ -85,14 +86,6 @@ export function SystemConfigPage() {
   };
 
   useConfigPageLoad({ hasConfig: config !== null, loading, loadConfig });
-
-  useEffect(() => {
-    if (!config) {
-      queueMicrotask(() => setForm(null));
-      return;
-    }
-    queueMicrotask(() => setForm(config));
-  }, [config]);
 
   const update = (key: keyof AppConfig, value: string | number) => {
     setDirty(true);

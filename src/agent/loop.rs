@@ -965,6 +965,7 @@ fn run_post_reply_maintenance_job(
             execution_state_store: config.execution_state_store.as_ref(),
             self_model_store: config.self_model_store.as_ref(),
             private_doc_store: config.private_doc_store.as_ref(),
+            private_garden_store: config.private_garden_store.as_ref(),
             extraction_state_store: config.long_term_memory_extraction_state_store.as_ref(),
         },
         PostReplyMemoryMaintenanceInput {
@@ -1034,6 +1035,18 @@ fn run_post_reply_maintenance_job(
         }
         Ok(crate::memory::PrivateDocWorkspaceRefreshOutcome::Skipped) => {}
         Err(error) => log::warn!("[agent_private_docs] failed: {}", error),
+    }
+    match maintenance_outcome.private_garden_result {
+        Ok(crate::memory::PrivateGardenGovernanceOutcome::Updated { writes, deletes }) => {
+            log::info!(
+                "[agent_private_garden] updated for {} (writes={}, deletes={})",
+                msg.chat_id,
+                writes,
+                deletes
+            );
+        }
+        Ok(crate::memory::PrivateGardenGovernanceOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_private_garden] failed: {}", error),
     }
     if maintenance_outcome.extraction_request_outcome
         == LongTermMemoryRefreshRequestOutcome::RequestFailed
@@ -2060,6 +2073,7 @@ fn run_worker_path(
         chat_id: &msg.chat_id,
         user_query: &msg.content,
         system_max_len: prompt_memory_system_budget,
+        now_secs: runtime.now_secs,
         profile: config.memory_profile,
         recent_messages_limit: config.session_max_messages,
         load_long_term_memory: !interactive_fast_path,
@@ -2084,6 +2098,7 @@ fn run_worker_path(
         group_activation: config.tg_group_activation.as_ref(),
         emotion_signal_suffix,
         execution_state_text: prompt_memory.execution_state_text.as_deref(),
+        self_state_text: prompt_memory.self_state_text.as_deref(),
         self_model_text: prompt_memory.self_model_text.as_deref(),
         private_workspace_text: prompt_memory.private_workspace_text.as_deref(),
         private_garden_text: prompt_memory.private_garden_text.as_deref(),

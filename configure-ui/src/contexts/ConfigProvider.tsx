@@ -43,6 +43,12 @@ function mapSegmentLoadError(res: ApiResult<unknown>): string | null {
       : ERROR_KEY_LOAD_FAILED;
 }
 
+function mapSaveError(error: string | undefined): string | undefined {
+  return error === API_ERROR.PAIRING_REQUIRED
+    ? "device.pairingCodeRequired"
+    : error;
+}
+
 /** display / audio / hardware / 主配置 GET 共用：ready、loading、错误映射一致。 */
 async function loadDeviceSegment<T extends object>(args: {
   ready: boolean;
@@ -166,58 +172,46 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     return { ok: false, error: res.error ?? ERROR_KEY_LOAD_FAILED };
   }, [api.config, deviceSessionKey, ready]);
 
+  const saveConfigSegment = useCallback(
+    async <TBody extends object,>(
+      save: (body: TBody) => Promise<ApiResult<unknown>>,
+      body: TBody,
+    ): Promise<{ ok: boolean; error?: string }> => {
+      const sessionKey = deviceSessionKey;
+      const res = await save(body);
+      if (res.ok && deviceSessionKeyRef.current === sessionKey) {
+        setConfig((prev) => (prev ? { ...prev, ...body } : null));
+      }
+      return { ok: res.ok ?? false, error: mapSaveError(res.error) };
+    },
+    [deviceSessionKey],
+  );
+
   const saveLlm = useCallback(
     async (
       body: LlmConfigSegment,
     ): Promise<{ ok: boolean; error?: string }> => {
-      const sessionKey = deviceSessionKey;
-      const res = await api.config.saveLlm(body);
-      if (res.ok && deviceSessionKeyRef.current === sessionKey) {
-        setConfig((prev) => (prev ? { ...prev, ...body } : null));
-      }
-      const err =
-        res.error === API_ERROR.PAIRING_REQUIRED
-          ? "device.pairingCodeRequired"
-          : res.error;
-      return { ok: res.ok ?? false, error: err };
+      return saveConfigSegment(api.config.saveLlm, body);
     },
-    [api.config, deviceSessionKey],
+    [api.config.saveLlm, saveConfigSegment],
   );
 
   const saveChannels = useCallback(
     async (
       body: ChannelsConfigSegment,
     ): Promise<{ ok: boolean; error?: string }> => {
-      const sessionKey = deviceSessionKey;
-      const res = await api.config.saveChannels(body);
-      if (res.ok && deviceSessionKeyRef.current === sessionKey) {
-        setConfig((prev) => (prev ? { ...prev, ...body } : null));
-      }
-      const err =
-        res.error === API_ERROR.PAIRING_REQUIRED
-          ? "device.pairingCodeRequired"
-          : res.error;
-      return { ok: res.ok ?? false, error: err };
+      return saveConfigSegment(api.config.saveChannels, body);
     },
-    [api.config, deviceSessionKey],
+    [api.config.saveChannels, saveConfigSegment],
   );
 
   const saveSystem = useCallback(
     async (
       body: SystemConfigSegment,
     ): Promise<{ ok: boolean; error?: string }> => {
-      const sessionKey = deviceSessionKey;
-      const res = await api.config.saveSystem(body);
-      if (res.ok && deviceSessionKeyRef.current === sessionKey) {
-        setConfig((prev) => (prev ? { ...prev, ...body } : null));
-      }
-      const err =
-        res.error === API_ERROR.PAIRING_REQUIRED
-          ? "device.pairingCodeRequired"
-          : res.error;
-      return { ok: res.ok ?? false, error: err };
+      return saveConfigSegment(api.config.saveSystem, body);
     },
-    [api.config, deviceSessionKey],
+    [api.config.saveSystem, saveConfigSegment],
   );
 
   const loadDisplayConfig = useCallback(async () => {

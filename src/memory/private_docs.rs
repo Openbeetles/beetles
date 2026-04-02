@@ -19,6 +19,7 @@ use super::{
 pub const PRIVATE_DOC_WORKSPACE_SYSTEM_PROMPT: &str = "You maintain a compact private document workspace for a persistent embodied AI assistant. Return JSON only: one object whose fields may include inner_journal, relationship_notes, self_reflection, private_plan. Omit unchanged fields. Use an empty string only when a document should be cleared because it is no longer helpful. These documents are private, subjective, and compact. They must not replace factual memory or copy the transcript. Use shared facts only as grounding. Keep each field concise, concrete, and continuity-preserving. inner_journal captures the inward afterglow of recent interaction. relationship_notes captures how the relationship currently feels or is shifting. self_reflection captures how the assistant sees its own stance or change. private_plan captures inward next-step framing, not a user-facing promise list. Avoid secrets, raw tool payloads, copied logs, generic assistant boilerplate, or long quotes.";
 
 const PRIVATE_DOC_FIELD_MAX_CHARS: usize = 240;
+pub const PRIVATE_DOC_WORKSPACE_TOTAL_CHAR_LIMIT: usize = PRIVATE_DOC_FIELD_MAX_CHARS * 4;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PrivateDocEntry {
@@ -62,6 +63,25 @@ impl PrivateDocWorkspace {
                 .as_ref()
                 .is_some_and(|entry| !entry.content.trim().is_empty())
     }
+}
+
+pub(crate) fn estimate_private_doc_workspace_chars(workspace: &PrivateDocWorkspace) -> usize {
+    workspace
+        .inner_journal
+        .as_ref()
+        .map_or(0, |entry| entry.content.chars().count())
+        + workspace
+            .relationship_notes
+            .as_ref()
+            .map_or(0, |entry| entry.content.chars().count())
+        + workspace
+            .self_reflection
+            .as_ref()
+            .map_or(0, |entry| entry.content.chars().count())
+        + workspace
+            .private_plan
+            .as_ref()
+            .map_or(0, |entry| entry.content.chars().count())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

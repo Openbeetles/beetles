@@ -71,6 +71,7 @@ pub struct ContextParams<'a> {
     pub group_activation: &'a str,
     pub emotion_signal_suffix: Option<&'a str>,
     pub execution_state_text: Option<&'a str>,
+    pub self_state_text: Option<&'a str>,
     pub self_model_text: Option<&'a str>,
     pub private_workspace_text: Option<&'a str>,
     pub private_garden_text: Option<&'a str>,
@@ -141,6 +142,7 @@ fn section_with_separator_len(content: Option<&str>) -> usize {
 
 fn reserve_priority_memory_budget(
     execution_state_text: Option<&str>,
+    self_state_text: Option<&str>,
     self_model_text: Option<&str>,
     private_workspace_text: Option<&str>,
     private_garden_text: Option<&str>,
@@ -149,15 +151,18 @@ fn reserve_priority_memory_budget(
 ) -> usize {
     let execution_reserve = section_with_separator_len(execution_state_text).min(base_max);
     let remaining = base_max.saturating_sub(execution_reserve);
-    let self_model_reserve = section_with_separator_len(self_model_text).min(remaining / 3);
+    let self_state_reserve = section_with_separator_len(self_state_text).min(remaining / 4);
+    let remaining = remaining.saturating_sub(self_state_reserve);
+    let self_model_reserve = section_with_separator_len(self_model_text).min(remaining / 4);
     let remaining = remaining.saturating_sub(self_model_reserve);
     let private_workspace_reserve =
-        section_with_separator_len(private_workspace_text).min(remaining / 3);
+        section_with_separator_len(private_workspace_text).min(remaining / 4);
     let remaining = remaining.saturating_sub(private_workspace_reserve);
-    let private_garden_reserve = section_with_separator_len(private_garden_text).min(remaining / 3);
+    let private_garden_reserve = section_with_separator_len(private_garden_text).min(remaining / 4);
     let remaining = remaining.saturating_sub(private_garden_reserve);
     let long_term_reserve = section_with_separator_len(long_term_memory_text).min(remaining);
     execution_reserve
+        .saturating_add(self_state_reserve)
         .saturating_add(self_model_reserve)
         .saturating_add(private_workspace_reserve)
         .saturating_add(private_garden_reserve)
@@ -306,6 +311,7 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     let base_max = p.system_max_len.saturating_sub(post_memory_tail_len);
     let priority_memory_reserve = reserve_priority_memory_budget(
         p.execution_state_text,
+        p.self_state_text,
         p.self_model_text,
         p.private_workspace_text,
         p.private_garden_text,
@@ -318,6 +324,9 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     append_system_prompt_base(&mut system, &soul, &user, &mem, base_prompt_budget);
     if let Some(execution_state_text) = p.execution_state_text {
         let _ = append_capped_section(&mut system, "\n\n", execution_state_text, base_max);
+    }
+    if let Some(self_state_text) = p.self_state_text {
+        let _ = append_capped_section(&mut system, "\n\n", self_state_text, base_max);
     }
     if let Some(long_term_memory_text) = p.long_term_memory_text {
         let _ = append_capped_section(&mut system, "\n\n", long_term_memory_text, base_max);
@@ -606,12 +615,13 @@ mod tests {
             important_message_store: &important,
             has_tools: false,
             skill_descriptions: "",
-            system_max_len: 560,
+            system_max_len: 680,
             messages_max_len: 256,
             session_max_messages: 8,
             group_activation: "always",
             emotion_signal_suffix: None,
             execution_state_text: Some("## Execution State\nGoal: close current task"),
+            self_state_text: Some("## Self State\nMemory pressure: Cautious"),
             self_model_text: Some("## Self Continuity\nAnchor: still the same beetle"),
             private_workspace_text: Some(
                 "## Inner Workspace\nPrivate plan: keep the inner layer coherent",
@@ -629,6 +639,7 @@ mod tests {
         .expect("context");
 
         assert!(system.contains("## Execution State"));
+        assert!(system.contains("## Self State"));
         assert!(system.contains("## Self Continuity"));
         assert!(system.contains("## Inner Workspace"));
         assert!(system.contains("## Private Garden"));
@@ -662,6 +673,7 @@ mod tests {
             group_activation: "always",
             emotion_signal_suffix: None,
             execution_state_text: None,
+            self_state_text: None,
             self_model_text: None,
             private_workspace_text: None,
             private_garden_text: None,

@@ -21,6 +21,8 @@ pub const SELF_MODEL_SYSTEM_PROMPT: &str = "You maintain a compact private self-
 
 const SELF_MODEL_FIELD_MAX_CHARS: usize = 220;
 const SELF_MODEL_ANCHOR_MAX_CHARS: usize = 180;
+pub const SELF_MODEL_TOTAL_CHAR_LIMIT: usize =
+    SELF_MODEL_ANCHOR_MAX_CHARS + (SELF_MODEL_FIELD_MAX_CHARS * 3);
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SelfModel {
@@ -43,6 +45,13 @@ impl SelfModel {
             || !self.relationship_state.trim().is_empty()
             || !self.private_notes.trim().is_empty()
     }
+}
+
+pub(crate) fn estimate_self_model_chars(model: &SelfModel) -> usize {
+    model.continuity_anchor.chars().count()
+        + model.self_narrative.chars().count()
+        + model.relationship_state.chars().count()
+        + model.private_notes.chars().count()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

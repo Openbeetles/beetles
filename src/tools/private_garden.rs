@@ -26,7 +26,7 @@ impl Tool for PrivateGardenTool {
     }
 
     fn description(&self) -> &str {
-        "Manage your current chat's free private workspace. Use it for self-owned internal notes, plans, drafts, or reflections that do not belong in shared factual memory or the governed private kernel."
+        "Manage your current chat's free private workspace. Use it for self-owned internal notes, drafts, and temporary organization that do not belong in shared factual memory or the governed private kernel. Prefer updating existing docs in place instead of accumulating per-turn history."
     }
 
     fn schema(&self) -> Value {
@@ -36,7 +36,7 @@ impl Tool for PrivateGardenTool {
                 "op": {
                     "type": "string",
                     "enum": ["list", "read", "write", "delete"],
-                    "description": "Operation to perform inside the current chat's private garden."
+                    "description": "Operation to perform inside the current chat's private garden. Use list/read before write when you need to inspect or reorganize existing material."
                 },
                 "path": {
                     "type": "string",
@@ -44,7 +44,7 @@ impl Tool for PrivateGardenTool {
                 },
                 "content": {
                     "type": "string",
-                    "description": "Document content for write."
+                    "description": "Complete document content for write. Writes replace the current document body, so prefer compact rewrites over appending historical notes."
                 },
                 "limit": {
                     "type": "integer",

@@ -10,15 +10,17 @@ use super::{
     evaluate_long_term_memory_extraction_turn, load_session_summary_snapshot,
     mark_long_term_memory_extraction_requested, memory_policy,
     persist_long_term_memory_extraction_state, run_execution_state_refresh_with_state,
-    run_private_doc_workspace_refresh_with_state, run_self_model_refresh_with_state,
-    run_session_summary_refresh_with_snapshot, should_refresh_execution_state,
-    should_refresh_private_doc_workspace, should_refresh_self_model, ExecutionStateRefreshContext,
+    run_private_doc_workspace_refresh_with_state, run_private_garden_governance_with_state,
+    run_self_model_refresh_with_state, run_session_summary_refresh_with_snapshot,
+    should_refresh_execution_state, should_refresh_private_doc_workspace,
+    should_refresh_private_garden, should_refresh_self_model, ExecutionStateRefreshContext,
     ExecutionStateRefreshInput, ExecutionStateRefreshOutcome, ExecutionStateStore,
     LongTermMemoryExtractionStateStore, LongTermMemoryExtractionTurnInput, MemoryProfile,
     PrivateDocStore, PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
-    PrivateDocWorkspaceRefreshOutcome, SelfModelRefreshContext, SelfModelRefreshInput,
-    SelfModelRefreshOutcome, SelfModelStore, SessionStore, SessionSummaryRefreshOutcome,
-    SessionSummaryStore,
+    PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
+    PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, PrivateGardenStore,
+    SelfModelRefreshContext, SelfModelRefreshInput, SelfModelRefreshOutcome, SelfModelStore,
+    SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore,
 };
 
 pub struct PostReplyMemoryMaintenanceContext<'a> {
@@ -27,6 +29,7 @@ pub struct PostReplyMemoryMaintenanceContext<'a> {
     pub execution_state_store: &'a dyn ExecutionStateStore,
     pub self_model_store: &'a dyn SelfModelStore,
     pub private_doc_store: &'a dyn PrivateDocStore,
+    pub private_garden_store: &'a dyn PrivateGardenStore,
     pub extraction_state_store: &'a dyn LongTermMemoryExtractionStateStore,
 }
 
@@ -56,6 +59,7 @@ pub struct PostReplyMemoryMaintenanceOutcome {
     pub execution_state_result: Result<ExecutionStateRefreshOutcome>,
     pub self_model_result: Result<SelfModelRefreshOutcome>,
     pub private_doc_result: Result<PrivateDocWorkspaceRefreshOutcome>,
+    pub private_garden_result: Result<PrivateGardenGovernanceOutcome>,
     pub extraction_request_outcome: LongTermMemoryRefreshRequestOutcome,
 }
 
@@ -134,11 +138,32 @@ pub fn run_post_reply_memory_maintenance(
             )
         })
         .unwrap_or(false);
+    let private_garden_docs = ctx.private_garden_store.list(input.chat_id, usize::MAX);
+    let private_garden_should_refresh = private_garden_docs
+        .as_ref()
+        .map(|docs| {
+            should_refresh_private_garden(
+                PrivateGardenGovernanceInput {
+                    chat_id: input.chat_id,
+                    ingress: input.ingress,
+                    channel: input.channel,
+                    user_content: input.user_content,
+                    reply_content: input.reply_content,
+                    pressure: input.pressure,
+                    tool_calls: input.tool_calls,
+                    now_secs: input.now_secs,
+                },
+                !docs.is_empty(),
+                input.memory_profile,
+            )
+        })
+        .unwrap_or(false);
     let shared_recent = if [
         summary_should_refresh,
         execution_should_refresh,
         self_model_should_refresh,
         private_doc_should_refresh,
+        private_garden_should_refresh,
     ]
     .into_iter()
     .filter(|enabled| *enabled)
@@ -156,7 +181,12 @@ pub fn run_post_reply_memory_maintenance(
                     .recent_message_count
                     .max(execution_policy.recent_message_count)
                     .max(self_model_policy.recent_message_count)
-                    .max(private_docs_policy.recent_message_count),
+                    .max(private_docs_policy.recent_message_count)
+                    .max(
+                        memory_policy(input.memory_profile)
+                            .private_garden_governance
+                            .recent_message_count,
+                    ),
             )
             .ok()
     } else {
@@ -285,6 +315,48 @@ pub fn run_post_reply_memory_maintenance(
         ),
         Err(error) => Err(error),
     };
+    let latest_private_workspace = match ctx.private_doc_store.get(input.chat_id) {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            log::warn!(
+                "[agent_private_garden] failed to reload private docs for chat_id={}: {}",
+                input.chat_id,
+                error
+            );
+            None
+        }
+    };
+    let private_garden_result = match private_garden_docs {
+        Ok(_existing_docs) => run_private_garden_governance_with_state(
+            http,
+            llm,
+            PrivateGardenGovernanceContext {
+                session_store: ctx.session_store,
+                session_summary_store: ctx.session_summary_store,
+                execution_state_store: ctx.execution_state_store,
+                self_model_store: ctx.self_model_store,
+                private_doc_store: ctx.private_doc_store,
+                private_garden_store: ctx.private_garden_store,
+            },
+            PrivateGardenGovernanceInput {
+                chat_id: input.chat_id,
+                ingress: input.ingress,
+                channel: input.channel,
+                user_content: input.user_content,
+                reply_content: input.reply_content,
+                pressure: input.pressure,
+                tool_calls: input.tool_calls,
+                now_secs: input.now_secs,
+            },
+            input.memory_profile,
+            summary_snapshot.summary_text.as_deref(),
+            latest_execution_state.as_ref(),
+            latest_self_model.as_ref(),
+            latest_private_workspace.as_ref(),
+            shared_recent.as_deref(),
+        ),
+        Err(error) => Err(error),
+    };
 
     let extraction_state = ctx.extraction_state_store.get(input.chat_id).ok().flatten();
     let extraction_decision = evaluate_long_term_memory_extraction_turn(
@@ -325,6 +397,7 @@ pub fn run_post_reply_memory_maintenance(
         execution_state_result,
         self_model_result,
         private_doc_result,
+        private_garden_result,
         extraction_request_outcome,
     }
 }
@@ -336,8 +409,9 @@ mod tests {
     use crate::llm::{LlmModelCompat, LlmResponse, Message, StopReason, ToolChoicePolicy};
     use crate::memory::{
         ExecutionState, ExecutionStateStore, LongTermMemoryExtractionState,
-        LongTermMemoryExtractionStateStore, PrivateDocStore, PrivateDocWorkspace, SelfModel,
-        SelfModelStore, SessionMessage, SessionSummaryStore,
+        LongTermMemoryExtractionStateStore, PrivateDocStore, PrivateDocWorkspace, PrivateGardenDoc,
+        PrivateGardenDocRecord, PrivateGardenStore, SelfModel, SelfModelStore, SessionMessage,
+        SessionSummaryStore,
     };
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -504,6 +578,83 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct StubPrivateGardenStore {
+        docs: Mutex<HashMap<String, PrivateGardenDoc>>,
+    }
+
+    impl PrivateGardenStore for StubPrivateGardenStore {
+        fn list(&self, _chat_id: &str, limit: usize) -> Result<Vec<PrivateGardenDocRecord>> {
+            let mut docs = self
+                .docs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .cloned()
+                .map(|doc| PrivateGardenDocRecord {
+                    path: doc.path.clone(),
+                    updated_at: doc.updated_at,
+                    revision: doc.revision,
+                    bytes: doc.content.len(),
+                    preview: crate::memory::build_private_garden_preview(&doc.content),
+                })
+                .collect::<Vec<_>>();
+            docs.sort_by(|a, b| {
+                b.updated_at
+                    .cmp(&a.updated_at)
+                    .then_with(|| a.path.cmp(&b.path))
+            });
+            docs.truncate(limit);
+            Ok(docs)
+        }
+
+        fn read(&self, _chat_id: &str, doc_path: &str) -> Result<Option<PrivateGardenDoc>> {
+            Ok(self
+                .docs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(doc_path)
+                .cloned())
+        }
+
+        fn write(
+            &self,
+            _chat_id: &str,
+            doc_path: &str,
+            content: &str,
+            now_secs: u64,
+        ) -> Result<PrivateGardenDocRecord> {
+            let mut docs = self.docs.lock().unwrap_or_else(|e| e.into_inner());
+            let revision = docs
+                .get(doc_path)
+                .map(|doc| doc.revision.saturating_add(1))
+                .unwrap_or(1);
+            let doc = PrivateGardenDoc {
+                path: doc_path.to_string(),
+                content: content.to_string(),
+                updated_at: now_secs,
+                revision,
+            };
+            docs.insert(doc_path.to_string(), doc.clone());
+            Ok(PrivateGardenDocRecord {
+                path: doc.path,
+                updated_at: doc.updated_at,
+                revision: doc.revision,
+                bytes: doc.content.len(),
+                preview: crate::memory::build_private_garden_preview(&doc.content),
+            })
+        }
+
+        fn delete(&self, _chat_id: &str, doc_path: &str) -> Result<bool> {
+            Ok(self
+                .docs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(doc_path)
+                .is_some())
+        }
+    }
+
     struct FixedLlmClient;
 
     impl LlmClient for FixedLlmClient {
@@ -525,6 +676,8 @@ mod tests {
                 r#"{"continuity_anchor":"我还在沿着同一条收口线前进","self_narrative":"现在我把共享事实层和私有层分开维护","relationship_state":"和这个用户维持着共同推进架构的关系感","private_notes":"下一轮继续收紧 self-model 的写入边界"}"#
             } else if system == crate::memory::PRIVATE_DOC_WORKSPACE_SYSTEM_PROMPT {
                 r#"{"inner_journal":"这轮开始把内部空间整理成可治理文档","private_plan":"继续收紧 private docs 的写入与投影边界"}"#
+            } else if system == crate::memory::PRIVATE_GARDEN_GOVERNANCE_SYSTEM_PROMPT {
+                r#"{"writes":[{"path":"journal/current.md","content":"把当前内部工作收束成一份持续维护的私有笔记。"}],"deletes":["scratch/stale.md"]}"#
             } else {
                 "summary"
             };
@@ -583,6 +736,7 @@ mod tests {
         let execution_state_store = StubExecutionStateStore::default();
         let self_model_store = StubSelfModelStore::default();
         let private_doc_store = StubPrivateDocStore::default();
+        let private_garden_store = StubPrivateGardenStore::default();
         let mut http = DummyHttpClient;
         let outcome = run_post_reply_memory_maintenance(
             &mut http,
@@ -593,6 +747,7 @@ mod tests {
                 execution_state_store: &execution_state_store,
                 self_model_store: &self_model_store,
                 private_doc_store: &private_doc_store,
+                private_garden_store: &private_garden_store,
                 extraction_state_store: &extraction_state_store,
             },
             PostReplyMemoryMaintenanceInput {
@@ -626,6 +781,10 @@ mod tests {
             outcome.private_doc_result,
             Ok(PrivateDocWorkspaceRefreshOutcome::Updated)
         ));
+        assert!(matches!(
+            outcome.private_garden_result,
+            Ok(PrivateGardenGovernanceOutcome::Updated { .. })
+        ));
         assert_eq!(
             outcome.extraction_request_outcome,
             LongTermMemoryRefreshRequestOutcome::Requested
@@ -652,6 +811,7 @@ mod tests {
         let execution_state_store = StubExecutionStateStore::default();
         let self_model_store = StubSelfModelStore::default();
         let private_doc_store = StubPrivateDocStore::default();
+        let private_garden_store = StubPrivateGardenStore::default();
         let mut http = DummyHttpClient;
         let outcome = run_post_reply_memory_maintenance(
             &mut http,
@@ -662,6 +822,7 @@ mod tests {
                 execution_state_store: &execution_state_store,
                 self_model_store: &self_model_store,
                 private_doc_store: &private_doc_store,
+                private_garden_store: &private_garden_store,
                 extraction_state_store: &extraction_state_store,
             },
             PostReplyMemoryMaintenanceInput {
@@ -694,6 +855,10 @@ mod tests {
         assert!(matches!(
             outcome.private_doc_result,
             Ok(PrivateDocWorkspaceRefreshOutcome::Skipped)
+        ));
+        assert!(matches!(
+            outcome.private_garden_result,
+            Ok(PrivateGardenGovernanceOutcome::Skipped)
         ));
         assert_eq!(
             outcome.extraction_request_outcome,
@@ -735,6 +900,7 @@ mod tests {
         let execution_state_store = StubExecutionStateStore::default();
         let self_model_store = StubSelfModelStore::default();
         let private_doc_store = StubPrivateDocStore::default();
+        let private_garden_store = StubPrivateGardenStore::default();
         let mut http = DummyHttpClient;
 
         let outcome = run_post_reply_memory_maintenance(
@@ -746,6 +912,7 @@ mod tests {
                 execution_state_store: &execution_state_store,
                 self_model_store: &self_model_store,
                 private_doc_store: &private_doc_store,
+                private_garden_store: &private_garden_store,
                 extraction_state_store: &extraction_state_store,
             },
             PostReplyMemoryMaintenanceInput {
@@ -778,6 +945,10 @@ mod tests {
         assert!(matches!(
             outcome.private_doc_result,
             Ok(PrivateDocWorkspaceRefreshOutcome::Updated)
+        ));
+        assert!(matches!(
+            outcome.private_garden_result,
+            Ok(PrivateGardenGovernanceOutcome::Updated { .. })
         ));
         assert_eq!(
             *session_store
@@ -818,6 +989,7 @@ mod tests {
         let execution_state_store = StubExecutionStateStore::default();
         let self_model_store = StubSelfModelStore::default();
         let private_doc_store = StubPrivateDocStore::default();
+        let private_garden_store = StubPrivateGardenStore::default();
         let mut http = DummyHttpClient;
 
         let outcome = run_post_reply_memory_maintenance(
@@ -829,6 +1001,7 @@ mod tests {
                 execution_state_store: &execution_state_store,
                 self_model_store: &self_model_store,
                 private_doc_store: &private_doc_store,
+                private_garden_store: &private_garden_store,
                 extraction_state_store: &extraction_state_store,
             },
             PostReplyMemoryMaintenanceInput {

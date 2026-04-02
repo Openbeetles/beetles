@@ -2,10 +2,11 @@
 //! Shared prompt memory loading for agent context construction.
 
 use super::{
-    memory_policy, recall_long_term_memory_block, render_execution_state_block,
+    build_self_state, memory_policy, recall_long_term_memory_block, render_execution_state_block,
     render_private_doc_workspace_block, render_private_garden_block, render_self_model_block,
-    ExecutionStateStore, LongTermMemoryStore, MemoryProfile, PrivateDocStore, PrivateGardenStore,
-    SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
+    render_self_state_block, ExecutionStateStore, LongTermMemoryStore, MemoryProfile,
+    PrivateDocStore, PrivateGardenStore, SelfModelStore, SessionMessage, SessionStore,
+    SessionSummaryStore,
 };
 
 pub struct PromptMemoryContext {
@@ -13,6 +14,7 @@ pub struct PromptMemoryContext {
     pub message_summary_text: Option<String>,
     pub long_term_memory_text: Option<String>,
     pub execution_state_text: Option<String>,
+    pub self_state_text: Option<String>,
     pub self_model_text: Option<String>,
     pub private_workspace_text: Option<String>,
     pub private_garden_text: Option<String>,
@@ -23,6 +25,7 @@ pub struct PromptMemoryContextParams<'a> {
     pub chat_id: &'a str,
     pub user_query: &'a str,
     pub system_max_len: usize,
+    pub now_secs: u64,
     pub profile: MemoryProfile,
     pub recent_messages_limit: usize,
     pub load_long_term_memory: bool,
@@ -70,43 +73,46 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
                 memory_policy(params.profile).execution_state.render_max_len,
             )
         });
-    let self_model_text = params
-        .self_model_store
-        .get(params.chat_id)
-        .ok()
-        .flatten()
-        .and_then(|model| {
-            render_self_model_block(
-                &model,
-                memory_policy(params.profile).self_model.render_max_len,
-            )
-        });
-    let private_workspace_text = params
-        .private_doc_store
-        .get(params.chat_id)
-        .ok()
-        .flatten()
-        .and_then(|workspace| {
-            render_private_doc_workspace_block(
-                &workspace,
-                memory_policy(params.profile).private_docs.render_max_len,
-            )
-        });
-    let private_garden_text = params
+    let self_model = params.self_model_store.get(params.chat_id).ok().flatten();
+    let self_model_text = self_model.as_ref().and_then(|model| {
+        render_self_model_block(
+            model,
+            memory_policy(params.profile).self_model.render_max_len,
+        )
+    });
+    let private_workspace = params.private_doc_store.get(params.chat_id).ok().flatten();
+    let private_workspace_text = private_workspace.as_ref().and_then(|workspace| {
+        render_private_doc_workspace_block(
+            workspace,
+            memory_policy(params.profile).private_docs.render_max_len,
+        )
+    });
+    let all_private_garden_docs = params
         .private_garden_store
-        .list(
-            params.chat_id,
+        .list(params.chat_id, usize::MAX)
+        .unwrap_or_default();
+    let private_garden_text = {
+        let mut recent_docs = all_private_garden_docs.clone();
+        recent_docs.truncate(
             memory_policy(params.profile)
                 .private_garden
                 .recent_doc_count,
+        );
+        render_private_garden_block(
+            &recent_docs,
+            memory_policy(params.profile).private_garden.render_max_len,
         )
-        .ok()
-        .and_then(|docs| {
-            render_private_garden_block(
-                &docs,
-                memory_policy(params.profile).private_garden.render_max_len,
-            )
-        });
+    };
+    let self_state_text = render_self_state_block(
+        &build_self_state(
+            self_model.as_ref(),
+            private_workspace.as_ref(),
+            &all_private_garden_docs,
+            params.now_secs,
+            params.profile,
+        ),
+        memory_policy(params.profile).self_state.render_max_len,
+    );
     let long_term_memory_text =
         if !params.load_long_term_memory || params.system_max_len < recall_policy.block_min_len {
             None
@@ -134,6 +140,7 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         message_summary_text,
         long_term_memory_text,
         execution_state_text,
+        self_state_text,
         self_model_text,
         private_workspace_text,
         private_garden_text,
@@ -453,6 +460,7 @@ mod tests {
             chat_id: "chat-1",
             user_query: "嗯?",
             system_max_len: 1024,
+            now_secs: 100,
             profile: MemoryProfile::Standard,
             recent_messages_limit: 8,
             load_long_term_memory: true,
@@ -494,6 +502,11 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("Goal: 收口 prompt memory"));
+        assert!(context
+            .self_state_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Self State"));
         assert!(context
             .self_model_text
             .as_deref()
@@ -544,6 +557,7 @@ mod tests {
             chat_id: "chat-1",
             user_query: "嗯?",
             system_max_len: 80,
+            now_secs: 100,
             profile: MemoryProfile::Embedded,
             recent_messages_limit: 8,
             load_long_term_memory: true,
@@ -626,6 +640,7 @@ mod tests {
             chat_id: "chat-1",
             user_query: "继续",
             system_max_len: 1024,
+            now_secs: 100,
             profile: MemoryProfile::Standard,
             recent_messages_limit: 16,
             load_long_term_memory: false,
@@ -640,6 +655,11 @@ mod tests {
 
         assert_eq!(context.summary_text.as_deref(), Some("summary"));
         assert!(context.long_term_memory_text.is_none());
+        assert!(context
+            .self_state_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Garden space: 1/16 docs"));
         assert!(context
             .self_model_text
             .as_deref()

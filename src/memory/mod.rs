@@ -11,9 +11,11 @@ mod long_term_extraction;
 mod maintenance;
 mod private_docs;
 mod private_garden;
+mod private_garden_governance;
 mod profile;
 mod prompt_context;
 mod self_model;
+mod self_state;
 mod session_summary_refresh;
 mod turn_ledger;
 
@@ -53,10 +55,12 @@ pub use maintenance::{
     PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput,
     PostReplyMemoryMaintenanceOutcome,
 };
+pub(crate) use private_docs::estimate_private_doc_workspace_chars;
 pub use private_docs::{
     render_private_doc_workspace_block, run_private_doc_workspace_refresh, PrivateDocEntry,
     PrivateDocWorkspace, PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
     PrivateDocWorkspaceRefreshOutcome, PRIVATE_DOC_WORKSPACE_SYSTEM_PROMPT,
+    PRIVATE_DOC_WORKSPACE_TOTAL_CHAR_LIMIT,
 };
 pub(crate) use private_docs::{
     run_private_doc_workspace_refresh_with_state, should_refresh_private_doc_workspace,
@@ -64,22 +68,37 @@ pub(crate) use private_docs::{
 pub(crate) use private_garden::build_private_garden_preview;
 pub use private_garden::{
     normalize_private_garden_doc_path, render_private_garden_block, PrivateGardenDoc,
-    PrivateGardenDocRecord,
+    PrivateGardenDocRecord, PRIVATE_GARDEN_MAX_DOCS_PER_CHAT, PRIVATE_GARDEN_MAX_DOC_BYTES,
+    PRIVATE_GARDEN_TOTAL_BYTE_LIMIT,
+};
+pub use private_garden_governance::{
+    run_private_garden_governance, PrivateGardenGovernanceContext, PrivateGardenGovernanceInput,
+    PrivateGardenGovernanceOutcome, PRIVATE_GARDEN_GOVERNANCE_SYSTEM_PROMPT,
+};
+pub(crate) use private_garden_governance::{
+    run_private_garden_governance_with_state, should_refresh_private_garden,
 };
 pub use profile::MemoryProfile;
 pub(crate) use profile::{
     memory_policy, shared_long_term_governance_policy, ExecutionStatePolicy,
-    LongTermExtractionPolicy, LongTermRecallPolicy, PrivateDocsPolicy, SelfModelPolicy,
-    SessionSummaryPolicy,
+    LongTermExtractionPolicy, LongTermRecallPolicy, PrivateDocsPolicy,
+    PrivateGardenGovernancePolicy, SelfModelPolicy, SessionSummaryPolicy,
 };
 pub use prompt_context::{
     load_prompt_memory_context, PromptMemoryContext, PromptMemoryContextParams,
 };
+pub(crate) use self_model::estimate_self_model_chars;
 pub use self_model::{
     render_self_model_block, run_self_model_refresh, SelfModel, SelfModelRefreshContext,
     SelfModelRefreshInput, SelfModelRefreshOutcome, SELF_MODEL_SYSTEM_PROMPT,
+    SELF_MODEL_TOTAL_CHAR_LIMIT,
 };
 pub(crate) use self_model::{run_self_model_refresh_with_state, should_refresh_self_model};
+pub use self_state::{
+    build_self_state, render_self_state_block, SelfMemoryGovernancePosture,
+    SelfMemorySpaceActivity, SelfMemorySpaceBottleneck, SelfMemorySpacePressure,
+    SelfMemorySpaceState, SelfState,
+};
 pub use session_summary_refresh::{
     fallback_session_summary, run_session_summary_refresh, should_refresh_session_summary,
     SessionSummaryRefreshContext, SessionSummaryRefreshOutcome,

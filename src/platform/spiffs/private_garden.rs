@@ -3,8 +3,8 @@
 use crate::error::{Error, Result};
 use crate::memory::{
     build_private_garden_preview, normalize_private_garden_doc_path, PrivateGardenDoc,
-    PrivateGardenDocRecord, PrivateGardenStore, REL_PATH_PRIVATE_GARDEN_DIR,
-    REL_PATH_PRIVATE_GARDEN_INDEX,
+    PrivateGardenDocRecord, PrivateGardenStore, PRIVATE_GARDEN_MAX_DOCS_PER_CHAT,
+    PRIVATE_GARDEN_MAX_DOC_BYTES, REL_PATH_PRIVATE_GARDEN_DIR, REL_PATH_PRIVATE_GARDEN_INDEX,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -14,8 +14,6 @@ use super::cached_json::{load_json_or_default, CachedJsonFileStore, StoreOp};
 use super::{read_file, remove_file, state_path_join, write_file};
 
 const MAX_PRIVATE_GARDEN_CHATS: usize = 32;
-const MAX_PRIVATE_GARDEN_DOCS_PER_CHAT: usize = 16;
-const MAX_PRIVATE_GARDEN_DOC_BYTES: usize = 8 * 1024;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct StoredGardenIndex {
@@ -143,10 +141,10 @@ impl PrivateGardenStore for SpiffsPrivateGardenStore {
         now_secs: u64,
     ) -> Result<PrivateGardenDocRecord> {
         let doc_path = normalize_private_garden_doc_path(doc_path)?;
-        if content.as_bytes().len() > MAX_PRIVATE_GARDEN_DOC_BYTES {
+        if content.as_bytes().len() > PRIVATE_GARDEN_MAX_DOC_BYTES {
             return Err(Error::config(
                 "private_garden_write",
-                format!("content exceeds {} bytes", MAX_PRIVATE_GARDEN_DOC_BYTES),
+                format!("content exceeds {} bytes", PRIVATE_GARDEN_MAX_DOC_BYTES),
             ));
         }
         self.index.with_cached_mut(|index| {
@@ -176,7 +174,7 @@ impl PrivateGardenStore for SpiffsPrivateGardenStore {
                 preview: build_private_garden_preview(content),
             };
 
-            if existing_index.is_none() && chat.docs.len() >= MAX_PRIVATE_GARDEN_DOCS_PER_CHAT {
+            if existing_index.is_none() && chat.docs.len() >= PRIVATE_GARDEN_MAX_DOCS_PER_CHAT {
                 if let Some((evict_idx, evicted)) = chat
                     .docs
                     .iter()

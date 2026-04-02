@@ -245,6 +245,7 @@ fn inspect_process_linux(_pid: i32, _include_cmdline: bool) -> Result<ProcessSna
     ))
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn status_field<'a>(status: &'a str, key: &str) -> Option<&'a str> {
     status.lines().find_map(|line| {
         line.strip_prefix(key)
@@ -253,18 +254,22 @@ fn status_field<'a>(status: &'a str, key: &str) -> Option<&'a str> {
     })
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn parse_i32_field(value: Option<&str>) -> Option<i32> {
     value?.split_whitespace().next()?.parse().ok()
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn parse_u32_field(value: Option<&str>) -> Option<u32> {
     value?.split_whitespace().next()?.parse().ok()
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn parse_kb_field(value: Option<&str>) -> Option<u64> {
     value?.split_whitespace().next()?.parse().ok()
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn parse_cmdline_bytes(raw: &[u8]) -> String {
     raw.split(|b| *b == 0)
         .filter(|part| !part.is_empty())

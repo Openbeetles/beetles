@@ -8,6 +8,10 @@ use std::fmt::Write as _;
 
 const MAX_PRIVATE_GARDEN_PATH_LEN: usize = 96;
 const MAX_PRIVATE_GARDEN_PREVIEW_CHARS: usize = 160;
+pub const PRIVATE_GARDEN_MAX_DOCS_PER_CHAT: usize = 16;
+pub const PRIVATE_GARDEN_MAX_DOC_BYTES: usize = 8 * 1024;
+pub const PRIVATE_GARDEN_TOTAL_BYTE_LIMIT: usize =
+    PRIVATE_GARDEN_MAX_DOCS_PER_CHAT * PRIVATE_GARDEN_MAX_DOC_BYTES;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PrivateGardenDocRecord {
@@ -94,7 +98,7 @@ pub fn render_private_garden_block(
     let mut out = String::with_capacity(max_len.min(768));
     out.push_str("## Private Garden\n");
     out.push_str(
-        "Free private workspace. Use `private_garden` when you want to inspect or reorganize it.\n",
+        "Free private workspace. Use `private_garden` when you want to inspect or reorganize it. Keep docs current by rewriting in place instead of appending a history trail.\n",
     );
     for doc in docs {
         let _ = writeln!(
