@@ -14,6 +14,7 @@ use std::fmt::Write as _;
 
 use super::{
     build_archive_evidence_block, memory_policy, render_long_term_memory_block,
+    search_archive_records, ArchiveRecordSource, ArchiveSearchHit, ArchiveSearchQuery,
     LongTermExtractionPolicy, LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryFreshness,
     LongTermMemoryKind, LongTermMemorySlot, LongTermMemorySourceScope, LongTermMemorySourceType,
     LongTermMemoryStaleHint, LongTermMemoryStore, MemoryProfile, MemoryStore, SessionMessage,
@@ -27,6 +28,7 @@ pub const LONG_TERM_MEMORY_EXTRACTION_SYSTEM_PROMPT: &str = "You extract durable
 pub const LONG_TERM_MEMORY_EXTRACTION_RECENT_N: usize = 10;
 /// 单次提取允许的动作数上限；实际运行值由 MemoryProfile 决定。
 pub const LONG_TERM_MEMORY_EXTRACTION_BATCH: usize = 4;
+const LONG_TERM_MEMORY_ARCHIVE_RECONCILE_LIMIT: usize = 4;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LongTermMemoryExtractionState {
@@ -303,6 +305,22 @@ fn build_extraction_existing_memory_grounding(
         if let Some(label) = entry.stale_hint.label() {
             meta.push(label.to_string());
         }
+        if entry.evidence_count > 0 || !entry.supporting_citations.is_empty() {
+            meta.push(format!(
+                "evidence={}",
+                entry
+                    .evidence_count
+                    .max(entry.supporting_citations.len() as u32)
+            ));
+        }
+        if let Some(citation) = entry.supporting_citations.first() {
+            let suffix = entry.supporting_citations.len().saturating_sub(1);
+            if suffix > 0 {
+                meta.push(format!("cite={} +{}", citation, suffix));
+            } else {
+                meta.push(format!("cite={}", citation));
+            }
+        }
         let line = format!(
             "- {}.{} => {} ({})",
             entry.kind.label(),
@@ -367,7 +385,10 @@ pub fn parse_long_term_memory_extraction_response(
                     confidence: parsed_item.confidence,
                     freshness: parsed_item.freshness,
                     stale_hint: parsed_item.stale_hint,
+                    supporting_citations: Vec::new(),
+                    evidence_count: None,
                     observed_at: None,
+                    last_confirmed_at: None,
                     source_revision: None,
                 })
             }
@@ -399,6 +420,165 @@ pub fn parse_long_term_memory_extraction_response(
         }
     }
     ParsedLongTermMemoryExtraction { upserts, deletes }
+}
+
+fn build_draft_archive_reconcile_query(
+    draft: &LongTermMemoryDraft,
+    recent: &[SessionMessage],
+    session_summary: Option<&str>,
+) -> String {
+    let mut parts = Vec::with_capacity(4);
+    parts.push(format!("{} {}", draft.topic, draft.content));
+    if !draft.keywords.is_empty() {
+        parts.push(draft.keywords.join(" "));
+    }
+    if let Some(summary) = session_summary
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        parts.push(truncate_content_to_max(summary, 160).to_string());
+    }
+    if let Some(user_message) = recent
+        .iter()
+        .rev()
+        .find(|message| message.role.eq_ignore_ascii_case("user"))
+        .map(|message| message.content.trim())
+        .filter(|value| !value.is_empty())
+    {
+        parts.push(truncate_content_to_max(user_message, 160).to_string());
+    }
+    parts.join("\n")
+}
+
+fn archive_hit_affinity_score(draft: &LongTermMemoryDraft, hit: &ArchiveSearchHit) -> u32 {
+    let mut score = 0u32;
+    let draft_terms = collect_affinity_terms(draft);
+    let hit_text = normalize_match_text(&format!(
+        "{} {} {} {}",
+        hit.title,
+        hit.excerpt,
+        hit.citation,
+        hit.cues.join(" ")
+    ));
+    let draft_topic = normalize_match_text(&draft.topic);
+    let draft_content = normalize_match_text(&draft.content);
+    if !draft_topic.is_empty() && hit_text.contains(&draft_topic) {
+        score = score.saturating_add(6);
+    }
+    if !draft_content.is_empty()
+        && (hit_text.contains(&draft_content)
+            || long_text_contains(&draft_content, &hit_text)
+            || long_text_contains(&hit_text, &draft_content))
+    {
+        score = score.saturating_add(8);
+    }
+    let overlap = draft_terms
+        .iter()
+        .filter(|term| hit_text.contains(term.as_str()))
+        .count()
+        .min(4) as u32;
+    score
+        .saturating_add(overlap.saturating_mul(2))
+        .saturating_add(hit.score / 10)
+}
+
+fn select_archive_reconcile_hits(
+    session_store: &dyn SessionStore,
+    memory_store: &dyn MemoryStore,
+    turn_ledger_store: &dyn TurnLedgerStore,
+    draft: &LongTermMemoryDraft,
+    recent: &[SessionMessage],
+    session_summary: Option<&str>,
+    chat_id: &str,
+) -> Vec<ArchiveSearchHit> {
+    let query = build_draft_archive_reconcile_query(draft, recent, session_summary);
+    if query.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut hits = search_archive_records(
+        session_store,
+        memory_store,
+        turn_ledger_store,
+        ArchiveSearchQuery {
+            query: &query,
+            preferred_chat_id: Some(chat_id),
+            chat_id_filter: None,
+            sources: &[
+                ArchiveRecordSource::Transcript,
+                ArchiveRecordSource::DailyNote,
+                ArchiveRecordSource::TurnLog,
+            ],
+            limit: LONG_TERM_MEMORY_ARCHIVE_RECONCILE_LIMIT,
+        },
+    )
+    .unwrap_or_default()
+    .into_iter()
+    .filter_map(|hit| {
+        let affinity = archive_hit_affinity_score(draft, &hit);
+        (affinity >= 6).then_some((hit, affinity))
+    })
+    .collect::<Vec<_>>();
+    hits.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| b.0.score.cmp(&a.0.score))
+            .then_with(|| b.0.observed_at.cmp(&a.0.observed_at))
+    });
+    hits.into_iter()
+        .map(|(hit, _)| hit)
+        .take(LONG_TERM_MEMORY_ARCHIVE_RECONCILE_LIMIT)
+        .collect()
+}
+
+fn enrich_drafts_with_archive_evidence(
+    drafts: &mut [LongTermMemoryDraft],
+    session_store: &dyn SessionStore,
+    memory_store: &dyn MemoryStore,
+    turn_ledger_store: &dyn TurnLedgerStore,
+    chat_id: &str,
+    recent: &[SessionMessage],
+    session_summary: Option<&str>,
+    now_secs: u64,
+) {
+    for draft in drafts {
+        let hits = select_archive_reconcile_hits(
+            session_store,
+            memory_store,
+            turn_ledger_store,
+            draft,
+            recent,
+            session_summary,
+            chat_id,
+        );
+        if hits.is_empty() {
+            continue;
+        }
+        let mut citations = Vec::with_capacity(hits.len());
+        let mut last_confirmed_at = 0u64;
+        let mut used_now_confirmation = false;
+        for hit in hits {
+            if citations.iter().any(|existing| existing == &hit.citation) {
+                continue;
+            }
+            citations.push(hit.citation);
+            match hit.observed_at {
+                Some(observed_at) if observed_at > 0 => {
+                    last_confirmed_at = last_confirmed_at.max(observed_at);
+                }
+                _ => used_now_confirmation = true,
+            }
+        }
+        if citations.is_empty() {
+            continue;
+        }
+        draft.supporting_citations = citations;
+        draft.evidence_count = Some(draft.supporting_citations.len() as u32);
+        if used_now_confirmation {
+            last_confirmed_at = last_confirmed_at.max(now_secs);
+        }
+        if last_confirmed_at > 0 {
+            draft.last_confirmed_at = Some(last_confirmed_at);
+        }
+    }
 }
 
 pub fn apply_long_term_memory_extraction(
@@ -716,6 +896,12 @@ fn should_skip_redundant_upsert(
     draft: &LongTermMemoryDraft,
     existing_entries: &[LongTermMemoryEntry],
 ) -> bool {
+    if !draft.supporting_citations.is_empty()
+        || draft.evidence_count.unwrap_or(0) > 0
+        || draft.last_confirmed_at.unwrap_or(0) > 0
+    {
+        return false;
+    }
     let Some(slot_id) = draft.stable_id() else {
         return true;
     };
@@ -1020,19 +1206,27 @@ fn extract_long_term_memory(
         None,
         ToolChoicePolicy::Auto,
     )?;
-    let mut extraction = prepare_long_term_memory_extraction(
-        ctx.long_term_memory_store,
-        &parse_long_term_memory_extraction_response(response.content.trim(), chat_id),
-        chat_id,
-    );
     let now_secs = crate::util::current_unix_secs();
+    let mut parsed = parse_long_term_memory_extraction_response(response.content.trim(), chat_id);
     let source_revision = ctx.session_store.message_count(chat_id).unwrap_or(0) as u64;
-    for draft in &mut extraction.upserts {
+    for draft in &mut parsed.upserts {
         draft.observed_at.get_or_insert(now_secs);
         if source_revision > 0 {
             draft.source_revision.get_or_insert(source_revision);
         }
     }
+    enrich_drafts_with_archive_evidence(
+        &mut parsed.upserts,
+        ctx.session_store,
+        ctx.memory_store,
+        ctx.turn_ledger_store,
+        chat_id,
+        &recent,
+        session_summary.as_deref(),
+        now_secs,
+    );
+    let extraction =
+        prepare_long_term_memory_extraction(ctx.long_term_memory_store, &parsed, chat_id);
     if extraction.upserts.is_empty() && extraction.deletes.is_empty() {
         return Ok(0);
     }
@@ -1327,7 +1521,10 @@ mod tests {
             confidence: None,
             freshness: None,
             stale_hint: None,
+            supporting_citations: Vec::new(),
+            evidence_count: None,
             observed_at: None,
+            last_confirmed_at: None,
             source_revision: None,
         }
     }
@@ -1354,9 +1551,12 @@ mod tests {
             confidence: crate::memory::LongTermMemoryConfidence::Medium,
             freshness: LongTermMemoryFreshness::Stable,
             stale_hint: LongTermMemoryStaleHint::None,
+            supporting_citations: Vec::new(),
+            evidence_count: 0,
             created_at,
             updated_at,
             observed_at: updated_at.max(created_at),
+            last_confirmed_at: updated_at.max(created_at),
             source_revision: 0,
             last_used_at: 0,
         })
@@ -1542,6 +1742,53 @@ mod tests {
         assert!(input.contains("## Recent conversation"));
         assert!(input.contains("USER: 最近我们在做长期记忆重构。"));
         assert!(input.contains("ASSISTANT: 这轮先把提取输入和解析从 agent loop 里拆出去。"));
+    }
+
+    #[test]
+    fn enrich_drafts_with_archive_evidence_attaches_structured_support() {
+        let session_store = StubSessionStore {
+            recent: vec![
+                SessionMessage {
+                    role: "user".to_string(),
+                    content: "当前主模型已经切到 OpenAI 了。".to_string(),
+                },
+                SessionMessage {
+                    role: "assistant".to_string(),
+                    content: "收到，这轮把主模型事实和证据一起写回 shared factual plane。"
+                        .to_string(),
+                },
+            ],
+            count: 2,
+        };
+        let memory_store = StubMemoryStore::default();
+        let turn_ledger_store = StubTurnLedgerStore::default();
+        let mut drafts = vec![test_draft(
+            LongTermMemoryKind::Fact,
+            "primary_llm",
+            "当前主模型是 OpenAI。",
+            vec!["openai", "主模型"],
+            Some("chat-1"),
+        )];
+
+        enrich_drafts_with_archive_evidence(
+            &mut drafts,
+            &session_store,
+            &memory_store,
+            &turn_ledger_store,
+            "chat-1",
+            &session_store.recent,
+            None,
+            200,
+        );
+
+        assert_eq!(drafts.len(), 1);
+        assert!(!drafts[0].supporting_citations.is_empty());
+        assert_eq!(
+            drafts[0].evidence_count,
+            Some(drafts[0].supporting_citations.len() as u32)
+        );
+        assert_eq!(drafts[0].last_confirmed_at, Some(200));
+        assert!(drafts[0].supporting_citations[0].starts_with("transcript:chat-1"));
     }
 
     #[test]
@@ -1824,6 +2071,43 @@ mod tests {
 
         assert!(prepared.upserts.is_empty());
         assert!(prepared.deletes.is_empty());
+    }
+
+    #[test]
+    fn prepare_extraction_keeps_same_slot_reinforcement_when_evidence_exists() {
+        let store = StubLongTermMemoryStore {
+            recall_entries: vec![test_entry(
+                "ltm-existing",
+                LongTermMemoryKind::Fact,
+                "primary_llm",
+                "当前主模型是 OpenAI。",
+                vec!["openai"],
+                Some("chat-1"),
+                1,
+                10,
+            )],
+            ..Default::default()
+        };
+        let mut draft = test_draft(
+            LongTermMemoryKind::Fact,
+            "primary_llm",
+            "当前主模型是 OpenAI。",
+            vec!["openai"],
+            Some("chat-1"),
+        );
+        draft.supporting_citations = vec!["transcript:chat-1#message=0".to_string()];
+        draft.evidence_count = Some(1);
+        draft.last_confirmed_at = Some(20);
+        let extraction = ParsedLongTermMemoryExtraction {
+            upserts: vec![draft],
+            deletes: vec![],
+        };
+
+        let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
+
+        assert_eq!(prepared.upserts.len(), 1);
+        assert_eq!(prepared.upserts[0].topic, "primary_llm");
+        assert_eq!(prepared.upserts[0].evidence_count, Some(1));
     }
 
     #[test]

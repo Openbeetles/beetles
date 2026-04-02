@@ -25,6 +25,10 @@ pub const MAX_LONG_TERM_MEMORY_KEYWORDS: usize = 8;
 pub const MAX_LONG_TERM_MEMORY_KEYWORD_LEN: usize = 24;
 /// 单个主题槽位字节上限。
 pub const MAX_LONG_TERM_MEMORY_TOPIC_LEN: usize = 40;
+/// 单条记忆保留的支持性引用上限。
+pub const MAX_LONG_TERM_MEMORY_SUPPORTING_CITATIONS: usize = 6;
+/// 单条支持性引用字节上限。
+pub const MAX_LONG_TERM_MEMORY_CITATION_LEN: usize = 96;
 /// 注入 prompt 的长期记忆块上限。
 pub const MAX_LONG_TERM_MEMORY_BLOCK_LEN: usize = 1024;
 /// 长期记忆治理：任务超时后视为陈旧。
@@ -400,11 +404,17 @@ pub struct LongTermMemoryEntry {
     pub freshness: LongTermMemoryFreshness,
     #[serde(default)]
     pub stale_hint: LongTermMemoryStaleHint,
+    #[serde(default)]
+    pub supporting_citations: Vec<String>,
+    #[serde(default)]
+    pub evidence_count: u32,
     pub created_at: u64,
     #[serde(default)]
     pub updated_at: u64,
     #[serde(default)]
     pub observed_at: u64,
+    #[serde(default)]
+    pub last_confirmed_at: u64,
     #[serde(default)]
     pub source_revision: u64,
     #[serde(default)]
@@ -432,7 +442,13 @@ pub struct LongTermMemoryDraft {
     #[serde(default)]
     pub stale_hint: Option<LongTermMemoryStaleHint>,
     #[serde(default)]
+    pub supporting_citations: Vec<String>,
+    #[serde(default)]
+    pub evidence_count: Option<u32>,
+    #[serde(default)]
     pub observed_at: Option<u64>,
+    #[serde(default)]
+    pub last_confirmed_at: Option<u64>,
     #[serde(default)]
     pub source_revision: Option<u64>,
 }
@@ -486,7 +502,10 @@ impl LongTermMemoryDraft {
             confidence: self.confidence,
             freshness: self.freshness,
             stale_hint: self.stale_hint,
+            supporting_citations: normalize_supporting_citations(&self.supporting_citations),
+            evidence_count: self.evidence_count.filter(|value| *value > 0),
             observed_at: self.observed_at.filter(|value| *value > 0),
+            last_confirmed_at: self.last_confirmed_at.filter(|value| *value > 0),
             source_revision: self.source_revision.filter(|value| *value > 0),
         })
     }
@@ -527,6 +546,45 @@ fn stable_id_for_kind_topic(kind: &LongTermMemoryKind, topic: &str) -> Option<St
     id.push_str("ltm-");
     id.push_str(&format!("{:016x}", hasher.finish()));
     Some(id)
+}
+
+fn normalize_supporting_citations(values: &[String]) -> Vec<String> {
+    let mut citations =
+        Vec::with_capacity(values.len().min(MAX_LONG_TERM_MEMORY_SUPPORTING_CITATIONS));
+    for raw in values {
+        let normalized = truncate_utf8_bytes(raw.trim(), MAX_LONG_TERM_MEMORY_CITATION_LEN);
+        if normalized.is_empty() || citations.iter().any(|item| item == &normalized) {
+            continue;
+        }
+        citations.push(normalized);
+        if citations.len() >= MAX_LONG_TERM_MEMORY_SUPPORTING_CITATIONS {
+            break;
+        }
+    }
+    citations
+}
+
+fn effective_evidence_count(citation_count: usize, evidence_count: u32) -> u32 {
+    evidence_count.max(citation_count as u32)
+}
+
+fn stale_hint_rank(hint: LongTermMemoryStaleHint) -> u8 {
+    match hint {
+        LongTermMemoryStaleHint::None => 0,
+        LongTermMemoryStaleHint::ReviewBeforeUse => 1,
+        LongTermMemoryStaleHint::VerifyAgainstCurrentState => 2,
+    }
+}
+
+fn strictest_stale_hint(
+    left: LongTermMemoryStaleHint,
+    right: LongTermMemoryStaleHint,
+) -> LongTermMemoryStaleHint {
+    if stale_hint_rank(left) >= stale_hint_rank(right) {
+        left
+    } else {
+        right
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -648,6 +706,16 @@ pub(crate) fn long_term_memory_entry_from_draft(
 ) -> Option<LongTermMemoryEntry> {
     let normalized = draft.normalized()?;
     let meta = resolve_long_term_memory_meta(&normalized);
+    let observed_at = normalized.observed_at.unwrap_or(now_secs);
+    let supporting_citations = normalize_supporting_citations(&normalized.supporting_citations);
+    let evidence_count = effective_evidence_count(
+        supporting_citations.len(),
+        normalized.evidence_count.unwrap_or(0),
+    );
+    let last_confirmed_at = normalized
+        .last_confirmed_at
+        .unwrap_or(observed_at)
+        .max(observed_at);
     Some(LongTermMemoryEntry {
         id,
         kind: normalized.kind,
@@ -660,9 +728,12 @@ pub(crate) fn long_term_memory_entry_from_draft(
         confidence: meta.confidence,
         freshness: meta.freshness,
         stale_hint: meta.stale_hint,
+        supporting_citations,
+        evidence_count,
         created_at: now_secs,
         updated_at: now_secs,
-        observed_at: draft.observed_at.unwrap_or(now_secs),
+        observed_at,
+        last_confirmed_at,
         source_revision: draft.source_revision.unwrap_or(0),
         last_used_at: 0,
     })
@@ -727,11 +798,17 @@ pub fn canonicalize_long_term_memory_entry(
         }
     }
     entry.keywords = keywords;
+    entry.supporting_citations = normalize_supporting_citations(&entry.supporting_citations);
+    entry.evidence_count =
+        effective_evidence_count(entry.supporting_citations.len(), entry.evidence_count);
     if entry.updated_at == 0 {
         entry.updated_at = entry.created_at;
     }
     if entry.observed_at == 0 {
         entry.observed_at = entry.updated_at.max(entry.created_at);
+    }
+    if entry.last_confirmed_at == 0 {
+        entry.last_confirmed_at = entry.observed_at;
     }
     let source_scope = infer_long_term_memory_source_scope(
         &entry.kind,
@@ -782,11 +859,16 @@ fn render_age_hint(entry: &LongTermMemoryEntry, now_secs: u64) -> Option<String>
         return None;
     }
     let age_secs = now_secs - observed_at;
+    let prefix = if entry.evidence_count > 0 || !entry.supporting_citations.is_empty() {
+        "confirmed"
+    } else {
+        "updated"
+    };
     let value = match age_secs {
-        0..=86_400 => "updated today".to_string(),
-        86_401..=604_800 => format!("updated {}d ago", age_secs / 86_400),
-        604_801..=5_184_000 => format!("updated {}w ago", age_secs / 604_800),
-        _ => format!("updated {}mo ago", age_secs / 2_592_000),
+        0..=86_400 => format!("{prefix} today"),
+        86_401..=604_800 => format!("{prefix} {}d ago", age_secs / 86_400),
+        604_801..=5_184_000 => format!("{prefix} {}w ago", age_secs / 604_800),
+        _ => format!("{prefix} {}mo ago", age_secs / 2_592_000),
     };
     Some(value)
 }
@@ -813,7 +895,8 @@ pub(crate) fn touch_long_term_memory_usage(entry: &mut LongTermMemoryEntry, now_
 
 fn entry_observed_at(entry: &LongTermMemoryEntry) -> u64 {
     entry
-        .observed_at
+        .last_confirmed_at
+        .max(entry.observed_at)
         .max(entry.updated_at)
         .max(entry.created_at)
 }
@@ -884,17 +967,43 @@ pub fn merge_long_term_memory_entry(
     let meta = resolve_long_term_memory_meta(&normalized);
     let mut changed = false;
     let incoming_observed_at = normalized.observed_at.unwrap_or(now_secs);
+    let incoming_last_confirmed_at = normalized
+        .last_confirmed_at
+        .unwrap_or(incoming_observed_at)
+        .max(incoming_observed_at);
     let incoming_source_revision = normalized.source_revision.unwrap_or(0);
+    let incoming_citations = normalize_supporting_citations(&normalized.supporting_citations);
+    let incoming_evidence_count = effective_evidence_count(
+        incoming_citations.len(),
+        normalized.evidence_count.unwrap_or(0),
+    );
     let incoming_is_older =
         draft_is_older_than_existing(existing, incoming_observed_at, incoming_source_revision);
     let content_changed = existing.content != normalized.content;
     let can_replace_content = !incoming_is_older
         && confidence_rank(meta.confidence) >= confidence_rank(existing.confidence);
-    if content_changed && !can_replace_content {
+    if content_changed && incoming_is_older {
         return false;
+    }
+    if content_changed && !can_replace_content {
+        let next_hint = strictest_stale_hint(
+            existing.stale_hint,
+            LongTermMemoryStaleHint::VerifyAgainstCurrentState,
+        );
+        if existing.stale_hint != next_hint {
+            existing.stale_hint = next_hint;
+            changed = true;
+        }
+        if changed && existing.updated_at != now_secs {
+            existing.updated_at = now_secs;
+        }
+        return changed;
     }
     if content_changed && can_replace_content {
         existing.content = normalized.content;
+        existing.supporting_citations = incoming_citations.clone();
+        existing.evidence_count = incoming_evidence_count;
+        existing.last_confirmed_at = incoming_last_confirmed_at;
         changed = true;
     }
 
@@ -914,6 +1023,41 @@ pub fn merge_long_term_memory_entry(
     if existing.keywords != merged_keywords {
         existing.keywords = merged_keywords;
         changed = true;
+    }
+    if !content_changed {
+        let base_evidence_count =
+            effective_evidence_count(existing.supporting_citations.len(), existing.evidence_count);
+        let mut merged_citations = existing.supporting_citations.clone();
+        let mut new_citation_count = 0u32;
+        for citation in &incoming_citations {
+            if merged_citations.iter().any(|item| item == citation) {
+                continue;
+            }
+            merged_citations.push(citation.clone());
+            new_citation_count = new_citation_count.saturating_add(1);
+            if merged_citations.len() >= MAX_LONG_TERM_MEMORY_SUPPORTING_CITATIONS {
+                break;
+            }
+        }
+        if existing.supporting_citations != merged_citations {
+            existing.supporting_citations = merged_citations;
+            changed = true;
+        }
+        let newer_confirmation = incoming_last_confirmed_at > existing.last_confirmed_at;
+        let confirmation_bump =
+            u32::from(new_citation_count == 0 && incoming_evidence_count > 0 && newer_confirmation);
+        let merged_evidence_count = base_evidence_count
+            .saturating_add(new_citation_count)
+            .max(incoming_evidence_count)
+            .saturating_add(confirmation_bump);
+        if existing.evidence_count != merged_evidence_count {
+            existing.evidence_count = merged_evidence_count;
+            changed = true;
+        }
+        if existing.last_confirmed_at < incoming_last_confirmed_at {
+            existing.last_confirmed_at = incoming_last_confirmed_at;
+            changed = true;
+        }
     }
     if let Some(source_chat_id) = normalized.source_chat_id.filter(|_| !incoming_is_older) {
         if existing.source_chat_id.as_deref() != Some(source_chat_id.as_str()) {
@@ -1186,6 +1330,22 @@ fn render_long_term_memory_line(
         if let Some(age_hint) = render_age_hint(entry, now_secs) {
             tags.push(age_hint);
         }
+    }
+    let evidence_count =
+        effective_evidence_count(entry.supporting_citations.len(), entry.evidence_count);
+    if evidence_count > 0 {
+        tags.push(format!("evidence={evidence_count}"));
+    }
+    if !entry.supporting_citations.is_empty() {
+        let preview_count = entry.supporting_citations.len().min(2);
+        let mut preview = entry.supporting_citations[..preview_count].join(", ");
+        if entry.supporting_citations.len() > preview_count {
+            preview.push_str(&format!(
+                " +{}",
+                entry.supporting_citations.len() - preview_count
+            ));
+        }
+        tags.push(format!("cites: {preview}"));
     }
     if include_keywords && !entry.keywords.is_empty() {
         format!(
@@ -1525,7 +1685,10 @@ mod tests {
             confidence: None,
             freshness: None,
             stale_hint: None,
+            supporting_citations: Vec::new(),
+            evidence_count: None,
             observed_at: None,
+            last_confirmed_at: None,
             source_revision: None,
         }
     }
@@ -1552,9 +1715,12 @@ mod tests {
             confidence: LongTermMemoryConfidence::Medium,
             freshness: LongTermMemoryFreshness::Stable,
             stale_hint: LongTermMemoryStaleHint::None,
+            supporting_citations: Vec::new(),
+            evidence_count: 0,
             created_at,
             updated_at,
             observed_at: updated_at.max(created_at),
+            last_confirmed_at: updated_at.max(created_at),
             source_revision: 0,
             last_used_at: 0,
         })
@@ -1659,9 +1825,12 @@ mod tests {
             confidence: LongTermMemoryConfidence::Medium,
             freshness: LongTermMemoryFreshness::Stable,
             stale_hint: LongTermMemoryStaleHint::None,
+            supporting_citations: Vec::new(),
+            evidence_count: 0,
             created_at: 42,
             updated_at: 0,
             observed_at: 0,
+            last_confirmed_at: 0,
             source_revision: 0,
             last_used_at: 0,
         })
@@ -1685,9 +1854,12 @@ mod tests {
             confidence: LongTermMemoryConfidence::Medium,
             freshness: LongTermMemoryFreshness::Stable,
             stale_hint: LongTermMemoryStaleHint::None,
+            supporting_citations: Vec::new(),
+            evidence_count: 0,
             created_at: 1,
             updated_at: 0,
             observed_at: 0,
+            last_confirmed_at: 0,
             source_revision: 0,
             last_used_at: 0,
         })
@@ -1794,6 +1966,41 @@ mod tests {
     }
 
     #[test]
+    fn merge_long_term_memory_entry_reinforces_same_content_with_archive_evidence() {
+        let mut entry = test_entry(
+            "ltm-1",
+            LongTermMemoryKind::Fact,
+            "primary_llm",
+            "当前主模型是 OpenAI。",
+            vec!["openai"],
+            Some("chat-a"),
+            10,
+            10,
+        );
+        entry.supporting_citations = vec!["transcript:chat-a#message=1".to_string()];
+        entry.evidence_count = 1;
+        entry.last_confirmed_at = 10;
+        let mut draft = test_draft(
+            LongTermMemoryKind::Fact,
+            "primary_llm",
+            "当前主模型是 OpenAI。",
+            vec!["模型"],
+            Some("chat-a"),
+        );
+        draft.supporting_citations = vec![
+            "daily_note:2026-04-02.md".to_string(),
+            "transcript:chat-a#message=1".to_string(),
+        ];
+        draft.evidence_count = Some(2);
+        draft.last_confirmed_at = Some(30);
+
+        assert!(merge_long_term_memory_entry(&mut entry, &draft, 30));
+        assert_eq!(entry.supporting_citations.len(), 2);
+        assert_eq!(entry.evidence_count, 2);
+        assert_eq!(entry.last_confirmed_at, 30);
+    }
+
+    #[test]
     fn merge_long_term_memory_entry_rejects_lower_confidence_overwrite() {
         let mut entry = test_entry(
             "ltm-1",
@@ -1819,10 +2026,14 @@ mod tests {
         draft.observed_at = Some(20);
         draft.source_revision = Some(9);
 
-        assert!(!merge_long_term_memory_entry(&mut entry, &draft, 20));
+        assert!(merge_long_term_memory_entry(&mut entry, &draft, 20));
         assert_eq!(entry.content, "User timezone is Asia/Shanghai.");
         assert_eq!(entry.confidence, LongTermMemoryConfidence::High);
         assert_eq!(entry.source_revision, 8);
+        assert_eq!(
+            entry.stale_hint,
+            LongTermMemoryStaleHint::VerifyAgainstCurrentState
+        );
     }
 
     #[test]
@@ -1854,6 +2065,67 @@ mod tests {
         assert_eq!(entry.content, "Current project is Beetle runtime.");
         assert_eq!(entry.source_revision, 12);
         assert_eq!(entry.observed_at, 30);
+    }
+
+    #[test]
+    fn render_long_term_memory_block_includes_evidence_summary() {
+        let mut entry = test_entry(
+            "ltm-1",
+            LongTermMemoryKind::Fact,
+            "primary_llm",
+            "当前主模型是 OpenAI。",
+            vec!["openai"],
+            None,
+            1,
+            2,
+        );
+        entry.supporting_citations = vec![
+            "transcript:chat-a#message=1".to_string(),
+            "daily_note:2026-04-02.md".to_string(),
+        ];
+        entry.evidence_count = 2;
+        entry.last_confirmed_at = 2;
+
+        let block = render_long_term_memory_block_with_now(&[entry], 512, 2).unwrap();
+
+        assert!(block.contains("evidence=2"));
+        assert!(block.contains("cites: transcript:chat-a#message=1"));
+    }
+
+    #[test]
+    fn canonicalize_long_term_memory_entry_defaults_evidence_fields() {
+        let entry = canonicalize_long_term_memory_entry(LongTermMemoryEntry {
+            id: "ltm-1".to_string(),
+            kind: LongTermMemoryKind::Fact,
+            topic: "release_phase".to_string(),
+            content: "Current phase is memory coordination.".to_string(),
+            keywords: vec![],
+            source_chat_id: None,
+            source_type: LongTermMemorySourceType::Conversation,
+            source_scope: LongTermMemorySourceScope::World,
+            confidence: LongTermMemoryConfidence::Medium,
+            freshness: LongTermMemoryFreshness::Dynamic,
+            stale_hint: LongTermMemoryStaleHint::ReviewBeforeUse,
+            supporting_citations: vec![
+                " transcript:chat-a#message=3 ".to_string(),
+                "transcript:chat-a#message=3".to_string(),
+            ],
+            evidence_count: 0,
+            created_at: 10,
+            updated_at: 10,
+            observed_at: 12,
+            last_confirmed_at: 0,
+            source_revision: 0,
+            last_used_at: 0,
+        })
+        .unwrap();
+
+        assert_eq!(
+            entry.supporting_citations,
+            vec!["transcript:chat-a#message=3"]
+        );
+        assert_eq!(entry.evidence_count, 1);
+        assert_eq!(entry.last_confirmed_at, 12);
     }
 
     #[test]

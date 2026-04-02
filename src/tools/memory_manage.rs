@@ -235,7 +235,10 @@ impl Tool for MemoryManageTool {
                     confidence,
                     freshness,
                     stale_hint,
+                    supporting_citations: Vec::new(),
+                    evidence_count: None,
                     observed_at: None,
+                    last_confirmed_at: None,
                     source_revision: None,
                 };
                 let changed_count = self
