@@ -8,6 +8,7 @@ use crate::orchestrator::PressureLevel;
 use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::fmt::Write as _;
 
 use super::{
@@ -16,10 +17,22 @@ use super::{
 };
 
 pub const REL_PATH_EXECUTION_STATES: &str = "memory/execution_states.json";
-pub const EXECUTION_STATE_SYSTEM_PROMPT: &str = "You maintain a compact live execution state for a personal AI assistant. Return JSON only: either null or one object with fields status, goal, progress, blocker, next_action, last_output. status must be active, blocked, or done. Capture only the current task/project execution context that should guide the next turn: the current goal, latest concrete progress, blocker, next action, and latest meaningful output. Replace old state when the focus changes instead of keeping parallel tasks. Do not store greetings, chit-chat, durable user profile facts, stable preferences, or general long-term memory. Return null when there is no active execution context worth carrying to the next turn. Keep fields short and concrete.";
+pub const EXECUTION_STATE_SYSTEM_PROMPT: &str = "You maintain a compact live execution state for a personal AI assistant. Return JSON only: either null or one object with fields status, goal, progress, blocker, next_action, last_output. status must be active, blocked, or done. Capture only the current task/project execution context that should guide the next turn: the current goal, latest concrete progress, blocker, next action, and latest meaningful output. Replace old state when the focus changes instead of keeping parallel tasks. Prefer concrete task names, changed progress, and actionable next steps. Do not return vague placeholders such as continue, keep going, processing, current task, or done unless paired with concrete task detail. Do not store greetings, chit-chat, durable user profile facts, stable preferences, or general long-term memory. Return null when there is no active execution context worth carrying to the next turn. Keep fields short and concrete.";
+const EXECUTION_STATE_REFRESH_RULES: &str = concat!(
+    "## Extraction Rules\n",
+    "- Goal must name the concrete task/project, not a vague placeholder.\n",
+    "- Progress must describe a real change, not just say it is ongoing.\n",
+    "- Next action must be an actionable next step when one exists.\n",
+    "- Return null if this turn contains no durable execution context worth carrying.\n\n",
+);
 
 const EXECUTION_STATE_GOAL_MAX_CHARS: usize = 120;
 const EXECUTION_STATE_FIELD_MAX_CHARS: usize = 180;
+const MIN_FOCUS_MATCH_CHARS: usize = 4;
+const MIN_FIELD_SPECIFICITY_SCORE: u32 = 2;
+const MIN_LAST_OUTPUT_SPECIFICITY_SCORE: u32 = 4;
+const MIN_STRONG_STATE_FIELD_SCORE: u32 = 3;
+const STRONG_SINGLE_FIELD_SCORE: u32 = 5;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -293,7 +306,9 @@ fn execution_state_recent_window(recent: &[SessionMessage], limit: usize) -> &[S
 fn should_capture_last_output(reply_content: &str) -> bool {
     let trimmed = reply_content.trim();
     let reply_chars = trimmed.chars().count();
-    !trimmed.is_empty() && (reply_chars >= 24 || trimmed.contains('\n'))
+    !trimmed.is_empty()
+        && !is_low_value_last_output(trimmed)
+        && (reply_chars >= 24 || trimmed.contains('\n'))
 }
 
 fn build_execution_state_refresh_input(
@@ -317,6 +332,7 @@ fn build_execution_state_refresh_input(
         input.push_str(summary);
         input.push_str("\n\n");
     }
+    input.push_str(EXECUTION_STATE_REFRESH_RULES);
     input.push_str("## Recent Conversation\n");
     input.push_str(&build_execution_state_transcript(recent, policy));
     input
@@ -368,30 +384,67 @@ fn parse_execution_state_response(raw: &str, now_secs: u64) -> Option<ExecutionS
 }
 
 fn normalize_execution_state(mut state: ExecutionState, now_secs: u64) -> Option<ExecutionState> {
-    state.goal = normalize_field(&state.goal, EXECUTION_STATE_GOAL_MAX_CHARS);
-    state.progress = normalize_field(&state.progress, EXECUTION_STATE_FIELD_MAX_CHARS);
-    state.blocker = normalize_field(&state.blocker, EXECUTION_STATE_FIELD_MAX_CHARS);
-    state.next_action = normalize_field(&state.next_action, EXECUTION_STATE_FIELD_MAX_CHARS);
-    state.last_output = normalize_field(&state.last_output, EXECUTION_STATE_FIELD_MAX_CHARS);
+    state.goal = sanitize_goal_field(&normalize_field(
+        &state.goal,
+        EXECUTION_STATE_GOAL_MAX_CHARS,
+    ));
+    state.progress = sanitize_progress_field(&normalize_field(
+        &state.progress,
+        EXECUTION_STATE_FIELD_MAX_CHARS,
+    ));
+    state.blocker = sanitize_blocker_field(&normalize_field(
+        &state.blocker,
+        EXECUTION_STATE_FIELD_MAX_CHARS,
+    ));
+    state.next_action = sanitize_next_action_field(&normalize_field(
+        &state.next_action,
+        EXECUTION_STATE_FIELD_MAX_CHARS,
+    ));
+    state.last_output = sanitize_last_output_field(&normalize_field(
+        &state.last_output,
+        EXECUTION_STATE_FIELD_MAX_CHARS,
+    ));
+    dedupe_execution_state_fields(&mut state);
     if !state.is_meaningful() {
         return None;
     }
-    if state.goal.is_empty() {
-        if !state.progress.is_empty() {
+    let goal_score = field_specificity_score(&state.goal);
+    let progress_score = field_specificity_score(&state.progress);
+    let blocker_score = field_specificity_score(&state.blocker);
+    let next_action_score = field_specificity_score(&state.next_action);
+    let strongest_score = [
+        goal_score,
+        progress_score,
+        blocker_score,
+        next_action_score,
+        field_specificity_score(&state.last_output),
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(0);
+    if state.goal.is_empty() || goal_score < MIN_STRONG_STATE_FIELD_SCORE {
+        if progress_score >= MIN_STRONG_STATE_FIELD_SCORE {
             state.goal = state.progress.clone();
-        } else if !state.next_action.is_empty() {
+        } else if next_action_score >= MIN_STRONG_STATE_FIELD_SCORE {
             state.goal = state.next_action.clone();
-        } else if !state.blocker.is_empty() {
+        } else if blocker_score >= MIN_STRONG_STATE_FIELD_SCORE {
             state.goal = state.blocker.clone();
-        } else {
+        } else if state.goal.is_empty() {
             return None;
         }
+    }
+    dedupe_execution_state_fields(&mut state);
+    if strongest_score < MIN_STRONG_STATE_FIELD_SCORE && state.status == ExecutionStatus::Active {
+        return None;
     }
     if !state.blocker.is_empty()
         && state.next_action.is_empty()
         && state.status == ExecutionStatus::Active
     {
         state.status = ExecutionStatus::Blocked;
+    }
+    if state.status == ExecutionStatus::Blocked && state.blocker.is_empty() {
+        state.status = ExecutionStatus::Active;
     }
     if state.status == ExecutionStatus::Done {
         state.blocker.clear();
@@ -457,6 +510,40 @@ fn should_persist_execution_state(state: &ExecutionState) -> bool {
     if !state.is_meaningful() {
         return false;
     }
+    let field_scores = [
+        field_specificity_score(&state.goal),
+        field_specificity_score(&state.progress),
+        field_specificity_score(&state.blocker),
+        field_specificity_score(&state.next_action),
+        field_specificity_score(&state.last_output),
+    ];
+    let non_empty_fields = [
+        &state.goal,
+        &state.progress,
+        &state.blocker,
+        &state.next_action,
+        &state.last_output,
+    ]
+    .iter()
+    .filter(|value| !value.trim().is_empty())
+    .count();
+    let strongest_field = field_scores.into_iter().max().unwrap_or(0);
+    let informative_fields = field_scores
+        .into_iter()
+        .filter(|score| *score >= MIN_FIELD_SPECIFICITY_SCORE)
+        .count();
+    if informative_fields == 0 {
+        return false;
+    }
+    if strongest_field < MIN_STRONG_STATE_FIELD_SCORE {
+        return false;
+    }
+    if non_empty_fields == 1
+        && strongest_field < STRONG_SINGLE_FIELD_SCORE
+        && state.status == ExecutionStatus::Active
+    {
+        return false;
+    }
     if state.status == ExecutionStatus::Done
         && state.next_action.is_empty()
         && state.blocker.is_empty()
@@ -467,24 +554,10 @@ fn should_persist_execution_state(state: &ExecutionState) -> bool {
 }
 
 fn same_execution_focus(left: &ExecutionState, right: &ExecutionState) -> bool {
-    let left_goal = normalize_focus_text(&left.goal);
-    let right_goal = normalize_focus_text(&right.goal);
-    if left_goal.is_empty() || right_goal.is_empty() {
-        return false;
-    }
-    if left_goal == right_goal {
-        return true;
-    }
-    let left_terms = focus_terms(&left_goal);
-    let right_terms = focus_terms(&right_goal);
-    if left_terms.is_empty() || right_terms.is_empty() {
-        return false;
-    }
-    let overlap = left_terms
-        .iter()
-        .filter(|term| right_terms.iter().any(|candidate| candidate == *term))
-        .count();
-    overlap > 0 && overlap * 2 >= left_terms.len().min(right_terms.len())
+    focus_strings_match(&left.goal, &right.goal)
+        || focus_strings_match(&left.goal, &right.next_action)
+        || focus_strings_match(&left.next_action, &right.goal)
+        || focus_strings_match(&left.next_action, &right.next_action)
 }
 
 fn normalize_focus_text(value: &str) -> String {
@@ -509,6 +582,177 @@ fn focus_terms(value: &str) -> Vec<&str> {
         .split_whitespace()
         .filter(|term| !term.is_empty())
         .collect()
+}
+
+fn compact_focus_text(value: &str) -> String {
+    value.chars().filter(|ch| !ch.is_whitespace()).collect()
+}
+
+fn focus_bigrams(value: &str) -> Vec<String> {
+    let chars: Vec<char> = compact_focus_text(value).chars().collect();
+    if chars.len() < 2 {
+        return Vec::new();
+    }
+    chars
+        .windows(2)
+        .map(|pair| pair.iter().collect::<String>())
+        .collect()
+}
+
+fn focus_strings_match(left: &str, right: &str) -> bool {
+    let left_goal = normalize_focus_text(left);
+    let right_goal = normalize_focus_text(right);
+    if left_goal.is_empty() || right_goal.is_empty() {
+        return false;
+    }
+    if left_goal == right_goal {
+        return true;
+    }
+
+    let left_compact = compact_focus_text(&left_goal);
+    let right_compact = compact_focus_text(&right_goal);
+    let min_chars = left_compact
+        .chars()
+        .count()
+        .min(right_compact.chars().count());
+    if min_chars >= MIN_FOCUS_MATCH_CHARS
+        && (left_compact.contains(&right_compact) || right_compact.contains(&left_compact))
+    {
+        return true;
+    }
+
+    let left_terms = focus_terms(&left_goal);
+    let right_terms = focus_terms(&right_goal);
+    let overlap = left_terms
+        .iter()
+        .filter(|term| right_terms.iter().any(|candidate| candidate == *term))
+        .count();
+    if overlap > 0 && overlap * 2 >= left_terms.len().min(right_terms.len()) {
+        return true;
+    }
+
+    let left_bigrams = focus_bigrams(&left_goal);
+    let right_bigrams = focus_bigrams(&right_goal);
+    if left_bigrams.len() < 2 || right_bigrams.len() < 2 {
+        return false;
+    }
+    let shared = left_bigrams
+        .iter()
+        .filter(|gram| right_bigrams.iter().any(|candidate| candidate == *gram))
+        .count();
+    shared >= 2 && shared * 2 >= left_bigrams.len().min(right_bigrams.len())
+}
+
+fn dedupe_execution_state_fields(state: &mut ExecutionState) {
+    if !state.goal.is_empty() && state.progress == state.goal {
+        state.progress.clear();
+    }
+    if !state.goal.is_empty() && state.next_action == state.goal {
+        state.next_action.clear();
+    }
+    if !state.progress.is_empty() && state.next_action == state.progress {
+        state.next_action.clear();
+    }
+    if !state.progress.is_empty() && state.blocker == state.progress {
+        state.blocker.clear();
+    }
+}
+
+fn sanitize_goal_field(value: &str) -> String {
+    is_low_value_focus_field(value)
+        .then(String::new)
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn sanitize_progress_field(value: &str) -> String {
+    is_low_value_focus_field(value)
+        .then(String::new)
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn sanitize_blocker_field(value: &str) -> String {
+    is_low_value_blocker_field(value)
+        .then(String::new)
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn sanitize_next_action_field(value: &str) -> String {
+    is_low_value_focus_field(value)
+        .then(String::new)
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn sanitize_last_output_field(value: &str) -> String {
+    is_low_value_last_output(value)
+        .then(String::new)
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn field_specificity_score(value: &str) -> u32 {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return 0;
+    }
+    let normalized = normalize_focus_text(trimmed);
+    let compact = compact_focus_text(&normalized);
+    let char_count = compact.chars().count();
+    let mut score = 0u32;
+    score += match char_count {
+        0..=2 => 0,
+        3..=4 => 1,
+        5..=7 => 2,
+        8..=11 => 3,
+        _ => 4,
+    };
+    let bigrams = focus_bigrams(&normalized);
+    let unique_bigrams = bigrams.iter().collect::<HashSet<_>>().len();
+    if unique_bigrams >= 2 {
+        score += 1;
+    }
+    if unique_bigrams >= 4 {
+        score += 1;
+    }
+    let has_digit = trimmed.chars().any(|ch| ch.is_ascii_digit());
+    let has_structural_marker = trimmed.chars().any(|ch| {
+        matches!(
+            ch,
+            '/' | '\\' | '_' | '.' | ':' | '#' | '(' | ')' | '[' | ']' | '`'
+        )
+    });
+    let has_ascii_word = trimmed
+        .split_whitespace()
+        .any(|token| token.chars().filter(|ch| ch.is_ascii_alphabetic()).count() >= 3);
+    let has_mixed_script = trimmed.chars().any(|ch| ch.is_ascii_alphabetic())
+        && trimmed
+            .chars()
+            .any(|ch| !ch.is_ascii() && !ch.is_whitespace());
+    let multi_part = normalized.split_whitespace().count() >= 2;
+    let has_sentence_shape = trimmed.chars().any(|ch| {
+        matches!(
+            ch,
+            ',' | '，' | '.' | '。' | ';' | '；' | ':' | '：' | '(' | ')' | '[' | ']'
+        )
+    });
+    score
+        + u32::from(has_digit)
+        + u32::from(has_structural_marker)
+        + u32::from(has_ascii_word)
+        + u32::from(has_mixed_script)
+        + u32::from(multi_part)
+        + u32::from(has_sentence_shape)
+}
+
+fn is_low_value_focus_field(value: &str) -> bool {
+    !value.trim().is_empty() && field_specificity_score(value) < MIN_FIELD_SPECIFICITY_SCORE
+}
+
+fn is_low_value_blocker_field(value: &str) -> bool {
+    !value.trim().is_empty() && field_specificity_score(value) < MIN_FIELD_SPECIFICITY_SCORE
+}
+
+fn is_low_value_last_output(value: &str) -> bool {
+    let trimmed = value.trim();
+    !trimmed.is_empty() && field_specificity_score(trimmed) < MIN_LAST_OUTPUT_SPECIFICITY_SCORE
 }
 
 fn normalize_field(value: &str, max_chars: usize) -> String {
@@ -721,6 +965,35 @@ mod tests {
     }
 
     #[test]
+    fn same_focus_matches_extended_goal_text() {
+        let merged = merge_execution_state(
+            Some(&ExecutionState {
+                status: ExecutionStatus::Active,
+                goal: "收口 execution state".to_string(),
+                progress: "store 已完成".to_string(),
+                blocker: String::new(),
+                next_action: "补测试".to_string(),
+                last_output: String::new(),
+                updated_at: 1,
+            }),
+            ExecutionState {
+                status: ExecutionStatus::Active,
+                goal: "继续收口 execution state 并补回归测试".to_string(),
+                progress: "开始整理回归项".to_string(),
+                blocker: String::new(),
+                next_action: String::new(),
+                last_output: String::new(),
+                updated_at: 2,
+            },
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(merged.progress, "开始整理回归项");
+        assert_eq!(merged.next_action, "补测试");
+    }
+
+    #[test]
     fn focus_switch_drops_old_parallel_fields() {
         let merged = merge_execution_state(
             Some(&ExecutionState {
@@ -768,6 +1041,42 @@ mod tests {
         )
         .unwrap();
         assert!(!should_persist_execution_state(&state));
+    }
+
+    #[test]
+    fn generic_state_without_concrete_fields_is_dropped() {
+        let state = normalize_execution_state(
+            ExecutionState {
+                status: ExecutionStatus::Active,
+                goal: "继续处理".to_string(),
+                progress: "推进中".to_string(),
+                blocker: "无".to_string(),
+                next_action: "继续".to_string(),
+                last_output: "好的".to_string(),
+                updated_at: 1,
+            },
+            2,
+        );
+        assert!(state.is_none());
+    }
+
+    #[test]
+    fn generic_goal_falls_back_to_concrete_next_action() {
+        let state = normalize_execution_state(
+            ExecutionState {
+                status: ExecutionStatus::Active,
+                goal: "继续处理".to_string(),
+                progress: "已完成 tool round 去重".to_string(),
+                blocker: String::new(),
+                next_action: "补 execution state 回归测试".to_string(),
+                last_output: String::new(),
+                updated_at: 1,
+            },
+            2,
+        )
+        .unwrap();
+        assert_eq!(state.goal, "已完成 tool round 去重");
+        assert_eq!(state.next_action, "补 execution state 回归测试");
     }
 
     #[test]
@@ -1038,5 +1347,14 @@ mod tests {
         );
         assert!(input.contains("## Execution State"));
         assert!(!input.contains("## Session Summary"));
+        assert!(input.contains("## Extraction Rules"));
+    }
+
+    #[test]
+    fn generic_reply_is_not_captured_as_last_output() {
+        assert!(!should_capture_last_output("好的，这轮继续处理。"));
+        assert!(should_capture_last_output(
+            "我已经把 execution state 的 merge 规则改成按具体目标优先了。"
+        ));
     }
 }
