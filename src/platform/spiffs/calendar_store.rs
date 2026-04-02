@@ -29,7 +29,7 @@ impl SpiffsCalendarStore {
     pub fn new() -> Self {
         Self {
             store: CachedJsonFileStore::new(
-                full_path(),
+                full_path,
                 load_json_or_default,
                 "calendar_store_cache_lock",
                 "calendar_store_cache",

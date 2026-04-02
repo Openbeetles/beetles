@@ -234,17 +234,62 @@ fn handle_config_command(platform: &Arc<dyn Platform>, action: beetle::commands:
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-fn handle_status_command(platform: &Arc<dyn Platform>, json: bool) {
+fn handle_status_command(platform: &Arc<dyn Platform>, json: bool, chat_id: Option<&str>) {
     let (config, _) = beetle::bootstrap::bootstrap_config_and_wifi(platform);
+    let recent_turn = chat_id.and_then(|id| {
+        platform
+            .turn_ledger_store()
+            .get(id)
+            .map_err(|e| {
+                eprintln!("Error reading turn ledger for '{}': {}", id, e);
+                std::process::exit(1);
+            })
+            .ok()
+            .flatten()
+    });
 
     if json {
-        println!("{{");
-        println!("  \"version\": \"{}\",", VERSION);
-        println!("  \"enabled_channel\": \"{}\"", config.enabled_channel);
-        println!("}}");
+        let payload = serde_json::json!({
+            "version": VERSION,
+            "enabled_channel": config.enabled_channel,
+            "chat_id": chat_id,
+            "recent_turn": recent_turn,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_string())
+        );
     } else {
         println!("beetle v{}", VERSION);
         println!("Enabled channel: {}", config.enabled_channel);
+        if let Some(id) = chat_id {
+            println!("Chat ID: {}", id);
+            match recent_turn {
+                Some(ledger) => {
+                    println!("Recent turn status: {:?}", ledger.status);
+                    println!("Recent turn reason: {}", ledger.reason);
+                    println!("Recent turn req_id: {}", ledger.req_id);
+                    println!("Recent turn ttft_ms: {}", ledger.ttft_ms);
+                    println!("Recent turn total_ms: {}", ledger.total_ms);
+                    println!("Recent turn tool_calls: {}", ledger.tool_calls);
+                    println!(
+                        "Recent turn delivery: waiting_notice_sent={} progress_updates_sent={} partial_updates_sent={} current_primary_delivered={} finalize_streamed={}",
+                        ledger.delivery.waiting_notice_sent,
+                        ledger.delivery.progress_updates_sent,
+                        ledger.delivery.partial_updates_sent,
+                        ledger.delivery.current_primary_delivered,
+                        ledger.delivery.finalize_streamed
+                    );
+                    if !ledger.user_preview.is_empty() {
+                        println!("Recent user preview: {}", ledger.user_preview);
+                    }
+                    if !ledger.reply_preview.is_empty() {
+                        println!("Recent reply preview: {}", ledger.reply_preview);
+                    }
+                }
+                None => println!("Recent turn: none"),
+            }
+        }
     }
 }
 
@@ -308,8 +353,8 @@ fn main() {
         Commands::Config { action } => {
             handle_config_command(&platform, action);
         }
-        Commands::Status { json } => {
-            handle_status_command(&platform, json);
+        Commands::Status { json, chat_id } => {
+            handle_status_command(&platform, json, chat_id.as_deref());
         }
         Commands::Doctor => {
             handle_doctor_command(&platform);

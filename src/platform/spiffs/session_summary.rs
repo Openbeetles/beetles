@@ -39,7 +39,7 @@ impl SpiffsSessionSummaryStore {
     pub fn new() -> Self {
         SpiffsSessionSummaryStore {
             store: CachedJsonFileStore::new(
-                full_path(),
+                full_path,
                 load_json_or_default,
                 "session_summary_cache_lock",
                 "session_summary_cache",

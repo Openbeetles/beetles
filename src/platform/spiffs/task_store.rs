@@ -28,7 +28,7 @@ impl SpiffsTaskStore {
     pub fn new() -> Self {
         Self {
             store: CachedJsonFileStore::new(
-                full_path(),
+                full_path,
                 load_json_or_default,
                 "task_store_cache_lock",
                 "task_store_cache",

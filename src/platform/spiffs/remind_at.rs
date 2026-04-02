@@ -42,7 +42,7 @@ impl SpiffsRemindAtStore {
     pub fn new() -> Self {
         Self {
             store: CachedJsonFileStore::new(
-                full_path(),
+                full_path,
                 load_json_or_default,
                 "remind_at_cache_lock",
                 "remind_at_cache",

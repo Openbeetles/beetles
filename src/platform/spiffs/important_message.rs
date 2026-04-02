@@ -32,7 +32,7 @@ impl SpiffsImportantMessageStore {
     pub fn new() -> Self {
         Self {
             store: CachedJsonFileStore::new(
-                full_path(),
+                full_path,
                 Self::load_map_from_disk,
                 "important_message_cache_lock",
                 "important_message_cache",

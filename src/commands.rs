@@ -31,6 +31,9 @@ pub enum Commands {
         /// 输出 JSON 格式
         #[arg(long)]
         json: bool,
+        /// 附带输出指定 chat_id 的最近一轮执行账本
+        #[arg(long)]
+        chat_id: Option<String>,
     },
 
     /// 诊断工具

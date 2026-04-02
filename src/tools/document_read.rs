@@ -18,6 +18,7 @@ use std::sync::Arc;
 const TAG: &str = "tools::document_read";
 pub(crate) const DEFAULT_DOCUMENT_MAX_CHARS: usize = 16_000;
 const MAX_LOCAL_RAW_BYTES: usize = 512 * 1024;
+const EMPTY_DOCUMENT_WARNING: &str = "document is empty or contains no readable text";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReadableDocument {
@@ -264,12 +265,9 @@ fn build_local_document(
     };
 
     let normalized = normalize_text(&content);
-    if normalized.is_empty() {
-        return Err(Error::config(
-            stage,
-            "document did not contain readable text",
-        ));
-    }
+    let warning = normalized
+        .is_empty()
+        .then(|| EMPTY_DOCUMENT_WARNING.to_string());
     let (content, truncated) = truncate_chars(&normalized, max_chars);
     Ok(ReadableDocument {
         source: source.to_string(),
@@ -278,13 +276,13 @@ fn build_local_document(
         content,
         truncated,
         raw_bytes: raw.len(),
-        warning: None,
+        warning,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{build_local_document, DocumentReadTool};
+    use super::{build_local_document, DocumentReadTool, EMPTY_DOCUMENT_WARNING};
     use crate::error::Result;
     use crate::i18n::Locale;
     use crate::platform::{ResponseBody, StateFs};
@@ -380,6 +378,16 @@ mod tests {
             build_local_document("docs/test.pdf", &pdf, 1_000, "tool_document_read").unwrap();
         assert_eq!(payload.kind, "pdf");
         assert!(payload.content.contains("Hello PDF"));
+    }
+
+    #[test]
+    fn empty_local_text_returns_warning_instead_of_error() {
+        let payload =
+            build_local_document("config/SOUL.md", b"  \n\t", 1_000, "tool_document_read").unwrap();
+        assert_eq!(payload.kind, "text");
+        assert!(payload.content.is_empty());
+        assert_eq!(payload.warning.as_deref(), Some(EMPTY_DOCUMENT_WARNING));
+        assert!(!payload.truncated);
     }
 
     #[test]

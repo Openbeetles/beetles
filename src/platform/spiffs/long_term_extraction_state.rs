@@ -26,7 +26,7 @@ impl SpiffsLongTermMemoryExtractionStateStore {
     pub fn new() -> Self {
         Self {
             store: CachedJsonFileStore::new(
-                full_path(),
+                full_path,
                 load_json_or_default,
                 "long_term_extraction_state_cache_lock",
                 "long_term_extraction_state_cache",

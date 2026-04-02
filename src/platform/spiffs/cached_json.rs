@@ -33,7 +33,7 @@ impl<R> StoreOp<R> {
 
 pub(crate) struct CachedJsonFileStore<T> {
     cache: Mutex<Option<T>>,
-    path: PathBuf,
+    path_fn: fn() -> PathBuf,
     load_fn: fn(&PathBuf) -> T,
     stage_cache_lock: &'static str,
     stage_cache: &'static str,
@@ -45,7 +45,7 @@ where
     T: Default + Serialize + DeserializeOwned,
 {
     pub(crate) fn new(
-        path: PathBuf,
+        path_fn: fn() -> PathBuf,
         load_fn: fn(&PathBuf) -> T,
         stage_cache_lock: &'static str,
         stage_cache: &'static str,
@@ -53,7 +53,7 @@ where
     ) -> Self {
         Self {
             cache: Mutex::new(None),
-            path,
+            path_fn,
             load_fn,
             stage_cache_lock,
             stage_cache,
@@ -83,13 +83,13 @@ where
     }
 
     fn load_from_disk(&self) -> T {
-        (self.load_fn)(&self.path)
+        (self.load_fn)(&(self.path_fn)())
     }
 
     fn persist(&self, value: &T) -> Result<()> {
         let json = serde_json::to_vec(value)
             .map_err(|e| Error::config(self.stage_persist, e.to_string()))?;
-        write_file(&self.path, &json)
+        write_file((self.path_fn)(), &json)
     }
 }
 

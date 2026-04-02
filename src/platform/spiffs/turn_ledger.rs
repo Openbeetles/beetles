@@ -26,7 +26,7 @@ impl SpiffsTurnLedgerStore {
     pub fn new() -> Self {
         Self {
             store: CachedJsonFileStore::new(
-                full_path(),
+                full_path,
                 load_json_or_default,
                 "turn_ledger_cache_lock",
                 "turn_ledger_cache",
