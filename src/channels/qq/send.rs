@@ -2,8 +2,13 @@
 
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
-use crate::error::{Error, Result};
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+use crate::error::Error;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+use crate::error::Result;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use ed25519_dalek::{Signer, SigningKey};
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use hex;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -16,6 +21,7 @@ const QQ_MSG_ID_TTL_SECS: u64 = 300;
 
 /// 将 Bot Secret 字符串重复至 32 字节作为 Ed25519 种子；不足则循环填充。
 /// Panics if secret is empty — caller must validate.
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn secret_to_seed(secret: &str) -> [u8; 32] {
     let mut seed = [0u8; 32];
     let bytes = secret.as_bytes();
@@ -33,6 +39,7 @@ fn secret_to_seed(secret: &str) -> [u8; 32] {
 }
 
 /// op=13：对 event_ts + plain_token 做 Ed25519 签名，返回 hex 编码的 signature。
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub fn sign_qq_url_verify(secret: &str, event_ts: &str, plain_token: &str) -> Result<String> {
     let seed = secret_to_seed(secret);
     let signing_key = SigningKey::from_bytes(&seed);
@@ -42,6 +49,7 @@ pub fn sign_qq_url_verify(secret: &str, event_ts: &str, plain_token: &str) -> Re
 }
 
 /// op=0：校验 X-Signature-Ed25519、X-Signature-Timestamp 与 body 的 Ed25519 验签。
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub fn verify_qq_signature(
     secret: &str,
     timestamp: &str,

@@ -2,6 +2,7 @@
 //! Request/response types for the router layer (no esp-idf types).
 
 use crate::bus::InboundTx;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use crate::channels::QqMsgIdCache;
 
 /// 与 webhook、QQ 回调相关的跨 handler 资源。
@@ -9,13 +10,23 @@ use crate::channels::QqMsgIdCache;
 #[derive(Clone)]
 pub struct RouterEnv {
     pub inbound_tx: InboundTx,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     pub qq_msg_id_cache: QqMsgIdCache,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     pub qq_webhook_enabled: bool,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     pub qq_app_id: String,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     pub qq_secret: String,
 }
 
 impl RouterEnv {
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    pub fn new(inbound_tx: InboundTx) -> Self {
+        Self { inbound_tx }
+    }
+
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     pub fn new(
         inbound_tx: InboundTx,
         qq_msg_id_cache: QqMsgIdCache,

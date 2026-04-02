@@ -10,7 +10,9 @@ pub use send::{
     FEISHU_TOKEN_URL,
 };
 
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 mod event;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use event::{handle_http_event, FeishuEventResponse};
 
 mod frame;

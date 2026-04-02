@@ -457,10 +457,14 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         let memory_http = Arc::clone(&memory_store);
         let session_http = Arc::clone(&session_store);
         let http_inbound_tx = user_inbound_tx.clone();
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         let http_qq_cache = Arc::clone(&qq_msg_id_cache);
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         let qq_wh_enabled = !config.qq_channel_app_id.trim().is_empty()
             && !config.qq_channel_secret.trim().is_empty();
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         let qq_app_id = config.qq_channel_app_id.clone();
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         let qq_secret = config.qq_channel_secret.clone();
         let initial_config = (*config).clone();
         spawn_planned("http_server", 6144, move || {
@@ -471,9 +475,13 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                 memory_http,
                 session_http,
                 http_inbound_tx,
+                #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
                 http_qq_cache,
+                #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
                 qq_wh_enabled,
+                #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
                 qq_app_id,
+                #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
                 qq_secret,
                 initial_config,
             ) {

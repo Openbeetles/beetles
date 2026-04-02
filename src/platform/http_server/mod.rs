@@ -21,10 +21,6 @@ pub fn run(
     memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
     session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
     inbound_tx: crate::bus::InboundTx,
-    msg_id_cache: crate::channels::QqMsgIdCache,
-    qq_webhook_enabled: bool,
-    qq_app_id: String,
-    qq_secret: String,
     initial_config: crate::config::AppConfig,
 ) -> Result<()> {
     let config_store = platform.config_store();
@@ -64,13 +60,7 @@ pub fn run(
         cached_config: std::sync::RwLock::new(initial_config),
     });
 
-    let router_env = router::RouterEnv::new(
-        inbound_tx.clone(),
-        msg_id_cache.clone(),
-        qq_webhook_enabled,
-        qq_app_id,
-        qq_secret,
-    );
+    let router_env = router::RouterEnv::new(inbound_tx.clone());
     esp_transport::register_all_esp_routes(&mut server, &ctx, &router_env, &config_store)?;
 
     loop {

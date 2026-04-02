@@ -10,6 +10,7 @@ use crate::platform::http_server::common::{
     HTML_HEADERS, JS_HEADERS, REDIRECT_PAIRING_HEADERS,
 };
 use crate::platform::http_server::handlers::{self, HandlerContext};
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use std::sync::Arc;
 
 const OPTIONS_BODY: &[u8] = b" ";

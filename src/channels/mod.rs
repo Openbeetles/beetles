@@ -23,15 +23,15 @@ pub use dispatch::{run_dispatch, ChannelSinks, MessageSink, QueuedSink};
 pub use feishu::run_feishu_ws_loop;
 pub use feishu::{
     acquire_tenant_token as feishu_acquire_token, event_body_to_pcmsg, feishu_edit_message,
-    feishu_send_and_get_id, flush_feishu_sends, handle_http_event, run_feishu_sender_loop,
-    FeishuEventResponse,
+    feishu_send_and_get_id, flush_feishu_sends, run_feishu_sender_loop,
 };
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use feishu::{handle_http_event, FeishuEventResponse};
 pub use http_client::ChannelHttpClient;
 pub use qq::run_qq_ws_loop;
-pub use qq::{
-    flush_qq_channel_sends, handle_webhook, run_qq_sender_loop, QqHandlerResult, QqMsgIdCache,
-    QQ_WEBHOOK_BODY_MAX,
-};
+pub use qq::{flush_qq_channel_sends, run_qq_sender_loop, QqMsgIdCache};
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use qq::{handle_webhook, QqHandlerResult, QQ_WEBHOOK_BODY_MAX};
 
 pub use telegram::{
     edit_message_text as tg_edit_message_text, flush_telegram_sends, get_bot_username,
