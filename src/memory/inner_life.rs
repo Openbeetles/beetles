@@ -12,10 +12,9 @@ use std::fmt::Write as _;
 use super::{
     memory_policy, render_execution_state_block, render_internal_memory_topology_block,
     render_private_doc_workspace_block, render_self_continuity_block, render_self_model_block,
-    ExecutionState, ExecutionStateStore, InnerLifePolicy, InnerLifeStore,
-    InternalMemoryLayerFocus, MemoryProfile, PrivateDocStore, PrivateDocWorkspace, SelfContinuity,
-    SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
-    SessionSummaryStore,
+    ExecutionState, ExecutionStateStore, InnerLifePolicy, InnerLifeStore, InternalMemoryLayerFocus,
+    MemoryProfile, PrivateDocStore, PrivateDocWorkspace, SelfContinuity, SelfContinuityStore,
+    SelfModel, SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
 };
 
 pub const INNER_LIFE_SYSTEM_PROMPT: &str = "You maintain the AI assistant's private inner life. Return JSON only: either null or one object with fields internal_monologue, private_journal, emotional_drift, attention_drift. This layer is subjective, first-person is allowed, and it may carry ambiguity, mood, or inward texture. It must stay compact. Do not copy transcript lines, generic assistant boilerplate, raw tool payloads, secrets, or factual memory that belongs elsewhere. Keep durable identity in self-continuity or self-model; use this layer for active inward afterglow, emotional movement, and current attentional drift.";
@@ -253,11 +252,8 @@ pub(crate) fn run_inner_life_refresh_with_state(
         }
         return Ok(InnerLifeRefreshOutcome::Skipped);
     }
-    let raw: RawInnerLife =
-        serde_json::from_str(content).map_err(|error| crate::error::Error::config(
-            "inner_life_parse",
-            error.to_string(),
-        ))?;
+    let raw: RawInnerLife = serde_json::from_str(content)
+        .map_err(|error| crate::error::Error::config("inner_life_parse", error.to_string()))?;
     let Some(next) = normalize_inner_life(
         InnerLife {
             internal_monologue: raw.internal_monologue,
@@ -311,7 +307,9 @@ fn build_inner_life_refresh_input(
     if let Some(block) = execution_state.and_then(|state| {
         render_execution_state_block(
             state,
-            policy.grounding_max_len.min(memory_policy(profile).execution_state.render_max_len),
+            policy
+                .grounding_max_len
+                .min(memory_policy(profile).execution_state.render_max_len),
         )
     }) {
         let _ = writeln!(input, "\n{}\n", block);
@@ -342,9 +340,9 @@ fn build_inner_life_refresh_input(
     {
         let _ = writeln!(input, "\n{}\n", block);
     }
-    if let Some(block) =
-        existing_inner_life.and_then(|inner_life| render_inner_life_block(inner_life, policy.existing_inner_life_max_len))
-    {
+    if let Some(block) = existing_inner_life.and_then(|inner_life| {
+        render_inner_life_block(inner_life, policy.existing_inner_life_max_len)
+    }) {
         let _ = writeln!(input, "\nExisting inner life:\n{}\n", block);
     } else {
         let _ = writeln!(input, "\nExisting inner life: empty\n");

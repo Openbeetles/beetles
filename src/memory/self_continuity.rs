@@ -140,7 +140,9 @@ pub fn render_self_continuity_block(continuity: &SelfContinuity, max_len: usize)
     let normalized = normalize_self_continuity(continuity.clone(), continuity.updated_at)?;
     let mut out = String::with_capacity(max_len.min(640));
     out.push_str("## Self Continuity Extended\n");
-    out.push_str("Private bridge across time. Use it to remain the same self without freezing growth.\n");
+    out.push_str(
+        "Private bridge across time. Use it to remain the same self without freezing growth.\n",
+    );
     if !normalized.wake_anchor.is_empty() {
         let _ = writeln!(out, "Wake anchor: {}", normalized.wake_anchor);
     }
@@ -263,11 +265,8 @@ pub(crate) fn run_self_continuity_refresh_with_state(
         }
         return Ok(SelfContinuityRefreshOutcome::Skipped);
     }
-    let raw: RawSelfContinuity =
-        serde_json::from_str(content).map_err(|error| crate::error::Error::config(
-            "self_continuity_parse",
-            error.to_string(),
-        ))?;
+    let raw: RawSelfContinuity = serde_json::from_str(content)
+        .map_err(|error| crate::error::Error::config("self_continuity_parse", error.to_string()))?;
     let mut next = existing_continuity.clone().unwrap_or_default();
     next.wake_anchor = raw.wake_anchor;
     next.current_self_state = raw.current_self_state;
@@ -341,7 +340,9 @@ fn build_self_continuity_refresh_input(
     if let Some(block) = execution_state.and_then(|state| {
         render_execution_state_block(
             state,
-            policy.grounding_max_len.min(memory_policy(profile).execution_state.render_max_len),
+            policy
+                .grounding_max_len
+                .min(memory_policy(profile).execution_state.render_max_len),
         )
     }) {
         let _ = writeln!(input, "\n{}\n", block);
@@ -362,13 +363,13 @@ fn build_self_continuity_refresh_input(
     {
         let _ = writeln!(input, "\n{}\n", block);
     }
-    if let Some(block) = private_docs.and_then(|docs| {
-        render_private_doc_workspace_block(docs, policy.grounding_max_len)
-    }) {
+    if let Some(block) = private_docs
+        .and_then(|docs| render_private_doc_workspace_block(docs, policy.grounding_max_len))
+    {
         let _ = writeln!(input, "\n{}\n", block);
     }
-    if let Some(block) =
-        inner_life.and_then(|inner_life| render_inner_life_block(inner_life, policy.grounding_max_len))
+    if let Some(block) = inner_life
+        .and_then(|inner_life| render_inner_life_block(inner_life, policy.grounding_max_len))
     {
         let _ = writeln!(input, "\n{}\n", block);
     }

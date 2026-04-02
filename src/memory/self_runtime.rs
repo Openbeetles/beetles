@@ -10,19 +10,22 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    memory_policy, render_execution_state_block, render_inner_life_block,
-    render_internal_memory_topology_block, render_private_doc_workspace_block,
-    render_private_garden_block, render_self_continuity_block, render_self_model_block,
+    autonomy_idle_interval_secs, memory_policy, render_autonomy_strategy_block,
+    render_execution_state_block, render_inner_life_block, render_internal_memory_topology_block,
+    render_private_doc_workspace_block, render_private_garden_block, render_self_continuity_block,
+    render_self_model_block, run_autonomy_strategy_refresh_with_state,
     run_inner_life_refresh_with_state, run_private_garden_governance_with_state,
-    run_self_continuity_refresh_with_state, touch_self_continuity_runtime, ExecutionStateStore,
-    InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome, InnerLifeStore,
-    InternalMemoryLayerFocus, MemoryProfile, PrivateDocStore, PrivateGardenGovernanceContext,
-    PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, PrivateGardenStore,
-    SelfContinuityRefreshContext, SelfContinuityRefreshInput, SelfContinuityRefreshOutcome,
-    SelfContinuityStore, SelfModelStore, SessionStore, SessionSummaryStore,
+    run_self_continuity_refresh_with_state, touch_self_continuity_runtime,
+    AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome,
+    AutonomyStrategyStore, ExecutionStateStore, InnerLifeRefreshContext, InnerLifeRefreshInput,
+    InnerLifeRefreshOutcome, InnerLifeStore, InternalMemoryLayerFocus, MemoryProfile,
+    PrivateDocStore, PrivateGardenGovernanceContext, PrivateGardenGovernanceInput,
+    PrivateGardenGovernanceOutcome, PrivateGardenStore, SelfContinuityRefreshContext,
+    SelfContinuityRefreshInput, SelfContinuityRefreshOutcome, SelfContinuityStore, SelfModelStore,
+    SessionStore, SessionSummaryStore,
 };
 
-pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's private inward space. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_self_continuity, self_continuity_intent, refresh_private_garden, private_garden_intent. Use true only when the corresponding layer should be updated now. Keep intents short and concrete. Favor autonomy, but do not churn memory without gain.";
+pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's private inward space. Respect the current autonomy strategy unless the latest context clearly requires a change in emphasis. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_self_continuity, self_continuity_intent, refresh_private_garden, private_garden_intent. Use true only when the corresponding layer should be updated now. Keep intents short and concrete. Favor autonomy, but do not churn memory without gain.";
 pub const SELF_RUNTIME_CHANNEL: &str = "_self_runtime";
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -73,10 +76,12 @@ pub struct SelfRuntimeContext<'a> {
     pub private_garden_store: &'a dyn PrivateGardenStore,
     pub inner_life_store: &'a dyn InnerLifeStore,
     pub self_continuity_store: &'a dyn SelfContinuityStore,
+    pub autonomy_strategy_store: &'a dyn AutonomyStrategyStore,
 }
 
 pub struct SelfRuntimeOutcome {
     pub decision: Option<SelfRuntimeDecision>,
+    pub autonomy_strategy_result: Result<AutonomyStrategyRefreshOutcome>,
     pub inner_life_result: Result<InnerLifeRefreshOutcome>,
     pub self_continuity_result: Result<SelfContinuityRefreshOutcome>,
     pub private_garden_result: Result<PrivateGardenGovernanceOutcome>,
@@ -169,6 +174,7 @@ pub fn self_runtime_tick(
     system_inbound_tx: &SystemInboundTx,
     session_store: &dyn SessionStore,
     self_continuity_store: &dyn SelfContinuityStore,
+    autonomy_strategy_store: &dyn AutonomyStrategyStore,
     profile: MemoryProfile,
     now_secs: u64,
 ) {
@@ -207,9 +213,23 @@ pub fn self_runtime_tick(
             .as_ref()
             .map(|c| c.last_autonomy_run_at)
             .unwrap_or(0);
-        if last_autonomy > 0
-            && now_secs.saturating_sub(last_autonomy) < policy.idle_tick_interval_secs
-        {
+        let strategy = match autonomy_strategy_store.get(&chat_id) {
+            Ok(value) => value,
+            Err(error) => {
+                log::warn!(
+                    "[self_runtime] failed to read autonomy strategy for {}: {}",
+                    chat_id,
+                    error
+                );
+                None
+            }
+        };
+        let idle_interval_secs = match autonomy_idle_interval_secs(strategy.as_ref(), profile) {
+            Some(interval) => interval,
+            None if strategy.is_some() => continue,
+            None => policy.idle_tick_interval_secs,
+        };
+        if last_autonomy > 0 && now_secs.saturating_sub(last_autonomy) < idle_interval_secs {
             continue;
         }
         if enqueue_self_runtime_idle_tick(system_inbound_tx, &chat_id) {
@@ -241,6 +261,7 @@ pub fn run_self_runtime(
         .unwrap_or_default();
     let inner_life = ctx.inner_life_store.get(chat_id).ok().flatten();
     let self_continuity = ctx.self_continuity_store.get(chat_id).ok().flatten();
+    let autonomy_strategy = ctx.autonomy_strategy_store.get(chat_id).ok().flatten();
     if payload.trigger == SelfRuntimeTrigger::PostReply {
         let _ = touch_self_continuity_runtime(
             ctx.self_continuity_store,
@@ -250,6 +271,92 @@ pub fn run_self_runtime(
             false,
         );
     }
+    let recent = ctx
+        .session_store
+        .load_recent(
+            chat_id,
+            memory_policy(profile)
+                .self_runtime
+                .recent_message_count
+                .max(
+                    memory_policy(profile)
+                        .autonomy_strategy
+                        .recent_message_count,
+                )
+                .max(memory_policy(profile).inner_life.recent_message_count)
+                .max(memory_policy(profile).self_continuity.recent_message_count)
+                .max(
+                    memory_policy(profile)
+                        .private_garden_governance
+                        .recent_message_count,
+                ),
+        )
+        .unwrap_or_default();
+    let autonomy_policy = memory_policy(profile).autonomy_strategy;
+    let autonomy_strategy_should_refresh = autonomy_strategy.is_none()
+        || (payload.trigger == SelfRuntimeTrigger::PostReply
+            && autonomy_policy.should_refresh(
+                AutonomyStrategyRefreshInput {
+                    chat_id,
+                    ingress: IngressKind::User,
+                    channel: &payload.source_channel,
+                    user_content: &payload.user_content,
+                    reply_content: &payload.reply_content,
+                    pressure: PressureLevel::Normal,
+                    tool_calls: payload.tool_calls,
+                    now_secs: payload.now_secs,
+                },
+                autonomy_strategy.is_some(),
+            ))
+        || autonomy_strategy.as_ref().is_some_and(|strategy| {
+            payload.now_secs.saturating_sub(strategy.updated_at)
+                >= autonomy_policy.refresh_interval_secs
+        });
+    let autonomy_strategy_result = run_autonomy_strategy_refresh_with_state(
+        http,
+        llm,
+        AutonomyStrategyRefreshContext {
+            session_store: ctx.session_store,
+            session_summary_store: ctx.session_summary_store,
+            execution_state_store: ctx.execution_state_store,
+            self_model_store: ctx.self_model_store,
+            inner_life_store: ctx.inner_life_store,
+            self_continuity_store: ctx.self_continuity_store,
+            private_doc_store: ctx.private_doc_store,
+            private_garden_store: ctx.private_garden_store,
+            autonomy_strategy_store: ctx.autonomy_strategy_store,
+        },
+        AutonomyStrategyRefreshInput {
+            chat_id,
+            ingress: match payload.trigger {
+                SelfRuntimeTrigger::PostReply => IngressKind::User,
+                SelfRuntimeTrigger::IdleTick => IngressKind::System,
+            },
+            channel: &payload.source_channel,
+            user_content: &payload.user_content,
+            reply_content: &payload.reply_content,
+            pressure: PressureLevel::Normal,
+            tool_calls: payload.tool_calls,
+            now_secs: payload.now_secs,
+        },
+        profile,
+        autonomy_strategy.clone(),
+        summary_text.as_deref(),
+        execution_state.as_ref(),
+        self_model.as_ref(),
+        inner_life.as_ref(),
+        self_continuity.as_ref(),
+        private_docs.as_ref(),
+        &private_garden_docs,
+        Some(autonomy_strategy_should_refresh),
+        Some(recent.as_slice()),
+    );
+    let refreshed_autonomy_strategy = ctx
+        .autonomy_strategy_store
+        .get(chat_id)
+        .ok()
+        .flatten()
+        .or(autonomy_strategy.clone());
     let decision = match decide_self_runtime(
         http,
         llm,
@@ -261,6 +368,7 @@ pub fn run_self_runtime(
         &private_garden_docs,
         inner_life.as_ref(),
         self_continuity.as_ref(),
+        refreshed_autonomy_strategy.as_ref(),
         profile,
         ctx.session_store,
         chat_id,
@@ -269,29 +377,13 @@ pub fn run_self_runtime(
         Err(error) => {
             return SelfRuntimeOutcome {
                 decision: None,
+                autonomy_strategy_result,
                 inner_life_result: Err(error),
                 self_continuity_result: Ok(SelfContinuityRefreshOutcome::Skipped),
                 private_garden_result: Ok(PrivateGardenGovernanceOutcome::Skipped),
             };
         }
     };
-
-    let recent = ctx
-        .session_store
-        .load_recent(
-            chat_id,
-            memory_policy(profile)
-                .self_runtime
-                .recent_message_count
-                .max(memory_policy(profile).inner_life.recent_message_count)
-                .max(memory_policy(profile).self_continuity.recent_message_count)
-                .max(
-                    memory_policy(profile)
-                        .private_garden_governance
-                        .recent_message_count,
-                ),
-        )
-        .unwrap_or_default();
 
     let decision_ref = decision.as_ref();
     let inner_life_result = if decision_ref.is_some_and(|d| d.refresh_inner_life) {
@@ -423,6 +515,7 @@ pub fn run_self_runtime(
 
     SelfRuntimeOutcome {
         decision,
+        autonomy_strategy_result,
         inner_life_result,
         self_continuity_result,
         private_garden_result,
@@ -441,6 +534,7 @@ fn decide_self_runtime(
     private_garden_docs: &[crate::memory::PrivateGardenDocRecord],
     inner_life: Option<&crate::memory::InnerLife>,
     self_continuity: Option<&crate::memory::SelfContinuity>,
+    autonomy_strategy: Option<&crate::memory::AutonomyStrategy>,
     profile: MemoryProfile,
     session_store: &dyn SessionStore,
     chat_id: &str,
@@ -520,6 +614,11 @@ fn decide_self_runtime(
     }
     if let Some(block) = self_continuity
         .and_then(|continuity| render_self_continuity_block(continuity, policy.grounding_max_len))
+    {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if let Some(block) = autonomy_strategy
+        .and_then(|strategy| render_autonomy_strategy_block(strategy, policy.grounding_max_len))
     {
         let _ = writeln!(input, "\n{}\n", block);
     }

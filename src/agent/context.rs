@@ -652,6 +652,7 @@ mod tests {
             execution_state_text: Some("## Execution State\nGoal: close current task"),
             self_state_text: Some("## Self State\nMemory pressure: Cautious"),
             self_model_text: Some("## Self Continuity\nAnchor: still the same beetle"),
+            autonomy_strategy_text: Some("## Autonomy Strategy\nCurrent mode: consolidate"),
             inner_life_text: Some("## Inner Life\nInternal monologue: keep moving"),
             self_continuity_text: Some("## Self Continuity Extended\nWake anchor: same thread"),
             private_workspace_text: Some(
@@ -672,6 +673,7 @@ mod tests {
         assert!(system.contains("## Execution State"));
         assert!(system.contains("## Self State"));
         assert!(system.contains("## Self Continuity"));
+        assert!(system.contains("## Autonomy Strategy"));
         assert!(system.contains("## Inner Life"));
         assert!(system.contains("## Self Continuity Extended"));
         assert!(system.contains("## Inner Workspace"));
@@ -707,6 +709,7 @@ mod tests {
             execution_state_text: None,
             self_state_text: None,
             self_model_text: None,
+            autonomy_strategy_text: None,
             inner_life_text: None,
             self_continuity_text: None,
             private_workspace_text: None,

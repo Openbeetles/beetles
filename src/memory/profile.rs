@@ -507,13 +507,10 @@ mod tests {
         assert!(standard.execution_state.render_max_len > embedded.execution_state.render_max_len);
         assert!(standard.self_model.render_max_len > embedded.self_model.render_max_len);
         assert!(
-            standard.autonomy_strategy.render_max_len
-                > embedded.autonomy_strategy.render_max_len
+            standard.autonomy_strategy.render_max_len > embedded.autonomy_strategy.render_max_len
         );
         assert!(standard.inner_life.render_max_len > embedded.inner_life.render_max_len);
-        assert!(
-            standard.self_continuity.render_max_len > embedded.self_continuity.render_max_len
-        );
+        assert!(standard.self_continuity.render_max_len > embedded.self_continuity.render_max_len);
         assert!(standard.private_docs.render_max_len > embedded.private_docs.render_max_len);
         assert!(standard.private_garden.render_max_len > embedded.private_garden.render_max_len);
         assert!(
@@ -524,9 +521,7 @@ mod tests {
             standard.internal_memory_routing.recent_message_count
                 > embedded.internal_memory_routing.recent_message_count
         );
-        assert!(
-            standard.self_runtime.max_jobs_per_tick > embedded.self_runtime.max_jobs_per_tick
-        );
+        assert!(standard.self_runtime.max_jobs_per_tick > embedded.self_runtime.max_jobs_per_tick);
         assert!(standard.self_state.render_max_len > embedded.self_state.render_max_len);
     }
 }

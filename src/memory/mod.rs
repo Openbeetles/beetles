@@ -25,17 +25,16 @@ mod self_state;
 mod session_summary_refresh;
 mod turn_ledger;
 
-pub use context_window::build_context_messages;
 pub(crate) use autonomy_strategy::estimate_autonomy_strategy_chars;
-pub use autonomy_strategy::{
-    render_autonomy_strategy_block, run_autonomy_strategy_refresh, AutonomyStrategy,
-    AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput,
-    AutonomyStrategyRefreshOutcome, AutonomyStrategyStore, AUTONOMY_STRATEGY_SYSTEM_PROMPT,
-    AUTONOMY_STRATEGY_TOTAL_CHAR_LIMIT,
-};
 pub(crate) use autonomy_strategy::{
     autonomy_idle_interval_secs, run_autonomy_strategy_refresh_with_state,
 };
+pub use autonomy_strategy::{
+    render_autonomy_strategy_block, run_autonomy_strategy_refresh, AutonomyStrategy,
+    AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome,
+    AUTONOMY_STRATEGY_SYSTEM_PROMPT, AUTONOMY_STRATEGY_TOTAL_CHAR_LIMIT,
+};
+pub use context_window::build_context_messages;
 pub use execution_state::{
     render_execution_state_block, run_execution_state_refresh, ExecutionState,
     ExecutionStateRefreshContext, ExecutionStateRefreshInput, ExecutionStateRefreshOutcome,
@@ -45,12 +44,12 @@ pub(crate) use execution_state::{
     run_execution_state_refresh_with_state, should_refresh_execution_state,
 };
 pub(crate) use inner_life::estimate_inner_life_chars;
+pub(crate) use inner_life::run_inner_life_refresh_with_state;
 pub use inner_life::{
     render_inner_life_block, run_inner_life_refresh, InnerLife, InnerLifeRefreshContext,
     InnerLifeRefreshInput, InnerLifeRefreshOutcome, INNER_LIFE_SYSTEM_PROMPT,
     INNER_LIFE_TOTAL_CHAR_LIMIT,
 };
-pub(crate) use inner_life::run_inner_life_refresh_with_state;
 pub(crate) use internal_memory_routing::run_internal_memory_routing_with_state;
 pub use internal_memory_routing::{
     InternalMemoryRoutingDecision, InternalMemoryRoutingInput,
@@ -112,21 +111,21 @@ pub(crate) use private_garden_governance::{
 };
 pub use profile::MemoryProfile;
 pub(crate) use profile::{
-    memory_policy, shared_long_term_governance_policy, ExecutionStatePolicy,
-    AutonomyStrategyPolicy, InnerLifePolicy, InternalMemoryRoutingPolicy, LongTermExtractionPolicy,
-    LongTermRecallPolicy, PrivateDocsPolicy, PrivateGardenGovernancePolicy,
-    SelfContinuityPolicy, SelfModelPolicy, SessionSummaryPolicy,
+    memory_policy, shared_long_term_governance_policy, AutonomyStrategyPolicy,
+    ExecutionStatePolicy, InnerLifePolicy, InternalMemoryRoutingPolicy, LongTermExtractionPolicy,
+    LongTermRecallPolicy, PrivateDocsPolicy, PrivateGardenGovernancePolicy, SelfContinuityPolicy,
+    SelfModelPolicy, SessionSummaryPolicy,
 };
 pub use prompt_context::{
     load_prompt_memory_context, PromptMemoryContext, PromptMemoryContextParams,
 };
 pub(crate) use self_continuity::estimate_self_continuity_chars;
+pub(crate) use self_continuity::run_self_continuity_refresh_with_state;
 pub use self_continuity::{
     render_self_continuity_block, run_self_continuity_refresh, touch_self_continuity_runtime,
     SelfContinuity, SelfContinuityRefreshContext, SelfContinuityRefreshInput,
     SelfContinuityRefreshOutcome, SELF_CONTINUITY_SYSTEM_PROMPT, SELF_CONTINUITY_TOTAL_CHAR_LIMIT,
 };
-pub(crate) use self_continuity::run_self_continuity_refresh_with_state;
 pub(crate) use self_model::estimate_self_model_chars;
 pub use self_model::{
     render_self_model_block, run_self_model_refresh, SelfModel, SelfModelRefreshContext,
@@ -140,10 +139,9 @@ pub use self_runtime::{
     SelfRuntimeOutcome, SelfRuntimeTrigger, SELF_RUNTIME_CHANNEL, SELF_RUNTIME_SYSTEM_PROMPT,
 };
 pub use self_state::{
-    SelfAutonomyState, SelfAutonomyStatus, SelfInnerState,
-    build_self_state, render_self_state_block, SelfMemoryGovernancePosture,
-    SelfMemorySpaceActivity, SelfMemorySpaceBottleneck, SelfMemorySpacePressure,
-    SelfMemorySpaceState, SelfState,
+    build_self_state, render_self_state_block, SelfAutonomyState, SelfAutonomyStatus,
+    SelfInnerState, SelfMemoryGovernancePosture, SelfMemorySpaceActivity,
+    SelfMemorySpaceBottleneck, SelfMemorySpacePressure, SelfMemorySpaceState, SelfState,
 };
 pub use session_summary_refresh::{
     fallback_session_summary, run_session_summary_refresh, should_refresh_session_summary,

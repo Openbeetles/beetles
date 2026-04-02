@@ -9,14 +9,13 @@ use crate::platform::{
     display_driver::{install_display_state, DisplayState},
     heartbeat_file::read_heartbeat_file,
     spiffs::{
-        spiffs_usage, SpiffsAutonomyStrategyStore, SpiffsCalendarProviderCredentialStore, SpiffsCalendarStore,
-        SpiffsExecutionStateStore, SpiffsImportantMessageStore,
-        SpiffsInnerLifeStore, SpiffsLongTermMemoryExtractionStateStore,
-        SpiffsLongTermMemoryStore, SpiffsMemoryStore, SpiffsPendingRetryStore,
-        SpiffsPrivateDocStore, SpiffsPrivateGardenStore, SpiffsRemindAtStore,
-        SpiffsSelfContinuityStore, SpiffsSelfModelStore, SpiffsSessionStore,
-        SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage, SpiffsTaskStore,
-        SpiffsTurnLedgerStore,
+        spiffs_usage, SpiffsAutonomyStrategyStore, SpiffsCalendarProviderCredentialStore,
+        SpiffsCalendarStore, SpiffsExecutionStateStore, SpiffsImportantMessageStore,
+        SpiffsInnerLifeStore, SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore,
+        SpiffsMemoryStore, SpiffsPendingRetryStore, SpiffsPrivateDocStore,
+        SpiffsPrivateGardenStore, SpiffsRemindAtStore, SpiffsSelfContinuityStore,
+        SpiffsSelfModelStore, SpiffsSessionStore, SpiffsSessionSummaryStore, SpiffsSkillMetaStore,
+        SpiffsSkillStorage, SpiffsTaskStore, SpiffsTurnLedgerStore,
     },
     NvsConfigStore,
 };
@@ -27,8 +26,8 @@ use crate::{
     memory::{
         AutonomyStrategyStore, ExecutionStateStore, ImportantMessageStore, InnerLifeStore,
         LongTermMemoryExtractionStateStore, LongTermMemoryStore, MemoryStore, PendingRetryStore,
-        PrivateDocStore, PrivateGardenStore, RemindAtStore, SelfContinuityStore,
-        SelfModelStore, SessionStore, SessionSummaryStore, TurnLedgerStore,
+        PrivateDocStore, PrivateGardenStore, RemindAtStore, SelfContinuityStore, SelfModelStore,
+        SessionStore, SessionSummaryStore, TurnLedgerStore,
     },
     task::TaskStore,
 };

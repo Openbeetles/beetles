@@ -11,11 +11,11 @@ use std::fmt::Write as _;
 
 use super::{
     build_self_state, memory_policy, render_execution_state_block, render_inner_life_block,
-    render_private_doc_workspace_block, render_private_garden_block,
-    render_self_continuity_block, render_self_model_block, render_self_state_block,
-    AutonomyStrategyPolicy, AutonomyStrategyStore, ExecutionState, ExecutionStateStore, InnerLife,
-    InnerLifeStore, MemoryProfile, PrivateDocStore, PrivateDocWorkspace, PrivateGardenStore,
-    SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
+    render_private_doc_workspace_block, render_private_garden_block, render_self_continuity_block,
+    render_self_model_block, render_self_state_block, AutonomyStrategyPolicy,
+    AutonomyStrategyStore, ExecutionState, ExecutionStateStore, InnerLife, InnerLifeStore,
+    MemoryProfile, PrivateDocStore, PrivateDocWorkspace, PrivateGardenStore, SelfContinuity,
+    SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
     SessionSummaryStore,
 };
 
@@ -116,7 +116,11 @@ struct RawAutonomyStrategy {
 }
 
 impl AutonomyStrategyPolicy {
-    fn should_refresh(self, input: AutonomyStrategyRefreshInput<'_>, has_existing: bool) -> bool {
+    pub(crate) fn should_refresh(
+        self,
+        input: AutonomyStrategyRefreshInput<'_>,
+        has_existing: bool,
+    ) -> bool {
         if input.ingress != IngressKind::User || input.channel == "cron" {
             return false;
         }
@@ -147,7 +151,11 @@ pub fn render_autonomy_strategy_block(
     strategy: &AutonomyStrategy,
     max_len: usize,
 ) -> Option<String> {
-    let normalized = normalize_autonomy_strategy(strategy.clone(), strategy.updated_at, MemoryProfile::Standard)?;
+    let normalized = normalize_autonomy_strategy(
+        strategy.clone(),
+        strategy.updated_at,
+        MemoryProfile::Standard,
+    )?;
     let mut out = String::with_capacity(max_len.min(640));
     out.push_str("## Autonomy Strategy\n");
     out.push_str("Private self-governance layer. It defines how you currently want to manage your inner space during ongoing and idle periods.\n");
@@ -353,6 +361,7 @@ fn build_autonomy_strategy_refresh_input(
         &build_self_state(
             self_model,
             private_docs,
+            existing_strategy,
             inner_life,
             self_continuity,
             private_garden_docs,
@@ -383,8 +392,8 @@ fn build_autonomy_strategy_refresh_input(
     {
         let _ = writeln!(input, "\n{}\n", block);
     }
-    if let Some(block) =
-        inner_life.and_then(|inner_life| render_inner_life_block(inner_life, policy.grounding_max_len))
+    if let Some(block) = inner_life
+        .and_then(|inner_life| render_inner_life_block(inner_life, policy.grounding_max_len))
     {
         let _ = writeln!(input, "\n{}\n", block);
     }
@@ -393,9 +402,9 @@ fn build_autonomy_strategy_refresh_input(
     {
         let _ = writeln!(input, "\n{}\n", block);
     }
-    if let Some(block) = private_docs.and_then(|docs| {
-        render_private_doc_workspace_block(docs, policy.grounding_max_len)
-    }) {
+    if let Some(block) = private_docs
+        .and_then(|docs| render_private_doc_workspace_block(docs, policy.grounding_max_len))
+    {
         let _ = writeln!(input, "\n{}\n", block);
     }
     if let Some(block) = render_private_garden_block(

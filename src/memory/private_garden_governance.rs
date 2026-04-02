@@ -357,6 +357,7 @@ fn build_private_garden_governance_input(
             private_workspace,
             None,
             None,
+            None,
             snapshot.records.as_slice(),
             now_secs,
             profile,

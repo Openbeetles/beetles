@@ -282,9 +282,9 @@ pub mod task_store;
 pub mod turn_ledger;
 pub use turn_ledger::SpiffsTurnLedgerStore;
 
+pub use autonomy_strategy::SpiffsAutonomyStrategyStore;
 pub use calendar_credentials::SpiffsCalendarProviderCredentialStore;
 pub use calendar_store::SpiffsCalendarStore;
-pub use autonomy_strategy::SpiffsAutonomyStrategyStore;
 pub use execution_state::SpiffsExecutionStateStore;
 pub use important_message::SpiffsImportantMessageStore;
 pub use inner_life::SpiffsInnerLifeStore;

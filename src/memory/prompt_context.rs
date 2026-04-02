@@ -2,12 +2,12 @@
 //! Shared prompt memory loading for agent context construction.
 
 use super::{
-    build_self_state, memory_policy, recall_long_term_memory_block, render_execution_state_block,
-    render_autonomy_strategy_block, render_inner_life_block, render_private_doc_workspace_block,
+    build_self_state, memory_policy, recall_long_term_memory_block, render_autonomy_strategy_block,
+    render_execution_state_block, render_inner_life_block, render_private_doc_workspace_block,
     render_private_garden_block, render_self_continuity_block, render_self_model_block,
     render_self_state_block, AutonomyStrategyStore, ExecutionStateStore, InnerLifeStore,
-    LongTermMemoryStore, MemoryProfile, PrivateDocStore, PrivateGardenStore,
-    SelfContinuityStore, SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
+    LongTermMemoryStore, MemoryProfile, PrivateDocStore, PrivateGardenStore, SelfContinuityStore,
+    SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
 };
 
 pub struct PromptMemoryContext {
@@ -95,7 +95,9 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
     let autonomy_strategy_text = autonomy_strategy.as_ref().and_then(|strategy| {
         render_autonomy_strategy_block(
             strategy,
-            memory_policy(params.profile).autonomy_strategy.render_max_len,
+            memory_policy(params.profile)
+                .autonomy_strategy
+                .render_max_len,
         )
     });
     let inner_life = params.inner_life_store.get(params.chat_id).ok().flatten();
@@ -138,6 +140,7 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         &build_self_state(
             self_model.as_ref(),
             private_workspace.as_ref(),
+            autonomy_strategy.as_ref(),
             inner_life.as_ref(),
             self_continuity.as_ref(),
             &all_private_garden_docs,
