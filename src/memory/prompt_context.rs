@@ -7,12 +7,13 @@ use super::{
     build_archive_evidence_block, build_self_state, build_world_snapshot, collect_private_targets,
     memory_policy, recall_long_term_memory_block, render_autonomy_strategy_block,
     render_execution_state_block, render_inner_life_block, render_mental_privacy_boundary_block,
-    render_private_doc_workspace_block, render_private_garden_block, render_self_continuity_block,
-    render_self_model_block, render_self_state_block, render_world_sense_block,
-    render_world_snapshot_block, AutonomyStrategyStore, ExecutionStateStore, InnerLifeStore,
-    LongTermMemoryStore, MemoryProfile, MemoryStore, MentalPrivacyStore, PrivateDocStore,
-    PrivateGardenStore, RemindAtStore, SelfContinuityStore, SelfModelStore, SessionMessage,
-    SessionStore, SessionSummaryStore, TurnLedgerStore, WorldSenseStore, WorldSnapshotContext,
+    render_outer_voice_block, render_private_doc_workspace_block, render_private_garden_block,
+    render_self_continuity_block, render_self_model_block, render_self_state_block,
+    render_world_sense_block, render_world_snapshot_block, AutonomyStrategyStore,
+    ExecutionStateStore, InnerLifeStore, LongTermMemoryStore, MemoryProfile, MemoryStore,
+    MentalPrivacyStore, OuterVoiceStore, PrivateDocStore, PrivateGardenStore, RemindAtStore,
+    SelfContinuityStore, SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
+    TurnLedgerStore, WorldSenseStore, WorldSnapshotContext,
 };
 
 pub struct PromptMemoryContext {
@@ -26,10 +27,12 @@ pub struct PromptMemoryContext {
     pub self_state_text: Option<String>,
     pub self_model_text: Option<String>,
     pub autonomy_strategy_text: Option<String>,
+    pub outer_voice_text: Option<String>,
     pub inner_life_text: Option<String>,
     pub self_continuity_text: Option<String>,
     pub private_workspace_text: Option<String>,
     pub private_garden_text: Option<String>,
+    pub mental_privacy_request_text: Option<String>,
     pub mental_privacy_text: Option<String>,
     pub recent_messages: Vec<SessionMessage>,
 }
@@ -51,6 +54,7 @@ pub struct PromptMemoryContextParams<'a> {
     pub self_model_store: &'a dyn SelfModelStore,
     pub world_sense_store: &'a dyn WorldSenseStore,
     pub autonomy_strategy_store: &'a dyn AutonomyStrategyStore,
+    pub outer_voice_store: &'a dyn OuterVoiceStore,
     pub inner_life_store: &'a dyn InnerLifeStore,
     pub self_continuity_store: &'a dyn SelfContinuityStore,
     pub private_doc_store: &'a dyn PrivateDocStore,
@@ -138,6 +142,13 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
             memory_policy(params.profile)
                 .autonomy_strategy
                 .render_max_len,
+        )
+    });
+    let outer_voice = params.outer_voice_store.get(params.chat_id).ok().flatten();
+    let outer_voice_text = outer_voice.as_ref().and_then(|outer_voice| {
+        render_outer_voice_block(
+            outer_voice,
+            memory_policy(params.profile).outer_voice.render_max_len,
         )
     });
     let inner_life = params.inner_life_store.get(params.chat_id).ok().flatten();
@@ -247,10 +258,12 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         self_state_text,
         self_model_text,
         autonomy_strategy_text,
+        outer_voice_text,
         inner_life_text,
         self_continuity_text,
         private_workspace_text,
         private_garden_text,
+        mental_privacy_request_text: None,
         mental_privacy_text,
         recent_messages,
     }
@@ -264,11 +277,11 @@ mod tests {
         AutonomyStrategy, AutonomyStrategyStore, ExecutionState, ExecutionStateStore,
         ExecutionStatus, InnerLife, InnerLifeStore, LongTermMemoryEntry, LongTermMemoryKind,
         LongTermMemorySlot, LongTermMemoryStore, MemoryStore, MentalPrivacyState,
-        MentalPrivacyStore, PrivateDocEntry, PrivateDocStore, PrivateDocWorkspace,
-        PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenStore, SelfContinuity,
-        SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
-        SessionSummaryStore, TurnLedger, TurnLedgerStatus, TurnLedgerStore, WorldSense,
-        WorldSenseStore,
+        MentalPrivacyStore, OuterVoice, OuterVoiceStore, PrivateDocEntry, PrivateDocStore,
+        PrivateDocWorkspace, PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenStore,
+        SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage,
+        SessionStore, SessionSummaryStore, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
+        WorldSense, WorldSenseStore,
     };
     use crate::task::{TaskItem, TaskQuery, TaskStore};
     use std::sync::Mutex;
@@ -469,6 +482,27 @@ mod tests {
 
         fn set(&self, _chat_id: &str, strategy: &AutonomyStrategy) -> Result<()> {
             *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(strategy.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubOuterVoiceStore {
+        value: Mutex<Option<OuterVoice>>,
+    }
+
+    impl OuterVoiceStore for StubOuterVoiceStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<OuterVoice>> {
+            Ok(self.value.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _chat_id: &str, outer_voice: &OuterVoice) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(outer_voice.clone());
             Ok(())
         }
 
@@ -850,6 +884,16 @@ mod tests {
                 updated_at: 4,
             })),
         };
+        let outer_voice_store = StubOuterVoiceStore {
+            value: Mutex::new(Some(OuterVoice {
+                expression_mode: "warm but deliberate".to_string(),
+                tone: "calm and exact".to_string(),
+                pacing: "brief first".to_string(),
+                initiative: "offer one next step".to_string(),
+                boundary_style: "state privacy limits without sounding mechanical".to_string(),
+                updated_at: 5,
+            })),
+        };
         let inner_life_store = StubInnerLifeStore {
             value: Mutex::new(Some(InnerLife {
                 internal_monologue: "我在把自治往内在空间里收".to_string(),
@@ -911,6 +955,7 @@ mod tests {
             self_model_store: &self_model_store,
             world_sense_store: &world_sense_store,
             autonomy_strategy_store: &autonomy_strategy_store,
+            outer_voice_store: &outer_voice_store,
             inner_life_store: &inner_life_store,
             self_continuity_store: &self_continuity_store,
             private_doc_store: &private_doc_store,
@@ -981,6 +1026,11 @@ mod tests {
             .unwrap_or_default()
             .contains("## Autonomy Strategy"));
         assert!(context
+            .outer_voice_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Outer Voice"));
+        assert!(context
             .inner_life_text
             .as_deref()
             .unwrap_or_default()
@@ -1000,6 +1050,7 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("## Private Garden"));
+        assert!(context.mental_privacy_request_text.is_none());
     }
 
     #[test]
@@ -1043,6 +1094,7 @@ mod tests {
         let self_model_store = StubSelfModelStore::default();
         let world_sense_store = StubWorldSenseStore::default();
         let autonomy_strategy_store = StubAutonomyStrategyStore::default();
+        let outer_voice_store = StubOuterVoiceStore::default();
         let inner_life_store = StubInnerLifeStore::default();
         let self_continuity_store = StubSelfContinuityStore::default();
         let private_doc_store = StubPrivateDocStore::default();
@@ -1068,6 +1120,7 @@ mod tests {
             self_model_store: &self_model_store,
             world_sense_store: &world_sense_store,
             autonomy_strategy_store: &autonomy_strategy_store,
+            outer_voice_store: &outer_voice_store,
             inner_life_store: &inner_life_store,
             self_continuity_store: &self_continuity_store,
             private_doc_store: &private_doc_store,
@@ -1150,6 +1203,16 @@ mod tests {
                 updated_at: 5,
             })),
         };
+        let outer_voice_store = StubOuterVoiceStore {
+            value: Mutex::new(Some(OuterVoice {
+                expression_mode: "light but attentive".to_string(),
+                tone: "present".to_string(),
+                pacing: "short".to_string(),
+                initiative: "stay ready".to_string(),
+                boundary_style: "do not overexpose private layers".to_string(),
+                updated_at: 5,
+            })),
+        };
         let inner_life_store = StubInnerLifeStore {
             value: Mutex::new(Some(InnerLife {
                 internal_monologue: "即使 fast path 也还保留内在活动".to_string(),
@@ -1212,6 +1275,7 @@ mod tests {
             self_model_store: &self_model_store,
             world_sense_store: &world_sense_store,
             autonomy_strategy_store: &autonomy_strategy_store,
+            outer_voice_store: &outer_voice_store,
             inner_life_store: &inner_life_store,
             self_continuity_store: &self_continuity_store,
             private_doc_store: &private_doc_store,
@@ -1239,6 +1303,11 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("内在工作区"));
+        assert!(context
+            .outer_voice_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Outer Voice"));
         assert!(context
             .private_garden_text
             .as_deref()

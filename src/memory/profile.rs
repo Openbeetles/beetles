@@ -101,6 +101,20 @@ pub(crate) struct WorldSensePolicy {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OuterVoicePolicy {
+    pub recent_message_count: usize,
+    pub transcript_preview_chars: usize,
+    pub existing_outer_voice_max_len: usize,
+    pub grounding_max_len: usize,
+    pub snapshot_max_len: usize,
+    pub render_max_len: usize,
+    pub substantive_user_chars: usize,
+    pub substantive_reply_chars: usize,
+    pub substantive_combined_chars: usize,
+    pub refresh_interval_secs: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct InnerLifePolicy {
     pub recent_message_count: usize,
     pub transcript_preview_chars: usize,
@@ -194,6 +208,7 @@ pub(crate) struct MemoryPolicy {
     pub execution_state: ExecutionStatePolicy,
     pub self_model: SelfModelPolicy,
     pub world_sense: WorldSensePolicy,
+    pub outer_voice: OuterVoicePolicy,
     pub autonomy_strategy: AutonomyStrategyPolicy,
     pub inner_life: InnerLifePolicy,
     pub self_continuity: SelfContinuityPolicy,
@@ -271,6 +286,18 @@ const EMBEDDED_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
         substantive_reply_chars: 20,
         substantive_combined_chars: 48,
         refresh_interval_secs: 4 * 60 * 60,
+    },
+    outer_voice: OuterVoicePolicy {
+        recent_message_count: 6,
+        transcript_preview_chars: 140,
+        existing_outer_voice_max_len: 360,
+        grounding_max_len: 220,
+        snapshot_max_len: 320,
+        render_max_len: 320,
+        substantive_user_chars: 8,
+        substantive_reply_chars: 20,
+        substantive_combined_chars: 48,
+        refresh_interval_secs: 3 * 60 * 60,
     },
     autonomy_strategy: AutonomyStrategyPolicy {
         recent_message_count: 6,
@@ -424,6 +451,18 @@ const STANDARD_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
         substantive_combined_chars: 40,
         refresh_interval_secs: 3 * 60 * 60,
     },
+    outer_voice: OuterVoicePolicy {
+        recent_message_count: 10,
+        transcript_preview_chars: 220,
+        existing_outer_voice_max_len: 512,
+        grounding_max_len: 320,
+        snapshot_max_len: 420,
+        render_max_len: 420,
+        substantive_user_chars: 6,
+        substantive_reply_chars: 18,
+        substantive_combined_chars: 40,
+        refresh_interval_secs: 2 * 60 * 60,
+    },
     autonomy_strategy: AutonomyStrategyPolicy {
         recent_message_count: 10,
         transcript_preview_chars: 220,
@@ -546,6 +585,7 @@ mod tests {
         assert!(standard.execution_state.render_max_len > embedded.execution_state.render_max_len);
         assert!(standard.self_model.render_max_len > embedded.self_model.render_max_len);
         assert!(standard.world_sense.render_max_len > embedded.world_sense.render_max_len);
+        assert!(standard.outer_voice.render_max_len > embedded.outer_voice.render_max_len);
         assert!(
             standard.autonomy_strategy.render_max_len > embedded.autonomy_strategy.render_max_len
         );

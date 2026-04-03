@@ -36,14 +36,16 @@ use crate::llm::{LlmClient, Message, StopReason, ToolChoicePolicy};
 use crate::memory::{
     build_turn_ledger_start, load_prompt_memory_context, memory_policy, normalize_turn_preview,
     normalize_turn_reason, recall_long_term_memory_block, run_long_term_memory_refresh,
-    run_mental_privacy_review, run_post_reply_memory_maintenance, run_self_runtime,
-    AutonomyStrategyStore, EmotionSignalStore, ExecutionStateStore, ImportantMessageStore,
-    InnerLifeStore, LongTermMemoryExtractionStateStore, LongTermMemoryRefreshContext,
-    LongTermMemoryRefreshOutcome, LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore,
-    MemoryStore, MentalPrivacyReviewContext, MentalPrivacyReviewInput, MentalPrivacyStore,
-    PendingRetryStore, PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput,
-    PrivateDocStore, PrivateGardenStore, PromptMemoryContextParams, RemindAtStore,
-    SelfContinuityStore, SelfModelStore, SelfRuntimeContext, SelfRuntimeOutcome, SessionStore,
+    run_mental_privacy_access_request_interpreter, run_mental_privacy_review,
+    run_post_reply_memory_maintenance, run_self_runtime, AutonomyStrategyStore, EmotionSignalStore,
+    ExecutionStateStore, ImportantMessageStore, InnerLifeStore, LongTermMemoryExtractionStateStore,
+    LongTermMemoryRefreshContext, LongTermMemoryRefreshOutcome,
+    LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore, MemoryStore,
+    MentalPrivacyAccessRequestContext, MentalPrivacyAccessRequestInput, MentalPrivacyReviewContext,
+    MentalPrivacyReviewInput, MentalPrivacyStore, OuterVoiceStore, PendingRetryStore,
+    PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput, PrivateDocStore,
+    PrivateGardenStore, PromptMemoryContextParams, RemindAtStore, SelfContinuityStore,
+    SelfModelStore, SelfRuntimeContext, SelfRuntimeOutcome, SessionStore,
     SessionSummaryRefreshOutcome, SessionSummaryStore, TurnDeliveryLedger, TurnLedger,
     TurnLedgerStatus, TurnLedgerStore, WorldSenseStore, SELF_RUNTIME_CHANNEL,
 };
@@ -1720,10 +1722,12 @@ fn run_self_runtime_job(
             self_model_store: config.self_model_store.as_ref(),
             world_sense_store: config.world_sense_store.as_ref(),
             autonomy_strategy_store: config.autonomy_strategy_store.as_ref(),
+            outer_voice_store: config.outer_voice_store.as_ref(),
             private_doc_store: config.private_doc_store.as_ref(),
             private_garden_store: config.private_garden_store.as_ref(),
             inner_life_store: config.inner_life_store.as_ref(),
             self_continuity_store: config.self_continuity_store.as_ref(),
+            mental_privacy_store: config.mental_privacy_store.as_ref(),
             remind_store: config.remind_store.as_ref(),
             task_store: config.task_store.as_ref(),
         },
@@ -1765,6 +1769,16 @@ fn run_self_runtime_job(
         }
         Ok(crate::memory::AutonomyStrategyRefreshOutcome::Skipped) => {}
         Err(error) => log::warn!("[agent_autonomy_strategy] failed: {}", error),
+    }
+    match outcome.outer_voice_result {
+        Ok(crate::memory::OuterVoiceRefreshOutcome::Updated) => {
+            log::info!("[agent_outer_voice] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::OuterVoiceRefreshOutcome::Cleared) => {
+            log::info!("[agent_outer_voice] cleared for {}", msg.chat_id);
+        }
+        Ok(crate::memory::OuterVoiceRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_outer_voice] failed: {}", error),
     }
     match outcome.inner_life_result {
         Ok(crate::memory::InnerLifeRefreshOutcome::Updated) => {
@@ -2034,6 +2048,7 @@ pub struct AgentLoopConfig {
     pub self_model_store: Arc<dyn SelfModelStore + Send + Sync>,
     pub world_sense_store: Arc<dyn WorldSenseStore + Send + Sync>,
     pub autonomy_strategy_store: Arc<dyn AutonomyStrategyStore + Send + Sync>,
+    pub outer_voice_store: Arc<dyn OuterVoiceStore + Send + Sync>,
     pub inner_life_store: Arc<dyn InnerLifeStore + Send + Sync>,
     pub self_continuity_store: Arc<dyn SelfContinuityStore + Send + Sync>,
     pub private_doc_store: Arc<dyn PrivateDocStore + Send + Sync>,
@@ -2788,6 +2803,7 @@ fn run_worker_path(
         self_model_store: config.self_model_store.as_ref(),
         world_sense_store: config.world_sense_store.as_ref(),
         autonomy_strategy_store: config.autonomy_strategy_store.as_ref(),
+        outer_voice_store: config.outer_voice_store.as_ref(),
         inner_life_store: config.inner_life_store.as_ref(),
         self_continuity_store: config.self_continuity_store.as_ref(),
         private_doc_store: config.private_doc_store.as_ref(),
@@ -2797,6 +2813,31 @@ fn run_worker_path(
         task_store: config.task_store.as_ref(),
         turn_ledger_store: config.turn_ledger_store.as_ref(),
     });
+    prompt_memory.mental_privacy_request_text = match run_mental_privacy_access_request_interpreter(
+        &mut tool_ctx,
+        worker_llm,
+        MentalPrivacyAccessRequestContext {
+            mental_privacy_store: config.mental_privacy_store.as_ref(),
+            self_model_store: config.self_model_store.as_ref(),
+            self_continuity_store: config.self_continuity_store.as_ref(),
+            inner_life_store: config.inner_life_store.as_ref(),
+            private_doc_store: config.private_doc_store.as_ref(),
+            private_garden_store: config.private_garden_store.as_ref(),
+        },
+        MentalPrivacyAccessRequestInput {
+            chat_id: &msg.chat_id,
+            user_content: &msg.content,
+        },
+    ) {
+        Ok(Some(request)) => {
+            crate::memory::render_mental_privacy_access_request_block(&request, 360)
+        }
+        Ok(None) => None,
+        Err(error) => {
+            log::warn!("[agent_mental_privacy_request] failed: {}", error);
+            None
+        }
+    };
     let (mut system, mut messages) = build_context(&super::ContextParams {
         msg,
         memory: config.memory_store.as_ref(),
@@ -2815,10 +2856,12 @@ fn run_worker_path(
         self_state_text: prompt_memory.self_state_text.as_deref(),
         self_model_text: prompt_memory.self_model_text.as_deref(),
         autonomy_strategy_text: prompt_memory.autonomy_strategy_text.as_deref(),
+        outer_voice_text: prompt_memory.outer_voice_text.as_deref(),
         inner_life_text: prompt_memory.inner_life_text.as_deref(),
         self_continuity_text: prompt_memory.self_continuity_text.as_deref(),
         private_workspace_text: prompt_memory.private_workspace_text.as_deref(),
         private_garden_text: prompt_memory.private_garden_text.as_deref(),
+        mental_privacy_request_text: prompt_memory.mental_privacy_request_text.as_deref(),
         mental_privacy_text: prompt_memory.mental_privacy_text.as_deref(),
         long_term_memory_text: prompt_memory.long_term_memory_text.as_deref(),
         archive_evidence_text: prompt_memory.archive_evidence_text.as_deref(),
@@ -3516,6 +3559,23 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct StubOuterVoiceStore;
+
+    impl OuterVoiceStore for StubOuterVoiceStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<crate::memory::OuterVoice>> {
+            Ok(None)
+        }
+
+        fn set(&self, _chat_id: &str, _outer_voice: &crate::memory::OuterVoice) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
     struct StubInnerLifeStore;
 
     impl InnerLifeStore for StubInnerLifeStore {
@@ -3843,6 +3903,7 @@ mod tests {
             self_model_store: Arc::new(StubSelfModelStore),
             world_sense_store: Arc::new(StubWorldSenseStore),
             autonomy_strategy_store: Arc::new(StubAutonomyStrategyStore),
+            outer_voice_store: Arc::new(StubOuterVoiceStore),
             inner_life_store: Arc::new(StubInnerLifeStore),
             self_continuity_store: Arc::new(StubSelfContinuityStore),
             private_doc_store: Arc::new(StubPrivateDocStore),

@@ -76,10 +76,12 @@ pub struct ContextParams<'a> {
     pub self_state_text: Option<&'a str>,
     pub self_model_text: Option<&'a str>,
     pub autonomy_strategy_text: Option<&'a str>,
+    pub outer_voice_text: Option<&'a str>,
     pub inner_life_text: Option<&'a str>,
     pub self_continuity_text: Option<&'a str>,
     pub private_workspace_text: Option<&'a str>,
     pub private_garden_text: Option<&'a str>,
+    pub mental_privacy_request_text: Option<&'a str>,
     pub mental_privacy_text: Option<&'a str>,
     pub long_term_memory_text: Option<&'a str>,
     pub archive_evidence_text: Option<&'a str>,
@@ -154,10 +156,12 @@ fn reserve_priority_memory_budget(
     self_state_text: Option<&str>,
     self_model_text: Option<&str>,
     autonomy_strategy_text: Option<&str>,
+    outer_voice_text: Option<&str>,
     inner_life_text: Option<&str>,
     self_continuity_text: Option<&str>,
     private_workspace_text: Option<&str>,
     private_garden_text: Option<&str>,
+    mental_privacy_request_text: Option<&str>,
     mental_privacy_text: Option<&str>,
     long_term_memory_text: Option<&str>,
     archive_evidence_text: Option<&str>,
@@ -176,6 +180,8 @@ fn reserve_priority_memory_budget(
     let autonomy_strategy_reserve =
         section_with_separator_len(autonomy_strategy_text).min(remaining / 4);
     let remaining = remaining.saturating_sub(autonomy_strategy_reserve);
+    let outer_voice_reserve = section_with_separator_len(outer_voice_text).min(remaining / 4);
+    let remaining = remaining.saturating_sub(outer_voice_reserve);
     let inner_life_reserve = section_with_separator_len(inner_life_text).min(remaining / 4);
     let remaining = remaining.saturating_sub(inner_life_reserve);
     let self_continuity_reserve =
@@ -186,6 +192,9 @@ fn reserve_priority_memory_budget(
     let remaining = remaining.saturating_sub(private_workspace_reserve);
     let private_garden_reserve = section_with_separator_len(private_garden_text).min(remaining / 4);
     let remaining = remaining.saturating_sub(private_garden_reserve);
+    let mental_privacy_request_reserve =
+        section_with_separator_len(mental_privacy_request_text).min(remaining / 4);
+    let remaining = remaining.saturating_sub(mental_privacy_request_reserve);
     let mental_privacy_reserve = section_with_separator_len(mental_privacy_text).min(remaining / 4);
     let remaining = remaining.saturating_sub(mental_privacy_reserve);
     let long_term_reserve = section_with_separator_len(long_term_memory_text).min(remaining / 2);
@@ -197,10 +206,12 @@ fn reserve_priority_memory_budget(
         .saturating_add(self_state_reserve)
         .saturating_add(self_model_reserve)
         .saturating_add(autonomy_strategy_reserve)
+        .saturating_add(outer_voice_reserve)
         .saturating_add(inner_life_reserve)
         .saturating_add(self_continuity_reserve)
         .saturating_add(private_workspace_reserve)
         .saturating_add(private_garden_reserve)
+        .saturating_add(mental_privacy_request_reserve)
         .saturating_add(mental_privacy_reserve)
         .saturating_add(long_term_reserve)
         .saturating_add(archive_evidence_reserve)
@@ -353,10 +364,12 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
         p.self_state_text,
         p.self_model_text,
         p.autonomy_strategy_text,
+        p.outer_voice_text,
         p.inner_life_text,
         p.self_continuity_text,
         p.private_workspace_text,
         p.private_garden_text,
+        p.mental_privacy_request_text,
         p.mental_privacy_text,
         p.long_term_memory_text,
         p.archive_evidence_text,
@@ -390,6 +403,9 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     if let Some(autonomy_strategy_text) = p.autonomy_strategy_text {
         let _ = append_capped_section(&mut system, "\n\n", autonomy_strategy_text, base_max);
     }
+    if let Some(outer_voice_text) = p.outer_voice_text {
+        let _ = append_capped_section(&mut system, "\n\n", outer_voice_text, base_max);
+    }
     if let Some(inner_life_text) = p.inner_life_text {
         let _ = append_capped_section(&mut system, "\n\n", inner_life_text, base_max);
     }
@@ -401,6 +417,9 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     }
     if let Some(private_garden_text) = p.private_garden_text {
         let _ = append_capped_section(&mut system, "\n\n", private_garden_text, base_max);
+    }
+    if let Some(mental_privacy_request_text) = p.mental_privacy_request_text {
+        let _ = append_capped_section(&mut system, "\n\n", mental_privacy_request_text, base_max);
     }
     if let Some(mental_privacy_text) = p.mental_privacy_text {
         let _ = append_capped_section(&mut system, "\n\n", mental_privacy_text, base_max);
@@ -693,6 +712,7 @@ mod tests {
             self_state_text: Some("## Self State\nMemory pressure: Cautious"),
             self_model_text: Some("## Self Continuity\nAnchor: still the same beetle"),
             autonomy_strategy_text: Some("## Autonomy Strategy\nCurrent mode: consolidate"),
+            outer_voice_text: Some("## Outer Voice\nTone: calm, deliberate, warm at the edge."),
             inner_life_text: Some("## Inner Life\nInternal monologue: keep moving"),
             self_continuity_text: Some("## Self Continuity Extended\nWake anchor: same thread"),
             private_workspace_text: Some(
@@ -701,6 +721,7 @@ mod tests {
             private_garden_text: Some(
                 "## Private Garden\n- journal/afterglow.md (rev 1, updated=1): free private traces",
             ),
+            mental_privacy_request_text: Some("## Privacy Access Request\nRequest kind: summary"),
             mental_privacy_text: Some("## Mental Privacy Boundary\nDo not leak private layers."),
             long_term_memory_text: None,
             archive_evidence_text: None,
@@ -718,6 +739,7 @@ mod tests {
         assert!(system.contains("## Self State"));
         assert!(system.contains("## Self Continuity"));
         assert!(system.contains("## Autonomy Strategy"));
+        assert!(system.contains("## Outer Voice"));
         assert!(system.contains("## Inner Life"));
         assert!(system.contains("## Self Continuity Extended"));
         assert!(system.contains("## Inner Workspace"));
@@ -756,10 +778,12 @@ mod tests {
             self_state_text: None,
             self_model_text: None,
             autonomy_strategy_text: None,
+            outer_voice_text: None,
             inner_life_text: None,
             self_continuity_text: None,
             private_workspace_text: None,
             private_garden_text: None,
+            mental_privacy_request_text: None,
             mental_privacy_text: None,
             long_term_memory_text: None,
             archive_evidence_text: None,

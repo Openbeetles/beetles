@@ -11,9 +11,9 @@ use crate::platform::{
         spiffs_usage, SpiffsAutonomyStrategyStore, SpiffsCalendarProviderCredentialStore,
         SpiffsCalendarStore, SpiffsExecutionStateStore, SpiffsImportantMessageStore,
         SpiffsInnerLifeStore, SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore,
-        SpiffsMemoryStore, SpiffsMentalPrivacyStore, SpiffsPendingRetryStore,
-        SpiffsPrivateDocStore, SpiffsPrivateGardenStore, SpiffsRemindAtStore,
-        SpiffsSelfContinuityStore, SpiffsSelfModelStore, SpiffsSessionStore,
+        SpiffsMemoryStore, SpiffsMentalPrivacyStore, SpiffsOuterVoiceStore,
+        SpiffsPendingRetryStore, SpiffsPrivateDocStore, SpiffsPrivateGardenStore,
+        SpiffsRemindAtStore, SpiffsSelfContinuityStore, SpiffsSelfModelStore, SpiffsSessionStore,
         SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage, SpiffsTaskStore,
         SpiffsTurnLedgerStore, SpiffsWorldSenseStore,
     },
@@ -27,8 +27,9 @@ use crate::{
     memory::{
         AutonomyStrategyStore, ExecutionStateStore, ImportantMessageStore, InnerLifeStore,
         LongTermMemoryExtractionStateStore, LongTermMemoryStore, MemoryStore, MentalPrivacyStore,
-        PendingRetryStore, PrivateDocStore, PrivateGardenStore, RemindAtStore, SelfContinuityStore,
-        SelfModelStore, SessionStore, SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
+        OuterVoiceStore, PendingRetryStore, PrivateDocStore, PrivateGardenStore, RemindAtStore,
+        SelfContinuityStore, SelfModelStore, SessionStore, SessionSummaryStore, TurnLedgerStore,
+        WorldSenseStore,
     },
     task::TaskStore,
 };
@@ -54,6 +55,7 @@ pub struct Esp32Platform {
     self_model_store: Arc<SpiffsSelfModelStore>,
     world_sense_store: Arc<SpiffsWorldSenseStore>,
     autonomy_strategy_store: Arc<SpiffsAutonomyStrategyStore>,
+    outer_voice_store: Arc<SpiffsOuterVoiceStore>,
     inner_life_store: Arc<SpiffsInnerLifeStore>,
     self_continuity_store: Arc<SpiffsSelfContinuityStore>,
     private_doc_store: Arc<SpiffsPrivateDocStore>,
@@ -95,6 +97,7 @@ impl Esp32Platform {
             self_model_store: Arc::new(SpiffsSelfModelStore::new()),
             world_sense_store: Arc::new(SpiffsWorldSenseStore::new()),
             autonomy_strategy_store: Arc::new(SpiffsAutonomyStrategyStore::new()),
+            outer_voice_store: Arc::new(SpiffsOuterVoiceStore::new()),
             inner_life_store: Arc::new(SpiffsInnerLifeStore::new()),
             self_continuity_store: Arc::new(SpiffsSelfContinuityStore::new()),
             private_doc_store: Arc::new(SpiffsPrivateDocStore::new()),
@@ -243,6 +246,10 @@ impl Platform for Esp32Platform {
 
     fn autonomy_strategy_store(&self) -> Arc<dyn AutonomyStrategyStore + Send + Sync> {
         Arc::clone(&self.autonomy_strategy_store) as Arc<dyn AutonomyStrategyStore + Send + Sync>
+    }
+
+    fn outer_voice_store(&self) -> Arc<dyn OuterVoiceStore + Send + Sync> {
+        Arc::clone(&self.outer_voice_store) as Arc<dyn OuterVoiceStore + Send + Sync>
     }
 
     fn inner_life_store(&self) -> Arc<dyn InnerLifeStore + Send + Sync> {

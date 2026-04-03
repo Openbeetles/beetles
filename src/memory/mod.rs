@@ -17,6 +17,7 @@ mod long_term;
 mod long_term_extraction;
 mod maintenance;
 mod mental_privacy;
+mod outer_voice;
 mod private_docs;
 mod private_garden;
 mod private_garden_governance;
@@ -105,16 +106,24 @@ pub use maintenance::{
     PostReplyMemoryMaintenanceOutcome,
 };
 pub(crate) use mental_privacy::{
-    collect_private_targets, render_mental_privacy_boundary_block, run_mental_privacy_review,
+    collect_private_targets, render_mental_privacy_access_request_block,
+    render_mental_privacy_boundary_block, run_mental_privacy_review,
 };
 pub use mental_privacy::{
-    MentalPrivacyConsentLog, MentalPrivacyEnvelope, MentalPrivacyLayer,
-    MentalPrivacyOwnerAccessMode, MentalPrivacyQuotePolicy, MentalPrivacyRequester,
-    MentalPrivacyReviewContext, MentalPrivacyReviewInput, MentalPrivacyReviewOutcome,
-    MentalPrivacyShareAction, MentalPrivacyState, MentalPrivacyStore, MentalPrivacyVisibility,
+    run_mental_privacy_access_request_interpreter, MentalPrivacyAccessRequest,
+    MentalPrivacyAccessRequestContext, MentalPrivacyAccessRequestInput, MentalPrivacyConsentLog,
+    MentalPrivacyEnvelope, MentalPrivacyLayer, MentalPrivacyOwnerAccessMode,
+    MentalPrivacyQuotePolicy, MentalPrivacyRequester, MentalPrivacyReviewContext,
+    MentalPrivacyReviewInput, MentalPrivacyReviewOutcome, MentalPrivacyShareAction,
+    MentalPrivacyState, MentalPrivacyStore, MentalPrivacyVisibility,
     MENTAL_PRIVACY_SYSTEM_CONSTRAINT, MENTAL_PRIVACY_TARGET_INNER_LIFE,
     MENTAL_PRIVACY_TARGET_SELF_CONTINUITY, MENTAL_PRIVACY_TARGET_SELF_MODEL,
     REL_PATH_MENTAL_PRIVACY_STATES,
+};
+pub(crate) use outer_voice::run_outer_voice_refresh_with_state;
+pub use outer_voice::{
+    render_outer_voice_block, OuterVoice, OuterVoiceRefreshContext, OuterVoiceRefreshInput,
+    OuterVoiceRefreshOutcome, OUTER_VOICE_SYSTEM_PROMPT, OUTER_VOICE_TOTAL_CHAR_LIMIT,
 };
 pub(crate) use private_docs::estimate_private_doc_workspace_chars;
 pub use private_docs::{
@@ -144,8 +153,8 @@ pub use profile::MemoryProfile;
 pub(crate) use profile::{
     memory_policy, shared_long_term_governance_policy, AutonomyStrategyPolicy,
     ExecutionStatePolicy, InnerLifePolicy, InternalMemoryRoutingPolicy, LongTermExtractionPolicy,
-    LongTermRecallPolicy, PrivateDocsPolicy, PrivateGardenGovernancePolicy, SelfContinuityPolicy,
-    SelfModelPolicy, SessionSummaryPolicy, WorldSensePolicy,
+    LongTermRecallPolicy, OuterVoicePolicy, PrivateDocsPolicy, PrivateGardenGovernancePolicy,
+    SelfContinuityPolicy, SelfModelPolicy, SessionSummaryPolicy, WorldSensePolicy,
 };
 pub use prompt_context::{
     load_prompt_memory_context, PromptMemoryContext, PromptMemoryContextParams,
@@ -228,6 +237,8 @@ pub const REL_PATH_SESSION_SUMMARIES: &str = "memory/session_summaries.json";
 pub const REL_PATH_SELF_MODELS: &str = "memory/self_models.json";
 /// 相对路径：World Sense（单文件 JSON，chat_id -> outer situational layer）。
 pub const REL_PATH_WORLD_SENSE: &str = "memory/world_sense.json";
+/// 相对路径：Outer Voice（单文件 JSON，chat_id -> outward expression layer）。
+pub const REL_PATH_OUTER_VOICES: &str = "memory/outer_voices.json";
 /// 相对路径：Autonomy Strategy（单文件 JSON，chat_id -> model-managed autonomy policy）。
 pub const REL_PATH_AUTONOMY_STRATEGIES: &str = "memory/autonomy_strategies.json";
 /// 相对路径：Inner Life（单文件 JSON，chat_id -> active subjective inward layer）。
@@ -266,6 +277,13 @@ pub trait SelfModelStore: Send + Sync {
 pub trait WorldSenseStore: Send + Sync {
     fn get(&self, chat_id: &str) -> Result<Option<WorldSense>>;
     fn set(&self, chat_id: &str, world_sense: &WorldSense) -> Result<()>;
+    fn clear(&self, chat_id: &str) -> Result<()>;
+}
+
+/// LLM 外在表达层。保存近期对外说话方式与表达姿态。
+pub trait OuterVoiceStore: Send + Sync {
+    fn get(&self, chat_id: &str) -> Result<Option<OuterVoice>>;
+    fn set(&self, chat_id: &str, outer_voice: &OuterVoice) -> Result<()>;
     fn clear(&self, chat_id: &str) -> Result<()>;
 }
 

@@ -32,6 +32,10 @@ pub struct WorldSnapshot {
     pub weekday: String,
     pub hour: u32,
     pub day_phase: String,
+    pub interaction_mode: String,
+    pub activity_rhythm: String,
+    pub situational_pull: String,
+    pub resource_tension: String,
     pub pressure: PressureLevel,
     pub memory_available_bytes: u32,
     pub active_http_count: u32,
@@ -212,10 +216,45 @@ pub fn build_world_snapshot(ctx: WorldSnapshotContext<'_>) -> WorldSnapshot {
             .saturating_sub(continuity.last_autonomy_run_at)
             .min(u64::MAX)
     });
+    let interaction_mode =
+        describe_interaction_mode(source_channel.as_str(), user_idle_secs, autonomy_idle_secs)
+            .to_string();
+    let activity_rhythm = describe_activity_rhythm(
+        user_idle_secs,
+        autonomy_idle_secs,
+        resource.active_http_count,
+        resource.active_agent_tasks,
+        reminders.len(),
+        due_tasks,
+        in_progress_tasks,
+    )
+    .to_string();
+    let situational_pull = describe_situational_pull(
+        source_channel.as_str(),
+        user_idle_secs,
+        due_tasks,
+        high_priority_tasks,
+        reminders.first().map(|(at, _)| *at).unwrap_or(0),
+        ctx.now_secs,
+    )
+    .to_string();
+    let resource_tension = describe_resource_tension(
+        resource.pressure,
+        resource.heap_free_internal,
+        resource.storage_used_kb,
+        resource.storage_total_kb,
+        resource.inbound_depth,
+        resource.outbound_depth,
+    )
+    .to_string();
     WorldSnapshot {
         weekday,
         hour,
         day_phase,
+        interaction_mode,
+        activity_rhythm,
+        situational_pull,
+        resource_tension,
         pressure: resource.pressure,
         memory_available_bytes: resource.heap_free_internal,
         active_http_count: resource.active_http_count,
@@ -249,6 +288,14 @@ pub fn render_world_snapshot_block(snapshot: &WorldSnapshot, max_len: usize) -> 
         out,
         "Outer scene now: {} {}:00-{}:59, {}.",
         snapshot.weekday, snapshot.hour, snapshot.hour, snapshot.day_phase
+    );
+    let _ = writeln!(
+        out,
+        "Derived state: interaction_mode={}, activity_rhythm={}, situational_pull={}, resource_tension={}.",
+        snapshot.interaction_mode,
+        snapshot.activity_rhythm,
+        snapshot.situational_pull,
+        snapshot.resource_tension
     );
     let _ = writeln!(
         out,
@@ -324,6 +371,10 @@ pub fn world_snapshot_fingerprint(snapshot: &WorldSnapshot) -> u64 {
     snapshot.weekday.hash(&mut hasher);
     snapshot.hour.hash(&mut hasher);
     snapshot.day_phase.hash(&mut hasher);
+    snapshot.interaction_mode.hash(&mut hasher);
+    snapshot.activity_rhythm.hash(&mut hasher);
+    snapshot.situational_pull.hash(&mut hasher);
+    snapshot.resource_tension.hash(&mut hasher);
     format!("{:?}", snapshot.pressure).hash(&mut hasher);
     snapshot.memory_available_bytes.hash(&mut hasher);
     snapshot.active_http_count.hash(&mut hasher);
@@ -545,6 +596,106 @@ fn describe_day_phase(hour: u32) -> &'static str {
     }
 }
 
+fn describe_interaction_mode(
+    source_channel: &str,
+    user_idle_secs: u64,
+    autonomy_idle_secs: u64,
+) -> &'static str {
+    if source_channel.is_empty() {
+        if autonomy_idle_secs > 0 && autonomy_idle_secs <= 10 * 60 {
+            "self_maintenance"
+        } else {
+            "background_idle"
+        }
+    } else if source_channel == "voice" {
+        "live_voice_exchange"
+    } else if user_idle_secs <= 3 * 60 {
+        "live_exchange"
+    } else if user_idle_secs <= 30 * 60 {
+        "paused_exchange"
+    } else {
+        "stale_thread_watch"
+    }
+}
+
+fn describe_activity_rhythm(
+    user_idle_secs: u64,
+    autonomy_idle_secs: u64,
+    active_http_count: u32,
+    active_agent_tasks: u32,
+    upcoming_reminders: usize,
+    due_tasks: usize,
+    in_progress_tasks: usize,
+) -> &'static str {
+    if active_http_count > 0 || active_agent_tasks > 0 {
+        "active_processing"
+    } else if due_tasks > 0 || in_progress_tasks > 0 {
+        "task_pulled"
+    } else if upcoming_reminders > 0 && user_idle_secs <= 30 * 60 {
+        "lightly_primed"
+    } else if user_idle_secs > 2 * 60 * 60 {
+        "long_idle"
+    } else if autonomy_idle_secs > 2 * 60 * 60 {
+        "autonomy_dormant"
+    } else {
+        "steady"
+    }
+}
+
+fn describe_situational_pull(
+    source_channel: &str,
+    user_idle_secs: u64,
+    due_tasks: usize,
+    high_priority_tasks: usize,
+    next_reminder_at: u64,
+    now_secs: u64,
+) -> &'static str {
+    if due_tasks > 0
+        || (next_reminder_at > 0 && next_reminder_at.saturating_sub(now_secs) <= 15 * 60)
+    {
+        "time_sensitive"
+    } else if high_priority_tasks > 0 {
+        "task_followthrough"
+    } else if !source_channel.is_empty() && user_idle_secs <= 5 * 60 {
+        "reply_ready"
+    } else if source_channel.is_empty() || user_idle_secs > 60 * 60 {
+        "self_maintenance_window"
+    } else {
+        "light_watch"
+    }
+}
+
+fn describe_resource_tension(
+    pressure: PressureLevel,
+    memory_available_bytes: u32,
+    storage_used_kb: u32,
+    storage_total_kb: u32,
+    inbound_depth: u32,
+    outbound_depth: u32,
+) -> &'static str {
+    let storage_ratio = if storage_total_kb == 0 {
+        0
+    } else {
+        storage_used_kb.saturating_mul(100) / storage_total_kb
+    };
+    if pressure != PressureLevel::Normal
+        || memory_available_bytes < 128 * 1024
+        || storage_ratio >= 90
+        || inbound_depth >= 3
+        || outbound_depth >= 3
+    {
+        "tight"
+    } else if memory_available_bytes < 512 * 1024
+        || storage_ratio >= 75
+        || inbound_depth > 0
+        || outbound_depth > 0
+    {
+        "guarded"
+    } else {
+        "light"
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_world_sense_refresh_input(
     existing_world_sense: Option<&WorldSense>,
@@ -561,6 +712,14 @@ fn build_world_sense_refresh_input(
         input.push_str(block.trim());
         input.push_str("\n\n");
     }
+    input.push_str("## Snapshot Reading Guide\n");
+    input.push_str("- current_scene should describe the present outer scene using interaction_mode, activity_rhythm, and situational_pull.\n");
+    input.push_str("- body_state should translate device/body/resource_tension into a lived operational condition.\n");
+    input.push_str("- social_field should capture how open, paused, direct, or distant the interaction field feels right now.\n");
+    input.push_str("- world_changes should name what recently shifted in the outside situation, not your inward state.\n");
+    input.push_str(
+        "- external_focus should say what in the external world deserves attention next.\n\n",
+    );
     if let Some(summary_text) = summary_text.filter(|text| !text.trim().is_empty()) {
         let summary = truncate_content_to_max(summary_text.trim(), policy.grounding_max_len);
         let _ = writeln!(input, "Summary: {}", scrub_credentials(summary.as_ref()));
@@ -618,6 +777,10 @@ mod tests {
             weekday: "Wednesday".to_string(),
             hour: 19,
             day_phase: "evening".to_string(),
+            interaction_mode: "live_exchange".to_string(),
+            activity_rhythm: "steady".to_string(),
+            situational_pull: "reply_ready".to_string(),
+            resource_tension: "light".to_string(),
             pressure: PressureLevel::Normal,
             memory_available_bytes: 512 * 1024,
             active_http_count: 1,
@@ -665,6 +828,10 @@ mod tests {
                 weekday: "Wednesday".to_string(),
                 hour: 19,
                 day_phase: "evening".to_string(),
+                interaction_mode: "live_exchange".to_string(),
+                activity_rhythm: "steady".to_string(),
+                situational_pull: "reply_ready".to_string(),
+                resource_tension: "light".to_string(),
                 pressure: PressureLevel::Normal,
                 memory_available_bytes: 512 * 1024,
                 active_http_count: 1,
@@ -691,7 +858,8 @@ mod tests {
         .expect("snapshot block");
         assert!(block.contains("## World Snapshot"));
         assert!(block.contains("qq_channel"));
-        assert!(block.contains("due_tasks=1"));
+        assert!(block.contains("Task/reminder field:"));
+        assert!(block.contains("interaction_mode=live_exchange"));
     }
 
     #[test]

@@ -434,6 +434,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         platform.world_sense_store();
     let autonomy_strategy_store: Arc<dyn beetle::memory::AutonomyStrategyStore + Send + Sync> =
         platform.autonomy_strategy_store();
+    let outer_voice_store: Arc<dyn beetle::memory::OuterVoiceStore + Send + Sync> =
+        platform.outer_voice_store();
     let inner_life_store: Arc<dyn beetle::memory::InnerLifeStore + Send + Sync> =
         platform.inner_life_store();
     let self_continuity_store: Arc<dyn beetle::memory::SelfContinuityStore + Send + Sync> =
@@ -1158,6 +1160,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             self_model_store: Arc::clone(&self_model_store),
             world_sense_store: Arc::clone(&world_sense_store),
             autonomy_strategy_store: Arc::clone(&autonomy_strategy_store),
+            outer_voice_store: Arc::clone(&outer_voice_store),
             inner_life_store: Arc::clone(&inner_life_store),
             self_continuity_store: Arc::clone(&self_continuity_store),
             private_doc_store: Arc::clone(&private_doc_store),

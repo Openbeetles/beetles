@@ -19,13 +19,15 @@ use super::{
     render_private_memory_boundary_block, render_self_continuity_block, render_self_model_block,
     render_self_state_block, render_shared_factual_plane_block, render_world_sense_block,
     render_world_snapshot_block, run_autonomy_strategy_refresh_with_state,
-    run_inner_life_refresh_with_state, run_private_doc_workspace_refresh_with_state,
-    run_private_garden_governance_with_state, run_self_continuity_refresh_with_state,
-    run_world_sense_refresh_with_state, touch_self_continuity_runtime, AutonomyGovernanceTendency,
-    AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome,
-    AutonomyStrategyStore, ExecutionStateStore, InnerLifeRefreshContext, InnerLifeRefreshInput,
-    InnerLifeRefreshOutcome, InnerLifeStore, InternalMemoryLayerFocus, LongTermMemoryStore,
-    MemoryProfile, PrivateDocStore, PrivateDocWorkspaceRefreshContext,
+    run_inner_life_refresh_with_state, run_outer_voice_refresh_with_state,
+    run_private_doc_workspace_refresh_with_state, run_private_garden_governance_with_state,
+    run_self_continuity_refresh_with_state, run_world_sense_refresh_with_state,
+    touch_self_continuity_runtime, AutonomyGovernanceTendency, AutonomyStrategyRefreshContext,
+    AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome, AutonomyStrategyStore,
+    ExecutionStateStore, InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome,
+    InnerLifeStore, InternalMemoryLayerFocus, LongTermMemoryStore, MemoryProfile,
+    MentalPrivacyStore, OuterVoiceRefreshContext, OuterVoiceRefreshInput, OuterVoiceRefreshOutcome,
+    OuterVoiceStore, PrivateDocStore, PrivateDocWorkspaceRefreshContext,
     PrivateDocWorkspaceRefreshInput, PrivateDocWorkspaceRefreshOutcome,
     PrivateGardenGovernanceContext, PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome,
     PrivateGardenStore, RemindAtStore, SelfContinuityRefreshContext, SelfContinuityRefreshInput,
@@ -93,6 +95,8 @@ pub struct SelfRuntimeContext<'a> {
     pub self_continuity_store: &'a dyn SelfContinuityStore,
     pub world_sense_store: &'a dyn WorldSenseStore,
     pub autonomy_strategy_store: &'a dyn AutonomyStrategyStore,
+    pub outer_voice_store: &'a dyn OuterVoiceStore,
+    pub mental_privacy_store: &'a dyn MentalPrivacyStore,
     pub remind_store: &'a dyn RemindAtStore,
     pub task_store: &'a dyn TaskStore,
 }
@@ -101,6 +105,7 @@ pub struct SelfRuntimeOutcome {
     pub decision: Option<SelfRuntimeDecision>,
     pub world_sense_result: Result<WorldSenseRefreshOutcome>,
     pub autonomy_strategy_result: Result<AutonomyStrategyRefreshOutcome>,
+    pub outer_voice_result: Result<OuterVoiceRefreshOutcome>,
     pub inner_life_result: Result<InnerLifeRefreshOutcome>,
     pub private_doc_result: Result<PrivateDocWorkspaceRefreshOutcome>,
     pub self_continuity_result: Result<SelfContinuityRefreshOutcome>,
@@ -117,6 +122,8 @@ struct LoadedSelfRuntimeState {
     self_continuity: Option<crate::memory::SelfContinuity>,
     world_sense: Option<crate::memory::WorldSense>,
     autonomy_strategy: Option<crate::memory::AutonomyStrategy>,
+    outer_voice: Option<crate::memory::OuterVoice>,
+    mental_privacy_state: Option<crate::memory::MentalPrivacyState>,
     world_snapshot: crate::memory::WorldSnapshot,
     recent: Vec<crate::memory::SessionMessage>,
 }
@@ -124,6 +131,7 @@ struct LoadedSelfRuntimeState {
 struct SelfRuntimeRefreshPrelude {
     world_sense_result: Result<WorldSenseRefreshOutcome>,
     autonomy_strategy_result: Result<AutonomyStrategyRefreshOutcome>,
+    outer_voice_result: Result<OuterVoiceRefreshOutcome>,
     refreshed_world_sense: Option<crate::memory::WorldSense>,
     refreshed_autonomy_strategy: Option<crate::memory::AutonomyStrategy>,
     runtime_self_state: SelfState,
@@ -173,6 +181,8 @@ fn load_self_runtime_state(
     let self_continuity = ctx.self_continuity_store.get(chat_id).ok().flatten();
     let world_sense = ctx.world_sense_store.get(chat_id).ok().flatten();
     let autonomy_strategy = ctx.autonomy_strategy_store.get(chat_id).ok().flatten();
+    let outer_voice = ctx.outer_voice_store.get(chat_id).ok().flatten();
+    let mental_privacy_state = ctx.mental_privacy_store.get(chat_id).ok().flatten();
     if payload.trigger == SelfRuntimeTrigger::PostReply {
         let _ = touch_self_continuity_runtime(
             ctx.self_continuity_store,
@@ -205,6 +215,7 @@ fn load_self_runtime_state(
                 )
                 .max(memory_policy(profile).inner_life.recent_message_count)
                 .max(memory_policy(profile).self_continuity.recent_message_count)
+                .max(memory_policy(profile).outer_voice.recent_message_count)
                 .max(
                     memory_policy(profile)
                         .private_garden_governance
@@ -222,6 +233,8 @@ fn load_self_runtime_state(
         self_continuity,
         world_sense,
         autonomy_strategy,
+        outer_voice,
+        mental_privacy_state,
         world_snapshot,
         recent,
     }
@@ -367,6 +380,67 @@ fn refresh_world_and_autonomy(
         .ok()
         .flatten()
         .or(state.autonomy_strategy.clone());
+    let outer_voice_policy = memory_policy(profile).outer_voice;
+    let outer_voice_should_refresh = state.outer_voice.is_none()
+        || world_snapshot_changed
+        || matches!(
+            &world_sense_result,
+            Ok(WorldSenseRefreshOutcome::Updated | WorldSenseRefreshOutcome::Cleared)
+        )
+        || matches!(
+            &autonomy_strategy_result,
+            Ok(AutonomyStrategyRefreshOutcome::Updated | AutonomyStrategyRefreshOutcome::Cleared)
+        )
+        || (payload.trigger == SelfRuntimeTrigger::PostReply
+            && outer_voice_policy.should_refresh(
+                OuterVoiceRefreshInput {
+                    chat_id,
+                    ingress,
+                    channel: &payload.source_channel,
+                    user_content: &payload.user_content,
+                    reply_content: &payload.reply_content,
+                    pressure: PressureLevel::Normal,
+                    tool_calls: payload.tool_calls,
+                    now_secs: payload.now_secs,
+                },
+                state.outer_voice.is_some(),
+            ))
+        || state.outer_voice.as_ref().is_some_and(|outer_voice| {
+            payload.now_secs.saturating_sub(outer_voice.updated_at)
+                >= outer_voice_policy.refresh_interval_secs
+        });
+    let outer_voice_result = run_outer_voice_refresh_with_state(
+        http,
+        llm,
+        OuterVoiceRefreshContext {
+            outer_voice_store: ctx.outer_voice_store,
+        },
+        OuterVoiceRefreshInput {
+            chat_id,
+            ingress,
+            channel: &payload.source_channel,
+            user_content: &payload.user_content,
+            reply_content: &payload.reply_content,
+            pressure: PressureLevel::Normal,
+            tool_calls: payload.tool_calls,
+            now_secs: payload.now_secs,
+        },
+        profile,
+        state.outer_voice.clone(),
+        state.summary_text.as_deref(),
+        state.execution_state.as_ref(),
+        state.self_model.as_ref(),
+        &state.world_snapshot,
+        refreshed_world_sense.as_ref(),
+        refreshed_autonomy_strategy.as_ref(),
+        state.inner_life.as_ref(),
+        state.self_continuity.as_ref(),
+        state.private_docs.as_ref(),
+        &state.private_garden_docs,
+        state.mental_privacy_state.as_ref(),
+        Some(outer_voice_should_refresh),
+        Some(state.recent.as_slice()),
+    );
     let runtime_self_state = build_self_state(
         state.self_model.as_ref(),
         state.private_docs.as_ref(),
@@ -380,6 +454,7 @@ fn refresh_world_and_autonomy(
     SelfRuntimeRefreshPrelude {
         world_sense_result,
         autonomy_strategy_result,
+        outer_voice_result,
         refreshed_world_sense,
         refreshed_autonomy_strategy,
         runtime_self_state,
@@ -785,6 +860,7 @@ pub fn run_self_runtime(
         decision: action_results.decision,
         world_sense_result: prelude.world_sense_result,
         autonomy_strategy_result: prelude.autonomy_strategy_result,
+        outer_voice_result: prelude.outer_voice_result,
         inner_life_result: action_results.inner_life_result,
         private_doc_result: action_results.private_doc_result,
         self_continuity_result: action_results.self_continuity_result,

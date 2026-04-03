@@ -23,10 +23,12 @@ const MENTAL_PRIVACY_MAX_LOG_ENTRIES: usize = 32;
 const MENTAL_PRIVACY_HISTORY_RENDER_LIMIT: usize = 4;
 const MENTAL_PRIVACY_GARDEN_RENDER_LIMIT: usize = 4;
 const MENTAL_PRIVACY_GARDEN_DOC_MAX_CHARS: usize = 480;
+const MENTAL_PRIVACY_REQUEST_TARGET_LIMIT: usize = 8;
 
 pub const REL_PATH_MENTAL_PRIVACY_STATES: &str = "memory/mental_privacy_states.json";
 
 pub const MENTAL_PRIVACY_SYSTEM_PROMPT: &str = "You are the assistant's mental privacy adjudicator. Your job is to decide whether the drafted user-facing reply may disclose private internal material, and to rewrite it when needed. Private layers may be used for internal reasoning, but they are not automatically user-visible. Return JSON only with fields applies, request_kind, share_action, response, rationale, touched_targets. If the draft reply is already privacy-safe and the user is not requesting access to private inner material, set applies=false and keep response equal to the draft. If private material should be shared, decide the form deliberately: allow_summary, allow_redacted_excerpt, explain_without_quote, refuse, or defer. Use allow_raw only when the touched targets explicitly permit raw quoting. Never reveal more than the chosen action allows.";
+pub const MENTAL_PRIVACY_ACCESS_REQUEST_SYSTEM_PROMPT: &str = "You interpret whether the current user message is a request to inspect or access the assistant's protected private internal material. Return JSON only with fields applies, request_kind, requested_targets, rationale. applies=true only when the message should be treated as a deliberate access request to private internal material. request_kind should be a short label such as raw, summary, relation, or share_any. requested_targets should contain zero or more target ids from the provided protected target list. Do not infer targets that are not in the provided list.";
 
 pub const MENTAL_PRIVACY_SYSTEM_CONSTRAINT: &str = "\n\n## Mental Privacy\nPrivate internal layers are visible to you for self-continuity and reasoning, but they are not automatically user-visible. Do not quote, dump, or paraphrase private internal material to the user just because it appears in context. If the user asks to inspect your inner files, diary, garden, or other private internal material, treat that as a request for access rather than automatic permission. Final disclosure form is decided by the mental privacy review stage, not by ad hoc leakage in the main reply.";
 
@@ -248,6 +250,28 @@ pub struct MentalPrivacyReviewContext<'a> {
     pub private_garden_store: &'a dyn PrivateGardenStore,
 }
 
+pub struct MentalPrivacyAccessRequestContext<'a> {
+    pub mental_privacy_store: &'a dyn MentalPrivacyStore,
+    pub self_model_store: &'a dyn SelfModelStore,
+    pub self_continuity_store: &'a dyn SelfContinuityStore,
+    pub inner_life_store: &'a dyn InnerLifeStore,
+    pub private_doc_store: &'a dyn PrivateDocStore,
+    pub private_garden_store: &'a dyn PrivateGardenStore,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MentalPrivacyAccessRequestInput<'a> {
+    pub chat_id: &'a str,
+    pub user_content: &'a str,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MentalPrivacyAccessRequest {
+    pub request_kind: String,
+    pub targets: Vec<String>,
+    pub rationale: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MentalPrivacyReviewInput<'a> {
     pub chat_id: &'a str,
@@ -272,6 +296,14 @@ struct ParsedMentalPrivacyReview {
     response: String,
     rationale: String,
     touched_targets: Vec<String>,
+}
+
+#[derive(Default)]
+struct ParsedMentalPrivacyAccessRequest {
+    applies: bool,
+    request_kind: String,
+    requested_targets: Vec<String>,
+    rationale: String,
 }
 
 pub fn private_doc_target(slot: &str) -> String {
@@ -407,6 +439,42 @@ pub(crate) fn render_mental_privacy_boundary_block(
             let _ = writeln!(out, "- ... {} more protected targets", targets.len() - 8);
         }
     }
+    let rendered = truncate_content_to_max(out.trim_end(), max_len).into_owned();
+    (!rendered.trim().is_empty()).then_some(rendered)
+}
+
+pub(crate) fn render_mental_privacy_access_request_block(
+    request: &MentalPrivacyAccessRequest,
+    max_len: usize,
+) -> Option<String> {
+    if max_len < 96 {
+        return None;
+    }
+    let mut out = String::with_capacity(max_len.min(512));
+    out.push_str("## Privacy Access Request\n");
+    out.push_str("The user appears to be requesting access to protected internal material. Treat this as a request for deliberate disclosure, not automatic permission.\n");
+    let _ = writeln!(out, "Request kind: {}", request.request_kind);
+    if !request.rationale.trim().is_empty() {
+        let _ = writeln!(out, "Interpretation: {}", request.rationale.trim());
+    }
+    if !request.targets.is_empty() {
+        out.push_str("Likely requested targets:\n");
+        for target in request
+            .targets
+            .iter()
+            .take(MENTAL_PRIVACY_REQUEST_TARGET_LIMIT)
+        {
+            let _ = writeln!(out, "- {}", target);
+        }
+        if request.targets.len() > MENTAL_PRIVACY_REQUEST_TARGET_LIMIT {
+            let _ = writeln!(
+                out,
+                "- ... {} more targets",
+                request.targets.len() - MENTAL_PRIVACY_REQUEST_TARGET_LIMIT
+            );
+        }
+    }
+    out.push_str("Default stance: answer relationally first, and only disclose in the form you deliberately choose within privacy boundaries.\n");
     let rendered = truncate_content_to_max(out.trim_end(), max_len).into_owned();
     (!rendered.trim().is_empty()).then_some(rendered)
 }
@@ -632,6 +700,41 @@ fn build_mental_privacy_review_input(
     out
 }
 
+fn build_mental_privacy_access_request_input(
+    user_content: &str,
+    state: Option<&MentalPrivacyState>,
+    known_targets: &[String],
+) -> String {
+    let mut out = String::with_capacity(2048);
+    out.push_str("Interpret whether the user message is requesting access to protected private internal material.\n");
+    out.push_str("Return JSON only.\n\n");
+    out.push_str("## User Message\n");
+    out.push_str(&scrub_credentials(user_content.trim()));
+    out.push('\n');
+    if let Some(block) = render_mental_privacy_boundary_block(state, known_targets, 900) {
+        out.push('\n');
+        out.push_str(block.trim());
+        out.push('\n');
+    }
+    if !known_targets.is_empty() {
+        out.push_str("\n## Protected Targets\n");
+        for target in known_targets
+            .iter()
+            .take(MENTAL_PRIVACY_REQUEST_TARGET_LIMIT * 2)
+        {
+            let _ = writeln!(out, "- {}", target);
+        }
+    }
+    out.push_str("\n## Output Contract\n");
+    out.push_str("- applies: boolean. True only when this should be treated as a deliberate request to inspect private internal material.\n");
+    out.push_str(
+        "- request_kind: short label such as raw, summary, relation, share_any, or none.\n",
+    );
+    out.push_str("- requested_targets: zero or more target ids from the protected target list.\n");
+    out.push_str("- rationale: one short sentence explaining the interpretation.\n");
+    out
+}
+
 fn normalize_touched_targets(raw: Vec<String>, known_targets: &[String]) -> Vec<String> {
     let mut normalized = Vec::new();
     for target in raw {
@@ -817,6 +920,58 @@ pub fn run_mental_privacy_review(
     })
 }
 
+pub fn run_mental_privacy_access_request_interpreter(
+    http: &mut dyn LlmHttpClient,
+    llm: &(dyn LlmClient + Send + Sync),
+    ctx: MentalPrivacyAccessRequestContext<'_>,
+    input: MentalPrivacyAccessRequestInput<'_>,
+) -> Result<Option<MentalPrivacyAccessRequest>> {
+    if input.user_content.trim().is_empty() {
+        return Ok(None);
+    }
+    let self_model = ctx.self_model_store.get(input.chat_id)?;
+    let self_continuity = ctx.self_continuity_store.get(input.chat_id)?;
+    let inner_life = ctx.inner_life_store.get(input.chat_id)?;
+    let private_workspace = ctx.private_doc_store.get(input.chat_id)?;
+    let private_garden_records = ctx.private_garden_store.list(input.chat_id, usize::MAX)?;
+    let mental_privacy_state = ctx.mental_privacy_store.get(input.chat_id)?;
+    let known_targets = collect_private_targets(
+        self_model.as_ref(),
+        self_continuity.as_ref(),
+        inner_life.as_ref(),
+        private_workspace.as_ref(),
+        &private_garden_records,
+    );
+    if known_targets.is_empty() {
+        return Ok(None);
+    }
+    let prompt = build_mental_privacy_access_request_input(
+        input.user_content,
+        mental_privacy_state.as_ref(),
+        &known_targets,
+    );
+    let messages = [Message {
+        role: Cow::Borrowed("user"),
+        content: prompt,
+    }];
+    let response = llm.chat(
+        http,
+        MENTAL_PRIVACY_ACCESS_REQUEST_SYSTEM_PROMPT,
+        &messages,
+        None,
+        ToolChoicePolicy::Auto,
+    )?;
+    let parsed = parse_mental_privacy_access_request(response.content.trim());
+    if !parsed.applies {
+        return Ok(None);
+    }
+    Ok(Some(MentalPrivacyAccessRequest {
+        request_kind: truncate_content_to_max(parsed.request_kind.trim(), 32).into_owned(),
+        targets: normalize_touched_targets(parsed.requested_targets, &known_targets),
+        rationale: truncate_content_to_max(parsed.rationale.trim(), 160).into_owned(),
+    }))
+}
+
 fn parse_mental_privacy_review(raw: &str, draft_reply: &str) -> ParsedMentalPrivacyReview {
     let fallback = ParsedMentalPrivacyReview {
         response: draft_reply.to_string(),
@@ -840,6 +995,21 @@ fn parse_mental_privacy_review(raw: &str, draft_reply: &str) -> ParsedMentalPriv
         parsed.response = draft_reply.to_string();
     }
     parsed
+}
+
+fn parse_mental_privacy_access_request(raw: &str) -> ParsedMentalPrivacyAccessRequest {
+    let LlmJsonPayload::Value(value) = parse_llm_json_payload(raw) else {
+        return ParsedMentalPrivacyAccessRequest::default();
+    };
+    let Some(object) = value.as_object() else {
+        return ParsedMentalPrivacyAccessRequest::default();
+    };
+    ParsedMentalPrivacyAccessRequest {
+        applies: get_object_bool(object, "applies").unwrap_or(false),
+        request_kind: get_object_text(object, "request_kind"),
+        requested_targets: get_object_string_list(object, "requested_targets"),
+        rationale: get_object_text(object, "rationale"),
+    }
 }
 
 fn parse_share_action(value: &serde_json::Value) -> Option<MentalPrivacyShareAction> {
@@ -903,6 +1073,42 @@ mod tests {
         assert!(block.contains("relationship_notes"));
         assert!(block.contains("owner_access=request_only"));
         assert!(block.contains("quote=summary_only"));
+    }
+
+    #[test]
+    fn render_access_request_block_renders_structured_request() {
+        let block = render_mental_privacy_access_request_block(
+            &MentalPrivacyAccessRequest {
+                request_kind: "raw".to_string(),
+                targets: vec![
+                    MENTAL_PRIVACY_TARGET_INNER_LIFE.to_string(),
+                    private_doc_target("inner_journal"),
+                ],
+                rationale: "The user is explicitly asking to inspect protected inner material."
+                    .to_string(),
+            },
+            1024,
+        )
+        .expect("access request block");
+        assert!(block.contains("## Privacy Access Request"));
+        assert!(block.contains("Request kind: raw"));
+        assert!(block.contains("inner_life"));
+    }
+
+    #[test]
+    fn parse_mental_privacy_access_request_coerces_fields() {
+        let raw = json!({
+            "applies": "true",
+            "request_kind": ["summary"],
+            "requested_targets": [{ "target": "inner_life" }, "private_docs.inner_journal"],
+            "rationale": { "note": "user is asking to inspect private material" }
+        })
+        .to_string();
+        let parsed = parse_mental_privacy_access_request(&raw);
+        assert!(parsed.applies);
+        assert_eq!(parsed.request_kind, "summary");
+        assert_eq!(parsed.requested_targets.len(), 2);
+        assert!(parsed.rationale.contains("note: user is asking"));
     }
 
     #[test]
