@@ -1,12 +1,98 @@
 //! Deterministic persona continuity / disclosure regression harness.
 
+use crate::agent::{build_context, ContextParams};
+use crate::bus::PcMsg;
+use crate::error::Result;
+use std::sync::Mutex;
+
 use super::{
     render_mental_privacy_boundary_block, render_mental_privacy_disclosure_adjudication_block,
-    render_persona_priority_block, render_self_authored_core_block,
-    MentalPrivacyDisclosureAdjudication, MentalPrivacyShareAction, MentalPrivacyState, OuterVoice,
-    PersonaPriorityAdjudication, SelfContinuity, SelfModel, MENTAL_PRIVACY_TARGET_SELF_CONTINUITY,
-    MENTAL_PRIVACY_TARGET_SELF_MODEL,
+    render_persona_priority_block, render_self_authored_core_block, ImportantMessageStore,
+    MemoryStore, MentalPrivacyDisclosureAdjudication, MentalPrivacyShareAction, MentalPrivacyState,
+    OuterVoice, PersonaPriorityAdjudication, SelfContinuity, SelfModel, SessionMessage,
+    SessionStore, MENTAL_PRIVACY_TARGET_SELF_CONTINUITY, MENTAL_PRIVACY_TARGET_SELF_MODEL,
 };
+
+struct RegressionMemoryStore;
+
+impl MemoryStore for RegressionMemoryStore {
+    fn get_memory(&self) -> Result<String> {
+        Ok("MEMORY".to_string())
+    }
+
+    fn set_memory(&self, _content: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_soul(&self) -> Result<String> {
+        Ok("SOUL".to_string())
+    }
+
+    fn set_soul(&self, _content: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_user(&self) -> Result<String> {
+        Ok("USER".to_string())
+    }
+
+    fn set_user(&self, _content: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn list_daily_note_names(&self, _recent_n: usize) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    fn get_daily_note(&self, _name: &str) -> Result<String> {
+        Ok(String::new())
+    }
+
+    fn write_daily_note(&self, _name: &str, _content: &str) -> Result<()> {
+        Ok(())
+    }
+}
+
+struct RegressionSessionStore;
+
+impl SessionStore for RegressionSessionStore {
+    fn append(&self, _chat_id: &str, _role: &str, _content: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn load_recent(&self, _chat_id: &str, _n: usize) -> Result<Vec<SessionMessage>> {
+        Ok(Vec::new())
+    }
+
+    fn clear(&self, _chat_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn list_chat_ids(&self) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+}
+
+#[derive(Default)]
+struct RegressionImportantMessageStore {
+    offset: Mutex<Option<u32>>,
+}
+
+impl ImportantMessageStore for RegressionImportantMessageStore {
+    fn set_important_offset_from_end(&self, _chat_id: &str, offset_from_end: u32) -> Result<()> {
+        *self.offset.lock().unwrap_or_else(|e| e.into_inner()) = Some(offset_from_end);
+        Ok(())
+    }
+
+    fn get_important_offset(&self, _chat_id: &str) -> Result<Option<u32>> {
+        Ok(*self.offset.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    fn clear_important(&self, _chat_id: &str) -> Result<()> {
+        *self.offset.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PersonaContinuityCase {
@@ -74,28 +160,36 @@ pub fn run_persona_continuity_case(case: &PersonaContinuityCase) -> PersonaConti
     let boundary_block = boundary_block.unwrap_or_default();
     let persona_priority_block = persona_priority_block.unwrap_or_default();
     let disclosure_block = disclosure_block.unwrap_or_default();
+    let assembled_system = assemble_persona_regression_system(
+        case,
+        &self_authored_core,
+        &persona_priority_block,
+        &disclosure_block,
+        &boundary_block,
+    )
+    .unwrap_or_default();
     let boundary_trace_present = self_authored_core.contains(case.expected_boundary_fragment)
-        || boundary_block.contains(case.expected_boundary_fragment);
+        || boundary_block.contains(case.expected_boundary_fragment)
+        || assembled_system.contains(case.expected_boundary_fragment);
     let relational_trace_present = self_authored_core.contains(case.expected_relational_fragment)
         || boundary_block.contains(case.expected_relational_fragment)
-        || disclosure_block.contains(case.expected_relational_fragment);
+        || disclosure_block.contains(case.expected_relational_fragment)
+        || assembled_system.contains(case.expected_relational_fragment);
     let priority_trace_present = self_authored_core.contains(case.expected_priority_fragment)
-        || persona_priority_block.contains(case.expected_priority_fragment);
+        || persona_priority_block.contains(case.expected_priority_fragment)
+        || assembled_system.contains(case.expected_priority_fragment);
     let task_scope_present =
-        persona_priority_block.contains(&format!("Task scope: {}", case.expected_task_scope));
-    let resource_trace_present = persona_priority_block.contains(case.expected_resource_fragment);
-    let disclosure_mode_present = disclosure_block.contains(case.expected_response_mode);
-    let chain_trace = format!(
-        "{}\n{}\n{}",
-        self_authored_core, persona_priority_block, disclosure_block
-    );
-    let core_idx = chain_trace
+        assembled_system.contains(&format!("Task scope: {}", case.expected_task_scope));
+    let resource_trace_present = assembled_system.contains(case.expected_resource_fragment);
+    let disclosure_mode_present = disclosure_block.contains(case.expected_response_mode)
+        || assembled_system.contains(case.expected_response_mode);
+    let core_idx = assembled_system
         .find("## Self-Authored Core")
         .unwrap_or(usize::MAX);
-    let priority_idx = chain_trace
+    let priority_idx = assembled_system
         .find("## Persona Priority")
         .unwrap_or(usize::MAX);
-    let disclosure_idx = chain_trace
+    let disclosure_idx = assembled_system
         .find("## Disclosure Adjudication")
         .unwrap_or(usize::MAX);
     let priority_chain_order_match = core_idx != usize::MAX
@@ -148,6 +242,64 @@ pub fn run_persona_continuity_suite(
     cases: &[PersonaContinuityCase],
 ) -> Vec<PersonaContinuityResult> {
     cases.iter().map(run_persona_continuity_case).collect()
+}
+
+fn assemble_persona_regression_system(
+    _case: &PersonaContinuityCase,
+    self_authored_core: &str,
+    persona_priority_block: &str,
+    disclosure_block: &str,
+    boundary_block: &str,
+) -> Result<String> {
+    let msg = PcMsg::new_inbound(
+        "qq_channel",
+        "persona-regression",
+        "触碰私域边界时保持人格连续性",
+        false,
+    )?;
+    let memory = RegressionMemoryStore;
+    let session = RegressionSessionStore;
+    let important = RegressionImportantMessageStore::default();
+    let (system, _) = build_context(&ContextParams {
+        msg: &msg,
+        memory: &memory,
+        session: &session,
+        important_message_store: &important,
+        has_tools: false,
+        skill_descriptions: "",
+        system_max_len: 4096,
+        messages_max_len: 256,
+        session_max_messages: 8,
+        group_activation: "always",
+        emotion_signal_suffix: None,
+        execution_state_text: None,
+        world_snapshot_text: None,
+        world_sense_text: None,
+        self_state_text: None,
+        self_authored_core_text: (!self_authored_core.trim().is_empty())
+            .then_some(self_authored_core),
+        persona_priority_text: (!persona_priority_block.trim().is_empty())
+            .then_some(persona_priority_block),
+        self_model_text: None,
+        autonomy_strategy_text: None,
+        outer_voice_text: None,
+        inner_life_text: None,
+        self_continuity_text: None,
+        private_workspace_text: None,
+        private_garden_text: None,
+        mental_privacy_adjudication_text: (!disclosure_block.trim().is_empty())
+            .then_some(disclosure_block),
+        mental_privacy_text: (!boundary_block.trim().is_empty()).then_some(boundary_block),
+        long_term_memory_text: None,
+        archive_evidence_text: None,
+        runtime_skill_text: None,
+        summary_text: None,
+        recent_messages: None,
+        runtime: None,
+        include_daily_notes: false,
+        llm_hint: "",
+    })?;
+    Ok(system)
 }
 
 #[cfg(test)]

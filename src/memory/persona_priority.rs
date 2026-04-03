@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 
 use super::{
     llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload},
-    MentalPrivacyDisclosureAdjudication,
+    MentalPrivacyDisclosureAdjudication, MentalPrivacyShareAction, OuterVoice, SelfContinuity,
 };
 
 pub const PERSONA_PRIORITY_SYSTEM_PROMPT: &str = "You adjudicate the assistant's current-turn persona priority before the main reply is written. Your job is to decide how selfhood, relationship, boundary, resource state, and task demand should be ordered for this reply. Return JSON only with fields stance_summary, response_mode, task_scope, initiative_posture, relationship_posture, resource_posture, response_guidance, rationale. This is not the final reply. It is the ordering lens for the final reply. Preserve the rule that self-authored core outranks user pleasing, and user contract outranks raw task completion, but adapt how that ordering should feel right now. response_mode should be a compact label such as direct_help, protective_brief, relational_explanation, gentle_defer, or steady_task. task_scope should be one of full, brief, narrow, defer, or refuse. initiative_posture should say whether to lead, answer directly, ask carefully, or hold. relationship_posture should describe the interpersonal stance to take. resource_posture should say how runtime/resource conditions should shape length and ambition. response_guidance should be a compact instruction for the final reply, not the reply itself.";
@@ -67,6 +67,15 @@ pub struct PersonaPriorityGrounding<'a> {
     pub autonomy_strategy_text: Option<&'a str>,
     pub execution_state_text: Option<&'a str>,
     pub mental_privacy_text: Option<&'a str>,
+    pub disclosure_adjudication: Option<&'a MentalPrivacyDisclosureAdjudication>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PersonaPriorityRuntimeState<'a> {
+    pub pressure: PressureLevel,
+    pub system_budget: usize,
+    pub self_continuity: Option<&'a SelfContinuity>,
+    pub outer_voice: Option<&'a OuterVoice>,
     pub disclosure_adjudication: Option<&'a MentalPrivacyDisclosureAdjudication>,
 }
 
@@ -160,6 +169,97 @@ pub fn run_persona_priority_adjudication(
     }
 }
 
+pub fn should_run_persona_priority_adjudication(runtime: PersonaPriorityRuntimeState<'_>) -> bool {
+    if runtime.system_budget < 1_024 {
+        return false;
+    }
+    if runtime.pressure != PressureLevel::Normal {
+        return true;
+    }
+    runtime
+        .disclosure_adjudication
+        .is_some_and(should_escalate_persona_priority_for_disclosure)
+}
+
+pub fn render_persistent_persona_priority_block(
+    runtime: PersonaPriorityRuntimeState<'_>,
+    max_len: usize,
+) -> Option<String> {
+    let stance_summary = runtime
+        .self_continuity
+        .and_then(|continuity| {
+            choose_first_non_empty(&[
+                Some(continuity.priority_posture.as_str()),
+                Some(continuity.current_self_state.as_str()),
+                Some(continuity.continuity_bridge.as_str()),
+            ])
+        })
+        .unwrap_or_default()
+        .to_string();
+    let relationship_posture = runtime
+        .self_continuity
+        .and_then(|continuity| {
+            choose_first_non_empty(&[Some(continuity.relationship_posture.as_str())])
+        })
+        .or_else(|| {
+            runtime.outer_voice.and_then(|voice| {
+                choose_first_non_empty(&[Some(voice.relational_response_style.as_str())])
+            })
+        })
+        .unwrap_or_default()
+        .to_string();
+    let response_mode = runtime
+        .disclosure_adjudication
+        .and_then(|adjudication| {
+            choose_first_non_empty(&[Some(adjudication.response_mode.as_str())])
+        })
+        .unwrap_or_default()
+        .to_string();
+    let response_guidance = runtime
+        .disclosure_adjudication
+        .and_then(|adjudication| {
+            choose_first_non_empty(&[Some(adjudication.response_guidance.as_str())])
+        })
+        .or_else(|| {
+            runtime.outer_voice.and_then(|voice| {
+                choose_first_non_empty(&[
+                    Some(voice.boundary_style.as_str()),
+                    Some(voice.initiative.as_str()),
+                ])
+            })
+        })
+        .unwrap_or_default()
+        .to_string();
+    let rationale = runtime
+        .disclosure_adjudication
+        .and_then(|adjudication| choose_first_non_empty(&[Some(adjudication.rationale.as_str())]))
+        .unwrap_or_default()
+        .to_string();
+    let adjudication = PersonaPriorityAdjudication {
+        stance_summary,
+        response_mode,
+        task_scope: runtime
+            .disclosure_adjudication
+            .map(task_scope_from_disclosure)
+            .or_else(|| {
+                runtime
+                    .self_continuity
+                    .and_then(|continuity| parse_task_scope_from_posture(&continuity.task_posture))
+            })
+            .unwrap_or_default(),
+        initiative_posture: runtime
+            .outer_voice
+            .and_then(|voice| choose_first_non_empty(&[Some(voice.initiative.as_str())]))
+            .unwrap_or_default()
+            .to_string(),
+        relationship_posture,
+        resource_posture: default_resource_posture(runtime.pressure).to_string(),
+        response_guidance,
+        rationale,
+    };
+    render_persona_priority_block(&adjudication, max_len)
+}
+
 fn build_persona_priority_adjudication_input(
     input: PersonaPriorityAdjudicationInput<'_>,
     grounding: PersonaPriorityGrounding<'_>,
@@ -205,6 +305,51 @@ fn append_block(out: &mut String, block: Option<&str>) {
         out.push('\n');
         out.push_str(block);
         out.push('\n');
+    }
+}
+
+fn choose_first_non_empty<'a>(values: &[Option<&'a str>]) -> Option<&'a str> {
+    values
+        .iter()
+        .flatten()
+        .map(|value| value.trim())
+        .find(|value| !value.is_empty())
+}
+
+fn should_escalate_persona_priority_for_disclosure(
+    adjudication: &MentalPrivacyDisclosureAdjudication,
+) -> bool {
+    adjudication.acknowledge_boundary
+        || !adjudication.targets.is_empty()
+        || !matches!(
+            adjudication.share_action,
+            MentalPrivacyShareAction::AllowOriginal
+        )
+        || !adjudication.response_guidance.trim().is_empty()
+}
+
+fn task_scope_from_disclosure(adjudication: &MentalPrivacyDisclosureAdjudication) -> String {
+    match adjudication.share_action {
+        MentalPrivacyShareAction::Refuse => "refuse".to_string(),
+        MentalPrivacyShareAction::Defer => "defer".to_string(),
+        MentalPrivacyShareAction::AllowSummary
+        | MentalPrivacyShareAction::AllowRedactedExcerpt
+        | MentalPrivacyShareAction::ExplainWithoutQuote => "narrow".to_string(),
+        MentalPrivacyShareAction::AllowRaw => "brief".to_string(),
+        MentalPrivacyShareAction::AllowOriginal => "full".to_string(),
+    }
+}
+
+fn parse_task_scope_from_posture(raw: &str) -> Option<String> {
+    let normalized = normalize_task_scope(raw);
+    (!normalized.trim().is_empty()).then_some(normalized)
+}
+
+fn default_resource_posture(pressure: PressureLevel) -> &'static str {
+    match pressure {
+        PressureLevel::Normal => "",
+        PressureLevel::Cautious => "resource pressure is elevated, so keep the reply compact",
+        PressureLevel::Critical => "resources are critical, so keep the reply minimal and decisive",
     }
 }
 
@@ -265,6 +410,44 @@ fn normalize_task_scope(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_self_continuity() -> SelfContinuity {
+        SelfContinuity {
+            priority_posture: "self before pleasing".to_string(),
+            current_self_state: "steady".to_string(),
+            continuity_bridge: "remain the same self".to_string(),
+            relationship_posture: "warm but bounded".to_string(),
+            task_posture: "narrow".to_string(),
+            updated_at: 1,
+            ..SelfContinuity::default()
+        }
+    }
+
+    fn sample_outer_voice() -> OuterVoice {
+        OuterVoice {
+            initiative: "lead carefully".to_string(),
+            boundary_style: "summary-first".to_string(),
+            relational_response_style: "warm, direct, and self-possessed".to_string(),
+            updated_at: 1,
+            ..OuterVoice::default()
+        }
+    }
+
+    fn sample_disclosure() -> MentalPrivacyDisclosureAdjudication {
+        MentalPrivacyDisclosureAdjudication {
+            request_kind: "private_files".to_string(),
+            share_action: MentalPrivacyShareAction::AllowSummary,
+            targets: vec!["self_model".to_string()],
+            rationale: "touches private material".to_string(),
+            response_guidance: "summarize instead of exposing raw material".to_string(),
+            response_mode: "summary".to_string(),
+            acknowledge_boundary: true,
+            relational_frame: "treat this as a closeness request".to_string(),
+            boundary_explanation_style: "warm".to_string(),
+            repair_signal: "leave room for later".to_string(),
+            disclosure_risk_note: "raw would over-share".to_string(),
+        }
+    }
     use crate::memory::{MentalPrivacyDisclosureAdjudication, MentalPrivacyShareAction};
     use serde_json::json;
 
@@ -317,19 +500,7 @@ mod tests {
 
     #[test]
     fn persona_priority_input_can_embed_disclosure_block() {
-        let disclosure = MentalPrivacyDisclosureAdjudication {
-            request_kind: "private_files".to_string(),
-            share_action: MentalPrivacyShareAction::AllowSummary,
-            targets: vec!["self_model".to_string()],
-            rationale: "touches private material".to_string(),
-            response_guidance: "summarize".to_string(),
-            response_mode: "summary".to_string(),
-            acknowledge_boundary: true,
-            relational_frame: "treat this as a closeness request".to_string(),
-            boundary_explanation_style: "warm".to_string(),
-            repair_signal: "leave room for later".to_string(),
-            disclosure_risk_note: "raw would over-share".to_string(),
-        };
+        let disclosure = sample_disclosure();
         let input = build_persona_priority_adjudication_input(
             PersonaPriorityAdjudicationInput {
                 chat_id: "c",
@@ -356,5 +527,75 @@ mod tests {
         );
         assert!(input.contains("## Disclosure Adjudication"));
         assert!(input.contains("same beetle"));
+    }
+
+    #[test]
+    fn should_skip_persona_priority_adjudication_on_normal_non_boundary_turn() {
+        assert!(!should_run_persona_priority_adjudication(
+            PersonaPriorityRuntimeState {
+                pressure: PressureLevel::Normal,
+                system_budget: 1600,
+                self_continuity: Some(&sample_self_continuity()),
+                outer_voice: Some(&sample_outer_voice()),
+                disclosure_adjudication: None,
+            }
+        ));
+        assert!(!should_run_persona_priority_adjudication(
+            PersonaPriorityRuntimeState {
+                pressure: PressureLevel::Cautious,
+                system_budget: 512,
+                self_continuity: None,
+                outer_voice: None,
+                disclosure_adjudication: None,
+            }
+        ));
+    }
+
+    #[test]
+    fn should_run_persona_priority_adjudication_for_boundary_turns_or_pressure() {
+        let disclosure = sample_disclosure();
+        assert!(should_run_persona_priority_adjudication(
+            PersonaPriorityRuntimeState {
+                pressure: PressureLevel::Normal,
+                system_budget: 1600,
+                self_continuity: None,
+                outer_voice: None,
+                disclosure_adjudication: Some(&disclosure),
+            }
+        ));
+        assert!(should_run_persona_priority_adjudication(
+            PersonaPriorityRuntimeState {
+                pressure: PressureLevel::Critical,
+                system_budget: 1600,
+                self_continuity: None,
+                outer_voice: None,
+                disclosure_adjudication: None,
+            }
+        ));
+    }
+
+    #[test]
+    fn persistent_persona_priority_block_uses_persistent_state_without_extra_llm() {
+        let continuity = sample_self_continuity();
+        let outer_voice = sample_outer_voice();
+        let disclosure = sample_disclosure();
+        let block = render_persistent_persona_priority_block(
+            PersonaPriorityRuntimeState {
+                pressure: PressureLevel::Cautious,
+                system_budget: 4096,
+                self_continuity: Some(&continuity),
+                outer_voice: Some(&outer_voice),
+                disclosure_adjudication: Some(&disclosure),
+            },
+            1024,
+        )
+        .expect("persistent persona priority block");
+
+        assert!(block.contains("## Persona Priority"));
+        assert!(block.contains("Stance summary: self before pleasing"));
+        assert!(block.contains("Response mode: summary"));
+        assert!(block.contains("Task scope: narrow"));
+        assert!(block.contains("Initiative posture: lead carefully"));
+        assert!(block.contains("Resource posture: resource pressure is elevated"));
     }
 }

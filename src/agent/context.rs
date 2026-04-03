@@ -200,7 +200,7 @@ fn reserve_priority_memory_budget(
     let _ = archive_evidence_text;
     let _ = runtime_skill_text;
     let remaining = base_max;
-    let reply_priority_reserve = REPLY_PRIORITY_CONSTRAINT.len().min(remaining);
+    let reply_priority_reserve = REPLY_PRIORITY_MINI_CONSTRAINT.len().min(remaining);
     let remaining = remaining.saturating_sub(reply_priority_reserve);
     let self_authored_core_reserve =
         section_with_separator_len(self_authored_core_text).min(remaining / 4);

@@ -44,11 +44,12 @@ use crate::memory::{
     MentalPrivacyDisclosureAdjudicationContext, MentalPrivacyDisclosureAdjudicationInput,
     MentalPrivacyReviewContext, MentalPrivacyReviewInput, MentalPrivacyStore, OuterVoiceStore,
     PendingRetryStore, PersonaPriorityAdjudicationInput, PersonaPriorityGrounding,
-    PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput, PrivateDocStore,
-    PrivateGardenStore, PromptMemoryContextParams, RemindAtStore, SelfContinuityStore,
-    SelfModelStore, SelfRuntimeContext, SelfRuntimeOutcome, SessionStore,
-    SessionSummaryRefreshOutcome, SessionSummaryStore, TurnDeliveryLedger, TurnLedger,
-    TurnLedgerStatus, TurnLedgerStore, WorldSenseStore, SELF_RUNTIME_CHANNEL,
+    PersonaPriorityRuntimeState, PostReplyMemoryMaintenanceContext,
+    PostReplyMemoryMaintenanceInput, PrivateDocStore, PrivateGardenStore,
+    PromptMemoryContextParams, RemindAtStore, SelfContinuityStore, SelfModelStore,
+    SelfRuntimeContext, SelfRuntimeOutcome, SessionStore, SessionSummaryRefreshOutcome,
+    SessionSummaryStore, TurnDeliveryLedger, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
+    WorldSenseStore, SELF_RUNTIME_CHANNEL,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
@@ -2920,38 +2921,54 @@ fn run_worker_path(
                     420,
                 )
             });
+    let persona_priority_runtime = PersonaPriorityRuntimeState {
+        pressure: runtime.pressure,
+        system_budget: prompt_memory_system_budget,
+        self_continuity: prompt_memory.self_continuity.as_ref(),
+        outer_voice: prompt_memory.outer_voice.as_ref(),
+        disclosure_adjudication: mental_privacy_adjudication.as_ref(),
+    };
     prompt_memory.persona_priority_text = if msg.ingress == IngressKind::User {
-        match crate::memory::run_persona_priority_adjudication(
-            &mut tool_ctx,
-            worker_llm,
-            PersonaPriorityAdjudicationInput {
-                chat_id: &msg.chat_id,
-                current_channel: &msg.channel,
-                user_content: &msg.content,
-                pressure: runtime.pressure,
-                now_secs: runtime.now_secs,
-            },
-            PersonaPriorityGrounding {
-                self_authored_core_text: prompt_memory.self_authored_core_text.as_deref(),
-                world_snapshot_text: prompt_memory.world_snapshot_text.as_deref(),
-                world_sense_text: prompt_memory.world_sense_text.as_deref(),
-                self_state_text: prompt_memory.self_state_text.as_deref(),
-                self_model_text: prompt_memory.self_model_text.as_deref(),
-                self_continuity_text: prompt_memory.self_continuity_text.as_deref(),
-                outer_voice_text: prompt_memory.outer_voice_text.as_deref(),
-                autonomy_strategy_text: prompt_memory.autonomy_strategy_text.as_deref(),
-                execution_state_text: prompt_memory.execution_state_text.as_deref(),
-                mental_privacy_text: prompt_memory.mental_privacy_text.as_deref(),
-                disclosure_adjudication: mental_privacy_adjudication.as_ref(),
-            },
-        ) {
-            Ok(result) => result.as_ref().and_then(|adjudication| {
-                crate::memory::render_persona_priority_block(adjudication, 420)
-            }),
-            Err(error) => {
-                log::warn!("[agent_persona_priority] failed: {}", error);
-                None
+        let fallback =
+            crate::memory::render_persistent_persona_priority_block(persona_priority_runtime, 420);
+        if crate::memory::should_run_persona_priority_adjudication(persona_priority_runtime) {
+            match crate::memory::run_persona_priority_adjudication(
+                &mut tool_ctx,
+                worker_llm,
+                PersonaPriorityAdjudicationInput {
+                    chat_id: &msg.chat_id,
+                    current_channel: &msg.channel,
+                    user_content: &msg.content,
+                    pressure: runtime.pressure,
+                    now_secs: runtime.now_secs,
+                },
+                PersonaPriorityGrounding {
+                    self_authored_core_text: prompt_memory.self_authored_core_text.as_deref(),
+                    world_snapshot_text: prompt_memory.world_snapshot_text.as_deref(),
+                    world_sense_text: prompt_memory.world_sense_text.as_deref(),
+                    self_state_text: prompt_memory.self_state_text.as_deref(),
+                    self_model_text: prompt_memory.self_model_text.as_deref(),
+                    self_continuity_text: prompt_memory.self_continuity_text.as_deref(),
+                    outer_voice_text: prompt_memory.outer_voice_text.as_deref(),
+                    autonomy_strategy_text: prompt_memory.autonomy_strategy_text.as_deref(),
+                    execution_state_text: prompt_memory.execution_state_text.as_deref(),
+                    mental_privacy_text: prompt_memory.mental_privacy_text.as_deref(),
+                    disclosure_adjudication: mental_privacy_adjudication.as_ref(),
+                },
+            ) {
+                Ok(result) => result
+                    .as_ref()
+                    .and_then(|adjudication| {
+                        crate::memory::render_persona_priority_block(adjudication, 420)
+                    })
+                    .or(fallback),
+                Err(error) => {
+                    log::warn!("[agent_persona_priority] failed: {}", error);
+                    fallback
+                }
             }
+        } else {
+            fallback
         }
     } else {
         None
@@ -4336,11 +4353,6 @@ mod tests {
     fn run_worker_path_suppresses_final_reply_after_message_tool_primary_delivery() {
         let llm = SequenceStubLlm {
             responses: Mutex::new(vec![
-                LlmResponse {
-                    content: r#"{"stance_summary":"keep the reply direct","response_mode":"direct_help","task_scope":"full","initiative_posture":"lead","relationship_posture":"neutral and steady","resource_posture":"normal resources","response_guidance":"let the tool delivery stand as the main reply","rationale":"tool primary delivery already satisfied the turn"}"#.to_string(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                },
                 LlmResponse {
                     content: "[tool_use]".to_string(),
                     stop_reason: StopReason::ToolUse,

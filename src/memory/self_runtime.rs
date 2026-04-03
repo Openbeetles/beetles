@@ -608,29 +608,28 @@ fn detect_boundary_flush_signal(
     SelfRuntimeBoundarySignal { reasons }
 }
 
-fn build_persona_distillation_snapshot(
-    state: &LoadedSelfRuntimeState,
-    prelude: &SelfRuntimeRefreshPrelude,
+#[allow(clippy::too_many_arguments)]
+fn build_persona_distillation_snapshot_from_layers(
+    private_docs: Option<&crate::memory::PrivateDocWorkspace>,
+    private_garden_docs: &[crate::memory::PrivateGardenDocRecord],
+    inner_life: Option<&crate::memory::InnerLife>,
+    self_model: Option<&crate::memory::SelfModel>,
+    self_continuity: Option<&crate::memory::SelfContinuity>,
+    outer_voice: Option<&crate::memory::OuterVoice>,
+    mental_privacy_state: Option<&crate::memory::MentalPrivacyState>,
+    world_sense: Option<&crate::memory::WorldSense>,
+    autonomy_strategy: Option<&crate::memory::AutonomyStrategy>,
 ) -> PersonaDistillationSnapshot {
-    let private_docs_at = state
-        .private_docs
-        .as_ref()
-        .map(|docs| docs.updated_at)
-        .unwrap_or(0);
-    let private_garden_at = state
-        .private_garden_docs
+    let private_docs_at = private_docs.map(|docs| docs.updated_at).unwrap_or(0);
+    let private_garden_at = private_garden_docs
         .iter()
         .map(|doc| doc.updated_at)
         .max()
         .unwrap_or(0);
-    let inner_life_at = state
-        .inner_life
-        .as_ref()
+    let inner_life_at = inner_life
         .map(|inner_life| inner_life.updated_at)
         .unwrap_or(0);
-    let boundary_state_at = state
-        .mental_privacy_state
-        .as_ref()
+    let boundary_state_at = mental_privacy_state
         .map(|mental_privacy| {
             mental_privacy
                 .updated_at
@@ -638,53 +637,28 @@ fn build_persona_distillation_snapshot(
                 .max(mental_privacy.relational_state.updated_at)
         })
         .unwrap_or(0);
-    let world_sense_at = prelude
-        .refreshed_world_sense
-        .as_ref()
+    let world_sense_at = world_sense
         .map(|world_sense| world_sense.updated_at)
-        .unwrap_or_else(|| {
-            state
-                .world_sense
-                .as_ref()
-                .map(|world_sense| world_sense.updated_at)
-                .unwrap_or(0)
-        });
-    let autonomy_strategy_at = prelude
-        .refreshed_autonomy_strategy
-        .as_ref()
+        .unwrap_or(0);
+    let autonomy_strategy_at = autonomy_strategy
         .map(|strategy| strategy.updated_at)
-        .unwrap_or_else(|| {
-            state
-                .autonomy_strategy
-                .as_ref()
-                .map(|strategy| strategy.updated_at)
-                .unwrap_or(0)
-        });
+        .unwrap_or(0);
     PersonaDistillationSnapshot {
         private_material_at: inner_life_at.max(private_docs_at).max(private_garden_at),
         boundary_state_at,
         world_context_at: world_sense_at.max(autonomy_strategy_at),
         world_sense_at,
         autonomy_strategy_at,
-        self_model_at: state
-            .self_model
-            .as_ref()
-            .map(|model| model.updated_at)
-            .unwrap_or(0),
-        self_continuity_at: state
-            .self_continuity
-            .as_ref()
+        self_model_at: self_model.map(|model| model.updated_at).unwrap_or(0),
+        self_continuity_at: self_continuity
             .map(|continuity| continuity.updated_at)
             .unwrap_or(0),
-        outer_voice_at: state
-            .outer_voice
-            .as_ref()
+        outer_voice_at: outer_voice
             .map(|outer_voice| outer_voice.updated_at)
             .unwrap_or(0),
-        has_inner_life: state.inner_life.is_some(),
-        has_world_sense: prelude.refreshed_world_sense.is_some() || state.world_sense.is_some(),
-        has_autonomy_strategy: prelude.refreshed_autonomy_strategy.is_some()
-            || state.autonomy_strategy.is_some(),
+        has_inner_life: inner_life.is_some(),
+        has_world_sense: world_sense.is_some(),
+        has_autonomy_strategy: autonomy_strategy.is_some(),
     }
 }
 
@@ -722,8 +696,7 @@ fn execute_self_runtime_actions(
         },
     );
     let factual_snapshot = governance.factual_plane_snapshot;
-    let distillation_snapshot = build_persona_distillation_snapshot(state, prelude);
-    let decision = match decide_self_runtime(
+    let mut decision = match decide_self_runtime(
         http,
         llm,
         ctx.session_store,
@@ -749,17 +722,14 @@ fn execute_self_runtime_actions(
         &factual_snapshot,
         &boundary_signal,
     ) {
-        Ok(decision) => Some(normalize_self_runtime_decision(
+        Ok(decision) => Some(normalize_initial_self_runtime_decision(
             decision,
             payload.trigger,
             prelude.refreshed_autonomy_strategy.as_ref(),
             &prelude.runtime_self_state,
-            &distillation_snapshot,
             state.self_model.is_some(),
             state.private_docs.is_some(),
             !state.private_garden_docs.is_empty(),
-            state.inner_life.is_some(),
-            state.self_continuity.is_some(),
             state.outer_voice.is_some(),
             state.mental_privacy_state.is_some(),
             &factual_snapshot,
@@ -778,6 +748,13 @@ fn execute_self_runtime_actions(
             };
         }
     };
+    let mut refreshed_inner_life = state.inner_life.clone();
+    let mut refreshed_private_docs = state.private_docs.clone();
+    let mut refreshed_private_garden_docs = state.private_garden_docs.clone();
+    let mut refreshed_self_model = state.self_model.clone();
+    let mut refreshed_self_continuity = state.self_continuity.clone();
+    let mut refreshed_mental_privacy = state.mental_privacy_state.clone();
+    let refreshed_outer_voice = state.outer_voice.clone();
     let decision_ref = decision.as_ref();
     let inner_life_result = if decision_ref.is_some_and(|d| d.refresh_inner_life) {
         run_inner_life_refresh_with_state(
@@ -816,12 +793,12 @@ fn execute_self_runtime_actions(
     } else {
         Ok(InnerLifeRefreshOutcome::Skipped)
     };
-    let refreshed_inner_life = ctx
+    refreshed_inner_life = ctx
         .inner_life_store
         .get(chat_id)
         .ok()
         .flatten()
-        .or(state.inner_life.clone());
+        .or(refreshed_inner_life);
     let private_doc_result = if decision_ref.is_some_and(|d| d.refresh_private_docs) {
         run_private_doc_workspace_refresh_with_state(
             http,
@@ -845,17 +822,17 @@ fn execute_self_runtime_actions(
                 now_secs: payload.now_secs,
             },
             profile,
-            state.private_docs.clone(),
+            refreshed_private_docs.clone(),
             state.summary_text.as_deref(),
             state.execution_state.as_ref(),
-            state.self_model.as_ref(),
-            &state.private_garden_docs,
+            refreshed_self_model.as_ref(),
+            &refreshed_private_garden_docs,
             decision_ref.and_then(|d| {
                 (!d.private_docs_intent.trim().is_empty()).then_some(d.private_docs_intent.as_str())
             }),
             &[],
             prelude.refreshed_autonomy_strategy.as_ref(),
-            state.self_continuity.as_ref(),
+            refreshed_self_continuity.as_ref(),
             refreshed_inner_life.as_ref(),
             prelude.refreshed_world_sense.as_ref(),
             Some(true),
@@ -864,12 +841,12 @@ fn execute_self_runtime_actions(
     } else {
         Ok(PrivateDocWorkspaceRefreshOutcome::Skipped)
     };
-    let refreshed_private_docs = ctx
+    refreshed_private_docs = ctx
         .private_doc_store
         .get(chat_id)
         .ok()
         .flatten()
-        .or(state.private_docs.clone());
+        .or(refreshed_private_docs);
     let private_garden_result = if decision_ref.is_some_and(|d| d.refresh_private_garden) {
         run_private_garden_governance_with_state(
             http,
@@ -895,7 +872,7 @@ fn execute_self_runtime_actions(
             profile,
             state.summary_text.as_deref(),
             state.execution_state.as_ref(),
-            state.self_model.as_ref(),
+            refreshed_self_model.as_ref(),
             refreshed_private_docs.as_ref(),
             prelude.refreshed_autonomy_strategy.as_ref(),
             decision_ref.and_then(|d| {
@@ -909,10 +886,23 @@ fn execute_self_runtime_actions(
     } else {
         Ok(PrivateGardenGovernanceOutcome::Skipped)
     };
-    let refreshed_private_garden_docs = ctx
+    refreshed_private_garden_docs = ctx
         .private_garden_store
         .list(chat_id, usize::MAX)
-        .unwrap_or_else(|_| state.private_garden_docs.clone());
+        .unwrap_or(refreshed_private_garden_docs);
+    re_finalize_staged_self_runtime_decision(
+        &mut decision,
+        state,
+        prelude,
+        refreshed_private_docs.as_ref(),
+        &refreshed_private_garden_docs,
+        refreshed_inner_life.as_ref(),
+        refreshed_self_model.as_ref(),
+        refreshed_self_continuity.as_ref(),
+        refreshed_outer_voice.as_ref(),
+        refreshed_mental_privacy.as_ref(),
+    );
+    let decision_ref = decision.as_ref();
     let self_model_result = if decision_ref.is_some_and(|d| d.refresh_self_model) {
         run_self_model_refresh_with_state(
             http,
@@ -935,7 +925,7 @@ fn execute_self_runtime_actions(
                 now_secs: payload.now_secs,
             },
             profile,
-            state.self_model.clone(),
+            refreshed_self_model.clone(),
             state.summary_text.as_deref(),
             state.execution_state.as_ref(),
             refreshed_private_docs.as_ref(),
@@ -952,12 +942,25 @@ fn execute_self_runtime_actions(
     } else {
         Ok(SelfModelRefreshOutcome::Skipped)
     };
-    let refreshed_self_model = ctx
+    refreshed_self_model = ctx
         .self_model_store
         .get(chat_id)
         .ok()
         .flatten()
-        .or(state.self_model.clone());
+        .or(refreshed_self_model);
+    re_finalize_staged_self_runtime_decision(
+        &mut decision,
+        state,
+        prelude,
+        refreshed_private_docs.as_ref(),
+        &refreshed_private_garden_docs,
+        refreshed_inner_life.as_ref(),
+        refreshed_self_model.as_ref(),
+        refreshed_self_continuity.as_ref(),
+        refreshed_outer_voice.as_ref(),
+        refreshed_mental_privacy.as_ref(),
+    );
+    let decision_ref = decision.as_ref();
     let self_continuity_result = if decision_ref.is_some_and(|d| d.refresh_self_continuity) {
         run_self_continuity_refresh_with_state(
             http,
@@ -1001,12 +1004,25 @@ fn execute_self_runtime_actions(
     } else {
         Ok(SelfContinuityRefreshOutcome::Skipped)
     };
-    let refreshed_self_continuity = ctx
+    refreshed_self_continuity = ctx
         .self_continuity_store
         .get(chat_id)
         .ok()
         .flatten()
-        .or(state.self_continuity.clone());
+        .or(refreshed_self_continuity);
+    re_finalize_staged_self_runtime_decision(
+        &mut decision,
+        state,
+        prelude,
+        refreshed_private_docs.as_ref(),
+        &refreshed_private_garden_docs,
+        refreshed_inner_life.as_ref(),
+        refreshed_self_model.as_ref(),
+        refreshed_self_continuity.as_ref(),
+        refreshed_outer_voice.as_ref(),
+        refreshed_mental_privacy.as_ref(),
+    );
+    let decision_ref = decision.as_ref();
     let boundary_persona_result = if decision_ref.is_some_and(|d| d.refresh_boundary_persona) {
         let trigger = match payload.trigger {
             SelfRuntimeTrigger::PostReply => "post_reply",
@@ -1032,11 +1048,7 @@ fn execute_self_runtime_actions(
                 reply_content: &payload.reply_content,
                 now_secs: payload.now_secs,
             },
-            ctx.mental_privacy_store
-                .get(chat_id)
-                .ok()
-                .flatten()
-                .or(state.mental_privacy_state.clone()),
+            refreshed_mental_privacy.clone(),
             refreshed_self_model.as_ref(),
             refreshed_self_continuity.as_ref(),
             state.recent.as_slice(),
@@ -1045,12 +1057,25 @@ fn execute_self_runtime_actions(
     } else {
         Ok(BoundaryPersonaRefreshOutcome::Skipped)
     };
-    let refreshed_mental_privacy = ctx
+    refreshed_mental_privacy = ctx
         .mental_privacy_store
         .get(chat_id)
         .ok()
         .flatten()
-        .or(state.mental_privacy_state.clone());
+        .or(refreshed_mental_privacy);
+    re_finalize_staged_self_runtime_decision(
+        &mut decision,
+        state,
+        prelude,
+        refreshed_private_docs.as_ref(),
+        &refreshed_private_garden_docs,
+        refreshed_inner_life.as_ref(),
+        refreshed_self_model.as_ref(),
+        refreshed_self_continuity.as_ref(),
+        refreshed_outer_voice.as_ref(),
+        refreshed_mental_privacy.as_ref(),
+    );
+    let decision_ref = decision.as_ref();
     let outer_voice_result = if decision_ref.is_some_and(|d| d.refresh_outer_voice) {
         run_outer_voice_refresh_with_state(
             http,
@@ -1069,7 +1094,7 @@ fn execute_self_runtime_actions(
                 now_secs: payload.now_secs,
             },
             profile,
-            state.outer_voice.clone(),
+            refreshed_outer_voice.clone(),
             state.summary_text.as_deref(),
             state.execution_state.as_ref(),
             refreshed_self_model.as_ref(),
@@ -1103,6 +1128,52 @@ fn execute_self_runtime_actions(
         boundary_persona_result,
         outer_voice_result,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn re_finalize_staged_self_runtime_decision(
+    decision: &mut Option<SelfRuntimeDecision>,
+    state: &LoadedSelfRuntimeState,
+    prelude: &SelfRuntimeRefreshPrelude,
+    refreshed_private_docs: Option<&crate::memory::PrivateDocWorkspace>,
+    refreshed_private_garden_docs: &[crate::memory::PrivateGardenDocRecord],
+    refreshed_inner_life: Option<&crate::memory::InnerLife>,
+    refreshed_self_model: Option<&crate::memory::SelfModel>,
+    refreshed_self_continuity: Option<&crate::memory::SelfContinuity>,
+    refreshed_outer_voice: Option<&crate::memory::OuterVoice>,
+    refreshed_mental_privacy: Option<&crate::memory::MentalPrivacyState>,
+) {
+    let Some(existing_decision) = decision.take() else {
+        return;
+    };
+    let snapshot = build_persona_distillation_snapshot_from_layers(
+        refreshed_private_docs,
+        refreshed_private_garden_docs,
+        refreshed_inner_life,
+        refreshed_self_model,
+        refreshed_self_continuity,
+        refreshed_outer_voice,
+        refreshed_mental_privacy,
+        prelude
+            .refreshed_world_sense
+            .as_ref()
+            .or(state.world_sense.as_ref()),
+        prelude
+            .refreshed_autonomy_strategy
+            .as_ref()
+            .or(state.autonomy_strategy.as_ref()),
+    );
+    *decision = Some(finalize_self_runtime_decision(
+        existing_decision,
+        &snapshot,
+        refreshed_private_docs.is_some(),
+        !refreshed_private_garden_docs.is_empty(),
+        refreshed_inner_life.is_some(),
+        refreshed_self_model.is_some(),
+        refreshed_self_continuity.is_some(),
+        refreshed_outer_voice.is_some(),
+        refreshed_mental_privacy.is_some(),
+    ));
 }
 
 pub fn enqueue_self_runtime_post_reply(
@@ -1311,8 +1382,9 @@ pub fn run_self_runtime(
     }
 }
 
+#[cfg(test)]
 fn normalize_self_runtime_decision(
-    mut decision: SelfRuntimeDecision,
+    decision: SelfRuntimeDecision,
     trigger: SelfRuntimeTrigger,
     autonomy_strategy: Option<&crate::memory::AutonomyStrategy>,
     self_state: &SelfState,
@@ -1322,6 +1394,45 @@ fn normalize_self_runtime_decision(
     has_private_garden_docs: bool,
     has_inner_life: bool,
     has_self_continuity: bool,
+    has_outer_voice: bool,
+    has_mental_privacy: bool,
+    factual_snapshot: &SharedFactualPlaneSnapshot,
+    boundary_signal: &SelfRuntimeBoundarySignal,
+) -> SelfRuntimeDecision {
+    let decision = normalize_initial_self_runtime_decision(
+        decision,
+        trigger,
+        autonomy_strategy,
+        self_state,
+        has_self_model,
+        has_private_docs,
+        has_private_garden_docs,
+        has_outer_voice,
+        has_mental_privacy,
+        factual_snapshot,
+        boundary_signal,
+    );
+    finalize_self_runtime_decision(
+        decision,
+        distillation_snapshot,
+        has_private_docs,
+        has_private_garden_docs,
+        has_inner_life,
+        has_self_model,
+        has_self_continuity,
+        has_outer_voice,
+        has_mental_privacy,
+    )
+}
+
+fn normalize_initial_self_runtime_decision(
+    mut decision: SelfRuntimeDecision,
+    trigger: SelfRuntimeTrigger,
+    autonomy_strategy: Option<&crate::memory::AutonomyStrategy>,
+    self_state: &SelfState,
+    has_self_model: bool,
+    has_private_docs: bool,
+    has_private_garden_docs: bool,
     has_outer_voice: bool,
     has_mental_privacy: bool,
     factual_snapshot: &SharedFactualPlaneSnapshot,
@@ -1338,29 +1449,6 @@ fn normalize_self_runtime_decision(
             has_private_garden_docs,
             has_outer_voice,
             has_mental_privacy,
-        );
-        normalize_persona_distillation_lag(
-            &mut decision,
-            distillation_snapshot,
-            has_private_docs,
-            has_private_garden_docs,
-            has_inner_life,
-            has_self_model,
-            has_self_continuity,
-            has_outer_voice,
-            has_mental_privacy,
-        );
-        normalize_runtime_distillation_decisions(
-            &mut decision,
-            has_private_docs,
-            has_private_garden_docs,
-            has_inner_life,
-            has_self_model,
-            has_self_continuity,
-            has_outer_voice,
-            has_mental_privacy,
-            distillation_snapshot.has_world_sense,
-            distillation_snapshot.has_autonomy_strategy,
         );
         return decision;
     };
@@ -1396,6 +1484,21 @@ fn normalize_self_runtime_decision(
         has_outer_voice,
         has_mental_privacy,
     );
+    decision
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finalize_self_runtime_decision(
+    mut decision: SelfRuntimeDecision,
+    distillation_snapshot: &PersonaDistillationSnapshot,
+    has_private_docs: bool,
+    has_private_garden_docs: bool,
+    has_inner_life: bool,
+    has_self_model: bool,
+    has_self_continuity: bool,
+    has_outer_voice: bool,
+    has_mental_privacy: bool,
+) -> SelfRuntimeDecision {
     normalize_persona_distillation_lag(
         &mut decision,
         distillation_snapshot,

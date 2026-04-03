@@ -159,8 +159,10 @@ pub use outer_voice::{
     OuterVoiceRefreshOutcome, OUTER_VOICE_SYSTEM_PROMPT, OUTER_VOICE_TOTAL_CHAR_LIMIT,
 };
 pub use persona_priority::{
-    render_persona_priority_block, run_persona_priority_adjudication, PersonaPriorityAdjudication,
-    PersonaPriorityAdjudicationInput, PersonaPriorityGrounding, PERSONA_PRIORITY_SYSTEM_PROMPT,
+    render_persistent_persona_priority_block, render_persona_priority_block,
+    run_persona_priority_adjudication, should_run_persona_priority_adjudication,
+    PersonaPriorityAdjudication, PersonaPriorityAdjudicationInput, PersonaPriorityGrounding,
+    PersonaPriorityRuntimeState, PERSONA_PRIORITY_SYSTEM_PROMPT,
 };
 pub use persona_regression::{
     run_persona_continuity_case, run_persona_continuity_suite, PersonaContinuityCase,
