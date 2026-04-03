@@ -38,6 +38,8 @@ done
 PATTERN1='use\s+crate::platform::(spiffs|heap|hardware_drivers)'
 PATTERN2='use\s+crate::platform::\*'
 PATTERN3='esp_idf_svc::'
+PATTERN4='crate::platform::is_wifi_sta_connected\s*\('
+PATTERN5='crate::platform::wifi::wifi_sta_ip\s*\('
 
 if rg -q "$PATTERN1" "${EXISTING_DIRS[@]}"; then
   echo "FAIL: forbidden direct use of platform implementation modules (spiffs|heap|hardware_drivers):" >&2
@@ -48,6 +50,18 @@ fi
 if rg -q "$PATTERN2" "${EXISTING_DIRS[@]}"; then
   echo "FAIL: forbidden use crate::platform::*" >&2
   rg "$PATTERN2" "${EXISTING_DIRS[@]}" >&2
+  exit 1
+fi
+
+if rg -q "$PATTERN4" "${EXISTING_DIRS[@]}"; then
+  echo "FAIL: forbidden direct WiFi status reads from platform helper in business domains" >&2
+  rg "$PATTERN4" "${EXISTING_DIRS[@]}" >&2
+  exit 1
+fi
+
+if rg -q "$PATTERN5" "${EXISTING_DIRS[@]}"; then
+  echo "FAIL: forbidden direct WiFi IP reads from platform helper in business domains" >&2
+  rg "$PATTERN5" "${EXISTING_DIRS[@]}" >&2
   exit 1
 fi
 

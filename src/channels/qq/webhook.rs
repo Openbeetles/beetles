@@ -1,6 +1,6 @@
 //! QQ 入站 HTTP 回调：op=13 验址、op=0 Ed25519 验签，支持 AT_MESSAGE_CREATE / GROUP_AT_MESSAGE_CREATE / C2C_MESSAGE_CREATE 入队。
 
-use super::send::{sign_qq_url_verify, verify_qq_signature, QqMsgIdCache};
+use super::send::{cache_msg_id, sign_qq_url_verify, verify_qq_signature, QqMsgIdCache};
 use crate::bus::{InboundTx, PcMsg};
 use crate::error::{Error, Result};
 
@@ -125,17 +125,7 @@ pub fn handle_webhook(
             };
             if let (Some(id), Some(ch), Some(content)) = (msg_id, chat_id, content) {
                 if !ch.is_empty() && !content.is_empty() {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    {
-                        let mut cache = msg_id_cache.lock().map_err(|e| Error::Other {
-                            source: Box::new(std::io::Error::other(e.to_string())),
-                            stage: "qq_msg_id_cache_lock",
-                        })?;
-                        cache.insert(ch.clone(), (id, now));
-                    }
+                    cache_msg_id(&msg_id_cache, &ch, &id)?;
                     let msg = PcMsg::new("qq_channel", ch, content)?;
                     inbound_tx.send(msg).map_err(|e| Error::Other {
                         source: Box::new(e),

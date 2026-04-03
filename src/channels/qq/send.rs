@@ -12,6 +12,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use hex;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 单条消息最大字符数，与现有通道对齐。
 const QQ_MAX_MESSAGE_LEN: usize = 4096;
@@ -81,6 +82,60 @@ pub type QqMsgIdCache = Arc<Mutex<HashMap<String, (String, u64)>>>;
 
 /// msg_id 缓存最大条目数。
 const QQ_MSG_ID_CACHE_MAX: usize = 64;
+
+fn qq_now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn prune_msg_id_cache_locked(cache: &mut HashMap<String, (String, u64)>, now: u64) {
+    cache.retain(|_, (_, ts)| now.saturating_sub(*ts) <= QQ_MSG_ID_TTL_SECS);
+}
+
+fn evict_oldest_msg_id_entries_locked(cache: &mut HashMap<String, (String, u64)>) {
+    while cache.len() > QQ_MSG_ID_CACHE_MAX {
+        let Some(oldest_key) = cache
+            .iter()
+            .min_by_key(|(_, (_, ts))| *ts)
+            .map(|(chat_id, _)| chat_id.clone())
+        else {
+            break;
+        };
+        cache.remove(&oldest_key);
+    }
+}
+
+fn insert_msg_id_locked(
+    cache: &mut HashMap<String, (String, u64)>,
+    chat_id: &str,
+    msg_id: &str,
+    now: u64,
+) {
+    prune_msg_id_cache_locked(cache, now);
+    cache.insert(chat_id.to_string(), (msg_id.to_string(), now));
+    evict_oldest_msg_id_entries_locked(cache);
+}
+
+fn pop_msg_id_locked(
+    cache: &mut HashMap<String, (String, u64)>,
+    chat_id: &str,
+    now: u64,
+) -> Option<String> {
+    prune_msg_id_cache_locked(cache, now);
+    cache.remove(chat_id).map(|(msg_id, _)| msg_id)
+}
+
+pub fn cache_msg_id(cache: &QqMsgIdCache, chat_id: &str, msg_id: &str) -> crate::error::Result<()> {
+    let now = qq_now_unix_secs();
+    let mut guard = cache.lock().map_err(|e| crate::error::Error::Other {
+        source: Box::new(std::io::Error::other(e.to_string())),
+        stage: "qq_msg_id_cache_lock",
+    })?;
+    insert_msg_id_locked(&mut guard, chat_id, msg_id, now);
+    Ok(())
+}
 
 pub const QQ_GET_APP_ACCESS_TOKEN_URL: &str = "https://bots.qq.com/app/getAppAccessToken";
 const QQ_MESSAGES_BASE: &str = "https://api.sgroup.qq.com/channels";
@@ -370,26 +425,11 @@ fn send_one_qq<H: ChannelHttpClient>(
 }
 
 fn pop_msg_id(cache: &QqMsgIdCache, chat_id: &str) -> Option<String> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    cache.lock().ok().and_then(|mut c| {
-        // Evict expired entries to prevent unbounded growth.
-        if c.len() > QQ_MSG_ID_CACHE_MAX / 2 {
-            c.retain(|_, (_, ts)| now.saturating_sub(*ts) <= QQ_MSG_ID_TTL_SECS);
-        }
-        let entry = c.get(chat_id).map(|(id, ts)| (id.clone(), *ts));
-        if let Some((id_clone, ts)) = entry {
-            if now.saturating_sub(ts) <= QQ_MSG_ID_TTL_SECS {
-                c.remove(chat_id);
-                return Some(id_clone);
-            }
-            // Expired — remove stale entry.
-            c.remove(chat_id);
-        }
-        None
-    })
+    let now = qq_now_unix_secs();
+    cache
+        .lock()
+        .ok()
+        .and_then(|mut c| pop_msg_id_locked(&mut c, chat_id, now))
 }
 
 /// 从 rx 取出待发送（一次性 drain）。
@@ -627,5 +667,50 @@ pub fn run_qq_sender_loop<H, F>(
                 &mut create_http,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn msg_id_cache_enforces_hard_cap_on_insert() {
+        let mut cache = HashMap::new();
+        let base = 10_000_u64;
+        for idx in 0..QQ_MSG_ID_CACHE_MAX {
+            insert_msg_id_locked(
+                &mut cache,
+                &format!("chat-{idx}"),
+                &format!("msg-{idx}"),
+                base + idx as u64,
+            );
+        }
+
+        insert_msg_id_locked(
+            &mut cache,
+            "chat-new",
+            "msg-new",
+            base + QQ_MSG_ID_CACHE_MAX as u64 + 1,
+        );
+
+        assert_eq!(cache.len(), QQ_MSG_ID_CACHE_MAX);
+        assert!(!cache.contains_key("chat-0"));
+        assert!(cache.contains_key("chat-1"));
+        assert!(cache.contains_key("chat-new"));
+    }
+
+    #[test]
+    fn msg_id_cache_prunes_expired_entries_before_pop() {
+        let mut cache = HashMap::new();
+        insert_msg_id_locked(&mut cache, "fresh", "msg-fresh", 100);
+        insert_msg_id_locked(&mut cache, "expired", "msg-expired", 100);
+
+        let got = pop_msg_id_locked(&mut cache, "fresh", 100 + QQ_MSG_ID_TTL_SECS - 1);
+        assert_eq!(got.as_deref(), Some("msg-fresh"));
+
+        let expired = pop_msg_id_locked(&mut cache, "expired", 100 + QQ_MSG_ID_TTL_SECS + 1);
+        assert_eq!(expired, None);
+        assert!(!cache.contains_key("expired"));
     }
 }

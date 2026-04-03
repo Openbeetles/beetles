@@ -18,7 +18,7 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let skills_count = crate::skills::list_skill_names(ctx.skill_storage.as_ref()).len();
     let last_errors_count = state::get_last_errors_count();
     let results = crate::doctor::diagnose(
-        crate::platform::is_wifi_sta_connected(),
+        crate::state::wifi_sta_connected(),
         inc_val,
         out_val,
         last_error,

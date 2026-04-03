@@ -67,10 +67,13 @@ struct CallbackState {
 }
 
 fn defer_callback_state_release(state: Box<CallbackState>) {
-    crate::runtime::schedule_delayed_task(
+    if let Err(task) = crate::runtime::schedule_critical_delayed_task(
         Instant::now() + Duration::from_millis(CALLBACK_STATE_RECLAIM_DELAY_MS),
         Box::new(move || drop(state)),
-    );
+    ) {
+        std::mem::forget(task);
+        log::error!("[wss] critical delayed release queue full; callback state retained");
+    }
 }
 
 /// ESP 上的 WSS 连接。

@@ -96,7 +96,7 @@ pub fn run_command(ctx: &CliContext, line: &str) -> String {
 }
 
 fn cmd_wifi_status(_ctx: &CliContext) -> String {
-    let status = if crate::platform::is_wifi_sta_connected() {
+    let status = if crate::state::wifi_sta_connected() {
         "yes"
     } else {
         "no"
@@ -214,7 +214,7 @@ fn cmd_config_reset(ctx: &CliContext, args: Vec<&str>) -> String {
 }
 
 fn cmd_health(ctx: &CliContext) -> String {
-    let wifi = if crate::platform::is_wifi_sta_connected() {
+    let wifi = if crate::state::wifi_sta_connected() {
         "connected"
     } else {
         "disconnected"
@@ -229,7 +229,7 @@ fn cmd_health(ctx: &CliContext) -> String {
         .as_ref()
         .map(|a| a.load(Ordering::Relaxed).to_string())
         .unwrap_or_else(|| "N/A".into());
-    let last_err = state::get_last_error().unwrap_or_else(|| "none".into());
+    let last_err = state::get_current_error().unwrap_or_else(|| "none".into());
     let thread_snapshot = crate::runtime::thread_registry::snapshot();
     let metrics = crate::metrics::snapshot();
     format!(

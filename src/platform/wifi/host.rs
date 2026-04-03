@@ -3,26 +3,17 @@
 
 use crate::config::AppConfig;
 use crate::error::{Error, Result};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
 
 const TAG: &str = "platform::wifi";
 
-static WIFI_STA_CONNECTED: AtomicBool = AtomicBool::new(false);
-static WIFI_STA_IP: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-
 /// 其他线程查询 WiFi STA 是否就绪（已连接且有 IP）。
 pub fn is_wifi_sta_connected() -> bool {
-    WIFI_STA_CONNECTED.load(Ordering::Relaxed)
+    crate::state::wifi_sta_connected()
 }
 
 /// 读取当前 STA IPv4（点分十进制），无可用地址时返回 None。
 pub fn wifi_sta_ip() -> Option<String> {
-    WIFI_STA_IP
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .ok()
-        .and_then(|g| g.clone())
+    crate::state::wifi_sta_ip()
 }
 
 /// 阻塞直到出站网络就绪；host 立即返回。
@@ -55,6 +46,7 @@ impl WifiScan for WifiScanHandle {
 
 /// 无 SoftAP/STA；返回 `Ok(None)`。
 pub fn connect(_config: &AppConfig) -> Result<Option<WifiScanHandle>> {
+    crate::state::clear_wifi_sta_state();
     log::info!("[{}] connect: no-op on host", TAG);
     Ok(None)
 }

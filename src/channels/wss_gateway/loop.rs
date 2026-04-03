@@ -26,7 +26,7 @@ const WIFI_WAIT_MAX_SECS: u64 = 60;
 /// 阻塞等待 WiFi STA 就绪，每 2s 轮询，最多 `WIFI_WAIT_MAX_SECS`。返回 true 表示已就绪，false 表示超时仍继续尝试。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn wait_for_wifi(tag: &str) -> bool {
-    if crate::platform::is_wifi_sta_connected() {
+    if crate::state::wifi_sta_connected() {
         return true;
     }
     log::info!(
@@ -38,7 +38,7 @@ fn wait_for_wifi(tag: &str) -> bool {
     while Instant::now() < deadline {
         crate::platform::task_wdt::feed_current_task();
         std::thread::sleep(Duration::from_secs(2));
-        if crate::platform::is_wifi_sta_connected() {
+        if crate::state::wifi_sta_connected() {
             log::info!("[{}] WiFi STA ready", tag);
             return true;
         }

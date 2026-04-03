@@ -760,10 +760,15 @@ fn spawn_waiting_notice(
         waiting_notice,
         shared: Arc::downgrade(&shared),
     };
-    crate::runtime::schedule_delayed_task(
+    if !crate::runtime::schedule_delayed_task(
         job.due_at,
         Box::new(move || fire_waiting_notice_job(job)),
-    );
+    ) {
+        shared
+            .waiting_notice_canceled
+            .store(true, Ordering::Relaxed);
+        log::warn!("[agent_delivery] waiting notice skipped: delayed task queue full");
+    }
     shared
 }
 
@@ -880,8 +885,16 @@ mod tests {
         crate::runtime::delayed_task::reset_delayed_tasks_for_tests();
     }
 
+    fn delayed_task_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn queued_delivery_emits_distinct_updates_with_cap() {
+        let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
@@ -903,6 +916,7 @@ mod tests {
 
     #[test]
     fn queued_delivery_suppresses_model_partial_drafts() {
+        let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
@@ -915,6 +929,7 @@ mod tests {
 
     #[test]
     fn edit_delivery_finalizes_without_outbound_message() {
+        let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, _outbound_rx, _) = new_inbound_channel(4);
         let msg = build_msg("telegram");
@@ -955,6 +970,7 @@ mod tests {
 
     #[test]
     fn queued_delivery_primary_current_suppresses_followup_finalize() {
+        let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
@@ -980,6 +996,7 @@ mod tests {
 
     #[test]
     fn queued_delivery_accepts_current_supplemental_tool_intent() {
+        let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
@@ -1003,6 +1020,7 @@ mod tests {
 
     #[test]
     fn queued_delivery_suppresses_tool_intents_after_primary_close() {
+        let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
@@ -1038,6 +1056,7 @@ mod tests {
 
     #[test]
     fn queued_delivery_routes_explicit_tool_intent_through_runtime() {
+        let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
@@ -1066,6 +1085,7 @@ mod tests {
 
     #[test]
     fn edit_delivery_primary_current_reuses_edit_lane() {
+        let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, _outbound_rx, _) = new_inbound_channel(4);
         let msg = build_msg("telegram");
@@ -1100,6 +1120,7 @@ mod tests {
 
     #[test]
     fn queued_delivery_sends_waiting_notice_for_long_think() {
+        let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
@@ -1115,6 +1136,7 @@ mod tests {
 
     #[test]
     fn queued_delivery_finalize_cancels_waiting_notice() {
+        let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
@@ -1130,6 +1152,7 @@ mod tests {
 
     #[test]
     fn queued_delivery_drop_cancels_waiting_notice() {
+        let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
@@ -1145,6 +1168,7 @@ mod tests {
 
     #[test]
     fn waiting_notice_rechecks_cancel_after_claim() {
+        let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let shared = Arc::new(QueuedDeliveryShared {
             visible_updates_sent: AtomicU8::new(0),

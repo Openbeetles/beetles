@@ -88,10 +88,10 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let memory_loaded = ctx.memory_store.get_memory().is_ok();
     let soul_loaded = ctx.memory_store.get_soul().is_ok();
     let storage_ok = memory_loaded || soul_loaded;
-    let last_error = state::get_last_error();
+    let last_error = state::get_current_error();
     let inc = ctx.inbound_depth.load(Ordering::Relaxed);
     let out = ctx.outbound_depth.load(Ordering::Relaxed);
-    let sta_up = crate::platform::is_wifi_sta_connected();
+    let sta_up = crate::state::wifi_sta_connected();
     let loc = locale_from_store(ctx.config_store.as_ref());
     let system_status = if sta_up && storage_ok && last_error.is_none() && inc <= 6 && out <= 6 {
         tr(Message::SystemStatusOk, loc)

@@ -10,7 +10,9 @@ use crate::channels::ChannelHttpClient;
 use crate::error::{Error, Result};
 use crate::memory::PendingRetryStore;
 
-use super::send::{QqMsgIdCache, QqTokenRequest, QqTokenResponse, QQ_GET_APP_ACCESS_TOKEN_URL};
+use super::send::{
+    cache_msg_id, QqMsgIdCache, QqTokenRequest, QqTokenResponse, QQ_GET_APP_ACCESS_TOKEN_URL,
+};
 
 const TAG: &str = "qq_ws";
 const QQ_GATEWAY_URL: &str = "https://api.sgroup.qq.com/gateway";
@@ -183,12 +185,8 @@ impl QqWssDriver {
 
     /// 将 msg_id 存入缓存，供发送时被动回复使用。
     fn cache_msg_id(&self, chat_id: &str, msg_id: &str) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        if let Ok(mut cache) = self.msg_id_cache.lock() {
-            cache.insert(chat_id.to_string(), (msg_id.to_string(), now));
+        if let Err(e) = cache_msg_id(&self.msg_id_cache, chat_id, msg_id) {
+            log::warn!("[{}] cache_msg_id failed: {}", TAG, e);
         }
     }
 }

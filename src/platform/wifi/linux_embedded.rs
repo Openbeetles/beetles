@@ -12,7 +12,6 @@ use crate::platform::wifi::linux_ctrl::{
     hostapd, iw_scan, net, process, wpa,
 };
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -20,8 +19,6 @@ const TAG: &str = "platform::wifi_linux";
 const SOFTAP_SSID: &str = "Beetle";
 const SOFTAP_DEFAULT_CHANNEL: u8 = 1;
 
-static WIFI_STA_CONNECTED: AtomicBool = AtomicBool::new(false);
-static WIFI_STA_IP: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static WIFI_IFACE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 /// GET /api/wifi/scan 返回的单个 AP。
@@ -69,15 +66,11 @@ impl WifiScan for WifiScanHandle {
 }
 
 pub fn is_wifi_sta_connected() -> bool {
-    WIFI_STA_CONNECTED.load(Ordering::Relaxed)
+    crate::state::wifi_sta_connected()
 }
 
 pub fn wifi_sta_ip() -> Option<String> {
-    WIFI_STA_IP
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .ok()
-        .and_then(|g| g.clone())
+    crate::state::wifi_sta_ip()
 }
 
 /// Linux 启动后不阻塞全局启动流程；连接状态由后台与 API 查询。
@@ -491,35 +484,19 @@ fn probe_loop(iface: &str) {
     loop {
         let ip = net::read_sta_ip(iface).ok().flatten();
         match ip {
-            Some(v) => {
-                WIFI_STA_CONNECTED.store(true, Ordering::Relaxed);
-                if let Ok(mut g) = WIFI_STA_IP.get_or_init(|| Mutex::new(None)).lock() {
-                    *g = Some(v);
-                }
-            }
-            None => {
-                WIFI_STA_CONNECTED.store(false, Ordering::Relaxed);
-                if let Ok(mut g) = WIFI_STA_IP.get_or_init(|| Mutex::new(None)).lock() {
-                    *g = None;
-                }
-            }
+            Some(v) => crate::state::set_wifi_sta_state(true, Some(v)),
+            None => crate::state::clear_wifi_sta_state(),
         }
         std::thread::sleep(Duration::from_secs(WIFI_RETRY_BACKOFF_SECS[0]));
     }
 }
 
 fn set_sta_state(ip: Option<String>) {
-    if let Ok(mut g) = WIFI_STA_IP.get_or_init(|| Mutex::new(None)).lock() {
-        *g = ip.clone();
-    }
-    WIFI_STA_CONNECTED.store(ip.is_some(), Ordering::Relaxed);
+    crate::state::set_wifi_sta_state(ip.is_some(), ip);
 }
 
 fn clear_sta_state() {
-    WIFI_STA_CONNECTED.store(false, Ordering::Relaxed);
-    if let Ok(mut g) = WIFI_STA_IP.get_or_init(|| Mutex::new(None)).lock() {
-        *g = None;
-    }
+    crate::state::clear_wifi_sta_state();
 }
 
 fn set_iface(iface: &str) {

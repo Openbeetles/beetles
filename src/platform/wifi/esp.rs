@@ -14,38 +14,29 @@ use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::wifi::{BlockingWifi, EspWifi};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const TAG: &str = "platform::wifi";
 const SCAN_RESP_TIMEOUT: Duration = Duration::from_secs(WIFI_SCAN_TIMEOUT_SECS);
 const SCAN_RETRY: u32 = 3;
 const SCAN_RETRY_DELAY: Duration = Duration::from_millis(400);
-/// 扫描结果短期缓存，避免配置页连续刷新时重复打 WiFi 驱动。
-const SCAN_CACHE_TTL_MS: u64 = 10_000;
 /// STA 状态轮询间隔（毫秒）。
 const STA_POLL_INTERVAL_MS: u64 = 5_000;
 /// 发起 connect() 后的冷却期（毫秒）：给 WiFi 驱动足够时间完成 auth/assoc/DHCP，
 /// 冷却期内不再检查也不再发起 connect()，避免频繁重连干扰驱动状态机。
 const STA_RECONNECT_COOLDOWN_MS: u64 = 15_000;
-/// WiFi STA 是否已连接且获得 IP；由 WiFi 线程写入，WSS/HTTP 线程读取。
-static WIFI_STA_CONNECTED: AtomicBool = AtomicBool::new(false);
 /// 当前启动是否期望 STA 出站网络；纯 SoftAP 配网模式下为 false，避免全局等待卡死。
 static WIFI_STA_EXPECTED: AtomicBool = AtomicBool::new(false);
-static WIFI_STA_IP: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 /// 其他线程查询 WiFi STA 是否就绪（已连接且有 IP）。
 pub fn is_wifi_sta_connected() -> bool {
-    WIFI_STA_CONNECTED.load(Ordering::Relaxed)
+    crate::state::wifi_sta_connected()
 }
 
 /// 读取当前 STA IPv4（点分十进制），无可用地址时返回 None。
 pub fn wifi_sta_ip() -> Option<String> {
-    WIFI_STA_IP
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .ok()
-        .and_then(|g| g.clone())
+    crate::state::wifi_sta_ip()
 }
 
 /// 阻塞直到出站网络就绪（STA 已连接）；轮询 2s 并喂狗。仅 ESP 生效，host 立即返回。
@@ -100,7 +91,6 @@ enum ScanResponse {
 pub struct WifiScanHandle {
     req_tx: mpsc::Sender<()>,
     resp_rx: Arc<Mutex<mpsc::Receiver<ScanResponse>>>,
-    cache: Arc<Mutex<Option<(Instant, Vec<WifiApEntry>)>>>,
 }
 
 /// 向设备请求一次 WiFi 扫描的 trait；由 Platform::wifi_scan() 返回。
@@ -110,25 +100,13 @@ pub trait WifiScan: Send + Sync {
 
 impl WifiScan for WifiScanHandle {
     fn request_scan(&self) -> Result<Vec<WifiApEntry>> {
-        if let Ok(cache) = self.cache.lock() {
-            if let Some((cached_at, list)) = cache.as_ref() {
-                if cached_at.elapsed() < Duration::from_millis(SCAN_CACHE_TTL_MS) {
-                    return Ok(list.clone());
-                }
-            }
-        }
         let _ = self.req_tx.send(());
         let guard = self.resp_rx.lock().map_err(|e| Error::Other {
             source: Box::new(std::io::Error::other(e.to_string())),
             stage: "wifi_scan_lock",
         })?;
         match guard.recv_timeout(SCAN_RESP_TIMEOUT) {
-            Ok(ScanResponse::Ok(list)) => {
-                if let Ok(mut cache) = self.cache.lock() {
-                    *cache = Some((Instant::now(), list.clone()));
-                }
-                Ok(list)
-            }
+            Ok(ScanResponse::Ok(list)) => Ok(list),
             Ok(ScanResponse::Err(msg)) => Err(Error::config("wifi_scan", msg)),
             Err(mpsc::RecvTimeoutError::Timeout) => Err(Error::config("wifi_scan", "scan timeout")),
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(Error::Other {
@@ -173,7 +151,6 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
             Ok(Some(WifiScanHandle {
                 req_tx: scan_req_tx,
                 resp_rx: Arc::new(Mutex::new(scan_resp_rx)),
-                cache: Arc::new(Mutex::new(None)),
             }))
         }
         Ok(Err(e)) => Err(e),
@@ -282,16 +259,15 @@ fn poll_sta_link(wifi: &mut BlockingWifi<EspWifi>, cooldown_until: &mut Option<I
     let sta_link_up = sta_l2 || sta_ip_ok;
 
     if sta_ip_ok {
-        if !WIFI_STA_CONNECTED.load(Ordering::Relaxed) {
+        if !crate::state::wifi_sta_connected() {
             log::info!("[{}] STA connected (detected in poll)", TAG);
         }
-        WIFI_STA_CONNECTED.store(true, Ordering::Relaxed);
         update_sta_ip_cache();
     } else {
-        if WIFI_STA_CONNECTED.load(Ordering::Relaxed) && !sta_link_up {
+        if crate::state::wifi_sta_connected() && !sta_link_up {
             log::warn!("[{}] STA disconnected, will reconnect", TAG);
         }
-        WIFI_STA_CONNECTED.store(false, Ordering::Relaxed);
+        crate::state::clear_wifi_sta_state();
     }
 
     let in_cooldown = cooldown_until.is_some_and(|t| Instant::now() < t);
@@ -303,9 +279,7 @@ fn poll_sta_link(wifi: &mut BlockingWifi<EspWifi>, cooldown_until: &mut Option<I
         return;
     }
 
-    if let Ok(mut g) = WIFI_STA_IP.get_or_init(|| Mutex::new(None)).lock() {
-        *g = None;
-    }
+    crate::state::clear_wifi_sta_state();
     match wifi.connect() {
         Ok(()) => {
             log::info!(
@@ -536,18 +510,12 @@ fn do_connect(
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn update_sta_ip_cache() {
-    let ip = read_sta_ipv4_string();
-    if let Ok(mut g) = WIFI_STA_IP.get_or_init(|| Mutex::new(None)).lock() {
-        *g = ip;
-    }
+    crate::state::set_wifi_sta_state(true, read_sta_ipv4_string());
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn clear_sta_ip_cache() {
-    WIFI_STA_CONNECTED.store(false, Ordering::Relaxed);
-    if let Ok(mut g) = WIFI_STA_IP.get_or_init(|| Mutex::new(None)).lock() {
-        *g = None;
-    }
+    crate::state::clear_wifi_sta_state();
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]

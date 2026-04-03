@@ -27,12 +27,12 @@ struct HealthBody {
 
 /// 生成 health JSON body（含 metrics 与 resource 快照，无敏感信息）。
 pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
-    let wifi = if crate::platform::is_wifi_sta_connected() {
+    let wifi = if crate::state::wifi_sta_connected() {
         "connected"
     } else {
         "disconnected"
     };
-    let last_err = state::get_last_error().unwrap_or_else(|| "none".to_string());
+    let last_err = state::get_current_error().unwrap_or_else(|| "none".to_string());
     let payload = HealthBody {
         wifi,
         inbound_depth: ctx.inbound_depth.load(Ordering::Relaxed),

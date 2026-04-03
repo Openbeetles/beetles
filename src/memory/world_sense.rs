@@ -260,7 +260,7 @@ pub fn build_world_snapshot(ctx: WorldSnapshotContext<'_>) -> WorldSnapshot {
         outbound_depth: resource.outbound_depth,
         storage_used_kb: resource.storage_used_kb,
         storage_total_kb: resource.storage_total_kb,
-        wifi_connected: crate::platform::is_wifi_sta_connected(),
+        wifi_connected: crate::state::wifi_sta_connected(),
         audio_recording: resource.audio_recording,
         audio_playing: resource.audio_playing,
         source_channel,

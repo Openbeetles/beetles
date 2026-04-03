@@ -227,7 +227,7 @@ pub fn poll_telegram_once<H: ChannelHttpClient>(
                             let out = ctx.outbound_depth.load(Ordering::Relaxed);
                             let status = tr(
                                 UiMessage::TelegramStatus {
-                                    wifi_connected: crate::platform::is_wifi_sta_connected(),
+                                    wifi_connected: crate::state::wifi_sta_connected(),
                                     inbound: inc,
                                     outbound: out,
                                 },
