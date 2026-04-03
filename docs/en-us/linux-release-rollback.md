@@ -1,16 +1,20 @@
-# Linux Package Status
+# Linux Runtime and Package Status
 
 **English** | [中文](../zh-cn/linux-release-rollback.md) | [Doc index](../README.md)
 
-This page is not for normal firmware users.
+This page describes how Beetle runs, ships, and rolls back on Linux.
 
-It is only for people who are dealing with the Linux release bundles directly.
+It is relevant if you are:
+
+- running Beetle on Linux
+- packaging Beetle for Linux
+- managing Linux deployment and rollback
 
 ## Current State
 
-- Linux packaging exists
-- it is aimed at integrators and operators
-- it is not yet a polished one-click install flow
+- the Linux main program path is stable
+- it is the better fit for full agent workflows, deployment, and integration
+- packaging exists
 
 ## If You Are Deploying Manually
 
@@ -25,7 +29,7 @@ A common manual layout is:
 - a `current` symlink pointing to the active version
 - state stored under `BEETLE_STATE_ROOT` or the runtime default
 
-Follow the instructions shipped inside the bundle. That is the authoritative source for the package you are installing.
+Follow the `README.txt` shipped inside the bundle.
 
 ## CI and Rollback
 

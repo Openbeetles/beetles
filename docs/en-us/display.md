@@ -2,7 +2,7 @@
 
 **English** | [中文](../zh-cn/display.md) | [Doc index](../README.md)
 
-This page is for people who want to attach an SPI TFT screen to Beetle.
+This page explains how to attach an SPI TFT screen to Beetle.
 
 If you only need the shortest path:
 

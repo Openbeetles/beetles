@@ -2,18 +2,18 @@
 
 [English](../en-us/hardware-device-config.md) | **中文** | [文档索引](../README.md)
 
-这篇文档讲的是 Beetle 如何把 `config/hardware.json` 变成运行时工具 `device_control`。
+`config/hardware.json` 的写法，以及 `device_control` 的生成方式如下。
 
-逻辑并不绕，顺下来就是这样：
+处理流程：
 
 - 你用 JSON 描述设备
 - 固件负责校验这份 JSON
 - Agent 看到的是设备名和语义说明，而不是引脚细节
-- 真正的 GPIO / PWM / ADC / 蜂鸣器操作由运行时执行
+- 真正的 GPIO / PWM / ADC / 蜂鸣器操作由程序执行
 
-## 什么时候该用它
+## 适用场景
 
-如果你希望 Agent 按“设备是什么、能干什么”来控制硬件，而不是直接碰 GPIO 编号，就该用 `hardware.json`。
+当你希望 Agent 通过“设备名称”和“设备说明”控制硬件，而不是直接操作 GPIO 编号时，应使用 `hardware.json`。
 
 适合：
 
@@ -44,7 +44,7 @@
 
 | 字段 | 必填 | 含义 |
 |------|------|------|
-| `id` | 是 | 运行时唯一设备名 |
+| `id` | 是 | 程序内唯一设备名 |
 | `device_type` | 是 | `gpio_out`、`gpio_in`、`pwm_out`、`adc_in`、`buzzer` |
 | `pins` | 是 | 引脚映射，目前是 `{"pin": <gpio>}` |
 | `what` | 是 | 设备是什么、能做什么 |
@@ -109,7 +109,7 @@ Agent **不会**直接看到引脚映射。
 
 精确的读写契约和校验规则看 [config-api.md](config-api.md)。
 
-## 运行时行为
+## 程序行为
 
 启动时，流程大致是这样：
 
@@ -118,7 +118,7 @@ Agent **不会**直接看到引脚映射。
 3. 合法就注册 `device_control`
 4. 不合法就不注册该工具
 
-运行时则有几条保护规则：
+程序还有几条保护规则：
 
 - 操作会有速率限制
 - 每个设备都有自己的锁
@@ -127,5 +127,5 @@ Agent **不会**直接看到引脚映射。
 ## 相关文档
 
 - [config-api.md](config-api.md)：HTTP 读写和校验规则
-- [tools.md](tools.md)：运行时工具列表
+- [tools.md](tools.md)：工具列表
 - [hardware.md](hardware.md)：板型说明和排错入口

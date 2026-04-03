@@ -72,6 +72,10 @@ pub struct SharedFactualPlaneObservation {
     pub topic: String,
     pub evidence_state: LongTermMemoryEvidenceState,
     pub reconcile_action: SharedFactualReconcileAction,
+    pub support_count: usize,
+    pub conflict_count: usize,
+    pub top_citations: Vec<String>,
+    pub evidence_summary: String,
     pub summary: String,
 }
 
@@ -99,6 +103,37 @@ impl SharedFactualPlaneSnapshot {
             .collect::<Vec<_>>();
         lines.truncate(3);
         (!lines.is_empty()).then(|| lines.join(" | "))
+    }
+
+    pub fn extraction_brief(&self) -> Option<String> {
+        let mut out = String::from(
+            "## Shared factual reconcile\nArchive evidence can suggest reinforce/correct/conflict/stale actions for canonical facts, but archive evidence is not canonical by itself.\n",
+        );
+        let mut appended = 0usize;
+        for observation in self.observations.iter().filter(|observation| {
+            observation.reconcile_action.should_request_refresh()
+                || observation.support_count > 0
+                || observation.conflict_count > 0
+        }) {
+            let line = format!(
+                "- {}: action={}; supports={}; conflicts={}; evidence={}",
+                observation.topic,
+                observation.reconcile_action.label(),
+                observation.support_count,
+                observation.conflict_count,
+                observation.evidence_summary
+            );
+            if out.len().saturating_add(line.len()).saturating_add(1) > 768 {
+                break;
+            }
+            out.push_str(&line);
+            out.push('\n');
+            appended += 1;
+            if appended >= 4 {
+                break;
+            }
+        }
+        (appended > 0).then(|| out.trim_end().to_string())
     }
 }
 
@@ -282,6 +317,80 @@ fn hit_conflicts_with_entry(entry: &LongTermMemoryEntry, hit: &ArchiveSearchHit)
     topic_overlap >= 0.20 && content_overlap <= 0.08
 }
 
+fn hit_is_recent_since(hit: &ArchiveSearchHit, timestamp: u64) -> bool {
+    hit.observed_at.unwrap_or(0) > timestamp
+        && matches!(
+            hit.source,
+            ArchiveRecordSource::Transcript | ArchiveRecordSource::DailyNote
+        )
+}
+
+fn collect_top_archive_citations(hits: &[ArchiveSearchHit], max_items: usize) -> Vec<String> {
+    let mut citations = Vec::with_capacity(hits.len().min(max_items));
+    for hit in hits {
+        if citations.iter().any(|existing| existing == &hit.citation) {
+            continue;
+        }
+        citations.push(hit.citation.clone());
+        if citations.len() >= max_items {
+            break;
+        }
+    }
+    citations
+}
+
+fn archive_hit_reason(hit: &ArchiveSearchHit) -> Option<String> {
+    let trace = hit.retrieval_trace.as_ref()?;
+    let mut parts = Vec::with_capacity(3);
+    if let Some(reason) = trace.ranking_reason.as_deref() {
+        parts.push(reason.to_string());
+    }
+    if let Some(reason) = trace.source_reason.as_deref() {
+        parts.push(reason.to_string());
+    }
+    if let Some(reason) = trace.recency_reason.as_deref() {
+        parts.push(reason.to_string());
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("; "))
+    }
+}
+
+fn build_observation_evidence_summary(
+    hits: &[ArchiveSearchHit],
+    support_count: usize,
+    conflict_count: usize,
+) -> String {
+    if hits.is_empty() {
+        return "no archive evidence".to_string();
+    }
+    let top_citations = collect_top_archive_citations(hits, 2);
+    let head = if top_citations.is_empty() {
+        format!(
+            "{} hits, {} support, {} conflict",
+            hits.len(),
+            support_count,
+            conflict_count
+        )
+    } else {
+        format!(
+            "{} hits, {} support, {} conflict, top={}",
+            hits.len(),
+            support_count,
+            conflict_count,
+            top_citations.join(", ")
+        )
+    };
+    let reason = hits.iter().find_map(archive_hit_reason);
+    if let Some(reason) = reason {
+        format!("{head}; why={reason}")
+    } else {
+        head
+    }
+}
+
 fn reconcile_entry_observation(
     entry: &LongTermMemoryEntry,
     hits: &[ArchiveSearchHit],
@@ -299,15 +408,27 @@ fn reconcile_entry_observation(
             .iter()
             .any(|citation| citation == &hit.citation)
     });
-    let has_recent_hit = hits.iter().any(|hit| {
-        hit.observed_at.unwrap_or(0) > latest_confirmation
-            && matches!(
-                hit.source,
-                ArchiveRecordSource::Transcript | ArchiveRecordSource::DailyNote
-            )
-    });
-    let has_supporting_hit = hits.iter().any(|hit| hit_supports_entry(entry, hit));
-    let has_conflicting_hit = hits.iter().any(|hit| hit_conflicts_with_entry(entry, hit));
+    let support_hits = hits
+        .iter()
+        .filter(|hit| hit_supports_entry(entry, hit))
+        .collect::<Vec<_>>();
+    let conflict_hits = hits
+        .iter()
+        .filter(|hit| hit_conflicts_with_entry(entry, hit))
+        .collect::<Vec<_>>();
+    let support_count = support_hits.len();
+    let conflict_count = conflict_hits.len();
+    let recent_support_count = support_hits
+        .iter()
+        .filter(|hit| hit_is_recent_since(hit, latest_confirmation))
+        .count();
+    let recent_conflict_count = conflict_hits
+        .iter()
+        .filter(|hit| hit_is_recent_since(hit, latest_confirmation))
+        .count();
+    let has_recent_hit = hits
+        .iter()
+        .any(|hit| hit_is_recent_since(hit, latest_confirmation));
     let reconcile_action = if hits.is_empty() {
         match evidence_state {
             LongTermMemoryEvidenceState::PossiblyStale
@@ -316,7 +437,16 @@ fn reconcile_entry_observation(
                 SharedFactualReconcileAction::Hold
             }
         }
-    } else if has_conflicting_hit && has_recent_hit {
+    } else if recent_conflict_count > 0
+        && (support_count == 0 || recent_conflict_count >= recent_support_count)
+    {
+        match entry.confidence {
+            LongTermMemoryConfidence::High => SharedFactualReconcileAction::Conflict,
+            LongTermMemoryConfidence::Low | LongTermMemoryConfidence::Medium => {
+                SharedFactualReconcileAction::Correct
+            }
+        }
+    } else if conflict_count > 0 && support_count == 0 {
         match entry.confidence {
             LongTermMemoryConfidence::High => SharedFactualReconcileAction::Conflict,
             LongTermMemoryConfidence::Low | LongTermMemoryConfidence::Medium => {
@@ -326,14 +456,17 @@ fn reconcile_entry_observation(
     } else if matches!(
         evidence_state,
         LongTermMemoryEvidenceState::PossiblyStale | LongTermMemoryEvidenceState::NeedsReview
-    ) && has_recent_hit
+    ) && recent_support_count > 0
     {
         SharedFactualReconcileAction::Correct
-    } else if has_overlap_citation || has_supporting_hit || has_recent_hit {
+    } else if has_overlap_citation || support_count > 0 || has_recent_hit {
         SharedFactualReconcileAction::Reinforce
     } else {
         SharedFactualReconcileAction::Hold
     };
+
+    let top_citations = collect_top_archive_citations(hits, 3);
+    let evidence_summary = build_observation_evidence_summary(hits, support_count, conflict_count);
 
     let mut summary = format!(
         "{}:{} => {} ({})",
@@ -342,17 +475,29 @@ fn reconcile_entry_observation(
         reconcile_action.label(),
         evidence_state.label()
     );
+    summary.push_str(&format!(
+        ", support={}, conflict={}",
+        support_count, conflict_count
+    ));
     if let Some(label) = long_term_memory_effective_stale_hint(entry, now_secs).label() {
         summary.push_str(&format!(", stale_hint={label}"));
     }
-    if let Some(hit) = hits.first() {
-        summary.push_str(&format!(", archive={}", hit.citation));
+    if let Some(citation) = top_citations.first() {
+        summary.push_str(&format!(", archive={}", citation));
     }
+    summary.push_str(&format!(
+        ", evidence={}",
+        truncate_content_to_max(&evidence_summary, 180)
+    ));
     SharedFactualPlaneObservation {
         entry_id: entry.id.clone(),
         topic: entry.topic.clone(),
         evidence_state,
         reconcile_action,
+        support_count,
+        conflict_count,
+        top_citations,
+        evidence_summary,
         summary,
     }
 }

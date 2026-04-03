@@ -2,10 +2,10 @@
 
 **中文** | [English below](#english)
 
-这里可以当成 Beetle 文档的导航页来用。
-如果你还不知道应该先看哪篇，直接按下面这张表找就行。
+这是 Beetle 的文档目录。
+按下面的表选择对应文档。
 
-## 我该看哪篇
+## 文档目录
 
 | 你的目标 | 中文 | English |
 |----------|------|---------|
@@ -20,69 +20,79 @@
 | 了解 Linux 发布包现状 | [zh-cn/linux-release-rollback.md](zh-cn/linux-release-rollback.md) | [en-us/linux-release-rollback.md](en-us/linux-release-rollback.md) |
 | 查看品牌 Logo 资源说明 | [assets/README.md](assets/README.md) | [assets/README.md](assets/README.md) |
 
-## 建议怎么读
+## 推荐阅读顺序
 
-如果你只是想把设备先用起来：
+首次配置：
 
 1. `configuration`
 2. `tools`
-3. 需要时再看 `hardware` 或 `display`
+3. 需要硬件配置时再看 `hardware`、`hardware-device-config`、`display`
 
-如果你是在接前端、脚本或者外部系统：
+ESP 硬件接入：
+
+1. `configuration`
+2. `hardware`
+3. `hardware-device-config`
+4. `display`
+
+Linux 部署与运行：
+
+1. `configuration`
+2. `tools`
+3. `llm-providers`
+4. `linux-release-rollback`
+
+前端、脚本和外部系统集成：
 
 1. `configuration`
 2. `config-api`
 3. `tools`
 4. `llm-providers`
 
-如果你准备动代码、做扩展或者排查底层问题：
+二次开发：
 
 1. `architecture`
 2. `hardware`
 3. `hardware-device-config`
-
-## 维护说明
-
-如果你在维护仓库文档，下面几个文件可以当成单一事实来源：
-
-- HTTP 路由与鉴权：[`src/platform/http_server/router/dispatch.rs`](../src/platform/http_server/router/dispatch.rs)
-- 工具注册表：[`src/tools/registry.rs`](../src/tools/registry.rs)
-- LLM 客户端与回退链：[`src/llm/mod.rs`](../src/llm/mod.rs)、[`src/llm/fallback.rs`](../src/llm/fallback.rs)
-- 板型预设：[`board_presets.toml`](../board_presets.toml)
 
 ---
 
 ## English
 
-This is the navigation page for Beetle docs.
-If you are not sure where to start, the table above is the fastest way in.
+This is the Beetle documentation index.
+Use the table above to find the right document.
 
-### Suggested reading order
+### Suggested Reading Order
 
-End users:
+First-time setup:
 
 1. `configuration`
 2. `tools`
-3. `hardware` or `display` if needed
+3. `hardware`, `hardware-device-config`, and `display` if needed
 
-Integrators:
+ESP hardware work:
+
+1. `configuration`
+2. `hardware`
+3. `hardware-device-config`
+4. `display`
+
+Linux deployment and runtime use:
+
+1. `configuration`
+2. `tools`
+3. `llm-providers`
+4. `linux-release-rollback`
+
+Custom frontend, script, or integration:
 
 1. `configuration`
 2. `config-api`
 3. `tools`
 4. `llm-providers`
 
-Developers extending the project:
+Code extension:
 
 1. `architecture`
 2. `hardware`
 3. `hardware-device-config`
-
-### Maintainer notes
-
-Single sources of truth:
-
-- HTTP routes and auth: [`src/platform/http_server/router/dispatch.rs`](../src/platform/http_server/router/dispatch.rs)
-- Tool registry: [`src/tools/registry.rs`](../src/tools/registry.rs)
-- LLM routing and fallback: [`src/llm/mod.rs`](../src/llm/mod.rs), [`src/llm/fallback.rs`](../src/llm/fallback.rs)
-- Board presets: [`board_presets.toml`](../board_presets.toml)

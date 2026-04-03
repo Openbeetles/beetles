@@ -2,9 +2,9 @@
 
 **English** | [中文](../zh-cn/hardware-device-config.md) | [Doc index](../README.md)
 
-This page explains how Beetle turns `config/hardware.json` into one runtime tool: `device_control`.
+This page explains how `config/hardware.json` becomes the `device_control` runtime tool.
 
-The idea is simple:
+The flow is simple:
 
 - you describe devices in JSON
 - the firmware validates that JSON

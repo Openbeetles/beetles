@@ -2,7 +2,7 @@
 
 [Back to documentation index](../README.md)
 
-Use this page when you already know you want the English docs set.
+Use this page when you want the English docs set directly.
 
 | Doc | When to read it |
 |-----|-----------------|
@@ -14,7 +14,7 @@ Use this page when you already know you want the English docs set.
 | [hardware.md](hardware.md) | Supported boards, resources, troubleshooting |
 | [hardware-device-config.md](hardware-device-config.md) | `hardware.json` and `device_control` |
 | [architecture.md](architecture.md) | Module layout and extension points |
-| [linux-release-rollback.md](linux-release-rollback.md) | Linux package status for integrators/operators |
+| [linux-release-rollback.md](linux-release-rollback.md) | Linux runtime, packaging, and rollback notes |
 
 Suggested order:
 

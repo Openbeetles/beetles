@@ -2,14 +2,14 @@
 
 [中文](../zh-cn/configuration.md) | **English** | [Doc index](../README.md)
 
-This page is for people who want to get a Beetle device working quickly.
+This page is for first-time Beetle setup.
 
-You will use it to:
+In most cases, the setup order is:
 
-- connect to the device for the first time
-- set the pairing code
-- configure WiFi, LLM, and chat channels
-- understand which settings matter most
+1. connect to the device hotspot
+2. set the pairing code
+3. configure WiFi
+4. configure an LLM and a chat channel
 
 If you are building your own frontend or script, read [config-api.md](config-api.md) after this page.
 
@@ -71,7 +71,7 @@ You still need:
 - the browser and device on the same network
 - the correct device address
 
-## What You Will Configure
+## Common Config Areas
 
 | Area | What it controls |
 |------|------------------|
@@ -85,7 +85,7 @@ You still need:
 
 ## Common Config Keys
 
-These are the names you will see in code, files, or the API:
+These names show up in files and API payloads:
 
 | Category | Keys | Meaning |
 |----------|------|---------|
@@ -98,7 +98,7 @@ These are the names you will see in code, files, or the API:
 | Proxy | `PROXY_URL` | Outbound HTTP proxy |
 | Search | `SEARCH_KEY`, `TAVILY_KEY` | Search service keys |
 
-For LLM sources, the real runtime config is centered on `config/llm.json`. Read [llm-providers.md](llm-providers.md) for the supported provider IDs and fallback behavior.
+LLM settings are mainly stored in `config/llm.json`. Read [llm-providers.md](llm-providers.md) for supported provider IDs and fallback behavior.
 
 ## Pairing Code and Activation
 
@@ -107,7 +107,7 @@ After the device has been paired once:
 - read-only APIs usually require the device to be activated
 - write APIs require pairing code plus CSRF
 
-The config UI handles that for you. If you are calling APIs manually, read [config-api.md](config-api.md).
+The built-in config UI handles that for you. If you are calling APIs manually, read [config-api.md](config-api.md).
 
 ## Useful Checks
 

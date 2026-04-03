@@ -11,6 +11,28 @@ use super::{
 const MAX_ARCHIVE_EVIDENCE_BLOCK_LEN: usize = 768;
 const MIN_ARCHIVE_EVIDENCE_BLOCK_LEN: usize = 220;
 
+fn render_archive_trace_summary(hit: &super::ArchiveSearchHit) -> Option<String> {
+    let trace = hit.retrieval_trace.as_ref()?;
+    let mut parts = Vec::with_capacity(4);
+    if let Some(reason) = trace.ranking_reason.as_deref() {
+        parts.push(reason.to_string());
+    }
+    if let Some(reason) = trace.source_reason.as_deref() {
+        parts.push(reason.to_string());
+    }
+    if let Some(reason) = trace.recency_reason.as_deref() {
+        parts.push(reason.to_string());
+    }
+    if let Some(reason) = trace.selector_reason.as_deref() {
+        parts.push(reason.to_string());
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(truncate_content_to_max(&parts.join("; "), 180).into_owned())
+    }
+}
+
 pub fn build_archive_evidence_block(
     session_store: &dyn SessionStore,
     memory_store: &dyn MemoryStore,
@@ -61,10 +83,18 @@ pub fn build_archive_evidence_block(
         } else {
             hit.cues.join(", ")
         };
-        let line = format!(
-            "- [{}] {} (citation: {}; {})",
-            hit.title, hit.excerpt, hit.citation, cue_summary
-        );
+        let trace_summary = render_archive_trace_summary(&hit);
+        let line = if let Some(trace_summary) = trace_summary {
+            format!(
+                "- [{}] {} (citation: {}; {}; why: {})",
+                hit.title, hit.excerpt, hit.citation, cue_summary, trace_summary
+            )
+        } else {
+            format!(
+                "- [{}] {} (citation: {}; {})",
+                hit.title, hit.excerpt, hit.citation, cue_summary
+            )
+        };
         if out.len().saturating_add(line.len()).saturating_add(1) > block_max_len {
             break;
         }

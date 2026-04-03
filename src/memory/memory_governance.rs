@@ -27,6 +27,7 @@ pub struct MemoryGovernanceOutcome {
     pub factual_plane_snapshot: SharedFactualPlaneSnapshot,
     pub strongest_action: Option<SharedFactualReconcileAction>,
     pub factual_coordination_summary: Option<String>,
+    pub extraction_brief: Option<String>,
     pub factual_refresh_suggested: bool,
 }
 
@@ -52,6 +53,7 @@ pub fn run_memory_governance_kernel(
     );
     let strongest_action = factual_plane_snapshot.strongest_refresh_action();
     let factual_coordination_summary = factual_plane_snapshot.refresh_summary();
+    let extraction_brief = factual_plane_snapshot.extraction_brief();
     let factual_refresh_suggested = matches!(
         strongest_action,
         Some(
@@ -68,6 +70,7 @@ pub fn run_memory_governance_kernel(
         factual_plane_snapshot,
         strongest_action,
         factual_coordination_summary,
+        extraction_brief,
         factual_refresh_suggested,
     }
 }

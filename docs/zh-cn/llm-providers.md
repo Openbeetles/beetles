@@ -2,15 +2,15 @@
 
 [English](../en-us/llm-providers.md) | **中文** | [文档索引](../README.md)
 
-这篇文档讲的是 Beetle 在 `config/llm.json` 里怎么理解 LLM 提供商配置。
+`config/llm.json` 的 LLM 配置规则如下。
 
-真正需要关心的，其实就三个问题：
+内容包括：
 
 1. `provider` 可以填什么？
 2. 哪些 provider 的 `api_url` 可以留空？
 3. 多个源时，回退顺序到底怎么走？
 
-## 先说结论
+## 基本规则
 
 - Beetle 支持配置多个 LLM 源
 - 配置入口是 `config/llm.json`

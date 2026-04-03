@@ -2,7 +2,7 @@
 
 [返回文档总索引](../README.md)
 
-如果你已经决定看中文文档，可以从这里直接跳转。
+中文文档目录：
 
 | 文档 | 适合什么时候看 |
 |------|----------------|
@@ -14,11 +14,11 @@
 | [hardware.md](hardware.md) | 看支持板型、资源限制和排错 |
 | [hardware-device-config.md](hardware-device-config.md) | 写 `hardware.json` 并启用 `device_control` |
 | [architecture.md](architecture.md) | 了解模块结构和扩展点 |
-| [linux-release-rollback.md](linux-release-rollback.md) | 看 Linux 发布包的当前状态 |
+| [linux-release-rollback.md](linux-release-rollback.md) | 看 Linux 版程序的运行、打包和回滚说明 |
 
-建议顺序：
+建议阅读顺序：
 
-1. 先看 `configuration`
-2. 要对接接口再看 `config-api`
-3. 按需看 `tools`、`llm-providers`
-4. 要做硬件或二次开发时再看 `hardware`、`display`、`architecture`
+1. `configuration`
+2. `config-api`
+3. `tools`、`llm-providers`
+4. `hardware`、`display`、`architecture`

@@ -81,6 +81,7 @@ impl Tool for MemorySearchTool {
             "hits": hits,
             "plane": "archive_evidence",
             "canonical": false,
+            "traceability": "Each hit includes retrieval_trace with backend, matched_terms, score breakdown, and ranking/source/recency/selector reasons when available.",
             "usage_hint": "Use memory_get with record_id or locator to inspect one cited archive record before concluding."
         })
         .to_string())

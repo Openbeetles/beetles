@@ -2,16 +2,16 @@
 
 [English](../en-us/display.md) | **中文** | [文档索引](../README.md)
 
-这篇文档是写给“想给 Beetle 接一块 SPI 屏幕”的人看的。
+Beetle 的 SPI 屏幕接入方式如下。
 
-如果你现在只想先把屏点亮，最短路径就是：
+最短配置流程：
 
 1. 按 SPI 接好屏幕
 2. 写好 `config/display.json`
 3. 选对 `driver`、分辨率和 SPI 引脚
 4. 重启设备看仪表板
 
-显示模块会实时渲染运行状态仪表板，全程不依赖位图资源或外部字体。
+显示模块会实时渲染运行状态仪表板，不依赖位图资源或外部字体。
 
 ---
 
@@ -25,7 +25,7 @@
 
 ST7789 与 ILI9341 共用短初始化序列（SWRESET → SLPOUT → COLMOD `0x55` → MADCTL → INV → NORON → DISPON）。**ST7735** 在 SLPOUT 之后发送帧率、电源、伽马等寄存器，COLMOD 为 `0x05`，再接 MADCTL → INV → NORON → DISPON。`invert_colors` 用于翻转各驱动默认的反色行为。
 
-如果你不确定自己的屏是哪种：
+如果无法确认屏幕控制器，可先按下列经验判断：
 
 - 很多 240x240 / 240x320 模块是 `st7789`
 - 很多 240x320 TFT 模块是 `ili9341`

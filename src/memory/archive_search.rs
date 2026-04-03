@@ -3,6 +3,7 @@
 use crate::error::Result;
 use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 
 use super::{MemoryStore, SessionStore, TurnLedger, TurnLedgerStore, MAX_SESSION_ENTRIES};
 
@@ -12,6 +13,50 @@ pub const MAX_ARCHIVE_GET_CONTENT_LEN: usize = 4 * 1024;
 const DEFAULT_ARCHIVE_GET_CONTENT_LEN: usize = 1800;
 const ARCHIVE_SEARCH_EXCERPT_LEN: usize = 220;
 const ARCHIVE_GET_EXCERPT_LEN: usize = 320;
+const ARCHIVE_TRACE_MAX_MATCHED_TERMS: usize = 4;
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchiveSearchBackendKind {
+    #[default]
+    Lexical,
+    IndexedHybrid,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArchiveSearchScoreBreakdown {
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub lexical_score: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub fts_score: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub hybrid_score: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub same_chat_bonus: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub source_bonus: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub recency_bonus: u32,
+    pub total_score: u32,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArchiveRetrievalTrace {
+    #[serde(default)]
+    pub backend: ArchiveSearchBackendKind,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matched_terms: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ranking_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recency_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector_reason: Option<String>,
+    #[serde(default)]
+    pub score: ArchiveSearchScoreBreakdown,
+}
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -148,6 +193,8 @@ pub struct ArchiveSearchHit {
     pub cues: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retrieval_trace: Option<ArchiveRetrievalTrace>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -164,6 +211,8 @@ pub struct ArchiveRecord {
     pub cues: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retrieval_trace: Option<ArchiveRetrievalTrace>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -175,6 +224,26 @@ pub struct ArchiveSearchQuery<'a> {
     pub limit: usize,
 }
 
+#[derive(Clone)]
+struct ArchiveSearchCandidate {
+    locator: ArchiveRecordLocator,
+    source: ArchiveRecordSource,
+    title: String,
+    content: String,
+    cues: Vec<String>,
+    observed_at: Option<u64>,
+    current_chat_match: bool,
+    normalized_title: String,
+    normalized_content: String,
+}
+
+#[derive(Default)]
+struct ArchiveCorpusStats {
+    document_count: usize,
+    avg_doc_len: f32,
+    document_frequency: HashMap<String, usize>,
+}
+
 pub fn search_archive_records(
     session_store: &dyn SessionStore,
     memory_store: &dyn MemoryStore,
@@ -184,147 +253,25 @@ pub fn search_archive_records(
     let limit = query.limit.clamp(1, MAX_ARCHIVE_SEARCH_LIMIT);
     let terms = collect_archive_match_terms(query.query);
     let weak_query = query.query.trim().is_empty() || terms.is_empty();
-    let mut hits = Vec::new();
-    let source_filter = query.sources;
-
-    if source_filter.is_empty() || source_filter.contains(&ArchiveRecordSource::Transcript) {
-        for chat_id in
-            collect_archive_chat_ids(session_store, query.preferred_chat_id, query.chat_id_filter)
-        {
-            let messages = session_store
-                .load_recent(&chat_id, MAX_SESSION_ENTRIES)
-                .unwrap_or_default();
-            for (index, message) in messages.iter().enumerate() {
-                let content = message.content.trim();
-                if content.is_empty() {
-                    continue;
-                }
-                let title = format!("{} in {}", message.role.to_uppercase(), chat_id);
-                let match_score = archive_match_score(content, &title, &terms);
-                if !weak_query && match_score == 0 {
-                    continue;
-                }
-                let mut cues = vec!["recent transcript".to_string()];
-                let mut score = 30u32
-                    .saturating_add(match_score)
-                    .saturating_add((index + 1) as u32);
-                if query.preferred_chat_id == Some(chat_id.as_str()) {
-                    score = score.saturating_add(10);
-                    cues.push("current chat".to_string());
-                }
-                let locator = ArchiveRecordLocator {
-                    source: ArchiveRecordSource::Transcript,
-                    chat_id: Some(chat_id.clone()),
-                    message_index: Some(index),
-                    note_name: None,
-                    req_id: None,
-                };
-                hits.push(ArchiveSearchHit {
-                    record_id: locator.record_id(),
-                    citation: locator.citation(),
-                    locator,
-                    source: ArchiveRecordSource::Transcript,
-                    title,
-                    excerpt: pick_archive_excerpt(content, &terms, ARCHIVE_SEARCH_EXCERPT_LEN),
-                    score,
-                    cues,
-                    observed_at: None,
-                });
-            }
-        }
+    let candidates =
+        collect_archive_candidates(session_store, memory_store, turn_ledger_store, query);
+    if candidates.is_empty() {
+        return Ok(Vec::new());
     }
-
-    if source_filter.is_empty() || source_filter.contains(&ArchiveRecordSource::DailyNote) {
-        for (order, name) in memory_store
-            .list_daily_note_names(usize::MAX)
-            .unwrap_or_default()
-            .into_iter()
-            .enumerate()
-        {
-            let Ok(content) = memory_store.get_daily_note(&name) else {
-                continue;
-            };
-            let content = content.trim();
-            if content.is_empty() {
-                continue;
-            }
-            let match_score = archive_match_score(content, &name, &terms);
-            if !weak_query && match_score == 0 {
-                continue;
-            }
-            let mut cues = vec!["daily archive context".to_string()];
-            let recency_bonus = 24u32.saturating_sub(order as u32).max(1);
-            let observed_at = parse_daily_note_observed_at(&name);
-            if observed_at.is_some() {
-                cues.push("dated note".to_string());
-            }
-            let locator = ArchiveRecordLocator {
-                source: ArchiveRecordSource::DailyNote,
-                chat_id: None,
-                message_index: None,
-                note_name: Some(name.clone()),
-                req_id: None,
-            };
-            hits.push(ArchiveSearchHit {
-                record_id: locator.record_id(),
-                citation: locator.citation(),
-                locator,
-                source: ArchiveRecordSource::DailyNote,
-                title: name,
-                excerpt: pick_archive_excerpt(content, &terms, ARCHIVE_SEARCH_EXCERPT_LEN),
-                score: 24u32
-                    .saturating_add(match_score)
-                    .saturating_add(recency_bonus),
-                cues,
-                observed_at,
-            });
-        }
-    }
-
-    if source_filter.is_empty() || source_filter.contains(&ArchiveRecordSource::TurnLog) {
-        for chat_id in
-            collect_archive_chat_ids(session_store, query.preferred_chat_id, query.chat_id_filter)
-        {
-            let Ok(Some(ledger)) = turn_ledger_store.get(&chat_id) else {
-                continue;
-            };
-            let content = render_turn_log_content(&ledger);
-            if content.is_empty() {
-                continue;
-            }
-            let title = format!("{} turn in {}", ledger.status.label(), chat_id);
-            let match_score = archive_match_score(&content, &title, &terms);
-            if !weak_query && match_score == 0 {
-                continue;
-            }
-            let mut cues = vec!["execution log".to_string()];
-            let mut score = 18u32.saturating_add(match_score);
-            if query.preferred_chat_id == Some(chat_id.as_str()) {
-                score = score.saturating_add(8);
-                cues.push("current chat".to_string());
-            }
-            let locator = ArchiveRecordLocator {
-                source: ArchiveRecordSource::TurnLog,
-                chat_id: Some(chat_id.clone()),
-                message_index: None,
-                note_name: None,
-                req_id: Some(ledger.req_id.clone()),
-            };
-            hits.push(ArchiveSearchHit {
-                record_id: locator.record_id(),
-                citation: locator.citation(),
-                locator,
-                source: ArchiveRecordSource::TurnLog,
-                title,
-                excerpt: pick_archive_excerpt(&content, &terms, ARCHIVE_SEARCH_EXCERPT_LEN),
-                score,
-                cues,
-                observed_at: turn_log_observed_at(&ledger),
-            });
-        }
-    }
-
-    apply_archive_recency_bonus(&mut hits);
+    let stats = build_archive_corpus_stats(&candidates, &terms);
+    let newest_observed_at = candidates
+        .iter()
+        .filter_map(|candidate| candidate.observed_at)
+        .max()
+        .unwrap_or(0);
+    let mut hits = score_archive_candidates(
+        candidates,
+        query,
+        &terms,
+        weak_query,
+        &stats,
+        newest_observed_at,
+    );
     hits.sort_by(|a, b| {
         b.score
             .cmp(&a.score)
@@ -335,34 +282,502 @@ pub fn search_archive_records(
     Ok(hits)
 }
 
-fn apply_archive_recency_bonus(hits: &mut [ArchiveSearchHit]) {
-    let newest = hits
-        .iter()
-        .filter_map(|hit| hit.observed_at)
-        .max()
-        .unwrap_or(0);
-    if newest == 0 {
-        return;
-    }
-    for hit in hits {
-        let Some(observed_at) = hit.observed_at else {
-            continue;
-        };
-        let age = newest.saturating_sub(observed_at);
-        let bonus = if age <= 86_400 {
-            6
-        } else if age <= 7 * 86_400 {
-            4
-        } else if age <= 30 * 86_400 {
-            2
-        } else {
-            0
-        };
-        hit.score = hit.score.saturating_add(bonus);
-        if bonus > 0 {
-            hit.cues.push(format!("recent+{}", bonus));
+fn collect_archive_candidates(
+    session_store: &dyn SessionStore,
+    memory_store: &dyn MemoryStore,
+    turn_ledger_store: &dyn TurnLedgerStore,
+    query: ArchiveSearchQuery<'_>,
+) -> Vec<ArchiveSearchCandidate> {
+    let mut candidates = Vec::new();
+    let source_filter = query.sources;
+    let chat_ids =
+        collect_archive_chat_ids(session_store, query.preferred_chat_id, query.chat_id_filter);
+
+    if source_filter.is_empty() || source_filter.contains(&ArchiveRecordSource::Transcript) {
+        for chat_id in &chat_ids {
+            let messages = session_store
+                .load_recent(chat_id, MAX_SESSION_ENTRIES)
+                .unwrap_or_default();
+            for (index, message) in messages.iter().enumerate() {
+                let content = message.content.trim();
+                if content.is_empty() {
+                    continue;
+                }
+                let title = format!("{} in {}", message.role.to_uppercase(), chat_id);
+                let locator = ArchiveRecordLocator {
+                    source: ArchiveRecordSource::Transcript,
+                    chat_id: Some(chat_id.clone()),
+                    message_index: Some(index),
+                    note_name: None,
+                    req_id: None,
+                };
+                let mut cues = vec!["recent transcript".to_string()];
+                if query.preferred_chat_id == Some(chat_id.as_str()) {
+                    cues.push("current chat".to_string());
+                }
+                candidates.push(ArchiveSearchCandidate {
+                    normalized_title: normalize_archive_match_text(&title),
+                    normalized_content: normalize_archive_match_text(content),
+                    locator,
+                    source: ArchiveRecordSource::Transcript,
+                    title,
+                    content: content.to_string(),
+                    cues,
+                    observed_at: None,
+                    current_chat_match: query.preferred_chat_id == Some(chat_id.as_str()),
+                });
+            }
         }
     }
+
+    if source_filter.is_empty() || source_filter.contains(&ArchiveRecordSource::DailyNote) {
+        for name in memory_store
+            .list_daily_note_names(usize::MAX)
+            .unwrap_or_default()
+        {
+            let Ok(content) = memory_store.get_daily_note(&name) else {
+                continue;
+            };
+            let content = content.trim();
+            if content.is_empty() {
+                continue;
+            }
+            let observed_at = parse_daily_note_observed_at(&name);
+            let mut cues = vec!["daily archive context".to_string()];
+            if observed_at.is_some() {
+                cues.push("dated note".to_string());
+            }
+            let locator = ArchiveRecordLocator {
+                source: ArchiveRecordSource::DailyNote,
+                chat_id: None,
+                message_index: None,
+                note_name: Some(name.clone()),
+                req_id: None,
+            };
+            candidates.push(ArchiveSearchCandidate {
+                normalized_title: normalize_archive_match_text(&name),
+                normalized_content: normalize_archive_match_text(content),
+                locator,
+                source: ArchiveRecordSource::DailyNote,
+                title: name,
+                content: content.to_string(),
+                cues,
+                observed_at,
+                current_chat_match: false,
+            });
+        }
+    }
+
+    if source_filter.is_empty() || source_filter.contains(&ArchiveRecordSource::TurnLog) {
+        for chat_id in &chat_ids {
+            let Ok(Some(ledger)) = turn_ledger_store.get(chat_id) else {
+                continue;
+            };
+            let content = render_turn_log_content(&ledger);
+            if content.is_empty() {
+                continue;
+            }
+            let title = format!("{} turn in {}", ledger.status.label(), chat_id);
+            let locator = ArchiveRecordLocator {
+                source: ArchiveRecordSource::TurnLog,
+                chat_id: Some(chat_id.clone()),
+                message_index: None,
+                note_name: None,
+                req_id: Some(ledger.req_id.clone()),
+            };
+            let mut cues = vec!["execution log".to_string()];
+            if query.preferred_chat_id == Some(chat_id.as_str()) {
+                cues.push("current chat".to_string());
+            }
+            candidates.push(ArchiveSearchCandidate {
+                normalized_title: normalize_archive_match_text(&title),
+                normalized_content: normalize_archive_match_text(&content),
+                locator,
+                source: ArchiveRecordSource::TurnLog,
+                title,
+                content,
+                cues,
+                observed_at: turn_log_observed_at(&ledger),
+                current_chat_match: query.preferred_chat_id == Some(chat_id.as_str()),
+            });
+        }
+    }
+
+    candidates
+}
+
+fn score_archive_candidates(
+    candidates: Vec<ArchiveSearchCandidate>,
+    query: ArchiveSearchQuery<'_>,
+    terms: &[String],
+    weak_query: bool,
+    stats: &ArchiveCorpusStats,
+    newest_observed_at: u64,
+) -> Vec<ArchiveSearchHit> {
+    candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            let (score, trace, matched_terms) =
+                score_archive_candidate(&candidate, query, terms, stats, newest_observed_at);
+            let substantive = trace.score.lexical_score > 0
+                || trace.score.fts_score > 0
+                || trace.score.hybrid_score > 0;
+            if !weak_query && !substantive {
+                return None;
+            }
+            Some(ArchiveSearchHit {
+                record_id: candidate.locator.record_id(),
+                citation: candidate.locator.citation(),
+                excerpt: pick_archive_excerpt(
+                    &candidate.content,
+                    if matched_terms.is_empty() {
+                        terms
+                    } else {
+                        matched_terms.as_slice()
+                    },
+                    ARCHIVE_SEARCH_EXCERPT_LEN,
+                ),
+                locator: candidate.locator,
+                source: candidate.source,
+                title: candidate.title,
+                score,
+                cues: build_archive_hit_cues(&candidate.cues, &trace),
+                observed_at: candidate.observed_at,
+                retrieval_trace: Some(trace),
+            })
+        })
+        .collect()
+}
+
+fn score_archive_candidate(
+    candidate: &ArchiveSearchCandidate,
+    query: ArchiveSearchQuery<'_>,
+    terms: &[String],
+    stats: &ArchiveCorpusStats,
+    newest_observed_at: u64,
+) -> (u32, ArchiveRetrievalTrace, Vec<String>) {
+    let matched_terms = matched_archive_terms(
+        &candidate.normalized_title,
+        &candidate.normalized_content,
+        terms,
+    );
+    let lexical_score = lexical_archive_score(
+        &candidate.normalized_title,
+        &candidate.normalized_content,
+        &matched_terms,
+    );
+    let fts_score = archive_fts_score(candidate, terms, stats);
+    let hybrid_score = archive_hybrid_score(candidate, query.query);
+    let same_chat_bonus = if candidate.current_chat_match { 10 } else { 0 };
+    let (source_bonus, source_reason) =
+        archive_source_preference_bonus(candidate, query.sources, same_chat_bonus > 0);
+    let (recency_bonus, recency_reason) =
+        archive_recency_bonus(candidate.observed_at, newest_observed_at);
+    let total_score = lexical_score
+        .saturating_add(fts_score)
+        .saturating_add(hybrid_score)
+        .saturating_add(same_chat_bonus)
+        .saturating_add(source_bonus)
+        .saturating_add(recency_bonus);
+    let trace = ArchiveRetrievalTrace {
+        backend: archive_search_backend_kind(),
+        matched_terms: matched_terms
+            .iter()
+            .take(ARCHIVE_TRACE_MAX_MATCHED_TERMS)
+            .cloned()
+            .collect(),
+        ranking_reason: Some(build_archive_ranking_reason(
+            candidate,
+            lexical_score,
+            fts_score,
+            hybrid_score,
+            same_chat_bonus,
+        )),
+        source_reason,
+        recency_reason,
+        selector_reason: None,
+        score: ArchiveSearchScoreBreakdown {
+            lexical_score,
+            fts_score,
+            hybrid_score,
+            same_chat_bonus,
+            source_bonus,
+            recency_bonus,
+            total_score,
+        },
+    };
+    (total_score, trace, matched_terms)
+}
+
+fn build_archive_corpus_stats(
+    candidates: &[ArchiveSearchCandidate],
+    terms: &[String],
+) -> ArchiveCorpusStats {
+    if candidates.is_empty() {
+        return ArchiveCorpusStats::default();
+    }
+    let mut total_len = 0usize;
+    let mut document_frequency = HashMap::new();
+    for candidate in candidates {
+        total_len = total_len.saturating_add(
+            candidate
+                .normalized_content
+                .split_whitespace()
+                .count()
+                .max(candidate.normalized_content.chars().count() / 4),
+        );
+        let mut seen = HashSet::new();
+        let combined = format!(
+            "{} {}",
+            candidate.normalized_title, candidate.normalized_content
+        );
+        for term in terms {
+            if combined.contains(term) && seen.insert(term.clone()) {
+                *document_frequency.entry(term.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+    ArchiveCorpusStats {
+        document_count: candidates.len(),
+        avg_doc_len: total_len as f32 / candidates.len() as f32,
+        document_frequency,
+    }
+}
+
+fn matched_archive_terms(
+    normalized_title: &str,
+    normalized_content: &str,
+    terms: &[String],
+) -> Vec<String> {
+    let mut matched = Vec::new();
+    for term in terms {
+        if normalized_title.contains(term) || normalized_content.contains(term) {
+            matched.push(term.clone());
+        }
+    }
+    matched
+}
+
+fn lexical_archive_score(
+    normalized_title: &str,
+    normalized_content: &str,
+    terms: &[String],
+) -> u32 {
+    if terms.is_empty() {
+        return 1;
+    }
+    let mut score = 0u32;
+    for term in terms {
+        if normalized_title.contains(term) {
+            score = score.saturating_add(6);
+        }
+        if normalized_content.contains(term) {
+            score = score.saturating_add(4);
+        }
+    }
+    score
+}
+
+fn archive_fts_score(
+    candidate: &ArchiveSearchCandidate,
+    terms: &[String],
+    stats: &ArchiveCorpusStats,
+) -> u32 {
+    if terms.is_empty() || stats.avg_doc_len <= 0.0 {
+        return 0;
+    }
+    let combined = format!(
+        "{} {}",
+        candidate.normalized_title, candidate.normalized_content
+    );
+    let doc_len = combined
+        .split_whitespace()
+        .count()
+        .max(combined.chars().count() / 4) as f32;
+    let avg_doc_len = stats.avg_doc_len.max(1.0);
+    let mut score = 0.0f32;
+    for term in terms {
+        let tf_title = archive_term_frequency(&candidate.normalized_title, term) as f32;
+        let tf_body = archive_term_frequency(&candidate.normalized_content, term) as f32;
+        let tf = tf_title.mul_add(1.5, tf_body);
+        if tf <= 0.0 {
+            continue;
+        }
+        let df = stats.document_frequency.get(term).copied().unwrap_or(0) as f32;
+        let idf = (((stats.document_count.max(1) as f32) + 1.0) / (df + 1.0)).ln_1p() + 1.0;
+        let k1 = 1.2f32;
+        let b = 0.75f32;
+        let norm = tf * (k1 + 1.0) / (tf + k1 * (1.0 - b + b * (doc_len / avg_doc_len)));
+        score += idf * norm;
+    }
+    (score * 6.0).round().max(0.0) as u32
+}
+
+fn archive_hybrid_score(candidate: &ArchiveSearchCandidate, query_text: &str) -> u32 {
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    {
+        let _ = candidate;
+        let _ = query_text;
+        0
+    }
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    {
+        let query = normalize_archive_match_text(query_text);
+        if query.is_empty() {
+            return 0;
+        }
+        let doc = format!(
+            "{} {}",
+            candidate.normalized_title, candidate.normalized_content
+        );
+        trigram_overlap_score(&query, &doc)
+    }
+}
+
+fn trigram_overlap_score(left: &str, right: &str) -> u32 {
+    let left = archive_trigrams(left);
+    let right = archive_trigrams(right);
+    if left.is_empty() || right.is_empty() {
+        return 0;
+    }
+    let overlap = left
+        .iter()
+        .filter(|gram| right.iter().any(|candidate| candidate == *gram))
+        .count();
+    let ratio = overlap as f32 / left.len().max(right.len()) as f32;
+    (ratio * 24.0).round().max(0.0) as u32
+}
+
+fn archive_trigrams(value: &str) -> Vec<String> {
+    let compact: Vec<char> = value.chars().filter(|ch| !ch.is_whitespace()).collect();
+    if compact.is_empty() {
+        return Vec::new();
+    }
+    if compact.len() < 3 {
+        return vec![compact.iter().collect()];
+    }
+    let mut grams = Vec::new();
+    for slice in compact.windows(3) {
+        let gram: String = slice.iter().collect();
+        if !grams.iter().any(|existing| existing == &gram) {
+            grams.push(gram);
+        }
+    }
+    grams
+}
+
+fn archive_source_preference_bonus(
+    candidate: &ArchiveSearchCandidate,
+    source_preferences: &[ArchiveRecordSource],
+    current_chat_match: bool,
+) -> (u32, Option<String>) {
+    if let Some(index) = source_preferences
+        .iter()
+        .position(|source| *source == candidate.source)
+    {
+        let bonus = ((source_preferences.len().saturating_sub(index)) as u32).saturating_mul(2);
+        return (
+            bonus,
+            Some(format!(
+                "requested source preference favored {}",
+                candidate.source.label()
+            )),
+        );
+    }
+    let (bonus, label) = match candidate.source {
+        ArchiveRecordSource::Transcript if current_chat_match => (4, "current transcript evidence"),
+        ArchiveRecordSource::Transcript => (3, "transcript evidence"),
+        ArchiveRecordSource::DailyNote => (2, "durable daily-note evidence"),
+        ArchiveRecordSource::TurnLog => (1, "execution-log evidence"),
+    };
+    (bonus, Some(label.to_string()))
+}
+
+fn archive_recency_bonus(
+    observed_at: Option<u64>,
+    newest_observed_at: u64,
+) -> (u32, Option<String>) {
+    let Some(observed_at) = observed_at else {
+        return (0, None);
+    };
+    if newest_observed_at == 0 || observed_at > newest_observed_at {
+        return (0, None);
+    }
+    let age = newest_observed_at.saturating_sub(observed_at);
+    let (bonus, label) = if age <= 86_400 {
+        (6, "same-day evidence")
+    } else if age <= 7 * 86_400 {
+        (4, "recent-week evidence")
+    } else if age <= 30 * 86_400 {
+        (2, "recent-month evidence")
+    } else {
+        (0, "older evidence")
+    };
+    (bonus, (bonus > 0).then_some(label.to_string()))
+}
+
+fn build_archive_ranking_reason(
+    candidate: &ArchiveSearchCandidate,
+    lexical_score: u32,
+    fts_score: u32,
+    hybrid_score: u32,
+    same_chat_bonus: u32,
+) -> String {
+    let mut parts = Vec::with_capacity(4);
+    if lexical_score > 0 {
+        parts.push("exact term overlap".to_string());
+    }
+    if fts_score > 0 {
+        parts.push("fts-style term weighting".to_string());
+    }
+    if hybrid_score > 0 {
+        parts.push("hybrid fuzzy match".to_string());
+    }
+    if same_chat_bonus > 0 && candidate.current_chat_match {
+        parts.push("same chat boost".to_string());
+    }
+    if parts.is_empty() {
+        format!("{} evidence remained eligible", candidate.source.label())
+    } else {
+        parts.join(", ")
+    }
+}
+
+fn build_archive_hit_cues(base_cues: &[String], trace: &ArchiveRetrievalTrace) -> Vec<String> {
+    let mut cues = base_cues.to_vec();
+    for term in trace
+        .matched_terms
+        .iter()
+        .take(ARCHIVE_TRACE_MAX_MATCHED_TERMS)
+    {
+        cues.push(format!("match:{term}"));
+    }
+    if trace.score.recency_bonus > 0 {
+        cues.push(format!("recent+{}", trace.score.recency_bonus));
+    }
+    cues
+}
+
+fn archive_term_frequency(text: &str, term: &str) -> usize {
+    if text.is_empty() || term.is_empty() {
+        return 0;
+    }
+    text.match_indices(term).count()
+}
+
+fn archive_search_backend_kind() -> ArchiveSearchBackendKind {
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    {
+        ArchiveSearchBackendKind::Lexical
+    }
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    {
+        ArchiveSearchBackendKind::IndexedHybrid
+    }
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 pub fn get_archive_record(
@@ -458,15 +873,34 @@ pub(crate) fn collect_archive_match_terms(query: &str) -> Vec<String> {
     }
     let mut terms = Vec::new();
     for part in normalized.split_whitespace() {
-        if part.chars().count() < 2 || terms.iter().any(|item| item == part) {
-            continue;
+        push_archive_term(&mut terms, part);
+        if part.chars().all(is_cjk) {
+            let chars: Vec<char> = part.chars().collect();
+            for width in [2usize, 3usize] {
+                if chars.len() < width {
+                    continue;
+                }
+                for window in chars.windows(width) {
+                    let candidate: String = window.iter().collect();
+                    push_archive_term(&mut terms, &candidate);
+                }
+            }
         }
-        terms.push(part.to_string());
     }
     if terms.is_empty() {
         terms.push(normalized);
+    } else if normalized.split_whitespace().count() > 1 {
+        push_archive_term(&mut terms, &normalized);
     }
     terms
+}
+
+fn push_archive_term(terms: &mut Vec<String>, term: &str) {
+    let trimmed = term.trim();
+    if trimmed.chars().count() < 2 || terms.iter().any(|item| item == trimmed) {
+        return;
+    }
+    terms.push(trimmed.to_string());
 }
 
 pub(crate) fn normalize_archive_match_text(input: &str) -> String {
@@ -505,24 +939,6 @@ pub(crate) fn pick_archive_excerpt(content: &str, terms: &[String], max_chars: u
     truncate_content_to_max(content.trim(), max_chars).to_string()
 }
 
-pub(crate) fn archive_match_score(content: &str, title: &str, terms: &[String]) -> u32 {
-    if terms.is_empty() {
-        return 1;
-    }
-    let normalized_content = normalize_archive_match_text(content);
-    let normalized_title = normalize_archive_match_text(title);
-    let mut score = 0u32;
-    for term in terms {
-        if normalized_title.contains(term) {
-            score = score.saturating_add(4);
-        }
-        if normalized_content.contains(term) {
-            score = score.saturating_add(3);
-        }
-    }
-    score
-}
-
 fn build_archive_record(
     locator: ArchiveRecordLocator,
     title: String,
@@ -550,6 +966,7 @@ fn build_archive_record(
         content_truncated,
         cues,
         observed_at,
+        retrieval_trace: None,
     }
 }
 
@@ -836,9 +1253,21 @@ mod tests {
         assert_eq!(hits[0].source, ArchiveRecordSource::DailyNote);
         assert!(hits[0].citation.contains("2026-04-02.md"));
         assert_eq!(
+            hits[0].retrieval_trace.as_ref().map(|trace| trace.backend),
+            Some(archive_search_backend_kind())
+        );
+        assert_eq!(
             ArchiveRecordLocator::parse_record_id(&hits[0].record_id),
             Some(hits[0].locator.clone())
         );
+    }
+
+    #[test]
+    fn collect_archive_match_terms_keeps_cjk_windows() {
+        let terms = collect_archive_match_terms("灯光自动化");
+        assert!(terms.iter().any(|term| term == "灯光自动化"));
+        assert!(terms.iter().any(|term| term == "灯光"));
+        assert!(terms.iter().any(|term| term == "自动"));
     }
 
     #[test]

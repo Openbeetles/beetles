@@ -2,17 +2,15 @@
 
 [中文](../zh-cn/tools.md) | **English** | [Doc index](../README.md)
 
-This page explains the tools Beetle can register at runtime.
+This page lists the tools Beetle may register at runtime.
 
-Important:
+Keep three things in mind:
 
 - users do not manually type tool names in normal chat
 - the model may call these tools automatically
-- the exact visible tool set depends on target, features, config, and policy
+- the visible tool set depends on target, features, config, and policy
 
-The authoritative registry is [`build_default_registry`](../../src/tools/registry.rs).
-
-## Always Registered
+## Base Tools
 
 | Tool | What it is for |
 |------|----------------|
@@ -43,7 +41,7 @@ The authoritative registry is [`build_default_registry`](../../src/tools/registr
 | `proxy_config` | read/write proxy config |
 | `model_config` | read/write model config fields |
 
-## Extra Non-ESP Tools With `tools_network_extra`
+## Extra Non-ESP Network Tools
 
 These appear only on non-ESP builds:
 
@@ -65,7 +63,7 @@ These appear only on non-ESP builds:
 | `cron_manage` | persistent scheduled tasks |
 | `network_scan` | WiFi and connectivity checks |
 
-Conditionally registered with diagnostics enabled:
+With diagnostics enabled, these appear only when the related hardware/config is present:
 
 | Tool | When it appears |
 |------|------------------|
@@ -83,15 +81,15 @@ These appear only when audio config and required credentials are present:
 | `voice_input` | speech-to-text |
 | `voice_output` | text-to-speech |
 
-## Host-Only Utilities
+## Linux / Non-ESP Utilities
 
 These are available only on non-ESP builds:
 
 | Tool | What it is for |
 |------|----------------|
 | `shell` | restricted shell execution |
-| `process` | host process operations |
-| `network` | host network diagnostics |
+| `process` | local process operations |
+| `network` | local network diagnostics |
 
 ## Usage Notes
 
@@ -99,7 +97,7 @@ These are available only on non-ESP builds:
 - `private_garden` is scoped to the current chat.
 - `memory_search` and `memory_get` return archive evidence, not canonical memory truth.
 - `http_request`, `web_fetch`, and `pdf_read` reject private/internal targets.
-- `GET /api/tools` may not show every runtime-registered tool; the runtime registry is the source of truth.
+- `GET /api/tools` may not show every runtime-registered tool; use the runtime registry as the final reference.
 
 Related docs:
 

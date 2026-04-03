@@ -2,23 +2,21 @@
 
 [English](../en-us/tools.md) | **中文** | [文档索引](../README.md)
 
-这篇文档讲的是 Beetle 在运行时到底有哪些工具可用。
+Beetle 工具列表如下。
 
-先把最容易误解的三点说清楚：
+说明：
 
 - 普通聊天里，用户不需要手动输入工具名
 - 模型会在需要时自动调用这些工具
-- 真正能看到哪些工具，还会受 target、feature、配置和策略影响
+- 实际可见的工具列表会受 target、feature、配置和策略影响
 
-权威来源是 [`build_default_registry`](../../src/tools/registry.rs)。
-
-## 始终注册的工具
+## 基础工具
 
 | 工具 | 用途 |
 |------|------|
 | `get_time` | 获取当前 UTC 时间 |
-| `env` | 读取环境变量，主要用于运行时/调试场景 |
-| `message` | 发送运行时管理的出站消息 |
+| `env` | 读取环境变量，主要用于程序配置和调试 |
+| `message` | 发送程序管理的出站消息 |
 | `task` | 持久任务管理 |
 | `calendar` | 持久日历事件 |
 | `files` | 列出或读取状态根下的文件 |
@@ -43,9 +41,9 @@
 | `proxy_config` | 读写代理配置 |
 | `model_config` | 读写模型配置字段 |
 
-## 非 ESP 且启用 `tools_network_extra` 时额外出现的工具
+## 非 ESP 构建的额外网络工具
 
-这些工具只会在非 ESP 构建里出现。对固件用户来说，通常可以先忽略这一组。
+以下工具仅在非 ESP 构建中提供。
 
 | 工具 | 用途 |
 |------|------|
@@ -65,7 +63,7 @@
 | `cron_manage` | 持久定时任务 |
 | `network_scan` | WiFi 和连通性检查 |
 
-`tools_diagnostics` 打开后，下面这些工具会按条件出现：
+启用 `tools_diagnostics` 后，以下工具按配置出现：
 
 | 工具 | 出现条件 |
 |------|----------|
@@ -83,23 +81,23 @@
 | `voice_input` | 语音转文字 |
 | `voice_output` | 文字转语音 |
 
-## 仅宿主侧可用的工具
+## Linux / 非 ESP 专属工具
 
-这些工具只在非 ESP 构建里可用，主要是给宿主侧开发和调试准备的：
+以下工具只在非 ESP 构建中可用：
 
 | 工具 | 用途 |
 |------|------|
 | `shell` | 受限 shell 执行 |
-| `process` | 宿主进程操作 |
-| `network` | 宿主网络诊断 |
+| `process` | 本地进程操作 |
+| `network` | 本地网络诊断 |
 
-## 使用说明
+## 使用限制
 
 - `files` 只读；`file_write` 和 `file_edit` 只能操作允许写入的路径。
 - `private_garden` 按当前 chat 隔离，不会和别的会话混在一起。
 - `memory_search` 和 `memory_get` 返回的是档案证据，不是最终事实层。
 - `http_request`、`web_fetch`、`pdf_read` 会拒绝内网和本机目标。
-- `GET /api/tools` 可能列不全全部运行时工具，真正的准绳还是注册表。
+- `GET /api/tools` 可能不会列出全部工具；完整列表以注册表为准。
 
 相关文档：
 

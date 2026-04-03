@@ -2,7 +2,7 @@
 
 **English** | [中文](../zh-cn/architecture.md) | [Doc index](../README.md)
 
-Read this page when you want to understand how Beetle is put together, not when you just want to flash a board.
+This page is a quick architecture guide for developers extending Beetle.
 
 It covers:
 

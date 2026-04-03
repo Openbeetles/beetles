@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use super::{
-    archive_search::normalize_archive_match_text, ArchiveRecordSource, ArchiveSearchHit,
-    MemoryProfile,
+    archive_search::normalize_archive_match_text, memory_capability_profile, ArchiveRecordSource,
+    ArchiveSearchHit, MemoryProfile,
 };
 
 #[derive(Clone, Copy)]
@@ -17,17 +17,18 @@ struct ArchiveSelectorPolicy {
 }
 
 fn selector_policy(profile: MemoryProfile, max_chars: usize) -> ArchiveSelectorPolicy {
+    let capability = memory_capability_profile(profile);
     match profile {
         MemoryProfile::Standard => ArchiveSelectorPolicy {
-            max_items: 4,
-            max_chars,
+            max_items: capability.archive_prompt_max_items.min(4),
+            max_chars: max_chars.min(capability.archive_prompt_max_chars),
             transcript_quota: 2,
             daily_note_quota: 1,
             turn_log_quota: 1,
         },
         MemoryProfile::Embedded => ArchiveSelectorPolicy {
-            max_items: 3,
-            max_chars,
+            max_items: capability.archive_prompt_max_items.min(3),
+            max_chars: max_chars.min(capability.archive_prompt_max_chars),
             transcript_quota: 1,
             daily_note_quota: 1,
             turn_log_quota: 1,
@@ -80,6 +81,29 @@ fn archive_prompt_line_len(hit: &ArchiveSearchHit) -> usize {
         .saturating_add(hit.cues.iter().map(|cue| cue.len()).sum::<usize>())
 }
 
+fn annotate_selector_reason(mut hit: ArchiveSearchHit, reason: String) -> ArchiveSearchHit {
+    if let Some(trace) = hit.retrieval_trace.as_mut() {
+        trace.selector_reason = Some(reason);
+    }
+    hit
+}
+
+fn primary_selector_reason(hit: &ArchiveSearchHit, used: usize, quota: usize) -> String {
+    format!(
+        "selected in primary quota pass as top {} evidence ({}/{})",
+        hit.source.label(),
+        used.saturating_add(1),
+        quota
+    )
+}
+
+fn relaxed_selector_reason(hit: &ArchiveSearchHit) -> String {
+    format!(
+        "selected in quota-relax pass to fill remaining archive budget with {} evidence",
+        hit.source.label()
+    )
+}
+
 pub(crate) fn select_archive_hits_for_prompt(
     mut hits: Vec<ArchiveSearchHit>,
     profile: MemoryProfile,
@@ -123,7 +147,8 @@ pub(crate) fn select_archive_hits_for_prompt(
         used_chars = used_chars.saturating_add(line_len);
         *per_source.entry(hit.source).or_insert(0) += 1;
         similarity_keys.push(key);
-        selected.push(hit);
+        let reason = primary_selector_reason(&hit, used, source_quota(policy, hit.source));
+        selected.push(annotate_selector_reason(hit, reason));
     }
 
     if selected.len() < policy.max_items {
@@ -139,7 +164,8 @@ pub(crate) fn select_archive_hits_for_prompt(
             }
             used_chars = used_chars.saturating_add(line_len);
             similarity_keys.push(key);
-            selected.push(hit);
+            let reason = relaxed_selector_reason(&hit);
+            selected.push(annotate_selector_reason(hit, reason));
         }
     }
 
@@ -174,6 +200,7 @@ mod tests {
             score,
             cues: vec!["test".to_string()],
             observed_at: Some(score as u64),
+            retrieval_trace: Some(Default::default()),
         }
     }
 
@@ -215,5 +242,11 @@ mod tests {
                 .count(),
             1
         );
+        assert!(selected.iter().all(|hit| {
+            hit.retrieval_trace
+                .as_ref()
+                .and_then(|trace| trace.selector_reason.as_deref())
+                .is_some()
+        }));
     }
 }

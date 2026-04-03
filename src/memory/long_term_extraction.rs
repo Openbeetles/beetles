@@ -14,11 +14,13 @@ use std::fmt::Write as _;
 
 use super::{
     build_archive_evidence_block, memory_policy, render_long_term_memory_block,
-    search_archive_records, ArchiveRecordSource, ArchiveSearchHit, ArchiveSearchQuery,
-    LongTermExtractionPolicy, LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryFreshness,
-    LongTermMemoryKind, LongTermMemorySlot, LongTermMemorySourceScope, LongTermMemorySourceType,
-    LongTermMemoryStaleHint, LongTermMemoryStore, MemoryProfile, MemoryStore, SessionMessage,
-    SessionStore, SessionSummaryStore, TurnLedgerStore, MAX_LONG_TERM_MEMORY_ITEMS,
+    run_memory_governance_kernel, search_archive_records, ArchiveRecordSource, ArchiveSearchHit,
+    ArchiveSearchQuery, LongTermExtractionPolicy, LongTermMemoryConfidence, LongTermMemoryDraft,
+    LongTermMemoryEntry, LongTermMemoryFreshness, LongTermMemoryKind, LongTermMemorySlot,
+    LongTermMemorySourceScope, LongTermMemorySourceType, LongTermMemoryStaleHint,
+    LongTermMemoryStore, MemoryGovernanceContext, MemoryGovernanceInput, MemoryProfile,
+    MemoryStore, SessionMessage, SessionStore, SessionSummaryStore, TurnLedgerStore,
+    MAX_LONG_TERM_MEMORY_ITEMS,
 };
 
 /// 长期记忆提取状态存储路径（相对状态根）。
@@ -243,6 +245,7 @@ pub fn build_long_term_memory_extraction_input(
     chat_id: &str,
     recent: &[SessionMessage],
     session_summary: Option<&str>,
+    factual_governance_brief: Option<&str>,
     archive_evidence: Option<&str>,
     profile: MemoryProfile,
 ) -> String {
@@ -271,6 +274,14 @@ pub fn build_long_term_memory_extraction_input(
 
     if let Some(memory) = existing_memory {
         input.push_str(&memory);
+        input.push_str("\n\n");
+    }
+
+    if let Some(factual_governance_brief) = factual_governance_brief
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        input.push_str(factual_governance_brief);
         input.push_str("\n\n");
     }
 
@@ -552,6 +563,14 @@ fn enrich_drafts_with_archive_evidence(
         if hits.is_empty() {
             continue;
         }
+        let support_count = hits
+            .iter()
+            .filter(|hit| archive_hit_supports_draft(draft, hit))
+            .count();
+        let conflict_count = hits
+            .iter()
+            .filter(|hit| archive_hit_conflicts_draft(draft, hit))
+            .count();
         let mut citations = Vec::with_capacity(hits.len());
         let mut last_confirmed_at = 0u64;
         let mut used_now_confirmation = false;
@@ -578,7 +597,80 @@ fn enrich_drafts_with_archive_evidence(
         if last_confirmed_at > 0 {
             draft.last_confirmed_at = Some(last_confirmed_at);
         }
+        if support_count >= 3 {
+            elevate_draft_confidence(draft, LongTermMemoryConfidence::High);
+        } else if support_count >= 1 {
+            elevate_draft_confidence(draft, LongTermMemoryConfidence::Medium);
+        }
+        if conflict_count > support_count && conflict_count > 0 {
+            lower_draft_confidence(draft, LongTermMemoryConfidence::Low);
+            draft
+                .stale_hint
+                .get_or_insert(LongTermMemoryStaleHint::ReviewBeforeUse);
+        }
+        if draft.freshness.is_none() {
+            draft.freshness = Some(match draft.kind {
+                LongTermMemoryKind::Project | LongTermMemoryKind::Task => {
+                    LongTermMemoryFreshness::Dynamic
+                }
+                _ => LongTermMemoryFreshness::Stable,
+            });
+        }
     }
+}
+
+fn archive_hit_supports_draft(draft: &LongTermMemoryDraft, hit: &ArchiveSearchHit) -> bool {
+    archive_hit_affinity_score(draft, hit) >= 10
+}
+
+fn archive_hit_conflicts_draft(draft: &LongTermMemoryDraft, hit: &ArchiveSearchHit) -> bool {
+    let draft_topic = normalize_match_text(&draft.topic);
+    let draft_terms = collect_affinity_terms(draft);
+    let hit_text = normalize_match_text(&format!(
+        "{} {} {}",
+        hit.title,
+        hit.excerpt,
+        hit.cues.join(" ")
+    ));
+    let topic_overlap = !draft_topic.is_empty() && hit_text.contains(&draft_topic);
+    let term_overlap = draft_terms
+        .iter()
+        .filter(|term| hit_text.contains(term.as_str()))
+        .count();
+    topic_overlap && term_overlap <= 1 && archive_hit_affinity_score(draft, hit) < 10
+}
+
+fn elevate_draft_confidence(draft: &mut LongTermMemoryDraft, target: LongTermMemoryConfidence) {
+    let next = match (
+        draft.confidence.unwrap_or(LongTermMemoryConfidence::Low),
+        target,
+    ) {
+        (LongTermMemoryConfidence::High, _) | (_, LongTermMemoryConfidence::Low) => {
+            draft.confidence.unwrap_or(target)
+        }
+        (LongTermMemoryConfidence::Medium, LongTermMemoryConfidence::High) => {
+            LongTermMemoryConfidence::High
+        }
+        (LongTermMemoryConfidence::Low, desired) => desired,
+        (existing, _) => existing,
+    };
+    draft.confidence = Some(next);
+}
+
+fn lower_draft_confidence(draft: &mut LongTermMemoryDraft, target: LongTermMemoryConfidence) {
+    let next = match (
+        draft.confidence.unwrap_or(LongTermMemoryConfidence::Medium),
+        target,
+    ) {
+        (_, LongTermMemoryConfidence::High) => LongTermMemoryConfidence::High,
+        (LongTermMemoryConfidence::Low, _) => LongTermMemoryConfidence::Low,
+        (LongTermMemoryConfidence::Medium, LongTermMemoryConfidence::Low)
+        | (LongTermMemoryConfidence::High, LongTermMemoryConfidence::Low) => {
+            LongTermMemoryConfidence::Low
+        }
+        (existing, _) => existing,
+    };
+    draft.confidence = Some(next);
 }
 
 pub fn apply_long_term_memory_extraction(
@@ -1188,6 +1280,26 @@ fn extract_long_term_memory(
             .min(768),
         profile,
     );
+    let governance = run_memory_governance_kernel(
+        MemoryGovernanceContext {
+            session_store: ctx.session_store,
+            long_term_memory_store: ctx.long_term_memory_store,
+            memory_store: ctx.memory_store,
+            turn_ledger_store: ctx.turn_ledger_store,
+        },
+        MemoryGovernanceInput {
+            chat_id,
+            query_hint: archive_query,
+            summary_text: session_summary.as_deref(),
+            recent: &recent,
+            max_len: memory_policy(profile)
+                .long_term_recall
+                .block_max_len_cap
+                .min(768),
+            profile,
+            external_content_used: false,
+        },
+    );
     let messages = [Message {
         role: Cow::Borrowed("user"),
         content: build_long_term_memory_extraction_input(
@@ -1195,6 +1307,7 @@ fn extract_long_term_memory(
             chat_id,
             &recent,
             session_summary.as_deref(),
+            governance.extraction_brief.as_deref(),
             archive_evidence.as_deref(),
             profile,
         ),
@@ -1734,6 +1847,7 @@ mod tests {
             "chat-1",
             &recent,
             Some("当前重点是 memory pipeline 收口。"),
+            Some("## Shared factual reconcile\n- response_style: action=reinforce; supports=2; conflicts=0; evidence=2 hits"),
             archive_evidence.as_deref(),
             MemoryProfile::Standard,
         );
@@ -1742,6 +1856,7 @@ mod tests {
         assert!(input.contains("当前重点是 memory pipeline 收口。"));
         assert!(input.contains("## Existing memory slots"));
         assert!(input.contains("preference.response_style"));
+        assert!(input.contains("## Shared factual reconcile"));
         assert!(input.contains("## Archive evidence"));
         assert!(input.contains("## Recent conversation"));
         assert!(input.contains("USER: 最近我们在做长期记忆重构。"));

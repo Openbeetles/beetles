@@ -2,15 +2,15 @@
 
 [中文](../zh-cn/llm-providers.md) | **English** | [Doc index](../README.md)
 
-This page explains how Beetle understands LLM providers in `config/llm.json`.
+This page explains the LLM settings in `config/llm.json`.
 
-It answers three practical questions:
+It focuses on three questions:
 
 1. Which `provider` values are supported?
 2. When can `api_url` be empty?
 3. In what order are multiple sources tried?
 
-## The Short Version
+## Quick Summary
 
 - Beetle supports multiple LLM sources.
 - Sources are configured in `config/llm.json`.

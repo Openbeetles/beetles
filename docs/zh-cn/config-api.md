@@ -1,16 +1,16 @@
-# 配置 API 契约 / Config API Contract
+# HTTP 配置 API
 
 [English](../en-us/config-api.md) | **中文** | [文档索引](../README.md)
 
-这篇文档是写给要直接调用设备 HTTP 接口的开发者的。
+本页面向直接调用 Beetle HTTP 接口的开发者。
 
-你一般会在下面这些场景里用到它：
+适用场景：
 
 - 想搞清楚配对码和 CSRF 规则
 - 想确认每个读写接口到底怎么工作
 - 想自己写前端、脚本或第三方集成
 
-如果你只是想先把设备跑起来、打开配置页、完成配网，那先看 [configuration.md](configuration.md) 会更合适。
+如果只需要完成首次配置，请先看 [configuration.md](configuration.md)。
 
 ## 网络与访问
 
@@ -19,8 +19,6 @@
 - **CORS**：所有 `/api/*` 及 `GET /` 的响应应带 `Access-Control-Allow-Origin: *`；OPTIONS 预检返回 200，并带 `Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS`、`Access-Control-Allow-Headers: Content-Type, X-Pairing-Code, X-CSRF-Token`（及大小写变体），以便外置配置页跨域调用。
 
 ## 配对码与鉴权
-
-权威实现：[`dispatch.rs`](../../src/platform/http_server/router/dispatch.rs)、[`auth.rs`](../../src/platform/http_server/router/auth.rs)。
 
 ### 术语
 
@@ -33,7 +31,7 @@
 
 - 任意 **OPTIONS**。
 - **GET /**：302 至配对相关页面（`Location: /pairing`），**不**返回 JSON。
-- **GET /wifi**：设备内嵌配置页 HTML（路径历史原因；**没有** `GET /config`）。
+- **GET /wifi**：设备内嵌配置页 HTML。
 - **GET /pairing**、**GET /common.css**、**GET /common.js**。
 - **GET /api/pairing_code**、**POST /api/pairing_code**（仅首次写入配对码）。
 - **GET /api/wifi/scan**、**GET /api/csrf_token**（未激活也可调用）。
@@ -77,15 +75,9 @@
 
 - **未激活**：302，`Location: /pairing`。
 - **已激活**：200 JSON，`name` 固定为 **`beetle`**，`version` 为固件版本，`endpoints` 为字符串数组。
-- **权威列表**：以设备返回为准；由 [`handlers/root.rs`](../../src/platform/http_server/handlers/root.rs) 生成。该数组会随版本扩充，但仍可能**未穷尽** [`dispatch.rs`](../../src/platform/http_server/router/dispatch.rs) 中已实现的路由；集成时不应仅以 `GET /` 的 `endpoints` 为唯一依据。截至当前实现，下列路由仍常见于 dispatch 中而**未**列入 `endpoints`（以固件为准）：
-  - `POST /api/config/wifi`
-  - `GET` / `POST /api/config/display`
-  - `GET /api/metrics`、`GET /api/resource`、`GET /api/csrf_token`、`GET /api/tools`
-  - `DELETE /api/sessions`
-  - `POST /api/dingtalk/webhook`、`GET`/`POST /api/wecom/webhook`、`POST /api/webhook/qq`
-  - `GET /common.css`、`GET /common.js`
+- **说明**：`endpoints` 适合做接口探测，但不要把它当成唯一接口清单。集成时请以本文档列出的接口为准。
 
-**示例**（字段与顺序以运行时为准）：
+**示例**（字段与顺序以程序实际返回为准）：
 
 ```json
 {
@@ -140,7 +132,7 @@
 - **用途**：仅写入 LLM 段（多源 + 全局流式开关）到 SPIFFS（`config/llm.json`）；请求体为 segment 全量，后端按 body 校验并写入。
 - **鉴权**：已激活 + 配对码 + CSRF（要求同本节「写操作：配对码 + CSRF」）。
 - **请求**：`Content-Type: application/json`，Body 为 `{ "llm_sources": [...], "llm_stream": false, "llm_router_source_index": null, "llm_worker_source_index": null }`（后两项可选，省略等同 null）。`llm_sources` 非空；每项 `api_key` 必填。每项可含：
-  - `provider`（必填，非空字符串；长度等校验见 `config` 模块。运行时客户端分流见 [`llm/mod.rs`](../../src/llm/mod.rs)：常见值含 `anthropic` 与 `openai`、`openai_compatible`、`gemini`、`glm`、`qwen`、`deepseek`、`moonshot`、`ollama` 等；完整说明见 [LLM 提供商](llm-providers.md)）
+  - `provider`（必填，非空字符串；长度等校验见 `config` 模块。客户端分流见 [`llm/mod.rs`](../../src/llm/mod.rs)：常见值含 `anthropic` 与 `openai`、`openai_compatible`、`gemini`、`glm`、`qwen`、`deepseek`、`moonshot`、`ollama` 等；完整说明见 [LLM 提供商](llm-providers.md)）
   - `api_key`（必填）
   - `model`（必填）
   - `api_url`（必填字段；若 `provider` 属于 OpenAI 兼容族且留空，则由客户端使用各厂商默认 base URL，见 `build_llm_clients`）
@@ -170,7 +162,7 @@
 - **用途**：获取当前硬件设备配置段（`config/hardware.json` 内容）。
 - **鉴权**：已激活；GET **不必**附带配对码。
 - **响应**：200，JSON 为 `HardwareSegment`：`{ "hardware_devices": [...] }`。文件不存在时返回 `{ "hardware_devices": [] }`。
-- **说明**：GET 返回文件原始内容。若启动时该校验未通过，运行时使用空设备列表，且 `load_errors` 会包含 `hardware_validation_failed`。
+- **说明**：GET 返回文件原始内容。若启动时校验未通过，程序会使用空设备列表，且 `load_errors` 会包含 `hardware_validation_failed`。
 
 ### POST /api/config/hardware
 
@@ -273,7 +265,7 @@
 
 - **用途**：返回固件侧为 HTTP 列举的「工具名 + 简短描述」JSON 数组，供配置页或脚本探测能力。
 - **鉴权**：已激活；GET **不必**附带配对码。
-- **响应**：200，JSON 数组 `[{"name":"get_time","description":"..."}, ...]`。实现见 [`handlers/tools.rs`](../../src/platform/http_server/handlers/tools.rs)：条目随 **`tools_network_extra`** / **`tools_diagnostics`** 等编译 feature 变化，且**不一定**与 Agent 运行时 [`build_default_registry`](../../src/tools/registry.rs) 完全一致（例如始终注册的 **env**、**file_write** 等可能未出现在该列表中）。**权威工具集合**以 Agent 注册表与 [Agent 工具说明](tools.md) 为准。
+- **响应**：200，JSON 数组 `[{"name":"get_time","description":"..."}, ...]`。实现见 [`handlers/tools.rs`](../../src/platform/http_server/handlers/tools.rs)：条目随 **`tools_network_extra`** / **`tools_diagnostics`** 等编译 feature 变化，且**不一定**与程序实际加载的全部工具完全一致（例如 **env**、**file_write** 等可能不会出现在该列表中）。完整工具说明见 [Agent 工具说明](tools.md)。
 
 ## Skills
 
