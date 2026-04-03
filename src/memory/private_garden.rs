@@ -14,6 +14,26 @@ pub const PRIVATE_GARDEN_MAX_DOC_BYTES: usize = 8 * 1024;
 pub const PRIVATE_GARDEN_TOTAL_BYTE_LIMIT: usize =
     PRIVATE_GARDEN_MAX_DOCS_PER_CHAT * PRIVATE_GARDEN_MAX_DOC_BYTES;
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PrivateGardenDocRole {
+    Workspace,
+    Diary,
+    Relational,
+    Sealed,
+}
+
+impl PrivateGardenDocRole {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Workspace => "workspace",
+            Self::Diary => "diary",
+            Self::Relational => "relational",
+            Self::Sealed => "sealed",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PrivateGardenDocRecord {
     pub path: String,
@@ -83,6 +103,22 @@ pub fn normalize_private_garden_doc_path(doc_path: &str) -> Result<String> {
         ));
     }
     Ok(normalized)
+}
+
+pub fn classify_private_garden_doc_path(doc_path: &str) -> PrivateGardenDocRole {
+    let normalized = doc_path.trim_start_matches('/');
+    if normalized.starts_with("sealed/") || normalized.starts_with("sealed_inner/") {
+        PrivateGardenDocRole::Sealed
+    } else if normalized.starts_with("diary/")
+        || normalized.starts_with("journal/")
+        || normalized.starts_with("private_diary/")
+    {
+        PrivateGardenDocRole::Diary
+    } else if normalized.starts_with("relationship/") || normalized.starts_with("relational/") {
+        PrivateGardenDocRole::Relational
+    } else {
+        PrivateGardenDocRole::Workspace
+    }
 }
 
 pub(crate) fn build_private_garden_preview(content: &str) -> String {
@@ -170,6 +206,11 @@ pub fn render_private_garden_block(
     }
     let usage = build_private_garden_usage(&all_docs);
     let directories = summarize_private_garden_directories(&all_docs, 4);
+    let mut role_counts = BTreeMap::<&'static str, usize>::new();
+    for doc in &all_docs {
+        let label = classify_private_garden_doc_path(&doc.path).label();
+        *role_counts.entry(label).or_insert(0) += 1;
+    }
     let docs: Vec<&PrivateGardenDocRecord> = all_docs
         .iter()
         .filter(|doc| !doc.preview.trim().is_empty())
@@ -178,7 +219,7 @@ pub fn render_private_garden_block(
     let mut out = String::with_capacity(max_len.min(768));
     out.push_str("## Private Garden\n");
     out.push_str(
-        "Free private workspace. Use `private_garden` when you want to inspect or reorganize it. Keep docs current by rewriting in place instead of appending a history trail.\n",
+        "Free private space. `workspace/*` is for active working material, `diary/*` for inward journal traces, `relationship/*` for relationship-side private notes, and `sealed/*` for the most private inner material. Keep docs current by rewriting in place instead of appending a history trail.\n",
     );
     let _ = writeln!(
         out,
@@ -190,6 +231,16 @@ pub fn render_private_garden_block(
         usage.bytes_limit,
         usage.bytes_free
     );
+    if !role_counts.is_empty() {
+        out.push_str("Roles: ");
+        for (idx, (label, count)) in role_counts.iter().enumerate() {
+            if idx > 0 {
+                out.push_str("; ");
+            }
+            let _ = write!(out, "{}={}", label, count);
+        }
+        out.push('\n');
+    }
     if !directories.is_empty() {
         out.push_str("Folders: ");
         for (idx, dir) in directories.iter().enumerate() {
@@ -235,6 +286,26 @@ mod tests {
     }
 
     #[test]
+    fn classifies_private_garden_doc_roles() {
+        assert_eq!(
+            classify_private_garden_doc_path("workspace/notes.md"),
+            PrivateGardenDocRole::Workspace
+        );
+        assert_eq!(
+            classify_private_garden_doc_path("journal/tonight.md"),
+            PrivateGardenDocRole::Diary
+        );
+        assert_eq!(
+            classify_private_garden_doc_path("relationship/owner.md"),
+            PrivateGardenDocRole::Relational
+        );
+        assert_eq!(
+            classify_private_garden_doc_path("sealed/core.md"),
+            PrivateGardenDocRole::Sealed
+        );
+    }
+
+    #[test]
     fn renders_private_garden_block_with_recent_preview() {
         let block = render_private_garden_block(
             &[PrivateGardenDocRecord {
@@ -253,6 +324,7 @@ mod tests {
 
         assert!(block.contains("## Private Garden"));
         assert!(block.contains("Capacity: 1/16 docs used"));
+        assert!(block.contains("Roles: diary=1"));
         assert!(block.contains("Folders: journal"));
         assert!(block.contains("journal/tonight.md"));
         assert!(block.contains("自由空间和内核区分开来"));
