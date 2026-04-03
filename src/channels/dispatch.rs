@@ -262,63 +262,6 @@ pub fn run_dispatch(outbound_rx: OutboundRx, sinks: Arc<ChannelSinks>) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::replay_cooldown_buffer_with;
-    use crate::bus::PcMsg;
-    use std::collections::VecDeque;
-
-    fn build_msg(channel: &str, chat_id: &str, content: &str) -> PcMsg {
-        PcMsg::new(channel, chat_id, content).expect("pcmsg")
-    }
-
-    #[test]
-    fn replay_cooldown_buffer_preserves_fifo_for_ready_messages() {
-        let mut buffer = VecDeque::from(vec![
-            build_msg("blocked", "chat-1", "first-blocked"),
-            build_msg("ready", "chat-2", "first-ready"),
-            build_msg("ready", "chat-2", "second-ready"),
-        ]);
-        let mut replayed = Vec::new();
-
-        replay_cooldown_buffer_with(
-            &mut buffer,
-            |channel| channel == "blocked",
-            |msg| {
-                replayed.push(msg.content.clone());
-                true
-            },
-        );
-
-        assert_eq!(replayed, vec!["first-ready", "second-ready"]);
-        assert_eq!(buffer.len(), 1);
-        assert_eq!(buffer[0].content, "first-blocked");
-    }
-
-    #[test]
-    fn replay_cooldown_buffer_reinserts_failed_message_in_place() {
-        let mut buffer = VecDeque::from(vec![
-            build_msg("ready", "chat-1", "first-ready"),
-            build_msg("ready", "chat-1", "second-ready"),
-        ]);
-        let mut attempts = 0usize;
-
-        replay_cooldown_buffer_with(
-            &mut buffer,
-            |_channel| false,
-            |_msg| {
-                attempts += 1;
-                false
-            },
-        );
-
-        assert_eq!(attempts, 1);
-        assert_eq!(buffer.len(), 2);
-        assert_eq!(buffer[0].content, "first-ready");
-        assert_eq!(buffer[1].content, "second-ready");
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Channel sink construction & sender thread spawning (extracted from main.rs)
 // ---------------------------------------------------------------------------
@@ -557,5 +500,62 @@ pub fn spawn_sender_threads(
             },
         );
         log::info!("[{}] QQ Channel sender thread started", TAG);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replay_cooldown_buffer_with;
+    use crate::bus::PcMsg;
+    use std::collections::VecDeque;
+
+    fn build_msg(channel: &str, chat_id: &str, content: &str) -> PcMsg {
+        PcMsg::new(channel, chat_id, content).expect("pcmsg")
+    }
+
+    #[test]
+    fn replay_cooldown_buffer_preserves_fifo_for_ready_messages() {
+        let mut buffer = VecDeque::from(vec![
+            build_msg("blocked", "chat-1", "first-blocked"),
+            build_msg("ready", "chat-2", "first-ready"),
+            build_msg("ready", "chat-2", "second-ready"),
+        ]);
+        let mut replayed = Vec::new();
+
+        replay_cooldown_buffer_with(
+            &mut buffer,
+            |channel| channel == "blocked",
+            |msg| {
+                replayed.push(msg.content.clone());
+                true
+            },
+        );
+
+        assert_eq!(replayed, vec!["first-ready", "second-ready"]);
+        assert_eq!(buffer.len(), 1);
+        assert_eq!(buffer[0].content, "first-blocked");
+    }
+
+    #[test]
+    fn replay_cooldown_buffer_reinserts_failed_message_in_place() {
+        let mut buffer = VecDeque::from(vec![
+            build_msg("ready", "chat-1", "first-ready"),
+            build_msg("ready", "chat-1", "second-ready"),
+        ]);
+        let mut attempts = 0usize;
+
+        replay_cooldown_buffer_with(
+            &mut buffer,
+            |_channel| false,
+            |_msg| {
+                attempts += 1;
+                false
+            },
+        );
+
+        assert_eq!(attempts, 1);
+        assert_eq!(buffer.len(), 2);
+        assert_eq!(buffer[0].content, "first-ready");
+        assert_eq!(buffer[1].content, "second-ready");
     }
 }

@@ -16,6 +16,12 @@ struct ArchiveSelectorPolicy {
     turn_log_quota: usize,
 }
 
+struct PreparedArchivePromptHit {
+    hit: ArchiveSearchHit,
+    similarity_key: String,
+    prompt_line_len: usize,
+}
+
 fn selector_policy(profile: MemoryProfile, max_chars: usize) -> ArchiveSelectorPolicy {
     let capability = memory_capability_profile(profile);
     match profile {
@@ -105,7 +111,7 @@ fn relaxed_selector_reason(hit: &ArchiveSearchHit) -> String {
 }
 
 pub(crate) fn select_archive_hits_for_prompt(
-    mut hits: Vec<ArchiveSearchHit>,
+    hits: Vec<ArchiveSearchHit>,
     profile: MemoryProfile,
     max_chars: usize,
 ) -> Vec<ArchiveSearchHit> {
@@ -114,12 +120,7 @@ pub(crate) fn select_archive_hits_for_prompt(
         return Vec::new();
     }
 
-    hits.sort_by(|a, b| {
-        b.score
-            .cmp(&a.score)
-            .then_with(|| b.observed_at.cmp(&a.observed_at))
-            .then_with(|| a.citation.cmp(&b.citation))
-    });
+    let mut prepared_hits = prepare_archive_prompt_hits(hits);
 
     let mut selected = Vec::with_capacity(policy.max_items);
     let mut deferred = Vec::new();
@@ -127,49 +128,66 @@ pub(crate) fn select_archive_hits_for_prompt(
     let mut per_source = HashMap::<ArchiveRecordSource, usize>::new();
     let mut similarity_keys = Vec::with_capacity(policy.max_items);
 
-    for hit in hits {
+    for prepared in prepared_hits.drain(..) {
         if selected.len() >= policy.max_items {
             break;
         }
-        let line_len = archive_prompt_line_len(&hit);
-        if used_chars.saturating_add(line_len) > policy.max_chars {
+        if used_chars.saturating_add(prepared.prompt_line_len) > policy.max_chars {
             continue;
         }
-        let key = normalized_similarity_key(&hit);
-        if is_too_similar(&similarity_keys, &key) {
+        if is_too_similar(&similarity_keys, &prepared.similarity_key) {
             continue;
         }
-        let used = per_source.get(&hit.source).copied().unwrap_or(0);
-        if used >= source_quota(policy, hit.source) {
-            deferred.push((key, hit));
+        let used = per_source.get(&prepared.hit.source).copied().unwrap_or(0);
+        if used >= source_quota(policy, prepared.hit.source) {
+            deferred.push(prepared);
             continue;
         }
-        used_chars = used_chars.saturating_add(line_len);
-        *per_source.entry(hit.source).or_insert(0) += 1;
-        similarity_keys.push(key);
-        let reason = primary_selector_reason(&hit, used, source_quota(policy, hit.source));
-        selected.push(annotate_selector_reason(hit, reason));
+        used_chars = used_chars.saturating_add(prepared.prompt_line_len);
+        *per_source.entry(prepared.hit.source).or_insert(0) += 1;
+        similarity_keys.push(prepared.similarity_key);
+        let reason = primary_selector_reason(
+            &prepared.hit,
+            used,
+            source_quota(policy, prepared.hit.source),
+        );
+        selected.push(annotate_selector_reason(prepared.hit, reason));
     }
 
     if selected.len() < policy.max_items {
-        for (key, hit) in deferred {
+        for prepared in deferred {
             if selected.len() >= policy.max_items {
                 break;
             }
-            let line_len = archive_prompt_line_len(&hit);
-            if used_chars.saturating_add(line_len) > policy.max_chars
-                || is_too_similar(&similarity_keys, &key)
+            if used_chars.saturating_add(prepared.prompt_line_len) > policy.max_chars
+                || is_too_similar(&similarity_keys, &prepared.similarity_key)
             {
                 continue;
             }
-            used_chars = used_chars.saturating_add(line_len);
-            similarity_keys.push(key);
-            let reason = relaxed_selector_reason(&hit);
-            selected.push(annotate_selector_reason(hit, reason));
+            used_chars = used_chars.saturating_add(prepared.prompt_line_len);
+            similarity_keys.push(prepared.similarity_key);
+            let reason = relaxed_selector_reason(&prepared.hit);
+            selected.push(annotate_selector_reason(prepared.hit, reason));
         }
     }
 
     selected
+}
+
+fn prepare_archive_prompt_hits(mut hits: Vec<ArchiveSearchHit>) -> Vec<PreparedArchivePromptHit> {
+    hits.sort_by(|a, b| {
+        b.score
+            .cmp(&a.score)
+            .then_with(|| b.observed_at.cmp(&a.observed_at))
+            .then_with(|| a.citation.cmp(&b.citation))
+    });
+    hits.into_iter()
+        .map(|hit| PreparedArchivePromptHit {
+            similarity_key: normalized_similarity_key(&hit),
+            prompt_line_len: archive_prompt_line_len(&hit),
+            hit,
+        })
+        .collect()
 }
 
 #[cfg(test)]

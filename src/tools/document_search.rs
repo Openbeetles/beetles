@@ -64,9 +64,11 @@ impl Tool for DocumentSearchTool {
         let response = if scope.is_empty() || self.state_fs.list_dir(&scope).is_ok() {
             self.search_directory(query, scope_arg, &scope, limit, case_sensitive)?
         } else if let Some(raw) = self.state_fs.read(&scope)? {
-            let mut stats = SearchStats::default();
-            stats.scanned_files = 1;
-            stats.scanned_raw_bytes = raw.len().min(MAX_TOTAL_RAW_BYTES);
+            let stats = SearchStats {
+                scanned_files: 1,
+                scanned_raw_bytes: raw.len().min(MAX_TOTAL_RAW_BYTES),
+                ..SearchStats::default()
+            };
             let matches = search_file(&scope, &raw, query, case_sensitive)
                 .into_iter()
                 .take(limit)

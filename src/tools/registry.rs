@@ -5,7 +5,8 @@ use crate::config::AppConfig;
 use crate::error::{Error, Result};
 use crate::llm::ToolSpec as LlmToolSpec;
 use crate::tools::{
-    Tool, ToolExecutionOutcome, ToolPolicyContext, MAX_TOOL_ARGS_LEN, MAX_TOOL_RESULT_LEN,
+    Tool, ToolExecutionOutcome, ToolMetadata, ToolPolicyContext, MAX_TOOL_ARGS_LEN,
+    MAX_TOOL_RESULT_LEN,
 };
 use crate::util::truncate_to_byte_len;
 use indexmap::IndexMap;
@@ -13,9 +14,16 @@ use std::sync::Arc;
 
 pub const DEFAULT_LLM_TOOL_SPECS_MAX_TOTAL_LEN: usize = 32 * 1024;
 
+struct RegisteredTool {
+    tool: Box<dyn Tool>,
+    llm_spec: LlmToolSpec,
+    metadata: ToolMetadata,
+    requires_network: bool,
+}
+
 /// 按 name 注册与派发工具；可生成带总长度上界的 tool specs。IndexMap 保证工具顺序稳定。
 pub struct ToolRegistry {
-    tools: IndexMap<&'static str, Box<dyn Tool>>,
+    tools: IndexMap<&'static str, RegisteredTool>,
 }
 
 impl Default for ToolRegistry {
@@ -33,24 +41,41 @@ impl ToolRegistry {
 
     pub fn register(&mut self, tool: Box<dyn Tool>) {
         let name = tool.name();
-        self.tools.insert(name, tool);
+        let metadata = tool.metadata();
+        let requires_network = tool.requires_network();
+        let llm_spec = LlmToolSpec {
+            name: name.to_string(),
+            description: tool.description().to_string(),
+            parameters_json: tool.schema().to_owned().into_boxed_str(),
+        };
+        self.tools.insert(
+            name,
+            RegisteredTool {
+                tool,
+                llm_spec,
+                metadata,
+                requires_network,
+            },
+        );
     }
 
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
-        self.tools.get(name).map(|b| b.as_ref())
+        self.tools.get(name).map(|entry| entry.tool.as_ref())
     }
 
     /// 该工具是否需要网络（从 Tool trait 推导）。未注册工具返回 false。
     /// Whether the named tool requires network (derived from Tool trait). Returns false for unknown tools.
     pub fn is_network_tool(&self, name: &str) -> bool {
-        self.tools.get(name).is_some_and(|t| t.requires_network())
+        self.tools
+            .get(name)
+            .is_some_and(|entry| entry.requires_network)
     }
 
     /// 该工具在本次 LLM 请求上下文中是否可见。
     pub fn is_llm_tool_visible(&self, name: &str, policy: &ToolPolicyContext<'_>) -> bool {
         self.tools
             .get(name)
-            .is_some_and(|tool| tool.metadata().is_exposed_to_llm(policy))
+            .is_some_and(|entry| entry.metadata.is_exposed_to_llm(policy))
     }
 
     /// 生成供 LLM 默认调用的 tool specs。
@@ -67,23 +92,19 @@ impl ToolRegistry {
     ) -> Vec<LlmToolSpec> {
         let mut out = Vec::with_capacity(self.tools.len());
         let mut len = 0usize;
-        for tool in self.tools.values() {
-            if !tool.metadata().is_exposed_to_llm(policy) {
+        for entry in self.tools.values() {
+            if !entry.metadata.is_exposed_to_llm(policy) {
                 continue;
             }
-            let name = tool.name();
-            let description = tool.description();
-            let parameters_json = tool.schema();
-            let add_len = name.len() + description.len() + parameters_json.len() + 2;
+            let add_len = entry.llm_spec.name.len()
+                + entry.llm_spec.description.len()
+                + entry.llm_spec.parameters_json.len()
+                + 2;
             if len + add_len > max_total_len && !out.is_empty() {
                 break;
             }
             len += add_len;
-            out.push(LlmToolSpec {
-                name: name.to_string(),
-                description: description.to_string(),
-                parameters_json: parameters_json.to_owned().into_boxed_str(),
-            });
+            out.push(entry.llm_spec.clone());
         }
         out
     }
@@ -92,7 +113,7 @@ impl ToolRegistry {
     pub fn has_llm_visible_tools(&self, policy: &ToolPolicyContext<'_>) -> bool {
         self.tools
             .values()
-            .any(|tool| tool.metadata().is_exposed_to_llm(policy))
+            .any(|entry| entry.metadata.is_exposed_to_llm(policy))
     }
 
     /// 按 name 执行工具；args 超限返回 Error::Config；返回值在 Registry 内截断至 MAX_TOOL_RESULT_LEN。

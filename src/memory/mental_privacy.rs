@@ -40,11 +40,12 @@ pub const MENTAL_PRIVACY_TARGET_SELF_MODEL: &str = "self_model";
 pub const MENTAL_PRIVACY_TARGET_SELF_CONTINUITY: &str = "self_continuity";
 pub const MENTAL_PRIVACY_TARGET_INNER_LIFE: &str = "inner_life";
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MentalPrivacyLayer {
     Shared,
     Relational,
+    #[default]
     Private,
     Sealed,
 }
@@ -60,11 +61,12 @@ impl MentalPrivacyLayer {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MentalPrivacyVisibility {
     Direct,
     SummaryOnly,
+    #[default]
     RequestOnly,
     Sealed,
 }
@@ -80,10 +82,11 @@ impl MentalPrivacyVisibility {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MentalPrivacyOwnerAccessMode {
     Direct,
+    #[default]
     RequestOnly,
     DenyByDefault,
 }
@@ -98,19 +101,21 @@ impl MentalPrivacyOwnerAccessMode {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MentalPrivacyQuotePolicy {
     Raw,
     SummaryOnly,
+    #[default]
     NeverQuote,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BoundaryPersonaPosture {
     Open,
     Warm,
+    #[default]
     Guarded,
     Sealed,
 }
@@ -126,16 +131,11 @@ impl BoundaryPersonaPosture {
     }
 }
 
-impl Default for BoundaryPersonaPosture {
-    fn default() -> Self {
-        Self::Guarded
-    }
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BoundaryDisclosureStyle {
     Relational,
+    #[default]
     SummaryFirst,
     Selective,
     Reserved,
@@ -149,12 +149,6 @@ impl BoundaryDisclosureStyle {
             Self::Selective => "selective",
             Self::Reserved => "reserved",
         }
-    }
-}
-
-impl Default for BoundaryDisclosureStyle {
-    fn default() -> Self {
-        Self::SummaryFirst
     }
 }
 
@@ -264,16 +258,18 @@ impl MentalPrivacyQuotePolicy {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MentalPrivacyRequester {
+    #[default]
     Owner,
     System,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MentalPrivacyShareAction {
+    #[default]
     AllowOriginal,
     AllowRaw,
     AllowSummary,
@@ -281,18 +277,6 @@ pub enum MentalPrivacyShareAction {
     ExplainWithoutQuote,
     Refuse,
     Defer,
-}
-
-impl Default for MentalPrivacyRequester {
-    fn default() -> Self {
-        Self::Owner
-    }
-}
-
-impl Default for MentalPrivacyShareAction {
-    fn default() -> Self {
-        Self::AllowOriginal
-    }
 }
 
 impl MentalPrivacyShareAction {
@@ -336,30 +320,6 @@ impl Default for MentalPrivacyEnvelope {
             selfhood_weight: 78,
             last_voluntary_share_at: 0,
         }
-    }
-}
-
-impl Default for MentalPrivacyLayer {
-    fn default() -> Self {
-        Self::Private
-    }
-}
-
-impl Default for MentalPrivacyVisibility {
-    fn default() -> Self {
-        Self::RequestOnly
-    }
-}
-
-impl Default for MentalPrivacyOwnerAccessMode {
-    fn default() -> Self {
-        Self::RequestOnly
-    }
-}
-
-impl Default for MentalPrivacyQuotePolicy {
-    fn default() -> Self {
-        Self::NeverQuote
     }
 }
 

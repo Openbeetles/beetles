@@ -112,6 +112,12 @@ struct PrivateMaintenancePasses {
     private_garden_result: Result<PrivateGardenGovernanceOutcome>,
 }
 
+struct PostReplyFollowupPasses {
+    governance: super::MemoryGovernanceOutcome,
+    extraction_request_outcome: LongTermMemoryRefreshRequestOutcome,
+    hygiene_outcome: super::MemoryHygieneOutcome,
+}
+
 fn collect_maintenance_baseline(
     ctx: &PostReplyMemoryMaintenanceContext<'_>,
     input: &PostReplyMemoryMaintenanceInput<'_>,
@@ -225,6 +231,7 @@ fn load_maintenance_recent_windows(
     baseline: &MaintenanceBaseline,
 ) -> MaintenanceRecentWindows {
     let capability = memory_capability_profile(input.memory_profile);
+    let policy = memory_policy(input.memory_profile);
     let shared_recent_threshold = match capability.background_hygiene_level {
         crate::memory::MemoryHygieneLevel::Minimal => 2,
         crate::memory::MemoryHygieneLevel::Standard => 1,
@@ -241,10 +248,10 @@ fn load_maintenance_recent_windows(
     .count()
         >= shared_recent_threshold
     {
-        let summary_policy = memory_policy(input.memory_profile).session_summary;
-        let execution_policy = memory_policy(input.memory_profile).execution_state;
-        let self_model_policy = memory_policy(input.memory_profile).self_model;
-        let private_docs_policy = memory_policy(input.memory_profile).private_docs;
+        let summary_policy = policy.session_summary;
+        let execution_policy = policy.execution_state;
+        let self_model_policy = policy.self_model;
+        let private_docs_policy = policy.private_docs;
         ctx.session_store
             .load_recent(
                 input.chat_id,
@@ -253,16 +260,8 @@ fn load_maintenance_recent_windows(
                     .max(execution_policy.recent_message_count)
                     .max(self_model_policy.recent_message_count)
                     .max(private_docs_policy.recent_message_count)
-                    .max(
-                        memory_policy(input.memory_profile)
-                            .private_garden_governance
-                            .recent_message_count,
-                    )
-                    .max(
-                        memory_policy(input.memory_profile)
-                            .internal_memory_routing
-                            .recent_message_count,
-                    ),
+                    .max(policy.private_garden_governance.recent_message_count)
+                    .max(policy.internal_memory_routing.recent_message_count),
             )
             .ok()
     } else {
@@ -272,9 +271,7 @@ fn load_maintenance_recent_windows(
         ctx.session_store
             .load_recent(
                 input.chat_id,
-                memory_policy(input.memory_profile)
-                    .internal_memory_routing
-                    .recent_message_count,
+                policy.internal_memory_routing.recent_message_count,
             )
             .ok()
     });
@@ -610,24 +607,54 @@ fn run_private_memory_maintenance_passes(
     }
 }
 
-pub fn run_post_reply_memory_maintenance(
-    http: &mut dyn LlmHttpClient,
-    llm: &(dyn LlmClient + Send + Sync),
-    ctx: PostReplyMemoryMaintenanceContext<'_>,
-    input: PostReplyMemoryMaintenanceInput<'_>,
+fn run_post_reply_followup_passes(
+    ctx: &PostReplyMemoryMaintenanceContext<'_>,
+    input: &PostReplyMemoryMaintenanceInput<'_>,
+    baseline: &MaintenanceBaseline,
+    recent: &MaintenanceRecentWindows,
+    shared: &SharedMaintenancePasses,
     mut enqueue_long_term_refresh: impl FnMut() -> bool,
-) -> PostReplyMemoryMaintenanceOutcome {
-    let baseline = collect_maintenance_baseline(&ctx, &input);
-    let recent = load_maintenance_recent_windows(&ctx, &input, &baseline);
-    let shared = run_shared_maintenance_passes(http, llm, &ctx, &input, &baseline, &recent);
-    let private =
-        run_private_memory_maintenance_passes(http, llm, &ctx, &input, &baseline, &recent, &shared);
+) -> PostReplyFollowupPasses {
+    let governance = run_post_reply_memory_governance(ctx, input, recent, shared);
+    let extraction_request_outcome = evaluate_post_reply_extraction_request(
+        ctx,
+        input,
+        baseline.after_count,
+        governance.factual_refresh_suggested,
+        &mut enqueue_long_term_refresh,
+    );
+    let hygiene_outcome = run_memory_hygiene_jobs(
+        MemoryHygieneContext {
+            session_store: ctx.session_store,
+            session_summary_store: ctx.session_summary_store,
+            memory_store: ctx.memory_store,
+            turn_ledger_store: ctx.turn_ledger_store,
+            long_term_memory_store: ctx.long_term_memory_store,
+            skill_storage: ctx.skill_storage,
+        },
+        input.chat_id,
+        input.memory_profile,
+        input.now_secs,
+    );
+    PostReplyFollowupPasses {
+        governance,
+        extraction_request_outcome,
+        hygiene_outcome,
+    }
+}
+
+fn run_post_reply_memory_governance(
+    ctx: &PostReplyMemoryMaintenanceContext<'_>,
+    input: &PostReplyMemoryMaintenanceInput<'_>,
+    recent: &MaintenanceRecentWindows,
+    shared: &SharedMaintenancePasses,
+) -> super::MemoryGovernanceOutcome {
     let factual_query = if !input.user_content.trim().is_empty() {
         input.user_content
     } else {
         input.reply_content
     };
-    let governance = run_memory_governance_kernel(
+    run_memory_governance_kernel(
         MemoryGovernanceContext {
             session_store: ctx.session_store,
             long_term_memory_store: ctx.long_term_memory_store,
@@ -648,9 +675,16 @@ pub fn run_post_reply_memory_maintenance(
             profile: input.memory_profile,
             external_content_used: input.external_content_used,
         },
-    );
-    let factual_refresh_suggested = governance.factual_refresh_suggested;
+    )
+}
 
+fn evaluate_post_reply_extraction_request(
+    ctx: &PostReplyMemoryMaintenanceContext<'_>,
+    input: &PostReplyMemoryMaintenanceInput<'_>,
+    after_count: usize,
+    factual_refresh_suggested: bool,
+    enqueue_long_term_refresh: &mut impl FnMut() -> bool,
+) -> LongTermMemoryRefreshRequestOutcome {
     let extraction_state = ctx.extraction_state_store.get(input.chat_id).ok().flatten();
     let extraction_decision = evaluate_long_term_memory_extraction_turn(
         LongTermMemoryExtractionTurnInput {
@@ -658,7 +692,7 @@ pub fn run_post_reply_memory_maintenance(
             channel: input.channel,
             user_content: input.user_content,
             reply_content: input.reply_content,
-            after_count: baseline.after_count,
+            after_count,
             pressure: input.pressure,
             external_content_used: input.external_content_used,
         },
@@ -667,12 +701,10 @@ pub fn run_post_reply_memory_maintenance(
     );
     let mut next_extraction_state = extraction_decision.next_state.clone();
     let should_request_extraction = extraction_decision.should_enqueue || factual_refresh_suggested;
-    let extraction_request_outcome = if should_request_extraction {
+    let outcome = if should_request_extraction {
         if enqueue_long_term_refresh() {
-            next_extraction_state = mark_long_term_memory_extraction_requested(
-                &next_extraction_state,
-                baseline.after_count,
-            );
+            next_extraction_state =
+                mark_long_term_memory_extraction_requested(&next_extraction_state, after_count);
             LongTermMemoryRefreshRequestOutcome::Requested
         } else {
             LongTermMemoryRefreshRequestOutcome::RequestFailed
@@ -686,18 +718,28 @@ pub fn run_post_reply_memory_maintenance(
         extraction_state.as_ref(),
         &next_extraction_state,
     );
-    let hygiene_outcome = run_memory_hygiene_jobs(
-        MemoryHygieneContext {
-            session_store: ctx.session_store,
-            session_summary_store: ctx.session_summary_store,
-            memory_store: ctx.memory_store,
-            turn_ledger_store: ctx.turn_ledger_store,
-            long_term_memory_store: ctx.long_term_memory_store,
-            skill_storage: ctx.skill_storage,
-        },
-        input.chat_id,
-        input.memory_profile,
-        input.now_secs,
+    outcome
+}
+
+pub fn run_post_reply_memory_maintenance(
+    http: &mut dyn LlmHttpClient,
+    llm: &(dyn LlmClient + Send + Sync),
+    ctx: PostReplyMemoryMaintenanceContext<'_>,
+    input: PostReplyMemoryMaintenanceInput<'_>,
+    mut enqueue_long_term_refresh: impl FnMut() -> bool,
+) -> PostReplyMemoryMaintenanceOutcome {
+    let baseline = collect_maintenance_baseline(&ctx, &input);
+    let recent = load_maintenance_recent_windows(&ctx, &input, &baseline);
+    let shared = run_shared_maintenance_passes(http, llm, &ctx, &input, &baseline, &recent);
+    let private =
+        run_private_memory_maintenance_passes(http, llm, &ctx, &input, &baseline, &recent, &shared);
+    let followup = run_post_reply_followup_passes(
+        &ctx,
+        &input,
+        &baseline,
+        &recent,
+        &shared,
+        &mut enqueue_long_term_refresh,
     );
 
     PostReplyMemoryMaintenanceOutcome {
@@ -709,10 +751,10 @@ pub fn run_post_reply_memory_maintenance(
         private_doc_result: private.private_doc_result,
         private_garden_upstream_cleanup_result: private.private_garden_upstream_cleanup_result,
         private_garden_result: private.private_garden_result,
-        factual_coordination_summary: governance.factual_coordination_summary,
-        factual_refresh_suggested: governance.factual_refresh_suggested,
-        extraction_request_outcome,
-        hygiene_outcome,
+        factual_coordination_summary: followup.governance.factual_coordination_summary,
+        factual_refresh_suggested: followup.governance.factual_refresh_suggested,
+        extraction_request_outcome: followup.extraction_request_outcome,
+        hygiene_outcome: followup.hygiene_outcome,
     }
 }
 
@@ -977,7 +1019,6 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .values()
-                .cloned()
                 .map(|doc| PrivateGardenDocRecord {
                     path: doc.path.clone(),
                     updated_at: doc.updated_at,

@@ -28,19 +28,25 @@ DIRS=(
   src/cron
   src/state
 )
+EXISTING_DIRS=()
+for dir in "${DIRS[@]}"; do
+  if [[ -d "$dir" ]]; then
+    EXISTING_DIRS+=("$dir")
+  fi
+done
 
 PATTERN1='use\s+crate::platform::(spiffs|heap|hardware_drivers)'
 PATTERN2='use\s+crate::platform::\*'
 
-if rg -q "$PATTERN1" "${DIRS[@]}"; then
+if rg -q "$PATTERN1" "${EXISTING_DIRS[@]}"; then
   echo "FAIL: forbidden direct use of platform implementation modules (spiffs|heap|hardware_drivers):" >&2
-  rg "$PATTERN1" "${DIRS[@]}" >&2
+  rg "$PATTERN1" "${EXISTING_DIRS[@]}" >&2
   exit 1
 fi
 
-if rg -q "$PATTERN2" "${DIRS[@]}"; then
+if rg -q "$PATTERN2" "${EXISTING_DIRS[@]}"; then
   echo "FAIL: forbidden use crate::platform::*" >&2
-  rg "$PATTERN2" "${DIRS[@]}" >&2
+  rg "$PATTERN2" "${EXISTING_DIRS[@]}" >&2
   exit 1
 fi
 

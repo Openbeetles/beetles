@@ -1895,6 +1895,133 @@ fn run_self_runtime_job(
     }
 }
 
+#[cold]
+#[inline(never)]
+fn try_run_lane_background_job(
+    http: &mut dyn PlatformHttpClient,
+    worker_llm: &(dyn LlmClient + Send + Sync),
+    config: &AgentLoopConfig,
+    system_inbound_tx: &SystemInboundTx,
+    msg: &PcMsg,
+) -> bool {
+    if is_long_term_memory_refresh_job(msg) {
+        run_long_term_memory_refresh_job(http, worker_llm, config, msg);
+        metrics::record_system_message_done(false);
+        return true;
+    }
+    if is_post_reply_maintenance_job(msg) {
+        run_post_reply_maintenance_job(http, worker_llm, config, system_inbound_tx, msg);
+        metrics::record_system_message_done(false);
+        return true;
+    }
+    if is_self_runtime_job(msg) {
+        run_self_runtime_job(http, worker_llm, config, system_inbound_tx, msg);
+        metrics::record_system_message_done(false);
+        return true;
+    }
+    false
+}
+
+#[cold]
+#[inline(never)]
+fn handle_admission_defer(
+    delay_ms: u64,
+    mut msg: PcMsg,
+    loc: UiLocale,
+    msg_key: u64,
+    user_inbound_tx: &UserInboundTx,
+    system_inbound_tx: &SystemInboundTx,
+    outbound_tx: &OutboundTx,
+    config: &AgentLoopConfig,
+    defer_tracker: &mut HashMap<u64, (u8, Instant)>,
+    low_mem_defer_log: &mut Option<(Arc<str>, Instant)>,
+) {
+    let entry = defer_tracker.entry(msg_key).or_insert((0, Instant::now()));
+    entry.0 = entry.0.saturating_add(1);
+    entry.1 = Instant::now();
+    let defer_count = entry.0;
+
+    if defer_count >= MAX_DEFER_RETRIES {
+        log::warn!(
+            "[agent] defer limit reached ({}) for chat_id={}, dropping message",
+            MAX_DEFER_RETRIES,
+            msg.chat_id
+        );
+        defer_tracker.remove(&msg_key);
+        if msg.ingress == IngressKind::User {
+            let defer_out = PcMsg {
+                channel: msg.channel.clone(),
+                chat_id: msg.chat_id.clone(),
+                content: tr(UiMessage::LowMemoryUserDefer, loc),
+                req_id: Some(msg.req_id.as_deref().unwrap_or_default().to_owned()),
+                ingress: IngressKind::User,
+                enqueue_ts_ms: now_unix_ms(),
+                is_group: false,
+            };
+            let _ = try_send_outbound(outbound_tx, defer_out, "defer-limit");
+        }
+        return;
+    }
+
+    if msg.ingress == IngressKind::User {
+        let defer_out = PcMsg {
+            channel: msg.channel.clone(),
+            chat_id: msg.chat_id.clone(),
+            content: tr(UiMessage::LowMemoryUserDefer, loc),
+            req_id: Some(msg.req_id.as_deref().unwrap_or_default().to_owned()),
+            ingress: IngressKind::User,
+            enqueue_ts_ms: now_unix_ms(),
+            is_group: false,
+        };
+        let _ = try_send_outbound(outbound_tx, defer_out, "defer");
+    }
+    let chat_id = msg.chat_id.clone();
+    msg.enqueue_ts_ms = now_unix_ms();
+    let inbound_tx = choose_inbound_tx(msg.ingress, user_inbound_tx, system_inbound_tx);
+    match inbound_tx.try_send(msg) {
+        Ok(()) => {
+            let now = Instant::now();
+            let should_log = low_mem_defer_log
+                .as_ref()
+                .map(|(id, t)| {
+                    id.as_ref() != chat_id.as_ref() || t.elapsed() >= LOW_MEM_DEFER_LOG_INTERVAL
+                })
+                .unwrap_or(true);
+            if should_log {
+                log::warn!("[agent] admission defer chat_id={}", chat_id);
+                *low_mem_defer_log = Some((chat_id.clone(), now));
+            }
+        }
+        Err(std::sync::mpsc::TrySendError::Full(m)) => {
+            let _ = config.pending_retry.save_pending_retry(&m);
+            log::warn!(
+                "[agent] admission defer, pending_retry saved chat_id={}",
+                m.chat_id
+            );
+        }
+        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+            log::error!("[agent] inbound_tx disconnected");
+        }
+    }
+    std::thread::sleep(Duration::from_millis(delay_ms));
+    crate::platform::task_wdt::feed_current_task();
+    metrics::record_wdt_feed();
+}
+
+#[cold]
+#[inline(never)]
+fn handle_admission_reject(reason: &str, low_mem_defer_log: &mut Option<(Arc<str>, Instant)>) {
+    let now = Instant::now();
+    let should_log = low_mem_defer_log
+        .as_ref()
+        .map(|(id, t)| id.as_ref() != reason || t.elapsed() >= LOW_MEM_DEFER_LOG_INTERVAL)
+        .unwrap_or(true);
+    if should_log {
+        log::warn!("[agent] inbound rejected: {}", reason);
+        *low_mem_defer_log = Some((Arc::from(reason), now));
+    }
+}
+
 /// run_worker_path 返回：正常内容或用户要求停止时的确认文案。
 pub enum WorkerOutcome {
     Content(String),
@@ -2268,19 +2395,7 @@ fn run_agent_loop_lane(
         } else {
             metrics::record_user_queue_wait_ms(queue_wait_ms);
         }
-        if is_long_term_memory_refresh_job(&msg) {
-            run_long_term_memory_refresh_job(http, worker_llm, config, &msg);
-            metrics::record_system_message_done(false);
-            continue;
-        }
-        if is_post_reply_maintenance_job(&msg) {
-            run_post_reply_maintenance_job(http, worker_llm, config, &system_inbound_tx, &msg);
-            metrics::record_system_message_done(false);
-            continue;
-        }
-        if is_self_runtime_job(&msg) {
-            run_self_runtime_job(http, worker_llm, config, &system_inbound_tx, &msg);
-            metrics::record_system_message_done(false);
+        if try_run_lane_background_job(http, worker_llm, config, &system_inbound_tx, &msg) {
             continue;
         }
 
@@ -2327,93 +2442,22 @@ fn run_agent_loop_lane(
         match crate::orchestrator::should_accept_inbound_pub(&msg.channel, &msg.chat_id) {
             AdmissionDecision::Accept => {}
             AdmissionDecision::Defer { delay_ms } => {
-                // Check defer count for this message; drop after MAX_DEFER_RETRIES.
-                let entry = defer_tracker.entry(msg_key).or_insert((0, Instant::now()));
-                entry.0 = entry.0.saturating_add(1);
-                entry.1 = Instant::now();
-                let defer_count = entry.0;
-
-                if defer_count >= MAX_DEFER_RETRIES {
-                    log::warn!(
-                        "[agent] defer limit reached ({}) for chat_id={}, dropping message",
-                        MAX_DEFER_RETRIES,
-                        msg.chat_id
-                    );
-                    defer_tracker.remove(&msg_key);
-                    if msg.ingress == IngressKind::User {
-                        let defer_out = PcMsg {
-                            channel: msg.channel.clone(),
-                            chat_id: msg.chat_id.clone(),
-                            content: tr(UiMessage::LowMemoryUserDefer, loc),
-                            req_id: Some(msg.req_id.as_deref().unwrap_or_default().to_owned()),
-                            ingress: IngressKind::User,
-                            enqueue_ts_ms: now_unix_ms(),
-                            is_group: false,
-                        };
-                        let _ = try_send_outbound(&outbound_tx, defer_out, "defer-limit");
-                    }
-                    continue;
-                }
-
-                if msg.ingress == IngressKind::User {
-                    let defer_out = PcMsg {
-                        channel: msg.channel.clone(),
-                        chat_id: msg.chat_id.clone(),
-                        content: tr(UiMessage::LowMemoryUserDefer, loc),
-                        req_id: Some(msg.req_id.as_deref().unwrap_or_default().to_owned()),
-                        ingress: IngressKind::User,
-                        enqueue_ts_ms: now_unix_ms(),
-                        is_group: false,
-                    };
-                    let _ = try_send_outbound(&outbound_tx, defer_out, "defer");
-                }
-                let chat_id = msg.chat_id.clone();
-                msg.enqueue_ts_ms = now_unix_ms();
-                let inbound_tx =
-                    choose_inbound_tx(msg.ingress, &user_inbound_tx, &system_inbound_tx);
-                match inbound_tx.try_send(msg) {
-                    Ok(()) => {
-                        let now = Instant::now();
-                        let should_log = low_mem_defer_log
-                            .as_ref()
-                            .map(|(id, t)| {
-                                id.as_ref() != chat_id.as_ref()
-                                    || t.elapsed() >= LOW_MEM_DEFER_LOG_INTERVAL
-                            })
-                            .unwrap_or(true);
-                        if should_log {
-                            log::warn!("[agent] admission defer chat_id={}", chat_id);
-                            low_mem_defer_log = Some((chat_id.clone(), now));
-                        }
-                    }
-                    Err(std::sync::mpsc::TrySendError::Full(m)) => {
-                        let _ = config.pending_retry.save_pending_retry(&m);
-                        log::warn!(
-                            "[agent] admission defer, pending_retry saved chat_id={}",
-                            m.chat_id
-                        );
-                    }
-                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                        log::error!("[agent] inbound_tx disconnected");
-                    }
-                }
-                std::thread::sleep(Duration::from_millis(delay_ms));
-                crate::platform::task_wdt::feed_current_task();
-                metrics::record_wdt_feed();
+                handle_admission_defer(
+                    delay_ms,
+                    msg,
+                    loc,
+                    msg_key,
+                    &user_inbound_tx,
+                    &system_inbound_tx,
+                    &outbound_tx,
+                    config,
+                    &mut defer_tracker,
+                    &mut low_mem_defer_log,
+                );
                 continue;
             }
             AdmissionDecision::Reject { reason } => {
-                let now = Instant::now();
-                let should_log = low_mem_defer_log
-                    .as_ref()
-                    .map(|(id, t)| {
-                        id.as_ref() != reason || t.elapsed() >= LOW_MEM_DEFER_LOG_INTERVAL
-                    })
-                    .unwrap_or(true);
-                if should_log {
-                    log::warn!("[agent] inbound rejected: {}", reason);
-                    low_mem_defer_log = Some((Arc::from(reason), now));
-                }
+                handle_admission_reject(reason, &mut low_mem_defer_log);
                 continue;
             }
         }
@@ -4028,6 +4072,49 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct ObservedAgentRequest {
+        system: String,
+        tool_count: usize,
+    }
+
+    struct ObservedSequenceStubLlm {
+        responses: Mutex<Vec<LlmResponse>>,
+        observed: Arc<Mutex<Vec<ObservedAgentRequest>>>,
+    }
+
+    impl LlmClient for ObservedSequenceStubLlm {
+        fn model_compat(&self) -> LlmModelCompat {
+            LlmModelCompat::default()
+        }
+
+        fn chat(
+            &self,
+            _http: &mut dyn LlmHttpClient,
+            system: &str,
+            _messages: &[Message],
+            tools: Option<&[crate::llm::ToolSpec]>,
+            _tool_choice: ToolChoicePolicy,
+        ) -> Result<LlmResponse> {
+            self.observed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(ObservedAgentRequest {
+                    system: system.to_string(),
+                    tool_count: tools.map_or(0, |specs| specs.len()),
+                });
+            let mut responses = self.responses.lock().unwrap_or_else(|e| e.into_inner());
+            if responses.is_empty() {
+                return Ok(LlmResponse {
+                    content: String::new(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                });
+            }
+            Ok(responses.remove(0))
+        }
+    }
+
     fn test_agent_loop_config() -> AgentLoopConfig {
         AgentLoopConfig {
             memory_store: Arc::new(EmptyMemoryStore),
@@ -4063,6 +4150,104 @@ mod tests {
             stream_editor: None,
             stream_editor_channel: None,
             resolve_locale: Arc::new(|| UiLocale::Zh),
+        }
+    }
+
+    #[derive(Clone)]
+    enum BenchmarkRegistryMode {
+        Empty,
+        MessagePrimary,
+    }
+
+    #[derive(Clone)]
+    struct AgentTurnBenchmarkCase {
+        name: &'static str,
+        msg: PcMsg,
+        registry_mode: BenchmarkRegistryMode,
+        responses: Vec<LlmResponse>,
+        expected_llm_calls: usize,
+        expected_react_rounds: u32,
+        expected_tool_calls: u32,
+        expected_streamed: bool,
+        expected_current_primary_delivered: bool,
+        expected_outcome_fragment: &'static str,
+        expect_final_recovery: bool,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct AgentTurnBenchmarkResult {
+        case_name: &'static str,
+        llm_calls: usize,
+        react_rounds: u32,
+        tool_calls: u32,
+        streamed: bool,
+        current_primary_delivered: bool,
+        final_recovery_used: bool,
+        outcome_fragment_present: bool,
+        passed: bool,
+    }
+
+    fn build_benchmark_registry(mode: &BenchmarkRegistryMode) -> crate::tools::ToolRegistry {
+        let mut registry = crate::tools::ToolRegistry::new();
+        if matches!(mode, BenchmarkRegistryMode::MessagePrimary) {
+            registry.register(Box::new(crate::tools::MessageTool));
+        }
+        registry
+    }
+
+    fn run_agent_turn_benchmark_case(case: AgentTurnBenchmarkCase) -> AgentTurnBenchmarkResult {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(case.responses),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let registry = build_benchmark_registry(&case.registry_mode);
+        let config = test_agent_loop_config();
+        let mut repeat = HashMap::new();
+
+        let (outcome, telemetry) = run_worker_path(
+            &mut http,
+            &llm,
+            &case.msg,
+            &outbound_tx,
+            "bench-req",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("benchmark worker path");
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        let final_recovery_used = observed
+            .iter()
+            .any(|request| request.system.contains(FINAL_RECOVERY_SYSTEM_SUFFIX));
+        let outcome_text = match outcome {
+            WorkerOutcome::Interrupt(text)
+            | WorkerOutcome::Content(text)
+            | WorkerOutcome::Delivered(text) => text,
+        };
+        let llm_calls = observed.len();
+        let outcome_fragment_present = outcome_text.contains(case.expected_outcome_fragment);
+        let passed = llm_calls == case.expected_llm_calls
+            && telemetry.latency.react_rounds == case.expected_react_rounds
+            && telemetry.latency.tool_calls == case.expected_tool_calls
+            && telemetry.streamed == case.expected_streamed
+            && telemetry.delivery.current_primary_delivered
+                == case.expected_current_primary_delivered
+            && final_recovery_used == case.expect_final_recovery
+            && outcome_fragment_present;
+        AgentTurnBenchmarkResult {
+            case_name: case.name,
+            llm_calls,
+            react_rounds: telemetry.latency.react_rounds,
+            tool_calls: telemetry.latency.tool_calls,
+            streamed: telemetry.streamed,
+            current_primary_delivered: telemetry.delivery.current_primary_delivered,
+            final_recovery_used,
+            outcome_fragment_present,
+            passed,
         }
     }
 
@@ -4400,5 +4585,99 @@ mod tests {
         assert!(contents.contains(&"正在执行 message…"));
         assert!(contents.contains(&"工具主答复"));
         assert!(outbound_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn agent_turn_benchmark_suite_catches_turn_shape_regressions() {
+        let cases = vec![
+            AgentTurnBenchmarkCase {
+                name: "direct reply stays single llm turn",
+                msg: PcMsg::new_inbound("qq_channel", "chat-1", "直接回答", false)
+                    .expect("message"),
+                registry_mode: BenchmarkRegistryMode::Empty,
+                responses: vec![LlmResponse {
+                    content: "直接答复".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                }],
+                expected_llm_calls: 1,
+                expected_react_rounds: 1,
+                expected_tool_calls: 0,
+                expected_streamed: false,
+                expected_current_primary_delivered: false,
+                expected_outcome_fragment: "直接答复",
+                expect_final_recovery: false,
+            },
+            AgentTurnBenchmarkCase {
+                name: "message primary delivery avoids extra recovery",
+                msg: PcMsg::new_inbound("qq_channel", "chat-1", "测试多轮发送", false)
+                    .expect("message"),
+                registry_mode: BenchmarkRegistryMode::MessagePrimary,
+                responses: vec![
+                    LlmResponse {
+                        content: "[tool_use]".to_string(),
+                        stop_reason: StopReason::ToolUse,
+                        tool_calls: Some(vec![crate::llm::ToolCall {
+                            id: "call_1".to_string(),
+                            name: "message".to_string(),
+                            input: r#"{"content":"工具主答复","delivery_kind":"primary"}"#
+                                .to_string(),
+                        }]),
+                    },
+                    LlmResponse {
+                        content: String::new(),
+                        stop_reason: StopReason::EndTurn,
+                        tool_calls: None,
+                    },
+                ],
+                expected_llm_calls: 2,
+                expected_react_rounds: 2,
+                expected_tool_calls: 1,
+                expected_streamed: true,
+                expected_current_primary_delivered: true,
+                expected_outcome_fragment: "工具主答复",
+                expect_final_recovery: false,
+            },
+            AgentTurnBenchmarkCase {
+                name: "final recovery remains single extra llm round",
+                msg: PcMsg::new_inbound("qq_channel", "chat-1", "兜底收尾", false)
+                    .expect("message"),
+                registry_mode: BenchmarkRegistryMode::MessagePrimary,
+                responses: vec![
+                    LlmResponse {
+                        content: "[tool_use]".to_string(),
+                        stop_reason: StopReason::ToolUse,
+                        tool_calls: Some(vec![crate::llm::ToolCall {
+                            id: "call_1".to_string(),
+                            name: "message".to_string(),
+                            input: r#"{"content":"补充消息","delivery_kind":"supplemental"}"#
+                                .to_string(),
+                        }]),
+                    },
+                    LlmResponse {
+                        content: String::new(),
+                        stop_reason: StopReason::EndTurn,
+                        tool_calls: None,
+                    },
+                    LlmResponse {
+                        content: "最终收尾".to_string(),
+                        stop_reason: StopReason::EndTurn,
+                        tool_calls: None,
+                    },
+                ],
+                expected_llm_calls: 3,
+                expected_react_rounds: 3,
+                expected_tool_calls: 1,
+                expected_streamed: false,
+                expected_current_primary_delivered: false,
+                expected_outcome_fragment: "最终收尾",
+                expect_final_recovery: true,
+            },
+        ];
+
+        for case in cases {
+            let result = run_agent_turn_benchmark_case(case);
+            assert!(result.passed, "agent turn benchmark failed: {:?}", result);
+        }
     }
 }

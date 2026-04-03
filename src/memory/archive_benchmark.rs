@@ -2,6 +2,7 @@
 
 use crate::error::Result;
 
+use super::archive_search::ArchiveSearchBackendKind;
 use super::{
     search_archive_records, select_archive_hits_for_prompt, ArchiveRecordSource,
     ArchiveSearchQuery, MemoryProfile, MemoryStore, SessionStore, TurnLedgerStore,
@@ -18,6 +19,11 @@ pub struct ArchiveBenchmarkCase {
     pub expected_top_citation_fragment: &'static str,
     pub expected_top_source: ArchiveRecordSource,
     pub min_selector_items: usize,
+    pub min_matched_terms: usize,
+    pub expected_backend: Option<ArchiveSearchBackendKind>,
+    pub expected_source_reason_fragment: Option<&'static str>,
+    pub expected_selector_reason_fragment: Option<&'static str>,
+    pub require_recency_reason: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,8 +33,12 @@ pub struct ArchiveBenchmarkResult {
     pub selector_hits: usize,
     pub top_citation: Option<String>,
     pub top_source: Option<ArchiveRecordSource>,
+    pub top_score: Option<u32>,
     pub backend_label: Option<String>,
+    pub matched_terms: Vec<String>,
     pub ranking_reason_present: bool,
+    pub source_reason_present: bool,
+    pub recency_reason_present: bool,
     pub selector_reason_present: bool,
     pub passed: bool,
 }
@@ -54,9 +64,16 @@ pub fn run_archive_benchmark_case(
     )?;
     let selected = select_archive_hits_for_prompt(hits.clone(), profile, case.selector_max_chars);
     let top_hit = hits.first();
+    let top_trace = top_hit.and_then(|hit| hit.retrieval_trace.as_ref());
     let ranking_reason_present = top_hit
         .and_then(|hit| hit.retrieval_trace.as_ref())
         .and_then(|trace| trace.ranking_reason.as_deref())
+        .is_some();
+    let source_reason_present = top_trace
+        .and_then(|trace| trace.source_reason.as_deref())
+        .is_some();
+    let recency_reason_present = top_trace
+        .and_then(|trace| trace.recency_reason.as_deref())
         .is_some();
     let selector_reason_present = selected.iter().all(|hit| {
         hit.retrieval_trace
@@ -65,10 +82,35 @@ pub fn run_archive_benchmark_case(
             .is_some()
     });
     let passed = top_hit.is_some_and(|hit| {
+        let trace = hit.retrieval_trace.as_ref();
         hit.citation.contains(case.expected_top_citation_fragment)
             && hit.source == case.expected_top_source
             && selected.len() >= case.min_selector_items
+            && trace
+                .map(|trace| trace.matched_terms.len() >= case.min_matched_terms)
+                .unwrap_or(case.min_matched_terms == 0)
+            && case
+                .expected_backend
+                .is_none_or(|backend| trace.is_some_and(|trace| trace.backend == backend))
+            && case.expected_source_reason_fragment.is_none_or(|fragment| {
+                trace
+                    .and_then(|trace| trace.source_reason.as_deref())
+                    .is_some_and(|reason| reason.contains(fragment))
+            })
+            && case
+                .expected_selector_reason_fragment
+                .is_none_or(|fragment| {
+                    selected.iter().any(|selected_hit| {
+                        selected_hit
+                            .retrieval_trace
+                            .as_ref()
+                            .and_then(|trace| trace.selector_reason.as_deref())
+                            .is_some_and(|reason| reason.contains(fragment))
+                    })
+                })
+            && (!case.require_recency_reason || recency_reason_present)
             && ranking_reason_present
+            && source_reason_present
             && selector_reason_present
     });
     Ok(ArchiveBenchmarkResult {
@@ -77,13 +119,38 @@ pub fn run_archive_benchmark_case(
         selector_hits: selected.len(),
         top_citation: top_hit.map(|hit| hit.citation.clone()),
         top_source: top_hit.map(|hit| hit.source),
-        backend_label: top_hit
-            .and_then(|hit| hit.retrieval_trace.as_ref())
-            .map(|trace| format!("{:?}", trace.backend)),
+        top_score: top_hit.map(|hit| hit.score),
+        backend_label: top_trace.map(|trace| format!("{:?}", trace.backend)),
+        matched_terms: top_trace
+            .map(|trace| trace.matched_terms.clone())
+            .unwrap_or_default(),
         ranking_reason_present,
+        source_reason_present,
+        recency_reason_present,
         selector_reason_present,
         passed,
     })
+}
+
+pub fn run_archive_benchmark_suite(
+    session_store: &dyn SessionStore,
+    memory_store: &dyn MemoryStore,
+    turn_ledger_store: &dyn TurnLedgerStore,
+    profile: MemoryProfile,
+    cases: &[ArchiveBenchmarkCase],
+) -> Result<Vec<ArchiveBenchmarkResult>> {
+    cases
+        .iter()
+        .map(|case| {
+            run_archive_benchmark_case(
+                session_store,
+                memory_store,
+                turn_ledger_store,
+                profile,
+                case,
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -287,6 +354,11 @@ mod tests {
                 expected_top_citation_fragment: "transcript:chat-a",
                 expected_top_source: ArchiveRecordSource::Transcript,
                 min_selector_items: 2,
+                min_matched_terms: 2,
+                expected_backend: None,
+                expected_source_reason_fragment: Some("transcript"),
+                expected_selector_reason_fragment: Some("primary quota pass"),
+                require_recency_reason: false,
             },
             ArchiveBenchmarkCase {
                 name: "daily note stays retrievable for durable setup phrase",
@@ -298,6 +370,11 @@ mod tests {
                 expected_top_citation_fragment: "daily_note:2026-04-02.md",
                 expected_top_source: ArchiveRecordSource::DailyNote,
                 min_selector_items: 1,
+                min_matched_terms: 2,
+                expected_backend: None,
+                expected_source_reason_fragment: Some("requested source preference"),
+                expected_selector_reason_fragment: Some("primary quota pass"),
+                require_recency_reason: true,
             },
             ArchiveBenchmarkCase {
                 name: "turn log remains traceable for verification query",
@@ -312,18 +389,25 @@ mod tests {
                 expected_top_citation_fragment: "turn_log:chat-a#req=req-1",
                 expected_top_source: ArchiveRecordSource::TurnLog,
                 min_selector_items: 1,
+                min_matched_terms: 1,
+                expected_backend: None,
+                expected_source_reason_fragment: Some("requested source preference"),
+                expected_selector_reason_fragment: Some("primary quota pass"),
+                require_recency_reason: false,
             },
         ];
-        for case in cases {
-            let report = run_archive_benchmark_case(
-                &session_store,
-                &memory_store,
-                &turn_store,
-                MemoryProfile::Standard,
-                &case,
-            )
-            .unwrap();
+        let reports = run_archive_benchmark_suite(
+            &session_store,
+            &memory_store,
+            &turn_store,
+            MemoryProfile::Standard,
+            &cases,
+        )
+        .unwrap();
+        for report in reports {
             assert!(report.passed, "archive benchmark failed: {:?}", report);
+            assert!(report.top_score.unwrap_or_default() > 0);
+            assert!(!report.matched_terms.is_empty());
         }
     }
 }

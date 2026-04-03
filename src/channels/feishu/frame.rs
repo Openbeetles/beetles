@@ -248,8 +248,8 @@ fn decode_varint(input: &[u8], pos: &mut usize, stage: &'static str) -> Result<u
     }
 }
 
-fn decode_length_delimited<'a>(
-    input: &'a [u8],
+fn decode_length_delimited(
+    input: &[u8],
     pos: &mut usize,
     wire_type: u8,
     stage: &'static str,

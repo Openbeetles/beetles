@@ -244,7 +244,7 @@ fn cmd_health(ctx: &CliContext) -> String {
     )
 }
 
-fn cmd_baseline(ctx: &CliContext) -> String {
+fn cmd_baseline(_ctx: &CliContext) -> String {
     let resource = crate::orchestrator::snapshot();
     let metrics = crate::metrics::snapshot();
     let thread_line = crate::runtime::thread_registry::format_baseline_log_line();

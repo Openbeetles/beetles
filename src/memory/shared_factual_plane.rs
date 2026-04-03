@@ -577,9 +577,7 @@ pub(crate) fn build_archive_reconcile_drafts(
     profile: MemoryProfile,
     limit: usize,
 ) -> Vec<super::LongTermMemoryDraft> {
-    let entries = long_term_store
-        .list(limit.max(1).min(24))
-        .unwrap_or_default();
+    let entries = long_term_store.list(limit.clamp(1, 24)).unwrap_or_default();
     if entries.is_empty() {
         return Vec::new();
     }

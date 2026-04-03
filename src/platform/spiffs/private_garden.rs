@@ -141,7 +141,7 @@ impl PrivateGardenStore for SpiffsPrivateGardenStore {
         now_secs: u64,
     ) -> Result<PrivateGardenDocRecord> {
         let doc_path = normalize_private_garden_doc_path(doc_path)?;
-        if content.as_bytes().len() > PRIVATE_GARDEN_MAX_DOC_BYTES {
+        if content.len() > PRIVATE_GARDEN_MAX_DOC_BYTES {
             return Err(Error::config(
                 "private_garden_write",
                 format!("content exceeds {} bytes", PRIVATE_GARDEN_MAX_DOC_BYTES),

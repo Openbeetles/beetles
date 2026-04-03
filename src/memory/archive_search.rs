@@ -83,13 +83,17 @@ impl ArchiveRecordSource {
             Self::TurnLog => "turn_log",
         }
     }
+}
 
-    pub fn from_str(value: &str) -> Option<Self> {
+impl std::str::FromStr for ArchiveRecordSource {
+    type Err = ();
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "transcript" => Some(Self::Transcript),
-            "daily_note" | "daily-note" | "daily note" => Some(Self::DailyNote),
-            "turn_log" | "turn-log" | "turn log" => Some(Self::TurnLog),
-            _ => None,
+            "transcript" => Ok(Self::Transcript),
+            "daily_note" | "daily-note" | "daily note" => Ok(Self::DailyNote),
+            "turn_log" | "turn-log" | "turn log" => Ok(Self::TurnLog),
+            _ => Err(()),
         }
     }
 }
@@ -244,6 +248,8 @@ struct ArchiveSearchCandidate {
     current_chat_match: bool,
     normalized_title: String,
     normalized_content: String,
+    normalized_document: String,
+    estimated_doc_len: usize,
     backend_fts_score: u32,
 }
 
@@ -267,24 +273,38 @@ struct ArchiveCorpusStats {
     document_frequency: HashMap<String, usize>,
 }
 
+#[derive(Clone, Copy)]
+struct PreparedArchiveSearchQuery<'a> {
+    raw: ArchiveSearchQuery<'a>,
+    limit: usize,
+    weak_query: bool,
+}
+
+impl<'a> PreparedArchiveSearchQuery<'a> {
+    fn new(raw: ArchiveSearchQuery<'a>, terms: &'a [String]) -> Self {
+        Self {
+            raw,
+            limit: raw.limit.clamp(1, MAX_ARCHIVE_SEARCH_LIMIT),
+            weak_query: raw.query.trim().is_empty() || terms.is_empty(),
+        }
+    }
+}
+
 pub fn search_archive_records(
     session_store: &dyn SessionStore,
     memory_store: &dyn MemoryStore,
     turn_ledger_store: &dyn TurnLedgerStore,
     query: ArchiveSearchQuery<'_>,
 ) -> Result<Vec<ArchiveSearchHit>> {
-    let limit = query.limit.clamp(1, MAX_ARCHIVE_SEARCH_LIMIT);
     let terms = collect_archive_match_terms(query.query);
-    let weak_query = query.query.trim().is_empty() || terms.is_empty();
+    let prepared = PreparedArchiveSearchQuery::new(query, &terms);
     #[cfg(target_os = "linux")]
     match search_archive_records_from_sqlite(
         session_store,
         memory_store,
         turn_ledger_store,
-        query,
+        prepared,
         &terms,
-        weak_query,
-        limit,
     ) {
         Ok(Some(hits)) => return Ok(hits),
         Ok(None) => {}
@@ -306,9 +326,8 @@ pub fn search_archive_records(
         .unwrap_or(0);
     let mut hits = score_archive_candidates(
         candidates,
-        query,
+        prepared,
         &terms,
-        weak_query,
         &stats,
         newest_observed_at,
         archive_search_backend_kind_fallback(),
@@ -319,7 +338,7 @@ pub fn search_archive_records(
             .then_with(|| b.observed_at.cmp(&a.observed_at))
             .then_with(|| a.citation.cmp(&b.citation))
     });
-    hits.truncate(limit);
+    hits.truncate(prepared.limit);
     Ok(hits)
 }
 
@@ -398,18 +417,16 @@ fn collect_live_archive_candidates(
                 if query.preferred_chat_id == Some(chat_id.as_str()) {
                     cues.push("current chat".to_string());
                 }
-                candidates.push(ArchiveSearchCandidate {
-                    normalized_title: normalize_archive_match_text(&title),
-                    normalized_content: normalize_archive_match_text(content),
+                candidates.push(build_archive_search_candidate(
                     locator,
-                    source: ArchiveRecordSource::Transcript,
+                    ArchiveRecordSource::Transcript,
                     title,
-                    content: content.to_string(),
+                    content,
                     cues,
-                    observed_at: None,
-                    current_chat_match: query.preferred_chat_id == Some(chat_id.as_str()),
-                    backend_fts_score: 0,
-                });
+                    None,
+                    query.preferred_chat_id == Some(chat_id.as_str()),
+                    0,
+                ));
             }
         }
     }
@@ -438,18 +455,16 @@ fn collect_live_archive_candidates(
                 note_name: Some(name.clone()),
                 req_id: None,
             };
-            candidates.push(ArchiveSearchCandidate {
-                normalized_title: normalize_archive_match_text(&name),
-                normalized_content: normalize_archive_match_text(content),
+            candidates.push(build_archive_search_candidate(
                 locator,
-                source: ArchiveRecordSource::DailyNote,
-                title: name,
-                content: content.to_string(),
+                ArchiveRecordSource::DailyNote,
+                name,
+                content,
                 cues,
                 observed_at,
-                current_chat_match: false,
-                backend_fts_score: 0,
-            });
+                false,
+                0,
+            ));
         }
     }
 
@@ -474,18 +489,16 @@ fn collect_live_archive_candidates(
             if query.preferred_chat_id == Some(chat_id.as_str()) {
                 cues.push("current chat".to_string());
             }
-            candidates.push(ArchiveSearchCandidate {
-                normalized_title: normalize_archive_match_text(&title),
-                normalized_content: normalize_archive_match_text(&content),
+            candidates.push(build_archive_search_candidate(
                 locator,
-                source: ArchiveRecordSource::TurnLog,
+                ArchiveRecordSource::TurnLog,
                 title,
-                content,
+                &content,
                 cues,
-                observed_at: turn_log_observed_at(&ledger),
-                current_chat_match: query.preferred_chat_id == Some(chat_id.as_str()),
-                backend_fts_score: 0,
-            });
+                turn_log_observed_at(&ledger),
+                query.preferred_chat_id == Some(chat_id.as_str()),
+                0,
+            ));
         }
     }
 
@@ -497,10 +510,8 @@ fn search_archive_records_from_sqlite(
     session_store: &dyn SessionStore,
     memory_store: &dyn MemoryStore,
     turn_ledger_store: &dyn TurnLedgerStore,
-    query: ArchiveSearchQuery<'_>,
+    query: PreparedArchiveSearchQuery<'_>,
     terms: &[String],
-    weak_query: bool,
-    limit: usize,
 ) -> Result<Option<Vec<ArchiveSearchHit>>> {
     let signature = match build_archive_source_signature() {
         Ok(signature) => signature,
@@ -525,11 +536,15 @@ fn search_archive_records_from_sqlite(
         return Ok(None);
     }
     if archive_sqlite_needs_rebuild(&conn, &signature)? {
-        let live =
-            collect_live_archive_candidates(session_store, memory_store, turn_ledger_store, query);
+        let live = collect_live_archive_candidates(
+            session_store,
+            memory_store,
+            turn_ledger_store,
+            query.raw,
+        );
         archive_sqlite_rebuild(&mut conn, &live, &signature)?;
     }
-    let candidates = query_archive_candidates_sqlite(&conn, query, terms, weak_query)?;
+    let candidates = query_archive_candidates_sqlite(&conn, query, terms)?;
     if candidates.is_empty() {
         return Ok(Some(Vec::new()));
     }
@@ -543,7 +558,6 @@ fn search_archive_records_from_sqlite(
         candidates,
         query,
         terms,
-        weak_query,
         &stats,
         newest_observed_at,
         ArchiveSearchBackendKind::SqliteFtsHybrid,
@@ -554,7 +568,7 @@ fn search_archive_records_from_sqlite(
             .then_with(|| b.observed_at.cmp(&a.observed_at))
             .then_with(|| a.citation.cmp(&b.citation))
     });
-    hits.truncate(limit);
+    hits.truncate(query.limit);
     Ok(Some(hits))
 }
 
@@ -698,12 +712,11 @@ fn archive_sqlite_rebuild(
 #[cfg(target_os = "linux")]
 fn query_archive_candidates_sqlite(
     conn: &Connection,
-    query: ArchiveSearchQuery<'_>,
+    query: PreparedArchiveSearchQuery<'_>,
     terms: &[String],
-    weak_query: bool,
 ) -> Result<Vec<ArchiveSearchCandidate>> {
     let mut out = std::collections::HashMap::<String, ArchiveSearchCandidate>::new();
-    if !weak_query {
+    if !query.weak_query {
         if let Some(match_expr) = archive_sqlite_match_expression(terms) {
             let mut stmt = conn
                 .prepare(
@@ -718,13 +731,13 @@ fn query_archive_candidates_sqlite(
                 .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
             let rows = stmt
                 .query_map(params![match_expr], |row| {
-                    map_archive_sqlite_candidate_row(row, query.preferred_chat_id)
+                    map_archive_sqlite_candidate_row(row, query.raw.preferred_chat_id)
                 })
                 .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
             for row in rows {
                 let candidate =
                     row.map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
-                if !archive_candidate_matches_query(&candidate, query) {
+                if !archive_candidate_matches_query(&candidate, query.raw) {
                     continue;
                 }
                 upsert_archive_candidate(out.entry(candidate.locator.record_id()), candidate);
@@ -742,13 +755,13 @@ fn query_archive_candidates_sqlite(
         .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
     let rows = stmt
         .query_map([], |row| {
-            map_archive_sqlite_candidate_row(row, query.preferred_chat_id)
+            map_archive_sqlite_candidate_row(row, query.raw.preferred_chat_id)
         })
         .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
     for row in rows {
         let candidate =
             row.map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
-        if !archive_candidate_matches_query(&candidate, query) {
+        if !archive_candidate_matches_query(&candidate, query.raw) {
             continue;
         }
         upsert_archive_candidate(out.entry(candidate.locator.record_id()), candidate);
@@ -764,7 +777,7 @@ fn map_archive_sqlite_candidate_row(
     let source = row
         .get::<_, String>(1)
         .ok()
-        .and_then(|value| ArchiveRecordSource::from_str(&value))
+        .and_then(|value| value.parse::<ArchiveRecordSource>().ok())
         .unwrap_or(ArchiveRecordSource::Transcript);
     let chat_id = row.get::<_, Option<String>>(2)?;
     let locator = ArchiveRecordLocator {
@@ -794,20 +807,18 @@ fn map_archive_sqlite_candidate_row(
     } else {
         0
     };
-    Ok(ArchiveSearchCandidate {
-        current_chat_match: chat_id
-            .as_deref()
-            .is_some_and(|chat_id| Some(chat_id) == preferred_chat_id),
-        normalized_title: normalize_archive_match_text(&title),
-        normalized_content: normalize_archive_match_text(&content),
+    Ok(build_archive_search_candidate(
         locator,
         source,
         title,
-        content,
+        &content,
         cues,
         observed_at,
-        backend_fts_score: sqlite_fts_score,
-    })
+        chat_id
+            .as_deref()
+            .is_some_and(|chat_id| Some(chat_id) == preferred_chat_id),
+        sqlite_fts_score,
+    ))
 }
 
 #[cfg(target_os = "linux")]
@@ -913,9 +924,8 @@ fn modified_unix_secs(meta: &std::fs::Metadata) -> u64 {
 
 fn score_archive_candidates(
     candidates: Vec<ArchiveSearchCandidate>,
-    query: ArchiveSearchQuery<'_>,
+    query: PreparedArchiveSearchQuery<'_>,
     terms: &[String],
-    weak_query: bool,
     stats: &ArchiveCorpusStats,
     newest_observed_at: u64,
     backend: ArchiveSearchBackendKind,
@@ -934,7 +944,7 @@ fn score_archive_candidates(
             let substantive = trace.score.lexical_score > 0
                 || trace.score.fts_score > 0
                 || trace.score.hybrid_score > 0;
-            if !weak_query && !substantive {
+            if !query.weak_query && !substantive {
                 return None;
             }
             Some(ArchiveSearchHit {
@@ -963,7 +973,7 @@ fn score_archive_candidates(
 
 fn score_archive_candidate(
     candidate: &ArchiveSearchCandidate,
-    query: ArchiveSearchQuery<'_>,
+    query: PreparedArchiveSearchQuery<'_>,
     terms: &[String],
     stats: &ArchiveCorpusStats,
     newest_observed_at: u64,
@@ -980,10 +990,10 @@ fn score_archive_candidate(
         &matched_terms,
     );
     let fts_score = archive_fts_score(candidate, terms, stats);
-    let hybrid_score = archive_hybrid_score(candidate, query.query);
+    let hybrid_score = archive_hybrid_score(candidate, query.raw.query);
     let same_chat_bonus = if candidate.current_chat_match { 10 } else { 0 };
     let (source_bonus, source_reason) =
-        archive_source_preference_bonus(candidate, query.sources, same_chat_bonus > 0);
+        archive_source_preference_bonus(candidate, query.raw.sources, same_chat_bonus > 0);
     let (recency_bonus, recency_reason) =
         archive_recency_bonus(candidate.observed_at, newest_observed_at);
     let total_score = lexical_score
@@ -1011,7 +1021,7 @@ fn score_archive_candidate(
         selector_reason: Some(build_archive_selector_reason(
             candidate,
             &matched_terms,
-            query.preferred_chat_id,
+            query.raw.preferred_chat_id,
         )),
         score: ArchiveSearchScoreBreakdown {
             lexical_score,
@@ -1036,20 +1046,10 @@ fn build_archive_corpus_stats(
     let mut total_len = 0usize;
     let mut document_frequency = HashMap::new();
     for candidate in candidates {
-        total_len = total_len.saturating_add(
-            candidate
-                .normalized_content
-                .split_whitespace()
-                .count()
-                .max(candidate.normalized_content.chars().count() / 4),
-        );
+        total_len = total_len.saturating_add(candidate.estimated_doc_len);
         let mut seen = HashSet::new();
-        let combined = format!(
-            "{} {}",
-            candidate.normalized_title, candidate.normalized_content
-        );
         for term in terms {
-            if combined.contains(term) && seen.insert(term.clone()) {
+            if candidate.normalized_document.contains(term) && seen.insert(term.clone()) {
                 *document_frequency.entry(term.clone()).or_insert(0) += 1;
             }
         }
@@ -1106,14 +1106,7 @@ fn archive_fts_score(
     if terms.is_empty() || stats.avg_doc_len <= 0.0 {
         return 0;
     }
-    let combined = format!(
-        "{} {}",
-        candidate.normalized_title, candidate.normalized_content
-    );
-    let doc_len = combined
-        .split_whitespace()
-        .count()
-        .max(combined.chars().count() / 4) as f32;
+    let doc_len = candidate.estimated_doc_len as f32;
     let avg_doc_len = stats.avg_doc_len.max(1.0);
     let mut score = 0.0f32;
     for term in terms {
@@ -1146,12 +1139,61 @@ fn archive_hybrid_score(candidate: &ArchiveSearchCandidate, query_text: &str) ->
         if query.is_empty() {
             return 0;
         }
-        let doc = format!(
-            "{} {}",
-            candidate.normalized_title, candidate.normalized_content
-        );
-        trigram_overlap_score(&query, &doc)
+        trigram_overlap_score(&query, &candidate.normalized_document)
     }
+}
+
+fn build_archive_search_candidate(
+    locator: ArchiveRecordLocator,
+    source: ArchiveRecordSource,
+    title: String,
+    content: &str,
+    cues: Vec<String>,
+    observed_at: Option<u64>,
+    current_chat_match: bool,
+    backend_fts_score: u32,
+) -> ArchiveSearchCandidate {
+    let normalized_title = normalize_archive_match_text(&title);
+    let normalized_content = normalize_archive_match_text(content);
+    let normalized_document =
+        combine_normalized_archive_parts(&normalized_title, &normalized_content);
+    let estimated_doc_len = archive_document_len(&normalized_document);
+    ArchiveSearchCandidate {
+        locator,
+        source,
+        title,
+        content: content.to_string(),
+        cues,
+        observed_at,
+        current_chat_match,
+        normalized_title,
+        normalized_content,
+        normalized_document,
+        estimated_doc_len,
+        backend_fts_score,
+    }
+}
+
+fn combine_normalized_archive_parts(title: &str, content: &str) -> String {
+    match (title.is_empty(), content.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => title.to_string(),
+        (true, false) => content.to_string(),
+        (false, false) => {
+            let mut combined = String::with_capacity(title.len() + content.len() + 1);
+            combined.push_str(title);
+            combined.push(' ');
+            combined.push_str(content);
+            combined
+        }
+    }
+}
+
+fn archive_document_len(normalized_document: &str) -> usize {
+    normalized_document
+        .split_whitespace()
+        .count()
+        .max(normalized_document.chars().count() / 4)
 }
 
 fn trigram_overlap_score(left: &str, right: &str) -> u32 {

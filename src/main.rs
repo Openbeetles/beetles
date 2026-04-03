@@ -1078,7 +1078,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                         voice_rx,
                     );
                 });
-                beetle::platform::wake_word::configure(model_name.as_str(), voice_tx);
+                platform.configure_wake_word(model_name.as_str(), voice_tx);
             }
         }
 

@@ -119,12 +119,11 @@ impl PrivateGardenGovernancePolicy {
         let user_chars = user.chars().count();
         let reply_chars = reply.chars().count();
         let combined_chars = user_chars.saturating_add(reply_chars);
-        let substantive = user_chars >= self.substantive_user_chars
+        user_chars >= self.substantive_user_chars
             || reply_chars >= self.substantive_reply_chars
             || combined_chars >= self.substantive_combined_chars
             || user.contains('\n')
-            || reply.contains('\n');
-        substantive
+            || reply.contains('\n')
     }
 }
 
@@ -651,7 +650,7 @@ fn normalize_private_garden_governance_actions(
             continue;
         };
         let trimmed = write.content.trim();
-        if trimmed.is_empty() || trimmed.as_bytes().len() > PRIVATE_GARDEN_MAX_DOC_BYTES {
+        if trimmed.is_empty() || trimmed.len() > PRIVATE_GARDEN_MAX_DOC_BYTES {
             continue;
         }
         let content = truncate_content_to_max(trimmed, PRIVATE_GARDEN_MAX_DOC_BYTES).into_owned();
@@ -877,7 +876,6 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .values()
-                .cloned()
                 .map(|doc| super::super::PrivateGardenDocRecord {
                     path: doc.path.clone(),
                     updated_at: doc.updated_at,

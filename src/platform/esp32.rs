@@ -123,6 +123,13 @@ impl Default for Esp32Platform {
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+impl Drop for Esp32Platform {
+    fn drop(&mut self) {
+        crate::platform::wake_word::shutdown();
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 impl Platform for Esp32Platform {
     fn state_fs(&self) -> Arc<dyn StateFs + Send + Sync> {
         Arc::clone(&self.state_fs)
@@ -355,9 +362,11 @@ impl Platform for Esp32Platform {
 
     fn init_audio(&self, config: &AudioSegment) -> crate::error::Result<()> {
         if !config.enabled {
+            crate::platform::wake_word::shutdown();
             *self.audio_state.write().unwrap_or_else(|e| e.into_inner()) = None;
             return Ok(());
         }
+        crate::platform::wake_word::shutdown();
         match crate::platform::audio_drivers::AudioPipelineState::from_config(config) {
             Ok(state) => {
                 *self.audio_state.write().unwrap_or_else(|e| e.into_inner()) =
@@ -365,10 +374,23 @@ impl Platform for Esp32Platform {
                 Ok(())
             }
             Err(e) => {
+                crate::platform::wake_word::shutdown();
                 *self.audio_state.write().unwrap_or_else(|e| e.into_inner()) = None;
                 Err(e)
             }
         }
+    }
+
+    fn configure_wake_word(
+        &self,
+        model_name: &str,
+        voice_tx: std::sync::mpsc::SyncSender<crate::audio::voice_session::VoiceEvent>,
+    ) {
+        crate::platform::wake_word::configure(model_name, voice_tx);
+    }
+
+    fn shutdown_wake_word(&self) {
+        crate::platform::wake_word::shutdown();
     }
 
     fn audio_mic_ready(&self) -> bool {

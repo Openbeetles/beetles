@@ -249,7 +249,6 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .values()
-                .cloned()
                 .map(|credential| credential.status())
                 .collect())
         }

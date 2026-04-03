@@ -328,7 +328,7 @@ impl TaskTool {
     }
 }
 
-fn require_session_scope<'a>(ctx: &'a dyn ToolContext) -> Result<(&'a str, &'a str)> {
+fn require_session_scope(ctx: &dyn ToolContext) -> Result<(&str, &str)> {
     let channel = ctx
         .current_channel()
         .ok_or_else(|| Error::config("tool_task", "no current channel"))?;

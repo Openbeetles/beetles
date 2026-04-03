@@ -100,8 +100,9 @@ fn parse_locator(obj: &serde_json::Map<String, Value>) -> Result<ArchiveRecordLo
         .get("source")
         .and_then(Value::as_str)
         .ok_or_else(|| Error::config("tool_memory_get", "missing source or record_id"))?;
-    let source = ArchiveRecordSource::from_str(source)
-        .ok_or_else(|| Error::config("tool_memory_get", "unsupported source"))?;
+    let source = source
+        .parse::<ArchiveRecordSource>()
+        .map_err(|_| Error::config("tool_memory_get", "unsupported source"))?;
     let chat_id = obj
         .get("chat_id")
         .and_then(Value::as_str)

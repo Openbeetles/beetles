@@ -43,7 +43,8 @@ mod world_sense;
 mod write_coordination;
 
 pub use archive_benchmark::{
-    run_archive_benchmark_case, ArchiveBenchmarkCase, ArchiveBenchmarkResult,
+    run_archive_benchmark_case, run_archive_benchmark_suite, ArchiveBenchmarkCase,
+    ArchiveBenchmarkResult,
 };
 pub use archive_plane::build_archive_evidence_block;
 pub(crate) use archive_search::maintain_archive_search_backend;

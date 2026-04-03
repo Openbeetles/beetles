@@ -101,7 +101,7 @@ fn parse_sources(value: Option<&Value>) -> Result<Vec<ArchiveRecordSource>> {
         let source = item
             .as_str()
             .ok_or_else(|| Error::config("tool_memory_search", "sources items must be strings"))?;
-        let parsed = ArchiveRecordSource::from_str(source).ok_or_else(|| {
+        let parsed = source.parse::<ArchiveRecordSource>().map_err(|_| {
             Error::config(
                 "tool_memory_search",
                 format!("unsupported archive source: {}", source),

@@ -116,7 +116,7 @@ struct AppliedEdit {
     match_count: usize,
 }
 
-fn parse_match_text<'a>(obj: &'a serde_json::Map<String, serde_json::Value>) -> Result<&'a str> {
+fn parse_match_text(obj: &serde_json::Map<String, serde_json::Value>) -> Result<&str> {
     obj.get("match_text")
         .and_then(|x| x.as_str())
         .filter(|s| !s.is_empty())

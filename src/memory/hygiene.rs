@@ -44,16 +44,22 @@ pub fn run_memory_hygiene_jobs(
     profile: MemoryProfile,
     now_secs: u64,
 ) -> MemoryHygieneOutcome {
-    let mut outcome = MemoryHygieneOutcome::default();
-    outcome.daily_notes_aggregated =
-        aggregate_old_daily_notes(ctx.memory_store, now_secs).unwrap_or(0);
-    outcome.transcripts_rolled_up = rollup_aging_transcripts(
-        ctx.session_store,
-        ctx.session_summary_store,
-        ctx.memory_store,
-    )
-    .unwrap_or(0);
-    outcome.sessions_gc = ctx.session_store.gc_stale(SESSION_GC_AGE_SECS).unwrap_or(0);
+    let effective_now_secs = if now_secs > 0 {
+        now_secs
+    } else {
+        current_unix_secs()
+    };
+    let mut outcome = MemoryHygieneOutcome {
+        daily_notes_aggregated: aggregate_old_daily_notes(ctx.memory_store, now_secs).unwrap_or(0),
+        transcripts_rolled_up: rollup_aging_transcripts(
+            ctx.session_store,
+            ctx.session_summary_store,
+            ctx.memory_store,
+        )
+        .unwrap_or(0),
+        sessions_gc: ctx.session_store.gc_stale(SESSION_GC_AGE_SECS).unwrap_or(0),
+        ..MemoryHygieneOutcome::default()
+    };
     let factual_drafts = build_archive_reconcile_drafts(
         ctx.session_store,
         ctx.long_term_memory_store,
@@ -66,38 +72,20 @@ pub fn run_memory_hygiene_jobs(
     if !factual_drafts.is_empty() {
         outcome.factual_metadata_updates = ctx
             .long_term_memory_store
-            .upsert_many(
-                &factual_drafts,
-                if now_secs > 0 {
-                    now_secs
-                } else {
-                    current_unix_secs()
-                },
-            )
+            .upsert_many(&factual_drafts, effective_now_secs)
             .unwrap_or(0);
     }
     outcome.factual_evidence_compacted = compact_factual_evidence_metadata(
         ctx.long_term_memory_store,
         &factual_drafts,
-        if now_secs > 0 {
-            now_secs
-        } else {
-            current_unix_secs()
-        },
+        effective_now_secs,
     )
     .unwrap_or(0);
     outcome.archive_index_maintained =
         maintain_archive_search_backend(ctx.session_store, ctx.memory_store, ctx.turn_ledger_store)
             .unwrap_or(false);
-    outcome.runtime_skill_governance = govern_runtime_skills(
-        ctx.skill_storage,
-        if now_secs > 0 {
-            now_secs
-        } else {
-            current_unix_secs()
-        },
-    )
-    .unwrap_or_default();
+    outcome.runtime_skill_governance =
+        govern_runtime_skills(ctx.skill_storage, effective_now_secs).unwrap_or_default();
     outcome
 }
 

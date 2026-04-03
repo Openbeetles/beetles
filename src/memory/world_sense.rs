@@ -208,14 +208,10 @@ pub fn build_world_snapshot(ctx: WorldSnapshotContext<'_>) -> WorldSnapshot {
         .filter(|task| task.priority == TaskPriority::High)
         .count();
     let user_idle_secs = ctx.self_continuity.map_or(0, |continuity| {
-        ctx.now_secs
-            .saturating_sub(continuity.last_user_turn_at)
-            .min(u64::MAX)
+        ctx.now_secs.saturating_sub(continuity.last_user_turn_at)
     });
     let autonomy_idle_secs = ctx.self_continuity.map_or(0, |continuity| {
-        ctx.now_secs
-            .saturating_sub(continuity.last_autonomy_run_at)
-            .min(u64::MAX)
+        ctx.now_secs.saturating_sub(continuity.last_autonomy_run_at)
     });
     let interaction_mode =
         describe_interaction_mode(source_channel.as_str(), user_idle_secs, autonomy_idle_secs)
@@ -488,7 +484,7 @@ pub(crate) fn run_world_sense_refresh_with_state(
         ToolChoicePolicy::Auto,
     )?;
     match parse_world_sense_response(response.content.trim(), snapshot, input.now_secs) {
-        ParsedWorldSenseResponse::Skip => return Ok(WorldSenseRefreshOutcome::Skipped),
+        ParsedWorldSenseResponse::Skip => Ok(WorldSenseRefreshOutcome::Skipped),
         ParsedWorldSenseResponse::Clear => {
             let latest = ctx.world_sense_store.get(input.chat_id)?;
             if whole_record_lease_advanced(
@@ -500,20 +496,17 @@ pub(crate) fn run_world_sense_refresh_with_state(
                     .unwrap_or(0),
                 latest.as_ref().map(|value| value.updated_at).unwrap_or(0),
             ) {
-                return Ok(WorldSenseRefreshOutcome::Skipped);
-            }
-            if latest.is_some() {
+                Ok(WorldSenseRefreshOutcome::Skipped)
+            } else if latest.is_some() {
                 ctx.world_sense_store.clear(input.chat_id)?;
-                return Ok(WorldSenseRefreshOutcome::Cleared);
+                Ok(WorldSenseRefreshOutcome::Cleared)
+            } else {
+                Ok(WorldSenseRefreshOutcome::Skipped)
             }
-            return Ok(WorldSenseRefreshOutcome::Skipped);
         }
         ParsedWorldSenseResponse::Update(next) => {
             let latest = ctx.world_sense_store.get(input.chat_id)?;
-            if latest.as_ref() == Some(&next) {
-                return Ok(WorldSenseRefreshOutcome::Skipped);
-            }
-            if whole_record_lease_advanced(
+            let lease_advanced = whole_record_lease_advanced(
                 existing_world_sense.as_ref(),
                 latest.as_ref(),
                 existing_world_sense
@@ -521,11 +514,13 @@ pub(crate) fn run_world_sense_refresh_with_state(
                     .map(|value| value.updated_at)
                     .unwrap_or(0),
                 latest.as_ref().map(|value| value.updated_at).unwrap_or(0),
-            ) {
-                return Ok(WorldSenseRefreshOutcome::Skipped);
+            );
+            if latest.as_ref() == Some(&next) || lease_advanced {
+                Ok(WorldSenseRefreshOutcome::Skipped)
+            } else {
+                ctx.world_sense_store.set(input.chat_id, &next)?;
+                Ok(WorldSenseRefreshOutcome::Updated)
             }
-            ctx.world_sense_store.set(input.chat_id, &next)?;
-            return Ok(WorldSenseRefreshOutcome::Updated);
         }
     }
 }
