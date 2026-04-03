@@ -36,16 +36,16 @@ use crate::llm::{LlmClient, Message, StopReason, ToolChoicePolicy};
 use crate::memory::{
     build_turn_ledger_start, load_prompt_memory_context, memory_policy, normalize_turn_preview,
     normalize_turn_reason, recall_long_term_memory_block, run_long_term_memory_refresh,
-    run_mental_privacy_access_request_interpreter, run_mental_privacy_review,
+    run_mental_privacy_disclosure_adjudication, run_mental_privacy_review,
     run_post_reply_memory_maintenance, run_self_runtime, AutonomyStrategyStore, EmotionSignalStore,
     ExecutionStateStore, ImportantMessageStore, InnerLifeStore, LongTermMemoryExtractionStateStore,
     LongTermMemoryRefreshContext, LongTermMemoryRefreshOutcome,
     LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore, MemoryStore,
-    MentalPrivacyAccessRequestContext, MentalPrivacyAccessRequestInput, MentalPrivacyReviewContext,
-    MentalPrivacyReviewInput, MentalPrivacyStore, OuterVoiceStore, PendingRetryStore,
-    PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput, PrivateDocStore,
-    PrivateGardenStore, PromptMemoryContextParams, RemindAtStore, SelfContinuityStore,
-    SelfModelStore, SelfRuntimeContext, SelfRuntimeOutcome, SessionStore,
+    MentalPrivacyDisclosureAdjudicationContext, MentalPrivacyDisclosureAdjudicationInput,
+    MentalPrivacyReviewContext, MentalPrivacyReviewInput, MentalPrivacyStore, OuterVoiceStore,
+    PendingRetryStore, PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput,
+    PrivateDocStore, PrivateGardenStore, PromptMemoryContextParams, RemindAtStore,
+    SelfContinuityStore, SelfModelStore, SelfRuntimeContext, SelfRuntimeOutcome, SessionStore,
     SessionSummaryRefreshOutcome, SessionSummaryStore, TurnDeliveryLedger, TurnLedger,
     TurnLedgerStatus, TurnLedgerStore, WorldSenseStore, SELF_RUNTIME_CHANNEL,
 };
@@ -1753,15 +1753,18 @@ fn run_self_runtime_job(
     );
     if let Some(decision) = outcome.decision.as_ref() {
         log::info!(
-            "[self_runtime] {} trigger={:?} inner_life={} private_docs={} private_docs_action={} self_continuity={} private_garden={} private_garden_action={} boundary_flush={} boundary_reason={:?} factual_refresh={} factual_action={} inner_life_intent={:?} private_docs_intent={:?} self_continuity_intent={:?} private_garden_intent={:?} factual_reconcile_intent={:?}",
+            "[self_runtime] {} trigger={:?} inner_life={} private_docs={} private_docs_action={} self_model={} self_continuity={} private_garden={} private_garden_action={} boundary_persona={} outer_voice={} boundary_flush={} boundary_reason={:?} factual_refresh={} factual_action={} inner_life_intent={:?} private_docs_intent={:?} self_model_intent={:?} self_continuity_intent={:?} private_garden_intent={:?} boundary_persona_intent={:?} outer_voice_intent={:?} factual_reconcile_intent={:?}",
             msg.chat_id,
             payload.trigger,
             decision.refresh_inner_life,
             decision.refresh_private_docs,
             decision.private_docs_action.label(),
+            decision.refresh_self_model,
             decision.refresh_self_continuity,
             decision.refresh_private_garden,
             decision.private_garden_action.label(),
+            decision.refresh_boundary_persona,
+            decision.refresh_outer_voice,
             decision.boundary_flush,
             (!decision.boundary_flush_reason.trim().is_empty())
                 .then_some(decision.boundary_flush_reason.as_str()),
@@ -1769,8 +1772,12 @@ fn run_self_runtime_job(
             decision.factual_reconcile_action.label(),
             (!decision.inner_life_intent.trim().is_empty()).then_some(decision.inner_life_intent.as_str()),
             (!decision.private_docs_intent.trim().is_empty()).then_some(decision.private_docs_intent.as_str()),
+            (!decision.self_model_intent.trim().is_empty()).then_some(decision.self_model_intent.as_str()),
             (!decision.self_continuity_intent.trim().is_empty()).then_some(decision.self_continuity_intent.as_str()),
             (!decision.private_garden_intent.trim().is_empty()).then_some(decision.private_garden_intent.as_str()),
+            (!decision.boundary_persona_intent.trim().is_empty())
+                .then_some(decision.boundary_persona_intent.as_str()),
+            (!decision.outer_voice_intent.trim().is_empty()).then_some(decision.outer_voice_intent.as_str()),
             (!decision.factual_reconcile_intent.trim().is_empty())
                 .then_some(decision.factual_reconcile_intent.as_str()),
         );
@@ -1843,6 +1850,13 @@ fn run_self_runtime_job(
         Ok(crate::memory::PrivateDocWorkspaceRefreshOutcome::Skipped) => {}
         Err(error) => log::warn!("[self_runtime_private_docs] failed: {}", error),
     }
+    match outcome.self_model_result {
+        Ok(crate::memory::SelfModelRefreshOutcome::Updated) => {
+            log::info!("[agent_self_model] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::SelfModelRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_self_model] failed: {}", error),
+    }
     match outcome.self_continuity_result {
         Ok(crate::memory::SelfContinuityRefreshOutcome::Updated) => {
             log::info!("[agent_self_continuity] updated for {}", msg.chat_id);
@@ -1869,6 +1883,13 @@ fn run_self_runtime_job(
         }
         Ok(crate::memory::PrivateGardenGovernanceOutcome::Skipped) => {}
         Err(error) => log::warn!("[self_runtime_private_garden] failed: {}", error),
+    }
+    match outcome.boundary_persona_result {
+        Ok(crate::memory::BoundaryPersonaRefreshOutcome::Updated) => {
+            log::info!("[agent_boundary_persona] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::BoundaryPersonaRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_boundary_persona] failed: {}", error),
     }
 }
 
@@ -2833,6 +2854,33 @@ fn run_worker_path(
     let prompt_memory_system_budget = budget
         .system_prompt_max
         .saturating_sub(post_memory_tail_len);
+    let mental_privacy_adjudication = if msg.ingress == IngressKind::User {
+        match run_mental_privacy_disclosure_adjudication(
+            &mut tool_ctx,
+            worker_llm,
+            MentalPrivacyDisclosureAdjudicationContext {
+                mental_privacy_store: config.mental_privacy_store.as_ref(),
+                self_model_store: config.self_model_store.as_ref(),
+                self_continuity_store: config.self_continuity_store.as_ref(),
+                inner_life_store: config.inner_life_store.as_ref(),
+                private_doc_store: config.private_doc_store.as_ref(),
+                private_garden_store: config.private_garden_store.as_ref(),
+            },
+            MentalPrivacyDisclosureAdjudicationInput {
+                chat_id: &msg.chat_id,
+                user_content: &msg.content,
+                now_secs: runtime.now_secs,
+            },
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                log::warn!("[agent_mental_privacy_adjudication] failed: {}", error);
+                None
+            }
+        }
+    } else {
+        None
+    };
     let mut prompt_memory = load_prompt_memory_context(PromptMemoryContextParams {
         chat_id: &msg.chat_id,
         current_channel: &msg.channel,
@@ -2842,6 +2890,7 @@ fn run_worker_path(
         profile: config.memory_profile,
         recent_messages_limit: config.session_max_messages,
         load_long_term_memory: !interactive_fast_path,
+        include_private_garden_projection: msg.ingress != IngressKind::User,
         session_store: config.session_store.as_ref(),
         memory_store: config.memory_store.as_ref(),
         session_summary_store: config.session_summary_store.as_ref(),
@@ -2861,31 +2910,15 @@ fn run_worker_path(
         turn_ledger_store: config.turn_ledger_store.as_ref(),
         skill_storage: config.skill_storage.as_ref(),
     });
-    prompt_memory.mental_privacy_request_text = match run_mental_privacy_access_request_interpreter(
-        &mut tool_ctx,
-        worker_llm,
-        MentalPrivacyAccessRequestContext {
-            mental_privacy_store: config.mental_privacy_store.as_ref(),
-            self_model_store: config.self_model_store.as_ref(),
-            self_continuity_store: config.self_continuity_store.as_ref(),
-            inner_life_store: config.inner_life_store.as_ref(),
-            private_doc_store: config.private_doc_store.as_ref(),
-            private_garden_store: config.private_garden_store.as_ref(),
-        },
-        MentalPrivacyAccessRequestInput {
-            chat_id: &msg.chat_id,
-            user_content: &msg.content,
-        },
-    ) {
-        Ok(Some(request)) => {
-            crate::memory::render_mental_privacy_access_request_block(&request, 360)
-        }
-        Ok(None) => None,
-        Err(error) => {
-            log::warn!("[agent_mental_privacy_request] failed: {}", error);
-            None
-        }
-    };
+    prompt_memory.mental_privacy_adjudication_text =
+        mental_privacy_adjudication
+            .as_ref()
+            .and_then(|adjudication| {
+                crate::memory::render_mental_privacy_disclosure_adjudication_block(
+                    adjudication,
+                    420,
+                )
+            });
     let (mut system, mut messages) = build_context(&super::ContextParams {
         msg,
         memory: config.memory_store.as_ref(),
@@ -2902,6 +2935,7 @@ fn run_worker_path(
         world_snapshot_text: prompt_memory.world_snapshot_text.as_deref(),
         world_sense_text: prompt_memory.world_sense_text.as_deref(),
         self_state_text: prompt_memory.self_state_text.as_deref(),
+        self_authored_core_text: prompt_memory.self_authored_core_text.as_deref(),
         self_model_text: prompt_memory.self_model_text.as_deref(),
         autonomy_strategy_text: prompt_memory.autonomy_strategy_text.as_deref(),
         outer_voice_text: prompt_memory.outer_voice_text.as_deref(),
@@ -2909,7 +2943,7 @@ fn run_worker_path(
         self_continuity_text: prompt_memory.self_continuity_text.as_deref(),
         private_workspace_text: prompt_memory.private_workspace_text.as_deref(),
         private_garden_text: prompt_memory.private_garden_text.as_deref(),
-        mental_privacy_request_text: prompt_memory.mental_privacy_request_text.as_deref(),
+        mental_privacy_adjudication_text: prompt_memory.mental_privacy_adjudication_text.as_deref(),
         mental_privacy_text: prompt_memory.mental_privacy_text.as_deref(),
         long_term_memory_text: prompt_memory.long_term_memory_text.as_deref(),
         archive_evidence_text: prompt_memory.archive_evidence_text.as_deref(),

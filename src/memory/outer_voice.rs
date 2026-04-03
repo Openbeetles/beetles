@@ -154,6 +154,8 @@ pub(crate) fn run_outer_voice_refresh_with_state(
     private_workspace: Option<&PrivateDocWorkspace>,
     private_garden_docs: &[PrivateGardenDocRecord],
     mental_privacy_state: Option<&MentalPrivacyState>,
+    distillation_intent: Option<&str>,
+    distillation_sources: &[String],
     decision_override: Option<bool>,
     recent_override: Option<&[SessionMessage]>,
 ) -> Result<OuterVoiceRefreshOutcome> {
@@ -180,6 +182,8 @@ pub(crate) fn run_outer_voice_refresh_with_state(
         private_workspace,
         private_garden_docs,
         mental_privacy_state,
+        distillation_intent,
+        distillation_sources,
         recent,
         policy,
     );
@@ -303,6 +307,8 @@ fn build_outer_voice_refresh_input(
     private_workspace: Option<&PrivateDocWorkspace>,
     private_garden_docs: &[PrivateGardenDocRecord],
     mental_privacy_state: Option<&MentalPrivacyState>,
+    distillation_intent: Option<&str>,
+    distillation_sources: &[String],
     recent: &[SessionMessage],
     policy: OuterVoicePolicy,
 ) -> String {
@@ -359,6 +365,24 @@ fn build_outer_voice_refresh_input(
     ) {
         let _ = writeln!(input, "\n{}\n", block);
     }
+    if let Some(intent) = distillation_intent
+        .map(str::trim)
+        .filter(|intent| !intent.is_empty())
+    {
+        input.push_str("\n## Distillation Intent\n");
+        input.push_str(intent);
+        input.push('\n');
+    }
+    if !distillation_sources.is_empty() {
+        input.push_str("\n## Distillation Sources\n");
+        for source in distillation_sources {
+            let source = source.trim();
+            if source.is_empty() {
+                continue;
+            }
+            let _ = writeln!(input, "- {}", source);
+        }
+    }
     if let Some(block) = existing_outer_voice
         .and_then(|voice| render_outer_voice_block(voice, policy.existing_outer_voice_max_len))
     {
@@ -385,6 +409,9 @@ fn build_outer_voice_refresh_input(
     );
     input.push_str(
         "- Let initiative decide whether to volunteer a little more, stay concise, ask gently, or hold position.\n",
+    );
+    input.push_str(
+        "- If distillation sources are provided, translate them into outward style guidance rather than revealing them.\n",
     );
     input
 }

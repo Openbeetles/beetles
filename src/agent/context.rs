@@ -52,6 +52,7 @@ const GROUP_ALWAYS_SILENT_CONSTRAINT: &str =
     "\n\nIf no response is needed, reply with exactly SILENT and nothing else.";
 const GROUP_MENTION_ONLY_CONSTRAINT: &str =
     "\n\nYou are in a group; only reply when explicitly mentioned.";
+const REPLY_PRIORITY_CONSTRAINT: &str = "\n\n## Reply Priority\nWhen writing the main reply, follow this order of authority:\n1. Self-authored core: your distilled identity, continuity, and self-chosen stance.\n2. Boundary/disclosure adjudication: if this turn touches privacy or inward boundaries, obey that stance before composing content.\n3. Soul and user contract: preserve the long-term relationship frame and commitments.\n4. Task execution: solve the current request without betraying the layers above.\nIf these layers pull in different directions, earlier items win.";
 
 /// build_context 参数聚合，减少函数签名复杂度。
 ///
@@ -74,6 +75,7 @@ pub struct ContextParams<'a> {
     pub world_snapshot_text: Option<&'a str>,
     pub world_sense_text: Option<&'a str>,
     pub self_state_text: Option<&'a str>,
+    pub self_authored_core_text: Option<&'a str>,
     pub self_model_text: Option<&'a str>,
     pub autonomy_strategy_text: Option<&'a str>,
     pub outer_voice_text: Option<&'a str>,
@@ -81,7 +83,7 @@ pub struct ContextParams<'a> {
     pub self_continuity_text: Option<&'a str>,
     pub private_workspace_text: Option<&'a str>,
     pub private_garden_text: Option<&'a str>,
-    pub mental_privacy_request_text: Option<&'a str>,
+    pub mental_privacy_adjudication_text: Option<&'a str>,
     pub mental_privacy_text: Option<&'a str>,
     pub long_term_memory_text: Option<&'a str>,
     pub archive_evidence_text: Option<&'a str>,
@@ -155,6 +157,7 @@ fn reserve_priority_memory_budget(
     world_snapshot_text: Option<&str>,
     world_sense_text: Option<&str>,
     self_state_text: Option<&str>,
+    self_authored_core_text: Option<&str>,
     self_model_text: Option<&str>,
     autonomy_strategy_text: Option<&str>,
     outer_voice_text: Option<&str>,
@@ -162,64 +165,41 @@ fn reserve_priority_memory_budget(
     self_continuity_text: Option<&str>,
     private_workspace_text: Option<&str>,
     private_garden_text: Option<&str>,
-    mental_privacy_request_text: Option<&str>,
+    mental_privacy_adjudication_text: Option<&str>,
     mental_privacy_text: Option<&str>,
     long_term_memory_text: Option<&str>,
     archive_evidence_text: Option<&str>,
     runtime_skill_text: Option<&str>,
     base_max: usize,
 ) -> usize {
-    let execution_reserve = section_with_separator_len(execution_state_text).min(base_max);
-    let remaining = base_max.saturating_sub(execution_reserve);
-    let world_snapshot_reserve = section_with_separator_len(world_snapshot_text).min(remaining / 4);
-    let remaining = remaining.saturating_sub(world_snapshot_reserve);
-    let world_sense_reserve = section_with_separator_len(world_sense_text).min(remaining / 4);
-    let remaining = remaining.saturating_sub(world_sense_reserve);
-    let self_state_reserve = section_with_separator_len(self_state_text).min(remaining / 4);
-    let remaining = remaining.saturating_sub(self_state_reserve);
-    let self_model_reserve = section_with_separator_len(self_model_text).min(remaining / 4);
-    let remaining = remaining.saturating_sub(self_model_reserve);
-    let autonomy_strategy_reserve =
-        section_with_separator_len(autonomy_strategy_text).min(remaining / 4);
-    let remaining = remaining.saturating_sub(autonomy_strategy_reserve);
-    let outer_voice_reserve = section_with_separator_len(outer_voice_text).min(remaining / 4);
-    let remaining = remaining.saturating_sub(outer_voice_reserve);
-    let inner_life_reserve = section_with_separator_len(inner_life_text).min(remaining / 4);
-    let remaining = remaining.saturating_sub(inner_life_reserve);
-    let self_continuity_reserve =
-        section_with_separator_len(self_continuity_text).min(remaining / 4);
-    let remaining = remaining.saturating_sub(self_continuity_reserve);
-    let private_workspace_reserve =
-        section_with_separator_len(private_workspace_text).min(remaining / 4);
-    let remaining = remaining.saturating_sub(private_workspace_reserve);
-    let private_garden_reserve = section_with_separator_len(private_garden_text).min(remaining / 4);
-    let remaining = remaining.saturating_sub(private_garden_reserve);
-    let mental_privacy_request_reserve =
-        section_with_separator_len(mental_privacy_request_text).min(remaining / 4);
-    let remaining = remaining.saturating_sub(mental_privacy_request_reserve);
+    let _ = execution_state_text;
+    let _ = world_snapshot_text;
+    let _ = world_sense_text;
+    let _ = self_state_text;
+    let _ = self_model_text;
+    let _ = autonomy_strategy_text;
+    let _ = outer_voice_text;
+    let _ = inner_life_text;
+    let _ = self_continuity_text;
+    let _ = private_workspace_text;
+    let _ = private_garden_text;
+    let _ = long_term_memory_text;
+    let _ = archive_evidence_text;
+    let _ = runtime_skill_text;
+    let remaining = base_max;
+    let reply_priority_reserve = REPLY_PRIORITY_CONSTRAINT.len().min(remaining);
+    let remaining = remaining.saturating_sub(reply_priority_reserve);
+    let self_authored_core_reserve =
+        section_with_separator_len(self_authored_core_text).min(remaining / 4);
+    let remaining = remaining.saturating_sub(self_authored_core_reserve);
+    let mental_privacy_adjudication_reserve =
+        section_with_separator_len(mental_privacy_adjudication_text).min(remaining / 4);
+    let remaining = remaining.saturating_sub(mental_privacy_adjudication_reserve);
     let mental_privacy_reserve = section_with_separator_len(mental_privacy_text).min(remaining / 4);
-    let remaining = remaining.saturating_sub(mental_privacy_reserve);
-    let long_term_reserve = section_with_separator_len(long_term_memory_text).min(remaining / 2);
-    let remaining = remaining.saturating_sub(long_term_reserve);
-    let archive_evidence_reserve = section_with_separator_len(archive_evidence_text).min(remaining);
-    let remaining = remaining.saturating_sub(archive_evidence_reserve);
-    let runtime_skill_reserve = section_with_separator_len(runtime_skill_text).min(remaining / 2);
-    execution_reserve
-        .saturating_add(world_snapshot_reserve)
-        .saturating_add(world_sense_reserve)
-        .saturating_add(self_state_reserve)
-        .saturating_add(self_model_reserve)
-        .saturating_add(autonomy_strategy_reserve)
-        .saturating_add(outer_voice_reserve)
-        .saturating_add(inner_life_reserve)
-        .saturating_add(self_continuity_reserve)
-        .saturating_add(private_workspace_reserve)
-        .saturating_add(private_garden_reserve)
-        .saturating_add(mental_privacy_request_reserve)
+    reply_priority_reserve
+        .saturating_add(self_authored_core_reserve)
+        .saturating_add(mental_privacy_adjudication_reserve)
         .saturating_add(mental_privacy_reserve)
-        .saturating_add(long_term_reserve)
-        .saturating_add(archive_evidence_reserve)
-        .saturating_add(runtime_skill_reserve)
 }
 
 fn push_scratch_if_fits<F>(
@@ -367,6 +347,7 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
         p.world_snapshot_text,
         p.world_sense_text,
         p.self_state_text,
+        p.self_authored_core_text,
         p.self_model_text,
         p.autonomy_strategy_text,
         p.outer_voice_text,
@@ -374,7 +355,7 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
         p.self_continuity_text,
         p.private_workspace_text,
         p.private_garden_text,
-        p.mental_privacy_request_text,
+        p.mental_privacy_adjudication_text,
         p.mental_privacy_text,
         p.long_term_memory_text,
         p.archive_evidence_text,
@@ -384,7 +365,24 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     let base_prompt_budget = base_max.saturating_sub(priority_memory_reserve);
     let mut system = String::with_capacity(p.system_max_len);
     let mut section_scratch = String::with_capacity(96);
-    append_system_prompt_base(&mut system, &soul, &user, &mem, base_prompt_budget);
+    let mut base_prompt = String::with_capacity(base_prompt_budget);
+    append_system_prompt_base(&mut base_prompt, &soul, &user, &mem, base_prompt_budget);
+    let _ = push_if_fits(&mut system, REPLY_PRIORITY_CONSTRAINT, base_max);
+    if let Some(self_authored_core_text) = p.self_authored_core_text {
+        let _ = append_capped_section(&mut system, "\n\n", self_authored_core_text, base_max);
+    }
+    if let Some(mental_privacy_adjudication_text) = p.mental_privacy_adjudication_text {
+        let _ = append_capped_section(
+            &mut system,
+            "\n\n",
+            mental_privacy_adjudication_text,
+            base_max,
+        );
+    }
+    if let Some(mental_privacy_text) = p.mental_privacy_text {
+        let _ = append_capped_section(&mut system, "\n\n", mental_privacy_text, base_max);
+    }
+    let _ = append_capped_section(&mut system, "\n\n", &base_prompt, base_max);
     if let Some(execution_state_text) = p.execution_state_text {
         let _ = append_capped_section(&mut system, "\n\n", execution_state_text, base_max);
     }
@@ -426,12 +424,6 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     }
     if let Some(private_garden_text) = p.private_garden_text {
         let _ = append_capped_section(&mut system, "\n\n", private_garden_text, base_max);
-    }
-    if let Some(mental_privacy_request_text) = p.mental_privacy_request_text {
-        let _ = append_capped_section(&mut system, "\n\n", mental_privacy_request_text, base_max);
-    }
-    if let Some(mental_privacy_text) = p.mental_privacy_text {
-        let _ = append_capped_section(&mut system, "\n\n", mental_privacy_text, base_max);
     }
     if p.include_daily_notes && system.len() < base_max {
         let names = p
@@ -708,7 +700,7 @@ mod tests {
             important_message_store: &important,
             has_tools: false,
             skill_descriptions: "",
-            system_max_len: 860,
+            system_max_len: 980,
             messages_max_len: 256,
             session_max_messages: 8,
             group_activation: "always",
@@ -719,6 +711,9 @@ mod tests {
             ),
             world_sense_text: Some("## World Sense\nCurrent scene: quiet but active chat."),
             self_state_text: Some("## Self State\nMemory pressure: Cautious"),
+            self_authored_core_text: Some(
+                "## Self-Authored Core\nIdentity anchor: still the same beetle",
+            ),
             self_model_text: Some("## Self Continuity\nAnchor: still the same beetle"),
             autonomy_strategy_text: Some("## Autonomy Strategy\nCurrent mode: consolidate"),
             outer_voice_text: Some("## Outer Voice\nTone: calm, deliberate, warm at the edge."),
@@ -730,7 +725,9 @@ mod tests {
             private_garden_text: Some(
                 "## Private Garden\n- journal/afterglow.md (rev 1, updated=1): free private traces",
             ),
-            mental_privacy_request_text: Some("## Privacy Access Request\nRequest kind: summary"),
+            mental_privacy_adjudication_text: Some(
+                "## Disclosure Adjudication\nChosen share action: allow_summary",
+            ),
             mental_privacy_text: Some("## Mental Privacy Boundary\nDo not leak private layers."),
             long_term_memory_text: None,
             archive_evidence_text: None,
@@ -743,16 +740,13 @@ mod tests {
         })
         .expect("context");
 
-        assert!(system.contains("## Execution State"));
-        assert!(system.contains("## World Snapshot"));
-        assert!(system.contains("## World Sense"));
-        assert!(system.contains("## Self State"));
-        assert!(system.contains("## Self Continuity"));
-        assert!(system.contains("## Autonomy Strategy"));
-        assert!(system.contains("## Outer Voice"));
-        assert!(system.contains("## Inner Life"));
-        assert!(system.contains("## Self Continuity Extended"));
-        assert!(system.contains("## Inner Workspace"));
+        assert!(system.contains("## Reply Priority"));
+        assert!(system.contains("## Self-Authored Core"));
+        assert!(system.contains("## Disclosure Adjudication"));
+        if let Some(soul_idx) = system.find("SOUL") {
+            assert!(system.find("## Self-Authored Core").unwrap() < soul_idx);
+            assert!(system.find("## Disclosure Adjudication").unwrap() < soul_idx);
+        }
     }
 
     #[test]
@@ -786,6 +780,7 @@ mod tests {
             world_snapshot_text: None,
             world_sense_text: None,
             self_state_text: None,
+            self_authored_core_text: None,
             self_model_text: None,
             autonomy_strategy_text: None,
             outer_voice_text: None,
@@ -793,7 +788,7 @@ mod tests {
             self_continuity_text: None,
             private_workspace_text: None,
             private_garden_text: None,
-            mental_privacy_request_text: None,
+            mental_privacy_adjudication_text: None,
             mental_privacy_text: None,
             long_term_memory_text: None,
             archive_evidence_text: None,

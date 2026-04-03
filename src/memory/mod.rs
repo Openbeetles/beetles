@@ -28,6 +28,7 @@ mod private_garden;
 mod private_garden_governance;
 mod profile;
 mod prompt_context;
+mod self_authored_core;
 mod self_continuity;
 mod self_model;
 mod self_runtime;
@@ -133,13 +134,16 @@ pub use memory_governance::{
     MemoryGovernanceContext, MemoryGovernanceInput, MemoryGovernanceOutcome,
 };
 pub(crate) use mental_privacy::{
-    collect_private_targets, render_mental_privacy_access_request_block,
-    render_mental_privacy_boundary_block, run_mental_privacy_review,
+    collect_private_targets, render_mental_privacy_boundary_block,
+    render_mental_privacy_disclosure_adjudication_block, run_boundary_persona_refresh_with_state,
+    run_mental_privacy_review,
 };
 pub use mental_privacy::{
-    run_mental_privacy_access_request_interpreter, MentalPrivacyAccessRequest,
-    MentalPrivacyAccessRequestContext, MentalPrivacyAccessRequestInput, MentalPrivacyConsentLog,
-    MentalPrivacyEnvelope, MentalPrivacyLayer, MentalPrivacyOwnerAccessMode,
+    run_mental_privacy_disclosure_adjudication, BoundaryDisclosureStyle, BoundaryPersonaPosture,
+    BoundaryPersonaRefreshContext, BoundaryPersonaRefreshInput, BoundaryPersonaRefreshOutcome,
+    BoundaryPersonaState, MentalPrivacyConsentLog, MentalPrivacyDisclosureAdjudication,
+    MentalPrivacyDisclosureAdjudicationContext, MentalPrivacyDisclosureAdjudicationInput,
+    MentalPrivacyEnvelope, MentalPrivacyLayer, MentalPrivacyLogStage, MentalPrivacyOwnerAccessMode,
     MentalPrivacyQuotePolicy, MentalPrivacyRequester, MentalPrivacyReviewContext,
     MentalPrivacyReviewInput, MentalPrivacyReviewOutcome, MentalPrivacyShareAction,
     MentalPrivacyState, MentalPrivacyStore, MentalPrivacyVisibility,
@@ -164,10 +168,12 @@ pub(crate) use private_docs::{
 };
 pub(crate) use private_garden::build_private_garden_preview;
 pub use private_garden::{
-    build_private_garden_usage, normalize_private_garden_doc_path, render_private_garden_block,
+    build_private_garden_usage, classify_private_garden_doc_path,
+    normalize_private_garden_doc_path, render_private_garden_block,
     summarize_private_garden_directories, PrivateGardenDirectorySummary, PrivateGardenDoc,
-    PrivateGardenDocRecord, PrivateGardenUsage, PRIVATE_GARDEN_MAX_DOCS_PER_CHAT,
-    PRIVATE_GARDEN_MAX_DOC_BYTES, PRIVATE_GARDEN_TOTAL_BYTE_LIMIT,
+    PrivateGardenDocRecord, PrivateGardenDocRole, PrivateGardenUsage,
+    PRIVATE_GARDEN_MAX_DOCS_PER_CHAT, PRIVATE_GARDEN_MAX_DOC_BYTES,
+    PRIVATE_GARDEN_TOTAL_BYTE_LIMIT,
 };
 pub use private_garden_governance::{
     run_private_garden_governance, PrivateGardenGovernanceContext, PrivateGardenGovernanceInput,
@@ -187,6 +193,7 @@ pub use profile::{MemoryCapabilityClass, MemoryHygieneLevel, MemoryProfile};
 pub use prompt_context::{
     load_prompt_memory_context, PromptMemoryContext, PromptMemoryContextParams,
 };
+pub use self_authored_core::render_self_authored_core_block;
 pub(crate) use self_continuity::estimate_self_continuity_chars;
 pub(crate) use self_continuity::run_self_continuity_refresh_with_state;
 pub use self_continuity::{

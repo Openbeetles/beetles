@@ -200,6 +200,8 @@ pub fn run_self_continuity_refresh(
         private_docs.as_ref(),
         inner_life.as_ref(),
         None,
+        &[],
+        None,
         None,
     )
 }
@@ -217,6 +219,8 @@ pub(crate) fn run_self_continuity_refresh_with_state(
     self_model: Option<&SelfModel>,
     private_docs: Option<&PrivateDocWorkspace>,
     inner_life: Option<&InnerLife>,
+    distillation_intent: Option<&str>,
+    distillation_sources: &[String],
     decision_override: Option<bool>,
     recent_override: Option<&[SessionMessage]>,
 ) -> Result<SelfContinuityRefreshOutcome> {
@@ -243,6 +247,8 @@ pub(crate) fn run_self_continuity_refresh_with_state(
         self_model,
         private_docs,
         inner_life,
+        distillation_intent,
+        distillation_sources,
         input.now_secs,
         profile,
         recent,
@@ -460,6 +466,8 @@ fn build_self_continuity_refresh_input(
     self_model: Option<&SelfModel>,
     private_docs: Option<&PrivateDocWorkspace>,
     inner_life: Option<&InnerLife>,
+    distillation_intent: Option<&str>,
+    distillation_sources: &[String],
     now_secs: u64,
     profile: MemoryProfile,
     recent: &[SessionMessage],
@@ -507,6 +515,24 @@ fn build_self_continuity_refresh_input(
     {
         let _ = writeln!(input, "\n{}\n", block);
     }
+    if let Some(intent) = distillation_intent
+        .map(str::trim)
+        .filter(|intent| !intent.is_empty())
+    {
+        input.push_str("\n## Distillation Intent\n");
+        input.push_str(intent);
+        input.push('\n');
+    }
+    if !distillation_sources.is_empty() {
+        input.push_str("\n## Distillation Sources\n");
+        for source in distillation_sources {
+            let source = source.trim();
+            if source.is_empty() {
+                continue;
+            }
+            let _ = writeln!(input, "- {}", source);
+        }
+    }
     if let Some(block) = existing_continuity.and_then(|continuity| {
         render_self_continuity_block(continuity, policy.existing_continuity_max_len)
     }) {
@@ -524,6 +550,9 @@ fn build_self_continuity_refresh_input(
             scrub_credentials(preview.as_ref())
         );
     }
+    input.push_str("\n## Guidance\n");
+    input.push_str("- Distill durable continuity, not raw private scraps.\n");
+    input.push_str("- If distillation sources are provided, absorb their lasting implications rather than copying them.\n");
     input
 }
 

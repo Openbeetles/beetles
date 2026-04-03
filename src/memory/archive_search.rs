@@ -498,6 +498,9 @@ fn search_archive_records_from_sqlite(
     memory_store: &dyn MemoryStore,
     turn_ledger_store: &dyn TurnLedgerStore,
     query: ArchiveSearchQuery<'_>,
+    terms: &[String],
+    weak_query: bool,
+    limit: usize,
 ) -> Result<Option<Vec<ArchiveSearchHit>>> {
     let signature = match build_archive_source_signature() {
         Ok(signature) => signature,
@@ -906,14 +909,6 @@ fn modified_unix_secs(meta: &std::fs::Metadata) -> u64 {
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
-}
-
-#[cfg(target_os = "linux")]
-fn locator_matches_chat(locator: &ArchiveRecordLocator, preferred_chat_id: Option<&str>) -> bool {
-    match (locator.chat_id.as_deref(), preferred_chat_id) {
-        (Some(left), Some(right)) => left == right,
-        _ => false,
-    }
 }
 
 fn score_archive_candidates(

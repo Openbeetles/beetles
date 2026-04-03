@@ -10,13 +10,13 @@ use super::{
     recall_long_term_memory_block, render_autonomy_strategy_block,
     render_exact_long_term_memory_block, render_execution_state_block, render_inner_life_block,
     render_mental_privacy_boundary_block, render_outer_voice_block,
-    render_private_doc_workspace_block, render_private_garden_block, render_self_continuity_block,
-    render_self_model_block, render_self_state_block, render_world_sense_block,
-    render_world_snapshot_block, AutonomyStrategyStore, ExecutionStateStore, InnerLifeStore,
-    LongTermMemoryStore, MemoryProfile, MemoryStore, MentalPrivacyStore, OuterVoiceStore,
-    PrivateDocStore, PrivateGardenStore, RemindAtStore, SelfContinuityStore, SelfModelStore,
-    SessionMessage, SessionStore, SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
-    WorldSnapshotContext,
+    render_private_doc_workspace_block, render_private_garden_block,
+    render_self_authored_core_block, render_self_continuity_block, render_self_model_block,
+    render_self_state_block, render_world_sense_block, render_world_snapshot_block,
+    AutonomyStrategyStore, ExecutionStateStore, InnerLifeStore, LongTermMemoryStore, MemoryProfile,
+    MemoryStore, MentalPrivacyStore, OuterVoiceStore, PrivateDocStore, PrivateGardenStore,
+    RemindAtStore, SelfContinuityStore, SelfModelStore, SessionMessage, SessionStore,
+    SessionSummaryStore, TurnLedgerStore, WorldSenseStore, WorldSnapshotContext,
 };
 
 pub struct PromptMemoryContext {
@@ -29,6 +29,7 @@ pub struct PromptMemoryContext {
     pub world_snapshot_text: Option<String>,
     pub world_sense_text: Option<String>,
     pub self_state_text: Option<String>,
+    pub self_authored_core_text: Option<String>,
     pub self_model_text: Option<String>,
     pub autonomy_strategy_text: Option<String>,
     pub outer_voice_text: Option<String>,
@@ -36,7 +37,7 @@ pub struct PromptMemoryContext {
     pub self_continuity_text: Option<String>,
     pub private_workspace_text: Option<String>,
     pub private_garden_text: Option<String>,
-    pub mental_privacy_request_text: Option<String>,
+    pub mental_privacy_adjudication_text: Option<String>,
     pub mental_privacy_text: Option<String>,
     pub recent_messages: Vec<SessionMessage>,
 }
@@ -50,6 +51,7 @@ pub struct PromptMemoryContextParams<'a> {
     pub profile: MemoryProfile,
     pub recent_messages_limit: usize,
     pub load_long_term_memory: bool,
+    pub include_private_garden_projection: bool,
     pub session_store: &'a dyn SessionStore,
     pub memory_store: &'a dyn MemoryStore,
     pub session_summary_store: &'a dyn SessionSummaryStore,
@@ -180,13 +182,18 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         .private_garden_store
         .list(params.chat_id, usize::MAX)
         .unwrap_or_default();
-    let private_garden_text = render_private_garden_block(
-        &all_private_garden_docs,
-        memory_policy(params.profile)
-            .private_garden
-            .recent_doc_count,
-        memory_policy(params.profile).private_garden.render_max_len,
-    );
+    let private_garden_text = params
+        .include_private_garden_projection
+        .then(|| {
+            render_private_garden_block(
+                &all_private_garden_docs,
+                memory_policy(params.profile)
+                    .private_garden
+                    .recent_doc_count,
+                memory_policy(params.profile).private_garden.render_max_len,
+            )
+        })
+        .flatten();
     let mental_privacy_state = params
         .mental_privacy_store
         .get(params.chat_id)
@@ -202,6 +209,13 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
     let mental_privacy_text = render_mental_privacy_boundary_block(
         mental_privacy_state.as_ref(),
         &mental_privacy_targets,
+        420,
+    );
+    let self_authored_core_text = render_self_authored_core_block(
+        self_model.as_ref(),
+        self_continuity.as_ref(),
+        outer_voice.as_ref(),
+        mental_privacy_state.as_ref(),
         420,
     );
     let self_state_text = render_self_state_block(
@@ -317,6 +331,7 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         world_snapshot_text,
         world_sense_text,
         self_state_text,
+        self_authored_core_text,
         self_model_text,
         autonomy_strategy_text,
         outer_voice_text,
@@ -324,7 +339,7 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         self_continuity_text,
         private_workspace_text,
         private_garden_text,
-        mental_privacy_request_text: None,
+        mental_privacy_adjudication_text: None,
         mental_privacy_text,
         recent_messages,
     }
@@ -1069,6 +1084,7 @@ mod tests {
             profile: MemoryProfile::Standard,
             recent_messages_limit: 8,
             load_long_term_memory: true,
+            include_private_garden_projection: true,
             session_store: &session_store,
             memory_store: &archive_memory_store,
             session_summary_store: &summary_store,
@@ -1139,6 +1155,11 @@ mod tests {
             .unwrap_or_default()
             .contains("## Self State"));
         assert!(context
+            .self_authored_core_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Self-Authored Core"));
+        assert!(context
             .self_model_text
             .as_deref()
             .unwrap_or_default()
@@ -1173,7 +1194,7 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("## Private Garden"));
-        assert!(context.mental_privacy_request_text.is_none());
+        assert!(context.mental_privacy_adjudication_text.is_none());
         assert!(context
             .runtime_skill_text
             .as_deref()
@@ -1241,6 +1262,7 @@ mod tests {
             profile: MemoryProfile::Embedded,
             recent_messages_limit: 8,
             load_long_term_memory: true,
+            include_private_garden_projection: true,
             session_store: &session_store,
             memory_store: &archive_memory_store,
             session_summary_store: &summary_store,
@@ -1399,6 +1421,7 @@ mod tests {
             profile: MemoryProfile::Standard,
             recent_messages_limit: 16,
             load_long_term_memory: false,
+            include_private_garden_projection: false,
             session_store: &session_store,
             memory_store: &archive_memory_store,
             session_summary_store: &summary_store,
@@ -1441,11 +1464,7 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("## Outer Voice"));
-        assert!(context
-            .private_garden_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("自由花园"));
+        assert!(context.private_garden_text.is_none());
         assert_eq!(context.recent_messages.len(), 2);
         assert!(memory_store
             .last_query
