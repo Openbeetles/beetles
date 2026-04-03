@@ -11,8 +11,17 @@ pub struct ThreadPlan {
 
 pub fn thread_plan(name: &str) -> ThreadPlan {
     match name {
-        "wifi_worker" | "dispatch" | "tg_poll" | "feishu_ws" | "qq_ws" | "tg_sender"
-        | "fs_sender" | "dt_sender" | "wc_sender" | "qq_sender" | "http_server"
+        "wifi_worker"
+        | "dispatch"
+        | "tg_poll"
+        | "feishu_ws"
+        | "qq_ws"
+        | "tg_sender"
+        | "fs_sender"
+        | "dt_sender"
+        | "wc_sender"
+        | "qq_sender"
+        | "http_server"
         | "restart_defer" => ThreadPlan {
             core: Some(SpawnCore::Core0),
             role: HttpThreadRole::Io,
@@ -25,6 +34,10 @@ pub fn thread_plan(name: &str) -> ThreadPlan {
             core: Some(SpawnCore::Core1),
             role: HttpThreadRole::Background,
         },
+        "agent_waiting_notice" => ThreadPlan {
+            core: Some(SpawnCore::Core1),
+            role: HttpThreadRole::Background,
+        },
         "audio_io_worker" => ThreadPlan {
             core: Some(SpawnCore::Core1),
             role: HttpThreadRole::Background,
@@ -33,16 +46,12 @@ pub fn thread_plan(name: &str) -> ThreadPlan {
             core: Some(SpawnCore::Core1),
             role: HttpThreadRole::Background,
         },
-        "display"
-        | "cron"
-        | "heartbeat"
-        | "heartbeat_tasks"
-        | "remind"
-        | "cli_repl"
-        | "agent_waiting_notice" => ThreadPlan {
-            core: Some(SpawnCore::Core1),
-            role: HttpThreadRole::Background,
-        },
+        "display" | "cron" | "heartbeat" | "heartbeat_tasks" | "remind" | "cli_repl" => {
+            ThreadPlan {
+                core: Some(SpawnCore::Core1),
+                role: HttpThreadRole::Background,
+            }
+        }
         _ => ThreadPlan {
             core: None,
             role: HttpThreadRole::Background,

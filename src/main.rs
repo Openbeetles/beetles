@@ -30,12 +30,34 @@ use clap::Parser;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 const TAG: &str = "beetle";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 type HttpFactory = beetle::runtime::stream_http::HttpFactory;
+
+#[cfg(feature = "config_api")]
+struct HttpServerSpawnContext {
+    platform: Arc<dyn Platform>,
+    tool_registry: Arc<beetle::tools::ToolRegistry>,
+    inbound_depth: Arc<std::sync::atomic::AtomicUsize>,
+    outbound_depth: Arc<std::sync::atomic::AtomicUsize>,
+    memory_store: Arc<dyn beetle::memory::MemoryStore + Send + Sync>,
+    session_store: Arc<dyn beetle::memory::SessionStore + Send + Sync>,
+    inbound_tx: beetle::bus::InboundTx,
+    shared_config: Arc<RwLock<AppConfig>>,
+    channel_connectivity_cache: Arc<beetle::channels::ChannelConnectivityCache>,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    msg_id_cache: beetle::channels::QqMsgIdCache,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    qq_webhook_enabled: bool,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    qq_app_id: String,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    qq_secret: String,
+}
 
 /// 从 orchestrator snapshot 的 internal 堆空闲字节数估算已用百分比。
 /// 以运行时首次观测到的空闲值作为动态基线（首次调用时的空闲量，此时大部分业务线程已启动），
@@ -199,6 +221,392 @@ fn compute_refresh_secs(
             }
         }
         _ => DISPLAY_REFRESH_IDLE_SECS,
+    }
+}
+
+#[cfg(feature = "config_api")]
+fn spawn_http_config_server(ctx: HttpServerSpawnContext) {
+    spawn_planned("http_server", 6144, move || {
+        if let Err(e) = beetle::platform::http_server::run(
+            ctx.platform,
+            ctx.tool_registry,
+            ctx.inbound_depth,
+            ctx.outbound_depth,
+            ctx.memory_store,
+            ctx.session_store,
+            ctx.inbound_tx,
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            ctx.msg_id_cache,
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            ctx.qq_webhook_enabled,
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            ctx.qq_app_id,
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            ctx.qq_secret,
+            ctx.shared_config,
+            ctx.channel_connectivity_cache,
+        ) {
+            log::warn!("[{}] HTTP config API server error: {}", TAG, e);
+        }
+    });
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn spawn_voice_session_if_ready(
+    platform: &Arc<dyn Platform>,
+    config: &Arc<AppConfig>,
+    baidu_token_cache: Option<&Arc<beetle::audio::baidu_token::BaiduTokenCache>>,
+    user_inbound_tx: &beetle::bus::InboundTx,
+    voice_event_tx_rx: &mut Option<(
+        String,
+        std::sync::mpsc::SyncSender<beetle::audio::voice_session::VoiceEvent>,
+        std::sync::mpsc::Receiver<beetle::audio::voice_session::VoiceEvent>,
+    )>,
+) {
+    let Some((model_name, voice_tx, voice_rx)) = voice_event_tx_rx.take() else {
+        return;
+    };
+    let (Some(audio_cfg), Some(bt_cache)) = (config.audio.as_ref(), baidu_token_cache) else {
+        return;
+    };
+    let vs_platform = Arc::clone(platform);
+    let vs_audio = audio_cfg.clone();
+    let vs_token = Arc::clone(bt_cache);
+    let vs_pf = Arc::clone(platform);
+    let vs_cfg = Arc::clone(config);
+    let vs_make_http: Arc<
+        dyn Fn() -> beetle::error::Result<Box<dyn beetle::PlatformHttpClient>> + Send + Sync,
+    > = Arc::new(move || vs_pf.create_http_client(vs_cfg.as_ref()));
+    let vs_inbound_tx = user_inbound_tx.clone();
+    let vs_prompt = audio_cfg.wake_word.wake_prompt.clone();
+    spawn_planned("voice_session", STACK_VOICE_CONTROL, move || {
+        beetle::audio::voice_session::run_voice_session(
+            beetle::audio::voice_session::VoiceSessionConfig {
+                platform: vs_platform,
+                audio_cfg: vs_audio,
+                baidu_token: vs_token,
+                make_http: vs_make_http,
+                inbound_tx: vs_inbound_tx,
+                wake_prompt: vs_prompt,
+            },
+            voice_rx,
+        );
+    });
+    platform.configure_wake_word(model_name.as_str(), voice_tx);
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
+#[derive(Clone)]
+struct DisplayLoopState {
+    last_state: Option<DisplaySystemState>,
+    last_ip: String,
+    last_channels: [(bool, bool, u32); 5],
+    last_pressure: Option<DisplayPressureLevel>,
+    last_heap: u8,
+    last_msg_in: u32,
+    last_msg_out: u32,
+    last_llm_ms: u32,
+    refresh_secs: u64,
+    busy_toggle: bool,
+    last_error_total: u64,
+    flash_active: bool,
+    last_activity_at: Instant,
+    backlight_off: bool,
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
+impl Default for DisplayLoopState {
+    fn default() -> Self {
+        Self {
+            last_state: None,
+            last_ip: String::new(),
+            last_channels: [(false, false, 0); 5],
+            last_pressure: None,
+            last_heap: 255,
+            last_msg_in: u32::MAX,
+            last_msg_out: u32::MAX,
+            last_llm_ms: 0,
+            refresh_secs: beetle::constants::DISPLAY_REFRESH_IDLE_SECS,
+            busy_toggle: false,
+            last_error_total: 0,
+            flash_active: false,
+            last_activity_at: Instant::now(),
+            backlight_off: false,
+        }
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
+fn build_display_channels(
+    enabled: &str,
+    snapshot: &beetle::orchestrator::ResourceSnapshot,
+) -> [DisplayChannelStatus; 5] {
+    [
+        DisplayChannelStatus {
+            name: "telegram",
+            enabled: enabled == "telegram",
+            healthy: snapshot.channels.telegram.healthy,
+            consecutive_failures: snapshot.channels.telegram.consecutive_failures,
+        },
+        DisplayChannelStatus {
+            name: "feishu",
+            enabled: enabled == "feishu",
+            healthy: snapshot.channels.feishu.healthy,
+            consecutive_failures: snapshot.channels.feishu.consecutive_failures,
+        },
+        DisplayChannelStatus {
+            name: "dingtalk",
+            enabled: enabled == "dingtalk",
+            healthy: snapshot.channels.dingtalk.healthy,
+            consecutive_failures: snapshot.channels.dingtalk.consecutive_failures,
+        },
+        DisplayChannelStatus {
+            name: "wecom",
+            enabled: enabled == "wecom",
+            healthy: snapshot.channels.wecom.healthy,
+            consecutive_failures: snapshot.channels.wecom.consecutive_failures,
+        },
+        DisplayChannelStatus {
+            name: "qq_channel",
+            enabled: enabled == "qq_channel",
+            healthy: snapshot.channels.qq_channel.healthy,
+            consecutive_failures: snapshot.channels.qq_channel.consecutive_failures,
+        },
+    ]
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
+fn update_display_error_flash(
+    loop_state: &mut DisplayLoopState,
+    metrics: &beetle::metrics::MetricsSnapshot,
+) -> bool {
+    let current_error_total = metrics.errors_agent_chat
+        + metrics.errors_agent_context
+        + metrics.errors_tool_execute
+        + metrics.errors_llm_request
+        + metrics.errors_llm_parse
+        + metrics.errors_channel_dispatch
+        + metrics.errors_session_append
+        + metrics.errors_tls_admission
+        + metrics.errors_other;
+    let error_flash = if current_error_total > loop_state.last_error_total {
+        loop_state.last_error_total = current_error_total;
+        true
+    } else {
+        loop_state.last_error_total = current_error_total;
+        false
+    };
+    if error_flash {
+        loop_state.flash_active = true;
+        true
+    } else if loop_state.flash_active {
+        loop_state.flash_active = false;
+        false
+    } else {
+        false
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
+fn update_display_backlight(
+    platform: &Arc<dyn Platform>,
+    loop_state: &mut DisplayLoopState,
+    sleep_enabled: bool,
+    sleep_duration: Duration,
+    any_change: bool,
+) -> bool {
+    if !sleep_enabled {
+        return false;
+    }
+    if any_change && loop_state.backlight_off {
+        let _ = platform.fade_display_backlight(0, 100, 500);
+        loop_state.backlight_off = false;
+        loop_state.last_state = None;
+        loop_state.last_heap = 255;
+        log::info!("[{}] display backlight woke up", TAG);
+        return true;
+    }
+    if !loop_state.backlight_off
+        && !any_change
+        && loop_state.last_activity_at.elapsed() >= sleep_duration
+    {
+        let _ = platform.fade_display_backlight(100, 0, 500);
+        loop_state.backlight_off = true;
+        log::info!("[{}] display backlight auto-sleep", TAG);
+        return true;
+    }
+    loop_state.backlight_off && !any_change
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
+fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
+    let enabled = config.enabled_channel.as_str();
+    let sleep_timeout = config
+        .display
+        .as_ref()
+        .map(|d| d.sleep_timeout_secs)
+        .unwrap_or(0);
+    let sleep_enabled = sleep_timeout > 0 && platform.display_backlight_available();
+    let sleep_duration = Duration::from_secs(sleep_timeout as u64);
+    let mut loop_state = DisplayLoopState::default();
+
+    loop {
+        std::thread::sleep(Duration::from_secs(loop_state.refresh_secs));
+        let snapshot = beetle::orchestrator::snapshot();
+        let pressure = match snapshot.pressure {
+            beetle::orchestrator::PressureLevel::Normal => DisplayPressureLevel::Normal,
+            beetle::orchestrator::PressureLevel::Cautious => DisplayPressureLevel::Cautious,
+            beetle::orchestrator::PressureLevel::Critical => DisplayPressureLevel::Critical,
+        };
+        let sta_connected = beetle::platform::is_wifi_sta_connected();
+        let busy = snapshot.active_agent_tasks > 0
+            || snapshot.active_http_count > 0
+            || snapshot.inbound_depth > 0
+            || snapshot.outbound_depth > 0;
+        let state = if snapshot.pressure == beetle::orchestrator::PressureLevel::Critical {
+            DisplaySystemState::Fault
+        } else if !sta_connected {
+            DisplaySystemState::NoWifi
+        } else if snapshot.audio_recording {
+            DisplaySystemState::Recording
+        } else if snapshot.audio_playing {
+            DisplaySystemState::Playing
+        } else if busy {
+            DisplaySystemState::Busy
+        } else {
+            DisplaySystemState::Idle
+        };
+        let ip = platform
+            .wifi_sta_ip()
+            .unwrap_or_else(|| SOFTAP_DEFAULT_IPV4.to_string());
+        let channels = build_display_channels(enabled, &snapshot);
+        let heap_percent = heap_used_percent(&snapshot);
+
+        let metrics = beetle::metrics::snapshot();
+        let msg_in = metrics.messages_in as u32;
+        let msg_out = metrics.messages_out as u32;
+        let last_active = metrics.last_active_epoch_secs as u32;
+        let llm_ms = metrics.llm_last_ms as u32;
+        let uptime_secs = beetle::platform::time::uptime_secs();
+
+        loop_state.busy_toggle = state == DisplaySystemState::Busy && !loop_state.busy_toggle;
+        if state != DisplaySystemState::Busy {
+            loop_state.busy_toggle = false;
+        }
+
+        let show_flash = update_display_error_flash(&mut loop_state, &metrics);
+        let state_changed = loop_state.last_state != Some(state);
+        let ip_changed = loop_state.last_ip.as_str() != ip.as_str();
+        let channels_changed = channels.iter().enumerate().any(|(i, ch)| {
+            loop_state.last_channels[i] != (ch.enabled, ch.healthy, ch.consecutive_failures)
+        });
+        let pressure_changed = loop_state.last_pressure.as_ref() != Some(&pressure);
+        let heap_changed = loop_state.last_heap.abs_diff(heap_percent) >= 2;
+        let msg_changed = msg_in != loop_state.last_msg_in || msg_out != loop_state.last_msg_out;
+        let llm_changed = llm_ms != loop_state.last_llm_ms;
+        let any_change = state_changed
+            || ip_changed
+            || channels_changed
+            || pressure_changed
+            || heap_changed
+            || msg_changed
+            || llm_changed
+            || show_flash;
+
+        if any_change {
+            loop_state.last_activity_at = Instant::now();
+        }
+
+        if update_display_backlight(
+            &platform,
+            &mut loop_state,
+            sleep_enabled,
+            sleep_duration,
+            any_change,
+        ) {
+            loop_state.refresh_secs = compute_refresh_secs(
+                state,
+                loop_state.backlight_off,
+                &loop_state.last_activity_at,
+            );
+            continue;
+        }
+
+        if state_changed {
+            let cmd = DisplayCommand::RefreshDashboard {
+                state,
+                wifi_connected: sta_connected,
+                ip_address: Some(ip.clone()),
+                channels: channels.clone(),
+                pressure: pressure.clone(),
+                heap_percent,
+                messages_in: msg_in,
+                messages_out: msg_out,
+                last_active_epoch_secs: last_active,
+                uptime_secs,
+                busy_phase: loop_state.busy_toggle,
+                llm_last_ms: llm_ms,
+                error_flash: show_flash,
+            };
+            if let Err(e) = platform.display_command(cmd) {
+                log::warn!("[{}] display refresh failed: {}", TAG, e);
+            }
+            loop_state.last_state = Some(state);
+            loop_state.last_ip.clear();
+            loop_state.last_ip.push_str(&ip);
+            for (i, ch) in channels.iter().enumerate() {
+                loop_state.last_channels[i] = (ch.enabled, ch.healthy, ch.consecutive_failures);
+            }
+            loop_state.last_pressure = Some(pressure.clone());
+            loop_state.last_heap = heap_percent;
+            loop_state.last_msg_in = msg_in;
+            loop_state.last_msg_out = msg_out;
+            loop_state.last_llm_ms = llm_ms;
+            loop_state.refresh_secs = compute_refresh_secs(
+                state,
+                loop_state.backlight_off,
+                &loop_state.last_activity_at,
+            );
+            continue;
+        }
+
+        if ip_changed {
+            let _ = platform.display_command(DisplayCommand::UpdateIp {
+                ip: ip.clone(),
+                uptime_secs,
+            });
+            loop_state.last_ip.clear();
+            loop_state.last_ip.push_str(&ip);
+        }
+        if channels_changed {
+            let _ = platform.display_command(DisplayCommand::UpdateChannels {
+                channels: channels.clone(),
+            });
+            for (i, ch) in channels.iter().enumerate() {
+                loop_state.last_channels[i] = (ch.enabled, ch.healthy, ch.consecutive_failures);
+            }
+        }
+        if pressure_changed || heap_changed || msg_changed || llm_changed || show_flash {
+            let _ = platform.display_command(DisplayCommand::UpdatePressure {
+                level: pressure.clone(),
+                heap_percent,
+                messages_in: msg_in,
+                messages_out: msg_out,
+                last_active_epoch_secs: last_active,
+                llm_last_ms: llm_ms,
+                error_flash: show_flash,
+            });
+            loop_state.last_pressure = Some(pressure);
+            loop_state.last_heap = heap_percent;
+            loop_state.last_msg_in = msg_in;
+            loop_state.last_msg_out = msg_out;
+            loop_state.last_llm_ms = llm_ms;
+        }
+        loop_state.refresh_secs = compute_refresh_secs(
+            state,
+            loop_state.backlight_off,
+            &loop_state.last_activity_at,
+        );
     }
 }
 
@@ -469,6 +877,21 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     let user_inbound_tx = bus.inbound_tx;
     let outbound_tx = bus.outbound_tx;
     let qq_msg_id_cache: beetle::channels::QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
+    #[allow(unused_variables)]
+    let (registry, baidu_token_cache) = beetle::build_default_registry(
+        &config,
+        beetle::DefaultRegistryDeps {
+            platform: Arc::clone(&platform),
+            remind_at_store: Arc::clone(&remind_at_store),
+            session_store: Arc::clone(&session_store),
+            memory_store: Arc::clone(&memory_store),
+            long_term_memory_store: Arc::clone(&long_term_memory_store),
+            turn_ledger_store: Arc::clone(&turn_ledger_store),
+            private_garden_store: Arc::clone(&private_garden_store),
+            config_store: platform.config_store(),
+        },
+    );
+    let registry = Arc::new(registry);
 
     // ── Audio init + wake-word registration (ESP only, after MessageBus) ───
     // Prepare the voice-session event channel here; wake_word::configure is deferred
@@ -518,44 +941,30 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_baseline();
 
+    let shared_runtime_config = Arc::new(RwLock::new((*config).clone()));
+    let channel_connectivity_cache = Arc::new(beetle::channels::ChannelConnectivityCache::new());
+
     #[cfg(feature = "config_api")]
     {
-        let platform_http = Arc::clone(&platform);
-        let inc = Arc::clone(&user_inbound_depth);
-        let out = Arc::clone(&outbound_depth);
-        let memory_http = Arc::clone(&memory_store);
-        let session_http = Arc::clone(&session_store);
-        let http_inbound_tx = user_inbound_tx.clone();
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        let http_qq_cache = Arc::clone(&qq_msg_id_cache);
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        let qq_wh_enabled = !config.qq_channel_app_id.trim().is_empty()
-            && !config.qq_channel_secret.trim().is_empty();
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        let qq_app_id = config.qq_channel_app_id.clone();
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        let qq_secret = config.qq_channel_secret.clone();
-        let initial_config = (*config).clone();
-        spawn_planned("http_server", 6144, move || {
-            if let Err(e) = beetle::platform::http_server::run(
-                platform_http,
-                inc,
-                out,
-                memory_http,
-                session_http,
-                http_inbound_tx,
-                #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-                http_qq_cache,
-                #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-                qq_wh_enabled,
-                #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-                qq_app_id,
-                #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-                qq_secret,
-                initial_config,
-            ) {
-                log::warn!("[{}] HTTP config API server error: {}", TAG, e);
-            }
+        spawn_http_config_server(HttpServerSpawnContext {
+            platform: Arc::clone(&platform),
+            tool_registry: Arc::clone(&registry),
+            inbound_depth: Arc::clone(&user_inbound_depth),
+            outbound_depth: Arc::clone(&outbound_depth),
+            memory_store: Arc::clone(&memory_store),
+            session_store: Arc::clone(&session_store),
+            inbound_tx: user_inbound_tx.clone(),
+            shared_config: Arc::clone(&shared_runtime_config),
+            channel_connectivity_cache: Arc::clone(&channel_connectivity_cache),
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            msg_id_cache: Arc::clone(&qq_msg_id_cache),
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            qq_webhook_enabled: !config.qq_channel_app_id.trim().is_empty()
+                && !config.qq_channel_secret.trim().is_empty(),
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            qq_app_id: config.qq_channel_app_id.clone(),
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            qq_secret: config.qq_channel_secret.clone(),
         });
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
         log::info!(
@@ -608,283 +1017,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             6144,
             plan.core,
             plan.role,
-            move || {
-                let enabled = display_config.enabled_channel.as_str();
-                // Dirty-region cache: skip SPI when nothing changed.
-                let mut last_state: Option<DisplaySystemState> = None;
-                let mut last_ip = String::new();
-                let mut last_channels: [(bool, bool, u32); 5] = [(false, false, 0); 5]; // F5: +consecutive_failures
-                let mut last_pressure: Option<DisplayPressureLevel> = None;
-                let mut last_heap: u8 = 255; // 255 forces first-round refresh
-                let mut last_msg_in: u32 = u32::MAX; // force first-round refresh
-                let mut last_msg_out: u32 = u32::MAX;
-                let mut last_llm_ms: u32 = 0; // F6: LLM 延迟 dirty cache
-
-                // F2: 自适应刷新频率
-                let mut refresh_secs: u64 = beetle::constants::DISPLAY_REFRESH_IDLE_SECS;
-
-                // F4: Busy 呼吸动画
-                let mut busy_toggle: bool = false;
-
-                // F7: 错误闪烁指示
-                let mut last_error_total: u64 = 0;
-                let mut flash_active: bool = false;
-
-                // Auto-sleep: backlight off after N seconds of no activity.
-                let sleep_timeout = display_config
-                    .display
-                    .as_ref()
-                    .map(|d| d.sleep_timeout_secs)
-                    .unwrap_or(0);
-                let sleep_enabled =
-                    sleep_timeout > 0 && display_platform.display_backlight_available();
-                let sleep_duration = std::time::Duration::from_secs(sleep_timeout as u64);
-                let mut last_activity_at = std::time::Instant::now();
-                let mut backlight_off = false;
-
-                loop {
-                    std::thread::sleep(std::time::Duration::from_secs(refresh_secs));
-                    let snapshot = beetle::orchestrator::snapshot();
-                    let pressure = match snapshot.pressure {
-                        beetle::orchestrator::PressureLevel::Normal => DisplayPressureLevel::Normal,
-                        beetle::orchestrator::PressureLevel::Cautious => {
-                            DisplayPressureLevel::Cautious
-                        }
-                        beetle::orchestrator::PressureLevel::Critical => {
-                            DisplayPressureLevel::Critical
-                        }
-                    };
-                    let sta_connected = beetle::platform::is_wifi_sta_connected();
-                    let busy = snapshot.active_agent_tasks > 0
-                        || snapshot.active_http_count > 0
-                        || snapshot.inbound_depth > 0
-                        || snapshot.outbound_depth > 0;
-                    let state =
-                        if snapshot.pressure == beetle::orchestrator::PressureLevel::Critical {
-                            DisplaySystemState::Fault
-                        } else if !sta_connected {
-                            DisplaySystemState::NoWifi
-                        } else if snapshot.audio_recording {
-                            DisplaySystemState::Recording
-                        } else if snapshot.audio_playing {
-                            DisplaySystemState::Playing
-                        } else if busy {
-                            DisplaySystemState::Busy
-                        } else {
-                            DisplaySystemState::Idle
-                        };
-                    let ip = display_platform
-                        .wifi_sta_ip()
-                        .unwrap_or_else(|| SOFTAP_DEFAULT_IPV4.to_string());
-
-                    // F5: 通道状态含 consecutive_failures
-                    let channels = [
-                        DisplayChannelStatus {
-                            name: "telegram",
-                            enabled: enabled == "telegram",
-                            healthy: snapshot.channels.telegram.healthy,
-                            consecutive_failures: snapshot.channels.telegram.consecutive_failures,
-                        },
-                        DisplayChannelStatus {
-                            name: "feishu",
-                            enabled: enabled == "feishu",
-                            healthy: snapshot.channels.feishu.healthy,
-                            consecutive_failures: snapshot.channels.feishu.consecutive_failures,
-                        },
-                        DisplayChannelStatus {
-                            name: "dingtalk",
-                            enabled: enabled == "dingtalk",
-                            healthy: snapshot.channels.dingtalk.healthy,
-                            consecutive_failures: snapshot.channels.dingtalk.consecutive_failures,
-                        },
-                        DisplayChannelStatus {
-                            name: "wecom",
-                            enabled: enabled == "wecom",
-                            healthy: snapshot.channels.wecom.healthy,
-                            consecutive_failures: snapshot.channels.wecom.consecutive_failures,
-                        },
-                        DisplayChannelStatus {
-                            name: "qq_channel",
-                            enabled: enabled == "qq_channel",
-                            healthy: snapshot.channels.qq_channel.healthy,
-                            consecutive_failures: snapshot.channels.qq_channel.consecutive_failures,
-                        },
-                    ];
-                    let heap_percent = heap_used_percent(&snapshot);
-
-                    // Read metrics for footer display.
-                    let m_snap = beetle::metrics::snapshot();
-                    let msg_in = m_snap.messages_in as u32;
-                    let msg_out = m_snap.messages_out as u32;
-                    let last_active = m_snap.last_active_epoch_secs as u32;
-                    let llm_ms = m_snap.llm_last_ms as u32; // F6
-
-                    // F3: uptime
-                    let uptime_secs = beetle::platform::time::uptime_secs();
-
-                    // F4: Busy 呼吸动画翻转
-                    if state == DisplaySystemState::Busy {
-                        busy_toggle = !busy_toggle;
-                    } else {
-                        busy_toggle = false;
-                    }
-
-                    // F7: 错误闪烁 — 检测新错误
-                    let current_error_total = m_snap.errors_agent_chat
-                        + m_snap.errors_agent_context
-                        + m_snap.errors_tool_execute
-                        + m_snap.errors_llm_request
-                        + m_snap.errors_llm_parse
-                        + m_snap.errors_channel_dispatch
-                        + m_snap.errors_session_append
-                        + m_snap.errors_tls_admission
-                        + m_snap.errors_other;
-                    let error_flash = if current_error_total > last_error_total {
-                        last_error_total = current_error_total;
-                        true
-                    } else {
-                        last_error_total = current_error_total;
-                        false
-                    };
-                    // flash_active tracks: this round flash, next round auto-reset
-                    let show_flash = if error_flash {
-                        flash_active = true;
-                        true
-                    } else if flash_active {
-                        flash_active = false; // auto-reset after one cycle
-                        false
-                    } else {
-                        false
-                    };
-
-                    // Detect any dirty region change as "activity".
-                    let state_changed = last_state != Some(state);
-                    let ip_changed = last_ip.as_str() != ip.as_str();
-                    let channels_changed = channels.iter().enumerate().any(|(i, ch)| {
-                        last_channels[i] != (ch.enabled, ch.healthy, ch.consecutive_failures)
-                    });
-                    let pressure_changed = last_pressure.as_ref() != Some(&pressure);
-                    let heap_changed = last_heap.abs_diff(heap_percent) >= 2;
-                    let msg_changed = msg_in != last_msg_in || msg_out != last_msg_out;
-                    let llm_changed = llm_ms != last_llm_ms; // F6
-                    let any_change = state_changed
-                        || ip_changed
-                        || channels_changed
-                        || pressure_changed
-                        || heap_changed
-                        || msg_changed
-                        || llm_changed
-                        || show_flash;
-
-                    if any_change {
-                        last_activity_at = std::time::Instant::now();
-                    }
-
-                    // Auto-sleep logic: wake on change, sleep on idle timeout.
-                    if sleep_enabled {
-                        if any_change && backlight_off {
-                            // F1: Wake up with fade
-                            let _ = display_platform.fade_display_backlight(0, 100, 500);
-                            backlight_off = false;
-                            last_state = None; // force full RefreshDashboard
-                            last_heap = 255;
-                            log::info!("[{}] display backlight woke up", TAG);
-                            continue;
-                        }
-                        if !backlight_off
-                            && !any_change
-                            && last_activity_at.elapsed() >= sleep_duration
-                        {
-                            // F1: Go to sleep with fade
-                            let _ = display_platform.fade_display_backlight(100, 0, 500);
-                            backlight_off = true;
-                            log::info!("[{}] display backlight auto-sleep", TAG);
-                            continue;
-                        }
-                        if backlight_off {
-                            // Still sleeping, no change — skip all rendering.
-                            continue;
-                        }
-                    }
-
-                    // State changed (icon + title area) → full refresh + update all cache
-                    if state_changed {
-                        let cmd = DisplayCommand::RefreshDashboard {
-                            state,
-                            wifi_connected: sta_connected,
-                            ip_address: Some(ip.clone()),
-                            channels: channels.clone(),
-                            pressure: pressure.clone(),
-                            heap_percent,
-                            messages_in: msg_in,
-                            messages_out: msg_out,
-                            last_active_epoch_secs: last_active,
-                            uptime_secs,
-                            busy_phase: busy_toggle,
-                            llm_last_ms: llm_ms,
-                            error_flash: show_flash,
-                        };
-                        if let Err(e) = display_platform.display_command(cmd) {
-                            log::warn!("[{}] display refresh failed: {}", TAG, e);
-                        }
-                        last_state = Some(state);
-                        last_ip.clear();
-                        last_ip.push_str(&ip);
-                        for (i, ch) in channels.iter().enumerate() {
-                            last_channels[i] = (ch.enabled, ch.healthy, ch.consecutive_failures);
-                        }
-                        last_pressure = Some(pressure.clone());
-                        last_heap = heap_percent;
-                        last_msg_in = msg_in;
-                        last_msg_out = msg_out;
-                        last_llm_ms = llm_ms;
-
-                        // F2: 计算下一轮刷新间隔
-                        refresh_secs =
-                            compute_refresh_secs(state, backlight_off, &last_activity_at);
-                        continue;
-                    }
-
-                    // State unchanged → partial updates per dirty region
-                    if ip_changed {
-                        let _ = display_platform.display_command(DisplayCommand::UpdateIp {
-                            ip: ip.clone(),
-                            uptime_secs,
-                        });
-                        last_ip.clear();
-                        last_ip.push_str(&ip);
-                    }
-                    if channels_changed {
-                        let _ = display_platform.display_command(DisplayCommand::UpdateChannels {
-                            channels: channels.clone(),
-                        });
-                        for (i, ch) in channels.iter().enumerate() {
-                            last_channels[i] = (ch.enabled, ch.healthy, ch.consecutive_failures);
-                        }
-                    }
-                    // 2% hysteresis on heap to avoid progress bar flicker
-                    if pressure_changed || heap_changed || msg_changed || llm_changed || show_flash
-                    {
-                        let _ = display_platform.display_command(DisplayCommand::UpdatePressure {
-                            level: pressure.clone(),
-                            heap_percent,
-                            messages_in: msg_in,
-                            messages_out: msg_out,
-                            last_active_epoch_secs: last_active,
-                            llm_last_ms: llm_ms,
-                            error_flash: show_flash,
-                        });
-                        last_pressure = Some(pressure.clone());
-                        last_heap = heap_percent;
-                        last_msg_in = msg_in;
-                        last_msg_out = msg_out;
-                        last_llm_ms = llm_ms;
-                    }
-
-                    // F2: 计算下一轮刷新间隔
-                    refresh_secs = compute_refresh_secs(state, backlight_off, &last_activity_at);
-                }
-            },
+            move || run_display_loop(display_platform, display_config),
         );
     }
 
@@ -1033,54 +1166,16 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         let worker_llm: Arc<dyn beetle::LlmClient + Send + Sync> = Arc::from(
             beetle::build_llm_clients(&config, Arc::clone(&resolve_locale_ui)),
         );
-        #[allow(unused_variables)]
-        let (registry, baidu_token_cache) = beetle::build_default_registry(
-            &config,
-            Arc::clone(&platform),
-            Arc::clone(&remind_at_store),
-            Arc::clone(&session_store),
-            Arc::clone(&memory_store),
-            Arc::clone(&long_term_memory_store),
-            Arc::clone(&turn_ledger_store),
-            Arc::clone(&private_garden_store),
-            platform.config_store(),
-        );
-        let registry = Arc::new(registry);
 
         // ── Voice session thread (ESP only) ─────────────────────────────────
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        if let Some((model_name, voice_tx, voice_rx)) = voice_event_tx_rx.take() {
-            if let (Some(audio_cfg), Some(ref bt_cache)) =
-                (config.audio.as_ref(), &baidu_token_cache)
-            {
-                let vs_platform = Arc::clone(&platform);
-                let vs_audio = audio_cfg.clone();
-                let vs_token = Arc::clone(bt_cache);
-                let vs_pf = Arc::clone(&platform);
-                let vs_cfg = Arc::clone(&config);
-                let vs_make_http: Arc<
-                    dyn Fn() -> beetle::error::Result<Box<dyn beetle::PlatformHttpClient>>
-                        + Send
-                        + Sync,
-                > = Arc::new(move || vs_pf.create_http_client(vs_cfg.as_ref()));
-                let vs_inbound_tx = user_inbound_tx.clone();
-                let vs_prompt = audio_cfg.wake_word.wake_prompt.clone();
-                spawn_planned("voice_session", STACK_VOICE_CONTROL, move || {
-                    beetle::audio::voice_session::run_voice_session(
-                        beetle::audio::voice_session::VoiceSessionConfig {
-                            platform: vs_platform,
-                            audio_cfg: vs_audio,
-                            baidu_token: vs_token,
-                            make_http: vs_make_http,
-                            inbound_tx: vs_inbound_tx,
-                            wake_prompt: vs_prompt,
-                        },
-                        voice_rx,
-                    );
-                });
-                platform.configure_wake_word(model_name.as_str(), voice_tx);
-            }
-        }
+        spawn_voice_session_if_ready(
+            &platform,
+            &config,
+            baidu_token_cache.as_ref(),
+            &user_inbound_tx,
+            &mut voice_event_tx_rx,
+        );
 
         let skill_meta_store_fn = Arc::clone(&skill_meta_store);
         let skill_storage_fn = Arc::clone(&skill_storage);

@@ -16,12 +16,14 @@ mod handlers;
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     platform: std::sync::Arc<dyn crate::platform::Platform>,
+    tool_registry: Arc<crate::tools::ToolRegistry>,
     inbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     outbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
     session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
     inbound_tx: crate::bus::InboundTx,
-    initial_config: crate::config::AppConfig,
+    shared_config: Arc<std::sync::RwLock<crate::config::AppConfig>>,
+    channel_connectivity_cache: Arc<crate::channels::ChannelConnectivityCache>,
 ) -> Result<()> {
     let config_store = platform.config_store();
     let config_file_store: std::sync::Arc<dyn crate::config::ConfigFileStore + Send + Sync> =
@@ -53,16 +55,17 @@ pub fn run(
         session_store: Arc::clone(&session_store),
         skill_storage: Arc::clone(&skill_storage),
         skill_meta_store: Arc::clone(&skill_meta_store),
+        tool_registry,
         inbound_depth: Arc::clone(&inbound_depth),
         outbound_depth: Arc::clone(&outbound_depth),
         version: Arc::from(env!("CARGO_PKG_VERSION")),
         board_id: Arc::from(crate::platform::runtime_board::resolved_board_id()),
-        cached_config: std::sync::RwLock::new(initial_config),
+        cached_config: shared_config,
+        channel_connectivity_cache,
     });
 
     let router_env = router::RouterEnv::new(inbound_tx.clone());
     esp_transport::register_all_esp_routes(&mut server, &ctx, &router_env, &config_store)?;
-
     loop {
         std::thread::sleep(std::time::Duration::from_secs(3600));
     }
@@ -172,6 +175,7 @@ fn handle_linux_request(
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     platform: std::sync::Arc<dyn crate::platform::Platform>,
+    tool_registry: Arc<crate::tools::ToolRegistry>,
     inbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     outbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
@@ -181,7 +185,8 @@ pub fn run(
     qq_webhook_enabled: bool,
     qq_app_id: String,
     qq_secret: String,
-    initial_config: crate::config::AppConfig,
+    shared_config: Arc<std::sync::RwLock<crate::config::AppConfig>>,
+    channel_connectivity_cache: Arc<crate::channels::ChannelConnectivityCache>,
 ) -> Result<()> {
     use std::time::Duration;
 
@@ -200,11 +205,13 @@ pub fn run(
         session_store: Arc::clone(&session_store),
         skill_storage: Arc::clone(&skill_storage),
         skill_meta_store: Arc::clone(&skill_meta_store),
+        tool_registry,
         inbound_depth: Arc::clone(&inbound_depth),
         outbound_depth: Arc::clone(&outbound_depth),
         version: Arc::from(env!("CARGO_PKG_VERSION")),
         board_id: Arc::from(crate::platform::runtime_board::resolved_board_id()),
-        cached_config: std::sync::RwLock::new(initial_config),
+        cached_config: shared_config,
+        channel_connectivity_cache,
     });
     let router_env = router::RouterEnv::new(
         inbound_tx.clone(),
