@@ -11,33 +11,35 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    autonomy_idle_interval_secs, build_self_state, build_world_snapshot,
+    autonomy_idle_interval_secs, build_archive_evidence_block, build_self_state,
+    build_shared_factual_plane_snapshot, build_world_snapshot,
     llm_json::{get_object_bool, get_object_text, parse_llm_json_payload, LlmJsonPayload},
     memory_policy, render_autonomy_strategy_block, render_execution_state_block,
     render_inner_life_block, render_internal_memory_topology_block,
     render_private_doc_workspace_block, render_private_garden_block,
     render_private_memory_boundary_block, render_self_continuity_block, render_self_model_block,
-    render_self_state_block, render_shared_factual_plane_block, render_world_sense_block,
-    render_world_snapshot_block, run_autonomy_strategy_refresh_with_state,
-    run_inner_life_refresh_with_state, run_outer_voice_refresh_with_state,
-    run_private_doc_workspace_refresh_with_state, run_private_garden_governance_with_state,
-    run_self_continuity_refresh_with_state, run_world_sense_refresh_with_state,
-    touch_self_continuity_runtime, AutonomyGovernanceTendency, AutonomyStrategyRefreshContext,
-    AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome, AutonomyStrategyStore,
-    ExecutionStateStore, InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome,
-    InnerLifeStore, InternalMemoryLayerFocus, LongTermMemoryStore, MemoryProfile,
-    MentalPrivacyStore, OuterVoiceRefreshContext, OuterVoiceRefreshInput, OuterVoiceRefreshOutcome,
-    OuterVoiceStore, PrivateDocStore, PrivateDocWorkspaceRefreshContext,
-    PrivateDocWorkspaceRefreshInput, PrivateDocWorkspaceRefreshOutcome,
-    PrivateGardenGovernanceContext, PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome,
-    PrivateGardenStore, RemindAtStore, SelfContinuityRefreshContext, SelfContinuityRefreshInput,
+    render_self_state_block, render_world_sense_block, render_world_snapshot_block,
+    run_autonomy_strategy_refresh_with_state, run_inner_life_refresh_with_state,
+    run_outer_voice_refresh_with_state, run_private_doc_workspace_refresh_with_state,
+    run_private_garden_governance_with_state, run_self_continuity_refresh_with_state,
+    run_world_sense_refresh_with_state, touch_self_continuity_runtime, AutonomyGovernanceTendency,
+    AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome,
+    AutonomyStrategyStore, ExecutionStateStore, InnerLifeRefreshContext, InnerLifeRefreshInput,
+    InnerLifeRefreshOutcome, InnerLifeStore, InternalMemoryLayerFocus, LongTermMemoryStore,
+    MemoryProfile, MemoryStore, MentalPrivacyStore, OuterVoiceRefreshContext,
+    OuterVoiceRefreshInput, OuterVoiceRefreshOutcome, OuterVoiceStore, PrivateDocStore,
+    PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
+    PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
+    PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, PrivateGardenStore,
+    RemindAtStore, SelfContinuityRefreshContext, SelfContinuityRefreshInput,
     SelfContinuityRefreshOutcome, SelfContinuityStore, SelfMemorySpaceBottleneck,
     SelfMemorySpacePressure, SelfModelStore, SelfState, SessionStore, SessionSummaryStore,
+    SharedFactualPlaneSnapshot, SharedFactualReconcileAction, TurnLedgerStore,
     WorldSenseRefreshContext, WorldSenseRefreshInput, WorldSenseRefreshOutcome, WorldSenseStore,
     WorldSnapshotContext,
 };
 
-pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's private inward space. Respect the current autonomy strategy unless the latest world state or self-state clearly requires a different emphasis. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_private_docs, private_docs_intent, refresh_self_continuity, self_continuity_intent, refresh_private_garden, private_garden_intent. Use true only when that layer should change now. This runtime governs private layers only; durable objective facts remain in the shared factual plane. private_docs is the governed inner workspace; private_garden is the free-form private workspace. Use self-state capacity, world-sense, current autonomy strategy, and canonical shared facts to decide whether to write, compress, reorganize, or leave memory untouched. Keep intents short and concrete. Favor autonomy, but do not churn memory without gain.";
+pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's private inward space. Respect the current autonomy strategy unless the latest world state or self-state clearly requires a different emphasis. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_private_docs, private_docs_intent, private_docs_action, refresh_self_continuity, self_continuity_intent, refresh_private_garden, private_garden_intent, private_garden_action, boundary_flush, boundary_flush_reason, request_factual_refresh, factual_reconcile_action, factual_reconcile_intent. Use true only when that layer should change now. Runtime governance actions are hold, rewrite, compress, or cleanup. factual_reconcile_action is hold, reinforce, correct, conflict, or stale. This runtime governs private layers directly, and may request a shared factual refresh when archive evidence suggests the canonical record should be reinforced, corrected, reconciled, or reviewed. private_docs is the governed inner workspace; private_garden is the free-form private workspace. Use self-state capacity, world-sense, current autonomy strategy, canonical shared facts, archive evidence, and boundary signals to decide whether to write, compress, reorganize, or leave memory untouched. Keep intents short and concrete. Favor autonomy, but do not churn memory without gain.";
 pub const SELF_RUNTIME_CHANNEL: &str = "_self_runtime";
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -74,6 +76,8 @@ pub struct SelfRuntimeDecision {
     #[serde(default)]
     pub private_docs_intent: String,
     #[serde(default)]
+    pub private_docs_action: SelfRuntimeGovernanceAction,
+    #[serde(default)]
     pub refresh_self_continuity: bool,
     #[serde(default)]
     pub self_continuity_intent: String,
@@ -81,10 +85,23 @@ pub struct SelfRuntimeDecision {
     pub refresh_private_garden: bool,
     #[serde(default)]
     pub private_garden_intent: String,
+    #[serde(default)]
+    pub private_garden_action: SelfRuntimeGovernanceAction,
+    #[serde(default)]
+    pub boundary_flush: bool,
+    #[serde(default)]
+    pub boundary_flush_reason: String,
+    #[serde(default)]
+    pub request_factual_refresh: bool,
+    #[serde(default)]
+    pub factual_reconcile_action: SharedFactualReconcileAction,
+    #[serde(default)]
+    pub factual_reconcile_intent: String,
 }
 
 pub struct SelfRuntimeContext<'a> {
     pub session_store: &'a dyn SessionStore,
+    pub memory_store: &'a dyn MemoryStore,
     pub session_summary_store: &'a dyn SessionSummaryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
@@ -99,6 +116,7 @@ pub struct SelfRuntimeContext<'a> {
     pub mental_privacy_store: &'a dyn MentalPrivacyStore,
     pub remind_store: &'a dyn RemindAtStore,
     pub task_store: &'a dyn TaskStore,
+    pub turn_ledger_store: &'a dyn TurnLedgerStore,
 }
 
 pub struct SelfRuntimeOutcome {
@@ -149,6 +167,88 @@ struct SelfRuntimeActionResults {
 enum GovernedRuntimeLayer {
     PrivateDocs,
     PrivateGarden,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SelfRuntimeGovernanceAction {
+    #[default]
+    Hold,
+    Rewrite,
+    Compress,
+    Cleanup,
+}
+
+impl SelfRuntimeGovernanceAction {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Hold => "hold",
+            Self::Rewrite => "rewrite",
+            Self::Compress => "compress",
+            Self::Cleanup => "cleanup",
+        }
+    }
+
+    fn from_text(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "rewrite" => Self::Rewrite,
+            "compress" => Self::Compress,
+            "cleanup" | "clean_up" | "clean-up" | "prune" => Self::Cleanup,
+            _ => Self::Hold,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SelfRuntimeBoundaryReason {
+    DailyBoundary,
+    AutonomyShift,
+    IdleSettlement,
+}
+
+impl SelfRuntimeBoundaryReason {
+    fn label(self) -> &'static str {
+        match self {
+            Self::DailyBoundary => "daily_boundary",
+            Self::AutonomyShift => "autonomy_shift",
+            Self::IdleSettlement => "idle_settlement",
+        }
+    }
+
+    fn human_label(self) -> &'static str {
+        match self {
+            Self::DailyBoundary => "daily boundary",
+            Self::AutonomyShift => "autonomy strategy shift",
+            Self::IdleSettlement => "idle settlement",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SelfRuntimeBoundarySignal {
+    reasons: Vec<SelfRuntimeBoundaryReason>,
+}
+
+impl SelfRuntimeBoundarySignal {
+    fn is_active(&self) -> bool {
+        !self.reasons.is_empty()
+    }
+
+    fn summary(&self) -> String {
+        self.reasons
+            .iter()
+            .map(|reason| reason.label())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    fn human_summary(&self) -> String {
+        self.reasons
+            .iter()
+            .map(|reason| reason.human_label())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 fn self_runtime_ingress(trigger: SelfRuntimeTrigger) -> IngressKind {
@@ -461,6 +561,52 @@ fn refresh_world_and_autonomy(
     }
 }
 
+fn unix_day_bucket(now_secs: u64) -> u64 {
+    now_secs / 86_400
+}
+
+fn detect_boundary_flush_signal(
+    payload: &SelfRuntimeJobPayload,
+    state: &LoadedSelfRuntimeState,
+    prelude: &SelfRuntimeRefreshPrelude,
+) -> SelfRuntimeBoundarySignal {
+    let mut reasons = Vec::with_capacity(4);
+    if payload.trigger == SelfRuntimeTrigger::IdleTick {
+        let last_autonomy_run_at = state
+            .self_continuity
+            .as_ref()
+            .map(|continuity| continuity.last_autonomy_run_at)
+            .unwrap_or(0);
+        if last_autonomy_run_at > 0
+            && unix_day_bucket(last_autonomy_run_at) != unix_day_bucket(payload.now_secs)
+        {
+            reasons.push(SelfRuntimeBoundaryReason::DailyBoundary);
+        }
+        let last_user_turn_at = state
+            .self_continuity
+            .as_ref()
+            .map(|continuity| continuity.last_user_turn_at)
+            .unwrap_or(0);
+        if last_user_turn_at > 0 && payload.now_secs.saturating_sub(last_user_turn_at) >= 30 * 60 {
+            reasons.push(SelfRuntimeBoundaryReason::IdleSettlement);
+        }
+    }
+    let previous_mode = state
+        .autonomy_strategy
+        .as_ref()
+        .map(|strategy| strategy.current_mode.trim())
+        .unwrap_or_default();
+    let current_mode = prelude
+        .refreshed_autonomy_strategy
+        .as_ref()
+        .map(|strategy| strategy.current_mode.trim())
+        .unwrap_or_default();
+    if !current_mode.is_empty() && !previous_mode.is_empty() && current_mode != previous_mode {
+        reasons.push(SelfRuntimeBoundaryReason::AutonomyShift);
+    }
+    SelfRuntimeBoundarySignal { reasons }
+}
+
 fn execute_self_runtime_actions(
     http: &mut dyn LlmHttpClient,
     llm: &(dyn LlmClient + Send + Sync),
@@ -471,10 +617,31 @@ fn execute_self_runtime_actions(
     state: &LoadedSelfRuntimeState,
     prelude: &SelfRuntimeRefreshPrelude,
 ) -> SelfRuntimeActionResults {
+    let boundary_signal = detect_boundary_flush_signal(payload, state, prelude);
+    let query_hint = if !payload.user_content.trim().is_empty() {
+        payload.user_content.as_str()
+    } else {
+        payload.reply_content.as_str()
+    };
+    let factual_snapshot = build_shared_factual_plane_snapshot(
+        ctx.session_store,
+        ctx.long_term_memory_store,
+        ctx.memory_store,
+        ctx.turn_ledger_store,
+        chat_id,
+        query_hint,
+        state.summary_text.as_deref(),
+        state.recent.as_slice(),
+        memory_policy(profile).self_runtime.grounding_max_len,
+        profile,
+    );
     let decision = match decide_self_runtime(
         http,
         llm,
         ctx.long_term_memory_store,
+        ctx.memory_store,
+        ctx.turn_ledger_store,
+        chat_id,
         payload,
         state.summary_text.as_deref(),
         state.execution_state.as_ref(),
@@ -487,8 +654,9 @@ fn execute_self_runtime_actions(
         &state.world_snapshot,
         prelude.refreshed_autonomy_strategy.as_ref(),
         profile,
-        ctx.session_store,
-        chat_id,
+        state.recent.as_slice(),
+        &factual_snapshot,
+        &boundary_signal,
     ) {
         Ok(decision) => Some(normalize_self_runtime_decision(
             decision,
@@ -497,6 +665,8 @@ fn execute_self_runtime_actions(
             &prelude.runtime_self_state,
             state.private_docs.is_some(),
             !state.private_garden_docs.is_empty(),
+            &factual_snapshot,
+            &boundary_signal,
         )),
         Err(error) => {
             return SelfRuntimeActionResults {
@@ -875,6 +1045,8 @@ fn normalize_self_runtime_decision(
     self_state: &SelfState,
     has_private_docs: bool,
     has_private_garden_docs: bool,
+    factual_snapshot: &SharedFactualPlaneSnapshot,
+    boundary_signal: &SelfRuntimeBoundarySignal,
 ) -> SelfRuntimeDecision {
     let Some(strategy) = autonomy_strategy else {
         if !decision.refresh_private_docs {
@@ -883,12 +1055,21 @@ fn normalize_self_runtime_decision(
         if !decision.refresh_private_garden {
             decision.private_garden_intent.clear();
         }
+        normalize_boundary_and_factual_decisions(
+            &mut decision,
+            self_state,
+            factual_snapshot,
+            boundary_signal,
+            has_private_docs,
+            has_private_garden_docs,
+        );
         return decision;
     };
 
     apply_runtime_governance_tendency(
         &mut decision.refresh_private_docs,
         &mut decision.private_docs_intent,
+        &mut decision.private_docs_action,
         strategy.private_docs_tendency,
         GovernedRuntimeLayer::PrivateDocs,
         trigger,
@@ -898,18 +1079,105 @@ fn normalize_self_runtime_decision(
     apply_runtime_governance_tendency(
         &mut decision.refresh_private_garden,
         &mut decision.private_garden_intent,
+        &mut decision.private_garden_action,
         strategy.private_garden_tendency,
         GovernedRuntimeLayer::PrivateGarden,
         trigger,
         self_state,
         has_private_garden_docs,
     );
+    normalize_boundary_and_factual_decisions(
+        &mut decision,
+        self_state,
+        factual_snapshot,
+        boundary_signal,
+        has_private_docs,
+        has_private_garden_docs,
+    );
     decision
+}
+
+fn normalize_boundary_and_factual_decisions(
+    decision: &mut SelfRuntimeDecision,
+    self_state: &SelfState,
+    factual_snapshot: &SharedFactualPlaneSnapshot,
+    boundary_signal: &SelfRuntimeBoundarySignal,
+    has_private_docs: bool,
+    has_private_garden_docs: bool,
+) {
+    if boundary_signal.is_active() {
+        decision.boundary_flush = true;
+        if decision.boundary_flush_reason.trim().is_empty() {
+            decision.boundary_flush_reason = boundary_signal.summary();
+        }
+        decision.refresh_self_continuity = true;
+        if decision.self_continuity_intent.trim().is_empty() {
+            decision.self_continuity_intent =
+                default_boundary_self_continuity_intent(boundary_signal);
+        }
+        if has_private_docs && !decision.refresh_private_docs {
+            decision.refresh_private_docs = true;
+            if matches!(
+                decision.private_docs_action,
+                SelfRuntimeGovernanceAction::Hold
+            ) {
+                decision.private_docs_action = default_boundary_governance_action(self_state, true);
+            }
+            if decision.private_docs_intent.trim().is_empty() {
+                decision.private_docs_intent = default_boundary_private_intent(
+                    decision.private_docs_action,
+                    GovernedRuntimeLayer::PrivateDocs,
+                    boundary_signal,
+                );
+            }
+        }
+        if has_private_garden_docs && !decision.refresh_private_garden {
+            decision.refresh_private_garden = true;
+            if matches!(
+                decision.private_garden_action,
+                SelfRuntimeGovernanceAction::Hold
+            ) {
+                decision.private_garden_action =
+                    default_boundary_governance_action(self_state, false);
+            }
+            if decision.private_garden_intent.trim().is_empty() {
+                decision.private_garden_intent = default_boundary_private_intent(
+                    decision.private_garden_action,
+                    GovernedRuntimeLayer::PrivateGarden,
+                    boundary_signal,
+                );
+            }
+        }
+    }
+
+    if let Some(action) = factual_snapshot.strongest_refresh_action() {
+        if matches!(
+            decision.factual_reconcile_action,
+            SharedFactualReconcileAction::Hold
+        ) {
+            decision.factual_reconcile_action = action;
+        }
+        if decision.factual_reconcile_intent.trim().is_empty() {
+            decision.factual_reconcile_intent =
+                default_factual_refresh_intent(action, factual_snapshot);
+        }
+        if matches!(
+            action,
+            SharedFactualReconcileAction::Correct
+                | SharedFactualReconcileAction::Conflict
+                | SharedFactualReconcileAction::Stale
+        ) {
+            decision.request_factual_refresh = true;
+        }
+    } else if !decision.request_factual_refresh {
+        decision.factual_reconcile_intent.clear();
+    }
 }
 
 fn apply_runtime_governance_tendency(
     refresh: &mut bool,
     intent: &mut String,
+    action: &mut SelfRuntimeGovernanceAction,
     tendency: AutonomyGovernanceTendency,
     layer: GovernedRuntimeLayer,
     trigger: SelfRuntimeTrigger,
@@ -927,11 +1195,26 @@ fn apply_runtime_governance_tendency(
     {
         *refresh = true;
     }
+    if matches!(*action, SelfRuntimeGovernanceAction::Hold) {
+        *action = runtime_action_from_tendency(tendency);
+    }
     if *refresh && intent.trim().is_empty() {
-        *intent = default_runtime_governance_intent(tendency, layer, self_state);
+        *intent = default_runtime_governance_intent(*action, layer, self_state);
     }
     if !*refresh {
         intent.clear();
+        *action = SelfRuntimeGovernanceAction::Hold;
+    }
+}
+
+fn runtime_action_from_tendency(
+    tendency: AutonomyGovernanceTendency,
+) -> SelfRuntimeGovernanceAction {
+    match tendency {
+        AutonomyGovernanceTendency::Retain => SelfRuntimeGovernanceAction::Hold,
+        AutonomyGovernanceTendency::Rewrite => SelfRuntimeGovernanceAction::Rewrite,
+        AutonomyGovernanceTendency::Compress => SelfRuntimeGovernanceAction::Compress,
+        AutonomyGovernanceTendency::Cleanup => SelfRuntimeGovernanceAction::Cleanup,
     }
 }
 
@@ -980,7 +1263,7 @@ fn should_force_runtime_governance_refresh(
 }
 
 fn default_runtime_governance_intent(
-    tendency: AutonomyGovernanceTendency,
+    action: SelfRuntimeGovernanceAction,
     layer: GovernedRuntimeLayer,
     self_state: &SelfState,
 ) -> String {
@@ -990,32 +1273,87 @@ fn default_runtime_governance_intent(
         SelfMemorySpaceBottleneck::GardenBytes => "压低 garden 总体体积",
         SelfMemorySpaceBottleneck::Balanced => "保持整体内在空间清晰",
     };
-    match (layer, tendency) {
-        (_, AutonomyGovernanceTendency::Retain) => String::new(),
-        (GovernedRuntimeLayer::PrivateDocs, AutonomyGovernanceTendency::Rewrite) => {
+    match (layer, action) {
+        (_, SelfRuntimeGovernanceAction::Hold) => String::new(),
+        (GovernedRuntimeLayer::PrivateDocs, SelfRuntimeGovernanceAction::Rewrite) => {
             "重写 governed docs，只保留仍然承重的内在线索".to_string()
         }
-        (GovernedRuntimeLayer::PrivateDocs, AutonomyGovernanceTendency::Compress) => {
+        (GovernedRuntimeLayer::PrivateDocs, SelfRuntimeGovernanceAction::Compress) => {
             let mut out = String::with_capacity(24 + pressure_focus.len());
             out.push_str("压缩 governed docs，");
             out.push_str(pressure_focus);
             out
         }
-        (GovernedRuntimeLayer::PrivateDocs, AutonomyGovernanceTendency::Cleanup) => {
+        (GovernedRuntimeLayer::PrivateDocs, SelfRuntimeGovernanceAction::Cleanup) => {
             "清理低价值 governed docs 字段，只留下仍然有效的部分".to_string()
         }
-        (GovernedRuntimeLayer::PrivateGarden, AutonomyGovernanceTendency::Rewrite) => {
+        (GovernedRuntimeLayer::PrivateGarden, SelfRuntimeGovernanceAction::Rewrite) => {
             "重写并重组 private garden 中仍然活跃的工作文档".to_string()
         }
-        (GovernedRuntimeLayer::PrivateGarden, AutonomyGovernanceTendency::Compress) => {
+        (GovernedRuntimeLayer::PrivateGarden, SelfRuntimeGovernanceAction::Compress) => {
             let mut out = String::with_capacity(24 + pressure_focus.len());
             out.push_str("压缩 private garden，");
             out.push_str(pressure_focus);
             out
         }
-        (GovernedRuntimeLayer::PrivateGarden, AutonomyGovernanceTendency::Cleanup) => {
+        (GovernedRuntimeLayer::PrivateGarden, SelfRuntimeGovernanceAction::Cleanup) => {
             "清理陈旧或重复的 private garden 草稿与路径".to_string()
         }
+    }
+}
+
+fn default_boundary_governance_action(
+    self_state: &SelfState,
+    private_docs: bool,
+) -> SelfRuntimeGovernanceAction {
+    match self_state.memory_space.pressure {
+        SelfMemorySpacePressure::Tight => SelfRuntimeGovernanceAction::Cleanup,
+        SelfMemorySpacePressure::Cautious => SelfRuntimeGovernanceAction::Compress,
+        SelfMemorySpacePressure::Normal => {
+            if private_docs {
+                SelfRuntimeGovernanceAction::Rewrite
+            } else {
+                SelfRuntimeGovernanceAction::Compress
+            }
+        }
+    }
+}
+
+fn default_boundary_self_continuity_intent(boundary_signal: &SelfRuntimeBoundarySignal) -> String {
+    format!(
+        "在 {} 收束当前阶段，确保下一次苏醒时连续性不撕裂",
+        boundary_signal.human_summary()
+    )
+}
+
+fn default_boundary_private_intent(
+    action: SelfRuntimeGovernanceAction,
+    layer: GovernedRuntimeLayer,
+    boundary_signal: &SelfRuntimeBoundarySignal,
+) -> String {
+    let layer_name = match layer {
+        GovernedRuntimeLayer::PrivateDocs => "governed docs",
+        GovernedRuntimeLayer::PrivateGarden => "private garden",
+    };
+    format!(
+        "在 {} 时对 {} 执行 {} 收口",
+        boundary_signal.human_summary(),
+        layer_name,
+        action.label()
+    )
+}
+
+fn default_factual_refresh_intent(
+    action: SharedFactualReconcileAction,
+    snapshot: &SharedFactualPlaneSnapshot,
+) -> String {
+    match snapshot.refresh_summary() {
+        Some(summary) => format!(
+            "shared factual plane needs {} review: {}",
+            action.label(),
+            summary
+        ),
+        None => format!("shared factual plane needs {} review", action.label()),
     }
 }
 
@@ -1023,7 +1361,10 @@ fn default_runtime_governance_intent(
 fn decide_self_runtime(
     http: &mut dyn LlmHttpClient,
     llm: &(dyn LlmClient + Send + Sync),
-    long_term_memory_store: &dyn LongTermMemoryStore,
+    _long_term_memory_store: &dyn LongTermMemoryStore,
+    memory_store: &dyn MemoryStore,
+    turn_ledger_store: &dyn TurnLedgerStore,
+    chat_id: &str,
     payload: &SelfRuntimeJobPayload,
     summary_text: Option<&str>,
     execution_state: Option<&crate::memory::ExecutionState>,
@@ -1036,11 +1377,16 @@ fn decide_self_runtime(
     world_snapshot: &crate::memory::WorldSnapshot,
     autonomy_strategy: Option<&crate::memory::AutonomyStrategy>,
     profile: MemoryProfile,
-    session_store: &dyn SessionStore,
-    chat_id: &str,
+    recent: &[crate::memory::SessionMessage],
+    factual_snapshot: &SharedFactualPlaneSnapshot,
+    boundary_signal: &SelfRuntimeBoundarySignal,
 ) -> Result<SelfRuntimeDecision> {
     let policy = memory_policy(profile).self_runtime;
-    let recent = session_store.load_recent(chat_id, policy.recent_message_count)?;
+    let query_hint = if !payload.user_content.trim().is_empty() {
+        payload.user_content.trim()
+    } else {
+        payload.reply_content.trim()
+    };
     let mut input = String::with_capacity(2048);
     let _ = writeln!(input, "Trigger: {:?}", payload.trigger);
     if !payload.source_channel.trim().is_empty() {
@@ -1086,11 +1432,15 @@ fn decide_self_runtime(
     }) {
         let _ = writeln!(input, "\n{}\n", block);
     }
-    if let Some(block) = render_shared_factual_plane_block(
-        long_term_memory_store,
+    if let Some(block) = factual_snapshot.block.as_deref() {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if let Some(block) = build_archive_evidence_block(
+        recent,
+        memory_store,
+        turn_ledger_store,
         chat_id,
-        summary_text,
-        &recent,
+        query_hint,
         policy.grounding_max_len,
         profile,
     ) {
@@ -1172,6 +1522,16 @@ fn decide_self_runtime(
     ) {
         let _ = writeln!(input, "\n{}\n", block);
     }
+    if boundary_signal.is_active() {
+        let _ = writeln!(
+            input,
+            "\nBoundary flush signal: {}",
+            boundary_signal.human_summary()
+        );
+    }
+    if let Some(summary) = factual_snapshot.refresh_summary() {
+        let _ = writeln!(input, "Shared factual reconcile summary: {}", summary);
+    }
     if payload.external_content_used {
         let _ = writeln!(
             input,
@@ -1214,11 +1574,38 @@ fn parse_self_runtime_decision(raw: &str) -> SelfRuntimeDecision {
         inner_life_intent: get_object_text(object, "inner_life_intent"),
         refresh_private_docs: get_object_bool(object, "refresh_private_docs").unwrap_or(false),
         private_docs_intent: get_object_text(object, "private_docs_intent"),
+        private_docs_action: SelfRuntimeGovernanceAction::from_text(&get_object_text(
+            object,
+            "private_docs_action",
+        )),
         refresh_self_continuity: get_object_bool(object, "refresh_self_continuity")
             .unwrap_or(false),
         self_continuity_intent: get_object_text(object, "self_continuity_intent"),
         refresh_private_garden: get_object_bool(object, "refresh_private_garden").unwrap_or(false),
         private_garden_intent: get_object_text(object, "private_garden_intent"),
+        private_garden_action: SelfRuntimeGovernanceAction::from_text(&get_object_text(
+            object,
+            "private_garden_action",
+        )),
+        boundary_flush: get_object_bool(object, "boundary_flush").unwrap_or(false),
+        boundary_flush_reason: get_object_text(object, "boundary_flush_reason"),
+        request_factual_refresh: get_object_bool(object, "request_factual_refresh")
+            .unwrap_or(false),
+        factual_reconcile_action: parse_shared_factual_reconcile_action(&get_object_text(
+            object,
+            "factual_reconcile_action",
+        )),
+        factual_reconcile_intent: get_object_text(object, "factual_reconcile_intent"),
+    }
+}
+
+fn parse_shared_factual_reconcile_action(value: &str) -> SharedFactualReconcileAction {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "reinforce" => SharedFactualReconcileAction::Reinforce,
+        "correct" => SharedFactualReconcileAction::Correct,
+        "conflict" => SharedFactualReconcileAction::Conflict,
+        "stale" => SharedFactualReconcileAction::Stale,
+        _ => SharedFactualReconcileAction::Hold,
     }
 }
 
@@ -1273,22 +1660,47 @@ mod tests {
             "inner_life_intent": { "goal": "capture drift" },
             "refresh_private_docs": 1,
             "private_docs_intent": ["rewrite private notes"],
+            "private_docs_action": "compress",
             "refresh_self_continuity": false,
             "self_continuity_intent": 0,
             "refresh_private_garden": { "enabled": true },
-            "private_garden_intent": { "path": "journal/today.md" }
+            "private_garden_intent": { "path": "journal/today.md" },
+            "private_garden_action": "cleanup",
+            "boundary_flush": true,
+            "boundary_flush_reason": ["daily_boundary"],
+            "request_factual_refresh": 1,
+            "factual_reconcile_action": "conflict",
+            "factual_reconcile_intent": { "why": "recent transcript diverges" }
         })
         .to_string();
         let parsed = parse_self_runtime_decision(&raw);
         assert!(parsed.refresh_inner_life);
         assert!(parsed.refresh_private_docs);
         assert!(parsed.refresh_private_garden);
+        assert_eq!(
+            parsed.private_docs_action,
+            SelfRuntimeGovernanceAction::Compress
+        );
+        assert_eq!(
+            parsed.private_garden_action,
+            SelfRuntimeGovernanceAction::Cleanup
+        );
+        assert!(parsed.boundary_flush);
+        assert!(parsed.request_factual_refresh);
+        assert_eq!(
+            parsed.factual_reconcile_action,
+            SharedFactualReconcileAction::Conflict
+        );
         assert!(parsed.inner_life_intent.contains("goal: capture drift"));
         assert_eq!(parsed.private_docs_intent, "rewrite private notes");
         assert_eq!(parsed.self_continuity_intent, "0");
         assert!(parsed
             .private_garden_intent
             .contains("path: journal/today.md"));
+        assert!(parsed.boundary_flush_reason.contains("daily_boundary"));
+        assert!(parsed
+            .factual_reconcile_intent
+            .contains("why: recent transcript diverges"));
     }
 
     #[test]
@@ -1313,10 +1725,16 @@ mod tests {
             &sample_self_state(),
             true,
             false,
+            &SharedFactualPlaneSnapshot::default(),
+            &SelfRuntimeBoundarySignal::default(),
         );
 
         assert!(decision.refresh_private_docs);
         assert!(decision.private_docs_intent.contains("压缩 governed docs"));
+        assert_eq!(
+            decision.private_docs_action,
+            SelfRuntimeGovernanceAction::Compress
+        );
     }
 
     #[test]
@@ -1344,6 +1762,8 @@ mod tests {
             &sample_self_state(),
             false,
             true,
+            &SharedFactualPlaneSnapshot::default(),
+            &SelfRuntimeBoundarySignal::default(),
         );
 
         assert!(decision.refresh_private_garden);
@@ -1351,5 +1771,30 @@ mod tests {
             .private_garden_intent
             .contains("重写并重组 private garden"));
         assert!(!decision.refresh_private_docs);
+        assert_eq!(
+            decision.private_garden_action,
+            SelfRuntimeGovernanceAction::Rewrite
+        );
+    }
+
+    #[test]
+    fn boundary_signal_forces_continuity_and_private_refresh() {
+        let decision = normalize_self_runtime_decision(
+            SelfRuntimeDecision::default(),
+            SelfRuntimeTrigger::IdleTick,
+            None,
+            &sample_self_state(),
+            true,
+            true,
+            &SharedFactualPlaneSnapshot::default(),
+            &SelfRuntimeBoundarySignal {
+                reasons: vec![SelfRuntimeBoundaryReason::DailyBoundary],
+            },
+        );
+
+        assert!(decision.boundary_flush);
+        assert!(decision.refresh_self_continuity);
+        assert!(decision.refresh_private_docs);
+        assert!(decision.refresh_private_garden);
     }
 }

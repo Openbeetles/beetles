@@ -7,25 +7,28 @@ use crate::llm::{LlmClient, LlmHttpClient};
 use crate::orchestrator::PressureLevel;
 
 use super::{
-    evaluate_long_term_memory_extraction_turn, load_session_summary_snapshot,
-    mark_long_term_memory_extraction_requested, memory_policy, normalize_private_garden_doc_path,
-    persist_long_term_memory_extraction_state, run_execution_state_refresh_with_state,
-    run_internal_memory_routing_with_state, run_private_doc_workspace_refresh_with_state,
-    run_private_garden_governance_with_state, run_self_model_refresh_with_state,
-    run_session_summary_refresh_with_snapshot, should_refresh_execution_state,
-    should_refresh_private_doc_workspace, should_refresh_private_garden, should_refresh_self_model,
-    ExecutionStateRefreshContext, ExecutionStateRefreshInput, ExecutionStateRefreshOutcome,
-    ExecutionStateStore, InternalMemoryRoutingDecision, InternalMemoryRoutingInput,
-    LongTermMemoryExtractionStateStore, LongTermMemoryExtractionTurnInput, LongTermMemoryStore,
-    MemoryProfile, PrivateDocStore, PrivateDocWorkspaceRefreshContext,
-    PrivateDocWorkspaceRefreshInput, PrivateDocWorkspaceRefreshOutcome,
-    PrivateGardenGovernanceContext, PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome,
-    PrivateGardenStore, SelfModelRefreshContext, SelfModelRefreshInput, SelfModelRefreshOutcome,
-    SelfModelStore, SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore,
+    build_shared_factual_plane_snapshot, evaluate_long_term_memory_extraction_turn,
+    load_session_summary_snapshot, mark_long_term_memory_extraction_requested, memory_policy,
+    normalize_private_garden_doc_path, persist_long_term_memory_extraction_state,
+    run_execution_state_refresh_with_state, run_internal_memory_routing_with_state,
+    run_private_doc_workspace_refresh_with_state, run_private_garden_governance_with_state,
+    run_self_model_refresh_with_state, run_session_summary_refresh_with_snapshot,
+    should_refresh_execution_state, should_refresh_private_doc_workspace,
+    should_refresh_private_garden, should_refresh_self_model, ExecutionStateRefreshContext,
+    ExecutionStateRefreshInput, ExecutionStateRefreshOutcome, ExecutionStateStore,
+    InternalMemoryRoutingDecision, InternalMemoryRoutingInput, LongTermMemoryExtractionStateStore,
+    LongTermMemoryExtractionTurnInput, LongTermMemoryStore, MemoryProfile, MemoryStore,
+    PrivateDocStore, PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
+    PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
+    PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, PrivateGardenStore,
+    SelfModelRefreshContext, SelfModelRefreshInput, SelfModelRefreshOutcome, SelfModelStore,
+    SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore, SharedFactualPlaneSnapshot,
+    SharedFactualReconcileAction, TurnLedgerStore,
 };
 
 pub struct PostReplyMemoryMaintenanceContext<'a> {
     pub session_store: &'a dyn SessionStore,
+    pub memory_store: &'a dyn MemoryStore,
     pub session_summary_store: &'a dyn SessionSummaryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
@@ -33,6 +36,7 @@ pub struct PostReplyMemoryMaintenanceContext<'a> {
     pub private_doc_store: &'a dyn PrivateDocStore,
     pub private_garden_store: &'a dyn PrivateGardenStore,
     pub extraction_state_store: &'a dyn LongTermMemoryExtractionStateStore,
+    pub turn_ledger_store: &'a dyn TurnLedgerStore,
 }
 
 pub struct PostReplyMemoryMaintenanceInput<'a> {
@@ -64,6 +68,8 @@ pub struct PostReplyMemoryMaintenanceOutcome {
     pub private_doc_result: Result<PrivateDocWorkspaceRefreshOutcome>,
     pub private_garden_upstream_cleanup_result: Result<usize>,
     pub private_garden_result: Result<PrivateGardenGovernanceOutcome>,
+    pub factual_coordination_summary: Option<String>,
+    pub factual_refresh_suggested: bool,
     pub extraction_request_outcome: LongTermMemoryRefreshRequestOutcome,
 }
 
@@ -100,6 +106,51 @@ struct PrivateMaintenancePasses {
     private_doc_result: Result<PrivateDocWorkspaceRefreshOutcome>,
     private_garden_upstream_cleanup_result: Result<usize>,
     private_garden_result: Result<PrivateGardenGovernanceOutcome>,
+}
+
+fn coordinate_shared_factual_plane(
+    ctx: &PostReplyMemoryMaintenanceContext<'_>,
+    input: &PostReplyMemoryMaintenanceInput<'_>,
+    summary_text: Option<&str>,
+    recent: &[crate::memory::SessionMessage],
+) -> SharedFactualPlaneSnapshot {
+    let query = if !input.user_content.trim().is_empty() {
+        input.user_content
+    } else {
+        input.reply_content
+    };
+    build_shared_factual_plane_snapshot(
+        ctx.session_store,
+        ctx.long_term_memory_store,
+        ctx.memory_store,
+        ctx.turn_ledger_store,
+        input.chat_id,
+        query,
+        summary_text,
+        recent,
+        memory_policy(input.memory_profile)
+            .long_term_recall
+            .block_max_len_cap,
+        input.memory_profile,
+    )
+}
+
+fn should_force_factual_refresh(
+    snapshot: &SharedFactualPlaneSnapshot,
+    input: &PostReplyMemoryMaintenanceInput<'_>,
+) -> bool {
+    matches!(
+        snapshot.strongest_refresh_action(),
+        Some(
+            SharedFactualReconcileAction::Correct
+                | SharedFactualReconcileAction::Conflict
+                | SharedFactualReconcileAction::Stale
+        )
+    ) || (input.external_content_used
+        && matches!(
+            snapshot.strongest_refresh_action(),
+            Some(SharedFactualReconcileAction::Reinforce)
+        ))
 }
 
 fn collect_maintenance_baseline(
@@ -607,6 +658,17 @@ pub fn run_post_reply_memory_maintenance(
     let shared = run_shared_maintenance_passes(http, llm, &ctx, &input, &baseline, &recent);
     let private =
         run_private_memory_maintenance_passes(http, llm, &ctx, &input, &baseline, &recent, &shared);
+    let factual_plane_snapshot = coordinate_shared_factual_plane(
+        &ctx,
+        &input,
+        shared.summary_snapshot.summary_text.as_deref(),
+        recent
+            .shared_recent
+            .as_deref()
+            .unwrap_or_else(|| recent.routing_recent.as_deref().unwrap_or(&[])),
+    );
+    let factual_refresh_suggested = should_force_factual_refresh(&factual_plane_snapshot, &input);
+    let factual_coordination_summary = factual_plane_snapshot.refresh_summary();
 
     let extraction_state = ctx.extraction_state_store.get(input.chat_id).ok().flatten();
     let extraction_decision = evaluate_long_term_memory_extraction_turn(
@@ -623,7 +685,8 @@ pub fn run_post_reply_memory_maintenance(
         input.memory_profile,
     );
     let mut next_extraction_state = extraction_decision.next_state.clone();
-    let extraction_request_outcome = if extraction_decision.should_enqueue {
+    let should_request_extraction = extraction_decision.should_enqueue || factual_refresh_suggested;
+    let extraction_request_outcome = if should_request_extraction {
         if enqueue_long_term_refresh() {
             next_extraction_state = mark_long_term_memory_extraction_requested(
                 &next_extraction_state,
@@ -652,6 +715,8 @@ pub fn run_post_reply_memory_maintenance(
         private_doc_result: private.private_doc_result,
         private_garden_upstream_cleanup_result: private.private_garden_upstream_cleanup_result,
         private_garden_result: private.private_garden_result,
+        factual_coordination_summary,
+        factual_refresh_suggested,
         extraction_request_outcome,
     }
 }
@@ -678,9 +743,9 @@ mod tests {
     use crate::llm::{LlmModelCompat, LlmResponse, Message, StopReason, ToolChoicePolicy};
     use crate::memory::{
         ExecutionState, ExecutionStateStore, LongTermMemoryExtractionState,
-        LongTermMemoryExtractionStateStore, PrivateDocStore, PrivateDocWorkspace, PrivateGardenDoc,
-        PrivateGardenDocRecord, PrivateGardenStore, SelfModel, SelfModelStore, SessionMessage,
-        SessionSummaryStore,
+        LongTermMemoryExtractionStateStore, MemoryStore, PrivateDocStore, PrivateDocWorkspace,
+        PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenStore, SelfModel, SelfModelStore,
+        SessionMessage, SessionSummaryStore, TurnLedger, TurnLedgerStore,
     };
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -722,6 +787,64 @@ mod tests {
     struct StubSessionSummaryStore {
         entries: Mutex<HashMap<String, (String, usize)>>,
         fail_get_with_count: bool,
+    }
+
+    #[derive(Default)]
+    struct StubMemoryStore;
+
+    impl MemoryStore for StubMemoryStore {
+        fn get_memory(&self) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn set_memory(&self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_soul(&self) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn set_soul(&self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_user(&self) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn set_user(&self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_daily_note_names(&self, _recent_n: usize) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn get_daily_note(&self, _name: &str) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn write_daily_note(&self, _name: &str, _content: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubTurnLedgerStore;
+
+    impl TurnLedgerStore for StubTurnLedgerStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<TurnLedger>> {
+            Ok(None)
+        }
+
+        fn set(&self, _chat_id: &str, _ledger: &TurnLedger) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
     }
 
     impl SessionSummaryStore for StubSessionSummaryStore {
@@ -1104,16 +1227,19 @@ mod tests {
             ..Default::default()
         };
         let execution_state_store = StubExecutionStateStore::default();
+        let memory_store = StubMemoryStore;
         let long_term_memory_store = StubLongTermMemoryStore;
         let self_model_store = StubSelfModelStore::default();
         let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
+        let turn_ledger_store = StubTurnLedgerStore;
         let mut http = DummyHttpClient;
         let outcome = run_post_reply_memory_maintenance(
             &mut http,
             &FixedLlmClient,
             PostReplyMemoryMaintenanceContext {
                 session_store: &session_store,
+                memory_store: &memory_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
                 long_term_memory_store: &long_term_memory_store,
@@ -1121,6 +1247,7 @@ mod tests {
                 private_doc_store: &private_doc_store,
                 private_garden_store: &private_garden_store,
                 extraction_state_store: &extraction_state_store,
+                turn_ledger_store: &turn_ledger_store,
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",
@@ -1196,16 +1323,19 @@ mod tests {
         let summary_store = StubSessionSummaryStore::default();
         let extraction_state_store = StubExtractionStateStore::default();
         let execution_state_store = StubExecutionStateStore::default();
+        let memory_store = StubMemoryStore;
         let long_term_memory_store = StubLongTermMemoryStore;
         let self_model_store = StubSelfModelStore::default();
         let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
+        let turn_ledger_store = StubTurnLedgerStore;
         let mut http = DummyHttpClient;
         let outcome = run_post_reply_memory_maintenance(
             &mut http,
             &FixedLlmClient,
             PostReplyMemoryMaintenanceContext {
                 session_store: &session_store,
+                memory_store: &memory_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
                 long_term_memory_store: &long_term_memory_store,
@@ -1213,6 +1343,7 @@ mod tests {
                 private_doc_store: &private_doc_store,
                 private_garden_store: &private_garden_store,
                 extraction_state_store: &extraction_state_store,
+                turn_ledger_store: &turn_ledger_store,
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",
@@ -1288,10 +1419,12 @@ mod tests {
         let summary_store = StubSessionSummaryStore::default();
         let extraction_state_store = StubExtractionStateStore::default();
         let execution_state_store = StubExecutionStateStore::default();
+        let memory_store = StubMemoryStore;
         let long_term_memory_store = StubLongTermMemoryStore;
         let self_model_store = StubSelfModelStore::default();
         let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
+        let turn_ledger_store = StubTurnLedgerStore;
         let mut http = DummyHttpClient;
 
         let outcome = run_post_reply_memory_maintenance(
@@ -1299,6 +1432,7 @@ mod tests {
             &FixedLlmClient,
             PostReplyMemoryMaintenanceContext {
                 session_store: &session_store,
+                memory_store: &memory_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
                 long_term_memory_store: &long_term_memory_store,
@@ -1306,6 +1440,7 @@ mod tests {
                 private_doc_store: &private_doc_store,
                 private_garden_store: &private_garden_store,
                 extraction_state_store: &extraction_state_store,
+                turn_ledger_store: &turn_ledger_store,
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",
@@ -1371,10 +1506,12 @@ mod tests {
         let summary_store = StubSessionSummaryStore::default();
         let extraction_state_store = StubExtractionStateStore::default();
         let execution_state_store = StubExecutionStateStore::default();
+        let memory_store = StubMemoryStore;
         let long_term_memory_store = StubLongTermMemoryStore;
         let self_model_store = StubSelfModelStore::default();
         let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
+        let turn_ledger_store = StubTurnLedgerStore;
         let mut http = DummyHttpClient;
 
         let outcome = run_post_reply_memory_maintenance(
@@ -1382,6 +1519,7 @@ mod tests {
             &RouterSuppressingLlmClient,
             PostReplyMemoryMaintenanceContext {
                 session_store: &session_store,
+                memory_store: &memory_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
                 long_term_memory_store: &long_term_memory_store,
@@ -1389,6 +1527,7 @@ mod tests {
                 private_doc_store: &private_doc_store,
                 private_garden_store: &private_garden_store,
                 extraction_state_store: &extraction_state_store,
+                turn_ledger_store: &turn_ledger_store,
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",
@@ -1444,10 +1583,12 @@ mod tests {
         let summary_store = StubSessionSummaryStore::default();
         let extraction_state_store = StubExtractionStateStore::default();
         let execution_state_store = StubExecutionStateStore::default();
+        let memory_store = StubMemoryStore;
         let long_term_memory_store = StubLongTermMemoryStore;
         let self_model_store = StubSelfModelStore::default();
         let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
+        let turn_ledger_store = StubTurnLedgerStore;
         private_garden_store
             .write("chat-1", "journal/promoted.md", "已经足够稳定，准备上提", 1)
             .unwrap();
@@ -1461,6 +1602,7 @@ mod tests {
             &FixedLlmClient,
             PostReplyMemoryMaintenanceContext {
                 session_store: &session_store,
+                memory_store: &memory_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
                 long_term_memory_store: &long_term_memory_store,
@@ -1468,6 +1610,7 @@ mod tests {
                 private_doc_store: &private_doc_store,
                 private_garden_store: &private_garden_store,
                 extraction_state_store: &extraction_state_store,
+                turn_ledger_store: &turn_ledger_store,
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",
@@ -1523,10 +1666,12 @@ mod tests {
             ..Default::default()
         };
         let execution_state_store = StubExecutionStateStore::default();
+        let memory_store = StubMemoryStore;
         let long_term_memory_store = StubLongTermMemoryStore;
         let self_model_store = StubSelfModelStore::default();
         let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
+        let turn_ledger_store = StubTurnLedgerStore;
         let mut http = DummyHttpClient;
 
         let outcome = run_post_reply_memory_maintenance(
@@ -1534,6 +1679,7 @@ mod tests {
             &FixedLlmClient,
             PostReplyMemoryMaintenanceContext {
                 session_store: &session_store,
+                memory_store: &memory_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
                 long_term_memory_store: &long_term_memory_store,
@@ -1541,6 +1687,7 @@ mod tests {
                 private_doc_store: &private_doc_store,
                 private_garden_store: &private_garden_store,
                 extraction_state_store: &extraction_state_store,
+                turn_ledger_store: &turn_ledger_store,
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",

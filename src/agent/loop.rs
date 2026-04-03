@@ -1548,6 +1548,7 @@ fn run_post_reply_maintenance_job(
         worker_llm,
         PostReplyMemoryMaintenanceContext {
             session_store: config.session_store.as_ref(),
+            memory_store: config.memory_store.as_ref(),
             session_summary_store: config.session_summary_store.as_ref(),
             execution_state_store: config.execution_state_store.as_ref(),
             long_term_memory_store: config.long_term_memory_store.as_ref(),
@@ -1555,6 +1556,7 @@ fn run_post_reply_maintenance_job(
             private_doc_store: config.private_doc_store.as_ref(),
             private_garden_store: config.private_garden_store.as_ref(),
             extraction_state_store: config.long_term_memory_extraction_state_store.as_ref(),
+            turn_ledger_store: config.turn_ledger_store.as_ref(),
         },
         PostReplyMemoryMaintenanceInput {
             chat_id: &msg.chat_id,
@@ -1671,6 +1673,14 @@ fn run_post_reply_maintenance_job(
         Ok(crate::memory::PrivateGardenGovernanceOutcome::Skipped) => {}
         Err(error) => log::warn!("[agent_private_garden] failed: {}", error),
     }
+    if let Some(summary) = maintenance_outcome.factual_coordination_summary.as_deref() {
+        log::info!(
+            "[agent_shared_factual_plane] {} suggested_refresh={} summary={}",
+            msg.chat_id,
+            maintenance_outcome.factual_refresh_suggested,
+            summary
+        );
+    }
     if maintenance_outcome.extraction_request_outcome
         == LongTermMemoryRefreshRequestOutcome::RequestFailed
     {
@@ -1685,6 +1695,7 @@ fn run_self_runtime_job(
     http: &mut dyn PlatformHttpClient,
     worker_llm: &(dyn LlmClient + Send + Sync),
     config: &AgentLoopConfig,
+    system_inbound_tx: &SystemInboundTx,
     msg: &PcMsg,
 ) {
     let payload: crate::memory::SelfRuntimeJobPayload = match serde_json::from_str(&msg.content) {
@@ -1716,6 +1727,7 @@ fn run_self_runtime_job(
         worker_llm,
         SelfRuntimeContext {
             session_store: config.session_store.as_ref(),
+            memory_store: config.memory_store.as_ref(),
             session_summary_store: config.session_summary_store.as_ref(),
             execution_state_store: config.execution_state_store.as_ref(),
             long_term_memory_store: config.long_term_memory_store.as_ref(),
@@ -1730,6 +1742,7 @@ fn run_self_runtime_job(
             mental_privacy_store: config.mental_privacy_store.as_ref(),
             remind_store: config.remind_store.as_ref(),
             task_store: config.task_store.as_ref(),
+            turn_ledger_store: config.turn_ledger_store.as_ref(),
         },
         &msg.chat_id,
         &payload,
@@ -1737,18 +1750,48 @@ fn run_self_runtime_job(
     );
     if let Some(decision) = outcome.decision.as_ref() {
         log::info!(
-            "[self_runtime] {} trigger={:?} inner_life={} private_docs={} self_continuity={} private_garden={} inner_life_intent={:?} private_docs_intent={:?} self_continuity_intent={:?} private_garden_intent={:?}",
+            "[self_runtime] {} trigger={:?} inner_life={} private_docs={} private_docs_action={} self_continuity={} private_garden={} private_garden_action={} boundary_flush={} boundary_reason={:?} factual_refresh={} factual_action={} inner_life_intent={:?} private_docs_intent={:?} self_continuity_intent={:?} private_garden_intent={:?} factual_reconcile_intent={:?}",
             msg.chat_id,
             payload.trigger,
             decision.refresh_inner_life,
             decision.refresh_private_docs,
+            decision.private_docs_action.label(),
             decision.refresh_self_continuity,
             decision.refresh_private_garden,
+            decision.private_garden_action.label(),
+            decision.boundary_flush,
+            (!decision.boundary_flush_reason.trim().is_empty())
+                .then_some(decision.boundary_flush_reason.as_str()),
+            decision.request_factual_refresh,
+            decision.factual_reconcile_action.label(),
             (!decision.inner_life_intent.trim().is_empty()).then_some(decision.inner_life_intent.as_str()),
             (!decision.private_docs_intent.trim().is_empty()).then_some(decision.private_docs_intent.as_str()),
             (!decision.self_continuity_intent.trim().is_empty()).then_some(decision.self_continuity_intent.as_str()),
             (!decision.private_garden_intent.trim().is_empty()).then_some(decision.private_garden_intent.as_str()),
+            (!decision.factual_reconcile_intent.trim().is_empty())
+                .then_some(decision.factual_reconcile_intent.as_str()),
         );
+        if decision.request_factual_refresh {
+            match PcMsg::new_system(LONG_TERM_MEMORY_REFRESH_CHANNEL, msg.chat_id.as_ref(), "") {
+                Ok(job) => match system_inbound_tx.try_send(job) {
+                    Ok(()) => {}
+                    Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                        log::debug!(
+                            "[self_runtime] skip factual refresh enqueue because system queue is full chat_id={}",
+                            msg.chat_id
+                        );
+                    }
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                        log::warn!(
+                            "[self_runtime] factual refresh enqueue failed: system queue disconnected"
+                        );
+                    }
+                },
+                Err(error) => {
+                    log::warn!("[self_runtime] factual refresh job build failed: {}", error);
+                }
+            }
+        }
     }
     match outcome.world_sense_result {
         Ok(crate::memory::WorldSenseRefreshOutcome::Updated) => {
@@ -2209,7 +2252,7 @@ fn run_agent_loop_lane(
             continue;
         }
         if is_self_runtime_job(&msg) {
-            run_self_runtime_job(http, worker_llm, config, &msg);
+            run_self_runtime_job(http, worker_llm, config, &system_inbound_tx, &msg);
             metrics::record_system_message_done(false);
             continue;
         }

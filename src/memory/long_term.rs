@@ -932,6 +932,20 @@ fn evidence_state_for_entry(
     LongTermMemoryEvidenceState::RecentState
 }
 
+pub(crate) fn long_term_memory_evidence_state(
+    entry: &LongTermMemoryEntry,
+    now_secs: u64,
+) -> LongTermMemoryEvidenceState {
+    evidence_state_for_entry(entry, now_secs)
+}
+
+pub(crate) fn long_term_memory_effective_stale_hint(
+    entry: &LongTermMemoryEntry,
+    now_secs: u64,
+) -> LongTermMemoryStaleHint {
+    effective_stale_hint(entry, now_secs)
+}
+
 fn confidence_rank(confidence: LongTermMemoryConfidence) -> u8 {
     match confidence {
         LongTermMemoryConfidence::Low => 0,
@@ -1148,19 +1162,16 @@ pub(crate) fn govern_long_term_memory_entries(
     changed
 }
 
-pub fn recall_long_term_memory_block(
+pub(crate) fn recall_long_term_memory_entries(
     store: &dyn LongTermMemoryStore,
     chat_id: &str,
     user_query: &str,
     summary_text: Option<&str>,
     recent_messages: &[SessionMessage],
-    system_max_len: usize,
     profile: MemoryProfile,
-) -> Option<String> {
-    let now_secs = crate::util::current_unix_secs();
+) -> Vec<LongTermMemoryEntry> {
     let policy = memory_policy(profile).long_term_recall;
-    let block_max_len = policy.recall_block_max_len(system_max_len);
-    let desired = policy.desired_entry_count(block_max_len);
+    let desired = policy.desired_entry_count(policy.block_max_len_cap);
     let recall_query = policy.build_recall_query(user_query, summary_text, recent_messages);
     let mut candidates = store
         .recall(
@@ -1182,7 +1193,29 @@ pub fn recall_long_term_memory_block(
         }
     }
     reorder_recall_candidates_for_chat(chat_id, &mut candidates);
-    let selected = policy.select_entries(candidates, desired);
+    policy.select_entries(candidates, desired)
+}
+
+pub fn recall_long_term_memory_block(
+    store: &dyn LongTermMemoryStore,
+    chat_id: &str,
+    user_query: &str,
+    summary_text: Option<&str>,
+    recent_messages: &[SessionMessage],
+    system_max_len: usize,
+    profile: MemoryProfile,
+) -> Option<String> {
+    let now_secs = crate::util::current_unix_secs();
+    let policy = memory_policy(profile).long_term_recall;
+    let block_max_len = policy.recall_block_max_len(system_max_len);
+    let selected = recall_long_term_memory_entries(
+        store,
+        chat_id,
+        user_query,
+        summary_text,
+        recent_messages,
+        profile,
+    );
     render_long_term_memory_block_with_now(&selected, block_max_len, now_secs)
 }
 
