@@ -1240,7 +1240,11 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                     Err(e) => {
                         log::error!("[{}] agent_user_loop create_http_client failed: {}", tag, e);
                         beetle::state::set_last_error(&e);
-                        user_agent_platform.request_restart();
+                        beetle::runtime::request_restart_with_continuity_flush(
+                            Arc::clone(&user_agent_platform),
+                            None,
+                            "agent_user_loop_http_init_failed",
+                        );
                         return;
                     }
                 };
@@ -1259,7 +1263,11 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                     log::warn!("[{}] agent_user_loop error: {}", tag, e);
                     beetle::state::set_last_error(&e);
                 }
-                user_agent_platform.request_restart();
+                beetle::runtime::request_restart_with_continuity_flush(
+                    user_agent_platform,
+                    None,
+                    "agent_user_loop_exit",
+                );
             },
         )
         .ok();
@@ -1290,7 +1298,11 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                             e
                         );
                         beetle::state::set_last_error(&e);
-                        system_agent_platform.request_restart();
+                        beetle::runtime::request_restart_with_continuity_flush(
+                            Arc::clone(&system_agent_platform),
+                            None,
+                            "agent_system_loop_http_init_failed",
+                        );
                         return;
                     }
                 };
@@ -1308,7 +1320,11 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                     log::warn!("[{}] agent_system_loop error: {}", tag, e);
                     beetle::state::set_last_error(&e);
                 }
-                system_agent_platform.request_restart();
+                beetle::runtime::request_restart_with_continuity_flush(
+                    system_agent_platform,
+                    None,
+                    "agent_system_loop_exit",
+                );
             },
         )
         .ok();
@@ -1329,7 +1345,11 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                 if let Some(done) = user_agent_handle.take() {
                     let _ = done.join();
                     log::error!("[{}] agent_user_loop exited; restart requested", TAG);
-                    platform.request_restart();
+                    beetle::runtime::request_restart_with_continuity_flush(
+                        Arc::clone(&platform),
+                        None,
+                        "agent_user_loop_join_exit",
+                    );
                 }
             }
         }
@@ -1338,7 +1358,11 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                 if let Some(done) = system_agent_handle.take() {
                     let _ = done.join();
                     log::error!("[{}] agent_system_loop exited; restart requested", TAG);
-                    platform.request_restart();
+                    beetle::runtime::request_restart_with_continuity_flush(
+                        Arc::clone(&platform),
+                        None,
+                        "agent_system_loop_join_exit",
+                    );
                 }
             }
         }

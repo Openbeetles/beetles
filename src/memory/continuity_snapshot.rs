@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use super::{
     ExecutionState, ExecutionStateStore, LongTermMemoryDraft, LongTermMemoryEntry,
     LongTermMemoryKind, LongTermMemoryStore, SelfContinuity, SelfContinuityStore, SelfModel,
-    SelfModelStore, SessionSummaryStore,
+    SelfModelStore, SessionStore, SessionSummaryStore,
 };
 
 const CONTINUITY_SNAPSHOT_VERSION: u32 = 1;
@@ -56,6 +56,7 @@ pub struct ContinuitySnapshotExportContext<'a> {
 
 pub struct ContinuitySnapshotImportContext<'a> {
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
+    pub session_summary_store: &'a dyn SessionSummaryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
     pub self_model_store: &'a dyn SelfModelStore,
     pub self_continuity_store: &'a dyn SelfContinuityStore,
@@ -64,6 +65,7 @@ pub struct ContinuitySnapshotImportContext<'a> {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContinuitySnapshotImportOutcome {
     pub long_term_imported: usize,
+    pub summary_restored: bool,
     pub self_model_restored: bool,
     pub self_continuity_restored: bool,
     pub execution_state_restored: bool,
@@ -125,6 +127,16 @@ pub fn import_continuity_snapshot(
         long_term_imported,
         ..ContinuitySnapshotImportOutcome::default()
     };
+    if let Some(summary_text) = snapshot
+        .summary_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        ctx.session_summary_store
+            .set(target_chat_id, summary_text)?;
+        outcome.summary_restored = true;
+    }
     if let Some(self_model) = snapshot.self_model.as_ref() {
         let should_restore = ctx
             .self_model_store
@@ -160,6 +172,69 @@ pub fn import_continuity_snapshot(
         }
     }
     Ok(outcome)
+}
+
+pub fn select_active_continuity_snapshot_chat_ids(
+    session_store: &dyn SessionStore,
+    self_continuity_store: &dyn SelfContinuityStore,
+    preferred_chat_id: Option<&str>,
+    now_secs: u64,
+    active_window_secs: u64,
+    limit: usize,
+) -> Vec<String> {
+    let mut scored = session_store
+        .list_chat_ids()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|chat_id| {
+            let continuity = self_continuity_store.get(&chat_id).ok().flatten();
+            let last_activity = continuity
+                .as_ref()
+                .map(|continuity| {
+                    continuity
+                        .last_user_turn_at
+                        .max(continuity.last_autonomy_run_at)
+                        .max(continuity.updated_at)
+                })
+                .unwrap_or(0);
+            let preferred = preferred_chat_id == Some(chat_id.as_str());
+            (chat_id, last_activity, preferred)
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|left, right| {
+        right
+            .2
+            .cmp(&left.2)
+            .then_with(|| right.1.cmp(&left.1))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    let limit = limit.max(1);
+    let mut selected = Vec::with_capacity(limit);
+    for (chat_id, last_activity, preferred) in scored {
+        let active = preferred
+            || last_activity == 0
+            || now_secs == 0
+            || now_secs.saturating_sub(last_activity) <= active_window_secs;
+        if !active {
+            continue;
+        }
+        if selected.iter().any(|existing| existing == &chat_id) {
+            continue;
+        }
+        selected.push(chat_id);
+        if selected.len() >= limit {
+            break;
+        }
+    }
+    if selected.is_empty() {
+        if let Some(preferred_chat_id) = preferred_chat_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            selected.push(preferred_chat_id.to_string());
+        }
+    }
+    selected
 }
 
 pub fn render_continuity_snapshot_markdown(snapshot: &ContinuitySnapshot) -> String {
@@ -337,6 +412,7 @@ mod tests {
     use crate::memory::{
         ExecutionStatus, LongTermMemoryConfidence, LongTermMemoryFreshness,
         LongTermMemorySourceScope, LongTermMemorySourceType, LongTermMemoryStaleHint,
+        SessionMessage,
     };
     use std::sync::Mutex;
 
@@ -424,7 +500,8 @@ mod tests {
                 .map(|(summary, _)| summary.clone()))
         }
 
-        fn set(&self, _chat_id: &str, _summary: &str) -> Result<()> {
+        fn set(&self, _chat_id: &str, summary: &str) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some((summary.to_string(), 1));
             Ok(())
         }
 
@@ -496,6 +573,46 @@ mod tests {
         }
     }
 
+    struct StubSessionStore {
+        chat_ids: Vec<String>,
+    }
+
+    impl SessionStore for StubSessionStore {
+        fn append(&self, _chat_id: &str, _role: &str, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn load_recent(&self, _chat_id: &str, _n: usize) -> Result<Vec<SessionMessage>> {
+            Ok(Vec::new())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_chat_ids(&self) -> Result<Vec<String>> {
+            Ok(self.chat_ids.clone())
+        }
+    }
+
+    struct MultiSelfContinuityStore {
+        entries: std::collections::HashMap<String, SelfContinuity>,
+    }
+
+    impl SelfContinuityStore for MultiSelfContinuityStore {
+        fn get(&self, chat_id: &str) -> Result<Option<SelfContinuity>> {
+            Ok(self.entries.get(chat_id).cloned())
+        }
+
+        fn set(&self, _chat_id: &str, _continuity: &SelfContinuity) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn bootstrap_snapshot_filters_to_core_fact_kinds() {
         let store = StubLongTermMemoryStore {
@@ -554,6 +671,7 @@ mod tests {
                 recent_changes: String::new(),
                 continuity_bridge: String::new(),
                 last_user_turn_at: 11,
+                last_user_channel: "qq_channel".to_string(),
                 last_autonomy_run_at: 0,
                 updated_at: 11,
             }),
@@ -570,6 +688,7 @@ mod tests {
         let outcome = import_continuity_snapshot(
             ContinuitySnapshotImportContext {
                 long_term_memory_store: &store,
+                session_summary_store: &StubSummaryStore::default(),
                 execution_state_store: &execution_state_store,
                 self_model_store: &self_model_store,
                 self_continuity_store: &self_continuity_store,
@@ -583,5 +702,109 @@ mod tests {
         assert!(outcome.self_model_restored);
         assert!(outcome.self_continuity_restored);
         assert!(outcome.execution_state_restored);
+    }
+
+    #[test]
+    fn full_restore_import_restores_summary_text() {
+        let summary_store = StubSummaryStore::default();
+        let outcome = import_continuity_snapshot(
+            ContinuitySnapshotImportContext {
+                long_term_memory_store: &StubLongTermMemoryStore::default(),
+                session_summary_store: &summary_store,
+                execution_state_store: &StubExecutionStateStore::default(),
+                self_model_store: &StubSelfModelStore::default(),
+                self_continuity_store: &StubSelfContinuityStore::default(),
+            },
+            "chat-new",
+            &ContinuitySnapshot {
+                version: CONTINUITY_SNAPSHOT_VERSION,
+                exported_at: 20,
+                mode: ContinuitySnapshotMode::Bootstrap,
+                chat_id: "chat-old".to_string(),
+                summary_text: Some("stable summary".to_string()),
+                long_term_memory: Vec::new(),
+                self_model: None,
+                self_continuity: None,
+                execution_state: None,
+            },
+            ContinuitySnapshotImportMode::BootstrapImport,
+        )
+        .unwrap();
+        assert!(outcome.summary_restored);
+        assert_eq!(
+            summary_store
+                .get_with_count("chat-new")
+                .unwrap()
+                .map(|(value, _)| value),
+            Some("stable summary".to_string())
+        );
+    }
+
+    #[test]
+    fn select_active_chat_ids_prefers_preferred_and_recent_activity() {
+        let session_store = StubSessionStore {
+            chat_ids: vec![
+                "chat-stale".to_string(),
+                "chat-recent".to_string(),
+                "chat-preferred".to_string(),
+            ],
+        };
+        let continuity_store = MultiSelfContinuityStore {
+            entries: [
+                (
+                    "chat-stale".to_string(),
+                    SelfContinuity {
+                        wake_anchor: String::new(),
+                        current_self_state: String::new(),
+                        recent_changes: String::new(),
+                        continuity_bridge: String::new(),
+                        last_user_turn_at: 10,
+                        last_user_channel: "qq_channel".to_string(),
+                        last_autonomy_run_at: 10,
+                        updated_at: 10,
+                    },
+                ),
+                (
+                    "chat-recent".to_string(),
+                    SelfContinuity {
+                        wake_anchor: String::new(),
+                        current_self_state: String::new(),
+                        recent_changes: String::new(),
+                        continuity_bridge: String::new(),
+                        last_user_turn_at: 990,
+                        last_user_channel: "qq_channel".to_string(),
+                        last_autonomy_run_at: 995,
+                        updated_at: 995,
+                    },
+                ),
+                (
+                    "chat-preferred".to_string(),
+                    SelfContinuity {
+                        wake_anchor: String::new(),
+                        current_self_state: String::new(),
+                        recent_changes: String::new(),
+                        continuity_bridge: String::new(),
+                        last_user_turn_at: 100,
+                        last_user_channel: "telegram".to_string(),
+                        last_autonomy_run_at: 100,
+                        updated_at: 100,
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let selected = select_active_continuity_snapshot_chat_ids(
+            &session_store,
+            &continuity_store,
+            Some("chat-preferred"),
+            1_000,
+            120,
+            4,
+        );
+        assert_eq!(
+            selected,
+            vec!["chat-preferred".to_string(), "chat-recent".to_string()]
+        );
     }
 }

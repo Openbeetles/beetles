@@ -184,7 +184,11 @@ fn cmd_heap_info(ctx: &CliContext) -> String {
 
 fn cmd_restart(ctx: &CliContext) -> String {
     log::info!("[{}] Restarting...", TAG);
-    ctx.platform.request_restart();
+    crate::runtime::request_restart_with_continuity_flush(
+        Arc::clone(&ctx.platform),
+        None,
+        "cli_restart",
+    );
     "restart: requested\n".into()
 }
 
@@ -363,7 +367,11 @@ fn cmd_ota(ctx: &CliContext, args: Vec<&str>) -> String {
     match ctx.platform.ota_from_url(url) {
         Ok(()) => {
             log::info!("[{}] OTA done, restarting", TAG);
-            ctx.platform.request_restart();
+            crate::runtime::request_restart_with_continuity_flush(
+                Arc::clone(&ctx.platform),
+                None,
+                "cli_ota_restart",
+            );
             "OTA successful. Restarting...\n".into()
         }
         Err(e) => format!("OTA failed: {}\n", state::sanitize_error_for_log(&e)),

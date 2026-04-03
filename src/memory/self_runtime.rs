@@ -143,6 +143,7 @@ struct LoadedSelfRuntimeState {
     autonomy_strategy: Option<crate::memory::AutonomyStrategy>,
     outer_voice: Option<crate::memory::OuterVoice>,
     mental_privacy_state: Option<crate::memory::MentalPrivacyState>,
+    prior_user_channel: String,
     world_snapshot: crate::memory::WorldSnapshot,
     recent: Vec<crate::memory::SessionMessage>,
 }
@@ -205,6 +206,7 @@ enum SelfRuntimeBoundaryReason {
     DailyBoundary,
     AutonomyShift,
     IdleSettlement,
+    ChannelHandoff,
 }
 
 impl SelfRuntimeBoundaryReason {
@@ -213,6 +215,7 @@ impl SelfRuntimeBoundaryReason {
             Self::DailyBoundary => "daily_boundary",
             Self::AutonomyShift => "autonomy_shift",
             Self::IdleSettlement => "idle_settlement",
+            Self::ChannelHandoff => "channel_handoff",
         }
     }
 
@@ -221,6 +224,7 @@ impl SelfRuntimeBoundaryReason {
             Self::DailyBoundary => "daily boundary",
             Self::AutonomyShift => "autonomy strategy shift",
             Self::IdleSettlement => "idle settlement",
+            Self::ChannelHandoff => "channel handoff",
         }
     }
 }
@@ -280,19 +284,22 @@ fn load_self_runtime_state(
         .unwrap_or_default();
     let inner_life = ctx.inner_life_store.get(chat_id).ok().flatten();
     let self_continuity = ctx.self_continuity_store.get(chat_id).ok().flatten();
+    let prior_user_channel = self_continuity
+        .as_ref()
+        .map(|continuity| continuity.last_user_channel.trim().to_string())
+        .unwrap_or_default();
     let world_sense = ctx.world_sense_store.get(chat_id).ok().flatten();
     let autonomy_strategy = ctx.autonomy_strategy_store.get(chat_id).ok().flatten();
     let outer_voice = ctx.outer_voice_store.get(chat_id).ok().flatten();
     let mental_privacy_state = ctx.mental_privacy_store.get(chat_id).ok().flatten();
-    if payload.trigger == SelfRuntimeTrigger::PostReply {
-        let _ = touch_self_continuity_runtime(
-            ctx.self_continuity_store,
-            chat_id,
-            payload.now_secs,
-            true,
-            false,
-        );
-    }
+    let self_continuity = if payload.trigger == SelfRuntimeTrigger::PostReply {
+        let mut continuity = self_continuity.unwrap_or_default();
+        continuity.last_user_turn_at = payload.now_secs;
+        continuity.last_user_channel = payload.source_channel.trim().to_string();
+        Some(continuity)
+    } else {
+        self_continuity
+    };
     let world_snapshot = build_world_snapshot(WorldSnapshotContext {
         chat_id,
         source_channel: &payload.source_channel,
@@ -336,6 +343,7 @@ fn load_self_runtime_state(
         autonomy_strategy,
         outer_voice,
         mental_privacy_state,
+        prior_user_channel,
         world_snapshot,
         recent,
     }
@@ -572,6 +580,14 @@ fn detect_boundary_flush_signal(
     prelude: &SelfRuntimeRefreshPrelude,
 ) -> SelfRuntimeBoundarySignal {
     let mut reasons = Vec::with_capacity(4);
+    let current_channel = payload.source_channel.trim();
+    if payload.trigger == SelfRuntimeTrigger::PostReply
+        && !current_channel.is_empty()
+        && !state.prior_user_channel.trim().is_empty()
+        && state.prior_user_channel.trim() != current_channel
+    {
+        reasons.push(SelfRuntimeBoundaryReason::ChannelHandoff);
+    }
     if payload.trigger == SelfRuntimeTrigger::IdleTick {
         let last_autonomy_run_at = state
             .self_continuity
@@ -1034,8 +1050,9 @@ pub fn run_self_runtime(
         ctx.self_continuity_store,
         chat_id,
         payload.now_secs,
-        false,
+        payload.trigger == SelfRuntimeTrigger::PostReply,
         true,
+        Some(payload.source_channel.as_str()),
     );
 
     SelfRuntimeOutcome {

@@ -54,6 +54,7 @@ pub use autonomy_strategy::{
     AUTONOMY_STRATEGY_TOTAL_CHAR_LIMIT,
 };
 pub use context_window::build_context_messages;
+pub(crate) use continuity_snapshot::select_active_continuity_snapshot_chat_ids;
 pub use continuity_snapshot::{
     export_continuity_snapshot, import_continuity_snapshot, render_continuity_snapshot_markdown,
     ContinuitySnapshot, ContinuitySnapshotExportContext, ContinuitySnapshotImportContext,
@@ -90,15 +91,15 @@ pub(crate) use long_term::{
     score_long_term_memory_recall, touch_long_term_memory_usage,
 };
 pub use long_term::{
-    long_term_memory_evidence_summary, parse_explicit_long_term_slot_query,
-    recall_long_term_memory_block, render_exact_long_term_memory_block,
-    render_long_term_memory_block, LongTermMemoryConfidence, LongTermMemoryDraft,
-    LongTermMemoryEntry, LongTermMemoryEvidenceState, LongTermMemoryEvidenceSummary,
-    LongTermMemoryFreshness, LongTermMemoryKind, LongTermMemoryQuery, LongTermMemorySlot,
-    LongTermMemorySourceScope, LongTermMemorySourceType, LongTermMemoryStaleHint,
-    LongTermMemoryStore, MAX_LONG_TERM_MEMORY_BLOCK_LEN, MAX_LONG_TERM_MEMORY_CONTENT_LEN,
-    MAX_LONG_TERM_MEMORY_ITEMS, MAX_LONG_TERM_MEMORY_KEYWORDS, MAX_LONG_TERM_MEMORY_KEYWORD_LEN,
-    REL_PATH_LONG_TERM_MEMORIES,
+    long_term_memory_evidence_summary, lookup_long_term_memory_slot,
+    parse_explicit_long_term_slot_query, recall_long_term_memory_block,
+    render_exact_long_term_memory_block, render_long_term_memory_block, LongTermMemoryConfidence,
+    LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryEvidenceState,
+    LongTermMemoryEvidenceSummary, LongTermMemoryFreshness, LongTermMemoryKind,
+    LongTermMemoryQuery, LongTermMemorySlot, LongTermMemorySlotLookup, LongTermMemorySourceScope,
+    LongTermMemorySourceType, LongTermMemoryStaleHint, LongTermMemoryStore,
+    MAX_LONG_TERM_MEMORY_BLOCK_LEN, MAX_LONG_TERM_MEMORY_CONTENT_LEN, MAX_LONG_TERM_MEMORY_ITEMS,
+    MAX_LONG_TERM_MEMORY_KEYWORDS, MAX_LONG_TERM_MEMORY_KEYWORD_LEN, REL_PATH_LONG_TERM_MEMORIES,
 };
 pub use long_term_extraction::{
     apply_long_term_memory_extraction, build_long_term_memory_extraction_input,

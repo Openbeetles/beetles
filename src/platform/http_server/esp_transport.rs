@@ -111,6 +111,7 @@ fn write_outgoing<C: Connection>(
     ctx: &Arc<HandlerContext>,
     req: Request<C>,
     out: OutgoingResponse,
+    restart_reason: &str,
 ) -> HandlerResult {
     let mut resp = req
         .into_response(out.status, Some(out.status_text), out.headers)
@@ -118,6 +119,7 @@ fn write_outgoing<C: Connection>(
     resp.write_all(&out.body).map_err(common::to_io)?;
     if out.restart == RestartAction::After300Ms {
         let platform = Arc::clone(&ctx.platform);
+        let restart_reason = restart_reason.to_string();
         crate::util::spawn_guarded_with_profile(
             "restart_defer",
             4096,
@@ -125,7 +127,11 @@ fn write_outgoing<C: Connection>(
             crate::util::HttpThreadRole::Background,
             move || {
                 std::thread::sleep(Duration::from_millis(300));
-                platform.request_restart();
+                crate::runtime::request_restart_with_continuity_flush(
+                    platform,
+                    None,
+                    restart_reason.as_str(),
+                );
             },
         );
     }
@@ -142,6 +148,7 @@ pub(super) fn esp_dispatch_route<C: Connection>(
     body_mode: EspBodyMode,
 ) -> HandlerResult {
     let uri = req.uri().to_string();
+    let restart_reason = uri.clone();
     let headers = collect_headers(&req);
     let body = match read_body_esp(&mut req, store.as_ref(), body_mode) {
         Ok(b) => b,
@@ -160,7 +167,7 @@ pub(super) fn esp_dispatch_route<C: Connection>(
             return Err(common::to_io(e));
         }
     };
-    write_outgoing(ctx, req, out)
+    write_outgoing(ctx, req, out, restart_reason.as_str())
 }
 
 macro_rules! esp_route {

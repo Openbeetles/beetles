@@ -2,10 +2,10 @@
 
 [English](../en-us/hardware.md) | **中文** | [文档索引](../README.md)
 
-本页说明以下内容：
+这页主要说明三件事：
 
 1. ESP32-S3 支持哪些板型
-2. Linux 版程序现在能做什么
+2. Linux 版现在能做什么
 3. 出问题时先查哪里
 
 ## ESP32-S3 支持板型
@@ -20,18 +20,17 @@
 
 ## Linux 支持情况
 
-Linux 版本已经可以稳定运行主程序。
+Linux 版已经可以稳定运行。
 
-- 主程序已经能稳定跑
-- 通道、记忆、工具、配置面和 API 都在这条线上
-- 更适合做完整 Agent 程序、部署和集成
+- 聊天、工具、记忆、配置页面和接口都可以正常使用
+- 更适合承载更完整的 Agent OS 能力、安装和扩展
 
 ## 资源与程序行为
 
 - 大块分配优先走 PSRAM
-- orchestrator 会根据压力决定是否放行工作
-- 内存紧张时，HTTP、LLM 和工具调用可能被限流
-- 较长的 HTTP / LLM 请求需要和任务看门狗共存
+- 程序会根据当前资源压力决定是否继续放行请求
+- 内存紧张时，接口请求、大模型请求和工具调用可能被限流
+- 较长的接口请求和大模型请求需要和任务看门狗共存
 
 ## 构建配置
 
@@ -43,15 +42,15 @@ Linux 版本已经可以稳定运行主程序。
 | 入口 | 能看到什么 |
 |------|------------|
 | `GET /api/health` | 整体健康状态 |
-| `GET /api/resource` | 程序资源快照 |
+| `GET /api/resource` | 资源占用情况 |
 | 串口日志 | 启动日志、heartbeat、警告信息 |
-| `cli` feature | 例如 `heap_info` 这类额外串口命令 |
+| `cli` 编译选项 | 例如 `heap_info` 这类额外串口命令 |
 
-精确 HTTP 字段请看 [config-api.md](config-api.md)。
+接口字段说明请看 [config-api.md](config-api.md)。
 
 ## 硬件设备配置
 
-如果需要让 Agent 控制 LED、继电器、蜂鸣器、传感器或 PWM 设备，请继续阅读：
+如果需要让 Beetle 控制 LED、继电器、蜂鸣器、传感器或 PWM 设备，请继续阅读：
 
 - [hardware-device-config.md](hardware-device-config.md)
 - [tools.md](tools.md) 里的 `device_control`

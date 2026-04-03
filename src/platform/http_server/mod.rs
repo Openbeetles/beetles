@@ -150,6 +150,7 @@ fn handle_linux_request(
     }
     if out.restart == router::RestartAction::After300Ms {
         let platform = Arc::clone(&ctx.platform);
+        let restart_reason = format!("http_restart{}", path);
         crate::util::spawn_guarded_with_profile(
             "restart_defer",
             4096,
@@ -157,7 +158,11 @@ fn handle_linux_request(
             crate::util::HttpThreadRole::Background,
             move || {
                 std::thread::sleep(std::time::Duration::from_millis(300));
-                platform.request_restart();
+                crate::runtime::request_restart_with_continuity_flush(
+                    platform,
+                    None,
+                    restart_reason.as_str(),
+                );
             },
         );
     }

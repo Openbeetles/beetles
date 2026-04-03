@@ -2,14 +2,14 @@
 
 **English** | [中文](../zh-cn/hardware-device-config.md) | [Doc index](../README.md)
 
-This page explains how `config/hardware.json` becomes the `device_control` runtime tool.
+This page explains how `config/hardware.json` becomes the `device_control` tool.
 
 The flow is simple:
 
 - you describe devices in JSON
 - the firmware validates that JSON
 - the agent sees device names and descriptions, not raw pin maps
-- the runtime executes the actual GPIO / PWM / ADC / buzzer operations
+- Beetle executes the actual GPIO / PWM / ADC / buzzer operations
 
 ## When To Use This
 
@@ -44,7 +44,7 @@ Each item in `hardware_devices` describes one device:
 
 | Field | Required | Meaning |
 |-------|----------|---------|
-| `id` | Yes | Unique device name used at runtime |
+| `id` | Yes | Unique device name |
 | `device_type` | Yes | `gpio_out`, `gpio_in`, `pwm_out`, `adc_in`, or `buzzer` |
 | `pins` | Yes | Pin mapping, currently `{"pin": <gpio>}` |
 | `what` | Yes | What the device is and what it does |
@@ -109,7 +109,7 @@ Important limits:
 
 The exact read/write contract is documented in [config-api.md](config-api.md).
 
-## Runtime Behavior
+## Behavior On Boot And During Use
 
 On boot:
 
@@ -118,7 +118,7 @@ On boot:
 3. if valid, it registers `device_control`
 4. if invalid, the tool is not registered
 
-At runtime:
+During use:
 
 - operations are rate-limited
 - each device has its own lock
@@ -127,5 +127,5 @@ At runtime:
 ## Related Docs
 
 - [config-api.md](config-api.md) for HTTP read/write behavior
-- [tools.md](tools.md) for the runtime tool list
+- [tools.md](tools.md) for the tool list
 - [hardware.md](hardware.md) for board and troubleshooting notes

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 
 use super::{
@@ -493,6 +494,15 @@ pub struct LongTermMemoryQuery {
     pub include_stale: bool,
     #[serde(default)]
     pub limit: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LongTermMemorySlotLookup {
+    pub slot: LongTermMemorySlot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<LongTermMemoryEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nearby_candidates: Vec<LongTermMemoryEntry>,
 }
 
 impl LongTermMemoryDraft {
@@ -1427,17 +1437,60 @@ pub fn render_exact_long_term_memory_block(
     slot: &LongTermMemorySlot,
     max_len: usize,
 ) -> Option<String> {
+    render_exact_long_term_memory_block_with_now(
+        store,
+        slot,
+        max_len,
+        crate::util::current_unix_secs(),
+    )
+}
+
+fn render_exact_long_term_memory_block_with_now(
+    store: &dyn LongTermMemoryStore,
+    slot: &LongTermMemorySlot,
+    max_len: usize,
+    now_secs: u64,
+) -> Option<String> {
     if max_len < 32 {
         return None;
     }
-    let entry = store.get_slot(slot).ok().flatten()?;
+    let lookup = lookup_long_term_memory_slot(store, slot, 0).ok()?;
+    let entry = lookup.entry?;
+    let evidence = long_term_memory_evidence_summary(&entry, now_secs);
     let mut out = String::from("## Long-term memory (exact slot)\n");
-    let line = render_long_term_memory_line(&entry, true, crate::util::current_unix_secs());
-    if out.len().saturating_add(line.len()) > max_len {
+    let body = render_exact_long_term_memory_body(&entry, &evidence);
+    if out.len().saturating_add(body.len()) > max_len {
         return render_long_term_memory_block(&[entry], max_len);
     }
-    out.push_str(&line);
+    out.push_str(&body);
     Some(out)
+}
+
+fn render_exact_long_term_memory_body(
+    entry: &LongTermMemoryEntry,
+    evidence: &LongTermMemoryEvidenceSummary,
+) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "Slot: [{}:{}]", entry.kind.label(), entry.topic);
+    let _ = writeln!(out, "Content: {}", entry.content);
+    let _ = writeln!(out, "Evidence: {}", evidence.summary);
+    let _ = write!(
+        out,
+        "Provenance: source={} scope={}",
+        entry.source_type.label(),
+        entry.source_scope.label()
+    );
+    if let Some(source_chat_id) = entry.source_chat_id.as_deref() {
+        let _ = write!(out, " chat={}", source_chat_id);
+    }
+    if entry.source_revision > 0 {
+        let _ = write!(out, " revision={}", entry.source_revision);
+    }
+    out.push('\n');
+    if !entry.supporting_citations.is_empty() {
+        let _ = writeln!(out, "Citations: {}", entry.supporting_citations.join(", "));
+    }
+    out
 }
 
 fn reorder_recall_candidates_for_chat(chat_id: &str, candidates: &mut [LongTermMemoryEntry]) {
@@ -1770,9 +1823,15 @@ pub fn parse_explicit_long_term_slot_query(query: &str) -> Option<LongTermMemory
     if trimmed.is_empty() {
         return None;
     }
-    let separators = [":", "/"];
+    let candidate = trimmed
+        .strip_prefix("slot ")
+        .or_else(|| trimmed.strip_prefix("slot="))
+        .or_else(|| trimmed.strip_prefix("slot:"))
+        .unwrap_or(trimmed)
+        .trim();
+    let separators = [":", "/", "."];
     for separator in separators {
-        let mut parts = trimmed.splitn(2, separator);
+        let mut parts = candidate.splitn(2, separator);
         let Some(kind) = parts.next() else {
             continue;
         };
@@ -1798,6 +1857,103 @@ pub fn parse_explicit_long_term_slot_query(query: &str) -> Option<LongTermMemory
         }
     }
     None
+}
+
+pub fn lookup_long_term_memory_slot(
+    store: &dyn LongTermMemoryStore,
+    slot: &LongTermMemorySlot,
+    nearby_limit: usize,
+) -> Result<LongTermMemorySlotLookup> {
+    let Some(normalized_slot) = slot.normalized() else {
+        return Ok(LongTermMemorySlotLookup {
+            slot: slot.clone(),
+            entry: None,
+            nearby_candidates: Vec::new(),
+        });
+    };
+    let entry = store.get_slot(&normalized_slot)?;
+    let nearby_candidates = if entry.is_none() && nearby_limit > 0 {
+        find_nearby_long_term_memory_slot_candidates(store, &normalized_slot, nearby_limit)?
+    } else {
+        Vec::new()
+    };
+    Ok(LongTermMemorySlotLookup {
+        slot: normalized_slot,
+        entry,
+        nearby_candidates,
+    })
+}
+
+fn find_nearby_long_term_memory_slot_candidates(
+    store: &dyn LongTermMemoryStore,
+    slot: &LongTermMemorySlot,
+    limit: usize,
+) -> Result<Vec<LongTermMemoryEntry>> {
+    let now_secs = crate::util::current_unix_secs();
+    let normalized_topic = normalize_for_match(&slot.topic);
+    let query_terms = collect_match_terms(&slot.topic);
+    let mut scored = store
+        .list(MAX_LONG_TERM_MEMORY_ITEMS)?
+        .into_iter()
+        .filter_map(|entry| {
+            let score = nearby_slot_candidate_score(&entry, slot, &normalized_topic, &query_terms);
+            (score > 0).then_some((score, entry))
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| {
+                u8::from(right.1.kind == slot.kind).cmp(&u8::from(left.1.kind == slot.kind))
+            })
+            .then_with(|| {
+                confidence_rank(right.1.confidence).cmp(&confidence_rank(left.1.confidence))
+            })
+            .then_with(|| entry_observed_at(&right.1).cmp(&entry_observed_at(&left.1)))
+            .then_with(|| {
+                long_term_memory_evidence_state(&right.1, now_secs)
+                    .label()
+                    .cmp(long_term_memory_evidence_state(&left.1, now_secs).label())
+            })
+    });
+    Ok(scored
+        .into_iter()
+        .take(limit.clamp(1, 8))
+        .map(|(_, entry)| entry)
+        .collect())
+}
+
+fn nearby_slot_candidate_score(
+    entry: &LongTermMemoryEntry,
+    slot: &LongTermMemorySlot,
+    normalized_topic: &str,
+    query_terms: &[String],
+) -> u32 {
+    let entry_topic = normalize_for_match(&entry.topic);
+    let mut score = 0u32;
+    if entry.kind == slot.kind {
+        score = score.saturating_add(8);
+    }
+    if entry.topic == slot.topic {
+        score = score.saturating_add(16);
+    } else if entry_topic == normalized_topic {
+        score = score.saturating_add(12);
+    } else if entry_topic.starts_with(normalized_topic)
+        || normalized_topic.starts_with(&entry_topic)
+    {
+        score = score.saturating_add(8);
+    } else if entry_topic.contains(normalized_topic) || normalized_topic.contains(&entry_topic) {
+        score = score.saturating_add(6);
+    }
+    for term in query_terms {
+        if entry_topic.contains(term) {
+            score = score.saturating_add(3);
+        } else if normalize_for_match(&entry.content).contains(term) {
+            score = score.saturating_add(1);
+        }
+    }
+    score
 }
 
 fn collect_match_terms(query: &str) -> Vec<String> {
@@ -2070,6 +2226,18 @@ mod tests {
         let slot = parse_explicit_long_term_slot_query("project:Current Project").unwrap();
         assert_eq!(slot.kind, LongTermMemoryKind::Project);
         assert_eq!(slot.topic, "current_project");
+    }
+
+    #[test]
+    fn parses_prefixed_and_dotted_slot_query_syntax() {
+        let prefixed =
+            parse_explicit_long_term_slot_query("slot relationship:owner relation").unwrap();
+        assert_eq!(prefixed.kind, LongTermMemoryKind::Relationship);
+        assert_eq!(prefixed.topic, "owner_relation");
+
+        let dotted = parse_explicit_long_term_slot_query("[profile.user name]").unwrap();
+        assert_eq!(dotted.kind, LongTermMemoryKind::Profile);
+        assert_eq!(dotted.topic, "user_name");
     }
 
     #[test]
@@ -2434,6 +2602,83 @@ mod tests {
 
         assert!(block.contains("evidence=2"));
         assert!(block.contains("cites: transcript:chat-a#message=1"));
+    }
+
+    #[test]
+    fn exact_slot_block_surfaces_evidence_and_provenance() {
+        let slot = LongTermMemorySlot {
+            kind: LongTermMemoryKind::Fact,
+            topic: "primary_llm".to_string(),
+        };
+        let mut entry = test_entry(
+            slot.stable_id().as_deref().unwrap_or("ltm-1"),
+            LongTermMemoryKind::Fact,
+            "primary_llm",
+            "当前主模型是 OpenAI。",
+            vec!["openai"],
+            Some("chat-a"),
+            1,
+            2,
+        );
+        entry.source_scope = LongTermMemorySourceScope::World;
+        entry.source_revision = 3;
+        entry.supporting_citations = vec!["transcript:chat-a#message=1".to_string()];
+        let store = StubLongTermMemoryStore {
+            recall_entries: vec![entry.clone()],
+            list_entries: vec![entry],
+        };
+
+        let block = render_exact_long_term_memory_block(&store, &slot, 512).unwrap();
+
+        assert!(block.contains("Evidence:"));
+        assert!(block.contains("Provenance:"));
+        assert!(block.contains("Citations:"));
+    }
+
+    #[test]
+    fn slot_lookup_returns_nearby_candidates_when_exact_slot_missing() {
+        let store = StubLongTermMemoryStore {
+            recall_entries: Vec::new(),
+            list_entries: vec![
+                test_entry(
+                    "ltm-1",
+                    LongTermMemoryKind::Project,
+                    "current_project_status",
+                    "Current project status is memory coordination.",
+                    vec!["project"],
+                    Some("chat-a"),
+                    10,
+                    20,
+                ),
+                test_entry(
+                    "ltm-2",
+                    LongTermMemoryKind::Task,
+                    "current_project_task",
+                    "Current task is continuity export.",
+                    vec!["task"],
+                    Some("chat-a"),
+                    10,
+                    30,
+                ),
+            ],
+        };
+
+        let lookup = lookup_long_term_memory_slot(
+            &store,
+            &LongTermMemorySlot {
+                kind: LongTermMemoryKind::Project,
+                topic: "current_project".to_string(),
+            },
+            3,
+        )
+        .unwrap();
+
+        assert!(lookup.entry.is_none());
+        assert_eq!(lookup.nearby_candidates.len(), 2);
+        assert_eq!(
+            lookup.nearby_candidates[0].kind,
+            LongTermMemoryKind::Project
+        );
     }
 
     #[test]

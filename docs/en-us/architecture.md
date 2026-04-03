@@ -28,7 +28,7 @@ At a high level, Beetle works like this:
 | `error` | Shared error type and stage-based error reporting |
 | `bus` | Inbound and outbound queues |
 | `orchestrator` | Runtime resource gating, pressure tracking, and health state |
-| `memory` | Session state, long-term memory, summaries, and prompt context |
+| `memory` | Session state, archive evidence, the shared factual plane, self continuity layers, and prompt context |
 | `platform` | Platform abstraction and platform-specific implementations |
 | `llm` | LLM clients and fallback routing |
 | `tools` | Tool definitions and runtime registry |
@@ -48,9 +48,29 @@ channel -> inbound queue -> agent -> tools / memory / llm -> outbound queue -> d
 More concretely:
 
 - inbound messages come from chat channels or scheduled tasks
-- the agent pulls one message, builds context, and runs the LLM/tool loop
-- session and memory state are updated
+- the agent pulls one message, builds context, and runs the LLM/tool loop; shared facts, archive evidence, and private continuity layers are assembled separately
+- exact factual retrieval prefers slot lookup / `factual_memory`, while archive retrieval stays evidence-only
+- session and memory state are updated, then post-reply maintenance and `self_runtime` may trigger boundary flush work
 - the final reply goes to outbound dispatch
+
+## Memory Mainline
+
+Beetle no longer treats memory as one flat text surface. The mainline is layered:
+
+- `archive plane`: transcript, daily, and turn-log evidence used for retrieval and reconciliation
+- `shared factual plane`: canonical shared records for stable facts, constraints, and slot-shaped project/task/profile state
+- `private continuity layers`: `self_model`, `inner_life`, `self_continuity`, `private_docs`, and `private_garden`
+
+These layers are intentionally separated:
+
+- archive hits are evidence, not final truth by themselves
+- the shared factual plane is where reusable canonical conclusions live
+- private layers serve continuity/personality and are not exposed by default
+
+Continuity migration and reboot handoff now sit on this same path:
+
+- `continuity_snapshot` supports bootstrap/full-restore export and import
+- restart paths try to flush a recent continuity bundle before reboot so handoff/reboot does not sever continuity
 
 ## Extension Points
 

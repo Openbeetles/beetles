@@ -75,7 +75,7 @@ Includes: `POST /api/config/wifi`, `/api/config/llm`, `/api/config/channels`, `/
 - **Activated**: 200 JSON; `name` is **`beetle`**, `version` is firmware version, `endpoints` is a string array.
 - **Note**: `endpoints` is useful for discovery, but do not treat it as the only API list. Use the routes documented on this page when building integrations.
 
-**Example** (exact fields/order are runtime-defined):
+**Example** (exact fields and order depend on the device build):
 
 ```json
 {
@@ -160,7 +160,7 @@ Includes: `POST /api/config/wifi`, `/api/config/llm`, `/api/config/channels`, `/
 - **Purpose**: Get current hardware device config segment (`config/hardware.json` content).
 - **Auth**: Activated; GET does **not** need a pairing code in the request.
 - **Response**: 200, JSON is `HardwareSegment`: `{ "hardware_devices": [...] }`. Returns `{ "hardware_devices": [] }` when the file does not exist.
-- **Note**: GET returns the raw file content. If validation failed at boot, the runtime uses an empty device list and `load_errors` will include `hardware_validation_failed`.
+- **Note**: GET returns the raw file content. If validation failed at boot, Beetle falls back to an empty device list and `load_errors` will include `hardware_validation_failed`.
 
 ### POST /api/config/hardware
 
@@ -263,7 +263,7 @@ Includes: `POST /api/config/wifi`, `/api/config/llm`, `/api/config/channels`, `/
 
 - **Purpose**: JSON array of `{name, description}` for HTTP discovery of tool names.
 - **Auth**: Activated; GET does **not** need a pairing code.
-- **Response**: 200, `[{"name":"get_time","description":"..."}, ...]`. Built in [`handlers/tools.rs`](../../src/platform/http_server/handlers/tools.rs); entries depend on Cargo features such as **`tools_network_extra`** / **`tools_diagnostics`** and may **not** match every tool registered at runtime in [`build_default_registry`](../../src/tools/registry.rs) (e.g. **env**, **file_write** may be missing). **Authoritative tool set**: Agent registry and [Agent tools](tools.md).
+- **Response**: 200, `[{"name":"get_time","description":"..."}, ...]`. Built in [`handlers/tools.rs`](../../src/platform/http_server/handlers/tools.rs); entries depend on Cargo features such as **`tools_network_extra`** / **`tools_diagnostics`** and may **not** match every tool loaded by Beetle from [`build_default_registry`](../../src/tools/registry.rs) (for example **env** and **file_write** may be missing). **Authoritative tool set**: the tool registry and [tools](tools.md).
 
 ## Skills
 
@@ -403,6 +403,7 @@ Called by vendor servers; each handler applies its own signature/token rules—*
 - **Purpose**: Trigger device restart so new config takes effect.
 - **Auth**: Activated + pairing code + CSRF.
 - **Response**: Returns 200, `{"ok": true}`, then device restarts within ~100–500ms.
+- **Extra behavior**: Before the actual restart, Beetle tries to flush a continuity bundle for recent active chats into the state root so reboot/handoff recovery has a fresh runtime snapshot. A flush failure is logged but does not block restart.
 - **Throttle**: Only one successful restart allowed within 60 seconds.
 
 ### GET /api/ota/check

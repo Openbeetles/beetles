@@ -209,6 +209,7 @@ pub fn build_default_registry(
         Arc::clone(&turn_ledger_store),
     )));
     registry.register(Box::new(super::ContinuitySnapshotTool::new(
+        platform.state_fs(),
         platform.long_term_memory_store(),
         platform.session_summary_store(),
         platform.execution_state_store(),

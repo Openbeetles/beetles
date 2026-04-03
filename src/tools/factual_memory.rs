@@ -2,7 +2,8 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    long_term_memory_evidence_summary, LongTermMemoryEntry, LongTermMemoryFreshness,
+    long_term_memory_evidence_summary, lookup_long_term_memory_slot,
+    parse_explicit_long_term_slot_query, LongTermMemoryEntry, LongTermMemoryFreshness,
     LongTermMemoryKind, LongTermMemoryQuery, LongTermMemorySlot, LongTermMemorySourceScope,
     LongTermMemoryStore,
 };
@@ -26,11 +27,11 @@ impl Tool for FactualMemoryTool {
     }
 
     fn description(&self) -> &'static str {
-        "Read the canonical shared factual plane by exact slot or structured filters. Use this for stable shared facts, profiles, constraints, tasks, or projects. Returned records include evidence posture and provenance, unlike archive-only memory_search/memory_get."
+        "Read the canonical shared factual plane by exact slot or structured filters. Use this for stable shared facts, profiles, constraints, tasks, or projects. Exact lookup supports slot_query syntax and returns evidence posture, provenance, and nearby canonical candidates when the slot misses."
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","description":"lookup_exact|query"},"kind":{"type":"string","description":"preference|profile|relationship|project|task|constraint|fact"},"topic":{"type":"string","description":"Stable slot topic key for exact lookup or query filter."},"source_scope":{"type":"string","description":"chat|user|world"},"source_chat_id":{"type":"string","description":"Optional source chat filter for query."},"freshness":{"type":"string","description":"stable|dynamic|volatile"},"include_stale":{"type":"boolean","description":"Whether stale records may be returned. Default false."},"limit":{"type":"integer","description":"Max records for query, default 4."}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"lookup_exact|lookup_slot|query"},"slot_query":{"type":"string","description":"Exact slot syntax such as project:current_project, slot relationship:owner_relation, or profile.user_name."},"kind":{"type":"string","description":"preference|profile|relationship|project|task|constraint|fact"},"topic":{"type":"string","description":"Stable slot topic key for exact lookup or query filter."},"source_scope":{"type":"string","description":"chat|user|world"},"source_chat_id":{"type":"string","description":"Optional source chat filter for query."},"freshness":{"type":"string","description":"stable|dynamic|volatile"},"include_stale":{"type":"boolean","description":"Whether stale records may be returned. Default false."},"limit":{"type":"integer","description":"Max records for query, default 4."}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
@@ -42,26 +43,44 @@ impl Tool for FactualMemoryTool {
             .filter(|value| !value.is_empty())
             .ok_or_else(|| Error::config("tool_factual_memory", "missing op"))?;
         match op {
-            "lookup_exact" => {
-                let kind = parse_kind(
-                    obj.get("kind")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| Error::config("tool_factual_memory", "missing kind"))?,
-                )?;
-                let topic = obj
-                    .get("topic")
+            "lookup_exact" | "lookup_slot" => {
+                let slot_query = obj
+                    .get("slot_query")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| Error::config("tool_factual_memory", "missing topic"))?;
-                let slot = LongTermMemorySlot {
-                    kind,
-                    topic: topic.to_string(),
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let slot = if let Some(slot_query) = slot_query {
+                    parse_explicit_long_term_slot_query(slot_query)
+                        .ok_or_else(|| Error::config("tool_factual_memory", "invalid slot_query"))?
+                } else {
+                    let kind =
+                        parse_kind(obj.get("kind").and_then(Value::as_str).ok_or_else(|| {
+                            Error::config("tool_factual_memory", "missing kind or slot_query")
+                        })?)?;
+                    let topic = obj.get("topic").and_then(Value::as_str).ok_or_else(|| {
+                        Error::config("tool_factual_memory", "missing topic or slot_query")
+                    })?;
+                    LongTermMemorySlot {
+                        kind,
+                        topic: topic.to_string(),
+                    }
+                    .normalized()
+                    .ok_or_else(|| Error::config("tool_factual_memory", "invalid slot"))?
                 };
-                let item = self.long_term_store.get_slot(&slot)?;
+                let lookup = lookup_long_term_memory_slot(self.long_term_store.as_ref(), &slot, 4)?;
                 Ok(json!({
                     "ok": true,
-                    "op": "lookup_exact",
-                    "slot": slot,
-                    "item": item.as_ref().map(|entry| render_entry(entry)),
+                    "op": op,
+                    "slot_query": slot_query,
+                    "slot": lookup.slot,
+                    "status": if lookup.entry.is_some() { "exact_match" } else { "not_found" },
+                    "exact_match": lookup.entry.is_some(),
+                    "item": lookup.entry.as_ref().map(render_entry),
+                    "nearby_candidates": lookup
+                        .nearby_candidates
+                        .iter()
+                        .map(|entry| render_candidate(entry, &lookup.slot))
+                        .collect::<Vec<_>>(),
                     "current_chat_id": ctx.current_chat_id(),
                     "plane": "canonical_shared_factual",
                     "canonical": true,
@@ -124,9 +143,55 @@ impl Tool for FactualMemoryTool {
 fn render_entry(entry: &LongTermMemoryEntry) -> serde_json::Value {
     let now_secs = crate::util::current_unix_secs();
     json!({
-        "entry": entry,
+        "slot": {
+            "kind": entry.kind.label(),
+            "topic": entry.topic.as_str(),
+        },
+        "content": entry.content.as_str(),
+        "keywords": &entry.keywords,
         "evidence": long_term_memory_evidence_summary(entry, now_secs),
+        "provenance": render_provenance(entry),
+        "entry": entry,
     })
+}
+
+fn render_candidate(entry: &LongTermMemoryEntry, requested_slot: &LongTermMemorySlot) -> Value {
+    json!({
+        "slot": {
+            "kind": entry.kind.label(),
+            "topic": entry.topic.as_str(),
+        },
+        "content": entry.content.as_str(),
+        "match_reason": candidate_match_reason(entry, requested_slot),
+        "evidence": long_term_memory_evidence_summary(entry, crate::util::current_unix_secs()),
+        "provenance": render_provenance(entry),
+    })
+}
+
+fn render_provenance(entry: &LongTermMemoryEntry) -> Value {
+    json!({
+        "source_type": entry.source_type.label(),
+        "source_scope": entry.source_scope.label(),
+        "source_chat_id": entry.source_chat_id.as_deref(),
+        "source_revision": entry.source_revision,
+        "evidence_count": entry.evidence_count,
+        "supporting_citations": &entry.supporting_citations,
+        "last_confirmed_at": entry.last_confirmed_at,
+        "last_used_at": entry.last_used_at,
+    })
+}
+
+fn candidate_match_reason(
+    entry: &LongTermMemoryEntry,
+    requested_slot: &LongTermMemorySlot,
+) -> String {
+    if entry.kind == requested_slot.kind && entry.topic == requested_slot.topic {
+        return "same canonical slot".to_string();
+    }
+    if entry.kind == requested_slot.kind {
+        return "same kind and nearby topic".to_string();
+    }
+    "nearby topic across another canonical kind".to_string()
 }
 
 fn parse_kind(raw: &str) -> Result<LongTermMemoryKind> {

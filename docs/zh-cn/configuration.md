@@ -2,16 +2,14 @@
 
 [English](../en-us/configuration.md) | **中文** | [文档索引](../README.md)
 
-Beetle 首次配置流程如下。
-
-操作顺序：
+Beetle 第一次配置时，按下面的顺序操作即可。
 
 1. 连上设备热点
 2. 设置配对码
 3. 配置 WiFi
-4. 配置 LLM 和聊天通道
+4. 配置大模型和聊天通道
 
-需要自己调用 HTTP 接口时，请阅读 [config-api.md](config-api.md)。
+如果需要自己调用接口，请阅读 [config-api.md](config-api.md)。
 
 ## 首次配置
 
@@ -30,7 +28,7 @@ Beetle 首次配置流程如下。
 - 保存配置
 - 重启设备
 - 恢复出厂
-- 执行 OTA
+- 在线升级固件
 
 注意：
 
@@ -44,26 +42,24 @@ Beetle 首次配置流程如下。
 
 连接成功后，只要浏览器和设备在同一局域网，就可以改用设备的局域网 IP 访问配置页。
 
-### 4. 配置 LLM 和聊天通道
+### 4. 配置大模型和聊天通道
 
 至少需要完成以下三项：
 
 1. WiFi
-2. 一个 LLM 源
+2. 一个大模型来源
 3. 一个聊天通道
 
 ## 访问配置页
-
-访问方式：
 
 ### 方式 A：直接访问设备
 
 - 连着设备热点时：打开 **http://192.168.4.1**
 - 和设备同局域网时：打开设备的局域网 IP
 
-### 方式 B：使用外部 Web UI
+### 方式 B：使用外部配置页面
 
-仓库里自带 `configure-ui`，它本质上也是通过 HTTP API 和设备通信。
+仓库里自带 `configure-ui`，也可以用它来连接设备。
 
 使用条件：
 
@@ -76,16 +72,16 @@ Beetle 首次配置流程如下。
 | 区域 | 作用 |
 |------|------|
 | WiFi | 路由器名称和密码 |
-| LLM | provider、模型、API Key、API URL、多源回退顺序 |
+| 大模型 | 服务商、模型、密钥、接口地址、回退顺序 |
 | 通道 | 各聊天通道的凭证和开关 |
 | 代理 / 搜索 | 代理地址和搜索相关 key |
 | 硬件 | `hardware.json` 驱动的外设配置 |
 | 显示 | SPI TFT 仪表板 |
-| 系统 | 重启、恢复、诊断、OTA 等 |
+| 系统 | 重启、恢复、诊断、在线升级等 |
 
 ## 主要配置键
 
-下列键名会出现在配置文件和 API 中：
+下列键名会出现在配置文件和接口里：
 
 | 类别 | 键 | 含义 |
 |------|----|------|
@@ -98,14 +94,14 @@ Beetle 首次配置流程如下。
 | 代理 | `PROXY_URL` | 出站 HTTP 代理 |
 | 搜索 | `SEARCH_KEY`、`TAVILY_KEY` | 搜索服务 key |
 
-LLM 相关配置主要在 `config/llm.json`。支持哪些 provider、`api_url` 怎么填、多源怎么回退，请看 [llm-providers.md](llm-providers.md)。
+大模型相关配置主要在 `config/llm.json`。支持哪些服务商、`api_url` 怎么填、多个来源怎么切换，请看 [llm-providers.md](llm-providers.md)。
 
 ## 配对码与激活状态
 
 设备完成配对后：
 
-- 大多数只读 API 要求设备已经激活
-- 写操作 API 需要“配对码 + CSRF”
+- 大多数只读接口要求设备已经激活
+- 写操作接口需要“配对码 + CSRF”
 
 内置配置页会自动处理这些校验。
 手动调用接口时，请参阅 [config-api.md](config-api.md)。
@@ -113,7 +109,7 @@ LLM 相关配置主要在 `config/llm.json`。支持哪些 provider、`api_url` 
 ## 状态检查
 
 - `GET /api/health`：快速看整体状态
-- `GET /api/resource`：看程序资源快照
+- `GET /api/resource`：查看资源占用情况
 - 串口日志：看启动信息和 heartbeat
 
 精确返回结构见 [config-api.md](config-api.md)。
@@ -122,5 +118,5 @@ LLM 相关配置主要在 `config/llm.json`。支持哪些 provider、`api_url` 
 
 - 打不开设备：先重新连接热点 **Beetle**，再试 `http://192.168.4.1`
 - 保存失败：大多数时候是配对码或 CSRF 失效
-- 设备在线但通道不工作：优先检查凭证和允许的 chat id
+- 设备在线但通道不工作：优先检查凭证和允许的会话 ID
 - 启动了但没有硬件控制：检查 `hardware.json` 是否正确，以及 `device_control` 是否真的被注册

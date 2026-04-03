@@ -1,8 +1,8 @@
-# Linux Runtime and Package Status
+# Linux Agent OS and Package Status
 
 **English** | [中文](../zh-cn/linux-release-rollback.md) | [Doc index](../README.md)
 
-This page describes how Beetle runs, ships, and rolls back on Linux.
+This page describes how Beetle Agent OS is installed, packaged, and rolled back on Linux.
 
 It is relevant if you are:
 
@@ -12,8 +12,8 @@ It is relevant if you are:
 
 ## Current State
 
-- the Linux main program path is stable
-- it is the better fit for full agent workflows, deployment, and integration
+- the Linux Agent OS path is stable
+- it is the better fit for fuller Agent OS capabilities, longer tasks, and complex integrations
 - packaging exists
 
 ## If You Are Deploying Manually
@@ -27,7 +27,7 @@ A common manual layout is:
 
 - `/opt/beetle/releases/<version>/`
 - a `current` symlink pointing to the active version
-- state stored under `BEETLE_STATE_ROOT` or the runtime default
+- state stored under `BEETLE_STATE_ROOT` or the default Linux state path
 
 Follow the `README.txt` shipped inside the bundle.
 

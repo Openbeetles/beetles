@@ -5,7 +5,7 @@
 This page covers three practical topics:
 
 1. which ESP32-S3 boards are supported
-2. what the Linux runtime currently provides
+2. what the Linux Agent OS currently provides
 3. where to look when something goes wrong
 
 ## ESP32-S3 Supported Boards
@@ -18,13 +18,12 @@ This page covers three practical topics:
 
 - only **ESP32-S3 with PSRAM** is supported by the board presets in this repo
 
-## Linux Runtime Status
+## Linux Agent OS Status
 
-The Linux runtime is stable for the main program.
+The Linux Agent OS is stable.
 
-- the main program runs stably on Linux
 - channels, memory, tools, and the config/API surface are part of that stable path
-- it is the better fit for full agent runtime, deployment, and integration work
+- it is the better fit for fuller Agent OS capabilities, deployment, and integration work
 
 ## Resource and Runtime Behavior
 

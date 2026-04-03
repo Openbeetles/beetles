@@ -5,7 +5,7 @@
 <h1 align="center">Beetle</h1>
 
 <p align="center">
-  <strong>Edge AI Agent runtime for ESP32-S3 and Linux</strong><br/>
+  <strong>Agent OS for ESP32-S3 and Linux</strong><br/>
   Rust · ReAct · Tools · Memory · Hardware control
 </p>
 
@@ -20,7 +20,7 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg" /></a>
 </p>
 
-Beetle can connect chat channels, call tools, store memory, and control hardware. It runs on **ESP32-S3** and **Linux**.
+Beetle is an `Agent OS` for **ESP32-S3** and **Linux**. It can connect chat channels, call tools, store memory, and control hardware.
 
 Main capabilities:
 
@@ -34,8 +34,8 @@ Recommended use by platform:
 
 | Target | Best suited for |
 |--------|-----------------|
-| ESP32-S3 | hardware control, peripherals, and always-on device assistants |
-| Linux | fuller agent workflows, longer tasks, and integration-heavy deployments |
+| ESP32-S3 | hardware control, peripherals, and always-on device agents |
+| Linux | fuller Agent OS capabilities, longer tasks, and complex integrations |
 
 This README is the quick start.
 For the full documentation map, go to [docs/README.md](docs/README.md).
@@ -44,18 +44,18 @@ For the full documentation map, go to [docs/README.md](docs/README.md).
 
 | Part | What it is for |
 |------|----------------|
-| Runtime core | Main agent runtime shared across ESP32-S3 and Linux |
+| Core system | Shared Agent OS core for ESP32-S3 and Linux |
 | `configure-ui` | Full web configuration frontend |
 | HTTP config API | For custom frontends, scripts, and integrations |
 | Display system | Optional SPI TFT dashboard |
-| Linux runtime | Linux deployment and package docs |
+| Linux Agent OS | Linux deployment and package docs |
 
 ## Current Support
 
-Current runtime targets:
+Current supported targets:
 
 - **ESP32-S3 with PSRAM**: best for hardware-facing deployments
-- **Linux**: best for full agent runtime, integration, and deployment
+- **Linux**: best for fuller Agent OS capabilities, integration, and deployment
 
 Supported board presets:
 
@@ -63,19 +63,19 @@ Supported board presets:
 - `esp32-s3-16mb`
 - `esp32-s3-32mb`
 
-Linux already runs the main program, tools, memory, config surface, and channel logic stably.
+Linux already runs the full Agent OS stack stably, including tools, memory, config surfaces, and channel logic.
 ESP focuses more on hardware and peripherals.
 
 ## Capabilities
 
-- Build a chat-connected AI runtime on either ESP32-S3 or Linux.
+- Run Beetle Agent OS on either ESP32-S3 or Linux.
 - Use ESP32-S3 to sense and control real devices.
-- Use Linux for fuller work-oriented agent workflows.
-- Connect Feishu, DingTalk, WeCom, and QQ Channel to the same runtime.
+- Use Linux for fuller task execution, hardware orchestration, and complex integrations.
+- Connect Feishu, DingTalk, WeCom, and QQ Channel to the same Agent OS.
 - Enable `telegram` or `websocket` through optional Cargo features.
 - Store summaries, long-term memory, reminders, tasks, and archive evidence on the device.
 - Drive configured hardware through the `device_control` tool.
-- Show runtime status on an SPI display.
+- Show Agent OS status on an SPI display.
 
 ## Quick Start
 
@@ -158,7 +158,7 @@ Important:
 
 | Area | What Beetle provides |
 |------|----------------------|
-| Channels | One runtime for multiple chat channels |
+| Channels | One Agent OS for multiple chat channels |
 | Memory | Session summary, long-term memory, archive evidence search |
 | Tools | Time, reminders, task/calendar, file ops, board info, networking, hardware control |
 | Hardware | Config-driven `device_control` for GPIO, PWM, ADC, buzzer, and related device types |

@@ -1,8 +1,8 @@
-# Agent Tools
+# Tools
 
 [中文](../zh-cn/tools.md) | **English** | [Doc index](../README.md)
 
-This page lists the tools Beetle may register at runtime.
+This page lists the tools Beetle Agent OS can use.
 
 Keep three things in mind:
 
@@ -15,8 +15,8 @@ Keep three things in mind:
 | Tool | What it is for |
 |------|----------------|
 | `get_time` | current UTC time |
-| `env` | read environment values for runtime/debug scenarios |
-| `message` | send a runtime-managed outbound message |
+| `env` | read environment values for config and debugging |
+| `message` | send an outbound message managed by Beetle |
 | `task` | persistent task management |
 | `calendar` | persistent calendar events |
 | `files` | list or read files under the state root |
@@ -28,7 +28,8 @@ Keep three things in mind:
 | `private_garden` | current-chat private workspace |
 | `memory_search` | search archive evidence from transcripts, daily notes, and turn logs |
 | `memory_get` | fetch one archive evidence record |
-| `continuity_snapshot` | export/import continuity state |
+| `factual_memory` | read the canonical shared factual plane with exact slot lookup and evidence posture |
+| `continuity_snapshot` | export, save, list, or import continuity snapshots |
 | `file_write` | write or append to allowed files under the state root |
 
 ## Tools Behind `tools_network_extra`
@@ -96,8 +97,10 @@ These are available only on non-ESP builds:
 - `files` is read-only; `file_write` and `file_edit` are limited to allowed mutable paths.
 - `private_garden` is scoped to the current chat.
 - `memory_search` and `memory_get` return archive evidence, not canonical memory truth.
+- `factual_memory` reads the canonical shared factual plane. Prefer `slot_query` for exact slot-shaped facts; results include evidence posture, provenance, and nearby canonical candidates on misses.
+- `continuity_snapshot` supports `export`, `import`, and `list_saved`. `export` may persist a named snapshot under the state root, and `import` may restore from inline JSON or from a saved snapshot name.
 - `http_request`, `web_fetch`, and `pdf_read` reject private/internal targets.
-- `GET /api/tools` may not show every runtime-registered tool; use the runtime registry as the final reference.
+- `GET /api/tools` may not show every loaded tool; use the tool registry as the final reference.
 
 Related docs:
 

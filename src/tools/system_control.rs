@@ -29,7 +29,7 @@ impl Tool for SystemControlTool {
         r#"{"type":"object","properties":{"op":{"type":"string","enum":["storage_usage","status","restart"],"description":"Operation: storage_usage | status | restart"},"confirm":{"type":"boolean","description":"Must be true for restart"}},"required":["op"]}"#
     }
 
-    fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
+    fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
         let obj = parse_tool_args(args, "tool_system_control")?;
         let op = obj
             .get("op")
@@ -92,7 +92,11 @@ impl Tool for SystemControlTool {
                     .to_string());
                 }
                 log::warn!("[system_control] restart requested via tool");
-                self.platform.request_restart();
+                crate::runtime::request_restart_with_continuity_flush(
+                    Arc::clone(&self.platform),
+                    ctx.current_chat_id(),
+                    "tool_system_control_restart",
+                );
                 Ok(json!({
                     "op": "restart",
                     "ok": true,

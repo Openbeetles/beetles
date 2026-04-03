@@ -1,41 +1,26 @@
-<p align="center">
-  <img src="configure-ui/public/logo.png" alt="甲壳虫" width="132" height="132" />
-</p>
+# Beetle（甲壳虫）
 
-<h1 align="center">Beetle（甲壳虫）</h1>
+**面向 ESP32-S3 与 Linux 的 Agent OS**<br/>
+Rust · ReAct · 工具调用 · 记忆 · 硬件控制
 
-<p align="center">
-  <strong>面向 ESP32-S3 与 Linux 的智能程序</strong><br/>
-  Rust · ReAct · 工具调用 · 记忆 · 硬件控制
-</p>
+[English](README.md) · **中文**
 
-<p align="center">
-  <a href="README.md">English</a> · <strong>中文</strong>
-</p>
+Beetle 是一套能跑在 **ESP32-S3** 和 **Linux** 上的 `Agent OS`，支持聊天通道接入、工具调用、记忆保存和硬件控制。
 
-<p align="center">
-  <a href="docs/README.md"><img alt="文档" src="https://img.shields.io/badge/%E6%96%87%E6%A1%A3-index-1f6feb" /></a>
-  <a href="#快速开始"><img alt="快速开始" src="https://img.shields.io/badge/%E5%BF%AB%E9%80%9F%E5%90%AF%E5%8A%A8-5%E5%88%86%E9%92%9F-2ea043" /></a>
-  <a href="#支持板型"><img alt="板型" src="https://img.shields.io/badge/%E6%9D%BF%E5%9E%8B-ESP32--S3-orange" /></a>
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg" /></a>
-</p>
+你可以用它来：
 
-Beetle 支持聊天通道接入、工具调用、记忆保存和硬件控制，可部署在 **ESP32-S3** 和 **Linux** 上。
-
-基础能力：
-
-- 接入聊天通道
-- 调用工具
-- 使用记忆
-- 提供配置页面和 HTTP API
-- 在支持的目标上控制硬件
+- 接收和发送聊天消息
+- 调用时间、提醒、任务、文件等工具
+- 保存会话摘要和长期记忆
+- 通过网页完成配置，也可以直接调用接口
+- 控制灯、继电器、蜂鸣器、传感器等设备
 
 平台定位：
 
 | 目标 | 更适合做什么 |
-|------|--------------|
+|------|------------|
 | ESP32-S3 | 接硬件、控外设、做常驻设备助理 |
-| Linux | 跑更完整的 Agent 工作流、长任务和集成部署 |
+| Linux | 适合运行更完整的 Agent OS 能力、长任务和复杂集成 |
 
 本页用于快速上手。完整文档目录见 [docs/README.md](docs/README.md)。
 
@@ -43,18 +28,18 @@ Beetle 支持聊天通道接入、工具调用、记忆保存和硬件控制，�
 
 | 部分 | 用途 |
 |------|------|
-| 核心程序 | ESP32-S3 和 Linux 共用的主程序 |
+| 核心系统 | ESP32-S3 和 Linux 共用的一套 Agent OS 核心 |
 | `configure-ui` | 完整 Web 配置前端 |
-| HTTP 配置 API | 给自定义前端、脚本和集成系统使用 |
+| 配置接口 | 给自定义前端、脚本和其他程序调用 |
 | 显示系统 | 可选 SPI 屏幕仪表板 |
-| Linux 版程序 | Linux 部署与发布包相关内容 |
+| Linux 版 Agent OS | Linux 安装、更新和发布包相关内容 |
 
 ## 当前支持
 
-当前可用的运行目标：
+当前支持的平台：
 
 - **带 PSRAM 的 ESP32-S3**：适合硬件控制和设备接入
-- **Linux**：适合完整 Agent 程序、集成和部署
+- **Linux**：适合运行更完整的 Agent OS 能力和长任务
 
 现有板型预设：
 
@@ -62,16 +47,16 @@ Beetle 支持聊天通道接入、工具调用、记忆保存和硬件控制，�
 - `esp32-s3-16mb`
 - `esp32-s3-32mb`
 
-Linux 已经可以稳定运行主程序、工具、记忆、配置面和通道逻辑。
+Linux 已经可以稳定运行完整的 Agent OS 能力，包括工具、记忆、配置页面和聊天通道。
 ESP 更强调硬件接入、设备联动和外设控制。
 
 ## 使用场景
 
-- 在 ESP32-S3 或 Linux 上直接跑聊天型 AI Agent
+- 在 ESP32-S3 或 Linux 上直接运行 Beetle Agent OS
 - 在 ESP32-S3 上接入 LED、继电器、蜂鸣器、传感器等设备
-- 在 Linux 上运行更完整的工作型 Agent 程序
-- 飞书、钉钉、企微、QQ 频道共用一个程序
-- 通过可选 feature 打开 `telegram` 或 `websocket`
+- 在 Linux 上运行更完整的 Agent OS 形态
+- 飞书、钉钉、企微、QQ 频道共用一套 Agent OS
+- 通过可选编译选项打开 `telegram` 或 `websocket`
 - 在设备上保存摘要、长期记忆、提醒、任务和档案证据
 - 通过 `device_control` 工具控制 GPIO、PWM、ADC、蜂鸣器等硬件
 - 在 SPI 屏幕上显示运行状态
@@ -109,15 +94,15 @@ $env:ESPFLASH_PORT="COM3"; .\build.ps1 --flash
 首次上电后，设备会开启一个名为 **Beetle** 的热点。
 
 1. 手机或电脑连接这个热点
-2. 浏览器打开 **http://192.168.4.1**
+2. 浏览器打开 **[http://192.168.4.1](http://192.168.4.1)**
 3. 设置配对码
-4. 配置 WiFi、LLM 和你要使用的聊天通道
+4. 配置 WiFi、大模型和你要使用的聊天通道
 
 设备连上路由器后，后续直接用它的局域网 IP 打开配置页即可。
 
 ## 构建说明
 
-默认启用的 Cargo feature：
+默认启用的 Cargo 编译选项：
 
 - `config_api`
 - `feishu`
@@ -125,7 +110,7 @@ $env:ESPFLASH_PORT="COM3"; .\build.ps1 --flash
 - `tools_network_extra`
 - `thread_panic_catch`
 
-可选 feature：
+可选编译选项：
 
 - `telegram`
 - `websocket`
@@ -142,11 +127,13 @@ cargo build --release --features telegram,ota
 
 ## 支持板型
 
-| BOARD | Flash | PSRAM | 说明 |
-|------|-------|-------|------|
-| `esp32-s3-8mb` | 8MB | 8MB | N8R8 |
-| `esp32-s3-16mb` | 16MB | 8MB | 默认板型 |
-| `esp32-s3-32mb` | 32MB | 16MB | N32R16 |
+
+| BOARD           | Flash | PSRAM | 说明     |
+| --------------- | ----- | ----- | ------ |
+| `esp32-s3-8mb`  | 8MB   | 8MB   | N8R8   |
+| `esp32-s3-16mb` | 16MB  | 8MB   | 默认板型   |
+| `esp32-s3-32mb` | 32MB  | 16MB  | N32R16 |
+
 
 这里最容易出错的地方有两个：
 
@@ -155,29 +142,33 @@ cargo build --release --features telegram,ota
 
 ## 主要能力
 
-| 维度 | Beetle 提供什么 |
-|------|-----------------|
-| 聊天通道 | 多个聊天通道共用一个程序 |
-| 记忆 | 会话摘要、长期记忆、档案证据检索 |
-| 工具 | 时间、提醒、任务/日历、文件操作、板子信息、联网工具、硬件控制 |
-| 硬件 | 基于配置生成 `device_control`，统一控制外设 |
-| 配置 | 内置浏览器流程 + 完整 HTTP 配置 API |
-| 显示 | SPI TFT 仪表板 |
-| 健康状态 | 指标、资源快照、诊断、重启与恢复操作 |
+
+| 维度   | Beetle 提供什么                     |
+| ---- | ------------------------------- |
+| 聊天通道 | 多个聊天通道共用一套 Agent OS                |
+| 记忆   | 会话摘要、长期记忆、档案证据检索                |
+| 工具   | 时间、提醒、任务/日历、文件操作、板子信息、联网工具、硬件控制 |
+| 硬件   | 基于配置生成 `device_control`，统一控制外设  |
+| 配置   | 内置浏览器流程 + 完整配置接口                |
+| 显示   | SPI TFT 仪表板                     |
+| 健康状态 | 指标、资源快照、诊断、重启与恢复操作              |
+
 
 ## 接下来该看哪篇
 
-| 你的目标 | 该看哪篇文档 |
-|----------|--------------|
-| 把板子烧起来并完成配置 | [docs/zh-cn/configuration.md](docs/zh-cn/configuration.md) |
-| 在 Linux 上部署或打包 | [docs/zh-cn/linux-release-rollback.md](docs/zh-cn/linux-release-rollback.md) |
-| 自己调用 HTTP API | [docs/zh-cn/config-api.md](docs/zh-cn/config-api.md) |
-| 了解 Agent 能调用哪些工具 | [docs/zh-cn/tools.md](docs/zh-cn/tools.md) |
-| 配置 LLM 提供商 | [docs/zh-cn/llm-providers.md](docs/zh-cn/llm-providers.md) |
-| 配置 SPI 屏幕 | [docs/zh-cn/display.md](docs/zh-cn/display.md) |
-| 配置硬件设备 | [docs/zh-cn/hardware-device-config.md](docs/zh-cn/hardware-device-config.md) |
-| 看板型限制和排错 | [docs/zh-cn/hardware.md](docs/zh-cn/hardware.md) |
-| 看完整文档地图 | [docs/README.md](docs/README.md) |
+
+| 你的目标           | 该看哪篇文档                                                                       |
+| -------------- | ---------------------------------------------------------------------------- |
+| 把板子烧起来并完成配置    | [docs/zh-cn/configuration.md](docs/zh-cn/configuration.md)                   |
+| 在 Linux 上安装或打包 | [docs/zh-cn/linux-release-rollback.md](docs/zh-cn/linux-release-rollback.md) |
+| 自己调用 HTTP 接口   | [docs/zh-cn/config-api.md](docs/zh-cn/config-api.md)                         |
+| 了解 Agent OS 能调用哪些工具 | [docs/zh-cn/tools.md](docs/zh-cn/tools.md)                                   |
+| 配置大模型服务商       | [docs/zh-cn/llm-providers.md](docs/zh-cn/llm-providers.md)                   |
+| 配置 SPI 屏幕      | [docs/zh-cn/display.md](docs/zh-cn/display.md)                               |
+| 配置硬件设备         | [docs/zh-cn/hardware-device-config.md](docs/zh-cn/hardware-device-config.md) |
+| 看板型限制和排错       | [docs/zh-cn/hardware.md](docs/zh-cn/hardware.md)                             |
+| 看完整文档地图        | [docs/README.md](docs/README.md)                                             |
+
 
 ## 常见问题
 
@@ -186,7 +177,7 @@ cargo build --release --features telegram,ota
 - `spiffs partition could not be found`：基本就是板型预设或分区表没用对
 - 需要精确接口行为：看 [docs/zh-cn/config-api.md](docs/zh-cn/config-api.md)
 - 需要板型和资源信息：看 [docs/zh-cn/hardware.md](docs/zh-cn/hardware.md)
-- 需要看 Linux 部署与打包说明：看 [docs/zh-cn/linux-release-rollback.md](docs/zh-cn/linux-release-rollback.md)
+- 需要看 Linux 安装与打包说明：看 [docs/zh-cn/linux-release-rollback.md](docs/zh-cn/linux-release-rollback.md)
 
 ## 许可
 

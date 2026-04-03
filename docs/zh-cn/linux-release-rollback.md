@@ -1,29 +1,29 @@
-# Linux 版程序与发布包说明
+# Linux 版 Agent OS 与发布包说明
 
 [English](../en-us/linux-release-rollback.md) | **中文** | [文档索引](../README.md)
 
-Linux 版 Beetle 的运行、打包和回滚方式如下。
+这页说明 Linux 版 Beetle Agent OS 的安装、打包和回滚。
 
 适用场景：
 
 - 直接在 Linux 上运行 Beetle 的人
-- 直接处理 Linux 发布包的集成方
-- 需要手工部署或回滚的运维人员
+- 直接处理 Linux 发布包的人
+- 需要手工安装或回滚的运维人员
 
 ## 当前状态
 
-- Linux 主程序已经能稳定运行
-- 适合运行完整 Agent 工作流、做集成和部署
+- Linux 版 Agent OS 已经能稳定运行
+- 适合承载更完整的 Agent OS 能力、长任务和复杂集成
 - Linux 打包路径已经存在
 
-## 手工部署
+## 手工安装
 
-发布 tarball 里通常会带：
+发布包里通常会带：
 
 - `README.txt`
 - `beetle.service` 示例
 
-常见手工部署目录结构：
+常见目录结构：
 
 - `/opt/beetle/releases/<version>/`
 - 用 `current` 符号链接指向当前运行版本

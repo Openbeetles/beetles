@@ -37,6 +37,8 @@ pub struct SelfContinuity {
     #[serde(default)]
     pub last_user_turn_at: u64,
     #[serde(default)]
+    pub last_user_channel: String,
+    #[serde(default)]
     pub last_autonomy_run_at: u64,
     #[serde(default)]
     pub updated_at: u64,
@@ -155,8 +157,14 @@ pub fn render_self_continuity_block(continuity: &SelfContinuity, max_len: usize)
     if normalized.last_user_turn_at > 0 || normalized.last_autonomy_run_at > 0 {
         let _ = writeln!(
             out,
-            "Runtime anchors: last_user_turn_at={} last_autonomy_run_at={}",
-            normalized.last_user_turn_at, normalized.last_autonomy_run_at
+            "Runtime anchors: last_user_turn_at={} last_user_channel={} last_autonomy_run_at={}",
+            normalized.last_user_turn_at,
+            if normalized.last_user_channel.trim().is_empty() {
+                "n/a"
+            } else {
+                normalized.last_user_channel.trim()
+            },
+            normalized.last_autonomy_run_at
         );
     }
     let capped = truncate_content_to_max(out.trim_end(), max_len).into_owned();
@@ -291,11 +299,13 @@ pub fn touch_self_continuity_runtime(
     now_secs: u64,
     touch_user_turn: bool,
     touch_autonomy_run: bool,
+    source_channel: Option<&str>,
 ) -> Result<()> {
     let baseline = store.get(chat_id)?;
     let mut continuity = baseline.clone().unwrap_or_default();
     if touch_user_turn {
         continuity.last_user_turn_at = now_secs;
+        continuity.last_user_channel = normalize_runtime_channel(source_channel);
     }
     if touch_autonomy_run {
         continuity.last_autonomy_run_at = now_secs;
@@ -309,6 +319,7 @@ pub fn touch_self_continuity_runtime(
         continuity = latest.unwrap_or_default();
         if touch_user_turn {
             continuity.last_user_turn_at = now_secs;
+            continuity.last_user_channel = normalize_runtime_channel(source_channel);
         }
         if touch_autonomy_run {
             continuity.last_autonomy_run_at = now_secs;
@@ -533,6 +544,7 @@ fn normalize_self_continuity(
     normalize_field(&mut continuity.current_self_state);
     normalize_field(&mut continuity.recent_changes);
     normalize_field(&mut continuity.continuity_bridge);
+    continuity.last_user_channel = normalize_runtime_channel(Some(&continuity.last_user_channel));
     continuity.updated_at = updated_at
         .max(continuity.last_user_turn_at)
         .max(continuity.last_autonomy_run_at);
@@ -540,6 +552,14 @@ fn normalize_self_continuity(
         || continuity.last_user_turn_at > 0
         || continuity.last_autonomy_run_at > 0)
         .then_some(continuity)
+}
+
+fn normalize_runtime_channel(channel: Option<&str>) -> String {
+    channel
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "cron" && !value.starts_with('_'))
+        .map(|value| truncate_content_to_max(value, 48).into_owned())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -583,6 +603,7 @@ mod tests {
                 recent_changes: String::new(),
                 continuity_bridge: String::new(),
                 last_user_turn_at: 12,
+                last_user_channel: "qq_channel".to_string(),
                 last_autonomy_run_at: 15,
                 updated_at: 15,
             },
@@ -591,5 +612,6 @@ mod tests {
         .unwrap();
         assert!(block.contains("Wake anchor"));
         assert!(block.contains("Runtime anchors"));
+        assert!(block.contains("last_user_channel=qq_channel"));
     }
 }

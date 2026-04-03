@@ -550,6 +550,7 @@ mod tests {
                 recent_changes: "o".repeat(220),
                 continuity_bridge: "p".repeat(220),
                 last_user_turn_at: 10,
+                last_user_channel: "qq_channel".to_string(),
                 last_autonomy_run_at: 10,
                 updated_at: 10,
             }),

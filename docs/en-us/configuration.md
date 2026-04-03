@@ -44,7 +44,7 @@ After you save WiFi settings, the device will try to join your router.
 
 Once it is on the same LAN as your browser, you can open the config page again through the device's LAN IP instead of the hotspot address.
 
-### Step 4: configure the runtime
+### Step 4: configure Beetle
 
 The usual minimum setup is:
 
@@ -112,7 +112,7 @@ The built-in config UI handles that for you. If you are calling APIs manually, r
 ## Useful Checks
 
 - `GET /api/health`: quick status snapshot
-- `GET /api/resource`: runtime resource snapshot
+- `GET /api/resource`: resource snapshot
 - serial logs: heartbeat and boot diagnostics
 
 See [config-api.md](config-api.md) for exact response formats.

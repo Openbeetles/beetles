@@ -1027,6 +1027,7 @@ mod tests {
                 recent_changes: "从程序路由走向模型自驱".to_string(),
                 continuity_bridge: "这一轮继续把自治闭环接实".to_string(),
                 last_user_turn_at: 10,
+                last_user_channel: "qq_channel".to_string(),
                 last_autonomy_run_at: 20,
                 updated_at: 2,
             }),
