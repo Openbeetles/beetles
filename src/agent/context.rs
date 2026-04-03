@@ -52,7 +52,8 @@ const GROUP_ALWAYS_SILENT_CONSTRAINT: &str =
     "\n\nIf no response is needed, reply with exactly SILENT and nothing else.";
 const GROUP_MENTION_ONLY_CONSTRAINT: &str =
     "\n\nYou are in a group; only reply when explicitly mentioned.";
-const REPLY_PRIORITY_CONSTRAINT: &str = "\n\n## Reply Priority\nWhen writing the main reply, follow this order of authority:\n1. Self-authored core: your distilled identity, continuity, and self-chosen stance.\n2. Boundary/disclosure adjudication: if this turn touches privacy or inward boundaries, obey that stance before composing content.\n3. Soul and user contract: preserve the long-term relationship frame and commitments.\n4. Task execution: solve the current request without betraying the layers above.\nIf these layers pull in different directions, earlier items win.";
+const REPLY_PRIORITY_MINI_CONSTRAINT: &str = "\n\n## Reply Priority\nself-authored core > current persona priority > boundary/disclosure > soul and user contract > task.";
+const REPLY_PRIORITY_CONSTRAINT: &str = "\n\n## Reply Priority\nWhen writing the main reply, follow this order of authority:\n1. Self-authored core: your distilled identity, continuity, and self-chosen stance.\n2. Current persona priority: the current-turn stance for how self, relationship, resources, and task should be ordered.\n3. Boundary/disclosure adjudication: if this turn touches privacy or inward boundaries, obey that stance before composing content.\n4. Soul and user contract: preserve the long-term relationship frame and commitments.\n5. Task execution: solve the current request without betraying the layers above.\nIf these layers pull in different directions, earlier items win.";
 
 /// build_context 参数聚合，减少函数签名复杂度。
 ///
@@ -76,6 +77,7 @@ pub struct ContextParams<'a> {
     pub world_sense_text: Option<&'a str>,
     pub self_state_text: Option<&'a str>,
     pub self_authored_core_text: Option<&'a str>,
+    pub persona_priority_text: Option<&'a str>,
     pub self_model_text: Option<&'a str>,
     pub autonomy_strategy_text: Option<&'a str>,
     pub outer_voice_text: Option<&'a str>,
@@ -152,12 +154,23 @@ fn section_with_separator_len(content: Option<&str>) -> usize {
         .map_or(0, |content| 2usize.saturating_add(content.len()))
 }
 
+fn append_priority_constraint(system: &mut String, max_len: usize) {
+    if push_if_fits(system, REPLY_PRIORITY_CONSTRAINT, max_len) {
+        return;
+    }
+    if push_if_fits(system, REPLY_PRIORITY_MINI_CONSTRAINT, max_len) {
+        return;
+    }
+    let _ = push_char_boundary_truncated(system, REPLY_PRIORITY_MINI_CONSTRAINT, max_len);
+}
+
 fn reserve_priority_memory_budget(
     execution_state_text: Option<&str>,
     world_snapshot_text: Option<&str>,
     world_sense_text: Option<&str>,
     self_state_text: Option<&str>,
     self_authored_core_text: Option<&str>,
+    persona_priority_text: Option<&str>,
     self_model_text: Option<&str>,
     autonomy_strategy_text: Option<&str>,
     outer_voice_text: Option<&str>,
@@ -192,12 +205,16 @@ fn reserve_priority_memory_budget(
     let self_authored_core_reserve =
         section_with_separator_len(self_authored_core_text).min(remaining / 4);
     let remaining = remaining.saturating_sub(self_authored_core_reserve);
+    let persona_priority_reserve =
+        section_with_separator_len(persona_priority_text).min(remaining / 4);
+    let remaining = remaining.saturating_sub(persona_priority_reserve);
     let mental_privacy_adjudication_reserve =
         section_with_separator_len(mental_privacy_adjudication_text).min(remaining / 4);
     let remaining = remaining.saturating_sub(mental_privacy_adjudication_reserve);
     let mental_privacy_reserve = section_with_separator_len(mental_privacy_text).min(remaining / 4);
     reply_priority_reserve
         .saturating_add(self_authored_core_reserve)
+        .saturating_add(persona_priority_reserve)
         .saturating_add(mental_privacy_adjudication_reserve)
         .saturating_add(mental_privacy_reserve)
 }
@@ -348,6 +365,7 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
         p.world_sense_text,
         p.self_state_text,
         p.self_authored_core_text,
+        p.persona_priority_text,
         p.self_model_text,
         p.autonomy_strategy_text,
         p.outer_voice_text,
@@ -367,9 +385,12 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     let mut section_scratch = String::with_capacity(96);
     let mut base_prompt = String::with_capacity(base_prompt_budget);
     append_system_prompt_base(&mut base_prompt, &soul, &user, &mem, base_prompt_budget);
-    let _ = push_if_fits(&mut system, REPLY_PRIORITY_CONSTRAINT, base_max);
+    append_priority_constraint(&mut system, base_max);
     if let Some(self_authored_core_text) = p.self_authored_core_text {
         let _ = append_capped_section(&mut system, "\n\n", self_authored_core_text, base_max);
+    }
+    if let Some(persona_priority_text) = p.persona_priority_text {
+        let _ = append_capped_section(&mut system, "\n\n", persona_priority_text, base_max);
     }
     if let Some(mental_privacy_adjudication_text) = p.mental_privacy_adjudication_text {
         let _ = append_capped_section(
@@ -714,6 +735,9 @@ mod tests {
             self_authored_core_text: Some(
                 "## Self-Authored Core\nIdentity anchor: still the same beetle",
             ),
+            persona_priority_text: Some(
+                "## Persona Priority\nStance summary: protect inward coherence first",
+            ),
             self_model_text: Some("## Self Continuity\nAnchor: still the same beetle"),
             autonomy_strategy_text: Some("## Autonomy Strategy\nCurrent mode: consolidate"),
             outer_voice_text: Some("## Outer Voice\nTone: calm, deliberate, warm at the edge."),
@@ -742,9 +766,11 @@ mod tests {
 
         assert!(system.contains("## Reply Priority"));
         assert!(system.contains("## Self-Authored Core"));
+        assert!(system.contains("## Persona Priority"));
         assert!(system.contains("## Disclosure Adjudication"));
         if let Some(soul_idx) = system.find("SOUL") {
             assert!(system.find("## Self-Authored Core").unwrap() < soul_idx);
+            assert!(system.find("## Persona Priority").unwrap() < soul_idx);
             assert!(system.find("## Disclosure Adjudication").unwrap() < soul_idx);
         }
     }
@@ -780,6 +806,9 @@ mod tests {
             self_authored_core_text: Some(
                 "## Self-Authored Core\nBoundary stance: posture=guarded\nRelational continuity: trust=52",
             ),
+            persona_priority_text: Some(
+                "## Persona Priority\nResponse mode: protective_brief\nTask scope: narrow",
+            ),
             self_model_text: None,
             autonomy_strategy_text: None,
             outer_voice_text: Some("## Outer Voice\nRelational response style: warm but firm"),
@@ -804,12 +833,14 @@ mod tests {
 
         let reply_priority_idx = system.find("## Reply Priority").unwrap();
         let self_core_idx = system.find("## Self-Authored Core").unwrap();
+        let persona_idx = system.find("## Persona Priority").unwrap();
         let disclosure_idx = system.find("## Disclosure Adjudication").unwrap();
         let boundary_idx = system.find("## Mental Privacy Boundary").unwrap();
         let soul_idx = system.find("SOUL").unwrap();
 
         assert!(reply_priority_idx < self_core_idx);
-        assert!(self_core_idx < disclosure_idx);
+        assert!(self_core_idx < persona_idx);
+        assert!(persona_idx < disclosure_idx);
         assert!(disclosure_idx < boundary_idx);
         assert!(boundary_idx < soul_idx);
     }
@@ -846,6 +877,7 @@ mod tests {
             world_sense_text: None,
             self_state_text: None,
             self_authored_core_text: None,
+            persona_priority_text: None,
             self_model_text: None,
             autonomy_strategy_text: None,
             outer_voice_text: None,

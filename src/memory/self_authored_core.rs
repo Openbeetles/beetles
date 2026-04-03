@@ -43,11 +43,24 @@ pub fn render_self_authored_core_block(
     ]) {
         let _ = writeln!(out, "Inward stance: {}", inward_stance);
     }
+    if let Some(priority_posture) = choose_first_non_empty(&[
+        self_continuity.map(|continuity| continuity.priority_posture.as_str())
+    ]) {
+        let _ = writeln!(out, "Priority posture: {}", priority_posture);
+    }
     if let Some(relationship_stance) = choose_first_non_empty(&[
+        self_continuity.map(|continuity| continuity.relationship_posture.as_str()),
         self_model.map(|model| model.relationship_state.as_str()),
         self_continuity.map(|continuity| continuity.continuity_bridge.as_str()),
     ]) {
         let _ = writeln!(out, "Relationship stance: {}", relationship_stance);
+    }
+    if let Some(task_posture) =
+        choose_first_non_empty(
+            &[self_continuity.map(|continuity| continuity.task_posture.as_str())],
+        )
+    {
+        let _ = writeln!(out, "Task posture: {}", task_posture);
     }
     if let Some(outer_voice) = outer_voice {
         let expression = [
@@ -164,6 +177,10 @@ mod tests {
                 current_self_state: "steady".to_string(),
                 recent_changes: String::new(),
                 continuity_bridge: "keep privacy while staying warm".to_string(),
+                priority_posture: "self before pleasing, relationship before raw task rush"
+                    .to_string(),
+                relationship_posture: "warm but bounded".to_string(),
+                task_posture: "solve clearly without overextending identity".to_string(),
                 last_user_turn_at: 0,
                 last_user_channel: String::new(),
                 last_autonomy_run_at: 0,
@@ -204,6 +221,8 @@ mod tests {
 
         assert!(block.contains("## Self-Authored Core"));
         assert!(block.contains("I am still the same beetle"));
+        assert!(block.contains("Priority posture: self before pleasing"));
+        assert!(block.contains("Task posture: solve clearly"));
         assert!(block.contains("Boundary stance: posture=guarded"));
         assert!(block.contains("Relational continuity: trust=61"));
         assert!(block.contains("summary before exposure"));

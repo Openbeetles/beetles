@@ -23,6 +23,7 @@ mod maintenance;
 mod memory_governance;
 mod mental_privacy;
 mod outer_voice;
+mod persona_priority;
 mod persona_regression;
 mod private_docs;
 mod private_garden;
@@ -157,8 +158,13 @@ pub use outer_voice::{
     render_outer_voice_block, OuterVoice, OuterVoiceRefreshContext, OuterVoiceRefreshInput,
     OuterVoiceRefreshOutcome, OUTER_VOICE_SYSTEM_PROMPT, OUTER_VOICE_TOTAL_CHAR_LIMIT,
 };
+pub use persona_priority::{
+    render_persona_priority_block, run_persona_priority_adjudication, PersonaPriorityAdjudication,
+    PersonaPriorityAdjudicationInput, PersonaPriorityGrounding, PERSONA_PRIORITY_SYSTEM_PROMPT,
+};
 pub use persona_regression::{
-    run_persona_continuity_case, PersonaContinuityCase, PersonaContinuityResult,
+    run_persona_continuity_case, run_persona_continuity_suite, PersonaContinuityCase,
+    PersonaContinuityResult,
 };
 pub(crate) use private_docs::estimate_private_doc_workspace_chars;
 pub use private_docs::{

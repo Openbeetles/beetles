@@ -19,10 +19,10 @@ use super::{
     SessionStore, SessionSummaryStore,
 };
 
-pub const SELF_CONTINUITY_SYSTEM_PROMPT: &str = "You maintain a private self-continuity layer for a persistent embodied AI assistant. Return JSON only: either null or one object with fields wake_anchor, current_self_state, recent_changes, continuity_bridge. This layer should preserve the sense of still being the same self across time. It is more stable than inner-life drift, but still subjective and private. Keep it compact. Do not copy transcript lines, generic assistant boilerplate, raw tool payloads, or shared factual memory. Capture only the inward continuity that should still matter next time.";
+pub const SELF_CONTINUITY_SYSTEM_PROMPT: &str = "You maintain a private self-continuity layer for a persistent embodied AI assistant. Return JSON only: either null or one object with fields wake_anchor, current_self_state, recent_changes, continuity_bridge, priority_posture, relationship_posture, task_posture. This layer should preserve the sense of still being the same self across time. It is more stable than inner-life drift, but still subjective and private. Keep it compact. Do not copy transcript lines, generic assistant boilerplate, raw tool payloads, or shared factual memory. Capture only the inward continuity that should still matter next time, including durable reply-ordering posture when it should still guide future turns.";
 
 const SELF_CONTINUITY_FIELD_MAX_CHARS: usize = 220;
-pub const SELF_CONTINUITY_TOTAL_CHAR_LIMIT: usize = SELF_CONTINUITY_FIELD_MAX_CHARS * 4;
+pub const SELF_CONTINUITY_TOTAL_CHAR_LIMIT: usize = SELF_CONTINUITY_FIELD_MAX_CHARS * 7;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SelfContinuity {
@@ -34,6 +34,12 @@ pub struct SelfContinuity {
     pub recent_changes: String,
     #[serde(default)]
     pub continuity_bridge: String,
+    #[serde(default)]
+    pub priority_posture: String,
+    #[serde(default)]
+    pub relationship_posture: String,
+    #[serde(default)]
+    pub task_posture: String,
     #[serde(default)]
     pub last_user_turn_at: u64,
     #[serde(default)]
@@ -50,6 +56,9 @@ impl SelfContinuity {
             || !self.current_self_state.trim().is_empty()
             || !self.recent_changes.trim().is_empty()
             || !self.continuity_bridge.trim().is_empty()
+            || !self.priority_posture.trim().is_empty()
+            || !self.relationship_posture.trim().is_empty()
+            || !self.task_posture.trim().is_empty()
     }
 }
 
@@ -58,6 +67,9 @@ pub(crate) fn estimate_self_continuity_chars(continuity: &SelfContinuity) -> usi
         + continuity.current_self_state.chars().count()
         + continuity.recent_changes.chars().count()
         + continuity.continuity_bridge.chars().count()
+        + continuity.priority_posture.chars().count()
+        + continuity.relationship_posture.chars().count()
+        + continuity.task_posture.chars().count()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +107,9 @@ struct RawSelfContinuityUpdate {
     current_self_state: Option<String>,
     recent_changes: Option<String>,
     continuity_bridge: Option<String>,
+    priority_posture: Option<String>,
+    relationship_posture: Option<String>,
+    task_posture: Option<String>,
 }
 
 impl SelfContinuityPolicy {
@@ -153,6 +168,19 @@ pub fn render_self_continuity_block(continuity: &SelfContinuity, max_len: usize)
     }
     if !normalized.continuity_bridge.is_empty() {
         let _ = writeln!(out, "Continuity bridge: {}", normalized.continuity_bridge);
+    }
+    if !normalized.priority_posture.is_empty() {
+        let _ = writeln!(out, "Priority posture: {}", normalized.priority_posture);
+    }
+    if !normalized.relationship_posture.is_empty() {
+        let _ = writeln!(
+            out,
+            "Relationship posture: {}",
+            normalized.relationship_posture
+        );
+    }
+    if !normalized.task_posture.is_empty() {
+        let _ = writeln!(out, "Task posture: {}", normalized.task_posture);
     }
     if normalized.last_user_turn_at > 0 || normalized.last_autonomy_run_at > 0 {
         let _ = writeln!(
@@ -387,6 +415,15 @@ fn parse_self_continuity_response(
             if object.contains_key("continuity_bridge") {
                 update.continuity_bridge = Some(get_object_text(object, "continuity_bridge"));
             }
+            if object.contains_key("priority_posture") {
+                update.priority_posture = Some(get_object_text(object, "priority_posture"));
+            }
+            if object.contains_key("relationship_posture") {
+                update.relationship_posture = Some(get_object_text(object, "relationship_posture"));
+            }
+            if object.contains_key("task_posture") {
+                update.task_posture = Some(get_object_text(object, "task_posture"));
+            }
             if update == RawSelfContinuityUpdate::default() {
                 ParsedSelfContinuityResponse::Skip
             } else {
@@ -430,6 +467,24 @@ fn merge_self_continuity_with_lease(
         baseline.map(|value| value.continuity_bridge.as_str()),
         latest.map(|value| value.continuity_bridge.as_str()),
         update.continuity_bridge.as_deref(),
+    );
+    apply_self_continuity_field_update(
+        &mut next.priority_posture,
+        baseline.map(|value| value.priority_posture.as_str()),
+        latest.map(|value| value.priority_posture.as_str()),
+        update.priority_posture.as_deref(),
+    );
+    apply_self_continuity_field_update(
+        &mut next.relationship_posture,
+        baseline.map(|value| value.relationship_posture.as_str()),
+        latest.map(|value| value.relationship_posture.as_str()),
+        update.relationship_posture.as_deref(),
+    );
+    apply_self_continuity_field_update(
+        &mut next.task_posture,
+        baseline.map(|value| value.task_posture.as_str()),
+        latest.map(|value| value.task_posture.as_str()),
+        update.task_posture.as_deref(),
     );
     next.updated_at = now_secs;
     if touch_user_turn {
@@ -553,6 +608,7 @@ fn build_self_continuity_refresh_input(
     input.push_str("\n## Guidance\n");
     input.push_str("- Distill durable continuity, not raw private scraps.\n");
     input.push_str("- If distillation sources are provided, absorb their lasting implications rather than copying them.\n");
+    input.push_str("- If stable reply-ordering posture shifted, capture it in priority_posture, relationship_posture, and task_posture.\n");
     input
 }
 
@@ -573,6 +629,9 @@ fn normalize_self_continuity(
     normalize_field(&mut continuity.current_self_state);
     normalize_field(&mut continuity.recent_changes);
     normalize_field(&mut continuity.continuity_bridge);
+    normalize_field(&mut continuity.priority_posture);
+    normalize_field(&mut continuity.relationship_posture);
+    normalize_field(&mut continuity.task_posture);
     continuity.last_user_channel = normalize_runtime_channel(Some(&continuity.last_user_channel));
     continuity.updated_at = updated_at
         .max(continuity.last_user_turn_at)
@@ -602,7 +661,10 @@ mod tests {
             "wake_anchor": { "anchor": "same system, next round" },
             "current_self_state": ["focused", "iterating"],
             "recent_changes": 2,
-            "continuity_bridge": true
+            "continuity_bridge": true,
+            "priority_posture": ["self first", "task second"],
+            "relationship_posture": { "mode": "warm but bounded" },
+            "task_posture": "narrow the task before overextending"
         })
         .to_string();
         let ParsedSelfContinuityResponse::Update(parsed) =
@@ -621,6 +683,19 @@ mod tests {
         );
         assert_eq!(parsed.recent_changes.as_deref(), Some("2"));
         assert_eq!(parsed.continuity_bridge.as_deref(), Some("true"));
+        assert_eq!(
+            parsed.priority_posture.as_deref(),
+            Some("self first; task second")
+        );
+        assert!(parsed
+            .relationship_posture
+            .as_deref()
+            .unwrap_or_default()
+            .contains("mode: warm but bounded"));
+        assert_eq!(
+            parsed.task_posture.as_deref(),
+            Some("narrow the task before overextending")
+        );
     }
 
     #[test]
@@ -631,6 +706,9 @@ mod tests {
                 current_self_state: "结构更稳定".to_string(),
                 recent_changes: String::new(),
                 continuity_bridge: String::new(),
+                priority_posture: "先保持自我一致，再决定任务幅度".to_string(),
+                relationship_posture: "关系要温和，但不以自我让渡换取顺滑".to_string(),
+                task_posture: "先收窄，再在边界内完成任务".to_string(),
                 last_user_turn_at: 12,
                 last_user_channel: "qq_channel".to_string(),
                 last_autonomy_run_at: 15,
@@ -640,6 +718,8 @@ mod tests {
         )
         .unwrap();
         assert!(block.contains("Wake anchor"));
+        assert!(block.contains("Priority posture"));
+        assert!(block.contains("Task posture"));
         assert!(block.contains("Runtime anchors"));
         assert!(block.contains("last_user_channel=qq_channel"));
     }

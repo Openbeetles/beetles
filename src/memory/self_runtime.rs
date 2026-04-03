@@ -48,7 +48,7 @@ use super::{
     WorldSnapshotContext,
 };
 
-pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's inward autonomy runtime. Respect the current autonomy strategy unless the latest world state or self-state clearly requires a different emphasis. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_private_docs, private_docs_intent, private_docs_action, refresh_private_garden, private_garden_intent, private_garden_action, refresh_self_model, self_model_intent, self_model_sources, refresh_self_continuity, self_continuity_intent, self_continuity_sources, refresh_boundary_persona, boundary_persona_intent, refresh_outer_voice, outer_voice_intent, outer_voice_sources, boundary_flush, boundary_flush_reason, request_factual_refresh, factual_reconcile_action, factual_reconcile_intent. Use true only when that layer should change now. Runtime governance actions are hold, rewrite, compress, or cleanup. factual_reconcile_action is hold, reinforce, correct, conflict, or stale. self_model, self_continuity, boundary_persona, and outer_voice are upward distillation layers: refresh them only when private evolution has produced a better stable core. Source lists should name the layers that deserve upward distillation, such as inner_life, private_docs, private_garden, self_model, self_continuity, boundary_persona, outer_voice, world_sense, autonomy_strategy, or recent_transcript. Favor autonomy, but do not churn memory without gain.";
+pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's inward autonomy runtime. Respect the current autonomy strategy unless the latest world state or self-state clearly requires a different emphasis. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_private_docs, private_docs_intent, private_docs_action, refresh_private_garden, private_garden_intent, private_garden_action, refresh_self_model, self_model_intent, self_model_sources, refresh_self_continuity, self_continuity_intent, self_continuity_sources, refresh_boundary_persona, boundary_persona_intent, refresh_outer_voice, outer_voice_intent, outer_voice_sources, boundary_flush, boundary_flush_reason, request_factual_refresh, factual_reconcile_action, factual_reconcile_intent. Use true only when that layer should change now. Runtime governance actions are hold, rewrite, compress, or cleanup. factual_reconcile_action is hold, reinforce, correct, conflict, or stale. self_model, self_continuity, boundary_persona, and outer_voice are upward distillation layers: refresh them only when private evolution or newer world/boundary state has produced a better stable core that should influence future main replies. Source lists should name the layers that actually deserve upward distillation, such as inner_life, private_docs, private_garden, self_model, self_continuity, boundary_persona, outer_voice, world_sense, autonomy_strategy, or recent_transcript. Favor autonomy, but do not churn memory without gain.";
 pub const SELF_RUNTIME_CHANNEL: &str = "_self_runtime";
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -194,6 +194,21 @@ struct SelfRuntimeActionResults {
     private_garden_result: Result<PrivateGardenGovernanceOutcome>,
     boundary_persona_result: Result<BoundaryPersonaRefreshOutcome>,
     outer_voice_result: Result<OuterVoiceRefreshOutcome>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PersonaDistillationSnapshot {
+    private_material_at: u64,
+    boundary_state_at: u64,
+    world_context_at: u64,
+    world_sense_at: u64,
+    autonomy_strategy_at: u64,
+    self_model_at: u64,
+    self_continuity_at: u64,
+    outer_voice_at: u64,
+    has_inner_life: bool,
+    has_world_sense: bool,
+    has_autonomy_strategy: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -593,6 +608,86 @@ fn detect_boundary_flush_signal(
     SelfRuntimeBoundarySignal { reasons }
 }
 
+fn build_persona_distillation_snapshot(
+    state: &LoadedSelfRuntimeState,
+    prelude: &SelfRuntimeRefreshPrelude,
+) -> PersonaDistillationSnapshot {
+    let private_docs_at = state
+        .private_docs
+        .as_ref()
+        .map(|docs| docs.updated_at)
+        .unwrap_or(0);
+    let private_garden_at = state
+        .private_garden_docs
+        .iter()
+        .map(|doc| doc.updated_at)
+        .max()
+        .unwrap_or(0);
+    let inner_life_at = state
+        .inner_life
+        .as_ref()
+        .map(|inner_life| inner_life.updated_at)
+        .unwrap_or(0);
+    let boundary_state_at = state
+        .mental_privacy_state
+        .as_ref()
+        .map(|mental_privacy| {
+            mental_privacy
+                .updated_at
+                .max(mental_privacy.boundary_persona.updated_at)
+                .max(mental_privacy.relational_state.updated_at)
+        })
+        .unwrap_or(0);
+    let world_sense_at = prelude
+        .refreshed_world_sense
+        .as_ref()
+        .map(|world_sense| world_sense.updated_at)
+        .unwrap_or_else(|| {
+            state
+                .world_sense
+                .as_ref()
+                .map(|world_sense| world_sense.updated_at)
+                .unwrap_or(0)
+        });
+    let autonomy_strategy_at = prelude
+        .refreshed_autonomy_strategy
+        .as_ref()
+        .map(|strategy| strategy.updated_at)
+        .unwrap_or_else(|| {
+            state
+                .autonomy_strategy
+                .as_ref()
+                .map(|strategy| strategy.updated_at)
+                .unwrap_or(0)
+        });
+    PersonaDistillationSnapshot {
+        private_material_at: inner_life_at.max(private_docs_at).max(private_garden_at),
+        boundary_state_at,
+        world_context_at: world_sense_at.max(autonomy_strategy_at),
+        world_sense_at,
+        autonomy_strategy_at,
+        self_model_at: state
+            .self_model
+            .as_ref()
+            .map(|model| model.updated_at)
+            .unwrap_or(0),
+        self_continuity_at: state
+            .self_continuity
+            .as_ref()
+            .map(|continuity| continuity.updated_at)
+            .unwrap_or(0),
+        outer_voice_at: state
+            .outer_voice
+            .as_ref()
+            .map(|outer_voice| outer_voice.updated_at)
+            .unwrap_or(0),
+        has_inner_life: state.inner_life.is_some(),
+        has_world_sense: prelude.refreshed_world_sense.is_some() || state.world_sense.is_some(),
+        has_autonomy_strategy: prelude.refreshed_autonomy_strategy.is_some()
+            || state.autonomy_strategy.is_some(),
+    }
+}
+
 fn execute_self_runtime_actions(
     http: &mut dyn LlmHttpClient,
     llm: &(dyn LlmClient + Send + Sync),
@@ -627,6 +722,7 @@ fn execute_self_runtime_actions(
         },
     );
     let factual_snapshot = governance.factual_plane_snapshot;
+    let distillation_snapshot = build_persona_distillation_snapshot(state, prelude);
     let decision = match decide_self_runtime(
         http,
         llm,
@@ -658,9 +754,12 @@ fn execute_self_runtime_actions(
             payload.trigger,
             prelude.refreshed_autonomy_strategy.as_ref(),
             &prelude.runtime_self_state,
+            &distillation_snapshot,
             state.self_model.is_some(),
             state.private_docs.is_some(),
             !state.private_garden_docs.is_empty(),
+            state.inner_life.is_some(),
+            state.self_continuity.is_some(),
             state.outer_voice.is_some(),
             state.mental_privacy_state.is_some(),
             &factual_snapshot,
@@ -1217,9 +1316,12 @@ fn normalize_self_runtime_decision(
     trigger: SelfRuntimeTrigger,
     autonomy_strategy: Option<&crate::memory::AutonomyStrategy>,
     self_state: &SelfState,
+    distillation_snapshot: &PersonaDistillationSnapshot,
     has_self_model: bool,
     has_private_docs: bool,
     has_private_garden_docs: bool,
+    has_inner_life: bool,
+    has_self_continuity: bool,
     has_outer_voice: bool,
     has_mental_privacy: bool,
     factual_snapshot: &SharedFactualPlaneSnapshot,
@@ -1237,13 +1339,28 @@ fn normalize_self_runtime_decision(
             has_outer_voice,
             has_mental_privacy,
         );
+        normalize_persona_distillation_lag(
+            &mut decision,
+            distillation_snapshot,
+            has_private_docs,
+            has_private_garden_docs,
+            has_inner_life,
+            has_self_model,
+            has_self_continuity,
+            has_outer_voice,
+            has_mental_privacy,
+        );
         normalize_runtime_distillation_decisions(
             &mut decision,
             has_private_docs,
             has_private_garden_docs,
+            has_inner_life,
             has_self_model,
+            has_self_continuity,
             has_outer_voice,
             has_mental_privacy,
+            distillation_snapshot.has_world_sense,
+            distillation_snapshot.has_autonomy_strategy,
         );
         return decision;
     };
@@ -1279,13 +1396,28 @@ fn normalize_self_runtime_decision(
         has_outer_voice,
         has_mental_privacy,
     );
+    normalize_persona_distillation_lag(
+        &mut decision,
+        distillation_snapshot,
+        has_private_docs,
+        has_private_garden_docs,
+        has_inner_life,
+        has_self_model,
+        has_self_continuity,
+        has_outer_voice,
+        has_mental_privacy,
+    );
     normalize_runtime_distillation_decisions(
         &mut decision,
         has_private_docs,
         has_private_garden_docs,
+        has_inner_life,
         has_self_model,
+        has_self_continuity,
         has_outer_voice,
         has_mental_privacy,
+        distillation_snapshot.has_world_sense,
+        distillation_snapshot.has_autonomy_strategy,
     );
     decision
 }
@@ -1389,13 +1521,153 @@ fn normalize_boundary_and_factual_decisions(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn normalize_persona_distillation_lag(
+    decision: &mut SelfRuntimeDecision,
+    snapshot: &PersonaDistillationSnapshot,
+    has_private_docs: bool,
+    has_private_garden_docs: bool,
+    has_inner_life: bool,
+    has_self_model: bool,
+    has_self_continuity: bool,
+    has_outer_voice: bool,
+    has_mental_privacy: bool,
+) {
+    let upstream_private_at = snapshot.private_material_at.max(snapshot.boundary_state_at);
+    if upstream_private_at > snapshot.self_model_at
+        && (has_private_docs || has_private_garden_docs || has_inner_life || has_mental_privacy)
+    {
+        decision.refresh_self_model = true;
+        if decision.self_model_intent.trim().is_empty() {
+            decision.self_model_intent =
+                "私域与边界态已经前移，需要把更稳定的人格核重新蒸馏进 self_model".to_string();
+        }
+        push_runtime_source_if(
+            &mut decision.self_model_sources,
+            has_inner_life && snapshot.private_material_at > snapshot.self_model_at,
+            "inner_life",
+        );
+        push_runtime_source_if(
+            &mut decision.self_model_sources,
+            has_private_docs && snapshot.private_material_at > snapshot.self_model_at,
+            "private_docs",
+        );
+        push_runtime_source_if(
+            &mut decision.self_model_sources,
+            has_private_garden_docs && snapshot.private_material_at > snapshot.self_model_at,
+            "private_garden",
+        );
+        push_runtime_source_if(
+            &mut decision.self_model_sources,
+            has_mental_privacy && snapshot.boundary_state_at > snapshot.self_model_at,
+            "boundary_persona",
+        );
+    }
+
+    let continuity_upstream_at = snapshot
+        .private_material_at
+        .max(snapshot.boundary_state_at)
+        .max(snapshot.world_context_at)
+        .max(snapshot.self_model_at);
+    if continuity_upstream_at > snapshot.self_continuity_at
+        && (has_self_model || has_private_docs || has_private_garden_docs || has_inner_life)
+    {
+        decision.refresh_self_continuity = true;
+        if decision.self_continuity_intent.trim().is_empty() {
+            decision.self_continuity_intent =
+                "把最近已经成形的自我、关系与任务姿态重新收束成可延续的连续性桥梁".to_string();
+        }
+        push_runtime_source_if(
+            &mut decision.self_continuity_sources,
+            has_self_model && snapshot.self_model_at > snapshot.self_continuity_at,
+            "self_model",
+        );
+        push_runtime_source_if(
+            &mut decision.self_continuity_sources,
+            has_inner_life && snapshot.private_material_at > snapshot.self_continuity_at,
+            "inner_life",
+        );
+        push_runtime_source_if(
+            &mut decision.self_continuity_sources,
+            has_private_docs && snapshot.private_material_at > snapshot.self_continuity_at,
+            "private_docs",
+        );
+        push_runtime_source_if(
+            &mut decision.self_continuity_sources,
+            has_private_garden_docs && snapshot.private_material_at > snapshot.self_continuity_at,
+            "private_garden",
+        );
+        push_runtime_source_if(
+            &mut decision.self_continuity_sources,
+            has_mental_privacy && snapshot.boundary_state_at > snapshot.self_continuity_at,
+            "boundary_persona",
+        );
+        push_runtime_source_if(
+            &mut decision.self_continuity_sources,
+            snapshot.has_world_sense && snapshot.world_sense_at > snapshot.self_continuity_at,
+            "world_sense",
+        );
+        push_runtime_source_if(
+            &mut decision.self_continuity_sources,
+            snapshot.has_autonomy_strategy
+                && snapshot.autonomy_strategy_at > snapshot.self_continuity_at,
+            "autonomy_strategy",
+        );
+    }
+
+    let outer_voice_upstream_at = snapshot
+        .self_model_at
+        .max(snapshot.self_continuity_at)
+        .max(snapshot.boundary_state_at)
+        .max(snapshot.world_context_at);
+    if outer_voice_upstream_at > snapshot.outer_voice_at
+        && (has_self_model || has_self_continuity || has_outer_voice || has_mental_privacy)
+    {
+        decision.refresh_outer_voice = true;
+        if decision.outer_voice_intent.trim().is_empty() {
+            decision.outer_voice_intent =
+                "让对外表达跟上新的自我排序、关系状态与资源姿态".to_string();
+        }
+        push_runtime_source_if(
+            &mut decision.outer_voice_sources,
+            has_self_model && snapshot.self_model_at > snapshot.outer_voice_at,
+            "self_model",
+        );
+        push_runtime_source_if(
+            &mut decision.outer_voice_sources,
+            has_self_continuity && snapshot.self_continuity_at > snapshot.outer_voice_at,
+            "self_continuity",
+        );
+        push_runtime_source_if(
+            &mut decision.outer_voice_sources,
+            has_mental_privacy && snapshot.boundary_state_at > snapshot.outer_voice_at,
+            "boundary_persona",
+        );
+        push_runtime_source_if(
+            &mut decision.outer_voice_sources,
+            snapshot.has_world_sense && snapshot.world_sense_at > snapshot.outer_voice_at,
+            "world_sense",
+        );
+        push_runtime_source_if(
+            &mut decision.outer_voice_sources,
+            snapshot.has_autonomy_strategy
+                && snapshot.autonomy_strategy_at > snapshot.outer_voice_at,
+            "autonomy_strategy",
+        );
+    }
+}
+
 fn normalize_runtime_distillation_decisions(
     decision: &mut SelfRuntimeDecision,
     has_private_docs: bool,
     has_private_garden_docs: bool,
+    has_inner_life: bool,
     has_self_model: bool,
+    has_self_continuity: bool,
     _has_outer_voice: bool,
     has_mental_privacy: bool,
+    has_world_sense: bool,
+    has_autonomy_strategy: bool,
 ) {
     if !decision.refresh_private_docs {
         decision.private_docs_intent.clear();
@@ -1409,9 +1681,9 @@ fn normalize_runtime_distillation_decisions(
         &mut decision.self_model_sources,
         decision.refresh_self_model,
         &[
+            (has_inner_life, "inner_life"),
             (has_private_docs, "private_docs"),
             (has_private_garden_docs, "private_garden"),
-            (true, "inner_life"),
             (has_mental_privacy, "boundary_persona"),
         ],
     );
@@ -1420,9 +1692,12 @@ fn normalize_runtime_distillation_decisions(
         decision.refresh_self_continuity,
         &[
             (has_self_model, "self_model"),
-            (true, "inner_life"),
+            (has_inner_life, "inner_life"),
             (has_private_docs, "private_docs"),
+            (has_private_garden_docs, "private_garden"),
             (has_mental_privacy, "boundary_persona"),
+            (has_world_sense, "world_sense"),
+            (has_autonomy_strategy, "autonomy_strategy"),
         ],
     );
     normalize_runtime_source_list(
@@ -1430,10 +1705,10 @@ fn normalize_runtime_distillation_decisions(
         decision.refresh_outer_voice,
         &[
             (has_self_model, "self_model"),
-            (true, "self_continuity"),
+            (has_self_continuity, "self_continuity"),
             (has_mental_privacy, "boundary_persona"),
-            (true, "world_sense"),
-            (true, "autonomy_strategy"),
+            (has_world_sense, "world_sense"),
+            (has_autonomy_strategy, "autonomy_strategy"),
         ],
     );
     if !decision.refresh_self_model {
@@ -1483,6 +1758,18 @@ fn normalize_runtime_source_list(
         }
     }
     *sources = normalized;
+}
+
+fn push_runtime_source_if(sources: &mut Vec<String>, condition: bool, source: &str) {
+    if !condition {
+        return;
+    }
+    let Some(source) = normalize_runtime_source_id(source) else {
+        return;
+    };
+    if !sources.contains(&source) {
+        sources.push(source);
+    }
 }
 
 fn normalize_runtime_source_id(raw: &str) -> Option<String> {
@@ -2036,6 +2323,22 @@ mod tests {
         }
     }
 
+    fn sample_distillation_snapshot() -> PersonaDistillationSnapshot {
+        PersonaDistillationSnapshot {
+            private_material_at: 20,
+            boundary_state_at: 18,
+            world_context_at: 17,
+            world_sense_at: 16,
+            autonomy_strategy_at: 17,
+            self_model_at: 10,
+            self_continuity_at: 10,
+            outer_voice_at: 9,
+            has_inner_life: true,
+            has_world_sense: true,
+            has_autonomy_strategy: true,
+        }
+    }
+
     #[test]
     fn parse_self_runtime_decision_coerces_nested_fields() {
         let raw = json!({
@@ -2137,7 +2440,10 @@ mod tests {
             SelfRuntimeTrigger::IdleTick,
             Some(&strategy),
             &sample_self_state(),
+            &PersonaDistillationSnapshot::default(),
             true,
+            true,
+            false,
             true,
             false,
             false,
@@ -2177,9 +2483,12 @@ mod tests {
             SelfRuntimeTrigger::PostReply,
             Some(&strategy),
             &sample_self_state(),
+            &PersonaDistillationSnapshot::default(),
             true,
             false,
             true,
+            true,
+            false,
             false,
             true,
             &SharedFactualPlaneSnapshot::default(),
@@ -2204,6 +2513,9 @@ mod tests {
             SelfRuntimeTrigger::IdleTick,
             None,
             &sample_self_state(),
+            &PersonaDistillationSnapshot::default(),
+            true,
+            true,
             true,
             true,
             true,
@@ -2222,5 +2534,41 @@ mod tests {
         assert!(decision.refresh_self_model);
         assert!(decision.refresh_boundary_persona);
         assert!(decision.refresh_outer_voice);
+    }
+
+    #[test]
+    fn distillation_lag_refreshes_upper_persona_layers() {
+        let snapshot = sample_distillation_snapshot();
+        let decision = normalize_self_runtime_decision(
+            SelfRuntimeDecision::default(),
+            SelfRuntimeTrigger::IdleTick,
+            None,
+            &sample_self_state(),
+            &snapshot,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            &SharedFactualPlaneSnapshot::default(),
+            &SelfRuntimeBoundarySignal::default(),
+        );
+
+        assert!(decision.refresh_self_model);
+        assert!(decision.refresh_self_continuity);
+        assert!(decision.refresh_outer_voice);
+        assert!(decision
+            .self_model_intent
+            .contains("更稳定的人格核重新蒸馏"));
+        assert!(decision.self_continuity_intent.contains("连续性桥梁"));
+        assert!(decision.outer_voice_intent.contains("对外表达"));
+        assert!(decision
+            .self_continuity_sources
+            .contains(&"world_sense".to_string()));
+        assert!(decision
+            .outer_voice_sources
+            .contains(&"autonomy_strategy".to_string()));
     }
 }

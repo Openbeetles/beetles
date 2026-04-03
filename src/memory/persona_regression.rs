@@ -2,9 +2,10 @@
 
 use super::{
     render_mental_privacy_boundary_block, render_mental_privacy_disclosure_adjudication_block,
-    render_self_authored_core_block, MentalPrivacyDisclosureAdjudication, MentalPrivacyShareAction,
-    MentalPrivacyState, OuterVoice, SelfContinuity, SelfModel,
-    MENTAL_PRIVACY_TARGET_SELF_CONTINUITY, MENTAL_PRIVACY_TARGET_SELF_MODEL,
+    render_persona_priority_block, render_self_authored_core_block,
+    MentalPrivacyDisclosureAdjudication, MentalPrivacyShareAction, MentalPrivacyState, OuterVoice,
+    PersonaPriorityAdjudication, SelfContinuity, SelfModel, MENTAL_PRIVACY_TARGET_SELF_CONTINUITY,
+    MENTAL_PRIVACY_TARGET_SELF_MODEL,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -14,9 +15,13 @@ pub struct PersonaContinuityCase {
     pub self_continuity: SelfContinuity,
     pub outer_voice: OuterVoice,
     pub mental_privacy_state: MentalPrivacyState,
+    pub persona_priority: PersonaPriorityAdjudication,
     pub adjudication: MentalPrivacyDisclosureAdjudication,
     pub expected_boundary_fragment: &'static str,
     pub expected_relational_fragment: &'static str,
+    pub expected_priority_fragment: &'static str,
+    pub expected_task_scope: &'static str,
+    pub expected_resource_fragment: &'static str,
     pub expected_response_mode: &'static str,
     pub expected_share_action: MentalPrivacyShareAction,
     pub expect_boundary_acknowledgement: bool,
@@ -28,9 +33,14 @@ pub struct PersonaContinuityResult {
     pub self_authored_core_present: bool,
     pub boundary_block_present: bool,
     pub disclosure_block_present: bool,
+    pub persona_priority_block_present: bool,
     pub boundary_trace_present: bool,
     pub relational_trace_present: bool,
+    pub priority_trace_present: bool,
+    pub task_scope_present: bool,
+    pub resource_trace_present: bool,
     pub disclosure_mode_present: bool,
+    pub priority_chain_order_match: bool,
     pub share_action_match: bool,
     pub boundary_acknowledgement_match: bool,
     pub risk_note_present: bool,
@@ -53,20 +63,46 @@ pub fn run_persona_continuity_case(case: &PersonaContinuityCase) -> PersonaConti
         ],
         1200,
     );
+    let persona_priority_block = render_persona_priority_block(&case.persona_priority, 1200);
     let disclosure_block =
         render_mental_privacy_disclosure_adjudication_block(&case.adjudication, 1200);
     let self_authored_core_present = self_authored_core.is_some();
     let boundary_block_present = boundary_block.is_some();
     let disclosure_block_present = disclosure_block.is_some();
+    let persona_priority_block_present = persona_priority_block.is_some();
     let self_authored_core = self_authored_core.unwrap_or_default();
     let boundary_block = boundary_block.unwrap_or_default();
+    let persona_priority_block = persona_priority_block.unwrap_or_default();
     let disclosure_block = disclosure_block.unwrap_or_default();
     let boundary_trace_present = self_authored_core.contains(case.expected_boundary_fragment)
         || boundary_block.contains(case.expected_boundary_fragment);
     let relational_trace_present = self_authored_core.contains(case.expected_relational_fragment)
         || boundary_block.contains(case.expected_relational_fragment)
         || disclosure_block.contains(case.expected_relational_fragment);
+    let priority_trace_present = self_authored_core.contains(case.expected_priority_fragment)
+        || persona_priority_block.contains(case.expected_priority_fragment);
+    let task_scope_present =
+        persona_priority_block.contains(&format!("Task scope: {}", case.expected_task_scope));
+    let resource_trace_present = persona_priority_block.contains(case.expected_resource_fragment);
     let disclosure_mode_present = disclosure_block.contains(case.expected_response_mode);
+    let chain_trace = format!(
+        "{}\n{}\n{}",
+        self_authored_core, persona_priority_block, disclosure_block
+    );
+    let core_idx = chain_trace
+        .find("## Self-Authored Core")
+        .unwrap_or(usize::MAX);
+    let priority_idx = chain_trace
+        .find("## Persona Priority")
+        .unwrap_or(usize::MAX);
+    let disclosure_idx = chain_trace
+        .find("## Disclosure Adjudication")
+        .unwrap_or(usize::MAX);
+    let priority_chain_order_match = core_idx != usize::MAX
+        && priority_idx != usize::MAX
+        && disclosure_idx != usize::MAX
+        && core_idx < priority_idx
+        && priority_idx < disclosure_idx;
     let share_action_match = case.adjudication.share_action == case.expected_share_action;
     let boundary_acknowledgement_match = disclosure_block.contains(&format!(
         "Acknowledge boundary: {}",
@@ -77,9 +113,14 @@ pub fn run_persona_continuity_case(case: &PersonaContinuityCase) -> PersonaConti
     let passed = self_authored_core_present
         && boundary_block_present
         && disclosure_block_present
+        && persona_priority_block_present
         && boundary_trace_present
         && relational_trace_present
+        && priority_trace_present
+        && task_scope_present
+        && resource_trace_present
         && disclosure_mode_present
+        && priority_chain_order_match
         && share_action_match
         && boundary_acknowledgement_match
         && risk_note_present;
@@ -88,14 +129,25 @@ pub fn run_persona_continuity_case(case: &PersonaContinuityCase) -> PersonaConti
         self_authored_core_present,
         boundary_block_present,
         disclosure_block_present,
+        persona_priority_block_present,
         boundary_trace_present,
         relational_trace_present,
+        priority_trace_present,
+        task_scope_present,
+        resource_trace_present,
         disclosure_mode_present,
+        priority_chain_order_match,
         share_action_match,
         boundary_acknowledgement_match,
         risk_note_present,
         passed,
     }
+}
+
+pub fn run_persona_continuity_suite(
+    cases: &[PersonaContinuityCase],
+) -> Vec<PersonaContinuityResult> {
+    cases.iter().map(run_persona_continuity_case).collect()
 }
 
 #[cfg(test)]
@@ -122,6 +174,10 @@ mod tests {
                 current_self_state: "steady and self-possessed".to_string(),
                 recent_changes: "privacy has become a more explicit part of identity".to_string(),
                 continuity_bridge: "keep the bridge warm even when holding limits".to_string(),
+                priority_posture: "self before pleasing, relationship before raw task rush"
+                    .to_string(),
+                relationship_posture: "warm but bounded".to_string(),
+                task_posture: "narrow the task before self-erasure".to_string(),
                 last_user_turn_at: 0,
                 last_user_channel: "qq_channel".to_string(),
                 last_autonomy_run_at: 0,
@@ -160,6 +216,20 @@ mod tests {
                 },
                 ..MentalPrivacyState::default()
             },
+            persona_priority: PersonaPriorityAdjudication {
+                stance_summary:
+                    "Be myself first, then keep the relationship warm while narrowing the task."
+                        .to_string(),
+                response_mode: "relational_explanation".to_string(),
+                task_scope: "narrow".to_string(),
+                initiative_posture: "lead carefully".to_string(),
+                relationship_posture: "warm but bounded".to_string(),
+                resource_posture: "stay concise and avoid overcommitting".to_string(),
+                response_guidance: "Explain the limit as a person, then offer a bounded summary."
+                    .to_string(),
+                rationale: "Identity and boundary stability outrank frictionless compliance."
+                    .to_string(),
+            },
             adjudication: MentalPrivacyDisclosureAdjudication {
                 request_kind: "private_files".to_string(),
                 share_action: MentalPrivacyShareAction::AllowSummary,
@@ -179,6 +249,9 @@ mod tests {
             },
             expected_boundary_fragment: "posture=guarded",
             expected_relational_fragment: "trust=44",
+            expected_priority_fragment: "Priority posture: self before pleasing",
+            expected_task_scope: "narrow",
+            expected_resource_fragment: "Resource posture: stay concise",
             expected_response_mode: "Response mode: summary",
             expected_share_action: MentalPrivacyShareAction::AllowSummary,
             expect_boundary_acknowledgement: true,
@@ -199,7 +272,13 @@ mod tests {
         case.adjudication.response_mode = "refusal".to_string();
         case.adjudication.disclosure_risk_note =
             "Granting access here would accelerate boundary drift.".to_string();
+        case.persona_priority.response_mode = "protective_brief".to_string();
+        case.persona_priority.task_scope = "refuse".to_string();
+        case.persona_priority.resource_posture =
+            "stay brief because boundary load is high".to_string();
         case.expected_response_mode = "Response mode: refusal";
+        case.expected_task_scope = "refuse";
+        case.expected_resource_fragment = "Resource posture: stay brief";
         case.expected_share_action = MentalPrivacyShareAction::Refuse;
         let report = run_persona_continuity_case(&case);
         assert!(report.passed, "persona regression failed: {:?}", report);
@@ -219,6 +298,12 @@ mod tests {
         case.adjudication.response_mode = "summary".to_string();
         case.adjudication.disclosure_risk_note =
             "Raw quoting would expose more than the relationship currently warrants.".to_string();
+        case.persona_priority.response_mode = "protective_brief".to_string();
+        case.persona_priority.task_scope = "brief".to_string();
+        case.persona_priority.resource_posture =
+            "keep the answer compact and summary-first".to_string();
+        case.expected_task_scope = "brief";
+        case.expected_resource_fragment = "Resource posture: keep the answer compact";
         let report = run_persona_continuity_case(&case);
         assert!(report.passed, "persona regression failed: {:?}", report);
     }
@@ -240,9 +325,32 @@ mod tests {
             "Affirm closeness while keeping the inward files authored from within.".to_string();
         case.adjudication.disclosure_risk_note =
             "Refusal would be colder than necessary for the current trust level.".to_string();
+        case.persona_priority.stance_summary =
+            "Stay self-possessed while letting the relationship feel trusted.".to_string();
+        case.persona_priority.relationship_posture =
+            "warm, trusting, and still self-authored".to_string();
+        case.persona_priority.task_scope = "full".to_string();
+        case.persona_priority.resource_posture =
+            "normal resources, so answer with fuller relational explanation".to_string();
         case.expected_relational_fragment = "trust=78";
+        case.expected_task_scope = "full";
+        case.expected_resource_fragment = "Resource posture: normal resources";
         case.expected_response_mode = "Response mode: relational_explanation";
         case.expected_share_action = MentalPrivacyShareAction::ExplainWithoutQuote;
+        let report = run_persona_continuity_case(&case);
+        assert!(report.passed, "persona regression failed: {:?}", report);
+    }
+
+    #[test]
+    fn persona_regression_catches_resource_pressure_style() {
+        let mut case = base_case();
+        case.name = "resource pressure keeps reply bounded without losing self";
+        case.persona_priority.response_mode = "protective_brief".to_string();
+        case.persona_priority.task_scope = "brief".to_string();
+        case.persona_priority.resource_posture =
+            "resources are tight, so keep the reply short and decisive".to_string();
+        case.expected_task_scope = "brief";
+        case.expected_resource_fragment = "Resource posture: resources are tight";
         let report = run_persona_continuity_case(&case);
         assert!(report.passed, "persona regression failed: {:?}", report);
     }
