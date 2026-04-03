@@ -87,6 +87,14 @@ pub enum SelfContinuityRefreshOutcome {
     Cleared,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct RawSelfContinuityUpdate {
+    wake_anchor: Option<String>,
+    current_self_state: Option<String>,
+    recent_changes: Option<String>,
+    continuity_bridge: Option<String>,
+}
+
 impl SelfContinuityPolicy {
     fn should_refresh(self, input: SelfContinuityRefreshInput<'_>, has_existing: bool) -> bool {
         if input.ingress != IngressKind::User || input.channel == "cron" {
@@ -243,26 +251,32 @@ pub(crate) fn run_self_continuity_refresh_with_state(
         None,
         ToolChoicePolicy::Auto,
     )?;
-    match parse_self_continuity_response(
-        response.content.trim(),
-        existing_continuity.as_ref(),
-        input.now_secs,
-        input.ingress == IngressKind::User,
-    ) {
+    match parse_self_continuity_response(response.content.trim(), existing_continuity.as_ref()) {
         ParsedSelfContinuityResponse::Skip => Ok(SelfContinuityRefreshOutcome::Skipped),
         ParsedSelfContinuityResponse::Clear => {
-            if existing_continuity.is_some() {
+            let latest = ctx.self_continuity_store.get(input.chat_id)?;
+            if latest.as_ref() != existing_continuity.as_ref() && latest.as_ref().is_some() {
+                return Ok(SelfContinuityRefreshOutcome::Skipped);
+            }
+            if latest.is_some() {
                 ctx.self_continuity_store.clear(input.chat_id)?;
                 Ok(SelfContinuityRefreshOutcome::Cleared)
             } else {
                 Ok(SelfContinuityRefreshOutcome::Skipped)
             }
         }
-        ParsedSelfContinuityResponse::Update(next) => {
-            let Some(next) = normalize_self_continuity(next, input.now_secs) else {
+        ParsedSelfContinuityResponse::Update(update) => {
+            let latest = ctx.self_continuity_store.get(input.chat_id)?;
+            let Some(next) = merge_self_continuity_with_lease(
+                existing_continuity.as_ref(),
+                latest.as_ref(),
+                &update,
+                input.now_secs,
+                input.ingress == IngressKind::User,
+            ) else {
                 return Ok(SelfContinuityRefreshOutcome::Skipped);
             };
-            if existing_continuity.as_ref() == Some(&next) {
+            if latest.as_ref() == Some(&next) {
                 return Ok(SelfContinuityRefreshOutcome::Skipped);
             }
             ctx.self_continuity_store.set(input.chat_id, &next)?;
@@ -278,7 +292,8 @@ pub fn touch_self_continuity_runtime(
     touch_user_turn: bool,
     touch_autonomy_run: bool,
 ) -> Result<()> {
-    let mut continuity = store.get(chat_id)?.unwrap_or_default();
+    let baseline = store.get(chat_id)?;
+    let mut continuity = baseline.clone().unwrap_or_default();
     if touch_user_turn {
         continuity.last_user_turn_at = now_secs;
     }
@@ -289,6 +304,20 @@ pub fn touch_self_continuity_runtime(
         .updated_at
         .max(continuity.last_user_turn_at)
         .max(continuity.last_autonomy_run_at);
+    let latest = store.get(chat_id)?;
+    if latest.as_ref() != baseline.as_ref() {
+        continuity = latest.unwrap_or_default();
+        if touch_user_turn {
+            continuity.last_user_turn_at = now_secs;
+        }
+        if touch_autonomy_run {
+            continuity.last_autonomy_run_at = now_secs;
+        }
+        continuity.updated_at = continuity
+            .updated_at
+            .max(continuity.last_user_turn_at)
+            .max(continuity.last_autonomy_run_at);
+    }
     if continuity.is_meaningful()
         || continuity.last_user_turn_at > 0
         || continuity.last_autonomy_run_at > 0
@@ -306,14 +335,12 @@ fn recent_window(recent: &[SessionMessage], limit: usize) -> &[SessionMessage] {
 enum ParsedSelfContinuityResponse {
     Skip,
     Clear,
-    Update(SelfContinuity),
+    Update(RawSelfContinuityUpdate),
 }
 
 fn parse_self_continuity_response(
     raw: &str,
     existing: Option<&SelfContinuity>,
-    now_secs: u64,
-    touch_user_turn: bool,
 ) -> ParsedSelfContinuityResponse {
     match parse_llm_json_payload(raw) {
         LlmJsonPayload::Null => {
@@ -330,17 +357,87 @@ fn parse_self_continuity_response(
             let Some(object) = value.as_object() else {
                 return ParsedSelfContinuityResponse::Skip;
             };
-            let mut next = existing.cloned().unwrap_or_default();
-            next.wake_anchor = get_object_text(object, "wake_anchor");
-            next.current_self_state = get_object_text(object, "current_self_state");
-            next.recent_changes = get_object_text(object, "recent_changes");
-            next.continuity_bridge = get_object_text(object, "continuity_bridge");
-            next.updated_at = now_secs;
-            if touch_user_turn {
-                next.last_user_turn_at = now_secs;
+            let mut update = RawSelfContinuityUpdate::default();
+            if object.contains_key("wake_anchor") {
+                update.wake_anchor = Some(get_object_text(object, "wake_anchor"));
             }
-            ParsedSelfContinuityResponse::Update(next)
+            if object.contains_key("current_self_state") {
+                update.current_self_state = Some(get_object_text(object, "current_self_state"));
+            }
+            if object.contains_key("recent_changes") {
+                update.recent_changes = Some(get_object_text(object, "recent_changes"));
+            }
+            if object.contains_key("continuity_bridge") {
+                update.continuity_bridge = Some(get_object_text(object, "continuity_bridge"));
+            }
+            if update == RawSelfContinuityUpdate::default() {
+                ParsedSelfContinuityResponse::Skip
+            } else {
+                ParsedSelfContinuityResponse::Update(update)
+            }
         }
+    }
+}
+
+fn merge_self_continuity_with_lease(
+    baseline: Option<&SelfContinuity>,
+    latest: Option<&SelfContinuity>,
+    update: &RawSelfContinuityUpdate,
+    now_secs: u64,
+    touch_user_turn: bool,
+) -> Option<SelfContinuity> {
+    let mut next = latest
+        .cloned()
+        .or_else(|| baseline.cloned())
+        .unwrap_or_default();
+    apply_self_continuity_field_update(
+        &mut next.wake_anchor,
+        baseline.map(|value| value.wake_anchor.as_str()),
+        latest.map(|value| value.wake_anchor.as_str()),
+        update.wake_anchor.as_deref(),
+    );
+    apply_self_continuity_field_update(
+        &mut next.current_self_state,
+        baseline.map(|value| value.current_self_state.as_str()),
+        latest.map(|value| value.current_self_state.as_str()),
+        update.current_self_state.as_deref(),
+    );
+    apply_self_continuity_field_update(
+        &mut next.recent_changes,
+        baseline.map(|value| value.recent_changes.as_str()),
+        latest.map(|value| value.recent_changes.as_str()),
+        update.recent_changes.as_deref(),
+    );
+    apply_self_continuity_field_update(
+        &mut next.continuity_bridge,
+        baseline.map(|value| value.continuity_bridge.as_str()),
+        latest.map(|value| value.continuity_bridge.as_str()),
+        update.continuity_bridge.as_deref(),
+    );
+    next.updated_at = now_secs;
+    if touch_user_turn {
+        next.last_user_turn_at = now_secs;
+    }
+    normalize_self_continuity(next, now_secs)
+}
+
+fn apply_self_continuity_field_update(
+    slot: &mut String,
+    baseline: Option<&str>,
+    latest: Option<&str>,
+    update: Option<&str>,
+) {
+    let Some(update) = update else {
+        return;
+    };
+    if baseline != latest {
+        return;
+    }
+    let trimmed = update.trim();
+    if trimmed.is_empty() {
+        slot.clear();
+    } else {
+        *slot = trimmed.to_string();
     }
 }
 
@@ -460,17 +557,21 @@ mod tests {
         })
         .to_string();
         let ParsedSelfContinuityResponse::Update(parsed) =
-            parse_self_continuity_response(&raw, None, 15, true)
+            parse_self_continuity_response(&raw, None)
         else {
             panic!("expected parsed continuity");
         };
         assert!(parsed
             .wake_anchor
+            .as_deref()
+            .unwrap_or_default()
             .contains("anchor: same system, next round"));
-        assert_eq!(parsed.current_self_state, "focused; iterating");
-        assert_eq!(parsed.recent_changes, "2");
-        assert_eq!(parsed.continuity_bridge, "true");
-        assert_eq!(parsed.last_user_turn_at, 15);
+        assert_eq!(
+            parsed.current_self_state.as_deref(),
+            Some("focused; iterating")
+        );
+        assert_eq!(parsed.recent_changes.as_deref(), Some("2"));
+        assert_eq!(parsed.continuity_bridge.as_deref(), Some("true"));
     }
 
     #[test]

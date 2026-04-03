@@ -1177,7 +1177,7 @@ fn extract_long_term_memory(
         .map(|message| message.content.as_str())
         .unwrap_or("");
     let archive_evidence = build_archive_evidence_block(
-        &recent,
+        ctx.session_store,
         ctx.memory_store,
         ctx.turn_ledger_store,
         chat_id,
@@ -1706,6 +1706,10 @@ mod tests {
                 "Daily note: memory pipeline 收口仍是今天的主线。".to_string(),
             )],
         };
+        let session_store = StubSessionStore {
+            recent: recent.clone(),
+            ..Default::default()
+        };
         let turn_ledger_store = StubTurnLedgerStore {
             ledger: Some(TurnLedger {
                 status: TurnLedgerStatus::Answered,
@@ -1716,7 +1720,7 @@ mod tests {
             }),
         };
         let archive_evidence = build_archive_evidence_block(
-            &recent,
+            &session_store,
             &archive_memory_store,
             &turn_ledger_store,
             "chat-1",

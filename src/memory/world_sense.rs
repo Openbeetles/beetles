@@ -15,9 +15,10 @@ use std::hash::{Hash, Hasher};
 use super::{
     llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload},
     memory_policy, render_autonomy_strategy_block, render_execution_state_block,
-    render_self_continuity_block, AutonomyStrategy, AutonomyStrategyStore, ExecutionState,
-    ExecutionStateStore, MemoryProfile, RemindAtStore, SelfContinuity, SelfContinuityStore,
-    SessionMessage, SessionStore, SessionSummaryStore, WorldSensePolicy, WorldSenseStore,
+    render_self_continuity_block, whole_record_lease_advanced, AutonomyStrategy,
+    AutonomyStrategyStore, ExecutionState, ExecutionStateStore, MemoryProfile, RemindAtStore,
+    SelfContinuity, SelfContinuityStore, SessionMessage, SessionStore, SessionSummaryStore,
+    WorldSensePolicy, WorldSenseStore,
 };
 
 pub const WORLD_SENSE_SYSTEM_PROMPT: &str = "You maintain the assistant's private world-sense layer. Return JSON only: either null or one object with fields current_scene, body_state, social_field, world_changes, external_focus. This layer describes the outer situation you currently feel yourself to be in: environment, device/body condition, interaction field, and what in the outside world deserves attention now. Do not write self-model, inner-life drift, or transcript summary. Keep it compact, situational, and current.";
@@ -489,14 +490,38 @@ pub(crate) fn run_world_sense_refresh_with_state(
     match parse_world_sense_response(response.content.trim(), snapshot, input.now_secs) {
         ParsedWorldSenseResponse::Skip => return Ok(WorldSenseRefreshOutcome::Skipped),
         ParsedWorldSenseResponse::Clear => {
-            if existing_world_sense.is_some() {
+            let latest = ctx.world_sense_store.get(input.chat_id)?;
+            if whole_record_lease_advanced(
+                existing_world_sense.as_ref(),
+                latest.as_ref(),
+                existing_world_sense
+                    .as_ref()
+                    .map(|value| value.updated_at)
+                    .unwrap_or(0),
+                latest.as_ref().map(|value| value.updated_at).unwrap_or(0),
+            ) {
+                return Ok(WorldSenseRefreshOutcome::Skipped);
+            }
+            if latest.is_some() {
                 ctx.world_sense_store.clear(input.chat_id)?;
                 return Ok(WorldSenseRefreshOutcome::Cleared);
             }
             return Ok(WorldSenseRefreshOutcome::Skipped);
         }
         ParsedWorldSenseResponse::Update(next) => {
-            if existing_world_sense.as_ref() == Some(&next) {
+            let latest = ctx.world_sense_store.get(input.chat_id)?;
+            if latest.as_ref() == Some(&next) {
+                return Ok(WorldSenseRefreshOutcome::Skipped);
+            }
+            if whole_record_lease_advanced(
+                existing_world_sense.as_ref(),
+                latest.as_ref(),
+                existing_world_sense
+                    .as_ref()
+                    .map(|value| value.updated_at)
+                    .unwrap_or(0),
+                latest.as_ref().map(|value| value.updated_at).unwrap_or(0),
+            ) {
                 return Ok(WorldSenseRefreshOutcome::Skipped);
             }
             ctx.world_sense_store.set(input.chat_id, &next)?;

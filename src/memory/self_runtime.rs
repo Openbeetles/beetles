@@ -638,6 +638,7 @@ fn execute_self_runtime_actions(
     let decision = match decide_self_runtime(
         http,
         llm,
+        ctx.session_store,
         ctx.long_term_memory_store,
         ctx.memory_store,
         ctx.turn_ledger_store,
@@ -1361,6 +1362,7 @@ fn default_factual_refresh_intent(
 fn decide_self_runtime(
     http: &mut dyn LlmHttpClient,
     llm: &(dyn LlmClient + Send + Sync),
+    session_store: &dyn SessionStore,
     _long_term_memory_store: &dyn LongTermMemoryStore,
     memory_store: &dyn MemoryStore,
     turn_ledger_store: &dyn TurnLedgerStore,
@@ -1436,7 +1438,7 @@ fn decide_self_runtime(
         let _ = writeln!(input, "\n{}\n", block);
     }
     if let Some(block) = build_archive_evidence_block(
-        recent,
+        session_store,
         memory_store,
         turn_ledger_store,
         chat_id,

@@ -83,6 +83,14 @@ pub enum SelfModelRefreshOutcome {
     Updated,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct RawSelfModelUpdate {
+    continuity_anchor: Option<String>,
+    self_narrative: Option<String>,
+    relationship_state: Option<String>,
+    private_notes: Option<String>,
+}
+
 impl SelfModelPolicy {
     fn should_refresh(self, input: SelfModelRefreshInput<'_>, has_existing_model: bool) -> bool {
         if input.ingress != IngressKind::User || input.channel == "cron" {
@@ -269,16 +277,21 @@ pub(crate) fn run_self_model_refresh_with_state(
         ToolChoicePolicy::Auto,
     ) {
         Ok(response) => {
-            let Some(next_model) =
-                parse_self_model_response(response.content.trim(), input.now_secs)
-            else {
+            let Some(update) = parse_self_model_response(response.content.trim()) else {
                 return Ok(SelfModelRefreshOutcome::Skipped);
             };
-            let Some(merged) =
-                merge_self_model(existing_model.as_ref(), next_model, input.now_secs)
-            else {
+            let latest_model = ctx.self_model_store.get(input.chat_id)?;
+            let Some(merged) = merge_self_model_with_lease(
+                existing_model.as_ref(),
+                latest_model.as_ref(),
+                &update,
+                input.now_secs,
+            ) else {
                 return Ok(SelfModelRefreshOutcome::Skipped);
             };
+            if latest_model.as_ref() == Some(&merged) {
+                return Ok(SelfModelRefreshOutcome::Skipped);
+            }
             ctx.self_model_store.set(input.chat_id, &merged)?;
             Ok(SelfModelRefreshOutcome::Updated)
         }
@@ -402,21 +415,25 @@ fn build_self_model_transcript(recent: &[SessionMessage], policy: SelfModelPolic
     transcript
 }
 
-fn parse_self_model_response(raw: &str, now_secs: u64) -> Option<SelfModel> {
+fn parse_self_model_response(raw: &str) -> Option<RawSelfModelUpdate> {
     let LlmJsonPayload::Value(value) = parse_llm_json_payload(raw) else {
         return None;
     };
     let parsed = value.as_object()?;
-    normalize_self_model(
-        SelfModel {
-            continuity_anchor: get_object_text(parsed, "continuity_anchor"),
-            self_narrative: get_object_text(parsed, "self_narrative"),
-            relationship_state: get_object_text(parsed, "relationship_state"),
-            private_notes: get_object_text(parsed, "private_notes"),
-            updated_at: now_secs,
-        },
-        now_secs,
-    )
+    let mut update = RawSelfModelUpdate::default();
+    if parsed.contains_key("continuity_anchor") {
+        update.continuity_anchor = Some(get_object_text(parsed, "continuity_anchor"));
+    }
+    if parsed.contains_key("self_narrative") {
+        update.self_narrative = Some(get_object_text(parsed, "self_narrative"));
+    }
+    if parsed.contains_key("relationship_state") {
+        update.relationship_state = Some(get_object_text(parsed, "relationship_state"));
+    }
+    if parsed.contains_key("private_notes") {
+        update.private_notes = Some(get_object_text(parsed, "private_notes"));
+    }
+    (update != RawSelfModelUpdate::default()).then_some(update)
 }
 
 fn normalize_self_model(mut model: SelfModel, now_secs: u64) -> Option<SelfModel> {
@@ -460,26 +477,60 @@ fn dedupe_self_model_fields(model: &mut SelfModel) {
     }
 }
 
-fn merge_self_model(
-    existing_model: Option<&SelfModel>,
-    mut next_model: SelfModel,
+fn merge_self_model_with_lease(
+    baseline_model: Option<&SelfModel>,
+    latest_model: Option<&SelfModel>,
+    update: &RawSelfModelUpdate,
     now_secs: u64,
 ) -> Option<SelfModel> {
-    if let Some(existing_model) = existing_model {
-        if next_model.continuity_anchor.trim().is_empty() {
-            next_model.continuity_anchor = existing_model.continuity_anchor.clone();
-        }
-        if next_model.self_narrative.trim().is_empty() {
-            next_model.self_narrative = existing_model.self_narrative.clone();
-        }
-        if next_model.relationship_state.trim().is_empty() {
-            next_model.relationship_state = existing_model.relationship_state.clone();
-        }
-        if next_model.private_notes.trim().is_empty() {
-            next_model.private_notes = existing_model.private_notes.clone();
-        }
-    }
+    let mut next_model = latest_model
+        .cloned()
+        .or_else(|| baseline_model.cloned())
+        .unwrap_or_default();
+    apply_self_model_field_update(
+        &mut next_model.continuity_anchor,
+        baseline_model.map(|model| model.continuity_anchor.as_str()),
+        latest_model.map(|model| model.continuity_anchor.as_str()),
+        update.continuity_anchor.as_deref(),
+    );
+    apply_self_model_field_update(
+        &mut next_model.self_narrative,
+        baseline_model.map(|model| model.self_narrative.as_str()),
+        latest_model.map(|model| model.self_narrative.as_str()),
+        update.self_narrative.as_deref(),
+    );
+    apply_self_model_field_update(
+        &mut next_model.relationship_state,
+        baseline_model.map(|model| model.relationship_state.as_str()),
+        latest_model.map(|model| model.relationship_state.as_str()),
+        update.relationship_state.as_deref(),
+    );
+    apply_self_model_field_update(
+        &mut next_model.private_notes,
+        baseline_model.map(|model| model.private_notes.as_str()),
+        latest_model.map(|model| model.private_notes.as_str()),
+        update.private_notes.as_deref(),
+    );
     normalize_self_model(next_model, now_secs)
+}
+
+fn apply_self_model_field_update(
+    slot: &mut String,
+    baseline: Option<&str>,
+    latest: Option<&str>,
+    update: Option<&str>,
+) {
+    let Some(update) = update else {
+        return;
+    };
+    let trimmed = update.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if baseline != latest {
+        return;
+    }
+    *slot = trimmed.to_string();
 }
 
 #[cfg(test)]
@@ -500,11 +551,18 @@ mod tests {
             "private_notes": true
         })
         .to_string();
-        let parsed = parse_self_model_response(&raw, 9).unwrap();
-        assert!(parsed.continuity_anchor.contains("anchor: same agent"));
-        assert_eq!(parsed.self_narrative, "stabilizing; governing memory");
-        assert_eq!(parsed.relationship_state, "2");
-        assert_eq!(parsed.private_notes, "true");
+        let parsed = parse_self_model_response(&raw).unwrap();
+        assert!(parsed
+            .continuity_anchor
+            .as_deref()
+            .unwrap_or_default()
+            .contains("anchor: same agent"));
+        assert_eq!(
+            parsed.self_narrative.as_deref(),
+            Some("stabilizing; governing memory")
+        );
+        assert_eq!(parsed.relationship_state.as_deref(), Some("2"));
+        assert_eq!(parsed.private_notes.as_deref(), Some("true"));
     }
 
     #[derive(Default)]
@@ -768,27 +826,61 @@ mod tests {
 
     #[test]
     fn merge_keeps_existing_fields_when_new_response_is_partial() {
-        let merged = merge_self_model(
-            Some(&SelfModel {
-                continuity_anchor: "还是同一个 beetle".to_string(),
-                self_narrative: "正在收口链路".to_string(),
-                relationship_state: "更贴近用户".to_string(),
-                private_notes: "别打散架构".to_string(),
-                updated_at: 10,
-            }),
-            SelfModel {
-                continuity_anchor: String::new(),
-                self_narrative: "已经把私有层从事实层里拆开".to_string(),
-                relationship_state: String::new(),
-                private_notes: String::new(),
-                updated_at: 20,
+        let baseline = SelfModel {
+            continuity_anchor: "还是同一个 beetle".to_string(),
+            self_narrative: "正在收口链路".to_string(),
+            relationship_state: "更贴近用户".to_string(),
+            private_notes: "别打散架构".to_string(),
+            updated_at: 10,
+        };
+        let merged = merge_self_model_with_lease(
+            Some(&baseline),
+            Some(&baseline),
+            &RawSelfModelUpdate {
+                continuity_anchor: None,
+                self_narrative: Some("已经把私有层从事实层里拆开".to_string()),
+                relationship_state: None,
+                private_notes: None,
             },
             20,
         )
         .unwrap();
         assert_eq!(merged.continuity_anchor, "还是同一个 beetle");
+        assert_eq!(merged.self_narrative, "已经把私有层从事实层里拆开");
         assert_eq!(merged.relationship_state, "更贴近用户");
         assert_eq!(merged.updated_at, 20);
+    }
+
+    #[test]
+    fn lease_merge_keeps_newer_field_change() {
+        let baseline = SelfModel {
+            continuity_anchor: "还是同一个 beetle".to_string(),
+            self_narrative: "正在收口链路".to_string(),
+            relationship_state: "更贴近用户".to_string(),
+            private_notes: "别打散架构".to_string(),
+            updated_at: 10,
+        };
+        let latest = SelfModel {
+            continuity_anchor: "还是同一个 beetle".to_string(),
+            self_narrative: "并发更新过的新叙事".to_string(),
+            relationship_state: "更贴近用户".to_string(),
+            private_notes: "别打散架构".to_string(),
+            updated_at: 11,
+        };
+        let merged = merge_self_model_with_lease(
+            Some(&baseline),
+            Some(&latest),
+            &RawSelfModelUpdate {
+                continuity_anchor: None,
+                self_narrative: Some("旧 flush 想覆盖".to_string()),
+                relationship_state: Some("关系仍然稳定".to_string()),
+                private_notes: None,
+            },
+            20,
+        )
+        .unwrap();
+        assert_eq!(merged.self_narrative, "并发更新过的新叙事");
+        assert_eq!(merged.relationship_state, "关系仍然稳定");
     }
 
     #[test]

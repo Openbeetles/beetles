@@ -324,6 +324,7 @@ pub fn search_archive_records(
         }
     }
 
+    apply_archive_recency_bonus(&mut hits);
     hits.sort_by(|a, b| {
         b.score
             .cmp(&a.score)
@@ -332,6 +333,36 @@ pub fn search_archive_records(
     });
     hits.truncate(limit);
     Ok(hits)
+}
+
+fn apply_archive_recency_bonus(hits: &mut [ArchiveSearchHit]) {
+    let newest = hits
+        .iter()
+        .filter_map(|hit| hit.observed_at)
+        .max()
+        .unwrap_or(0);
+    if newest == 0 {
+        return;
+    }
+    for hit in hits {
+        let Some(observed_at) = hit.observed_at else {
+            continue;
+        };
+        let age = newest.saturating_sub(observed_at);
+        let bonus = if age <= 86_400 {
+            6
+        } else if age <= 7 * 86_400 {
+            4
+        } else if age <= 30 * 86_400 {
+            2
+        } else {
+            0
+        };
+        hit.score = hit.score.saturating_add(bonus);
+        if bonus > 0 {
+            hit.cues.push(format!("recent+{}", bonus));
+        }
+    }
 }
 
 pub fn get_archive_record(

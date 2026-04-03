@@ -205,6 +205,13 @@ pub fn build_default_registry(
         Arc::clone(&memory_store),
         Arc::clone(&turn_ledger_store),
     )));
+    registry.register(Box::new(super::ContinuitySnapshotTool::new(
+        platform.long_term_memory_store(),
+        platform.session_summary_store(),
+        platform.execution_state_store(),
+        platform.self_model_store(),
+        platform.self_continuity_store(),
+    )));
     #[cfg(feature = "tools_diagnostics")]
     if !config.hardware_devices.is_empty() {
         registry.register(Box::new(super::DeviceControlTool::new(

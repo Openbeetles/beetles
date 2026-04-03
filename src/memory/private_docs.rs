@@ -349,11 +349,18 @@ pub(crate) fn run_private_doc_workspace_refresh_with_state(
             let Some(update) = parse_private_doc_workspace_response(response.content.trim()) else {
                 return Ok(PrivateDocWorkspaceRefreshOutcome::Skipped);
             };
-            let Some(merged) =
-                merge_private_doc_workspace(existing_workspace.as_ref(), update, input.now_secs)
-            else {
+            let latest_workspace = ctx.private_doc_store.get(input.chat_id)?;
+            let Some(merged) = merge_private_doc_workspace_with_lease(
+                existing_workspace.as_ref(),
+                latest_workspace.as_ref(),
+                update,
+                input.now_secs,
+            ) else {
                 return Ok(PrivateDocWorkspaceRefreshOutcome::Skipped);
             };
+            if latest_workspace.as_ref() == Some(&merged) {
+                return Ok(PrivateDocWorkspaceRefreshOutcome::Skipped);
+            }
             ctx.private_doc_store.set(input.chat_id, &merged)?;
             Ok(PrivateDocWorkspaceRefreshOutcome::Updated)
         }
@@ -576,35 +583,60 @@ fn normalize_private_doc_entry(entry: &mut Option<PrivateDocEntry>) {
     value.content = truncate_content_to_max(trimmed, PRIVATE_DOC_FIELD_MAX_CHARS).into_owned();
 }
 
-fn merge_private_doc_workspace(
-    existing_workspace: Option<&PrivateDocWorkspace>,
+fn merge_private_doc_workspace_with_lease(
+    baseline_workspace: Option<&PrivateDocWorkspace>,
+    latest_workspace: Option<&PrivateDocWorkspace>,
     update: RawPrivateDocWorkspaceUpdate,
     now_secs: u64,
 ) -> Option<PrivateDocWorkspace> {
-    let mut workspace = existing_workspace.cloned().unwrap_or_default();
-    apply_private_doc_update(&mut workspace.inner_journal, update.inner_journal, now_secs);
+    let mut workspace = latest_workspace
+        .cloned()
+        .or_else(|| baseline_workspace.cloned())
+        .unwrap_or_default();
+    apply_private_doc_update(
+        &mut workspace.inner_journal,
+        baseline_workspace.and_then(|workspace| workspace.inner_journal.as_ref()),
+        latest_workspace.and_then(|workspace| workspace.inner_journal.as_ref()),
+        update.inner_journal,
+        now_secs,
+    );
     apply_private_doc_update(
         &mut workspace.relationship_notes,
+        baseline_workspace.and_then(|workspace| workspace.relationship_notes.as_ref()),
+        latest_workspace.and_then(|workspace| workspace.relationship_notes.as_ref()),
         update.relationship_notes,
         now_secs,
     );
     apply_private_doc_update(
         &mut workspace.self_reflection,
+        baseline_workspace.and_then(|workspace| workspace.self_reflection.as_ref()),
+        latest_workspace.and_then(|workspace| workspace.self_reflection.as_ref()),
         update.self_reflection,
         now_secs,
     );
-    apply_private_doc_update(&mut workspace.private_plan, update.private_plan, now_secs);
+    apply_private_doc_update(
+        &mut workspace.private_plan,
+        baseline_workspace.and_then(|workspace| workspace.private_plan.as_ref()),
+        latest_workspace.and_then(|workspace| workspace.private_plan.as_ref()),
+        update.private_plan,
+        now_secs,
+    );
     normalize_private_doc_workspace(workspace, now_secs)
 }
 
 fn apply_private_doc_update(
     slot: &mut Option<PrivateDocEntry>,
+    baseline: Option<&PrivateDocEntry>,
+    latest: Option<&PrivateDocEntry>,
     update: Option<String>,
     now_secs: u64,
 ) {
     let Some(update) = update else {
         return;
     };
+    if baseline != latest {
+        return;
+    }
     let trimmed = update.trim();
     if trimmed.is_empty() {
         *slot = None;
@@ -1028,22 +1060,24 @@ mod tests {
 
     #[test]
     fn merge_updates_revision_and_can_clear_doc() {
-        let merged = merge_private_doc_workspace(
-            Some(&PrivateDocWorkspace {
-                inner_journal: Some(PrivateDocEntry {
-                    content: "旧内容".to_string(),
-                    updated_at: 1,
-                    revision: 2,
-                }),
-                relationship_notes: Some(PrivateDocEntry {
-                    content: "关系感增强".to_string(),
-                    updated_at: 1,
-                    revision: 1,
-                }),
-                self_reflection: None,
-                private_plan: None,
+        let baseline = PrivateDocWorkspace {
+            inner_journal: Some(PrivateDocEntry {
+                content: "旧内容".to_string(),
                 updated_at: 1,
+                revision: 2,
             }),
+            relationship_notes: Some(PrivateDocEntry {
+                content: "关系感增强".to_string(),
+                updated_at: 1,
+                revision: 1,
+            }),
+            self_reflection: None,
+            private_plan: None,
+            updated_at: 1,
+        };
+        let merged = merge_private_doc_workspace_with_lease(
+            Some(&baseline),
+            Some(&baseline),
             RawPrivateDocWorkspaceUpdate {
                 inner_journal: Some("新内容".to_string()),
                 relationship_notes: Some(String::new()),
@@ -1064,6 +1098,58 @@ mod tests {
                 .as_ref()
                 .map(|entry| entry.content.as_str()),
             Some("继续治理私有空间")
+        );
+    }
+
+    #[test]
+    fn lease_merge_preserves_newer_slot_update() {
+        let baseline = PrivateDocWorkspace {
+            inner_journal: Some(PrivateDocEntry {
+                content: "旧内容".to_string(),
+                updated_at: 1,
+                revision: 2,
+            }),
+            relationship_notes: None,
+            self_reflection: None,
+            private_plan: None,
+            updated_at: 1,
+        };
+        let latest = PrivateDocWorkspace {
+            inner_journal: Some(PrivateDocEntry {
+                content: "并发新内容".to_string(),
+                updated_at: 2,
+                revision: 3,
+            }),
+            relationship_notes: None,
+            self_reflection: None,
+            private_plan: None,
+            updated_at: 2,
+        };
+        let merged = merge_private_doc_workspace_with_lease(
+            Some(&baseline),
+            Some(&latest),
+            RawPrivateDocWorkspaceUpdate {
+                inner_journal: Some("旧 flush 想覆盖".to_string()),
+                relationship_notes: None,
+                self_reflection: None,
+                private_plan: Some("新加计划".to_string()),
+            },
+            10,
+        )
+        .unwrap();
+        assert_eq!(
+            merged
+                .inner_journal
+                .as_ref()
+                .map(|entry| entry.content.as_str()),
+            Some("并发新内容")
+        );
+        assert_eq!(
+            merged
+                .private_plan
+                .as_ref()
+                .map(|entry| entry.content.as_str()),
+            Some("新加计划")
         );
     }
 

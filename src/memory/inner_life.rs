@@ -14,10 +14,10 @@ use super::{
     memory_policy, render_execution_state_block, render_internal_memory_topology_block,
     render_private_doc_workspace_block, render_private_memory_boundary_block,
     render_self_continuity_block, render_self_model_block, render_shared_factual_plane_block,
-    ExecutionState, ExecutionStateStore, InnerLifePolicy, InnerLifeStore, InternalMemoryLayerFocus,
-    LongTermMemoryStore, MemoryProfile, PrivateDocStore, PrivateDocWorkspace, SelfContinuity,
-    SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
-    SessionSummaryStore,
+    whole_record_lease_advanced, ExecutionState, ExecutionStateStore, InnerLifePolicy,
+    InnerLifeStore, InternalMemoryLayerFocus, LongTermMemoryStore, MemoryProfile, PrivateDocStore,
+    PrivateDocWorkspace, SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore,
+    SessionMessage, SessionStore, SessionSummaryStore,
 };
 
 pub const INNER_LIFE_SYSTEM_PROMPT: &str = "You maintain the AI assistant's private inner life. Return JSON only: either null or one object with fields internal_monologue, private_journal, emotional_drift, attention_drift. This layer is subjective, first-person is allowed, and it may carry ambiguity, mood, or inward texture. It must stay compact. Do not copy transcript lines, generic assistant boilerplate, raw tool payloads, secrets, or factual memory that belongs elsewhere. Durable objective material belongs in the shared factual plane, and durable private identity belongs in self-continuity or self-model; use this layer for active inward afterglow, emotional movement, and current attentional drift.";
@@ -248,7 +248,19 @@ pub(crate) fn run_inner_life_refresh_with_state(
     match parse_inner_life_response(response.content.trim(), input.now_secs) {
         ParsedInnerLifeResponse::Skip => Ok(InnerLifeRefreshOutcome::Skipped),
         ParsedInnerLifeResponse::Clear => {
-            if existing_inner_life.is_some() {
+            let latest = ctx.inner_life_store.get(input.chat_id)?;
+            if whole_record_lease_advanced(
+                existing_inner_life.as_ref(),
+                latest.as_ref(),
+                existing_inner_life
+                    .as_ref()
+                    .map(|value| value.updated_at)
+                    .unwrap_or(0),
+                latest.as_ref().map(|value| value.updated_at).unwrap_or(0),
+            ) {
+                return Ok(InnerLifeRefreshOutcome::Skipped);
+            }
+            if latest.is_some() {
                 ctx.inner_life_store.clear(input.chat_id)?;
                 Ok(InnerLifeRefreshOutcome::Cleared)
             } else {
@@ -256,7 +268,19 @@ pub(crate) fn run_inner_life_refresh_with_state(
             }
         }
         ParsedInnerLifeResponse::Update(next) => {
-            if existing_inner_life.as_ref() == Some(&next) {
+            let latest = ctx.inner_life_store.get(input.chat_id)?;
+            if latest.as_ref() == Some(&next) {
+                return Ok(InnerLifeRefreshOutcome::Skipped);
+            }
+            if whole_record_lease_advanced(
+                existing_inner_life.as_ref(),
+                latest.as_ref(),
+                existing_inner_life
+                    .as_ref()
+                    .map(|value| value.updated_at)
+                    .unwrap_or(0),
+                latest.as_ref().map(|value| value.updated_at).unwrap_or(0),
+            ) {
                 return Ok(InnerLifeRefreshOutcome::Skipped);
             }
             ctx.inner_life_store.set(input.chat_id, &next)?;

@@ -272,8 +272,14 @@ pub(crate) fn run_private_garden_governance_with_state(
             else {
                 return Ok(PrivateGardenGovernanceOutcome::Skipped);
             };
-            let (writes, moves, deletes) =
-                normalize_private_garden_governance_actions(raw, &snapshot.docs, policy);
+            let latest_snapshot =
+                load_private_garden_snapshot(ctx.private_garden_store, input.chat_id)?;
+            let (writes, moves, deletes) = normalize_private_garden_governance_actions(
+                raw,
+                &snapshot,
+                &latest_snapshot,
+                policy,
+            );
             if writes.is_empty() && moves.is_empty() && deletes.is_empty() {
                 return Ok(PrivateGardenGovernanceOutcome::Skipped);
             }
@@ -621,21 +627,24 @@ fn parse_private_garden_move_value(value: &serde_json::Value) -> Option<RawPriva
 
 fn normalize_private_garden_governance_actions(
     raw: RawPrivateGardenGovernanceResponse,
-    existing_docs: &[PrivateGardenDoc],
+    baseline_snapshot: &PrivateGardenSnapshot,
+    latest_snapshot: &PrivateGardenSnapshot,
     policy: PrivateGardenGovernancePolicy,
 ) -> (
     Vec<PrivateGardenWriteAction>,
     Vec<PrivateGardenMoveAction>,
     Vec<String>,
 ) {
-    let existing_map = existing_docs
+    let baseline_revisions = baseline_snapshot
+        .docs
         .iter()
-        .map(|doc| (doc.path.as_str(), doc.content.as_str()))
+        .map(|doc| (doc.path.as_str(), doc.revision))
         .collect::<HashMap<_, _>>();
-    let existing_paths = existing_docs
+    let latest_map = latest_snapshot
+        .docs
         .iter()
-        .map(|doc| doc.path.clone())
-        .collect::<HashSet<_>>();
+        .map(|doc| (doc.path.as_str(), doc))
+        .collect::<HashMap<_, _>>();
     let mut writes_by_path = HashMap::<String, String>::new();
     for write in raw.writes.into_iter().take(policy.max_writes) {
         let Ok(path) = normalize_private_garden_doc_path(&write.path) else {
@@ -646,9 +655,14 @@ fn normalize_private_garden_governance_actions(
             continue;
         }
         let content = truncate_content_to_max(trimmed, PRIVATE_GARDEN_MAX_DOC_BYTES).into_owned();
-        if existing_map
+        if latest_map
             .get(path.as_str())
-            .is_some_and(|existing| existing.trim() == content.trim())
+            .is_some_and(|existing| existing.content.trim() == content.trim())
+        {
+            continue;
+        }
+        if baseline_revisions.get(path.as_str()).copied()
+            != latest_map.get(path.as_str()).map(|doc| doc.revision)
         {
             continue;
         }
@@ -664,12 +678,17 @@ fn normalize_private_garden_governance_actions(
         let Ok(to_path) = normalize_private_garden_doc_path(&raw_move.to_path) else {
             continue;
         };
+        let latest_source_revision = latest_map.get(from_path.as_str()).map(|doc| doc.revision);
+        let baseline_source_revision = baseline_revisions.get(from_path.as_str()).copied();
         if from_path == to_path
-            || !existing_paths.contains(&from_path)
+            || baseline_source_revision.is_none()
+            || latest_source_revision != baseline_source_revision
             || claimed_sources.contains(&from_path)
             || claimed_targets.contains(&to_path)
             || writes_by_path.contains_key(&from_path)
             || writes_by_path.contains_key(&to_path)
+            || latest_map.get(to_path.as_str()).map(|doc| doc.revision)
+                != baseline_revisions.get(to_path.as_str()).copied()
         {
             continue;
         }
@@ -690,7 +709,8 @@ fn normalize_private_garden_governance_actions(
         };
         if write_paths.contains(&path)
             || move_sources.contains(&path)
-            || !existing_map.contains_key(path.as_str())
+            || baseline_revisions.get(path.as_str()).copied()
+                != latest_map.get(path.as_str()).map(|doc| doc.revision)
         {
             continue;
         }
@@ -1137,6 +1157,20 @@ mod tests {
             updated_at: 1,
             revision: 1,
         }];
+        let baseline_snapshot = PrivateGardenSnapshot {
+            records: vec![PrivateGardenDocRecord {
+                path: "journal/active.md".to_string(),
+                updated_at: 1,
+                revision: 1,
+                bytes: 4,
+                preview: "same".to_string(),
+            }],
+            docs: existing_docs.clone(),
+        };
+        let latest_snapshot = PrivateGardenSnapshot {
+            records: baseline_snapshot.records.clone(),
+            docs: existing_docs,
+        };
         let (writes, moves, deletes) = normalize_private_garden_governance_actions(
             RawPrivateGardenGovernanceResponse {
                 writes: vec![
@@ -1169,7 +1203,8 @@ mod tests {
                     "journal/active.md".to_string(),
                 ],
             },
-            &existing_docs,
+            &baseline_snapshot,
+            &latest_snapshot,
             memory_policy(MemoryProfile::Embedded).private_garden_governance,
         );
 

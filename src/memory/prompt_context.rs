@@ -233,7 +233,7 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         None
     } else {
         build_archive_evidence_block(
-            &recent_messages,
+            params.session_store,
             params.memory_store,
             params.turn_ledger_store,
             params.chat_id,

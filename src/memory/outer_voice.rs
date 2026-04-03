@@ -15,9 +15,9 @@ use super::{
     memory_policy, render_autonomy_strategy_block, render_execution_state_block,
     render_inner_life_block, render_mental_privacy_boundary_block, render_self_continuity_block,
     render_self_model_block, render_world_sense_block, render_world_snapshot_block,
-    AutonomyStrategy, ExecutionState, InnerLife, MentalPrivacyState, OuterVoicePolicy,
-    PrivateDocWorkspace, PrivateGardenDocRecord, SelfContinuity, SelfModel, SessionMessage,
-    WorldSense, WorldSnapshot,
+    whole_record_lease_advanced, AutonomyStrategy, ExecutionState, InnerLife, MentalPrivacyState,
+    OuterVoicePolicy, PrivateDocWorkspace, PrivateGardenDocRecord, SelfContinuity, SelfModel,
+    SessionMessage, WorldSense, WorldSnapshot,
 };
 
 pub const OUTER_VOICE_SYSTEM_PROMPT: &str = "You maintain the assistant's outer voice layer. Return JSON only: either null or one object with fields expression_mode, tone, pacing, initiative, boundary_style. This layer is outward-facing: it shapes how the assistant should speak across user-visible channels in the near term. It is not a transcript summary, not a private diary, and not factual memory. Use world-sense, autonomy strategy, self-model, inner-life drift, self-continuity, and mental privacy boundaries as grounding. Keep it compact, stable enough to guide future replies, and willing to shift when the surrounding situation changes. Never copy private text into this layer; only encode expression guidance.";
@@ -197,7 +197,19 @@ pub(crate) fn run_outer_voice_refresh_with_state(
     match parse_outer_voice_response(response.content.trim(), input.now_secs) {
         ParsedOuterVoiceResponse::Skip => Ok(OuterVoiceRefreshOutcome::Skipped),
         ParsedOuterVoiceResponse::Clear => {
-            if existing_outer_voice.is_some() {
+            let latest = ctx.outer_voice_store.get(input.chat_id)?;
+            if whole_record_lease_advanced(
+                existing_outer_voice.as_ref(),
+                latest.as_ref(),
+                existing_outer_voice
+                    .as_ref()
+                    .map(|value| value.updated_at)
+                    .unwrap_or(0),
+                latest.as_ref().map(|value| value.updated_at).unwrap_or(0),
+            ) {
+                return Ok(OuterVoiceRefreshOutcome::Skipped);
+            }
+            if latest.is_some() {
                 ctx.outer_voice_store.clear(input.chat_id)?;
                 Ok(OuterVoiceRefreshOutcome::Cleared)
             } else {
@@ -205,7 +217,19 @@ pub(crate) fn run_outer_voice_refresh_with_state(
             }
         }
         ParsedOuterVoiceResponse::Update(next) => {
-            if existing_outer_voice.as_ref() == Some(&next) {
+            let latest = ctx.outer_voice_store.get(input.chat_id)?;
+            if latest.as_ref() == Some(&next) {
+                return Ok(OuterVoiceRefreshOutcome::Skipped);
+            }
+            if whole_record_lease_advanced(
+                existing_outer_voice.as_ref(),
+                latest.as_ref(),
+                existing_outer_voice
+                    .as_ref()
+                    .map(|value| value.updated_at)
+                    .unwrap_or(0),
+                latest.as_ref().map(|value| value.updated_at).unwrap_or(0),
+            ) {
                 return Ok(OuterVoiceRefreshOutcome::Skipped);
             }
             ctx.outer_voice_store.set(input.chat_id, &next)?;

@@ -19,11 +19,11 @@ use super::{
     render_private_doc_workspace_block, render_private_garden_block,
     render_private_memory_boundary_block, render_self_continuity_block, render_self_model_block,
     render_self_state_block, render_shared_factual_plane_block, render_world_sense_block,
-    render_world_snapshot_block, AutonomyStrategyPolicy, AutonomyStrategyStore, ExecutionState,
-    ExecutionStateStore, InnerLife, InnerLifeStore, LongTermMemoryStore, MemoryProfile,
-    PrivateDocStore, PrivateDocWorkspace, PrivateGardenStore, SelfContinuity, SelfContinuityStore,
-    SelfModel, SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore, WorldSense,
-    WorldSenseStore, WorldSnapshot,
+    render_world_snapshot_block, whole_record_lease_advanced, AutonomyStrategyPolicy,
+    AutonomyStrategyStore, ExecutionState, ExecutionStateStore, InnerLife, InnerLifeStore,
+    LongTermMemoryStore, MemoryProfile, PrivateDocStore, PrivateDocWorkspace, PrivateGardenStore,
+    SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
+    SessionSummaryStore, WorldSense, WorldSenseStore, WorldSnapshot,
 };
 
 pub const AUTONOMY_STRATEGY_SYSTEM_PROMPT: &str = "You maintain the assistant's private autonomy strategy. Return JSON only: either null or one object with fields current_mode, active_priorities, write_policy, next_focus, cadence_reason, self_model_tendency, private_docs_tendency, private_garden_tendency, idle_enabled, idle_interval_secs. This layer is not a transcript summary. It is your own short-term self-governance policy for private layers only: what kind of inward work matters now, how aggressively to write, compress, or prune private material, what should be focused next, and how often autonomous upkeep should wake during idle time. Tendencies are structured governance directives for each layer: retain, rewrite, compress, or cleanup. Use current world-sense, self-state capacity, workspace shape, and canonical shared facts as real constraints, but do not try to replace the shared factual plane. Keep it compact, concrete, and self-directed.";
@@ -345,7 +345,19 @@ pub(crate) fn run_autonomy_strategy_refresh_with_state(
     match parse_autonomy_strategy_response(response.content.trim(), input.now_secs, profile) {
         ParsedAutonomyStrategyResponse::Skip => Ok(AutonomyStrategyRefreshOutcome::Skipped),
         ParsedAutonomyStrategyResponse::Clear => {
-            if existing_strategy.is_some() {
+            let latest = ctx.autonomy_strategy_store.get(input.chat_id)?;
+            if whole_record_lease_advanced(
+                existing_strategy.as_ref(),
+                latest.as_ref(),
+                existing_strategy
+                    .as_ref()
+                    .map(|value| value.updated_at)
+                    .unwrap_or(0),
+                latest.as_ref().map(|value| value.updated_at).unwrap_or(0),
+            ) {
+                return Ok(AutonomyStrategyRefreshOutcome::Skipped);
+            }
+            if latest.is_some() {
                 ctx.autonomy_strategy_store.clear(input.chat_id)?;
                 Ok(AutonomyStrategyRefreshOutcome::Cleared)
             } else {
@@ -353,7 +365,19 @@ pub(crate) fn run_autonomy_strategy_refresh_with_state(
             }
         }
         ParsedAutonomyStrategyResponse::Update(next) => {
-            if existing_strategy.as_ref() == Some(&next) {
+            let latest = ctx.autonomy_strategy_store.get(input.chat_id)?;
+            if latest.as_ref() == Some(&next) {
+                return Ok(AutonomyStrategyRefreshOutcome::Skipped);
+            }
+            if whole_record_lease_advanced(
+                existing_strategy.as_ref(),
+                latest.as_ref(),
+                existing_strategy
+                    .as_ref()
+                    .map(|value| value.updated_at)
+                    .unwrap_or(0),
+                latest.as_ref().map(|value| value.updated_at).unwrap_or(0),
+            ) {
                 return Ok(AutonomyStrategyRefreshOutcome::Skipped);
             }
             ctx.autonomy_strategy_store.set(input.chat_id, &next)?;

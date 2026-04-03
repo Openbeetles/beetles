@@ -6,8 +6,10 @@ use serde::{Deserialize, Serialize};
 
 mod archive_plane;
 mod archive_search;
+mod archive_selector;
 mod autonomy_strategy;
 mod context_window;
+mod continuity_snapshot;
 mod execution_state;
 mod inner_life;
 mod internal_memory_routing;
@@ -31,6 +33,7 @@ mod session_summary_refresh;
 mod shared_factual_plane;
 mod turn_ledger;
 mod world_sense;
+mod write_coordination;
 
 pub use archive_plane::build_archive_evidence_block;
 pub use archive_search::{
@@ -38,9 +41,7 @@ pub use archive_search::{
     ArchiveRecordLocator, ArchiveRecordSource, ArchiveSearchHit, ArchiveSearchQuery,
     MAX_ARCHIVE_GET_CONTENT_LEN, MAX_ARCHIVE_SEARCH_LIMIT,
 };
-pub(crate) use archive_search::{
-    archive_match_score, collect_archive_match_terms, pick_archive_excerpt,
-};
+pub(crate) use archive_selector::select_archive_hits_for_prompt;
 pub(crate) use autonomy_strategy::estimate_autonomy_strategy_chars;
 pub(crate) use autonomy_strategy::{
     autonomy_idle_interval_secs, run_autonomy_strategy_refresh_with_state,
@@ -52,6 +53,11 @@ pub use autonomy_strategy::{
     AUTONOMY_STRATEGY_TOTAL_CHAR_LIMIT,
 };
 pub use context_window::build_context_messages;
+pub use continuity_snapshot::{
+    export_continuity_snapshot, import_continuity_snapshot, render_continuity_snapshot_markdown,
+    ContinuitySnapshot, ContinuitySnapshotExportContext, ContinuitySnapshotImportContext,
+    ContinuitySnapshotImportMode, ContinuitySnapshotImportOutcome, ContinuitySnapshotMode,
+};
 pub use execution_state::{
     render_execution_state_block, run_execution_state_refresh, ExecutionState,
     ExecutionStateRefreshContext, ExecutionStateRefreshInput, ExecutionStateRefreshOutcome,
@@ -206,6 +212,7 @@ pub use world_sense::{
     WorldSenseRefreshInput, WorldSenseRefreshOutcome, WorldSnapshot, WorldSnapshotContext,
     WORLD_SENSE_SYSTEM_PROMPT, WORLD_SENSE_TOTAL_CHAR_LIMIT,
 };
+pub(crate) use write_coordination::whole_record_lease_advanced;
 
 /// 单次写入内容最大字节数（与 platform::spiffs 上界一致）。实现应拒绝超长写入。
 pub const MAX_MEMORY_CONTENT_LEN: usize = 256 * 1024;
