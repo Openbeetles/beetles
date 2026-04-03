@@ -1,6 +1,7 @@
 //! Prompt 侧共享记忆读装配。
 //! Shared prompt memory loading for agent context construction.
 
+use crate::platform::SkillStorage;
 use crate::task::TaskStore;
 
 use super::{
@@ -23,6 +24,7 @@ pub struct PromptMemoryContext {
     pub message_summary_text: Option<String>,
     pub long_term_memory_text: Option<String>,
     pub archive_evidence_text: Option<String>,
+    pub runtime_skill_text: Option<String>,
     pub execution_state_text: Option<String>,
     pub world_snapshot_text: Option<String>,
     pub world_sense_text: Option<String>,
@@ -65,6 +67,7 @@ pub struct PromptMemoryContextParams<'a> {
     pub remind_store: &'a dyn RemindAtStore,
     pub task_store: &'a dyn TaskStore,
     pub turn_ledger_store: &'a dyn TurnLedgerStore,
+    pub skill_storage: &'a dyn SkillStorage,
 }
 
 pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> PromptMemoryContext {
@@ -267,6 +270,38 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
             params.profile,
         )
     };
+    let runtime_skill_query = {
+        let combined = if crate::memory::parse_explicit_long_term_slot_query(params.user_query)
+            .is_some()
+        {
+            params.user_query.to_string()
+        } else if super::archive_search::collect_archive_match_terms(params.user_query).is_empty() {
+            [
+                Some(params.user_query.trim().to_string()).filter(|value| !value.is_empty()),
+                summary_text.clone(),
+                recent_messages
+                    .iter()
+                    .rev()
+                    .take(2)
+                    .map(|message| message.content.trim().to_string())
+                    .find(|value| !value.is_empty()),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" ")
+        } else {
+            params.user_query.to_string()
+        };
+        combined.trim().to_string()
+    };
+    let runtime_skill_text = crate::skills::build_runtime_skill_recall_block(
+        params.skill_storage,
+        &runtime_skill_query,
+        Some(params.chat_id),
+        params.now_secs,
+        params.system_max_len.min(420),
+    );
     let message_summary_text = if execution_state_text.is_some() {
         None
     } else {
@@ -277,6 +312,7 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         message_summary_text,
         long_term_memory_text,
         archive_evidence_text,
+        runtime_skill_text,
         execution_state_text,
         world_snapshot_text,
         world_sense_text,
@@ -308,7 +344,9 @@ mod tests {
         SessionStore, SessionSummaryStore, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
         WorldSense, WorldSenseStore,
     };
+    use crate::platform::SkillStorage;
     use crate::task::{TaskItem, TaskQuery, TaskStore};
+    use std::collections::HashMap;
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -431,6 +469,49 @@ mod tests {
     #[derive(Default)]
     struct StubTurnLedgerStore {
         ledger: Mutex<Option<TurnLedger>>,
+    }
+
+    #[derive(Default)]
+    struct StubSkillStorage {
+        files: Mutex<HashMap<String, Vec<u8>>>,
+    }
+
+    impl SkillStorage for StubSkillStorage {
+        fn list_names(&self) -> Result<Vec<String>> {
+            Ok(self
+                .files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .keys()
+                .cloned()
+                .collect())
+        }
+
+        fn read(&self, name: &str) -> Result<Vec<u8>> {
+            Ok(self
+                .files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(name)
+                .cloned()
+                .unwrap_or_default())
+        }
+
+        fn write(&self, name: &str, content: &[u8]) -> Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(name.to_string(), content.to_vec());
+            Ok(())
+        }
+
+        fn remove(&self, name: &str) -> Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(name);
+            Ok(())
+        }
     }
 
     impl TurnLedgerStore for StubTurnLedgerStore {
@@ -964,6 +1045,21 @@ mod tests {
         let mental_privacy_store = StubMentalPrivacyStore::default();
         let remind_store = StubRemindAtStore;
         let task_store = StubTaskStore;
+        let skill_storage = StubSkillStorage::default();
+        crate::skills::upsert_runtime_skill(
+            &skill_storage,
+            &crate::skills::RuntimeSkillWrite {
+                name: String::new(),
+                topic: "coffee_grounding".to_string(),
+                title: "Coffee grounding".to_string(),
+                summary: "Reuse durable coffee preference before replying.".to_string(),
+                content: "- search archive evidence\n- restate cold brew preference".to_string(),
+                citations: vec!["daily_note:2026-04-02.md".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                observed_at: 10,
+            },
+        )
+        .unwrap();
         let context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
             current_channel: "qq_channel",
@@ -990,6 +1086,7 @@ mod tests {
             remind_store: &remind_store,
             task_store: &task_store,
             turn_ledger_store: &turn_ledger_store,
+            skill_storage: &skill_storage,
         });
 
         assert_eq!(
@@ -1077,6 +1174,11 @@ mod tests {
             .unwrap_or_default()
             .contains("## Private Garden"));
         assert!(context.mental_privacy_request_text.is_none());
+        assert!(context
+            .runtime_skill_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Runtime skills"));
     }
 
     #[test]
@@ -1128,6 +1230,7 @@ mod tests {
         let mental_privacy_store = StubMentalPrivacyStore::default();
         let remind_store = StubRemindAtStore;
         let task_store = StubTaskStore;
+        let skill_storage = StubSkillStorage::default();
 
         let context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
@@ -1155,6 +1258,7 @@ mod tests {
             remind_store: &remind_store,
             task_store: &task_store,
             turn_ledger_store: &turn_ledger_store,
+            skill_storage: &skill_storage,
         });
 
         assert_eq!(
@@ -1284,6 +1388,7 @@ mod tests {
         let mental_privacy_store = StubMentalPrivacyStore::default();
         let remind_store = StubRemindAtStore;
         let task_store = StubTaskStore;
+        let skill_storage = StubSkillStorage::default();
 
         let context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
@@ -1311,6 +1416,7 @@ mod tests {
             remind_store: &remind_store,
             task_store: &task_store,
             turn_ledger_store: &turn_ledger_store,
+            skill_storage: &skill_storage,
         });
 
         assert_eq!(context.summary_text.as_deref(), Some("summary"));

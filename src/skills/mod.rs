@@ -4,6 +4,13 @@
 use crate::error::{Error, Result};
 use crate::platform::{SkillMetaStore, SkillStorage};
 
+mod runtime;
+
+pub use runtime::{
+    build_runtime_skill_recall_block, is_runtime_skill_name, retrieve_runtime_skill_hits,
+    touch_runtime_skill_hits, upsert_runtime_skill, RuntimeSkillHit, RuntimeSkillRecord,
+};
+
 fn is_skill_name_valid(name: &str) -> bool {
     !name.is_empty() && !name.contains("..") && !name.contains('/') && !name.contains('\\')
 }
@@ -158,6 +165,9 @@ pub fn build_skill_descriptions_for_system_prompt(
     }
     let mut out = String::with_capacity(max_chars.min(4096));
     for name in names {
+        if is_runtime_skill_name(&name) {
+            continue;
+        }
         if out.len() >= max_chars {
             break;
         }
@@ -220,67 +230,6 @@ pub fn runtime_skill_name_for_topic(topic: &str) -> String {
         "{RUNTIME_SKILL_PREFIX}{}",
         suffix.chars().take(40).collect::<String>()
     )
-}
-
-pub fn upsert_runtime_skill(storage: &dyn SkillStorage, write: &RuntimeSkillWrite) -> Result<bool> {
-    let name = if write.name.trim().is_empty() {
-        runtime_skill_name_for_topic(&write.topic)
-    } else {
-        write.name.trim().to_string()
-    };
-    let rendered = render_runtime_skill_markdown(write);
-    let changed = get_skill_content(storage, &name)
-        .map(|existing| existing.trim() != rendered.trim())
-        .unwrap_or(true);
-    if !changed {
-        return Ok(false);
-    }
-    write_skill(storage, &name, &rendered)?;
-    Ok(true)
-}
-
-fn render_runtime_skill_markdown(write: &RuntimeSkillWrite) -> String {
-    let mut out = String::new();
-    out.push_str("<!-- beetle:runtime-skill -->\n");
-    out.push_str("# ");
-    out.push_str(if write.title.trim().is_empty() {
-        write.topic.trim()
-    } else {
-        write.title.trim()
-    });
-    out.push_str("\n\n");
-    out.push_str("Type: procedural_runtime_skill\n");
-    out.push_str("Topic: ");
-    out.push_str(write.topic.trim());
-    out.push('\n');
-    if let Some(chat_id) = write
-        .source_chat_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        out.push_str("Source chat: ");
-        out.push_str(chat_id);
-        out.push('\n');
-    }
-    if write.observed_at > 0 {
-        out.push_str("Observed at: ");
-        out.push_str(&write.observed_at.to_string());
-        out.push('\n');
-    }
-    out.push_str("\n## Summary\n");
-    out.push_str(write.summary.trim());
-    out.push_str("\n\n## Procedure\n");
-    out.push_str(write.content.trim());
-    if !write.citations.is_empty() {
-        out.push_str("\n\n## Provenance\n");
-        for citation in &write.citations {
-            out.push_str("- ");
-            out.push_str(citation.trim());
-            out.push('\n');
-        }
-    }
-    out
 }
 
 /// 删除指定 skill 文件。

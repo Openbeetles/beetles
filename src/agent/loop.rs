@@ -2857,6 +2857,7 @@ fn run_worker_path(
         remind_store: config.remind_store.as_ref(),
         task_store: config.task_store.as_ref(),
         turn_ledger_store: config.turn_ledger_store.as_ref(),
+        skill_storage: config.skill_storage.as_ref(),
     });
     prompt_memory.mental_privacy_request_text = match run_mental_privacy_access_request_interpreter(
         &mut tool_ctx,
@@ -2910,6 +2911,7 @@ fn run_worker_path(
         mental_privacy_text: prompt_memory.mental_privacy_text.as_deref(),
         long_term_memory_text: prompt_memory.long_term_memory_text.as_deref(),
         archive_evidence_text: prompt_memory.archive_evidence_text.as_deref(),
+        runtime_skill_text: prompt_memory.runtime_skill_text.as_deref(),
         summary_text: prompt_memory.message_summary_text.as_deref(),
         recent_messages: (!prompt_memory.recent_messages.is_empty())
             .then_some(prompt_memory.recent_messages.as_slice()),

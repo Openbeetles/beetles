@@ -2,6 +2,8 @@
 
 use crate::error::Result;
 use crate::util::truncate_content_to_max;
+#[cfg(target_os = "linux")]
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 #[cfg(target_os = "linux")]
@@ -19,7 +21,7 @@ const ARCHIVE_TRACE_MAX_MATCHED_TERMS: usize = 4;
 #[cfg(target_os = "linux")]
 const ARCHIVE_INDEX_VERSION: u32 = 1;
 #[cfg(target_os = "linux")]
-const REL_PATH_ARCHIVE_INDEX: &str = "memory/archive_index.json";
+const REL_PATH_ARCHIVE_INDEX: &str = "memory/archive_index.sqlite3";
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -27,6 +29,7 @@ pub enum ArchiveSearchBackendKind {
     #[default]
     Lexical,
     IndexedHybrid,
+    SqliteFtsHybrid,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -241,26 +244,7 @@ struct ArchiveSearchCandidate {
     current_chat_match: bool,
     normalized_title: String,
     normalized_content: String,
-}
-
-#[cfg(target_os = "linux")]
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct ArchivePersistentIndex {
-    version: u32,
-    signature: ArchiveSourceSignature,
-    built_at: u64,
-    documents: Vec<ArchivePersistentDocument>,
-}
-
-#[cfg(target_os = "linux")]
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct ArchivePersistentDocument {
-    locator: ArchiveRecordLocator,
-    source: ArchiveRecordSource,
-    title: String,
-    content: String,
-    cues: Vec<String>,
-    observed_at: Option<u64>,
+    backend_fts_score: u32,
 }
 
 #[cfg(target_os = "linux")]
@@ -292,8 +276,25 @@ pub fn search_archive_records(
     let limit = query.limit.clamp(1, MAX_ARCHIVE_SEARCH_LIMIT);
     let terms = collect_archive_match_terms(query.query);
     let weak_query = query.query.trim().is_empty() || terms.is_empty();
+    #[cfg(target_os = "linux")]
+    match search_archive_records_from_sqlite(
+        session_store,
+        memory_store,
+        turn_ledger_store,
+        query,
+        &terms,
+        weak_query,
+        limit,
+    ) {
+        Ok(Some(hits)) => return Ok(hits),
+        Ok(None) => {}
+        Err(error) => log::warn!(
+            "[archive_search] sqlite backend failed, falling back: {}",
+            error
+        ),
+    }
     let candidates =
-        collect_archive_candidates(session_store, memory_store, turn_ledger_store, query);
+        collect_live_archive_candidates(session_store, memory_store, turn_ledger_store, query);
     if candidates.is_empty() {
         return Ok(Vec::new());
     }
@@ -310,6 +311,7 @@ pub fn search_archive_records(
         weak_query,
         &stats,
         newest_observed_at,
+        archive_search_backend_kind_fallback(),
     );
     hits.sort_by(|a, b| {
         b.score
@@ -319,26 +321,6 @@ pub fn search_archive_records(
     });
     hits.truncate(limit);
     Ok(hits)
-}
-
-fn collect_archive_candidates(
-    session_store: &dyn SessionStore,
-    memory_store: &dyn MemoryStore,
-    turn_ledger_store: &dyn TurnLedgerStore,
-    query: ArchiveSearchQuery<'_>,
-) -> Vec<ArchiveSearchCandidate> {
-    #[cfg(target_os = "linux")]
-    {
-        if let Some(indexed) = collect_archive_candidates_from_persistent_index(
-            session_store,
-            memory_store,
-            turn_ledger_store,
-            query,
-        ) {
-            return indexed;
-        }
-    }
-    collect_live_archive_candidates(session_store, memory_store, turn_ledger_store, query)
 }
 
 fn collect_live_archive_candidates(
@@ -384,6 +366,7 @@ fn collect_live_archive_candidates(
                     cues,
                     observed_at: None,
                     current_chat_match: query.preferred_chat_id == Some(chat_id.as_str()),
+                    backend_fts_score: 0,
                 });
             }
         }
@@ -423,6 +406,7 @@ fn collect_live_archive_candidates(
                 cues,
                 observed_at,
                 current_chat_match: false,
+                backend_fts_score: 0,
             });
         }
     }
@@ -458,6 +442,7 @@ fn collect_live_archive_candidates(
                 cues,
                 observed_at: turn_log_observed_at(&ledger),
                 current_chat_match: query.preferred_chat_id == Some(chat_id.as_str()),
+                backend_fts_score: 0,
             });
         }
     }
@@ -466,46 +451,66 @@ fn collect_live_archive_candidates(
 }
 
 #[cfg(target_os = "linux")]
-fn collect_archive_candidates_from_persistent_index(
+fn search_archive_records_from_sqlite(
     session_store: &dyn SessionStore,
     memory_store: &dyn MemoryStore,
     turn_ledger_store: &dyn TurnLedgerStore,
     query: ArchiveSearchQuery<'_>,
-) -> Option<Vec<ArchiveSearchCandidate>> {
-    let signature = build_archive_source_signature().ok()?;
-    if let Some(index) = load_archive_persistent_index()
-        .filter(|index| index.version == ARCHIVE_INDEX_VERSION && index.signature == signature)
-    {
-        return Some(
-            index
-                .documents
-                .into_iter()
-                .map(|doc| persistent_document_to_candidate(doc, query.preferred_chat_id))
-                .collect(),
-        );
+) -> Result<Option<Vec<ArchiveSearchHit>>> {
+    let signature = match build_archive_source_signature() {
+        Ok(signature) => signature,
+        Err(error) => {
+            log::warn!("[archive_search] sqlite signature failed: {}", error);
+            return Ok(None);
+        }
+    };
+    let path = archive_index_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
     }
-    let live =
-        collect_live_archive_candidates(session_store, memory_store, turn_ledger_store, query);
-    let _ = persist_archive_persistent_index(&live, signature);
-    Some(live)
-}
-
-#[cfg(target_os = "linux")]
-fn persistent_document_to_candidate(
-    doc: ArchivePersistentDocument,
-    preferred_chat_id: Option<&str>,
-) -> ArchiveSearchCandidate {
-    ArchiveSearchCandidate {
-        current_chat_match: locator_matches_chat(&doc.locator, preferred_chat_id),
-        normalized_title: normalize_archive_match_text(&doc.title),
-        normalized_content: normalize_archive_match_text(&doc.content),
-        locator: doc.locator,
-        source: doc.source,
-        title: doc.title,
-        content: doc.content,
-        cues: doc.cues,
-        observed_at: doc.observed_at,
+    let mut conn = match Connection::open(path) {
+        Ok(conn) => conn,
+        Err(error) => {
+            log::warn!("[archive_search] sqlite open failed: {}", error);
+            return Ok(None);
+        }
+    };
+    if let Err(error) = ensure_archive_sqlite_schema(&conn) {
+        log::warn!("[archive_search] sqlite schema failed: {}", error);
+        return Ok(None);
     }
+    if archive_sqlite_needs_rebuild(&conn, &signature)? {
+        let live =
+            collect_live_archive_candidates(session_store, memory_store, turn_ledger_store, query);
+        archive_sqlite_rebuild(&mut conn, &live, &signature)?;
+    }
+    let candidates = query_archive_candidates_sqlite(&conn, query, terms, weak_query)?;
+    if candidates.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let stats = build_archive_corpus_stats(&candidates, terms);
+    let newest_observed_at = candidates
+        .iter()
+        .filter_map(|candidate| candidate.observed_at)
+        .max()
+        .unwrap_or(0);
+    let mut hits = score_archive_candidates(
+        candidates,
+        query,
+        terms,
+        weak_query,
+        &stats,
+        newest_observed_at,
+        ArchiveSearchBackendKind::SqliteFtsHybrid,
+    );
+    hits.sort_by(|a, b| {
+        b.score
+            .cmp(&a.score)
+            .then_with(|| b.observed_at.cmp(&a.observed_at))
+            .then_with(|| a.citation.cmp(&b.citation))
+    });
+    hits.truncate(limit);
+    Ok(Some(hits))
 }
 
 #[cfg(target_os = "linux")]
@@ -514,39 +519,293 @@ fn archive_index_path() -> PathBuf {
 }
 
 #[cfg(target_os = "linux")]
-fn load_archive_persistent_index() -> Option<ArchivePersistentIndex> {
-    let buf = std::fs::read(archive_index_path()).ok()?;
-    serde_json::from_slice::<ArchivePersistentIndex>(&buf).ok()
+fn ensure_archive_sqlite_schema(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS archive_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS archive_documents (
+            record_id TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            chat_id TEXT,
+            message_index INTEGER,
+            note_name TEXT,
+            req_id TEXT,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            cues TEXT NOT NULL,
+            observed_at INTEGER,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_archive_documents_source ON archive_documents(source);
+        CREATE INDEX IF NOT EXISTS idx_archive_documents_chat ON archive_documents(chat_id);
+        CREATE INDEX IF NOT EXISTS idx_archive_documents_observed_at ON archive_documents(observed_at);
+        CREATE VIRTUAL TABLE IF NOT EXISTS archive_documents_fts USING fts5(
+            record_id UNINDEXED,
+            title,
+            content,
+            cues,
+            tokenize='unicode61 remove_diacritics 2'
+        );",
+    )
+    .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))
 }
 
 #[cfg(target_os = "linux")]
-fn persist_archive_persistent_index(
-    candidates: &[ArchiveSearchCandidate],
-    signature: ArchiveSourceSignature,
-) -> Result<()> {
-    let index = ArchivePersistentIndex {
-        version: ARCHIVE_INDEX_VERSION,
-        signature,
-        built_at: crate::util::current_unix_secs(),
-        documents: candidates
-            .iter()
-            .map(|candidate| ArchivePersistentDocument {
-                locator: candidate.locator.clone(),
-                source: candidate.source,
-                title: candidate.title.clone(),
-                content: candidate.content.clone(),
-                cues: candidate.cues.clone(),
-                observed_at: candidate.observed_at,
-            })
-            .collect(),
-    };
-    let path = archive_index_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let json = serde_json::to_vec(&index)
+fn archive_sqlite_needs_rebuild(
+    conn: &Connection,
+    signature: &ArchiveSourceSignature,
+) -> Result<bool> {
+    let version = conn
+        .query_row(
+            "SELECT value FROM archive_meta WHERE key = 'version'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
         .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
-    std::fs::write(path, json).map_err(|e| crate::error::Error::io("archive_index", e))
+    if version.as_deref() != Some(&ARCHIVE_INDEX_VERSION.to_string()) {
+        return Ok(true);
+    }
+    let stored_signature = conn
+        .query_row(
+            "SELECT value FROM archive_meta WHERE key = 'signature'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
+    let Some(stored_signature) = stored_signature else {
+        return Ok(true);
+    };
+    let parsed = serde_json::from_str::<ArchiveSourceSignature>(&stored_signature)
+        .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
+    Ok(parsed != *signature)
+}
+
+#[cfg(target_os = "linux")]
+fn archive_sqlite_rebuild(
+    conn: &mut Connection,
+    candidates: &[ArchiveSearchCandidate],
+    signature: &ArchiveSourceSignature,
+) -> Result<()> {
+    let tx = conn
+        .transaction()
+        .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
+    tx.execute("DELETE FROM archive_documents_fts", [])
+        .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
+    tx.execute("DELETE FROM archive_documents", [])
+        .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
+    for candidate in candidates {
+        let cues = candidate.cues.join("\n");
+        tx.execute(
+            "INSERT INTO archive_documents (
+                record_id, source, chat_id, message_index, note_name, req_id,
+                title, content, cues, observed_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                candidate.locator.record_id(),
+                candidate.source.label(),
+                candidate.locator.chat_id.as_deref(),
+                candidate.locator.message_index.map(|value| value as i64),
+                candidate.locator.note_name.as_deref(),
+                candidate.locator.req_id.as_deref(),
+                candidate.title,
+                candidate.content,
+                cues,
+                candidate.observed_at.map(|value| value as i64),
+                crate::util::current_unix_secs() as i64,
+            ],
+        )
+        .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
+        let rowid = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO archive_documents_fts(rowid, record_id, title, content, cues)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                rowid,
+                candidate.locator.record_id(),
+                candidate.title,
+                candidate.content,
+                candidate.cues.join(" "),
+            ],
+        )
+        .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
+    }
+    tx.execute(
+        "INSERT INTO archive_meta(key, value) VALUES('version', ?1)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![ARCHIVE_INDEX_VERSION.to_string()],
+    )
+    .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
+    tx.execute(
+        "INSERT INTO archive_meta(key, value) VALUES('signature', ?1)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![serde_json::to_string(signature)
+            .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?],
+    )
+    .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
+    tx.commit()
+        .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))
+}
+
+#[cfg(target_os = "linux")]
+fn query_archive_candidates_sqlite(
+    conn: &Connection,
+    query: ArchiveSearchQuery<'_>,
+    terms: &[String],
+    weak_query: bool,
+) -> Result<Vec<ArchiveSearchCandidate>> {
+    let mut out = std::collections::HashMap::<String, ArchiveSearchCandidate>::new();
+    if !weak_query {
+        if let Some(match_expr) = archive_sqlite_match_expression(terms) {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT d.record_id, d.source, d.chat_id, d.message_index, d.note_name, d.req_id,
+                            d.title, d.content, d.cues, d.observed_at, bm25(archive_documents_fts, 6.0, 1.5, 1.0) as rank
+                     FROM archive_documents_fts
+                     JOIN archive_documents d ON d.rowid = archive_documents_fts.rowid
+                     WHERE archive_documents_fts MATCH ?1
+                     ORDER BY rank ASC
+                     LIMIT 48",
+                )
+                .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
+            let rows = stmt
+                .query_map(params![match_expr], |row| {
+                    map_archive_sqlite_candidate_row(row, query.preferred_chat_id)
+                })
+                .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
+            for row in rows {
+                let candidate =
+                    row.map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
+                if !archive_candidate_matches_query(&candidate, query) {
+                    continue;
+                }
+                upsert_archive_candidate(out.entry(candidate.locator.record_id()), candidate);
+            }
+        }
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT record_id, source, chat_id, message_index, note_name, req_id,
+                    title, content, cues, observed_at, 0.0 as rank
+             FROM archive_documents
+             ORDER BY observed_at DESC, rowid DESC
+             LIMIT 64",
+        )
+        .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
+    let rows = stmt
+        .query_map([], |row| {
+            map_archive_sqlite_candidate_row(row, query.preferred_chat_id)
+        })
+        .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
+    for row in rows {
+        let candidate =
+            row.map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
+        if !archive_candidate_matches_query(&candidate, query) {
+            continue;
+        }
+        upsert_archive_candidate(out.entry(candidate.locator.record_id()), candidate);
+    }
+    Ok(out.into_values().collect())
+}
+
+#[cfg(target_os = "linux")]
+fn map_archive_sqlite_candidate_row(
+    row: &rusqlite::Row<'_>,
+    preferred_chat_id: Option<&str>,
+) -> rusqlite::Result<ArchiveSearchCandidate> {
+    let source = row
+        .get::<_, String>(1)
+        .ok()
+        .and_then(|value| ArchiveRecordSource::from_str(&value))
+        .unwrap_or(ArchiveRecordSource::Transcript);
+    let chat_id = row.get::<_, Option<String>>(2)?;
+    let locator = ArchiveRecordLocator {
+        source,
+        chat_id: chat_id.clone(),
+        message_index: row
+            .get::<_, Option<i64>>(3)?
+            .and_then(|value| usize::try_from(value).ok()),
+        note_name: row.get::<_, Option<String>>(4)?,
+        req_id: row.get::<_, Option<String>>(5)?,
+    };
+    let title = row.get::<_, String>(6)?;
+    let content = row.get::<_, String>(7)?;
+    let cues = row
+        .get::<_, String>(8)?
+        .lines()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let observed_at = row
+        .get::<_, Option<i64>>(9)?
+        .and_then(|value| u64::try_from(value).ok());
+    let rank = row.get::<_, f64>(10).unwrap_or(0.0);
+    let sqlite_fts_score = if rank > 0.0 {
+        ((1.0 / (1.0 + rank)) * 64.0).round().max(0.0) as u32
+    } else {
+        0
+    };
+    Ok(ArchiveSearchCandidate {
+        current_chat_match: chat_id
+            .as_deref()
+            .is_some_and(|chat_id| Some(chat_id) == preferred_chat_id),
+        normalized_title: normalize_archive_match_text(&title),
+        normalized_content: normalize_archive_match_text(&content),
+        locator,
+        source,
+        title,
+        content,
+        cues,
+        observed_at,
+        backend_fts_score: sqlite_fts_score,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn upsert_archive_candidate(
+    slot: std::collections::hash_map::Entry<'_, String, ArchiveSearchCandidate>,
+    candidate: ArchiveSearchCandidate,
+) {
+    match slot {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(candidate);
+        }
+        std::collections::hash_map::Entry::Occupied(mut entry) => {
+            if candidate.backend_fts_score > entry.get().backend_fts_score {
+                entry.insert(candidate);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn archive_candidate_matches_query(
+    candidate: &ArchiveSearchCandidate,
+    query: ArchiveSearchQuery<'_>,
+) -> bool {
+    if let Some(chat_id_filter) = query.chat_id_filter {
+        if candidate.locator.chat_id.as_deref() != Some(chat_id_filter) {
+            return false;
+        }
+    }
+    query.sources.is_empty() || query.sources.contains(&candidate.source)
+}
+
+#[cfg(target_os = "linux")]
+fn archive_sqlite_match_expression(terms: &[String]) -> Option<String> {
+    let mut parts = Vec::new();
+    for term in terms {
+        let escaped = term.replace('"', "\"\"");
+        if escaped.trim().is_empty() {
+            continue;
+        }
+        parts.push(format!("\"{}\"", escaped));
+    }
+    (!parts.is_empty()).then(|| parts.join(" OR "))
 }
 
 #[cfg(target_os = "linux")]
@@ -622,12 +881,19 @@ fn score_archive_candidates(
     weak_query: bool,
     stats: &ArchiveCorpusStats,
     newest_observed_at: u64,
+    backend: ArchiveSearchBackendKind,
 ) -> Vec<ArchiveSearchHit> {
     candidates
         .into_iter()
         .filter_map(|candidate| {
-            let (score, trace, matched_terms) =
-                score_archive_candidate(&candidate, query, terms, stats, newest_observed_at);
+            let (score, trace, matched_terms) = score_archive_candidate(
+                &candidate,
+                query,
+                terms,
+                stats,
+                newest_observed_at,
+                backend,
+            );
             let substantive = trace.score.lexical_score > 0
                 || trace.score.fts_score > 0
                 || trace.score.hybrid_score > 0;
@@ -664,6 +930,7 @@ fn score_archive_candidate(
     terms: &[String],
     stats: &ArchiveCorpusStats,
     newest_observed_at: u64,
+    backend: ArchiveSearchBackendKind,
 ) -> (u32, ArchiveRetrievalTrace, Vec<String>) {
     let matched_terms = matched_archive_terms(
         &candidate.normalized_title,
@@ -689,7 +956,7 @@ fn score_archive_candidate(
         .saturating_add(source_bonus)
         .saturating_add(recency_bonus);
     let trace = ArchiveRetrievalTrace {
-        backend: archive_search_backend_kind(),
+        backend,
         matched_terms: matched_terms
             .iter()
             .take(ARCHIVE_TRACE_MAX_MATCHED_TERMS)
@@ -796,6 +1063,9 @@ fn archive_fts_score(
     terms: &[String],
     stats: &ArchiveCorpusStats,
 ) -> u32 {
+    if candidate.backend_fts_score > 0 {
+        return candidate.backend_fts_score;
+    }
     if terms.is_empty() || stats.avg_doc_len <= 0.0 {
         return 0;
     }
@@ -1009,7 +1279,7 @@ fn archive_term_frequency(text: &str, term: &str) -> usize {
     text.match_indices(term).count()
 }
 
-fn archive_search_backend_kind() -> ArchiveSearchBackendKind {
+fn archive_search_backend_kind_fallback() -> ArchiveSearchBackendKind {
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     {
         ArchiveSearchBackendKind::Lexical
@@ -1498,7 +1768,7 @@ mod tests {
         assert!(hits[0].citation.contains("2026-04-02.md"));
         assert_eq!(
             hits[0].retrieval_trace.as_ref().map(|trace| trace.backend),
-            Some(archive_search_backend_kind())
+            Some(archive_search_backend_kind_fallback())
         );
         assert_eq!(
             ArchiveRecordLocator::parse_record_id(&hits[0].record_id),

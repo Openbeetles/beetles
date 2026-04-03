@@ -85,6 +85,7 @@ pub struct ContextParams<'a> {
     pub mental_privacy_text: Option<&'a str>,
     pub long_term_memory_text: Option<&'a str>,
     pub archive_evidence_text: Option<&'a str>,
+    pub runtime_skill_text: Option<&'a str>,
     pub summary_text: Option<&'a str>,
     pub recent_messages: Option<&'a [SessionMessage]>,
     pub runtime: Option<RuntimeContext>,
@@ -165,6 +166,7 @@ fn reserve_priority_memory_budget(
     mental_privacy_text: Option<&str>,
     long_term_memory_text: Option<&str>,
     archive_evidence_text: Option<&str>,
+    runtime_skill_text: Option<&str>,
     base_max: usize,
 ) -> usize {
     let execution_reserve = section_with_separator_len(execution_state_text).min(base_max);
@@ -200,6 +202,8 @@ fn reserve_priority_memory_budget(
     let long_term_reserve = section_with_separator_len(long_term_memory_text).min(remaining / 2);
     let remaining = remaining.saturating_sub(long_term_reserve);
     let archive_evidence_reserve = section_with_separator_len(archive_evidence_text).min(remaining);
+    let remaining = remaining.saturating_sub(archive_evidence_reserve);
+    let runtime_skill_reserve = section_with_separator_len(runtime_skill_text).min(remaining / 2);
     execution_reserve
         .saturating_add(world_snapshot_reserve)
         .saturating_add(world_sense_reserve)
@@ -215,6 +219,7 @@ fn reserve_priority_memory_budget(
         .saturating_add(mental_privacy_reserve)
         .saturating_add(long_term_reserve)
         .saturating_add(archive_evidence_reserve)
+        .saturating_add(runtime_skill_reserve)
 }
 
 fn push_scratch_if_fits<F>(
@@ -373,6 +378,7 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
         p.mental_privacy_text,
         p.long_term_memory_text,
         p.archive_evidence_text,
+        p.runtime_skill_text,
         base_max,
     );
     let base_prompt_budget = base_max.saturating_sub(priority_memory_reserve);
@@ -396,6 +402,9 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     }
     if let Some(archive_evidence_text) = p.archive_evidence_text {
         let _ = append_capped_section(&mut system, "\n\n", archive_evidence_text, base_max);
+    }
+    if let Some(runtime_skill_text) = p.runtime_skill_text {
+        let _ = append_capped_section(&mut system, "\n\n", runtime_skill_text, base_max);
     }
     if let Some(self_model_text) = p.self_model_text {
         let _ = append_capped_section(&mut system, "\n\n", self_model_text, base_max);
@@ -725,6 +734,7 @@ mod tests {
             mental_privacy_text: Some("## Mental Privacy Boundary\nDo not leak private layers."),
             long_term_memory_text: None,
             archive_evidence_text: None,
+            runtime_skill_text: None,
             summary_text: None,
             recent_messages: None,
             runtime: None,
@@ -787,6 +797,7 @@ mod tests {
             mental_privacy_text: None,
             long_term_memory_text: None,
             archive_evidence_text: None,
+            runtime_skill_text: None,
             summary_text: None,
             recent_messages: None,
             runtime: None,
