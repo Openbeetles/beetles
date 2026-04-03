@@ -44,18 +44,8 @@ impl Tool for WebSearchTool {
         "Search the web and return structured results with titles, URLs, and snippets. Use document_read with one of the returned URLs when page or document content is needed."
     }
 
-    fn schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "query": { "type": "string", "description": "Search query" },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum results to return (default 5, max 8)"
-                }
-            },
-            "required": ["query"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"query":{"type":"string","description":"Search query"},"limit":{"type":"integer","description":"Maximum results to return (default 5, max 8)"}},"required":["query"]}"#
     }
 
     fn requires_network(&self) -> bool {

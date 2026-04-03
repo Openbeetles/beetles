@@ -41,14 +41,8 @@ impl Tool for VoiceOutputTool {
         "Speak text aloud through the device speaker (text-to-speech). Use when user asks to say/speak/read something aloud."
     }
 
-    fn schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "text": { "type": "string", "description": "Text to speak" }
-            },
-            "required": ["text"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"text":{"type":"string","description":"Text to speak"}},"required":["text"]}"#
     }
 
     fn requires_network(&self) -> bool {

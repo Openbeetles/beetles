@@ -12,6 +12,7 @@ mod execution_state;
 mod inner_life;
 mod internal_memory_routing;
 mod internal_memory_topology;
+mod llm_json;
 mod long_term;
 mod long_term_extraction;
 mod maintenance;

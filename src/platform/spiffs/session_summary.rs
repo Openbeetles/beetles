@@ -5,10 +5,9 @@ use crate::constants::SESSION_SUMMARY_MAX_LEN;
 use crate::error::Result;
 use crate::memory::{SessionSummaryStore, REL_PATH_SESSION_SUMMARIES};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
 
-use super::cached_json::{load_json_or_default, CachedJsonFileStore, StoreOp};
+use super::cached_json::ChatScopedCachedJsonMapStore;
 use super::state_path_join;
 
 const MAX_SESSION_SUMMARY_CHATS: usize = 32;
@@ -32,18 +31,18 @@ fn truncate_summary(s: &str) -> String {
 }
 
 pub struct SpiffsSessionSummaryStore {
-    store: CachedJsonFileStore<HashMap<String, SummaryEntry>>,
+    store: ChatScopedCachedJsonMapStore<SummaryEntry>,
 }
 
 impl SpiffsSessionSummaryStore {
     pub fn new() -> Self {
         SpiffsSessionSummaryStore {
-            store: CachedJsonFileStore::new(
+            store: ChatScopedCachedJsonMapStore::new(
                 full_path,
-                load_json_or_default,
                 "session_summary_cache_lock",
                 "session_summary_cache",
                 "session_summary_persist",
+                MAX_SESSION_SUMMARY_CHATS,
             ),
         }
     }
@@ -57,11 +56,9 @@ impl Default for SpiffsSessionSummaryStore {
 
 impl SessionSummaryStore for SpiffsSessionSummaryStore {
     fn get(&self, chat_id: &str) -> Result<Option<String>> {
-        self.store.with_cached_mut(|map| {
-            Ok(StoreOp::clean(
-                map.get(chat_id).map(|entry| entry.summary.clone()),
-            ))
-        })
+        self.store
+            .get_cloned(chat_id)
+            .map(|value| value.map(|entry| entry.summary))
     }
 
     fn set(&self, chat_id: &str, summary: &str) -> Result<()> {
@@ -69,30 +66,18 @@ impl SessionSummaryStore for SpiffsSessionSummaryStore {
     }
 
     fn set_with_count(&self, chat_id: &str, summary: &str, message_count: usize) -> Result<()> {
-        self.store.with_cached_mut(|map| {
-            let next_entry = SummaryEntry {
+        self.store.set_owned(
+            chat_id,
+            SummaryEntry {
                 summary: truncate_summary(summary),
                 last_summary_at_count: message_count,
-            };
-            if map.get(chat_id) == Some(&next_entry) {
-                return Ok(StoreOp::clean(()));
-            }
-            if !map.contains_key(chat_id) && map.len() >= MAX_SESSION_SUMMARY_CHATS {
-                let key_to_remove = map.keys().next().cloned();
-                if let Some(k) = key_to_remove {
-                    map.remove(&k);
-                }
-            }
-            map.insert(chat_id.to_string(), next_entry);
-            Ok(StoreOp::dirty(()))
-        })
+            },
+        )
     }
 
     fn get_with_count(&self, chat_id: &str) -> Result<Option<(String, usize)>> {
-        self.store.with_cached_mut(|map| {
-            Ok(StoreOp::clean(map.get(chat_id).map(|entry| {
-                (entry.summary.clone(), entry.last_summary_at_count)
-            })))
-        })
+        self.store
+            .get_cloned(chat_id)
+            .map(|value| value.map(|entry| (entry.summary, entry.last_summary_at_count)))
     }
 }

@@ -40,29 +40,8 @@ impl Tool for DocumentSearchTool {
         "Search document names and readable content under storage. Use this first when you know a phrase or topic but do not know which file contains it, then use document_read to inspect the matched path."
     }
 
-    fn schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Phrase to search for in file paths and readable document text"
-                },
-                "path": {
-                    "type": "string",
-                    "description": "Optional storage subpath or file to search under, e.g. docs or notes/todo.md"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of matches to return (default 6, max 12)"
-                },
-                "case_sensitive": {
-                    "type": "boolean",
-                    "description": "Whether matching is case-sensitive (default false)"
-                }
-            },
-            "required": ["query"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"query":{"type":"string","description":"Phrase to search for in file paths and readable document text"},"path":{"type":"string","description":"Optional storage subpath or file to search under, e.g. docs or notes/todo.md"},"limit":{"type":"integer","description":"Maximum number of matches to return (default 6, max 12)"},"case_sensitive":{"type":"boolean","description":"Whether matching is case-sensitive (default false)"}},"required":["query"]}"#
     }
 
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {

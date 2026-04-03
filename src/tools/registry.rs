@@ -73,8 +73,8 @@ impl ToolRegistry {
             }
             let name = tool.name();
             let description = tool.description();
-            let parameters = tool.schema();
-            let add_len = name.len() + description.len() + parameters.to_string().len() + 2;
+            let parameters_json = tool.schema();
+            let add_len = name.len() + description.len() + parameters_json.len() + 2;
             if len + add_len > max_total_len && !out.is_empty() {
                 break;
             }
@@ -82,7 +82,7 @@ impl ToolRegistry {
             out.push(LlmToolSpec {
                 name: name.to_string(),
                 description: description.to_string(),
-                parameters,
+                parameters_json: parameters_json.to_owned().into_boxed_str(),
             });
         }
         out
@@ -308,8 +308,6 @@ pub fn build_default_registry(
 mod tests {
     use super::*;
     use crate::tools::{ToolExposure, ToolMetadata};
-    use serde_json::json;
-
     struct VisibleTool;
     struct StatefulTool;
     struct AdminTool;
@@ -325,8 +323,8 @@ mod tests {
         fn description(&self) -> &str {
             "visible tool"
         }
-        fn schema(&self) -> serde_json::Value {
-            json!({"type":"object","properties":{"x":{"type":"string"}}})
+        fn schema(&self) -> &str {
+            r#"{"type":"object","properties":{"x":{"type":"string"}}}"#
         }
         fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
             Ok(String::new())
@@ -340,8 +338,8 @@ mod tests {
         fn description(&self) -> &str {
             "stateful tool"
         }
-        fn schema(&self) -> serde_json::Value {
-            json!({"type":"object"})
+        fn schema(&self) -> &str {
+            r#"{"type":"object"}"#
         }
         fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
             Ok(String::new())
@@ -358,8 +356,8 @@ mod tests {
         fn description(&self) -> &str {
             "admin tool"
         }
-        fn schema(&self) -> serde_json::Value {
-            json!({"type":"object"})
+        fn schema(&self) -> &str {
+            r#"{"type":"object"}"#
         }
         fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
             Ok(String::new())
@@ -376,8 +374,8 @@ mod tests {
         fn description(&self) -> &str {
             "internal only tool"
         }
-        fn schema(&self) -> serde_json::Value {
-            json!({"type":"object"})
+        fn schema(&self) -> &str {
+            r#"{"type":"object"}"#
         }
         fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
             Ok(String::new())
@@ -398,8 +396,8 @@ mod tests {
         fn description(&self) -> &str {
             "user only task"
         }
-        fn schema(&self) -> serde_json::Value {
-            json!({"type":"object"})
+        fn schema(&self) -> &str {
+            r#"{"type":"object"}"#
         }
         fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
             Ok(String::new())
@@ -416,8 +414,8 @@ mod tests {
         fn description(&self) -> &str {
             "outcome tool"
         }
-        fn schema(&self) -> serde_json::Value {
-            json!({"type":"object"})
+        fn schema(&self) -> &str {
+            r#"{"type":"object"}"#
         }
         fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
             Ok("legacy".to_string())

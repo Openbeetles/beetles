@@ -8,7 +8,7 @@ use crate::constants::{
 use crate::error::{Error, Result};
 use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
 use crate::Platform;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -58,7 +58,7 @@ pub struct I2cDeviceTool {
     device_map: HashMap<String, usize>,
     states: Vec<DeviceState>,
     description: String,
-    schema: Value,
+    schema: String,
 }
 
 impl I2cDeviceTool {
@@ -105,39 +105,19 @@ impl I2cDeviceTool {
         desc
     }
 
-    fn build_schema(devices: &[I2cDeviceEntry]) -> Value {
-        let ids: Vec<Value> = devices
-            .iter()
-            .map(|d| Value::String(d.id.clone()))
-            .collect();
-        json!({
-            "type": "object",
-            "properties": {
-                "device_id": {
-                    "type": "string",
-                    "enum": ids,
-                    "description": "Target I2C device ID"
-                },
-                "op": {
-                    "type": "string",
-                    "description": "Operation: read|write"
-                },
-                "register": {
-                    "type": "integer",
-                    "description": "Register address (0-255)"
-                },
-                "len": {
-                    "type": "integer",
-                    "description": "Number of bytes to read (1-32, for read op)"
-                },
-                "data": {
-                    "type": "array",
-                    "items": { "type": "integer" },
-                    "description": "Bytes to write (for write op, max 32)"
-                }
-            },
-            "required": ["device_id", "op", "register"]
-        })
+    fn build_schema(devices: &[I2cDeviceEntry]) -> String {
+        let mut schema =
+            String::from(r#"{"type":"object","properties":{"device_id":{"type":"string","enum":["#);
+        for (idx, device) in devices.iter().enumerate() {
+            if idx > 0 {
+                schema.push(',');
+            }
+            crate::util::push_json_string_escaped(&mut schema, &device.id);
+        }
+        schema.push_str(
+            r#"],"description":"Target I2C device ID"},"op":{"type":"string","description":"Operation: read|write"},"register":{"type":"integer","description":"Register address (0-255)"},"len":{"type":"integer","description":"Number of bytes to read (1-32, for read op)"},"data":{"type":"array","items":{"type":"integer"},"description":"Bytes to write (for write op, max 32)"}},"required":["device_id","op","register"]}"#,
+        );
+        schema
     }
 
     fn check_rate_limit(&self, idx: usize, is_write: bool) -> Result<()> {
@@ -188,8 +168,8 @@ impl Tool for I2cDeviceTool {
         &self.description
     }
 
-    fn schema(&self) -> Value {
-        self.schema.clone()
+    fn schema(&self) -> &str {
+        &self.schema
     }
 
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {

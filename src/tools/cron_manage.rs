@@ -58,18 +58,8 @@ impl Tool for CronManageTool {
     fn description(&self) -> &'static str {
         "Manage persistent cron tasks. Op: add (create a scheduled task), list, remove (by id), update (toggle enabled or change expr/action). Max 16 tasks. Tasks are checked every 60s by the cron loop."
     }
-    fn schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "op": { "type": "string", "description": "Operation: add|list|remove|update" },
-                "id": { "type": "string", "description": "Task ID (for remove/update)" },
-                "expr": { "type": "string", "description": "5-field cron expression (for add/update)" },
-                "action": { "type": "string", "description": "Action text to inject as message when triggered (for add/update, max 512 bytes)" },
-                "enabled": { "type": "boolean", "description": "Enable/disable task (for update, default true)" }
-            },
-            "required": ["op"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: add|list|remove|update"},"id":{"type":"string","description":"Task ID (for remove/update)"},"expr":{"type":"string","description":"5-field cron expression (for add/update)"},"action":{"type":"string","description":"Action text to inject as message when triggered (for add/update, max 512 bytes)"},"enabled":{"type":"boolean","description":"Enable/disable task (for update, default true)"}},"required":["op"]}"#
     }
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
         let obj = parse_tool_args(args, "tool_cron_manage")?;

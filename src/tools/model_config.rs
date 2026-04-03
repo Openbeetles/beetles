@@ -26,18 +26,8 @@ impl Tool for ModelConfigTool {
     fn description(&self) -> &'static str {
         "View or update LLM model configuration. Op: get (show current config, api_key excluded), set (update provider/model/api_url/max_tokens). Changes take effect after restart."
     }
-    fn schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "op": { "type": "string", "description": "Operation: get|set" },
-                "provider": { "type": "string", "description": "LLM provider name (for set)" },
-                "model": { "type": "string", "description": "Model name (for set)" },
-                "api_url": { "type": "string", "description": "API base URL (for set)" },
-                "max_tokens": { "type": "integer", "description": "Max tokens (for set)" }
-            },
-            "required": ["op"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: get|set"},"provider":{"type":"string","description":"LLM provider name (for set)"},"model":{"type":"string","description":"Model name (for set)"},"api_url":{"type":"string","description":"API base URL (for set)"},"max_tokens":{"type":"integer","description":"Max tokens (for set)"}},"required":["op"]}"#
     }
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
         let obj = parse_tool_args(args, "tool_model_config")?;

@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 use crate::llm::types::MAX_REQUEST_BODY_LEN;
 use crate::llm::types::{AnthropicResponse, StopReason, ToolCall};
 use crate::llm::{LlmClient, LlmHttpClient, LlmResponse, Message, ToolChoicePolicy, ToolSpec};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json;
 
 const TAG: &str = "llm::anthropic";
@@ -124,86 +124,97 @@ fn build_request_body(
     tool_choice: ToolChoicePolicy,
     stream: bool,
 ) -> Result<Vec<u8>> {
-    #[derive(Serialize)]
-    struct AnthropicToolChoiceRef {
-        #[serde(rename = "type")]
-        choice_type: &'static str,
+    fn push_json_string_field(out: &mut String, key: &str, value: &str) {
+        out.push('"');
+        out.push_str(key);
+        out.push_str("\":");
+        crate::util::push_json_string_escaped(out, value);
     }
-    #[derive(Serialize)]
-    struct AnthropicToolRef<'a> {
-        name: &'a str,
-        description: &'a str,
-        input_schema: &'a serde_json::Value,
-    }
-    #[derive(Serialize)]
-    struct AnthropicRequestMessageRef<'a> {
-        role: &'a str,
-        content: &'a str,
-    }
-    #[derive(Serialize)]
-    struct AnthropicRequestRef<'a> {
-        model: &'a str,
-        max_tokens: u32,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        system: Option<&'a str>,
-        messages: Vec<AnthropicRequestMessageRef<'a>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        tools: Option<Vec<AnthropicToolRef<'a>>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        tool_choice: Option<AnthropicToolChoiceRef>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        stream: Option<bool>,
-    }
-    let tools_api = tools.and_then(|t| {
-        if t.is_empty() {
-            None
-        } else {
-            Some(
-                t.iter()
-                    .map(|s| AnthropicToolRef {
-                        name: &s.name,
-                        description: &s.description,
-                        input_schema: &s.parameters,
-                    })
-                    .collect::<Vec<_>>(),
-            )
+
+    fn push_messages_field(out: &mut String, messages: &[Message]) {
+        out.push_str("\"messages\":[");
+        for (idx, message) in messages.iter().enumerate() {
+            if idx > 0 {
+                out.push(',');
+            }
+            out.push('{');
+            push_json_string_field(out, "role", &message.role);
+            out.push(',');
+            push_json_string_field(out, "content", &message.content);
+            out.push('}');
         }
-    });
-    let has_tools = tools_api.as_ref().is_some_and(|v| !v.is_empty());
-    let req = AnthropicRequestRef {
-        model,
-        max_tokens,
-        system: if system.is_empty() {
-            None
-        } else {
-            Some(system)
-        },
-        messages: messages
-            .iter()
-            .map(|m| AnthropicRequestMessageRef {
-                role: &m.role,
-                content: &m.content,
-            })
-            .collect(),
-        tools: tools_api,
-        tool_choice: if has_tools && tool_choice == ToolChoicePolicy::Require {
-            Some(AnthropicToolChoiceRef { choice_type: "any" })
-        } else {
-            None
-        },
-        stream: if stream { Some(true) } else { None },
-    };
-    let body = serde_json::to_vec(&req).map_err(|e| Error::Other {
-        source: Box::new(e),
-        stage: "llm_parse",
-    })?;
+        out.push(']');
+    }
+
+    fn push_tools_field(out: &mut String, tools: &[ToolSpec]) {
+        out.push_str(",\"tools\":[");
+        for (idx, tool) in tools.iter().enumerate() {
+            if idx > 0 {
+                out.push(',');
+            }
+            out.push('{');
+            push_json_string_field(out, "name", &tool.name);
+            out.push(',');
+            push_json_string_field(out, "description", &tool.description);
+            out.push_str(",\"input_schema\":");
+            out.push_str(tool.parameters_json());
+            out.push('}');
+        }
+        out.push(']');
+    }
+
+    let mut num_buf = [0u8; 20];
+    let max_tokens_str = crate::util::usize_to_decimal_buf(&mut num_buf, max_tokens as usize);
+    let mut body = String::with_capacity(
+        model.len()
+            + system.len()
+            + messages
+                .iter()
+                .map(|m| m.role.len() + m.content.len() + 32)
+                .sum::<usize>()
+            + tools
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|tool| {
+                            tool.name.len()
+                                + tool.description.len()
+                                + tool.parameters_json().len()
+                                + 48
+                        })
+                        .sum::<usize>()
+                })
+                .unwrap_or(0)
+            + 128,
+    );
+    body.push('{');
+    push_json_string_field(&mut body, "model", model);
+    body.push_str(",\"max_tokens\":");
+    body.push_str(max_tokens_str);
+    if !system.is_empty() {
+        body.push(',');
+        push_json_string_field(&mut body, "system", system);
+    }
+    body.push(',');
+    push_messages_field(&mut body, messages);
+    let has_tools = tools.is_some_and(|items| !items.is_empty());
+    if let Some(items) = tools.filter(|items| !items.is_empty()) {
+        push_tools_field(&mut body, items);
+    }
+    if has_tools && tool_choice == ToolChoicePolicy::Require {
+        body.push_str(",\"tool_choice\":{\"type\":\"any\"}");
+    }
+    if stream {
+        body.push_str(",\"stream\":true");
+    }
+    body.push('}');
     if body.len() > MAX_REQUEST_BODY_LEN {
         return Err(Error::config(
             "llm_request",
             format!("request body exceeds {} bytes", MAX_REQUEST_BODY_LEN),
         ));
     }
-    Ok(body)
+    Ok(body.into_bytes())
 }
 
 fn do_request(
@@ -497,7 +508,7 @@ mod tests {
             Some(&[ToolSpec {
                 name: "t".to_string(),
                 description: "d".to_string(),
-                parameters: serde_json::json!({"type":"object"}),
+                parameters_json: r#"{"type":"object"}"#.into(),
             }]),
             ToolChoicePolicy::Require,
             false,

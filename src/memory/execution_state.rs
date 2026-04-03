@@ -12,6 +12,7 @@ use std::collections::HashSet;
 use std::fmt::Write as _;
 
 use super::{
+    llm_json::{coerce_json_text, parse_llm_json_payload, LlmJsonPayload},
     memory_policy, ExecutionStatePolicy, MemoryProfile, SessionMessage, SessionStore,
     SessionSummaryStore,
 };
@@ -100,22 +101,6 @@ pub enum ExecutionStateRefreshOutcome {
     Skipped,
     Updated,
     Cleared,
-}
-
-#[derive(Deserialize)]
-struct RawExecutionState {
-    #[serde(default)]
-    status: Option<ExecutionStatus>,
-    #[serde(default)]
-    goal: String,
-    #[serde(default)]
-    progress: String,
-    #[serde(default)]
-    blocker: String,
-    #[serde(default)]
-    next_action: String,
-    #[serde(default)]
-    last_output: String,
 }
 
 impl ExecutionStatePolicy {
@@ -356,31 +341,53 @@ fn build_execution_state_transcript(
 }
 
 fn parse_execution_state_response(raw: &str, now_secs: u64) -> Option<ExecutionState> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("null") {
+    let LlmJsonPayload::Value(value) = parse_llm_json_payload(raw) else {
         return None;
-    }
-    let json_slice = if trimmed.starts_with('{') {
-        trimmed
-    } else {
-        match (trimmed.find('{'), trimmed.rfind('}')) {
-            (Some(start), Some(end)) if start < end => &trimmed[start..=end],
-            _ => return None,
-        }
     };
-    let parsed = serde_json::from_str::<RawExecutionState>(json_slice).ok()?;
+    let parsed = value.as_object()?;
     normalize_execution_state(
         ExecutionState {
-            status: parsed.status.unwrap_or_default(),
-            goal: parsed.goal,
-            progress: parsed.progress,
-            blocker: parsed.blocker,
-            next_action: parsed.next_action,
-            last_output: parsed.last_output,
+            status: parsed
+                .get("status")
+                .and_then(parse_execution_status)
+                .unwrap_or_default(),
+            goal: parsed.get("goal").map(coerce_json_text).unwrap_or_default(),
+            progress: parsed
+                .get("progress")
+                .map(coerce_json_text)
+                .unwrap_or_default(),
+            blocker: parsed
+                .get("blocker")
+                .map(coerce_json_text)
+                .unwrap_or_default(),
+            next_action: parsed
+                .get("next_action")
+                .map(coerce_json_text)
+                .unwrap_or_default(),
+            last_output: parsed
+                .get("last_output")
+                .map(coerce_json_text)
+                .unwrap_or_default(),
             updated_at: now_secs,
         },
         now_secs,
     )
+}
+
+fn parse_execution_status(value: &serde_json::Value) -> Option<ExecutionStatus> {
+    let normalized = coerce_json_text(value).to_ascii_lowercase();
+    if normalized.contains("block") {
+        Some(ExecutionStatus::Blocked)
+    } else if normalized.contains("done") || normalized.contains("complete") {
+        Some(ExecutionStatus::Done)
+    } else if normalized.contains("active")
+        || normalized.contains("doing")
+        || normalized.contains("progress")
+    {
+        Some(ExecutionStatus::Active)
+    } else {
+        None
+    }
 }
 
 fn normalize_execution_state(mut state: ExecutionState, now_secs: u64) -> Option<ExecutionState> {
@@ -774,8 +781,29 @@ mod tests {
     use super::*;
     use crate::error::Result;
     use crate::llm::{LlmModelCompat, LlmResponse, StopReason};
+    use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Mutex;
+
+    #[test]
+    fn parse_execution_state_response_coerces_nested_fields() {
+        let raw = json!({
+            "status": { "value": "blocked" },
+            "goal": ["reduce esp size", "then move on"],
+            "progress": { "step": "fixed parser warnings" },
+            "blocker": false,
+            "next_action": { "step": "run size diff" },
+            "last_output": { "note": "tests green" }
+        })
+        .to_string();
+        let parsed = parse_execution_state_response(&raw, 11).unwrap();
+        assert_eq!(parsed.status, ExecutionStatus::Blocked);
+        assert_eq!(parsed.goal, "reduce esp size; then move on");
+        assert!(parsed.progress.contains("step: fixed parser warnings"));
+        assert_eq!(parsed.blocker, "false");
+        assert!(parsed.next_action.contains("step: run size diff"));
+        assert!(parsed.last_output.contains("note: tests green"));
+    }
 
     #[derive(Default)]
     struct StubSessionStore {

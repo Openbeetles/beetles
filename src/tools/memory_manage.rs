@@ -36,27 +36,8 @@ impl Tool for MemoryManageTool {
     fn description(&self) -> &'static str {
         "Manage persistent memory, structured long-term memory, soul/user config, and daily notes. Op: get_memory, set_memory, get_soul, set_soul, get_user, set_user, list_daily_notes, get_daily_note, write_daily_note, list_long_term, get_long_term, upsert_long_term, delete_long_term, delete_long_term_slot."
     }
-    fn schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "op": { "type": "string", "description": "Operation: get_memory|set_memory|get_soul|set_soul|get_user|set_user|list_daily_notes|get_daily_note|write_daily_note|list_long_term|get_long_term|upsert_long_term|delete_long_term|delete_long_term_slot" },
-                "content": { "type": "string", "description": "Content for set_memory/set_soul/set_user/write_daily_note" },
-                "name": { "type": "string", "description": "Daily note name (e.g. 2025-03-10.md) for get_daily_note/write_daily_note" },
-                "recent_n": { "type": "integer", "description": "Max number of daily notes to list (default 10, max 30)" },
-                "append": { "type": "boolean", "description": "If true, append to existing note instead of overwrite (default false, for write_daily_note)" },
-                "id": { "type": "string", "description": "Structured long-term memory id for get_long_term/delete_long_term" },
-                "topic": { "type": "string", "description": "Structured long-term memory stable topic key, e.g. response_style or current_project" },
-                "kind": { "type": "string", "description": "Structured long-term memory kind: preference|profile|relationship|project|task|constraint|fact" },
-                "keywords": { "type": "array", "items": { "type": "string" }, "description": "Structured long-term memory keywords" },
-                "source_type": { "type": "string", "description": "Structured long-term memory source type: conversation|manual_tool|system_runtime|external_observation" },
-                "source_scope": { "type": "string", "description": "Structured long-term memory source scope: chat|user|world" },
-                "confidence": { "type": "string", "description": "Structured long-term memory confidence: low|medium|high" },
-                "freshness": { "type": "string", "description": "Structured long-term memory freshness: stable|dynamic|volatile" },
-                "stale_hint": { "type": "string", "description": "Structured long-term memory stale hint: none|review_before_use|verify_against_current_state" }
-            },
-            "required": ["op"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: get_memory|set_memory|get_soul|set_soul|get_user|set_user|list_daily_notes|get_daily_note|write_daily_note|list_long_term|get_long_term|upsert_long_term|delete_long_term|delete_long_term_slot"},"content":{"type":"string","description":"Content for set_memory/set_soul/set_user/write_daily_note"},"name":{"type":"string","description":"Daily note name (e.g. 2025-03-10.md) for get_daily_note/write_daily_note"},"recent_n":{"type":"integer","description":"Max number of daily notes to list (default 10, max 30)"},"append":{"type":"boolean","description":"If true, append to existing note instead of overwrite (default false, for write_daily_note)"},"id":{"type":"string","description":"Structured long-term memory id for get_long_term/delete_long_term"},"topic":{"type":"string","description":"Structured long-term memory stable topic key, e.g. response_style or current_project"},"kind":{"type":"string","description":"Structured long-term memory kind: preference|profile|relationship|project|task|constraint|fact"},"keywords":{"type":"array","items":{"type":"string"},"description":"Structured long-term memory keywords"},"source_type":{"type":"string","description":"Structured long-term memory source type: conversation|manual_tool|system_runtime|external_observation"},"source_scope":{"type":"string","description":"Structured long-term memory source scope: chat|user|world"},"confidence":{"type":"string","description":"Structured long-term memory confidence: low|medium|high"},"freshness":{"type":"string","description":"Structured long-term memory freshness: stable|dynamic|volatile"},"stale_hint":{"type":"string","description":"Structured long-term memory stale hint: none|review_before_use|verify_against_current_state"}},"required":["op"]}"#
     }
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
         let obj = parse_tool_args(args, "tool_memory_manage")?;

@@ -38,45 +38,8 @@ impl Tool for MemoryGetTool {
         "Fetch one cited archive-sidecar record by record_id or locator fields. Use this after memory_search to inspect a specific transcript message, daily note, or turn log. Returned content is archive evidence, not canonical shared memory."
     }
 
-    fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "record_id": {
-                    "type": "string",
-                    "description": "Opaque archive record id returned by memory_search."
-                },
-                "source": {
-                    "type": "string",
-                    "enum": ["transcript", "daily_note", "turn_log"],
-                    "description": "Source type when not using record_id."
-                },
-                "chat_id": {
-                    "type": "string",
-                    "description": "Chat id for transcript or turn_log locators."
-                },
-                "message_index": {
-                    "type": "integer",
-                    "description": "Transcript message index returned by memory_search."
-                },
-                "note_name": {
-                    "type": "string",
-                    "description": "Daily note file name, e.g. 2026-04-02.md."
-                },
-                "req_id": {
-                    "type": "string",
-                    "description": "Turn log request id returned by memory_search."
-                },
-                "focus_query": {
-                    "type": "string",
-                    "description": "Optional focus term for excerpting the returned record."
-                },
-                "max_chars": {
-                    "type": "integer",
-                    "description": "Max content chars to return, default 1800, max 4096."
-                }
-            }
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"record_id":{"type":"string","description":"Opaque archive record id returned by memory_search."},"source":{"type":"string","enum":["transcript","daily_note","turn_log"],"description":"Source type when not using record_id."},"chat_id":{"type":"string","description":"Chat id for transcript or turn_log locators."},"message_index":{"type":"integer","description":"Transcript message index returned by memory_search."},"note_name":{"type":"string","description":"Daily note file name, e.g. 2026-04-02.md."},"req_id":{"type":"string","description":"Turn log request id returned by memory_search."},"focus_query":{"type":"string","description":"Optional focus term for excerpting the returned record."},"max_chars":{"type":"integer","description":"Max content chars to return, default 1800, max 4096."}}}"#
     }
 
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {

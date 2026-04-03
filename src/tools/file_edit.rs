@@ -29,30 +29,8 @@ impl Tool for FileEditTool {
         "Edit an existing text file in storage using deterministic operations: replace_once, replace_all, insert_before, insert_after, or prepend. Use this when a localized file change is needed instead of rewriting the whole file."
     }
 
-    fn schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "File path under storage root, e.g. notes/todo.txt"
-                },
-                "mode": {
-                    "type": "string",
-                    "enum": ["replace_once", "replace_all", "insert_before", "insert_after", "prepend"],
-                    "description": "Edit operation to perform"
-                },
-                "match_text": {
-                    "type": "string",
-                    "description": "Exact text to locate for replace/insert modes"
-                },
-                "content": {
-                    "type": "string",
-                    "description": "Replacement or inserted content"
-                }
-            },
-            "required": ["path", "mode", "content"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"path":{"type":"string","description":"File path under storage root, e.g. notes/todo.txt"},"mode":{"type":"string","enum":["replace_once","replace_all","insert_before","insert_after","prepend"],"description":"Edit operation to perform"},"match_text":{"type":"string","description":"Exact text to locate for replace/insert modes"},"content":{"type":"string","description":"Replacement or inserted content"}},"required":["path","mode","content"]}"#
     }
 
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {

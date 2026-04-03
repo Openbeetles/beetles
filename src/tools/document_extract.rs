@@ -32,50 +32,8 @@ impl Tool for DocumentExtractTool {
         "Extract targeted content from a public URL or stored document. Supports matching lines, Markdown/text sections, and JSON fields. Use this after document_search or document_read when only part of a document is needed."
     }
 
-    fn schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "source": {
-                    "type": "string",
-                    "description": "Public http(s) URL or storage path such as docs/readme.md"
-                },
-                "mode": {
-                    "type": "string",
-                    "enum": ["lines", "section", "json_field"],
-                    "description": "Extraction mode"
-                },
-                "query": {
-                    "type": "string",
-                    "description": "Phrase to match for lines or sections"
-                },
-                "json_path": {
-                    "type": "string",
-                    "description": "JSON pointer (/a/b/0) or dot path (a.b[0]) for json_field mode"
-                },
-                "context_before": {
-                    "type": "integer",
-                    "description": "Context lines before each matched line (default 1, max 4)"
-                },
-                "context_after": {
-                    "type": "integer",
-                    "description": "Context lines after each matched line (default 1, max 4)"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum extracted items to return (default 4, max 8)"
-                },
-                "case_sensitive": {
-                    "type": "boolean",
-                    "description": "Whether matching is case-sensitive (default false)"
-                },
-                "max_chars": {
-                    "type": "integer",
-                    "description": "Maximum source characters to load before extraction (default 16000, max 50000)"
-                }
-            },
-            "required": ["source", "mode"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"source":{"type":"string","description":"Public http(s) URL or storage path such as docs/readme.md"},"mode":{"type":"string","enum":["lines","section","json_field"],"description":"Extraction mode"},"query":{"type":"string","description":"Phrase to match for lines or sections"},"json_path":{"type":"string","description":"JSON pointer (/a/b/0) or dot path (a.b[0]) for json_field mode"},"context_before":{"type":"integer","description":"Context lines before each matched line (default 1, max 4)"},"context_after":{"type":"integer","description":"Context lines after each matched line (default 1, max 4)"},"limit":{"type":"integer","description":"Maximum extracted items to return (default 4, max 8)"},"case_sensitive":{"type":"boolean","description":"Whether matching is case-sensitive (default false)"},"max_chars":{"type":"integer","description":"Maximum source characters to load before extraction (default 16000, max 50000)"}},"required":["source","mode"]}"#
     }
 
     fn requires_network(&self) -> bool {

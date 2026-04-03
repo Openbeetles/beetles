@@ -11,23 +11,24 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    autonomy_idle_interval_secs, build_self_state, build_world_snapshot, memory_policy,
-    render_autonomy_strategy_block, render_execution_state_block, render_inner_life_block,
-    render_internal_memory_topology_block, render_private_doc_workspace_block,
-    render_private_garden_block, render_private_memory_boundary_block,
-    render_self_continuity_block, render_self_model_block, render_self_state_block,
-    render_shared_factual_plane_block, render_world_sense_block, render_world_snapshot_block,
-    run_autonomy_strategy_refresh_with_state, run_inner_life_refresh_with_state,
-    run_private_doc_workspace_refresh_with_state, run_private_garden_governance_with_state,
-    run_self_continuity_refresh_with_state, run_world_sense_refresh_with_state,
-    touch_self_continuity_runtime, AutonomyGovernanceTendency, AutonomyStrategyRefreshContext,
-    AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome, AutonomyStrategyStore,
-    ExecutionStateStore, InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome,
-    InnerLifeStore, InternalMemoryLayerFocus, LongTermMemoryStore, MemoryProfile, PrivateDocStore,
-    PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
-    PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
-    PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, PrivateGardenStore,
-    RemindAtStore, SelfContinuityRefreshContext, SelfContinuityRefreshInput,
+    autonomy_idle_interval_secs, build_self_state, build_world_snapshot,
+    llm_json::{get_object_bool, get_object_text, parse_llm_json_payload, LlmJsonPayload},
+    memory_policy, render_autonomy_strategy_block, render_execution_state_block,
+    render_inner_life_block, render_internal_memory_topology_block,
+    render_private_doc_workspace_block, render_private_garden_block,
+    render_private_memory_boundary_block, render_self_continuity_block, render_self_model_block,
+    render_self_state_block, render_shared_factual_plane_block, render_world_sense_block,
+    render_world_snapshot_block, run_autonomy_strategy_refresh_with_state,
+    run_inner_life_refresh_with_state, run_private_doc_workspace_refresh_with_state,
+    run_private_garden_governance_with_state, run_self_continuity_refresh_with_state,
+    run_world_sense_refresh_with_state, touch_self_continuity_runtime, AutonomyGovernanceTendency,
+    AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome,
+    AutonomyStrategyStore, ExecutionStateStore, InnerLifeRefreshContext, InnerLifeRefreshInput,
+    InnerLifeRefreshOutcome, InnerLifeStore, InternalMemoryLayerFocus, LongTermMemoryStore,
+    MemoryProfile, PrivateDocStore, PrivateDocWorkspaceRefreshContext,
+    PrivateDocWorkspaceRefreshInput, PrivateDocWorkspaceRefreshOutcome,
+    PrivateGardenGovernanceContext, PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome,
+    PrivateGardenStore, RemindAtStore, SelfContinuityRefreshContext, SelfContinuityRefreshInput,
     SelfContinuityRefreshOutcome, SelfContinuityStore, SelfMemorySpaceBottleneck,
     SelfMemorySpacePressure, SelfModelStore, SelfState, SessionStore, SessionSummaryStore,
     WorldSenseRefreshContext, WorldSenseRefreshInput, WorldSenseRefreshOutcome, WorldSenseStore,
@@ -106,10 +107,506 @@ pub struct SelfRuntimeOutcome {
     pub private_garden_result: Result<PrivateGardenGovernanceOutcome>,
 }
 
+struct LoadedSelfRuntimeState {
+    summary_text: Option<String>,
+    execution_state: Option<crate::memory::ExecutionState>,
+    self_model: Option<crate::memory::SelfModel>,
+    private_docs: Option<crate::memory::PrivateDocWorkspace>,
+    private_garden_docs: Vec<crate::memory::PrivateGardenDocRecord>,
+    inner_life: Option<crate::memory::InnerLife>,
+    self_continuity: Option<crate::memory::SelfContinuity>,
+    world_sense: Option<crate::memory::WorldSense>,
+    autonomy_strategy: Option<crate::memory::AutonomyStrategy>,
+    world_snapshot: crate::memory::WorldSnapshot,
+    recent: Vec<crate::memory::SessionMessage>,
+}
+
+struct SelfRuntimeRefreshPrelude {
+    world_sense_result: Result<WorldSenseRefreshOutcome>,
+    autonomy_strategy_result: Result<AutonomyStrategyRefreshOutcome>,
+    refreshed_world_sense: Option<crate::memory::WorldSense>,
+    refreshed_autonomy_strategy: Option<crate::memory::AutonomyStrategy>,
+    runtime_self_state: SelfState,
+}
+
+struct SelfRuntimeActionResults {
+    decision: Option<SelfRuntimeDecision>,
+    inner_life_result: Result<InnerLifeRefreshOutcome>,
+    private_doc_result: Result<PrivateDocWorkspaceRefreshOutcome>,
+    self_continuity_result: Result<SelfContinuityRefreshOutcome>,
+    private_garden_result: Result<PrivateGardenGovernanceOutcome>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GovernedRuntimeLayer {
     PrivateDocs,
     PrivateGarden,
+}
+
+fn self_runtime_ingress(trigger: SelfRuntimeTrigger) -> IngressKind {
+    match trigger {
+        SelfRuntimeTrigger::PostReply => IngressKind::User,
+        SelfRuntimeTrigger::IdleTick => IngressKind::System,
+    }
+}
+
+fn load_self_runtime_state(
+    ctx: &SelfRuntimeContext<'_>,
+    chat_id: &str,
+    payload: &SelfRuntimeJobPayload,
+    profile: MemoryProfile,
+) -> LoadedSelfRuntimeState {
+    let summary_text = ctx
+        .session_summary_store
+        .get_with_count(chat_id)
+        .ok()
+        .flatten()
+        .map(|(summary, _)| summary);
+    let execution_state = ctx.execution_state_store.get(chat_id).ok().flatten();
+    let self_model = ctx.self_model_store.get(chat_id).ok().flatten();
+    let private_docs = ctx.private_doc_store.get(chat_id).ok().flatten();
+    let private_garden_docs = ctx
+        .private_garden_store
+        .list(chat_id, usize::MAX)
+        .unwrap_or_default();
+    let inner_life = ctx.inner_life_store.get(chat_id).ok().flatten();
+    let self_continuity = ctx.self_continuity_store.get(chat_id).ok().flatten();
+    let world_sense = ctx.world_sense_store.get(chat_id).ok().flatten();
+    let autonomy_strategy = ctx.autonomy_strategy_store.get(chat_id).ok().flatten();
+    if payload.trigger == SelfRuntimeTrigger::PostReply {
+        let _ = touch_self_continuity_runtime(
+            ctx.self_continuity_store,
+            chat_id,
+            payload.now_secs,
+            true,
+            false,
+        );
+    }
+    let world_snapshot = build_world_snapshot(WorldSnapshotContext {
+        chat_id,
+        source_channel: &payload.source_channel,
+        now_secs: payload.now_secs,
+        self_continuity: self_continuity.as_ref(),
+        remind_store: ctx.remind_store,
+        task_store: ctx.task_store,
+    });
+    let recent = ctx
+        .session_store
+        .load_recent(
+            chat_id,
+            memory_policy(profile)
+                .self_runtime
+                .recent_message_count
+                .max(memory_policy(profile).world_sense.recent_message_count)
+                .max(
+                    memory_policy(profile)
+                        .autonomy_strategy
+                        .recent_message_count,
+                )
+                .max(memory_policy(profile).inner_life.recent_message_count)
+                .max(memory_policy(profile).self_continuity.recent_message_count)
+                .max(
+                    memory_policy(profile)
+                        .private_garden_governance
+                        .recent_message_count,
+                ),
+        )
+        .unwrap_or_default();
+    LoadedSelfRuntimeState {
+        summary_text,
+        execution_state,
+        self_model,
+        private_docs,
+        private_garden_docs,
+        inner_life,
+        self_continuity,
+        world_sense,
+        autonomy_strategy,
+        world_snapshot,
+        recent,
+    }
+}
+
+fn refresh_world_and_autonomy(
+    http: &mut dyn LlmHttpClient,
+    llm: &(dyn LlmClient + Send + Sync),
+    ctx: &SelfRuntimeContext<'_>,
+    chat_id: &str,
+    payload: &SelfRuntimeJobPayload,
+    profile: MemoryProfile,
+    state: &LoadedSelfRuntimeState,
+) -> SelfRuntimeRefreshPrelude {
+    let ingress = self_runtime_ingress(payload.trigger);
+    let world_policy = memory_policy(profile).world_sense;
+    let world_snapshot_changed = state.world_sense.as_ref().is_some_and(|existing| {
+        existing.source_fingerprint
+            != crate::memory::world_snapshot_fingerprint(&state.world_snapshot)
+    });
+    let world_sense_should_refresh = state.world_sense.is_none()
+        || world_snapshot_changed
+        || (payload.trigger == SelfRuntimeTrigger::PostReply
+            && world_policy.should_refresh(
+                WorldSenseRefreshInput {
+                    chat_id,
+                    ingress,
+                    channel: &payload.source_channel,
+                    user_content: &payload.user_content,
+                    reply_content: &payload.reply_content,
+                    pressure: PressureLevel::Normal,
+                    tool_calls: payload.tool_calls,
+                    now_secs: payload.now_secs,
+                },
+                state.world_sense.is_some(),
+            ))
+        || state.world_sense.as_ref().is_some_and(|world_sense| {
+            payload.now_secs.saturating_sub(world_sense.updated_at)
+                >= world_policy.refresh_interval_secs
+        });
+    let world_sense_result = run_world_sense_refresh_with_state(
+        http,
+        llm,
+        WorldSenseRefreshContext {
+            session_store: ctx.session_store,
+            session_summary_store: ctx.session_summary_store,
+            execution_state_store: ctx.execution_state_store,
+            self_continuity_store: ctx.self_continuity_store,
+            autonomy_strategy_store: ctx.autonomy_strategy_store,
+            world_sense_store: ctx.world_sense_store,
+            remind_store: ctx.remind_store,
+            task_store: ctx.task_store,
+        },
+        WorldSenseRefreshInput {
+            chat_id,
+            ingress,
+            channel: &payload.source_channel,
+            user_content: &payload.user_content,
+            reply_content: &payload.reply_content,
+            pressure: PressureLevel::Normal,
+            tool_calls: payload.tool_calls,
+            now_secs: payload.now_secs,
+        },
+        profile,
+        state.world_sense.clone(),
+        &state.world_snapshot,
+        state.summary_text.as_deref(),
+        state.execution_state.as_ref(),
+        state.self_continuity.as_ref(),
+        state.autonomy_strategy.as_ref(),
+        Some(world_sense_should_refresh),
+        Some(state.recent.as_slice()),
+    );
+    let refreshed_world_sense = ctx
+        .world_sense_store
+        .get(chat_id)
+        .ok()
+        .flatten()
+        .or(state.world_sense.clone());
+    let autonomy_policy = memory_policy(profile).autonomy_strategy;
+    let autonomy_strategy_should_refresh = state.autonomy_strategy.is_none()
+        || (payload.trigger == SelfRuntimeTrigger::PostReply
+            && autonomy_policy.should_refresh(
+                AutonomyStrategyRefreshInput {
+                    chat_id,
+                    ingress,
+                    channel: &payload.source_channel,
+                    user_content: &payload.user_content,
+                    reply_content: &payload.reply_content,
+                    pressure: PressureLevel::Normal,
+                    tool_calls: payload.tool_calls,
+                    now_secs: payload.now_secs,
+                },
+                state.autonomy_strategy.is_some(),
+            ))
+        || state.autonomy_strategy.as_ref().is_some_and(|strategy| {
+            payload.now_secs.saturating_sub(strategy.updated_at)
+                >= autonomy_policy.refresh_interval_secs
+        });
+    let autonomy_strategy_result = run_autonomy_strategy_refresh_with_state(
+        http,
+        llm,
+        AutonomyStrategyRefreshContext {
+            session_store: ctx.session_store,
+            session_summary_store: ctx.session_summary_store,
+            execution_state_store: ctx.execution_state_store,
+            long_term_memory_store: ctx.long_term_memory_store,
+            self_model_store: ctx.self_model_store,
+            inner_life_store: ctx.inner_life_store,
+            self_continuity_store: ctx.self_continuity_store,
+            private_doc_store: ctx.private_doc_store,
+            private_garden_store: ctx.private_garden_store,
+            world_sense_store: ctx.world_sense_store,
+            autonomy_strategy_store: ctx.autonomy_strategy_store,
+        },
+        AutonomyStrategyRefreshInput {
+            chat_id,
+            ingress,
+            channel: &payload.source_channel,
+            user_content: &payload.user_content,
+            reply_content: &payload.reply_content,
+            pressure: PressureLevel::Normal,
+            tool_calls: payload.tool_calls,
+            now_secs: payload.now_secs,
+        },
+        profile,
+        state.autonomy_strategy.clone(),
+        state.summary_text.as_deref(),
+        state.execution_state.as_ref(),
+        state.self_model.as_ref(),
+        state.inner_life.as_ref(),
+        state.self_continuity.as_ref(),
+        state.private_docs.as_ref(),
+        &state.private_garden_docs,
+        refreshed_world_sense.as_ref(),
+        Some(&state.world_snapshot),
+        Some(autonomy_strategy_should_refresh),
+        Some(state.recent.as_slice()),
+    );
+    let refreshed_autonomy_strategy = ctx
+        .autonomy_strategy_store
+        .get(chat_id)
+        .ok()
+        .flatten()
+        .or(state.autonomy_strategy.clone());
+    let runtime_self_state = build_self_state(
+        state.self_model.as_ref(),
+        state.private_docs.as_ref(),
+        refreshed_autonomy_strategy.as_ref(),
+        state.inner_life.as_ref(),
+        state.self_continuity.as_ref(),
+        &state.private_garden_docs,
+        payload.now_secs,
+        profile,
+    );
+    SelfRuntimeRefreshPrelude {
+        world_sense_result,
+        autonomy_strategy_result,
+        refreshed_world_sense,
+        refreshed_autonomy_strategy,
+        runtime_self_state,
+    }
+}
+
+fn execute_self_runtime_actions(
+    http: &mut dyn LlmHttpClient,
+    llm: &(dyn LlmClient + Send + Sync),
+    ctx: &SelfRuntimeContext<'_>,
+    chat_id: &str,
+    payload: &SelfRuntimeJobPayload,
+    profile: MemoryProfile,
+    state: &LoadedSelfRuntimeState,
+    prelude: &SelfRuntimeRefreshPrelude,
+) -> SelfRuntimeActionResults {
+    let decision = match decide_self_runtime(
+        http,
+        llm,
+        ctx.long_term_memory_store,
+        payload,
+        state.summary_text.as_deref(),
+        state.execution_state.as_ref(),
+        state.self_model.as_ref(),
+        state.private_docs.as_ref(),
+        &state.private_garden_docs,
+        state.inner_life.as_ref(),
+        state.self_continuity.as_ref(),
+        prelude.refreshed_world_sense.as_ref(),
+        &state.world_snapshot,
+        prelude.refreshed_autonomy_strategy.as_ref(),
+        profile,
+        ctx.session_store,
+        chat_id,
+    ) {
+        Ok(decision) => Some(normalize_self_runtime_decision(
+            decision,
+            payload.trigger,
+            prelude.refreshed_autonomy_strategy.as_ref(),
+            &prelude.runtime_self_state,
+            state.private_docs.is_some(),
+            !state.private_garden_docs.is_empty(),
+        )),
+        Err(error) => {
+            return SelfRuntimeActionResults {
+                decision: None,
+                inner_life_result: Err(error),
+                private_doc_result: Ok(PrivateDocWorkspaceRefreshOutcome::Skipped),
+                self_continuity_result: Ok(SelfContinuityRefreshOutcome::Skipped),
+                private_garden_result: Ok(PrivateGardenGovernanceOutcome::Skipped),
+            };
+        }
+    };
+    let decision_ref = decision.as_ref();
+    let inner_life_result = if decision_ref.is_some_and(|d| d.refresh_inner_life) {
+        run_inner_life_refresh_with_state(
+            http,
+            llm,
+            InnerLifeRefreshContext {
+                session_store: ctx.session_store,
+                session_summary_store: ctx.session_summary_store,
+                execution_state_store: ctx.execution_state_store,
+                long_term_memory_store: ctx.long_term_memory_store,
+                self_model_store: ctx.self_model_store,
+                private_doc_store: ctx.private_doc_store,
+                self_continuity_store: ctx.self_continuity_store,
+                inner_life_store: ctx.inner_life_store,
+            },
+            InnerLifeRefreshInput {
+                chat_id,
+                ingress: IngressKind::System,
+                channel: SELF_RUNTIME_CHANNEL,
+                user_content: &payload.user_content,
+                reply_content: &payload.reply_content,
+                pressure: PressureLevel::Normal,
+                tool_calls: payload.tool_calls,
+                now_secs: payload.now_secs,
+            },
+            profile,
+            state.inner_life.clone(),
+            state.summary_text.as_deref(),
+            state.execution_state.as_ref(),
+            state.self_model.as_ref(),
+            state.private_docs.as_ref(),
+            state.self_continuity.as_ref(),
+            Some(true),
+            Some(state.recent.as_slice()),
+        )
+    } else {
+        Ok(InnerLifeRefreshOutcome::Skipped)
+    };
+    let refreshed_inner_life = ctx
+        .inner_life_store
+        .get(chat_id)
+        .ok()
+        .flatten()
+        .or(state.inner_life.clone());
+    let private_doc_result = if decision_ref.is_some_and(|d| d.refresh_private_docs) {
+        run_private_doc_workspace_refresh_with_state(
+            http,
+            llm,
+            PrivateDocWorkspaceRefreshContext {
+                session_store: ctx.session_store,
+                session_summary_store: ctx.session_summary_store,
+                execution_state_store: ctx.execution_state_store,
+                long_term_memory_store: ctx.long_term_memory_store,
+                self_model_store: ctx.self_model_store,
+                private_doc_store: ctx.private_doc_store,
+            },
+            PrivateDocWorkspaceRefreshInput {
+                chat_id,
+                ingress: IngressKind::System,
+                channel: SELF_RUNTIME_CHANNEL,
+                user_content: &payload.user_content,
+                reply_content: &payload.reply_content,
+                pressure: PressureLevel::Normal,
+                tool_calls: payload.tool_calls,
+                now_secs: payload.now_secs,
+            },
+            profile,
+            state.private_docs.clone(),
+            state.summary_text.as_deref(),
+            state.execution_state.as_ref(),
+            state.self_model.as_ref(),
+            &state.private_garden_docs,
+            decision_ref.and_then(|d| {
+                (!d.private_docs_intent.trim().is_empty()).then_some(d.private_docs_intent.as_str())
+            }),
+            &[],
+            prelude.refreshed_autonomy_strategy.as_ref(),
+            state.self_continuity.as_ref(),
+            refreshed_inner_life.as_ref(),
+            prelude.refreshed_world_sense.as_ref(),
+            Some(true),
+            Some(state.recent.as_slice()),
+        )
+    } else {
+        Ok(PrivateDocWorkspaceRefreshOutcome::Skipped)
+    };
+    let refreshed_private_docs = ctx
+        .private_doc_store
+        .get(chat_id)
+        .ok()
+        .flatten()
+        .or(state.private_docs.clone());
+    let self_continuity_result = if decision_ref.is_some_and(|d| d.refresh_self_continuity) {
+        run_self_continuity_refresh_with_state(
+            http,
+            llm,
+            SelfContinuityRefreshContext {
+                session_store: ctx.session_store,
+                session_summary_store: ctx.session_summary_store,
+                execution_state_store: ctx.execution_state_store,
+                self_model_store: ctx.self_model_store,
+                private_doc_store: ctx.private_doc_store,
+                inner_life_store: ctx.inner_life_store,
+                self_continuity_store: ctx.self_continuity_store,
+            },
+            SelfContinuityRefreshInput {
+                chat_id,
+                ingress: IngressKind::System,
+                channel: SELF_RUNTIME_CHANNEL,
+                user_content: &payload.user_content,
+                reply_content: &payload.reply_content,
+                pressure: PressureLevel::Normal,
+                tool_calls: payload.tool_calls,
+                now_secs: payload.now_secs,
+            },
+            profile,
+            state.self_continuity.clone(),
+            state.summary_text.as_deref(),
+            state.execution_state.as_ref(),
+            state.self_model.as_ref(),
+            refreshed_private_docs.as_ref(),
+            refreshed_inner_life.as_ref(),
+            Some(true),
+            Some(state.recent.as_slice()),
+        )
+    } else {
+        Ok(SelfContinuityRefreshOutcome::Skipped)
+    };
+    let private_garden_result = if decision_ref.is_some_and(|d| d.refresh_private_garden) {
+        run_private_garden_governance_with_state(
+            http,
+            llm,
+            PrivateGardenGovernanceContext {
+                session_store: ctx.session_store,
+                session_summary_store: ctx.session_summary_store,
+                execution_state_store: ctx.execution_state_store,
+                self_model_store: ctx.self_model_store,
+                private_doc_store: ctx.private_doc_store,
+                private_garden_store: ctx.private_garden_store,
+            },
+            PrivateGardenGovernanceInput {
+                chat_id,
+                ingress: IngressKind::System,
+                channel: SELF_RUNTIME_CHANNEL,
+                user_content: &payload.user_content,
+                reply_content: &payload.reply_content,
+                pressure: PressureLevel::Normal,
+                tool_calls: payload.tool_calls,
+                now_secs: payload.now_secs,
+            },
+            profile,
+            state.summary_text.as_deref(),
+            state.execution_state.as_ref(),
+            state.self_model.as_ref(),
+            refreshed_private_docs.as_ref(),
+            prelude.refreshed_autonomy_strategy.as_ref(),
+            decision_ref.and_then(|d| {
+                (!d.private_garden_intent.trim().is_empty())
+                    .then_some(d.private_garden_intent.as_str())
+            }),
+            &[],
+            Some(true),
+            Some(state.recent.as_slice()),
+        )
+    } else {
+        Ok(PrivateGardenGovernanceOutcome::Skipped)
+    };
+    SelfRuntimeActionResults {
+        decision,
+        inner_life_result,
+        private_doc_result,
+        self_continuity_result,
+        private_garden_result,
+    }
 }
 
 pub fn enqueue_self_runtime_post_reply(
@@ -271,416 +768,10 @@ pub fn run_self_runtime(
     payload: &SelfRuntimeJobPayload,
     profile: MemoryProfile,
 ) -> SelfRuntimeOutcome {
-    let summary_text = ctx
-        .session_summary_store
-        .get_with_count(chat_id)
-        .ok()
-        .flatten()
-        .map(|(summary, _)| summary);
-    let execution_state = ctx.execution_state_store.get(chat_id).ok().flatten();
-    let self_model = ctx.self_model_store.get(chat_id).ok().flatten();
-    let private_docs = ctx.private_doc_store.get(chat_id).ok().flatten();
-    let private_garden_docs = ctx
-        .private_garden_store
-        .list(chat_id, usize::MAX)
-        .unwrap_or_default();
-    let inner_life = ctx.inner_life_store.get(chat_id).ok().flatten();
-    let self_continuity = ctx.self_continuity_store.get(chat_id).ok().flatten();
-    let world_sense = ctx.world_sense_store.get(chat_id).ok().flatten();
-    let autonomy_strategy = ctx.autonomy_strategy_store.get(chat_id).ok().flatten();
-    if payload.trigger == SelfRuntimeTrigger::PostReply {
-        let _ = touch_self_continuity_runtime(
-            ctx.self_continuity_store,
-            chat_id,
-            payload.now_secs,
-            true,
-            false,
-        );
-    }
-    let world_snapshot = build_world_snapshot(WorldSnapshotContext {
-        chat_id,
-        source_channel: &payload.source_channel,
-        now_secs: payload.now_secs,
-        self_continuity: self_continuity.as_ref(),
-        remind_store: ctx.remind_store,
-        task_store: ctx.task_store,
-    });
-    let recent = ctx
-        .session_store
-        .load_recent(
-            chat_id,
-            memory_policy(profile)
-                .self_runtime
-                .recent_message_count
-                .max(memory_policy(profile).world_sense.recent_message_count)
-                .max(
-                    memory_policy(profile)
-                        .autonomy_strategy
-                        .recent_message_count,
-                )
-                .max(memory_policy(profile).inner_life.recent_message_count)
-                .max(memory_policy(profile).self_continuity.recent_message_count)
-                .max(
-                    memory_policy(profile)
-                        .private_garden_governance
-                        .recent_message_count,
-                ),
-        )
-        .unwrap_or_default();
-    let world_policy = memory_policy(profile).world_sense;
-    let world_snapshot_changed = world_sense.as_ref().is_some_and(|existing| {
-        existing.source_fingerprint != crate::memory::world_snapshot_fingerprint(&world_snapshot)
-    });
-    let world_sense_should_refresh = world_sense.is_none()
-        || world_snapshot_changed
-        || (payload.trigger == SelfRuntimeTrigger::PostReply
-            && world_policy.should_refresh(
-                WorldSenseRefreshInput {
-                    chat_id,
-                    ingress: IngressKind::User,
-                    channel: &payload.source_channel,
-                    user_content: &payload.user_content,
-                    reply_content: &payload.reply_content,
-                    pressure: PressureLevel::Normal,
-                    tool_calls: payload.tool_calls,
-                    now_secs: payload.now_secs,
-                },
-                world_sense.is_some(),
-            ))
-        || world_sense.as_ref().is_some_and(|world_sense| {
-            payload.now_secs.saturating_sub(world_sense.updated_at)
-                >= world_policy.refresh_interval_secs
-        });
-    let world_sense_result = run_world_sense_refresh_with_state(
-        http,
-        llm,
-        WorldSenseRefreshContext {
-            session_store: ctx.session_store,
-            session_summary_store: ctx.session_summary_store,
-            execution_state_store: ctx.execution_state_store,
-            self_continuity_store: ctx.self_continuity_store,
-            autonomy_strategy_store: ctx.autonomy_strategy_store,
-            world_sense_store: ctx.world_sense_store,
-            remind_store: ctx.remind_store,
-            task_store: ctx.task_store,
-        },
-        WorldSenseRefreshInput {
-            chat_id,
-            ingress: match payload.trigger {
-                SelfRuntimeTrigger::PostReply => IngressKind::User,
-                SelfRuntimeTrigger::IdleTick => IngressKind::System,
-            },
-            channel: &payload.source_channel,
-            user_content: &payload.user_content,
-            reply_content: &payload.reply_content,
-            pressure: PressureLevel::Normal,
-            tool_calls: payload.tool_calls,
-            now_secs: payload.now_secs,
-        },
-        profile,
-        world_sense.clone(),
-        &world_snapshot,
-        summary_text.as_deref(),
-        execution_state.as_ref(),
-        self_continuity.as_ref(),
-        autonomy_strategy.as_ref(),
-        Some(world_sense_should_refresh),
-        Some(recent.as_slice()),
-    );
-    let refreshed_world_sense = ctx
-        .world_sense_store
-        .get(chat_id)
-        .ok()
-        .flatten()
-        .or(world_sense.clone());
-    let autonomy_policy = memory_policy(profile).autonomy_strategy;
-    let autonomy_strategy_should_refresh = autonomy_strategy.is_none()
-        || (payload.trigger == SelfRuntimeTrigger::PostReply
-            && autonomy_policy.should_refresh(
-                AutonomyStrategyRefreshInput {
-                    chat_id,
-                    ingress: IngressKind::User,
-                    channel: &payload.source_channel,
-                    user_content: &payload.user_content,
-                    reply_content: &payload.reply_content,
-                    pressure: PressureLevel::Normal,
-                    tool_calls: payload.tool_calls,
-                    now_secs: payload.now_secs,
-                },
-                autonomy_strategy.is_some(),
-            ))
-        || autonomy_strategy.as_ref().is_some_and(|strategy| {
-            payload.now_secs.saturating_sub(strategy.updated_at)
-                >= autonomy_policy.refresh_interval_secs
-        });
-    let autonomy_strategy_result = run_autonomy_strategy_refresh_with_state(
-        http,
-        llm,
-        AutonomyStrategyRefreshContext {
-            session_store: ctx.session_store,
-            session_summary_store: ctx.session_summary_store,
-            execution_state_store: ctx.execution_state_store,
-            long_term_memory_store: ctx.long_term_memory_store,
-            self_model_store: ctx.self_model_store,
-            inner_life_store: ctx.inner_life_store,
-            self_continuity_store: ctx.self_continuity_store,
-            private_doc_store: ctx.private_doc_store,
-            private_garden_store: ctx.private_garden_store,
-            world_sense_store: ctx.world_sense_store,
-            autonomy_strategy_store: ctx.autonomy_strategy_store,
-        },
-        AutonomyStrategyRefreshInput {
-            chat_id,
-            ingress: match payload.trigger {
-                SelfRuntimeTrigger::PostReply => IngressKind::User,
-                SelfRuntimeTrigger::IdleTick => IngressKind::System,
-            },
-            channel: &payload.source_channel,
-            user_content: &payload.user_content,
-            reply_content: &payload.reply_content,
-            pressure: PressureLevel::Normal,
-            tool_calls: payload.tool_calls,
-            now_secs: payload.now_secs,
-        },
-        profile,
-        autonomy_strategy.clone(),
-        summary_text.as_deref(),
-        execution_state.as_ref(),
-        self_model.as_ref(),
-        inner_life.as_ref(),
-        self_continuity.as_ref(),
-        private_docs.as_ref(),
-        &private_garden_docs,
-        refreshed_world_sense.as_ref(),
-        Some(&world_snapshot),
-        Some(autonomy_strategy_should_refresh),
-        Some(recent.as_slice()),
-    );
-    let refreshed_autonomy_strategy = ctx
-        .autonomy_strategy_store
-        .get(chat_id)
-        .ok()
-        .flatten()
-        .or(autonomy_strategy.clone());
-    let runtime_self_state = build_self_state(
-        self_model.as_ref(),
-        private_docs.as_ref(),
-        refreshed_autonomy_strategy.as_ref(),
-        inner_life.as_ref(),
-        self_continuity.as_ref(),
-        &private_garden_docs,
-        payload.now_secs,
-        profile,
-    );
-    let decision = match decide_self_runtime(
-        http,
-        llm,
-        ctx.long_term_memory_store,
-        payload,
-        summary_text.as_deref(),
-        execution_state.as_ref(),
-        self_model.as_ref(),
-        private_docs.as_ref(),
-        &private_garden_docs,
-        inner_life.as_ref(),
-        self_continuity.as_ref(),
-        refreshed_world_sense.as_ref(),
-        &world_snapshot,
-        refreshed_autonomy_strategy.as_ref(),
-        profile,
-        ctx.session_store,
-        chat_id,
-    ) {
-        Ok(decision) => Some(normalize_self_runtime_decision(
-            decision,
-            payload.trigger,
-            refreshed_autonomy_strategy.as_ref(),
-            &runtime_self_state,
-            private_docs.is_some(),
-            !private_garden_docs.is_empty(),
-        )),
-        Err(error) => {
-            return SelfRuntimeOutcome {
-                decision: None,
-                world_sense_result,
-                autonomy_strategy_result,
-                inner_life_result: Err(error),
-                private_doc_result: Ok(PrivateDocWorkspaceRefreshOutcome::Skipped),
-                self_continuity_result: Ok(SelfContinuityRefreshOutcome::Skipped),
-                private_garden_result: Ok(PrivateGardenGovernanceOutcome::Skipped),
-            };
-        }
-    };
-
-    let decision_ref = decision.as_ref();
-    let inner_life_result = if decision_ref.is_some_and(|d| d.refresh_inner_life) {
-        run_inner_life_refresh_with_state(
-            http,
-            llm,
-            InnerLifeRefreshContext {
-                session_store: ctx.session_store,
-                session_summary_store: ctx.session_summary_store,
-                execution_state_store: ctx.execution_state_store,
-                long_term_memory_store: ctx.long_term_memory_store,
-                self_model_store: ctx.self_model_store,
-                private_doc_store: ctx.private_doc_store,
-                self_continuity_store: ctx.self_continuity_store,
-                inner_life_store: ctx.inner_life_store,
-            },
-            InnerLifeRefreshInput {
-                chat_id,
-                ingress: IngressKind::System,
-                channel: SELF_RUNTIME_CHANNEL,
-                user_content: &payload.user_content,
-                reply_content: &payload.reply_content,
-                pressure: PressureLevel::Normal,
-                tool_calls: payload.tool_calls,
-                now_secs: payload.now_secs,
-            },
-            profile,
-            inner_life.clone(),
-            summary_text.as_deref(),
-            execution_state.as_ref(),
-            self_model.as_ref(),
-            private_docs.as_ref(),
-            self_continuity.as_ref(),
-            Some(true),
-            Some(recent.as_slice()),
-        )
-    } else {
-        Ok(InnerLifeRefreshOutcome::Skipped)
-    };
-
-    let refreshed_inner_life = ctx
-        .inner_life_store
-        .get(chat_id)
-        .ok()
-        .flatten()
-        .or(inner_life);
-    let private_doc_result = if decision_ref.is_some_and(|d| d.refresh_private_docs) {
-        run_private_doc_workspace_refresh_with_state(
-            http,
-            llm,
-            PrivateDocWorkspaceRefreshContext {
-                session_store: ctx.session_store,
-                session_summary_store: ctx.session_summary_store,
-                execution_state_store: ctx.execution_state_store,
-                long_term_memory_store: ctx.long_term_memory_store,
-                self_model_store: ctx.self_model_store,
-                private_doc_store: ctx.private_doc_store,
-            },
-            PrivateDocWorkspaceRefreshInput {
-                chat_id,
-                ingress: IngressKind::System,
-                channel: SELF_RUNTIME_CHANNEL,
-                user_content: &payload.user_content,
-                reply_content: &payload.reply_content,
-                pressure: PressureLevel::Normal,
-                tool_calls: payload.tool_calls,
-                now_secs: payload.now_secs,
-            },
-            profile,
-            private_docs.clone(),
-            summary_text.as_deref(),
-            execution_state.as_ref(),
-            self_model.as_ref(),
-            &private_garden_docs,
-            decision_ref.and_then(|d| {
-                (!d.private_docs_intent.trim().is_empty()).then_some(d.private_docs_intent.as_str())
-            }),
-            &[],
-            refreshed_autonomy_strategy.as_ref(),
-            self_continuity.as_ref(),
-            refreshed_inner_life.as_ref(),
-            refreshed_world_sense.as_ref(),
-            Some(true),
-            Some(recent.as_slice()),
-        )
-    } else {
-        Ok(PrivateDocWorkspaceRefreshOutcome::Skipped)
-    };
-    let refreshed_private_docs = ctx
-        .private_doc_store
-        .get(chat_id)
-        .ok()
-        .flatten()
-        .or(private_docs.clone());
-    let self_continuity_result = if decision_ref.is_some_and(|d| d.refresh_self_continuity) {
-        run_self_continuity_refresh_with_state(
-            http,
-            llm,
-            SelfContinuityRefreshContext {
-                session_store: ctx.session_store,
-                session_summary_store: ctx.session_summary_store,
-                execution_state_store: ctx.execution_state_store,
-                self_model_store: ctx.self_model_store,
-                private_doc_store: ctx.private_doc_store,
-                inner_life_store: ctx.inner_life_store,
-                self_continuity_store: ctx.self_continuity_store,
-            },
-            SelfContinuityRefreshInput {
-                chat_id,
-                ingress: IngressKind::System,
-                channel: SELF_RUNTIME_CHANNEL,
-                user_content: &payload.user_content,
-                reply_content: &payload.reply_content,
-                pressure: PressureLevel::Normal,
-                tool_calls: payload.tool_calls,
-                now_secs: payload.now_secs,
-            },
-            profile,
-            self_continuity.clone(),
-            summary_text.as_deref(),
-            execution_state.as_ref(),
-            self_model.as_ref(),
-            refreshed_private_docs.as_ref(),
-            refreshed_inner_life.as_ref(),
-            Some(true),
-            Some(recent.as_slice()),
-        )
-    } else {
-        Ok(SelfContinuityRefreshOutcome::Skipped)
-    };
-
-    let private_garden_result = if decision_ref.is_some_and(|d| d.refresh_private_garden) {
-        run_private_garden_governance_with_state(
-            http,
-            llm,
-            PrivateGardenGovernanceContext {
-                session_store: ctx.session_store,
-                session_summary_store: ctx.session_summary_store,
-                execution_state_store: ctx.execution_state_store,
-                self_model_store: ctx.self_model_store,
-                private_doc_store: ctx.private_doc_store,
-                private_garden_store: ctx.private_garden_store,
-            },
-            PrivateGardenGovernanceInput {
-                chat_id,
-                ingress: IngressKind::System,
-                channel: SELF_RUNTIME_CHANNEL,
-                user_content: &payload.user_content,
-                reply_content: &payload.reply_content,
-                pressure: PressureLevel::Normal,
-                tool_calls: payload.tool_calls,
-                now_secs: payload.now_secs,
-            },
-            profile,
-            summary_text.as_deref(),
-            execution_state.as_ref(),
-            self_model.as_ref(),
-            refreshed_private_docs.as_ref(),
-            refreshed_autonomy_strategy.as_ref(),
-            decision_ref.and_then(|d| {
-                (!d.private_garden_intent.trim().is_empty())
-                    .then_some(d.private_garden_intent.as_str())
-            }),
-            &[],
-            Some(true),
-            Some(recent.as_slice()),
-        )
-    } else {
-        Ok(PrivateGardenGovernanceOutcome::Skipped)
-    };
+    let state = load_self_runtime_state(&ctx, chat_id, payload, profile);
+    let prelude = refresh_world_and_autonomy(http, llm, &ctx, chat_id, payload, profile, &state);
+    let action_results =
+        execute_self_runtime_actions(http, llm, &ctx, chat_id, payload, profile, &state, &prelude);
 
     let _ = touch_self_continuity_runtime(
         ctx.self_continuity_store,
@@ -691,13 +782,13 @@ pub fn run_self_runtime(
     );
 
     SelfRuntimeOutcome {
-        decision,
-        world_sense_result,
-        autonomy_strategy_result,
-        inner_life_result,
-        private_doc_result,
-        self_continuity_result,
-        private_garden_result,
+        decision: action_results.decision,
+        world_sense_result: prelude.world_sense_result,
+        autonomy_strategy_result: prelude.autonomy_strategy_result,
+        inner_life_result: action_results.inner_life_result,
+        private_doc_result: action_results.private_doc_result,
+        self_continuity_result: action_results.self_continuity_result,
+        private_garden_result: action_results.private_garden_result,
     }
 }
 
@@ -829,7 +920,10 @@ fn default_runtime_governance_intent(
             "重写 governed docs，只保留仍然承重的内在线索".to_string()
         }
         (GovernedRuntimeLayer::PrivateDocs, AutonomyGovernanceTendency::Compress) => {
-            format!("压缩 governed docs，{}", pressure_focus)
+            let mut out = String::with_capacity(24 + pressure_focus.len());
+            out.push_str("压缩 governed docs，");
+            out.push_str(pressure_focus);
+            out
         }
         (GovernedRuntimeLayer::PrivateDocs, AutonomyGovernanceTendency::Cleanup) => {
             "清理低价值 governed docs 字段，只留下仍然有效的部分".to_string()
@@ -838,7 +932,10 @@ fn default_runtime_governance_intent(
             "重写并重组 private garden 中仍然活跃的工作文档".to_string()
         }
         (GovernedRuntimeLayer::PrivateGarden, AutonomyGovernanceTendency::Compress) => {
-            format!("压缩 private garden，{}", pressure_focus)
+            let mut out = String::with_capacity(24 + pressure_focus.len());
+            out.push_str("压缩 private garden，");
+            out.push_str(pressure_focus);
+            out
         }
         (GovernedRuntimeLayer::PrivateGarden, AutonomyGovernanceTendency::Cleanup) => {
             "清理陈旧或重复的 private garden 草稿与路径".to_string()
@@ -1026,13 +1123,33 @@ fn decide_self_runtime(
         None,
         ToolChoicePolicy::Auto,
     )?;
-    serde_json::from_str(response.content.trim())
-        .map_err(|error| crate::error::Error::config("self_runtime_parse", error.to_string()))
+    Ok(parse_self_runtime_decision(response.content.trim()))
+}
+
+fn parse_self_runtime_decision(raw: &str) -> SelfRuntimeDecision {
+    let LlmJsonPayload::Value(value) = parse_llm_json_payload(raw) else {
+        return SelfRuntimeDecision::default();
+    };
+    let Some(object) = value.as_object() else {
+        return SelfRuntimeDecision::default();
+    };
+    SelfRuntimeDecision {
+        refresh_inner_life: get_object_bool(object, "refresh_inner_life").unwrap_or(false),
+        inner_life_intent: get_object_text(object, "inner_life_intent"),
+        refresh_private_docs: get_object_bool(object, "refresh_private_docs").unwrap_or(false),
+        private_docs_intent: get_object_text(object, "private_docs_intent"),
+        refresh_self_continuity: get_object_bool(object, "refresh_self_continuity")
+            .unwrap_or(false),
+        self_continuity_intent: get_object_text(object, "self_continuity_intent"),
+        refresh_private_garden: get_object_bool(object, "refresh_private_garden").unwrap_or(false),
+        private_garden_intent: get_object_text(object, "private_garden_intent"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn sample_self_state() -> SelfState {
         SelfState {
@@ -1071,6 +1188,31 @@ mod tests {
                 idle_interval_secs: 900,
             },
         }
+    }
+
+    #[test]
+    fn parse_self_runtime_decision_coerces_nested_fields() {
+        let raw = json!({
+            "refresh_inner_life": "true",
+            "inner_life_intent": { "goal": "capture drift" },
+            "refresh_private_docs": 1,
+            "private_docs_intent": ["rewrite private notes"],
+            "refresh_self_continuity": false,
+            "self_continuity_intent": 0,
+            "refresh_private_garden": { "enabled": true },
+            "private_garden_intent": { "path": "journal/today.md" }
+        })
+        .to_string();
+        let parsed = parse_self_runtime_decision(&raw);
+        assert!(parsed.refresh_inner_life);
+        assert!(parsed.refresh_private_docs);
+        assert!(parsed.refresh_private_garden);
+        assert!(parsed.inner_life_intent.contains("goal: capture drift"));
+        assert_eq!(parsed.private_docs_intent, "rewrite private notes");
+        assert_eq!(parsed.self_continuity_intent, "0");
+        assert!(parsed
+            .private_garden_intent
+            .contains("path: journal/today.md"));
     }
 
     #[test]

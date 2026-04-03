@@ -1,6 +1,7 @@
 use crate::error::{Error, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -100,5 +101,69 @@ where
     match read_file(path) {
         Ok(buf) if buf.len() > 2 => serde_json::from_slice(&buf).unwrap_or_default(),
         _ => T::default(),
+    }
+}
+
+pub(crate) struct ChatScopedCachedJsonMapStore<V>
+where
+    V: Clone + PartialEq + Serialize + DeserializeOwned,
+{
+    store: CachedJsonFileStore<HashMap<String, V>>,
+    max_entries: usize,
+}
+
+impl<V> ChatScopedCachedJsonMapStore<V>
+where
+    V: Clone + PartialEq + Serialize + DeserializeOwned,
+{
+    pub(crate) fn new(
+        path_fn: fn() -> PathBuf,
+        stage_cache_lock: &'static str,
+        stage_cache: &'static str,
+        stage_persist: &'static str,
+        max_entries: usize,
+    ) -> Self {
+        Self {
+            store: CachedJsonFileStore::new(
+                path_fn,
+                load_json_or_default,
+                stage_cache_lock,
+                stage_cache,
+                stage_persist,
+            ),
+            max_entries,
+        }
+    }
+
+    #[inline(never)]
+    pub(crate) fn get_cloned(&self, chat_id: &str) -> Result<Option<V>> {
+        self.store
+            .with_cached_mut(|map| Ok(StoreOp::clean(map.get(chat_id).cloned())))
+    }
+
+    #[inline(never)]
+    pub(crate) fn set_owned(&self, chat_id: &str, next: V) -> Result<()> {
+        self.store.with_cached_mut(|map| {
+            if map.get(chat_id) == Some(&next) {
+                return Ok(StoreOp::clean(()));
+            }
+            if !map.contains_key(chat_id) && map.len() >= self.max_entries {
+                if let Some(key_to_remove) = map.keys().next().cloned() {
+                    map.remove(&key_to_remove);
+                }
+            }
+            map.insert(chat_id.to_string(), next);
+            Ok(StoreOp::dirty(()))
+        })
+    }
+
+    #[inline(never)]
+    pub(crate) fn clear(&self, chat_id: &str) -> Result<()> {
+        self.store.with_cached_mut(|map| {
+            if map.remove(chat_id).is_some() {
+                return Ok(StoreOp::dirty(()));
+            }
+            Ok(StoreOp::clean(()))
+        })
     }
 }

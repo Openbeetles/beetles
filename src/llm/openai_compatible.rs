@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use crate::llm::compat::model_compat_for_source;
 use crate::llm::types::{LlmResponse, StopReason, ToolCall, MAX_REQUEST_BODY_LEN};
 use crate::llm::{LlmClient, LlmHttpClient, LlmModelCompat, Message, ToolChoicePolicy, ToolSpec};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 const TAG: &str = "llm::openai_compat";
 const DEFAULT_API_BASE: &str = "https://api.openai.com/v1";
@@ -74,41 +74,7 @@ impl OpenAiCompatibleClient {
     }
 }
 
-// --- OpenAI Chat Completions 请求/响应 DTO ---
-
-#[derive(Debug, Serialize)]
-struct OpenAiRequestMessageRef<'a> {
-    role: &'a str,
-    content: &'a str,
-}
-
-#[derive(Debug, Serialize)]
-struct OpenAiFunctionSpecRef<'a> {
-    name: &'a str,
-    description: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    parameters: Option<&'a serde_json::Value>,
-}
-
-#[derive(Debug, Serialize)]
-struct OpenAiToolRef<'a> {
-    #[serde(rename = "type")]
-    tool_type: &'static str,
-    function: OpenAiFunctionSpecRef<'a>,
-}
-
-#[derive(Debug, Serialize)]
-struct OpenAiRequestRef<'a> {
-    model: &'a str,
-    max_tokens: u32,
-    messages: Vec<OpenAiRequestMessageRef<'a>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<OpenAiToolRef<'a>>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_choice: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stream: Option<bool>,
-}
+// --- OpenAI Chat Completions 响应 DTO ---
 
 #[derive(Debug, Deserialize)]
 struct OpenAiResponse {
@@ -162,58 +128,96 @@ fn build_request_body(
     tool_choice: ToolChoicePolicy,
     stream: bool,
 ) -> Result<Vec<u8>> {
-    let mut req_messages: Vec<OpenAiRequestMessageRef<'_>> =
-        Vec::with_capacity(messages.len() + usize::from(!system.is_empty()));
-    if !system.is_empty() {
-        req_messages.push(OpenAiRequestMessageRef {
-            role: "system",
-            content: system,
-        });
-    }
-    for m in messages {
-        req_messages.push(OpenAiRequestMessageRef {
-            role: &m.role,
-            content: &m.content,
-        });
+    fn push_json_string_field(out: &mut String, key: &str, value: &str) {
+        out.push('"');
+        out.push_str(key);
+        out.push_str("\":");
+        crate::util::push_json_string_escaped(out, value);
     }
 
-    let tools_api = tools.and_then(|t| {
-        if t.is_empty() {
-            None
-        } else {
-            Some(
-                t.iter()
-                    .map(|s| OpenAiToolRef {
-                        tool_type: "function",
-                        function: OpenAiFunctionSpecRef {
-                            name: &s.name,
-                            description: &s.description,
-                            parameters: Some(&s.parameters),
-                        },
-                    })
-                    .collect::<Vec<_>>(),
-            )
+    fn push_messages_field(out: &mut String, system: &str, messages: &[Message]) {
+        out.push_str("\"messages\":[");
+        let mut wrote_any = false;
+        if !system.is_empty() {
+            out.push('{');
+            push_json_string_field(out, "role", "system");
+            out.push(',');
+            push_json_string_field(out, "content", system);
+            out.push('}');
+            wrote_any = true;
         }
-    });
+        for message in messages {
+            if wrote_any {
+                out.push(',');
+            }
+            out.push('{');
+            push_json_string_field(out, "role", &message.role);
+            out.push(',');
+            push_json_string_field(out, "content", &message.content);
+            out.push('}');
+            wrote_any = true;
+        }
+        out.push(']');
+    }
 
-    let has_tools = tools_api.as_ref().is_some_and(|v| !v.is_empty());
-    let req = OpenAiRequestRef {
-        model,
-        max_tokens,
-        messages: req_messages,
-        tools: tools_api,
-        tool_choice: if has_tools && tool_choice == ToolChoicePolicy::Require {
-            Some("required")
-        } else {
-            None
-        },
-        stream: if stream { Some(true) } else { None },
-    };
+    fn push_tools_field(out: &mut String, tools: &[ToolSpec]) {
+        out.push_str(",\"tools\":[");
+        for (idx, tool) in tools.iter().enumerate() {
+            if idx > 0 {
+                out.push(',');
+            }
+            out.push_str("{\"type\":\"function\",\"function\":{");
+            push_json_string_field(out, "name", &tool.name);
+            out.push(',');
+            push_json_string_field(out, "description", &tool.description);
+            out.push_str(",\"parameters\":");
+            out.push_str(tool.parameters_json());
+            out.push_str("}}");
+        }
+        out.push(']');
+    }
 
-    let body = serde_json::to_vec(&req).map_err(|e| Error::Other {
-        source: Box::new(e),
-        stage: "llm_parse",
-    })?;
+    let mut num_buf = [0u8; 20];
+    let max_tokens_str = crate::util::usize_to_decimal_buf(&mut num_buf, max_tokens as usize);
+    let mut body = String::with_capacity(
+        model.len()
+            + system.len()
+            + messages
+                .iter()
+                .map(|m| m.role.len() + m.content.len() + 32)
+                .sum::<usize>()
+            + tools
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|tool| {
+                            tool.name.len()
+                                + tool.description.len()
+                                + tool.parameters_json().len()
+                                + 64
+                        })
+                        .sum::<usize>()
+                })
+                .unwrap_or(0)
+            + 128,
+    );
+    body.push('{');
+    push_json_string_field(&mut body, "model", model);
+    body.push_str(",\"max_tokens\":");
+    body.push_str(max_tokens_str);
+    body.push(',');
+    push_messages_field(&mut body, system, messages);
+    let has_tools = tools.is_some_and(|items| !items.is_empty());
+    if let Some(items) = tools.filter(|items| !items.is_empty()) {
+        push_tools_field(&mut body, items);
+    }
+    if has_tools && tool_choice == ToolChoicePolicy::Require {
+        body.push_str(",\"tool_choice\":\"required\"");
+    }
+    if stream {
+        body.push_str(",\"stream\":true");
+    }
+    body.push('}');
 
     if body.len() > MAX_REQUEST_BODY_LEN {
         return Err(Error::config(
@@ -221,7 +225,7 @@ fn build_request_body(
             format!("request body exceeds {} bytes", MAX_REQUEST_BODY_LEN),
         ));
     }
-    Ok(body)
+    Ok(body.into_bytes())
 }
 
 impl LlmClient for OpenAiCompatibleClient {
@@ -635,7 +639,7 @@ mod tests {
             Some(&[ToolSpec {
                 name: "t".to_string(),
                 description: "d".to_string(),
-                parameters: serde_json::json!({"type":"object"}),
+                parameters_json: r#"{"type":"object"}"#.into(),
             }]),
             ToolChoicePolicy::Require,
             false,

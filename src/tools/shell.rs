@@ -2,7 +2,6 @@
 
 use crate::error::{Error, Result};
 use crate::tools::{Tool, ToolContext, ToolMetadata};
-use serde_json::Value;
 use std::process::Command;
 
 /// 允许执行的命令白名单
@@ -28,22 +27,8 @@ impl Tool for ShellTool {
         "执行 shell 命令（仅限白名单命令：ls, cat, grep, ps, df, free, uptime, whoami, pwd, date, uname）"
     }
 
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "要执行的命令（仅限白名单）"
-                },
-                "args": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "命令参数"
-                }
-            },
-            "required": ["command"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"command":{"type":"string","description":"要执行的命令（仅限白名单）"},"args":{"type":"array","items":{"type":"string"},"description":"命令参数"}},"required":["command"]}"#
     }
 
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {

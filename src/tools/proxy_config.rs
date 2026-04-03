@@ -39,15 +39,8 @@ impl Tool for ProxyConfigTool {
     fn description(&self) -> &'static str {
         "Manage HTTP proxy configuration. Op: get (show current proxy, redacted), set (set proxy URL), clear (remove proxy). Changes take effect after restart."
     }
-    fn schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "op": { "type": "string", "description": "Operation: get|set|clear" },
-                "url": { "type": "string", "description": "Proxy URL for set operation (e.g. http://proxy:8080)" }
-            },
-            "required": ["op"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: get|set|clear"},"url":{"type":"string","description":"Proxy URL for set operation (e.g. http://proxy:8080)"}},"required":["op"]}"#
     }
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
         let obj = parse_tool_args(args, "tool_proxy_config")?;

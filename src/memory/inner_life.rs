@@ -10,6 +10,7 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
+    llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload},
     memory_policy, render_execution_state_block, render_internal_memory_topology_block,
     render_private_doc_workspace_block, render_private_memory_boundary_block,
     render_self_continuity_block, render_self_model_block, render_shared_factual_plane_block,
@@ -82,18 +83,6 @@ pub enum InnerLifeRefreshOutcome {
     Skipped,
     Updated,
     Cleared,
-}
-
-#[derive(Default, Deserialize)]
-struct RawInnerLife {
-    #[serde(default)]
-    internal_monologue: String,
-    #[serde(default)]
-    private_journal: String,
-    #[serde(default)]
-    emotional_drift: String,
-    #[serde(default)]
-    attention_drift: String,
 }
 
 impl InnerLifePolicy {
@@ -256,42 +245,60 @@ pub(crate) fn run_inner_life_refresh_with_state(
         None,
         ToolChoicePolicy::Auto,
     )?;
-    let content = response.content.trim();
-    if content.eq_ignore_ascii_case("null") {
-        if existing_inner_life.is_some() {
-            ctx.inner_life_store.clear(input.chat_id)?;
-            return Ok(InnerLifeRefreshOutcome::Cleared);
+    match parse_inner_life_response(response.content.trim(), input.now_secs) {
+        ParsedInnerLifeResponse::Skip => Ok(InnerLifeRefreshOutcome::Skipped),
+        ParsedInnerLifeResponse::Clear => {
+            if existing_inner_life.is_some() {
+                ctx.inner_life_store.clear(input.chat_id)?;
+                Ok(InnerLifeRefreshOutcome::Cleared)
+            } else {
+                Ok(InnerLifeRefreshOutcome::Skipped)
+            }
         }
-        return Ok(InnerLifeRefreshOutcome::Skipped);
-    }
-    let raw: RawInnerLife = serde_json::from_str(content)
-        .map_err(|error| crate::error::Error::config("inner_life_parse", error.to_string()))?;
-    let Some(next) = normalize_inner_life(
-        InnerLife {
-            internal_monologue: raw.internal_monologue,
-            private_journal: raw.private_journal,
-            emotional_drift: raw.emotional_drift,
-            attention_drift: raw.attention_drift,
-            updated_at: input.now_secs,
-        },
-        input.now_secs,
-    ) else {
-        if existing_inner_life.is_some() {
-            ctx.inner_life_store.clear(input.chat_id)?;
-            return Ok(InnerLifeRefreshOutcome::Cleared);
+        ParsedInnerLifeResponse::Update(next) => {
+            if existing_inner_life.as_ref() == Some(&next) {
+                return Ok(InnerLifeRefreshOutcome::Skipped);
+            }
+            ctx.inner_life_store.set(input.chat_id, &next)?;
+            Ok(InnerLifeRefreshOutcome::Updated)
         }
-        return Ok(InnerLifeRefreshOutcome::Skipped);
-    };
-    if existing_inner_life.as_ref() == Some(&next) {
-        return Ok(InnerLifeRefreshOutcome::Skipped);
     }
-    ctx.inner_life_store.set(input.chat_id, &next)?;
-    Ok(InnerLifeRefreshOutcome::Updated)
 }
 
 fn recent_window(recent: &[SessionMessage], limit: usize) -> &[SessionMessage] {
     let start = recent.len().saturating_sub(limit);
     &recent[start..]
+}
+
+enum ParsedInnerLifeResponse {
+    Skip,
+    Clear,
+    Update(InnerLife),
+}
+
+fn parse_inner_life_response(raw: &str, now_secs: u64) -> ParsedInnerLifeResponse {
+    match parse_llm_json_payload(raw) {
+        LlmJsonPayload::Null => ParsedInnerLifeResponse::Clear,
+        LlmJsonPayload::Absent => ParsedInnerLifeResponse::Skip,
+        LlmJsonPayload::Value(value) => {
+            let Some(object) = value.as_object() else {
+                return ParsedInnerLifeResponse::Skip;
+            };
+            let Some(next) = normalize_inner_life(
+                InnerLife {
+                    internal_monologue: get_object_text(object, "internal_monologue"),
+                    private_journal: get_object_text(object, "private_journal"),
+                    emotional_drift: get_object_text(object, "emotional_drift"),
+                    attention_drift: get_object_text(object, "attention_drift"),
+                    updated_at: now_secs,
+                },
+                now_secs,
+            ) else {
+                return ParsedInnerLifeResponse::Skip;
+            };
+            ParsedInnerLifeResponse::Update(next)
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -404,6 +411,27 @@ fn normalize_inner_life(mut inner_life: InnerLife, updated_at: u64) -> Option<In
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_inner_life_response_handles_nested_values() {
+        let raw = json!({
+            "internal_monologue": { "thought": "stabilize parser" },
+            "private_journal": ["fixed warning", "kept semantics"],
+            "emotional_drift": true,
+            "attention_drift": 3
+        })
+        .to_string();
+        let ParsedInnerLifeResponse::Update(parsed) = parse_inner_life_response(&raw, 7) else {
+            panic!("expected parsed inner life");
+        };
+        assert!(parsed
+            .internal_monologue
+            .contains("thought: stabilize parser"));
+        assert_eq!(parsed.private_journal, "fixed warning; kept semantics");
+        assert_eq!(parsed.emotional_drift, "true");
+        assert_eq!(parsed.attention_drift, "3");
+    }
 
     #[test]
     fn render_inner_life_block_includes_populated_fields() {

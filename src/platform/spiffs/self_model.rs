@@ -3,10 +3,9 @@
 use crate::error::Result;
 use crate::memory::{SelfModel, SelfModelStore, REL_PATH_SELF_MODELS};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
 
-use super::cached_json::{load_json_or_default, CachedJsonFileStore, StoreOp};
+use super::cached_json::ChatScopedCachedJsonMapStore;
 use super::state_path_join;
 
 const MAX_SELF_MODEL_CHATS: usize = 32;
@@ -19,18 +18,18 @@ fn full_path() -> PathBuf {
 }
 
 pub struct SpiffsSelfModelStore {
-    store: CachedJsonFileStore<HashMap<String, StoredSelfModel>>,
+    store: ChatScopedCachedJsonMapStore<StoredSelfModel>,
 }
 
 impl SpiffsSelfModelStore {
     pub fn new() -> Self {
         Self {
-            store: CachedJsonFileStore::new(
+            store: ChatScopedCachedJsonMapStore::new(
                 full_path,
-                load_json_or_default,
                 "self_model_cache_lock",
                 "self_model_cache",
                 "self_model_persist",
+                MAX_SELF_MODEL_CHATS,
             ),
         }
     }
@@ -44,35 +43,17 @@ impl Default for SpiffsSelfModelStore {
 
 impl SelfModelStore for SpiffsSelfModelStore {
     fn get(&self, chat_id: &str) -> Result<Option<SelfModel>> {
-        self.store.with_cached_mut(|map| {
-            Ok(StoreOp::clean(
-                map.get(chat_id).map(|model| model.0.clone()),
-            ))
-        })
+        self.store
+            .get_cloned(chat_id)
+            .map(|value| value.map(|model| model.0))
     }
 
     fn set(&self, chat_id: &str, model: &SelfModel) -> Result<()> {
-        self.store.with_cached_mut(|map| {
-            let next_model = StoredSelfModel(model.clone());
-            if map.get(chat_id) == Some(&next_model) {
-                return Ok(StoreOp::clean(()));
-            }
-            if !map.contains_key(chat_id) && map.len() >= MAX_SELF_MODEL_CHATS {
-                if let Some(key_to_remove) = map.keys().next().cloned() {
-                    map.remove(&key_to_remove);
-                }
-            }
-            map.insert(chat_id.to_string(), next_model);
-            Ok(StoreOp::dirty(()))
-        })
+        self.store
+            .set_owned(chat_id, StoredSelfModel(model.clone()))
     }
 
     fn clear(&self, chat_id: &str) -> Result<()> {
-        self.store.with_cached_mut(|map| {
-            if map.remove(chat_id).is_some() {
-                return Ok(StoreOp::dirty(()));
-            }
-            Ok(StoreOp::clean(()))
-        })
+        self.store.clear(chat_id)
     }
 }

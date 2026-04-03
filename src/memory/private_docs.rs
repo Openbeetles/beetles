@@ -11,7 +11,9 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    build_self_state, memory_policy, render_autonomy_strategy_block, render_execution_state_block,
+    build_self_state,
+    llm_json::{coerce_json_text, parse_llm_json_payload, LlmJsonPayload},
+    memory_policy, render_autonomy_strategy_block, render_execution_state_block,
     render_inner_life_block, render_internal_memory_topology_block,
     render_private_memory_boundary_block, render_self_continuity_block, render_self_model_block,
     render_self_state_block, render_shared_factual_plane_block, render_world_sense_block,
@@ -530,11 +532,21 @@ fn build_private_docs_transcript(recent: &[SessionMessage], policy: PrivateDocsP
 }
 
 fn parse_private_doc_workspace_response(raw: &str) -> Option<RawPrivateDocWorkspaceUpdate> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() || trimmed == "null" || trimmed == "{}" {
+    let LlmJsonPayload::Value(value) = parse_llm_json_payload(raw) else {
         return None;
-    }
-    serde_json::from_str(trimmed).ok()
+    };
+    let object = value.as_object()?;
+    let update = RawPrivateDocWorkspaceUpdate {
+        inner_journal: object.get("inner_journal").map(coerce_json_text),
+        relationship_notes: object.get("relationship_notes").map(coerce_json_text),
+        self_reflection: object.get("self_reflection").map(coerce_json_text),
+        private_plan: object.get("private_plan").map(coerce_json_text),
+    };
+    (update.inner_journal.is_some()
+        || update.relationship_notes.is_some()
+        || update.self_reflection.is_some()
+        || update.private_plan.is_some())
+    .then_some(update)
 }
 
 fn normalize_private_doc_workspace(
@@ -614,8 +626,28 @@ mod tests {
     use super::*;
     use crate::error::Result;
     use crate::llm::{LlmModelCompat, LlmResponse, StopReason};
+    use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Mutex;
+
+    #[test]
+    fn parse_private_doc_workspace_response_coerces_nested_fields() {
+        let raw = json!({
+            "inner_journal": { "note": "keep calm" },
+            "relationship_notes": ["closer", "more direct"],
+            "self_reflection": 2,
+            "private_plan": true
+        })
+        .to_string();
+        let parsed = parse_private_doc_workspace_response(&raw).unwrap();
+        assert_eq!(parsed.inner_journal.as_deref(), Some("note: keep calm"));
+        assert_eq!(
+            parsed.relationship_notes.as_deref(),
+            Some("closer; more direct")
+        );
+        assert_eq!(parsed.self_reflection.as_deref(), Some("2"));
+        assert_eq!(parsed.private_plan.as_deref(), Some("true"));
+    }
 
     #[derive(Default)]
     struct StubSessionStore {

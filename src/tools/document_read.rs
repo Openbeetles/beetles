@@ -64,21 +64,8 @@ impl Tool for DocumentReadTool {
         "Read a public URL or a document path under storage. Automatically handles HTML/text/JSON/PDF and returns cleaned readable text. If you need to locate the right stored file first, use document_search."
     }
 
-    fn schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "source": {
-                    "type": "string",
-                    "description": "Public http(s) URL or storage path such as docs/readme.md"
-                },
-                "max_chars": {
-                    "type": "integer",
-                    "description": "Maximum characters to return (default 16000, max 50000)"
-                }
-            },
-            "required": ["source"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"source":{"type":"string","description":"Public http(s) URL or storage path such as docs/readme.md"},"max_chars":{"type":"integer","description":"Maximum characters to return (default 16000, max 50000)"}},"required":["source"]}"#
     }
 
     fn requires_network(&self) -> bool {

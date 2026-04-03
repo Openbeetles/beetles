@@ -4,7 +4,6 @@
 use crate::error::Result;
 use crate::tools::{Tool, ToolContext};
 use crate::util::{current_unix_secs, epoch_to_ymdhms, weekday_name};
-use serde_json::json;
 
 pub struct GetTimeTool;
 
@@ -26,8 +25,8 @@ impl Tool for GetTimeTool {
     fn description(&self) -> &'static str {
         "Get current UTC time in YYYY-MM-DD Weekday HH:MM:SS UTC format. On device, ensure SNTP or RTC is synced first."
     }
-    fn schema(&self) -> serde_json::Value {
-        json!({ "type": "object", "properties": {} })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{}}"#
     }
     fn execute(&self, _args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
         let secs = current_unix_secs();

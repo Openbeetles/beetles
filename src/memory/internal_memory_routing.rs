@@ -6,11 +6,14 @@ use crate::error::Result;
 use crate::llm::{LlmClient, LlmHttpClient, Message, ToolChoicePolicy};
 use crate::orchestrator::PressureLevel;
 use crate::util::{scrub_credentials, truncate_content_to_max};
-use serde::Deserialize;
 use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
+    llm_json::{
+        get_object_bool, get_object_string_list, get_optional_object_text, parse_llm_json_payload,
+        LlmJsonPayload,
+    },
     memory_policy, normalize_private_garden_doc_path, render_execution_state_block,
     render_internal_memory_topology_block, render_private_memory_boundary_block,
     render_shared_factual_plane_block, ExecutionState, InternalMemoryLayerFocus,
@@ -47,28 +50,6 @@ pub struct InternalMemoryRoutingDecision {
     pub refresh_private_garden: bool,
     pub private_garden_intent: Option<String>,
     pub private_garden_cleanup_paths: Vec<String>,
-}
-
-#[derive(Default, Deserialize)]
-struct RawInternalMemoryRoutingDecision {
-    #[serde(default)]
-    refresh_self_model: bool,
-    #[serde(default)]
-    self_model_intent: Option<String>,
-    #[serde(default)]
-    self_model_sources: Vec<String>,
-    #[serde(default)]
-    refresh_private_docs: bool,
-    #[serde(default)]
-    private_docs_intent: Option<String>,
-    #[serde(default)]
-    private_docs_sources: Vec<String>,
-    #[serde(default)]
-    refresh_private_garden: bool,
-    #[serde(default)]
-    private_garden_intent: Option<String>,
-    #[serde(default)]
-    private_garden_cleanup_paths: Vec<String>,
 }
 
 pub(crate) fn should_route_internal_memory_turn(
@@ -245,37 +226,39 @@ fn build_internal_memory_routing_transcript(
 }
 
 fn parse_internal_memory_routing_response(raw: &str) -> Option<InternalMemoryRoutingDecision> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() || trimmed == "null" || trimmed == "{}" {
+    let LlmJsonPayload::Value(value) = parse_llm_json_payload(raw) else {
         return None;
-    }
-    let parsed: RawInternalMemoryRoutingDecision = serde_json::from_str(trimmed).ok()?;
+    };
+    let parsed = value.as_object()?;
+    let refresh_self_model = get_object_bool(parsed, "refresh_self_model").unwrap_or(false);
+    let refresh_private_docs = get_object_bool(parsed, "refresh_private_docs").unwrap_or(false);
+    let refresh_private_garden = get_object_bool(parsed, "refresh_private_garden").unwrap_or(false);
     let decision = InternalMemoryRoutingDecision {
-        refresh_self_model: parsed.refresh_self_model,
+        refresh_self_model,
         self_model_intent: normalize_routing_intent(
-            parsed.self_model_intent,
-            parsed.refresh_self_model,
+            get_optional_object_text(parsed, "self_model_intent"),
+            refresh_self_model,
         ),
         self_model_sources: normalize_routing_sources(
-            parsed.self_model_sources,
-            parsed.refresh_self_model,
+            get_object_string_list(parsed, "self_model_sources"),
+            refresh_self_model,
         ),
-        refresh_private_docs: parsed.refresh_private_docs,
+        refresh_private_docs,
         private_docs_intent: normalize_routing_intent(
-            parsed.private_docs_intent,
-            parsed.refresh_private_docs,
+            get_optional_object_text(parsed, "private_docs_intent"),
+            refresh_private_docs,
         ),
         private_docs_sources: normalize_routing_sources(
-            parsed.private_docs_sources,
-            parsed.refresh_private_docs,
+            get_object_string_list(parsed, "private_docs_sources"),
+            refresh_private_docs,
         ),
-        refresh_private_garden: parsed.refresh_private_garden,
+        refresh_private_garden,
         private_garden_intent: normalize_routing_intent(
-            parsed.private_garden_intent,
-            parsed.refresh_private_garden,
+            get_optional_object_text(parsed, "private_garden_intent"),
+            refresh_private_garden,
         ),
         private_garden_cleanup_paths: normalize_private_garden_cleanup_paths(
-            parsed.private_garden_cleanup_paths,
+            get_object_string_list(parsed, "private_garden_cleanup_paths"),
         ),
     };
     (decision.refresh_self_model
@@ -339,6 +322,7 @@ fn normalize_private_garden_cleanup_paths(raw: Vec<String>) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::memory::{PrivateGardenDocRecord, SelfModel};
+    use serde_json::json;
 
     #[test]
     fn routing_parser_returns_none_for_empty_work() {
@@ -376,6 +360,46 @@ mod tests {
         assert_eq!(
             parsed.private_garden_cleanup_paths,
             vec!["journal/current.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn routing_parser_coerces_nested_fields() {
+        let raw = json!({
+            "refresh_self_model": "true",
+            "self_model_intent": { "intent": "stabilize self stance" },
+            "self_model_sources": [{ "target": "private_docs.inner_journal" }],
+            "refresh_private_docs": 1,
+            "private_docs_intent": ["rewrite workspace"],
+            "private_docs_sources": "private_garden:journal/today.md",
+            "refresh_private_garden": { "enabled": false },
+            "private_garden_intent": "ignored",
+            "private_garden_cleanup_paths": [{ "path": "journal/today.md" }]
+        })
+        .to_string();
+        let parsed = parse_internal_memory_routing_response(&raw).unwrap();
+        assert!(parsed.refresh_self_model);
+        assert!(parsed.refresh_private_docs);
+        assert!(!parsed.refresh_private_garden);
+        assert!(parsed
+            .self_model_intent
+            .unwrap()
+            .contains("intent: stabilize self stance"));
+        assert_eq!(
+            parsed.private_docs_intent.as_deref(),
+            Some("rewrite workspace")
+        );
+        assert_eq!(
+            parsed.self_model_sources,
+            vec!["private_docs.inner_journal".to_string()]
+        );
+        assert_eq!(
+            parsed.private_docs_sources,
+            vec!["private_garden:journal/today.md".to_string()]
+        );
+        assert_eq!(
+            parsed.private_garden_cleanup_paths,
+            vec!["journal/today.md".to_string()]
         );
     }
 

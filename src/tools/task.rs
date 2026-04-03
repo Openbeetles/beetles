@@ -46,29 +46,8 @@ impl Tool for TaskTool {
         "Manage durable tasks. Ops: list, get, create, update, complete, delete. Supports due_at reminders and optional local calendar sync."
     }
 
-    fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "op": { "type": "string", "description": "Operation: list|get|create|update|complete|delete" },
-                "id": { "type": "string", "description": "Task ID for get/update/complete/delete" },
-                "title": { "type": "string", "description": "Task title" },
-                "detail": { "type": "string", "description": "Optional task detail" },
-                "project": { "type": "string", "description": "Optional project/group label" },
-                "status": { "type": "string", "description": "Task status: open|in_progress|completed|cancelled" },
-                "priority": { "type": "string", "description": "Task priority: low|normal|high" },
-                "due_at": { "description": "Optional due reminder time as Unix seconds, ISO8601, or null to clear", "oneOf": [{ "type": "number" }, { "type": "string" }, { "type": "null" }] },
-                "calendar_start_at": { "description": "Optional local calendar start time as Unix seconds, ISO8601, or null to clear", "oneOf": [{ "type": "number" }, { "type": "string" }, { "type": "null" }] },
-                "calendar_end_at": { "description": "Optional local calendar end time as Unix seconds, ISO8601, or null to clear", "oneOf": [{ "type": "number" }, { "type": "string" }, { "type": "null" }] },
-                "calendar_timezone": { "type": "string", "description": "Optional local calendar timezone label" },
-                "calendar_location": { "type": "string", "description": "Optional local calendar location" },
-                "calendar_notes": { "type": "string", "description": "Optional local calendar notes" },
-                "clear_calendar": { "type": "boolean", "description": "Remove linked local calendar event and clear calendar fields" },
-                "limit": { "type": "integer", "description": "List limit, default 20, max 50" },
-                "include_completed": { "type": "boolean", "description": "Whether list should include completed/cancelled tasks" }
-            },
-            "required": ["op"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: list|get|create|update|complete|delete"},"id":{"type":"string","description":"Task ID for get/update/complete/delete"},"title":{"type":"string","description":"Task title"},"detail":{"type":"string","description":"Optional task detail"},"project":{"type":"string","description":"Optional project/group label"},"status":{"type":"string","description":"Task status: open|in_progress|completed|cancelled"},"priority":{"type":"string","description":"Task priority: low|normal|high"},"due_at":{"description":"Optional due reminder time as Unix seconds, ISO8601, or null to clear","oneOf":[{"type":"number"},{"type":"string"},{"type":"null"}]},"calendar_start_at":{"description":"Optional local calendar start time as Unix seconds, ISO8601, or null to clear","oneOf":[{"type":"number"},{"type":"string"},{"type":"null"}]},"calendar_end_at":{"description":"Optional local calendar end time as Unix seconds, ISO8601, or null to clear","oneOf":[{"type":"number"},{"type":"string"},{"type":"null"}]},"calendar_timezone":{"type":"string","description":"Optional local calendar timezone label"},"calendar_location":{"type":"string","description":"Optional local calendar location"},"calendar_notes":{"type":"string","description":"Optional local calendar notes"},"clear_calendar":{"type":"boolean","description":"Remove linked local calendar event and clear calendar fields"},"limit":{"type":"integer","description":"List limit, default 20, max 50"},"include_completed":{"type":"boolean","description":"Whether list should include completed/cancelled tasks"}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {

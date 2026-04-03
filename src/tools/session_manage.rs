@@ -24,16 +24,8 @@ impl Tool for SessionManageTool {
     fn description(&self) -> &'static str {
         "Manage chat sessions. Op: list (all session IDs), info (load recent messages for a chat_id), clear (clear a session), delete (delete a session)."
     }
-    fn schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "op": { "type": "string", "description": "Operation: list|info|clear|delete" },
-                "chat_id": { "type": "string", "description": "Chat ID (required for info/clear/delete)" },
-                "recent_n": { "type": "integer", "description": "Number of recent messages for info (default 10, max 50)" }
-            },
-            "required": ["op"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: list|info|clear|delete"},"chat_id":{"type":"string","description":"Chat ID (required for info/clear/delete)"},"recent_n":{"type":"integer","description":"Number of recent messages for info (default 10, max 50)"}},"required":["op"]}"#
     }
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
         let obj = parse_tool_args(args, "tool_session_manage")?;

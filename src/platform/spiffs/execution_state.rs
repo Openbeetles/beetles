@@ -3,10 +3,9 @@
 use crate::error::Result;
 use crate::memory::{ExecutionState, ExecutionStateStore, REL_PATH_EXECUTION_STATES};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
 
-use super::cached_json::{load_json_or_default, CachedJsonFileStore, StoreOp};
+use super::cached_json::ChatScopedCachedJsonMapStore;
 use super::state_path_join;
 
 const MAX_EXECUTION_STATE_CHATS: usize = 32;
@@ -19,18 +18,18 @@ fn full_path() -> PathBuf {
 }
 
 pub struct SpiffsExecutionStateStore {
-    store: CachedJsonFileStore<HashMap<String, StoredExecutionState>>,
+    store: ChatScopedCachedJsonMapStore<StoredExecutionState>,
 }
 
 impl SpiffsExecutionStateStore {
     pub fn new() -> Self {
         Self {
-            store: CachedJsonFileStore::new(
+            store: ChatScopedCachedJsonMapStore::new(
                 full_path,
-                load_json_or_default,
                 "execution_state_cache_lock",
                 "execution_state_cache",
                 "execution_state_persist",
+                MAX_EXECUTION_STATE_CHATS,
             ),
         }
     }
@@ -44,35 +43,17 @@ impl Default for SpiffsExecutionStateStore {
 
 impl ExecutionStateStore for SpiffsExecutionStateStore {
     fn get(&self, chat_id: &str) -> Result<Option<ExecutionState>> {
-        self.store.with_cached_mut(|map| {
-            Ok(StoreOp::clean(
-                map.get(chat_id).map(|state| state.0.clone()),
-            ))
-        })
+        self.store
+            .get_cloned(chat_id)
+            .map(|value| value.map(|state| state.0))
     }
 
     fn set(&self, chat_id: &str, state: &ExecutionState) -> Result<()> {
-        self.store.with_cached_mut(|map| {
-            let next_state = StoredExecutionState(state.clone());
-            if map.get(chat_id) == Some(&next_state) {
-                return Ok(StoreOp::clean(()));
-            }
-            if !map.contains_key(chat_id) && map.len() >= MAX_EXECUTION_STATE_CHATS {
-                if let Some(key_to_remove) = map.keys().next().cloned() {
-                    map.remove(&key_to_remove);
-                }
-            }
-            map.insert(chat_id.to_string(), next_state);
-            Ok(StoreOp::dirty(()))
-        })
+        self.store
+            .set_owned(chat_id, StoredExecutionState(state.clone()))
     }
 
     fn clear(&self, chat_id: &str) -> Result<()> {
-        self.store.with_cached_mut(|map| {
-            if map.remove(chat_id).is_some() {
-                return Ok(StoreOp::dirty(()));
-            }
-            Ok(StoreOp::clean(()))
-        })
+        self.store.clear(chat_id)
     }
 }

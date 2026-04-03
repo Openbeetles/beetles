@@ -37,15 +37,8 @@ impl Tool for RemindAtTool {
     fn description(&self) -> &'static str {
         "Schedule a reminder. Args: at (ISO8601 string or Unix seconds), context (string). At the given time the user will receive a message with the context."
     }
-    fn schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "at": { "description": "ISO8601 (e.g. 2025-03-10T12:00:00Z) or Unix seconds", "oneOf": [{ "type": "number" }, { "type": "string" }] },
-                "context": { "description": "Reminder text to show at that time", "type": "string" }
-            },
-            "required": ["at", "context"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"at":{"description":"ISO8601 (e.g. 2025-03-10T12:00:00Z) or Unix seconds","oneOf":[{"type":"number"},{"type":"string"}]},"context":{"description":"Reminder text to show at that time","type":"string"}},"required":["at","context"]}"#
     }
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
         let chat_id = ctx.current_chat_id().ok_or_else(|| {
@@ -95,13 +88,8 @@ impl Tool for RemindListTool {
         "List upcoming reminders for current chat. Args: limit (optional, default 10, max 20)."
     }
 
-    fn schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "limit": { "type": "number", "description": "max items to return, default 10, max 20" }
-            }
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"limit":{"type":"number","description":"max items to return, default 10, max 20"}}}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {

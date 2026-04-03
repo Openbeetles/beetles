@@ -6,10 +6,9 @@ use crate::memory::{
     LongTermMemoryExtractionState, LongTermMemoryExtractionStateStore,
     REL_PATH_LONG_TERM_EXTRACTION_STATES,
 };
-use std::collections::HashMap;
 use std::path::PathBuf;
 
-use super::cached_json::{load_json_or_default, CachedJsonFileStore, StoreOp};
+use super::cached_json::ChatScopedCachedJsonMapStore;
 use super::state_path_join;
 
 const MAX_LONG_TERM_EXTRACTION_STATE_CHATS: usize = 64;
@@ -19,18 +18,18 @@ fn full_path() -> PathBuf {
 }
 
 pub struct SpiffsLongTermMemoryExtractionStateStore {
-    store: CachedJsonFileStore<HashMap<String, LongTermMemoryExtractionState>>,
+    store: ChatScopedCachedJsonMapStore<LongTermMemoryExtractionState>,
 }
 
 impl SpiffsLongTermMemoryExtractionStateStore {
     pub fn new() -> Self {
         Self {
-            store: CachedJsonFileStore::new(
+            store: ChatScopedCachedJsonMapStore::new(
                 full_path,
-                load_json_or_default,
                 "long_term_extraction_state_cache_lock",
                 "long_term_extraction_state_cache",
                 "long_term_extraction_state_persist",
+                MAX_LONG_TERM_EXTRACTION_STATE_CHATS,
             ),
         }
     }
@@ -44,32 +43,14 @@ impl Default for SpiffsLongTermMemoryExtractionStateStore {
 
 impl LongTermMemoryExtractionStateStore for SpiffsLongTermMemoryExtractionStateStore {
     fn get(&self, chat_id: &str) -> Result<Option<LongTermMemoryExtractionState>> {
-        self.store
-            .with_cached_mut(|map| Ok(StoreOp::clean(map.get(chat_id).cloned())))
+        self.store.get_cloned(chat_id)
     }
 
     fn set(&self, chat_id: &str, state: &LongTermMemoryExtractionState) -> Result<()> {
-        self.store.with_cached_mut(|map| {
-            if map.get(chat_id) == Some(state) {
-                return Ok(StoreOp::clean(()));
-            }
-            if !map.contains_key(chat_id) && map.len() >= MAX_LONG_TERM_EXTRACTION_STATE_CHATS {
-                let key_to_remove = map.keys().next().cloned();
-                if let Some(key) = key_to_remove {
-                    map.remove(&key);
-                }
-            }
-            map.insert(chat_id.to_string(), state.clone());
-            Ok(StoreOp::dirty(()))
-        })
+        self.store.set_owned(chat_id, state.clone())
     }
 
     fn clear(&self, chat_id: &str) -> Result<()> {
-        self.store.with_cached_mut(|map| {
-            if map.remove(chat_id).is_some() {
-                return Ok(StoreOp::dirty(()));
-            }
-            Ok(StoreOp::clean(()))
-        })
+        self.store.clear(chat_id)
     }
 }

@@ -202,21 +202,8 @@ impl Tool for AnalyzeImageTool {
         "Analyze an image from a URL using vision AI. Use this when a user sends an image URL and you need to understand its content."
     }
 
-    fn schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "image_url": {
-                    "type": "string",
-                    "description": "The HTTP/HTTPS URL of the image to analyze"
-                },
-                "question": {
-                    "type": "string",
-                    "description": "A specific question about the image (default: describe the image in detail)"
-                }
-            },
-            "required": ["image_url"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"image_url":{"type":"string","description":"The HTTP/HTTPS URL of the image to analyze"},"question":{"type":"string","description":"A specific question about the image (default: describe the image in detail)"}},"required":["image_url"]}"#
     }
 
     fn requires_network(&self) -> bool {

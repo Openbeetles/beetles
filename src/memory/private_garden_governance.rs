@@ -12,8 +12,9 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use super::{
-    build_private_garden_preview, build_private_garden_usage, build_self_state, memory_policy,
-    normalize_private_garden_doc_path, render_autonomy_strategy_block,
+    build_private_garden_preview, build_private_garden_usage, build_self_state,
+    llm_json::{coerce_json_string_list, coerce_json_text, parse_llm_json_payload, LlmJsonPayload},
+    memory_policy, normalize_private_garden_doc_path, render_autonomy_strategy_block,
     render_execution_state_block, render_internal_memory_topology_block,
     render_private_doc_workspace_block, render_self_model_block, render_self_state_block,
     summarize_private_garden_directories, AutonomyStrategy, ExecutionState, ExecutionStateStore,
@@ -553,11 +554,69 @@ fn build_private_garden_transcript(
 fn parse_private_garden_governance_response(
     raw: &str,
 ) -> Option<RawPrivateGardenGovernanceResponse> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() || trimmed == "null" || trimmed == "{}" {
+    let LlmJsonPayload::Value(value) = parse_llm_json_payload(raw) else {
         return None;
-    }
-    serde_json::from_str(trimmed).ok()
+    };
+    let object = value.as_object()?;
+    let writes = object
+        .get("writes")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(parse_private_garden_write_value)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let moves = object
+        .get("moves")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(parse_private_garden_move_value)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let deletes = object
+        .get("deletes")
+        .map(coerce_json_string_list)
+        .unwrap_or_default();
+    (!writes.is_empty() || !moves.is_empty() || !deletes.is_empty()).then_some(
+        RawPrivateGardenGovernanceResponse {
+            writes,
+            moves,
+            deletes,
+        },
+    )
+}
+
+fn parse_private_garden_write_value(value: &serde_json::Value) -> Option<RawPrivateGardenWrite> {
+    let object = value.as_object()?;
+    let path = object
+        .get("path")
+        .and_then(|value| coerce_json_string_list(value).into_iter().next())
+        .unwrap_or_default();
+    let content = object
+        .get("content")
+        .map(coerce_json_text)
+        .unwrap_or_default();
+    (!path.trim().is_empty() && !content.trim().is_empty())
+        .then_some(RawPrivateGardenWrite { path, content })
+}
+
+fn parse_private_garden_move_value(value: &serde_json::Value) -> Option<RawPrivateGardenMove> {
+    let object = value.as_object()?;
+    let from_path = object
+        .get("from_path")
+        .and_then(|value| coerce_json_string_list(value).into_iter().next())
+        .unwrap_or_default();
+    let to_path = object
+        .get("to_path")
+        .and_then(|value| coerce_json_string_list(value).into_iter().next())
+        .unwrap_or_default();
+    (!from_path.trim().is_empty() && !to_path.trim().is_empty())
+        .then_some(RawPrivateGardenMove { from_path, to_path })
 }
 
 fn normalize_private_garden_governance_actions(
@@ -659,8 +718,37 @@ mod tests {
     use crate::error::Result;
     use crate::llm::{LlmModelCompat, LlmResponse, StopReason};
     use crate::memory::PrivateGardenDocRecord;
+    use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Mutex;
+
+    #[test]
+    fn parse_private_garden_governance_response_coerces_nested_shapes() {
+        let raw = json!({
+            "writes": [
+                {
+                    "path": { "value": "journal/today.md" },
+                    "content": ["line one", "line two"]
+                }
+            ],
+            "moves": [
+                {
+                    "from_path": { "path": "scratch/idea.md" },
+                    "to_path": "journal/idea.md"
+                }
+            ],
+            "deletes": [{ "path": "scratch/old.md" }]
+        })
+        .to_string();
+        let parsed = parse_private_garden_governance_response(&raw).unwrap();
+        assert_eq!(parsed.writes.len(), 1);
+        assert_eq!(parsed.writes[0].path, "journal/today.md");
+        assert_eq!(parsed.writes[0].content, "line one; line two");
+        assert_eq!(parsed.moves.len(), 1);
+        assert_eq!(parsed.moves[0].from_path, "scratch/idea.md");
+        assert_eq!(parsed.moves[0].to_path, "journal/idea.md");
+        assert_eq!(parsed.deletes, vec!["scratch/old.md".to_string()]);
+    }
 
     #[derive(Default)]
     struct StubSessionStore {

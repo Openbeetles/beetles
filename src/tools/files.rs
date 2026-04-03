@@ -28,15 +28,8 @@ impl Tool for FilesTool {
     fn description(&self) -> &'static str {
         "List, read, or delete files under storage. Args: path (string), mode (optional: 'list', 'read', or 'delete', default 'read'). Read returns content truncated to limit; list returns entry names, max 256; delete removes the file."
     }
-    fn schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string", "description": "Path under storage root, e.g. skills/foo.md" },
-                "mode": { "type": "string", "description": "list, read, or delete (default read)" }
-            },
-            "required": ["path"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"path":{"type":"string","description":"Path under storage root, e.g. skills/foo.md"},"mode":{"type":"string","description":"list, read, or delete (default read)"}},"required":["path"]}"#
     }
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
         let obj = parse_tool_args(args, "tool_files")?;

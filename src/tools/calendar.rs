@@ -53,28 +53,8 @@ impl Tool for CalendarTool {
         "Manage persistent calendar events. Ops: list, get, create, update, delete, provider_status. Provider defaults to local. Times accept Unix seconds or ISO8601."
     }
 
-    fn schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "op": { "type": "string", "description": "Operation: list|get|create|update|delete|provider_status" },
-                "provider": { "type": "string", "description": "Calendar provider. Defaults to local." },
-                "id": { "type": "string", "description": "Event ID for get/update/delete" },
-                "title": { "type": "string", "description": "Event title for create/update" },
-                "start_at": { "description": "Start time as Unix seconds or ISO8601", "oneOf": [{ "type": "number" }, { "type": "string" }] },
-                "end_at": { "description": "End time as Unix seconds or ISO8601", "oneOf": [{ "type": "number" }, { "type": "string" }] },
-                "timezone": { "type": "string", "description": "Optional timezone label" },
-                "location": { "type": "string", "description": "Optional location" },
-                "notes": { "type": "string", "description": "Optional notes" },
-                "calendar_id": { "type": "string", "description": "Optional calendar ID. Defaults to default for local events." },
-                "status": { "type": "string", "description": "Optional status for update: confirmed|cancelled" },
-                "start_from": { "description": "List query lower bound on start time", "oneOf": [{ "type": "number" }, { "type": "string" }] },
-                "start_to": { "description": "List query upper bound on start time", "oneOf": [{ "type": "number" }, { "type": "string" }] },
-                "limit": { "type": "integer", "description": "List limit, default 10, max 50" },
-                "include_cancelled": { "type": "boolean", "description": "Whether list should include cancelled events" }
-            },
-            "required": ["op"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: list|get|create|update|delete|provider_status"},"provider":{"type":"string","description":"Calendar provider. Defaults to local."},"id":{"type":"string","description":"Event ID for get/update/delete"},"title":{"type":"string","description":"Event title for create/update"},"start_at":{"description":"Start time as Unix seconds or ISO8601","oneOf":[{"type":"number"},{"type":"string"}]},"end_at":{"description":"End time as Unix seconds or ISO8601","oneOf":[{"type":"number"},{"type":"string"}]},"timezone":{"type":"string","description":"Optional timezone label"},"location":{"type":"string","description":"Optional location"},"notes":{"type":"string","description":"Optional notes"},"calendar_id":{"type":"string","description":"Optional calendar ID. Defaults to default for local events."},"status":{"type":"string","description":"Optional status for update: confirmed|cancelled"},"start_from":{"description":"List query lower bound on start time","oneOf":[{"type":"number"},{"type":"string"}]},"start_to":{"description":"List query upper bound on start time","oneOf":[{"type":"number"},{"type":"string"}]},"limit":{"type":"integer","description":"List limit, default 10, max 50"},"include_cancelled":{"type":"boolean","description":"Whether list should include cancelled events"}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {

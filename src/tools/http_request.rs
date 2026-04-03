@@ -14,18 +14,8 @@ impl Tool for HttpRequestTool {
     fn description(&self) -> &'static str {
         "Make HTTP requests. Supports GET, POST, PUT, DELETE, PATCH methods with custom headers and body. Private IPs are blocked (SSRF protection)."
     }
-    fn schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "url": { "type": "string", "description": "Request URL (must be https:// or http://)" },
-                "method": { "type": "string", "description": "HTTP method: GET|POST|PUT|DELETE|PATCH (default GET)" },
-                "headers": { "type": "object", "description": "Optional headers as key-value pairs" },
-                "body": { "type": "string", "description": "Request body (for POST/PUT/PATCH)" },
-                "content_type": { "type": "string", "description": "Content-Type header (default application/json)" }
-            },
-            "required": ["url"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"url":{"type":"string","description":"Request URL (must be https:// or http://)"},"method":{"type":"string","description":"HTTP method: GET|POST|PUT|DELETE|PATCH (default GET)"},"headers":{"type":"object","description":"Optional headers as key-value pairs"},"body":{"type":"string","description":"Request body (for POST/PUT/PATCH)"},"content_type":{"type":"string","description":"Content-Type header (default application/json)"}},"required":["url"]}"#
     }
     fn requires_network(&self) -> bool {
         true

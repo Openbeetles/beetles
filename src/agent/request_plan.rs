@@ -406,8 +406,6 @@ mod tests {
     use crate::llm::{LlmHttpClient, LlmModelCompat, Message, StopReason, ToolChoicePolicy};
     use crate::tools::{Tool, ToolMetadata};
     use crate::Result;
-    use serde_json::json;
-
     struct VisibleTool;
     struct NamedTool {
         name: &'static str,
@@ -426,8 +424,8 @@ mod tests {
             "visible tool"
         }
 
-        fn schema(&self) -> serde_json::Value {
-            json!({"type":"object"})
+        fn schema(&self) -> &str {
+            r#"{"type":"object"}"#
         }
 
         fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
@@ -444,8 +442,8 @@ mod tests {
             self.description
         }
 
-        fn schema(&self) -> serde_json::Value {
-            json!({"type":"object"})
+        fn schema(&self) -> &str {
+            r#"{"type":"object"}"#
         }
 
         fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {

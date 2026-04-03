@@ -38,33 +38,8 @@ impl Tool for MemorySearchTool {
         "Search the archive sidecar across retained transcripts, daily notes, and turn logs. Returns citation-ready evidence hits with record_id and locator. These hits are archive evidence only, not canonical shared memory."
     }
 
-    fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "What to search for in the archive sidecar."
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max hits to return, default 4, max 8."
-                },
-                "chat_id": {
-                    "type": "string",
-                    "description": "Optional chat_id filter. If omitted, search all retained chats and boost the current chat."
-                },
-                "sources": {
-                    "type": "array",
-                    "description": "Optional source filter: transcript, daily_note, or turn_log.",
-                    "items": {
-                        "type": "string",
-                        "enum": ["transcript", "daily_note", "turn_log"]
-                    }
-                }
-            },
-            "required": ["query"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"query":{"type":"string","description":"What to search for in the archive sidecar."},"limit":{"type":"integer","description":"Max hits to return, default 4, max 8."},"chat_id":{"type":"string","description":"Optional chat_id filter. If omitted, search all retained chats and boost the current chat."},"sources":{"type":"array","description":"Optional source filter: transcript, daily_note, or turn_log.","items":{"type":"string","enum":["transcript","daily_note","turn_log"]}}},"required":["query"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {

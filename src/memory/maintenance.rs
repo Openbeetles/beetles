@@ -67,13 +67,45 @@ pub struct PostReplyMemoryMaintenanceOutcome {
     pub extraction_request_outcome: LongTermMemoryRefreshRequestOutcome,
 }
 
-pub fn run_post_reply_memory_maintenance(
-    http: &mut dyn LlmHttpClient,
-    llm: &(dyn LlmClient + Send + Sync),
-    ctx: PostReplyMemoryMaintenanceContext<'_>,
-    input: PostReplyMemoryMaintenanceInput<'_>,
-    mut enqueue_long_term_refresh: impl FnMut() -> bool,
-) -> PostReplyMemoryMaintenanceOutcome {
+struct MaintenanceBaseline {
+    after_count: usize,
+    initial_summary_snapshot: super::session_summary_refresh::SessionSummarySnapshot,
+    execution_state: Result<Option<crate::memory::ExecutionState>>,
+    self_model: Result<Option<crate::memory::SelfModel>>,
+    private_docs: Result<Option<crate::memory::PrivateDocWorkspace>>,
+    private_garden_docs: Result<Vec<crate::memory::PrivateGardenDocRecord>>,
+    summary_should_refresh: bool,
+    execution_should_refresh: bool,
+    self_model_should_refresh: bool,
+    private_doc_should_refresh: bool,
+    private_garden_should_refresh: bool,
+}
+
+struct MaintenanceRecentWindows {
+    shared_recent: Option<Vec<crate::memory::SessionMessage>>,
+    routing_recent: Option<Vec<crate::memory::SessionMessage>>,
+}
+
+struct SharedMaintenancePasses {
+    summary_result: Result<SessionSummaryRefreshOutcome>,
+    summary_snapshot: super::session_summary_refresh::SessionSummarySnapshot,
+    execution_state_result: Result<ExecutionStateRefreshOutcome>,
+    latest_execution_state: Option<crate::memory::ExecutionState>,
+    internal_memory_routing_result: Result<Option<InternalMemoryRoutingDecision>>,
+    internal_memory_decision: InternalMemoryRoutingDecision,
+}
+
+struct PrivateMaintenancePasses {
+    self_model_result: Result<SelfModelRefreshOutcome>,
+    private_doc_result: Result<PrivateDocWorkspaceRefreshOutcome>,
+    private_garden_upstream_cleanup_result: Result<usize>,
+    private_garden_result: Result<PrivateGardenGovernanceOutcome>,
+}
+
+fn collect_maintenance_baseline(
+    ctx: &PostReplyMemoryMaintenanceContext<'_>,
+    input: &PostReplyMemoryMaintenanceInput<'_>,
+) -> MaintenanceBaseline {
     let after_count = ctx.session_store.message_count(input.chat_id).unwrap_or(0);
     let initial_summary_snapshot =
         load_session_summary_snapshot(ctx.session_summary_store, input.chat_id);
@@ -162,12 +194,32 @@ pub fn run_post_reply_memory_maintenance(
             )
         })
         .unwrap_or(false);
-    let shared_recent = if [
+    MaintenanceBaseline {
+        after_count,
+        initial_summary_snapshot,
+        execution_state,
+        self_model,
+        private_docs,
+        private_garden_docs,
         summary_should_refresh,
         execution_should_refresh,
         self_model_should_refresh,
         private_doc_should_refresh,
         private_garden_should_refresh,
+    }
+}
+
+fn load_maintenance_recent_windows(
+    ctx: &PostReplyMemoryMaintenanceContext<'_>,
+    input: &PostReplyMemoryMaintenanceInput<'_>,
+    baseline: &MaintenanceBaseline,
+) -> MaintenanceRecentWindows {
+    let shared_recent = if [
+        baseline.summary_should_refresh,
+        baseline.execution_should_refresh,
+        baseline.self_model_should_refresh,
+        baseline.private_doc_should_refresh,
+        baseline.private_garden_should_refresh,
     ]
     .into_iter()
     .filter(|enabled| *enabled)
@@ -211,7 +263,20 @@ pub fn run_post_reply_memory_maintenance(
             )
             .ok()
     });
+    MaintenanceRecentWindows {
+        shared_recent,
+        routing_recent,
+    }
+}
 
+fn run_shared_maintenance_passes(
+    http: &mut dyn LlmHttpClient,
+    llm: &(dyn LlmClient + Send + Sync),
+    ctx: &PostReplyMemoryMaintenanceContext<'_>,
+    input: &PostReplyMemoryMaintenanceInput<'_>,
+    baseline: &MaintenanceBaseline,
+    recent: &MaintenanceRecentWindows,
+) -> SharedMaintenancePasses {
     let (summary_result, summary_snapshot) = match run_session_summary_refresh_with_snapshot(
         http,
         llm,
@@ -220,15 +285,15 @@ pub fn run_post_reply_memory_maintenance(
             session_summary_store: ctx.session_summary_store,
         },
         input.chat_id,
-        after_count,
+        baseline.after_count,
         input.memory_profile,
-        initial_summary_snapshot.clone(),
-        shared_recent.as_deref(),
+        baseline.initial_summary_snapshot.clone(),
+        recent.shared_recent.as_deref(),
     ) {
         Ok((outcome, snapshot)) => (Ok(outcome), snapshot),
-        Err(error) => (Err(error), initial_summary_snapshot),
+        Err(error) => (Err(error), baseline.initial_summary_snapshot.clone()),
     };
-    let execution_state_result = match execution_state {
+    let execution_state_result = match &baseline.execution_state {
         Ok(existing_state) => run_execution_state_refresh_with_state(
             http,
             llm,
@@ -248,11 +313,14 @@ pub fn run_post_reply_memory_maintenance(
                 now_secs: input.now_secs,
             },
             input.memory_profile,
-            existing_state,
+            existing_state.clone(),
             summary_snapshot.summary_text.as_deref(),
-            shared_recent.as_deref(),
+            recent.shared_recent.as_deref(),
         ),
-        Err(error) => Err(error),
+        Err(error) => Err(crate::error::Error::config(
+            error.stage(),
+            error.to_string(),
+        )),
     };
     let latest_execution_state = match ctx.execution_state_store.get(input.chat_id) {
         Ok(state) => state,
@@ -265,7 +333,7 @@ pub fn run_post_reply_memory_maintenance(
             None
         }
     };
-    let internal_memory_routing_result = match &private_garden_docs {
+    let internal_memory_routing_result = match &baseline.private_garden_docs {
         Ok(existing_garden_docs) => run_internal_memory_routing_with_state(
             http,
             llm,
@@ -283,13 +351,18 @@ pub fn run_post_reply_memory_maintenance(
             input.memory_profile,
             summary_snapshot.summary_text.as_deref(),
             latest_execution_state.as_ref(),
-            self_model.as_ref().ok().and_then(|model| model.as_ref()),
-            private_docs
+            baseline
+                .self_model
+                .as_ref()
+                .ok()
+                .and_then(|model| model.as_ref()),
+            baseline
+                .private_docs
                 .as_ref()
                 .ok()
                 .and_then(|workspace| workspace.as_ref()),
             existing_garden_docs,
-            routing_recent.as_deref().unwrap_or(&[]),
+            recent.routing_recent.as_deref().unwrap_or(&[]),
         ),
         Err(error) => Err(crate::error::Error::config(
             "agent_internal_memory_routing",
@@ -297,13 +370,13 @@ pub fn run_post_reply_memory_maintenance(
         )),
     };
     let fallback_internal_memory_decision = InternalMemoryRoutingDecision {
-        refresh_self_model: self_model_should_refresh,
+        refresh_self_model: baseline.self_model_should_refresh,
         self_model_intent: None,
         self_model_sources: Vec::new(),
-        refresh_private_docs: private_doc_should_refresh,
+        refresh_private_docs: baseline.private_doc_should_refresh,
         private_docs_intent: None,
         private_docs_sources: Vec::new(),
-        refresh_private_garden: private_garden_should_refresh,
+        refresh_private_garden: baseline.private_garden_should_refresh,
         private_garden_intent: None,
         private_garden_cleanup_paths: Vec::new(),
     };
@@ -312,7 +385,26 @@ pub fn run_post_reply_memory_maintenance(
         Ok(None) => InternalMemoryRoutingDecision::default(),
         Err(_) => fallback_internal_memory_decision,
     };
-    let self_model_result = match self_model {
+    SharedMaintenancePasses {
+        summary_result,
+        summary_snapshot,
+        execution_state_result,
+        latest_execution_state,
+        internal_memory_routing_result,
+        internal_memory_decision,
+    }
+}
+
+fn run_private_memory_maintenance_passes(
+    http: &mut dyn LlmHttpClient,
+    llm: &(dyn LlmClient + Send + Sync),
+    ctx: &PostReplyMemoryMaintenanceContext<'_>,
+    input: &PostReplyMemoryMaintenanceInput<'_>,
+    baseline: &MaintenanceBaseline,
+    recent: &MaintenanceRecentWindows,
+    shared: &SharedMaintenancePasses,
+) -> PrivateMaintenancePasses {
+    let self_model_result = match &baseline.self_model {
         Ok(existing_model) => run_self_model_refresh_with_state(
             http,
             llm,
@@ -334,20 +426,27 @@ pub fn run_post_reply_memory_maintenance(
                 now_secs: input.now_secs,
             },
             input.memory_profile,
-            existing_model,
-            summary_snapshot.summary_text.as_deref(),
-            latest_execution_state.as_ref(),
-            private_docs
+            existing_model.clone(),
+            shared.summary_snapshot.summary_text.as_deref(),
+            shared.latest_execution_state.as_ref(),
+            baseline
+                .private_docs
                 .as_ref()
                 .ok()
                 .and_then(|workspace| workspace.as_ref()),
-            private_garden_docs.as_deref().unwrap_or(&[]),
-            internal_memory_decision.self_model_intent.as_deref(),
-            internal_memory_decision.self_model_sources.as_slice(),
-            Some(internal_memory_decision.refresh_self_model),
-            shared_recent.as_deref(),
+            baseline.private_garden_docs.as_deref().unwrap_or(&[]),
+            shared.internal_memory_decision.self_model_intent.as_deref(),
+            shared
+                .internal_memory_decision
+                .self_model_sources
+                .as_slice(),
+            Some(shared.internal_memory_decision.refresh_self_model),
+            recent.shared_recent.as_deref(),
         ),
-        Err(error) => Err(error),
+        Err(error) => Err(crate::error::Error::config(
+            error.stage(),
+            error.to_string(),
+        )),
     };
     let latest_self_model = match ctx.self_model_store.get(input.chat_id) {
         Ok(model) => model,
@@ -360,7 +459,7 @@ pub fn run_post_reply_memory_maintenance(
             None
         }
     };
-    let private_doc_result = match private_docs {
+    let private_doc_result = match &baseline.private_docs {
         Ok(existing_workspace) => run_private_doc_workspace_refresh_with_state(
             http,
             llm,
@@ -383,21 +482,30 @@ pub fn run_post_reply_memory_maintenance(
                 now_secs: input.now_secs,
             },
             input.memory_profile,
-            existing_workspace,
-            summary_snapshot.summary_text.as_deref(),
-            latest_execution_state.as_ref(),
+            existing_workspace.clone(),
+            shared.summary_snapshot.summary_text.as_deref(),
+            shared.latest_execution_state.as_ref(),
             latest_self_model.as_ref(),
-            private_garden_docs.as_deref().unwrap_or(&[]),
-            internal_memory_decision.private_docs_intent.as_deref(),
-            internal_memory_decision.private_docs_sources.as_slice(),
+            baseline.private_garden_docs.as_deref().unwrap_or(&[]),
+            shared
+                .internal_memory_decision
+                .private_docs_intent
+                .as_deref(),
+            shared
+                .internal_memory_decision
+                .private_docs_sources
+                .as_slice(),
             None,
             None,
             None,
             None,
-            Some(internal_memory_decision.refresh_private_docs),
-            shared_recent.as_deref(),
+            Some(shared.internal_memory_decision.refresh_private_docs),
+            recent.shared_recent.as_deref(),
         ),
-        Err(error) => Err(error),
+        Err(error) => Err(crate::error::Error::config(
+            error.stage(),
+            error.to_string(),
+        )),
     };
     let private_garden_upstream_cleanup_result =
         if matches!(self_model_result, Ok(SelfModelRefreshOutcome::Updated))
@@ -409,7 +517,8 @@ pub fn run_post_reply_memory_maintenance(
             cleanup_promoted_private_garden_docs(
                 ctx.private_garden_store,
                 input.chat_id,
-                internal_memory_decision
+                shared
+                    .internal_memory_decision
                     .private_garden_cleanup_paths
                     .as_slice(),
             )
@@ -427,7 +536,7 @@ pub fn run_post_reply_memory_maintenance(
             None
         }
     };
-    let private_garden_result = match private_garden_docs {
+    let private_garden_result = match &baseline.private_garden_docs {
         Ok(_existing_docs) => run_private_garden_governance_with_state(
             http,
             llm,
@@ -450,27 +559,54 @@ pub fn run_post_reply_memory_maintenance(
                 now_secs: input.now_secs,
             },
             input.memory_profile,
-            summary_snapshot.summary_text.as_deref(),
-            latest_execution_state.as_ref(),
+            shared.summary_snapshot.summary_text.as_deref(),
+            shared.latest_execution_state.as_ref(),
             latest_self_model.as_ref(),
             latest_private_workspace.as_ref(),
             None,
-            internal_memory_decision.private_garden_intent.as_deref(),
+            shared
+                .internal_memory_decision
+                .private_garden_intent
+                .as_deref(),
             if private_garden_upstream_cleanup_result
                 .as_ref()
                 .is_ok_and(|deleted| *deleted > 0)
             {
-                internal_memory_decision
+                shared
+                    .internal_memory_decision
                     .private_garden_cleanup_paths
                     .as_slice()
             } else {
                 &[]
             },
-            Some(internal_memory_decision.refresh_private_garden),
-            shared_recent.as_deref(),
+            Some(shared.internal_memory_decision.refresh_private_garden),
+            recent.shared_recent.as_deref(),
         ),
-        Err(error) => Err(error),
+        Err(error) => Err(crate::error::Error::config(
+            "agent_private_garden",
+            error.to_string(),
+        )),
     };
+    PrivateMaintenancePasses {
+        self_model_result,
+        private_doc_result,
+        private_garden_upstream_cleanup_result,
+        private_garden_result,
+    }
+}
+
+pub fn run_post_reply_memory_maintenance(
+    http: &mut dyn LlmHttpClient,
+    llm: &(dyn LlmClient + Send + Sync),
+    ctx: PostReplyMemoryMaintenanceContext<'_>,
+    input: PostReplyMemoryMaintenanceInput<'_>,
+    mut enqueue_long_term_refresh: impl FnMut() -> bool,
+) -> PostReplyMemoryMaintenanceOutcome {
+    let baseline = collect_maintenance_baseline(&ctx, &input);
+    let recent = load_maintenance_recent_windows(&ctx, &input, &baseline);
+    let shared = run_shared_maintenance_passes(http, llm, &ctx, &input, &baseline, &recent);
+    let private =
+        run_private_memory_maintenance_passes(http, llm, &ctx, &input, &baseline, &recent, &shared);
 
     let extraction_state = ctx.extraction_state_store.get(input.chat_id).ok().flatten();
     let extraction_decision = evaluate_long_term_memory_extraction_turn(
@@ -479,7 +615,7 @@ pub fn run_post_reply_memory_maintenance(
             channel: input.channel,
             user_content: input.user_content,
             reply_content: input.reply_content,
-            after_count,
+            after_count: baseline.after_count,
             pressure: input.pressure,
             external_content_used: input.external_content_used,
         },
@@ -489,8 +625,10 @@ pub fn run_post_reply_memory_maintenance(
     let mut next_extraction_state = extraction_decision.next_state.clone();
     let extraction_request_outcome = if extraction_decision.should_enqueue {
         if enqueue_long_term_refresh() {
-            next_extraction_state =
-                mark_long_term_memory_extraction_requested(&next_extraction_state, after_count);
+            next_extraction_state = mark_long_term_memory_extraction_requested(
+                &next_extraction_state,
+                baseline.after_count,
+            );
             LongTermMemoryRefreshRequestOutcome::Requested
         } else {
             LongTermMemoryRefreshRequestOutcome::RequestFailed
@@ -506,14 +644,14 @@ pub fn run_post_reply_memory_maintenance(
     );
 
     PostReplyMemoryMaintenanceOutcome {
-        after_count,
-        summary_result,
-        execution_state_result,
-        internal_memory_routing_result,
-        self_model_result,
-        private_doc_result,
-        private_garden_upstream_cleanup_result,
-        private_garden_result,
+        after_count: baseline.after_count,
+        summary_result: shared.summary_result,
+        execution_state_result: shared.execution_state_result,
+        internal_memory_routing_result: shared.internal_memory_routing_result,
+        self_model_result: private.self_model_result,
+        private_doc_result: private.private_doc_result,
+        private_garden_upstream_cleanup_result: private.private_garden_upstream_cleanup_result,
+        private_garden_result: private.private_garden_result,
         extraction_request_outcome,
     }
 }

@@ -342,7 +342,7 @@ mod tests {
         let tools = [ToolSpec {
             name: "get_time".to_string(),
             description: "time".to_string(),
-            parameters: serde_json::json!({"type":"object"}),
+            parameters_json: r#"{"type":"object"}"#.into(),
         }];
         let (system, request_tools) =
             prepare_request_for_client(LlmModelCompat::prompt_guided(), "base", Some(&tools));
@@ -355,7 +355,7 @@ mod tests {
         let tools = [ToolSpec {
             name: "get_time".to_string(),
             description: "time".to_string(),
-            parameters: serde_json::json!({"type":"object"}),
+            parameters_json: r#"{"type":"object"}"#.into(),
         }];
         let response = finalize_response_for_client(
             LlmModelCompat::prompt_guided(),
@@ -386,7 +386,7 @@ mod tests {
         let tools = [ToolSpec {
             name: "get_time".to_string(),
             description: "time".to_string(),
-            parameters: serde_json::json!({"type":"object"}),
+            parameters_json: r#"{"type":"object"}"#.into(),
         }];
 
         let response = client
@@ -431,7 +431,7 @@ mod tests {
         let tools = [ToolSpec {
             name: "get_time".to_string(),
             description: "time".to_string(),
-            parameters: serde_json::json!({"type":"object"}),
+            parameters_json: r#"{"type":"object"}"#.into(),
         }];
 
         let response = client
@@ -474,7 +474,7 @@ mod tests {
         let tools = [ToolSpec {
             name: "get_time".to_string(),
             description: "time".to_string(),
-            parameters: serde_json::json!({"type":"object"}),
+            parameters_json: r#"{"type":"object"}"#.into(),
         }];
         let mut progress_updates = Vec::new();
 
@@ -524,7 +524,7 @@ mod tests {
         let tools = [ToolSpec {
             name: "get_time".to_string(),
             description: "time".to_string(),
-            parameters: serde_json::json!({"type":"object"}),
+            parameters_json: r#"{"type":"object"}"#.into(),
         }];
         let mut progress_updates = Vec::new();
 

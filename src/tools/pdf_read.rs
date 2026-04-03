@@ -22,18 +22,8 @@ impl Tool for PdfReadTool {
         "Fetch a public PDF URL and extract readable text. Use this for PDF links returned by web_search."
     }
 
-    fn schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "url": { "type": "string", "description": "Public PDF URL to fetch" },
-                "max_chars": {
-                    "type": "integer",
-                    "description": "Maximum characters to return (default 16000, max 50000)"
-                }
-            },
-            "required": ["url"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"url":{"type":"string","description":"Public PDF URL to fetch"},"max_chars":{"type":"integer","description":"Maximum characters to return (default 16000, max 50000)"}},"required":["url"]}"#
     }
 
     fn requires_network(&self) -> bool {

@@ -17,21 +17,8 @@ impl Tool for EnvTool {
         "环境变量访问（get: 获取单个变量，list: 列出所有变量）。Args: mode (\"get\" or \"list\"), key (get 模式必需）"
     }
 
-    fn schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "mode": {
-                    "type": "string",
-                    "description": "get 或 list"
-                },
-                "key": {
-                    "type": "string",
-                    "description": "环境变量名称（get 模式必需）"
-                }
-            },
-            "required": ["mode"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"mode":{"type":"string","description":"get 或 list"},"key":{"type":"string","description":"环境变量名称（get 模式必需）"}},"required":["mode"]}"#
     }
 
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {

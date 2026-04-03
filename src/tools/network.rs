@@ -26,34 +26,8 @@ impl Tool for NetworkTool {
         "Inspect Linux host networking. Op: interfaces, dns, route, resolve, ping, or http_probe. Returns structured JSON instead of raw command output."
     }
 
-    fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "op": {
-                    "type": "string",
-                    "enum": ["interfaces", "dns", "route", "resolve", "ping", "http_probe"],
-                    "description": "Operation to perform"
-                },
-                "host": {
-                    "type": "string",
-                    "description": "Host name for resolve/ping"
-                },
-                "url": {
-                    "type": "string",
-                    "description": "URL for http_probe"
-                },
-                "port": {
-                    "type": "integer",
-                    "description": "Port for resolve (default 80)"
-                },
-                "count": {
-                    "type": "integer",
-                    "description": "Ping packet count (default 3, max 5)"
-                }
-            },
-            "required": ["op"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"op":{"type":"string","enum":["interfaces","dns","route","resolve","ping","http_probe"],"description":"Operation to perform"},"host":{"type":"string","description":"Host name for resolve/ping"},"url":{"type":"string","description":"URL for http_probe"},"port":{"type":"integer","description":"Port for resolve (default 80)"},"count":{"type":"integer","description":"Ping packet count (default 3, max 5)"}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {

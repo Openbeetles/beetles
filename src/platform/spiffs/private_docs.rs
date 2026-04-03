@@ -3,10 +3,9 @@
 use crate::error::Result;
 use crate::memory::{PrivateDocStore, PrivateDocWorkspace, REL_PATH_PRIVATE_DOC_WORKSPACES};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
 
-use super::cached_json::{load_json_or_default, CachedJsonFileStore, StoreOp};
+use super::cached_json::ChatScopedCachedJsonMapStore;
 use super::state_path_join;
 
 const MAX_PRIVATE_DOC_CHATS: usize = 32;
@@ -19,18 +18,18 @@ fn full_path() -> PathBuf {
 }
 
 pub struct SpiffsPrivateDocStore {
-    store: CachedJsonFileStore<HashMap<String, StoredPrivateDocWorkspace>>,
+    store: ChatScopedCachedJsonMapStore<StoredPrivateDocWorkspace>,
 }
 
 impl SpiffsPrivateDocStore {
     pub fn new() -> Self {
         Self {
-            store: CachedJsonFileStore::new(
+            store: ChatScopedCachedJsonMapStore::new(
                 full_path,
-                load_json_or_default,
                 "private_doc_cache_lock",
                 "private_doc_cache",
                 "private_doc_persist",
+                MAX_PRIVATE_DOC_CHATS,
             ),
         }
     }
@@ -44,35 +43,17 @@ impl Default for SpiffsPrivateDocStore {
 
 impl PrivateDocStore for SpiffsPrivateDocStore {
     fn get(&self, chat_id: &str) -> Result<Option<PrivateDocWorkspace>> {
-        self.store.with_cached_mut(|map| {
-            Ok(StoreOp::clean(
-                map.get(chat_id).map(|workspace| workspace.0.clone()),
-            ))
-        })
+        self.store
+            .get_cloned(chat_id)
+            .map(|value| value.map(|workspace| workspace.0))
     }
 
     fn set(&self, chat_id: &str, workspace: &PrivateDocWorkspace) -> Result<()> {
-        self.store.with_cached_mut(|map| {
-            let next_workspace = StoredPrivateDocWorkspace(workspace.clone());
-            if map.get(chat_id) == Some(&next_workspace) {
-                return Ok(StoreOp::clean(()));
-            }
-            if !map.contains_key(chat_id) && map.len() >= MAX_PRIVATE_DOC_CHATS {
-                if let Some(key_to_remove) = map.keys().next().cloned() {
-                    map.remove(&key_to_remove);
-                }
-            }
-            map.insert(chat_id.to_string(), next_workspace);
-            Ok(StoreOp::dirty(()))
-        })
+        self.store
+            .set_owned(chat_id, StoredPrivateDocWorkspace(workspace.clone()))
     }
 
     fn clear(&self, chat_id: &str) -> Result<()> {
-        self.store.with_cached_mut(|map| {
-            if map.remove(chat_id).is_some() {
-                return Ok(StoreOp::dirty(()));
-            }
-            Ok(StoreOp::clean(()))
-        })
+        self.store.clear(chat_id)
     }
 }

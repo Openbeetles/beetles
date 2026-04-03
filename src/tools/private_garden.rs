@@ -33,38 +33,8 @@ impl Tool for PrivateGardenTool {
         "Manage your current chat's free private workspace. Use it for self-owned internal notes, drafts, and temporary organization that do not belong in shared factual memory or the governed private kernel. Prefer updating existing docs in place instead of accumulating per-turn history."
     }
 
-    fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "op": {
-                    "type": "string",
-                    "enum": ["list", "tree", "read", "write", "move", "delete"],
-                    "description": "Operation to perform inside the current chat's private garden. Use list/tree/read before write or move when you need to inspect or reorganize existing material."
-                },
-                "path": {
-                    "type": "string",
-                    "description": "Relative document path, e.g. journal/afterglow.md."
-                },
-                "from_path": {
-                    "type": "string",
-                    "description": "Existing relative document path to move from."
-                },
-                "to_path": {
-                    "type": "string",
-                    "description": "Target relative document path to move to."
-                },
-                "content": {
-                    "type": "string",
-                    "description": "Complete document content for write. Writes replace the current document body, so prefer compact rewrites over appending historical notes."
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max docs to list; for list default 4 max 8, for tree default 16 max 16."
-                }
-            },
-            "required": ["op"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"op":{"type":"string","enum":["list","tree","read","write","move","delete"],"description":"Operation to perform inside the current chat's private garden. Use list/tree/read before write or move when you need to inspect or reorganize existing material."},"path":{"type":"string","description":"Relative document path, e.g. journal/afterglow.md."},"from_path":{"type":"string","description":"Existing relative document path to move from."},"to_path":{"type":"string","description":"Target relative document path to move to."},"content":{"type":"string","description":"Complete document content for write. Writes replace the current document body, so prefer compact rewrites over appending historical notes."},"limit":{"type":"integer","description":"Max docs to list; for list default 4 max 8, for tree default 16 max 16."}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {

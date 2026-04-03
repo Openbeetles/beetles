@@ -19,34 +19,8 @@ impl Tool for ProcessTool {
         "Inspect running processes on Linux. Op: list (recent process overview) or inspect (details for one pid). Returns structured JSON instead of raw shell output."
     }
 
-    fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "op": {
-                    "type": "string",
-                    "enum": ["list", "inspect"],
-                    "description": "Operation to perform"
-                },
-                "pid": {
-                    "type": "integer",
-                    "description": "Target process ID for inspect"
-                },
-                "query": {
-                    "type": "string",
-                    "description": "Optional substring filter for name/cmdline in list mode"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max processes to return in list mode (default 16, max 64)"
-                },
-                "include_cmdline": {
-                    "type": "boolean",
-                    "description": "Whether to include full command lines in output"
-                }
-            },
-            "required": ["op"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"op":{"type":"string","enum":["list","inspect"],"description":"Operation to perform"},"pid":{"type":"integer","description":"Target process ID for inspect"},"query":{"type":"string","description":"Optional substring filter for name/cmdline in list mode"},"limit":{"type":"integer","description":"Max processes to return in list mode (default 16, max 64)"},"include_cmdline":{"type":"boolean","description":"Whether to include full command lines in output"}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {

@@ -47,6 +47,7 @@ pub struct SensorWatchTool {
     store: Arc<dyn MemoryStore + Send + Sync>,
     devices: Vec<DeviceEntry>,
     i2c_sensors: Vec<I2cSensorEntry>,
+    schema: String,
 }
 
 impl SensorWatchTool {
@@ -55,11 +56,40 @@ impl SensorWatchTool {
         devices: Vec<DeviceEntry>,
         i2c_sensors: Vec<I2cSensorEntry>,
     ) -> Self {
+        let schema = Self::build_schema(&devices, &i2c_sensors);
         Self {
             store,
             devices,
             i2c_sensors,
+            schema,
         }
+    }
+
+    fn build_schema(devices: &[DeviceEntry], i2c_sensors: &[I2cSensorEntry]) -> String {
+        let mut schema = String::from(
+            r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: add|list|remove|update"},"id":{"type":"string","description":"Watch ID (for remove/update)"},"device_id":{"type":"string","enum":["#,
+        );
+        let mut wrote_any = false;
+        for device in devices.iter().filter(|d| {
+            d.device_type == "adc_in" || d.device_type == "gpio_in" || d.device_type == "dht"
+        }) {
+            if wrote_any {
+                schema.push(',');
+            }
+            crate::util::push_json_string_escaped(&mut schema, &device.id);
+            wrote_any = true;
+        }
+        for sensor in i2c_sensors.iter().filter(|sensor| sensor.model != "raw") {
+            if wrote_any {
+                schema.push(',');
+            }
+            crate::util::push_json_string_escaped(&mut schema, &sensor.id);
+            wrote_any = true;
+        }
+        schema.push_str(
+            r#"],"description":"Sensor device ID (adc_in, gpio_in, dht, or i2c_sensors id)"},"interval_secs":{"type":"integer","description":"Check interval in seconds (min 60)"},"threshold_type":{"type":"string","description":"Threshold type: above|below|change"},"threshold_value":{"type":"number","description":"Threshold value"},"alert_message":{"type":"string","description":"Alert message (max 512 bytes)"},"enabled":{"type":"boolean","description":"Enable/disable watch (for update)"}},"required":["op"]}"#,
+        );
+        schema
     }
 
     fn load_watches(&self) -> Result<Vec<SensorWatch>> {
@@ -103,34 +133,8 @@ impl Tool for SensorWatchTool {
         "Manage sensor monitoring watches with threshold alerts. Op: add (create watch on adc_in/gpio_in/dht or configured i2c_sensors except raw), list, remove (by id), update (toggle enabled or change threshold). Max 8 watches. Watches are checked by cron loop."
     }
 
-    fn schema(&self) -> Value {
-        let mut sensor_ids: Vec<Value> = self
-            .devices
-            .iter()
-            .filter(|d| {
-                d.device_type == "adc_in" || d.device_type == "gpio_in" || d.device_type == "dht"
-            })
-            .map(|d| Value::String(d.id.clone()))
-            .collect();
-        for s in &self.i2c_sensors {
-            if s.model != "raw" {
-                sensor_ids.push(Value::String(s.id.clone()));
-            }
-        }
-        json!({
-            "type": "object",
-            "properties": {
-                "op": { "type": "string", "description": "Operation: add|list|remove|update" },
-                "id": { "type": "string", "description": "Watch ID (for remove/update)" },
-                "device_id": { "type": "string", "enum": sensor_ids, "description": "Sensor device ID (adc_in, gpio_in, dht, or i2c_sensors id)" },
-                "interval_secs": { "type": "integer", "description": "Check interval in seconds (min 60)" },
-                "threshold_type": { "type": "string", "description": "Threshold type: above|below|change" },
-                "threshold_value": { "type": "number", "description": "Threshold value" },
-                "alert_message": { "type": "string", "description": "Alert message (max 512 bytes)" },
-                "enabled": { "type": "boolean", "description": "Enable/disable watch (for update)" }
-            },
-            "required": ["op"]
-        })
+    fn schema(&self) -> &str {
+        &self.schema
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {

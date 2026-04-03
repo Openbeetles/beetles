@@ -12,6 +12,7 @@ use std::collections::HashSet;
 use std::fmt::Write as _;
 
 use super::{
+    llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload},
     memory_policy, render_execution_state_block, render_internal_memory_topology_block,
     render_private_memory_boundary_block, render_shared_factual_plane_block, ExecutionState,
     ExecutionStateStore, InternalMemoryLayerFocus, LongTermMemoryStore, MemoryProfile,
@@ -80,18 +81,6 @@ pub struct SelfModelRefreshContext<'a> {
 pub enum SelfModelRefreshOutcome {
     Skipped,
     Updated,
-}
-
-#[derive(Deserialize)]
-struct RawSelfModel {
-    #[serde(default)]
-    continuity_anchor: String,
-    #[serde(default)]
-    self_narrative: String,
-    #[serde(default)]
-    relationship_state: String,
-    #[serde(default)]
-    private_notes: String,
 }
 
 impl SelfModelPolicy {
@@ -414,16 +403,16 @@ fn build_self_model_transcript(recent: &[SessionMessage], policy: SelfModelPolic
 }
 
 fn parse_self_model_response(raw: &str, now_secs: u64) -> Option<SelfModel> {
-    if raw.trim().is_empty() || raw.trim() == "null" {
+    let LlmJsonPayload::Value(value) = parse_llm_json_payload(raw) else {
         return None;
-    }
-    let parsed: RawSelfModel = serde_json::from_str(raw).ok()?;
+    };
+    let parsed = value.as_object()?;
     normalize_self_model(
         SelfModel {
-            continuity_anchor: parsed.continuity_anchor,
-            self_narrative: parsed.self_narrative,
-            relationship_state: parsed.relationship_state,
-            private_notes: parsed.private_notes,
+            continuity_anchor: get_object_text(parsed, "continuity_anchor"),
+            self_narrative: get_object_text(parsed, "self_narrative"),
+            relationship_state: get_object_text(parsed, "relationship_state"),
+            private_notes: get_object_text(parsed, "private_notes"),
             updated_at: now_secs,
         },
         now_secs,
@@ -498,8 +487,25 @@ mod tests {
     use super::*;
     use crate::error::Result;
     use crate::llm::{LlmModelCompat, LlmResponse, StopReason};
+    use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Mutex;
+
+    #[test]
+    fn parse_self_model_response_coerces_nested_fields() {
+        let raw = json!({
+            "continuity_anchor": { "anchor": "same agent" },
+            "self_narrative": ["stabilizing", "governing memory"],
+            "relationship_state": 2,
+            "private_notes": true
+        })
+        .to_string();
+        let parsed = parse_self_model_response(&raw, 9).unwrap();
+        assert!(parsed.continuity_anchor.contains("anchor: same agent"));
+        assert_eq!(parsed.self_narrative, "stabilizing; governing memory");
+        assert_eq!(parsed.relationship_state, "2");
+        assert_eq!(parsed.private_notes, "true");
+    }
 
     #[derive(Default)]
     struct StubSessionStore {

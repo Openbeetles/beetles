@@ -25,22 +25,8 @@ impl Tool for SystemControlTool {
         "System admin operations. Op: storage_usage (state storage usage), status (full board/system status), restart (requires confirm=true)."
     }
 
-    fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "op": {
-                    "type": "string",
-                    "enum": ["storage_usage", "status", "restart"],
-                    "description": "Operation: storage_usage | status | restart"
-                },
-                "confirm": {
-                    "type": "boolean",
-                    "description": "Must be true for restart"
-                }
-            },
-            "required": ["op"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"op":{"type":"string","enum":["storage_usage","status","restart"],"description":"Operation: storage_usage | status | restart"},"confirm":{"type":"boolean","description":"Must be true for restart"}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {

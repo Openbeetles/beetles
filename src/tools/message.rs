@@ -16,37 +16,8 @@ impl Tool for MessageTool {
         "Send a user-visible message through the runtime outbound pipeline. Use target=current for the active chat, or target=explicit with channel and chat_id."
     }
 
-    fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "content": {
-                    "type": "string",
-                    "description": "Message body to send."
-                },
-                "target": {
-                    "type": "string",
-                    "enum": ["current", "explicit"],
-                    "description": "current = active chat; explicit = use channel + chat_id.",
-                    "default": "current"
-                },
-                "channel": {
-                    "type": "string",
-                    "description": "Required when target=explicit."
-                },
-                "chat_id": {
-                    "type": "string",
-                    "description": "Required when target=explicit."
-                },
-                "delivery_kind": {
-                    "type": "string",
-                    "enum": ["supplemental", "primary"],
-                    "description": "primary means this tool message is the main reply for the current chat.",
-                    "default": "supplemental"
-                }
-            },
-            "required": ["content"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"content":{"type":"string","description":"Message body to send."},"target":{"type":"string","enum":["current","explicit"],"description":"current = active chat; explicit = use channel + chat_id.","default":"current"},"channel":{"type":"string","description":"Required when target=explicit."},"chat_id":{"type":"string","description":"Required when target=explicit."},"delivery_kind":{"type":"string","enum":["supplemental","primary"],"description":"primary means this tool message is the main reply for the current chat.","default":"supplemental"}},"required":["content"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {

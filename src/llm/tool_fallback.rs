@@ -24,8 +24,7 @@ pub(crate) fn append_tool_fallback_instructions(
     system.push_str(TOOL_PROTOCOL_HEADER);
     for spec in tool_specs {
         let description = truncate_content_to_max(spec.description.trim(), TOOL_LINE_MAX_CHARS);
-        let parameters_json = spec.parameters.to_string();
-        let args = truncate_content_to_max(&parameters_json, TOOL_ARGS_MAX_CHARS);
+        let args = truncate_content_to_max(spec.parameters_json(), TOOL_ARGS_MAX_CHARS);
         let mut line = String::with_capacity(spec.name.len() + description.len() + args.len() + 32);
         let _ = writeln!(&mut line, "- {}: {}", spec.name, description);
         let _ = writeln!(&mut line, "  arguments: {}", args);
@@ -246,7 +245,7 @@ mod tests {
             &[ToolSpec {
                 name: "get_time".to_string(),
                 description: "time".to_string(),
-                parameters: serde_json::json!({"type":"object"}),
+                parameters_json: r#"{"type":"object"}"#.into(),
             }],
         );
         assert_eq!(system, "base");

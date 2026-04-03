@@ -7,7 +7,7 @@ use crate::constants::{KV_STORE_MAX_ENTRIES, KV_STORE_MAX_KEY_LEN, KV_STORE_MAX_
 use crate::error::{Error, Result};
 use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
 use crate::StateFs;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -77,26 +77,8 @@ impl Tool for KvStoreTool {
          Keys: alphanumeric, underscore, hyphen, dot; max 64 chars. \
          Values: UTF-8 string, max 512 bytes. Max 64 entries total."
     }
-    fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "op": {
-                    "type": "string",
-                    "enum": ["get", "set", "delete", "list_keys"],
-                    "description": "Operation to perform"
-                },
-                "key": {
-                    "type": "string",
-                    "description": "Key name (required for get / set / delete)"
-                },
-                "value": {
-                    "type": "string",
-                    "description": "Value to store (required for set)"
-                }
-            },
-            "required": ["op"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"op":{"type":"string","enum":["get","set","delete","list_keys"],"description":"Operation to perform"},"key":{"type":"string","description":"Key name (required for get / set / delete)"},"value":{"type":"string","description":"Value to store (required for set)"}},"required":["op"]}"#
     }
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
         let fs = self.state_fs.as_ref();

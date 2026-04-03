@@ -6,7 +6,6 @@ use crate::constants::I2C_SENSOR_RATE_LIMIT_MS;
 use crate::error::{Error, Result};
 use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
 use crate::Platform;
-use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -53,7 +52,7 @@ pub struct I2cSensorTool {
     device_map: HashMap<String, usize>,
     states: Vec<DeviceState>,
     description: String,
-    schema: Value,
+    schema: String,
 }
 
 impl I2cSensorTool {
@@ -100,26 +99,19 @@ impl I2cSensorTool {
         desc
     }
 
-    fn build_schema(sensors: &[I2cSensorEntry]) -> Value {
-        let ids: Vec<Value> = sensors
-            .iter()
-            .map(|s| Value::String(s.id.clone()))
-            .collect();
-        json!({
-            "type": "object",
-            "properties": {
-                "device_id": {
-                    "type": "string",
-                    "enum": ids,
-                    "description": "Configured I2C sensor ID"
-                },
-                "op": {
-                    "type": "string",
-                    "description": "Operation: read"
-                }
-            },
-            "required": ["device_id", "op"]
-        })
+    fn build_schema(sensors: &[I2cSensorEntry]) -> String {
+        let mut schema =
+            String::from(r#"{"type":"object","properties":{"device_id":{"type":"string","enum":["#);
+        for (idx, sensor) in sensors.iter().enumerate() {
+            if idx > 0 {
+                schema.push(',');
+            }
+            crate::util::push_json_string_escaped(&mut schema, &sensor.id);
+        }
+        schema.push_str(
+            r#"],"description":"Configured I2C sensor ID"},"op":{"type":"string","description":"Operation: read"}},"required":["device_id","op"]}"#,
+        );
+        schema
     }
 
     fn check_rate_limit(&self, idx: usize) -> Result<()> {
@@ -165,8 +157,8 @@ impl Tool for I2cSensorTool {
         &self.description
     }
 
-    fn schema(&self) -> Value {
-        self.schema.clone()
+    fn schema(&self) -> &str {
+        &self.schema
     }
 
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {

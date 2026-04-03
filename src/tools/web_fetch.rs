@@ -23,18 +23,8 @@ impl Tool for WebFetchTool {
         "Fetch a public web page and return cleaned readable text. Best used after web_search with one of the returned HTML/text URLs. For PDF documents, use pdf_read instead."
     }
 
-    fn schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "url": { "type": "string", "description": "Public http(s) URL to fetch" },
-                "max_chars": {
-                    "type": "integer",
-                    "description": "Maximum characters to return (default 12000, max 50000)"
-                }
-            },
-            "required": ["url"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"url":{"type":"string","description":"Public http(s) URL to fetch"},"max_chars":{"type":"integer","description":"Maximum characters to return (default 12000, max 50000)"}},"required":["url"]}"#
     }
 
     fn requires_network(&self) -> bool {

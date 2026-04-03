@@ -25,16 +25,8 @@ impl Tool for FileWriteTool {
     fn description(&self) -> &'static str {
         "Write content to a file under storage. Supports overwrite and append modes. Protected system files cannot be written. Max content size: 16KB."
     }
-    fn schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string", "description": "File path under storage root, e.g. notes/todo.txt" },
-                "content": { "type": "string", "description": "Content to write" },
-                "append": { "type": "boolean", "description": "If true, append to existing file (default false, overwrite)" }
-            },
-            "required": ["path", "content"]
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"path":{"type":"string","description":"File path under storage root, e.g. notes/todo.txt"},"content":{"type":"string","description":"Content to write"},"append":{"type":"boolean","description":"If true, append to existing file (default false, overwrite)"}},"required":["path","content"]}"#
     }
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
         let obj = parse_tool_args(args, "tool_file_write")?;

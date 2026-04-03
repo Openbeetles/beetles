@@ -4,7 +4,7 @@
 use crate::config::DeviceEntry;
 use crate::error::{Error, Result};
 use crate::tools::{Tool, ToolContext, ToolMetadata};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -64,7 +64,7 @@ pub struct DeviceControlTool {
     /// pwm_out 设备 ID → (LEDC channel 0–7, LEDC timer index 0–3)；每设备独立定时器以支持不同 frequency_hz。
     pwm_channels: HashMap<String, (u8, u8)>,
     description: String,
-    schema: Value,
+    schema: String,
     platform: Arc<dyn crate::Platform>,
 }
 
@@ -121,26 +121,19 @@ impl DeviceControlTool {
         desc
     }
 
-    fn build_schema(devices: &[DeviceEntry]) -> Value {
-        let ids: Vec<Value> = devices
-            .iter()
-            .map(|d| Value::String(d.id.clone()))
-            .collect();
-        json!({
-            "type": "object",
-            "properties": {
-                "device_id": {
-                    "type": "string",
-                    "enum": ids,
-                    "description": "Target device ID"
-                },
-                "params": {
-                    "type": "object",
-                    "description": "Device-specific params, e.g. {\"value\": 1} or {\"duty\": 50}; read-only devices need no params"
-                }
-            },
-            "required": ["device_id"]
-        })
+    fn build_schema(devices: &[DeviceEntry]) -> String {
+        let mut schema =
+            String::from(r#"{"type":"object","properties":{"device_id":{"type":"string","enum":["#);
+        for (idx, device) in devices.iter().enumerate() {
+            if idx > 0 {
+                schema.push(',');
+            }
+            crate::util::push_json_string_escaped(&mut schema, &device.id);
+        }
+        schema.push_str(
+            r#"],"description":"Target device ID"},"params":{"type":"object","description":"Device-specific params, e.g. {\"value\": 1} or {\"duty\": 50}; read-only devices need no params"}},"required":["device_id"]}"#,
+        );
+        schema
     }
 
     fn check_rate_limit(&self, idx: usize, device_type: &str) -> Result<()> {
@@ -218,8 +211,8 @@ impl Tool for DeviceControlTool {
         &self.description
     }
 
-    fn schema(&self) -> Value {
-        self.schema.clone()
+    fn schema(&self) -> &str {
+        &self.schema
     }
 
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {

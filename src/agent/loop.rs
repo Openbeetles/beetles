@@ -53,7 +53,8 @@ use crate::state;
 use crate::tools::http_bridge::HttpClientToolContext;
 use crate::tools::{ToolOutboundDeliveryKind, ToolOutboundIntent, ToolOutboundTarget};
 use crate::util::{
-    remove_substrings_all_trim, strip_agent_stop_confirmation, truncate_content_to_max,
+    push_json_string_escaped, remove_substrings_all_trim, strip_agent_stop_confirmation,
+    truncate_content_to_max, usize_to_decimal_buf,
 };
 use crate::PlatformHttpClient;
 use serde::{Deserialize, Serialize};
@@ -216,9 +217,316 @@ struct WorkerRunTelemetry {
     used_final_answer_recovery: bool,
 }
 
+struct ToolCallExecutionResult {
+    result_owned: String,
+    failure_kind: Option<super::tool_outcome::ToolFailureKind>,
+    delivered_reply: Option<String>,
+    call_succeeded: bool,
+}
+
+struct ToolUseRoundExecutionOutput {
+    truncated: bool,
+    round_tool_success: bool,
+    round_repeat_count: usize,
+    round_failure_summary: ToolFailureSummary,
+    round_signature: u64,
+    round_observations: SuccessfulToolRoundObservations,
+    omitted_evidence_count: usize,
+    delivered_current_chat_reply: Option<String>,
+}
+
 fn mark_ttft_if_visible(latency: &mut WorkerLatency, worker_start: Instant, content: &str) {
     if latency.ttft_ms.is_none() && !content.trim().is_empty() {
         latency.ttft_ms = Some(worker_start.elapsed().as_millis());
+    }
+}
+
+fn build_json_error_object(message: &str) -> String {
+    let mut out = String::with_capacity(message.len().saturating_add(16));
+    out.push_str("{\"error\":");
+    push_json_string_escaped(&mut out, message);
+    out.push('}');
+    out
+}
+
+#[cold]
+#[inline(never)]
+fn unavailable_tool_execution_result(tool_name: &str) -> ToolCallExecutionResult {
+    metrics::record_tool_call(false);
+    let assessment = unavailable_tool_assessment();
+    let mut message = String::with_capacity(tool_name.len().saturating_add(56));
+    message.push_str("tool '");
+    message.push_str(tool_name);
+    message.push_str("' is not available in the current runtime context");
+    ToolCallExecutionResult {
+        result_owned: crate::util::scrub_credentials(&build_json_error_object(&message)),
+        failure_kind: Some(assessment.kind),
+        delivered_reply: None,
+        call_succeeded: false,
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn denied_tool_execution_result(reason: &str) -> ToolCallExecutionResult {
+    let assessment = denied_tool_assessment(reason);
+    ToolCallExecutionResult {
+        result_owned: crate::util::scrub_credentials(&build_json_error_object(reason)),
+        failure_kind: Some(assessment.kind),
+        delivered_reply: None,
+        call_succeeded: false,
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn outbound_error_tool_execution_result(
+    tool_name: &str,
+    error: &crate::error::Error,
+) -> ToolCallExecutionResult {
+    metrics::record_tool_call(false);
+    metrics::record_error_by_stage(error.stage());
+    log::error!(
+        "[agent_tool] {} outbound intent delivery failed: {}",
+        tool_name,
+        error
+    );
+    state::set_last_error(error);
+    let assessment = classify_tool_error(error);
+    let mut tool_error_buf = String::with_capacity(128);
+    let _ = write!(
+        &mut tool_error_buf,
+        "[tool error] {}.{}",
+        error, assessment.hint
+    );
+    ToolCallExecutionResult {
+        result_owned: crate::util::scrub_credentials(tool_error_buf.as_str()),
+        failure_kind: Some(assessment.kind),
+        delivered_reply: None,
+        call_succeeded: false,
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn execute_error_tool_execution_result(
+    tool_name: &str,
+    input: &str,
+    error: &crate::error::Error,
+) -> ToolCallExecutionResult {
+    metrics::record_tool_call(false);
+    metrics::record_error_by_stage(error.stage());
+    log::error!(
+        "[agent_tool] {} execute failed: {} input={:?}",
+        tool_name,
+        error,
+        crate::util::truncate_content_to_max(input, 200).as_ref()
+    );
+    state::set_last_error(error);
+    let assessment = classify_tool_error(error);
+    let mut tool_error_buf = String::with_capacity(128);
+    let _ = write!(
+        &mut tool_error_buf,
+        "[tool error] {}.{}",
+        error, assessment.hint
+    );
+    ToolCallExecutionResult {
+        result_owned: crate::util::scrub_credentials(tool_error_buf.as_str()),
+        failure_kind: Some(assessment.kind),
+        delivered_reply: None,
+        call_succeeded: false,
+    }
+}
+
+#[inline(never)]
+fn execute_tool_call(
+    tc: &crate::llm::ToolCall,
+    registry: &crate::tools::ToolRegistry,
+    request_plan: &AgentRequestPlan,
+    delivery: &mut DeliverySession,
+    tool_ctx: &mut HttpClientToolContext<'_>,
+    latency: &mut WorkerLatency,
+) -> ToolCallExecutionResult {
+    if !registry.is_llm_tool_visible(&tc.name, request_plan.policy()) {
+        return unavailable_tool_execution_result(&tc.name);
+    }
+
+    let needs_net = registry.is_network_tool(&tc.name);
+    match crate::orchestrator::can_execute_tool_pub(&tc.name, needs_net) {
+        ToolDecision::Deny { reason } => {
+            log::info!("[agent_tool] {} denied: {}", tc.name, reason);
+            denied_tool_execution_result(reason)
+        }
+        ToolDecision::Allow => {
+            let tool_exec_start = Instant::now();
+            match registry.execute(&tc.name, &tc.input, tool_ctx) {
+                Ok(outcome) => {
+                    latency.tool_exec_ms = latency
+                        .tool_exec_ms
+                        .saturating_add(tool_exec_start.elapsed().as_millis());
+                    let mut delivered_reply = None;
+                    for intent in &outcome.outbound_intents {
+                        match delivery.deliver_tool_outbound_intent(intent) {
+                            Ok(ToolIntentDelivery::CurrentPrimary) => {
+                                log_tool_intent_result(
+                                    &tc.name,
+                                    intent,
+                                    ToolIntentDelivery::CurrentPrimary,
+                                );
+                                delivered_reply = Some(intent.content.clone());
+                            }
+                            Ok(ToolIntentDelivery::VisibleUpdate) => {
+                                log_tool_intent_result(
+                                    &tc.name,
+                                    intent,
+                                    ToolIntentDelivery::VisibleUpdate,
+                                );
+                            }
+                            Ok(ToolIntentDelivery::Suppressed) => {
+                                log_tool_intent_result(
+                                    &tc.name,
+                                    intent,
+                                    ToolIntentDelivery::Suppressed,
+                                );
+                            }
+                            Err(error) => {
+                                latency.tool_exec_ms = latency.tool_exec_ms.saturating_add(0);
+                                return outbound_error_tool_execution_result(&tc.name, &error);
+                            }
+                        }
+                    }
+                    metrics::record_tool_call(true);
+                    ToolCallExecutionResult {
+                        result_owned: crate::util::scrub_credentials(&outcome.content),
+                        failure_kind: None,
+                        delivered_reply,
+                        call_succeeded: true,
+                    }
+                }
+                Err(error) => {
+                    latency.tool_exec_ms = latency
+                        .tool_exec_ms
+                        .saturating_add(tool_exec_start.elapsed().as_millis());
+                    execute_error_tool_execution_result(&tc.name, &tc.input, &error)
+                }
+            }
+        }
+    }
+}
+
+#[inline(never)]
+fn execute_tool_use_round(
+    tool_calls: &[crate::llm::ToolCall],
+    loc: UiLocale,
+    delivery: &mut DeliverySession,
+    request_plan: &AgentRequestPlan,
+    registry: &crate::tools::ToolRegistry,
+    tool_ctx: &mut HttpClientToolContext<'_>,
+    config: &AgentLoopConfig,
+    tool_call_repeat: &mut HashMap<u64, u8>,
+    latency: &mut WorkerLatency,
+    tool_result_user_content: &mut String,
+    round_evidence_lines: &mut Vec<String>,
+) -> ToolUseRoundExecutionOutput {
+    let mut truncated = false;
+    let mut round_tool_success = false;
+    let mut round_repeat_count = 0usize;
+    let mut round_call_keys = Vec::with_capacity(tool_calls.len());
+    let mut round_failure_summary = ToolFailureSummary::default();
+    let mut omitted_evidence_count = 0usize;
+    let mut round_observations = SuccessfulToolRoundObservations::default();
+    let mut delivered_current_chat_reply = None;
+
+    latency.tool_calls = latency.tool_calls.saturating_add(tool_calls.len() as u32);
+
+    for (i, tc) in tool_calls.iter().enumerate() {
+        let progress = if tool_calls.len() == 1 {
+            tr(
+                UiMessage::ToolProgressSingle {
+                    name: tc.name.clone(),
+                },
+                loc,
+            )
+        } else {
+            tr(
+                UiMessage::ToolProgress {
+                    name: tc.name.clone(),
+                    index: i,
+                    total: tool_calls.len(),
+                },
+                loc,
+            )
+        };
+        delivery.emit_progress(&progress);
+
+        let execution = execute_tool_call(tc, registry, request_plan, delivery, tool_ctx, latency);
+        if let Some(reply) = execution.delivered_reply {
+            delivered_current_chat_reply = Some(reply);
+        }
+        let result_view = execution.result_owned.as_str();
+        if let Some(kind) = execution.failure_kind {
+            round_failure_summary.record(kind);
+        } else if config.strategy == AgentRunStrategy::LinuxEnhanced {
+            record_successful_tool_result(&mut round_observations, &tc.name, result_view);
+            if round_evidence_lines.len() < MAX_TOOL_EVIDENCE_ITEMS {
+                if let Some(line) = build_tool_evidence_line(&tc.id, &tc.name, result_view) {
+                    round_evidence_lines.push(line);
+                }
+            } else {
+                omitted_evidence_count = omitted_evidence_count.saturating_add(1);
+            }
+        }
+        if execution.call_succeeded {
+            round_tool_success = true;
+        }
+
+        let call_key = hash_tool_call(&tc.name, &tc.input);
+        round_call_keys.push(call_key);
+        let n = tool_call_repeat.entry(call_key).or_insert(0);
+        *n = (*n).saturating_add(1);
+        let repeat_count = *n as usize;
+        if *n >= 2 {
+            round_repeat_count = round_repeat_count.saturating_add(1);
+        }
+        crate::platform::task_wdt::feed_current_task();
+        if i > 0
+            && push_bounded_utf8(
+                tool_result_user_content,
+                "\n",
+                MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
+            )
+        {
+            truncated = true;
+            break;
+        }
+        if append_tool_result_block(
+            tool_result_user_content,
+            ToolResultBlock {
+                call_id: &tc.id,
+                tool_name: &tc.name,
+                status: tool_result_status_attr(execution.failure_kind.is_some()),
+                failure: failure_kind_attr(execution.failure_kind),
+                repeat_count,
+                content: result_view,
+            },
+            MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
+        ) {
+            truncated = true;
+            break;
+        }
+    }
+
+    let round_signature = hash_tool_round(&round_call_keys);
+
+    ToolUseRoundExecutionOutput {
+        truncated,
+        round_tool_success,
+        round_repeat_count,
+        round_failure_summary,
+        round_signature,
+        round_observations,
+        omitted_evidence_count,
+        delivered_current_chat_reply,
     }
 }
 
@@ -443,7 +751,11 @@ fn append_tool_evidence_summary_block(
         }
     }
     if omitted_count > 0 {
-        let more = format!("- [more] {omitted_count} additional successful tool result(s)");
+        let mut more = String::with_capacity(56);
+        let mut count_buf = [0u8; 20];
+        more.push_str("- [more] ");
+        more.push_str(usize_to_decimal_buf(&mut count_buf, omitted_count));
+        more.push_str(" additional successful tool result(s)");
         if push_bounded_utf8(dst, &more, max_bytes) || push_bounded_utf8(dst, "\n", max_bytes) {
             return true;
         }
@@ -498,11 +810,45 @@ fn extract_long_term_memory_bullets(block: &str) -> Vec<String> {
 }
 
 fn extract_tag_attr<'a>(line: &'a str, attr: &str) -> Option<&'a str> {
-    let pattern = format!("{attr}=\"");
-    let start = line.find(&pattern)? + pattern.len();
-    let remain = &line[start..];
-    let end = remain.find('"')?;
-    Some(&remain[..end])
+    let mut search_from = 0usize;
+    let bytes = line.as_bytes();
+    while let Some(pos) = line[search_from..].find(attr) {
+        let start = search_from + pos;
+        let after = start + attr.len();
+        if bytes.get(after) == Some(&b'=') && bytes.get(after + 1) == Some(&b'"') {
+            let value_start = after + 2;
+            let remain = &line[value_start..];
+            let end = remain.find('"')?;
+            return Some(&remain[..end]);
+        }
+        search_from = after;
+    }
+    None
+}
+
+fn append_tool_result_summary_header(
+    out: &mut String,
+    call_id: &str,
+    tool_name: &str,
+    status: &str,
+    failure: Option<&str>,
+    repeat_count: Option<&str>,
+) {
+    out.push('[');
+    out.push_str(call_id);
+    out.push_str("] ");
+    out.push_str(tool_name);
+    out.push_str(" status=");
+    out.push_str(status);
+    if let Some(failure) = failure {
+        out.push_str(" failure=");
+        out.push_str(failure);
+    }
+    if let Some(repeat_count) = repeat_count {
+        out.push_str(" repeat=");
+        out.push_str(repeat_count);
+    }
+    out.push_str(": ");
 }
 
 /// 将早期轮次的工具结果压缩为「预览 + 总字节数」摘要，保留语义锚点、不丢轮次结构。
@@ -530,18 +876,23 @@ fn summarize_tool_results(content: &str) -> String {
                 block_body.push_str(next);
             }
             let preview = build_tool_result_preview(&block_body);
-            let header = match (failure, repeat_count) {
-                (Some(failure), Some(repeat_count)) => {
-                    format!("[{call_id}] {tool_name} status={status} failure={failure} repeat={repeat_count}: ")
-                }
-                (Some(failure), None) => {
-                    format!("[{call_id}] {tool_name} status={status} failure={failure}: ")
-                }
-                (None, Some(repeat_count)) => {
-                    format!("[{call_id}] {tool_name} status={status} repeat={repeat_count}: ")
-                }
-                (None, None) => format!("[{call_id}] {tool_name} status={status}: "),
-            };
+            let mut header = String::with_capacity(
+                call_id
+                    .len()
+                    .saturating_add(tool_name.len())
+                    .saturating_add(status.len())
+                    .saturating_add(failure.map_or(0, str::len))
+                    .saturating_add(repeat_count.map_or(0, str::len))
+                    .saturating_add(32),
+            );
+            append_tool_result_summary_header(
+                &mut header,
+                call_id,
+                tool_name,
+                status,
+                failure,
+                repeat_count,
+            );
             if block_body.chars().count() <= TOOL_RESULT_PREVIEW_CHARS {
                 let _ = writeln!(out, "{header}{preview}");
             } else {
@@ -880,6 +1231,231 @@ fn run_long_term_memory_refresh_job(
             log::warn!("[agent_memory] refresh failed: {}", error);
         }
         LongTermMemoryRefreshOutcome::Deferred { .. } => {}
+    }
+}
+
+#[cold]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn handle_worker_path_error(
+    error: crate::error::Error,
+    worker_lane_tag: &str,
+    msg: &mut PcMsg,
+    loc: UiLocale,
+    msg_start: Instant,
+    queue_wait_ms: u128,
+    admission_ms: u128,
+    worker_prepare_ms: u128,
+    msg_key: u64,
+    llm_failure_count: &mut HashMap<u64, (u8, Instant)>,
+    user_inbound_tx: &UserInboundTx,
+    system_inbound_tx: &SystemInboundTx,
+    outbound_tx: &OutboundTx,
+    config: &AgentLoopConfig,
+    turn_ledger: &mut TurnLedger,
+) {
+    let llm_ms = msg_start
+        .elapsed()
+        .as_millis()
+        .saturating_sub(admission_ms)
+        .saturating_sub(worker_prepare_ms);
+    let total_ms = msg_start.elapsed().as_millis();
+    turn_ledger.status = TurnLedgerStatus::Failed;
+    turn_ledger.reason = normalize_turn_reason(error.stage());
+    turn_ledger.updated_at_ms = now_unix_ms();
+    turn_ledger.finished_at_ms = turn_ledger.updated_at_ms;
+    turn_ledger.total_ms = total_ms.min(u64::MAX as u128) as u64;
+    turn_ledger.reply_preview = normalize_turn_preview(&tr(UiMessage::NodeMaintenance, loc));
+    persist_turn_ledger(
+        config.turn_ledger_store.as_ref(),
+        &msg.chat_id,
+        turn_ledger,
+        "error",
+    );
+    crate::platform::task_wdt::feed_current_task();
+    metrics::record_error_by_stage(error.stage());
+    log::warn!("[agent:{}] chat loop failed: {}", worker_lane_tag, error);
+    log::warn!(
+        "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} llm_ms={} total_ms={} status=llm_error",
+        worker_lane_tag,
+        msg.req_id.as_deref().unwrap_or_default(),
+        msg.channel,
+        msg.chat_id,
+        queue_wait_ms,
+        admission_ms,
+        worker_prepare_ms,
+        llm_ms,
+        total_ms
+    );
+    state::set_last_error(&error);
+
+    let (counter, _) = llm_failure_count
+        .entry(msg_key)
+        .or_insert((0, Instant::now()));
+    *counter = counter.saturating_add(1);
+
+    if *counter < 3 && error.is_retryable_upstream() {
+        msg.enqueue_ts_ms = now_unix_ms();
+        let inbound_tx = choose_inbound_tx(msg.ingress, user_inbound_tx, system_inbound_tx);
+        match inbound_tx.try_send(msg.clone()) {
+            Ok(()) => {}
+            Err(std::sync::mpsc::TrySendError::Full(m)) => {
+                let _ = config.pending_retry.save_pending_retry(&m);
+                log::warn!(
+                    "[agent] llm retry: inbound full, pending_retry saved chat_id={}",
+                    m.chat_id
+                );
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                log::error!("[agent] inbound_tx disconnected during llm retry");
+            }
+        }
+        let delay_ms =
+            (AGENT_RETRY_BASE_MS * (1 << (*counter as u64).min(4))).min(AGENT_RETRY_MAX_MS);
+        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        return;
+    }
+
+    let reply = PcMsg {
+        channel: msg.channel.clone(),
+        chat_id: msg.chat_id.clone(),
+        content: tr(UiMessage::NodeMaintenance, loc),
+        req_id: Some(msg.req_id.as_deref().unwrap_or_default().to_owned()),
+        ingress: IngressKind::User,
+        enqueue_ts_ms: now_unix_ms(),
+        is_group: false,
+    };
+    let _ = try_send_outbound(outbound_tx, reply, "chat-failure");
+}
+
+#[inline(never)]
+fn maybe_apply_mental_privacy_review(
+    http: &mut dyn PlatformHttpClient,
+    worker_llm: &(dyn LlmClient + Send + Sync),
+    config: &AgentLoopConfig,
+    msg: &PcMsg,
+    loc: UiLocale,
+    reply_content: String,
+) -> String {
+    if msg.ingress != IngressKind::User || reply_content.trim().is_empty() {
+        return reply_content;
+    }
+
+    let t0 = metrics::record_llm_call_start();
+    let mut privacy_http = HttpClientToolContext {
+        http,
+        chat_id: Some(msg.chat_id.clone()),
+        channel: Some(msg.channel.clone()),
+        supports_current_chat_outbound_message: false,
+        supports_current_chat_primary_reply: false,
+        supports_explicit_outbound_message: false,
+        outbound_message_budget: 0,
+        outbound_message_count: 0,
+        current_primary_message_delivered: false,
+        locale: loc,
+    };
+    match run_mental_privacy_review(
+        &mut privacy_http,
+        worker_llm,
+        MentalPrivacyReviewContext {
+            mental_privacy_store: config.mental_privacy_store.as_ref(),
+            self_model_store: config.self_model_store.as_ref(),
+            self_continuity_store: config.self_continuity_store.as_ref(),
+            inner_life_store: config.inner_life_store.as_ref(),
+            private_doc_store: config.private_doc_store.as_ref(),
+            private_garden_store: config.private_garden_store.as_ref(),
+        },
+        MentalPrivacyReviewInput {
+            chat_id: &msg.chat_id,
+            user_content: &msg.content,
+            draft_reply: &reply_content,
+            now_secs: crate::util::current_unix_secs(),
+        },
+    ) {
+        Ok(review) => {
+            metrics::record_llm_call_end(t0);
+            review.reply_content
+        }
+        Err(error) => {
+            metrics::record_llm_call_end(t0);
+            metrics::record_llm_error();
+            log::warn!("[agent_mental_privacy] review failed: {}", error);
+            reply_content
+        }
+    }
+}
+
+#[cold]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn log_agent_latency_summary(
+    worker_lane_tag: &str,
+    req_id: &str,
+    channel: &str,
+    chat_id: &str,
+    queue_wait_ms: u128,
+    admission_ms: u128,
+    worker_prepare_ms: u128,
+    worker_latency: &WorkerLatency,
+    llm_ms: u128,
+    outbound_enqueue_ms: u128,
+    reply_handoff_ms: u128,
+    post_reply_ms: u128,
+    total_ms: u128,
+    streamed: bool,
+    delivered: bool,
+    latency_warn_ms: u128,
+) {
+    if total_ms >= latency_warn_ms {
+        log::warn!(
+            "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} context_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={} level=slow",
+            worker_lane_tag,
+            req_id,
+            channel,
+            chat_id,
+            queue_wait_ms,
+            admission_ms,
+            worker_prepare_ms,
+            worker_latency.context_ms,
+            worker_latency.llm_round_total_ms,
+            worker_latency.tool_exec_ms,
+            worker_latency.session_write_ms,
+            llm_ms,
+            outbound_enqueue_ms,
+            reply_handoff_ms,
+            post_reply_ms,
+            total_ms,
+            worker_latency.react_rounds,
+            worker_latency.tool_calls,
+            worker_latency.ttft_ms.unwrap_or(0),
+            streamed,
+            delivered
+        );
+    } else {
+        log::info!(
+            "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} context_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={}",
+            worker_lane_tag,
+            req_id,
+            channel,
+            chat_id,
+            queue_wait_ms,
+            admission_ms,
+            worker_prepare_ms,
+            worker_latency.context_ms,
+            worker_latency.llm_round_total_ms,
+            worker_latency.tool_exec_ms,
+            worker_latency.session_write_ms,
+            llm_ms,
+            outbound_enqueue_ms,
+            reply_handoff_ms,
+            post_reply_ms,
+            total_ms,
+            worker_latency.react_rounds,
+            worker_latency.tool_calls,
+            worker_latency.ttft_ms.unwrap_or(0),
+            streamed,
+            delivered
+        );
     }
 }
 
@@ -1821,80 +2397,23 @@ fn run_agent_loop_lane(
         let (outcome, telemetry) = match final_content {
             Ok(ok) => ok,
             Err(e) => {
-                let llm_ms = msg_start
-                    .elapsed()
-                    .as_millis()
-                    .saturating_sub(admission_ms)
-                    .saturating_sub(worker_prepare_ms);
-                let total_ms = msg_start.elapsed().as_millis();
-                turn_ledger.status = TurnLedgerStatus::Failed;
-                turn_ledger.reason = normalize_turn_reason(e.stage());
-                turn_ledger.updated_at_ms = now_unix_ms();
-                turn_ledger.finished_at_ms = turn_ledger.updated_at_ms;
-                turn_ledger.total_ms = total_ms.min(u64::MAX as u128) as u64;
-                turn_ledger.reply_preview =
-                    normalize_turn_preview(&tr(UiMessage::NodeMaintenance, loc));
-                persist_turn_ledger(
-                    config.turn_ledger_store.as_ref(),
-                    &msg.chat_id,
-                    &turn_ledger,
-                    "error",
-                );
-                crate::platform::task_wdt::feed_current_task();
-                metrics::record_error_by_stage(e.stage());
-                log::warn!("[agent:{}] chat loop failed: {}", worker_lane_tag, e);
-                log::warn!(
-                    "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} llm_ms={} total_ms={} status=llm_error",
+                handle_worker_path_error(
+                    e,
                     worker_lane_tag,
-                    msg.req_id.as_deref().unwrap_or_default(),
-                    msg.channel,
-                    msg.chat_id,
+                    &mut msg,
+                    loc,
+                    msg_start,
                     queue_wait_ms,
                     admission_ms,
                     worker_prepare_ms,
-                    llm_ms,
-                    total_ms
+                    msg_key,
+                    &mut llm_failure_count,
+                    &user_inbound_tx,
+                    &system_inbound_tx,
+                    &outbound_tx,
+                    config,
+                    &mut turn_ledger,
                 );
-                state::set_last_error(&e);
-
-                let (counter, _) = llm_failure_count
-                    .entry(msg_key)
-                    .or_insert((0, Instant::now()));
-                *counter = counter.saturating_add(1);
-
-                if *counter < 3 && e.is_retryable_upstream() {
-                    msg.enqueue_ts_ms = now_unix_ms();
-                    let inbound_tx =
-                        choose_inbound_tx(msg.ingress, &user_inbound_tx, &system_inbound_tx);
-                    match inbound_tx.try_send(msg) {
-                        Ok(()) => {}
-                        Err(std::sync::mpsc::TrySendError::Full(m)) => {
-                            let _ = config.pending_retry.save_pending_retry(&m);
-                            log::warn!(
-                                "[agent] llm retry: inbound full, pending_retry saved chat_id={}",
-                                m.chat_id
-                            );
-                        }
-                        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                            log::error!("[agent] inbound_tx disconnected during llm retry");
-                        }
-                    }
-                    let delay_ms = (AGENT_RETRY_BASE_MS * (1 << (*counter as u64).min(4)))
-                        .min(AGENT_RETRY_MAX_MS);
-                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-                    continue;
-                }
-
-                let reply = PcMsg {
-                    channel: msg.channel.clone(),
-                    chat_id: msg.chat_id.clone(),
-                    content: tr(UiMessage::NodeMaintenance, loc),
-                    req_id: Some(msg.req_id.as_deref().unwrap_or_default().to_owned()),
-                    ingress: IngressKind::User,
-                    enqueue_ts_ms: now_unix_ms(),
-                    is_group: false,
-                };
-                let _ = try_send_outbound(&outbound_tx, reply, "chat-failure");
                 continue;
             }
         };
@@ -1939,48 +2458,15 @@ fn run_agent_loop_lane(
         if !is_interrupt && apply_finalizer {
             reply_content = finalize_user_visible_reply(config.strategy, &reply_content);
         }
-        if !is_interrupt && msg.ingress == IngressKind::User && !reply_content.trim().is_empty() {
-            let t0 = metrics::record_llm_call_start();
-            let mut privacy_http = HttpClientToolContext {
+        if !is_interrupt {
+            reply_content = maybe_apply_mental_privacy_review(
                 http,
-                chat_id: Some(msg.chat_id.clone()),
-                channel: Some(msg.channel.clone()),
-                supports_current_chat_outbound_message: false,
-                supports_current_chat_primary_reply: false,
-                supports_explicit_outbound_message: false,
-                outbound_message_budget: 0,
-                outbound_message_count: 0,
-                current_primary_message_delivered: false,
-                locale: loc,
-            };
-            match run_mental_privacy_review(
-                &mut privacy_http,
                 worker_llm,
-                MentalPrivacyReviewContext {
-                    mental_privacy_store: config.mental_privacy_store.as_ref(),
-                    self_model_store: config.self_model_store.as_ref(),
-                    self_continuity_store: config.self_continuity_store.as_ref(),
-                    inner_life_store: config.inner_life_store.as_ref(),
-                    private_doc_store: config.private_doc_store.as_ref(),
-                    private_garden_store: config.private_garden_store.as_ref(),
-                },
-                MentalPrivacyReviewInput {
-                    chat_id: &msg.chat_id,
-                    user_content: &msg.content,
-                    draft_reply: &reply_content,
-                    now_secs: crate::util::current_unix_secs(),
-                },
-            ) {
-                Ok(review) => {
-                    metrics::record_llm_call_end(t0);
-                    reply_content = review.reply_content;
-                }
-                Err(error) => {
-                    metrics::record_llm_call_end(t0);
-                    metrics::record_llm_error();
-                    log::warn!("[agent_mental_privacy] review failed: {}", error);
-                }
-            }
+                config,
+                &msg,
+                loc,
+                reply_content,
+            );
         }
         if !is_interrupt
             && reply_content.trim().is_empty()
@@ -2175,57 +2661,24 @@ fn run_agent_loop_lane(
         } else {
             metrics::record_user_message_done();
         }
-        if total_ms >= LATENCY_WARN_MS {
-            log::warn!(
-                "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} context_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={} level=slow",
-                worker_lane_tag,
-                msg.req_id.as_deref().unwrap_or_default(),
-                msg.channel,
-                msg.chat_id,
-                queue_wait_ms,
-                admission_ms,
-                worker_prepare_ms,
-                worker_latency.context_ms,
-                worker_latency.llm_round_total_ms,
-                worker_latency.tool_exec_ms,
-                worker_latency.session_write_ms,
-                llm_ms,
-                outbound_enqueue_ms,
-                reply_handoff_ms,
-                post_reply_ms,
-                total_ms,
-                worker_latency.react_rounds,
-                worker_latency.tool_calls,
-                worker_latency.ttft_ms.unwrap_or(0),
-                streamed,
-                delivered
-            );
-        } else {
-            log::info!(
-                "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} context_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={}",
-                worker_lane_tag,
-                msg.req_id.as_deref().unwrap_or_default(),
-                msg.channel,
-                msg.chat_id,
-                queue_wait_ms,
-                admission_ms,
-                worker_prepare_ms,
-                worker_latency.context_ms,
-                worker_latency.llm_round_total_ms,
-                worker_latency.tool_exec_ms,
-                worker_latency.session_write_ms,
-                llm_ms,
-                outbound_enqueue_ms,
-                reply_handoff_ms,
-                post_reply_ms,
-                total_ms,
-                worker_latency.react_rounds,
-                worker_latency.tool_calls,
-                worker_latency.ttft_ms.unwrap_or(0),
-                streamed,
-                delivered
-            );
-        }
+        log_agent_latency_summary(
+            worker_lane_tag,
+            msg.req_id.as_deref().unwrap_or_default(),
+            msg.channel.as_ref(),
+            msg.chat_id.as_ref(),
+            queue_wait_ms,
+            admission_ms,
+            worker_prepare_ms,
+            &worker_latency,
+            llm_ms,
+            outbound_enqueue_ms,
+            reply_handoff_ms,
+            post_reply_ms,
+            total_ms,
+            streamed,
+            delivered,
+            LATENCY_WARN_MS,
+        );
     }
     Ok(())
 }
@@ -2405,11 +2858,9 @@ fn run_worker_path(
     // 跨请求复用容器，每次新请求清空；跨轮次仍保留本请求内状态。
     tool_call_repeat.clear();
     // 复用工具错误消息缓冲区，避免错误路径反复分配。
-    let mut tool_error_buf = String::with_capacity(256);
     let mut final_content = String::with_capacity(4096);
     let mut memory_grounding: Option<String> = None;
     let mut tool_result_user_content = String::with_capacity(1024);
-    let mut round_call_keys = Vec::with_capacity(4);
     let mut round_evidence_lines = Vec::with_capacity(MAX_TOOL_EVIDENCE_ITEMS);
     // P1 Enhancement 3: 进度跟踪（最近3轮），用于检测无效循环。
     let mut progress_history: [Option<RoundProgress>; 3] = [None; 3];
@@ -2619,226 +3070,28 @@ fn run_worker_path(
             }
             tool_result_user_content.push_str(TOOL_RESULTS_PREFIX);
             let mut truncated = false;
-            latency.tool_calls = latency.tool_calls.saturating_add(tool_calls.len() as u32);
-            // P1 Enhancement 3: 跟踪本轮工具是否有成功。
-            let mut round_tool_success = false;
-            let mut round_repeat_count = 0usize;
-            round_call_keys.clear();
-            if round_call_keys.capacity() < tool_calls.len() {
-                round_call_keys.reserve(tool_calls.len() - round_call_keys.capacity());
-            }
-            let mut round_failure_summary = ToolFailureSummary::default();
             round_evidence_lines.clear();
-            let mut omitted_evidence_count = 0usize;
-            let mut round_observations = SuccessfulToolRoundObservations::default();
-            for (i, tc) in tool_calls.iter().enumerate() {
-                let progress = if tool_calls.len() == 1 {
-                    tr(
-                        UiMessage::ToolProgressSingle {
-                            name: tc.name.clone(),
-                        },
-                        loc,
-                    )
-                } else {
-                    tr(
-                        UiMessage::ToolProgress {
-                            name: tc.name.clone(),
-                            index: i,
-                            total: tool_calls.len(),
-                        },
-                        loc,
-                    )
-                };
-                delivery.emit_progress(&progress);
-                // 工具执行门控
-                let (result_owned, failure_kind, delivered_reply) = {
-                    if !registry.is_llm_tool_visible(&tc.name, request_plan.policy()) {
-                        metrics::record_tool_call(false);
-                        let assessment = unavailable_tool_assessment();
-                        (
-                            crate::util::scrub_credentials(
-                                &serde_json::json!({
-                                    "error": format!(
-                                        "tool '{}' is not available in the current runtime context",
-                                        tc.name
-                                    )
-                                })
-                                .to_string(),
-                            ),
-                            Some(assessment.kind),
-                            None,
-                        )
-                    } else {
-                        let needs_net = registry.is_network_tool(&tc.name);
-                        match crate::orchestrator::can_execute_tool_pub(&tc.name, needs_net) {
-                            ToolDecision::Deny { reason } => {
-                                log::info!("[agent_tool] {} denied: {}", tc.name, reason);
-                                let assessment = denied_tool_assessment(reason);
-                                (
-                                    crate::util::scrub_credentials(
-                                        &serde_json::json!({ "error": reason }).to_string(),
-                                    ),
-                                    Some(assessment.kind),
-                                    None,
-                                )
-                            }
-                            ToolDecision::Allow => {
-                                let tool_exec_start = Instant::now();
-                                match registry.execute(&tc.name, &tc.input, &mut tool_ctx) {
-                                    Ok(outcome) => {
-                                        latency.tool_exec_ms = latency
-                                            .tool_exec_ms
-                                            .saturating_add(tool_exec_start.elapsed().as_millis());
-                                        let mut delivered_reply = None;
-                                        let mut outbound_error = None;
-                                        for intent in &outcome.outbound_intents {
-                                            match delivery.deliver_tool_outbound_intent(intent) {
-                                                Ok(ToolIntentDelivery::CurrentPrimary) => {
-                                                    log_tool_intent_result(
-                                                        &tc.name,
-                                                        intent,
-                                                        ToolIntentDelivery::CurrentPrimary,
-                                                    );
-                                                    delivered_reply = Some(intent.content.clone());
-                                                }
-                                                Ok(ToolIntentDelivery::VisibleUpdate) => {
-                                                    log_tool_intent_result(
-                                                        &tc.name,
-                                                        intent,
-                                                        ToolIntentDelivery::VisibleUpdate,
-                                                    );
-                                                }
-                                                Ok(ToolIntentDelivery::Suppressed) => {
-                                                    log_tool_intent_result(
-                                                        &tc.name,
-                                                        intent,
-                                                        ToolIntentDelivery::Suppressed,
-                                                    );
-                                                }
-                                                Err(e) => {
-                                                    outbound_error = Some(e);
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                        if let Some(e) = outbound_error {
-                                            metrics::record_tool_call(false);
-                                            metrics::record_error_by_stage(e.stage());
-                                            log::error!(
-                                                "[agent_tool] {} outbound intent delivery failed: {}",
-                                                tc.name,
-                                                e
-                                            );
-                                            state::set_last_error(&e);
-                                            let assessment = classify_tool_error(&e);
-                                            tool_error_buf.clear();
-                                            let _ = write!(
-                                                &mut tool_error_buf,
-                                                "[tool error] {}.{}",
-                                                e, assessment.hint
-                                            );
-                                            (
-                                                crate::util::scrub_credentials(
-                                                    tool_error_buf.as_str(),
-                                                ),
-                                                Some(assessment.kind),
-                                                None,
-                                            )
-                                        } else {
-                                            metrics::record_tool_call(true);
-                                            round_tool_success = true;
-                                            any_tool_used = true;
-                                            (
-                                                crate::util::scrub_credentials(&outcome.content),
-                                                None,
-                                                delivered_reply,
-                                            )
-                                        }
-                                    }
-                                    Err(e) => {
-                                        latency.tool_exec_ms = latency
-                                            .tool_exec_ms
-                                            .saturating_add(tool_exec_start.elapsed().as_millis());
-                                        metrics::record_tool_call(false);
-                                        metrics::record_error_by_stage(e.stage());
-                                        log::error!(
-                                            "[agent_tool] {} execute failed: {} input={:?}",
-                                            tc.name,
-                                            e,
-                                            crate::util::truncate_content_to_max(&tc.input, 200)
-                                                .as_ref()
-                                        );
-                                        state::set_last_error(&e);
-                                        tool_error_buf.clear();
-                                        let assessment = classify_tool_error(&e);
-                                        let _ = write!(
-                                            &mut tool_error_buf,
-                                            "[tool error] {}.{}",
-                                            e, assessment.hint
-                                        );
-                                        (
-                                            crate::util::scrub_credentials(tool_error_buf.as_str()),
-                                            Some(assessment.kind),
-                                            None,
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                };
-                if let Some(reply) = delivered_reply {
-                    delivered_current_chat_reply = Some(reply);
-                }
-                let result_view = result_owned.as_str();
-                if let Some(kind) = failure_kind {
-                    round_failure_summary.record(kind);
-                } else if config.strategy == AgentRunStrategy::LinuxEnhanced {
-                    record_successful_tool_result(&mut round_observations, &tc.name, result_view);
-                    if round_evidence_lines.len() < MAX_TOOL_EVIDENCE_ITEMS {
-                        if let Some(line) = build_tool_evidence_line(&tc.id, &tc.name, result_view)
-                        {
-                            round_evidence_lines.push(line);
-                        }
-                    } else {
-                        omitted_evidence_count = omitted_evidence_count.saturating_add(1);
-                    }
-                }
-                let call_key = hash_tool_call(&tc.name, &tc.input);
-                round_call_keys.push(call_key);
-                let n = tool_call_repeat.entry(call_key).or_insert(0);
-                *n = (*n).saturating_add(1);
-                let repeat_count = *n as usize;
-                if *n >= 2 {
-                    round_repeat_count = round_repeat_count.saturating_add(1);
-                }
-                crate::platform::task_wdt::feed_current_task();
-                if i > 0
-                    && push_bounded_utf8(
-                        &mut tool_result_user_content,
-                        "\n",
-                        MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
-                    )
-                {
-                    truncated = true;
-                    break;
-                }
-                if append_tool_result_block(
-                    &mut tool_result_user_content,
-                    ToolResultBlock {
-                        call_id: &tc.id,
-                        tool_name: &tc.name,
-                        status: tool_result_status_attr(failure_kind.is_some()),
-                        failure: failure_kind_attr(failure_kind),
-                        repeat_count,
-                        content: result_view,
-                    },
-                    MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
-                ) {
-                    truncated = true;
-                    break;
-                }
+            let tool_round_output = execute_tool_use_round(
+                tool_calls,
+                loc,
+                &mut delivery,
+                &request_plan,
+                registry,
+                &mut tool_ctx,
+                config,
+                tool_call_repeat,
+                &mut latency,
+                &mut tool_result_user_content,
+                &mut round_evidence_lines,
+            );
+            truncated |= tool_round_output.truncated;
+            if let Some(reply) = tool_round_output.delivered_current_chat_reply {
+                delivered_current_chat_reply = Some(reply);
             }
+            if tool_round_output.round_tool_success {
+                any_tool_used = true;
+            }
+            let round_failure_summary = tool_round_output.round_failure_summary;
             if !round_evidence_lines.is_empty() {
                 if !tool_result_user_content.ends_with('\n') {
                     let _ = push_bounded_utf8(
@@ -2850,37 +3103,41 @@ fn run_worker_path(
                 if append_tool_evidence_summary_block(
                     &mut tool_result_user_content,
                     &round_evidence_lines,
-                    omitted_evidence_count,
+                    tool_round_output.omitted_evidence_count,
                     MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
                 ) {
                     truncated = true;
                 }
             }
-            let round_signature = hash_tool_round(&round_call_keys);
-            external_content_used |= round_used_external_content(&round_observations);
+            let round_signature = tool_round_output.round_signature;
+            external_content_used |=
+                round_used_external_content(&tool_round_output.round_observations);
             recent_tool_round.record_round(
                 tool_calls.len(),
-                round_tool_success,
+                tool_round_output.round_tool_success,
                 round_signature,
                 round_failure_summary,
             );
             let ping_pong_detected = recent_tool_round.ping_pong_detected();
-            let round_guidance = if round_tool_success {
+            let round_guidance = if tool_round_output.round_tool_success {
                 merge_tool_round_guidance(
                     build_success_tool_round_guidance(
                         config.strategy,
                         tool_calls.len(),
                         round_failure_summary,
                     ),
-                    build_success_tool_execution_guidance(config.strategy, &round_observations),
+                    build_success_tool_execution_guidance(
+                        config.strategy,
+                        &tool_round_output.round_observations,
+                    ),
                 )
             } else {
                 build_tool_round_guidance(
                     config.strategy,
-                    round_tool_success,
+                    tool_round_output.round_tool_success,
                     recent_tool_round.consecutive_stalled_rounds,
                     tool_calls.len(),
-                    round_repeat_count,
+                    tool_round_output.round_repeat_count,
                     round_failure_summary,
                     ping_pong_detected,
                 )
@@ -2962,7 +3219,7 @@ fn run_worker_path(
             progress_history[0] = progress_history[1];
             progress_history[1] = progress_history[2];
             progress_history[2] = Some(RoundProgress {
-                new_info: round_tool_success,
+                new_info: tool_round_output.round_tool_success,
             });
             continue;
         }

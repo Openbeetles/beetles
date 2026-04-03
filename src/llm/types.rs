@@ -25,13 +25,18 @@ pub struct Message {
     pub content: String,
 }
 
-/// 工具规格；阶段 6/7 用于 API 与 system 说明；parameters 为 JSON Schema 对象供 API 使用。
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// 工具规格；parameters_json 为预序列化 JSON Schema，避免在热路径反复构造 Value。
+#[derive(Clone, Debug)]
 pub struct ToolSpec {
     pub name: String,
     pub description: String,
-    #[serde(default)]
-    pub parameters: serde_json::Value,
+    pub parameters_json: Box<str>,
+}
+
+impl ToolSpec {
+    pub fn parameters_json(&self) -> &str {
+        self.parameters_json.as_ref()
+    }
 }
 
 /// 响应 stop_reason 枚举。

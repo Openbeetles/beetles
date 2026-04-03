@@ -332,7 +332,7 @@ pub trait ToolContext {
 pub trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
     fn description(&self) -> &str;
-    fn schema(&self) -> Value;
+    fn schema(&self) -> &str;
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String>;
     fn execute_outcome(
         &self,

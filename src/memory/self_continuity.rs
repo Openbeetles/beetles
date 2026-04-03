@@ -10,6 +10,7 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
+    llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload},
     memory_policy, render_execution_state_block, render_inner_life_block,
     render_internal_memory_topology_block, render_private_doc_workspace_block,
     render_self_model_block, ExecutionState, ExecutionStateStore, InnerLife, InnerLifeStore,
@@ -84,18 +85,6 @@ pub enum SelfContinuityRefreshOutcome {
     Skipped,
     Updated,
     Cleared,
-}
-
-#[derive(Default, Deserialize)]
-struct RawSelfContinuity {
-    #[serde(default)]
-    wake_anchor: String,
-    #[serde(default)]
-    current_self_state: String,
-    #[serde(default)]
-    recent_changes: String,
-    #[serde(default)]
-    continuity_bridge: String,
 }
 
 impl SelfContinuityPolicy {
@@ -254,36 +243,32 @@ pub(crate) fn run_self_continuity_refresh_with_state(
         None,
         ToolChoicePolicy::Auto,
     )?;
-    let content = response.content.trim();
-    if content.eq_ignore_ascii_case("null") {
-        if let Some(existing) = existing_continuity {
-            if existing.last_user_turn_at > 0 || existing.last_autonomy_run_at > 0 {
+    match parse_self_continuity_response(
+        response.content.trim(),
+        existing_continuity.as_ref(),
+        input.now_secs,
+        input.ingress == IngressKind::User,
+    ) {
+        ParsedSelfContinuityResponse::Skip => Ok(SelfContinuityRefreshOutcome::Skipped),
+        ParsedSelfContinuityResponse::Clear => {
+            if existing_continuity.is_some() {
+                ctx.self_continuity_store.clear(input.chat_id)?;
+                Ok(SelfContinuityRefreshOutcome::Cleared)
+            } else {
+                Ok(SelfContinuityRefreshOutcome::Skipped)
+            }
+        }
+        ParsedSelfContinuityResponse::Update(next) => {
+            let Some(next) = normalize_self_continuity(next, input.now_secs) else {
+                return Ok(SelfContinuityRefreshOutcome::Skipped);
+            };
+            if existing_continuity.as_ref() == Some(&next) {
                 return Ok(SelfContinuityRefreshOutcome::Skipped);
             }
-            ctx.self_continuity_store.clear(input.chat_id)?;
-            return Ok(SelfContinuityRefreshOutcome::Cleared);
+            ctx.self_continuity_store.set(input.chat_id, &next)?;
+            Ok(SelfContinuityRefreshOutcome::Updated)
         }
-        return Ok(SelfContinuityRefreshOutcome::Skipped);
     }
-    let raw: RawSelfContinuity = serde_json::from_str(content)
-        .map_err(|error| crate::error::Error::config("self_continuity_parse", error.to_string()))?;
-    let mut next = existing_continuity.clone().unwrap_or_default();
-    next.wake_anchor = raw.wake_anchor;
-    next.current_self_state = raw.current_self_state;
-    next.recent_changes = raw.recent_changes;
-    next.continuity_bridge = raw.continuity_bridge;
-    next.updated_at = input.now_secs;
-    if input.ingress == IngressKind::User {
-        next.last_user_turn_at = input.now_secs;
-    }
-    let Some(next) = normalize_self_continuity(next, input.now_secs) else {
-        return Ok(SelfContinuityRefreshOutcome::Skipped);
-    };
-    if existing_continuity.as_ref() == Some(&next) {
-        return Ok(SelfContinuityRefreshOutcome::Skipped);
-    }
-    ctx.self_continuity_store.set(input.chat_id, &next)?;
-    Ok(SelfContinuityRefreshOutcome::Updated)
 }
 
 pub fn touch_self_continuity_runtime(
@@ -316,6 +301,47 @@ pub fn touch_self_continuity_runtime(
 fn recent_window(recent: &[SessionMessage], limit: usize) -> &[SessionMessage] {
     let start = recent.len().saturating_sub(limit);
     &recent[start..]
+}
+
+enum ParsedSelfContinuityResponse {
+    Skip,
+    Clear,
+    Update(SelfContinuity),
+}
+
+fn parse_self_continuity_response(
+    raw: &str,
+    existing: Option<&SelfContinuity>,
+    now_secs: u64,
+    touch_user_turn: bool,
+) -> ParsedSelfContinuityResponse {
+    match parse_llm_json_payload(raw) {
+        LlmJsonPayload::Null => {
+            if existing
+                .is_some_and(|value| value.last_user_turn_at > 0 || value.last_autonomy_run_at > 0)
+            {
+                ParsedSelfContinuityResponse::Skip
+            } else {
+                ParsedSelfContinuityResponse::Clear
+            }
+        }
+        LlmJsonPayload::Absent => ParsedSelfContinuityResponse::Skip,
+        LlmJsonPayload::Value(value) => {
+            let Some(object) = value.as_object() else {
+                return ParsedSelfContinuityResponse::Skip;
+            };
+            let mut next = existing.cloned().unwrap_or_default();
+            next.wake_anchor = get_object_text(object, "wake_anchor");
+            next.current_self_state = get_object_text(object, "current_self_state");
+            next.recent_changes = get_object_text(object, "recent_changes");
+            next.continuity_bridge = get_object_text(object, "continuity_bridge");
+            next.updated_at = now_secs;
+            if touch_user_turn {
+                next.last_user_turn_at = now_secs;
+            }
+            ParsedSelfContinuityResponse::Update(next)
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -422,6 +448,30 @@ fn normalize_self_continuity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_self_continuity_response_handles_nested_text() {
+        let raw = json!({
+            "wake_anchor": { "anchor": "same system, next round" },
+            "current_self_state": ["focused", "iterating"],
+            "recent_changes": 2,
+            "continuity_bridge": true
+        })
+        .to_string();
+        let ParsedSelfContinuityResponse::Update(parsed) =
+            parse_self_continuity_response(&raw, None, 15, true)
+        else {
+            panic!("expected parsed continuity");
+        };
+        assert!(parsed
+            .wake_anchor
+            .contains("anchor: same system, next round"));
+        assert_eq!(parsed.current_self_state, "focused; iterating");
+        assert_eq!(parsed.recent_changes, "2");
+        assert_eq!(parsed.continuity_bridge, "true");
+        assert_eq!(parsed.last_user_turn_at, 15);
+    }
 
     #[test]
     fn render_self_continuity_block_shows_runtime_anchors() {

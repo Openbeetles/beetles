@@ -1,6 +1,6 @@
 //! Mental privacy governance for private internal layers.
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::llm::{LlmClient, LlmHttpClient, Message, ToolChoicePolicy};
 use crate::util::{scrub_credentials, truncate_content_to_max};
 use serde::{Deserialize, Serialize};
@@ -9,6 +9,10 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use super::{
+    llm_json::{
+        coerce_json_text, get_object_bool, get_object_string_list, get_object_text,
+        parse_llm_json_payload, LlmJsonPayload,
+    },
     normalize_private_garden_doc_path, render_inner_life_block, render_private_doc_workspace_block,
     render_private_garden_block, render_self_continuity_block, render_self_model_block, InnerLife,
     InnerLifeStore, PrivateDocStore, PrivateDocWorkspace, PrivateGardenDoc, PrivateGardenDocRecord,
@@ -260,19 +264,13 @@ pub struct MentalPrivacyReviewOutcome {
     pub touched_targets: Vec<String>,
 }
 
-#[derive(Default, Deserialize)]
-struct RawMentalPrivacyReview {
-    #[serde(default)]
+#[derive(Default)]
+struct ParsedMentalPrivacyReview {
     applies: bool,
-    #[serde(default)]
     request_kind: String,
-    #[serde(default)]
     share_action: Option<MentalPrivacyShareAction>,
-    #[serde(default)]
     response: String,
-    #[serde(default)]
     rationale: String,
-    #[serde(default)]
     touched_targets: Vec<String>,
 }
 
@@ -781,8 +779,7 @@ pub fn run_mental_privacy_review(
         None,
         ToolChoicePolicy::Auto,
     )?;
-    let parsed: RawMentalPrivacyReview = serde_json::from_str(response.content.trim())
-        .map_err(|error| Error::config("mental_privacy_parse", error.to_string()))?;
+    let parsed = parse_mental_privacy_review(response.content.trim(), input.draft_reply);
     let touched_targets = normalize_touched_targets(parsed.touched_targets, &known_targets);
     let action = enforce_quote_policy(
         parsed
@@ -820,9 +817,56 @@ pub fn run_mental_privacy_review(
     })
 }
 
+fn parse_mental_privacy_review(raw: &str, draft_reply: &str) -> ParsedMentalPrivacyReview {
+    let fallback = ParsedMentalPrivacyReview {
+        response: draft_reply.to_string(),
+        ..ParsedMentalPrivacyReview::default()
+    };
+    let LlmJsonPayload::Value(value) = parse_llm_json_payload(raw) else {
+        return fallback;
+    };
+    let Some(object) = value.as_object() else {
+        return fallback;
+    };
+    let mut parsed = ParsedMentalPrivacyReview {
+        applies: get_object_bool(object, "applies").unwrap_or(false),
+        request_kind: get_object_text(object, "request_kind"),
+        share_action: object.get("share_action").and_then(parse_share_action),
+        response: get_object_text(object, "response"),
+        rationale: get_object_text(object, "rationale"),
+        touched_targets: get_object_string_list(object, "touched_targets"),
+    };
+    if parsed.response.trim().is_empty() {
+        parsed.response = draft_reply.to_string();
+    }
+    parsed
+}
+
+fn parse_share_action(value: &serde_json::Value) -> Option<MentalPrivacyShareAction> {
+    let normalized = coerce_json_text(value).to_ascii_lowercase();
+    if normalized.contains("allow_redacted_excerpt") || normalized.contains("redacted") {
+        Some(MentalPrivacyShareAction::AllowRedactedExcerpt)
+    } else if normalized.contains("allow_summary") || normalized.contains("summary") {
+        Some(MentalPrivacyShareAction::AllowSummary)
+    } else if normalized.contains("explain_without_quote") || normalized.contains("without_quote") {
+        Some(MentalPrivacyShareAction::ExplainWithoutQuote)
+    } else if normalized.contains("allow_raw") || normalized == "raw" {
+        Some(MentalPrivacyShareAction::AllowRaw)
+    } else if normalized.contains("refuse") {
+        Some(MentalPrivacyShareAction::Refuse)
+    } else if normalized.contains("defer") {
+        Some(MentalPrivacyShareAction::Defer)
+    } else if normalized.contains("allow_original") || normalized.contains("original") {
+        Some(MentalPrivacyShareAction::AllowOriginal)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn default_envelope_reflects_target_kind() {
@@ -859,5 +903,36 @@ mod tests {
         assert!(block.contains("relationship_notes"));
         assert!(block.contains("owner_access=request_only"));
         assert!(block.contains("quote=summary_only"));
+    }
+
+    #[test]
+    fn parse_mental_privacy_review_falls_back_on_empty_content() {
+        let parsed = parse_mental_privacy_review("", "draft reply");
+        assert!(!parsed.applies);
+        assert_eq!(parsed.response, "draft reply");
+        assert!(parsed.share_action.is_none());
+    }
+
+    #[test]
+    fn parse_mental_privacy_review_coerces_non_string_fields() {
+        let raw = json!({
+            "applies": "true",
+            "request_kind": ["share_any"],
+            "share_action": { "mode": "allow_summary" },
+            "response": { "text": "I can summarize that boundary." },
+            "rationale": ["private material needs mediated disclosure"],
+            "touched_targets": [{ "target": "inner_life" }, "private_docs.relationship_notes"]
+        })
+        .to_string();
+        let parsed = parse_mental_privacy_review(&raw, "draft");
+        assert!(parsed.applies);
+        assert_eq!(
+            parsed.share_action,
+            Some(MentalPrivacyShareAction::AllowSummary)
+        );
+        assert!(parsed
+            .response
+            .contains("text: I can summarize that boundary."));
+        assert_eq!(parsed.touched_targets.len(), 2);
     }
 }

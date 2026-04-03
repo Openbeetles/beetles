@@ -13,6 +13,7 @@ use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 
 use super::{
+    llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload},
     memory_policy, render_autonomy_strategy_block, render_execution_state_block,
     render_self_continuity_block, AutonomyStrategy, AutonomyStrategyStore, ExecutionState,
     ExecutionStateStore, MemoryProfile, RemindAtStore, SelfContinuity, SelfContinuityStore,
@@ -118,20 +119,6 @@ pub enum WorldSenseRefreshOutcome {
     Skipped,
     Updated,
     Cleared,
-}
-
-#[derive(Default, Deserialize)]
-struct RawWorldSense {
-    #[serde(default)]
-    current_scene: String,
-    #[serde(default)]
-    body_state: String,
-    #[serde(default)]
-    social_field: String,
-    #[serde(default)]
-    world_changes: String,
-    #[serde(default)]
-    external_focus: String,
 }
 
 impl WorldSensePolicy {
@@ -448,39 +435,114 @@ pub(crate) fn run_world_sense_refresh_with_state(
         None,
         ToolChoicePolicy::Auto,
     )?;
-    let content = response.content.trim();
-    if content.eq_ignore_ascii_case("null") {
-        if existing_world_sense.is_some() {
-            ctx.world_sense_store.clear(input.chat_id)?;
-            return Ok(WorldSenseRefreshOutcome::Cleared);
+    match parse_world_sense_response(response.content.trim(), snapshot, input.now_secs) {
+        ParsedWorldSenseResponse::Skip => return Ok(WorldSenseRefreshOutcome::Skipped),
+        ParsedWorldSenseResponse::Clear => {
+            if existing_world_sense.is_some() {
+                ctx.world_sense_store.clear(input.chat_id)?;
+                return Ok(WorldSenseRefreshOutcome::Cleared);
+            }
+            return Ok(WorldSenseRefreshOutcome::Skipped);
         }
-        return Ok(WorldSenseRefreshOutcome::Skipped);
-    }
-    let raw: RawWorldSense = serde_json::from_str(content)
-        .map_err(|error| crate::error::Error::config("world_sense_parse", error.to_string()))?;
-    let Some(next) = normalize_world_sense(
-        WorldSense {
-            current_scene: raw.current_scene,
-            body_state: raw.body_state,
-            social_field: raw.social_field,
-            world_changes: raw.world_changes,
-            external_focus: raw.external_focus,
-            source_fingerprint: world_snapshot_fingerprint(snapshot),
-            updated_at: input.now_secs,
-        },
-        input.now_secs,
-    ) else {
-        if existing_world_sense.is_some() {
-            ctx.world_sense_store.clear(input.chat_id)?;
-            return Ok(WorldSenseRefreshOutcome::Cleared);
+        ParsedWorldSenseResponse::Update(next) => {
+            if existing_world_sense.as_ref() == Some(&next) {
+                return Ok(WorldSenseRefreshOutcome::Skipped);
+            }
+            ctx.world_sense_store.set(input.chat_id, &next)?;
+            return Ok(WorldSenseRefreshOutcome::Updated);
         }
-        return Ok(WorldSenseRefreshOutcome::Skipped);
-    };
-    if existing_world_sense.as_ref() == Some(&next) {
-        return Ok(WorldSenseRefreshOutcome::Skipped);
     }
-    ctx.world_sense_store.set(input.chat_id, &next)?;
-    Ok(WorldSenseRefreshOutcome::Updated)
+}
+
+enum ParsedWorldSenseResponse {
+    Skip,
+    Clear,
+    Update(WorldSense),
+}
+
+fn parse_world_sense_response(
+    raw: &str,
+    snapshot: &WorldSnapshot,
+    now_secs: u64,
+) -> ParsedWorldSenseResponse {
+    match parse_llm_json_payload(raw) {
+        LlmJsonPayload::Null => ParsedWorldSenseResponse::Clear,
+        LlmJsonPayload::Absent => ParsedWorldSenseResponse::Skip,
+        LlmJsonPayload::Value(value) => {
+            let Some(object) = value.as_object() else {
+                return ParsedWorldSenseResponse::Skip;
+            };
+            let Some(next) = normalize_world_sense(
+                WorldSense {
+                    current_scene: get_object_text(object, "current_scene"),
+                    body_state: get_object_text(object, "body_state"),
+                    social_field: get_object_text(object, "social_field"),
+                    world_changes: get_object_text(object, "world_changes"),
+                    external_focus: get_object_text(object, "external_focus"),
+                    source_fingerprint: world_snapshot_fingerprint(snapshot),
+                    updated_at: now_secs,
+                },
+                now_secs,
+            ) else {
+                return ParsedWorldSenseResponse::Skip;
+            };
+            ParsedWorldSenseResponse::Update(next)
+        }
+    }
+}
+
+fn recent_window(recent: &[SessionMessage], limit: usize) -> &[SessionMessage] {
+    let start = recent.len().saturating_sub(limit);
+    &recent[start..]
+}
+
+fn normalize_world_sense(mut world_sense: WorldSense, now_secs: u64) -> Option<WorldSense> {
+    world_sense.current_scene = truncate_content_to_max(
+        world_sense.current_scene.trim(),
+        WORLD_SENSE_FIELD_MAX_CHARS,
+    )
+    .trim()
+    .to_string();
+    world_sense.body_state =
+        truncate_content_to_max(world_sense.body_state.trim(), WORLD_SENSE_FIELD_MAX_CHARS)
+            .trim()
+            .to_string();
+    world_sense.social_field =
+        truncate_content_to_max(world_sense.social_field.trim(), WORLD_SENSE_FIELD_MAX_CHARS)
+            .trim()
+            .to_string();
+    world_sense.world_changes = truncate_content_to_max(
+        world_sense.world_changes.trim(),
+        WORLD_SENSE_FIELD_MAX_CHARS,
+    )
+    .trim()
+    .to_string();
+    world_sense.external_focus = truncate_content_to_max(
+        world_sense.external_focus.trim(),
+        WORLD_SENSE_FIELD_MAX_CHARS,
+    )
+    .trim()
+    .to_string();
+    world_sense.updated_at = now_secs;
+    world_sense.is_meaningful().then_some(world_sense)
+}
+
+fn normalize_channel(channel: &str) -> &str {
+    let channel = channel.trim();
+    if channel.is_empty() || channel.starts_with('_') || channel == "cron" {
+        ""
+    } else {
+        channel
+    }
+}
+
+fn describe_day_phase(hour: u32) -> &'static str {
+    match hour {
+        5..=10 => "morning",
+        11..=16 => "daytime",
+        17..=21 => "evening",
+        _ => "night",
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -545,63 +607,56 @@ fn build_world_sense_refresh_input(
     input
 }
 
-fn recent_window(recent: &[SessionMessage], limit: usize) -> &[SessionMessage] {
-    let start = recent.len().saturating_sub(limit);
-    &recent[start..]
-}
-
-fn normalize_world_sense(mut world_sense: WorldSense, now_secs: u64) -> Option<WorldSense> {
-    world_sense.current_scene = truncate_content_to_max(
-        world_sense.current_scene.trim(),
-        WORLD_SENSE_FIELD_MAX_CHARS,
-    )
-    .trim()
-    .to_string();
-    world_sense.body_state =
-        truncate_content_to_max(world_sense.body_state.trim(), WORLD_SENSE_FIELD_MAX_CHARS)
-            .trim()
-            .to_string();
-    world_sense.social_field =
-        truncate_content_to_max(world_sense.social_field.trim(), WORLD_SENSE_FIELD_MAX_CHARS)
-            .trim()
-            .to_string();
-    world_sense.world_changes = truncate_content_to_max(
-        world_sense.world_changes.trim(),
-        WORLD_SENSE_FIELD_MAX_CHARS,
-    )
-    .trim()
-    .to_string();
-    world_sense.external_focus = truncate_content_to_max(
-        world_sense.external_focus.trim(),
-        WORLD_SENSE_FIELD_MAX_CHARS,
-    )
-    .trim()
-    .to_string();
-    world_sense.updated_at = now_secs;
-    world_sense.is_meaningful().then_some(world_sense)
-}
-
-fn normalize_channel(channel: &str) -> &str {
-    let channel = channel.trim();
-    if channel.is_empty() || channel.starts_with('_') || channel == "cron" {
-        ""
-    } else {
-        channel
-    }
-}
-
-fn describe_day_phase(hour: u32) -> &'static str {
-    match hour {
-        5..=10 => "morning",
-        11..=16 => "daytime",
-        17..=21 => "evening",
-        _ => "night",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_world_sense_response_coerces_nested_fields() {
+        let snapshot = WorldSnapshot {
+            weekday: "Wednesday".to_string(),
+            hour: 19,
+            day_phase: "evening".to_string(),
+            pressure: PressureLevel::Normal,
+            memory_available_bytes: 512 * 1024,
+            active_http_count: 1,
+            active_agent_tasks: 0,
+            inbound_depth: 0,
+            outbound_depth: 0,
+            storage_used_kb: 8,
+            storage_total_kb: 64,
+            wifi_connected: true,
+            audio_recording: false,
+            audio_playing: false,
+            source_channel: "qq".to_string(),
+            open_tasks: 1,
+            in_progress_tasks: 0,
+            due_tasks: 0,
+            high_priority_tasks: 0,
+            upcoming_reminders: 0,
+            next_reminder_at: 0,
+            user_idle_secs: 0,
+            autonomy_idle_secs: 0,
+        };
+        let raw = json!({
+            "current_scene": { "place": "desk", "status": ["quiet", "focused"] },
+            "body_state": ["powered", "stable"],
+            "social_field": "direct chat",
+            "world_changes": 2,
+            "external_focus": { "task": "fix parser" }
+        })
+        .to_string();
+        let ParsedWorldSenseResponse::Update(parsed) =
+            parse_world_sense_response(&raw, &snapshot, 42)
+        else {
+            panic!("expected parsed world sense");
+        };
+        assert!(parsed.current_scene.contains("place: desk"));
+        assert_eq!(parsed.body_state, "powered; stable");
+        assert_eq!(parsed.world_changes, "2");
+        assert!(parsed.external_focus.contains("task: fix parser"));
+    }
 
     #[test]
     fn render_world_snapshot_block_includes_outer_state() {

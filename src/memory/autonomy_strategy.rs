@@ -10,7 +10,12 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    build_self_state, memory_policy, render_execution_state_block, render_inner_life_block,
+    build_self_state,
+    llm_json::{
+        coerce_json_text, get_object_bool, get_object_text, get_object_u64, parse_llm_json_payload,
+        LlmJsonPayload,
+    },
+    memory_policy, render_execution_state_block, render_inner_life_block,
     render_private_doc_workspace_block, render_private_garden_block,
     render_private_memory_boundary_block, render_self_continuity_block, render_self_model_block,
     render_self_state_block, render_shared_factual_plane_block, render_world_sense_block,
@@ -129,30 +134,6 @@ pub enum AutonomyStrategyRefreshOutcome {
     Skipped,
     Updated,
     Cleared,
-}
-
-#[derive(Default, Deserialize)]
-struct RawAutonomyStrategy {
-    #[serde(default)]
-    current_mode: String,
-    #[serde(default)]
-    active_priorities: String,
-    #[serde(default)]
-    write_policy: String,
-    #[serde(default)]
-    next_focus: String,
-    #[serde(default)]
-    cadence_reason: String,
-    #[serde(default)]
-    self_model_tendency: AutonomyGovernanceTendency,
-    #[serde(default)]
-    private_docs_tendency: AutonomyGovernanceTendency,
-    #[serde(default)]
-    private_garden_tendency: AutonomyGovernanceTendency,
-    #[serde(default = "default_idle_enabled")]
-    idle_enabled: bool,
-    #[serde(default)]
-    idle_interval_secs: u64,
 }
 
 impl AutonomyStrategyPolicy {
@@ -361,50 +342,99 @@ pub(crate) fn run_autonomy_strategy_refresh_with_state(
         None,
         ToolChoicePolicy::Auto,
     )?;
-    let content = response.content.trim();
-    if content.eq_ignore_ascii_case("null") {
-        if existing_strategy.is_some() {
-            ctx.autonomy_strategy_store.clear(input.chat_id)?;
-            return Ok(AutonomyStrategyRefreshOutcome::Cleared);
+    match parse_autonomy_strategy_response(response.content.trim(), input.now_secs, profile) {
+        ParsedAutonomyStrategyResponse::Skip => Ok(AutonomyStrategyRefreshOutcome::Skipped),
+        ParsedAutonomyStrategyResponse::Clear => {
+            if existing_strategy.is_some() {
+                ctx.autonomy_strategy_store.clear(input.chat_id)?;
+                Ok(AutonomyStrategyRefreshOutcome::Cleared)
+            } else {
+                Ok(AutonomyStrategyRefreshOutcome::Skipped)
+            }
         }
-        return Ok(AutonomyStrategyRefreshOutcome::Skipped);
-    }
-    let raw: RawAutonomyStrategy = serde_json::from_str(content).map_err(|error| {
-        crate::error::Error::config("autonomy_strategy_parse", error.to_string())
-    })?;
-    let Some(next) = normalize_autonomy_strategy(
-        AutonomyStrategy {
-            current_mode: raw.current_mode,
-            active_priorities: raw.active_priorities,
-            write_policy: raw.write_policy,
-            next_focus: raw.next_focus,
-            cadence_reason: raw.cadence_reason,
-            self_model_tendency: raw.self_model_tendency,
-            private_docs_tendency: raw.private_docs_tendency,
-            private_garden_tendency: raw.private_garden_tendency,
-            idle_enabled: raw.idle_enabled,
-            idle_interval_secs: raw.idle_interval_secs,
-            updated_at: input.now_secs,
-        },
-        input.now_secs,
-        profile,
-    ) else {
-        if existing_strategy.is_some() {
-            ctx.autonomy_strategy_store.clear(input.chat_id)?;
-            return Ok(AutonomyStrategyRefreshOutcome::Cleared);
+        ParsedAutonomyStrategyResponse::Update(next) => {
+            if existing_strategy.as_ref() == Some(&next) {
+                return Ok(AutonomyStrategyRefreshOutcome::Skipped);
+            }
+            ctx.autonomy_strategy_store.set(input.chat_id, &next)?;
+            Ok(AutonomyStrategyRefreshOutcome::Updated)
         }
-        return Ok(AutonomyStrategyRefreshOutcome::Skipped);
-    };
-    if existing_strategy.as_ref() == Some(&next) {
-        return Ok(AutonomyStrategyRefreshOutcome::Skipped);
     }
-    ctx.autonomy_strategy_store.set(input.chat_id, &next)?;
-    Ok(AutonomyStrategyRefreshOutcome::Updated)
 }
 
 fn recent_window(recent: &[SessionMessage], limit: usize) -> &[SessionMessage] {
     let start = recent.len().saturating_sub(limit);
     &recent[start..]
+}
+
+enum ParsedAutonomyStrategyResponse {
+    Skip,
+    Clear,
+    Update(AutonomyStrategy),
+}
+
+fn parse_autonomy_strategy_response(
+    raw: &str,
+    now_secs: u64,
+    profile: MemoryProfile,
+) -> ParsedAutonomyStrategyResponse {
+    match parse_llm_json_payload(raw) {
+        LlmJsonPayload::Null => ParsedAutonomyStrategyResponse::Clear,
+        LlmJsonPayload::Absent => ParsedAutonomyStrategyResponse::Skip,
+        LlmJsonPayload::Value(value) => {
+            let Some(object) = value.as_object() else {
+                return ParsedAutonomyStrategyResponse::Skip;
+            };
+            let Some(next) = normalize_autonomy_strategy(
+                AutonomyStrategy {
+                    current_mode: get_object_text(object, "current_mode"),
+                    active_priorities: get_object_text(object, "active_priorities"),
+                    write_policy: get_object_text(object, "write_policy"),
+                    next_focus: get_object_text(object, "next_focus"),
+                    cadence_reason: get_object_text(object, "cadence_reason"),
+                    self_model_tendency: object
+                        .get("self_model_tendency")
+                        .map(parse_governance_tendency)
+                        .unwrap_or_default(),
+                    private_docs_tendency: object
+                        .get("private_docs_tendency")
+                        .map(parse_governance_tendency)
+                        .unwrap_or_default(),
+                    private_garden_tendency: object
+                        .get("private_garden_tendency")
+                        .map(parse_governance_tendency)
+                        .unwrap_or_default(),
+                    idle_enabled: get_object_bool(object, "idle_enabled")
+                        .unwrap_or_else(default_idle_enabled),
+                    idle_interval_secs: get_object_u64(object, "idle_interval_secs")
+                        .unwrap_or_default(),
+                    updated_at: now_secs,
+                },
+                now_secs,
+                profile,
+            ) else {
+                return ParsedAutonomyStrategyResponse::Skip;
+            };
+            ParsedAutonomyStrategyResponse::Update(next)
+        }
+    }
+}
+
+fn parse_governance_tendency(value: &serde_json::Value) -> AutonomyGovernanceTendency {
+    let normalized = coerce_json_text(value).to_ascii_lowercase();
+    if normalized.contains("compress") {
+        AutonomyGovernanceTendency::Compress
+    } else if normalized.contains("cleanup")
+        || normalized.contains("clean up")
+        || normalized.contains("prune")
+        || normalized.contains("delete")
+    {
+        AutonomyGovernanceTendency::Cleanup
+    } else if normalized.contains("rewrite") || normalized.contains("refresh") {
+        AutonomyGovernanceTendency::Rewrite
+    } else {
+        AutonomyGovernanceTendency::Retain
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -554,6 +584,48 @@ fn normalize_autonomy_strategy(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_autonomy_strategy_response_coerces_non_string_fields() {
+        let raw = json!({
+            "current_mode": ["consolidate", "privacy"],
+            "active_priorities": { "primary": "compress private docs" },
+            "write_policy": { "policy": "rewrite before append" },
+            "next_focus": 7,
+            "cadence_reason": ["idle", "maintenance"],
+            "self_model_tendency": { "mode": "rewrite" },
+            "private_docs_tendency": ["compress"],
+            "private_garden_tendency": "cleanup",
+            "idle_enabled": "true",
+            "idle_interval_secs": "900 seconds"
+        })
+        .to_string();
+        let ParsedAutonomyStrategyResponse::Update(parsed) =
+            parse_autonomy_strategy_response(&raw, 12, MemoryProfile::Standard)
+        else {
+            panic!("expected parsed autonomy strategy");
+        };
+        assert_eq!(parsed.current_mode, "consolidate; privacy");
+        assert!(parsed
+            .active_priorities
+            .contains("primary: compress private docs"));
+        assert_eq!(parsed.next_focus, "7");
+        assert_eq!(
+            parsed.self_model_tendency,
+            AutonomyGovernanceTendency::Rewrite
+        );
+        assert_eq!(
+            parsed.private_docs_tendency,
+            AutonomyGovernanceTendency::Compress
+        );
+        assert_eq!(
+            parsed.private_garden_tendency,
+            AutonomyGovernanceTendency::Cleanup
+        );
+        assert!(parsed.idle_enabled);
+        assert_eq!(parsed.idle_interval_secs, 900);
+    }
 
     #[test]
     fn render_autonomy_strategy_block_exposes_idle_policy() {

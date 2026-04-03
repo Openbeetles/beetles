@@ -9,7 +9,6 @@ use crate::error::{Error, Result};
 use crate::tools::http_bridge::ToolContextHttpClient;
 use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
 use crate::Platform;
-use serde_json::json;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -42,13 +41,8 @@ impl Tool for VoiceInputTool {
         "Listen through the device microphone and transcribe speech to text. Use when user asks to listen/hear/record voice."
     }
 
-    fn schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "max_ms": { "type": "integer", "description": "Max capture milliseconds, default 12000" }
-            }
-        })
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"max_ms":{"type":"integer","description":"Max capture milliseconds, default 12000"}}}"#
     }
 
     fn requires_network(&self) -> bool {
