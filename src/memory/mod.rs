@@ -4,6 +4,7 @@ use crate::bus::PcMsg;
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
 
+mod archive_benchmark;
 mod archive_plane;
 mod archive_search;
 mod archive_selector;
@@ -38,7 +39,11 @@ mod turn_ledger;
 mod world_sense;
 mod write_coordination;
 
+pub use archive_benchmark::{
+    run_archive_benchmark_case, ArchiveBenchmarkCase, ArchiveBenchmarkResult,
+};
 pub use archive_plane::build_archive_evidence_block;
+pub(crate) use archive_search::maintain_archive_search_backend;
 pub(crate) use archive_search::parse_daily_note_observed_at;
 pub use archive_search::{
     archive_get_default_content_len, get_archive_record, search_archive_records, ArchiveRecord,

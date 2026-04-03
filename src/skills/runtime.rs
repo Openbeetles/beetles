@@ -11,6 +11,40 @@ const MAX_RUNTIME_SKILL_CITATIONS: usize = 8;
 const MIN_RUNTIME_SKILL_BLOCK_LEN: usize = 180;
 const RUNTIME_SKILL_TOUCH_INTERVAL_SECS: u64 = 6 * 60 * 60;
 const RUNTIME_SKILL_STALE_AFTER_SECS: u64 = 90 * 86_400;
+const RUNTIME_SKILL_DUPLICATE_SIMILARITY: u32 = 16;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeSkillStatus {
+    Active,
+    Stale,
+    LowValue,
+}
+
+impl RuntimeSkillStatus {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Stale => "stale",
+            Self::LowValue => "low_value",
+        }
+    }
+
+    fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "stale" => Self::Stale,
+            "low_value" | "low-value" | "low value" => Self::LowValue,
+            _ => Self::Active,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RuntimeSkillGovernanceOutcome {
+    pub merged: usize,
+    pub pruned: usize,
+    pub stale_marked: usize,
+    pub low_value_marked: usize,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeSkillRecord {
@@ -26,6 +60,9 @@ pub struct RuntimeSkillRecord {
     pub last_used_at: Option<u64>,
     pub use_count: u32,
     pub quality_score: u8,
+    pub status: RuntimeSkillStatus,
+    pub supersedes: Vec<String>,
+    pub component_topics: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -123,6 +160,7 @@ pub fn touch_runtime_skill_hits(
         record.last_used_at = Some(now_secs);
         record.use_count = record.use_count.saturating_add(1);
         record.quality_score = compute_runtime_skill_quality(&record);
+        record.status = RuntimeSkillStatus::Active;
         if write_runtime_skill_record(storage, &record).is_ok() {
             changed = changed.saturating_add(1);
         }
@@ -151,6 +189,17 @@ pub fn build_runtime_skill_recall_block(
         "## Runtime skills\nProcedural memory distilled from proven prior operations. Reuse the method when it fits, but adapt it to current constraints instead of quoting it blindly.\n",
     );
     let mut appended = 0usize;
+    if let Some(composition_line) = build_runtime_skill_composition_line(&hits, query, max_chars) {
+        if out
+            .len()
+            .saturating_add(composition_line.len())
+            .saturating_add(1)
+            <= max_chars
+        {
+            out.push_str(&composition_line);
+            out.push('\n');
+        }
+    }
     for hit in &hits {
         let reasons_joined = hit.reasons.join(", ");
         let reasons = truncate_content_to_max(&reasons_joined, 140);
@@ -164,23 +213,25 @@ pub fn build_runtime_skill_recall_block(
             .join(", ");
         let line = if citations.is_empty() {
             format!(
-                "- [{}] {} (topic: {}; why: {}; quality={}; reused={})",
+                "- [{}] {} (topic: {}; why: {}; quality={}; reused={}; status={})",
                 hit.record.title,
                 truncate_content_to_max(hit.record.summary.trim(), 120),
                 hit.record.topic,
                 reasons,
                 hit.record.quality_score,
                 hit.record.use_count,
+                hit.record.status.label(),
             )
         } else {
             format!(
-                "- [{}] {} (topic: {}; why: {}; quality={}; reused={}; provenance={})",
+                "- [{}] {} (topic: {}; why: {}; quality={}; reused={}; status={}; provenance={})",
                 hit.record.title,
                 truncate_content_to_max(hit.record.summary.trim(), 120),
                 hit.record.topic,
                 reasons,
                 hit.record.quality_score,
                 hit.record.use_count,
+                hit.record.status.label(),
                 citations,
             )
         };
@@ -206,6 +257,66 @@ pub fn build_runtime_skill_recall_block(
     }
 }
 
+pub fn govern_runtime_skills(
+    storage: &dyn SkillStorage,
+    now_secs: u64,
+) -> crate::error::Result<RuntimeSkillGovernanceOutcome> {
+    let mut records = list_runtime_skill_records(storage);
+    if records.is_empty() {
+        return Ok(RuntimeSkillGovernanceOutcome::default());
+    }
+    let mut outcome = RuntimeSkillGovernanceOutcome::default();
+    let mut changed_records = std::collections::HashMap::<String, RuntimeSkillRecord>::new();
+    let mut removed_names = Vec::new();
+
+    records.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut consumed = vec![false; records.len()];
+    for idx in 0..records.len() {
+        if consumed[idx] {
+            continue;
+        }
+        let mut group = vec![records[idx].clone()];
+        consumed[idx] = true;
+        for other_idx in (idx + 1)..records.len() {
+            if consumed[other_idx] {
+                continue;
+            }
+            if runtime_skill_similarity(&records[idx], &records[other_idx])
+                < RUNTIME_SKILL_DUPLICATE_SIMILARITY
+            {
+                continue;
+            }
+            group.push(records[other_idx].clone());
+            consumed[other_idx] = true;
+        }
+        let canonical = select_canonical_runtime_skill_index(&group);
+        let merged = merge_runtime_skill_group(group, canonical);
+        for superseded in &merged.supersedes {
+            if superseded != &merged.name {
+                removed_names.push(superseded.clone());
+                outcome.merged = outcome.merged.saturating_add(1);
+            }
+        }
+        let governed = apply_runtime_skill_status(merged, now_secs, &mut outcome);
+        if should_prune_runtime_skill(&governed, now_secs) {
+            removed_names.push(governed.name.clone());
+            outcome.pruned = outcome.pruned.saturating_add(1);
+            continue;
+        }
+        changed_records.insert(governed.name.clone(), governed);
+    }
+
+    for record in changed_records.values() {
+        write_runtime_skill_record(storage, record)?;
+    }
+    removed_names.sort();
+    removed_names.dedup();
+    for name in removed_names {
+        let _ = storage.remove(&name);
+    }
+    Ok(outcome)
+}
+
 fn fallback_runtime_skill_hits(
     storage: &dyn SkillStorage,
     preferred_chat_id: Option<&str>,
@@ -214,7 +325,10 @@ fn fallback_runtime_skill_hits(
 ) -> Vec<RuntimeSkillHit> {
     let mut hits = list_runtime_skill_records(storage)
         .into_iter()
-        .map(|record| {
+        .filter_map(|record| {
+            if should_prune_runtime_skill(&record, now_secs) {
+                return None;
+            }
             let mut score = (record.quality_score / 8) as u32;
             let mut reasons = vec!["fallback procedural memory".to_string()];
             if let Some(chat_id) = preferred_chat_id {
@@ -229,11 +343,19 @@ fn fallback_runtime_skill_hits(
                     reasons.push("recently reused".to_string());
                 }
             }
-            RuntimeSkillHit {
+            if runtime_skill_is_stale(&record, now_secs) {
+                score = score.saturating_sub(4);
+                reasons.push("stale".to_string());
+            }
+            if matches!(record.status, RuntimeSkillStatus::LowValue) {
+                score = score.saturating_sub(8);
+                reasons.push("low-value".to_string());
+            }
+            Some(RuntimeSkillHit {
                 record,
                 score,
                 reasons,
-            }
+            })
         })
         .collect::<Vec<_>>();
     hits.sort_by(|a, b| {
@@ -280,6 +402,18 @@ pub fn upsert_runtime_skill(
     }
     let existing = get_skill_content(storage, &input.name)
         .and_then(|content| parse_runtime_skill_record(&input.name, &content));
+    let all_records = list_runtime_skill_records(storage);
+    let canonical_name = find_canonical_runtime_skill_name(&all_records, &input);
+    let existing = canonical_name
+        .as_deref()
+        .and_then(|name| {
+            get_skill_content(storage, name)
+                .and_then(|content| parse_runtime_skill_record(name, &content))
+        })
+        .or(existing);
+    if let Some(canonical_name) = canonical_name {
+        input.name = canonical_name;
+    }
     let record = merge_runtime_skill_record(existing.as_ref(), input);
     let rendered = render_runtime_skill_record(&record);
     let changed = get_skill_content(storage, &record.name)
@@ -429,8 +563,21 @@ fn parse_runtime_skill_record(name: &str, content: &str) -> Option<RuntimeSkillR
                 last_used_at,
                 use_count,
                 quality_score: 0,
+                status: RuntimeSkillStatus::Active,
+                supersedes: Vec::new(),
+                component_topics: vec![topic.clone()],
             })
         });
+    let mut component_topics = meta
+        .get("components")
+        .or_else(|| meta.get("component_topics"))
+        .map(|value| parse_list_field(value))
+        .unwrap_or_default();
+    if !component_topics.iter().any(|candidate| candidate == &topic) {
+        component_topics.push(topic.clone());
+    }
+    component_topics.sort();
+    component_topics.dedup();
     Some(RuntimeSkillRecord {
         name: name.to_string(),
         title,
@@ -444,6 +591,15 @@ fn parse_runtime_skill_record(name: &str, content: &str) -> Option<RuntimeSkillR
         last_used_at,
         use_count,
         quality_score,
+        status: meta
+            .get("status")
+            .map(|value| RuntimeSkillStatus::parse(value))
+            .unwrap_or(RuntimeSkillStatus::Active),
+        supersedes: meta
+            .get("supersedes")
+            .map(|value| parse_list_field(value))
+            .unwrap_or_default(),
+        component_topics,
     })
 }
 
@@ -476,10 +632,21 @@ fn merge_runtime_skill_record(
     existing: Option<&RuntimeSkillRecord>,
     input: RuntimeSkillUpsertInput,
 ) -> RuntimeSkillRecord {
+    let RuntimeSkillUpsertInput {
+        name,
+        title,
+        topic,
+        summary,
+        procedure,
+        citations: input_citations,
+        source_chat_id,
+        observed_at,
+        updated_at,
+    } = input;
     let mut citations = existing
         .map(|record| record.citations.clone())
         .unwrap_or_default();
-    for citation in input.citations {
+    for citation in input_citations {
         if citations.iter().any(|existing| existing == &citation) {
             continue;
         }
@@ -489,18 +656,27 @@ fn merge_runtime_skill_record(
         }
     }
     let mut record = RuntimeSkillRecord {
-        name: input.name,
-        title: input.title,
-        topic: input.topic,
-        summary: input.summary,
-        procedure: input.procedure,
+        name,
+        title,
+        topic: topic.clone(),
+        summary,
+        procedure,
         citations,
-        source_chat_id: input.source_chat_id,
-        observed_at: input.observed_at,
-        updated_at: input.updated_at,
+        source_chat_id,
+        observed_at,
+        updated_at,
         last_used_at: existing.and_then(|record| record.last_used_at),
         use_count: existing.map(|record| record.use_count).unwrap_or(0),
         quality_score: 0,
+        status: existing
+            .map(|record| record.status)
+            .unwrap_or(RuntimeSkillStatus::Active),
+        supersedes: existing
+            .map(|record| record.supersedes.clone())
+            .unwrap_or_default(),
+        component_topics: existing
+            .map(|record| record.component_topics.clone())
+            .unwrap_or_else(|| vec![topic]),
     };
     if let Some(existing) = existing {
         if record.summary.is_empty() {
@@ -513,6 +689,22 @@ fn merge_runtime_skill_record(
             record.observed_at = existing.observed_at;
         }
         record.updated_at = record.updated_at.max(existing.updated_at);
+        for topic in &existing.component_topics {
+            if !record
+                .component_topics
+                .iter()
+                .any(|candidate| candidate == topic)
+            {
+                record.component_topics.push(topic.clone());
+            }
+        }
+        if !record
+            .component_topics
+            .iter()
+            .any(|candidate| candidate == &record.topic)
+        {
+            record.component_topics.push(record.topic.clone());
+        }
         if normalized_runtime_skill_identity(existing) == normalized_runtime_skill_identity(&record)
             && normalize_runtime_skill_text(&existing.procedure)
                 == normalize_runtime_skill_text(&record.procedure)
@@ -524,6 +716,17 @@ fn merge_runtime_skill_record(
             };
         }
     }
+    if !record
+        .component_topics
+        .iter()
+        .any(|candidate| candidate == &record.topic)
+    {
+        record.component_topics.push(record.topic.clone());
+    }
+    record.component_topics.sort();
+    record.component_topics.dedup();
+    record.supersedes.sort();
+    record.supersedes.dedup();
     record.quality_score = compute_runtime_skill_quality(&record);
     record
 }
@@ -548,6 +751,9 @@ fn render_runtime_skill_record(record: &RuntimeSkillRecord) -> String {
         out.push_str(chat_id);
         out.push('\n');
     }
+    out.push_str("Status: ");
+    out.push_str(record.status.label());
+    out.push('\n');
     if record.observed_at > 0 {
         out.push_str("Observed at: ");
         out.push_str(&record.observed_at.to_string());
@@ -569,8 +775,15 @@ fn render_runtime_skill_record(record: &RuntimeSkillRecord) -> String {
     out.push_str("Quality: ");
     out.push_str(&record.quality_score.to_string());
     out.push('\n');
-    if runtime_skill_is_stale(record, record.updated_at.max(record.observed_at)) {
-        out.push_str("Status: stale\n");
+    if !record.supersedes.is_empty() {
+        out.push_str("Supersedes: ");
+        out.push_str(&record.supersedes.join(", "));
+        out.push('\n');
+    }
+    if !record.component_topics.is_empty() {
+        out.push_str("Components: ");
+        out.push_str(&record.component_topics.join(", "));
+        out.push('\n');
     }
     out.push_str("\n## Summary\n");
     out.push_str(record.summary.trim());
@@ -608,6 +821,12 @@ fn score_runtime_skill_record(
     preferred_chat_id: Option<&str>,
     now_secs: u64,
 ) -> Option<RuntimeSkillHit> {
+    if matches!(record.status, RuntimeSkillStatus::LowValue)
+        && runtime_skill_is_stale(&record, now_secs)
+        && record.use_count == 0
+    {
+        return None;
+    }
     let haystack = normalize_runtime_skill_text(&format!(
         "{} {} {}",
         record.topic, record.summary, record.procedure
@@ -665,6 +884,10 @@ fn score_runtime_skill_record(
         score = score.saturating_sub(8);
         reasons.push("stale".to_string());
     }
+    if matches!(record.status, RuntimeSkillStatus::LowValue) {
+        score = score.saturating_sub(12);
+        reasons.push("low-value".to_string());
+    }
     (score > 0).then_some(RuntimeSkillHit {
         record,
         score,
@@ -702,6 +925,207 @@ fn normalize_citations(citations: &[String]) -> Vec<String> {
         }
     }
     out
+}
+
+fn parse_list_field(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn find_canonical_runtime_skill_name(
+    records: &[RuntimeSkillRecord],
+    input: &RuntimeSkillUpsertInput,
+) -> Option<String> {
+    let probe = RuntimeSkillRecord {
+        name: input.name.clone(),
+        title: input.title.clone(),
+        topic: input.topic.clone(),
+        summary: input.summary.clone(),
+        procedure: input.procedure.clone(),
+        citations: input.citations.clone(),
+        source_chat_id: input.source_chat_id.clone(),
+        observed_at: input.observed_at,
+        updated_at: input.updated_at,
+        last_used_at: None,
+        use_count: 0,
+        quality_score: 0,
+        status: RuntimeSkillStatus::Active,
+        supersedes: Vec::new(),
+        component_topics: vec![input.topic.clone()],
+    };
+    records
+        .iter()
+        .filter(|record| {
+            runtime_skill_similarity(record, &probe) >= RUNTIME_SKILL_DUPLICATE_SIMILARITY
+        })
+        .max_by_key(|record| runtime_skill_rank(record))
+        .map(|record| record.name.clone())
+}
+
+fn runtime_skill_similarity(left: &RuntimeSkillRecord, right: &RuntimeSkillRecord) -> u32 {
+    let left_id = normalize_runtime_skill_text(&format!("{} {}", left.topic, left.title));
+    let right_id = normalize_runtime_skill_text(&format!("{} {}", right.topic, right.title));
+    if left_id == right_id {
+        return 32;
+    }
+    trigram_overlap_score(&left_id, &right_id)
+        .saturating_add(u32::from(left_id.contains(&right_id) || right_id.contains(&left_id)) * 12)
+}
+
+fn runtime_skill_rank(record: &RuntimeSkillRecord) -> u32 {
+    (record.quality_score as u32)
+        .saturating_add(record.use_count.saturating_mul(3))
+        .saturating_add(record.citations.len() as u32 * 2)
+        .saturating_add(u32::from(record.status == RuntimeSkillStatus::Active) * 6)
+        .saturating_add((record.updated_at / 86_400) as u32)
+}
+
+fn select_canonical_runtime_skill_index(group: &[RuntimeSkillRecord]) -> usize {
+    let mut best_idx = 0usize;
+    let mut best_rank = 0u32;
+    for (idx, record) in group.iter().enumerate() {
+        let rank = runtime_skill_rank(record);
+        if idx == 0 || rank > best_rank {
+            best_idx = idx;
+            best_rank = rank;
+        }
+    }
+    best_idx
+}
+
+fn merge_runtime_skill_group(
+    mut group: Vec<RuntimeSkillRecord>,
+    canonical_idx: usize,
+) -> RuntimeSkillRecord {
+    let mut canonical = group.swap_remove(canonical_idx);
+    for duplicate in group {
+        if duplicate.name != canonical.name
+            && !canonical
+                .supersedes
+                .iter()
+                .any(|existing| existing == &duplicate.name)
+        {
+            canonical.supersedes.push(duplicate.name.clone());
+        }
+        for topic in duplicate
+            .component_topics
+            .iter()
+            .chain(std::iter::once(&duplicate.topic))
+        {
+            if !canonical
+                .component_topics
+                .iter()
+                .any(|existing| existing == topic)
+            {
+                canonical.component_topics.push(topic.clone());
+            }
+        }
+        for citation in duplicate.citations {
+            if !canonical
+                .citations
+                .iter()
+                .any(|existing| existing == &citation)
+            {
+                canonical.citations.push(citation);
+                canonical.citations.truncate(MAX_RUNTIME_SKILL_CITATIONS);
+            }
+        }
+        canonical.use_count = canonical.use_count.saturating_add(duplicate.use_count);
+        canonical.last_used_at = canonical.last_used_at.max(duplicate.last_used_at);
+        canonical.observed_at = canonical.observed_at.max(duplicate.observed_at);
+        canonical.updated_at = canonical.updated_at.max(duplicate.updated_at);
+        if duplicate.quality_score > canonical.quality_score
+            && duplicate.summary.len() > canonical.summary.len()
+        {
+            canonical.summary = duplicate.summary;
+        }
+        if duplicate.procedure.lines().count() > canonical.procedure.lines().count() {
+            canonical.procedure = duplicate.procedure;
+        }
+        if canonical.source_chat_id.is_none() {
+            canonical.source_chat_id = duplicate.source_chat_id;
+        }
+    }
+    canonical.component_topics.sort();
+    canonical.component_topics.dedup();
+    canonical.supersedes.sort();
+    canonical.supersedes.dedup();
+    canonical.quality_score = compute_runtime_skill_quality(&canonical);
+    canonical
+}
+
+fn apply_runtime_skill_status(
+    mut record: RuntimeSkillRecord,
+    now_secs: u64,
+    outcome: &mut RuntimeSkillGovernanceOutcome,
+) -> RuntimeSkillRecord {
+    let stale = runtime_skill_is_stale(&record, now_secs);
+    let next_status = if stale && record.quality_score < 45 && record.use_count == 0 {
+        RuntimeSkillStatus::LowValue
+    } else if stale {
+        RuntimeSkillStatus::Stale
+    } else if record.quality_score < 32 && record.use_count == 0 {
+        RuntimeSkillStatus::LowValue
+    } else {
+        RuntimeSkillStatus::Active
+    };
+    if next_status != record.status {
+        match next_status {
+            RuntimeSkillStatus::Stale => {
+                outcome.stale_marked = outcome.stale_marked.saturating_add(1)
+            }
+            RuntimeSkillStatus::LowValue => {
+                outcome.low_value_marked = outcome.low_value_marked.saturating_add(1)
+            }
+            RuntimeSkillStatus::Active => {}
+        }
+    }
+    record.status = next_status;
+    record
+}
+
+fn should_prune_runtime_skill(record: &RuntimeSkillRecord, now_secs: u64) -> bool {
+    matches!(record.status, RuntimeSkillStatus::LowValue)
+        && runtime_skill_is_stale(record, now_secs)
+        && record.use_count == 0
+        && record.citations.len() <= 1
+}
+
+fn build_runtime_skill_composition_line(
+    hits: &[RuntimeSkillHit],
+    query: &str,
+    max_chars: usize,
+) -> Option<String> {
+    if hits.len() < 2 {
+        return None;
+    }
+    let normalized_query = normalize_runtime_skill_text(query);
+    let first = &hits[0];
+    let second = hits
+        .iter()
+        .skip(1)
+        .find(|candidate| candidate.record.topic != first.record.topic)?;
+    let query_terms = collect_runtime_skill_terms(&normalized_query);
+    let first_overlap = query_terms
+        .iter()
+        .filter(|term| normalize_runtime_skill_text(&first.record.summary).contains(term.as_str()))
+        .count();
+    let second_overlap = query_terms
+        .iter()
+        .filter(|term| normalize_runtime_skill_text(&second.record.summary).contains(term.as_str()))
+        .count();
+    if first_overlap == 0 || second_overlap == 0 {
+        return None;
+    }
+    let line = format!(
+        "- [Composition] Combine {} then {} for this turn when both setup and verification are needed.",
+        first.record.title, second.record.title
+    );
+    (line.len() <= max_chars / 2).then_some(line)
 }
 
 fn normalize_runtime_skill_text(input: &str) -> String {
@@ -838,6 +1262,33 @@ mod tests {
         }
     }
 
+    fn runtime_skill_record(
+        name: &str,
+        topic: &str,
+        title: &str,
+        summary: &str,
+        procedure: &str,
+        observed_at: u64,
+    ) -> RuntimeSkillRecord {
+        RuntimeSkillRecord {
+            name: name.to_string(),
+            title: title.to_string(),
+            topic: topic.to_string(),
+            summary: summary.to_string(),
+            procedure: procedure.to_string(),
+            citations: Vec::new(),
+            source_chat_id: Some("chat-1".to_string()),
+            observed_at,
+            updated_at: observed_at,
+            last_used_at: None,
+            use_count: 0,
+            quality_score: 0,
+            status: RuntimeSkillStatus::Active,
+            supersedes: Vec::new(),
+            component_topics: vec![topic.to_string()],
+        }
+    }
+
     #[test]
     fn runtime_skill_recall_prefers_exact_topic_and_provenance() {
         let storage = StubSkillStorage::default();
@@ -900,5 +1351,119 @@ mod tests {
         .unwrap();
         assert_eq!(record.use_count, 1);
         assert_eq!(record.last_used_at, Some(1000));
+    }
+
+    #[test]
+    fn governance_merges_duplicate_runtime_skills_into_canonical_record() {
+        let storage = StubSkillStorage::default();
+        let mut canonical = runtime_skill_record(
+            "runtime_skill__wifi_setup",
+            "wifi_setup",
+            "Wi-Fi setup",
+            "Bring Wi-Fi up before verification.",
+            "- connect wifi\n- verify connectivity",
+            100,
+        );
+        canonical.citations = vec!["transcript:chat-1#message=1".to_string()];
+        canonical.quality_score = compute_runtime_skill_quality(&canonical);
+        write_runtime_skill_record(&storage, &canonical).unwrap();
+
+        let mut duplicate = runtime_skill_record(
+            "runtime_skill__wifi_verification",
+            "wifi setup",
+            "Wi-Fi setup flow",
+            "Bring Wi-Fi up before verification.",
+            "- connect wifi\n- verify connectivity",
+            120,
+        );
+        duplicate.citations = vec!["turn_log:chat-1#req=req-1".to_string()];
+        duplicate.quality_score = compute_runtime_skill_quality(&duplicate);
+        write_runtime_skill_record(&storage, &duplicate).unwrap();
+
+        let outcome = govern_runtime_skills(&storage, 200).unwrap();
+        assert_eq!(outcome.merged, 1);
+        assert!(get_skill_content(&storage, "runtime_skill__wifi_verification").is_none());
+        let merged = parse_runtime_skill_record(
+            "runtime_skill__wifi_setup",
+            &get_skill_content(&storage, "runtime_skill__wifi_setup").unwrap(),
+        )
+        .unwrap();
+        assert!(merged
+            .supersedes
+            .iter()
+            .any(|name| name == "runtime_skill__wifi_verification"));
+        assert!(merged
+            .component_topics
+            .iter()
+            .any(|topic| topic == "wifi_setup"));
+        assert!(merged
+            .component_topics
+            .iter()
+            .any(|topic| topic == "wifi setup"));
+        assert_eq!(merged.citations.len(), 2);
+    }
+
+    #[test]
+    fn governance_prunes_stale_low_value_runtime_skills() {
+        let storage = StubSkillStorage::default();
+        let mut low_value = runtime_skill_record(
+            "runtime_skill__temp_probe",
+            "temp_probe",
+            "Temp probe",
+            "",
+            "probe",
+            1,
+        );
+        low_value.quality_score = compute_runtime_skill_quality(&low_value);
+        write_runtime_skill_record(&storage, &low_value).unwrap();
+
+        let outcome =
+            govern_runtime_skills(&storage, RUNTIME_SKILL_STALE_AFTER_SECS.saturating_add(10))
+                .unwrap();
+        assert_eq!(outcome.pruned, 1);
+        assert!(get_skill_content(&storage, "runtime_skill__temp_probe").is_none());
+    }
+
+    #[test]
+    fn runtime_skill_recall_can_suggest_composition() {
+        let storage = StubSkillStorage::default();
+        upsert_runtime_skill(
+            &storage,
+            &RuntimeSkillWrite {
+                name: String::new(),
+                topic: "network_setup".to_string(),
+                title: "Network setup".to_string(),
+                summary: "Network setup checklist for bring-up.".to_string(),
+                content: "- connect wifi\n- collect link status".to_string(),
+                citations: vec!["transcript:chat-1#message=1".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                observed_at: 100,
+            },
+        )
+        .unwrap();
+        upsert_runtime_skill(
+            &storage,
+            &RuntimeSkillWrite {
+                name: String::new(),
+                topic: "network_verification".to_string(),
+                title: "Network verification".to_string(),
+                summary: "Verification pass for setup and connectivity.".to_string(),
+                content: "- inspect retrieval trace\n- verify connectivity".to_string(),
+                citations: vec!["turn_log:chat-1#req=req-1".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                observed_at: 120,
+            },
+        )
+        .unwrap();
+
+        let block = build_runtime_skill_recall_block(
+            &storage,
+            "network setup verification",
+            Some("chat-1"),
+            200,
+            480,
+        )
+        .unwrap();
+        assert!(block.contains("[Composition]"));
     }
 }

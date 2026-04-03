@@ -1558,6 +1558,7 @@ fn run_post_reply_maintenance_job(
             private_garden_store: config.private_garden_store.as_ref(),
             extraction_state_store: config.long_term_memory_extraction_state_store.as_ref(),
             turn_ledger_store: config.turn_ledger_store.as_ref(),
+            skill_storage: config.skill_storage.as_ref(),
         },
         PostReplyMemoryMaintenanceInput {
             chat_id: &msg.chat_id,
@@ -1744,6 +1745,7 @@ fn run_self_runtime_job(
             remind_store: config.remind_store.as_ref(),
             task_store: config.task_store.as_ref(),
             turn_ledger_store: config.turn_ledger_store.as_ref(),
+            skill_storage: config.skill_storage.as_ref(),
         },
         &msg.chat_id,
         &payload,

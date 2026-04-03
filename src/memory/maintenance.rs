@@ -5,6 +5,7 @@ use crate::bus::IngressKind;
 use crate::error::Result;
 use crate::llm::{LlmClient, LlmHttpClient};
 use crate::orchestrator::PressureLevel;
+use crate::platform::SkillStorage;
 
 use super::{
     evaluate_long_term_memory_extraction_turn, load_session_summary_snapshot,
@@ -38,6 +39,7 @@ pub struct PostReplyMemoryMaintenanceContext<'a> {
     pub private_garden_store: &'a dyn PrivateGardenStore,
     pub extraction_state_store: &'a dyn LongTermMemoryExtractionStateStore,
     pub turn_ledger_store: &'a dyn TurnLedgerStore,
+    pub skill_storage: &'a dyn SkillStorage,
 }
 
 pub struct PostReplyMemoryMaintenanceInput<'a> {
@@ -691,6 +693,7 @@ pub fn run_post_reply_memory_maintenance(
             memory_store: ctx.memory_store,
             turn_ledger_store: ctx.turn_ledger_store,
             long_term_memory_store: ctx.long_term_memory_store,
+            skill_storage: ctx.skill_storage,
         },
         input.chat_id,
         input.memory_profile,
@@ -1108,6 +1111,27 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct StubSkillStorage;
+
+    impl SkillStorage for StubSkillStorage {
+        fn list_names(&self) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn read(&self, _name: &str) -> Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+
+        fn write(&self, _name: &str, _content: &[u8]) -> Result<()> {
+            Ok(())
+        }
+
+        fn remove(&self, _name: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
     struct FixedLlmClient;
 
     struct RouterSuppressingLlmClient;
@@ -1225,6 +1249,7 @@ mod tests {
         let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
         let turn_ledger_store = StubTurnLedgerStore;
+        let skill_storage = StubSkillStorage;
         let mut http = DummyHttpClient;
         let outcome = run_post_reply_memory_maintenance(
             &mut http,
@@ -1240,6 +1265,7 @@ mod tests {
                 private_garden_store: &private_garden_store,
                 extraction_state_store: &extraction_state_store,
                 turn_ledger_store: &turn_ledger_store,
+                skill_storage: &skill_storage,
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",
@@ -1321,6 +1347,7 @@ mod tests {
         let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
         let turn_ledger_store = StubTurnLedgerStore;
+        let skill_storage = StubSkillStorage;
         let mut http = DummyHttpClient;
         let outcome = run_post_reply_memory_maintenance(
             &mut http,
@@ -1336,6 +1363,7 @@ mod tests {
                 private_garden_store: &private_garden_store,
                 extraction_state_store: &extraction_state_store,
                 turn_ledger_store: &turn_ledger_store,
+                skill_storage: &skill_storage,
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",
@@ -1417,6 +1445,7 @@ mod tests {
         let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
         let turn_ledger_store = StubTurnLedgerStore;
+        let skill_storage = StubSkillStorage;
         let mut http = DummyHttpClient;
 
         let outcome = run_post_reply_memory_maintenance(
@@ -1433,6 +1462,7 @@ mod tests {
                 private_garden_store: &private_garden_store,
                 extraction_state_store: &extraction_state_store,
                 turn_ledger_store: &turn_ledger_store,
+                skill_storage: &skill_storage,
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",
@@ -1504,6 +1534,7 @@ mod tests {
         let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
         let turn_ledger_store = StubTurnLedgerStore;
+        let skill_storage = StubSkillStorage;
         let mut http = DummyHttpClient;
 
         let outcome = run_post_reply_memory_maintenance(
@@ -1520,6 +1551,7 @@ mod tests {
                 private_garden_store: &private_garden_store,
                 extraction_state_store: &extraction_state_store,
                 turn_ledger_store: &turn_ledger_store,
+                skill_storage: &skill_storage,
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",
@@ -1581,6 +1613,7 @@ mod tests {
         let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
         let turn_ledger_store = StubTurnLedgerStore;
+        let skill_storage = StubSkillStorage;
         private_garden_store
             .write("chat-1", "journal/promoted.md", "已经足够稳定，准备上提", 1)
             .unwrap();
@@ -1603,6 +1636,7 @@ mod tests {
                 private_garden_store: &private_garden_store,
                 extraction_state_store: &extraction_state_store,
                 turn_ledger_store: &turn_ledger_store,
+                skill_storage: &skill_storage,
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",
@@ -1664,6 +1698,7 @@ mod tests {
         let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
         let turn_ledger_store = StubTurnLedgerStore;
+        let skill_storage = StubSkillStorage;
         let mut http = DummyHttpClient;
 
         let outcome = run_post_reply_memory_maintenance(
@@ -1680,6 +1715,7 @@ mod tests {
                 private_garden_store: &private_garden_store,
                 extraction_state_store: &extraction_state_store,
                 turn_ledger_store: &turn_ledger_store,
+                skill_storage: &skill_storage,
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",

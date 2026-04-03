@@ -323,6 +323,48 @@ pub fn search_archive_records(
     Ok(hits)
 }
 
+pub(crate) fn maintain_archive_search_backend(
+    session_store: &dyn SessionStore,
+    memory_store: &dyn MemoryStore,
+    turn_ledger_store: &dyn TurnLedgerStore,
+) -> Result<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        let signature = build_archive_source_signature()?;
+        let path = archive_index_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let mut conn = Connection::open(path)
+            .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
+        ensure_archive_sqlite_schema(&conn)?;
+        let needs_rebuild = archive_sqlite_needs_rebuild(&conn, &signature)?;
+        if needs_rebuild {
+            let live = collect_live_archive_candidates(
+                session_store,
+                memory_store,
+                turn_ledger_store,
+                ArchiveSearchQuery {
+                    query: "",
+                    preferred_chat_id: None,
+                    chat_id_filter: None,
+                    sources: &[],
+                    limit: 1,
+                },
+            );
+            archive_sqlite_rebuild(&mut conn, &live, &signature)?;
+        }
+        Ok(needs_rebuild)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = session_store;
+        let _ = memory_store;
+        let _ = turn_ledger_store;
+        Ok(false)
+    }
+}
+
 fn collect_live_archive_candidates(
     session_store: &dyn SessionStore,
     memory_store: &dyn MemoryStore,

@@ -4,6 +4,7 @@ use crate::bus::{IngressKind, PcMsg, SystemInboundTx};
 use crate::error::Result;
 use crate::llm::{LlmClient, LlmHttpClient, Message, ToolChoicePolicy};
 use crate::orchestrator::PressureLevel;
+use crate::platform::SkillStorage;
 use crate::task::TaskStore;
 use crate::util::{current_unix_secs, scrub_credentials, truncate_content_to_max};
 use serde::{Deserialize, Serialize};
@@ -118,6 +119,7 @@ pub struct SelfRuntimeContext<'a> {
     pub remind_store: &'a dyn RemindAtStore,
     pub task_store: &'a dyn TaskStore,
     pub turn_ledger_store: &'a dyn TurnLedgerStore,
+    pub skill_storage: &'a dyn SkillStorage,
 }
 
 pub struct SelfRuntimeOutcome {
@@ -1062,6 +1064,7 @@ pub fn run_self_runtime(
                 memory_store: ctx.memory_store,
                 turn_ledger_store: ctx.turn_ledger_store,
                 long_term_memory_store: ctx.long_term_memory_store,
+                skill_storage: ctx.skill_storage,
             },
             chat_id,
             profile,

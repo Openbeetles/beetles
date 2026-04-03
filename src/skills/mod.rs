@@ -7,8 +7,9 @@ use crate::platform::{SkillMetaStore, SkillStorage};
 mod runtime;
 
 pub use runtime::{
-    build_runtime_skill_recall_block, is_runtime_skill_name, retrieve_runtime_skill_hits,
-    touch_runtime_skill_hits, upsert_runtime_skill, RuntimeSkillHit, RuntimeSkillRecord,
+    build_runtime_skill_recall_block, govern_runtime_skills, is_runtime_skill_name,
+    retrieve_runtime_skill_hits, touch_runtime_skill_hits, upsert_runtime_skill,
+    RuntimeSkillGovernanceOutcome, RuntimeSkillHit, RuntimeSkillRecord, RuntimeSkillStatus,
 };
 
 fn is_skill_name_valid(name: &str) -> bool {
