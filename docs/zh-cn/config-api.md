@@ -2,7 +2,15 @@
 
 [English](../en-us/config-api.md) | **中文** | [文档索引](../README.md)
 
-本文档面向**对接设备 HTTP API 的开发者**（如自建配置页、脚本或第三方集成）。设备固件以 **HTTP API** 为主；同时内嵌 **`/wifi`、`/pairing`** 等基础 HTML 与静态资源（见下文）。完整配置 UI 也可由外置前端（如本仓库 `configure-ui`）实现。用户连接设备热点或与设备同网后，在配置页中填写**设备地址**（连接设备热点时填 **http://192.168.4.1**，同网时填路由器分配的 IP）即可调用下述接口。
+这篇文档是写给要直接调用设备 HTTP 接口的开发者的。
+
+你一般会在下面这些场景里用到它：
+
+- 想搞清楚配对码和 CSRF 规则
+- 想确认每个读写接口到底怎么工作
+- 想自己写前端、脚本或第三方集成
+
+如果你只是想先把设备跑起来、打开配置页、完成配网，那先看 [configuration.md](configuration.md) 会更合适。
 
 ## 网络与访问
 
@@ -18,8 +26,8 @@
 
 - **未激活**：NVS 中尚未保存有效 6 位配对码。
 - **已激活**：已成功执行过 `POST /api/pairing_code`。
-- **仅已激活**：设备已激活即可调用；**不要求**在 query/header 中带配对码（实现为 `require_activated`）。
-- **写操作**（变更状态或配置）：已激活后默认须 **配对码** + **CSRF**（先校验配对码，再校验 CSRF）；**例外**见后文 **「写操作：配对码 + CSRF」**。
+- **仅已激活**：设备必须已经激活，但这次请求本身**不要求**在 query/header 中带配对码（实现为 `require_activated`）。
+- **写操作**：设备激活后，变更状态或配置的接口通常都需要 **配对码 + CSRF**；具体哪些接口算写操作、哪些是例外，后面会列出来。
 
 ### 未激活时可用的请求
 
@@ -31,7 +39,7 @@
 - **GET /api/wifi/scan**、**GET /api/csrf_token**（未激活也可调用）。
 - 通道平台回调：**POST /api/feishu/event**、**POST /api/dingtalk/webhook**、**GET/POST /api/wecom/webhook**、**POST /api/webhook/qq**（QQ 依赖构建/环境开关）。
 
-其余路径在未激活下通常返回 401（请先设置配对码等，具体 JSON 随固件 locale 可能略有差异）。
+其余路径在未激活下通常都会返回 401。至于具体 JSON 文案，会随固件 locale 略有差异。
 
 ### 已激活、只读 API（请求中不必带配对码）
 
@@ -39,7 +47,7 @@
 
 **GET /**、**GET /api/config**、**GET /api/config/hardware**、**GET /api/config/audio**、**GET /api/config/display**、**GET /api/health**、**GET /api/metrics**、**GET /api/resource**、**GET /api/tools**、**GET /api/diagnose**、**GET /api/system_info**、**GET /api/channel_connectivity**、**GET /api/sessions**、**GET /api/memory/status**、**GET /api/skills**、**GET /api/soul**、**GET /api/user**；启用 `ota` 时另有 **GET /api/ota/check**。
 
-未激活时访问上述接口 → 401。
+如果设备还没激活，访问上述接口就是 401。
 
 ### 写操作：配对码 + CSRF
 
@@ -50,7 +58,7 @@
 
 包括但不限于：`POST /api/config/wifi`、`/api/config/llm`、`/api/config/channels`、`/api/config/system`、`/api/config/hardware`、`/api/config/audio`、`/api/config/display`；**POST**/**DELETE /api/skills**、**POST /api/skills/import**；**POST /api/soul**、**POST /api/user**；**DELETE /api/sessions**；**POST /api/restart**、**POST /api/config_reset**、**POST /api/webhook**；**POST /api/ota**（若编译启用）。
 
-**例外**：**POST /api/pairing_code**（仅未激活）不要求精；各**通道 webhook** 使用平台约定鉴权，**不要求精**配对码/CSRF。
+**例外**：**POST /api/pairing_code**（仅未激活）不要求配对码/CSRF；各**通道 webhook** 使用平台约定鉴权，也不要求配对码/CSRF。
 
 ### GET /api/csrf_token
 
@@ -98,7 +106,7 @@
 - **用途**：首次设置 6 位配对码（仅未激活）。
 - **请求**：`Content-Type: application/json`，Body `{"code": "123456"}`。
 - **响应**：成功 200 `{"ok": true}`；已设置过或格式错误 400。
-- **鉴权**：不要求精。
+- **鉴权**：不要求配对码/CSRF。
 
 ### GET /pairing
 

@@ -1,62 +1,77 @@
-# LLM provider configuration
+# LLM Providers
 
 [中文](../zh-cn/llm-providers.md) | **English** | [Doc index](../README.md)
 
-Configure sources in the web UI or via SPIFFS `config/llm.json` (or the HTTP API in [config-api](config-api.md)).
+This page explains how Beetle understands LLM providers in `config/llm.json`.
 
-## How the firmware picks a client (vs vendor docs)
+It answers three practical questions:
 
-[`build_llm_clients`](../../src/llm/mod.rs) routes by `provider`:
+1. Which `provider` values are supported?
+2. When can `api_url` be empty?
+3. In what order are multiple sources tried?
 
-- **`anthropic`**: `AnthropicClient` (Claude Messages API).
-- **`openai`, `openai_compatible`, `gemini`, `glm`, `qwen`, `deepseek`, `moonshot`, `ollama`**: **`OpenAiCompatibleClient`** (OpenAI-style chat/completions; per-vendor base URL/headers handled inside that client).
+## The Short Version
 
-Field length validation lives in `config`. **Inclusion in the fallback chain** also follows `build_llm_clients`: **empty `api_url` is OK** for the OpenAI-compatible IDs above; **`anthropic` (and any provider not in that list) is skipped when `api_url` is empty**. For non-empty URLs, `AnthropicClient` expects the **full Messages request URL** (same role as the default `https://api.anthropic.com/v1/messages`), see [`anthropic.rs`](../../src/llm/anthropic.rs).
+- Beetle supports multiple LLM sources.
+- Sources are configured in `config/llm.json`.
+- Some providers are handled as OpenAI-compatible clients.
+- If you configure multiple sources, Beetle tries them in an ordered fallback chain.
 
-**Multi-source fallback** ([`FallbackLlmClient`](../../src/llm/fallback.rs)): the worker tries sources in the order computed by [`llm_fallback_source_indices`](../../src/llm/mod.rs), returns the **first Ok**; if all fail, returns the **last** error. If **`llm_router_source_index`** is set and valid, that source is tried **first**; if **`llm_worker_source_index`** is also set and valid (and differs), it is tried **second**; remaining **usable** sources follow in list order. With neither index set, order is the natural order of usable entries in `llm_sources`. Runtime stays a **single worker client** wrapping this ordered fallback chain.
+## Supported Provider IDs
 
-Model names in each vendor section are **examples**—follow each vendor’s current documentation.
+| Provider ID | Client path | Notes |
+|-------------|-------------|------|
+| `openai` | OpenAI-compatible client | Standard OpenAI path |
+| `openai_compatible` | OpenAI-compatible client | Generic compatible endpoint |
+| `gemini` | OpenAI-compatible client | Vendor-specific handling inside the client |
+| `glm` | OpenAI-compatible client | Zhipu GLM |
+| `qwen` | OpenAI-compatible client | Qwen |
+| `deepseek` | OpenAI-compatible client | DeepSeek |
+| `moonshot` | OpenAI-compatible client | Moonshot |
+| `ollama` | OpenAI-compatible client | Usually local/self-hosted |
+| `anthropic` | Anthropic client | Uses Claude Messages API |
 
----
+## Important `api_url` Rules
 
-## Provider IDs
+### When `api_url` may be empty
 
-### OpenAI
-- **ID**: `openai`
-- **Examples**: `gpt-4o`, `gpt-4`, `gpt-3.5-turbo`
-- **Keys**: [platform.openai.com](https://platform.openai.com)
+These provider IDs may use an empty `api_url`:
 
-### Anthropic (Claude)
-- **ID**: `anthropic`
-- **Examples**: see [Anthropic docs](https://docs.anthropic.com)
-- **Keys**: [console.anthropic.com](https://console.anthropic.com)
+- `openai`
+- `openai_compatible`
+- `gemini`
+- `glm`
+- `qwen`
+- `deepseek`
+- `moonshot`
+- `ollama`
 
-### Google Gemini (via OpenAI-compatible client)
-- **ID**: `gemini`
-- **Examples**: see [Google AI](https://ai.google.dev)
+### When `api_url` must be present
 
-### Zhipu GLM
-- **ID**: `glm`
+- `anthropic`
+- any unknown provider ID
 
-### Qwen
-- **ID**: `qwen`
+For `anthropic`, a non-empty `api_url` is treated as the full Messages endpoint URL.
 
-### DeepSeek
-- **ID**: `deepseek`
+## Fallback Order
 
-### Moonshot
-- **ID**: `moonshot`
+When more than one source is configured, Beetle builds one ordered fallback chain.
 
-### Ollama (local)
-- **ID**: `ollama`
-- **api_url**: typically `http://<host>:11434/v1`
-- **api_key**: any non-empty placeholder is fine if the server ignores it
+The order is:
 
----
+1. `llm_router_source_index`, if set and valid
+2. `llm_worker_source_index`, if set, valid, and different from the router source
+3. the remaining usable sources in list order
 
-## Configuration examples
+Behavior:
 
-### Single provider
+- first successful response wins
+- if every source fails, the last error is returned
+
+## Minimal Examples
+
+### One source
+
 ```json
 {
   "llm_sources": [
@@ -70,7 +85,8 @@ Model names in each vendor section are **examples**—follow each vendor’s cur
 }
 ```
 
-### Multiple providers (ordered fallback)
+### Multiple sources with fallback
+
 ```json
 {
   "llm_sources": [
@@ -96,30 +112,18 @@ Model names in each vendor section are **examples**—follow each vendor’s cur
 }
 ```
 
-Summary:
+## Ollama Notes
 
-- Try order follows **`llm_router_source_index` / `llm_worker_source_index`** (optional) plus remaining usable sources; **first success wins**.
-- If every source fails, the **last** error is returned.
+- Use `provider: "ollama"`
+- `api_url` is usually `http://<host>:11434/v1`
+- `api_key` can be any non-empty placeholder if the server ignores it
 
-### Offline-friendly ordering (example)
+## Where The Rules Come From
 
-Put Ollama last so local inference is used when upstream is down:
+Implementation references:
 
-```json
-{
-  "llm_sources": [
-    {
-      "provider": "qwen",
-      "api_key": "sk-...",
-      "model": "qwen-turbo",
-      "api_url": ""
-    },
-    {
-      "provider": "ollama",
-      "api_key": "ollama",
-      "model": "llama3",
-      "api_url": "http://192.168.1.100:11434/v1"
-    }
-  ]
-}
-```
+- client build logic: [`src/llm/mod.rs`](../../src/llm/mod.rs)
+- fallback chain: [`src/llm/fallback.rs`](../../src/llm/fallback.rs)
+- Anthropic client behavior: [`src/llm/anthropic.rs`](../../src/llm/anthropic.rs)
+
+Vendor model names change over time. Treat model names in examples as examples, not guarantees.

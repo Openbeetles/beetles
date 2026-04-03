@@ -7,23 +7,23 @@ use crate::llm::{LlmClient, LlmHttpClient};
 use crate::orchestrator::PressureLevel;
 
 use super::{
-    build_shared_factual_plane_snapshot, evaluate_long_term_memory_extraction_turn,
-    load_session_summary_snapshot, mark_long_term_memory_extraction_requested, memory_policy,
+    evaluate_long_term_memory_extraction_turn, load_session_summary_snapshot,
+    mark_long_term_memory_extraction_requested, memory_capability_profile, memory_policy,
     normalize_private_garden_doc_path, persist_long_term_memory_extraction_state,
     run_execution_state_refresh_with_state, run_internal_memory_routing_with_state,
-    run_private_doc_workspace_refresh_with_state, run_private_garden_governance_with_state,
-    run_self_model_refresh_with_state, run_session_summary_refresh_with_snapshot,
-    should_refresh_execution_state, should_refresh_private_doc_workspace,
-    should_refresh_private_garden, should_refresh_self_model, ExecutionStateRefreshContext,
-    ExecutionStateRefreshInput, ExecutionStateRefreshOutcome, ExecutionStateStore,
-    InternalMemoryRoutingDecision, InternalMemoryRoutingInput, LongTermMemoryExtractionStateStore,
-    LongTermMemoryExtractionTurnInput, LongTermMemoryStore, MemoryProfile, MemoryStore,
-    PrivateDocStore, PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
+    run_memory_governance_kernel, run_private_doc_workspace_refresh_with_state,
+    run_private_garden_governance_with_state, run_self_model_refresh_with_state,
+    run_session_summary_refresh_with_snapshot, should_refresh_execution_state,
+    should_refresh_private_doc_workspace, should_refresh_private_garden, should_refresh_self_model,
+    ExecutionStateRefreshContext, ExecutionStateRefreshInput, ExecutionStateRefreshOutcome,
+    ExecutionStateStore, InternalMemoryRoutingDecision, InternalMemoryRoutingInput,
+    LongTermMemoryExtractionStateStore, LongTermMemoryExtractionTurnInput, LongTermMemoryStore,
+    MemoryGovernanceContext, MemoryGovernanceInput, MemoryProfile, MemoryStore, PrivateDocStore,
+    PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
     PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
     PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, PrivateGardenStore,
     SelfModelRefreshContext, SelfModelRefreshInput, SelfModelRefreshOutcome, SelfModelStore,
-    SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore, SharedFactualPlaneSnapshot,
-    SharedFactualReconcileAction, TurnLedgerStore,
+    SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore, TurnLedgerStore,
 };
 
 pub struct PostReplyMemoryMaintenanceContext<'a> {
@@ -106,51 +106,6 @@ struct PrivateMaintenancePasses {
     private_doc_result: Result<PrivateDocWorkspaceRefreshOutcome>,
     private_garden_upstream_cleanup_result: Result<usize>,
     private_garden_result: Result<PrivateGardenGovernanceOutcome>,
-}
-
-fn coordinate_shared_factual_plane(
-    ctx: &PostReplyMemoryMaintenanceContext<'_>,
-    input: &PostReplyMemoryMaintenanceInput<'_>,
-    summary_text: Option<&str>,
-    recent: &[crate::memory::SessionMessage],
-) -> SharedFactualPlaneSnapshot {
-    let query = if !input.user_content.trim().is_empty() {
-        input.user_content
-    } else {
-        input.reply_content
-    };
-    build_shared_factual_plane_snapshot(
-        ctx.session_store,
-        ctx.long_term_memory_store,
-        ctx.memory_store,
-        ctx.turn_ledger_store,
-        input.chat_id,
-        query,
-        summary_text,
-        recent,
-        memory_policy(input.memory_profile)
-            .long_term_recall
-            .block_max_len_cap,
-        input.memory_profile,
-    )
-}
-
-fn should_force_factual_refresh(
-    snapshot: &SharedFactualPlaneSnapshot,
-    input: &PostReplyMemoryMaintenanceInput<'_>,
-) -> bool {
-    matches!(
-        snapshot.strongest_refresh_action(),
-        Some(
-            SharedFactualReconcileAction::Correct
-                | SharedFactualReconcileAction::Conflict
-                | SharedFactualReconcileAction::Stale
-        )
-    ) || (input.external_content_used
-        && matches!(
-            snapshot.strongest_refresh_action(),
-            Some(SharedFactualReconcileAction::Reinforce)
-        ))
 }
 
 fn collect_maintenance_baseline(
@@ -265,6 +220,11 @@ fn load_maintenance_recent_windows(
     input: &PostReplyMemoryMaintenanceInput<'_>,
     baseline: &MaintenanceBaseline,
 ) -> MaintenanceRecentWindows {
+    let capability = memory_capability_profile(input.memory_profile);
+    let shared_recent_threshold = match capability.background_hygiene_level {
+        crate::memory::MemoryHygieneLevel::Minimal => 2,
+        crate::memory::MemoryHygieneLevel::Standard => 1,
+    };
     let shared_recent = if [
         baseline.summary_should_refresh,
         baseline.execution_should_refresh,
@@ -275,7 +235,7 @@ fn load_maintenance_recent_windows(
     .into_iter()
     .filter(|enabled| *enabled)
     .count()
-        >= 2
+        >= shared_recent_threshold
     {
         let summary_policy = memory_policy(input.memory_profile).session_summary;
         let execution_policy = memory_policy(input.memory_profile).execution_state;
@@ -658,17 +618,34 @@ pub fn run_post_reply_memory_maintenance(
     let shared = run_shared_maintenance_passes(http, llm, &ctx, &input, &baseline, &recent);
     let private =
         run_private_memory_maintenance_passes(http, llm, &ctx, &input, &baseline, &recent, &shared);
-    let factual_plane_snapshot = coordinate_shared_factual_plane(
-        &ctx,
-        &input,
-        shared.summary_snapshot.summary_text.as_deref(),
-        recent
-            .shared_recent
-            .as_deref()
-            .unwrap_or_else(|| recent.routing_recent.as_deref().unwrap_or(&[])),
+    let factual_query = if !input.user_content.trim().is_empty() {
+        input.user_content
+    } else {
+        input.reply_content
+    };
+    let governance = run_memory_governance_kernel(
+        MemoryGovernanceContext {
+            session_store: ctx.session_store,
+            long_term_memory_store: ctx.long_term_memory_store,
+            memory_store: ctx.memory_store,
+            turn_ledger_store: ctx.turn_ledger_store,
+        },
+        MemoryGovernanceInput {
+            chat_id: input.chat_id,
+            query_hint: factual_query,
+            summary_text: shared.summary_snapshot.summary_text.as_deref(),
+            recent: recent
+                .shared_recent
+                .as_deref()
+                .unwrap_or_else(|| recent.routing_recent.as_deref().unwrap_or(&[])),
+            max_len: memory_policy(input.memory_profile)
+                .long_term_recall
+                .block_max_len_cap,
+            profile: input.memory_profile,
+            external_content_used: input.external_content_used,
+        },
     );
-    let factual_refresh_suggested = should_force_factual_refresh(&factual_plane_snapshot, &input);
-    let factual_coordination_summary = factual_plane_snapshot.refresh_summary();
+    let factual_refresh_suggested = governance.factual_refresh_suggested;
 
     let extraction_state = ctx.extraction_state_store.get(input.chat_id).ok().flatten();
     let extraction_decision = evaluate_long_term_memory_extraction_turn(
@@ -715,8 +692,8 @@ pub fn run_post_reply_memory_maintenance(
         private_doc_result: private.private_doc_result,
         private_garden_upstream_cleanup_result: private.private_garden_upstream_cleanup_result,
         private_garden_result: private.private_garden_result,
-        factual_coordination_summary,
-        factual_refresh_suggested,
+        factual_coordination_summary: governance.factual_coordination_summary,
+        factual_refresh_suggested: governance.factual_refresh_suggested,
         extraction_request_outcome,
     }
 }

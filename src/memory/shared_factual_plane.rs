@@ -5,14 +5,14 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     long_term_memory_effective_stale_hint, long_term_memory_evidence_state,
-    recall_long_term_memory_block, recall_long_term_memory_entries, render_long_term_memory_block,
-    search_archive_records, ArchiveRecordSource, ArchiveSearchHit, ArchiveSearchQuery,
-    LongTermMemoryConfidence, LongTermMemoryEntry, LongTermMemoryEvidenceState,
+    memory_capability_profile, parse_explicit_long_term_slot_query, recall_long_term_memory_block,
+    recall_long_term_memory_entries, render_exact_long_term_memory_block,
+    render_long_term_memory_block, search_archive_records, ArchiveRecordSource, ArchiveSearchHit,
+    ArchiveSearchQuery, LongTermMemoryConfidence, LongTermMemoryEntry, LongTermMemoryEvidenceState,
     LongTermMemoryStore, MemoryProfile, MemoryStore, SessionMessage, TurnLedgerStore,
 };
 
 const SHARED_FACTUAL_HEADER_LEN: usize = 128;
-const SHARED_FACTUAL_RECONCILE_LIMIT: usize = 3;
 const SHARED_FACTUAL_OBSERVATION_TERM_LIMIT: usize = 12;
 
 fn build_shared_factual_query(query_hint: Option<&str>, recent: &[SessionMessage]) -> String {
@@ -205,11 +205,13 @@ fn lookup_archive_hits_for_entry(
     query_hint: &str,
     summary_text: Option<&str>,
     recent: &[SessionMessage],
+    profile: MemoryProfile,
 ) -> Vec<ArchiveSearchHit> {
     let query = build_entry_archive_query(entry, query_hint, summary_text, recent);
     if query.trim().is_empty() {
         return Vec::new();
     }
+    let capability = memory_capability_profile(profile);
     search_archive_records(
         session_store,
         memory_store,
@@ -223,10 +225,36 @@ fn lookup_archive_hits_for_entry(
                 ArchiveRecordSource::DailyNote,
                 ArchiveRecordSource::TurnLog,
             ],
-            limit: SHARED_FACTUAL_RECONCILE_LIMIT,
+            limit: capability.shared_factual_archive_hits,
         },
     )
     .unwrap_or_default()
+}
+
+fn load_shared_factual_entries(
+    long_term_store: &dyn LongTermMemoryStore,
+    chat_id: &str,
+    query_hint: &str,
+    summary_text: Option<&str>,
+    recent: &[SessionMessage],
+    profile: MemoryProfile,
+) -> Vec<LongTermMemoryEntry> {
+    let capability = memory_capability_profile(profile);
+    if capability.prompt_exact_lookup_enabled {
+        if let Some(slot) = parse_explicit_long_term_slot_query(query_hint) {
+            if let Ok(Some(entry)) = long_term_store.get_slot(&slot) {
+                return vec![entry];
+            }
+        }
+    }
+    recall_long_term_memory_entries(
+        long_term_store,
+        chat_id,
+        query_hint,
+        summary_text,
+        recent,
+        profile,
+    )
 }
 
 fn hit_supports_entry(entry: &LongTermMemoryEntry, hit: &ArchiveSearchHit) -> bool {
@@ -344,7 +372,7 @@ pub(crate) fn build_shared_factual_plane_snapshot(
     if max_len < 96 {
         return SharedFactualPlaneSnapshot::default();
     }
-    let recalled_entries = recall_long_term_memory_entries(
+    let recalled_entries = load_shared_factual_entries(
         long_term_store,
         chat_id,
         query_hint,
@@ -375,6 +403,7 @@ pub(crate) fn build_shared_factual_plane_snapshot(
                 &query,
                 summary_text,
                 recent,
+                profile,
             );
             reconcile_entry_observation(entry, &hits, now_secs)
         })
@@ -425,15 +454,19 @@ pub(crate) fn render_shared_factual_plane_block(
     }
     let query = build_shared_factual_query(None, recent);
     let recall_budget = max_len.saturating_sub(SHARED_FACTUAL_HEADER_LEN).max(96);
-    let recalled = recall_long_term_memory_block(
-        store,
-        chat_id,
-        &query,
-        summary_text,
-        recent,
-        recall_budget,
-        profile,
-    );
+    let recalled = parse_explicit_long_term_slot_query(&query)
+        .and_then(|slot| render_exact_long_term_memory_block(store, &slot, recall_budget))
+        .or_else(|| {
+            recall_long_term_memory_block(
+                store,
+                chat_id,
+                &query,
+                summary_text,
+                recent,
+                recall_budget,
+                profile,
+            )
+        });
     let mut out = String::with_capacity(max_len.min(768));
     out.push_str("## Shared Factual Plane\n");
     out.push_str(

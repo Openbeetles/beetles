@@ -1,16 +1,34 @@
-# Linux install and versions (current status)
+# Linux Package Status
 
 **English** | [中文](../zh-cn/linux-release-rollback.md) | [Doc index](../README.md)
 
-## Who this is for
+This page is not for normal firmware users.
 
-**Most users can skip this.** There is no polished one-click or single-command install for Linux yet; the musl bundles and layout notes are mainly for **integrators and operators** who need to line up release artifacts.  
-A smoother path (e.g. **one-click** or **install over SSH**) is planned; user-facing docs will be updated when that exists.
+It is only for people who are dealing with the Linux release bundles directly.
 
-## If you are installing manually
+## Current State
 
-Each tarball includes `README.txt` and a sample `beetle.service`. If you must deploy by hand, a common pattern is: extract under `/opt/beetle/releases/<version>/`, point a `current` symlink at the version to run, and use `BEETLE_STATE_ROOT` or defaults for state (see `src/platform/state_root.rs`). Follow the in-bundle notes—**this is not** the long-term end-user story.
+- Linux packaging exists
+- it is aimed at integrators and operators
+- it is not yet a polished one-click install flow
 
-## Relation to CI
+## If You Are Deploying Manually
 
-Releases ship checksums and build provenance; installation and rollback on the device are your responsibility and are not simulated in CI.
+Release tarballs include:
+
+- `README.txt`
+- a sample `beetle.service`
+
+A common manual layout is:
+
+- `/opt/beetle/releases/<version>/`
+- a `current` symlink pointing to the active version
+- state stored under `BEETLE_STATE_ROOT` or the runtime default
+
+Follow the instructions shipped inside the bundle. That is the authoritative source for the package you are installing.
+
+## CI and Rollback
+
+- releases include checksums and provenance
+- installation and rollback on the target machine are your responsibility
+- CI does not simulate on-machine rollback behavior

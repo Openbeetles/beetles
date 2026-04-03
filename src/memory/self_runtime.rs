@@ -12,23 +12,24 @@ use std::fmt::Write as _;
 
 use super::{
     autonomy_idle_interval_secs, build_archive_evidence_block, build_self_state,
-    build_shared_factual_plane_snapshot, build_world_snapshot,
+    build_world_snapshot,
     llm_json::{get_object_bool, get_object_text, parse_llm_json_payload, LlmJsonPayload},
-    memory_policy, render_autonomy_strategy_block, render_execution_state_block,
-    render_inner_life_block, render_internal_memory_topology_block,
+    memory_capability_profile, memory_policy, render_autonomy_strategy_block,
+    render_execution_state_block, render_inner_life_block, render_internal_memory_topology_block,
     render_private_doc_workspace_block, render_private_garden_block,
     render_private_memory_boundary_block, render_self_continuity_block, render_self_model_block,
     render_self_state_block, render_world_sense_block, render_world_snapshot_block,
     run_autonomy_strategy_refresh_with_state, run_inner_life_refresh_with_state,
-    run_outer_voice_refresh_with_state, run_private_doc_workspace_refresh_with_state,
-    run_private_garden_governance_with_state, run_self_continuity_refresh_with_state,
-    run_world_sense_refresh_with_state, touch_self_continuity_runtime, AutonomyGovernanceTendency,
-    AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome,
-    AutonomyStrategyStore, ExecutionStateStore, InnerLifeRefreshContext, InnerLifeRefreshInput,
-    InnerLifeRefreshOutcome, InnerLifeStore, InternalMemoryLayerFocus, LongTermMemoryStore,
-    MemoryProfile, MemoryStore, MentalPrivacyStore, OuterVoiceRefreshContext,
-    OuterVoiceRefreshInput, OuterVoiceRefreshOutcome, OuterVoiceStore, PrivateDocStore,
-    PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
+    run_memory_governance_kernel, run_outer_voice_refresh_with_state,
+    run_private_doc_workspace_refresh_with_state, run_private_garden_governance_with_state,
+    run_self_continuity_refresh_with_state, run_world_sense_refresh_with_state,
+    touch_self_continuity_runtime, AutonomyGovernanceTendency, AutonomyStrategyRefreshContext,
+    AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome, AutonomyStrategyStore,
+    ExecutionStateStore, InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome,
+    InnerLifeStore, InternalMemoryLayerFocus, LongTermMemoryStore, MemoryGovernanceContext,
+    MemoryGovernanceInput, MemoryProfile, MemoryStore, MentalPrivacyStore,
+    OuterVoiceRefreshContext, OuterVoiceRefreshInput, OuterVoiceRefreshOutcome, OuterVoiceStore,
+    PrivateDocStore, PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
     PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
     PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, PrivateGardenStore,
     RemindAtStore, SelfContinuityRefreshContext, SelfContinuityRefreshInput,
@@ -623,18 +624,24 @@ fn execute_self_runtime_actions(
     } else {
         payload.reply_content.as_str()
     };
-    let factual_snapshot = build_shared_factual_plane_snapshot(
-        ctx.session_store,
-        ctx.long_term_memory_store,
-        ctx.memory_store,
-        ctx.turn_ledger_store,
-        chat_id,
-        query_hint,
-        state.summary_text.as_deref(),
-        state.recent.as_slice(),
-        memory_policy(profile).self_runtime.grounding_max_len,
-        profile,
+    let governance = run_memory_governance_kernel(
+        MemoryGovernanceContext {
+            session_store: ctx.session_store,
+            long_term_memory_store: ctx.long_term_memory_store,
+            memory_store: ctx.memory_store,
+            turn_ledger_store: ctx.turn_ledger_store,
+        },
+        MemoryGovernanceInput {
+            chat_id,
+            query_hint,
+            summary_text: state.summary_text.as_deref(),
+            recent: state.recent.as_slice(),
+            max_len: memory_policy(profile).self_runtime.grounding_max_len,
+            profile,
+            external_content_used: payload.external_content_used,
+        },
     );
+    let factual_snapshot = governance.factual_plane_snapshot;
     let decision = match decide_self_runtime(
         http,
         llm,
@@ -947,6 +954,7 @@ pub fn self_runtime_tick(
     now_secs: u64,
 ) {
     let policy = memory_policy(profile).self_runtime;
+    let capability = memory_capability_profile(profile);
     let chat_ids = match session_store.list_chat_ids() {
         Ok(chat_ids) => chat_ids,
         Err(error) => {
@@ -956,7 +964,10 @@ pub fn self_runtime_tick(
     };
     let mut enqueued = 0usize;
     for chat_id in chat_ids {
-        if enqueued >= policy.max_jobs_per_tick {
+        let max_jobs_per_tick = policy
+            .max_jobs_per_tick
+            .min(capability.runtime_max_jobs_per_tick);
+        if enqueued >= max_jobs_per_tick {
             break;
         }
         let continuity = match self_continuity_store.get(&chat_id) {

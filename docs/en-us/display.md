@@ -1,8 +1,17 @@
 # Display dashboard
 
-**English** | [中文](../zh-cn/display.md)
+**English** | [中文](../zh-cn/display.md) | [Doc index](../README.md)
 
-The display module drives an SPI-connected TFT screen to show a real-time operational dashboard. A procedurally drawn beetle icon reflects system state at a glance, alongside channel health, IP address, and heap pressure — all without image assets or external fonts.
+This page is for people who want to attach an SPI TFT screen to Beetle.
+
+If you only need the shortest path:
+
+1. wire the screen over SPI
+2. create `config/display.json`
+3. choose the right `driver`, `width`, `height`, and SPI pins
+4. reboot and check the dashboard
+
+The display module renders a real-time status dashboard with no bitmap assets or external fonts.
 
 ---
 
@@ -15,6 +24,12 @@ The display module drives an SPI-connected TFT screen to show a real-time operat
 | **ST7735** | 128x160, 128x128, 80x160, etc. | ST7735 / ST7735R / ST7735S family (register-compatible); inversion OFF by default; uses frame-rate, power, and gamma init |
 
 ST7789 and ILI9341 share a short init (SWRESET → SLPOUT → COLMOD `0x55` → MADCTL → INV → NORON → DISPON). **ST7735** sends frame-rate, power, and gamma registers after SLPOUT, uses COLMOD `0x05`, then MADCTL → INV → NORON → DISPON. The `invert_colors` flag flips each driver's default inversion behavior.
+
+If you are not sure which panel you have:
+
+- many 240x240 / 240x320 modules are `st7789`
+- many 240x320 TFT modules are `ili9341`
+- many 1.8-inch 128x160 modules are `st7735`
 
 ---
 

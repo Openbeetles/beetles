@@ -5,15 +5,17 @@ use crate::task::TaskStore;
 
 use super::{
     build_archive_evidence_block, build_self_state, build_world_snapshot, collect_private_targets,
-    memory_policy, recall_long_term_memory_block, render_autonomy_strategy_block,
-    render_execution_state_block, render_inner_life_block, render_mental_privacy_boundary_block,
-    render_outer_voice_block, render_private_doc_workspace_block, render_private_garden_block,
-    render_self_continuity_block, render_self_model_block, render_self_state_block,
-    render_world_sense_block, render_world_snapshot_block, AutonomyStrategyStore,
-    ExecutionStateStore, InnerLifeStore, LongTermMemoryStore, MemoryProfile, MemoryStore,
-    MentalPrivacyStore, OuterVoiceStore, PrivateDocStore, PrivateGardenStore, RemindAtStore,
-    SelfContinuityStore, SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
-    TurnLedgerStore, WorldSenseStore, WorldSnapshotContext,
+    memory_capability_profile, memory_policy, parse_explicit_long_term_slot_query,
+    recall_long_term_memory_block, render_autonomy_strategy_block,
+    render_exact_long_term_memory_block, render_execution_state_block, render_inner_life_block,
+    render_mental_privacy_boundary_block, render_outer_voice_block,
+    render_private_doc_workspace_block, render_private_garden_block, render_self_continuity_block,
+    render_self_model_block, render_self_state_block, render_world_sense_block,
+    render_world_snapshot_block, AutonomyStrategyStore, ExecutionStateStore, InnerLifeStore,
+    LongTermMemoryStore, MemoryProfile, MemoryStore, MentalPrivacyStore, OuterVoiceStore,
+    PrivateDocStore, PrivateGardenStore, RemindAtStore, SelfContinuityStore, SelfModelStore,
+    SessionMessage, SessionStore, SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
+    WorldSnapshotContext,
 };
 
 pub struct PromptMemoryContext {
@@ -219,15 +221,38 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
             let grounding_start = recent_messages
                 .len()
                 .saturating_sub(recall_policy.recent_grounding_message_count);
-            recall_long_term_memory_block(
-                params.long_term_memory_store,
-                params.chat_id,
-                params.user_query,
-                summary_text.as_deref(),
-                &recent_messages[grounding_start..],
-                params.system_max_len,
-                params.profile,
-            )
+            let capability = memory_capability_profile(params.profile);
+            if capability.prompt_exact_lookup_enabled {
+                parse_explicit_long_term_slot_query(params.user_query)
+                    .and_then(|slot| {
+                        render_exact_long_term_memory_block(
+                            params.long_term_memory_store,
+                            &slot,
+                            params.system_max_len,
+                        )
+                    })
+                    .or_else(|| {
+                        recall_long_term_memory_block(
+                            params.long_term_memory_store,
+                            params.chat_id,
+                            params.user_query,
+                            summary_text.as_deref(),
+                            &recent_messages[grounding_start..],
+                            params.system_max_len,
+                            params.profile,
+                        )
+                    })
+            } else {
+                recall_long_term_memory_block(
+                    params.long_term_memory_store,
+                    params.chat_id,
+                    params.user_query,
+                    summary_text.as_deref(),
+                    &recent_messages[grounding_start..],
+                    params.system_max_len,
+                    params.profile,
+                )
+            }
         };
     let archive_evidence_text = if !params.load_long_term_memory {
         None

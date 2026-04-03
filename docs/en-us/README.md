@@ -1,16 +1,24 @@
-# English docs
+# English Docs
 
 [Back to documentation index](../README.md)
 
-Suggested order: **configuration** → **config-api** (when integrating); **tools** / **llm-providers** as needed; **architecture** / **hardware** for development.
+Use this page when you already know you want the English docs set.
 
-| Doc | Purpose |
-|-----|---------|
-| [configuration.md](configuration.md) | Device access, config UI, pairing, common keys |
-| [config-api.md](config-api.md) | HTTP API contract (auth, CSRF) |
-| [tools.md](tools.md) | Agent tools (user-oriented) |
-| [llm-providers.md](llm-providers.md) | LLM provider IDs and examples |
-| [architecture.md](architecture.md) | Modules and data flow |
-| [hardware.md](hardware.md) | Boards, resources, troubleshooting entry |
-| [hardware-device-config.md](hardware-device-config.md) | Hardware JSON and device_control |
-| [linux-release-rollback.md](linux-release-rollback.md) | Linux release tarball notes |
+| Doc | When to read it |
+|-----|-----------------|
+| [configuration.md](configuration.md) | First setup, hotspot access, pairing code, config page |
+| [config-api.md](config-api.md) | Custom frontend, scripts, or third-party integration |
+| [tools.md](tools.md) | What the agent can call at runtime |
+| [llm-providers.md](llm-providers.md) | Provider IDs, `api_url` rules, fallback order |
+| [display.md](display.md) | SPI display setup and dashboard behavior |
+| [hardware.md](hardware.md) | Supported boards, resources, troubleshooting |
+| [hardware-device-config.md](hardware-device-config.md) | `hardware.json` and `device_control` |
+| [architecture.md](architecture.md) | Module layout and extension points |
+| [linux-release-rollback.md](linux-release-rollback.md) | Linux package status for integrators/operators |
+
+Suggested order:
+
+1. `configuration`
+2. `config-api` if you integrate with the device
+3. `tools` and `llm-providers` as needed
+4. `hardware`, `display`, and `architecture` when going deeper

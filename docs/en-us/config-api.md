@@ -2,7 +2,15 @@
 
 [中文](../zh-cn/config-api.md) | **English** | [Doc index](../README.md)
 
-This doc is for **developers integrating with the device HTTP API** (e.g. custom config UI, scripts, or third-party apps). Firmware is centered on **HTTP APIs** and also embeds minimal pages at **`/wifi`**, **`/pairing`**, plus **`/common.css`** / **`/common.js`** (see below). A richer UI can be provided externally (e.g. this repo’s `configure-ui`). After connecting to the device hotspot or the same LAN, the user enters the **device address** in that page (**http://192.168.4.1** when on the device hotspot, or the router-assigned IP when on the same LAN) to call the APIs below.
+This page is for developers who want to call the device over HTTP.
+
+Read this page when you need:
+
+- the pairing and CSRF rules
+- the exact read/write API behavior
+- the endpoint list for your own frontend, script, or integration
+
+If you only want to bring up a device and use the built-in configuration flow, read [configuration.md](configuration.md) first.
 
 ## Network and access
 
@@ -18,8 +26,8 @@ Source of truth: [`dispatch.rs`](../../src/platform/http_server/router/dispatch.
 
 - **Not activated**: No valid 6-digit pairing code stored in NVS.
 - **Activated**: `POST /api/pairing_code` has succeeded at least once.
-- **Activated only** (`require_activated`): The device is activated; the request **does not** need `?code=` or `X-Pairing-Code`.
-- **Writes** (state-changing): After activation, default to **pairing code** + **CSRF** (pairing first, then CSRF). Path list and **exceptions**: section **Writes: pairing code + CSRF**.
+- **Activated only** (`require_activated`): The device must already be activated, but the request itself does **not** need `?code=` or `X-Pairing-Code`.
+- **Writes**: After activation, state-changing APIs normally require **pairing code + CSRF**. The exact list and exceptions are below.
 
 ### Allowed when not activated
 

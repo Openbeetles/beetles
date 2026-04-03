@@ -176,8 +176,15 @@ impl AgentRequestPlan<'_> {
             .iter()
             .any(|tool| tool.name == "memory_search");
         let has_memory_get = self.tool_specs.iter().any(|tool| tool.name == "memory_get");
+        let has_factual_memory = self
+            .tool_specs
+            .iter()
+            .any(|tool| tool.name == "factual_memory");
         if has_memory_search && has_memory_get {
             guidance.push_str(" For retained conversation history, daily notes, or turn logs, use memory_search to locate archive evidence and memory_get to inspect one cited record. Archive hits are evidence sources only; do not treat them as canonical shared memory unless you separately distill and verify a stable conclusion.");
+        }
+        if has_factual_memory {
+            guidance.push_str(" For exact canonical shared facts, slot-shaped profile values, durable constraints, or stable task/project records, prefer factual_memory over archive search. factual_memory returns canonical records plus evidence posture; use archive evidence only when you need supporting records or reconciliation.");
         }
         Some(guidance)
     }

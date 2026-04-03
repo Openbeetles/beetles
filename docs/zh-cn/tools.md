@@ -2,94 +2,106 @@
 
 [English](../en-us/tools.md) | **中文** | [文档索引](../README.md)
 
-说明聊天时 **Agent 可自动调用的工具**（无需手动调用）：名称、用途与限制。调用失败时 Agent 会用自然语言反馈原因。
+这篇文档讲的是 Beetle 在运行时到底有哪些工具可用。
 
-权威注册逻辑见固件 [`build_default_registry`](../../src/tools/registry.rs)。下列按 **Cargo feature** 与 **运行时配置** 归纳；仓库默认 feature 见根目录 [`Cargo.toml`](../../Cargo.toml)（当前默认启用 **`tools_diagnostics`** 与 **`tools_network_extra`**）。
+先把最容易误解的三点说清楚：
 
----
+- 普通聊天里，用户不需要手动输入工具名
+- 模型会在需要时自动调用这些工具
+- 真正能看到哪些工具，还会受 target、feature、配置和策略影响
 
-## 始终注册（与 feature 无关）
+权威来源是 [`build_default_registry`](../../src/tools/registry.rs)。
 
-| 工具名 | 作用概要 | Agent 可能使用的场景 |
-|--------|----------|----------------------|
-| **get_time** | 返回当前 UTC 时间（日期、星期、时分秒）。 | 「几点了」「今天几号」等。 |
-| **env** | 进程环境变量：`get` / `list`。 | 调试或读取运行环境（注意敏感变量勿写入对话）。 |
-| **files** | 列出或**读取**设备存储（SPIFFS）中的文件；路径须在存储根下，禁止 `..`。 | 列出目录、读取配置/技能/笔记等（只读）。 |
-| **remind_at** | 按时间（ISO8601 或 Unix 秒）与文案写入提醒；到点在同通道推送消息。 | 「X 点提醒我 …」。 |
-| **remind_list** | 列出当前会话未到点的提醒（可限条数）。 | 「我设了哪些提醒」。 |
-| **board_info** | 芯片型号、堆/PSRAM、运行时间、资源压力、WiFi 状态、SPIFFS 用量等。 | 「设备状态」「内存」「存储」。 |
-| **kv_store** | 持久键值：`get`/`set`/`delete`/`list_keys`；key 字符集与长度、value 与条数有上限。 | 「记住 …」「之前存了什么 key」。 |
-| **file_write** | 向存储根下**写入**文件（覆写/追加）；关键路径（如 `config/llm.json`、`config/SOUL.md` 等）受保护不可写。 | 用户笔记、非受控路径下的写入需求。 |
+## 始终注册的工具
 
----
+| 工具 | 用途 |
+|------|------|
+| `get_time` | 获取当前 UTC 时间 |
+| `env` | 读取环境变量，主要用于运行时/调试场景 |
+| `message` | 发送运行时管理的出站消息 |
+| `task` | 持久任务管理 |
+| `calendar` | 持久日历事件 |
+| `files` | 列出或读取状态根下的文件 |
+| `file_edit` | 对状态根中的文本文件做局部修改 |
+| `remind_at` | 创建提醒 |
+| `remind_list` | 列出当前 chat 的提醒 |
+| `board_info` | 查看芯片、堆、PSRAM、运行时间、WiFi、SPIFFS |
+| `kv_store` | 持久键值存储 |
+| `private_garden` | 当前 chat 私有工作区 |
+| `memory_search` | 搜索 transcript、daily note、turn log 中的档案证据 |
+| `memory_get` | 读取一条档案证据记录 |
+| `continuity_snapshot` | 导出或导入连续性状态 |
+| `file_write` | 向允许写入的状态根文件写内容 |
 
-## 依赖 Cargo feature `tools_network_extra`
+## `tools_network_extra` 下的工具
 
-关闭该 feature 时，下列工具**不会**注册。
+| 工具 | 用途 |
+|------|------|
+| `web_search` | 网页搜索 |
+| `analyze_image` | 分析图片 URL |
+| `http_request` | 发起公网 HTTP 请求 |
+| `proxy_config` | 读写代理配置 |
+| `model_config` | 读写模型配置字段 |
 
-| 工具名 | 作用概要 | Agent 可能使用的场景 |
-|--------|----------|----------------------|
-| **web_search** | 按关键词联网搜索并返回摘要。 | 需要较新事实或「搜一下 …」。 |
-| **analyze_image** | 根据图片 URL 用视觉模型分析内容。 | 提供图片链接并询问画面内容。 |
-| **http_request** | 统一 HTTP：**GET/POST/PUT/DELETE/PATCH**；可带头与 body。**禁止访问私网地址**（SSRF 防护）。 | 拉取公开 API、Webhook、自动化回调等。 |
-| **proxy_config** | 查看/设置/清除 HTTP 代理（NVS）；**重启后生效**。 | 运行时改代理（若策略允许）。 |
-| **model_config** | 查看或更新 `config/llm.json` 中模型相关字段（**不回显 api_key**）；**重启后生效**。 | 切换模型/URL 等（若策略允许）。 |
+## 非 ESP 且启用 `tools_network_extra` 时额外出现的工具
 
----
+这些工具只会在非 ESP 构建里出现。对固件用户来说，通常可以先忽略这一组。
 
-## 依赖 Cargo feature `tools_diagnostics`
+| 工具 | 用途 |
+|------|------|
+| `document_search` | 搜索存储中的文档 |
+| `document_read` | 读取公网 URL 或本地文档 |
+| `document_extract` | 抽取行、章节或 JSON 字段 |
+| `web_fetch` | 把公网网页抓成可读文本 |
+| `pdf_read` | 读取公网 PDF |
 
-关闭该 feature 时，下列工具**不会**注册（`device_control` / `sensor_watch` / I2C 类还受配置条件约束）。
+## `tools_diagnostics` 下的工具
 
-| 工具名 | 作用概要 | Agent 可能使用的场景 |
-|--------|----------|----------------------|
-| **memory_manage** | 长期记忆、SOUL/USER、每日笔记等：`get_memory`/`set_memory`、`get_soul`/`set_soul`、`get_user`/`set_user`、日记读写等。 | 管理记忆与笔记（与配置页 SOUL/USER 文件域不同，以工具语义为准）。 |
-| **session_manage** | 会话：`list`/`info`/`clear`/`delete`。 | 查看或清理某会话历史。 |
-| **system_control** | `restart`（须 `confirm=true`）、`spiffs_usage`。 | 重启设备、查看 SPIFFS 用量（高风险操作会要求确认）。 |
-| **cron_manage** | 持久化定时任务 CRUD（cron 表达式 + 触发动作）；由设备 cron 循环调度。 | 管理周期性自动发消息类任务。 |
-| **network_scan** | `wifi_scan`、`wifi_status`、`connectivity_check`；扫描有**最小间隔**限制。 | WiFi 与简单连通性诊断。 |
+| 工具 | 用途 |
+|------|------|
+| `memory_manage` | 管理长期记忆及相关文本存储 |
+| `session_manage` | 查看、清理或删除会话 |
+| `system_control` | 重启和存储相关系统操作 |
+| `cron_manage` | 持久定时任务 |
+| `network_scan` | WiFi 和连通性检查 |
 
-### 条件注册（在启用 `tools_diagnostics` 前提下）
+`tools_diagnostics` 打开后，下面这些工具会按条件出现：
 
-| 工具名 | 何时注册 | 作用概要 |
-|--------|----------|----------|
-| **device_control** | `hardware_devices` 非空 | 按配置的 `device_id` 操作 GPIO/PWM/ADC/蜂鸣器等；详见 [硬件设备配置](hardware-device-config.md)。 |
-| **sensor_watch** | `hardware_devices` 非空 **或** `i2c_sensors` 非空 | 传感器阈值告警：`add`/`list`/`remove`/`update`；与 cron 协同。 |
-| **i2c_device** | 配置了 `i2c_bus` 且 `i2c_devices` 非空 | 按配置的 I2C 设备读写寄存器。 |
-| **i2c_sensor** | 配置了 `i2c_bus` 且 `i2c_sensors` 非空 | I2C 传感器读数（与 `sensor_watch` 协同）。 |
+| 工具 | 出现条件 |
+|------|----------|
+| `device_control` | 配置了 `hardware_devices` |
+| `sensor_watch` | 配置了可监控硬件或 I2C 传感器 |
+| `i2c_device` | 配置了 I2C 总线和 I2C 设备 |
+| `i2c_sensor` | 配置了 I2C 总线和 I2C 传感器 |
 
----
+## 音频相关工具
 
-## 音频：语音输入/输出（条件注册）
+只有在音频配置和凭证齐全时才会出现：
 
-当存在 **`config/audio.json`** 且 **`audio.enabled`**，且百度 STT/TTS 凭证与麦克风/扬声器开关满足 [`registry.rs`](../../src/tools/registry.rs) 中的检查时注册：
+| 工具 | 用途 |
+|------|------|
+| `voice_input` | 语音转文字 |
+| `voice_output` | 文字转语音 |
 
-| 工具名 | 条件摘要 |
-|--------|----------|
-| **voice_input** | `stt.provider == "baidu"`，STT key/secret 非空，`microphone.enabled` |
-| **voice_output** | `tts.provider == "baidu"` 且与 STT 同源凭证，`speaker.enabled` |
+## 仅宿主侧可用的工具
 
----
+这些工具只在非 ESP 构建里可用，主要是给宿主侧开发和调试准备的：
 
-## 仅非 ESP 目标（如 Linux 宿主）
+| 工具 | 用途 |
+|------|------|
+| `shell` | 受限 shell 执行 |
+| `process` | 宿主进程操作 |
+| `network` | 宿主网络诊断 |
 
-下列工具在 **`xtensa` / `riscv32` 嵌入式目标上不会编译注册**：
+## 使用说明
 
-| 工具名 | 作用概要 |
-|--------|----------|
-| **shell** | 受限 shell 命令执行（宿主调试）。 |
-| **process** | 进程相关操作。 |
-| **network** | 宿主网络诊断。 |
+- `files` 只读；`file_write` 和 `file_edit` 只能操作允许写入的路径。
+- `private_garden` 按当前 chat 隔离，不会和别的会话混在一起。
+- `memory_search` 和 `memory_get` 返回的是档案证据，不是最终事实层。
+- `http_request`、`web_fetch`、`pdf_read` 会拒绝内网和本机目标。
+- `GET /api/tools` 可能列不全全部运行时工具，真正的准绳还是注册表。
 
----
+相关文档：
 
-## 限制与说明
-
-- **时间**：设备时间需 NTP/RTC 同步后才准；可用 **get_time** 自检。
-- **files**：只读；路径不得越权；列表条数与单文件读取长度有上限（见实现常量）。
-- **提醒**：存于设备，条数有上限；到点向**当前通道/会话**推送。
-- **网络类工具**（web_search、analyze_image、http_request、network_scan 等）：在资源紧张时 orchestrator 可能限流或推迟调用。
-- **http_request**：**内网/本机地址会被拒绝**，勿用于探测局域网。
-- **GET /api/tools**（HTTP）列出的工具名可能与上述注册表**不完全一致**，以运行时 Registry 与本页为准。
-
-如需通过 JSON 描述板载外设并由 Agent 语义操作硬件，见 [硬件设备配置](hardware-device-config.md) 与配置页「硬件」相关项。
+- [hardware-device-config.md](hardware-device-config.md)
+- [config-api.md](config-api.md)

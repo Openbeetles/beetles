@@ -1,55 +1,62 @@
-# Hardware and resources
+# Hardware and Board Notes
 
 **English** | [中文](../zh-cn/hardware.md) | [Doc index](../README.md)
 
-For **board selection and troubleshooting**: supported boards, memory and build options, where to observe runtime health, and pointers to configurable hardware docs (`hardware.json` details are not duplicated here).
+This page answers three basic questions:
 
----
+1. Which boards are officially covered by the current firmware presets?
+2. What should I know about memory, build profile, and observability?
+3. Where should I look when something goes wrong?
 
-## Boards and resources
+## Supported Boards
 
-| Board (BOARD=) | Flash | PSRAM | CPU | Notes |
-|----------------|-------|-------|-----|-------|
-| `esp32-s3-8mb` | 8MB | 8MB Octal | 240MHz | N8R8; use `BOARD=esp32-s3-8mb ./build.sh` |
-| `esp32-s3-16mb` | 16MB | 8MB Octal | 240MHz | N16R8; default when BOARD unset |
-| `esp32-s3-32mb` | 32MB | 16MB Octal | 240MHz | N32R16; use `BOARD=esp32-s3-32mb ./build.sh` |
+| BOARD | Flash | PSRAM | Notes |
+|------|-------|-------|------|
+| `esp32-s3-8mb` | 8MB | 8MB | N8R8 |
+| `esp32-s3-16mb` | 16MB | 8MB | Default preset |
+| `esp32-s3-32mb` | 32MB | 16MB | N32R16 |
 
-- Board is selected via `BOARD=esp32-s3-8mb` | `esp32-s3-16mb` | `esp32-s3-32mb` (optional; default `esp32-s3-16mb`); `board_presets.toml` defines target and partition table.
-- **Only ESP32-S3 with PSRAM is supported**.
+Current rule:
 
----
+- only **ESP32-S3 with PSRAM** is supported by the board presets in this repo
 
-## Memory and watchdog
+## Memory and Runtime Behavior
 
-- **ESP32-S3**: Large allocations use PSRAM first; HTTP response bodies and other large buffers use PSRAM to reduce internal heap pressure. The orchestrator module manages resource admission: HTTP requests go through priority-based TLS permit with real-time heap checks; agent inbound messages and LLM/tool calls are gated by pressure level (Normal/Cautious/Critical).
-- **Watchdog**: Task watchdog ~60 s; LLM/HTTP long requests feed the dog before running; if request timeout is ≥60s, keep this in mind.
+- Large allocations prefer PSRAM.
+- The orchestrator gates work based on runtime pressure.
+- HTTP, LLM, and tool activity can be limited when memory is tight.
+- Long HTTP or LLM operations must coexist with the task watchdog.
 
----
+## Build Profiles
 
-## Build and performance
+- `cargo build --release` uses `opt-level = 2`
+- `cargo build --profile release-size` is the size-focused profile
 
-- Default `cargo build --release` uses `opt-level = 3` (performance first).
-- If you need a smaller firmware image, use:  
-  `cargo build --profile release-size`  
-  (`opt-level = "s"`).
+## What To Monitor
 
----
+| Where | What you learn |
+|-------|----------------|
+| `GET /api/health` | Overall status and health snapshot |
+| `GET /api/resource` | Runtime resource snapshot |
+| serial logs | Boot info, heartbeat, and warnings |
+| `cli` feature | Extra serial inspection commands such as `heap_info` |
 
-## Observability
+Exact HTTP field shapes are documented in [config-api.md](config-api.md).
 
-- **HTTP**: `GET /api/health` and `GET /api/resource` are documented in [config-api](config-api.md) (orchestrator-aligned snapshots).
-- **Logs**: Heartbeat emits periodic baselines for trends.
-- **CLI** (feature `cli`): Serial `heap_info` and related commands for heap/PSRAM summaries.
+## Hardware Devices
 
----
+If you want the agent to control LEDs, relays, buzzers, sensors, or PWM devices, read:
 
-## Configurable hardware devices
+- [hardware-device-config.md](hardware-device-config.md)
+- [tools.md](tools.md) for `device_control`
 
-See [Hardware device config](hardware-device-config.md) (design constraints) and [config-api /api/config/hardware](config-api.md) (HTTP contract). The Agent tool name is **`device_control`** (registration rules in [tools](tools.md)).
+## Common Problems
 
----
+- `spiffs partition could not be found`
+  Use the project's board preset and partition table.
 
-## Known issues and troubleshooting
+- `esp_task_wdt_reset: task not found`
+  A thread doing HTTP was probably not registered with the task watchdog.
 
-- **`esp_task_wdt_reset: task not found`**: Any thread that performs HTTP must be registered with the task watchdog (TWDT). The main Agent thread, Feishu/QQ WSS threads, and Telegram poll thread call `register_current_task_to_task_wdt()` at startup. If you still see this, check for use of `EspHttpClient` in a new thread without registration.
-- **`couldn't get hostname for :xxx: getaddrinfo() returns 202`**: In ESP-IDF log format `:%s:` the colons are delimiters, not part of the hostname. 202 is DNS resolution failure. Common causes: WSS client auto-reconnect consuming socket/DNS (addressed with `disable_auto_reconnect: true`), or WiFi/DNS not ready.
+- `getaddrinfo() returns 202`
+  Usually means DNS resolution failed or the network stack was not ready.

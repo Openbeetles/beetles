@@ -28,6 +28,7 @@ pub mod document_read;
 ))]
 pub mod document_search;
 pub mod env;
+pub mod factual_memory;
 pub mod file_edit;
 pub mod file_write;
 pub mod files;
@@ -104,6 +105,7 @@ pub use document_read::DocumentReadTool;
 ))]
 pub use document_search::DocumentSearchTool;
 pub use env::EnvTool;
+pub use factual_memory::FactualMemoryTool;
 pub use file_edit::FileEditTool;
 pub use file_write::FileWriteTool;
 pub use files::FilesTool;

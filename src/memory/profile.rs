@@ -8,6 +8,31 @@ pub enum MemoryProfile {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemoryCapabilityClass {
+    ConstrainedDevice,
+    ExpandedDevice,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemoryHygieneLevel {
+    Minimal,
+    Standard,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemoryCapabilityProfile {
+    pub class: MemoryCapabilityClass,
+    pub archive_prompt_max_items: usize,
+    pub archive_prompt_max_chars: usize,
+    pub shared_factual_archive_hits: usize,
+    pub exact_slot_lookup_enabled: bool,
+    pub prompt_exact_lookup_enabled: bool,
+    pub slot_query_max_results: usize,
+    pub background_hygiene_level: MemoryHygieneLevel,
+    pub runtime_max_jobs_per_tick: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SessionSummaryPolicy {
     pub refresh_min_messages: usize,
     pub refresh_delta_messages: usize,
@@ -548,10 +573,43 @@ const STANDARD_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
     },
 };
 
+const EMBEDDED_MEMORY_CAPABILITY_PROFILE: MemoryCapabilityProfile = MemoryCapabilityProfile {
+    class: MemoryCapabilityClass::ConstrainedDevice,
+    archive_prompt_max_items: 3,
+    archive_prompt_max_chars: 512,
+    shared_factual_archive_hits: 2,
+    exact_slot_lookup_enabled: true,
+    prompt_exact_lookup_enabled: true,
+    slot_query_max_results: 4,
+    background_hygiene_level: MemoryHygieneLevel::Minimal,
+    runtime_max_jobs_per_tick: 2,
+};
+
+const STANDARD_MEMORY_CAPABILITY_PROFILE: MemoryCapabilityProfile = MemoryCapabilityProfile {
+    class: MemoryCapabilityClass::ExpandedDevice,
+    archive_prompt_max_items: 4,
+    archive_prompt_max_chars: 768,
+    shared_factual_archive_hits: 3,
+    exact_slot_lookup_enabled: true,
+    prompt_exact_lookup_enabled: true,
+    slot_query_max_results: 8,
+    background_hygiene_level: MemoryHygieneLevel::Standard,
+    runtime_max_jobs_per_tick: 4,
+};
+
 pub(crate) fn memory_policy(profile: MemoryProfile) -> &'static MemoryPolicy {
     match profile {
         MemoryProfile::Embedded => &EMBEDDED_MEMORY_POLICY,
         MemoryProfile::Standard => &STANDARD_MEMORY_POLICY,
+    }
+}
+
+pub(crate) fn memory_capability_profile(
+    profile: MemoryProfile,
+) -> &'static MemoryCapabilityProfile {
+    match profile {
+        MemoryProfile::Embedded => &EMBEDDED_MEMORY_CAPABILITY_PROFILE,
+        MemoryProfile::Standard => &STANDARD_MEMORY_CAPABILITY_PROFILE,
     }
 }
 
@@ -603,5 +661,20 @@ mod tests {
         );
         assert!(standard.self_runtime.max_jobs_per_tick > embedded.self_runtime.max_jobs_per_tick);
         assert!(standard.self_state.render_max_len > embedded.self_state.render_max_len);
+    }
+
+    #[test]
+    fn standard_capability_profile_supports_stronger_memory_sidecar() {
+        let embedded = memory_capability_profile(MemoryProfile::Embedded);
+        let standard = memory_capability_profile(MemoryProfile::Standard);
+        assert!(standard.archive_prompt_max_items > embedded.archive_prompt_max_items);
+        assert!(standard.archive_prompt_max_chars > embedded.archive_prompt_max_chars);
+        assert!(standard.shared_factual_archive_hits > embedded.shared_factual_archive_hits);
+        assert!(standard.slot_query_max_results > embedded.slot_query_max_results);
+        assert!(matches!(
+            standard.background_hygiene_level,
+            MemoryHygieneLevel::Standard
+        ));
+        assert!(standard.runtime_max_jobs_per_tick > embedded.runtime_max_jobs_per_tick);
     }
 }

@@ -5,8 +5,8 @@
 <h1 align="center">Beetle</h1>
 
 <p align="center">
-  <strong>Hardware-native Edge AI Agent Runtime</strong><br/>
-  Rust · ReAct · Multi-channel · Zero relay
+  <strong>Edge AI Agent firmware for ESP32-S3</strong><br/>
+  Rust · ReAct · Tools · Memory · Hardware control
 </p>
 
 <p align="center">
@@ -14,141 +14,72 @@
 </p>
 
 <p align="center">
-  <a href="http://beetle.uno/"><img alt="Live Config UI" src="https://img.shields.io/badge/Live%20Config%20UI-beetle.uno-1f6feb" /></a>
+  <a href="docs/README.md"><img alt="Docs" src="https://img.shields.io/badge/Docs-index-1f6feb" /></a>
   <a href="#quick-start"><img alt="Quick Start" src="https://img.shields.io/badge/Quick%20Start-5%20minutes-2ea043" /></a>
-  <a href="#platform-roadmap"><img alt="Platform Roadmap" src="https://img.shields.io/badge/Platform-ESP32--S3%20%E2%86%92%20Linux%20Class-orange" /></a>
+  <a href="#supported-boards"><img alt="Boards" src="https://img.shields.io/badge/Boards-ESP32--S3-orange" /></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg" /></a>
 </p>
 
-> **One device, one agent runtime.**  
-> Build once, connect many channels, and drive real hardware with LLM decisions.
+Beetle is a firmware runtime that lets one ESP32-S3 board act like an AI agent:
 
-| Why Beetle | What you get now |
-|------------|------------------|
-| Hardware-native architecture | ReAct + tools + memory running on-board |
-| Full product loop | Built-in lightweight config pages + full `configure-ui` web app + portal [beetle.uno](http://beetle.uno/) |
-| Practical deployment target | Cost-effective devices in the **$7-$70** range |
-| Expansion path | ESP32-S3 baseline today, Linux-class and stronger platforms next |
+- It receives messages from chat channels.
+- It calls tools and uses memory on the device.
+- It can control hardware such as GPIO, PWM, ADC, and buzzer devices.
+- It exposes a browser-based configuration flow and an HTTP config API.
 
-Built for the **$7-$70 device range** (roughly CNY 50-500): ESP32 now, Linux-class and other common platforms next.  
-Current baseline and entry target is **ESP32-S3**; platforms with performance above ESP32-S3 are planned for compatibility expansion.
+If you want to flash a board and get to a working config page quickly, start here. If you are integrating the device into your own frontend or workflow, jump to [docs/README.md](docs/README.md).
 
-Feishu, DingTalk, WeCom, QQ Channel, Telegram, and WebSocket converge on one board—no gateway, no always-on PC. Provision via hotspot + browser; switch board type with `BOARD=xxx`.
+## What Is In The Repo
 
-## At a glance
+| Part | What it is for |
+|------|----------------|
+| Firmware runtime | The main ESP32-S3 agent firmware |
+| `configure-ui` | Full web configuration frontend |
+| HTTP config API | For custom frontends, scripts, and integrations |
+| Display system | Optional SPI TFT dashboard |
+| Host-side build paths | Development, document tools, and Linux packaging |
 
-- **What it is**: A hardware-native agent runtime inspired by OpenClaw.
-- **Why it matters**: One board handles chat channels, tools, memory, and device actions.
-- **Where it runs**: ESP32-S3 today; Linux-class and stronger platforms are on the roadmap.
-- **What it enables**: Portable intelligent assistants and LLM-driven smart-device interconnection.
-- **UI and delivery**: Firmware includes lightweight on-device config pages, and the full configuration web app is provided via `configure-ui` and [beetle.uno](http://beetle.uno/).
+## Current Scope
 
-## Typical use cases
+This repository currently documents and ships a stable firmware path for **ESP32-S3 boards with PSRAM**.
 
-- **Pocket assistant**: Carry one board, talk through your preferred channel, trigger local tools.
-- **Smart-space bridge**: Use LLM decisions to drive GPIO/PWM/ADC/buzzer and connect real devices.
-- **Team prototype**: Build a customizable, commercializable AI hardware workflow before scaling.
-- **Provisioning and operations UI**: Use the built-in configuration web UI for setup, channel config, health checks, and iterative tuning.
+Supported board presets:
 
----
+- `esp32-s3-8mb`
+- `esp32-s3-16mb`
+- `esp32-s3-32mb`
 
-## Table of contents
+The repo also contains non-ESP build paths for development and integration work. Those paths are useful, but this README is primarily about the ESP32-S3 firmware flow.
 
-- [Overview](#overview)
-- [At a glance](#at-a-glance)
-- [Typical use cases](#typical-use-cases)
-- [Who this is for](#who-this-is-for)
-- [Platform roadmap](#platform-roadmap)
-- [Prerequisites](#prerequisites)
-- [Quick start](#quick-start)
-- [Environment & build](#environment--build)
-- [Supported boards](#supported-boards)
-- [Configuration](#configuration)
-- [Features](#features)
-- [Storage & security](#storage--security)
-- [Documentation](#documentation)
-- [Troubleshooting](#troubleshooting)
-- [References & license](#references--license)
+## What You Can Do With It
 
----
+- Build a chat-connected AI device that runs directly on one board.
+- Connect Feishu, DingTalk, WeCom, and QQ Channel to the same runtime.
+- Enable `telegram` or `websocket` through optional Cargo features.
+- Store summaries, long-term memory, reminders, tasks, and archive evidence on the device.
+- Drive configured hardware through the `device_control` tool.
+- Show runtime status on an SPI display.
 
-## Overview
+## Quick Start
 
-- **Hardware as Agent runtime**: ReAct, tools, and memory run on the device itself (ESP32 baseline now, broader hardware targets next), with no mandatory cloud inference relay.
-- **Unified multi-channel**: All channels share one queue and one Agent; new channels register by implementing a trait.
-- **Browser provisioning**: When unprovisioned, the device opens hotspot **Beetle** (no password); open **http://192.168.4.1**. After WiFi is set, use the router-assigned device IP; pairing code protects write operations.
-- **Positioning**: A hardware-native \"openClaw\" for low-cost to mid-cost devices, with ESP32-S3 as the current baseline.
-- **Long-term vision**: Portable intelligent assistant + intelligent IoT interconnection, where LLM drives hardware capabilities for customizable and commercial deployments.
-- Inspired by [OpenClaw](https://github.com/openclaw/openclaw); type-safe full-stack Agent on MCU in Rust.
+### 1. Prepare the toolchain
 
-**System topology:**
+- Install the [esp-rs toolchain](https://docs.espressif.com/projects/rust-book/en/latest/introduction.html) with `espup install`
+- Install `espflash` with `cargo install espflash`
+- On Windows, install Visual Studio with Desktop development for C++
 
-```
- FEISHU  DINGTALK  WECOM  QQ  TG  WS
-     \      |      |    /   |   /
-      \     |      |   /    |  /
-       \    ▼      ▼  ▼     ▼
-    ┌────────────────────────────────────┐
-    │  BEETLE RUNTIME · ONE DEVICE AGENT │
-    │  ReAct │ Tools │ Memory │ Orchestrator │
-    └────────────────────────────────────┘
-            │                   │
-            ▼                   ▼
-    ┌──────────────┐   ┌────────────────┐
-    │Platform Layer│   │ Display (SPI)  │
-    │ESP32-S3 (now)│   │ ST7789/ILI9341 │
-    │Linux+ (next) │   │ Dashboard UI   │
-    └──────────────┘   └────────────────┘
-```
+### 2. Build or flash
 
----
-
-## Who this is for
-
-- **Hardware developers / makers**: Build practical AI agents directly on low-cost boards.
-- **IoT and embedded engineers**: Use one Rust codebase to connect chat channels, tools, and device control.
-- **Product teams**: Prototype portable assistants and LLM-driven smart-device workflows before commercial rollout.
-- **Open-source contributors**: Extend channels, tools, models, and platform compatibility through traits.
-
----
-
-## Platform roadmap
-
-| Stage | Platform scope | Status |
-|-------|----------------|--------|
-| **Now** | ESP32-S3 as baseline and entry threshold | Stable |
-| **Next** | Linux-class edge devices (SBC/embedded Linux) | Planned |
-| **Then** | Other common hardware platforms with performance above ESP32-S3 | Planned |
-
-Current repo defaults target ESP32-S3 first to keep bring-up and validation deterministic. This is a **starting point**, not a hard platform limitation.
-
----
-
-## Prerequisites
-
-| Environment       | Requirement                                                                                                    |
-| ----------------- | -------------------------------------------------------------------------------------------------------------- |
-| **Rust**          | [esp-rs toolchain](https://docs.espressif.com/projects/rust-book/en/latest/introduction.html), `espup install` |
-| **Flash**         | [espflash](https://github.com/esp-rs/espflash), `cargo install espflash`                                       |
-| **macOS / Linux** | No extra deps; first run of `build.sh` may prompt for espup/ldproxy                                            |
-| **Windows**       | Visual Studio (Desktop development with C++ + Windows 10/11 SDK)                                               |
-
----
-
-## Quick start
-
-### macOS / Linux
+macOS / Linux:
 
 ```bash
-./build.sh                    # Build only
-./build.sh --flash            # Build and flash (prompts for erase, port)
+./build.sh
+./build.sh --flash
 BOARD=esp32-s3-16mb ./build.sh --flash
-ESPFLASH_PORT=/dev/cu.usbserial-xxx ./build.sh --flash   # Specify port
+ESPFLASH_PORT=/dev/cu.usbserial-xxx ./build.sh --flash
 ```
 
-### Windows
-
-In project root, use **PowerShell** or **cmd** (`build.cmd` calls `build.ps1`):
+Windows:
 
 ```powershell
 .\build.ps1
@@ -157,106 +88,88 @@ $env:BOARD="esp32-s3-16mb"; .\build.ps1 --flash
 $env:ESPFLASH_PORT="COM3"; .\build.ps1 --flash
 ```
 
-If path is too long, run `.\build.ps1 clean` then build again.
+### 3. Open the config page
 
-**First use**: Device powers on with hotspot **Beetle**; open **http://192.168.4.1** in a browser to set WiFi and pairing code.
+On first boot, the device opens a hotspot named **Beetle**.
 
----
+1. Connect your phone or computer to that hotspot.
+2. Open **http://192.168.4.1** in a browser.
+3. Set the pairing code.
+4. Configure WiFi, LLM, and the chat channel you want to use.
 
-## Environment & build
+After the device joins your router, open the config page again through the device's LAN IP.
+
+## Build Notes
+
+Default Cargo features:
+
+- `config_api`
+- `feishu`
+- `tools_diagnostics`
+- `tools_network_extra`
+- `thread_panic_catch`
+
+Optional features:
+
+- `telegram`
+- `websocket`
+- `cli`
+- `ota`
+
+Example:
 
 ```bash
-cargo build --release
+cargo build --release --features telegram,ota
 ```
 
-- **Target**: Default `xtensa-esp32s3-espidf`; board type from `BOARD` and `board_presets.toml`.
-- **Features**: `config_api` (default), `telegram`, `feishu` (default), `websocket`, `cli`, `ota`.  
-  Example: `cargo build --release --features cli,ota`
+Board selection is controlled by `BOARD`. The build scripts read `board_presets.toml` and choose the right target, partition table, and flash size.
 
-Flash: use `--flash` to flash; `./build.sh clean` to clean; `--no-monitor` to skip serial monitor. Set `ESPFLASH_PORT` to e.g. `/dev/cu.usbserial-xxx` or `COM3`. On connect failure: check USB cable/port; put board in download mode (hold BOOT, tap RESET); script prints diagnostics on erase/flash failure.
+## Supported Boards
 
----
+| BOARD | Flash | PSRAM | Notes |
+|------|-------|-------|-------|
+| `esp32-s3-8mb` | 8MB | 8MB | N8R8 |
+| `esp32-s3-16mb` | 16MB | 8MB | Default preset |
+| `esp32-s3-32mb` | 32MB | 16MB | N32R16 |
 
-## Supported boards
+Important:
 
-| BOARD           | Flash | PSRAM | Description                              |
-| --------------- | ----- | ----- | ---------------------------------------- |
-| `esp32-s3-8mb`  | 8MB   | 8MB   | N8R8; `BOARD=esp32-s3-8mb ./build.sh`    |
-| `esp32-s3-16mb` | 16MB  | 8MB   | N16R8; default when BOARD unset          |
-| `esp32-s3-32mb` | 32MB  | 16MB  | N32R16; `BOARD=esp32-s3-32mb ./build.sh` |
+- Use the project's partition table.
+- If you see `spiffs partition could not be found`, the board preset or partition setup is wrong.
 
-Partition table and flash size are chosen by `board_presets.toml` and the board overlay `sdkconfig.defaults.esp32s3.board` (written by the build script). **Use the project partition table** or you will get `spiffs partition could not be found`.
+## Main Capabilities
 
----
+| Area | What Beetle provides |
+|------|----------------------|
+| Channels | One runtime for multiple chat channels |
+| Memory | Session summary, long-term memory, archive evidence search |
+| Tools | Time, reminders, task/calendar, file ops, board info, networking, hardware control |
+| Hardware | Config-driven `device_control` for GPIO, PWM, ADC, buzzer, and related device types |
+| Config | Built-in browser flow plus a full HTTP config API |
+| Display | SPI TFT status dashboard |
+| Health | Metrics, resource snapshots, diagnostics, and restart/reset operations |
 
-## Configuration
+## Where To Read Next
 
-- **At build time**: Env vars `BEETLE_*` before build; NVS keys override at runtime if present.
-- **At runtime**: Config page writes to NVS; secrets are not logged or written to SPIFFS.
-
-| Category       | Config keys                                                                                                                                                                 |
-| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| WiFi           | `WIFI_SSID`, `WIFI_PASS`                                                                                                                                                    |
-| Telegram       | `TG_TOKEN`, `TG_ALLOWED_CHAT_IDS`                                                                                                                                           |
-| Feishu         | `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_ALLOWED_CHAT_IDS`                                                                                                             |
-| DingTalk       | `DINGTALK_WEBHOOK_URL`                                                                                                                                                      |
-| WeCom          | `WECOM_CORP_ID`, `WECOM_CORP_SECRET`, `WECOM_AGENT_ID`, `WECOM_DEFAULT_TOUSER`                                                                                              |
-| QQ Channel     | `QQ_CHANNEL_APP_ID`, `QQ_CHANNEL_SECRET`                                                                                                                                    |
-| LLM            | Multi-source: `config/llm.json` (SPIFFS); build-time env for defaults. Keys: provider, api_key, model, api_url, stream, max_tokens; router/worker indices for routing mode. Supported providers: `openai`, `anthropic`, `gemini`, `glm`, `qwen`, `deepseek`, `moonshot`, `ollama`. See [LLM Providers Guide](docs/en-us/llm-providers.md). |
-| Proxy / search | `PROXY_URL`, `SEARCH_KEY`, `TAVILY_KEY`                                                                                                                                     |
-
-Full key names and validation: `src/config.rs`. Runtime config segments (LLM, channels, system) and API: [Config API](docs/en-us/config-api.md). Provisioning: [Configuration](docs/en-us/configuration.md).
-
----
-
-## Features
-
-| Area                 | Description                                                                                                                                                                                                                                                                                                                           |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Board as Agent       | ReAct, tools, memory on ESP32                                                                                                                                                                                                                                                                                                         |
-| Unified channels     | Feishu / DingTalk / WeCom / QQ Channel / Telegram / WebSocket, same queue, same Agent                                                                                                                                                                                                                                                 |
-| **Display dashboard** | Real-time status display via SPI-connected TFT (ST7789 / ILI9341). Animated beetle icon reflects system state (Booting / NoWifi / Idle / Busy / Fault); live channel health dots, IP address, heap pressure bar. Pure `embedded-graphics` rendering—no image assets, PSRAM framebuffer, partial row flush for minimal SPI traffic. See [Display](docs/en-us/display.md). |
-| Browser provisioning | Hotspot Beetle → http://192.168.4.1; after WiFi → router-assigned IP, pairing code for writes                                                                                                                                                                                                                                         |
-| Rust stack           | Type-safe, unified errors and resource limits; new channel/tool/LLM via trait                                                                                                                                                                                                                                                         |
-| Memory & tools       | Long-term memory, session summary, reminders; GetTime, Cron, Files, WebSearch, AnalyzeImage, FetchUrl, HttpPost, RemindAt, KvStore, UpdateSessionSummary; **board_info** for device status (chip, heap, uptime, pressure, WiFi, SPIFFS); **device_control** for GPIO/PWM/ADC/buzzer per config/hardware.json; Skills in system prompt |
-| Resource & health    | Orchestrator: heap/queue pressure, HTTP admission, channel circuit breaker; health and resource snapshot via API                                                                                                                                                                                                                      |
-
----
-
-## Storage & security
-
-- **SPIFFS**: `spiffs_data/` is packed and flashed to the spiffs partition (memory, sessions, skills).
-- **OTA** (feature `ota`): Fetches firmware from config URL to spare partition; failure does not overwrite current partition.
-- **Security**: Secrets not logged or written to disk; queue/message/response size limits are centralized; config page writes require pairing code.
-
----
-
-## Documentation
-
-| Doc                                                                                 | Description                                                                              |
-| ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| [Documentation index](docs/README.md)                                                | Audience-based map (EN/ZH paths) and maintainer conventions                            |
-| [Linux release tarball](docs/en-us/linux-release-rollback.md)                       | musl bundle layout, manual install notes (no one-click yet); systemd sample in tarball   |
-| [Configuration](docs/en-us/configuration.md)                                        | Provisioning, config page, common config                                                 |
-| [Config API contract](docs/en-us/config-api.md)                                     | HTTP API: pairing, config segments, health, OTA, webhook                                 |
-| [Agent tools](docs/en-us/tools.md)                                                  | User-facing guide: tools registered in firmware (`build_default_registry`)             |
-| [Hardware & resources](docs/en-us/hardware.md)                                      | Boards, memory, PSRAM, watchdog, build options, troubleshooting                          |
-| [Hardware device config](docs/en-us/hardware-device-config.md)                      | `hardware.json` + `device_control` design (GPIO/PWM/ADC/buzzer)                          |
-| [Architecture](docs/en-us/architecture.md)                                          | Modules, data flow, extension                                                            |
-
----
+| If you want to... | Read this |
+|-------------------|-----------|
+| Flash the board and configure it | [docs/en-us/configuration.md](docs/en-us/configuration.md) |
+| Call the HTTP API yourself | [docs/en-us/config-api.md](docs/en-us/config-api.md) |
+| Understand what tools the agent can use | [docs/en-us/tools.md](docs/en-us/tools.md) |
+| Configure LLM providers | [docs/en-us/llm-providers.md](docs/en-us/llm-providers.md) |
+| Configure an SPI display | [docs/en-us/display.md](docs/en-us/display.md) |
+| Configure hardware devices | [docs/en-us/hardware-device-config.md](docs/en-us/hardware-device-config.md) |
+| Check board limits and troubleshooting | [docs/en-us/hardware.md](docs/en-us/hardware.md) |
+| See the full docs map | [docs/README.md](docs/README.md) |
 
 ## Troubleshooting
 
-- **`spiffs partition could not be found`**: Use the project partition table (see [Hardware](docs/en-us/hardware.md)).
-- **Flash/connect failure**: Check USB cable/port; put board in download mode (hold BOOT, tap RESET); set `ESPFLASH_PORT`.
-- **Task watchdog / DNS etc.**: See [Hardware – known issues](docs/en-us/hardware.md#known-issues-and-troubleshooting).
+- Flash fails: check the USB cable, port, and `ESPFLASH_PORT`.
+- Device is not reachable: reconnect to hotspot `Beetle` and open `http://192.168.4.1`.
+- `spiffs partition could not be found`: use the project board preset and partition table.
+- Need exact API behavior: see [docs/en-us/config-api.md](docs/en-us/config-api.md).
+- Need board/resource details: see [docs/en-us/hardware.md](docs/en-us/hardware.md).
 
----
+## License
 
-## References & license
-
-- [Rust on ESP Book](https://docs.espressif.com/projects/rust-book/)
-- [esp-idf-svc](https://github.com/esp-rs/esp-idf-svc)
-
-This project is dual-licensed under **MIT OR Apache-2.0**. See [LICENSE](LICENSE).
+Beetle is dual-licensed under **MIT OR Apache-2.0**. See [LICENSE](LICENSE).

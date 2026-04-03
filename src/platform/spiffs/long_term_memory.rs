@@ -3,10 +3,12 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    canonicalize_long_term_memory_entry, govern_long_term_memory_entries,
-    long_term_memory_entry_from_draft, merge_long_term_memory_entry, score_long_term_memory_recall,
-    touch_long_term_memory_usage, LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemorySlot,
-    LongTermMemoryStore, MAX_LONG_TERM_MEMORY_ITEMS, REL_PATH_LONG_TERM_MEMORIES,
+    canonicalize_long_term_memory_entry, compare_long_term_memory_query_results,
+    govern_long_term_memory_entries, long_term_memory_entry_from_draft,
+    long_term_memory_matches_query, merge_long_term_memory_entry, score_long_term_memory_recall,
+    touch_long_term_memory_usage, LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryQuery,
+    LongTermMemorySlot, LongTermMemoryStore, MAX_LONG_TERM_MEMORY_ITEMS,
+    REL_PATH_LONG_TERM_MEMORIES,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -181,6 +183,37 @@ impl LongTermMemoryStore for SpiffsLongTermMemoryStore {
                 Self::persist(entries)?;
             }
             Ok(item)
+        })
+    }
+
+    fn get_slot(&self, slot: &LongTermMemorySlot) -> Result<Option<LongTermMemoryEntry>> {
+        let Some(id) = slot.stable_id() else {
+            return Ok(None);
+        };
+        self.get(&id)
+    }
+
+    fn query(&self, query: &LongTermMemoryQuery) -> Result<Vec<LongTermMemoryEntry>> {
+        let normalized = query.normalized();
+        let now_secs = crate::util::current_unix_secs();
+        self.with_entries_mut(|entries| {
+            let mut touched = false;
+            let mut out = Vec::with_capacity(entries.len().min(normalized.limit));
+            for entry in entries.iter_mut() {
+                if !long_term_memory_matches_query(entry, &normalized, now_secs) {
+                    continue;
+                }
+                touched |= touch_long_term_memory_usage(entry, now_secs);
+                out.push(entry.clone());
+            }
+            out.sort_by(|left, right| {
+                compare_long_term_memory_query_results(left, right, &normalized)
+            });
+            out.truncate(normalized.limit);
+            if touched {
+                Self::persist(entries)?;
+            }
+            Ok(out)
         })
     }
 

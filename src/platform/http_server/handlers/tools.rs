@@ -29,6 +29,7 @@ fn tool_infos() -> Vec<ToolInfo> {
         ToolInfo::new("remind_list"),
         ToolInfo::new("board_info"),
         ToolInfo::new("kv_store"),
+        ToolInfo::new("factual_memory"),
     ];
 
     #[cfg(feature = "tools_network_extra")]

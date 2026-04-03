@@ -18,6 +18,7 @@ mod llm_json;
 mod long_term;
 mod long_term_extraction;
 mod maintenance;
+mod memory_governance;
 mod mental_privacy;
 mod outer_voice;
 mod private_docs;
@@ -82,18 +83,22 @@ pub(crate) use internal_memory_topology::{
     render_internal_memory_topology_block, InternalMemoryLayerFocus,
 };
 pub(crate) use long_term::{
-    canonicalize_long_term_memory_entry, govern_long_term_memory_entries,
-    long_term_memory_effective_stale_hint, long_term_memory_entry_from_draft,
-    long_term_memory_evidence_state, merge_long_term_memory_entry, recall_long_term_memory_entries,
+    canonicalize_long_term_memory_entry, compare_long_term_memory_query_results,
+    govern_long_term_memory_entries, long_term_memory_effective_stale_hint,
+    long_term_memory_entry_from_draft, long_term_memory_evidence_state,
+    long_term_memory_matches_query, merge_long_term_memory_entry, recall_long_term_memory_entries,
     score_long_term_memory_recall, touch_long_term_memory_usage,
 };
 pub use long_term::{
-    recall_long_term_memory_block, render_long_term_memory_block, LongTermMemoryConfidence,
-    LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryEvidenceState, LongTermMemoryFreshness,
-    LongTermMemoryKind, LongTermMemorySlot, LongTermMemorySourceScope, LongTermMemorySourceType,
-    LongTermMemoryStaleHint, LongTermMemoryStore, MAX_LONG_TERM_MEMORY_BLOCK_LEN,
-    MAX_LONG_TERM_MEMORY_CONTENT_LEN, MAX_LONG_TERM_MEMORY_ITEMS, MAX_LONG_TERM_MEMORY_KEYWORDS,
-    MAX_LONG_TERM_MEMORY_KEYWORD_LEN, REL_PATH_LONG_TERM_MEMORIES,
+    long_term_memory_evidence_summary, parse_explicit_long_term_slot_query,
+    recall_long_term_memory_block, render_exact_long_term_memory_block,
+    render_long_term_memory_block, LongTermMemoryConfidence, LongTermMemoryDraft,
+    LongTermMemoryEntry, LongTermMemoryEvidenceState, LongTermMemoryEvidenceSummary,
+    LongTermMemoryFreshness, LongTermMemoryKind, LongTermMemoryQuery, LongTermMemorySlot,
+    LongTermMemorySourceScope, LongTermMemorySourceType, LongTermMemoryStaleHint,
+    LongTermMemoryStore, MAX_LONG_TERM_MEMORY_BLOCK_LEN, MAX_LONG_TERM_MEMORY_CONTENT_LEN,
+    MAX_LONG_TERM_MEMORY_ITEMS, MAX_LONG_TERM_MEMORY_KEYWORDS, MAX_LONG_TERM_MEMORY_KEYWORD_LEN,
+    REL_PATH_LONG_TERM_MEMORIES,
 };
 pub use long_term_extraction::{
     apply_long_term_memory_extraction, build_long_term_memory_extraction_input,
@@ -111,6 +116,10 @@ pub use maintenance::{
     run_post_reply_memory_maintenance, LongTermMemoryRefreshRequestOutcome,
     PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput,
     PostReplyMemoryMaintenanceOutcome,
+};
+pub(crate) use memory_governance::run_memory_governance_kernel;
+pub use memory_governance::{
+    MemoryGovernanceContext, MemoryGovernanceInput, MemoryGovernanceOutcome,
 };
 pub(crate) use mental_privacy::{
     collect_private_targets, render_mental_privacy_access_request_block,
@@ -156,13 +165,14 @@ pub use private_garden_governance::{
 pub(crate) use private_garden_governance::{
     run_private_garden_governance_with_state, should_refresh_private_garden,
 };
-pub use profile::MemoryProfile;
 pub(crate) use profile::{
-    memory_policy, shared_long_term_governance_policy, AutonomyStrategyPolicy,
-    ExecutionStatePolicy, InnerLifePolicy, InternalMemoryRoutingPolicy, LongTermExtractionPolicy,
-    LongTermRecallPolicy, OuterVoicePolicy, PrivateDocsPolicy, PrivateGardenGovernancePolicy,
-    SelfContinuityPolicy, SelfModelPolicy, SessionSummaryPolicy, WorldSensePolicy,
+    memory_capability_profile, memory_policy, shared_long_term_governance_policy,
+    AutonomyStrategyPolicy, ExecutionStatePolicy, InnerLifePolicy, InternalMemoryRoutingPolicy,
+    LongTermExtractionPolicy, LongTermRecallPolicy, OuterVoicePolicy, PrivateDocsPolicy,
+    PrivateGardenGovernancePolicy, SelfContinuityPolicy, SelfModelPolicy, SessionSummaryPolicy,
+    WorldSensePolicy,
 };
+pub use profile::{MemoryCapabilityClass, MemoryHygieneLevel, MemoryProfile};
 pub use prompt_context::{
     load_prompt_memory_context, PromptMemoryContext, PromptMemoryContextParams,
 };

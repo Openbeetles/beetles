@@ -1,55 +1,62 @@
-# 硬件与资源
+# 硬件与板型说明
 
 [English](../en-us/hardware.md) | **中文** | [文档索引](../README.md)
 
-本文档面向**选型与排错的用户与开发者**，说明支持的板型、内存与编译选项、可观测入口，以及可配置硬件的文档引用（`hardware.json` 的细节不在此重复展开）。
+这篇文档不讲抽象愿景，只回答三个最实际的问题：
 
----
+1. 当前固件到底支持哪些板型？
+2. 内存、构建配置和可观测入口该怎么看？
+3. 出问题时先查哪里？
 
-## 板型与资源
+## 支持板型
 
-| 板型 (BOARD=) | Flash | PSRAM | CPU | 备注 |
-|---------------|-------|-------|-----|------|
-| `esp32-s3-8mb` | 8MB | 8MB Octal | 240MHz | N8R8；构建时用 `BOARD=esp32-s3-8mb ./build.sh` |
-| `esp32-s3-16mb` | 16MB | 8MB Octal | 240MHz | N16R8；未设 BOARD 时默认 |
-| `esp32-s3-32mb` | 32MB | 16MB Octal | 240MHz | N32R16；构建时用 `BOARD=esp32-s3-32mb ./build.sh` |
+| BOARD | Flash | PSRAM | 说明 |
+|------|-------|-------|------|
+| `esp32-s3-8mb` | 8MB | 8MB | N8R8 |
+| `esp32-s3-16mb` | 16MB | 8MB | 默认板型 |
+| `esp32-s3-32mb` | 32MB | 16MB | N32R16 |
 
-- 板型通过 `BOARD=esp32-s3-8mb` | `esp32-s3-16mb` | `esp32-s3-32mb` 选择（可省略，默认 `esp32-s3-16mb`）；`board_presets.toml` 决定 target 与分区表。
-- **仅支持带 PSRAM 的 ESP32-S3**。
+当前规则很明确，也很简单：
 
----
+- 仓库里的板型预设只支持 **带 PSRAM 的 ESP32-S3**
 
-## 内存与看门狗
+## 内存与运行时行为
 
-- **ESP32-S3**：大块分配优先 PSRAM，HTTP 响应体等大 buffer 走 PSRAM，减轻内部堆压力。orchestrator 模块统一管理资源准入：HTTP 请求经过带优先级的 TLS 令牌与实时堆检查；agent 入站消息与 LLM/工具调用受压力等级（Normal/Cautious/Critical）门控。
-- **看门狗**：任务看门狗约 60 秒；LLM/HTTP 长请求前会喂狗，建议请求超时 ≥60s 时留意配置。
+- 大块分配优先走 PSRAM
+- orchestrator 会根据压力决定是否放行工作
+- 内存紧张时，HTTP、LLM 和工具调用可能被限流
+- 较长的 HTTP / LLM 请求需要和任务看门狗共存
 
----
+## 构建配置
 
-## 编译与性能
+- `cargo build --release` 使用 `opt-level = 2`
+- `cargo build --profile release-size` 是更偏体积的构建配置
 
-- 默认 `cargo build --release` 使用 `opt-level = 3`（性能优先）。
-- 若更关注固件体积，可使用：  
-  `cargo build --profile release-size`  
-  即使用 `opt-level = "s"`。
+## 看状态要看哪里
 
----
+| 入口 | 能看到什么 |
+|------|------------|
+| `GET /api/health` | 整体健康状态 |
+| `GET /api/resource` | 运行时资源快照 |
+| 串口日志 | 启动日志、heartbeat、警告信息 |
+| `cli` feature | 例如 `heap_info` 这类额外串口命令 |
 
-## 可观测性
-
-- **HTTP**：`GET /api/health` 与 `GET /api/resource` 的字段说明见 [config-api](config-api.md)（与 orchestrator 快照一致）。
-- **日志**：heartbeat 周期性输出基线，便于对照趋势。
-- **CLI**（feature `cli`）：串口 `heap_info` 等命令查看堆与 PSRAM 摘要。
-
----
+精确 HTTP 字段请看 [config-api.md](config-api.md)。
 
 ## 可配置硬件设备
 
-见 [硬件设备配置](hardware-device-config.md)（设计约束）与 [config-api /api/config/hardware](config-api.md)（HTTP 契约）；Agent 侧工具名为 **`device_control`**（注册条件见 [tools](tools.md)）。
+如果你希望 Agent 去控制 LED、继电器、蜂鸣器、传感器或 PWM 设备，就继续看：
 
----
+- [hardware-device-config.md](hardware-device-config.md)
+- [tools.md](tools.md) 里的 `device_control`
 
-## 已知问题与排错
+## 常见问题
 
-- **`esp_task_wdt_reset: task not found`**：发起 HTTP 的线程必须已注册到任务看门狗（TWDT）。主 Agent 线程、Feishu/QQ WSS 线程、Telegram 轮询线程在启动时均已调用 `register_current_task_to_task_wdt()`；若仍出现此错误，检查是否在新线程中直接使用 `EspHttpClient` 而未注册。
-- **`couldn't get hostname for :xxx: getaddrinfo() returns 202`**：ESP-IDF 日志格式为 `:%s:`，冒号是分隔符，不是 hostname 的一部分。202 为 DNS 解析失败。常见原因：WSS 客户端自动重连占用 socket/DNS 资源（已通过 `disable_auto_reconnect: true` 修复），或 WiFi/DNS 未就绪。
+- `spiffs partition could not be found`
+  基本就是没有用项目里的板型预设或分区表。
+
+- `esp_task_wdt_reset: task not found`
+  通常表示某个发 HTTP 的线程没有注册到任务看门狗。
+
+- `getaddrinfo() returns 202`
+  一般说明 DNS 解析失败，或者网络栈还没准备好。

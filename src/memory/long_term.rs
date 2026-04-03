@@ -358,7 +358,8 @@ impl LongTermMemoryStaleHint {
 }
 
 /// 召回给主模型的主证据态标签。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum LongTermMemoryEvidenceState {
     StableFact,
     RecentState,
@@ -375,6 +376,22 @@ impl LongTermMemoryEvidenceState {
             Self::NeedsReview => "needs review",
         }
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LongTermMemoryEvidenceSummary {
+    pub state: LongTermMemoryEvidenceState,
+    pub confidence: LongTermMemoryConfidence,
+    pub freshness: LongTermMemoryFreshness,
+    pub stale_hint: LongTermMemoryStaleHint,
+    pub source_type: LongTermMemorySourceType,
+    pub source_scope: LongTermMemorySourceScope,
+    pub evidence_count: u32,
+    pub supporting_citations: Vec<String>,
+    pub last_confirmed_at: u64,
+    pub last_used_at: u64,
+    pub age_summary: Option<String>,
+    pub summary: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -460,6 +477,24 @@ pub struct LongTermMemorySlot {
     pub topic: String,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LongTermMemoryQuery {
+    #[serde(default)]
+    pub kind: Option<LongTermMemoryKind>,
+    #[serde(default)]
+    pub topic: Option<String>,
+    #[serde(default)]
+    pub source_scope: Option<LongTermMemorySourceScope>,
+    #[serde(default)]
+    pub source_chat_id: Option<String>,
+    #[serde(default)]
+    pub freshness: Option<LongTermMemoryFreshness>,
+    #[serde(default)]
+    pub include_stale: bool,
+    #[serde(default)]
+    pub limit: usize,
+}
+
 impl LongTermMemoryDraft {
     /// 规范化草稿：裁剪长度、去重关键词、忽略空内容。
     pub fn normalized(&self) -> Option<Self> {
@@ -531,6 +566,29 @@ impl LongTermMemorySlot {
     pub fn stable_id(&self) -> Option<String> {
         let normalized = self.normalized()?;
         stable_id_for_kind_topic(&normalized.kind, &normalized.topic)
+    }
+}
+
+impl LongTermMemoryQuery {
+    pub fn normalized(&self) -> Self {
+        Self {
+            kind: self.kind.clone(),
+            topic: self
+                .topic
+                .as_deref()
+                .map(normalize_topic)
+                .filter(|value| !value.is_empty()),
+            source_scope: self.source_scope,
+            source_chat_id: self
+                .source_chat_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+            freshness: self.freshness,
+            include_stale: self.include_stale,
+            limit: self.limit.clamp(1, MAX_LONG_TERM_MEMORY_ITEMS),
+        }
     }
 }
 
@@ -749,6 +807,23 @@ pub trait LongTermMemoryStore: Send + Sync {
         limit: usize,
     ) -> Result<Vec<LongTermMemoryEntry>>;
     fn get(&self, id: &str) -> Result<Option<LongTermMemoryEntry>>;
+    fn get_slot(&self, slot: &LongTermMemorySlot) -> Result<Option<LongTermMemoryEntry>> {
+        let Some(id) = slot.stable_id() else {
+            return Ok(None);
+        };
+        self.get(&id)
+    }
+    fn query(&self, query: &LongTermMemoryQuery) -> Result<Vec<LongTermMemoryEntry>> {
+        let normalized = query.normalized();
+        let now_secs = crate::util::current_unix_secs();
+        let mut entries = self.list(MAX_LONG_TERM_MEMORY_ITEMS)?;
+        entries.retain(|entry| long_term_memory_matches_query(entry, &normalized, now_secs));
+        entries.sort_by(|left, right| {
+            compare_long_term_memory_query_results(left, right, &normalized)
+        });
+        entries.truncate(normalized.limit);
+        Ok(entries)
+    }
     fn list(&self, limit: usize) -> Result<Vec<LongTermMemoryEntry>>;
     fn delete(&self, id: &str) -> Result<bool>;
     fn delete_slot(&self, slot: &LongTermMemorySlot) -> Result<bool>;
@@ -946,12 +1021,140 @@ pub(crate) fn long_term_memory_effective_stale_hint(
     effective_stale_hint(entry, now_secs)
 }
 
+pub fn long_term_memory_evidence_summary(
+    entry: &LongTermMemoryEntry,
+    now_secs: u64,
+) -> LongTermMemoryEvidenceSummary {
+    let state = evidence_state_for_entry(entry, now_secs);
+    let stale_hint = effective_stale_hint(entry, now_secs);
+    let evidence_count =
+        effective_evidence_count(entry.supporting_citations.len(), entry.evidence_count);
+    let age_summary = render_age_hint(entry, now_secs);
+    let mut summary = String::from(state.label());
+    summary.push_str("; ");
+    summary.push_str(entry.confidence.label());
+    summary.push_str("; ");
+    summary.push_str(entry.source_scope.label());
+    if !matches!(entry.freshness, LongTermMemoryFreshness::Stable) {
+        summary.push_str("; ");
+        summary.push_str(entry.freshness.label());
+    }
+    if let Some(label) = stale_hint.label() {
+        summary.push_str("; stale_hint=");
+        summary.push_str(label);
+    }
+    if let Some(age_summary) = age_summary.as_deref() {
+        summary.push_str("; ");
+        summary.push_str(age_summary);
+    }
+    if evidence_count > 0 {
+        summary.push_str("; evidence=");
+        summary.push_str(&evidence_count.to_string());
+    }
+    LongTermMemoryEvidenceSummary {
+        state,
+        confidence: entry.confidence,
+        freshness: entry.freshness,
+        stale_hint,
+        source_type: entry.source_type,
+        source_scope: entry.source_scope,
+        evidence_count,
+        supporting_citations: entry.supporting_citations.clone(),
+        last_confirmed_at: entry.last_confirmed_at,
+        last_used_at: entry.last_used_at,
+        age_summary,
+        summary,
+    }
+}
+
 fn confidence_rank(confidence: LongTermMemoryConfidence) -> u8 {
     match confidence {
         LongTermMemoryConfidence::Low => 0,
         LongTermMemoryConfidence::Medium => 1,
         LongTermMemoryConfidence::High => 2,
     }
+}
+
+pub(crate) fn long_term_memory_matches_query(
+    entry: &LongTermMemoryEntry,
+    query: &LongTermMemoryQuery,
+    now_secs: u64,
+) -> bool {
+    if let Some(kind) = query.kind.as_ref() {
+        if &entry.kind != kind {
+            return false;
+        }
+    }
+    if let Some(topic) = query.topic.as_deref() {
+        if entry.topic != topic {
+            return false;
+        }
+    }
+    if let Some(source_scope) = query.source_scope {
+        if entry.source_scope != source_scope {
+            return false;
+        }
+    }
+    if let Some(source_chat_id) = query.source_chat_id.as_deref() {
+        if entry.source_chat_id.as_deref() != Some(source_chat_id) {
+            return false;
+        }
+    }
+    if let Some(freshness) = query.freshness {
+        if entry.freshness != freshness {
+            return false;
+        }
+    }
+    if !query.include_stale
+        && matches!(
+            age_state_for_entry(entry, now_secs),
+            LongTermMemoryAgeState::Stale
+        )
+    {
+        return false;
+    }
+    true
+}
+
+pub(crate) fn compare_long_term_memory_query_results(
+    left: &LongTermMemoryEntry,
+    right: &LongTermMemoryEntry,
+    query: &LongTermMemoryQuery,
+) -> Ordering {
+    query_exactness_priority(right, query)
+        .cmp(&query_exactness_priority(left, query))
+        .then_with(|| confidence_rank(right.confidence).cmp(&confidence_rank(left.confidence)))
+        .then_with(|| entry_observed_at(right).cmp(&entry_observed_at(left)))
+        .then_with(|| right.updated_at.cmp(&left.updated_at))
+        .then_with(|| right.created_at.cmp(&left.created_at))
+}
+
+fn query_exactness_priority(entry: &LongTermMemoryEntry, query: &LongTermMemoryQuery) -> u8 {
+    let mut score = 0u8;
+    if query
+        .topic
+        .as_deref()
+        .is_some_and(|topic| entry.topic == topic)
+    {
+        score = score.saturating_add(4);
+    }
+    if query.kind.as_ref().is_some_and(|kind| &entry.kind == kind) {
+        score = score.saturating_add(3);
+    }
+    if query
+        .source_chat_id
+        .as_deref()
+        .is_some_and(|chat_id| entry.source_chat_id.as_deref() == Some(chat_id))
+    {
+        score = score.saturating_add(2);
+    }
+    if query
+        .source_scope
+        .is_some_and(|source_scope| entry.source_scope == source_scope)
+    {
+        score = score.saturating_add(1);
+    }
+    score
 }
 
 fn draft_is_older_than_existing(
@@ -1217,6 +1420,24 @@ pub fn recall_long_term_memory_block(
         profile,
     );
     render_long_term_memory_block_with_now(&selected, block_max_len, now_secs)
+}
+
+pub fn render_exact_long_term_memory_block(
+    store: &dyn LongTermMemoryStore,
+    slot: &LongTermMemorySlot,
+    max_len: usize,
+) -> Option<String> {
+    if max_len < 32 {
+        return None;
+    }
+    let entry = store.get_slot(slot).ok().flatten()?;
+    let mut out = String::from("## Long-term memory (exact slot)\n");
+    let line = render_long_term_memory_line(&entry, true, crate::util::current_unix_secs());
+    if out.len().saturating_add(line.len()) > max_len {
+        return render_long_term_memory_block(&[entry], max_len);
+    }
+    out.push_str(&line);
+    Some(out)
 }
 
 fn reorder_recall_candidates_for_chat(chat_id: &str, candidates: &mut [LongTermMemoryEntry]) {
@@ -1542,6 +1763,43 @@ fn normalize_for_match(input: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+pub fn parse_explicit_long_term_slot_query(query: &str) -> Option<LongTermMemorySlot> {
+    let trimmed = query
+        .trim()
+        .trim_matches(|ch| matches!(ch, '[' | ']' | '(' | ')'));
+    if trimmed.is_empty() {
+        return None;
+    }
+    let separators = [":", "/"];
+    for separator in separators {
+        let mut parts = trimmed.splitn(2, separator);
+        let Some(kind) = parts.next() else {
+            continue;
+        };
+        let Some(topic) = parts.next() else {
+            continue;
+        };
+        let kind = match kind.trim().to_ascii_lowercase().as_str() {
+            "preference" => LongTermMemoryKind::Preference,
+            "profile" => LongTermMemoryKind::Profile,
+            "relationship" => LongTermMemoryKind::Relationship,
+            "project" => LongTermMemoryKind::Project,
+            "task" => LongTermMemoryKind::Task,
+            "constraint" => LongTermMemoryKind::Constraint,
+            "fact" => LongTermMemoryKind::Fact,
+            _ => continue,
+        };
+        let slot = LongTermMemorySlot {
+            kind,
+            topic: topic.to_string(),
+        };
+        if let Some(normalized) = slot.normalized() {
+            return Some(normalized);
+        }
+    }
+    None
+}
+
 fn collect_match_terms(query: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
@@ -1805,6 +2063,59 @@ mod tests {
         };
 
         assert_eq!(draft.stable_id(), slot.stable_id());
+    }
+
+    #[test]
+    fn parses_explicit_slot_query_syntax() {
+        let slot = parse_explicit_long_term_slot_query("project:Current Project").unwrap();
+        assert_eq!(slot.kind, LongTermMemoryKind::Project);
+        assert_eq!(slot.topic, "current_project");
+    }
+
+    #[test]
+    fn default_query_filters_slot_scope_and_freshness() {
+        let now_secs = crate::util::current_unix_secs();
+        let mut project = test_entry(
+            "ltm-1",
+            LongTermMemoryKind::Project,
+            "current_project",
+            "Current project is Beetle runtime.",
+            vec!["runtime"],
+            Some("chat-a"),
+            now_secs.saturating_sub(60),
+            now_secs.saturating_sub(30),
+        );
+        project.source_scope = LongTermMemorySourceScope::Chat;
+        project.freshness = LongTermMemoryFreshness::Dynamic;
+        let mut fact = test_entry(
+            "ltm-2",
+            LongTermMemoryKind::Fact,
+            "primary_llm",
+            "Current primary model is OpenAI.",
+            vec!["openai"],
+            None,
+            now_secs.saturating_sub(60),
+            now_secs.saturating_sub(20),
+        );
+        fact.source_scope = LongTermMemorySourceScope::World;
+        let store = StubLongTermMemoryStore {
+            recall_entries: Vec::new(),
+            list_entries: vec![fact, project.clone()],
+        };
+
+        let items = store
+            .query(&LongTermMemoryQuery {
+                kind: Some(LongTermMemoryKind::Project),
+                topic: Some("current_project".to_string()),
+                source_scope: Some(LongTermMemorySourceScope::Chat),
+                source_chat_id: Some("chat-a".to_string()),
+                freshness: Some(LongTermMemoryFreshness::Dynamic),
+                include_stale: false,
+                limit: 4,
+            })
+            .unwrap();
+
+        assert_eq!(items, vec![project]);
     }
 
     #[test]

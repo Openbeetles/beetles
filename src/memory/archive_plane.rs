@@ -4,8 +4,8 @@ use crate::memory::{MemoryStore, SessionStore, TurnLedgerStore};
 use crate::util::truncate_content_to_max;
 
 use super::{
-    search_archive_records, select_archive_hits_for_prompt, ArchiveSearchQuery, MemoryProfile,
-    MAX_ARCHIVE_SEARCH_LIMIT,
+    memory_capability_profile, search_archive_records, select_archive_hits_for_prompt,
+    ArchiveSearchQuery, MemoryProfile, MAX_ARCHIVE_SEARCH_LIMIT,
 };
 
 const MAX_ARCHIVE_EVIDENCE_BLOCK_LEN: usize = 768;
@@ -20,10 +20,9 @@ pub fn build_archive_evidence_block(
     system_max_len: usize,
     profile: MemoryProfile,
 ) -> Option<String> {
-    let (max_items, cap) = match profile {
-        MemoryProfile::Standard => (4usize, 768usize),
-        MemoryProfile::Embedded => (3usize, 512usize),
-    };
+    let capability = memory_capability_profile(profile);
+    let max_items = capability.archive_prompt_max_items;
+    let cap = capability.archive_prompt_max_chars;
     let block_max_len = system_max_len.min(cap).min(MAX_ARCHIVE_EVIDENCE_BLOCK_LEN);
     if block_max_len < MIN_ARCHIVE_EVIDENCE_BLOCK_LEN {
         return None;

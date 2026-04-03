@@ -195,6 +195,9 @@ pub fn build_default_registry(
     registry.register(Box::new(super::PrivateGardenTool::new(
         private_garden_store,
     )));
+    registry.register(Box::new(super::FactualMemoryTool::new(Arc::clone(
+        &long_term_memory_store,
+    ))));
     registry.register(Box::new(super::MemorySearchTool::new(
         Arc::clone(&session_store),
         Arc::clone(&memory_store),

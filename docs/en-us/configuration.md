@@ -1,78 +1,125 @@
-# Configuration and usage
+# Configuration Guide
 
-**English** | [中文](../zh-cn/configuration.md) | [Doc index](../README.md)
+[中文](../zh-cn/configuration.md) | **English** | [Doc index](../README.md)
 
-This doc is for **end users**: how to access the device, provision WiFi, use the config page (including the online version), set the pairing code, and what the common config keys and health API are for. The full API contract is in [Config API Contract](config-api.md).
+This page is for people who want to get a Beetle device working quickly.
 
----
+You will use it to:
 
-## Accessing the device
+- connect to the device for the first time
+- set the pairing code
+- configure WiFi, LLM, and chat channels
+- understand which settings matter most
 
-**Recommended:** When connected to the device hotspot, open **http://192.168.4.1/** in the browser; when on the same LAN, use the IP assigned to the device by your router.
+If you are building your own frontend or script, read [config-api.md](config-api.md) after this page.
 
-### Unprovisioned (first use)
+## First-Time Setup
 
-1. Device powers on and opens a hotspot; SSID is **Beetle** (no password).
-2. Connect your phone or PC to that hotspot.
-3. In a browser open **http://192.168.4.1** (port 80; no need to type the port).
+### Step 1: connect to the hotspot
 
-Only the device is on that hotspot; the firmware SoftAP address is 192.168.4.1 and does not conflict with your home router.
+On first boot, the device opens a hotspot named **Beetle**.
 
-### After WiFi is set
+1. Connect your phone or computer to that hotspot.
+2. Open **http://192.168.4.1** in a browser.
+3. You should see the pairing/config flow.
 
-Once the device is connected to your router, as long as your phone/PC and the device are on the same LAN, use the IP assigned to the device by your router.
+### Step 2: set the pairing code
 
----
+The pairing code protects write operations such as:
 
-## Pairing code
+- saving config
+- restarting the device
+- running factory reset
+- starting OTA updates
 
-- On first access, set a **6-digit pairing code** on the config page.
-- The pairing code protects write operations (save config, restart, OTA, etc.); secrets are written to NVS via the config page only—not logged or written to SPIFFS.
-- If you forget the code, you can clear it via factory reset (requires access to the config page to run the reset action).
+Notes:
 
----
+- Set it the first time you open the config page.
+- Secrets written through the config UI go to NVS.
+- Secrets are not supposed to be logged or written to SPIFFS.
 
-## Config page features
+### Step 3: configure WiFi
 
-You can open the config page in two ways:
+After you save WiFi settings, the device will try to join your router.
 
-1. **From the device**: After connecting to the device hotspot or the same LAN, open **http://192.168.4.1** (when on the device hotspot) or the router-assigned device IP (when on the same LAN) in the browser; the device serves or redirects to the config UI.
-2. **Online**: Open **https://ai-orangeoracle.github.io/beetle/** (or the repo’s custom domain if set). You still need a flashed device and your browser on the same network; then enter the device address in the page (**http://192.168.4.1** or the router-assigned IP) to read or write config.
+Once it is on the same LAN as your browser, you can open the config page again through the device's LAN IP instead of the hotspot address.
 
-The config page provides:
+### Step 4: configure the runtime
 
-- Set or change the pairing code
-- WiFi scan and connection settings
-- Channel credentials and toggles (Telegram, Feishu, DingTalk, WeCom, QQ Channel, Webhook)
-- LLM config (API key, model, compatible URL, etc.)
-- Proxy, search keys, etc.
-- System info, restart, OTA (if enabled in firmware), factory reset
+The usual minimum setup is:
 
-After the device is **activated** (pairing code has been set once), mutating APIs need **pairing code** + **CSRF** (see [config-api auth](config-api.md#pairing-code-and-auth)); the config UI should attach both. Before activation, most read APIs (e.g. `GET /api/health`) return 401—complete pairing first.
+1. WiFi
+2. one LLM source
+3. one chat channel
 
----
+## How To Open The Config UI
 
-## Common config keys
+You have two common options:
 
-Same as the README table, for quick reference:
+### Option A: open the device directly
 
-| Category | Keys | Description |
-|----------|------|-------------|
-| WiFi | `WIFI_SSID`, `WIFI_PASS` | Router SSID and password |
-| Telegram | `TG_TOKEN`, `TG_ALLOWED_CHAT_IDS` | Bot token; allowed chat IDs, comma-separated; empty = reject |
-| Feishu | `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_ALLOWED_CHAT_IDS` | App credentials and allowed chats |
-| DingTalk | `DINGTALK_WEBHOOK_URL` | DingTalk bot webhook |
-| WeCom | `WECOM_CORP_ID`, `WECOM_CORP_SECRET`, `WECOM_AGENT_ID`, `WECOM_DEFAULT_TOUSER` | WeCom app and default recipient |
-| QQ Channel | `QQ_CHANNEL_APP_ID`, `QQ_CHANNEL_SECRET` | QQ Channel bot credentials |
-| LLM | `API_KEY`, `MODEL`, `MODEL_PROVIDER`, `API_URL` | e.g. model `claude-opus-4-5`; provider: `anthropic` / `openai` / `openai_compatible`; compatible API base URL (e.g. Ollama) |
-| Proxy | `PROXY_URL` | e.g. `http://host:8080` |
-| Search | `SEARCH_KEY`, `TAVILY_KEY` | Search and Tavily API keys |
+- While connected to the hotspot: use **http://192.168.4.1**
+- While on the same LAN: use the device's router-assigned IP
 
-Build-time env vars `BEETLE_*` can prefill; at runtime the config page (NVS) wins if a key exists. On startup, enabled channels are validated for credentials and length (`validate_for_channels`); failures are logged as warnings and do not block boot.
+### Option B: use the external web UI
 
----
+The repo includes `configure-ui`, which can talk to the device over the HTTP API.
 
-## Health and observability
+You still need:
 
-- **GET /api/health**: Requires **activation**; you do **not** need to put the pairing code in the URL or headers. Field shapes for nested `metrics` / `resource` are documented under [config-api: GET /api/health](config-api.md#get-apihealth). Example: `http://192.168.4.1/api/health` on the hotspot or `http://<device-lan-ip>/api/health` on the LAN.
-- **Serial**: Heartbeat periodically logs a metrics baseline for long-run comparison (exact fields follow firmware logs).
+- a flashed device
+- the browser and device on the same network
+- the correct device address
+
+## What You Will Configure
+
+| Area | What it controls |
+|------|------------------|
+| WiFi | Router SSID and password |
+| LLM | Provider, model, API key, API URL, fallback order |
+| Channels | Credentials and channel-specific settings |
+| Proxy / search | Proxy URL and search-related keys |
+| Hardware | `hardware.json`-driven devices for `device_control` |
+| Display | SPI TFT dashboard |
+| System | Restart, reset, diagnostics, OTA if enabled |
+
+## Common Config Keys
+
+These are the names you will see in code, files, or the API:
+
+| Category | Keys | Meaning |
+|----------|------|---------|
+| WiFi | `WIFI_SSID`, `WIFI_PASS` | Router credentials |
+| Telegram | `TG_TOKEN`, `TG_ALLOWED_CHAT_IDS` | Telegram bot credentials and allowed chats |
+| Feishu | `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_ALLOWED_CHAT_IDS` | Feishu app credentials |
+| DingTalk | `DINGTALK_WEBHOOK_URL` | DingTalk webhook |
+| WeCom | `WECOM_CORP_ID`, `WECOM_CORP_SECRET`, `WECOM_AGENT_ID`, `WECOM_DEFAULT_TOUSER` | WeCom app settings |
+| QQ Channel | `QQ_CHANNEL_APP_ID`, `QQ_CHANNEL_SECRET` | QQ Channel credentials |
+| Proxy | `PROXY_URL` | Outbound HTTP proxy |
+| Search | `SEARCH_KEY`, `TAVILY_KEY` | Search service keys |
+
+For LLM sources, the real runtime config is centered on `config/llm.json`. Read [llm-providers.md](llm-providers.md) for the supported provider IDs and fallback behavior.
+
+## Pairing Code and Activation
+
+After the device has been paired once:
+
+- read-only APIs usually require the device to be activated
+- write APIs require pairing code plus CSRF
+
+The config UI handles that for you. If you are calling APIs manually, read [config-api.md](config-api.md).
+
+## Useful Checks
+
+- `GET /api/health`: quick status snapshot
+- `GET /api/resource`: runtime resource snapshot
+- serial logs: heartbeat and boot diagnostics
+
+See [config-api.md](config-api.md) for exact response formats.
+
+## Common Problems
+
+- Cannot open the device: reconnect to hotspot **Beetle** and retry `http://192.168.4.1`
+- Cannot save config: pairing code or CSRF is missing/expired
+- Device is online but channels do not work: check credentials and allowed chat IDs
+- Device booted but hardware control is missing: check `hardware.json` and whether `device_control` was registered
