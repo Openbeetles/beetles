@@ -13,6 +13,19 @@ const TAG: &str = "skills";
 pub const MAX_SKILL_CONTENT_LEN: usize = 32 * 1024;
 /// 列出 skill 数量上界。
 const MAX_SKILL_COUNT: usize = 64;
+const RUNTIME_SKILL_PREFIX: &str = "runtime_skill__";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeSkillWrite {
+    pub name: String,
+    pub topic: String,
+    pub title: String,
+    pub summary: String,
+    pub content: String,
+    pub citations: Vec<String>,
+    pub source_chat_id: Option<String>,
+    pub observed_at: u64,
+}
 
 /// 返回所有 skill 名称（不含 .md）。失败或目录不存在返回空 vec，打日志不阻塞。
 pub fn list_skill_names(storage: &dyn SkillStorage) -> Vec<String> {
@@ -185,6 +198,89 @@ pub fn write_skill(storage: &dyn SkillStorage, name: &str, content: &str) -> Res
         ));
     }
     storage.write(name, content.as_bytes())
+}
+
+pub fn runtime_skill_name_for_topic(topic: &str) -> String {
+    let mut slug = topic
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    while slug.contains("__") {
+        slug = slug.replace("__", "_");
+    }
+    let slug = slug.trim_matches('_');
+    let suffix = if slug.is_empty() { "skill" } else { slug };
+    format!(
+        "{RUNTIME_SKILL_PREFIX}{}",
+        suffix.chars().take(40).collect::<String>()
+    )
+}
+
+pub fn upsert_runtime_skill(storage: &dyn SkillStorage, write: &RuntimeSkillWrite) -> Result<bool> {
+    let name = if write.name.trim().is_empty() {
+        runtime_skill_name_for_topic(&write.topic)
+    } else {
+        write.name.trim().to_string()
+    };
+    let rendered = render_runtime_skill_markdown(write);
+    let changed = get_skill_content(storage, &name)
+        .map(|existing| existing.trim() != rendered.trim())
+        .unwrap_or(true);
+    if !changed {
+        return Ok(false);
+    }
+    write_skill(storage, &name, &rendered)?;
+    Ok(true)
+}
+
+fn render_runtime_skill_markdown(write: &RuntimeSkillWrite) -> String {
+    let mut out = String::new();
+    out.push_str("<!-- beetle:runtime-skill -->\n");
+    out.push_str("# ");
+    out.push_str(if write.title.trim().is_empty() {
+        write.topic.trim()
+    } else {
+        write.title.trim()
+    });
+    out.push_str("\n\n");
+    out.push_str("Type: procedural_runtime_skill\n");
+    out.push_str("Topic: ");
+    out.push_str(write.topic.trim());
+    out.push('\n');
+    if let Some(chat_id) = write
+        .source_chat_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        out.push_str("Source chat: ");
+        out.push_str(chat_id);
+        out.push('\n');
+    }
+    if write.observed_at > 0 {
+        out.push_str("Observed at: ");
+        out.push_str(&write.observed_at.to_string());
+        out.push('\n');
+    }
+    out.push_str("\n## Summary\n");
+    out.push_str(write.summary.trim());
+    out.push_str("\n\n## Procedure\n");
+    out.push_str(write.content.trim());
+    if !write.citations.is_empty() {
+        out.push_str("\n\n## Provenance\n");
+        for citation in &write.citations {
+            out.push_str("- ");
+            out.push_str(citation.trim());
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// 删除指定 skill 文件。

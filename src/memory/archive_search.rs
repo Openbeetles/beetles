@@ -4,6 +4,8 @@ use crate::error::Result;
 use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+#[cfg(target_os = "linux")]
+use std::path::{Path, PathBuf};
 
 use super::{MemoryStore, SessionStore, TurnLedger, TurnLedgerStore, MAX_SESSION_ENTRIES};
 
@@ -14,6 +16,10 @@ const DEFAULT_ARCHIVE_GET_CONTENT_LEN: usize = 1800;
 const ARCHIVE_SEARCH_EXCERPT_LEN: usize = 220;
 const ARCHIVE_GET_EXCERPT_LEN: usize = 320;
 const ARCHIVE_TRACE_MAX_MATCHED_TERMS: usize = 4;
+#[cfg(target_os = "linux")]
+const ARCHIVE_INDEX_VERSION: u32 = 1;
+#[cfg(target_os = "linux")]
+const REL_PATH_ARCHIVE_INDEX: &str = "memory/archive_index.json";
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -237,6 +243,39 @@ struct ArchiveSearchCandidate {
     normalized_content: String,
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct ArchivePersistentIndex {
+    version: u32,
+    signature: ArchiveSourceSignature,
+    built_at: u64,
+    documents: Vec<ArchivePersistentDocument>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct ArchivePersistentDocument {
+    locator: ArchiveRecordLocator,
+    source: ArchiveRecordSource,
+    title: String,
+    content: String,
+    cues: Vec<String>,
+    observed_at: Option<u64>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct ArchiveSourceSignature {
+    sessions_files: u64,
+    sessions_bytes: u64,
+    sessions_latest_mtime: u64,
+    daily_files: u64,
+    daily_bytes: u64,
+    daily_latest_mtime: u64,
+    turn_log_bytes: u64,
+    turn_log_mtime: u64,
+}
+
 #[derive(Default)]
 struct ArchiveCorpusStats {
     document_count: usize,
@@ -283,6 +322,26 @@ pub fn search_archive_records(
 }
 
 fn collect_archive_candidates(
+    session_store: &dyn SessionStore,
+    memory_store: &dyn MemoryStore,
+    turn_ledger_store: &dyn TurnLedgerStore,
+    query: ArchiveSearchQuery<'_>,
+) -> Vec<ArchiveSearchCandidate> {
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(indexed) = collect_archive_candidates_from_persistent_index(
+            session_store,
+            memory_store,
+            turn_ledger_store,
+            query,
+        ) {
+            return indexed;
+        }
+    }
+    collect_live_archive_candidates(session_store, memory_store, turn_ledger_store, query)
+}
+
+fn collect_live_archive_candidates(
     session_store: &dyn SessionStore,
     memory_store: &dyn MemoryStore,
     turn_ledger_store: &dyn TurnLedgerStore,
@@ -406,6 +465,156 @@ fn collect_archive_candidates(
     candidates
 }
 
+#[cfg(target_os = "linux")]
+fn collect_archive_candidates_from_persistent_index(
+    session_store: &dyn SessionStore,
+    memory_store: &dyn MemoryStore,
+    turn_ledger_store: &dyn TurnLedgerStore,
+    query: ArchiveSearchQuery<'_>,
+) -> Option<Vec<ArchiveSearchCandidate>> {
+    let signature = build_archive_source_signature().ok()?;
+    if let Some(index) = load_archive_persistent_index()
+        .filter(|index| index.version == ARCHIVE_INDEX_VERSION && index.signature == signature)
+    {
+        return Some(
+            index
+                .documents
+                .into_iter()
+                .map(|doc| persistent_document_to_candidate(doc, query.preferred_chat_id))
+                .collect(),
+        );
+    }
+    let live =
+        collect_live_archive_candidates(session_store, memory_store, turn_ledger_store, query);
+    let _ = persist_archive_persistent_index(&live, signature);
+    Some(live)
+}
+
+#[cfg(target_os = "linux")]
+fn persistent_document_to_candidate(
+    doc: ArchivePersistentDocument,
+    preferred_chat_id: Option<&str>,
+) -> ArchiveSearchCandidate {
+    ArchiveSearchCandidate {
+        current_chat_match: locator_matches_chat(&doc.locator, preferred_chat_id),
+        normalized_title: normalize_archive_match_text(&doc.title),
+        normalized_content: normalize_archive_match_text(&doc.content),
+        locator: doc.locator,
+        source: doc.source,
+        title: doc.title,
+        content: doc.content,
+        cues: doc.cues,
+        observed_at: doc.observed_at,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn archive_index_path() -> PathBuf {
+    crate::platform::state_mount_path().join(REL_PATH_ARCHIVE_INDEX)
+}
+
+#[cfg(target_os = "linux")]
+fn load_archive_persistent_index() -> Option<ArchivePersistentIndex> {
+    let buf = std::fs::read(archive_index_path()).ok()?;
+    serde_json::from_slice::<ArchivePersistentIndex>(&buf).ok()
+}
+
+#[cfg(target_os = "linux")]
+fn persist_archive_persistent_index(
+    candidates: &[ArchiveSearchCandidate],
+    signature: ArchiveSourceSignature,
+) -> Result<()> {
+    let index = ArchivePersistentIndex {
+        version: ARCHIVE_INDEX_VERSION,
+        signature,
+        built_at: crate::util::current_unix_secs(),
+        documents: candidates
+            .iter()
+            .map(|candidate| ArchivePersistentDocument {
+                locator: candidate.locator.clone(),
+                source: candidate.source,
+                title: candidate.title.clone(),
+                content: candidate.content.clone(),
+                cues: candidate.cues.clone(),
+                observed_at: candidate.observed_at,
+            })
+            .collect(),
+    };
+    let path = archive_index_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let json = serde_json::to_vec(&index)
+        .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
+    std::fs::write(path, json).map_err(|e| crate::error::Error::io("archive_index", e))
+}
+
+#[cfg(target_os = "linux")]
+fn build_archive_source_signature() -> Result<ArchiveSourceSignature> {
+    let root = crate::platform::state_mount_path();
+    let sessions = scan_path_signature(&root.join(super::REL_PATH_SESSIONS_DIR))?;
+    let daily = scan_path_signature(&root.join(super::REL_PATH_DAILY_DIR))?;
+    let turn_logs = scan_path_signature(&root.join(super::REL_PATH_TURN_LEDGERS))?;
+    Ok(ArchiveSourceSignature {
+        sessions_files: sessions.0,
+        sessions_bytes: sessions.1,
+        sessions_latest_mtime: sessions.2,
+        daily_files: daily.0,
+        daily_bytes: daily.1,
+        daily_latest_mtime: daily.2,
+        turn_log_bytes: turn_logs.1,
+        turn_log_mtime: turn_logs.2,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn scan_path_signature(path: &Path) -> Result<(u64, u64, u64)> {
+    if !path.exists() {
+        return Ok((0, 0, 0));
+    }
+    let meta = std::fs::metadata(path).map_err(|e| crate::error::Error::io("archive_index", e))?;
+    if meta.is_file() {
+        return Ok((1, meta.len(), modified_unix_secs(&meta)));
+    }
+    let mut files = 0u64;
+    let mut bytes = 0u64;
+    let mut latest = 0u64;
+    for entry in std::fs::read_dir(path).map_err(|e| crate::error::Error::io("archive_index", e))? {
+        let entry = entry.map_err(|e| crate::error::Error::io("archive_index", e))?;
+        let meta = entry
+            .metadata()
+            .map_err(|e| crate::error::Error::io("archive_index", e))?;
+        if meta.is_dir() {
+            let nested = scan_path_signature(&entry.path())?;
+            files = files.saturating_add(nested.0);
+            bytes = bytes.saturating_add(nested.1);
+            latest = latest.max(nested.2);
+        } else {
+            files = files.saturating_add(1);
+            bytes = bytes.saturating_add(meta.len());
+            latest = latest.max(modified_unix_secs(&meta));
+        }
+    }
+    Ok((files, bytes, latest))
+}
+
+#[cfg(target_os = "linux")]
+fn modified_unix_secs(meta: &std::fs::Metadata) -> u64 {
+    meta.modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+#[cfg(target_os = "linux")]
+fn locator_matches_chat(locator: &ArchiveRecordLocator, preferred_chat_id: Option<&str>) -> bool {
+    match (locator.chat_id.as_deref(), preferred_chat_id) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
 fn score_archive_candidates(
     candidates: Vec<ArchiveSearchCandidate>,
     query: ArchiveSearchQuery<'_>,
@@ -495,7 +704,11 @@ fn score_archive_candidate(
         )),
         source_reason,
         recency_reason,
-        selector_reason: None,
+        selector_reason: Some(build_archive_selector_reason(
+            candidate,
+            &matched_terms,
+            query.preferred_chat_id,
+        )),
         score: ArchiveSearchScoreBreakdown {
             lexical_score,
             fts_score,
@@ -758,6 +971,37 @@ fn build_archive_hit_cues(base_cues: &[String], trace: &ArchiveRetrievalTrace) -
     cues
 }
 
+fn build_archive_selector_reason(
+    candidate: &ArchiveSearchCandidate,
+    matched_terms: &[String],
+    preferred_chat_id: Option<&str>,
+) -> String {
+    let mut parts = Vec::new();
+    parts.push(format!("source={}", candidate.source.label()));
+    if let Some(chat_id) = candidate.locator.chat_id.as_deref() {
+        if Some(chat_id) == preferred_chat_id {
+            parts.push("current-chat preferred".to_string());
+        } else {
+            parts.push(format!("chat={chat_id}"));
+        }
+    }
+    if let Some(observed_at) = candidate.observed_at {
+        parts.push(format!("observed_at={observed_at}"));
+    }
+    if !matched_terms.is_empty() {
+        parts.push(format!(
+            "matched={}",
+            matched_terms
+                .iter()
+                .take(ARCHIVE_TRACE_MAX_MATCHED_TERMS)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+    }
+    parts.join("; ")
+}
+
 fn archive_term_frequency(text: &str, term: &str) -> usize {
     if text.is_empty() || term.is_empty() {
         return 0;
@@ -1017,7 +1261,7 @@ fn turn_log_observed_at(ledger: &TurnLedger) -> Option<u64> {
     (millis > 0).then_some(millis / 1000)
 }
 
-fn parse_daily_note_observed_at(name: &str) -> Option<u64> {
+pub(crate) fn parse_daily_note_observed_at(name: &str) -> Option<u64> {
     let stem = name.strip_suffix(".md").unwrap_or(name);
     let mut parts = stem.split('-');
     let year = parts.next()?.parse::<i32>().ok()?;

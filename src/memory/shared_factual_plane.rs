@@ -137,6 +137,72 @@ impl SharedFactualPlaneSnapshot {
     }
 }
 
+fn observation_to_metadata_draft(
+    entry: &LongTermMemoryEntry,
+    observation: &SharedFactualPlaneObservation,
+    last_confirmed_at: u64,
+) -> Option<super::LongTermMemoryDraft> {
+    if matches!(
+        observation.reconcile_action,
+        SharedFactualReconcileAction::Hold
+    ) {
+        return None;
+    }
+    let confidence = match observation.reconcile_action {
+        SharedFactualReconcileAction::Reinforce => match observation.support_count {
+            0 => entry.confidence,
+            1 => match entry.confidence {
+                LongTermMemoryConfidence::Low => LongTermMemoryConfidence::Medium,
+                existing => existing,
+            },
+            _ => LongTermMemoryConfidence::High,
+        },
+        SharedFactualReconcileAction::Correct
+        | SharedFactualReconcileAction::Conflict
+        | SharedFactualReconcileAction::Stale => LongTermMemoryConfidence::Low,
+        SharedFactualReconcileAction::Hold => entry.confidence,
+    };
+    let stale_hint = match observation.reconcile_action {
+        SharedFactualReconcileAction::Reinforce => {
+            if matches!(
+                observation.evidence_state,
+                LongTermMemoryEvidenceState::StableFact
+            ) {
+                entry.stale_hint
+            } else {
+                super::LongTermMemoryStaleHint::ReviewBeforeUse
+            }
+        }
+        SharedFactualReconcileAction::Correct
+        | SharedFactualReconcileAction::Conflict
+        | SharedFactualReconcileAction::Stale => {
+            super::LongTermMemoryStaleHint::VerifyAgainstCurrentState
+        }
+        SharedFactualReconcileAction::Hold => entry.stale_hint,
+    };
+    Some(super::LongTermMemoryDraft {
+        kind: entry.kind.clone(),
+        topic: entry.topic.clone(),
+        content: entry.content.clone(),
+        keywords: entry.keywords.clone(),
+        source_chat_id: entry.source_chat_id.clone(),
+        source_type: Some(entry.source_type),
+        source_scope: Some(entry.source_scope),
+        confidence: Some(confidence),
+        freshness: Some(entry.freshness),
+        stale_hint: Some(stale_hint),
+        supporting_citations: observation.top_citations.clone(),
+        evidence_count: Some(
+            observation
+                .support_count
+                .max(observation.top_citations.len()) as u32,
+        ),
+        observed_at: (last_confirmed_at > 0).then_some(last_confirmed_at),
+        last_confirmed_at: (last_confirmed_at > 0).then_some(last_confirmed_at),
+        source_revision: None,
+    })
+}
+
 fn factual_action_priority(action: SharedFactualReconcileAction) -> u8 {
     match action {
         SharedFactualReconcileAction::Hold => 0,
@@ -500,6 +566,54 @@ fn reconcile_entry_observation(
         evidence_summary,
         summary,
     }
+}
+
+pub(crate) fn build_archive_reconcile_drafts(
+    session_store: &dyn super::SessionStore,
+    long_term_store: &dyn LongTermMemoryStore,
+    memory_store: &dyn MemoryStore,
+    turn_ledger_store: &dyn TurnLedgerStore,
+    current_chat_id: &str,
+    profile: MemoryProfile,
+    limit: usize,
+) -> Vec<super::LongTermMemoryDraft> {
+    let entries = long_term_store
+        .list(limit.max(1).min(24))
+        .unwrap_or_default();
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    let now_secs = crate::util::current_unix_secs();
+    let mut drafts = Vec::new();
+    for entry in entries {
+        let preferred_chat = entry
+            .source_chat_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(current_chat_id);
+        let hits = lookup_archive_hits_for_entry(
+            &entry,
+            memory_store,
+            turn_ledger_store,
+            session_store,
+            preferred_chat,
+            &entry.content,
+            None,
+            &[],
+            profile,
+        );
+        let last_confirmed_at = hits
+            .iter()
+            .filter_map(|hit| hit.observed_at)
+            .max()
+            .unwrap_or(0);
+        let observation = reconcile_entry_observation(&entry, &hits, now_secs);
+        if let Some(draft) = observation_to_metadata_draft(&entry, &observation, last_confirmed_at)
+        {
+            drafts.push(draft);
+        }
+    }
+    drafts
 }
 
 pub(crate) fn build_shared_factual_plane_snapshot(

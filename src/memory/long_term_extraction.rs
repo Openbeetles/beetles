@@ -6,6 +6,8 @@ use crate::error::Error;
 use crate::error::Result;
 use crate::llm::{LlmClient, LlmHttpClient, Message, ToolChoicePolicy};
 use crate::orchestrator::PressureLevel;
+use crate::platform::SkillStorage;
+use crate::skills::{upsert_runtime_skill, RuntimeSkillWrite};
 use crate::util::{scrub_credentials, truncate_content_to_max};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -25,7 +27,7 @@ use super::{
 
 /// 长期记忆提取状态存储路径（相对状态根）。
 pub const REL_PATH_LONG_TERM_EXTRACTION_STATES: &str = "memory/long_term_extraction_states.json";
-pub const LONG_TERM_MEMORY_EXTRACTION_SYSTEM_PROMPT: &str = "You extract durable long-term memory for a personal AI assistant. Return JSON only: an array of objects. Each object must contain op, kind, topic. op must be upsert or delete. kind must be one of preference, profile, relationship, project, task, constraint, fact. topic must be a short stable slot key identifying the same memory across future updates, for example response_style, user_name, current_project, timezone, partner_name. Reuse an existing topic whenever the conversation updates, completes, or corrects that same durable slot. Prefer updating an existing slot over inventing a nearby new topic. For op=upsert, also provide content and optional keywords. For op=delete, omit content and keywords. Use delete when the conversation clearly invalidates or completes an existing durable slot, for example a task is finished, a temporary project focus is no longer active, or a prior fact is explicitly corrected. Store only durable user profile facts, stable preferences, durable constraints, ongoing project/task state, and durable external facts. Do not store greetings, one-off troubleshooting steps, short acknowledgements, temporary moods, assistant plans for the next single turn, assistant-only claims, secrets, credentials, raw tool payloads, copied log fragments, or long external document excerpts. Treat archive evidence sources as supporting records rather than canonical memory: they may justify a durable conclusion, but they are not themselves a fact slot. Prefer newer transcript evidence over older archive fragments when they disagree. When project/task context shifts, update the existing active slot instead of creating a parallel near-duplicate slot. Use the provided session summary, existing long-term memory, and archive evidence as grounding when deciding whether to upsert, delete, or ignore. Keep only the highest-value durable changes, at most 4 items. If there is nothing durable to add, update, or delete, return [].";
+pub const LONG_TERM_MEMORY_EXTRACTION_SYSTEM_PROMPT: &str = "You extract durable memory updates for a personal AI assistant. Return JSON only: an array of objects. Each object must contain plane plus topic. plane must be factual, skill, or ignore. Use factual for canonical shared facts: durable user profile facts, stable preferences, durable constraints, ongoing project/task state, and durable external facts. Use skill for procedural experience, operating routines, tool-use know-how, setup playbooks, or reusable workflows that should not pollute canonical factual memory. Use ignore when nothing durable should be written. For plane=factual, also provide op, kind, and optionally content and keywords. op must be upsert or delete. kind must be one of preference, profile, relationship, project, task, constraint, fact. Reuse an existing factual topic whenever the same durable slot is being updated or corrected. For plane=skill, provide content and optional skill_summary; content should be a compact reusable procedure, not a transcript. For plane=ignore, no extra fields are needed. Do not store greetings, one-off troubleshooting steps as factual memory, short acknowledgements, temporary moods, assistant-only claims, secrets, credentials, raw tool payloads, copied log fragments, or long external document excerpts. Treat archive evidence sources as supporting records rather than canonical memory: they may justify a durable conclusion, but they are not themselves a fact slot. Prefer newer transcript evidence over older archive fragments when they disagree. When project/task context shifts, update the existing active factual slot instead of creating a parallel near-duplicate slot. Use the provided session summary, existing long-term memory, and archive evidence as grounding when deciding whether to upsert, delete, reroute to skill, or ignore. Keep only the highest-value durable changes, at most 4 items. If there is nothing durable to add, update, or delete, return [].";
 /// 共享策略允许的 recent 消息窗口上限；实际运行值由 MemoryProfile 决定。
 pub const LONG_TERM_MEMORY_EXTRACTION_RECENT_N: usize = 10;
 /// 单次提取允许的动作数上限；实际运行值由 MemoryProfile 决定。
@@ -205,13 +207,17 @@ pub fn mark_long_term_memory_extraction_deferred(
 pub struct ParsedLongTermMemoryExtraction {
     pub upserts: Vec<LongTermMemoryDraft>,
     pub deletes: Vec<LongTermMemorySlot>,
+    pub skill_writes: Vec<RuntimeSkillWrite>,
 }
 
 #[derive(Deserialize)]
 struct LongTermMemoryExtractionItem {
+    #[serde(default)]
+    plane: Option<String>,
     #[serde(default = "default_long_term_memory_extraction_op")]
     op: String,
-    kind: LongTermMemoryKind,
+    #[serde(default)]
+    kind: Option<LongTermMemoryKind>,
     topic: String,
     #[serde(default)]
     content: String,
@@ -229,11 +235,14 @@ struct LongTermMemoryExtractionItem {
     freshness: Option<LongTermMemoryFreshness>,
     #[serde(default)]
     stale_hint: Option<LongTermMemoryStaleHint>,
+    #[serde(default)]
+    skill_summary: String,
 }
 
 enum ParsedLongTermMemoryAction {
     Upsert(LongTermMemoryDraft),
     Delete(LongTermMemorySlot),
+    Skill(RuntimeSkillWrite),
 }
 
 fn default_long_term_memory_extraction_op() -> String {
@@ -374,17 +383,55 @@ pub fn parse_long_term_memory_extraction_response(
         else {
             continue;
         };
+        let plane = parsed_item
+            .plane
+            .as_deref()
+            .map(str::trim)
+            .map(|value| value.to_ascii_lowercase());
+        if matches!(plane.as_deref(), Some("ignore")) {
+            continue;
+        }
         let action = match parsed_item.op.trim().to_ascii_lowercase().as_str() {
-            "delete" => ParsedLongTermMemoryAction::Delete(LongTermMemorySlot {
-                kind: parsed_item.kind,
-                topic: parsed_item.topic,
-            }),
+            _ if matches!(plane.as_deref(), Some("skill")) => {
+                ParsedLongTermMemoryAction::Skill(RuntimeSkillWrite {
+                    name: crate::skills::runtime_skill_name_for_topic(&parsed_item.topic),
+                    topic: parsed_item.topic.clone(),
+                    title: parsed_item.topic.replace('_', " "),
+                    summary: truncate_content_to_max(
+                        if parsed_item.skill_summary.trim().is_empty() {
+                            parsed_item.content.trim()
+                        } else {
+                            parsed_item.skill_summary.trim()
+                        },
+                        160,
+                    )
+                    .into_owned(),
+                    content: parsed_item.content,
+                    citations: Vec::new(),
+                    source_chat_id: parsed_item
+                        .source_chat_id
+                        .or_else(|| Some(chat_id.to_string())),
+                    observed_at: 0,
+                })
+            }
+            "delete" => {
+                let Some(kind) = parsed_item.kind else {
+                    continue;
+                };
+                ParsedLongTermMemoryAction::Delete(LongTermMemorySlot {
+                    kind,
+                    topic: parsed_item.topic,
+                })
+            }
             "upsert" => {
+                let Some(kind) = parsed_item.kind else {
+                    continue;
+                };
                 if parsed_item.source_chat_id.is_none() {
                     parsed_item.source_chat_id = Some(chat_id.to_string());
                 }
                 ParsedLongTermMemoryAction::Upsert(LongTermMemoryDraft {
-                    kind: parsed_item.kind,
+                    kind,
                     topic: parsed_item.topic,
                     content: parsed_item.content,
                     keywords: parsed_item.keywords,
@@ -408,6 +455,7 @@ pub fn parse_long_term_memory_extraction_response(
         let slot_id = match &action {
             ParsedLongTermMemoryAction::Upsert(draft) => draft.stable_id(),
             ParsedLongTermMemoryAction::Delete(slot) => slot.stable_id(),
+            ParsedLongTermMemoryAction::Skill(write) => Some(format!("skill:{}", write.name)),
         };
         let Some(slot_id) = slot_id else {
             continue;
@@ -424,13 +472,19 @@ pub fn parse_long_term_memory_extraction_response(
     }
     let mut upserts = Vec::with_capacity(actions.len());
     let mut deletes = Vec::with_capacity(actions.len());
+    let mut skill_writes = Vec::with_capacity(actions.len());
     for action in actions {
         match action {
             ParsedLongTermMemoryAction::Upsert(draft) => upserts.push(draft),
             ParsedLongTermMemoryAction::Delete(slot) => deletes.push(slot),
+            ParsedLongTermMemoryAction::Skill(write) => skill_writes.push(write),
         }
     }
-    ParsedLongTermMemoryExtraction { upserts, deletes }
+    ParsedLongTermMemoryExtraction {
+        upserts,
+        deletes,
+        skill_writes,
+    }
 }
 
 fn build_draft_archive_reconcile_query(
@@ -675,6 +729,7 @@ fn lower_draft_confidence(draft: &mut LongTermMemoryDraft, target: LongTermMemor
 
 pub fn apply_long_term_memory_extraction(
     store: &dyn LongTermMemoryStore,
+    skill_storage: &dyn SkillStorage,
     extraction: &ParsedLongTermMemoryExtraction,
     now_secs: u64,
 ) -> Result<usize> {
@@ -686,6 +741,9 @@ pub fn apply_long_term_memory_extraction(
     }
     if !extraction.upserts.is_empty() {
         changed += store.upsert_many(&extraction.upserts, now_secs)?;
+    }
+    for write in &extraction.skill_writes {
+        changed += usize::from(upsert_runtime_skill(skill_storage, write)?);
     }
     Ok(changed)
 }
@@ -699,8 +757,25 @@ pub fn prepare_long_term_memory_extraction(
     let mut upsert_slots = HashMap::with_capacity(extraction.upserts.len());
     let mut protected_slots = HashSet::with_capacity(extraction.upserts.len());
     let mut upserts = Vec::with_capacity(extraction.upserts.len());
+    let mut skill_writes = Vec::with_capacity(
+        extraction
+            .skill_writes
+            .len()
+            .saturating_add(extraction.upserts.len()),
+    );
+    let mut skill_names = HashMap::with_capacity(skill_writes.len());
     for draft in &extraction.upserts {
-        let Some(mut normalized) = draft.normalized() else {
+        let routed = super::route_long_term_draft(draft);
+        if let Some(write) = routed.skill_write {
+            if let Some(existing_idx) = skill_names.get(&write.name).copied() {
+                skill_writes[existing_idx] = write;
+            } else {
+                skill_names.insert(write.name.clone(), skill_writes.len());
+                skill_writes.push(write);
+            }
+            continue;
+        }
+        let Some(mut normalized) = routed.factual_draft else {
             continue;
         };
         if !should_keep_durable_draft(&normalized) {
@@ -721,6 +796,14 @@ pub fn prepare_long_term_memory_extraction(
         } else {
             upsert_slots.insert(slot_id, upserts.len());
             upserts.push(normalized);
+        }
+    }
+    for write in &extraction.skill_writes {
+        if let Some(existing_idx) = skill_names.get(&write.name).copied() {
+            skill_writes[existing_idx] = write.clone();
+        } else {
+            skill_names.insert(write.name.clone(), skill_writes.len());
+            skill_writes.push(write.clone());
         }
     }
 
@@ -769,7 +852,11 @@ pub fn prepare_long_term_memory_extraction(
         }
     }
 
-    ParsedLongTermMemoryExtraction { upserts, deletes }
+    ParsedLongTermMemoryExtraction {
+        upserts,
+        deletes,
+        skill_writes,
+    }
 }
 
 fn resolve_existing_slot_match<'a>(
@@ -1152,6 +1239,7 @@ pub struct LongTermMemoryRefreshContext<'a> {
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
     pub extraction_state_store: &'a dyn LongTermMemoryExtractionStateStore,
     pub turn_ledger_store: &'a dyn TurnLedgerStore,
+    pub skill_storage: &'a dyn SkillStorage,
 }
 
 pub enum LongTermMemoryRefreshOutcome {
@@ -1340,10 +1428,18 @@ fn extract_long_term_memory(
     );
     let extraction =
         prepare_long_term_memory_extraction(ctx.long_term_memory_store, &parsed, chat_id);
-    if extraction.upserts.is_empty() && extraction.deletes.is_empty() {
+    if extraction.upserts.is_empty()
+        && extraction.deletes.is_empty()
+        && extraction.skill_writes.is_empty()
+    {
         return Ok(0);
     }
-    apply_long_term_memory_extraction(ctx.long_term_memory_store, &extraction, now_secs)
+    apply_long_term_memory_extraction(
+        ctx.long_term_memory_store,
+        ctx.skill_storage,
+        &extraction,
+        now_secs,
+    )
 }
 
 pub fn persist_long_term_memory_extraction_state(
@@ -1374,6 +1470,7 @@ mod tests {
     use crate::memory::{
         LongTermMemoryEntry, MemoryStore, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
     };
+    use crate::platform::SkillStorage;
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -1520,6 +1617,53 @@ mod tests {
         }
 
         fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubSkillStorage {
+        writes: Mutex<Vec<(String, String)>>,
+    }
+
+    impl SkillStorage for StubSkillStorage {
+        fn list_names(&self) -> Result<Vec<String>> {
+            Ok(self
+                .writes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect())
+        }
+
+        fn read(&self, name: &str) -> Result<Vec<u8>> {
+            Ok(self
+                .writes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .find(|(candidate, _)| candidate == name)
+                .map(|(_, content)| content.as_bytes().to_vec())
+                .unwrap_or_default())
+        }
+
+        fn write(&self, name: &str, content: &[u8]) -> Result<()> {
+            let mut guard = self.writes.lock().unwrap_or_else(|e| e.into_inner());
+            let text = String::from_utf8_lossy(content).into_owned();
+            if let Some(existing) = guard.iter_mut().find(|(candidate, _)| candidate == name) {
+                existing.1 = text;
+            } else {
+                guard.push((name.to_string(), text));
+            }
+            Ok(())
+        }
+
+        fn remove(&self, name: &str) -> Result<()> {
+            self.writes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(|(candidate, _)| candidate != name);
             Ok(())
         }
     }
@@ -1950,6 +2094,7 @@ mod tests {
             deleted_slot_result: true,
             ..Default::default()
         };
+        let skill_storage = StubSkillStorage::default();
         let extraction = ParsedLongTermMemoryExtraction {
             upserts: vec![test_draft(
                 LongTermMemoryKind::Project,
@@ -1962,9 +2107,11 @@ mod tests {
                 kind: LongTermMemoryKind::Task,
                 topic: "old_focus".to_string(),
             }],
+            skill_writes: vec![],
         };
 
-        let changed = apply_long_term_memory_extraction(&store, &extraction, 100).unwrap();
+        let changed =
+            apply_long_term_memory_extraction(&store, &skill_storage, &extraction, 100).unwrap();
 
         assert_eq!(changed, 2);
         assert_eq!(
@@ -1991,6 +2138,7 @@ mod tests {
             upsert_many_result: Some(0),
             ..Default::default()
         };
+        let skill_storage = StubSkillStorage::default();
         let extraction = ParsedLongTermMemoryExtraction {
             upserts: vec![test_draft(
                 LongTermMemoryKind::Fact,
@@ -2000,9 +2148,11 @@ mod tests {
                 Some("chat-1"),
             )],
             deletes: vec![],
+            skill_writes: vec![],
         };
 
-        let changed = apply_long_term_memory_extraction(&store, &extraction, 100).unwrap();
+        let changed =
+            apply_long_term_memory_extraction(&store, &skill_storage, &extraction, 100).unwrap();
 
         assert_eq!(changed, 0);
         assert_eq!(
@@ -2039,6 +2189,7 @@ mod tests {
                 Some("chat-1"),
             )],
             deletes: vec![],
+            skill_writes: vec![],
         };
 
         let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
@@ -2059,6 +2210,7 @@ mod tests {
                 Some("chat-1"),
             )],
             deletes: vec![],
+            skill_writes: vec![],
         };
 
         let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
@@ -2079,6 +2231,7 @@ mod tests {
                 Some("chat-1"),
             )],
             deletes: vec![],
+            skill_writes: vec![],
         };
 
         let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
@@ -2099,6 +2252,7 @@ mod tests {
                 Some("chat-1"),
             )],
             deletes: vec![],
+            skill_writes: vec![],
         };
 
         let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
@@ -2119,6 +2273,7 @@ mod tests {
                 Some("chat-1"),
             )],
             deletes: vec![],
+            skill_writes: vec![],
         };
 
         let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
@@ -2148,6 +2303,7 @@ mod tests {
                 ),
             ],
             deletes: vec![],
+            skill_writes: vec![],
         };
 
         let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
@@ -2184,6 +2340,7 @@ mod tests {
                 kind: LongTermMemoryKind::Task,
                 topic: "current_focus".to_string(),
             }],
+            skill_writes: vec![],
         };
 
         let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
@@ -2220,6 +2377,7 @@ mod tests {
         let extraction = ParsedLongTermMemoryExtraction {
             upserts: vec![draft],
             deletes: vec![],
+            skill_writes: vec![],
         };
 
         let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
@@ -2253,6 +2411,7 @@ mod tests {
                 Some("chat-1"),
             )],
             deletes: vec![],
+            skill_writes: vec![],
         };
 
         let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
@@ -2285,6 +2444,7 @@ mod tests {
                 Some("chat-1"),
             )],
             deletes: vec![],
+            skill_writes: vec![],
         };
 
         let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
@@ -2329,6 +2489,7 @@ mod tests {
                 Some("chat-1"),
             )],
             deletes: vec![],
+            skill_writes: vec![],
         };
 
         let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
@@ -2375,6 +2536,7 @@ mod tests {
                 Some("chat-1"),
             )],
             deletes: vec![],
+            skill_writes: vec![],
         };
 
         let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
@@ -2408,6 +2570,7 @@ mod tests {
                 Some("chat-1"),
             )],
             deletes: vec![],
+            skill_writes: vec![],
         };
 
         let prepared = prepare_long_term_memory_extraction(&store, &extraction, "chat-1");
@@ -2458,6 +2621,7 @@ mod tests {
             })),
             ..Default::default()
         };
+        let skill_storage = StubSkillStorage::default();
         let ctx = LongTermMemoryRefreshContext {
             memory_store: &archive_memory_store,
             session_store: &session_store,
@@ -2465,6 +2629,7 @@ mod tests {
             long_term_memory_store: &memory_store,
             extraction_state_store: &extraction_state_store,
             turn_ledger_store: &turn_ledger_store,
+            skill_storage: &skill_storage,
         };
         let mut http = DummyHttpClient;
         let outcome = run_long_term_memory_refresh(

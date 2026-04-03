@@ -1167,6 +1167,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             private_garden_store: Arc::clone(&private_garden_store),
             mental_privacy_store: Arc::clone(&mental_privacy_store),
             turn_ledger_store: Arc::clone(&turn_ledger_store),
+            skill_storage: Arc::clone(&skill_storage),
             memory_profile: platform.memory_profile(),
             get_skill_descriptions,
             session_max_messages: session_max,

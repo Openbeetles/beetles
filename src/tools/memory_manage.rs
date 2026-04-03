@@ -3,11 +3,13 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    LongTermMemoryConfidence, LongTermMemoryDraft, LongTermMemoryFreshness, LongTermMemoryKind,
-    LongTermMemorySlot, LongTermMemorySourceScope, LongTermMemorySourceType,
-    LongTermMemoryStaleHint, LongTermMemoryStore, MemoryStore, MAX_MEMORY_CONTENT_LEN,
+    route_long_term_draft, LongTermMemoryConfidence, LongTermMemoryDraft, LongTermMemoryFreshness,
+    LongTermMemoryKind, LongTermMemorySlot, LongTermMemorySourceScope, LongTermMemorySourceType,
+    LongTermMemoryStaleHint, LongTermMemoryStore, MemoryPlane, MemoryStore, MAX_MEMORY_CONTENT_LEN,
     MAX_SOUL_USER_LEN,
 };
+use crate::platform::SkillStorage;
+use crate::skills::upsert_runtime_skill;
 use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
 use serde_json::json;
 use std::sync::Arc;
@@ -15,16 +17,19 @@ use std::sync::Arc;
 pub struct MemoryManageTool {
     store: Arc<dyn MemoryStore + Send + Sync>,
     long_term_store: Arc<dyn LongTermMemoryStore + Send + Sync>,
+    skill_storage: Arc<dyn SkillStorage + Send + Sync>,
 }
 
 impl MemoryManageTool {
     pub fn new(
         store: Arc<dyn MemoryStore + Send + Sync>,
         long_term_store: Arc<dyn LongTermMemoryStore + Send + Sync>,
+        skill_storage: Arc<dyn SkillStorage + Send + Sync>,
     ) -> Self {
         Self {
             store,
             long_term_store,
+            skill_storage,
         }
     }
 }
@@ -37,7 +42,7 @@ impl Tool for MemoryManageTool {
         "Manage persistent memory, structured long-term memory, soul/user config, and daily notes. Op: get_memory, set_memory, get_soul, set_soul, get_user, set_user, list_daily_notes, get_daily_note, write_daily_note, list_long_term, get_long_term, get_long_term_slot, query_long_term, upsert_long_term, delete_long_term, delete_long_term_slot."
     }
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: get_memory|set_memory|get_soul|set_soul|get_user|set_user|list_daily_notes|get_daily_note|write_daily_note|list_long_term|get_long_term|get_long_term_slot|query_long_term|upsert_long_term|delete_long_term|delete_long_term_slot"},"content":{"type":"string","description":"Content for set_memory/set_soul/set_user/write_daily_note"},"name":{"type":"string","description":"Daily note name (e.g. 2025-03-10.md) for get_daily_note/write_daily_note"},"recent_n":{"type":"integer","description":"Max number of daily notes to list (default 10, max 30)"},"append":{"type":"boolean","description":"If true, append to existing note instead of overwrite (default false, for write_daily_note)"},"id":{"type":"string","description":"Structured long-term memory id for get_long_term/delete_long_term"},"topic":{"type":"string","description":"Structured long-term memory stable topic key, e.g. response_style or current_project"},"kind":{"type":"string","description":"Structured long-term memory kind: preference|profile|relationship|project|task|constraint|fact"},"keywords":{"type":"array","items":{"type":"string"},"description":"Structured long-term memory keywords"},"source_type":{"type":"string","description":"Structured long-term memory source type: conversation|manual_tool|system_runtime|external_observation"},"source_scope":{"type":"string","description":"Structured long-term memory source scope: chat|user|world"},"source_chat_id":{"type":"string","description":"Optional long-term memory source chat filter"},"confidence":{"type":"string","description":"Structured long-term memory confidence: low|medium|high"},"freshness":{"type":"string","description":"Structured long-term memory freshness: stable|dynamic|volatile"},"stale_hint":{"type":"string","description":"Structured long-term memory stale hint: none|review_before_use|verify_against_current_state"},"include_stale":{"type":"boolean","description":"Whether query_long_term includes stale records (default false)"}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: get_memory|set_memory|get_soul|set_soul|get_user|set_user|list_daily_notes|get_daily_note|write_daily_note|list_long_term|get_long_term|get_long_term_slot|query_long_term|upsert_long_term|delete_long_term|delete_long_term_slot"},"content":{"type":"string","description":"Content for set_memory/set_soul/set_user/write_daily_note"},"name":{"type":"string","description":"Daily note name (e.g. 2025-03-10.md) for get_daily_note/write_daily_note"},"recent_n":{"type":"integer","description":"Max number of daily notes to list (default 10, max 30)"},"append":{"type":"boolean","description":"If true, append to existing note instead of overwrite (default false, for write_daily_note)"},"id":{"type":"string","description":"Structured long-term memory id for get_long_term/delete_long_term"},"topic":{"type":"string","description":"Structured long-term memory stable topic key, e.g. response_style or current_project"},"kind":{"type":"string","description":"Structured long-term memory kind: preference|profile|relationship|project|task|constraint|fact"},"keywords":{"type":"array","items":{"type":"string"},"description":"Structured long-term memory keywords"},"source_type":{"type":"string","description":"Structured long-term memory source type: conversation|manual_tool|system_runtime|external_observation"},"source_scope":{"type":"string","description":"Structured long-term memory source scope: chat|user|world"},"source_chat_id":{"type":"string","description":"Optional long-term memory source chat filter"},"confidence":{"type":"string","description":"Structured long-term memory confidence: low|medium|high"},"freshness":{"type":"string","description":"Structured long-term memory freshness: stable|dynamic|volatile"},"stale_hint":{"type":"string","description":"Structured long-term memory stale hint: none|review_before_use|verify_against_current_state"},"include_stale":{"type":"boolean","description":"Whether query_long_term includes stale records (default false)"},"plane":{"type":"string","description":"Optional desired plane hint: factual|skill|auto. Procedural content is still redirected away from canonical factual memory."}},"required":["op"]}"#
     }
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
         let obj = parse_tool_args(args, "tool_memory_manage")?;
@@ -275,13 +280,46 @@ impl Tool for MemoryManageTool {
                     last_confirmed_at: None,
                     source_revision: None,
                 };
-                let changed_count = self
-                    .long_term_store
-                    .upsert_many(&[draft], crate::util::current_unix_secs())?;
-                Ok(
-                    json!({"op": "upsert_long_term", "ok": true, "changed_count": changed_count})
-                        .to_string(),
-                )
+                let routed = route_long_term_draft(&draft);
+                match routed.plane {
+                    MemoryPlane::Factual => {
+                        let changed_count = self.long_term_store.upsert_many(
+                            &[routed.factual_draft.ok_or_else(|| {
+                                Error::config(
+                                    "tool_memory_manage",
+                                    "missing normalized factual draft",
+                                )
+                            })?],
+                            crate::util::current_unix_secs(),
+                        )?;
+                        Ok(json!({
+                            "op": "upsert_long_term",
+                            "ok": true,
+                            "plane": "factual",
+                            "changed_count": changed_count
+                        })
+                        .to_string())
+                    }
+                    MemoryPlane::Skill => {
+                        let write = routed.skill_write.ok_or_else(|| {
+                            Error::config("tool_memory_manage", "missing routed skill write")
+                        })?;
+                        let changed = upsert_runtime_skill(self.skill_storage.as_ref(), &write)?;
+                        Ok(json!({
+                            "op": "upsert_long_term",
+                            "ok": true,
+                            "plane": "skill",
+                            "redirected": true,
+                            "skill_name": write.name,
+                            "changed_count": usize::from(changed)
+                        })
+                        .to_string())
+                    }
+                    MemoryPlane::Reject => Err(Error::config(
+                        "tool_memory_manage",
+                        "content looks like raw payload/log material and was rejected",
+                    )),
+                }
             }
             "delete_long_term" => {
                 let id = obj

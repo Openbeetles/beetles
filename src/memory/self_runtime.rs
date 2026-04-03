@@ -20,14 +20,14 @@ use super::{
     render_private_memory_boundary_block, render_self_continuity_block, render_self_model_block,
     render_self_state_block, render_world_sense_block, render_world_snapshot_block,
     run_autonomy_strategy_refresh_with_state, run_inner_life_refresh_with_state,
-    run_memory_governance_kernel, run_outer_voice_refresh_with_state,
+    run_memory_governance_kernel, run_memory_hygiene_jobs, run_outer_voice_refresh_with_state,
     run_private_doc_workspace_refresh_with_state, run_private_garden_governance_with_state,
     run_self_continuity_refresh_with_state, run_world_sense_refresh_with_state,
     touch_self_continuity_runtime, AutonomyGovernanceTendency, AutonomyStrategyRefreshContext,
     AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome, AutonomyStrategyStore,
     ExecutionStateStore, InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome,
     InnerLifeStore, InternalMemoryLayerFocus, LongTermMemoryStore, MemoryGovernanceContext,
-    MemoryGovernanceInput, MemoryProfile, MemoryStore, MentalPrivacyStore,
+    MemoryGovernanceInput, MemoryHygieneContext, MemoryProfile, MemoryStore, MentalPrivacyStore,
     OuterVoiceRefreshContext, OuterVoiceRefreshInput, OuterVoiceRefreshOutcome, OuterVoiceStore,
     PrivateDocStore, PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
     PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
@@ -1054,6 +1054,20 @@ pub fn run_self_runtime(
         true,
         Some(payload.source_channel.as_str()),
     );
+    if matches!(payload.trigger, SelfRuntimeTrigger::IdleTick) {
+        let _ = run_memory_hygiene_jobs(
+            MemoryHygieneContext {
+                session_store: ctx.session_store,
+                session_summary_store: ctx.session_summary_store,
+                memory_store: ctx.memory_store,
+                turn_ledger_store: ctx.turn_ledger_store,
+                long_term_memory_store: ctx.long_term_memory_store,
+            },
+            chat_id,
+            profile,
+            payload.now_secs,
+        );
+    }
 
     SelfRuntimeOutcome {
         decision: action_results.decision,

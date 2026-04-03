@@ -228,6 +228,7 @@ pub fn build_default_registry(
     registry.register(Box::new(super::MemoryManageTool::new(
         Arc::clone(&memory_store),
         Arc::clone(&long_term_memory_store),
+        platform.skill_storage(),
     )));
     #[cfg(feature = "tools_network_extra")]
     registry.register(Box::new(super::HttpRequestTool));

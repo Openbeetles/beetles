@@ -11,14 +11,15 @@ use super::{
     mark_long_term_memory_extraction_requested, memory_capability_profile, memory_policy,
     normalize_private_garden_doc_path, persist_long_term_memory_extraction_state,
     run_execution_state_refresh_with_state, run_internal_memory_routing_with_state,
-    run_memory_governance_kernel, run_private_doc_workspace_refresh_with_state,
-    run_private_garden_governance_with_state, run_self_model_refresh_with_state,
-    run_session_summary_refresh_with_snapshot, should_refresh_execution_state,
-    should_refresh_private_doc_workspace, should_refresh_private_garden, should_refresh_self_model,
-    ExecutionStateRefreshContext, ExecutionStateRefreshInput, ExecutionStateRefreshOutcome,
-    ExecutionStateStore, InternalMemoryRoutingDecision, InternalMemoryRoutingInput,
-    LongTermMemoryExtractionStateStore, LongTermMemoryExtractionTurnInput, LongTermMemoryStore,
-    MemoryGovernanceContext, MemoryGovernanceInput, MemoryProfile, MemoryStore, PrivateDocStore,
+    run_memory_governance_kernel, run_memory_hygiene_jobs,
+    run_private_doc_workspace_refresh_with_state, run_private_garden_governance_with_state,
+    run_self_model_refresh_with_state, run_session_summary_refresh_with_snapshot,
+    should_refresh_execution_state, should_refresh_private_doc_workspace,
+    should_refresh_private_garden, should_refresh_self_model, ExecutionStateRefreshContext,
+    ExecutionStateRefreshInput, ExecutionStateRefreshOutcome, ExecutionStateStore,
+    InternalMemoryRoutingDecision, InternalMemoryRoutingInput, LongTermMemoryExtractionStateStore,
+    LongTermMemoryExtractionTurnInput, LongTermMemoryStore, MemoryGovernanceContext,
+    MemoryGovernanceInput, MemoryHygieneContext, MemoryProfile, MemoryStore, PrivateDocStore,
     PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
     PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
     PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, PrivateGardenStore,
@@ -71,6 +72,7 @@ pub struct PostReplyMemoryMaintenanceOutcome {
     pub factual_coordination_summary: Option<String>,
     pub factual_refresh_suggested: bool,
     pub extraction_request_outcome: LongTermMemoryRefreshRequestOutcome,
+    pub hygiene_outcome: super::MemoryHygieneOutcome,
 }
 
 struct MaintenanceBaseline {
@@ -682,6 +684,18 @@ pub fn run_post_reply_memory_maintenance(
         extraction_state.as_ref(),
         &next_extraction_state,
     );
+    let hygiene_outcome = run_memory_hygiene_jobs(
+        MemoryHygieneContext {
+            session_store: ctx.session_store,
+            session_summary_store: ctx.session_summary_store,
+            memory_store: ctx.memory_store,
+            turn_ledger_store: ctx.turn_ledger_store,
+            long_term_memory_store: ctx.long_term_memory_store,
+        },
+        input.chat_id,
+        input.memory_profile,
+        input.now_secs,
+    );
 
     PostReplyMemoryMaintenanceOutcome {
         after_count: baseline.after_count,
@@ -695,6 +709,7 @@ pub fn run_post_reply_memory_maintenance(
         factual_coordination_summary: governance.factual_coordination_summary,
         factual_refresh_suggested: governance.factual_refresh_suggested,
         extraction_request_outcome,
+        hygiene_outcome,
     }
 }
 
