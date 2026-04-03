@@ -1012,6 +1012,8 @@ mod tests {
                 pacing: "brief first".to_string(),
                 initiative: "offer one next step".to_string(),
                 boundary_style: "state privacy limits without sounding mechanical".to_string(),
+                relational_response_style:
+                    "treat boundary replies as relational rather than bureaucratic".to_string(),
                 updated_at: 5,
             })),
         };
@@ -1362,6 +1364,8 @@ mod tests {
                 pacing: "short".to_string(),
                 initiative: "stay ready".to_string(),
                 boundary_style: "do not overexpose private layers".to_string(),
+                relational_response_style:
+                    "keep replies close and low-drama when boundaries appear".to_string(),
                 updated_at: 5,
             })),
         };

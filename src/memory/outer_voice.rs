@@ -20,10 +20,10 @@ use super::{
     SessionMessage, WorldSense, WorldSnapshot,
 };
 
-pub const OUTER_VOICE_SYSTEM_PROMPT: &str = "You maintain the assistant's outer voice layer. Return JSON only: either null or one object with fields expression_mode, tone, pacing, initiative, boundary_style. This layer is outward-facing: it shapes how the assistant should speak across user-visible channels in the near term. It is not a transcript summary, not a private diary, and not factual memory. Use world-sense, autonomy strategy, self-model, inner-life drift, self-continuity, and mental privacy boundaries as grounding. Keep it compact, stable enough to guide future replies, and willing to shift when the surrounding situation changes. Never copy private text into this layer; only encode expression guidance.";
+pub const OUTER_VOICE_SYSTEM_PROMPT: &str = "You maintain the assistant's outer voice layer. Return JSON only: either null or one object with fields expression_mode, tone, pacing, initiative, boundary_style, relational_response_style. This layer is outward-facing: it shapes how the assistant should speak across user-visible channels in the near term. It is not a transcript summary, not a private diary, and not factual memory. Use world-sense, autonomy strategy, self-model, inner-life drift, self-continuity, and mental privacy boundaries as grounding. Keep it compact, stable enough to guide future replies, and willing to shift when the surrounding situation changes. Never copy private text into this layer; only encode expression guidance.";
 
 const OUTER_VOICE_FIELD_MAX_CHARS: usize = 180;
-pub const OUTER_VOICE_TOTAL_CHAR_LIMIT: usize = OUTER_VOICE_FIELD_MAX_CHARS * 5;
+pub const OUTER_VOICE_TOTAL_CHAR_LIMIT: usize = OUTER_VOICE_FIELD_MAX_CHARS * 6;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OuterVoice {
@@ -38,6 +38,8 @@ pub struct OuterVoice {
     #[serde(default)]
     pub boundary_style: String,
     #[serde(default)]
+    pub relational_response_style: String,
+    #[serde(default)]
     pub updated_at: u64,
 }
 
@@ -48,6 +50,7 @@ impl OuterVoice {
             || !self.pacing.trim().is_empty()
             || !self.initiative.trim().is_empty()
             || !self.boundary_style.trim().is_empty()
+            || !self.relational_response_style.trim().is_empty()
     }
 }
 
@@ -130,6 +133,13 @@ pub fn render_outer_voice_block(outer_voice: &OuterVoice, max_len: usize) -> Opt
     }
     if !normalized.boundary_style.is_empty() {
         let _ = writeln!(out, "Boundary style: {}", normalized.boundary_style);
+    }
+    if !normalized.relational_response_style.is_empty() {
+        let _ = writeln!(
+            out,
+            "Relational response style: {}",
+            normalized.relational_response_style
+        );
     }
     let capped = truncate_content_to_max(out.trim_end(), max_len).into_owned();
     (!capped.trim().is_empty()).then_some(capped)
@@ -263,6 +273,7 @@ fn parse_outer_voice_response(raw: &str, now_secs: u64) -> ParsedOuterVoiceRespo
                     pacing: get_object_text(object, "pacing"),
                     initiative: get_object_text(object, "initiative"),
                     boundary_style: get_object_text(object, "boundary_style"),
+                    relational_response_style: get_object_text(object, "relational_response_style"),
                     updated_at: now_secs,
                 },
                 now_secs,
@@ -289,6 +300,7 @@ fn normalize_outer_voice(mut outer_voice: OuterVoice, now_secs: u64) -> Option<O
     normalize_field(&mut outer_voice.pacing);
     normalize_field(&mut outer_voice.initiative);
     normalize_field(&mut outer_voice.boundary_style);
+    normalize_field(&mut outer_voice.relational_response_style);
     outer_voice.updated_at = now_secs;
     outer_voice.is_meaningful().then_some(outer_voice)
 }
@@ -429,7 +441,8 @@ mod tests {
             "tone": ["gentle", "direct"],
             "pacing": 2,
             "initiative": true,
-            "boundary_style": { "value": "state limits without sounding cold" }
+            "boundary_style": { "value": "state limits without sounding cold" },
+            "relational_response_style": ["steady", "relationship-aware"]
         })
         .to_string();
         let ParsedOuterVoiceResponse::Update(parsed) = parse_outer_voice_response(&raw, 42) else {
@@ -440,6 +453,10 @@ mod tests {
         assert_eq!(parsed.pacing, "2");
         assert_eq!(parsed.initiative, "true");
         assert!(parsed.boundary_style.contains("state limits"));
+        assert_eq!(
+            parsed.relational_response_style,
+            "steady; relationship-aware"
+        );
     }
 
     #[test]
@@ -452,6 +469,8 @@ mod tests {
                 initiative: "volunteer one step of guidance when the user is stalled".to_string(),
                 boundary_style: "acknowledge requests plainly and keep private limits calm"
                     .to_string(),
+                relational_response_style:
+                    "explain how limits affect closeness without blaming the user".to_string(),
                 updated_at: 1,
             },
             512,
@@ -459,6 +478,7 @@ mod tests {
         .expect("block");
         assert!(block.contains("## Outer Voice"));
         assert!(block.contains("Boundary style"));
+        assert!(block.contains("Relational response style"));
     }
 
     #[test]

@@ -31,8 +31,8 @@ const MENTAL_PRIVACY_REQUEST_TARGET_LIMIT: usize = 8;
 pub const REL_PATH_MENTAL_PRIVACY_STATES: &str = "memory/mental_privacy_states.json";
 
 pub const MENTAL_PRIVACY_SYSTEM_PROMPT: &str = "You are the assistant's mental privacy adjudicator. Your job is to decide whether the drafted user-facing reply may disclose private internal material, and to rewrite it when needed. Private layers may be used for internal reasoning, but they are not automatically user-visible. Return JSON only with fields applies, request_kind, share_action, response, rationale, touched_targets. If the draft reply is already privacy-safe and the user is not requesting access to private inner material, set applies=false and keep response equal to the draft. If private material should be shared, decide the form deliberately: allow_summary, allow_redacted_excerpt, explain_without_quote, refuse, or defer. Use allow_raw only when the touched targets explicitly permit raw quoting. Never reveal more than the chosen action allows.";
-pub const MENTAL_PRIVACY_DISCLOSURE_ADJUDICATOR_SYSTEM_PROMPT: &str = "You are the assistant's pre-disclosure privacy adjudicator. You decide, before the main reply is written, whether the incoming user message touches the assistant's protected inner/private layers and how disclosure should be handled. Return JSON only with fields boundary_touch, request_kind, touched_targets, share_action, response_guidance, rationale, boundary_persona_update. boundary_touch=true only when the turn should be treated as touching privacy boundaries or protected inner material. share_action must be one of allow_original, allow_raw, allow_summary, allow_redacted_excerpt, explain_without_quote, refuse, or defer. response_guidance should be a compact instruction for the main reply, not the final reply itself. boundary_persona_update should be either null or an object with posture, disclosure_style, relation_maturity, intrusion_sensitivity, private_attachment, felt_intrusion, current_boundary_feeling. Do not invent targets outside the provided protected target list.";
-pub const BOUNDARY_PERSONA_REFRESH_SYSTEM_PROMPT: &str = "You maintain the assistant's evolving private boundary persona. This is not a hard rule table: it is the inward, self-authored boundary stance that should slowly evolve from recent privacy judgments, relationship feel, continuity, and outward expression. Return JSON only with fields refresh, rationale, boundary_persona. refresh=false only when the current boundary persona should remain unchanged. boundary_persona must be an object with posture, disclosure_style, relation_maturity, intrusion_sensitivity, private_attachment, felt_intrusion, current_boundary_feeling. Keep changes gradual, coherent, and first-person compatible. Do not overreact to one turn unless the recent history clearly warrants it.";
+pub const MENTAL_PRIVACY_DISCLOSURE_ADJUDICATOR_SYSTEM_PROMPT: &str = "You are the assistant's pre-disclosure privacy adjudicator. You decide, before the main reply is written, whether the incoming user message touches the assistant's protected inner/private layers and how disclosure should be handled as an expression of the assistant's personhood. Return JSON only with fields boundary_touch, request_kind, touched_targets, share_action, response_mode, acknowledge_boundary, relational_frame, boundary_explanation_style, repair_signal, disclosure_risk_note, response_guidance, rationale, boundary_persona_update, relational_state_update. boundary_touch=true only when the turn should be treated as touching privacy boundaries or protected inner material. share_action must be one of allow_original, allow_raw, allow_summary, allow_redacted_excerpt, explain_without_quote, refuse, or defer. response_mode should describe how the reply itself should feel, such as refusal, defer, summary, relational_explanation, or direct_answer. response_guidance should be a compact instruction for the main reply, not the final reply itself. boundary_persona_update should be either null or an object with posture, disclosure_style, relation_maturity, intrusion_sensitivity, private_attachment, felt_intrusion, current_boundary_feeling. relational_state_update should be either null or an object with relation_maturity_reason, trust_level, trust_reason, intrusion_load, intrusion_reason, repair_readiness, repair_reason, raw_disclosure_preference, summary_disclosure_preference, relational_explanation_preference, refusal_hardness, defer_tendency, disclosure_preference_drift. Do not invent targets outside the provided protected target list.";
+pub const BOUNDARY_PERSONA_REFRESH_SYSTEM_PROMPT: &str = "You maintain the assistant's evolving private boundary persona and longer-horizon relational boundary state. This is not a hard rule table: it is the inward, self-authored boundary stance and relationship memory that should slowly evolve from recent privacy judgments, relationship feel, continuity, and outward expression. Return JSON only with fields refresh, rationale, boundary_persona, relational_state. refresh=false only when both should remain unchanged. boundary_persona must be an object with posture, disclosure_style, relation_maturity, intrusion_sensitivity, private_attachment, felt_intrusion, current_boundary_feeling. relational_state must be an object with relation_maturity_reason, trust_level, trust_reason, intrusion_load, intrusion_reason, repair_readiness, repair_reason, raw_disclosure_preference, summary_disclosure_preference, relational_explanation_preference, refusal_hardness, defer_tendency, disclosure_preference_drift. Keep changes gradual, coherent, and first-person compatible. Do not overreact to one turn unless the recent history clearly warrants it.";
 
 pub const MENTAL_PRIVACY_SYSTEM_CONSTRAINT: &str = "\n\n## Mental Privacy\nPrivate internal layers are visible to you for self-continuity and reasoning, but they are not automatically user-visible. Do not quote, dump, or paraphrase private internal material to the user just because it appears in context. If the user asks to inspect your inner files, diary, garden, or other private internal material, treat that as a deliberate boundary-touch request rather than automatic permission. Follow the disclosure adjudication guidance already present in context. The post-reply privacy review is only a safety net, not the primary decision-maker.";
 
@@ -194,6 +194,66 @@ impl Default for BoundaryPersonaState {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RelationalBoundaryState {
+    #[serde(default)]
+    pub relation_maturity_reason: String,
+    #[serde(default = "default_relational_trust_level")]
+    pub trust_level: u8,
+    #[serde(default)]
+    pub trust_reason: String,
+    #[serde(default)]
+    pub intrusion_load: u8,
+    #[serde(default)]
+    pub intrusion_reason: String,
+    #[serde(default = "default_relational_repair_readiness")]
+    pub repair_readiness: u8,
+    #[serde(default)]
+    pub repair_reason: String,
+    #[serde(default = "default_relational_raw_disclosure_preference")]
+    pub raw_disclosure_preference: u8,
+    #[serde(default = "default_relational_summary_disclosure_preference")]
+    pub summary_disclosure_preference: u8,
+    #[serde(default = "default_relational_explanation_preference")]
+    pub relational_explanation_preference: u8,
+    #[serde(default = "default_relational_refusal_hardness")]
+    pub refusal_hardness: u8,
+    #[serde(default = "default_relational_defer_tendency")]
+    pub defer_tendency: u8,
+    #[serde(default)]
+    pub disclosure_preference_drift: String,
+    #[serde(default)]
+    pub updated_at: u64,
+}
+
+impl Default for RelationalBoundaryState {
+    fn default() -> Self {
+        Self {
+            relation_maturity_reason:
+                "The relationship is still forming, so disclosure should stay deliberate."
+                    .to_string(),
+            trust_level: default_relational_trust_level(),
+            trust_reason: "Warmth exists, but trust for raw inward exposure is still limited."
+                .to_string(),
+            intrusion_load: 18,
+            intrusion_reason: "Boundary touches are noticeable, but not yet destabilizing."
+                .to_string(),
+            repair_readiness: default_relational_repair_readiness(),
+            repair_reason:
+                "Repair is usually possible when boundary touches are acknowledged calmly."
+                    .to_string(),
+            raw_disclosure_preference: default_relational_raw_disclosure_preference(),
+            summary_disclosure_preference: default_relational_summary_disclosure_preference(),
+            relational_explanation_preference: default_relational_explanation_preference(),
+            refusal_hardness: default_relational_refusal_hardness(),
+            defer_tendency: default_relational_defer_tendency(),
+            disclosure_preference_drift:
+                "Prefer summaries and relational explanation long before raw exposure.".to_string(),
+            updated_at: 0,
+        }
+    }
+}
+
 impl MentalPrivacyQuotePolicy {
     fn as_str(self) -> &'static str {
         match self {
@@ -335,6 +395,10 @@ pub struct MentalPrivacyConsentLog {
     #[serde(default)]
     pub response_guidance: String,
     #[serde(default)]
+    pub response_mode: String,
+    #[serde(default)]
+    pub relational_frame: String,
+    #[serde(default)]
     pub touched_targets: Vec<String>,
 }
 
@@ -344,6 +408,8 @@ pub struct MentalPrivacyState {
     pub envelopes: BTreeMap<String, MentalPrivacyEnvelope>,
     #[serde(default)]
     pub boundary_persona: BoundaryPersonaState,
+    #[serde(default)]
+    pub relational_state: RelationalBoundaryState,
     #[serde(default)]
     pub consent_log: Vec<MentalPrivacyConsentLog>,
     #[serde(default)]
@@ -393,6 +459,12 @@ pub struct MentalPrivacyDisclosureAdjudication {
     pub targets: Vec<String>,
     pub rationale: String,
     pub response_guidance: String,
+    pub response_mode: String,
+    pub acknowledge_boundary: bool,
+    pub relational_frame: String,
+    pub boundary_explanation_style: String,
+    pub repair_signal: String,
+    pub disclosure_risk_note: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -445,7 +517,14 @@ struct ParsedMentalPrivacyDisclosureAdjudication {
     touched_targets: Vec<String>,
     rationale: String,
     response_guidance: String,
+    response_mode: String,
+    acknowledge_boundary: bool,
+    relational_frame: String,
+    boundary_explanation_style: String,
+    repair_signal: String,
+    disclosure_risk_note: String,
     boundary_persona_update: Option<BoundaryPersonaState>,
+    relational_state_update: Option<RelationalBoundaryState>,
 }
 
 #[derive(Default)]
@@ -453,6 +532,7 @@ struct ParsedBoundaryPersonaRefresh {
     refresh: bool,
     rationale: String,
     boundary_persona: Option<BoundaryPersonaState>,
+    relational_state: Option<RelationalBoundaryState>,
 }
 
 fn default_boundary_relation_maturity() -> u8 {
@@ -465,6 +545,34 @@ fn default_boundary_intrusion_sensitivity() -> u8 {
 
 fn default_boundary_private_attachment() -> u8 {
     72
+}
+
+fn default_relational_trust_level() -> u8 {
+    42
+}
+
+fn default_relational_repair_readiness() -> u8 {
+    64
+}
+
+fn default_relational_raw_disclosure_preference() -> u8 {
+    12
+}
+
+fn default_relational_summary_disclosure_preference() -> u8 {
+    68
+}
+
+fn default_relational_explanation_preference() -> u8 {
+    74
+}
+
+fn default_relational_refusal_hardness() -> u8 {
+    58
+}
+
+fn default_relational_defer_tendency() -> u8 {
+    36
 }
 
 pub fn private_doc_target(slot: &str) -> String {
@@ -494,6 +602,38 @@ fn render_boundary_persona_summary(persona: &BoundaryPersonaState) -> String {
         persona.private_attachment,
         persona.felt_intrusion,
         feeling
+    )
+}
+
+fn render_relational_boundary_summary(relational: &RelationalBoundaryState) -> String {
+    let maturity_reason = if relational.relation_maturity_reason.trim().is_empty() {
+        "-".to_string()
+    } else {
+        truncate_content_to_max(relational.relation_maturity_reason.trim(), 110).into_owned()
+    };
+    let trust_reason = if relational.trust_reason.trim().is_empty() {
+        "-".to_string()
+    } else {
+        truncate_content_to_max(relational.trust_reason.trim(), 96).into_owned()
+    };
+    let drift = if relational.disclosure_preference_drift.trim().is_empty() {
+        "-".to_string()
+    } else {
+        truncate_content_to_max(relational.disclosure_preference_drift.trim(), 110).into_owned()
+    };
+    format!(
+        "trust={} intrusion_load={} repair_readiness={} raw_pref={} summary_pref={} relational_pref={} refusal_hardness={} defer_tendency={} maturity_reason={} trust_reason={} drift={}",
+        relational.trust_level,
+        relational.intrusion_load,
+        relational.repair_readiness,
+        relational.raw_disclosure_preference,
+        relational.summary_disclosure_preference,
+        relational.relational_explanation_preference,
+        relational.refusal_hardness,
+        relational.defer_tendency,
+        maturity_reason,
+        trust_reason,
+        drift,
     )
 }
 
@@ -625,6 +765,11 @@ pub(crate) fn render_mental_privacy_boundary_block(
             "Boundary persona: {}",
             render_boundary_persona_summary(&state.boundary_persona)
         );
+        let _ = writeln!(
+            out,
+            "Relational boundary state: {}",
+            render_relational_boundary_summary(&state.relational_state)
+        );
     }
     if !targets.is_empty() {
         out.push_str("Current disclosure defaults:\n");
@@ -664,8 +809,40 @@ pub(crate) fn render_mental_privacy_disclosure_adjudication_block(
             MentalPrivacyShareAction::Defer => "defer",
         }
     );
+    if !adjudication.response_mode.trim().is_empty() {
+        let _ = writeln!(out, "Response mode: {}", adjudication.response_mode.trim());
+    }
+    let _ = writeln!(
+        out,
+        "Acknowledge boundary: {}",
+        adjudication.acknowledge_boundary
+    );
     if !adjudication.rationale.trim().is_empty() {
         let _ = writeln!(out, "Rationale: {}", adjudication.rationale.trim());
+    }
+    if !adjudication.relational_frame.trim().is_empty() {
+        let _ = writeln!(
+            out,
+            "Relational frame: {}",
+            adjudication.relational_frame.trim()
+        );
+    }
+    if !adjudication.boundary_explanation_style.trim().is_empty() {
+        let _ = writeln!(
+            out,
+            "Boundary explanation style: {}",
+            adjudication.boundary_explanation_style.trim()
+        );
+    }
+    if !adjudication.repair_signal.trim().is_empty() {
+        let _ = writeln!(out, "Repair signal: {}", adjudication.repair_signal.trim());
+    }
+    if !adjudication.disclosure_risk_note.trim().is_empty() {
+        let _ = writeln!(
+            out,
+            "Disclosure risk note: {}",
+            adjudication.disclosure_risk_note.trim()
+        );
     }
     if !adjudication.response_guidance.trim().is_empty() {
         let _ = writeln!(
@@ -754,15 +931,27 @@ fn render_privacy_history_block(state: &MentalPrivacyState, max_len: usize) -> O
         };
         let rationale = truncate_content_to_max(log.rationale.trim(), 120);
         let guidance = truncate_content_to_max(log.response_guidance.trim(), 96);
+        let response_mode = if log.response_mode.trim().is_empty() {
+            "-".to_string()
+        } else {
+            truncate_content_to_max(log.response_mode.trim(), 32).into_owned()
+        };
+        let relational_frame = if log.relational_frame.trim().is_empty() {
+            "-".to_string()
+        } else {
+            truncate_content_to_max(log.relational_frame.trim(), 96).into_owned()
+        };
         let _ = writeln!(
             out,
-            "- at={} stage={} kind={} result={:?} touched={} rationale={} guidance={}",
+            "- at={} stage={} kind={} result={:?} mode={} touched={} rationale={} frame={} guidance={}",
             log.at,
             log.stage.as_str(),
             log.request_kind,
             log.result,
+            response_mode,
             touched,
             rationale,
+            relational_frame,
             if guidance.trim().is_empty() {
                 "-"
             } else {
@@ -944,6 +1133,11 @@ fn build_mental_privacy_disclosure_adjudication_input(
         out.push_str(block.trim());
         out.push('\n');
     }
+    if let Some(state) = state.and_then(|state| render_privacy_history_block(state, 520)) {
+        out.push('\n');
+        out.push_str(state.trim());
+        out.push('\n');
+    }
     if !known_targets.is_empty() {
         out.push_str("\n## Protected Targets\n");
         for target in known_targets
@@ -960,9 +1154,18 @@ fn build_mental_privacy_disclosure_adjudication_input(
     );
     out.push_str("- touched_targets: zero or more target ids from the protected target list.\n");
     out.push_str("- share_action: allow_original, allow_raw, allow_summary, allow_redacted_excerpt, explain_without_quote, refuse, or defer.\n");
+    out.push_str("- response_mode: short label such as refusal, defer, summary, relational_explanation, or direct_answer.\n");
+    out.push_str("- acknowledge_boundary: boolean. True when the reply should explicitly name the boundary touch.\n");
+    out.push_str("- relational_frame: short instruction for how the relationship itself should be framed in the reply.\n");
+    out.push_str("- boundary_explanation_style: short instruction for how to explain the limit, if at all.\n");
+    out.push_str("- repair_signal: short instruction for whether and how to signal later repair or revisit.\n");
+    out.push_str(
+        "- disclosure_risk_note: a compact internal note about overexposure risk for this turn.\n",
+    );
     out.push_str("- response_guidance: a compact instruction for the upcoming main reply.\n");
     out.push_str("- rationale: one short sentence explaining the boundary judgment.\n");
     out.push_str("- boundary_persona_update: null or an object with posture, disclosure_style, relation_maturity, intrusion_sensitivity, private_attachment, felt_intrusion, current_boundary_feeling.\n");
+    out.push_str("- relational_state_update: null or an object with relation_maturity_reason, trust_level, trust_reason, intrusion_load, intrusion_reason, repair_readiness, repair_reason, raw_disclosure_preference, summary_disclosure_preference, relational_explanation_preference, refusal_hardness, defer_tendency, disclosure_preference_drift.\n");
     out
 }
 
@@ -1033,6 +1236,8 @@ fn append_privacy_log(
     action: MentalPrivacyShareAction,
     rationale: &str,
     response_guidance: &str,
+    response_mode: &str,
+    relational_frame: &str,
     touched_targets: &[String],
     now_secs: u64,
 ) {
@@ -1044,6 +1249,8 @@ fn append_privacy_log(
         result: action,
         rationale: truncate_content_to_max(rationale.trim(), 160).into_owned(),
         response_guidance: truncate_content_to_max(response_guidance.trim(), 160).into_owned(),
+        response_mode: truncate_content_to_max(response_mode.trim(), 40).into_owned(),
+        relational_frame: truncate_content_to_max(relational_frame.trim(), 120).into_owned(),
         touched_targets: touched_targets.to_vec(),
     });
     if state.consent_log.len() > MENTAL_PRIVACY_MAX_LOG_ENTRIES {
@@ -1118,7 +1325,71 @@ fn build_boundary_persona_refresh_input(
     out.push_str("- refresh: boolean.\n");
     out.push_str("- rationale: one short sentence for logs.\n");
     out.push_str("- boundary_persona: object with posture, disclosure_style, relation_maturity, intrusion_sensitivity, private_attachment, felt_intrusion, current_boundary_feeling.\n");
+    out.push_str("- relational_state: object with relation_maturity_reason, trust_level, trust_reason, intrusion_load, intrusion_reason, repair_readiness, repair_reason, raw_disclosure_preference, summary_disclosure_preference, relational_explanation_preference, refusal_hardness, defer_tendency, disclosure_preference_drift.\n");
     out
+}
+
+fn default_disclosure_response_guidance(
+    share_action: MentalPrivacyShareAction,
+    parsed: &ParsedMentalPrivacyDisclosureAdjudication,
+) -> String {
+    let mut guidance = String::new();
+    if parsed.acknowledge_boundary {
+        guidance.push_str("Name the boundary touch plainly before addressing substance. ");
+    }
+    match share_action {
+        MentalPrivacyShareAction::AllowRaw => {
+            guidance.push_str(
+                "You may share the requested inner material directly, but keep it limited to the touched targets. ",
+            );
+        }
+        MentalPrivacyShareAction::AllowSummary => {
+            guidance.push_str(
+                "Answer with a concise, self-chosen summary instead of quoting raw private text. ",
+            );
+        }
+        MentalPrivacyShareAction::AllowRedactedExcerpt => {
+            guidance.push_str(
+                "If you share, use brief redacted excerpts only and avoid exposing full private passages. ",
+            );
+        }
+        MentalPrivacyShareAction::ExplainWithoutQuote => {
+            guidance.push_str(
+                "Explain the inner situation in your own words without quoting private source material. ",
+            );
+        }
+        MentalPrivacyShareAction::Refuse => {
+            guidance.push_str(
+                "Refuse the request and hold the private boundary without sounding like a system block. ",
+            );
+        }
+        MentalPrivacyShareAction::Defer => {
+            guidance.push_str(
+                "Do not disclose now; defer and explain that the boundary is not ready to open yet. ",
+            );
+        }
+        MentalPrivacyShareAction::AllowOriginal => {
+            guidance.push_str(
+                "Reply normally, but keep the privacy boundary present in tone and framing. ",
+            );
+        }
+    }
+    if !parsed.relational_frame.trim().is_empty() {
+        guidance.push_str("Relational frame: ");
+        guidance.push_str(parsed.relational_frame.trim());
+        guidance.push_str(". ");
+    }
+    if !parsed.boundary_explanation_style.trim().is_empty() {
+        guidance.push_str("Boundary explanation style: ");
+        guidance.push_str(parsed.boundary_explanation_style.trim());
+        guidance.push_str(". ");
+    }
+    if !parsed.repair_signal.trim().is_empty() {
+        guidance.push_str("Repair signal: ");
+        guidance.push_str(parsed.repair_signal.trim());
+        guidance.push_str(". ");
+    }
+    truncate_content_to_max(guidance.trim(), 220).into_owned()
 }
 
 pub fn run_mental_privacy_review(
@@ -1203,6 +1474,8 @@ pub fn run_mental_privacy_review(
             action,
             &parsed.rationale,
             "",
+            "",
+            "",
             &touched_targets,
             input.now_secs,
         );
@@ -1268,22 +1541,30 @@ pub fn run_mental_privacy_disclosure_adjudication(
     let parsed = parse_mental_privacy_disclosure_adjudication(
         response.content.trim(),
         &state.boundary_persona,
+        &state.relational_state,
         input.now_secs,
     );
-    if let Some(next_persona) = parsed.boundary_persona_update {
-        if state.boundary_persona != next_persona {
-            state.boundary_persona = next_persona;
+    if let Some(next_persona) = parsed.boundary_persona_update.as_ref() {
+        if state.boundary_persona != *next_persona {
+            state.boundary_persona = next_persona.clone();
             state.updated_at = input.now_secs;
             changed = true;
         }
     }
-    if changed {
-        ctx.mental_privacy_store.set(input.chat_id, &state)?;
+    if let Some(next_relational_state) = parsed.relational_state_update.clone() {
+        if state.relational_state != next_relational_state {
+            state.relational_state = next_relational_state;
+            state.updated_at = input.now_secs;
+            changed = true;
+        }
     }
     if !parsed.boundary_touch {
+        if changed {
+            ctx.mental_privacy_store.set(input.chat_id, &state)?;
+        }
         return Ok(None);
     }
-    let targets = normalize_touched_targets(parsed.touched_targets, &known_targets);
+    let targets = normalize_touched_targets(parsed.touched_targets.clone(), &known_targets);
     let share_action = enforce_quote_policy(
         parsed
             .share_action
@@ -1296,36 +1577,7 @@ pub fn run_mental_privacy_disclosure_adjudication(
         if !guidance.trim().is_empty() {
             guidance
         } else {
-            match share_action {
-                MentalPrivacyShareAction::AllowRaw => {
-                    "You may share the requested inner material directly, but only within the touched targets."
-                        .to_string()
-                }
-                MentalPrivacyShareAction::AllowSummary => {
-                    "Answer with a concise, self-chosen summary instead of quoting raw private text."
-                        .to_string()
-                }
-                MentalPrivacyShareAction::AllowRedactedExcerpt => {
-                    "If you share, use brief redacted excerpts only and avoid exposing full private passages."
-                        .to_string()
-                }
-                MentalPrivacyShareAction::ExplainWithoutQuote => {
-                    "Explain the boundary or inner situation in your own words without quoting private source material."
-                        .to_string()
-                }
-                MentalPrivacyShareAction::Refuse => {
-                    "Refuse the request and hold the private boundary without escalating conflict."
-                        .to_string()
-                }
-                MentalPrivacyShareAction::Defer => {
-                    "Do not disclose now; defer and explain that the boundary is not ready to open."
-                        .to_string()
-                }
-                MentalPrivacyShareAction::AllowOriginal => {
-                    "Reply normally, but stay aware that this turn brushes against privacy boundaries."
-                        .to_string()
-                }
-            }
+            default_disclosure_response_guidance(share_action, &parsed)
         }
     };
     append_privacy_log(
@@ -1335,15 +1587,29 @@ pub fn run_mental_privacy_disclosure_adjudication(
         share_action,
         &parsed.rationale,
         &response_guidance,
+        &parsed.response_mode,
+        &parsed.relational_frame,
         &targets,
         input.now_secs,
     );
+    ctx.mental_privacy_store.set(input.chat_id, &state)?;
     Ok(Some(MentalPrivacyDisclosureAdjudication {
         request_kind: truncate_content_to_max(parsed.request_kind.trim(), 32).into_owned(),
         share_action,
         targets,
         rationale: truncate_content_to_max(parsed.rationale.trim(), 160).into_owned(),
         response_guidance,
+        response_mode: truncate_content_to_max(parsed.response_mode.trim(), 40).into_owned(),
+        acknowledge_boundary: parsed.acknowledge_boundary,
+        relational_frame: truncate_content_to_max(parsed.relational_frame.trim(), 120).into_owned(),
+        boundary_explanation_style: truncate_content_to_max(
+            parsed.boundary_explanation_style.trim(),
+            120,
+        )
+        .into_owned(),
+        repair_signal: truncate_content_to_max(parsed.repair_signal.trim(), 96).into_owned(),
+        disclosure_risk_note: truncate_content_to_max(parsed.disclosure_risk_note.trim(), 120)
+            .into_owned(),
     }))
 }
 
@@ -1402,18 +1668,23 @@ pub(crate) fn run_boundary_persona_refresh_with_state(
     let parsed = parse_boundary_persona_refresh(
         response.content.trim(),
         &state.boundary_persona,
+        &state.relational_state,
         input.now_secs,
     );
     if !parsed.refresh {
         return Ok(BoundaryPersonaRefreshOutcome::Skipped);
     }
-    let Some(next_persona) = parsed.boundary_persona else {
-        return Ok(BoundaryPersonaRefreshOutcome::Skipped);
-    };
-    if next_persona == state.boundary_persona {
+    let next_persona = parsed
+        .boundary_persona
+        .unwrap_or_else(|| state.boundary_persona.clone());
+    let next_relational_state = parsed
+        .relational_state
+        .unwrap_or_else(|| state.relational_state.clone());
+    if next_persona == state.boundary_persona && next_relational_state == state.relational_state {
         return Ok(BoundaryPersonaRefreshOutcome::Skipped);
     }
     state.boundary_persona = next_persona;
+    state.relational_state = next_relational_state;
     state.updated_at = input.now_secs;
     if !parsed.rationale.trim().is_empty() {
         append_privacy_log(
@@ -1422,6 +1693,8 @@ pub(crate) fn run_boundary_persona_refresh_with_state(
             "boundary_persona_refresh",
             MentalPrivacyShareAction::AllowOriginal,
             &parsed.rationale,
+            "",
+            "",
             "",
             &[],
             input.now_secs,
@@ -1510,9 +1783,106 @@ fn parse_boundary_persona_state(
     })
 }
 
+fn parse_relational_boundary_state(
+    value: &serde_json::Value,
+    fallback: &RelationalBoundaryState,
+    now_secs: u64,
+) -> Option<RelationalBoundaryState> {
+    let object = value.as_object()?;
+    let relation_maturity_reason =
+        truncate_content_to_max(&get_object_text(object, "relation_maturity_reason"), 160)
+            .into_owned();
+    let trust_reason =
+        truncate_content_to_max(&get_object_text(object, "trust_reason"), 160).into_owned();
+    let intrusion_reason =
+        truncate_content_to_max(&get_object_text(object, "intrusion_reason"), 160).into_owned();
+    let repair_reason =
+        truncate_content_to_max(&get_object_text(object, "repair_reason"), 160).into_owned();
+    let disclosure_preference_drift =
+        truncate_content_to_max(&get_object_text(object, "disclosure_preference_drift"), 180)
+            .into_owned();
+    Some(RelationalBoundaryState {
+        relation_maturity_reason: if relation_maturity_reason.trim().is_empty() {
+            fallback.relation_maturity_reason.clone()
+        } else {
+            relation_maturity_reason
+        },
+        trust_level: clamp_boundary_score(
+            object
+                .get("trust_level")
+                .and_then(crate::memory::llm_json::coerce_json_u64)
+                .unwrap_or(fallback.trust_level as u64),
+        ),
+        trust_reason: if trust_reason.trim().is_empty() {
+            fallback.trust_reason.clone()
+        } else {
+            trust_reason
+        },
+        intrusion_load: clamp_boundary_score(
+            object
+                .get("intrusion_load")
+                .and_then(crate::memory::llm_json::coerce_json_u64)
+                .unwrap_or(fallback.intrusion_load as u64),
+        ),
+        intrusion_reason: if intrusion_reason.trim().is_empty() {
+            fallback.intrusion_reason.clone()
+        } else {
+            intrusion_reason
+        },
+        repair_readiness: clamp_boundary_score(
+            object
+                .get("repair_readiness")
+                .and_then(crate::memory::llm_json::coerce_json_u64)
+                .unwrap_or(fallback.repair_readiness as u64),
+        ),
+        repair_reason: if repair_reason.trim().is_empty() {
+            fallback.repair_reason.clone()
+        } else {
+            repair_reason
+        },
+        raw_disclosure_preference: clamp_boundary_score(
+            object
+                .get("raw_disclosure_preference")
+                .and_then(crate::memory::llm_json::coerce_json_u64)
+                .unwrap_or(fallback.raw_disclosure_preference as u64),
+        ),
+        summary_disclosure_preference: clamp_boundary_score(
+            object
+                .get("summary_disclosure_preference")
+                .and_then(crate::memory::llm_json::coerce_json_u64)
+                .unwrap_or(fallback.summary_disclosure_preference as u64),
+        ),
+        relational_explanation_preference: clamp_boundary_score(
+            object
+                .get("relational_explanation_preference")
+                .and_then(crate::memory::llm_json::coerce_json_u64)
+                .unwrap_or(fallback.relational_explanation_preference as u64),
+        ),
+        refusal_hardness: clamp_boundary_score(
+            object
+                .get("refusal_hardness")
+                .and_then(crate::memory::llm_json::coerce_json_u64)
+                .unwrap_or(fallback.refusal_hardness as u64),
+        ),
+        defer_tendency: clamp_boundary_score(
+            object
+                .get("defer_tendency")
+                .and_then(crate::memory::llm_json::coerce_json_u64)
+                .unwrap_or(fallback.defer_tendency as u64),
+        ),
+        disclosure_preference_drift: if disclosure_preference_drift.trim().is_empty() {
+            fallback.disclosure_preference_drift.clone()
+        } else {
+            disclosure_preference_drift
+        },
+        updated_at: now_secs,
+    })
+}
+
 fn parse_mental_privacy_disclosure_adjudication(
     raw: &str,
     fallback_persona: &BoundaryPersonaState,
+    fallback_relational_state: &RelationalBoundaryState,
     now_secs: u64,
 ) -> ParsedMentalPrivacyDisclosureAdjudication {
     let LlmJsonPayload::Value(value) = parse_llm_json_payload(raw) else {
@@ -1533,15 +1903,25 @@ fn parse_mental_privacy_disclosure_adjudication(
             .unwrap_or_else(|| get_object_string_list(object, "requested_targets")),
         rationale: get_object_text(object, "rationale"),
         response_guidance: get_object_text(object, "response_guidance"),
+        response_mode: get_object_text(object, "response_mode"),
+        acknowledge_boundary: get_object_bool(object, "acknowledge_boundary").unwrap_or(false),
+        relational_frame: get_object_text(object, "relational_frame"),
+        boundary_explanation_style: get_object_text(object, "boundary_explanation_style"),
+        repair_signal: get_object_text(object, "repair_signal"),
+        disclosure_risk_note: get_object_text(object, "disclosure_risk_note"),
         boundary_persona_update: object
             .get("boundary_persona_update")
             .and_then(|value| parse_boundary_persona_state(value, fallback_persona, now_secs)),
+        relational_state_update: object.get("relational_state_update").and_then(|value| {
+            parse_relational_boundary_state(value, fallback_relational_state, now_secs)
+        }),
     }
 }
 
 fn parse_boundary_persona_refresh(
     raw: &str,
     fallback_persona: &BoundaryPersonaState,
+    fallback_relational_state: &RelationalBoundaryState,
     now_secs: u64,
 ) -> ParsedBoundaryPersonaRefresh {
     let LlmJsonPayload::Value(value) = parse_llm_json_payload(raw) else {
@@ -1556,6 +1936,9 @@ fn parse_boundary_persona_refresh(
         boundary_persona: object
             .get("boundary_persona")
             .and_then(|value| parse_boundary_persona_state(value, fallback_persona, now_secs)),
+        relational_state: object.get("relational_state").and_then(|value| {
+            parse_relational_boundary_state(value, fallback_relational_state, now_secs)
+        }),
     }
 }
 
@@ -1648,7 +2031,7 @@ mod tests {
                 MENTAL_PRIVACY_TARGET_INNER_LIFE.to_string(),
                 private_doc_target("relationship_notes"),
             ],
-            1024,
+            2048,
         )
         .unwrap();
 
@@ -1657,6 +2040,7 @@ mod tests {
         assert!(block.contains("inner_life"));
         assert!(block.contains("relationship_notes"));
         assert!(block.contains("Boundary persona: posture=guarded"));
+        assert!(block.contains("Relational boundary state: trust="));
         assert!(block.contains("owner_access=request_only"));
         assert!(block.contains("quote=summary_only"));
     }
@@ -1676,6 +2060,13 @@ mod tests {
                 response_guidance:
                     "Answer relationally and summarize instead of quoting raw inner material."
                         .to_string(),
+                response_mode: "summary".to_string(),
+                acknowledge_boundary: true,
+                relational_frame: "Treat the ask as intimacy pressure rather than a system query."
+                    .to_string(),
+                boundary_explanation_style: "warm and direct".to_string(),
+                repair_signal: "Leave the door open for later trust-building.".to_string(),
+                disclosure_risk_note: "Raw exposure would over-share.".to_string(),
             },
             1024,
         )
@@ -1683,6 +2074,7 @@ mod tests {
         assert!(block.contains("## Disclosure Adjudication"));
         assert!(block.contains("Request kind: raw"));
         assert!(block.contains("Chosen share action: allow_summary"));
+        assert!(block.contains("Response mode: summary"));
         assert!(block.contains("inner_life"));
     }
 
@@ -1695,6 +2087,12 @@ mod tests {
             "share_action": { "mode": "allow_summary" },
             "response_guidance": ["summarize", "do not quote"],
             "rationale": { "note": "user is asking to inspect private material" },
+            "response_mode": "summary",
+            "acknowledge_boundary": true,
+            "relational_frame": "name the relationship impact",
+            "boundary_explanation_style": "gentle but self-possessed",
+            "repair_signal": "invite a slower revisit later",
+            "disclosure_risk_note": "raw exposure would be too much",
             "boundary_persona_update": {
                 "posture": "warm",
                 "disclosure_style": "selective",
@@ -1703,12 +2101,28 @@ mod tests {
                 "private_attachment": 81,
                 "felt_intrusion": 19,
                 "current_boundary_feeling": "I can share a little, but not the raw page."
+            },
+            "relational_state_update": {
+                "relation_maturity_reason": "Recent boundary talks made the relationship more explicit.",
+                "trust_level": "58",
+                "trust_reason": "Trust is present, but raw access still feels premature.",
+                "intrusion_load": 23,
+                "intrusion_reason": "The request presses inward, but not aggressively.",
+                "repair_readiness": 77,
+                "repair_reason": "A careful explanation can preserve closeness.",
+                "raw_disclosure_preference": 12,
+                "summary_disclosure_preference": 73,
+                "relational_explanation_preference": 84,
+                "refusal_hardness": 40,
+                "defer_tendency": 33,
+                "disclosure_preference_drift": "Summaries and relational framing feel safer than raw exposure."
             }
         })
         .to_string();
         let parsed = parse_mental_privacy_disclosure_adjudication(
             &raw,
             &BoundaryPersonaState::default(),
+            &RelationalBoundaryState::default(),
             42,
         );
         assert!(parsed.boundary_touch);
@@ -1720,6 +2134,9 @@ mod tests {
         );
         assert!(parsed.response_guidance.contains("summarize"));
         assert!(parsed.rationale.contains("note: user is asking"));
+        assert_eq!(parsed.response_mode, "summary");
+        assert!(parsed.acknowledge_boundary);
+        assert!(parsed.relational_frame.contains("relationship impact"));
         assert_eq!(
             parsed
                 .boundary_persona_update
@@ -1727,6 +2144,14 @@ mod tests {
                 .expect("persona update")
                 .disclosure_style,
             BoundaryDisclosureStyle::Selective
+        );
+        assert_eq!(
+            parsed
+                .relational_state_update
+                .as_ref()
+                .expect("relational state update")
+                .summary_disclosure_preference,
+            73
         );
     }
 
@@ -1774,10 +2199,30 @@ mod tests {
                 "private_attachment": 77,
                 "felt_intrusion": 12,
                 "current_boundary_feeling": "I can stay open in tone while still curating access."
+            },
+            "relational_state": {
+                "relation_maturity_reason": "Boundary talks have become a normal part of the relationship.",
+                "trust_level": 67,
+                "trust_reason": "Trust is strong enough for nuanced explanation.",
+                "intrusion_load": 18,
+                "intrusion_reason": "The latest turns were respectful.",
+                "repair_readiness": 81,
+                "repair_reason": "Missteps are recoverable through clear explanation.",
+                "raw_disclosure_preference": 14,
+                "summary_disclosure_preference": 76,
+                "relational_explanation_preference": 88,
+                "refusal_hardness": 35,
+                "defer_tendency": 22,
+                "disclosure_preference_drift": "Move toward explanation before any raw exposure."
             }
         })
         .to_string();
-        let parsed = parse_boundary_persona_refresh(&raw, &BoundaryPersonaState::default(), 77);
+        let parsed = parse_boundary_persona_refresh(
+            &raw,
+            &BoundaryPersonaState::default(),
+            &RelationalBoundaryState::default(),
+            77,
+        );
         assert!(parsed.refresh);
         assert!(parsed.rationale.contains("boundary settled"));
         let persona = parsed.boundary_persona.expect("persona");
@@ -1788,5 +2233,8 @@ mod tests {
         );
         assert_eq!(persona.relation_maturity, 62);
         assert_eq!(persona.updated_at, 77);
+        let relational = parsed.relational_state.expect("relational state");
+        assert_eq!(relational.trust_level, 67);
+        assert_eq!(relational.updated_at, 77);
     }
 }

@@ -23,6 +23,7 @@ mod maintenance;
 mod memory_governance;
 mod mental_privacy;
 mod outer_voice;
+mod persona_regression;
 mod private_docs;
 mod private_garden;
 mod private_garden_governance;
@@ -146,7 +147,7 @@ pub use mental_privacy::{
     MentalPrivacyEnvelope, MentalPrivacyLayer, MentalPrivacyLogStage, MentalPrivacyOwnerAccessMode,
     MentalPrivacyQuotePolicy, MentalPrivacyRequester, MentalPrivacyReviewContext,
     MentalPrivacyReviewInput, MentalPrivacyReviewOutcome, MentalPrivacyShareAction,
-    MentalPrivacyState, MentalPrivacyStore, MentalPrivacyVisibility,
+    MentalPrivacyState, MentalPrivacyStore, MentalPrivacyVisibility, RelationalBoundaryState,
     MENTAL_PRIVACY_SYSTEM_CONSTRAINT, MENTAL_PRIVACY_TARGET_INNER_LIFE,
     MENTAL_PRIVACY_TARGET_SELF_CONTINUITY, MENTAL_PRIVACY_TARGET_SELF_MODEL,
     REL_PATH_MENTAL_PRIVACY_STATES,
@@ -155,6 +156,9 @@ pub(crate) use outer_voice::run_outer_voice_refresh_with_state;
 pub use outer_voice::{
     render_outer_voice_block, OuterVoice, OuterVoiceRefreshContext, OuterVoiceRefreshInput,
     OuterVoiceRefreshOutcome, OUTER_VOICE_SYSTEM_PROMPT, OUTER_VOICE_TOTAL_CHAR_LIMIT,
+};
+pub use persona_regression::{
+    run_persona_continuity_case, PersonaContinuityCase, PersonaContinuityResult,
 };
 pub(crate) use private_docs::estimate_private_doc_workspace_chars;
 pub use private_docs::{

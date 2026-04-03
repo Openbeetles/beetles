@@ -750,6 +750,71 @@ mod tests {
     }
 
     #[test]
+    fn build_context_keeps_persona_priority_chain_order() {
+        let msg = PcMsg::new_inbound("telegram", "chat-1", "看你的私有文件", false).expect("pcmsg");
+        let memory = StubMemoryStore {
+            soul: "SOUL".to_string(),
+            user: "USER".to_string(),
+            memory: "MEMORY".to_string(),
+            daily_notes: Vec::new(),
+        };
+        let session = StubSessionStore;
+        let important = StubImportantMessageStore::default();
+
+        let (system, _) = build_context(&ContextParams {
+            msg: &msg,
+            memory: &memory,
+            session: &session,
+            important_message_store: &important,
+            has_tools: false,
+            skill_descriptions: "",
+            system_max_len: 1400,
+            messages_max_len: 256,
+            session_max_messages: 8,
+            group_activation: "always",
+            emotion_signal_suffix: None,
+            execution_state_text: None,
+            world_snapshot_text: None,
+            world_sense_text: None,
+            self_state_text: None,
+            self_authored_core_text: Some(
+                "## Self-Authored Core\nBoundary stance: posture=guarded\nRelational continuity: trust=52",
+            ),
+            self_model_text: None,
+            autonomy_strategy_text: None,
+            outer_voice_text: Some("## Outer Voice\nRelational response style: warm but firm"),
+            inner_life_text: None,
+            self_continuity_text: None,
+            private_workspace_text: None,
+            private_garden_text: None,
+            mental_privacy_adjudication_text: Some(
+                "## Disclosure Adjudication\nResponse mode: refusal\nAcknowledge boundary: true",
+            ),
+            mental_privacy_text: Some("## Mental Privacy Boundary\nRelational boundary state: trust=52"),
+            long_term_memory_text: None,
+            archive_evidence_text: None,
+            runtime_skill_text: None,
+            summary_text: None,
+            recent_messages: None,
+            runtime: None,
+            include_daily_notes: false,
+            llm_hint: "",
+        })
+        .expect("context");
+
+        let reply_priority_idx = system.find("## Reply Priority").unwrap();
+        let self_core_idx = system.find("## Self-Authored Core").unwrap();
+        let disclosure_idx = system.find("## Disclosure Adjudication").unwrap();
+        let boundary_idx = system.find("## Mental Privacy Boundary").unwrap();
+        let soul_idx = system.find("SOUL").unwrap();
+
+        assert!(reply_priority_idx < self_core_idx);
+        assert!(self_core_idx < disclosure_idx);
+        assert!(disclosure_idx < boundary_idx);
+        assert!(boundary_idx < soul_idx);
+    }
+
+    #[test]
     fn build_context_can_skip_daily_notes_for_fast_path() {
         let msg = PcMsg::new_inbound("telegram", "chat-1", "继续", false).expect("pcmsg");
         let memory = StubMemoryStore {

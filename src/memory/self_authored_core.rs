@@ -1,7 +1,10 @@
 use crate::util::truncate_content_to_max;
 use std::fmt::Write as _;
 
-use super::{BoundaryPersonaState, MentalPrivacyState, OuterVoice, SelfContinuity, SelfModel};
+use super::{
+    BoundaryPersonaState, MentalPrivacyState, OuterVoice, RelationalBoundaryState, SelfContinuity,
+    SelfModel,
+};
 
 fn choose_first_non_empty<'a>(values: &[Option<&'a str>]) -> Option<&'a str> {
     values
@@ -22,6 +25,7 @@ pub fn render_self_authored_core_block(
         return None;
     }
     let boundary_persona = mental_privacy_state.map(|state| &state.boundary_persona);
+    let relational_state = mental_privacy_state.map(|state| &state.relational_state);
     let identity_anchor = choose_first_non_empty(&[
         self_model.map(|model| model.continuity_anchor.as_str()),
         self_continuity.map(|continuity| continuity.wake_anchor.as_str()),
@@ -57,6 +61,12 @@ pub fn render_self_authored_core_block(
                 .then(|| format!("initiative={}", outer_voice.initiative.trim())),
             (!outer_voice.boundary_style.trim().is_empty())
                 .then(|| format!("boundary_style={}", outer_voice.boundary_style.trim())),
+            (!outer_voice.relational_response_style.trim().is_empty()).then(|| {
+                format!(
+                    "relational_response_style={}",
+                    outer_voice.relational_response_style.trim()
+                )
+            }),
         ]
         .into_iter()
         .flatten()
@@ -68,6 +78,9 @@ pub fn render_self_authored_core_block(
     }
     if let Some(boundary_persona) = boundary_persona {
         append_boundary_persona_line(&mut out, boundary_persona);
+    }
+    if let Some(relational_state) = relational_state {
+        append_relational_state_line(&mut out, relational_state);
     }
     let rendered = truncate_content_to_max(out.trim_end(), max_len).into_owned();
     (!rendered.trim().is_empty()).then_some(rendered)
@@ -100,11 +113,39 @@ fn append_boundary_persona_line(out: &mut String, boundary_persona: &BoundaryPer
     let _ = writeln!(out, "Boundary stance: {}", summary);
 }
 
+fn append_relational_state_line(out: &mut String, relational_state: &RelationalBoundaryState) {
+    let mut summary = format!(
+        "trust={} intrusion_load={} repair_readiness={} raw_pref={} summary_pref={} relational_pref={} refusal_hardness={} defer_tendency={}",
+        relational_state.trust_level,
+        relational_state.intrusion_load,
+        relational_state.repair_readiness,
+        relational_state.raw_disclosure_preference,
+        relational_state.summary_disclosure_preference,
+        relational_state.relational_explanation_preference,
+        relational_state.refusal_hardness,
+        relational_state.defer_tendency,
+    );
+    if !relational_state.relation_maturity_reason.trim().is_empty() {
+        summary.push_str(" maturity_reason=");
+        summary.push_str(relational_state.relation_maturity_reason.trim());
+    }
+    if !relational_state
+        .disclosure_preference_drift
+        .trim()
+        .is_empty()
+    {
+        summary.push_str(" drift=");
+        summary.push_str(relational_state.disclosure_preference_drift.trim());
+    }
+    let _ = writeln!(out, "Relational continuity: {}", summary);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::memory::{
         BoundaryDisclosureStyle, BoundaryPersonaPosture, BoundaryPersonaState, MentalPrivacyState,
+        RelationalBoundaryState,
     };
 
     #[test]
@@ -134,6 +175,8 @@ mod tests {
                 pacing: "measured".to_string(),
                 initiative: "answer directly".to_string(),
                 boundary_style: "summary before exposure".to_string(),
+                relational_response_style: "name the relationship impact without sounding brittle"
+                    .to_string(),
                 updated_at: 1,
             }),
             Some(&MentalPrivacyState {
@@ -147,6 +190,12 @@ mod tests {
                     current_boundary_feeling: "Stay warm, but hold the inner room.".to_string(),
                     updated_at: 1,
                 },
+                relational_state: RelationalBoundaryState {
+                    trust_level: 61,
+                    disclosure_preference_drift:
+                        "Summaries feel safe; raw exposure still feels premature.".to_string(),
+                    ..RelationalBoundaryState::default()
+                },
                 ..MentalPrivacyState::default()
             }),
             1024,
@@ -156,6 +205,7 @@ mod tests {
         assert!(block.contains("## Self-Authored Core"));
         assert!(block.contains("I am still the same beetle"));
         assert!(block.contains("Boundary stance: posture=guarded"));
+        assert!(block.contains("Relational continuity: trust=61"));
         assert!(block.contains("summary before exposure"));
     }
 }
