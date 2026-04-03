@@ -8,14 +8,10 @@
 //!   `voice_session_worker`, so long STT/TTS calls no longer block event intake.
 
 use crate::audio::baidu_token::BaiduTokenCache;
-use crate::audio::capture::{capture_speech, AudioRecordingGuard};
-use crate::audio::stt_baidu;
-use crate::audio::tts_baidu;
+use crate::audio::pipeline::{capture_and_transcribe, speak_text};
 use crate::bus::{PcMsg, TrackedSender};
 use crate::config::AudioSegment;
-use crate::constants::{
-    AUDIO_CAPTURE_MAX_MS, AUDIO_TTS_WRITE_CHUNK_SAMPLES, VOICE_CHANNEL_NAME, VOICE_DEVICE_CHAT_ID,
-};
+use crate::constants::{AUDIO_CAPTURE_MAX_MS, VOICE_CHANNEL_NAME, VOICE_DEVICE_CHAT_ID};
 use crate::platform::PlatformHttpClient;
 use crate::util::{
     spawn_guarded_with_profile_handle, HttpThreadRole, SpawnCore, STACK_VOICE_SESSION,
@@ -24,7 +20,7 @@ use crate::Platform;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const TAG: &str = "voice_session";
 const WORKER_IDLE_POLL_MS: u64 = 100;
@@ -179,18 +175,13 @@ fn handle_wake_interaction<F>(
     };
 
     if !cfg.wake_prompt.is_empty() && cfg.platform.audio_speaker_ready() {
-        let _guard = AudioRecordingGuard::new();
-        crate::orchestrator::set_audio_playing(true);
-        let tts_result = tts_baidu::stream_wav_pcm16le(
-            client.as_mut(),
+        let tts_result = speak_text(
+            cfg.platform.as_ref(),
+            &cfg.audio_cfg,
             cfg.baidu_token.as_ref(),
-            &cfg.audio_cfg.stt,
-            &cfg.audio_cfg.tts,
+            client.as_mut(),
             &cfg.wake_prompt,
-            AUDIO_TTS_WRITE_CHUNK_SAMPLES,
-            |chunk| cfg.platform.write_speaker_pcm_i16(chunk),
         );
-        crate::orchestrator::set_audio_playing(false);
         if let Err(error) = tts_result {
             log::warn!("[{}] wake prompt TTS failed: {}", TAG, error);
         }
@@ -200,39 +191,21 @@ fn handle_wake_interaction<F>(
         log::warn!("[{}] microphone not ready, skipping capture", TAG);
         return;
     }
-    let captured = {
-        let _guard = AudioRecordingGuard::new();
-        match capture_speech(
-            cfg.platform.as_ref(),
-            &cfg.audio_cfg,
-            AUDIO_CAPTURE_MAX_MS,
-            TAG,
-        ) {
-            Ok(pcm) => pcm,
-            Err(error) => {
-                log::info!("[{}] no speech captured: {}", TAG, error);
-                return;
-            }
-        }
-    };
-
-    let mic_sr = cfg.audio_cfg.microphone.sample_rate.max(8_000);
-    let stt_start = Instant::now();
-    let text = match stt_baidu::transcribe_pcm16_samples(
-        client.as_mut(),
+    let text = match capture_and_transcribe(
+        cfg.platform.as_ref(),
+        &cfg.audio_cfg,
         cfg.baidu_token.as_ref(),
-        &cfg.audio_cfg.stt,
-        captured.as_slice(),
-        mic_sr,
+        client.as_mut(),
+        AUDIO_CAPTURE_MAX_MS,
+        TAG,
     ) {
         Ok(text) => text,
         Err(error) => {
-            log::warn!("[{}] STT failed: {}", TAG, error);
+            log::info!("[{}] voice capture/transcribe skipped: {}", TAG, error);
             crate::metrics::record_voice_tool_failure("voice_session_stt");
             return;
         }
     };
-    crate::metrics::record_voice_input_stt_http_ms(stt_start.elapsed().as_millis());
     log::info!("[{}] transcribed: {:?}", TAG, text);
 
     match PcMsg::new_inbound(VOICE_CHANNEL_NAME, VOICE_DEVICE_CHAT_ID, &text, false) {
@@ -272,24 +245,22 @@ fn handle_speak<F>(
         None => return,
     };
 
-    let _guard = AudioRecordingGuard::new();
-    crate::orchestrator::set_audio_playing(true);
-    let tts_start = Instant::now();
-    let tts_result = tts_baidu::stream_wav_pcm16le(
-        client.as_mut(),
+    let tts_result = speak_text(
+        cfg.platform.as_ref(),
+        &cfg.audio_cfg,
         cfg.baidu_token.as_ref(),
-        &cfg.audio_cfg.stt,
-        &cfg.audio_cfg.tts,
+        client.as_mut(),
         text,
-        AUDIO_TTS_WRITE_CHUNK_SAMPLES,
-        |chunk| cfg.platform.write_speaker_pcm_i16(chunk),
     );
-    crate::orchestrator::set_audio_playing(false);
-    crate::metrics::record_voice_output_play_ms(tts_start.elapsed().as_millis());
-
-    if let Err(error) = tts_result {
-        log::warn!("[{}] TTS playback failed: {}", TAG, error);
-        crate::metrics::record_voice_tool_failure("voice_session_tts");
+    match tts_result {
+        Ok(playback) => {
+            crate::metrics::record_voice_output_tts_http_ms(playback.tts_http_ms);
+            crate::metrics::record_voice_output_play_ms(playback.play_ms);
+        }
+        Err(error) => {
+            log::warn!("[{}] TTS playback failed: {}", TAG, error);
+            crate::metrics::record_voice_tool_failure("voice_session_tts");
+        }
     }
 }
 

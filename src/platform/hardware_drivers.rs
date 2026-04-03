@@ -669,7 +669,13 @@ pub fn drive_dht(pins: &PinConfig, _params: &Value, options: &Value) -> Result<S
         if (sum & 0xFF) != data[4] {
             log::warn!(
                 "[drive_dht] checksum mismatch: [{:#04x},{:#04x},{:#04x},{:#04x},{:#04x}] sum={:#04x} attempt={}",
-                data[0], data[1], data[2], data[3], data[4], sum & 0xFF, attempt
+                data[0],
+                data[1],
+                data[2],
+                data[3],
+                data[4],
+                sum & 0xFF,
+                attempt
             );
             last_err = Some(Error::config("drive_dht", "checksum mismatch"));
             continue;

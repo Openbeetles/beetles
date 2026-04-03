@@ -7,12 +7,80 @@ use crate::memory::{
     LongTermMemoryKind, LongTermMemoryQuery, LongTermMemorySlot, LongTermMemorySourceScope,
     LongTermMemoryStore,
 };
-use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
-use serde_json::{json, Value};
+use crate::tools::{parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata};
+use serde::Serialize;
+use serde_json::Value;
 use std::sync::Arc;
 
 pub struct FactualMemoryTool {
     long_term_store: Arc<dyn LongTermMemoryStore + Send + Sync>,
+}
+
+#[derive(Serialize)]
+struct FactualMemorySlotRef<'a> {
+    kind: &'a str,
+    topic: &'a str,
+}
+
+#[derive(Serialize)]
+struct FactualMemoryProvenance<'a> {
+    source_type: &'a str,
+    source_scope: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_chat_id: Option<&'a str>,
+    source_revision: u64,
+    evidence_count: u32,
+    supporting_citations: &'a [String],
+    last_confirmed_at: u64,
+    last_used_at: u64,
+}
+
+#[derive(Serialize)]
+struct FactualMemoryRenderedEntry<'a> {
+    slot: FactualMemorySlotRef<'a>,
+    content: &'a str,
+    keywords: &'a [String],
+    evidence: crate::memory::LongTermMemoryEvidenceSummary,
+    provenance: FactualMemoryProvenance<'a>,
+    entry: &'a LongTermMemoryEntry,
+}
+
+#[derive(Serialize)]
+struct FactualMemoryCandidate<'a> {
+    slot: FactualMemorySlotRef<'a>,
+    content: &'a str,
+    match_reason: String,
+    evidence: crate::memory::LongTermMemoryEvidenceSummary,
+    provenance: FactualMemoryProvenance<'a>,
+}
+
+#[derive(Serialize)]
+struct FactualMemoryLookupResponse<'a> {
+    ok: bool,
+    op: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    slot_query: Option<&'a str>,
+    slot: LongTermMemorySlot,
+    status: &'static str,
+    exact_match: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    item: Option<FactualMemoryRenderedEntry<'a>>,
+    nearby_candidates: Vec<FactualMemoryCandidate<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_chat_id: Option<&'a str>,
+    plane: &'static str,
+    canonical: bool,
+}
+
+#[derive(Serialize)]
+struct FactualMemoryQueryResponse<'a> {
+    ok: bool,
+    op: &'static str,
+    query: LongTermMemoryQuery,
+    count: usize,
+    items: Vec<FactualMemoryRenderedEntry<'a>>,
+    plane: &'static str,
+    canonical: bool,
 }
 
 impl FactualMemoryTool {
@@ -68,24 +136,31 @@ impl Tool for FactualMemoryTool {
                     .ok_or_else(|| Error::config("tool_factual_memory", "invalid slot"))?
                 };
                 let lookup = lookup_long_term_memory_slot(self.long_term_store.as_ref(), &slot, 4)?;
-                Ok(json!({
-                    "ok": true,
-                    "op": op,
-                    "slot_query": slot_query,
-                    "slot": lookup.slot,
-                    "status": if lookup.entry.is_some() { "exact_match" } else { "not_found" },
-                    "exact_match": lookup.entry.is_some(),
-                    "item": lookup.entry.as_ref().map(render_entry),
-                    "nearby_candidates": lookup
-                        .nearby_candidates
-                        .iter()
-                        .map(|entry| render_candidate(entry, &lookup.slot))
-                        .collect::<Vec<_>>(),
-                    "current_chat_id": ctx.current_chat_id(),
-                    "plane": "canonical_shared_factual",
-                    "canonical": true,
-                })
-                .to_string())
+                let exact_match = lookup.entry.is_some();
+                serialize_tool_output(
+                    "tool_factual_memory",
+                    &FactualMemoryLookupResponse {
+                        ok: true,
+                        op,
+                        slot_query,
+                        slot: lookup.slot.clone(),
+                        status: if exact_match {
+                            "exact_match"
+                        } else {
+                            "not_found"
+                        },
+                        exact_match,
+                        item: lookup.entry.as_ref().map(render_entry),
+                        nearby_candidates: lookup
+                            .nearby_candidates
+                            .iter()
+                            .map(|entry| render_candidate(entry, &lookup.slot))
+                            .collect::<Vec<_>>(),
+                        current_chat_id: ctx.current_chat_id(),
+                        plane: "canonical_shared_factual",
+                        canonical: true,
+                    },
+                )
             }
             "query" => {
                 let limit = obj.get("limit").and_then(Value::as_u64).unwrap_or(4) as usize;
@@ -117,16 +192,18 @@ impl Tool for FactualMemoryTool {
                     limit,
                 };
                 let items = self.long_term_store.query(&query)?;
-                Ok(json!({
-                    "ok": true,
-                    "op": "query",
-                    "query": query.normalized(),
-                    "count": items.len(),
-                    "items": items.iter().map(render_entry).collect::<Vec<_>>(),
-                    "plane": "canonical_shared_factual",
-                    "canonical": true,
-                })
-                .to_string())
+                serialize_tool_output(
+                    "tool_factual_memory",
+                    &FactualMemoryQueryResponse {
+                        ok: true,
+                        op: "query",
+                        query: query.normalized(),
+                        count: items.len(),
+                        items: items.iter().map(render_entry).collect::<Vec<_>>(),
+                        plane: "canonical_shared_factual",
+                        canonical: true,
+                    },
+                )
             }
             _ => Err(Error::config(
                 "tool_factual_memory",
@@ -140,45 +217,48 @@ impl Tool for FactualMemoryTool {
     }
 }
 
-fn render_entry(entry: &LongTermMemoryEntry) -> serde_json::Value {
+fn render_entry(entry: &LongTermMemoryEntry) -> FactualMemoryRenderedEntry<'_> {
     let now_secs = crate::util::current_unix_secs();
-    json!({
-        "slot": {
-            "kind": entry.kind.label(),
-            "topic": entry.topic.as_str(),
+    FactualMemoryRenderedEntry {
+        slot: FactualMemorySlotRef {
+            kind: entry.kind.label(),
+            topic: entry.topic.as_str(),
         },
-        "content": entry.content.as_str(),
-        "keywords": &entry.keywords,
-        "evidence": long_term_memory_evidence_summary(entry, now_secs),
-        "provenance": render_provenance(entry),
-        "entry": entry,
-    })
+        content: entry.content.as_str(),
+        keywords: &entry.keywords,
+        evidence: long_term_memory_evidence_summary(entry, now_secs),
+        provenance: render_provenance(entry),
+        entry,
+    }
 }
 
-fn render_candidate(entry: &LongTermMemoryEntry, requested_slot: &LongTermMemorySlot) -> Value {
-    json!({
-        "slot": {
-            "kind": entry.kind.label(),
-            "topic": entry.topic.as_str(),
+fn render_candidate<'a>(
+    entry: &'a LongTermMemoryEntry,
+    requested_slot: &LongTermMemorySlot,
+) -> FactualMemoryCandidate<'a> {
+    FactualMemoryCandidate {
+        slot: FactualMemorySlotRef {
+            kind: entry.kind.label(),
+            topic: entry.topic.as_str(),
         },
-        "content": entry.content.as_str(),
-        "match_reason": candidate_match_reason(entry, requested_slot),
-        "evidence": long_term_memory_evidence_summary(entry, crate::util::current_unix_secs()),
-        "provenance": render_provenance(entry),
-    })
+        content: entry.content.as_str(),
+        match_reason: candidate_match_reason(entry, requested_slot),
+        evidence: long_term_memory_evidence_summary(entry, crate::util::current_unix_secs()),
+        provenance: render_provenance(entry),
+    }
 }
 
-fn render_provenance(entry: &LongTermMemoryEntry) -> Value {
-    json!({
-        "source_type": entry.source_type.label(),
-        "source_scope": entry.source_scope.label(),
-        "source_chat_id": entry.source_chat_id.as_deref(),
-        "source_revision": entry.source_revision,
-        "evidence_count": entry.evidence_count,
-        "supporting_citations": &entry.supporting_citations,
-        "last_confirmed_at": entry.last_confirmed_at,
-        "last_used_at": entry.last_used_at,
-    })
+fn render_provenance(entry: &LongTermMemoryEntry) -> FactualMemoryProvenance<'_> {
+    FactualMemoryProvenance {
+        source_type: entry.source_type.label(),
+        source_scope: entry.source_scope.label(),
+        source_chat_id: entry.source_chat_id.as_deref(),
+        source_revision: entry.source_revision,
+        evidence_count: entry.evidence_count,
+        supporting_citations: &entry.supporting_citations,
+        last_confirmed_at: entry.last_confirmed_at,
+        last_used_at: entry.last_used_at,
+    }
 }
 
 fn candidate_match_reason(

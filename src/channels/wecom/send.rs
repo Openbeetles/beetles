@@ -267,15 +267,21 @@ fn send_one_wecom<H: ChannelHttpClient>(
     chat_id: &str,
     default_touser: &str,
     content: &str,
-) {
+) -> crate::error::Result<()> {
     const TAG: &str = "wecom_send";
+    if content.trim().is_empty() {
+        return Err(crate::error::Error::config(
+            "wecom_send",
+            "refusing to send empty WeCom message",
+        ));
+    }
     let touser = if chat_id.trim().is_empty() {
         default_touser
     } else {
         chat_id.trim()
     };
     if touser.is_empty() {
-        return;
+        return Ok(());
     }
     for chunk in crate::channels::chunk::chunk_text_by_utf8_bytes(content, WECOM_MAX_TEXT_BYTES) {
         let body = serde_json::json!({
@@ -284,31 +290,30 @@ fn send_one_wecom<H: ChannelHttpClient>(
             "agentid": agent_id_u32,
             "text": { "content": chunk }
         });
-        let body_bytes = match serde_json::to_vec(&body) {
-            Ok(b) => b,
-            Err(e) => {
-                log::warn!("[{}] send json: {}", TAG, e);
-                continue;
-            }
-        };
+        let body_bytes = serde_json::to_vec(&body)
+            .map_err(|e| crate::error::Error::config("wecom_send", e.to_string()))?;
         let send_url = format!("{}?access_token={}", WECOM_SEND_BASE, token);
-        if let Ok((status, resp_body)) =
-            crate::channels::send::send_post(TAG, http, &send_url, &body_bytes)
-        {
-            if status < 400 {
-                if let Ok(resp) = serde_json::from_slice::<WecomSendResponse>(resp_body.as_ref()) {
-                    if resp.errcode != 0 {
-                        log::warn!(
-                            "[{}] send errcode={} errmsg={}",
-                            TAG,
-                            resp.errcode,
-                            resp.errmsg
-                        );
-                    }
-                }
+        let (status, resp_body) =
+            crate::channels::send::send_post(TAG, http, &send_url, &body_bytes)?;
+        if status >= 400 {
+            return Err(crate::error::Error::http("wecom_send", status));
+        }
+        if let Ok(resp) = serde_json::from_slice::<WecomSendResponse>(resp_body.as_ref()) {
+            if resp.errcode != 0 {
+                log::warn!(
+                    "[{}] send errcode={} errmsg={}",
+                    TAG,
+                    resp.errcode,
+                    resp.errmsg
+                );
+                return Err(crate::error::Error::config(
+                    "wecom_send",
+                    format!("errcode={} errmsg={}", resp.errcode, resp.errmsg),
+                ));
             }
         }
     }
+    Ok(())
 }
 
 /// 从 rx 取出待发送（一次性 drain）。
@@ -335,14 +340,20 @@ pub fn flush_wecom_sends<H: ChannelHttpClient>(
         None => return,
     };
     while let Ok((chat_id, content, _req_id)) = rx.try_recv() {
-        send_one_wecom(
+        if let Err(error) = send_one_wecom(
             http,
             &token,
             agent_id_u32,
             &chat_id,
             default_touser,
             &content,
-        );
+        ) {
+            log::warn!(
+                "[wecom_flush] send failed for chat_id={}: {}",
+                chat_id,
+                error
+            );
+        }
     }
 }
 
@@ -460,9 +471,31 @@ pub fn run_wecom_sender_loop<H, F>(
             let Some(h) = http.as_mut() else {
                 continue;
             };
-            send_one_wecom(h, &token, agent_id_u32, &chat_id, default_touser, &content);
+            match send_one_wecom(h, &token, agent_id_u32, &chat_id, default_touser, &content) {
+                Ok(()) => crate::metrics::record_channel_http_result(true),
+                Err(error) => {
+                    crate::metrics::record_channel_http_result(false);
+                    log::warn!(
+                        "[{}] send failed (attempt {}), chat_id={}: {}",
+                        TAG,
+                        retry + 1,
+                        chat_id,
+                        error
+                    );
+                    token_cache = None;
+                    http = None;
+                    continue;
+                }
+            }
             while let Ok((cid, cnt, _)) = rx.try_recv() {
-                send_one_wecom(h, &token, agent_id_u32, &cid, default_touser, &cnt);
+                if let Err(error) =
+                    send_one_wecom(h, &token, agent_id_u32, &cid, default_touser, &cnt)
+                {
+                    crate::metrics::record_channel_http_result(false);
+                    log::warn!("[{}] drain send failed for chat_id={}: {}", TAG, cid, error);
+                    break;
+                }
+                crate::metrics::record_channel_http_result(true);
             }
             sent = true;
             break;

@@ -1,11 +1,24 @@
 use crate::error::{Error, Result};
 use crate::tools::{
-    parse_tool_args, Tool, ToolContext, ToolExecutionOutcome, ToolMetadata,
+    parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolExecutionOutcome, ToolMetadata,
     ToolOutboundDeliveryKind, ToolOutboundIntent, ToolOutboundTarget,
 };
-use serde_json::{json, Value};
+use serde::Serialize;
+use serde_json::Value;
 
 pub struct MessageTool;
+
+#[derive(Serialize)]
+struct MessageToolSummary<'a> {
+    ok: bool,
+    tool: &'static str,
+    target: &'a str,
+    delivery_kind: &'a str,
+    channel: &'a str,
+    chat_id: &'a str,
+    sent_chars: usize,
+    submitted_to_runtime: bool,
+}
 
 impl Tool for MessageTool {
     fn name(&self) -> &'static str {
@@ -114,17 +127,23 @@ impl Tool for MessageTool {
         }
         ctx.claim_outbound_message_delivery(current_target, primary)?;
 
-        let summary = json!({
-            "ok": true,
-            "tool": "message",
-            "target": if current_target { "current" } else { "explicit" },
-            "delivery_kind": if primary { "primary" } else { "supplemental" },
-            "channel": channel,
-            "chat_id": chat_id,
-            "sent_chars": content.chars().count(),
-            "submitted_to_runtime": true,
-        })
-        .to_string();
+        let summary = serialize_tool_output(
+            "tool_message",
+            &MessageToolSummary {
+                ok: true,
+                tool: "message",
+                target: if current_target {
+                    "current"
+                } else {
+                    "explicit"
+                },
+                delivery_kind: if primary { "primary" } else { "supplemental" },
+                channel: channel.as_str(),
+                chat_id: chat_id.as_str(),
+                sent_chars: content.chars().count(),
+                submitted_to_runtime: true,
+            },
+        )?;
 
         Ok(
             ToolExecutionOutcome::text(summary).with_outbound_intent(ToolOutboundIntent {

@@ -38,7 +38,6 @@ pub struct BgTimerContext {
     pub memory_profile: MemoryProfile,
     pub autonomy_strategy_store: Arc<dyn AutonomyStrategyStore + Send + Sync>,
     pub self_continuity_store: Arc<dyn SelfContinuityStore + Send + Sync>,
-
     // cron
     pub memory_store: Option<Arc<dyn MemoryStore + Send + Sync>>,
     pub sensor_watch: Option<SensorWatchContext>,

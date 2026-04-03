@@ -80,7 +80,7 @@ impl Tool for HttpRequestTool {
                 return Err(Error::config(
                     "tool_http_request",
                     format!("unsupported method: {}", method),
-                ))
+                ));
             }
         };
 

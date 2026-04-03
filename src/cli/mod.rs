@@ -333,7 +333,9 @@ fn cmd_spiffs_stress(ctx: &CliContext, args: Vec<&str>) -> String {
         rounds,
         payload_bytes,
         elapsed_ms,
-        after.spiffs_lock_ops_total.saturating_sub(before.spiffs_lock_ops_total),
+        after
+            .spiffs_lock_ops_total
+            .saturating_sub(before.spiffs_lock_ops_total),
         after
             .spiffs_lock_contention_total
             .saturating_sub(before.spiffs_lock_contention_total),

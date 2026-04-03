@@ -418,14 +418,16 @@ fn collect_live_archive_candidates(
                     cues.push("current chat".to_string());
                 }
                 candidates.push(build_archive_search_candidate(
-                    locator,
-                    ArchiveRecordSource::Transcript,
-                    title,
-                    content,
-                    cues,
-                    None,
-                    query.preferred_chat_id == Some(chat_id.as_str()),
-                    0,
+                    ArchiveSearchCandidateInput {
+                        locator,
+                        source: ArchiveRecordSource::Transcript,
+                        title,
+                        content: content.to_string(),
+                        cues,
+                        observed_at: None,
+                        current_chat_match: query.preferred_chat_id == Some(chat_id.as_str()),
+                        backend_fts_score: 0,
+                    },
                 ));
             }
         }
@@ -456,14 +458,16 @@ fn collect_live_archive_candidates(
                 req_id: None,
             };
             candidates.push(build_archive_search_candidate(
-                locator,
-                ArchiveRecordSource::DailyNote,
-                name,
-                content,
-                cues,
-                observed_at,
-                false,
-                0,
+                ArchiveSearchCandidateInput {
+                    locator,
+                    source: ArchiveRecordSource::DailyNote,
+                    title: name,
+                    content: content.to_string(),
+                    cues,
+                    observed_at,
+                    current_chat_match: false,
+                    backend_fts_score: 0,
+                },
             ));
         }
     }
@@ -490,14 +494,16 @@ fn collect_live_archive_candidates(
                 cues.push("current chat".to_string());
             }
             candidates.push(build_archive_search_candidate(
-                locator,
-                ArchiveRecordSource::TurnLog,
-                title,
-                &content,
-                cues,
-                turn_log_observed_at(&ledger),
-                query.preferred_chat_id == Some(chat_id.as_str()),
-                0,
+                ArchiveSearchCandidateInput {
+                    locator,
+                    source: ArchiveRecordSource::TurnLog,
+                    title,
+                    content,
+                    cues,
+                    observed_at: turn_log_observed_at(&ledger),
+                    current_chat_match: query.preferred_chat_id == Some(chat_id.as_str()),
+                    backend_fts_score: 0,
+                },
             ));
         }
     }
@@ -808,16 +814,18 @@ fn map_archive_sqlite_candidate_row(
         0
     };
     Ok(build_archive_search_candidate(
-        locator,
-        source,
-        title,
-        &content,
-        cues,
-        observed_at,
-        chat_id
-            .as_deref()
-            .is_some_and(|chat_id| Some(chat_id) == preferred_chat_id),
-        sqlite_fts_score,
+        ArchiveSearchCandidateInput {
+            locator,
+            source,
+            title,
+            content,
+            cues,
+            observed_at,
+            current_chat_match: chat_id
+                .as_deref()
+                .is_some_and(|chat_id| Some(chat_id) == preferred_chat_id),
+            backend_fts_score: sqlite_fts_score,
+        },
     ))
 }
 
@@ -1143,34 +1151,36 @@ fn archive_hybrid_score(candidate: &ArchiveSearchCandidate, query_text: &str) ->
     }
 }
 
-fn build_archive_search_candidate(
+struct ArchiveSearchCandidateInput {
     locator: ArchiveRecordLocator,
     source: ArchiveRecordSource,
     title: String,
-    content: &str,
+    content: String,
     cues: Vec<String>,
     observed_at: Option<u64>,
     current_chat_match: bool,
     backend_fts_score: u32,
-) -> ArchiveSearchCandidate {
-    let normalized_title = normalize_archive_match_text(&title);
-    let normalized_content = normalize_archive_match_text(content);
+}
+
+fn build_archive_search_candidate(input: ArchiveSearchCandidateInput) -> ArchiveSearchCandidate {
+    let normalized_title = normalize_archive_match_text(&input.title);
+    let normalized_content = normalize_archive_match_text(&input.content);
     let normalized_document =
         combine_normalized_archive_parts(&normalized_title, &normalized_content);
     let estimated_doc_len = archive_document_len(&normalized_document);
     ArchiveSearchCandidate {
-        locator,
-        source,
-        title,
-        content: content.to_string(),
-        cues,
-        observed_at,
-        current_chat_match,
+        locator: input.locator,
+        source: input.source,
+        title: input.title,
+        content: input.content,
+        cues: input.cues,
+        observed_at: input.observed_at,
+        current_chat_match: input.current_chat_match,
         normalized_title,
         normalized_content,
         normalized_document,
         estimated_doc_len,
-        backend_fts_score,
+        backend_fts_score: input.backend_fts_score,
     }
 }
 
@@ -1196,6 +1206,7 @@ fn archive_document_len(normalized_document: &str) -> usize {
         .max(normalized_document.chars().count() / 4)
 }
 
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn trigram_overlap_score(left: &str, right: &str) -> u32 {
     let left = archive_trigrams(left);
     let right = archive_trigrams(right);
@@ -1210,6 +1221,7 @@ fn trigram_overlap_score(left: &str, right: &str) -> u32 {
     (ratio * 24.0).round().max(0.0) as u32
 }
 
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn archive_trigrams(value: &str) -> Vec<String> {
     let compact: Vec<char> = value.chars().filter(|ch| !ch.is_whitespace()).collect();
     if compact.is_empty() {

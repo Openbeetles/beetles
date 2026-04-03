@@ -74,7 +74,12 @@ impl NetworkScanTool {
 
     fn do_wifi_status(&self) -> Result<String> {
         let ip = self.platform.wifi_sta_ip();
-        let board_info = self.platform.board_info_json().unwrap_or_default();
+        let board_info = self
+            .platform
+            .board_info_json()
+            .ok()
+            .and_then(|payload| serde_json::from_str::<Value>(&payload).ok())
+            .unwrap_or(Value::Null);
 
         Ok(json!({
             "op": "wifi_status",
@@ -146,9 +151,7 @@ impl Tool for NetworkScanTool {
     }
 
     fn requires_network(&self) -> bool {
-        // wifi_scan and wifi_status don't need network, but connectivity_check does.
-        // Conservative: return false since most ops don't need it.
-        false
+        true
     }
 
     fn metadata(&self) -> ToolMetadata {

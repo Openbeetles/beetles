@@ -6,9 +6,10 @@ use crate::calendar::{
 };
 use crate::error::{Error, Result};
 use crate::task::{normalize_task_item, TaskItem, TaskPriority, TaskQuery, TaskStatus, TaskStore};
-use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
+use crate::tools::{parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata};
 use crate::util::{current_unix_secs, parse_iso8601};
-use serde_json::{json, Value};
+use serde::Serialize;
+use serde_json::Value;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -18,6 +19,45 @@ static TASK_SEQ: AtomicU32 = AtomicU32::new(1);
 pub struct TaskTool {
     store: Arc<dyn TaskStore + Send + Sync>,
     calendar_service: CalendarService,
+}
+
+#[derive(Serialize)]
+struct TaskListResponse {
+    op: &'static str,
+    count: usize,
+    tasks: Vec<TaskItem>,
+}
+
+#[derive(Serialize)]
+struct TaskGetResponse {
+    op: &'static str,
+    task: TaskItem,
+}
+
+#[derive(Serialize)]
+struct TaskMutationResponse {
+    op: &'static str,
+    ok: bool,
+    task: TaskItem,
+}
+
+#[derive(Serialize)]
+struct TaskUpdateResponse {
+    op: &'static str,
+    ok: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    updated_fields: Vec<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task: Option<TaskItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+struct TaskDeleteResponse<'a> {
+    op: &'static str,
+    id: &'a str,
+    ok: bool,
 }
 
 impl TaskTool {
@@ -69,12 +109,14 @@ impl Tool for TaskTool {
                     limit: obj.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize,
                 };
                 let tasks = self.store.list(channel, chat_id, query)?;
-                Ok(json!({
-                    "op": "list",
-                    "count": tasks.len(),
-                    "tasks": tasks.into_iter().map(task_to_json).collect::<Vec<_>>(),
-                })
-                .to_string())
+                serialize_tool_output(
+                    "tool_task",
+                    &TaskListResponse {
+                        op: "list",
+                        count: tasks.len(),
+                        tasks,
+                    },
+                )
             }
             "get" => {
                 let id = required_string(&obj, "id")?;
@@ -82,11 +124,7 @@ impl Tool for TaskTool {
                     .store
                     .get(channel, chat_id, id)?
                     .ok_or_else(|| Error::config("tool_task", "task not found"))?;
-                Ok(json!({
-                    "op": "get",
-                    "task": task_to_json(task),
-                })
-                .to_string())
+                serialize_tool_output("tool_task", &TaskGetResponse { op: "get", task })
             }
             "create" => {
                 let now_secs = current_unix_secs();
@@ -133,12 +171,14 @@ impl Tool for TaskTool {
                 task = normalize_task_item(task)?;
                 self.sync_local_calendar(&mut task, now_secs)?;
                 self.store.upsert(&task)?;
-                Ok(json!({
-                    "op": "create",
-                    "ok": true,
-                    "task": task_to_json(task),
-                })
-                .to_string())
+                serialize_tool_output(
+                    "tool_task",
+                    &TaskMutationResponse {
+                        op: "create",
+                        ok: true,
+                        task,
+                    },
+                )
             }
             "update" => {
                 let now_secs = current_unix_secs();
@@ -213,12 +253,16 @@ impl Tool for TaskTool {
                     updated.push("clear_calendar");
                 }
                 if updated.is_empty() {
-                    return Ok(json!({
-                        "op": "update",
-                        "ok": false,
-                        "error": "no fields to update",
-                    })
-                    .to_string());
+                    return serialize_tool_output(
+                        "tool_task",
+                        &TaskUpdateResponse {
+                            op: "update",
+                            ok: false,
+                            updated_fields: Vec::new(),
+                            task: None,
+                            error: Some("no fields to update"),
+                        },
+                    );
                 }
                 if task.status == TaskStatus::Completed {
                     task.completed_at_unix_secs = now_secs;
@@ -229,13 +273,16 @@ impl Tool for TaskTool {
                 task = normalize_task_item(task)?;
                 self.sync_local_calendar(&mut task, now_secs)?;
                 self.store.upsert(&task)?;
-                Ok(json!({
-                    "op": "update",
-                    "ok": true,
-                    "updated_fields": updated,
-                    "task": task_to_json(task),
-                })
-                .to_string())
+                serialize_tool_output(
+                    "tool_task",
+                    &TaskUpdateResponse {
+                        op: "update",
+                        ok: true,
+                        updated_fields: updated,
+                        task: Some(task),
+                        error: None,
+                    },
+                )
             }
             "complete" => {
                 let now_secs = current_unix_secs();
@@ -249,12 +296,14 @@ impl Tool for TaskTool {
                 task.updated_at = now_secs;
                 task = normalize_task_item(task)?;
                 self.store.upsert(&task)?;
-                Ok(json!({
-                    "op": "complete",
-                    "ok": true,
-                    "task": task_to_json(task),
-                })
-                .to_string())
+                serialize_tool_output(
+                    "tool_task",
+                    &TaskMutationResponse {
+                        op: "complete",
+                        ok: true,
+                        task,
+                    },
+                )
             }
             "delete" => {
                 let id = required_string(&obj, "id")?;
@@ -262,12 +311,14 @@ impl Tool for TaskTool {
                     self.delete_local_calendar(&task.calendar_event_id)?;
                 }
                 let removed = self.store.delete(channel, chat_id, id)?;
-                Ok(json!({
-                    "op": "delete",
-                    "id": id,
-                    "ok": removed,
-                })
-                .to_string())
+                serialize_tool_output(
+                    "tool_task",
+                    &TaskDeleteResponse {
+                        op: "delete",
+                        id,
+                        ok: removed,
+                    },
+                )
             }
             _ => Err(Error::config("tool_task", format!("unknown op: {}", op))),
         }
@@ -414,36 +465,6 @@ fn build_task_id(title: &str) -> String {
     let short = (hasher.finish() & 0xffff) as u16;
     let seq = TASK_SEQ.fetch_add(1, Ordering::Relaxed) & 0xffff;
     format!("tsk_{}_{}_{:04x}", current_unix_secs(), seq, short)
-}
-
-fn task_to_json(task: TaskItem) -> Value {
-    json!({
-        "id": task.id,
-        "title": task.title,
-        "detail": task.detail,
-        "project": task.project,
-        "status": match task.status {
-            TaskStatus::Open => "open",
-            TaskStatus::InProgress => "in_progress",
-            TaskStatus::Completed => "completed",
-            TaskStatus::Cancelled => "cancelled",
-        },
-        "priority": match task.priority {
-            TaskPriority::Low => "low",
-            TaskPriority::Normal => "normal",
-            TaskPriority::High => "high",
-        },
-        "due_at_unix_secs": task.due_at_unix_secs,
-        "due_notified_at_unix_secs": task.due_notified_at_unix_secs,
-        "calendar_event_id": task.calendar_event_id,
-        "calendar_start_at_unix_secs": task.calendar_start_at_unix_secs,
-        "calendar_end_at_unix_secs": task.calendar_end_at_unix_secs,
-        "calendar_timezone": task.calendar_timezone,
-        "calendar_location": task.calendar_location,
-        "calendar_notes": task.calendar_notes,
-        "completed_at_unix_secs": task.completed_at_unix_secs,
-        "updated_at": task.updated_at,
-    })
 }
 
 #[cfg(test)]

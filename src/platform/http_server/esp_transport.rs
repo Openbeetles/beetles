@@ -25,6 +25,23 @@ pub(super) enum EspBodyMode {
     Utf8SoulUser,
 }
 
+#[derive(Clone, Copy)]
+struct EspRouteSpec {
+    path: &'static str,
+    method: Method,
+    body_mode: EspBodyMode,
+}
+
+impl EspRouteSpec {
+    const fn new(path: &'static str, method: Method, body_mode: EspBodyMode) -> Self {
+        Self {
+            path,
+            method,
+            body_mode,
+        }
+    }
+}
+
 fn method_as_str(m: Method) -> &'static str {
     match m {
         Method::Get => "GET",
@@ -170,22 +187,270 @@ pub(super) fn esp_dispatch_route<C: Connection>(
     write_outgoing(ctx, req, out, restart_reason.as_str())
 }
 
-macro_rules! esp_route {
-    ($server:expr, $path:expr, $m:ident, $ctx:expr, $env:expr, $store:expr, $mode:expr) => {{
-        let ctx = Arc::clone($ctx);
-        let env = $env.clone();
-        let store = Arc::clone($store);
-        let path: &'static str = $path;
-        let http_method = Method::$m;
-        $server
-            .fn_handler(path, http_method, move |req| -> HandlerResult {
-                esp_dispatch_route(&ctx, &env, &store, req, http_method, $mode)
-            })
-            .map_err(|e| crate::error::Error::Other {
-                source: Box::new(e),
-                stage: "http_server_handler",
-            })?;
-    }};
+#[cold]
+#[inline(never)]
+fn register_esp_route(
+    server: &mut EspHttpServer<'static>,
+    ctx: &Arc<HandlerContext>,
+    env: &RouterEnv,
+    config_store: &Arc<dyn ConfigStore + Send + Sync>,
+    spec: EspRouteSpec,
+) -> Result<()> {
+    let ctx = Arc::clone(ctx);
+    let env = env.clone();
+    let store = Arc::clone(config_store);
+    server
+        .fn_handler(spec.path, spec.method, move |req| -> HandlerResult {
+            esp_dispatch_route(&ctx, &env, &store, req, spec.method, spec.body_mode)
+        })
+        .map_err(|e| crate::error::Error::Other {
+            source: Box::new(e),
+            stage: "http_server_handler",
+        })?;
+    Ok(())
+}
+
+#[cold]
+#[inline(never)]
+fn register_esp_route_specs(
+    server: &mut EspHttpServer<'static>,
+    ctx: &Arc<HandlerContext>,
+    env: &RouterEnv,
+    config_store: &Arc<dyn ConfigStore + Send + Sync>,
+    specs: &[EspRouteSpec],
+) -> Result<()> {
+    for spec in specs {
+        register_esp_route(server, ctx, env, config_store, *spec)?;
+    }
+    Ok(())
+}
+
+const STATIC_PAGE_ROUTES: &[EspRouteSpec] = &[
+    EspRouteSpec::new("/", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/wifi", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/wifi", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/pairing", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/pairing", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/common.css", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/common.css", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/common.js", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/common.js", Method::Options, EspBodyMode::None),
+];
+
+const PAIRING_AND_CONFIG_ROUTES: &[EspRouteSpec] = &[
+    EspRouteSpec::new("/api/pairing_code", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new(
+        "/api/pairing_code",
+        Method::Post,
+        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
+    ),
+    EspRouteSpec::new("/api/pairing_code", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/api/config", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/api/config", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new(
+        "/api/config/wifi",
+        Method::Post,
+        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
+    ),
+    EspRouteSpec::new("/api/config/wifi", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/api/config/llm", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new(
+        "/api/config/llm",
+        Method::Post,
+        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
+    ),
+    EspRouteSpec::new("/api/config/channels", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new(
+        "/api/config/channels",
+        Method::Post,
+        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
+    ),
+    EspRouteSpec::new("/api/config/system", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new(
+        "/api/config/system",
+        Method::Post,
+        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
+    ),
+    EspRouteSpec::new("/api/config/hardware", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/api/config/hardware", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new(
+        "/api/config/hardware",
+        Method::Post,
+        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
+    ),
+    EspRouteSpec::new("/api/config/audio", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/api/config/audio", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new(
+        "/api/config/audio",
+        Method::Post,
+        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
+    ),
+    EspRouteSpec::new("/api/config/display", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/api/config/display", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new(
+        "/api/config/display",
+        Method::Post,
+        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
+    ),
+    EspRouteSpec::new("/api/wifi/scan", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/api/wifi/scan", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/api/csrf_token", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/api/csrf_token", Method::Options, EspBodyMode::None),
+];
+
+const OBSERVABILITY_ROUTES: &[EspRouteSpec] = &[
+    EspRouteSpec::new("/api/health", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/api/health", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/api/metrics", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/api/metrics", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/api/resource", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/api/resource", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/api/diagnose", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/api/diagnose", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/api/system_info", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/api/system_info", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/api/channel_connectivity", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new(
+        "/api/channel_connectivity",
+        Method::Options,
+        EspBodyMode::None,
+    ),
+];
+
+const MEMORY_AND_SKILL_ROUTES: &[EspRouteSpec] = &[
+    EspRouteSpec::new("/api/tools", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/api/tools", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/api/soul", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/api/user", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/api/sessions", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/api/sessions", Method::Delete, EspBodyMode::None),
+    EspRouteSpec::new("/api/sessions", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/api/memory/status", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/api/memory/status", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/api/skills", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new(
+        "/api/skills",
+        Method::Post,
+        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
+    ),
+    EspRouteSpec::new("/api/skills", Method::Delete, EspBodyMode::None),
+    EspRouteSpec::new("/api/skills", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new(
+        "/api/skills/import",
+        Method::Post,
+        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
+    ),
+    EspRouteSpec::new("/api/skills/import", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/api/soul", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/api/user", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/api/soul", Method::Post, EspBodyMode::Utf8SoulUser),
+    EspRouteSpec::new("/api/user", Method::Post, EspBodyMode::Utf8SoulUser),
+];
+
+const ACTION_ROUTES: &[EspRouteSpec] = &[
+    EspRouteSpec::new("/api/restart", Method::Post, EspBodyMode::None),
+    EspRouteSpec::new("/api/restart", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/api/config_reset", Method::Post, EspBodyMode::None),
+    EspRouteSpec::new("/api/config_reset", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new(
+        "/api/webhook",
+        Method::Post,
+        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
+    ),
+    EspRouteSpec::new("/api/webhook", Method::Options, EspBodyMode::None),
+];
+
+#[cold]
+#[inline(never)]
+fn register_static_page_routes(
+    server: &mut EspHttpServer<'static>,
+    ctx: &Arc<HandlerContext>,
+    env: &RouterEnv,
+    config_store: &Arc<dyn ConfigStore + Send + Sync>,
+) -> Result<()> {
+    register_esp_route_specs(server, ctx, env, config_store, STATIC_PAGE_ROUTES)
+}
+
+#[cold]
+#[inline(never)]
+fn register_pairing_and_config_routes(
+    server: &mut EspHttpServer<'static>,
+    ctx: &Arc<HandlerContext>,
+    env: &RouterEnv,
+    config_store: &Arc<dyn ConfigStore + Send + Sync>,
+) -> Result<()> {
+    register_esp_route_specs(server, ctx, env, config_store, PAIRING_AND_CONFIG_ROUTES)
+}
+
+#[cold]
+#[inline(never)]
+fn register_observability_routes(
+    server: &mut EspHttpServer<'static>,
+    ctx: &Arc<HandlerContext>,
+    env: &RouterEnv,
+    config_store: &Arc<dyn ConfigStore + Send + Sync>,
+) -> Result<()> {
+    register_esp_route_specs(server, ctx, env, config_store, OBSERVABILITY_ROUTES)
+}
+
+#[cold]
+#[inline(never)]
+fn register_memory_and_skill_routes(
+    server: &mut EspHttpServer<'static>,
+    ctx: &Arc<HandlerContext>,
+    env: &RouterEnv,
+    config_store: &Arc<dyn ConfigStore + Send + Sync>,
+) -> Result<()> {
+    register_esp_route_specs(server, ctx, env, config_store, MEMORY_AND_SKILL_ROUTES)
+}
+
+#[cold]
+#[inline(never)]
+fn register_action_routes(
+    server: &mut EspHttpServer<'static>,
+    ctx: &Arc<HandlerContext>,
+    env: &RouterEnv,
+    config_store: &Arc<dyn ConfigStore + Send + Sync>,
+) -> Result<()> {
+    register_esp_route_specs(server, ctx, env, config_store, ACTION_ROUTES)
+}
+
+#[cfg(feature = "ota")]
+const OTA_ROUTES: &[EspRouteSpec] = &[
+    EspRouteSpec::new("/api/ota/check", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/api/ota/check", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new(
+        "/api/ota",
+        Method::Post,
+        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
+    ),
+    EspRouteSpec::new("/api/ota", Method::Options, EspBodyMode::None),
+];
+
+#[cfg(feature = "ota")]
+#[cold]
+#[inline(never)]
+fn register_optional_feature_routes(
+    server: &mut EspHttpServer<'static>,
+    ctx: &Arc<HandlerContext>,
+    env: &RouterEnv,
+    config_store: &Arc<dyn ConfigStore + Send + Sync>,
+) -> Result<()> {
+    register_esp_route_specs(server, ctx, env, config_store, OTA_ROUTES)?;
+    Ok(())
+}
+
+#[cfg(not(feature = "ota"))]
+#[cold]
+#[inline(never)]
+fn register_optional_feature_routes(
+    _server: &mut EspHttpServer<'static>,
+    _ctx: &Arc<HandlerContext>,
+    _env: &RouterEnv,
+    _config_store: &Arc<dyn ConfigStore + Send + Sync>,
+) -> Result<()> {
+    Ok(())
 }
 
 /// 注册与历史 `register!` 等价的全量 URI handler。
@@ -195,723 +460,11 @@ pub(super) fn register_all_esp_routes(
     env: &RouterEnv,
     config_store: &Arc<dyn ConfigStore + Send + Sync>,
 ) -> Result<()> {
-    esp_route!(server, "/", Get, ctx, env, config_store, EspBodyMode::None);
-    esp_route!(
-        server,
-        "/",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/wifi",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/wifi",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/pairing",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/pairing",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/common.css",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/common.css",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/common.js",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/common.js",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/pairing_code",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/pairing_code",
-        Post,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN)
-    );
-    esp_route!(
-        server,
-        "/api/pairing_code",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/config",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/config",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/config/wifi",
-        Post,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN)
-    );
-    esp_route!(
-        server,
-        "/api/config/wifi",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/config/llm",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/config/llm",
-        Post,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN)
-    );
-
-    esp_route!(
-        server,
-        "/api/config/channels",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/config/channels",
-        Post,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN)
-    );
-
-    esp_route!(
-        server,
-        "/api/config/system",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/config/system",
-        Post,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN)
-    );
-
-    esp_route!(
-        server,
-        "/api/config/hardware",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/config/hardware",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/config/hardware",
-        Post,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN)
-    );
-
-    esp_route!(
-        server,
-        "/api/config/audio",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/config/audio",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/config/audio",
-        Post,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN)
-    );
-
-    esp_route!(
-        server,
-        "/api/config/display",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/config/display",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/config/display",
-        Post,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN)
-    );
-
-    esp_route!(
-        server,
-        "/api/wifi/scan",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/wifi/scan",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/health",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/health",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/metrics",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/metrics",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/resource",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/resource",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/tools",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/tools",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/csrf_token",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/csrf_token",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/diagnose",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/diagnose",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/system_info",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/system_info",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/channel_connectivity",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/channel_connectivity",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/soul",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/user",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/sessions",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/sessions",
-        Delete,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/sessions",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/memory/status",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/memory/status",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/skills",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/skills",
-        Post,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN)
-    );
-    esp_route!(
-        server,
-        "/api/skills",
-        Delete,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/skills",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/skills/import",
-        Post,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN)
-    );
-    esp_route!(
-        server,
-        "/api/skills/import",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/soul",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/user",
-        Get,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/soul",
-        Post,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::Utf8SoulUser
-    );
-    esp_route!(
-        server,
-        "/api/user",
-        Post,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::Utf8SoulUser
-    );
-
-    esp_route!(
-        server,
-        "/api/restart",
-        Post,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/restart",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/config_reset",
-        Post,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-    esp_route!(
-        server,
-        "/api/config_reset",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    esp_route!(
-        server,
-        "/api/webhook",
-        Post,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN)
-    );
-    esp_route!(
-        server,
-        "/api/webhook",
-        Options,
-        ctx,
-        env,
-        config_store,
-        EspBodyMode::None
-    );
-
-    #[cfg(feature = "ota")]
-    {
-        esp_route!(
-            server,
-            "/api/ota/check",
-            Get,
-            ctx,
-            env,
-            config_store,
-            EspBodyMode::None
-        );
-        esp_route!(
-            server,
-            "/api/ota/check",
-            Options,
-            ctx,
-            env,
-            config_store,
-            EspBodyMode::None
-        );
-        esp_route!(
-            server,
-            "/api/ota",
-            Post,
-            ctx,
-            env,
-            config_store,
-            EspBodyMode::Utf8(POST_BODY_MAX_LEN)
-        );
-        esp_route!(
-            server,
-            "/api/ota",
-            Options,
-            ctx,
-            env,
-            config_store,
-            EspBodyMode::None
-        );
-    }
-
+    register_static_page_routes(server, ctx, env, config_store)?;
+    register_pairing_and_config_routes(server, ctx, env, config_store)?;
+    register_observability_routes(server, ctx, env, config_store)?;
+    register_memory_and_skill_routes(server, ctx, env, config_store)?;
+    register_action_routes(server, ctx, env, config_store)?;
+    register_optional_feature_routes(server, ctx, env, config_store)?;
     Ok(())
 }

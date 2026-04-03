@@ -45,7 +45,7 @@ use crate::memory::{
     MentalPrivacyReviewContext, MentalPrivacyReviewInput, MentalPrivacyStore, OuterVoiceStore,
     PendingRetryStore, PersonaPriorityAdjudicationInput, PersonaPriorityGrounding,
     PersonaPriorityRuntimeState, PostReplyMemoryMaintenanceContext,
-    PostReplyMemoryMaintenanceInput, PrivateDocStore, PrivateGardenStore,
+    PostReplyMemoryMaintenanceInput, PrivateDocStore, PrivateGardenStore, PromptMemoryContext,
     PromptMemoryContextParams, RemindAtStore, SelfContinuityStore, SelfModelStore,
     SelfRuntimeContext, SelfRuntimeOutcome, SessionStore, SessionSummaryRefreshOutcome,
     SessionSummaryStore, TurnDeliveryLedger, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
@@ -221,6 +221,15 @@ struct WorkerRunTelemetry {
     used_final_answer_recovery: bool,
 }
 
+struct PreparedWorkerConversation {
+    prompt_memory: PromptMemoryContext,
+    system: String,
+    messages: Vec<Message>,
+    system_scratch: String,
+    interactive_fast_path: bool,
+    prompt_memory_system_budget: usize,
+}
+
 struct ToolCallExecutionResult {
     result_owned: String,
     failure_kind: Option<super::tool_outcome::ToolFailureKind>,
@@ -251,6 +260,251 @@ fn build_json_error_object(message: &str) -> String {
     push_json_string_escaped(&mut out, message);
     out.push('}');
     out
+}
+
+#[inline(never)]
+fn prepare_worker_conversation<'a>(
+    worker_llm: &(dyn LlmClient + Send + Sync),
+    msg: &'a crate::bus::PcMsg,
+    request_plan: &AgentRequestPlan<'a>,
+    config: &AgentLoopConfig,
+    tool_ctx: &mut HttpClientToolContext<'_>,
+    latency: &mut WorkerLatency,
+) -> Result<PreparedWorkerConversation> {
+    let emotion_signal_suffix = config
+        .emotion_signal_store
+        .get_then_clear(&msg.chat_id)
+        .ok()
+        .flatten()
+        .and_then(|s| {
+            if s == "comfort" {
+                Some("用户可能需安慰，回复时可适当照顾情绪。")
+            } else {
+                None
+            }
+        });
+    let budget = crate::orchestrator::current_budget();
+    let snapshot = crate::orchestrator::snapshot();
+    let interactive_fast_path = msg.ingress == IngressKind::User && msg.channel.as_ref() != "voice";
+    let runtime = RuntimeContext {
+        now_secs: crate::util::current_unix_secs(),
+        platform: if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
+            "ESP32-S3"
+        } else {
+            "Linux"
+        },
+        pressure: snapshot.pressure,
+        active_agent_tasks: snapshot.active_agent_tasks,
+        inbound_depth: snapshot.inbound_depth,
+        outbound_depth: snapshot.outbound_depth,
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        cpu_usage_percent: snapshot.cpu_usage_percent,
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        load_average: snapshot.load_average,
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        process_memory_kb: snapshot.process_memory_kb,
+    };
+    let context_start = Instant::now();
+    let skill_descriptions = (config.get_skill_descriptions)();
+    let has_tools = request_plan.has_tools();
+    let post_memory_tail_len = estimate_post_memory_system_tail_len(PostMemoryTailParams {
+        has_tools,
+        skill_descriptions: &skill_descriptions,
+        is_group: msg.is_group,
+        group_activation: config.tg_group_activation.as_ref(),
+        emotion_signal_suffix,
+        runtime: Some(runtime),
+        llm_hint: budget.llm_hint,
+    });
+    let prompt_memory_system_budget = budget
+        .system_prompt_max
+        .saturating_sub(post_memory_tail_len);
+    let mental_privacy_adjudication = if msg.ingress == IngressKind::User {
+        match run_mental_privacy_disclosure_adjudication(
+            tool_ctx,
+            worker_llm,
+            MentalPrivacyDisclosureAdjudicationContext {
+                mental_privacy_store: config.mental_privacy_store.as_ref(),
+                self_model_store: config.self_model_store.as_ref(),
+                self_continuity_store: config.self_continuity_store.as_ref(),
+                inner_life_store: config.inner_life_store.as_ref(),
+                private_doc_store: config.private_doc_store.as_ref(),
+                private_garden_store: config.private_garden_store.as_ref(),
+            },
+            MentalPrivacyDisclosureAdjudicationInput {
+                chat_id: &msg.chat_id,
+                user_content: &msg.content,
+                now_secs: runtime.now_secs,
+            },
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                log::warn!("[agent_mental_privacy_adjudication] failed: {}", error);
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut prompt_memory = load_prompt_memory_context(PromptMemoryContextParams {
+        chat_id: &msg.chat_id,
+        current_channel: &msg.channel,
+        user_query: &msg.content,
+        system_max_len: prompt_memory_system_budget,
+        now_secs: runtime.now_secs,
+        profile: config.memory_profile,
+        recent_messages_limit: config.session_max_messages,
+        load_long_term_memory: !interactive_fast_path,
+        include_private_garden_projection: msg.ingress != IngressKind::User,
+        session_store: config.session_store.as_ref(),
+        memory_store: config.memory_store.as_ref(),
+        session_summary_store: config.session_summary_store.as_ref(),
+        long_term_memory_store: config.long_term_memory_store.as_ref(),
+        execution_state_store: config.execution_state_store.as_ref(),
+        self_model_store: config.self_model_store.as_ref(),
+        world_sense_store: config.world_sense_store.as_ref(),
+        autonomy_strategy_store: config.autonomy_strategy_store.as_ref(),
+        outer_voice_store: config.outer_voice_store.as_ref(),
+        inner_life_store: config.inner_life_store.as_ref(),
+        self_continuity_store: config.self_continuity_store.as_ref(),
+        private_doc_store: config.private_doc_store.as_ref(),
+        private_garden_store: config.private_garden_store.as_ref(),
+        mental_privacy_store: config.mental_privacy_store.as_ref(),
+        remind_store: config.remind_store.as_ref(),
+        task_store: config.task_store.as_ref(),
+        turn_ledger_store: config.turn_ledger_store.as_ref(),
+        skill_storage: config.skill_storage.as_ref(),
+    });
+    prompt_memory.mental_privacy_adjudication_text =
+        mental_privacy_adjudication
+            .as_ref()
+            .and_then(|adjudication| {
+                crate::memory::render_mental_privacy_disclosure_adjudication_block(
+                    adjudication,
+                    420,
+                )
+            });
+    let persona_priority_runtime = PersonaPriorityRuntimeState {
+        pressure: runtime.pressure,
+        system_budget: prompt_memory_system_budget,
+        self_continuity: prompt_memory.self_continuity.as_ref(),
+        outer_voice: prompt_memory.outer_voice.as_ref(),
+        disclosure_adjudication: mental_privacy_adjudication.as_ref(),
+    };
+    prompt_memory.persona_priority_text = if msg.ingress == IngressKind::User {
+        let fallback =
+            crate::memory::render_persistent_persona_priority_block(persona_priority_runtime, 420);
+        if crate::memory::should_run_persona_priority_adjudication(persona_priority_runtime) {
+            match crate::memory::run_persona_priority_adjudication(
+                tool_ctx,
+                worker_llm,
+                PersonaPriorityAdjudicationInput {
+                    chat_id: &msg.chat_id,
+                    current_channel: &msg.channel,
+                    user_content: &msg.content,
+                    pressure: runtime.pressure,
+                    now_secs: runtime.now_secs,
+                },
+                PersonaPriorityGrounding {
+                    self_authored_core_text: prompt_memory.self_authored_core_text.as_deref(),
+                    world_snapshot_text: prompt_memory.world_snapshot_text.as_deref(),
+                    world_sense_text: prompt_memory.world_sense_text.as_deref(),
+                    self_state_text: prompt_memory.self_state_text.as_deref(),
+                    self_model_text: prompt_memory.self_model_text.as_deref(),
+                    self_continuity_text: prompt_memory.self_continuity_text.as_deref(),
+                    outer_voice_text: prompt_memory.outer_voice_text.as_deref(),
+                    autonomy_strategy_text: prompt_memory.autonomy_strategy_text.as_deref(),
+                    execution_state_text: prompt_memory.execution_state_text.as_deref(),
+                    mental_privacy_text: prompt_memory.mental_privacy_text.as_deref(),
+                    disclosure_adjudication: mental_privacy_adjudication.as_ref(),
+                },
+            ) {
+                Ok(result) => result
+                    .as_ref()
+                    .and_then(|adjudication| {
+                        crate::memory::render_persona_priority_block(adjudication, 420)
+                    })
+                    .or(fallback),
+                Err(error) => {
+                    log::warn!("[agent_persona_priority] failed: {}", error);
+                    fallback
+                }
+            }
+        } else {
+            fallback
+        }
+    } else {
+        None
+    };
+    let (mut system, messages) = build_context(&super::ContextParams {
+        msg,
+        memory: config.memory_store.as_ref(),
+        session: config.session_store.as_ref(),
+        important_message_store: config.important_message_store.as_ref(),
+        has_tools,
+        skill_descriptions: &skill_descriptions,
+        system_max_len: budget.system_prompt_max,
+        messages_max_len: budget.messages_max,
+        session_max_messages: config.session_max_messages,
+        group_activation: config.tg_group_activation.as_ref(),
+        emotion_signal_suffix,
+        execution_state_text: prompt_memory.execution_state_text.as_deref(),
+        world_snapshot_text: prompt_memory.world_snapshot_text.as_deref(),
+        world_sense_text: prompt_memory.world_sense_text.as_deref(),
+        self_state_text: prompt_memory.self_state_text.as_deref(),
+        self_authored_core_text: prompt_memory.self_authored_core_text.as_deref(),
+        persona_priority_text: prompt_memory.persona_priority_text.as_deref(),
+        self_model_text: prompt_memory.self_model_text.as_deref(),
+        autonomy_strategy_text: prompt_memory.autonomy_strategy_text.as_deref(),
+        outer_voice_text: prompt_memory.outer_voice_text.as_deref(),
+        inner_life_text: prompt_memory.inner_life_text.as_deref(),
+        self_continuity_text: prompt_memory.self_continuity_text.as_deref(),
+        private_workspace_text: prompt_memory.private_workspace_text.as_deref(),
+        private_garden_text: prompt_memory.private_garden_text.as_deref(),
+        mental_privacy_adjudication_text: prompt_memory.mental_privacy_adjudication_text.as_deref(),
+        mental_privacy_text: prompt_memory.mental_privacy_text.as_deref(),
+        long_term_memory_text: prompt_memory.long_term_memory_text.as_deref(),
+        archive_evidence_text: prompt_memory.archive_evidence_text.as_deref(),
+        runtime_skill_text: prompt_memory.runtime_skill_text.as_deref(),
+        summary_text: prompt_memory.message_summary_text.as_deref(),
+        recent_messages: (!prompt_memory.recent_messages.is_empty())
+            .then_some(prompt_memory.recent_messages.as_slice()),
+        runtime: Some(runtime),
+        include_daily_notes: false,
+        llm_hint: budget.llm_hint,
+    })
+    .map_err(|e| e.with_stage("agent_context"))?;
+    latency.context_ms = context_start.elapsed().as_millis();
+    request_plan.apply_system_prompt(&mut system, budget.system_prompt_max);
+    let mut system_scratch =
+        String::with_capacity(system.len().saturating_add(PLAN_SYSTEM_SUFFIX.len()));
+    if config.strategy.enables_preplanning()
+        && should_generate_execution_plan(msg, has_tools, snapshot.pressure)
+    {
+        let planning_system =
+            prepare_system_with_suffix(&system, PLAN_SYSTEM_SUFFIX, &mut system_scratch);
+        match worker_llm.chat(
+            tool_ctx,
+            planning_system,
+            &messages,
+            None,
+            ToolChoicePolicy::Auto,
+        ) {
+            Ok(resp) => append_execution_plan(&mut system, budget.system_prompt_max, &resp.content),
+            Err(e) => {
+                log::debug!("[agent_plan] skipped after planning error: {}", e);
+            }
+        }
+    }
+
+    Ok(PreparedWorkerConversation {
+        prompt_memory,
+        system,
+        messages,
+        system_scratch,
+        interactive_fast_path,
+        prompt_memory_system_budget,
+    })
 }
 
 #[cold]
@@ -1464,6 +1718,302 @@ fn log_agent_latency_summary(
     }
 }
 
+struct LaneTurnFinalizeContext<'a> {
+    worker_lane_tag: &'a str,
+    config: &'a AgentLoopConfig,
+    system_inbound_tx: &'a SystemInboundTx,
+    outbound_tx: &'a OutboundTx,
+    msg: PcMsg,
+    loc: UiLocale,
+    msg_start: Instant,
+    queue_wait_ms: u128,
+    admission_ms: u128,
+    worker_prepare_ms: u128,
+    msg_key: u64,
+    turn_ledger: TurnLedger,
+    latency_warn_ms: u128,
+}
+
+#[inline(never)]
+fn finalize_lane_turn(
+    http: &mut dyn PlatformHttpClient,
+    worker_llm: &(dyn LlmClient + Send + Sync),
+    ctx: LaneTurnFinalizeContext<'_>,
+    llm_failure_count: &mut HashMap<u64, (u8, Instant)>,
+    defer_tracker: &mut HashMap<u64, (u8, Instant)>,
+    outcome: WorkerOutcome,
+    telemetry: WorkerRunTelemetry,
+) {
+    let LaneTurnFinalizeContext {
+        worker_lane_tag,
+        config,
+        system_inbound_tx,
+        outbound_tx,
+        msg,
+        loc,
+        msg_start,
+        queue_wait_ms,
+        admission_ms,
+        worker_prepare_ms,
+        msg_key,
+        mut turn_ledger,
+        latency_warn_ms,
+    } = ctx;
+    let WorkerRunTelemetry {
+        streamed,
+        latency: mut worker_latency,
+        delivery,
+        any_tool_used,
+        external_content_used,
+        used_final_answer_recovery,
+    } = telemetry;
+
+    let (mut reply_content, is_interrupt, reply_already_delivered, apply_finalizer) = match outcome
+    {
+        WorkerOutcome::Interrupt(confirm) => {
+            let cow = truncate_content_to_max(&confirm, MAX_CONTENT_LEN);
+            let s = if let std::borrow::Cow::Borrowed(_) = &cow {
+                confirm
+            } else {
+                cow.into_owned()
+            };
+            (s, true, false, false)
+        }
+        WorkerOutcome::Content(s) => {
+            let cow = truncate_content_to_max(&s, MAX_CONTENT_LEN);
+            let s = if let std::borrow::Cow::Borrowed(_) = &cow {
+                s
+            } else {
+                cow.into_owned()
+            };
+            (s, false, false, true)
+        }
+        WorkerOutcome::Delivered(s) => {
+            let cow = truncate_content_to_max(&s, MAX_CONTENT_LEN);
+            let s = if let std::borrow::Cow::Borrowed(_) = &cow {
+                s
+            } else {
+                cow.into_owned()
+            };
+            (s, false, true, false)
+        }
+    };
+    if !is_interrupt && apply_finalizer {
+        reply_content = finalize_user_visible_reply(config.strategy, &reply_content);
+    }
+    if !is_interrupt {
+        reply_content =
+            maybe_apply_mental_privacy_review(http, worker_llm, config, &msg, loc, reply_content);
+    }
+    if !is_interrupt
+        && reply_content.trim().is_empty()
+        && msg.ingress == IngressKind::User
+        && msg.channel.as_ref() != "cron"
+    {
+        reply_content = tr(UiMessage::AgentNoFinalReply, loc);
+    }
+    let mark_important = !is_interrupt && reply_content.contains(AGENT_MARKER_MARK_IMPORTANT);
+    let signal_comfort = !is_interrupt && reply_content.contains(AGENT_MARKER_SIGNAL_COMFORT);
+    if mark_important || signal_comfort {
+        reply_content = remove_substrings_all_trim(
+            &reply_content,
+            &[AGENT_MARKER_MARK_IMPORTANT, AGENT_MARKER_SIGNAL_COMFORT],
+        );
+        if signal_comfort {
+            let _ = config.emotion_signal_store.set(&msg.chat_id, "comfort");
+        }
+        reply_content = truncate_content_to_max(&reply_content, MAX_CONTENT_LEN).into_owned();
+    }
+    if !is_interrupt && !reply_content.is_empty() {
+        metrics::record_final_answer_call();
+    }
+
+    if reply_content.trim() == "SILENT"
+        || (msg.channel.as_ref() == "cron" && reply_content.is_empty())
+    {
+        llm_failure_count.remove(&msg_key);
+        defer_tracker.remove(&msg_key);
+        let total_ms = msg_start.elapsed().as_millis();
+        metrics::record_e2e_ms(total_ms);
+        if msg.ingress == IngressKind::System {
+            let is_cron = msg.channel.as_ref() == "cron";
+            metrics::record_system_message_done(is_cron);
+            if is_cron {
+                let cron_e2e = now_unix_ms().saturating_sub(msg.enqueue_ts_ms) as u128;
+                metrics::record_cron_e2e_ms(cron_e2e);
+            }
+        } else {
+            metrics::record_user_message_done();
+        }
+        return;
+    }
+
+    let session_start = Instant::now();
+    if let Err(e) = config
+        .session_store
+        .append(&msg.chat_id, "user", &msg.content)
+    {
+        log::warn!("[agent_session] append user failed: {}", e);
+        metrics::record_error_by_stage("session_append");
+    }
+    worker_latency.session_write_ms = worker_latency
+        .session_write_ms
+        .saturating_add(session_start.elapsed().as_millis());
+    llm_failure_count.remove(&msg_key);
+    defer_tracker.remove(&msg_key);
+
+    let outbound_start = Instant::now();
+    let delivered = if reply_already_delivered {
+        crate::platform::task_wdt::feed_current_task();
+        true
+    } else if !streamed {
+        let out = PcMsg {
+            channel: msg.channel.clone(),
+            chat_id: msg.chat_id.clone(),
+            content: reply_content.clone(),
+            req_id: Some(msg.req_id.as_deref().unwrap_or_default().to_owned()),
+            ingress: IngressKind::User,
+            enqueue_ts_ms: now_unix_ms(),
+            is_group: false,
+        };
+        crate::platform::task_wdt::feed_current_task();
+        try_send_outbound(outbound_tx, out, "reply")
+    } else {
+        metrics::record_message_out();
+        crate::platform::task_wdt::feed_current_task();
+        true
+    };
+    let outbound_enqueue_ms = outbound_start.elapsed().as_millis();
+    let reply_handoff_ms = if delivered {
+        msg_start.elapsed().as_millis()
+    } else {
+        0
+    };
+
+    if delivered {
+        let session_assistant_start = Instant::now();
+        if let Err(e) = config
+            .session_store
+            .append(&msg.chat_id, "assistant", &reply_content)
+        {
+            log::warn!("[agent_session] append assistant failed: {}", e);
+            metrics::record_error_by_stage("session_append");
+        }
+        worker_latency.session_write_ms = worker_latency
+            .session_write_ms
+            .saturating_add(session_assistant_start.elapsed().as_millis());
+        if mark_important {
+            let _ = config
+                .important_message_store
+                .set_important_offset_from_end(&msg.chat_id, 1);
+        }
+    }
+    let llm_ms = worker_latency
+        .context_ms
+        .saturating_add(worker_latency.llm_round_total_ms)
+        .saturating_add(worker_latency.tool_exec_ms)
+        .saturating_add(worker_latency.session_write_ms);
+
+    if delivered
+        && !enqueue_post_reply_maintenance_job(
+            system_inbound_tx,
+            &msg,
+            &reply_content,
+            worker_latency.tool_calls,
+            external_content_used,
+        )
+    {
+        log::debug!(
+            "[agent_memory] post-reply maintenance job skipped chat_id={}",
+            msg.chat_id
+        );
+    }
+    if delivered
+        && !crate::memory::enqueue_self_runtime_post_reply(
+            system_inbound_tx,
+            msg.chat_id.as_ref(),
+            msg.channel.as_ref(),
+            &msg.content,
+            &reply_content,
+            worker_latency.tool_calls,
+            external_content_used,
+        )
+    {
+        log::debug!(
+            "[self_runtime] post-reply job skipped chat_id={}",
+            msg.chat_id
+        );
+    }
+    let total_ms = msg_start.elapsed().as_millis();
+    let post_reply_ms = total_ms.saturating_sub(reply_handoff_ms);
+    turn_ledger.status = if is_interrupt {
+        TurnLedgerStatus::Interrupted
+    } else {
+        TurnLedgerStatus::Answered
+    };
+    turn_ledger.reason = normalize_turn_reason(if is_interrupt {
+        "interrupt"
+    } else if reply_already_delivered || delivery.current_primary_delivered {
+        "current_primary"
+    } else if used_final_answer_recovery {
+        "final_recovery"
+    } else {
+        "final_answer"
+    });
+    turn_ledger.reply_preview = normalize_turn_preview(&reply_content);
+    turn_ledger.updated_at_ms = now_unix_ms();
+    turn_ledger.finished_at_ms = turn_ledger.updated_at_ms;
+    turn_ledger.react_rounds = worker_latency.react_rounds;
+    turn_ledger.tool_calls = worker_latency.tool_calls;
+    turn_ledger.any_tool_used = any_tool_used;
+    turn_ledger.final_answer_recovered = used_final_answer_recovery;
+    turn_ledger.final_reply_delivered = delivered;
+    turn_ledger.reply_handoff_ms = reply_handoff_ms.min(u64::MAX as u128) as u64;
+    turn_ledger.post_reply_ms = post_reply_ms.min(u64::MAX as u128) as u64;
+    turn_ledger.total_ms = total_ms.min(u64::MAX as u128) as u64;
+    turn_ledger.ttft_ms = worker_latency.ttft_ms.unwrap_or(0).min(u64::MAX as u128) as u64;
+    turn_ledger.delivery = build_turn_delivery_ledger(delivery);
+    persist_turn_ledger(
+        config.turn_ledger_store.as_ref(),
+        &msg.chat_id,
+        &turn_ledger,
+        "finish",
+    );
+    metrics::record_react_rounds(worker_latency.react_rounds);
+    metrics::record_tool_calls_last(worker_latency.tool_calls);
+    metrics::record_ttft_ms(worker_latency.ttft_ms.unwrap_or(0));
+    metrics::record_e2e_ms(reply_handoff_ms);
+    metrics::record_post_reply_ms(post_reply_ms);
+    if msg.ingress == IngressKind::System {
+        let is_cron = msg.channel.as_ref() == "cron";
+        metrics::record_system_message_done(is_cron);
+        if is_cron {
+            let cron_e2e = now_unix_ms().saturating_sub(msg.enqueue_ts_ms) as u128;
+            metrics::record_cron_e2e_ms(cron_e2e);
+        }
+    } else {
+        metrics::record_user_message_done();
+    }
+    log_agent_latency_summary(
+        worker_lane_tag,
+        msg.req_id.as_deref().unwrap_or_default(),
+        msg.channel.as_ref(),
+        msg.chat_id.as_ref(),
+        queue_wait_ms,
+        admission_ms,
+        worker_prepare_ms,
+        &worker_latency,
+        llm_ms,
+        outbound_enqueue_ms,
+        reply_handoff_ms,
+        post_reply_ms,
+        total_ms,
+        streamed,
+        delivered,
+        latency_warn_ms,
+    );
+}
+
 fn enqueue_post_reply_maintenance_job(
     system_inbound_tx: &SystemInboundTx,
     msg: &PcMsg,
@@ -1772,14 +2322,20 @@ fn run_self_runtime_job(
                 .then_some(decision.boundary_flush_reason.as_str()),
             decision.request_factual_refresh,
             decision.factual_reconcile_action.label(),
-            (!decision.inner_life_intent.trim().is_empty()).then_some(decision.inner_life_intent.as_str()),
-            (!decision.private_docs_intent.trim().is_empty()).then_some(decision.private_docs_intent.as_str()),
-            (!decision.self_model_intent.trim().is_empty()).then_some(decision.self_model_intent.as_str()),
-            (!decision.self_continuity_intent.trim().is_empty()).then_some(decision.self_continuity_intent.as_str()),
-            (!decision.private_garden_intent.trim().is_empty()).then_some(decision.private_garden_intent.as_str()),
+            (!decision.inner_life_intent.trim().is_empty())
+                .then_some(decision.inner_life_intent.as_str()),
+            (!decision.private_docs_intent.trim().is_empty())
+                .then_some(decision.private_docs_intent.as_str()),
+            (!decision.self_model_intent.trim().is_empty())
+                .then_some(decision.self_model_intent.as_str()),
+            (!decision.self_continuity_intent.trim().is_empty())
+                .then_some(decision.self_continuity_intent.as_str()),
+            (!decision.private_garden_intent.trim().is_empty())
+                .then_some(decision.private_garden_intent.as_str()),
             (!decision.boundary_persona_intent.trim().is_empty())
                 .then_some(decision.boundary_persona_intent.as_str()),
-            (!decision.outer_voice_intent.trim().is_empty()).then_some(decision.outer_voice_intent.as_str()),
+            (!decision.outer_voice_intent.trim().is_empty())
+                .then_some(decision.outer_voice_intent.as_str()),
             (!decision.factual_reconcile_intent.trim().is_empty())
                 .then_some(decision.factual_reconcile_intent.as_str()),
         );
@@ -1922,21 +2478,28 @@ fn try_run_lane_background_job(
     false
 }
 
+struct AdmissionDeferContext<'a> {
+    loc: UiLocale,
+    user_inbound_tx: &'a UserInboundTx,
+    system_inbound_tx: &'a SystemInboundTx,
+    outbound_tx: &'a OutboundTx,
+    config: &'a AgentLoopConfig,
+    defer_tracker: &'a mut HashMap<u64, (u8, Instant)>,
+    low_mem_defer_log: &'a mut Option<(Arc<str>, Instant)>,
+}
+
 #[cold]
 #[inline(never)]
 fn handle_admission_defer(
     delay_ms: u64,
     mut msg: PcMsg,
-    loc: UiLocale,
     msg_key: u64,
-    user_inbound_tx: &UserInboundTx,
-    system_inbound_tx: &SystemInboundTx,
-    outbound_tx: &OutboundTx,
-    config: &AgentLoopConfig,
-    defer_tracker: &mut HashMap<u64, (u8, Instant)>,
-    low_mem_defer_log: &mut Option<(Arc<str>, Instant)>,
+    ctx: AdmissionDeferContext<'_>,
 ) {
-    let entry = defer_tracker.entry(msg_key).or_insert((0, Instant::now()));
+    let entry = ctx
+        .defer_tracker
+        .entry(msg_key)
+        .or_insert((0, Instant::now()));
     entry.0 = entry.0.saturating_add(1);
     entry.1 = Instant::now();
     let defer_count = entry.0;
@@ -1947,18 +2510,18 @@ fn handle_admission_defer(
             MAX_DEFER_RETRIES,
             msg.chat_id
         );
-        defer_tracker.remove(&msg_key);
+        ctx.defer_tracker.remove(&msg_key);
         if msg.ingress == IngressKind::User {
             let defer_out = PcMsg {
                 channel: msg.channel.clone(),
                 chat_id: msg.chat_id.clone(),
-                content: tr(UiMessage::LowMemoryUserDefer, loc),
+                content: tr(UiMessage::LowMemoryUserDefer, ctx.loc),
                 req_id: Some(msg.req_id.as_deref().unwrap_or_default().to_owned()),
                 ingress: IngressKind::User,
                 enqueue_ts_ms: now_unix_ms(),
                 is_group: false,
             };
-            let _ = try_send_outbound(outbound_tx, defer_out, "defer-limit");
+            let _ = try_send_outbound(ctx.outbound_tx, defer_out, "defer-limit");
         }
         return;
     }
@@ -1967,21 +2530,22 @@ fn handle_admission_defer(
         let defer_out = PcMsg {
             channel: msg.channel.clone(),
             chat_id: msg.chat_id.clone(),
-            content: tr(UiMessage::LowMemoryUserDefer, loc),
+            content: tr(UiMessage::LowMemoryUserDefer, ctx.loc),
             req_id: Some(msg.req_id.as_deref().unwrap_or_default().to_owned()),
             ingress: IngressKind::User,
             enqueue_ts_ms: now_unix_ms(),
             is_group: false,
         };
-        let _ = try_send_outbound(outbound_tx, defer_out, "defer");
+        let _ = try_send_outbound(ctx.outbound_tx, defer_out, "defer");
     }
     let chat_id = msg.chat_id.clone();
     msg.enqueue_ts_ms = now_unix_ms();
-    let inbound_tx = choose_inbound_tx(msg.ingress, user_inbound_tx, system_inbound_tx);
+    let inbound_tx = choose_inbound_tx(msg.ingress, ctx.user_inbound_tx, ctx.system_inbound_tx);
     match inbound_tx.try_send(msg) {
         Ok(()) => {
             let now = Instant::now();
-            let should_log = low_mem_defer_log
+            let should_log = ctx
+                .low_mem_defer_log
                 .as_ref()
                 .map(|(id, t)| {
                     id.as_ref() != chat_id.as_ref() || t.elapsed() >= LOW_MEM_DEFER_LOG_INTERVAL
@@ -1989,11 +2553,11 @@ fn handle_admission_defer(
                 .unwrap_or(true);
             if should_log {
                 log::warn!("[agent] admission defer chat_id={}", chat_id);
-                *low_mem_defer_log = Some((chat_id.clone(), now));
+                *ctx.low_mem_defer_log = Some((chat_id.clone(), now));
             }
         }
         Err(std::sync::mpsc::TrySendError::Full(m)) => {
-            let _ = config.pending_retry.save_pending_retry(&m);
+            let _ = ctx.config.pending_retry.save_pending_retry(&m);
             log::warn!(
                 "[agent] admission defer, pending_retry saved chat_id={}",
                 m.chat_id
@@ -2445,14 +3009,16 @@ fn run_agent_loop_lane(
                 handle_admission_defer(
                     delay_ms,
                     msg,
-                    loc,
                     msg_key,
-                    &user_inbound_tx,
-                    &system_inbound_tx,
-                    &outbound_tx,
-                    config,
-                    &mut defer_tracker,
-                    &mut low_mem_defer_log,
+                    AdmissionDeferContext {
+                        loc,
+                        user_inbound_tx: &user_inbound_tx,
+                        system_inbound_tx: &system_inbound_tx,
+                        outbound_tx: &outbound_tx,
+                        config,
+                        defer_tracker: &mut defer_tracker,
+                        low_mem_defer_log: &mut low_mem_defer_log,
+                    },
                 );
                 continue;
             }
@@ -2548,265 +3114,41 @@ fn run_agent_loop_lane(
         };
         let WorkerRunTelemetry {
             streamed,
-            latency: mut worker_latency,
+            latency,
             delivery,
             any_tool_used,
             external_content_used,
             used_final_answer_recovery,
         } = telemetry;
-        let (mut reply_content, is_interrupt, reply_already_delivered, apply_finalizer) =
-            match outcome {
-                WorkerOutcome::Interrupt(confirm) => {
-                    let cow = truncate_content_to_max(&confirm, MAX_CONTENT_LEN);
-                    let s = if let std::borrow::Cow::Borrowed(_) = &cow {
-                        confirm
-                    } else {
-                        cow.into_owned()
-                    };
-                    (s, true, false, false)
-                }
-                WorkerOutcome::Content(s) => {
-                    let cow = truncate_content_to_max(&s, MAX_CONTENT_LEN);
-                    let s = if let std::borrow::Cow::Borrowed(_) = &cow {
-                        s
-                    } else {
-                        cow.into_owned()
-                    };
-                    (s, false, false, true)
-                }
-                WorkerOutcome::Delivered(s) => {
-                    let cow = truncate_content_to_max(&s, MAX_CONTENT_LEN);
-                    let s = if let std::borrow::Cow::Borrowed(_) = &cow {
-                        s
-                    } else {
-                        cow.into_owned()
-                    };
-                    (s, false, true, false)
-                }
-            };
-        if !is_interrupt && apply_finalizer {
-            reply_content = finalize_user_visible_reply(config.strategy, &reply_content);
-        }
-        if !is_interrupt {
-            reply_content = maybe_apply_mental_privacy_review(
-                http,
-                worker_llm,
+        finalize_lane_turn(
+            http,
+            worker_llm,
+            LaneTurnFinalizeContext {
+                worker_lane_tag,
                 config,
-                &msg,
+                system_inbound_tx: &system_inbound_tx,
+                outbound_tx: &outbound_tx,
+                msg,
                 loc,
-                reply_content,
-            );
-        }
-        if !is_interrupt
-            && reply_content.trim().is_empty()
-            && msg.ingress == IngressKind::User
-            && msg.channel.as_ref() != "cron"
-        {
-            reply_content = tr(UiMessage::AgentNoFinalReply, loc);
-        }
-        let mark_important = !is_interrupt && reply_content.contains(AGENT_MARKER_MARK_IMPORTANT);
-        let signal_comfort = !is_interrupt && reply_content.contains(AGENT_MARKER_SIGNAL_COMFORT);
-        if mark_important || signal_comfort {
-            reply_content = remove_substrings_all_trim(
-                &reply_content,
-                &[AGENT_MARKER_MARK_IMPORTANT, AGENT_MARKER_SIGNAL_COMFORT],
-            );
-            if signal_comfort {
-                let _ = config.emotion_signal_store.set(&msg.chat_id, "comfort");
-            }
-            reply_content = truncate_content_to_max(&reply_content, MAX_CONTENT_LEN).into_owned();
-        }
-        if !is_interrupt && !reply_content.is_empty() {
-            metrics::record_final_answer_call();
-        }
-
-        // SILENT 或 cron 空回复不写 session，直接跳过。
-        if reply_content.trim() == "SILENT"
-            || (msg.channel.as_ref() == "cron" && reply_content.is_empty())
-        {
-            llm_failure_count.remove(&msg_key);
-            defer_tracker.remove(&msg_key);
-            let total_ms = msg_start.elapsed().as_millis();
-            metrics::record_e2e_ms(total_ms);
-            if msg.ingress == IngressKind::System {
-                let is_cron = msg.channel.as_ref() == "cron";
-                metrics::record_system_message_done(is_cron);
-                if is_cron {
-                    let cron_e2e = now_unix_ms().saturating_sub(msg.enqueue_ts_ms) as u128;
-                    metrics::record_cron_e2e_ms(cron_e2e);
-                }
-            } else {
-                metrics::record_user_message_done();
-            }
-            continue;
-        }
-
-        let session_start = Instant::now();
-        if let Err(e) = config
-            .session_store
-            .append(&msg.chat_id, "user", &msg.content)
-        {
-            log::warn!("[agent_session] append user failed: {}", e);
-            metrics::record_error_by_stage("session_append");
-        }
-        worker_latency.session_write_ms = worker_latency
-            .session_write_ms
-            .saturating_add(session_start.elapsed().as_millis());
-        llm_failure_count.remove(&msg_key);
-        defer_tracker.remove(&msg_key);
-
-        // 已由 delivery 侧直接交付到通道时，跳过 outbound_tx 避免重复发送。
-        let outbound_start = Instant::now();
-        let delivered = if reply_already_delivered {
-            crate::platform::task_wdt::feed_current_task();
-            true
-        } else if !streamed {
-            let out = PcMsg {
-                channel: msg.channel.clone(),
-                chat_id: msg.chat_id.clone(),
-                content: reply_content.clone(),
-                req_id: Some(msg.req_id.as_deref().unwrap_or_default().to_owned()),
-                ingress: IngressKind::User,
-                enqueue_ts_ms: now_unix_ms(),
-                is_group: false,
-            };
-            crate::platform::task_wdt::feed_current_task();
-            try_send_outbound(&outbound_tx, out, "reply")
-        } else {
-            metrics::record_message_out();
-            crate::platform::task_wdt::feed_current_task();
-            true
-        };
-        let outbound_enqueue_ms = outbound_start.elapsed().as_millis();
-        let reply_handoff_ms = if delivered {
-            msg_start.elapsed().as_millis()
-        } else {
-            0
-        };
-
-        if delivered {
-            let session_assistant_start = Instant::now();
-            if let Err(e) = config
-                .session_store
-                .append(&msg.chat_id, "assistant", &reply_content)
-            {
-                log::warn!("[agent_session] append assistant failed: {}", e);
-                metrics::record_error_by_stage("session_append");
-            }
-            worker_latency.session_write_ms = worker_latency
-                .session_write_ms
-                .saturating_add(session_assistant_start.elapsed().as_millis());
-            if mark_important {
-                let _ = config
-                    .important_message_store
-                    .set_important_offset_from_end(&msg.chat_id, 1);
-            }
-        }
-        let llm_ms = worker_latency
-            .context_ms
-            .saturating_add(worker_latency.llm_round_total_ms)
-            .saturating_add(worker_latency.tool_exec_ms)
-            .saturating_add(worker_latency.session_write_ms);
-
-        // Post-reply maintenance is best-effort and runs on the system queue so the
-        // interactive lane can hand the reply off without paying for another LLM/storage pass.
-        if delivered
-            && !enqueue_post_reply_maintenance_job(
-                &system_inbound_tx,
-                &msg,
-                &reply_content,
-                worker_latency.tool_calls,
+                msg_start,
+                queue_wait_ms,
+                admission_ms,
+                worker_prepare_ms,
+                msg_key,
+                turn_ledger,
+                latency_warn_ms: LATENCY_WARN_MS,
+            },
+            &mut llm_failure_count,
+            &mut defer_tracker,
+            outcome,
+            WorkerRunTelemetry {
+                streamed,
+                latency,
+                delivery,
+                any_tool_used,
                 external_content_used,
-            )
-        {
-            log::debug!(
-                "[agent_memory] post-reply maintenance job skipped chat_id={}",
-                msg.chat_id
-            );
-        }
-        if delivered
-            && !crate::memory::enqueue_self_runtime_post_reply(
-                &system_inbound_tx,
-                msg.chat_id.as_ref(),
-                msg.channel.as_ref(),
-                &msg.content,
-                &reply_content,
-                worker_latency.tool_calls,
-                external_content_used,
-            )
-        {
-            log::debug!(
-                "[self_runtime] post-reply job skipped chat_id={}",
-                msg.chat_id
-            );
-        }
-        let total_ms = msg_start.elapsed().as_millis();
-        let post_reply_ms = total_ms.saturating_sub(reply_handoff_ms);
-        turn_ledger.status = if is_interrupt {
-            TurnLedgerStatus::Interrupted
-        } else {
-            TurnLedgerStatus::Answered
-        };
-        turn_ledger.reason = normalize_turn_reason(if is_interrupt {
-            "interrupt"
-        } else if reply_already_delivered || delivery.current_primary_delivered {
-            "current_primary"
-        } else if used_final_answer_recovery {
-            "final_recovery"
-        } else {
-            "final_answer"
-        });
-        turn_ledger.reply_preview = normalize_turn_preview(&reply_content);
-        turn_ledger.updated_at_ms = now_unix_ms();
-        turn_ledger.finished_at_ms = turn_ledger.updated_at_ms;
-        turn_ledger.react_rounds = worker_latency.react_rounds;
-        turn_ledger.tool_calls = worker_latency.tool_calls;
-        turn_ledger.any_tool_used = any_tool_used;
-        turn_ledger.final_answer_recovered = used_final_answer_recovery;
-        turn_ledger.final_reply_delivered = delivered;
-        turn_ledger.reply_handoff_ms = reply_handoff_ms.min(u64::MAX as u128) as u64;
-        turn_ledger.post_reply_ms = post_reply_ms.min(u64::MAX as u128) as u64;
-        turn_ledger.total_ms = total_ms.min(u64::MAX as u128) as u64;
-        turn_ledger.ttft_ms = worker_latency.ttft_ms.unwrap_or(0).min(u64::MAX as u128) as u64;
-        turn_ledger.delivery = build_turn_delivery_ledger(delivery);
-        persist_turn_ledger(
-            config.turn_ledger_store.as_ref(),
-            &msg.chat_id,
-            &turn_ledger,
-            "finish",
-        );
-        metrics::record_react_rounds(worker_latency.react_rounds);
-        metrics::record_tool_calls_last(worker_latency.tool_calls);
-        metrics::record_ttft_ms(worker_latency.ttft_ms.unwrap_or(0));
-        metrics::record_e2e_ms(reply_handoff_ms);
-        metrics::record_post_reply_ms(post_reply_ms);
-        if msg.ingress == IngressKind::System {
-            let is_cron = msg.channel.as_ref() == "cron";
-            metrics::record_system_message_done(is_cron);
-            if is_cron {
-                let cron_e2e = now_unix_ms().saturating_sub(msg.enqueue_ts_ms) as u128;
-                metrics::record_cron_e2e_ms(cron_e2e);
-            }
-        } else {
-            metrics::record_user_message_done();
-        }
-        log_agent_latency_summary(
-            worker_lane_tag,
-            msg.req_id.as_deref().unwrap_or_default(),
-            msg.channel.as_ref(),
-            msg.chat_id.as_ref(),
-            queue_wait_ms,
-            admission_ms,
-            worker_prepare_ms,
-            &worker_latency,
-            llm_ms,
-            outbound_enqueue_ms,
-            reply_handoff_ms,
-            post_reply_ms,
-            total_ms,
-            streamed,
-            delivered,
-            LATENCY_WARN_MS,
+                used_final_answer_recovery,
+            },
         );
     }
     Ok(())
@@ -2829,7 +3171,6 @@ fn run_worker_path(
     let mut latency = WorkerLatency::default();
     let worker_start = Instant::now();
     let request_plan = AgentRequestPlan::build(msg, registry, worker_llm, config.strategy);
-    let has_tools = request_plan.has_tools();
     let mut tool_ctx = HttpClientToolContext {
         http,
         chat_id: Some(msg.chat_id.clone()),
@@ -2853,230 +3194,21 @@ fn run_worker_path(
         msg.ingress == IngressKind::User && msg.channel.as_ref() != "voice";
     tool_ctx.supports_current_chat_primary_reply = tool_ctx.supports_current_chat_outbound_message;
     let mut delivery = DeliverySession::new(msg, req_id, outbound_tx, editor, loc);
-    let emotion_signal_suffix = config
-        .emotion_signal_store
-        .get_then_clear(&msg.chat_id)
-        .ok()
-        .flatten()
-        .and_then(|s| {
-            if s == "comfort" {
-                Some("用户可能需安慰，回复时可适当照顾情绪。")
-            } else {
-                None
-            }
-        });
-    let budget = crate::orchestrator::current_budget();
-    let snapshot = crate::orchestrator::snapshot();
-    let interactive_fast_path = msg.ingress == IngressKind::User && msg.channel.as_ref() != "voice";
-    let runtime = RuntimeContext {
-        now_secs: crate::util::current_unix_secs(),
-        platform: if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
-            "ESP32-S3"
-        } else {
-            "Linux"
-        },
-        pressure: snapshot.pressure,
-        active_agent_tasks: snapshot.active_agent_tasks,
-        inbound_depth: snapshot.inbound_depth,
-        outbound_depth: snapshot.outbound_depth,
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        cpu_usage_percent: snapshot.cpu_usage_percent,
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        load_average: snapshot.load_average,
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        process_memory_kb: snapshot.process_memory_kb,
-    };
-    let context_start = Instant::now();
-    let skill_descriptions = (config.get_skill_descriptions)();
-    let post_memory_tail_len = estimate_post_memory_system_tail_len(PostMemoryTailParams {
-        has_tools,
-        skill_descriptions: &skill_descriptions,
-        is_group: msg.is_group,
-        group_activation: config.tg_group_activation.as_ref(),
-        emotion_signal_suffix,
-        runtime: Some(runtime),
-        llm_hint: budget.llm_hint,
-    });
-    let prompt_memory_system_budget = budget
-        .system_prompt_max
-        .saturating_sub(post_memory_tail_len);
-    let mental_privacy_adjudication = if msg.ingress == IngressKind::User {
-        match run_mental_privacy_disclosure_adjudication(
-            &mut tool_ctx,
-            worker_llm,
-            MentalPrivacyDisclosureAdjudicationContext {
-                mental_privacy_store: config.mental_privacy_store.as_ref(),
-                self_model_store: config.self_model_store.as_ref(),
-                self_continuity_store: config.self_continuity_store.as_ref(),
-                inner_life_store: config.inner_life_store.as_ref(),
-                private_doc_store: config.private_doc_store.as_ref(),
-                private_garden_store: config.private_garden_store.as_ref(),
-            },
-            MentalPrivacyDisclosureAdjudicationInput {
-                chat_id: &msg.chat_id,
-                user_content: &msg.content,
-                now_secs: runtime.now_secs,
-            },
-        ) {
-            Ok(result) => result,
-            Err(error) => {
-                log::warn!("[agent_mental_privacy_adjudication] failed: {}", error);
-                None
-            }
-        }
-    } else {
-        None
-    };
-    let mut prompt_memory = load_prompt_memory_context(PromptMemoryContextParams {
-        chat_id: &msg.chat_id,
-        current_channel: &msg.channel,
-        user_query: &msg.content,
-        system_max_len: prompt_memory_system_budget,
-        now_secs: runtime.now_secs,
-        profile: config.memory_profile,
-        recent_messages_limit: config.session_max_messages,
-        load_long_term_memory: !interactive_fast_path,
-        include_private_garden_projection: msg.ingress != IngressKind::User,
-        session_store: config.session_store.as_ref(),
-        memory_store: config.memory_store.as_ref(),
-        session_summary_store: config.session_summary_store.as_ref(),
-        long_term_memory_store: config.long_term_memory_store.as_ref(),
-        execution_state_store: config.execution_state_store.as_ref(),
-        self_model_store: config.self_model_store.as_ref(),
-        world_sense_store: config.world_sense_store.as_ref(),
-        autonomy_strategy_store: config.autonomy_strategy_store.as_ref(),
-        outer_voice_store: config.outer_voice_store.as_ref(),
-        inner_life_store: config.inner_life_store.as_ref(),
-        self_continuity_store: config.self_continuity_store.as_ref(),
-        private_doc_store: config.private_doc_store.as_ref(),
-        private_garden_store: config.private_garden_store.as_ref(),
-        mental_privacy_store: config.mental_privacy_store.as_ref(),
-        remind_store: config.remind_store.as_ref(),
-        task_store: config.task_store.as_ref(),
-        turn_ledger_store: config.turn_ledger_store.as_ref(),
-        skill_storage: config.skill_storage.as_ref(),
-    });
-    prompt_memory.mental_privacy_adjudication_text =
-        mental_privacy_adjudication
-            .as_ref()
-            .and_then(|adjudication| {
-                crate::memory::render_mental_privacy_disclosure_adjudication_block(
-                    adjudication,
-                    420,
-                )
-            });
-    let persona_priority_runtime = PersonaPriorityRuntimeState {
-        pressure: runtime.pressure,
-        system_budget: prompt_memory_system_budget,
-        self_continuity: prompt_memory.self_continuity.as_ref(),
-        outer_voice: prompt_memory.outer_voice.as_ref(),
-        disclosure_adjudication: mental_privacy_adjudication.as_ref(),
-    };
-    prompt_memory.persona_priority_text = if msg.ingress == IngressKind::User {
-        let fallback =
-            crate::memory::render_persistent_persona_priority_block(persona_priority_runtime, 420);
-        if crate::memory::should_run_persona_priority_adjudication(persona_priority_runtime) {
-            match crate::memory::run_persona_priority_adjudication(
-                &mut tool_ctx,
-                worker_llm,
-                PersonaPriorityAdjudicationInput {
-                    chat_id: &msg.chat_id,
-                    current_channel: &msg.channel,
-                    user_content: &msg.content,
-                    pressure: runtime.pressure,
-                    now_secs: runtime.now_secs,
-                },
-                PersonaPriorityGrounding {
-                    self_authored_core_text: prompt_memory.self_authored_core_text.as_deref(),
-                    world_snapshot_text: prompt_memory.world_snapshot_text.as_deref(),
-                    world_sense_text: prompt_memory.world_sense_text.as_deref(),
-                    self_state_text: prompt_memory.self_state_text.as_deref(),
-                    self_model_text: prompt_memory.self_model_text.as_deref(),
-                    self_continuity_text: prompt_memory.self_continuity_text.as_deref(),
-                    outer_voice_text: prompt_memory.outer_voice_text.as_deref(),
-                    autonomy_strategy_text: prompt_memory.autonomy_strategy_text.as_deref(),
-                    execution_state_text: prompt_memory.execution_state_text.as_deref(),
-                    mental_privacy_text: prompt_memory.mental_privacy_text.as_deref(),
-                    disclosure_adjudication: mental_privacy_adjudication.as_ref(),
-                },
-            ) {
-                Ok(result) => result
-                    .as_ref()
-                    .and_then(|adjudication| {
-                        crate::memory::render_persona_priority_block(adjudication, 420)
-                    })
-                    .or(fallback),
-                Err(error) => {
-                    log::warn!("[agent_persona_priority] failed: {}", error);
-                    fallback
-                }
-            }
-        } else {
-            fallback
-        }
-    } else {
-        None
-    };
-    let (mut system, mut messages) = build_context(&super::ContextParams {
+    let PreparedWorkerConversation {
+        mut prompt_memory,
+        system,
+        mut messages,
+        mut system_scratch,
+        interactive_fast_path,
+        prompt_memory_system_budget,
+    } = prepare_worker_conversation(
+        worker_llm,
         msg,
-        memory: config.memory_store.as_ref(),
-        session: config.session_store.as_ref(),
-        important_message_store: config.important_message_store.as_ref(),
-        has_tools,
-        skill_descriptions: &skill_descriptions,
-        system_max_len: budget.system_prompt_max,
-        messages_max_len: budget.messages_max,
-        session_max_messages: config.session_max_messages,
-        group_activation: config.tg_group_activation.as_ref(),
-        emotion_signal_suffix,
-        execution_state_text: prompt_memory.execution_state_text.as_deref(),
-        world_snapshot_text: prompt_memory.world_snapshot_text.as_deref(),
-        world_sense_text: prompt_memory.world_sense_text.as_deref(),
-        self_state_text: prompt_memory.self_state_text.as_deref(),
-        self_authored_core_text: prompt_memory.self_authored_core_text.as_deref(),
-        persona_priority_text: prompt_memory.persona_priority_text.as_deref(),
-        self_model_text: prompt_memory.self_model_text.as_deref(),
-        autonomy_strategy_text: prompt_memory.autonomy_strategy_text.as_deref(),
-        outer_voice_text: prompt_memory.outer_voice_text.as_deref(),
-        inner_life_text: prompt_memory.inner_life_text.as_deref(),
-        self_continuity_text: prompt_memory.self_continuity_text.as_deref(),
-        private_workspace_text: prompt_memory.private_workspace_text.as_deref(),
-        private_garden_text: prompt_memory.private_garden_text.as_deref(),
-        mental_privacy_adjudication_text: prompt_memory.mental_privacy_adjudication_text.as_deref(),
-        mental_privacy_text: prompt_memory.mental_privacy_text.as_deref(),
-        long_term_memory_text: prompt_memory.long_term_memory_text.as_deref(),
-        archive_evidence_text: prompt_memory.archive_evidence_text.as_deref(),
-        runtime_skill_text: prompt_memory.runtime_skill_text.as_deref(),
-        summary_text: prompt_memory.message_summary_text.as_deref(),
-        recent_messages: (!prompt_memory.recent_messages.is_empty())
-            .then_some(prompt_memory.recent_messages.as_slice()),
-        runtime: Some(runtime),
-        include_daily_notes: false,
-        llm_hint: budget.llm_hint,
-    })
-    .map_err(|e| e.with_stage("agent_context"))?;
-    latency.context_ms = context_start.elapsed().as_millis();
-    request_plan.apply_system_prompt(&mut system, budget.system_prompt_max);
-    let mut system_scratch =
-        String::with_capacity(system.len().saturating_add(PLAN_SYSTEM_SUFFIX.len()));
-    if config.strategy.enables_preplanning()
-        && should_generate_execution_plan(msg, has_tools, snapshot.pressure)
-    {
-        let planning_system =
-            prepare_system_with_suffix(&system, PLAN_SYSTEM_SUFFIX, &mut system_scratch);
-        match worker_llm.chat(
-            &mut tool_ctx,
-            planning_system,
-            &messages,
-            None,
-            ToolChoicePolicy::Auto,
-        ) {
-            Ok(resp) => append_execution_plan(&mut system, budget.system_prompt_max, &resp.content),
-            Err(e) => {
-                log::debug!("[agent_plan] skipped after planning error: {}", e);
-            }
-        }
-    }
+        &request_plan,
+        config,
+        &mut tool_ctx,
+        &mut latency,
+    )?;
 
     // ReAct 追加消息起始下标；用于滑动窗口压缩早期轮次。
     let initial_msg_count = messages.len();

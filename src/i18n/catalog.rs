@@ -155,9 +155,7 @@ pub fn tr(msg: Message, loc: Locale) -> String {
             Message::QueueFull => zh("队列已满，请稍后重试"),
             Message::MissingNameForWrite => zh("缺少技能名称"),
             Message::MissingNameOrEnabled => zh("缺少 name 或 enabled"),
-            Message::MissingOrderNameContent => {
-                zh("缺少 order、name+content 或 name+enabled")
-            }
+            Message::MissingOrderNameContent => zh("缺少 order、name+content 或 name+enabled"),
             Message::MissingUrl => zh("缺少 url"),
             Message::MissingName => zh("缺少 name"),
             Message::UrlBodyNotUtf8 => zh("URL 返回内容不是合法 UTF-8"),
@@ -212,17 +210,14 @@ pub fn tr(msg: Message, loc: Locale) -> String {
                 } else {
                     "未连接"
                 };
-                format!(
-                    "WiFi: {}，入站: {}，出站: {}",
-                    w, inbound, outbound
-                )
+                format!("WiFi: {}，入站: {}，出站: {}", w, inbound, outbound)
             }
             Message::BindHintEmpty => {
                 zh("绑定：请设置 BEETLE_TG_ALLOWED_CHAT_IDS=<你的 chat_id> 后重新编译。")
             }
-            Message::BindHintNotInList => zh(
-                "绑定：请将你的 chat_id 加入 BEETLE_TG_ALLOWED_CHAT_IDS（逗号分隔）后重新编译。",
-            ),
+            Message::BindHintNotInList => {
+                zh("绑定：请将你的 chat_id 加入 BEETLE_TG_ALLOWED_CHAT_IDS（逗号分隔）后重新编译。")
+            }
             Message::RemindAtSetOk => zh("已设置提醒。"),
             Message::SessionSummaryUpdated => zh("已更新会话摘要。"),
             Message::SensorWatchAlert {
@@ -248,25 +243,19 @@ pub fn tr(msg: Message, loc: Locale) -> String {
             Message::HeartbeatPendingTasksReminder => {
                 zh("请根据 HEARTBEAT.md 中的待办事项执行并更新文件。")
             }
-            Message::LlmNotConfigured => zh(
-                "LLM 未配置或配置无效，请通过 Web UI / 配置 API 设置 llm_sources 或 api_key。",
-            ),
+            Message::LlmNotConfigured => {
+                zh("LLM 未配置或配置无效，请通过 Web UI / 配置 API 设置 llm_sources 或 api_key。")
+            }
             Message::ConfigRejected => zh("配置无效，请检查字段后重试"),
             Message::LocaleMustBeZhOrEn => zh("语言须为 zh 或 en"),
-            Message::TgGroupActivationInvalid => {
-                zh("群组激活模式须为 mention 或 always")
-            }
+            Message::TgGroupActivationInvalid => zh("群组激活模式须为 mention 或 always"),
             Message::ConfigFieldTooLong => zh("字段长度超出限制"),
             Message::ConfigEnabledChannelInvalid => zh("enabled_channel 取值无效"),
             Message::ConfigLlmSourcesEmpty => zh("llm_sources 不能为空"),
-            Message::ConfigLlmIndicesInvalid => {
-                zh("llm_router / llm_worker 源下标无效")
-            }
+            Message::ConfigLlmIndicesInvalid => zh("llm_router / llm_worker 源下标无效"),
             Message::ConfigLlmSourceFieldLen => zh("某个 LLM 源字段过长"),
             Message::ConfigChannelFieldLen => zh("通道配置字段过长"),
-            Message::ConfigSessionRangeInvalid => {
-                zh("session_max_messages 超出允许范围")
-            }
+            Message::ConfigSessionRangeInvalid => zh("session_max_messages 超出允许范围"),
             Message::ConfigHardwareInvalid => zh("硬件配置无效"),
             Message::ConfigDisplayInvalid => zh("显示配置无效"),
         },
@@ -291,20 +280,14 @@ pub fn tr(msg: Message, loc: Locale) -> String {
             Message::QueueFull => en("Queue full, try again later"),
             Message::MissingNameForWrite => en("Missing skill name for write"),
             Message::MissingNameOrEnabled => en("Missing name or enabled"),
-            Message::MissingOrderNameContent => {
-                en("Missing order, name+content, or name+enabled")
-            }
+            Message::MissingOrderNameContent => en("Missing order, name+content, or name+enabled"),
             Message::MissingUrl => en("Missing URL"),
             Message::MissingName => en("Missing name"),
             Message::UrlBodyNotUtf8 => en("URL body is not valid UTF-8"),
             Message::OtaChannelNotConfigured => en("Update channel not configured"),
             Message::OtaCheckFail => en("Check for update failed, try again later"),
-            Message::OtaDownload => {
-                en("Network or download failed, check connection and retry")
-            }
-            Message::OtaValidate => {
-                en("Firmware verification failed, try another source")
-            }
+            Message::OtaDownload => en("Network or download failed, check connection and retry"),
+            Message::OtaValidate => en("Firmware verification failed, try another source"),
             Message::OtaWrite => en("Write failed, do not power off and retry"),
             Message::CsrfInvalidToken => en("Invalid CSRF token"),
             Message::CsrfTokenRequired => en("CSRF token required"),
@@ -323,17 +306,11 @@ pub fn tr(msg: Message, loc: Locale) -> String {
             Message::SystemStatusStorage => en("Storage error"),
             Message::SystemStatusChannel => en("Channel error"),
             Message::SystemStatusRunning => en("Running"),
-            Message::ChannelConnectivityUnavailable => {
-                en("Channel connectivity check unavailable")
-            }
+            Message::ChannelConnectivityUnavailable => en("Channel connectivity check unavailable"),
             Message::ConnectivityNotConfigured => en("Not configured"),
-            Message::ConnectivityCheckFailed => {
-                en("Check failed, verify network connection")
-            }
+            Message::ConnectivityCheckFailed => en("Check failed, verify network connection"),
             Message::ConnectivityTokenInvalid => en("Invalid or expired credentials"),
-            Message::LowMemoryUserDefer => {
-                en("Device is low on memory, please try again later.")
-            }
+            Message::LowMemoryUserDefer => en("Device is low on memory, please try again later."),
             Message::NodeMaintenance => en("Node is under maintenance, please wait..."),
             Message::ReplyTruncated => en("(Reply truncated due to length limit)"),
             Message::StreamLowMemoryOmitted => {
@@ -349,12 +326,7 @@ pub fn tr(msg: Message, loc: Locale) -> String {
                 ref name,
                 index,
                 total,
-            } => format!(
-                "Running {} ({}/{})…",
-                name,
-                index.saturating_add(1),
-                total
-            ),
+            } => format!("Running {} ({}/{})…", name, index.saturating_add(1), total),
             Message::ToolProgressSingle { ref name } => format!("Running {}…", name),
             Message::TgActivationMention => en("Switched to mention"),
             Message::TgActivationAlways => en("Switched to always"),
@@ -369,14 +341,11 @@ pub fn tr(msg: Message, loc: Locale) -> String {
                 } else {
                     "disconnected"
                 };
-                format!(
-                    "WiFi: {}, inbound: {}, outbound: {}",
-                    w, inbound, outbound
-                )
+                format!("WiFi: {}, inbound: {}, outbound: {}", w, inbound, outbound)
             }
-            Message::BindHintEmpty => en(
-                "Bind: set BEETLE_TG_ALLOWED_CHAT_IDS=<your_chat_id> and rebuild.",
-            ),
+            Message::BindHintEmpty => {
+                en("Bind: set BEETLE_TG_ALLOWED_CHAT_IDS=<your_chat_id> and rebuild.")
+            }
             Message::BindHintNotInList => en(
                 "Bind: add your chat_id to BEETLE_TG_ALLOWED_CHAT_IDS (comma-separated) and rebuild.",
             ),
@@ -408,9 +377,7 @@ pub fn tr(msg: Message, loc: Locale) -> String {
             Message::LlmNotConfigured => en(
                 "LLM is not configured or invalid. Set llm_sources or api_key via Web UI / config API.",
             ),
-            Message::ConfigRejected => {
-                en("Invalid configuration, check fields and try again")
-            }
+            Message::ConfigRejected => en("Invalid configuration, check fields and try again"),
             Message::LocaleMustBeZhOrEn => en("Locale must be zh or en"),
             Message::TgGroupActivationInvalid => {
                 en("tg_group_activation must be mention or always")
@@ -421,15 +388,9 @@ pub fn tr(msg: Message, loc: Locale) -> String {
             Message::ConfigLlmIndicesInvalid => {
                 en("llm_router_source_index / llm_worker_source_index out of range")
             }
-            Message::ConfigLlmSourceFieldLen => {
-                en("An LLM source field exceeds the length limit")
-            }
-            Message::ConfigChannelFieldLen => {
-                en("A channel field exceeds the length limit")
-            }
-            Message::ConfigSessionRangeInvalid => {
-                en("session_max_messages is out of range")
-            }
+            Message::ConfigLlmSourceFieldLen => en("An LLM source field exceeds the length limit"),
+            Message::ConfigChannelFieldLen => en("A channel field exceeds the length limit"),
+            Message::ConfigSessionRangeInvalid => en("session_max_messages is out of range"),
             Message::ConfigHardwareInvalid => en("Invalid hardware configuration"),
             Message::ConfigDisplayInvalid => en("Invalid display configuration"),
         },

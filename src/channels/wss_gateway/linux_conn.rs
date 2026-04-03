@@ -137,10 +137,10 @@ impl WssConnection for LinuxWssConnection {
 
             match self.ws.read() {
                 Ok(Message::Binary(b)) => {
-                    return Ok(Some(WssEvent::Binary(WssBinary::from_vec(b))))
+                    return Ok(Some(WssEvent::Binary(WssBinary::from_vec(b))));
                 }
                 Ok(Message::Text(t)) => {
-                    return Ok(Some(WssEvent::Binary(WssBinary::from_vec(t.into_bytes()))))
+                    return Ok(Some(WssEvent::Binary(WssBinary::from_vec(t.into_bytes()))));
                 }
                 Ok(Message::Ping(payload)) => {
                     if let Err(e) = self.ws.send(Message::Pong(payload)) {

@@ -141,7 +141,7 @@ pub use private_garden::PrivateGardenTool;
 pub use process::ProcessTool;
 #[cfg(feature = "tools_network_extra")]
 pub use proxy_config::ProxyConfigTool;
-pub use registry::{build_default_registry, ToolRegistry};
+pub use registry::{build_default_registry, DefaultRegistryDeps, ToolRegistry};
 pub use remind_at::{RemindAtTool, RemindListTool};
 pub use sensor_watch::SensorWatchTool;
 #[cfg(feature = "tools_diagnostics")]
@@ -162,17 +162,19 @@ pub use web_fetch::WebFetchTool;
 pub use web_search::WebSearchTool;
 
 use crate::error::{Error, Result};
+use serde::Serialize;
 use serde_json::{Map, Value};
 
 /// 将 args 解析为 JSON 对象；供各 tool execute 统一使用，stage 用于错误上下文。
 pub fn parse_tool_args(args: &str, stage: &'static str) -> Result<Map<String, Value>> {
-    let v: Value = serde_json::from_str(args).map_err(|e| Error::Other {
+    serde_json::from_str::<Map<String, Value>>(args).map_err(|e| Error::Other {
         source: Box::new(e),
         stage,
-    })?;
-    v.as_object()
-        .cloned()
-        .ok_or_else(|| Error::config(stage, "tool args must be a JSON object"))
+    })
+}
+
+pub fn serialize_tool_output<T: Serialize>(stage: &'static str, value: &T) -> Result<String> {
+    serde_json::to_string(value).map_err(|e| Error::config(stage, e.to_string()))
 }
 
 /// 单次 execute 的 args 最大长度（字符）。超限返回 Error::Config。

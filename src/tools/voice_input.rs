@@ -1,8 +1,7 @@
 //! voice_input：采集麦克风 PCM，能量断句后调用百度 STT。
 
 use crate::audio::baidu_token::BaiduTokenCache;
-use crate::audio::capture::{capture_speech, AudioRecordingGuard};
-use crate::audio::stt_baidu;
+use crate::audio::pipeline::capture_and_transcribe;
 use crate::config::AudioSegment;
 use crate::constants::AUDIO_CAPTURE_MAX_MS;
 use crate::error::{Error, Result};
@@ -10,7 +9,6 @@ use crate::tools::http_bridge::ToolContextHttpClient;
 use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
 use crate::Platform;
 use std::sync::Arc;
-use std::time::Instant;
 
 pub struct VoiceInputTool {
     platform: Arc<dyn Platform>,
@@ -62,25 +60,16 @@ impl Tool for VoiceInputTool {
                 .map(|v| v.min(AUDIO_CAPTURE_MAX_MS as u64) as u32)
                 .unwrap_or(AUDIO_CAPTURE_MAX_MS);
 
-            let _recording_guard = AudioRecordingGuard::new();
-            let captured = capture_speech(
+            let mut http = ToolContextHttpClient::new(ctx);
+            let text = capture_and_transcribe(
                 self.platform.as_ref(),
                 &self.audio_cfg,
+                self.baidu_token.as_ref(),
+                &mut http,
                 max_ms,
                 "voice_input",
             )?;
 
-            let mic_sr = self.audio_cfg.microphone.sample_rate.max(8_000);
-            let mut http = ToolContextHttpClient::new(ctx);
-            let stt_start = Instant::now();
-            let text = stt_baidu::transcribe_pcm16_samples(
-                &mut http,
-                self.baidu_token.as_ref(),
-                &self.audio_cfg.stt,
-                captured.as_slice(),
-                mic_sr,
-            )?;
-            crate::metrics::record_voice_input_stt_http_ms(stt_start.elapsed().as_millis());
             log_audio_resource_snapshot("voice_input_done");
             Ok(text)
         })();

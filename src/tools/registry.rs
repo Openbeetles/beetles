@@ -63,6 +63,11 @@ impl ToolRegistry {
         self.tools.get(name).map(|entry| entry.tool.as_ref())
     }
 
+    /// API / 调试使用：返回当前注册顺序下的工具名列表。
+    pub fn tool_names(&self) -> Vec<&'static str> {
+        self.tools.keys().copied().collect()
+    }
+
     /// 该工具是否需要网络（从 Tool trait 推导）。未注册工具返回 false。
     /// Whether the named tool requires network (derived from Tool trait). Returns false for unknown tools.
     pub fn is_network_tool(&self, name: &str) -> bool {
@@ -144,21 +149,30 @@ impl ToolRegistry {
 
 /// 构建包含所有内置工具的注册表。`platform` 用于 `board_info` 等依赖平台能力的工具。
 /// Returns `(registry, Option<baidu_token_cache>)` — the cache is shared with voice_session.
-pub fn build_default_registry(
+pub struct DefaultRegistryDeps {
+    pub platform: Arc<dyn crate::Platform>,
+    pub remind_at_store: Arc<dyn crate::memory::RemindAtStore + Send + Sync>,
+    pub session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
+    pub memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
+    pub long_term_memory_store: Arc<dyn crate::memory::LongTermMemoryStore + Send + Sync>,
+    pub turn_ledger_store: Arc<dyn crate::memory::TurnLedgerStore + Send + Sync>,
+    pub private_garden_store: Arc<dyn crate::memory::PrivateGardenStore + Send + Sync>,
+    pub config_store: Arc<dyn crate::platform::ConfigStore + Send + Sync>,
+}
+
+#[cold]
+#[inline(never)]
+fn register_core_tools(
+    registry: &mut ToolRegistry,
     config: &AppConfig,
-    platform: Arc<dyn crate::Platform>,
-    remind_at_store: Arc<dyn crate::memory::RemindAtStore + Send + Sync>,
-    session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
-    memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
-    long_term_memory_store: Arc<dyn crate::memory::LongTermMemoryStore + Send + Sync>,
-    turn_ledger_store: Arc<dyn crate::memory::TurnLedgerStore + Send + Sync>,
-    private_garden_store: Arc<dyn crate::memory::PrivateGardenStore + Send + Sync>,
-    _config_store: Arc<dyn crate::platform::ConfigStore + Send + Sync>,
-) -> (
-    ToolRegistry,
-    Option<Arc<crate::audio::baidu_token::BaiduTokenCache>>,
+    platform: &Arc<dyn crate::Platform>,
+    remind_at_store: &Arc<dyn crate::memory::RemindAtStore + Send + Sync>,
+    session_store: &Arc<dyn crate::memory::SessionStore + Send + Sync>,
+    memory_store: &Arc<dyn crate::memory::MemoryStore + Send + Sync>,
+    long_term_memory_store: &Arc<dyn crate::memory::LongTermMemoryStore + Send + Sync>,
+    turn_ledger_store: &Arc<dyn crate::memory::TurnLedgerStore + Send + Sync>,
+    private_garden_store: &Arc<dyn crate::memory::PrivateGardenStore + Send + Sync>,
 ) {
-    let mut registry = ToolRegistry::new();
     registry.register(Box::new(super::GetTimeTool));
     registry.register(Box::new(super::EnvTool));
     registry.register(Box::new(super::MessageTool));
@@ -206,28 +220,29 @@ pub fn build_default_registry(
     registry.register(Box::new(super::PdfReadTool));
     #[cfg(feature = "tools_network_extra")]
     registry.register(Box::new(super::AnalyzeImageTool::new(config)));
-    let remind_at_store_for_list = Arc::clone(&remind_at_store);
-    registry.register(Box::new(super::RemindAtTool::new(remind_at_store)));
-    registry.register(Box::new(super::RemindListTool::new(
-        remind_at_store_for_list,
-    )));
-    registry.register(Box::new(super::BoardInfoTool::new(Arc::clone(&platform))));
+    registry.register(Box::new(super::RemindAtTool::new(Arc::clone(
+        remind_at_store,
+    ))));
+    registry.register(Box::new(super::RemindListTool::new(Arc::clone(
+        remind_at_store,
+    ))));
+    registry.register(Box::new(super::BoardInfoTool::new(Arc::clone(platform))));
     registry.register(Box::new(super::KvStoreTool::new(platform.state_fs())));
-    registry.register(Box::new(super::PrivateGardenTool::new(
+    registry.register(Box::new(super::PrivateGardenTool::new(Arc::clone(
         private_garden_store,
-    )));
+    ))));
     registry.register(Box::new(super::FactualMemoryTool::new(Arc::clone(
-        &long_term_memory_store,
+        long_term_memory_store,
     ))));
     registry.register(Box::new(super::MemorySearchTool::new(
-        Arc::clone(&session_store),
-        Arc::clone(&memory_store),
-        Arc::clone(&turn_ledger_store),
+        Arc::clone(session_store),
+        Arc::clone(memory_store),
+        Arc::clone(turn_ledger_store),
     )));
     registry.register(Box::new(super::MemoryGetTool::new(
-        Arc::clone(&session_store),
-        Arc::clone(&memory_store),
-        Arc::clone(&turn_ledger_store),
+        Arc::clone(session_store),
+        Arc::clone(memory_store),
+        Arc::clone(turn_ledger_store),
     )));
     registry.register(Box::new(super::ContinuitySnapshotTool::new(
         platform.state_fs(),
@@ -241,39 +256,55 @@ pub fn build_default_registry(
     if !config.hardware_devices.is_empty() {
         registry.register(Box::new(super::DeviceControlTool::new(
             config.hardware_devices.clone(),
-            Arc::clone(&platform),
+            Arc::clone(platform),
         )));
     }
-    // --- New tools ---
+}
+
+#[cold]
+#[inline(never)]
+fn register_extended_runtime_tools(
+    registry: &mut ToolRegistry,
+    config: &AppConfig,
+    platform: &Arc<dyn crate::Platform>,
+    memory_store: &Arc<dyn crate::memory::MemoryStore + Send + Sync>,
+    long_term_memory_store: &Arc<dyn crate::memory::LongTermMemoryStore + Send + Sync>,
+    session_store: &Arc<dyn crate::memory::SessionStore + Send + Sync>,
+    config_store: &Arc<dyn crate::platform::ConfigStore + Send + Sync>,
+) {
     #[cfg(feature = "tools_diagnostics")]
     registry.register(Box::new(super::MemoryManageTool::new(
-        Arc::clone(&memory_store),
-        Arc::clone(&long_term_memory_store),
+        Arc::clone(memory_store),
+        Arc::clone(long_term_memory_store),
         platform.skill_storage(),
     )));
     #[cfg(feature = "tools_network_extra")]
     registry.register(Box::new(super::HttpRequestTool));
     #[cfg(feature = "tools_diagnostics")]
-    registry.register(Box::new(super::SessionManageTool::new(session_store)));
+    registry.register(Box::new(super::SessionManageTool::new(Arc::clone(
+        session_store,
+    ))));
     registry.register(Box::new(super::FileWriteTool::new(platform.state_fs())));
     #[cfg(feature = "tools_diagnostics")]
     registry.register(Box::new(super::SystemControlTool::new(Arc::clone(
-        &platform,
+        platform,
     ))));
     #[cfg(feature = "tools_diagnostics")]
     registry.register(Box::new(super::CronManageTool::new(Arc::clone(
-        &memory_store,
+        memory_store,
     ))));
     #[cfg(feature = "tools_network_extra")]
-    registry.register(Box::new(super::ProxyConfigTool::new(_config_store)));
+    registry.register(Box::new(super::ProxyConfigTool::new(Arc::clone(
+        config_store,
+    ))));
     #[cfg(feature = "tools_network_extra")]
-    registry.register(Box::new(super::ModelConfigTool::new(Arc::clone(&platform))));
+    registry.register(Box::new(super::ModelConfigTool::new(Arc::clone(platform))));
     #[cfg(feature = "tools_diagnostics")]
-    registry.register(Box::new(super::NetworkScanTool::new(Arc::clone(&platform))));
+    registry.register(Box::new(super::NetworkScanTool::new(Arc::clone(platform))));
     #[cfg(feature = "tools_diagnostics")]
     if !config.hardware_devices.is_empty() || !config.i2c_sensors.is_empty() {
         registry.register(Box::new(super::SensorWatchTool::new(
-            Arc::clone(&memory_store),
+            Arc::clone(memory_store),
             config.hardware_devices.clone(),
             config.i2c_sensors.clone(),
         )));
@@ -281,59 +312,114 @@ pub fn build_default_registry(
     #[cfg(feature = "tools_diagnostics")]
     if config.i2c_bus.is_some() && !config.i2c_devices.is_empty() {
         registry.register(Box::new(super::I2cDeviceTool::new(
-            Arc::clone(&platform),
+            Arc::clone(platform),
             config.i2c_devices.clone(),
         )));
     }
     #[cfg(feature = "tools_diagnostics")]
     if config.i2c_bus.is_some() && !config.i2c_sensors.is_empty() {
         registry.register(Box::new(super::I2cSensorTool::new(
-            Arc::clone(&platform),
+            Arc::clone(platform),
             config.i2c_sensors.clone(),
         )));
     }
-    let mut shared_baidu_token: Option<Arc<crate::audio::baidu_token::BaiduTokenCache>> = None;
-    if let Some(audio_cfg) = config.audio.clone() {
-        let baidu_stt_credential_ok =
-            !audio_cfg.stt.api_key.trim().is_empty() && !audio_cfg.stt.api_secret.trim().is_empty();
-        let stt_ok = audio_cfg.stt.provider == "baidu"
-            && baidu_stt_credential_ok
-            && audio_cfg.microphone.enabled;
-        let tts_ok = audio_cfg.tts.provider == "baidu"
-            && audio_cfg.stt.provider == "baidu"
-            && baidu_stt_credential_ok
-            && audio_cfg.speaker.enabled;
-        let baidu_token_cache = if audio_cfg.enabled && (stt_ok || tts_ok) {
-            Some(Arc::new(crate::audio::baidu_token::BaiduTokenCache::new()))
-        } else {
-            None
-        };
-        if audio_cfg.enabled && stt_ok {
-            if let Some(ref cache) = baidu_token_cache {
-                registry.register(Box::new(super::VoiceInputTool::new(
-                    Arc::clone(&platform),
-                    audio_cfg.clone(),
-                    Arc::clone(cache),
-                )));
-            }
+}
+
+#[cold]
+#[inline(never)]
+fn register_audio_tools(
+    registry: &mut ToolRegistry,
+    config: &AppConfig,
+    platform: &Arc<dyn crate::Platform>,
+) -> Option<Arc<crate::audio::baidu_token::BaiduTokenCache>> {
+    let Some(audio_cfg) = config.audio.clone() else {
+        return None;
+    };
+    let baidu_stt_credential_ok =
+        !audio_cfg.stt.api_key.trim().is_empty() && !audio_cfg.stt.api_secret.trim().is_empty();
+    let stt_ok = audio_cfg.stt.provider == "baidu"
+        && baidu_stt_credential_ok
+        && audio_cfg.microphone.enabled;
+    let tts_ok = audio_cfg.tts.provider == "baidu"
+        && audio_cfg.stt.provider == "baidu"
+        && baidu_stt_credential_ok
+        && audio_cfg.speaker.enabled;
+    let baidu_token_cache = if audio_cfg.enabled && (stt_ok || tts_ok) {
+        Some(Arc::new(crate::audio::baidu_token::BaiduTokenCache::new()))
+    } else {
+        None
+    };
+    if audio_cfg.enabled && stt_ok {
+        if let Some(ref cache) = baidu_token_cache {
+            registry.register(Box::new(super::VoiceInputTool::new(
+                Arc::clone(platform),
+                audio_cfg.clone(),
+                Arc::clone(cache),
+            )));
         }
-        if audio_cfg.enabled && tts_ok {
-            if let Some(ref cache) = baidu_token_cache {
-                registry.register(Box::new(super::VoiceOutputTool::new(
-                    Arc::clone(&platform),
-                    audio_cfg,
-                    Arc::clone(cache),
-                )));
-            }
-        }
-        shared_baidu_token = baidu_token_cache;
     }
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    if audio_cfg.enabled && tts_ok {
+        if let Some(ref cache) = baidu_token_cache {
+            registry.register(Box::new(super::VoiceOutputTool::new(
+                Arc::clone(platform),
+                audio_cfg,
+                Arc::clone(cache),
+            )));
+        }
+    }
+    baidu_token_cache
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[cold]
+#[inline(never)]
+fn register_host_only_tools(registry: &mut ToolRegistry) {
     registry.register(Box::new(super::ShellTool));
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     registry.register(Box::new(super::ProcessTool));
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     registry.register(Box::new(super::NetworkTool));
+}
+
+pub fn build_default_registry(
+    config: &AppConfig,
+    deps: DefaultRegistryDeps,
+) -> (
+    ToolRegistry,
+    Option<Arc<crate::audio::baidu_token::BaiduTokenCache>>,
+) {
+    let DefaultRegistryDeps {
+        platform,
+        remind_at_store,
+        session_store,
+        memory_store,
+        long_term_memory_store,
+        turn_ledger_store,
+        private_garden_store,
+        config_store,
+    } = deps;
+    let mut registry = ToolRegistry::new();
+    register_core_tools(
+        &mut registry,
+        config,
+        &platform,
+        &remind_at_store,
+        &session_store,
+        &memory_store,
+        &long_term_memory_store,
+        &turn_ledger_store,
+        &private_garden_store,
+    );
+    register_extended_runtime_tools(
+        &mut registry,
+        config,
+        &platform,
+        &memory_store,
+        &long_term_memory_store,
+        &session_store,
+        &config_store,
+    );
+    let shared_baidu_token = register_audio_tools(&mut registry, config, &platform);
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    register_host_only_tools(&mut registry);
     (registry, shared_baidu_token)
 }
 

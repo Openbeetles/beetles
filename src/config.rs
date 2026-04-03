@@ -685,7 +685,10 @@ impl AppConfig {
                     || self.wecom_corp_secret.trim().is_empty()
                     || self.wecom_agent_id.trim().is_empty()
                 {
-                    return Err(Error::config("config", "enabled_channel=wecom requires wecom_corp_id, wecom_corp_secret, wecom_agent_id"));
+                    return Err(Error::config(
+                        "config",
+                        "enabled_channel=wecom requires wecom_corp_id, wecom_corp_secret, wecom_agent_id",
+                    ));
                 }
                 if self.wecom_agent_id.trim().parse::<u32>().is_err() {
                     return Err(Error::config(
@@ -698,7 +701,10 @@ impl AppConfig {
                 if self.qq_channel_app_id.trim().is_empty()
                     || self.qq_channel_secret.trim().is_empty()
                 {
-                    return Err(Error::config("config", "enabled_channel=qq_channel requires qq_channel_app_id and qq_channel_secret"));
+                    return Err(Error::config(
+                        "config",
+                        "enabled_channel=qq_channel requires qq_channel_app_id and qq_channel_secret",
+                    ));
                 }
                 if self.qq_channel_app_id.len() > CONFIG_FIELD_MAX_LEN
                     || self.qq_channel_secret.len() > CONFIG_FIELD_MAX_LEN

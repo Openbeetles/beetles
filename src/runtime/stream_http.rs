@@ -39,7 +39,14 @@ fn maybe_log_stream_http_stats(trigger: &str) {
     };
     log::info!(
         "[{}] stream_http_stats trigger={} ops={} reuse_hits={} creates={} resets={} invalidates={} reuse_rate={}%",
-        TAG, trigger, ops, hits, creates, resets, invalidates, reuse_rate
+        TAG,
+        trigger,
+        ops,
+        hits,
+        creates,
+        resets,
+        invalidates,
+        reuse_rate
     );
 }
 

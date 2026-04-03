@@ -266,9 +266,9 @@ pub(crate) fn final_answer_followup(
             .to_string()
         } else {
             format!(
-            "[SYSTEM] Recent tool calls already produced {} useful result(s). Answer directly from those successful results now. Mention only the specific remaining gap if it still matters, and do not end with generic wrap-up text.",
-            recent_successful_round.successful_calls
-        )
+                "[SYSTEM] Recent tool calls already produced {} useful result(s). Answer directly from those successful results now. Mention only the specific remaining gap if it still matters, and do not end with generic wrap-up text.",
+                recent_successful_round.successful_calls
+            )
         },
     )
 }

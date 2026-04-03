@@ -3,8 +3,10 @@
 
 use crate::error::{Error, Result};
 use crate::tools::state_file_guard::{ensure_state_path_mutable, normalize_state_tool_path};
-use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata, MAX_TOOL_RESULT_LEN};
-use serde_json::json;
+use crate::tools::{
+    parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata, MAX_TOOL_RESULT_LEN,
+};
+use serde::Serialize;
 use std::sync::Arc;
 
 const MAX_LIST_ENTRIES: usize = 256;
@@ -13,6 +15,29 @@ const MAX_READ_RAW_BYTES: usize = MAX_TOOL_RESULT_LEN * 2;
 
 pub struct FilesTool {
     state_fs: Arc<dyn crate::StateFs + Send + Sync>,
+}
+
+#[derive(Serialize)]
+struct FilesListResponse<'a> {
+    mode: &'static str,
+    path: &'a str,
+    entries: Vec<String>,
+    truncated: bool,
+}
+
+#[derive(Serialize)]
+struct FilesDeleteResponse<'a> {
+    mode: &'static str,
+    path: &'a str,
+    success: bool,
+}
+
+#[derive(Serialize)]
+struct FilesReadResponse<'a> {
+    mode: &'static str,
+    path: &'a str,
+    content: String,
+    truncated: bool,
 }
 
 impl FilesTool {
@@ -52,26 +77,28 @@ impl Tool for FilesTool {
             if truncated {
                 entries.truncate(MAX_LIST_ENTRIES);
             }
-            let out = json!({
-                "mode": "list",
-                "path": path_arg,
-                "entries": entries,
-                "truncated": truncated
-            });
-            return serde_json::to_string(&out)
-                .map_err(|e| Error::config("tool_files", e.to_string()));
+            return serialize_tool_output(
+                "tool_files",
+                &FilesListResponse {
+                    mode: "list",
+                    path: path_arg,
+                    entries,
+                    truncated,
+                },
+            );
         }
 
         if mode == "delete" {
             ensure_state_path_mutable(&rel, "tool_files")?;
             self.state_fs.remove(&rel)?;
-            let out = json!({
-                "mode": "delete",
-                "path": path_arg,
-                "success": true
-            });
-            return serde_json::to_string(&out)
-                .map_err(|e| Error::config("tool_files", e.to_string()));
+            return serialize_tool_output(
+                "tool_files",
+                &FilesDeleteResponse {
+                    mode: "delete",
+                    path: path_arg,
+                    success: true,
+                },
+            );
         }
 
         if mode != "read" {
@@ -99,13 +126,15 @@ impl Tool for FilesTool {
                 } else {
                     (content, false)
                 };
-                let out = json!({
-                    "mode": "read",
-                    "path": path_arg,
-                    "content": content,
-                    "truncated": truncated
-                });
-                serde_json::to_string(&out).map_err(|e| Error::config("tool_files", e.to_string()))
+                serialize_tool_output(
+                    "tool_files",
+                    &FilesReadResponse {
+                        mode: "read",
+                        path: path_arg,
+                        content,
+                        truncated,
+                    },
+                )
             }
             None => match self.state_fs.list_dir(&rel) {
                 Ok(_) => Err(Error::config(

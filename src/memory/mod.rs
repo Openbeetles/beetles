@@ -4,6 +4,7 @@ use crate::bus::PcMsg;
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
 
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 mod archive_benchmark;
 mod archive_plane;
 mod archive_search;
@@ -24,6 +25,7 @@ mod memory_governance;
 mod mental_privacy;
 mod outer_voice;
 mod persona_priority;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 mod persona_regression;
 mod private_docs;
 mod private_garden;
@@ -42,6 +44,7 @@ mod turn_ledger;
 mod world_sense;
 mod write_coordination;
 
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use archive_benchmark::{
     run_archive_benchmark_case, run_archive_benchmark_suite, ArchiveBenchmarkCase,
     ArchiveBenchmarkResult,
@@ -165,6 +168,7 @@ pub use persona_priority::{
     PersonaPriorityAdjudication, PersonaPriorityAdjudicationInput, PersonaPriorityGrounding,
     PersonaPriorityRuntimeState, PERSONA_PRIORITY_SYSTEM_PROMPT,
 };
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use persona_regression::{
     run_persona_continuity_case, run_persona_continuity_suite, PersonaContinuityCase,
     PersonaContinuityResult,

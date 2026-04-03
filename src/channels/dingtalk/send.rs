@@ -67,8 +67,18 @@ pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
     }
 }
 
-fn send_one_dingtalk<H: ChannelHttpClient>(http: &mut H, webhook_url: &str, content: &str) {
+fn send_one_dingtalk<H: ChannelHttpClient>(
+    http: &mut H,
+    webhook_url: &str,
+    content: &str,
+) -> crate::error::Result<()> {
     const TAG: &str = "dingtalk_send";
+    if content.trim().is_empty() {
+        return Err(crate::error::Error::config(
+            "dingtalk_send",
+            "refusing to send empty DingTalk message",
+        ));
+    }
     let chunks =
         crate::channels::chunk::chunk_text_by_char_count(content, DINGTALK_MAX_MESSAGE_LEN);
     for chunk in chunks {
@@ -76,15 +86,14 @@ fn send_one_dingtalk<H: ChannelHttpClient>(http: &mut H, webhook_url: &str, cont
             "msgtype": "text",
             "text": { "content": chunk }
         });
-        let body_bytes = match serde_json::to_vec(&body) {
-            Ok(b) => b,
-            Err(e) => {
-                log::warn!("[{}] send json: {}", TAG, e);
-                continue;
-            }
-        };
-        let _ = crate::channels::send::send_post(TAG, http, webhook_url, &body_bytes);
+        let body_bytes = serde_json::to_vec(&body)
+            .map_err(|e| crate::error::Error::config("dingtalk_send", e.to_string()))?;
+        let (status, _) = crate::channels::send::send_post(TAG, http, webhook_url, &body_bytes)?;
+        if status >= 400 {
+            return Err(crate::error::Error::http("dingtalk_send", status));
+        }
     }
+    Ok(())
 }
 
 /// 从 rx 取出待发送（一次性 drain）。
@@ -97,7 +106,9 @@ pub fn flush_dingtalk_sends<H: ChannelHttpClient>(
         return;
     }
     while let Ok((_chat_id, content, _req_id)) = rx.try_recv() {
-        send_one_dingtalk(http, webhook_url, &content);
+        if let Err(error) = send_one_dingtalk(http, webhook_url, &content) {
+            log::warn!("[dingtalk_flush] send failed: {}", error);
+        }
     }
 }
 
@@ -156,9 +167,22 @@ pub fn run_dingtalk_sender_loop<H, F>(
             let Some(h) = http.as_mut() else {
                 continue;
             };
-            send_one_dingtalk(h, webhook_url, &content);
+            match send_one_dingtalk(h, webhook_url, &content) {
+                Ok(()) => crate::metrics::record_channel_http_result(true),
+                Err(error) => {
+                    crate::metrics::record_channel_http_result(false);
+                    log::warn!("[{}] send failed (attempt {}): {}", TAG, retry + 1, error);
+                    http = None;
+                    continue;
+                }
+            }
             while let Ok((_, cnt, _)) = rx.try_recv() {
-                send_one_dingtalk(h, webhook_url, &cnt);
+                if let Err(error) = send_one_dingtalk(h, webhook_url, &cnt) {
+                    crate::metrics::record_channel_http_result(false);
+                    log::warn!("[{}] drain send failed: {}", TAG, error);
+                    break;
+                }
+                crate::metrics::record_channel_http_result(true);
             }
             sent = true;
             break;

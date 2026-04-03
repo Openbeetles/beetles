@@ -1991,7 +1991,9 @@ mod tests {
             "chat-1",
             &recent,
             Some("当前重点是 memory pipeline 收口。"),
-            Some("## Shared factual reconcile\n- response_style: action=reinforce; supports=2; conflicts=0; evidence=2 hits"),
+            Some(
+                "## Shared factual reconcile\n- response_style: action=reinforce; supports=2; conflicts=0; evidence=2 hits",
+            ),
             archive_evidence.as_deref(),
             MemoryProfile::Standard,
         );

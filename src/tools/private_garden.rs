@@ -5,9 +5,10 @@ use crate::memory::{
     build_private_garden_usage, summarize_private_garden_directories, PrivateGardenStore,
     PRIVATE_GARDEN_MAX_DOCS_PER_CHAT,
 };
-use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
+use crate::tools::{parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata};
 use crate::util::current_unix_secs;
-use serde_json::{json, Value};
+use serde::Serialize;
+use serde_json::Value;
 use std::sync::Arc;
 
 const PRIVATE_GARDEN_MAX_LIST_LIMIT: usize = 8;
@@ -16,6 +17,46 @@ const PRIVATE_GARDEN_MAX_CONTENT_LEN: usize = 8 * 1024;
 
 pub struct PrivateGardenTool {
     store: Arc<dyn PrivateGardenStore + Send + Sync>,
+}
+
+#[derive(Serialize)]
+struct PrivateGardenDocsResponse<T> {
+    ok: bool,
+    op: &'static str,
+    docs: T,
+}
+
+#[derive(Serialize)]
+struct PrivateGardenTreeResponse {
+    ok: bool,
+    op: &'static str,
+    usage: crate::memory::PrivateGardenUsage,
+    directories: Vec<crate::memory::PrivateGardenDirectorySummary>,
+    docs: Vec<crate::memory::PrivateGardenDocRecord>,
+}
+
+#[derive(Serialize)]
+struct PrivateGardenDocResponse<T> {
+    ok: bool,
+    op: &'static str,
+    doc: T,
+}
+
+#[derive(Serialize)]
+struct PrivateGardenMoveResponse<'a> {
+    ok: bool,
+    op: &'static str,
+    from_path: &'a str,
+    to_path: &'a str,
+    doc: Option<crate::memory::PrivateGardenDocRecord>,
+}
+
+#[derive(Serialize)]
+struct PrivateGardenDeleteResponse<'a> {
+    ok: bool,
+    op: &'static str,
+    deleted: bool,
+    path: &'a str,
 }
 
 impl PrivateGardenTool {
@@ -56,12 +97,14 @@ impl Tool for PrivateGardenTool {
                     .clamp(1, PRIVATE_GARDEN_MAX_LIST_LIMIT as u64)
                     as usize;
                 let docs = self.store.list(chat_id, limit)?;
-                Ok(json!({
-                    "ok": true,
-                    "op": "list",
-                    "docs": docs,
-                })
-                .to_string())
+                serialize_tool_output(
+                    "tool_private_garden",
+                    &PrivateGardenDocsResponse {
+                        ok: true,
+                        op: "list",
+                        docs,
+                    },
+                )
             }
             "tree" => {
                 let limit = obj
@@ -72,14 +115,16 @@ impl Tool for PrivateGardenTool {
                     as usize;
                 let all_docs = self.store.list(chat_id, usize::MAX)?;
                 let docs = all_docs.iter().take(limit).cloned().collect::<Vec<_>>();
-                Ok(json!({
-                    "ok": true,
-                    "op": "tree",
-                    "usage": build_private_garden_usage(&all_docs),
-                    "directories": summarize_private_garden_directories(&all_docs, 8),
-                    "docs": docs,
-                })
-                .to_string())
+                serialize_tool_output(
+                    "tool_private_garden",
+                    &PrivateGardenTreeResponse {
+                        ok: true,
+                        op: "tree",
+                        usage: build_private_garden_usage(&all_docs),
+                        directories: summarize_private_garden_directories(&all_docs, 8),
+                        docs,
+                    },
+                )
             }
             "read" => {
                 let path = obj
@@ -87,12 +132,14 @@ impl Tool for PrivateGardenTool {
                     .and_then(Value::as_str)
                     .ok_or_else(|| Error::config("tool_private_garden", "missing path"))?;
                 let doc = self.store.read(chat_id, path)?;
-                Ok(json!({
-                    "ok": true,
-                    "op": "read",
-                    "doc": doc,
-                })
-                .to_string())
+                serialize_tool_output(
+                    "tool_private_garden",
+                    &PrivateGardenDocResponse {
+                        ok: true,
+                        op: "read",
+                        doc,
+                    },
+                )
             }
             "write" => {
                 let path = obj
@@ -112,12 +159,14 @@ impl Tool for PrivateGardenTool {
                 let record = self
                     .store
                     .write(chat_id, path, content, current_unix_secs())?;
-                Ok(json!({
-                    "ok": true,
-                    "op": "write",
-                    "doc": record,
-                })
-                .to_string())
+                serialize_tool_output(
+                    "tool_private_garden",
+                    &PrivateGardenDocResponse {
+                        ok: true,
+                        op: "write",
+                        doc: record,
+                    },
+                )
             }
             "move" => {
                 let from_path = obj
@@ -131,14 +180,16 @@ impl Tool for PrivateGardenTool {
                 let moved =
                     self.store
                         .move_doc(chat_id, from_path, to_path, current_unix_secs())?;
-                Ok(json!({
-                    "ok": true,
-                    "op": "move",
-                    "from_path": from_path,
-                    "to_path": to_path,
-                    "doc": moved,
-                })
-                .to_string())
+                serialize_tool_output(
+                    "tool_private_garden",
+                    &PrivateGardenMoveResponse {
+                        ok: true,
+                        op: "move",
+                        from_path,
+                        to_path,
+                        doc: moved,
+                    },
+                )
             }
             "delete" => {
                 let path = obj
@@ -146,13 +197,15 @@ impl Tool for PrivateGardenTool {
                     .and_then(Value::as_str)
                     .ok_or_else(|| Error::config("tool_private_garden", "missing path"))?;
                 let deleted = self.store.delete(chat_id, path)?;
-                Ok(json!({
-                    "ok": true,
-                    "op": "delete",
-                    "deleted": deleted,
-                    "path": path,
-                })
-                .to_string())
+                serialize_tool_output(
+                    "tool_private_garden",
+                    &PrivateGardenDeleteResponse {
+                        ok: true,
+                        op: "delete",
+                        deleted,
+                        path,
+                    },
+                )
             }
             _ => Err(Error::config(
                 "tool_private_garden",

@@ -1,8 +1,9 @@
 /**
- * LLM 服务商枚举与「api_url 为空时」的默认端点。
+ * LLM 服务商枚举与「api_url 为空时」的默认端点、切换服务商时的默认模型预填。
  * Keep in sync with firmware:
  * - `src/llm/openai_compatible.rs` (`from_source` empty `api_url` branches)
  * - `src/llm/anthropic.rs` (`API_BASE` when `api_url` empty)
+ * Default `model` strings align with `docs/zh-cn/llm-providers.md` examples where applicable.
  */
 
 export const LLM_PROVIDER_VALUES = [
@@ -41,6 +42,45 @@ export function normalizeLlmApiUrl(url: string): string {
 
 export function defaultApiUrlForProvider(provider: LlmProviderValue): string {
   return LLM_DEFAULT_API_URL[provider];
+}
+
+/** 各供应商常用/文档示例模型 ID，供 UI 选择服务商后预填（用户可改）。 */
+export const LLM_DEFAULT_MODEL: Record<LlmProviderValue, string> = {
+  anthropic: "claude-3-5-sonnet-20241022",
+  openai: "gpt-4o",
+  openai_compatible: "gpt-4o",
+  gemini: "gemini-1.5-flash",
+  glm: "glm-4-flash",
+  qwen: "qwen-plus",
+  deepseek: "deepseek-chat",
+  moonshot: "moonshot-v1-8k",
+  ollama: "llama3.2",
+};
+
+export function defaultModelForProvider(provider: LlmProviderValue): string {
+  return LLM_DEFAULT_MODEL[provider];
+}
+
+/**
+ * 切换 provider 后写入的 model：
+ * - 当前为空 → 填入新服务商默认模型；
+ * - 当前与「旧服务商默认模型」相同（trim 后）→ 同步为新服务商默认；
+ * - 否则保留用户自定义模型名。
+ */
+export function modelAfterProviderChange(
+  currentModel: string,
+  oldProvider: LlmProviderValue,
+  newProvider: LlmProviderValue,
+): string {
+  const trimmed = currentModel.trim();
+  if (!trimmed) {
+    return defaultModelForProvider(newProvider);
+  }
+  const oldDefault = defaultModelForProvider(oldProvider);
+  if (oldDefault.length > 0 && trimmed === oldDefault.trim()) {
+    return defaultModelForProvider(newProvider);
+  }
+  return currentModel;
 }
 
 /**

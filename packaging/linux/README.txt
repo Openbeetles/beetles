@@ -7,7 +7,7 @@ This tarball is for integrators and manual trials. **End-user one-click / SSH in
 
 Binary
 ------
-- `beetle`: statically linked (musl). If you deploy by hand, a common layout is `/opt/beetle/releases/<version>/` plus a `current` symlink; see the markdown above for current status only.
+- `beetle`: statically linked (musl). `./build.sh --deploy-linux` installs to `/opt/beetle/releases/<release>/`, updates `/opt/beetle/current`, and also keeps `/opt/beetle/beetle` as a compatibility shortcut to the current binary.
 - **WiFi addressing**: Beetle sets AP/STA addresses via **rtnetlink** in-process; the **`ip` utility is not required** for those steps (you still need `wpa_supplicant` / `hostapd` / `dnsmasq` / `iw` where the code invokes them).
 
 Config API (optional)
@@ -22,14 +22,14 @@ Hardware JSON
 
 systemd
 -------
-- Edit `beetle.service`: set `User=`/`Group=` and tighten `ReadWritePaths=` for your deployment.
-- Install: copy unit to `/etc/systemd/system/`, `systemctl daemon-reload`, `systemctl enable --now beetle`.
+- Edit `beetle.service`: set `User=`/`Group=`; optional hardening: `ProtectSystem=` + `ReadWritePaths=` only if every listed path exists (missing paths cause systemd 226/NAMESPACE on start).
+- Install: copy unit to `/etc/systemd/system/`, optionally create `/etc/default/beetle`, then run `systemctl daemon-reload` and `systemctl enable --now beetle`.
 - **Startup order**: the unit uses `After=local-fs.target` and `Wants=network-pre.target` only — **not** `network-online.target`. Beetle manages `wpa_supplicant` / `hostapd` itself; waiting for “full internet” can deadlock with `NetworkManager-wait-online` on devices where the wlan is not yet up at that point.
 - **NetworkManager conflict**: if NetworkManager (or another manager) **owns the same wlan interface**, pick one — either disable NM for that iface or do not run Beetle’s Linux WiFi stack on it. Two controllers on one radio will race.
 
 Environment
 -------------
-- Optional `EnvironmentFile=-/etc/default/beetle` (uncomment in the unit) for e.g. `BEETLE_STATE_ROOT=/var/lib/beetle`.
+- Optional `/etc/default/beetle` can set e.g. `BEETLE_STATE_ROOT=/var/lib/beetle` and `BEETLE_CONFIG_HTTP_LISTEN=127.0.0.1:8080`.
 
 Permissions
 -----------

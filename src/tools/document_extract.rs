@@ -89,7 +89,7 @@ impl Tool for DocumentExtractTool {
                 return Err(Error::config(
                     "tool_document_extract",
                     "mode must be one of: lines, section, json_field",
-                ))
+                ));
             }
         }?;
 

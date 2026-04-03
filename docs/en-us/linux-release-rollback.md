@@ -30,6 +30,12 @@ A common manual layout is:
 - state stored under `BEETLE_STATE_ROOT` or the default Linux state path
 
 Follow the `README.txt` shipped inside the bundle.
+Today, `./build.sh --deploy-linux` maintains this layout on the target:
+
+- `/opt/beetle/releases/<release>/`
+- `/opt/beetle/current` pointing to the active release
+- `/opt/beetle/beetle` as a compatibility shortcut to the active binary
+- `/var/lib/beetle` as the default state directory
 
 ## CI and Rollback
 

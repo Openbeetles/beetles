@@ -3,6 +3,9 @@ Description=Beetle agent (甲壳虫)
 # Self-managed WiFi/AP: do not order after network-online (NM wait-online can deadlock).
 After=local-fs.target
 Wants=network-pre.target
+# Use StartLimitInterval= (no "Sec") so units work on older systemd (e.g. <229) that lack StartLimitIntervalSec.
+StartLimitInterval=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -14,11 +17,11 @@ ExecStart=/opt/beetle/current/beetle
 # Recover from crashes; cap bursts so a broken binary does not spin forever.
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=300
-StartLimitBurst=5
 # State and SPIFFS-emulation paths (host): see README.txt for BEETLE_STATE_ROOT.
-# Optional: EnvironmentFile=-/etc/default/beetle
-ReadWritePaths=/var/lib/beetle /data/beetle
+EnvironmentFile=-/etc/default/beetle
+# Do not set ReadWritePaths= here: on embedded images it enables mount namespacing and fails with
+# status 226/NAMESPACE if a listed path (e.g. /data/beetle) does not exist. Harden with ProtectSystem=
+# + ReadWritePaths= only after mkdir those paths on your board.
 NoNewPrivileges=yes
 
 [Install]

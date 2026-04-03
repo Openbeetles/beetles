@@ -117,7 +117,7 @@ panic = "abort"
 # 使用: cargo build --profile release-size --target xtensa-esp32s3-espidf
 [profile.release-size]
 inherits = "release"
-opt-level = "s"
+opt-level = "z"
 
 # esp-idf-svc 0.52.1 未处理 esp_websocket_client（IDF 5.4+）的 WEBSOCKET_EVENT_BEGIN / WEBSOCKET_EVENT_FINISH，
 # 会导致 WebSocketEventType::new 返回 ESP_ERR_INVALID_ARG。上游合并后可删本 patch 与 third_party 副本。

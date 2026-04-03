@@ -33,6 +33,7 @@ Quick examples:
   ./build.sh
   TARGET=linux ./build.sh
   TARGET=linux-armv7 ./build.sh
+  TARGET=linux-aarch64 ./build.sh
   TARGET=esp ./build.sh
   TARGET=esp ./build.sh --flash
   ./build.sh --deploy-linux
@@ -57,6 +58,7 @@ MSG_SELECT_PLATFORM="Select build platform:"
 MSG_PLATFORM_ESP="ESP32-S3 Firmware (default)"
 MSG_PLATFORM_LINUX="Linux x86_64"
 MSG_PLATFORM_LINUX_ARMV7="Linux armv7 (32-bit ARM hard-float)"
+MSG_PLATFORM_LINUX_AARCH64="Linux aarch64 (64-bit ARM)"
 MSG_INPUT_OPTION="Enter option"
 MSG_PRESS_ENTER="press Enter for"
 MSG_INVALID_OPTION="Invalid option, enter"
@@ -199,15 +201,44 @@ linux_deploy_detect_binaries() {
     echo "${binaries[@]}"
 }
 
+linux_deploy_array_contains() {
+    local needle="$1"
+    shift
+    local item
+    for item in "$@"; do
+        if [ "$item" = "$needle" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Select architecture
 linux_deploy_select_arch() {
     local available=($(linux_deploy_detect_binaries))
+    local recommended_arch=""
 
     if [ ${#available[@]} -eq 0 ]; then
         echo -e "${RED}Error: No compiled binaries found${NC}"
         echo "Please run ./build.sh first"
         exit 1
     fi
+
+    case "${DEVICE_ARCH:-}" in
+        x86_64)
+            if linux_deploy_array_contains "x86_64" "${available[@]}"; then
+                recommended_arch="x86_64"
+            elif linux_deploy_array_contains "x86_64-gnu" "${available[@]}"; then
+                recommended_arch="x86_64-gnu"
+            fi
+            ;;
+        armv7l)
+            linux_deploy_array_contains "armv7" "${available[@]}" && recommended_arch="armv7"
+            ;;
+        aarch64)
+            linux_deploy_array_contains "aarch64" "${available[@]}" && recommended_arch="aarch64"
+            ;;
+    esac
 
     echo "Available builds:"
     local i=1
@@ -220,6 +251,9 @@ linux_deploy_select_arch() {
     if [ ${#available[@]} -eq 1 ]; then
         SELECTED_ARCH="${available[0]}"
         echo -e "${GREEN}Auto-selected: $SELECTED_ARCH${NC}"
+    elif [ -n "$recommended_arch" ]; then
+        SELECTED_ARCH="$recommended_arch"
+        echo -e "${GREEN}Auto-selected for device architecture ${DEVICE_ARCH}: $SELECTED_ARCH${NC}"
     else
         read -p "Select architecture [1-${#available[@]}]: " choice
         choice=${choice:-1}
@@ -256,6 +290,14 @@ linux_deploy_select_arch() {
 # Path: ~/.config/beetle/deploy-linux.defaults (mode 600).
 DEPLOY_DEFAULTS_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/beetle"
 DEPLOY_DEFAULTS_FILE="$DEPLOY_DEFAULTS_DIR/deploy-linux.defaults"
+DEPLOY_ROOT="/opt/beetle"
+DEPLOY_RELEASES_DIR="$DEPLOY_ROOT/releases"
+DEPLOY_CURRENT_LINK="$DEPLOY_ROOT/current"
+DEPLOY_COMPAT_BIN="$DEPLOY_ROOT/beetle"
+DEPLOY_STATE_DIR="/var/lib/beetle"
+DEPLOY_SERVICE_PATH="/etc/systemd/system/beetle.service"
+DEPLOY_INIT_PATH="/etc/init.d/beetle"
+DEPLOY_ENV_PATH="/etc/default/beetle"
 
 linux_deploy_load_deploy_defaults() {
     DEFAULT_DEVICE_IP=""
@@ -397,39 +439,140 @@ linux_deploy_detect_device_arch() {
     echo "Device architecture: $DEVICE_ARCH"
     echo "Operating system: $DEVICE_OS"
 
-    # Architecture match check
-    case "$DEVICE_ARCH" in
-        x86_64)
-            if [ "$SELECTED_ARCH" != "x86_64" ] && [ "$SELECTED_ARCH" != "x86_64-gnu" ]; then
-                echo -e "${YELLOW}⚠ Warning: Device is x86_64, but selected $SELECTED_ARCH${NC}"
-            fi
-            ;;
-        armv7l)
-            if [ "$SELECTED_ARCH" != "armv7" ]; then
-                echo -e "${YELLOW}⚠ Warning: Device is armv7l, but selected $SELECTED_ARCH${NC}"
-            fi
-            ;;
-        aarch64)
-            if [ "$SELECTED_ARCH" != "aarch64" ]; then
-                echo -e "${YELLOW}⚠ Warning: Device is aarch64, but selected $SELECTED_ARCH${NC}"
-            fi
-            ;;
-    esac
+    echo ""
+}
 
+linux_deploy_probe_remote_install_state() {
+    echo "========== Remote Install State =========="
+    echo ""
+
+    REMOTE_HAS_SYSTEMD=0
+    REMOTE_HAS_SERVICE=0
+    REMOTE_SERVICE_ACTIVE=0
+    REMOTE_SERVICE_ENABLED=0
+    REMOTE_HAS_CURRENT_BIN=0
+    REMOTE_HAS_COMPAT_BIN=0
+    REMOTE_CURRENT_TARGET=""
+
+    local out line key value
+    out=$(
+        ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" '
+            if command -v systemctl >/dev/null 2>&1; then
+                echo HAS_SYSTEMD=1
+            else
+                echo HAS_SYSTEMD=0
+            fi
+            if [ -e /etc/systemd/system/beetle.service ]; then
+                echo HAS_SERVICE=1
+            else
+                echo HAS_SERVICE=0
+            fi
+            if [ -x /opt/beetle/current/beetle ]; then
+                echo HAS_CURRENT_BIN=1
+            else
+                echo HAS_CURRENT_BIN=0
+            fi
+            if [ -x /opt/beetle/beetle ]; then
+                echo HAS_COMPAT_BIN=1
+            else
+                echo HAS_COMPAT_BIN=0
+            fi
+            if [ -L /opt/beetle/current ]; then
+                target=$(readlink -f /opt/beetle/current 2>/dev/null || readlink /opt/beetle/current 2>/dev/null || true)
+                echo CURRENT_TARGET=$target
+            else
+                echo CURRENT_TARGET=
+            fi
+            if command -v systemctl >/dev/null 2>&1 && [ -e /etc/systemd/system/beetle.service ]; then
+                if systemctl is-active --quiet beetle; then
+                    echo SERVICE_ACTIVE=1
+                else
+                    echo SERVICE_ACTIVE=0
+                fi
+                if systemctl is-enabled --quiet beetle 2>/dev/null; then
+                    echo SERVICE_ENABLED=1
+                else
+                    echo SERVICE_ENABLED=0
+                fi
+            else
+                echo SERVICE_ACTIVE=0
+                echo SERVICE_ENABLED=0
+            fi
+        ' 2>/dev/null
+    )
+
+    while IFS= read -r line; do
+        key=${line%%=*}
+        value=${line#*=}
+        case "$key" in
+            HAS_SYSTEMD) REMOTE_HAS_SYSTEMD=${value:-0} ;;
+            HAS_SERVICE) REMOTE_HAS_SERVICE=${value:-0} ;;
+            SERVICE_ACTIVE) REMOTE_SERVICE_ACTIVE=${value:-0} ;;
+            SERVICE_ENABLED) REMOTE_SERVICE_ENABLED=${value:-0} ;;
+            HAS_CURRENT_BIN) REMOTE_HAS_CURRENT_BIN=${value:-0} ;;
+            HAS_COMPAT_BIN) REMOTE_HAS_COMPAT_BIN=${value:-0} ;;
+            CURRENT_TARGET) REMOTE_CURRENT_TARGET=$value ;;
+        esac
+    done <<<"$out"
+
+    if [ "$REMOTE_HAS_SYSTEMD" = "1" ]; then
+        echo "  Service manager: systemd"
+    else
+        echo "  Service manager: none detected"
+    fi
+    if [ "$REMOTE_HAS_SERVICE" = "1" ]; then
+        echo "  beetle.service: present"
+    else
+        echo "  beetle.service: missing"
+    fi
+    if [ "$REMOTE_HAS_CURRENT_BIN" = "1" ]; then
+        echo "  Current release: $DEPLOY_CURRENT_LINK"
+    else
+        echo "  Current release: missing"
+    fi
+    if [ -n "$REMOTE_CURRENT_TARGET" ]; then
+        echo "  Current target: $REMOTE_CURRENT_TARGET"
+    fi
+    if [ "$REMOTE_HAS_COMPAT_BIN" = "1" ]; then
+        echo "  Compat binary: $DEPLOY_COMPAT_BIN present"
+    fi
+    if [ "$REMOTE_HAS_SERVICE" = "1" ]; then
+        if [ "$REMOTE_SERVICE_ACTIVE" = "1" ]; then
+            echo "  Service status: active"
+        elif [ "$REMOTE_SERVICE_ENABLED" = "1" ]; then
+            echo "  Service status: installed but not running"
+        else
+            echo "  Service status: installed and disabled/stopped"
+        fi
+    fi
     echo ""
 }
 
 # Select deployment mode
 linux_deploy_select_deploy_mode() {
+    local default_mode="2"
+    if [ "${REMOTE_HAS_SERVICE:-0}" = "1" ] || [ "${REMOTE_HAS_CURRENT_BIN:-0}" = "1" ] || [ "${REMOTE_HAS_COMPAT_BIN:-0}" = "1" ]; then
+        default_mode="3"
+    fi
+
     echo "========== Deployment Mode =========="
     echo ""
-    echo "  1) Quick deploy (binary only)"
-    echo "  2) Full deploy (binary + systemd service)"
-    echo "  3) Update binary only"
+    echo "  1) Quick deploy (binary only; do not touch services)"
+    echo "  2) Full deploy (install/refresh service, enable + start)"
+    echo "  3) Smart update (replace binary; restart existing service when appropriate)"
+    echo ""
+    if [ "$default_mode" = "3" ]; then
+        echo "Detected an existing beetle install on the device; defaulting to smart update."
+    else
+        echo "No existing beetle install detected; defaulting to full deploy."
+    fi
+    if [ "${REMOTE_HAS_SYSTEMD:-0}" != "1" ]; then
+        echo "systemd was not detected; full deploy will install the SysV init example when possible."
+    fi
     echo ""
 
-    read -p "Select mode [1-3] (default 2): " mode
-    DEPLOY_MODE=${mode:-2}
+    read -p "Select mode [1-3] (default ${default_mode}): " mode
+    DEPLOY_MODE=${mode:-$default_mode}
     echo ""
 }
 
@@ -542,25 +685,36 @@ linux_deploy_upload_files() {
     echo "========== Uploading Files =========="
     echo ""
 
-    echo "Creating directories..."
-    ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
-        "mkdir -p /opt/beetle /opt/beetle/bin /var/lib/beetle"
+    DEPLOY_RELEASE_NAME="${BEETLE_DEPLOY_RELEASE_NAME:-$(date +%Y%m%d-%H%M%S)-$SELECTED_ARCH}"
+    REMOTE_TMP_BIN="/tmp/beetle-${DEPLOY_RELEASE_NAME}.bin"
+    REMOTE_TMP_SERVICE="/tmp/beetle-${DEPLOY_RELEASE_NAME}.service"
+    REMOTE_TMP_INIT="/tmp/beetle-${DEPLOY_RELEASE_NAME}.init"
+    REMOTE_TMP_ENV="/tmp/beetle-${DEPLOY_RELEASE_NAME}.env"
+    REMOTE_TMP_README="/tmp/beetle-${DEPLOY_RELEASE_NAME}.README.txt"
+    REMOTE_TMP_HWJSON="/tmp/beetle-${DEPLOY_RELEASE_NAME}.hardware.json"
 
     linux_deploy_upload_embed_deps
 
-    echo "Uploading binary..."
+    echo "Uploading release payload for ${DEPLOY_RELEASE_NAME} ..."
     scp "${SSH_MUX_OPTS[@]}" -P "$SSH_PORT" "$BINARY_PATH" \
-        "${DEVICE_USER}@${DEVICE_IP}:/opt/beetle/beetle"
+        "${DEVICE_USER}@${DEVICE_IP}:${REMOTE_TMP_BIN}"
+    scp "${SSH_MUX_OPTS[@]}" -P "$SSH_PORT" packaging/linux/README.txt \
+        "${DEVICE_USER}@${DEVICE_IP}:${REMOTE_TMP_README}"
+    scp "${SSH_MUX_OPTS[@]}" -P "$SSH_PORT" packaging/linux/hardware.json.example \
+        "${DEVICE_USER}@${DEVICE_IP}:${REMOTE_TMP_HWJSON}"
 
     if [ "$DEPLOY_MODE" = "2" ]; then
-        echo "Uploading systemd service..."
+        echo "Uploading service templates..."
         scp "${SSH_MUX_OPTS[@]}" -P "$SSH_PORT" packaging/linux/beetle.service \
-            "${DEVICE_USER}@${DEVICE_IP}:/tmp/"
+            "${DEVICE_USER}@${DEVICE_IP}:${REMOTE_TMP_SERVICE}"
+        scp "${SSH_MUX_OPTS[@]}" -P "$SSH_PORT" packaging/linux/beetle.init \
+            "${DEVICE_USER}@${DEVICE_IP}:${REMOTE_TMP_INIT}"
+        scp "${SSH_MUX_OPTS[@]}" -P "$SSH_PORT" packaging/linux/beetle.env.example \
+            "${DEVICE_USER}@${DEVICE_IP}:${REMOTE_TMP_ENV}"
     fi
 
     echo -e "${GREEN}✓ Upload complete${NC}"
     echo ""
-    linux_deploy_report_wifi_tools_on_device
 }
 
 # Shell-side check: script never "extracts from firmware"; it only uploads files you placed
@@ -602,18 +756,179 @@ linux_deploy_report_wifi_tools_on_device() {
     fi
 }
 
-# Install service
-linux_deploy_install_service() {
-    echo "========== Installing Service =========="
+# Install release layout and optional service templates
+linux_deploy_install_payloads() {
+    echo "========== Installing Payload =========="
     echo ""
 
-    ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" << 'REMOTE_EOF'
-chmod +x /opt/beetle/beetle
+    ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
+        "DEPLOY_ROOT='$DEPLOY_ROOT' DEPLOY_RELEASES_DIR='$DEPLOY_RELEASES_DIR' DEPLOY_CURRENT_LINK='$DEPLOY_CURRENT_LINK' DEPLOY_COMPAT_BIN='$DEPLOY_COMPAT_BIN' DEPLOY_STATE_DIR='$DEPLOY_STATE_DIR' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' DEPLOY_INIT_PATH='$DEPLOY_INIT_PATH' DEPLOY_ENV_PATH='$DEPLOY_ENV_PATH' DEPLOY_RELEASE_NAME='$DEPLOY_RELEASE_NAME' REMOTE_TMP_BIN='$REMOTE_TMP_BIN' REMOTE_TMP_SERVICE='$REMOTE_TMP_SERVICE' REMOTE_TMP_INIT='$REMOTE_TMP_INIT' REMOTE_TMP_ENV='$REMOTE_TMP_ENV' REMOTE_TMP_README='$REMOTE_TMP_README' REMOTE_TMP_HWJSON='$REMOTE_TMP_HWJSON' sh -s" << 'REMOTE_EOF'
+set -eu
 
-if [ -f /tmp/beetle.service ]; then
-    cp /tmp/beetle.service /etc/systemd/system/
-    systemctl daemon-reload
-    echo "✓ systemd service installed"
+release_dir="$DEPLOY_RELEASES_DIR/$DEPLOY_RELEASE_NAME"
+mkdir -p "$DEPLOY_RELEASES_DIR" "$DEPLOY_ROOT/bin" "$DEPLOY_STATE_DIR" "$DEPLOY_STATE_DIR/config"
+chmod 700 "$DEPLOY_STATE_DIR" "$DEPLOY_STATE_DIR/config" 2>/dev/null || true
+
+if [ -e "$release_dir" ]; then
+    rm -rf "$release_dir"
+fi
+mkdir -p "$release_dir"
+
+[ -f "$REMOTE_TMP_BIN" ] || {
+    echo "Uploaded binary missing: $REMOTE_TMP_BIN" >&2
+    exit 1
+}
+
+if [ -x "$DEPLOY_CURRENT_LINK/beetle" ]; then
+    cp -pf "$DEPLOY_CURRENT_LINK/beetle" "$DEPLOY_ROOT/beetle.prev" || true
+elif [ -x "$DEPLOY_COMPAT_BIN" ] && [ ! -L "$DEPLOY_COMPAT_BIN" ]; then
+    cp -pf "$DEPLOY_COMPAT_BIN" "$DEPLOY_ROOT/beetle.prev" || true
+fi
+
+chmod 755 "$REMOTE_TMP_BIN"
+mv "$REMOTE_TMP_BIN" "$release_dir/beetle"
+
+if [ -f "$REMOTE_TMP_README" ]; then
+    mv "$REMOTE_TMP_README" "$release_dir/README.txt"
+fi
+if [ -f "$REMOTE_TMP_HWJSON" ]; then
+    mv "$REMOTE_TMP_HWJSON" "$release_dir/hardware.json.example"
+    if [ ! -f "$DEPLOY_STATE_DIR/config/hardware.json.example" ]; then
+        cp -f "$release_dir/hardware.json.example" "$DEPLOY_STATE_DIR/config/hardware.json.example"
+    fi
+fi
+
+if [ -e "$DEPLOY_CURRENT_LINK" ] && [ ! -L "$DEPLOY_CURRENT_LINK" ]; then
+    rm -rf "$DEPLOY_CURRENT_LINK"
+fi
+ln -sfn "$release_dir" "$DEPLOY_CURRENT_LINK"
+ln -sfn "$DEPLOY_CURRENT_LINK/beetle" "$DEPLOY_COMPAT_BIN"
+if [ -f "$release_dir/README.txt" ]; then
+    ln -sfn "$DEPLOY_CURRENT_LINK/README.txt" "$DEPLOY_ROOT/README.txt"
+fi
+
+if [ -f "$REMOTE_TMP_SERVICE" ]; then
+    mv "$REMOTE_TMP_SERVICE" "$DEPLOY_SERVICE_PATH"
+    chmod 644 "$DEPLOY_SERVICE_PATH"
+fi
+if [ -f "$REMOTE_TMP_INIT" ] && [ -d /etc/init.d ]; then
+    mv "$REMOTE_TMP_INIT" "$DEPLOY_INIT_PATH"
+    chmod 755 "$DEPLOY_INIT_PATH"
+fi
+if [ -f "$REMOTE_TMP_ENV" ]; then
+    if [ ! -f "$DEPLOY_ENV_PATH" ]; then
+        mv "$REMOTE_TMP_ENV" "$DEPLOY_ENV_PATH"
+        chmod 644 "$DEPLOY_ENV_PATH"
+    else
+        rm -f "$REMOTE_TMP_ENV"
+    fi
+fi
+
+rm -f "$REMOTE_TMP_SERVICE" "$REMOTE_TMP_INIT" "$REMOTE_TMP_ENV" "$REMOTE_TMP_README" "$REMOTE_TMP_HWJSON"
+
+echo "✓ Installed release: $release_dir"
+echo "✓ Current symlink: $DEPLOY_CURRENT_LINK -> $release_dir"
+REMOTE_EOF
+
+    echo ""
+}
+
+linux_deploy_manage_service() {
+    echo "========== Service Handling =========="
+    echo ""
+
+    if [ "$DEPLOY_MODE" = "1" ]; then
+        echo "Quick deploy selected; skipping service changes."
+        echo ""
+        return 0
+    fi
+
+    ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
+        "DEPLOY_MODE='$DEPLOY_MODE' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' DEPLOY_INIT_PATH='$DEPLOY_INIT_PATH' sh -s" << 'REMOTE_EOF'
+set -eu
+
+if command -v systemctl >/dev/null 2>&1; then
+    if [ "$DEPLOY_MODE" = "2" ]; then
+        if [ ! -f "$DEPLOY_SERVICE_PATH" ]; then
+            echo "Expected service file missing: $DEPLOY_SERVICE_PATH" >&2
+            exit 1
+        fi
+        systemctl daemon-reload
+        systemctl enable beetle >/dev/null 2>&1 || true
+        if systemctl is-active --quiet beetle; then
+            systemctl restart beetle
+            echo "✓ beetle service restarted"
+        else
+            systemctl start beetle
+            echo "✓ beetle service started"
+        fi
+    elif [ -f "$DEPLOY_SERVICE_PATH" ]; then
+        systemctl daemon-reload
+        if systemctl is-active --quiet beetle; then
+            systemctl restart beetle
+            echo "✓ beetle service restarted"
+        elif systemctl is-enabled --quiet beetle 2>/dev/null; then
+            systemctl start beetle
+            echo "✓ beetle service started"
+        else
+            echo "beetle.service exists but is disabled/stopped; left unchanged."
+        fi
+    else
+        echo "No beetle.service on device; binary updated only."
+    fi
+elif [ "$DEPLOY_MODE" = "2" ] && [ -f "$DEPLOY_INIT_PATH" ]; then
+    echo "systemd not detected; installed init example at $DEPLOY_INIT_PATH"
+else
+    echo "No service manager automation available; binary updated only."
+fi
+REMOTE_EOF
+
+    echo ""
+}
+
+linux_deploy_verify_remote_install() {
+    echo "========== Remote Verification =========="
+    echo ""
+
+    ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
+        "DEPLOY_ROOT='$DEPLOY_ROOT' DEPLOY_CURRENT_LINK='$DEPLOY_CURRENT_LINK' DEPLOY_COMPAT_BIN='$DEPLOY_COMPAT_BIN' DEPLOY_STATE_DIR='$DEPLOY_STATE_DIR' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' sh -s" << 'REMOTE_EOF'
+set -eu
+
+echo "Paths:"
+if [ -L "$DEPLOY_CURRENT_LINK" ]; then
+    target=$(readlink -f "$DEPLOY_CURRENT_LINK" 2>/dev/null || readlink "$DEPLOY_CURRENT_LINK" 2>/dev/null || true)
+    echo "  current -> ${target:-$DEPLOY_CURRENT_LINK}"
+else
+    echo "  current -> (missing)"
+fi
+if [ -e "$DEPLOY_COMPAT_BIN" ]; then
+    ls -l "$DEPLOY_COMPAT_BIN"
+else
+    echo "  compat binary -> missing"
+fi
+if [ -e "$DEPLOY_SERVICE_PATH" ]; then
+    echo "  service file -> $DEPLOY_SERVICE_PATH"
+fi
+if [ -d "$DEPLOY_STATE_DIR" ]; then
+    echo "  state dir -> $DEPLOY_STATE_DIR"
+fi
+echo ""
+
+if command -v systemctl >/dev/null 2>&1 && [ -f "$DEPLOY_SERVICE_PATH" ]; then
+    if systemctl is-active --quiet beetle; then
+        echo "Service: active"
+    elif systemctl is-enabled --quiet beetle 2>/dev/null; then
+        echo "Service: installed but not running"
+    else
+        echo "Service: installed and disabled/stopped"
+    fi
+    echo ""
+    systemctl --no-pager --full status beetle 2>&1 | sed -n "1,12p" || true
+    if ! systemctl is-active --quiet beetle; then
+        echo ""
+        echo "Recent journal:"
+        journalctl -u beetle -n 20 --no-pager 2>&1 || true
+    fi
 fi
 REMOTE_EOF
 
@@ -633,17 +948,33 @@ linux_deploy_show_next_steps() {
         echo "  Beetle looks there first — you do not need to edit PATH on the device for these."
         echo ""
     fi
-    echo "  1. Start beetle:"
-    echo "     - With systemd: systemctl start beetle"
-    echo "     - Without systemd: ssh -p $SSH_PORT ${DEVICE_USER}@${DEVICE_IP}"
-    echo "       then: nohup /opt/beetle/beetle >> /var/log/beetle.log 2>&1 &"
+    echo "  1. Main paths:"
+    echo "     - Current release: $DEPLOY_CURRENT_LINK"
+    echo "     - Binary shortcut: $DEPLOY_COMPAT_BIN"
+    echo "     - State directory: $DEPLOY_STATE_DIR"
+    echo "     - Service config: $DEPLOY_SERVICE_PATH"
     echo ""
-    echo "  2. Configure WiFi (after WiFi stack works):"
+    echo "  2. Start beetle manually if needed:"
+    echo "     - Direct run: $DEPLOY_COMPAT_BIN"
+    echo "     - Or: nohup $DEPLOY_COMPAT_BIN >> /var/log/beetle.log 2>&1 &"
+    echo ""
+    if [ "${REMOTE_HAS_SYSTEMD:-0}" = "1" ] && [ "${REMOTE_HAS_SERVICE:-0}" = "1" ]; then
+        if [ "${REMOTE_SERVICE_ACTIVE:-0}" = "1" ]; then
+            echo "  3. systemd service is already active; restart if needed:"
+            echo "     systemctl restart beetle"
+        elif [ "${REMOTE_SERVICE_ENABLED:-0}" = "1" ]; then
+            echo "  3. systemd service is installed but currently stopped:"
+            echo "     systemctl start beetle"
+        else
+            echo "  3. systemd service is installed but disabled:"
+            echo "     systemctl enable --now beetle"
+        fi
+        echo ""
+        echo "  4. Configure WiFi (after WiFi stack works):"
+    else
+        echo "  3. Configure WiFi (after WiFi stack works):"
+    fi
     echo "     Hotspot SSID Beetle → http://DEVICE_IP/ (or http://192.168.4.1 on SoftAP)"
-    echo ""
-    echo "Configuration files:"
-    echo "  - State directory: /var/lib/beetle"
-    echo "  - Service config: /etc/systemd/system/beetle.service"
     echo ""
 }
 
@@ -654,22 +985,22 @@ linux_deploy_main() {
     echo "  Beetle Linux Deployment"
     echo "=========================================="
     echo ""
-    linux_deploy_select_arch
-    linux_deploy_fetch_embed_deps_from_url
     linux_deploy_input_device_info
     linux_deploy_setup_ssh_mux
     trap linux_deploy_cleanup_ssh_mux EXIT INT TERM
     linux_deploy_test_connection
     linux_deploy_detect_device_arch
+    linux_deploy_select_arch
+    linux_deploy_fetch_embed_deps_from_url
+    linux_deploy_probe_remote_install_state
     linux_deploy_select_deploy_mode
     linux_deploy_prompt_wifi_helpers_or_continue
     linux_deploy_upload_files
-
-    if [ "$DEPLOY_MODE" = "2" ]; then
-        linux_deploy_install_service
-    fi
-
+    linux_deploy_install_payloads
+    linux_deploy_manage_service
+    linux_deploy_report_wifi_tools_on_device
     linux_deploy_show_next_steps
+    linux_deploy_verify_remote_install
 }
 
 
@@ -693,6 +1024,10 @@ run_linux_docker_build() {
     docker run --rm -v "$SCRIPT_ROOT":/home/rust/src -w /home/rust/src \
       messense/rust-musl-cross:armv7-musleabihf \
       cargo build --release --target armv7-unknown-linux-musleabihf
+  elif [[ "$target" == "aarch64-unknown-linux-musl" ]]; then
+    docker run --rm -v "$SCRIPT_ROOT":/home/rust/src -w /home/rust/src \
+      messense/rust-musl-cross:aarch64-musl \
+      cargo build --release --target aarch64-unknown-linux-musl
   else
     echo "Error: Docker build not supported for target: $target" >&2
     exit 1
@@ -705,7 +1040,8 @@ select_build_platform() {
       esp|esp32) PLATFORM_CHOICE=1; return 0 ;;  # ESP32
       linux) PLATFORM_CHOICE=2; return 0 ;;      # Linux
       linux-armv7|armv7) PLATFORM_CHOICE=3; return 0 ;;
-      *) echo "Error: Unknown TARGET=$TARGET. Use 'esp', 'linux', or 'linux-armv7'" >&2; exit 1 ;;
+      linux-aarch64|aarch64) PLATFORM_CHOICE=4; return 0 ;;
+      *) echo "Error: Unknown TARGET=$TARGET. Use 'esp', 'linux', 'linux-armv7', or 'linux-aarch64'" >&2; exit 1 ;;
     esac
   fi
 
@@ -724,16 +1060,18 @@ select_build_platform() {
   echo "  1) $MSG_PLATFORM_ESP"
   echo "  2) $MSG_PLATFORM_LINUX"
   echo "  3) $MSG_PLATFORM_LINUX_ARMV7"
+  echo "  4) $MSG_PLATFORM_LINUX_AARCH64"
   echo ""
 
   while true; do
-    read -r -p "$MSG_INPUT_OPTION [1-3] ($MSG_PRESS_ENTER 1): " choice
+    read -r -p "$MSG_INPUT_OPTION [1-4] ($MSG_PRESS_ENTER 1): " choice
     choice=${choice:-1}
     case "$choice" in
       1) PLATFORM_CHOICE=1; return 0 ;;
       2) PLATFORM_CHOICE=2; return 0 ;;
       3) PLATFORM_CHOICE=3; return 0 ;;
-      *) echo "$MSG_INVALID_OPTION 1, 2, or 3" ;;
+      4) PLATFORM_CHOICE=4; return 0 ;;
+      *) echo "$MSG_INVALID_OPTION 1, 2, 3, or 4" ;;
     esac
   done
 }
@@ -742,12 +1080,14 @@ select_build_platform() {
 PLATFORM_CHOICE=1
 select_build_platform
 
-if [[ $PLATFORM_CHOICE -eq 2 || $PLATFORM_CHOICE -eq 3 ]]; then
+if [[ $PLATFORM_CHOICE -eq 2 || $PLATFORM_CHOICE -eq 3 || $PLATFORM_CHOICE -eq 4 ]]; then
   # Linux 构建
   echo ""
   echo "========== $MSG_LINUX_MODE =========="
   if [[ $PLATFORM_CHOICE -eq 3 ]]; then
     BUILD_TARGET="armv7-unknown-linux-musleabihf"
+  elif [[ $PLATFORM_CHOICE -eq 4 ]]; then
+    BUILD_TARGET="aarch64-unknown-linux-musl"
   fi
 
   # 检测当前系统
@@ -764,9 +1104,12 @@ if [[ $PLATFORM_CHOICE -eq 2 || $PLATFORM_CHOICE -eq 3 ]]; then
     if [[ $PLATFORM_CHOICE -eq 2 ]]; then
       BUILD_TARGET="x86_64-unknown-linux-musl"
       LOCAL_LINKER_CMD="x86_64-linux-musl-gcc"
-    else
+    elif [[ $PLATFORM_CHOICE -eq 3 ]]; then
       BUILD_TARGET="armv7-unknown-linux-musleabihf"
       LOCAL_LINKER_CMD="arm-linux-musleabihf-gcc"
+    else
+      BUILD_TARGET="aarch64-unknown-linux-musl"
+      LOCAL_LINKER_CMD="aarch64-linux-musl-gcc"
     fi
 
     # Docker CLI alone is not enough (Desktop may be off); require a running daemon for auto mode.
@@ -1251,6 +1594,21 @@ if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then
         exit 1
       fi
     fi
+    if [[ "$BUILD_TARGET" == "aarch64-unknown-linux-musl" ]] && ! command -v aarch64-linux-musl-gcc &>/dev/null; then
+      echo ""
+      echo "========== Installing musl-cross toolchain =========="
+      echo "  aarch64-linux-musl-gcc not found."
+      if command -v brew &>/dev/null; then
+        echo "  Installing via Homebrew..."
+        brew install filosottile/musl-cross/musl-cross
+      else
+        echo "Error: Neither Docker nor musl-cross found." >&2
+        echo "Install one of:" >&2
+        echo "  - Docker: https://www.docker.com/products/docker-desktop" >&2
+        echo "  - musl-cross: brew install filosottile/musl-cross/musl-cross" >&2
+        exit 1
+      fi
+    fi
 
     if [[ "$BUILD_TARGET" == "x86_64-unknown-linux-musl" ]] && ! command -v x86_64-linux-musl-gcc &>/dev/null; then
       echo "Error: x86_64-linux-musl-gcc is still not available after installation." >&2
@@ -1261,6 +1619,12 @@ if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then
     if [[ "$BUILD_TARGET" == "armv7-unknown-linux-musleabihf" ]] && ! command -v arm-linux-musleabihf-gcc &>/dev/null; then
       echo "Error: arm-linux-musleabihf-gcc is still not available after installation." >&2
       echo "Hint: restart your shell and verify with: arm-linux-musleabihf-gcc --version" >&2
+      echo "Or choose Docker build mode to avoid local linker setup." >&2
+      exit 1
+    fi
+    if [[ "$BUILD_TARGET" == "aarch64-unknown-linux-musl" ]] && ! command -v aarch64-linux-musl-gcc &>/dev/null; then
+      echo "Error: aarch64-linux-musl-gcc is still not available after installation." >&2
+      echo "Hint: restart your shell and verify with: aarch64-linux-musl-gcc --version" >&2
       echo "Or choose Docker build mode to avoid local linker setup." >&2
       exit 1
     fi
@@ -1302,6 +1666,24 @@ EOF
       fi
       # Also export linker env to avoid any stale/global Cargo config precedence issues.
       export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER="arm-linux-musleabihf-gcc"
+    fi
+    if [[ "$BUILD_TARGET" == "aarch64-unknown-linux-musl" ]]; then
+      mkdir -p .cargo
+      if ! grep -q "aarch64-unknown-linux-musl" .cargo/config.toml 2>/dev/null; then
+        cat >> .cargo/config.toml << 'EOF'
+
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-linux-musl-gcc"
+EOF
+        echo "  Configured aarch64 musl linker in .cargo/config.toml"
+      fi
+      if ! grep -q 'linker = "aarch64-linux-musl-gcc"' .cargo/config.toml 2>/dev/null; then
+        cat >> .cargo/config.toml << 'EOF'
+linker = "aarch64-linux-musl-gcc"
+EOF
+        echo "  Added linker for aarch64 musl target in .cargo/config.toml"
+      fi
+      export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="aarch64-linux-musl-gcc"
     fi
   fi
 
@@ -1417,6 +1799,13 @@ if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then
       echo "  1) Prefer Docker mode for armv7 (recommended)." >&2
       echo "  2) Ensure target is installed on stable toolchain:" >&2
       echo "     rustup +stable target add armv7-unknown-linux-musleabihf" >&2
+    elif [[ "$BUILD_TARGET" == "aarch64-unknown-linux-musl" ]] && [[ "$(uname -s)" == "Darwin" ]]; then
+      echo "Common fixes on macOS (aarch64):" >&2
+      echo "  1) Prefer Docker mode for aarch64 (recommended)." >&2
+      echo "  2) Ensure target is installed on stable toolchain:" >&2
+      echo "     rustup +stable target add aarch64-unknown-linux-musl" >&2
+      echo "  3) Ensure musl linker is available:" >&2
+      echo "     aarch64-linux-musl-gcc --version" >&2
     fi
     exit 1
   fi

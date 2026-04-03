@@ -36,7 +36,9 @@ import {
   apiUrlAfterProviderChange,
   DEFAULT_LLM_PROVIDER,
   defaultApiUrlForProvider,
+  defaultModelForProvider,
   LLM_PROVIDER_VALUES,
+  modelAfterProviderChange,
   type LlmProviderValue,
 } from "../constants/llmProviders";
 
@@ -194,7 +196,7 @@ export function AIConfigPage() {
         {
           provider: DEFAULT_LLM_PROVIDER,
           api_key: "",
-          model: "",
+          model: defaultModelForProvider(DEFAULT_LLM_PROVIDER),
           api_url: defaultApiUrlForProvider(DEFAULT_LLM_PROVIDER),
         },
       ],
@@ -233,6 +235,7 @@ export function AIConfigPage() {
       next[i] = {
         ...cur,
         provider: newP,
+        model: modelAfterProviderChange(cur.model, cur.provider, newP),
         api_url: apiUrlAfterProviderChange(cur.api_url, cur.provider, newP),
       };
       return { ...prev, sources: next };
@@ -429,6 +432,7 @@ export function AIConfigPage() {
                   onChange={(e) => updateSource(i, "model", e.target.value)}
                   size="small"
                   fullWidth
+                  placeholder={defaultModelForProvider(row.provider)}
                   slotProps={{ htmlInput: { maxLength: MAX_LEN } }}
                 />
                 <TextField

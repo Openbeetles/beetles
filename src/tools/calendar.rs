@@ -8,9 +8,10 @@ use crate::calendar::{
 };
 
 use crate::error::{Error, Result};
-use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
+use crate::tools::{parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata};
 use crate::util::{current_unix_secs, parse_iso8601};
-use serde_json::{json, Value};
+use serde::Serialize;
+use serde_json::Value;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -19,6 +20,58 @@ static EVENT_SEQ: AtomicU32 = AtomicU32::new(1);
 
 pub struct CalendarTool {
     service: CalendarService,
+}
+
+#[derive(Serialize)]
+struct CalendarProviderStatusResponse {
+    op: &'static str,
+    local_provider: &'static str,
+    registered_remote_providers: Vec<String>,
+    configured_providers: Vec<CalendarProviderCredentialStatus>,
+}
+
+#[derive(Serialize)]
+struct CalendarListResponse {
+    op: &'static str,
+    provider: String,
+    count: usize,
+    items: Vec<CalendarEvent>,
+}
+
+#[derive(Serialize)]
+struct CalendarGetResponse {
+    op: &'static str,
+    provider: String,
+    event: CalendarEvent,
+}
+
+#[derive(Serialize)]
+struct CalendarMutationResponse {
+    op: &'static str,
+    ok: bool,
+    provider: String,
+    event: CalendarEvent,
+}
+
+#[derive(Serialize)]
+struct CalendarUpdateResponse {
+    op: &'static str,
+    ok: bool,
+    provider: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    updated_fields: Vec<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    event: Option<CalendarEvent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+struct CalendarDeleteResponse<'a> {
+    op: &'static str,
+    provider: String,
+    id: &'a str,
+    ok: bool,
 }
 
 impl CalendarTool {
@@ -66,19 +119,20 @@ impl Tool for CalendarTool {
         match op {
             "provider_status" => {
                 let registered_remote_providers = self.service.provider_names();
-                let configured_providers = self
-                    .service
-                    .list_provider_statuses()?
+                let registered_remote_providers = registered_remote_providers
                     .into_iter()
-                    .map(provider_status_to_json)
+                    .map(str::to_string)
                     .collect::<Vec<_>>();
-                Ok(json!({
-                    "op": "provider_status",
-                    "local_provider": CALENDAR_PROVIDER_LOCAL,
-                    "registered_remote_providers": registered_remote_providers,
-                    "configured_providers": configured_providers,
-                })
-                .to_string())
+                let configured_providers = self.service.list_provider_statuses()?;
+                serialize_tool_output(
+                    "tool_calendar",
+                    &CalendarProviderStatusResponse {
+                        op: "provider_status",
+                        local_provider: CALENDAR_PROVIDER_LOCAL,
+                        registered_remote_providers,
+                        configured_providers,
+                    },
+                )
             }
             "list" => {
                 let provider = parse_provider(&obj);
@@ -96,15 +150,15 @@ impl Tool for CalendarTool {
                 let items = with_calendar_http(&provider, ctx, |http| {
                     self.service.list(http, &provider, query)
                 })?;
-                let count = items.len();
-                let items = items.into_iter().map(event_to_json).collect::<Vec<_>>();
-                Ok(json!({
-                    "op": "list",
-                    "provider": provider,
-                    "count": count,
-                    "items": items,
-                })
-                .to_string())
+                serialize_tool_output(
+                    "tool_calendar",
+                    &CalendarListResponse {
+                        op: "list",
+                        provider,
+                        count: items.len(),
+                        items,
+                    },
+                )
             }
             "get" => {
                 let provider = parse_provider(&obj);
@@ -113,12 +167,14 @@ impl Tool for CalendarTool {
                     self.service.get(http, &provider, id)
                 })?
                 .ok_or_else(|| Error::config("tool_calendar", "event not found"))?;
-                Ok(json!({
-                    "op": "get",
-                    "provider": provider,
-                    "event": event_to_json(event),
-                })
-                .to_string())
+                serialize_tool_output(
+                    "tool_calendar",
+                    &CalendarGetResponse {
+                        op: "get",
+                        provider,
+                        event,
+                    },
+                )
             }
             "create" => {
                 let provider = parse_provider(&obj);
@@ -143,13 +199,15 @@ impl Tool for CalendarTool {
                 let event = with_calendar_http(&provider, ctx, |http| {
                     self.service.upsert(http, &provider, &event, true)
                 })?;
-                Ok(json!({
-                    "op": "create",
-                    "ok": true,
-                    "provider": provider,
-                    "event": event_to_json(event),
-                })
-                .to_string())
+                serialize_tool_output(
+                    "tool_calendar",
+                    &CalendarMutationResponse {
+                        op: "create",
+                        ok: true,
+                        provider,
+                        event,
+                    },
+                )
             }
             "update" => {
                 let provider = parse_provider(&obj);
@@ -192,13 +250,17 @@ impl Tool for CalendarTool {
                     updated.push("status");
                 }
                 if updated.is_empty() {
-                    return Ok(json!({
-                        "op": "update",
-                        "ok": false,
-                        "provider": provider,
-                        "error": "no fields to update",
-                    })
-                    .to_string());
+                    return serialize_tool_output(
+                        "tool_calendar",
+                        &CalendarUpdateResponse {
+                            op: "update",
+                            ok: false,
+                            provider,
+                            updated_fields: Vec::new(),
+                            event: None,
+                            error: Some("no fields to update"),
+                        },
+                    );
                 }
                 event.provider = provider.clone();
                 event.updated_at = current_unix_secs();
@@ -206,14 +268,17 @@ impl Tool for CalendarTool {
                 let event = with_calendar_http(&provider, ctx, |http| {
                     self.service.upsert(http, &provider, &event, false)
                 })?;
-                Ok(json!({
-                    "op": "update",
-                    "ok": true,
-                    "provider": provider,
-                    "updated_fields": updated,
-                    "event": event_to_json(event),
-                })
-                .to_string())
+                serialize_tool_output(
+                    "tool_calendar",
+                    &CalendarUpdateResponse {
+                        op: "update",
+                        ok: true,
+                        provider,
+                        updated_fields: updated,
+                        event: Some(event),
+                        error: None,
+                    },
+                )
             }
             "delete" => {
                 let provider = parse_provider(&obj);
@@ -221,13 +286,15 @@ impl Tool for CalendarTool {
                 let removed = with_calendar_http(&provider, ctx, |http| {
                     self.service.delete(http, &provider, id)
                 })?;
-                Ok(json!({
-                    "op": "delete",
-                    "provider": provider,
-                    "id": id,
-                    "ok": removed,
-                })
-                .to_string())
+                serialize_tool_output(
+                    "tool_calendar",
+                    &CalendarDeleteResponse {
+                        op: "delete",
+                        provider,
+                        id,
+                        ok: removed,
+                    },
+                )
             }
             _ => Err(Error::config(
                 "tool_calendar",
@@ -339,39 +406,6 @@ fn build_event_id(title: &str, start_at_unix_secs: u64) -> String {
     let short = (hasher.finish() & 0xffff) as u16;
     let seq = EVENT_SEQ.fetch_add(1, Ordering::Relaxed) & 0xffff;
     format!("cal_{}_{}_{:04x}", start_at_unix_secs, seq, short)
-}
-
-fn provider_status_to_json(status: CalendarProviderCredentialStatus) -> Value {
-    json!({
-        "provider": status.provider,
-        "account_id": status.account_id,
-        "account_label": status.account_label,
-        "calendar_id": status.calendar_id,
-        "configured": status.configured,
-        "has_refresh_token": status.has_refresh_token,
-        "expires_at_unix_secs": status.expires_at_unix_secs,
-        "updated_at": status.updated_at,
-    })
-}
-
-fn event_to_json(event: CalendarEvent) -> Value {
-    json!({
-        "id": event.id,
-        "title": event.title,
-        "start_at_unix_secs": event.start_at_unix_secs,
-        "end_at_unix_secs": event.end_at_unix_secs,
-        "timezone": event.timezone,
-        "location": event.location,
-        "notes": event.notes,
-        "provider": event.provider,
-        "calendar_id": event.calendar_id,
-        "remote_id": event.remote_id,
-        "status": match event.status {
-            CalendarEventStatus::Confirmed => "confirmed",
-            CalendarEventStatus::Cancelled => "cancelled",
-        },
-        "updated_at": event.updated_at
-    })
 }
 
 #[cfg(test)]

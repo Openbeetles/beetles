@@ -1,8 +1,8 @@
 //! Env 工具：环境变量访问（get/list）。
 
 use crate::error::{Error, Result};
-use crate::tools::{Tool, ToolContext, ToolMetadata};
-use serde_json::json;
+use crate::tools::{serialize_tool_output, Tool, ToolContext, ToolMetadata};
+use serde::Serialize;
 use std::env;
 
 #[derive(Default)]
@@ -29,6 +29,28 @@ impl Tool for EnvTool {
             key: Option<String>,
         }
 
+        #[derive(Serialize)]
+        struct EnvVarEntry {
+            key: String,
+            value: String,
+        }
+
+        #[derive(Serialize)]
+        struct EnvGetResponse {
+            mode: &'static str,
+            key: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            value: Option<String>,
+            found: bool,
+        }
+
+        #[derive(Serialize)]
+        struct EnvListResponse {
+            mode: &'static str,
+            count: usize,
+            vars: Vec<EnvVarEntry>,
+        }
+
         let parsed: EnvArgs = serde_json::from_str(args).map_err(|e| Error::Config {
             stage: "env_tool",
             message: format!("invalid args: {}", e),
@@ -42,29 +64,38 @@ impl Tool for EnvTool {
                 })?;
 
                 match env::var(&key) {
-                    Ok(value) => Ok(json!({
-                        "mode": "get",
-                        "key": key,
-                        "value": value,
-                        "found": true
-                    })
-                    .to_string()),
-                    Err(_) => Ok(json!({
-                        "mode": "get",
-                        "key": key,
-                        "found": false
-                    })
-                    .to_string()),
+                    Ok(value) => serialize_tool_output(
+                        "env_tool",
+                        &EnvGetResponse {
+                            mode: "get",
+                            key,
+                            value: Some(value),
+                            found: true,
+                        },
+                    ),
+                    Err(_) => serialize_tool_output(
+                        "env_tool",
+                        &EnvGetResponse {
+                            mode: "get",
+                            key,
+                            value: None,
+                            found: false,
+                        },
+                    ),
                 }
             }
             "list" => {
-                let vars: Vec<(String, String)> = env::vars().collect();
-                Ok(json!({
-                    "mode": "list",
-                    "count": vars.len(),
-                    "vars": vars.into_iter().map(|(k, v)| json!({"key": k, "value": v})).collect::<Vec<_>>()
-                })
-                .to_string())
+                let vars = env::vars()
+                    .map(|(key, value)| EnvVarEntry { key, value })
+                    .collect::<Vec<_>>();
+                serialize_tool_output(
+                    "env_tool",
+                    &EnvListResponse {
+                        mode: "list",
+                        count: vars.len(),
+                        vars,
+                    },
+                )
             }
             _ => Err(Error::Config {
                 stage: "env_tool",

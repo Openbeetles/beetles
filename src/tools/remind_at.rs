@@ -3,9 +3,10 @@
 use crate::error::{Error, Result};
 use crate::i18n::{tr, Message as UiMessage};
 use crate::memory::RemindAtStore;
-use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
+use crate::tools::{parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata};
 use crate::util::parse_iso8601;
-use serde_json::{json, Value};
+use serde::Serialize;
+use serde_json::Value;
 
 /// 需要注入 RemindAtStore；由 main 注册时传入。
 pub struct RemindAtTool {
@@ -73,6 +74,18 @@ pub struct RemindListTool {
     store: std::sync::Arc<dyn RemindAtStore + Send + Sync>,
 }
 
+#[derive(Serialize)]
+struct RemindListEntry {
+    at_unix_secs: u64,
+    context: String,
+}
+
+#[derive(Serialize)]
+struct RemindListResponse {
+    count: usize,
+    items: Vec<RemindListEntry>,
+}
+
 impl RemindListTool {
     pub fn new(store: std::sync::Arc<dyn RemindAtStore + Send + Sync>) -> Self {
         Self { store }
@@ -116,19 +129,19 @@ impl Tool for RemindListTool {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let items = self.store.list_upcoming(channel, chat_id, now, limit)?;
-        let entries: Vec<serde_json::Value> = items
+        let entries = items
             .into_iter()
-            .map(|(at_unix_secs, context)| {
-                json!({
-                    "at_unix_secs": at_unix_secs,
-                    "context": context
-                })
+            .map(|(at_unix_secs, context)| RemindListEntry {
+                at_unix_secs,
+                context,
             })
-            .collect();
-        Ok(json!({
-            "count": entries.len(),
-            "items": entries
-        })
-        .to_string())
+            .collect::<Vec<_>>();
+        serialize_tool_output(
+            "remind_list",
+            &RemindListResponse {
+                count: entries.len(),
+                items: entries,
+            },
+        )
     }
 }

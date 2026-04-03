@@ -263,7 +263,11 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                                             true
                                         }
                                         Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                                            log::warn!("[{}] inbound queue full, skip ack to trigger re-delivery, chat_id={}", tag, chat_id);
+                                            log::warn!(
+                                                "[{}] inbound queue full, skip ack to trigger re-delivery, chat_id={}",
+                                                tag,
+                                                chat_id
+                                            );
                                             false
                                         }
                                         Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {

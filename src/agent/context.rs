@@ -164,54 +164,31 @@ fn append_priority_constraint(system: &mut String, max_len: usize) {
     let _ = push_char_boundary_truncated(system, REPLY_PRIORITY_MINI_CONSTRAINT, max_len);
 }
 
+struct PriorityMemoryBudgetInputs<'a> {
+    self_authored_core_text: Option<&'a str>,
+    persona_priority_text: Option<&'a str>,
+    mental_privacy_adjudication_text: Option<&'a str>,
+    mental_privacy_text: Option<&'a str>,
+}
+
 fn reserve_priority_memory_budget(
-    execution_state_text: Option<&str>,
-    world_snapshot_text: Option<&str>,
-    world_sense_text: Option<&str>,
-    self_state_text: Option<&str>,
-    self_authored_core_text: Option<&str>,
-    persona_priority_text: Option<&str>,
-    self_model_text: Option<&str>,
-    autonomy_strategy_text: Option<&str>,
-    outer_voice_text: Option<&str>,
-    inner_life_text: Option<&str>,
-    self_continuity_text: Option<&str>,
-    private_workspace_text: Option<&str>,
-    private_garden_text: Option<&str>,
-    mental_privacy_adjudication_text: Option<&str>,
-    mental_privacy_text: Option<&str>,
-    long_term_memory_text: Option<&str>,
-    archive_evidence_text: Option<&str>,
-    runtime_skill_text: Option<&str>,
+    inputs: PriorityMemoryBudgetInputs<'_>,
     base_max: usize,
 ) -> usize {
-    let _ = execution_state_text;
-    let _ = world_snapshot_text;
-    let _ = world_sense_text;
-    let _ = self_state_text;
-    let _ = self_model_text;
-    let _ = autonomy_strategy_text;
-    let _ = outer_voice_text;
-    let _ = inner_life_text;
-    let _ = self_continuity_text;
-    let _ = private_workspace_text;
-    let _ = private_garden_text;
-    let _ = long_term_memory_text;
-    let _ = archive_evidence_text;
-    let _ = runtime_skill_text;
     let remaining = base_max;
     let reply_priority_reserve = REPLY_PRIORITY_MINI_CONSTRAINT.len().min(remaining);
     let remaining = remaining.saturating_sub(reply_priority_reserve);
     let self_authored_core_reserve =
-        section_with_separator_len(self_authored_core_text).min(remaining / 4);
+        section_with_separator_len(inputs.self_authored_core_text).min(remaining / 4);
     let remaining = remaining.saturating_sub(self_authored_core_reserve);
     let persona_priority_reserve =
-        section_with_separator_len(persona_priority_text).min(remaining / 4);
+        section_with_separator_len(inputs.persona_priority_text).min(remaining / 4);
     let remaining = remaining.saturating_sub(persona_priority_reserve);
     let mental_privacy_adjudication_reserve =
-        section_with_separator_len(mental_privacy_adjudication_text).min(remaining / 4);
+        section_with_separator_len(inputs.mental_privacy_adjudication_text).min(remaining / 4);
     let remaining = remaining.saturating_sub(mental_privacy_adjudication_reserve);
-    let mental_privacy_reserve = section_with_separator_len(mental_privacy_text).min(remaining / 4);
+    let mental_privacy_reserve =
+        section_with_separator_len(inputs.mental_privacy_text).min(remaining / 4);
     reply_priority_reserve
         .saturating_add(self_authored_core_reserve)
         .saturating_add(persona_priority_reserve)
@@ -360,24 +337,12 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     });
     let base_max = p.system_max_len.saturating_sub(post_memory_tail_len);
     let priority_memory_reserve = reserve_priority_memory_budget(
-        p.execution_state_text,
-        p.world_snapshot_text,
-        p.world_sense_text,
-        p.self_state_text,
-        p.self_authored_core_text,
-        p.persona_priority_text,
-        p.self_model_text,
-        p.autonomy_strategy_text,
-        p.outer_voice_text,
-        p.inner_life_text,
-        p.self_continuity_text,
-        p.private_workspace_text,
-        p.private_garden_text,
-        p.mental_privacy_adjudication_text,
-        p.mental_privacy_text,
-        p.long_term_memory_text,
-        p.archive_evidence_text,
-        p.runtime_skill_text,
+        PriorityMemoryBudgetInputs {
+            self_authored_core_text: p.self_authored_core_text,
+            persona_priority_text: p.persona_priority_text,
+            mental_privacy_adjudication_text: p.mental_privacy_adjudication_text,
+            mental_privacy_text: p.mental_privacy_text,
+        },
         base_max,
     );
     let base_prompt_budget = base_max.saturating_sub(priority_memory_reserve);

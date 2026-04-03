@@ -5,14 +5,27 @@ use crate::memory::{
     archive_get_default_content_len, get_archive_record, ArchiveRecordLocator, ArchiveRecordSource,
     MemoryStore, SessionStore, TurnLedgerStore, MAX_ARCHIVE_GET_CONTENT_LEN,
 };
-use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
-use serde_json::{json, Value};
+use crate::tools::{parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata};
+use serde::Serialize;
+use serde_json::Value;
 use std::sync::Arc;
 
 pub struct MemoryGetTool {
     session_store: Arc<dyn SessionStore + Send + Sync>,
     memory_store: Arc<dyn MemoryStore + Send + Sync>,
     turn_ledger_store: Arc<dyn TurnLedgerStore + Send + Sync>,
+}
+
+#[derive(Serialize)]
+struct MemoryGetResponse {
+    ok: bool,
+    found: bool,
+    op: &'static str,
+    locator: ArchiveRecordLocator,
+    record: Option<crate::memory::ArchiveRecord>,
+    plane: &'static str,
+    canonical: bool,
+    usage_hint: &'static str,
 }
 
 impl MemoryGetTool {
@@ -63,17 +76,19 @@ impl Tool for MemoryGetTool {
             focus_query,
             max_chars,
         )?;
-        Ok(json!({
-            "ok": record.is_some(),
-            "found": record.is_some(),
-            "op": "get",
-            "locator": locator,
-            "record": record,
-            "plane": "archive_evidence",
-            "canonical": false,
-            "usage_hint": "Treat the returned record as evidence only. Distill stable conclusions separately; do not equate archive records with canonical shared memory."
-        })
-        .to_string())
+        serialize_tool_output(
+            "tool_memory_get",
+            &MemoryGetResponse {
+                ok: record.is_some(),
+                found: record.is_some(),
+                op: "get",
+                locator,
+                record,
+                plane: "archive_evidence",
+                canonical: false,
+                usage_hint: "Treat the returned record as evidence only. Distill stable conclusions separately; do not equate archive records with canonical shared memory.",
+            },
+        )
     }
 
     fn metadata(&self) -> ToolMetadata {

@@ -30,6 +30,12 @@
 - 状态目录使用 `BEETLE_STATE_ROOT` 或程序默认路径
 
 真正安装时，以发布包内的 `README.txt` 为准。
+当前 `./build.sh --deploy-linux` 会在目标机上维护：
+
+- `/opt/beetle/releases/<release>/`
+- `/opt/beetle/current` 指向当前版本
+- `/opt/beetle/beetle` 作为当前二进制的兼容快捷路径
+- `/var/lib/beetle` 作为默认状态目录
 
 ## CI 和回滚
 

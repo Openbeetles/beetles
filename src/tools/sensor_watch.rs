@@ -186,7 +186,7 @@ impl Tool for SensorWatchTool {
                         return Err(Error::config(
                             "tool_sensor_watch",
                             "threshold_type must be above|below|change",
-                        ))
+                        ));
                     }
                 };
 
@@ -314,7 +314,7 @@ impl Tool for SensorWatchTool {
                             return Err(Error::config(
                                 "tool_sensor_watch",
                                 "threshold_type must be above|below|change",
-                            ))
+                            ));
                         }
                     };
                     updated.push("threshold_type");

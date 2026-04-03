@@ -5,14 +5,28 @@ use crate::memory::{
     search_archive_records, ArchiveRecordSource, ArchiveSearchQuery, MemoryStore, SessionStore,
     TurnLedgerStore, MAX_ARCHIVE_SEARCH_LIMIT,
 };
-use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
-use serde_json::{json, Value};
+use crate::tools::{parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata};
+use serde::Serialize;
+use serde_json::Value;
 use std::sync::Arc;
 
 pub struct MemorySearchTool {
     session_store: Arc<dyn SessionStore + Send + Sync>,
     memory_store: Arc<dyn MemoryStore + Send + Sync>,
     turn_ledger_store: Arc<dyn TurnLedgerStore + Send + Sync>,
+}
+
+#[derive(Serialize)]
+struct MemorySearchResponse<'a> {
+    ok: bool,
+    op: &'static str,
+    query: &'a str,
+    count: usize,
+    hits: Vec<crate::memory::ArchiveSearchHit>,
+    plane: &'static str,
+    canonical: bool,
+    traceability: &'static str,
+    usage_hint: &'static str,
 }
 
 impl MemorySearchTool {
@@ -73,18 +87,20 @@ impl Tool for MemorySearchTool {
                 limit,
             },
         )?;
-        Ok(json!({
-            "ok": true,
-            "op": "search",
-            "query": query,
-            "count": hits.len(),
-            "hits": hits,
-            "plane": "archive_evidence",
-            "canonical": false,
-            "traceability": "Each hit includes retrieval_trace with backend, matched_terms, score breakdown, and ranking/source/recency/selector reasons when available.",
-            "usage_hint": "Use memory_get with record_id or locator to inspect one cited archive record before concluding."
-        })
-        .to_string())
+        serialize_tool_output(
+            "tool_memory_search",
+            &MemorySearchResponse {
+                ok: true,
+                op: "search",
+                query,
+                count: hits.len(),
+                hits,
+                plane: "archive_evidence",
+                canonical: false,
+                traceability: "Each hit includes retrieval_trace with backend, matched_terms, score breakdown, and ranking/source/recency/selector reasons when available.",
+                usage_hint: "Use memory_get with record_id or locator to inspect one cited archive record before concluding.",
+            },
+        )
     }
 
     fn metadata(&self) -> ToolMetadata {

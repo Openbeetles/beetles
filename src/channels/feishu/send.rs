@@ -94,8 +94,14 @@ fn send_feishu_message<H: ChannelHttpClient>(
     token: &str,
     chat_id: &str,
     content: &str,
-) {
+) -> crate::error::Result<()> {
     const TAG: &str = "feishu_send";
+    if content.trim().is_empty() {
+        return Err(crate::error::Error::config(
+            "feishu_send",
+            "refusing to send empty Feishu message",
+        ));
+    }
     let auth_val = format!("Bearer {}", token);
     for chunk in crate::channels::chunk::chunk_text_by_char_count(content, FEISHU_MAX_MESSAGE_LEN) {
         let body_bytes = build_feishu_text_body(Some(chat_id), &chunk);
@@ -103,14 +109,25 @@ fn send_feishu_message<H: ChannelHttpClient>(
             ("Authorization", auth_val.as_str()),
             ("Content-Type", "application/json; charset=utf-8"),
         ];
-        let _ = crate::channels::send::send_post_with_headers(
+        let (status, _) = crate::channels::send::send_post_with_headers(
             TAG,
             http,
             FEISHU_SEND_URL,
             &headers,
             &body_bytes,
-        );
+        )
+        .map_err(|e| crate::error::Error::Other {
+            source: Box::new(e),
+            stage: "feishu_send",
+        })?;
+        if status >= 400 {
+            return Err(crate::error::Error::Http {
+                status_code: status,
+                stage: "feishu_send",
+            });
+        }
     }
+    Ok(())
 }
 
 /// 从 rx 取出待发送，鉴权后调用飞书发消息 API（一次性 drain）。
@@ -128,7 +145,13 @@ pub fn flush_feishu_sends<H: ChannelHttpClient>(
         None => return,
     };
     while let Ok((chat_id, content, _req_id)) = rx.try_recv() {
-        send_feishu_message(http, &token, &chat_id, &content);
+        if let Err(error) = send_feishu_message(http, &token, &chat_id, &content) {
+            log::warn!(
+                "[feishu_flush] send failed for chat_id={}: {}",
+                chat_id,
+                error
+            );
+        }
     }
 }
 
@@ -209,9 +232,29 @@ pub fn run_feishu_sender_loop<H, F>(
                 log::warn!("[{}] missing tenant token after refresh", TAG);
                 continue;
             };
-            send_feishu_message(h, token.as_str(), &chat_id, &content);
+            match send_feishu_message(h, token.as_str(), &chat_id, &content) {
+                Ok(()) => crate::metrics::record_channel_http_result(true),
+                Err(error) => {
+                    crate::metrics::record_channel_http_result(false);
+                    log::warn!(
+                        "[{}] send failed (attempt {}), chat_id={}: {}",
+                        TAG,
+                        retry + 1,
+                        chat_id,
+                        error
+                    );
+                    cached_token = None;
+                    http = None;
+                    continue;
+                }
+            }
             while let Ok((cid, cnt, _)) = rx.try_recv() {
-                send_feishu_message(h, token, &cid, &cnt);
+                if let Err(error) = send_feishu_message(h, token, &cid, &cnt) {
+                    crate::metrics::record_channel_http_result(false);
+                    log::warn!("[{}] drain send failed for chat_id={}: {}", TAG, cid, error);
+                    break;
+                }
+                crate::metrics::record_channel_http_result(true);
             }
             sent = true;
             break;

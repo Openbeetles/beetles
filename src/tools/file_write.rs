@@ -4,12 +4,20 @@
 use crate::constants::FILE_WRITE_MAX_CONTENT_LEN;
 use crate::error::{Error, Result};
 use crate::tools::state_file_guard::{ensure_state_path_mutable, normalize_state_tool_path};
-use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
-use serde_json::json;
+use crate::tools::{parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata};
+use serde::Serialize;
 use std::sync::Arc;
 
 pub struct FileWriteTool {
     state_fs: Arc<dyn crate::StateFs + Send + Sync>,
+}
+
+#[derive(Serialize)]
+struct FileWriteResponse<'a> {
+    path: &'a str,
+    ok: bool,
+    append: bool,
+    bytes_written: usize,
 }
 
 impl FileWriteTool {
@@ -63,13 +71,15 @@ impl Tool for FileWriteTool {
 
         self.state_fs.write(&rel, &final_bytes)?;
 
-        Ok(json!({
-            "path": path_arg,
-            "ok": true,
-            "append": append,
-            "bytes_written": content.len()
-        })
-        .to_string())
+        serialize_tool_output(
+            "tool_file_write",
+            &FileWriteResponse {
+                path: path_arg,
+                ok: true,
+                append,
+                bytes_written: content.len(),
+            },
+        )
     }
 
     fn metadata(&self) -> ToolMetadata {

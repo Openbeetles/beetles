@@ -4,14 +4,23 @@
 use crate::constants::FILE_WRITE_MAX_CONTENT_LEN;
 use crate::error::{Error, Result};
 use crate::tools::state_file_guard::{ensure_state_path_mutable, normalize_state_tool_path};
-use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
-use serde_json::json;
+use crate::tools::{parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata};
+use serde::Serialize;
 use std::sync::Arc;
 
 const MAX_EDIT_FILE_BYTES: usize = 64 * 1024;
 
 pub struct FileEditTool {
     state_fs: Arc<dyn crate::StateFs + Send + Sync>,
+}
+
+#[derive(Serialize)]
+struct FileEditResponse<'a> {
+    path: &'a str,
+    ok: bool,
+    mode: &'a str,
+    match_count: usize,
+    bytes_written: usize,
 }
 
 impl FileEditTool {
@@ -90,20 +99,22 @@ impl Tool for FileEditTool {
                 return Err(Error::config(
                     "tool_file_edit",
                     "mode must be one of: replace_once, replace_all, insert_before, insert_after, prepend",
-                ))
+                ));
             }
         };
 
         self.state_fs.write(&rel, edit.content.as_bytes())?;
 
-        Ok(json!({
-            "path": path_arg,
-            "ok": true,
-            "mode": mode,
-            "match_count": edit.match_count,
-            "bytes_written": edit.content.len(),
-        })
-        .to_string())
+        serialize_tool_output(
+            "tool_file_edit",
+            &FileEditResponse {
+                path: path_arg,
+                ok: true,
+                mode,
+                match_count: edit.match_count,
+                bytes_written: edit.content.len(),
+            },
+        )
     }
 
     fn metadata(&self) -> ToolMetadata {

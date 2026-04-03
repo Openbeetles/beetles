@@ -49,8 +49,14 @@ fn send_one_telegram<H: ChannelHttpClient>(
     token: &str,
     chat_id: &str,
     content: &str,
-) {
+) -> Result<()> {
     const TAG: &str = "telegram_send";
+    if content.trim().is_empty() {
+        return Err(Error::config(
+            "telegram_send",
+            "refusing to send empty Telegram message",
+        ));
+    }
     let url = format!("{}{}/sendMessage", TELEGRAM_API_BASE, token);
     let mut reply_to_message_id: Option<i64> = None;
     for chunk in crate::channels::chunk::chunk_text_by_char_count(content, TELEGRAM_MAX_MESSAGE_LEN)
@@ -62,34 +68,31 @@ fn send_one_telegram<H: ChannelHttpClient>(
         if let Some(id) = reply_to_message_id {
             body["reply_to_message_id"] = serde_json::json!(id);
         }
-        let body_bytes = match serde_json::to_vec(&body) {
-            Ok(b) => b,
-            Err(e) => {
-                log::warn!("[{}] json: {}", TAG, e);
-                continue;
-            }
-        };
-        if let Ok((status, resp_body)) =
-            crate::channels::send::send_post(TAG, http, &url, &body_bytes)
-        {
-            if status >= 400 {
-                continue;
-            }
-            #[derive(serde::Deserialize)]
-            struct SendMessageResult {
-                result: Option<SendMessageResultInner>,
-            }
-            #[derive(serde::Deserialize)]
-            struct SendMessageResultInner {
-                message_id: Option<i64>,
-            }
-            if let Ok(r) = serde_json::from_slice::<SendMessageResult>(resp_body.as_ref()) {
-                if let Some(inner) = r.result {
-                    reply_to_message_id = inner.message_id;
-                }
+        let body_bytes =
+            serde_json::to_vec(&body).map_err(|e| Error::config("telegram_send", e.to_string()))?;
+        let (status, resp_body) = crate::channels::send::send_post(TAG, http, &url, &body_bytes)
+            .map_err(|e| map_stage(e, "telegram_send"))?;
+        if status >= 400 {
+            return Err(Error::Http {
+                status_code: status,
+                stage: "telegram_send",
+            });
+        }
+        #[derive(serde::Deserialize)]
+        struct SendMessageResult {
+            result: Option<SendMessageResultInner>,
+        }
+        #[derive(serde::Deserialize)]
+        struct SendMessageResultInner {
+            message_id: Option<i64>,
+        }
+        if let Ok(r) = serde_json::from_slice::<SendMessageResult>(resp_body.as_ref()) {
+            if let Some(inner) = r.result {
+                reply_to_message_id = inner.message_id;
             }
         }
     }
+    Ok(())
 }
 
 /// 从 rx 取出所有待发送（一次性 drain）。
@@ -99,7 +102,13 @@ pub fn flush_telegram_sends<H: ChannelHttpClient>(
     http: &mut H,
 ) {
     while let Ok((chat_id, content, _req_id)) = rx.try_recv() {
-        send_one_telegram(http, token, &chat_id, &content);
+        if let Err(error) = send_one_telegram(http, token, &chat_id, &content) {
+            log::warn!(
+                "[telegram_flush] send failed for chat_id={}: {}",
+                chat_id,
+                error
+            );
+        }
     }
 }
 
@@ -155,9 +164,28 @@ pub fn run_telegram_sender_loop<H, F>(
             let Some(h) = http.as_mut() else {
                 continue;
             };
-            send_one_telegram(h, token, &chat_id, &content);
+            match send_one_telegram(h, token, &chat_id, &content) {
+                Ok(()) => crate::metrics::record_channel_http_result(true),
+                Err(error) => {
+                    crate::metrics::record_channel_http_result(false);
+                    log::warn!(
+                        "[{}] send failed (attempt {}), chat_id={}: {}",
+                        TAG,
+                        retry + 1,
+                        chat_id,
+                        error
+                    );
+                    http = None;
+                    continue;
+                }
+            }
             while let Ok((cid, cnt, _)) = rx.try_recv() {
-                send_one_telegram(h, token, &cid, &cnt);
+                if let Err(error) = send_one_telegram(h, token, &cid, &cnt) {
+                    crate::metrics::record_channel_http_result(false);
+                    log::warn!("[{}] drain send failed for chat_id={}: {}", TAG, cid, error);
+                    break;
+                }
+                crate::metrics::record_channel_http_result(true);
             }
             sent = true;
             break;
