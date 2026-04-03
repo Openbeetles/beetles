@@ -48,7 +48,6 @@ struct HttpServerSpawnContext {
     session_store: Arc<dyn beetle::memory::SessionStore + Send + Sync>,
     inbound_tx: beetle::bus::InboundTx,
     shared_config: Arc<RwLock<AppConfig>>,
-    channel_connectivity_cache: Arc<beetle::channels::ChannelConnectivityCache>,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     msg_id_cache: beetle::channels::QqMsgIdCache,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -244,7 +243,6 @@ fn spawn_http_config_server(ctx: HttpServerSpawnContext) {
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             ctx.qq_secret,
             ctx.shared_config,
-            ctx.channel_connectivity_cache,
         ) {
             log::warn!("[{}] HTTP config API server error: {}", TAG, e);
         }
@@ -942,8 +940,6 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     beetle::orchestrator::log_baseline();
 
     let shared_runtime_config = Arc::new(RwLock::new((*config).clone()));
-    let channel_connectivity_cache = Arc::new(beetle::channels::ChannelConnectivityCache::new());
-
     #[cfg(feature = "config_api")]
     {
         spawn_http_config_server(HttpServerSpawnContext {
@@ -955,7 +951,6 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             session_store: Arc::clone(&session_store),
             inbound_tx: user_inbound_tx.clone(),
             shared_config: Arc::clone(&shared_runtime_config),
-            channel_connectivity_cache: Arc::clone(&channel_connectivity_cache),
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             msg_id_cache: Arc::clone(&qq_msg_id_cache),
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]

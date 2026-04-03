@@ -2,11 +2,10 @@ use crate::bus::{IngressKind, OutboundTx, PcMsg};
 use crate::error::Result;
 use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
 use crate::metrics;
-use crate::runtime::spawn_planned;
 use crate::tools::{ToolOutboundDeliveryKind, ToolOutboundIntent, ToolOutboundTarget};
 use crate::util::truncate_content_to_max;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{mpsc, Arc, OnceLock, Weak};
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 const EDIT_THROTTLE_MS: u64 = 500;
@@ -15,7 +14,6 @@ const MAX_QUEUED_VISIBLE_UPDATES: u8 = 4;
 const MIN_PARTIAL_VISIBLE_CHARS: usize = 8;
 const MAX_QUEUED_PROGRESS_CHARS: usize = 120;
 const MAX_QUEUED_PARTIAL_CHARS: usize = 240;
-const WAITING_NOTICE_STACK_SIZE: usize = 8192;
 
 /// 流式编辑器：LLM 流式输出期间，发送占位消息并逐步编辑内容。
 /// 实现方内部自行创建/管理 HTTP 连接，不占用 agent 的 LLM HTTP 连接。
@@ -109,10 +107,6 @@ struct WaitingNoticeJob {
     req_id: String,
     waiting_notice: String,
     shared: Weak<QueuedDeliveryShared>,
-}
-
-struct WaitingNoticeScheduler {
-    tx: mpsc::Sender<WaitingNoticeJob>,
 }
 
 impl<'a> DeliverySession<'a> {
@@ -757,7 +751,7 @@ fn spawn_waiting_notice(
         waiting_notice_canceled: AtomicBool::new(false),
         waiting_notice_sent: AtomicBool::new(false),
     });
-    waiting_notice_scheduler().schedule(WaitingNoticeJob {
+    let job = WaitingNoticeJob {
         due_at: Instant::now() + waiting_notice_delay(),
         outbound_tx,
         channel,
@@ -765,110 +759,39 @@ fn spawn_waiting_notice(
         req_id: req_id.to_string(),
         waiting_notice,
         shared: Arc::downgrade(&shared),
-    });
+    };
+    crate::runtime::schedule_delayed_task(
+        job.due_at,
+        Box::new(move || fire_waiting_notice_job(job)),
+    );
     shared
 }
 
-fn waiting_notice_scheduler() -> &'static WaitingNoticeScheduler {
-    static SCHEDULER: OnceLock<WaitingNoticeScheduler> = OnceLock::new();
-    SCHEDULER.get_or_init(WaitingNoticeScheduler::new)
-}
-
-impl WaitingNoticeScheduler {
-    fn new() -> Self {
-        let (tx, rx) = mpsc::channel::<WaitingNoticeJob>();
-        spawn_planned(
-            "agent_waiting_notice",
-            WAITING_NOTICE_STACK_SIZE,
-            move || {
-                run_waiting_notice_scheduler(rx);
-            },
-        );
-        Self { tx }
+fn fire_waiting_notice_job(job: WaitingNoticeJob) {
+    let Some(shared) = job.shared.upgrade() else {
+        return;
+    };
+    if shared.waiting_notice_canceled.load(Ordering::Relaxed) {
+        return;
     }
-
-    fn schedule(&self, job: WaitingNoticeJob) {
-        if let Err(error) = self.tx.send(job) {
-            log::warn!("[agent_delivery] waiting notice schedule failed: {}", error);
-        }
+    if !try_claim_shared_visible_slot(&shared) {
+        return;
     }
-}
-
-fn run_waiting_notice_scheduler(rx: mpsc::Receiver<WaitingNoticeJob>) {
-    let mut pending: Vec<WaitingNoticeJob> = Vec::new();
-    loop {
-        match next_waiting_notice_event(&rx, &mut pending) {
-            WaitingNoticeEvent::New(job) => pending.push(job),
-            WaitingNoticeEvent::TimerFired => {}
-            WaitingNoticeEvent::Closed => break,
-        }
-        fire_due_waiting_notices(&mut pending);
+    if !should_send_waiting_notice_after_claim(&shared) {
+        return;
     }
-}
-
-enum WaitingNoticeEvent {
-    New(WaitingNoticeJob),
-    TimerFired,
-    Closed,
-}
-
-fn next_waiting_notice_event(
-    rx: &mpsc::Receiver<WaitingNoticeJob>,
-    pending: &mut [WaitingNoticeJob],
-) -> WaitingNoticeEvent {
-    if pending.is_empty() {
-        return match rx.recv() {
-            Ok(job) => WaitingNoticeEvent::New(job),
-            Err(_) => WaitingNoticeEvent::Closed,
-        };
-    }
-    let now = Instant::now();
-    let timeout = pending
-        .iter()
-        .map(|job| job.due_at.saturating_duration_since(now))
-        .min()
-        .unwrap_or_else(|| Duration::from_secs(1));
-    match rx.recv_timeout(timeout) {
-        Ok(job) => WaitingNoticeEvent::New(job),
-        Err(mpsc::RecvTimeoutError::Timeout) => WaitingNoticeEvent::TimerFired,
-        Err(mpsc::RecvTimeoutError::Disconnected) => WaitingNoticeEvent::Closed,
-    }
-}
-
-fn fire_due_waiting_notices(pending: &mut Vec<WaitingNoticeJob>) {
-    let now = Instant::now();
-    let mut index = 0usize;
-    while index < pending.len() {
-        if pending[index].due_at > now {
-            index += 1;
-            continue;
-        }
-        let job = pending.swap_remove(index);
-        let Some(shared) = job.shared.upgrade() else {
-            continue;
-        };
-        if shared.waiting_notice_canceled.load(Ordering::Relaxed) {
-            continue;
-        }
-        if !try_claim_shared_visible_slot(&shared) {
-            continue;
-        }
-        if !should_send_waiting_notice_after_claim(&shared) {
-            continue;
-        }
-        if send_visible_update(
-            &job.outbound_tx,
-            &job.channel,
-            &job.chat_id,
-            &job.req_id,
-            &job.waiting_notice,
-        )
-        .is_err()
-        {
-            shared.visible_updates_sent.fetch_sub(1, Ordering::Relaxed);
-        } else {
-            shared.waiting_notice_sent.store(true, Ordering::Relaxed);
-        }
+    if send_visible_update(
+        &job.outbound_tx,
+        &job.channel,
+        &job.chat_id,
+        &job.req_id,
+        &job.waiting_notice,
+    )
+    .is_err()
+    {
+        shared.visible_updates_sent.fetch_sub(1, Ordering::Relaxed);
+    } else {
+        shared.waiting_notice_sent.store(true, Ordering::Relaxed);
     }
 }
 
@@ -953,8 +876,13 @@ mod tests {
         PcMsg::new_inbound(channel, "chat-1", "hello", false).expect("pcmsg")
     }
 
+    fn reset_delayed_tasks() {
+        crate::runtime::delayed_task::reset_delayed_tasks_for_tests();
+    }
+
     #[test]
     fn queued_delivery_emits_distinct_updates_with_cap() {
+        reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
         let mut delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
@@ -975,6 +903,7 @@ mod tests {
 
     #[test]
     fn queued_delivery_suppresses_model_partial_drafts() {
+        reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
         let mut delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
@@ -986,6 +915,7 @@ mod tests {
 
     #[test]
     fn edit_delivery_finalizes_without_outbound_message() {
+        reset_delayed_tasks();
         let (outbound_tx, _outbound_rx, _) = new_inbound_channel(4);
         let msg = build_msg("telegram");
         let editor = StubEditor::default();
@@ -1025,6 +955,7 @@ mod tests {
 
     #[test]
     fn queued_delivery_primary_current_suppresses_followup_finalize() {
+        reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
         let mut delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
@@ -1049,6 +980,7 @@ mod tests {
 
     #[test]
     fn queued_delivery_accepts_current_supplemental_tool_intent() {
+        reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
         let mut delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
@@ -1071,6 +1003,7 @@ mod tests {
 
     #[test]
     fn queued_delivery_suppresses_tool_intents_after_primary_close() {
+        reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
         let mut delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
@@ -1105,6 +1038,7 @@ mod tests {
 
     #[test]
     fn queued_delivery_routes_explicit_tool_intent_through_runtime() {
+        reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
         let mut delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
@@ -1132,6 +1066,7 @@ mod tests {
 
     #[test]
     fn edit_delivery_primary_current_reuses_edit_lane() {
+        reset_delayed_tasks();
         let (outbound_tx, _outbound_rx, _) = new_inbound_channel(4);
         let msg = build_msg("telegram");
         let editor = StubEditor::default();
@@ -1165,11 +1100,13 @@ mod tests {
 
     #[test]
     fn queued_delivery_sends_waiting_notice_for_long_think() {
+        reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
         let delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
 
         std::thread::sleep(waiting_notice_delay() + std::time::Duration::from_millis(20));
+        crate::runtime::service_delayed_tasks();
 
         let first = outbound_rx.try_recv().expect("waiting notice");
         assert_eq!(first.content, "还在处理，请稍等 ⏳");
@@ -1178,6 +1115,7 @@ mod tests {
 
     #[test]
     fn queued_delivery_finalize_cancels_waiting_notice() {
+        reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
         let mut delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
@@ -1185,12 +1123,14 @@ mod tests {
         let streamed = delivery.finalize("最终答案");
         assert!(!streamed);
         std::thread::sleep(waiting_notice_delay() + std::time::Duration::from_millis(20));
+        crate::runtime::service_delayed_tasks();
 
         assert!(outbound_rx.try_recv().is_err());
     }
 
     #[test]
     fn queued_delivery_drop_cancels_waiting_notice() {
+        reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
         {
@@ -1198,12 +1138,14 @@ mod tests {
         }
 
         std::thread::sleep(waiting_notice_delay() + std::time::Duration::from_millis(20));
+        crate::runtime::service_delayed_tasks();
 
         assert!(outbound_rx.try_recv().is_err());
     }
 
     #[test]
     fn waiting_notice_rechecks_cancel_after_claim() {
+        reset_delayed_tasks();
         let shared = Arc::new(QueuedDeliveryShared {
             visible_updates_sent: AtomicU8::new(0),
             waiting_notice_canceled: AtomicBool::new(false),

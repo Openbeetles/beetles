@@ -1,14 +1,12 @@
-//! 通道连通性检查：按配置逐通道单次 HTTP 探测，供 GET /api/channel_connectivity 使用。
+//! 通道连通性检查：按当前启用通道做一次现场 HTTP 探测，供 GET /api/channel_connectivity 使用。
 //! 不依赖 Platform，仅依赖 ChannelHttpClient 与 AppConfig。
 //!
-//! 各通道实现 check_connectivity，本模块仅按固定顺序收集并返回列表。
-//! 调用方（前端或网关）应设置合理 HTTP 超时。
+//! 配置面一次只启用一个 outbound channel，因此这里只对 `enabled_channel`
+//! 做真实探测；其余通道返回“当前未启用”的占位结果，避免无意义的串行外网请求。
 
 use crate::config::AppConfig;
 use crate::i18n::{tr, Locale, Message};
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 
 /// 单通道连通性结果；与前端约定字段名。
 #[derive(Debug, Clone, Serialize)]
@@ -25,59 +23,6 @@ pub struct ChannelConnectivitySnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checked_at_unix_secs: Option<u64>,
     pub stale: bool,
-}
-
-#[derive(Default)]
-pub struct ChannelConnectivityCache {
-    inner: Mutex<Option<ChannelConnectivitySnapshot>>,
-    refresh_in_flight: AtomicBool,
-}
-
-impl ChannelConnectivityCache {
-    pub fn new() -> Self {
-        Self {
-            inner: Mutex::new(None),
-            refresh_in_flight: AtomicBool::new(false),
-        }
-    }
-
-    pub fn publish_success(
-        &self,
-        channels: Vec<ChannelConnectivityItem>,
-        checked_at_unix_secs: u64,
-    ) {
-        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        *guard = Some(ChannelConnectivitySnapshot {
-            channels,
-            checked_at_unix_secs: Some(checked_at_unix_secs),
-            stale: false,
-        });
-    }
-
-    pub fn try_start_refresh(&self) -> bool {
-        self.refresh_in_flight
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-    }
-
-    pub fn finish_refresh(&self) {
-        self.refresh_in_flight.store(false, Ordering::Release);
-    }
-
-    pub fn snapshot_or_fallback(
-        &self,
-        config: &AppConfig,
-        loc: Locale,
-        now_unix_secs: u64,
-        max_age_secs: u64,
-    ) -> ChannelConnectivitySnapshot {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-            .map(|snapshot| mark_snapshot_staleness(snapshot, now_unix_secs, max_age_secs))
-            .unwrap_or_else(|| unavailable_snapshot(config, loc))
-    }
 }
 
 /// 供各通道 check_connectivity 构建结果用。
@@ -99,161 +44,157 @@ fn webhook_configured(c: &AppConfig) -> bool {
     c.webhook_enabled && !c.webhook_token.trim().is_empty()
 }
 
-/// 按固定顺序检查各通道，返回列表；未配置的通道也列入，configured=false。
-pub fn check_all<H: crate::channels::ChannelHttpClient + ?Sized>(
+fn disabled_item(id: &'static str, loc: Locale) -> ChannelConnectivityItem {
+    item(
+        id,
+        false,
+        false,
+        Some(tr(Message::ConnectivityNotConfigured, loc)),
+    )
+}
+
+fn active_channel_item<H: crate::channels::ChannelHttpClient + ?Sized>(
     config: &AppConfig,
     http: &mut H,
     loc: Locale,
-) -> Vec<ChannelConnectivityItem> {
-    let mut out = Vec::with_capacity(6);
-    out.push(crate::channels::telegram::check_connectivity(
-        config, http, loc,
-    ));
-    out.push(crate::channels::feishu::check_connectivity(
-        config, http, loc,
-    ));
-    out.push(crate::channels::dingtalk::check_connectivity(
-        config, http, loc,
-    ));
-    out.push(crate::channels::wecom::check_connectivity(
-        config, http, loc,
-    ));
-    out.push(crate::channels::qq::check_connectivity(config, http, loc));
+) -> Option<ChannelConnectivityItem> {
+    match config.enabled_channel.as_str() {
+        "telegram" => Some(crate::channels::telegram::check_connectivity(
+            config, http, loc,
+        )),
+        "feishu" => Some(crate::channels::feishu::check_connectivity(
+            config, http, loc,
+        )),
+        "dingtalk" => Some(crate::channels::dingtalk::check_connectivity(
+            config, http, loc,
+        )),
+        "wecom" => Some(crate::channels::wecom::check_connectivity(
+            config, http, loc,
+        )),
+        "qq_channel" => Some(crate::channels::qq::check_connectivity(config, http, loc)),
+        _ => None,
+    }
+}
+
+fn webhook_item(config: &AppConfig, loc: Locale) -> ChannelConnectivityItem {
     let configured = webhook_configured(config);
-    let msg = if configured {
+    let message = if configured {
         None
     } else {
         Some(tr(Message::ConnectivityNotConfigured, loc))
     };
-    out.push(item("webhook", configured, configured, msg));
-    out
+    item("webhook", configured, configured, message)
 }
 
-pub fn refresh_cached_connectivity<F>(
-    cache: &ChannelConnectivityCache,
+/// 按固定顺序返回通道连通性结果。
+/// 仅当前 `enabled_channel` 执行真实探测；其他通道返回当前未启用。
+pub fn build_snapshot<H: crate::channels::ChannelHttpClient + ?Sized>(
     config: &AppConfig,
+    http: &mut H,
     loc: Locale,
-    create_http: F,
-) -> crate::Result<()>
-where
-    F: FnOnce() -> crate::Result<Box<dyn crate::PlatformHttpClient>>,
-{
-    let mut http = create_http()?;
-    let channels = check_all(config, &mut *http, loc);
-    cache.publish_success(channels, crate::util::current_unix_secs());
-    Ok(())
-}
-
-fn mark_snapshot_staleness(
-    mut snapshot: ChannelConnectivitySnapshot,
-    now_unix_secs: u64,
-    max_age_secs: u64,
 ) -> ChannelConnectivitySnapshot {
-    snapshot.stale = snapshot
-        .checked_at_unix_secs
-        .is_none_or(|checked_at| now_unix_secs.saturating_sub(checked_at) > max_age_secs);
-    snapshot
-}
-
-fn unavailable_snapshot(config: &AppConfig, loc: Locale) -> ChannelConnectivitySnapshot {
-    let unavailable = tr(Message::ChannelConnectivityUnavailable, loc);
+    let active = active_channel_item(config, http, loc);
     ChannelConnectivitySnapshot {
         channels: vec![
-            unavailable_item("telegram", telegram_configured(config), loc, &unavailable),
-            unavailable_item("feishu", feishu_configured(config), loc, &unavailable),
-            unavailable_item("dingtalk", dingtalk_configured(config), loc, &unavailable),
-            unavailable_item("wecom", wecom_configured(config), loc, &unavailable),
-            unavailable_item(
-                "qq_channel",
-                qq_channel_configured(config),
-                loc,
-                &unavailable,
-            ),
-            unavailable_item("webhook", webhook_configured(config), loc, &unavailable),
+            active
+                .clone()
+                .filter(|item| item.id == "telegram")
+                .unwrap_or_else(|| disabled_item("telegram", loc)),
+            active
+                .clone()
+                .filter(|item| item.id == "feishu")
+                .unwrap_or_else(|| disabled_item("feishu", loc)),
+            active
+                .clone()
+                .filter(|item| item.id == "dingtalk")
+                .unwrap_or_else(|| disabled_item("dingtalk", loc)),
+            active
+                .clone()
+                .filter(|item| item.id == "wecom")
+                .unwrap_or_else(|| disabled_item("wecom", loc)),
+            active
+                .filter(|item| item.id == "qq_channel")
+                .unwrap_or_else(|| disabled_item("qq_channel", loc)),
+            webhook_item(config, loc),
         ],
-        checked_at_unix_secs: None,
-        stale: true,
+        checked_at_unix_secs: Some(crate::util::current_unix_secs()),
+        stale: false,
     }
-}
-
-fn unavailable_item(
-    id: &'static str,
-    configured: bool,
-    loc: Locale,
-    unavailable: &str,
-) -> ChannelConnectivityItem {
-    if configured {
-        item(id, true, false, Some(unavailable.to_string()))
-    } else {
-        item(
-            id,
-            false,
-            false,
-            Some(tr(Message::ConnectivityNotConfigured, loc)),
-        )
-    }
-}
-
-fn telegram_configured(config: &AppConfig) -> bool {
-    !config.tg_token.trim().is_empty()
-}
-
-fn feishu_configured(config: &AppConfig) -> bool {
-    !config.feishu_app_id.trim().is_empty() && !config.feishu_app_secret.trim().is_empty()
-}
-
-fn dingtalk_configured(config: &AppConfig) -> bool {
-    !config.dingtalk_webhook_url.trim().is_empty()
-}
-
-fn wecom_configured(config: &AppConfig) -> bool {
-    !config.wecom_corp_id.trim().is_empty()
-        && !config.wecom_corp_secret.trim().is_empty()
-        && config.wecom_agent_id.trim().parse::<u32>().is_ok()
-}
-
-fn qq_channel_configured(config: &AppConfig) -> bool {
-    !config.qq_channel_app_id.trim().is_empty() && !config.qq_channel_secret.trim().is_empty()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channels::ChannelHttpClient;
+    use crate::error::Result;
+
+    #[derive(Default)]
+    struct StubHttp;
+
+    impl ChannelHttpClient for StubHttp {
+        fn http_get(&mut self, _url: &str) -> Result<(u16, crate::platform::ResponseBody)> {
+            Ok((200, crate::platform::ResponseBody::Heap(b"{}".to_vec())))
+        }
+
+        fn http_get_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+        ) -> Result<(u16, crate::platform::ResponseBody)> {
+            Ok((200, crate::platform::ResponseBody::Heap(b"{}".to_vec())))
+        }
+
+        fn http_post(
+            &mut self,
+            _url: &str,
+            _body: &[u8],
+        ) -> Result<(u16, crate::platform::ResponseBody)> {
+            Ok((200, crate::platform::ResponseBody::Heap(b"{}".to_vec())))
+        }
+
+        fn http_post_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> Result<(u16, crate::platform::ResponseBody)> {
+            Ok((200, crate::platform::ResponseBody::Heap(b"{}".to_vec())))
+        }
+    }
 
     fn configured_config() -> AppConfig {
         let mut config = AppConfig::load_from_env();
         config.tg_token = "tg-token".to_string();
+        config.enabled_channel = "telegram".to_string();
         config
     }
 
     #[test]
-    fn snapshot_without_cache_is_stale_fallback() {
-        let cache = ChannelConnectivityCache::new();
-        let snapshot = cache.snapshot_or_fallback(&configured_config(), Locale::Zh, 100, 60);
-        assert!(snapshot.stale);
+    fn build_snapshot_checks_only_enabled_channel() {
+        let mut http = StubHttp;
+        let snapshot = build_snapshot(&configured_config(), &mut http, Locale::Zh);
+        assert!(!snapshot.stale);
         assert_eq!(snapshot.channels[0].id, "telegram");
-        assert!(!snapshot.channels[0].ok);
+        assert!(snapshot.channels[0].configured);
+        assert!(snapshot
+            .channels
+            .iter()
+            .skip(1)
+            .take(4)
+            .all(|item| !item.configured));
     }
 
     #[test]
-    fn snapshot_marks_old_success_as_stale() {
-        let cache = ChannelConnectivityCache::new();
-        cache.publish_success(vec![item("telegram", true, true, None)], 10);
-
-        let fresh = cache.snapshot_or_fallback(&configured_config(), Locale::Zh, 50, 60);
-        assert!(!fresh.stale);
-
-        let stale = cache.snapshot_or_fallback(&configured_config(), Locale::Zh, 100, 60);
-        assert!(stale.stale);
-        assert!(stale.channels[0].ok);
-    }
-
-    #[test]
-    fn refresh_claim_is_single_flight() {
-        let cache = ChannelConnectivityCache::new();
-        assert!(cache.try_start_refresh());
-        assert!(!cache.try_start_refresh());
-        cache.finish_refresh();
-        assert!(cache.try_start_refresh());
+    fn build_snapshot_reports_disabled_channels_as_not_configured() {
+        let mut config = configured_config();
+        config.enabled_channel.clear();
+        let mut http = StubHttp;
+        let snapshot = build_snapshot(&config, &mut http, Locale::Zh);
+        assert!(snapshot
+            .channels
+            .iter()
+            .take(5)
+            .all(|item| !item.configured));
+        assert!(snapshot.channels.iter().take(5).all(|item| !item.ok));
     }
 }

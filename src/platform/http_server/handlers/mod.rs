@@ -17,11 +17,12 @@ pub struct HandlerContext {
     pub session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
     pub skill_storage: Arc<dyn SkillStorage + Send + Sync>,
     pub skill_meta_store: Arc<dyn SkillMetaStore + Send + Sync>,
+    pub tool_registry: Arc<crate::tools::ToolRegistry>,
     pub inbound_depth: Arc<AtomicUsize>,
     pub outbound_depth: Arc<AtomicUsize>,
     pub version: Arc<str>,
     pub board_id: Arc<str>,
-    pub cached_config: RwLock<AppConfig>,
+    pub cached_config: Arc<RwLock<AppConfig>>,
 }
 
 impl HandlerContext {
@@ -30,7 +31,7 @@ impl HandlerContext {
         self.cached_config.read().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// 保存操作后调用，从 stores 重新加载配置到缓存。运行在 12KB httpd 任务上。
+    /// 保存操作后调用，从 stores 重新加载配置到缓存。
     pub fn reload_config(&self) {
         let new = AppConfig::load(
             self.config_store.as_ref(),

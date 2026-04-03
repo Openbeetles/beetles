@@ -352,7 +352,7 @@ impl Platform for Esp32Platform {
 
     #[cfg(feature = "ota")]
     fn ota_from_url(&self, url: &str) -> crate::error::Result<()> {
-        crate::ota::ota_update_from_url(url)
+        crate::platform::ota::ota_update_from_url(url)
     }
 
     fn init_display(&self, config: &DisplayConfig) -> crate::error::Result<()> {

@@ -23,7 +23,6 @@ pub fn run(
     session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
     inbound_tx: crate::bus::InboundTx,
     shared_config: Arc<std::sync::RwLock<crate::config::AppConfig>>,
-    channel_connectivity_cache: Arc<crate::channels::ChannelConnectivityCache>,
 ) -> Result<()> {
     let config_store = platform.config_store();
     let config_file_store: std::sync::Arc<dyn crate::config::ConfigFileStore + Send + Sync> =
@@ -61,7 +60,6 @@ pub fn run(
         version: Arc::from(env!("CARGO_PKG_VERSION")),
         board_id: Arc::from(crate::platform::runtime_board::resolved_board_id()),
         cached_config: shared_config,
-        channel_connectivity_cache,
     });
 
     let router_env = router::RouterEnv::new(inbound_tx.clone());
@@ -186,7 +184,6 @@ pub fn run(
     qq_app_id: String,
     qq_secret: String,
     shared_config: Arc<std::sync::RwLock<crate::config::AppConfig>>,
-    channel_connectivity_cache: Arc<crate::channels::ChannelConnectivityCache>,
 ) -> Result<()> {
     use std::time::Duration;
 
@@ -211,7 +208,6 @@ pub fn run(
         version: Arc::from(env!("CARGO_PKG_VERSION")),
         board_id: Arc::from(crate::platform::runtime_board::resolved_board_id()),
         cached_config: shared_config,
-        channel_connectivity_cache,
     });
     let router_env = router::RouterEnv::new(
         inbound_tx.clone(),

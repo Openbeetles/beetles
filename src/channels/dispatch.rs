@@ -213,6 +213,7 @@ fn dispatch_via_sink(
 const COOLDOWN_BUFFER_MAX: usize = 16;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 const COOLDOWN_BUFFER_MAX: usize = 64;
+const DISPATCH_POLL_MAX_WAIT_MS: u64 = 200;
 
 /// 循环接收出站消息，按 msg.channel 查找 sink 并调用 send；失败打日志并重试；
 /// 单通道熔断冷却期内暂存消息，冷却结束后重放。
@@ -223,9 +224,14 @@ pub fn run_dispatch(outbound_rx: OutboundRx, sinks: Arc<ChannelSinks>) {
     crate::platform::task_wdt::register_current_task_to_task_wdt();
 
     loop {
+        crate::runtime::service_delayed_tasks();
         crate::platform::task_wdt::feed_current_task();
-        let msg = match outbound_rx.recv() {
+        let wait = crate::runtime::next_delayed_task_wait(Duration::from_millis(
+            DISPATCH_POLL_MAX_WAIT_MS,
+        ));
+        let msg = match outbound_rx.recv_timeout(wait) {
             Ok(m) => m,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
             Err(e) => {
                 log::warn!("[{}] outbound disconnected, dispatch exiting: {:?}", TAG, e);
                 break;

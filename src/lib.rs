@@ -34,9 +34,6 @@ pub mod cli;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod commands;
 
-#[cfg(all(feature = "ota", any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub mod ota;
-
 pub mod bootstrap;
 pub mod cron;
 pub mod heartbeat;
@@ -89,9 +86,10 @@ pub use platform::{
 };
 pub use platform::{ConfigStore, MemorySnapshot, Platform, SkillStorage, StateFs};
 pub use tools::{
-    build_default_registry, CalendarTool, FileEditTool, FileWriteTool, FilesTool, GetTimeTool,
-    KvStoreTool, PrivateGardenTool, RemindAtTool, TaskTool, Tool, ToolContext, ToolExposure,
-    ToolMetadata, ToolPolicyContext, ToolRegistry, VoiceInputTool, VoiceOutputTool,
+    build_default_registry, CalendarTool, DefaultRegistryDeps, FileEditTool, FileWriteTool,
+    FilesTool, GetTimeTool, KvStoreTool, PrivateGardenTool, RemindAtTool, TaskTool, Tool,
+    ToolContext, ToolExposure, ToolMetadata, ToolPolicyContext, ToolRegistry, VoiceInputTool,
+    VoiceOutputTool,
 };
 #[cfg(feature = "tools_diagnostics")]
 pub use tools::{

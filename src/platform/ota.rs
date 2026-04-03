@@ -1,5 +1,6 @@
-//! OTA：从 URL 拉取固件、写 OTA 分区；失败不写当前运行分区，可回退。
-//! OTA: fetch firmware from URL, write to OTA partition; on failure current partition unchanged.
+//! OTA implementation kept inside `platform/` so business modules do not touch ESP-IDF APIs.
+//! OTA 实现收口到 `platform/`，避免业务域直接依赖 ESP-IDF。
+
 #![cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 
 use crate::error::{Error, Result};

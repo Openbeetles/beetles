@@ -37,6 +37,7 @@ done
 
 PATTERN1='use\s+crate::platform::(spiffs|heap|hardware_drivers)'
 PATTERN2='use\s+crate::platform::\*'
+PATTERN3='esp_idf_svc::'
 
 if rg -q "$PATTERN1" "${EXISTING_DIRS[@]}"; then
   echo "FAIL: forbidden direct use of platform implementation modules (spiffs|heap|hardware_drivers):" >&2
@@ -47,6 +48,15 @@ fi
 if rg -q "$PATTERN2" "${EXISTING_DIRS[@]}"; then
   echo "FAIL: forbidden use crate::platform::*" >&2
   rg "$PATTERN2" "${EXISTING_DIRS[@]}" >&2
+  exit 1
+fi
+
+ESP_IDF_SVC_HITS="$(rg -n "$PATTERN3" src \
+  --glob '!src/platform/**' \
+  --glob '!src/channels/wss_gateway/esp_conn.rs' || true)"
+if [[ -n "$ESP_IDF_SVC_HITS" ]]; then
+  echo "FAIL: forbidden direct esp_idf_svc usage outside platform/ (except fixed exceptions):" >&2
+  echo "$ESP_IDF_SVC_HITS" >&2
   exit 1
 fi
 
