@@ -93,19 +93,33 @@ fn startup_self_check(memory_store: &dyn MemoryStore) -> bool {
 
 /// 首次启动或空存储：当 get_memory 与 get_soul 均失败时写入占位数据，使后续自检可过、业务可进（如引导配置）。
 fn ensure_storage_ready(memory_store: &dyn MemoryStore) {
-    let need_defaults = memory_store.get_memory().is_err() && memory_store.get_soul().is_err();
-    if !need_defaults {
+    let need_memory = memory_store.get_memory().is_err();
+    let need_soul = memory_store.get_soul().is_err();
+    let need_user = memory_store.get_user().is_err();
+    if !need_memory && !need_soul && !need_user {
         return;
     }
     log::info!(
-        "[{}] first boot or empty storage: writing default memory/soul",
-        TAG
+        "[{}] preparing default storage files memory_missing={} soul_missing={} user_missing={}",
+        TAG,
+        need_memory,
+        need_soul,
+        need_user
     );
-    if let Err(e) = memory_store.set_memory("") {
-        log::warn!("[{}] set_memory default failed: {}", TAG, e);
+    if need_memory {
+        if let Err(e) = memory_store.set_memory("") {
+            log::warn!("[{}] set_memory default failed: {}", TAG, e);
+        }
     }
-    if let Err(e) = memory_store.set_soul("") {
-        log::warn!("[{}] set_soul default failed: {}", TAG, e);
+    if need_soul {
+        if let Err(e) = memory_store.set_soul("") {
+            log::warn!("[{}] set_soul default failed: {}", TAG, e);
+        }
+    }
+    if need_user {
+        if let Err(e) = memory_store.set_user("") {
+            log::warn!("[{}] set_user default failed: {}", TAG, e);
+        }
     }
 }
 

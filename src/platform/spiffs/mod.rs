@@ -21,7 +21,43 @@ pub fn spiffs_base_string() -> String {
 
 /// 与 `state_mount_path().join(rel)` 相同；供各 `Spiffs*` 存储拼接路径。
 pub(crate) fn state_path_join(rel: impl AsRef<Path>) -> PathBuf {
-    state_mount_path().join(rel.as_ref())
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    {
+        state_mount_path().join(esp_rel_path_alias(rel.as_ref()))
+    }
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    {
+        state_mount_path().join(rel.as_ref())
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn fnv1a64_hash(s: &str) -> u64 {
+    let mut h: u64 = 14695981039346656037;
+    for b in s.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(1099511628211);
+    }
+    h
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn esp_rel_path_alias(rel: &Path) -> PathBuf {
+    let rel_str = rel.to_string_lossy();
+    match rel_str.as_ref() {
+        crate::memory::REL_PATH_AUTONOMY_STRATEGIES => PathBuf::from("m/as.json"),
+        crate::memory::REL_PATH_LONG_TERM_EXTRACTION_STATES => PathBuf::from("m/lte.json"),
+        crate::memory::REL_PATH_MENTAL_PRIVACY_STATES => PathBuf::from("m/mps.json"),
+        crate::memory::REL_PATH_PRIVATE_DOC_WORKSPACES => PathBuf::from("m/pdw.json"),
+        crate::memory::REL_PATH_PRIVATE_GARDEN_INDEX => PathBuf::from("m/pgi.json"),
+        _ => {
+            if rel_str.starts_with(crate::memory::REL_PATH_PRIVATE_GARDEN_DIR) {
+                PathBuf::from(format!("g/{:016x}.md", fnv1a64_hash(rel_str.as_ref())))
+            } else {
+                rel.to_path_buf()
+            }
+        }
+    }
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -132,7 +168,11 @@ pub fn spiffs_usage() -> Option<(usize, usize)> {
             let ret = unsafe {
                 esp_idf_svc::sys::esp_spiffs_info(std::ptr::null(), &mut total, &mut used)
             };
-            if ret == 0 { Some((total, used)) } else { None }
+            if ret == 0 {
+                Some((total, used))
+            } else {
+                None
+            }
         })
     }
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -301,6 +341,6 @@ pub use self_model::SpiffsSelfModelStore;
 pub use session::SpiffsSessionStore;
 pub use session_summary::SpiffsSessionSummaryStore;
 pub use skill_meta::SpiffsSkillMetaStore;
-pub use skill_storage::{SpiffsSkillStorage, default_skill_storage_arc};
+pub use skill_storage::{default_skill_storage_arc, SpiffsSkillStorage};
 pub use task_store::SpiffsTaskStore;
 pub use world_sense::SpiffsWorldSenseStore;

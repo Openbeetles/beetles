@@ -11,9 +11,8 @@ fn flash_mb_display(flash_bytes: u32) -> u32 {
 fn cores_display(cores: u32) -> Option<String> {
     match cores {
         0 => None,
-        1 => Some("single-core".to_string()),
-        2 => Some("dual-core".to_string()),
-        n => Some(format!("{} cores", n)),
+        1 => Some("1-core CPU".to_string()),
+        n => Some(format!("{}-core CPU", n)),
     }
 }
 
@@ -188,7 +187,7 @@ mod tests {
     fn formats_supported_soc_for_humans() {
         assert_eq!(
             human_hardware_summary("ESP32-S3", 16 * 1024 * 1024, 2, true),
-            "Beetle ESP32-S3 (16MB Flash, dual-core, with PSRAM)"
+            "Beetle ESP32-S3 (16MB Flash, 2-core CPU, with PSRAM)"
         );
     }
 
@@ -196,7 +195,7 @@ mod tests {
     fn formats_unknown_soc_without_diagnostic_noise() {
         assert_eq!(
             human_hardware_summary("Unsupported SoC (id 7)", 8 * 1024 * 1024, 1, false),
-            "Beetle device (Unsupported SoC (id 7)) (8MB Flash, single-core, without PSRAM)"
+            "Beetle device (Unsupported SoC (id 7)) (8MB Flash, 1-core CPU, without PSRAM)"
         );
     }
 }

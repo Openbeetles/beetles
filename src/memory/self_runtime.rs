@@ -12,27 +12,11 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    AutonomyGovernanceTendency, AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput,
-    AutonomyStrategyRefreshOutcome, AutonomyStrategyStore, BoundaryPersonaRefreshContext,
-    BoundaryPersonaRefreshInput, BoundaryPersonaRefreshOutcome, ExecutionStateStore,
-    InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome, InnerLifeStore,
-    InternalMemoryLayerFocus, LongTermMemoryStore, MemoryGovernanceContext, MemoryGovernanceInput,
-    MemoryHygieneContext, MemoryProfile, MemoryStore, MentalPrivacyStore, OuterVoiceRefreshContext,
-    OuterVoiceRefreshInput, OuterVoiceRefreshOutcome, OuterVoiceStore, PrivateDocStore,
-    PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
-    PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
-    PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, PrivateGardenStore,
-    RemindAtStore, SelfContinuityRefreshContext, SelfContinuityRefreshInput,
-    SelfContinuityRefreshOutcome, SelfContinuityStore, SelfMemorySpaceBottleneck,
-    SelfMemorySpacePressure, SelfModelRefreshContext, SelfModelRefreshInput,
-    SelfModelRefreshOutcome, SelfModelStore, SelfState, SessionStore, SessionSummaryStore,
-    SharedFactualPlaneSnapshot, SharedFactualReconcileAction, TurnLedgerStore,
-    WorldSenseRefreshContext, WorldSenseRefreshInput, WorldSenseRefreshOutcome, WorldSenseStore,
-    WorldSnapshotContext, autonomy_idle_interval_secs, build_archive_evidence_block,
-    build_self_state, build_world_snapshot,
+    autonomy_idle_interval_secs, build_archive_evidence_block, build_self_state,
+    build_world_snapshot,
     llm_json::{
-        LlmJsonPayload, get_object_bool, get_object_string_list, get_object_text,
-        parse_llm_json_payload,
+        get_object_bool, get_object_string_list, get_object_text, parse_llm_json_payload,
+        LlmJsonPayload,
     },
     memory_capability_profile, memory_policy, render_autonomy_strategy_block,
     render_execution_state_block, render_inner_life_block, render_internal_memory_topology_block,
@@ -45,7 +29,23 @@ use super::{
     run_outer_voice_refresh_with_state, run_private_doc_workspace_refresh_with_state,
     run_private_garden_governance_with_state, run_self_continuity_refresh_with_state,
     run_self_model_refresh_with_state, run_world_sense_refresh_with_state,
-    touch_self_continuity_runtime,
+    touch_self_continuity_runtime, AutonomyGovernanceTendency, AutonomyStrategyRefreshContext,
+    AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome, AutonomyStrategyStore,
+    BoundaryPersonaRefreshContext, BoundaryPersonaRefreshInput, BoundaryPersonaRefreshOutcome,
+    ExecutionStateStore, InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome,
+    InnerLifeStore, InternalMemoryLayerFocus, LongTermMemoryStore, MemoryGovernanceContext,
+    MemoryGovernanceInput, MemoryHygieneContext, MemoryProfile, MemoryStore, MentalPrivacyStore,
+    OuterVoiceRefreshContext, OuterVoiceRefreshInput, OuterVoiceRefreshOutcome, OuterVoiceStore,
+    PrivateDocStore, PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
+    PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
+    PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, PrivateGardenStore,
+    RemindAtStore, SelfContinuityRefreshContext, SelfContinuityRefreshInput,
+    SelfContinuityRefreshOutcome, SelfContinuityStore, SelfMemorySpaceBottleneck,
+    SelfMemorySpacePressure, SelfModelRefreshContext, SelfModelRefreshInput,
+    SelfModelRefreshOutcome, SelfModelStore, SelfState, SessionStore, SessionSummaryStore,
+    SharedFactualPlaneSnapshot, SharedFactualReconcileAction, TurnLedgerStore,
+    WorldSenseRefreshContext, WorldSenseRefreshInput, WorldSenseRefreshOutcome, WorldSenseStore,
+    WorldSnapshotContext,
 };
 
 pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's inward autonomy runtime. Respect the current autonomy strategy unless the latest world state or self-state clearly requires a different emphasis. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_private_docs, private_docs_intent, private_docs_action, refresh_private_garden, private_garden_intent, private_garden_action, refresh_self_model, self_model_intent, self_model_sources, refresh_self_continuity, self_continuity_intent, self_continuity_sources, refresh_boundary_persona, boundary_persona_intent, refresh_outer_voice, outer_voice_intent, outer_voice_sources, boundary_flush, boundary_flush_reason, request_factual_refresh, factual_reconcile_action, factual_reconcile_intent. Use true only when that layer should change now. Runtime governance actions are hold, rewrite, compress, or cleanup. factual_reconcile_action is hold, reinforce, correct, conflict, or stale. self_model, self_continuity, boundary_persona, and outer_voice are upward distillation layers: refresh them only when private evolution or newer world/boundary state has produced a better stable core that should influence future main replies. Source lists should name the layers that actually deserve upward distillation, such as inner_life, private_docs, private_garden, self_model, self_continuity, boundary_persona, outer_voice, world_sense, autonomy_strategy, or recent_transcript. Favor autonomy, but do not churn memory without gain.";
@@ -1340,9 +1340,12 @@ pub fn run_self_runtime(
     profile: MemoryProfile,
 ) -> SelfRuntimeOutcome {
     let state = load_self_runtime_state(&ctx, chat_id, payload, profile);
+    crate::platform::task_wdt::feed_current_task();
     let prelude = refresh_world_and_autonomy(http, llm, &ctx, chat_id, payload, profile, &state);
+    crate::platform::task_wdt::feed_current_task();
     let action_results =
         execute_self_runtime_actions(http, llm, &ctx, chat_id, payload, profile, &state, &prelude);
+    crate::platform::task_wdt::feed_current_task();
 
     let _ = touch_self_continuity_runtime(
         ctx.self_continuity_store,
@@ -1352,6 +1355,7 @@ pub fn run_self_runtime(
         true,
         Some(payload.source_channel.as_str()),
     );
+    crate::platform::task_wdt::feed_current_task();
     if matches!(payload.trigger, SelfRuntimeTrigger::IdleTick) {
         let _ = run_memory_hygiene_jobs(
             MemoryHygieneContext {
@@ -1366,6 +1370,7 @@ pub fn run_self_runtime(
             profile,
             payload.now_secs,
         );
+        crate::platform::task_wdt::feed_current_task();
     }
 
     SelfRuntimeOutcome {
@@ -1544,7 +1549,9 @@ fn normalize_boundary_and_factual_decisions(
         if has_self_model {
             decision.refresh_self_model = true;
             if decision.self_model_intent.trim().is_empty() {
-                decision.self_model_intent = "把这一轮私域变化蒸馏进更稳定的自我核心".to_string();
+                decision.self_model_intent =
+                    "Distill this turn's private-state change into a steadier self core"
+                        .to_string();
             }
         }
         decision.refresh_self_continuity = true;
@@ -1556,13 +1563,16 @@ fn normalize_boundary_and_factual_decisions(
             decision.refresh_boundary_persona = true;
             if decision.boundary_persona_intent.trim().is_empty() {
                 decision.boundary_persona_intent =
-                    "让边界人格根据最近的触碰与回应方式重新定型".to_string();
+                    "Retune the boundary persona around the latest contact and response pattern"
+                        .to_string();
             }
         }
         if has_outer_voice {
             decision.refresh_outer_voice = true;
             if decision.outer_voice_intent.trim().is_empty() {
-                decision.outer_voice_intent = "让外在表达跟上新的边界姿态与自我核心".to_string();
+                decision.outer_voice_intent =
+                    "Bring outward expression in line with the new boundary stance and self core"
+                        .to_string();
             }
         }
         if has_private_docs && !decision.refresh_private_docs {
@@ -1642,8 +1652,7 @@ fn normalize_persona_distillation_lag(
     {
         decision.refresh_self_model = true;
         if decision.self_model_intent.trim().is_empty() {
-            decision.self_model_intent =
-                "私域与边界态已经前移，需要把更稳定的人格核重新蒸馏进 self_model".to_string();
+            decision.self_model_intent = "Private material and boundary state have moved ahead; redistill a steadier kernel into self_model".to_string();
         }
         push_runtime_source_if(
             &mut decision.self_model_sources,
@@ -1678,7 +1687,7 @@ fn normalize_persona_distillation_lag(
         decision.refresh_self_continuity = true;
         if decision.self_continuity_intent.trim().is_empty() {
             decision.self_continuity_intent =
-                "把最近已经成形的自我、关系与任务姿态重新收束成可延续的连续性桥梁".to_string();
+                "Fold the latest self, relationship, and task stance into a continuity bridge that can carry forward".to_string();
         }
         push_runtime_source_if(
             &mut decision.self_continuity_sources,
@@ -1729,7 +1738,7 @@ fn normalize_persona_distillation_lag(
         decision.refresh_outer_voice = true;
         if decision.outer_voice_intent.trim().is_empty() {
             decision.outer_voice_intent =
-                "让对外表达跟上新的自我排序、关系状态与资源姿态".to_string();
+                "Let outward expression catch up with the new self ordering, relationship state, and resource posture".to_string();
         }
         push_runtime_source_if(
             &mut decision.outer_voice_sources,
@@ -1817,7 +1826,8 @@ fn normalize_runtime_distillation_decisions(
     if !decision.refresh_self_model {
         decision.self_model_intent.clear();
     } else if decision.self_model_intent.trim().is_empty() {
-        decision.self_model_intent = "把私域中的稳定变化蒸馏进 self_model".to_string();
+        decision.self_model_intent =
+            "Distill stable private-state changes into self_model".to_string();
     }
     if !decision.refresh_self_continuity {
         decision.self_continuity_intent.clear();
@@ -1826,12 +1836,14 @@ fn normalize_runtime_distillation_decisions(
         decision.boundary_persona_intent.clear();
     } else if decision.boundary_persona_intent.trim().is_empty() {
         decision.boundary_persona_intent =
-            "更新边界人格的长期姿态，而不是只记录单次裁决".to_string();
+            "Refresh the long-horizon boundary stance instead of only recording one ruling"
+                .to_string();
     }
     if !decision.refresh_outer_voice {
         decision.outer_voice_intent.clear();
     } else if decision.outer_voice_intent.trim().is_empty() {
-        decision.outer_voice_intent = "让 outer_voice 体现新的自我核心与边界表达".to_string();
+        decision.outer_voice_intent =
+            "Let outer_voice reflect the updated self core and boundary expression".to_string();
     }
 }
 
@@ -1988,36 +2000,36 @@ fn default_runtime_governance_intent(
     self_state: &SelfState,
 ) -> String {
     let pressure_focus = match self_state.memory_space.bottleneck {
-        SelfMemorySpaceBottleneck::Kernel => "降低内核空间中的重复与漂移",
-        SelfMemorySpaceBottleneck::GardenDocs => "减少 garden 文档数量上的拥挤",
-        SelfMemorySpaceBottleneck::GardenBytes => "压低 garden 总体体积",
-        SelfMemorySpaceBottleneck::Balanced => "保持整体内在空间清晰",
+        SelfMemorySpaceBottleneck::Kernel => "reduce duplication and drift in the kernel space",
+        SelfMemorySpaceBottleneck::GardenDocs => "reduce crowding in garden document count",
+        SelfMemorySpaceBottleneck::GardenBytes => "shrink total garden volume",
+        SelfMemorySpaceBottleneck::Balanced => "keep the overall inner workspace clear",
     };
     match (layer, action) {
         (_, SelfRuntimeGovernanceAction::Hold) => String::new(),
         (GovernedRuntimeLayer::PrivateDocs, SelfRuntimeGovernanceAction::Rewrite) => {
-            "重写 governed docs，只保留仍然承重的内在线索".to_string()
+            "Rewrite governed docs so only still-load-bearing inner signals remain".to_string()
         }
         (GovernedRuntimeLayer::PrivateDocs, SelfRuntimeGovernanceAction::Compress) => {
             let mut out = String::with_capacity(24 + pressure_focus.len());
-            out.push_str("压缩 governed docs，");
+            out.push_str("Compress governed docs to ");
             out.push_str(pressure_focus);
             out
         }
         (GovernedRuntimeLayer::PrivateDocs, SelfRuntimeGovernanceAction::Cleanup) => {
-            "清理低价值 governed docs 字段，只留下仍然有效的部分".to_string()
+            "Clean low-value governed-doc fields and leave only what still matters".to_string()
         }
         (GovernedRuntimeLayer::PrivateGarden, SelfRuntimeGovernanceAction::Rewrite) => {
-            "重写并重组 private garden 中仍然活跃的工作文档".to_string()
+            "Rewrite and reorganize the still-active working docs in private_garden".to_string()
         }
         (GovernedRuntimeLayer::PrivateGarden, SelfRuntimeGovernanceAction::Compress) => {
             let mut out = String::with_capacity(24 + pressure_focus.len());
-            out.push_str("压缩 private garden，");
+            out.push_str("Compress private_garden to ");
             out.push_str(pressure_focus);
             out
         }
         (GovernedRuntimeLayer::PrivateGarden, SelfRuntimeGovernanceAction::Cleanup) => {
-            "清理陈旧或重复的 private garden 草稿与路径".to_string()
+            "Clean stale or duplicated private_garden drafts and paths".to_string()
         }
     }
 }
@@ -2041,7 +2053,7 @@ fn default_boundary_governance_action(
 
 fn default_boundary_self_continuity_intent(boundary_signal: &SelfRuntimeBoundarySignal) -> String {
     format!(
-        "在 {} 收束当前阶段，确保下一次苏醒时连续性不撕裂",
+        "Close the current phase around {} so continuity does not tear on the next wake cycle",
         boundary_signal.human_summary()
     )
 }
@@ -2056,10 +2068,10 @@ fn default_boundary_private_intent(
         GovernedRuntimeLayer::PrivateGarden => "private garden",
     };
     format!(
-        "在 {} 时对 {} 执行 {} 收口",
-        boundary_signal.human_summary(),
+        "Apply {} consolidation to {} around {}",
+        action.label(),
         layer_name,
-        action.label()
+        boundary_signal.human_summary(),
     )
 }
 
@@ -2504,31 +2516,23 @@ mod tests {
             parsed.self_continuity_sources,
             vec!["self_model".to_string(), "recent_transcript".to_string()]
         );
-        assert!(
-            parsed
-                .private_garden_intent
-                .contains("path: journal/today.md")
-        );
-        assert!(
-            parsed
-                .boundary_persona_intent
-                .contains("stabilize boundary stance")
-        );
-        assert!(
-            parsed
-                .outer_voice_intent
-                .contains("why: express new stance")
-        );
+        assert!(parsed
+            .private_garden_intent
+            .contains("path: journal/today.md"));
+        assert!(parsed
+            .boundary_persona_intent
+            .contains("stabilize boundary stance"));
+        assert!(parsed
+            .outer_voice_intent
+            .contains("why: express new stance"));
         assert_eq!(
             parsed.outer_voice_sources,
             vec!["boundary_persona".to_string(), "world_sense".to_string()]
         );
         assert!(parsed.boundary_flush_reason.contains("daily_boundary"));
-        assert!(
-            parsed
-                .factual_reconcile_intent
-                .contains("why: recent transcript diverges")
-        );
+        assert!(parsed
+            .factual_reconcile_intent
+            .contains("why: recent transcript diverges"));
     }
 
     #[test]
@@ -2564,7 +2568,9 @@ mod tests {
         );
 
         assert!(decision.refresh_private_docs);
-        assert!(decision.private_docs_intent.contains("压缩 governed docs"));
+        assert!(decision
+            .private_docs_intent
+            .contains("Compress governed docs"));
         assert_eq!(
             decision.private_docs_action,
             SelfRuntimeGovernanceAction::Compress
@@ -2607,11 +2613,9 @@ mod tests {
         );
 
         assert!(decision.refresh_private_garden);
-        assert!(
-            decision
-                .private_garden_intent
-                .contains("重写并重组 private garden")
-        );
+        assert!(decision
+            .private_garden_intent
+            .contains("Rewrite and reorganize"));
         assert!(!decision.refresh_private_docs);
         assert_eq!(
             decision.private_garden_action,
@@ -2672,22 +2676,18 @@ mod tests {
         assert!(decision.refresh_self_model);
         assert!(decision.refresh_self_continuity);
         assert!(decision.refresh_outer_voice);
-        assert!(
-            decision
-                .self_model_intent
-                .contains("更稳定的人格核重新蒸馏")
-        );
-        assert!(decision.self_continuity_intent.contains("连续性桥梁"));
-        assert!(decision.outer_voice_intent.contains("对外表达"));
-        assert!(
-            decision
-                .self_continuity_sources
-                .contains(&"world_sense".to_string())
-        );
-        assert!(
-            decision
-                .outer_voice_sources
-                .contains(&"autonomy_strategy".to_string())
-        );
+        assert!(decision
+            .self_model_intent
+            .contains("redistill a steadier kernel"));
+        assert!(decision
+            .self_continuity_intent
+            .contains("continuity bridge"));
+        assert!(decision.outer_voice_intent.contains("outward expression"));
+        assert!(decision
+            .self_continuity_sources
+            .contains(&"world_sense".to_string()));
+        assert!(decision
+            .outer_voice_sources
+            .contains(&"autonomy_strategy".to_string()));
     }
 }

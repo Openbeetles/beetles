@@ -10,15 +10,15 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    ExecutionState, InternalMemoryLayerFocus, InternalMemoryRoutingPolicy, LongTermMemoryStore,
-    MemoryProfile, PrivateDocWorkspace, PrivateGardenDocRecord, SelfModel, SessionMessage,
     llm_json::{
-        LlmJsonPayload, get_object_bool, get_object_string_list, get_optional_object_text,
-        parse_llm_json_payload,
+        get_object_bool, get_object_string_list, get_optional_object_text, parse_llm_json_payload,
+        LlmJsonPayload,
     },
     memory_policy, normalize_private_garden_doc_path, render_execution_state_block,
     render_internal_memory_topology_block, render_private_memory_boundary_block,
-    render_shared_factual_plane_block,
+    render_shared_factual_plane_block, ExecutionState, InternalMemoryLayerFocus,
+    InternalMemoryRoutingPolicy, LongTermMemoryStore, MemoryProfile, PrivateDocWorkspace,
+    PrivateGardenDocRecord, SelfModel, SessionMessage,
 };
 
 pub const INTERNAL_MEMORY_ROUTING_SYSTEM_PROMPT: &str = "You decide whether a persistent embodied AI assistant should refresh each private internal memory layer after the latest turn. Return JSON only: either null, or one object with boolean fields refresh_self_model, refresh_private_docs, refresh_private_garden, plus optional self_model_intent, private_docs_intent, private_garden_intent, self_model_sources, private_docs_sources, and private_garden_cleanup_paths. Choose true only when that layer should be rewritten now. This router governs private layers only; durable objective facts remain in the shared factual plane. If a layer is true, provide a short intent describing what that layer should capture so downstream writers avoid overlap. self_model_sources and private_docs_sources are optional short descriptors of material being distilled or promoted, such as private_docs.inner_journal or private_garden:journal/current.md. private_garden_cleanup_paths are optional garden-relative document paths that can be deleted after successful upstream promotion. self_model is for durable private continuity and stance. private_docs is for compact governed subjective docs. private_garden is for free-form self-owned drafts, organization, and exploratory internal work. Use self-state pressure and current workspace shape to avoid unnecessary writes. If nothing should change, return null.";
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn routing_parser_keeps_true_targets() {
         let parsed = parse_internal_memory_routing_response(
-            r#"{"refresh_self_model":true,"self_model_intent":"沉淀最近形成的持续自我定位","self_model_sources":["private_docs.inner_journal","private_garden:journal/current.md"],"refresh_private_docs":false,"private_docs_intent":"should drop","private_docs_sources":["private_garden:notes/skip.md"],"refresh_private_garden":true,"private_garden_intent":"把当前草稿整理成更稳定的目录结构","private_garden_cleanup_paths":["journal/current.md","../escape","journal/current.md"]}"#,
+            r#"{"refresh_self_model":true,"self_model_intent":"Stabilize the recently formed private self-positioning","self_model_sources":["private_docs.inner_journal","private_garden:journal/current.md"],"refresh_private_docs":false,"private_docs_intent":"should drop","private_docs_sources":["private_garden:notes/skip.md"],"refresh_private_garden":true,"private_garden_intent":"Reshape the current drafts into a steadier document structure","private_garden_cleanup_paths":["journal/current.md","../escape","journal/current.md"]}"#,
         )
         .unwrap();
 
@@ -342,7 +342,7 @@ mod tests {
         assert!(parsed.refresh_private_garden);
         assert_eq!(
             parsed.self_model_intent.as_deref(),
-            Some("沉淀最近形成的持续自我定位")
+            Some("Stabilize the recently formed private self-positioning")
         );
         assert_eq!(
             parsed.self_model_sources,
@@ -355,7 +355,7 @@ mod tests {
         assert!(parsed.private_docs_sources.is_empty());
         assert_eq!(
             parsed.private_garden_intent.as_deref(),
-            Some("把当前草稿整理成更稳定的目录结构")
+            Some("Reshape the current drafts into a steadier document structure")
         );
         assert_eq!(
             parsed.private_garden_cleanup_paths,
@@ -381,12 +381,10 @@ mod tests {
         assert!(parsed.refresh_self_model);
         assert!(parsed.refresh_private_docs);
         assert!(!parsed.refresh_private_garden);
-        assert!(
-            parsed
-                .self_model_intent
-                .unwrap()
-                .contains("intent: stabilize self stance")
-        );
+        assert!(parsed
+            .self_model_intent
+            .unwrap()
+            .contains("intent: stabilize self stance"));
         assert_eq!(
             parsed.private_docs_intent.as_deref(),
             Some("rewrite workspace")

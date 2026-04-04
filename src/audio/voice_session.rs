@@ -1,11 +1,12 @@
-//! 语音会话调度：主线程只消费事件并派发，重活交给独立 worker。
-//! Voice session scheduler: event intake stays responsive while a worker handles STT/TTS.
+//! 语音会话调度：主线程只消费事件并派发，重活按任务交给短生命周期 worker。
+//! Voice session scheduler: event intake stays responsive while one-shot workers handle STT/TTS.
 //!
 //! Architecture:
 //! - `wake_word::feed_pcm_i16` pushes `WakeDetected`
 //! - `VoiceSink` pushes `Speak(text)`
 //! - `run_voice_session` coalesces events and dispatches one task at a time to
-//!   `voice_session_worker`, so long STT/TTS calls no longer block event intake.
+//!   a short-lived `voice_session_worker`, so long STT/TTS calls no longer
+//!   block event intake and the 8KB worker stack is not kept alive while idle.
 
 use crate::audio::baidu_token::BaiduTokenCache;
 use crate::audio::pipeline::{capture_and_transcribe, speak_text};
@@ -18,7 +19,7 @@ use crate::util::{
     spawn_guarded_with_profile_handle, HttpThreadRole, SpawnCore, STACK_VOICE_SESSION,
 };
 use crate::Platform;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -36,6 +37,7 @@ pub enum VoiceEvent {
     Speak(String),
 }
 
+#[derive(Clone)]
 enum VoiceWorkerTask {
     WakeInteraction,
     Speak(String),
@@ -48,6 +50,7 @@ struct PendingVoiceEvents {
 }
 
 /// All dependencies for the voice session thread, injected by `main`.
+#[derive(Clone)]
 pub struct VoiceSessionConfig {
     pub platform: Arc<dyn Platform>,
     pub audio_cfg: AudioSegment,
@@ -65,24 +68,27 @@ pub fn run_voice_session(cfg: VoiceSessionConfig, rx: Receiver<VoiceEvent>) {
         audio_realtime_enabled(&cfg.audio_cfg)
     );
 
-    let (worker_tx, worker_rx) = mpsc::sync_channel::<VoiceWorkerTask>(1);
     let (done_tx, done_rx) = mpsc::channel::<()>();
-    let worker = match spawn_voice_session_worker(cfg, worker_rx, done_tx) {
-        Ok(handle) => handle,
-        Err(error) => {
-            log::error!("[{}] failed to start worker: {}", TAG, error);
-            return;
-        }
-    };
-
     let mut worker_busy = false;
+    let mut worker_handle: Option<JoinHandle<()>> = None;
     let mut pending = PendingVoiceEvents::default();
 
     loop {
-        drain_worker_done(&done_rx, &mut worker_busy);
-        if !worker_busy && dispatch_pending_voice_task(&worker_tx, &mut pending) {
-            worker_busy = true;
-            continue;
+        drain_worker_done(&mut worker_handle, &done_rx, &mut worker_busy);
+        if !worker_busy {
+            if let Some(task) = take_pending_voice_task(&mut pending) {
+                match spawn_voice_session_worker(cfg.clone(), task.clone(), done_tx.clone()) {
+                    Ok(handle) => {
+                        worker_handle = Some(handle);
+                        worker_busy = true;
+                        continue;
+                    }
+                    Err(error) => {
+                        log::error!("[{}] failed to start worker: {}", TAG, error);
+                        restore_pending_voice_task(&mut pending, task);
+                    }
+                }
+            }
         }
 
         let next_event = if worker_busy {
@@ -101,17 +107,18 @@ pub fn run_voice_session(cfg: VoiceSessionConfig, rx: Receiver<VoiceEvent>) {
         let Some(event) = next_event else {
             continue;
         };
-        handle_voice_event(event, &mut pending, &worker_tx, &mut worker_busy);
+        handle_voice_event(event, &mut pending);
     }
 
-    drop(worker_tx);
-    let _ = worker.join();
+    if let Some(handle) = worker_handle.take() {
+        let _ = handle.join();
+    }
     log::info!("[{}] scheduler stopped", TAG);
 }
 
 fn spawn_voice_session_worker(
     cfg: VoiceSessionConfig,
-    rx: Receiver<VoiceWorkerTask>,
+    task: VoiceWorkerTask,
     done_tx: mpsc::Sender<()>,
 ) -> std::io::Result<JoinHandle<()>> {
     spawn_guarded_with_profile_handle(
@@ -119,13 +126,13 @@ fn spawn_voice_session_worker(
         STACK_VOICE_SESSION,
         Some(SpawnCore::Core1),
         HttpThreadRole::Background,
-        move || run_voice_session_worker(cfg, rx, done_tx),
+        move || run_voice_session_worker(cfg, task, done_tx),
     )
 }
 
 fn run_voice_session_worker(
     cfg: VoiceSessionConfig,
-    rx: Receiver<VoiceWorkerTask>,
+    task: VoiceWorkerTask,
     done_tx: mpsc::Sender<()>,
 ) {
     let mut http: Option<Box<dyn PlatformHttpClient>> = None;
@@ -143,18 +150,15 @@ fn run_voice_session_worker(
         h.is_some()
     };
 
-    while let Ok(task) = rx.recv() {
-        match task {
-            VoiceWorkerTask::WakeInteraction => {
-                handle_wake_interaction(&cfg, &mut http, &ensure_http);
-            }
-            VoiceWorkerTask::Speak(text) => {
-                handle_speak(&cfg, &mut http, &ensure_http, &text);
-            }
+    match task {
+        VoiceWorkerTask::WakeInteraction => {
+            handle_wake_interaction(&cfg, &mut http, &ensure_http);
         }
-        let _ = done_tx.send(());
+        VoiceWorkerTask::Speak(text) => {
+            handle_speak(&cfg, &mut http, &ensure_http, &text);
+        }
     }
-
+    let _ = done_tx.send(());
     log::info!("[{}] worker stopped", TAG);
 }
 
@@ -326,86 +330,51 @@ fn handle_speak<F>(
     }
 }
 
-fn drain_worker_done(done_rx: &mpsc::Receiver<()>, worker_busy: &mut bool) {
-    while done_rx.try_recv().is_ok() {
-        *worker_busy = false;
-    }
-}
-
-fn dispatch_pending_voice_task(
-    worker_tx: &SyncSender<VoiceWorkerTask>,
-    pending: &mut PendingVoiceEvents,
-) -> bool {
-    if pending.wake_requested {
-        return match worker_tx.try_send(VoiceWorkerTask::WakeInteraction) {
-            Ok(()) => {
-                pending.wake_requested = false;
-                true
-            }
-            Err(mpsc::TrySendError::Full(_)) => false,
-            Err(mpsc::TrySendError::Disconnected(_)) => {
-                log::warn!(
-                    "[{}] worker channel disconnected while dispatching wake",
-                    TAG
-                );
-                false
-            }
-        };
-    }
-
-    let Some(text) = pending.pending_speak.take() else {
-        return false;
-    };
-    match worker_tx.try_send(VoiceWorkerTask::Speak(text.clone())) {
-        Ok(()) => true,
-        Err(mpsc::TrySendError::Full(_)) => {
-            pending.pending_speak = Some(text);
-            false
-        }
-        Err(mpsc::TrySendError::Disconnected(_)) => {
-            log::warn!(
-                "[{}] worker channel disconnected while dispatching speak",
-                TAG
-            );
-            false
-        }
-    }
-}
-
-fn handle_voice_event(
-    event: VoiceEvent,
-    pending: &mut PendingVoiceEvents,
-    worker_tx: &SyncSender<VoiceWorkerTask>,
+fn drain_worker_done(
+    worker_handle: &mut Option<JoinHandle<()>>,
+    done_rx: &mpsc::Receiver<()>,
     worker_busy: &mut bool,
 ) {
+    while done_rx.try_recv().is_ok() {
+        *worker_busy = false;
+        if let Some(handle) = worker_handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn take_pending_voice_task(pending: &mut PendingVoiceEvents) -> Option<VoiceWorkerTask> {
+    if pending.wake_requested {
+        pending.wake_requested = false;
+        return Some(VoiceWorkerTask::WakeInteraction);
+    }
+    pending.pending_speak.take().map(VoiceWorkerTask::Speak)
+}
+
+fn restore_pending_voice_task(pending: &mut PendingVoiceEvents, task: VoiceWorkerTask) {
+    match task {
+        VoiceWorkerTask::WakeInteraction => {
+            pending.wake_requested = true;
+            pending.pending_speak = None;
+        }
+        VoiceWorkerTask::Speak(text) => {
+            if pending.pending_speak.is_none() {
+                pending.pending_speak = Some(text);
+            }
+        }
+    }
+}
+
+fn handle_voice_event(event: VoiceEvent, pending: &mut PendingVoiceEvents) {
     match event {
         VoiceEvent::WakeDetected => {
             pending.wake_requested = true;
             pending.pending_speak = None;
-            if !*worker_busy && dispatch_pending_voice_task(worker_tx, pending) {
-                *worker_busy = true;
-            }
         }
         VoiceEvent::Speak(text) => {
             let normalized = normalize_speak_text(&text);
             if normalized.is_empty() {
                 return;
-            }
-            if !*worker_busy && !pending.wake_requested {
-                match worker_tx.try_send(VoiceWorkerTask::Speak(normalized.clone())) {
-                    Ok(()) => {
-                        *worker_busy = true;
-                        return;
-                    }
-                    Err(mpsc::TrySendError::Full(_)) => {}
-                    Err(mpsc::TrySendError::Disconnected(_)) => {
-                        log::warn!(
-                            "[{}] worker channel disconnected while dispatching speak",
-                            TAG
-                        );
-                        return;
-                    }
-                }
             }
             if pending.pending_speak.as_deref() == Some(normalized.as_str()) {
                 return;
@@ -435,14 +404,7 @@ mod tests {
             wake_requested: false,
             pending_speak: Some("old reply".to_string()),
         };
-        let (tx, _rx) = mpsc::sync_channel(1);
-        let mut worker_busy = true;
-        handle_voice_event(
-            VoiceEvent::WakeDetected,
-            &mut pending,
-            &tx,
-            &mut worker_busy,
-        );
+        handle_voice_event(VoiceEvent::WakeDetected, &mut pending);
         assert!(pending.wake_requested);
         assert!(pending.pending_speak.is_none());
     }
@@ -450,20 +412,8 @@ mod tests {
     #[test]
     fn speak_keeps_latest_pending_text() {
         let mut pending = PendingVoiceEvents::default();
-        let (tx, _rx) = mpsc::sync_channel(1);
-        let mut worker_busy = true;
-        handle_voice_event(
-            VoiceEvent::Speak("first reply".to_string()),
-            &mut pending,
-            &tx,
-            &mut worker_busy,
-        );
-        handle_voice_event(
-            VoiceEvent::Speak("second reply".to_string()),
-            &mut pending,
-            &tx,
-            &mut worker_busy,
-        );
+        handle_voice_event(VoiceEvent::Speak("first reply".to_string()), &mut pending);
+        handle_voice_event(VoiceEvent::Speak("second reply".to_string()), &mut pending);
         assert_eq!(pending.pending_speak.as_deref(), Some("second reply"));
     }
 

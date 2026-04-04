@@ -3,8 +3,8 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    MAX_SESSION_ENTRIES, MAX_SESSION_MESSAGE_LEN, REL_PATH_SESSIONS_DIR, SessionMessage,
-    SessionStore,
+    SessionMessage, SessionStore, MAX_SESSION_ENTRIES, MAX_SESSION_MESSAGE_LEN,
+    REL_PATH_SESSIONS_DIR,
 };
 use serde_json;
 use std::collections::HashMap;
@@ -17,7 +17,7 @@ use std::sync::Mutex;
 
 use crate::platform::state_root::state_mount_path;
 
-use super::{MAX_WRITE_SIZE, list_dir, read_file, with_fs_lock, write_file};
+use super::{list_dir, read_file, with_fs_lock, write_file, MAX_WRITE_SIZE};
 
 const TAG: &str = "platform::spiffs::session";
 
@@ -192,11 +192,27 @@ fn append_session_line_unlocked(
         .ok()
         .and_then(|meta| usize::try_from(meta.len()).ok())
         .unwrap_or(0);
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path_str)
-        .map_err(|e| Error::io("session_append", e))?;
+    let open_result = OpenOptions::new().create(true).append(true).open(path_str);
+    let mut file = match open_result {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut body = String::with_capacity(
+                CHAT_ID_HEADER_PREFIX.len()
+                    + chat_id.len()
+                    + line.len()
+                    + if write_header { 3 } else { 1 },
+            );
+            if write_header {
+                body.push_str(CHAT_ID_HEADER_PREFIX);
+                body.push_str(chat_id);
+                body.push('\n');
+            }
+            body.push_str(line);
+            body.push('\n');
+            return write_session_body_unlocked(path, body.as_bytes());
+        }
+        Err(error) => return Err(Error::io("session_append", error)),
+    };
     if file_len == 0 && write_header {
         file.write_all(CHAT_ID_HEADER_PREFIX.as_bytes())
             .and_then(|_| file.write_all(chat_id.as_bytes()))

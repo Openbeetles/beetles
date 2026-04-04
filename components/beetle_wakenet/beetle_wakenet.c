@@ -30,6 +30,8 @@ typedef struct {
     int                    chunk_size;  /* samples per detect() call */
     int16_t               *accumulator; /* PSRAM staging buffer      */
     int                    acc_pos;     /* samples buffered so far   */
+    int16_t                resample_tail[2];
+    int                    resample_tail_len;
 } beetle_wn_ctx_t;
 
 static beetle_wn_ctx_t  *s_ctx    = NULL;
@@ -50,6 +52,20 @@ static void ctx_destroy(void) {
     }
     heap_caps_free(s_ctx);
     s_ctx = NULL;
+}
+
+static beetle_wn_result_t feed_detect_sample(int16_t sample) {
+    s_ctx->accumulator[s_ctx->acc_pos++] = sample;
+    if (s_ctx->acc_pos < s_ctx->chunk_size) {
+        return BEETLE_WN_NO;
+    }
+
+    int result = s_ctx->wakenet->detect(s_ctx->model_data, s_ctx->accumulator);
+    s_ctx->acc_pos = 0;
+    if (result > 0) {
+        return BEETLE_WN_DETECTED;
+    }
+    return BEETLE_WN_NO;
 }
 
 /* ── public API ───────────────────────────────────────────────────────────── */
@@ -108,6 +124,7 @@ beetle_wn_err_t beetle_wakenet_init(const char *model_name) {
     s_ctx->chunk_size = chunk_size;
     s_ctx->accumulator = acc;
     s_ctx->acc_pos    = 0;
+    s_ctx->resample_tail_len = 0;
 
     return BEETLE_WN_OK;
 }
@@ -117,24 +134,42 @@ beetle_wn_result_t beetle_wakenet_feed(const int16_t *pcm, int samples) {
         return BEETLE_WN_NO;
     }
 
-    int i = 0;
-    while (i < samples) {
-        int space = s_ctx->chunk_size - s_ctx->acc_pos;
-        int copy  = samples - i;
-        if (copy > space) copy = space;
+    /*
+     * The mic path currently delivers 24 kHz PCM while WakeNet expects 16 kHz.
+     * Downsample with a tiny 3:2 rational stepper:
+     *   in:  s0 s1 s2
+     *   out: s0, lerp(s1,s2,0.5)
+     * Carry 1-2 tail samples across calls so frame boundaries stay continuous.
+     */
+    int16_t triple[3];
+    int triple_len = s_ctx->resample_tail_len;
+    if (triple_len > 0) {
+        memcpy(triple, s_ctx->resample_tail, (size_t)triple_len * sizeof(int16_t));
+    }
 
-        memcpy(s_ctx->accumulator + s_ctx->acc_pos, pcm + i, (size_t)copy * sizeof(int16_t));
-        s_ctx->acc_pos += copy;
-        i += copy;
-
-        if (s_ctx->acc_pos == s_ctx->chunk_size) {
-            int result = s_ctx->wakenet->detect(s_ctx->model_data, s_ctx->accumulator);
-            s_ctx->acc_pos = 0;
-            if (result > 0) {
-                /* wake word detected – reset accumulator, signal caller */
-                return BEETLE_WN_DETECTED;
-            }
+    for (int i = 0; i < samples; ++i) {
+        triple[triple_len++] = pcm[i];
+        if (triple_len < 3) {
+            continue;
         }
+
+        if (feed_detect_sample(triple[0]) == BEETLE_WN_DETECTED) {
+            s_ctx->resample_tail_len = 0;
+            return BEETLE_WN_DETECTED;
+        }
+
+        int32_t blended = ((int32_t)triple[1] + (int32_t)triple[2]) / 2;
+        if (feed_detect_sample((int16_t)blended) == BEETLE_WN_DETECTED) {
+            s_ctx->resample_tail_len = 0;
+            return BEETLE_WN_DETECTED;
+        }
+
+        triple_len = 0;
+    }
+
+    s_ctx->resample_tail_len = triple_len;
+    if (triple_len > 0) {
+        memcpy(s_ctx->resample_tail, triple, (size_t)triple_len * sizeof(int16_t));
     }
     return BEETLE_WN_NO;
 }
@@ -142,6 +177,7 @@ beetle_wn_result_t beetle_wakenet_feed(const int16_t *pcm, int samples) {
 void beetle_wakenet_reset(void) {
     if (s_ctx != NULL) {
         s_ctx->acc_pos = 0;
+        s_ctx->resample_tail_len = 0;
     }
 }
 
