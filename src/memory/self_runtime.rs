@@ -435,6 +435,7 @@ fn refresh_world_and_autonomy(
             payload.now_secs.saturating_sub(world_sense.updated_at)
                 >= world_policy.refresh_interval_secs
         });
+    crate::platform::task_wdt::feed_current_task();
     let world_sense_result = run_world_sense_refresh_with_state(
         http,
         llm,
@@ -468,6 +469,7 @@ fn refresh_world_and_autonomy(
         Some(world_sense_should_refresh),
         Some(state.recent.as_slice()),
     );
+    crate::platform::task_wdt::feed_current_task();
     let refreshed_world_sense = ctx
         .world_sense_store
         .get(chat_id)
@@ -494,6 +496,7 @@ fn refresh_world_and_autonomy(
             payload.now_secs.saturating_sub(strategy.updated_at)
                 >= autonomy_policy.refresh_interval_secs
         });
+    crate::platform::task_wdt::feed_current_task();
     let autonomy_strategy_result = run_autonomy_strategy_refresh_with_state(
         http,
         llm,
@@ -534,12 +537,14 @@ fn refresh_world_and_autonomy(
         Some(autonomy_strategy_should_refresh),
         Some(state.recent.as_slice()),
     );
+    crate::platform::task_wdt::feed_current_task();
     let refreshed_autonomy_strategy = ctx
         .autonomy_strategy_store
         .get(chat_id)
         .ok()
         .flatten()
         .or(state.autonomy_strategy.clone());
+    crate::platform::task_wdt::feed_current_task();
     let runtime_self_state = build_self_state(
         state.self_model.as_ref(),
         state.private_docs.as_ref(),
@@ -765,6 +770,7 @@ fn execute_self_runtime_actions(
     let refreshed_outer_voice = state.outer_voice.clone();
     let decision_ref = decision.as_ref();
     let inner_life_result = if decision_ref.is_some_and(|d| d.refresh_inner_life) {
+        crate::platform::task_wdt::feed_current_task();
         run_inner_life_refresh_with_state(
             http,
             llm,
@@ -809,6 +815,7 @@ fn execute_self_runtime_actions(
         .or(refreshed_inner_life);
     crate::platform::task_wdt::feed_current_task();
     let private_doc_result = if decision_ref.is_some_and(|d| d.refresh_private_docs) {
+        crate::platform::task_wdt::feed_current_task();
         run_private_doc_workspace_refresh_with_state(
             http,
             llm,
@@ -858,6 +865,7 @@ fn execute_self_runtime_actions(
         .or(refreshed_private_docs);
     crate::platform::task_wdt::feed_current_task();
     let private_garden_result = if decision_ref.is_some_and(|d| d.refresh_private_garden) {
+        crate::platform::task_wdt::feed_current_task();
         run_private_garden_governance_with_state(
             http,
             llm,
@@ -916,6 +924,7 @@ fn execute_self_runtime_actions(
     crate::platform::task_wdt::feed_current_task();
     let decision_ref = decision.as_ref();
     let self_model_result = if decision_ref.is_some_and(|d| d.refresh_self_model) {
+        crate::platform::task_wdt::feed_current_task();
         run_self_model_refresh_with_state(
             http,
             llm,
@@ -976,6 +985,7 @@ fn execute_self_runtime_actions(
     crate::platform::task_wdt::feed_current_task();
     let decision_ref = decision.as_ref();
     let self_continuity_result = if decision_ref.is_some_and(|d| d.refresh_self_continuity) {
+        crate::platform::task_wdt::feed_current_task();
         run_self_continuity_refresh_with_state(
             http,
             llm,
@@ -1044,6 +1054,7 @@ fn execute_self_runtime_actions(
             SelfRuntimeTrigger::PostReply => "post_reply",
             SelfRuntimeTrigger::IdleTick => "idle_tick",
         };
+        crate::platform::task_wdt::feed_current_task();
         run_boundary_persona_refresh_with_state(
             http,
             llm,
@@ -1095,6 +1106,7 @@ fn execute_self_runtime_actions(
     crate::platform::task_wdt::feed_current_task();
     let decision_ref = decision.as_ref();
     let outer_voice_result = if decision_ref.is_some_and(|d| d.refresh_outer_voice) {
+        crate::platform::task_wdt::feed_current_task();
         run_outer_voice_refresh_with_state(
             http,
             llm,
@@ -1287,10 +1299,7 @@ pub fn self_runtime_tick(
     now_secs: u64,
 ) {
     if let Some(reason) = idle_self_runtime_block_reason() {
-        log::debug!(
-            "[self_runtime] skip idle tick enqueue because {}",
-            reason
-        );
+        log::debug!("[self_runtime] skip idle tick enqueue because {}", reason);
         return;
     }
 
@@ -1387,10 +1396,24 @@ fn idle_self_runtime_due(
     uptime_secs >= idle_interval_secs
 }
 
+fn idle_self_runtime_scheduler_block_reason() -> Option<&'static str> {
+    let snap = crate::orchestrator::snapshot();
+    if snap.active_agent_tasks > 0 {
+        Some("agent_plane_busy")
+    } else if snap.inbound_depth > 0 || snap.outbound_depth > 0 {
+        Some("message_queues_busy")
+    } else {
+        None
+    }
+}
+
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn idle_self_runtime_block_reason() -> Option<&'static str> {
     if crate::state::voice_exclusive_active() {
         return Some("voice_exclusive_active");
+    }
+    if let Some(reason) = idle_self_runtime_scheduler_block_reason() {
+        return Some(reason);
     }
 
     let pressure = crate::orchestrator::refresh_heap_if_stale();
@@ -1413,7 +1436,7 @@ fn idle_self_runtime_block_reason() -> Option<&'static str> {
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn idle_self_runtime_block_reason() -> Option<&'static str> {
-    None
+    idle_self_runtime_scheduler_block_reason()
 }
 
 pub fn run_self_runtime(

@@ -178,6 +178,7 @@ pub(crate) fn run_outer_voice_refresh_with_state(
         return Ok(OuterVoiceRefreshOutcome::Skipped);
     }
     let policy = memory_policy(profile).outer_voice;
+    crate::platform::task_wdt::feed_current_task();
     let recent = recent_override.unwrap_or(&[]);
     let prompt = build_outer_voice_refresh_input(
         existing_outer_voice.as_ref(),
@@ -201,6 +202,7 @@ pub(crate) fn run_outer_voice_refresh_with_state(
         role: Cow::Borrowed("user"),
         content: prompt,
     }];
+    crate::platform::task_wdt::feed_current_task();
     let response = llm.chat(
         http,
         OUTER_VOICE_SYSTEM_PROMPT,
@@ -208,9 +210,11 @@ pub(crate) fn run_outer_voice_refresh_with_state(
         None,
         ToolChoicePolicy::Auto,
     )?;
+    crate::platform::task_wdt::feed_current_task();
     match parse_outer_voice_response(response.content.trim(), input.now_secs) {
         ParsedOuterVoiceResponse::Skip => Ok(OuterVoiceRefreshOutcome::Skipped),
         ParsedOuterVoiceResponse::Clear => {
+            crate::platform::task_wdt::feed_current_task();
             let latest = ctx.outer_voice_store.get(input.chat_id)?;
             if whole_record_lease_advanced(
                 existing_outer_voice.as_ref(),
@@ -224,6 +228,7 @@ pub(crate) fn run_outer_voice_refresh_with_state(
                 return Ok(OuterVoiceRefreshOutcome::Skipped);
             }
             if latest.is_some() {
+                crate::platform::task_wdt::feed_current_task();
                 ctx.outer_voice_store.clear(input.chat_id)?;
                 Ok(OuterVoiceRefreshOutcome::Cleared)
             } else {
@@ -231,6 +236,7 @@ pub(crate) fn run_outer_voice_refresh_with_state(
             }
         }
         ParsedOuterVoiceResponse::Update(next) => {
+            crate::platform::task_wdt::feed_current_task();
             let latest = ctx.outer_voice_store.get(input.chat_id)?;
             if latest.as_ref() == Some(&next) {
                 return Ok(OuterVoiceRefreshOutcome::Skipped);
@@ -246,6 +252,7 @@ pub(crate) fn run_outer_voice_refresh_with_state(
             ) {
                 return Ok(OuterVoiceRefreshOutcome::Skipped);
             }
+            crate::platform::task_wdt::feed_current_task();
             ctx.outer_voice_store.set(input.chat_id, &next)?;
             Ok(OuterVoiceRefreshOutcome::Updated)
         }

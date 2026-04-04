@@ -289,6 +289,7 @@ fn run_shared_maintenance_passes(
     baseline: &MaintenanceBaseline,
     recent: &MaintenanceRecentWindows,
 ) -> SharedMaintenancePasses {
+    crate::platform::task_wdt::feed_current_task();
     let (summary_result, summary_snapshot) = match run_session_summary_refresh_with_snapshot(
         http,
         llm,
@@ -305,6 +306,7 @@ fn run_shared_maintenance_passes(
         Ok((outcome, snapshot)) => (Ok(outcome), snapshot),
         Err(error) => (Err(error), baseline.initial_summary_snapshot.clone()),
     };
+    crate::platform::task_wdt::feed_current_task();
     let execution_state_result = match &baseline.execution_state {
         Ok(existing_state) => run_execution_state_refresh_with_state(
             http,
@@ -334,6 +336,7 @@ fn run_shared_maintenance_passes(
             error.to_string(),
         )),
     };
+    crate::platform::task_wdt::feed_current_task();
     let latest_execution_state = match ctx.execution_state_store.get(input.chat_id) {
         Ok(state) => state,
         Err(error) => {
@@ -345,6 +348,7 @@ fn run_shared_maintenance_passes(
             None
         }
     };
+    crate::platform::task_wdt::feed_current_task();
     let internal_memory_routing_result = match &baseline.private_garden_docs {
         Ok(existing_garden_docs) => run_internal_memory_routing_with_state(
             http,
@@ -381,6 +385,7 @@ fn run_shared_maintenance_passes(
             error.to_string(),
         )),
     };
+    crate::platform::task_wdt::feed_current_task();
     let fallback_internal_memory_decision = InternalMemoryRoutingDecision {
         refresh_self_model: baseline.self_model_should_refresh,
         self_model_intent: None,
@@ -416,6 +421,7 @@ fn run_private_memory_maintenance_passes(
     recent: &MaintenanceRecentWindows,
     shared: &SharedMaintenancePasses,
 ) -> PrivateMaintenancePasses {
+    crate::platform::task_wdt::feed_current_task();
     let self_model_result = match &baseline.self_model {
         Ok(existing_model) => run_self_model_refresh_with_state(
             http,
@@ -460,6 +466,7 @@ fn run_private_memory_maintenance_passes(
             error.to_string(),
         )),
     };
+    crate::platform::task_wdt::feed_current_task();
     let latest_self_model = match ctx.self_model_store.get(input.chat_id) {
         Ok(model) => model,
         Err(error) => {
@@ -471,6 +478,7 @@ fn run_private_memory_maintenance_passes(
             None
         }
     };
+    crate::platform::task_wdt::feed_current_task();
     let private_doc_result = match &baseline.private_docs {
         Ok(existing_workspace) => run_private_doc_workspace_refresh_with_state(
             http,
@@ -519,6 +527,7 @@ fn run_private_memory_maintenance_passes(
             error.to_string(),
         )),
     };
+    crate::platform::task_wdt::feed_current_task();
     let private_garden_upstream_cleanup_result =
         if matches!(self_model_result, Ok(SelfModelRefreshOutcome::Updated))
             || matches!(
@@ -537,6 +546,7 @@ fn run_private_memory_maintenance_passes(
         } else {
             Ok(0)
         };
+    crate::platform::task_wdt::feed_current_task();
     let latest_private_workspace = match ctx.private_doc_store.get(input.chat_id) {
         Ok(workspace) => workspace,
         Err(error) => {
@@ -548,6 +558,7 @@ fn run_private_memory_maintenance_passes(
             None
         }
     };
+    crate::platform::task_wdt::feed_current_task();
     let private_garden_result = match &baseline.private_garden_docs {
         Ok(_existing_docs) => run_private_garden_governance_with_state(
             http,
@@ -599,6 +610,7 @@ fn run_private_memory_maintenance_passes(
             error.to_string(),
         )),
     };
+    crate::platform::task_wdt::feed_current_task();
     PrivateMaintenancePasses {
         self_model_result,
         private_doc_result,
@@ -615,7 +627,9 @@ fn run_post_reply_followup_passes(
     shared: &SharedMaintenancePasses,
     mut enqueue_long_term_refresh: impl FnMut() -> bool,
 ) -> PostReplyFollowupPasses {
+    crate::platform::task_wdt::feed_current_task();
     let governance = run_post_reply_memory_governance(ctx, input, recent, shared);
+    crate::platform::task_wdt::feed_current_task();
     let extraction_request_outcome = evaluate_post_reply_extraction_request(
         ctx,
         input,
@@ -623,6 +637,7 @@ fn run_post_reply_followup_passes(
         governance.factual_refresh_suggested,
         &mut enqueue_long_term_refresh,
     );
+    crate::platform::task_wdt::feed_current_task();
     let hygiene_outcome = run_memory_hygiene_jobs(
         MemoryHygieneContext {
             session_store: ctx.session_store,
@@ -636,6 +651,7 @@ fn run_post_reply_followup_passes(
         input.memory_profile,
         input.now_secs,
     );
+    crate::platform::task_wdt::feed_current_task();
     PostReplyFollowupPasses {
         governance,
         extraction_request_outcome,

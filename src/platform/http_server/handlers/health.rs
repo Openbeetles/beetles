@@ -23,6 +23,7 @@ struct HealthBody {
     metrics: metrics::MetricsSnapshot,
     resource: orchestrator::ResourceSnapshot,
     threads: runtime::ThreadRegistrySnapshot,
+    runtime_mode: runtime::thread_registry::RuntimeModeSnapshot,
 }
 
 /// 生成 health JSON body（含 metrics 与 resource 快照，无敏感信息）。
@@ -44,6 +45,7 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         metrics: metrics::snapshot(),
         resource: orchestrator::snapshot(),
         threads: runtime::thread_registry::snapshot(),
+        runtime_mode: runtime::thread_registry::runtime_mode_snapshot(),
     };
     serde_json::to_string(&payload).map_err(std::io::Error::other)
 }

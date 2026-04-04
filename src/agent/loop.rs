@@ -49,10 +49,13 @@ use crate::memory::{
     PromptMemoryContextParams, RemindAtStore, SelfContinuityStore, SelfModelStore,
     SelfRuntimeContext, SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore,
     TurnDeliveryLedger, TurnLedger, TurnLedgerStatus, TurnLedgerStore, WorldSenseStore,
-    SELF_RUNTIME_CHANNEL,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
+use crate::runtime::system_work::{
+    classify_system_work, CHANNEL_CRON, CHANNEL_LONG_TERM_MEMORY_REFRESH,
+    CHANNEL_POST_REPLY_MAINTENANCE, CHANNEL_SELF_RUNTIME,
+};
 use crate::state;
 use crate::tools::http_bridge::HttpClientToolContext;
 use crate::tools::{ToolOutboundDeliveryKind, ToolOutboundIntent, ToolOutboundTarget};
@@ -91,8 +94,6 @@ const TOOL_EVIDENCE_TAIL_CHARS: usize = 32;
 const MAX_TOOL_EVIDENCE_ITEMS: usize = 4;
 const ASSISTANT_COMPACT_PREVIEW_CHARS: usize = 160;
 const ASSISTANT_COMPACT_TAIL_CHARS: usize = 48;
-const LONG_TERM_MEMORY_REFRESH_CHANNEL: &str = "_memory_refresh";
-const POST_REPLY_MAINTENANCE_CHANNEL: &str = "_post_reply_maintenance";
 const POST_REPLY_MAINTENANCE_USER_PREVIEW_CHARS: usize = 512;
 const POST_REPLY_MAINTENANCE_REPLY_PREVIEW_CHARS: usize = 768;
 const PLAN_SYSTEM_SUFFIX: &str = "\n\n## Internal planning\nBefore solving the latest user request, create a short internal execution plan. Return 3-6 concise numbered steps only. Do not answer the user. Do not call tools in this planning step.";
@@ -137,15 +138,21 @@ fn choose_inbound_tx<'a>(
 }
 
 fn is_long_term_memory_refresh_job(msg: &PcMsg) -> bool {
-    msg.ingress == IngressKind::System && msg.channel.as_ref() == LONG_TERM_MEMORY_REFRESH_CHANNEL
+    msg.ingress == IngressKind::System && msg.channel.as_ref() == CHANNEL_LONG_TERM_MEMORY_REFRESH
 }
 
 fn is_post_reply_maintenance_job(msg: &PcMsg) -> bool {
-    msg.ingress == IngressKind::System && msg.channel.as_ref() == POST_REPLY_MAINTENANCE_CHANNEL
+    msg.ingress == IngressKind::System && msg.channel.as_ref() == CHANNEL_POST_REPLY_MAINTENANCE
 }
 
 fn is_self_runtime_job(msg: &PcMsg) -> bool {
-    msg.ingress == IngressKind::System && msg.channel.as_ref() == SELF_RUNTIME_CHANNEL
+    msg.ingress == IngressKind::System && msg.channel.as_ref() == CHANNEL_SELF_RUNTIME
+}
+
+fn is_lane_background_job(msg: &PcMsg) -> bool {
+    is_long_term_memory_refresh_job(msg)
+        || is_post_reply_maintenance_job(msg)
+        || is_self_runtime_job(msg)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -186,20 +193,7 @@ impl PostReplyMaintenanceJobPayload {
         }
     }
 }
-#[derive(Clone, Copy)]
-enum AgentWorkerLane {
-    User,
-    System,
-}
-
-impl AgentWorkerLane {
-    fn as_str(self) -> &'static str {
-        match self {
-            AgentWorkerLane::User => "user",
-            AgentWorkerLane::System => "system",
-        }
-    }
-}
+const AGENT_LOOP_TAG: &str = "main";
 
 #[derive(Default)]
 struct WorkerLatency {
@@ -1808,7 +1802,7 @@ fn finalize_lane_turn(
     if !is_interrupt
         && reply_content.trim().is_empty()
         && msg.ingress == IngressKind::User
-        && msg.channel.as_ref() != "cron"
+        && msg.channel.as_ref() != CHANNEL_CRON
     {
         reply_content = tr(UiMessage::AgentNoFinalReply, loc);
     }
@@ -1829,14 +1823,14 @@ fn finalize_lane_turn(
     }
 
     if reply_content.trim() == "SILENT"
-        || (msg.channel.as_ref() == "cron" && reply_content.is_empty())
+        || (msg.channel.as_ref() == CHANNEL_CRON && reply_content.is_empty())
     {
         llm_failure_count.remove(&msg_key);
         defer_tracker.remove(&msg_key);
         let total_ms = msg_start.elapsed().as_millis();
         metrics::record_e2e_ms(total_ms);
         if msg.ingress == IngressKind::System {
-            let is_cron = msg.channel.as_ref() == "cron";
+            let is_cron = msg.channel.as_ref() == CHANNEL_CRON;
             metrics::record_system_message_done(is_cron);
             if is_cron {
                 let cron_e2e = now_unix_ms().saturating_sub(msg.enqueue_ts_ms) as u128;
@@ -1985,7 +1979,7 @@ fn finalize_lane_turn(
     metrics::record_e2e_ms(reply_handoff_ms);
     metrics::record_post_reply_ms(post_reply_ms);
     if msg.ingress == IngressKind::System {
-        let is_cron = msg.channel.as_ref() == "cron";
+        let is_cron = msg.channel.as_ref() == CHANNEL_CRON;
         metrics::record_system_message_done(is_cron);
         if is_cron {
             let cron_e2e = now_unix_ms().saturating_sub(msg.enqueue_ts_ms) as u128;
@@ -2038,7 +2032,7 @@ fn enqueue_post_reply_maintenance_job(
             return false;
         }
     };
-    let job = match PcMsg::new_system(POST_REPLY_MAINTENANCE_CHANNEL, msg.chat_id.as_ref(), body) {
+    let job = match PcMsg::new_system(CHANNEL_POST_REPLY_MAINTENANCE, msg.chat_id.as_ref(), body) {
         Ok(job) => job,
         Err(error) => {
             log::warn!(
@@ -2124,7 +2118,7 @@ fn run_post_reply_maintenance_job(
             external_content_used: payload.external_content_used,
             now_secs: payload.now_secs,
         },
-        || match PcMsg::new_system(LONG_TERM_MEMORY_REFRESH_CHANNEL, msg.chat_id.as_ref(), "") {
+        || match PcMsg::new_system(CHANNEL_LONG_TERM_MEMORY_REFRESH, msg.chat_id.as_ref(), "") {
             Ok(job) => match system_inbound_tx.try_send(job) {
                 Ok(()) => true,
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {
@@ -2352,7 +2346,7 @@ fn run_self_runtime_job(
                 .then_some(decision.factual_reconcile_intent.as_str()),
         );
         if decision.request_factual_refresh {
-            match PcMsg::new_system(LONG_TERM_MEMORY_REFRESH_CHANNEL, msg.chat_id.as_ref(), "") {
+            match PcMsg::new_system(CHANNEL_LONG_TERM_MEMORY_REFRESH, msg.chat_id.as_ref(), "") {
                 Ok(job) => match system_inbound_tx.try_send(job) {
                     Ok(()) => {}
                     Err(std::sync::mpsc::TrySendError::Full(_)) => {
@@ -2474,20 +2468,62 @@ fn try_run_lane_background_job(
 ) -> bool {
     if is_long_term_memory_refresh_job(msg) {
         run_long_term_memory_refresh_job(http, worker_llm, config, msg);
-        metrics::record_system_message_done(false);
         return true;
     }
     if is_post_reply_maintenance_job(msg) {
         run_post_reply_maintenance_job(http, worker_llm, config, system_inbound_tx, msg);
-        metrics::record_system_message_done(false);
         return true;
     }
     if is_self_runtime_job(msg) {
         run_self_runtime_job(http, worker_llm, config, system_inbound_tx, msg);
-        metrics::record_system_message_done(false);
         return true;
     }
     false
+}
+
+struct BackgroundMaintenanceScope;
+
+impl BackgroundMaintenanceScope {
+    fn enter() -> Self {
+        crate::state::set_background_maintenance_active(true);
+        Self
+    }
+}
+
+impl Drop for BackgroundMaintenanceScope {
+    fn drop(&mut self) {
+        crate::state::set_background_maintenance_active(false);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn run_background_job_with_accounting(
+    http: &mut dyn PlatformHttpClient,
+    worker_llm: &(dyn LlmClient + Send + Sync),
+    config: &AgentLoopConfig,
+    user_inbound_tx: &UserInboundTx,
+    system_inbound_tx: &SystemInboundTx,
+    outbound_tx: &OutboundTx,
+    loc: UiLocale,
+    msg: PcMsg,
+) {
+    let msg = match handle_llm_gate(
+        msg,
+        loc,
+        user_inbound_tx,
+        system_inbound_tx,
+        outbound_tx,
+        config,
+    ) {
+        GateResult::Proceed(msg) => msg,
+        GateResult::Skipped => return,
+    };
+
+    let _agent_task_guard = crate::orchestrator::begin_agent_task();
+    let _maintenance_scope = BackgroundMaintenanceScope::enter();
+    let _ = try_run_lane_background_job(http, worker_llm, config, system_inbound_tx, &msg);
+    metrics::record_system_message_done(false);
 }
 
 struct AdmissionDeferContext<'a> {
@@ -2850,9 +2886,9 @@ pub struct AgentLoopConfig {
 
 pub type TypingNotifier = Box<dyn FnMut(&str, &str, &mut dyn PlatformHttpClient) + Send>;
 
-/// User worker：只消费 user inbound 队列。
+/// 单一 agent 执行面：同时消费 user/system 两条入站队列。
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-pub fn run_user_agent_loop(
+pub fn run_agent_loop(
     http: &mut dyn PlatformHttpClient,
     worker_llm: &(dyn LlmClient + Send + Sync),
     registry: &crate::tools::ToolRegistry,
@@ -2860,10 +2896,11 @@ pub fn run_user_agent_loop(
     user_inbound_tx: UserInboundTx,
     user_inbound_rx: UserInboundRx,
     system_inbound_tx: SystemInboundTx,
+    system_inbound_rx: InboundRx,
     outbound_tx: OutboundTx,
     typing_notifier: Option<TypingNotifier>,
 ) -> Result<()> {
-    run_agent_loop_lane(
+    run_agent_loop_main(
         http,
         worker_llm,
         registry,
@@ -2871,57 +2908,35 @@ pub fn run_user_agent_loop(
         user_inbound_tx,
         user_inbound_rx,
         system_inbound_tx,
+        system_inbound_rx,
         outbound_tx,
         typing_notifier,
-        AgentWorkerLane::User,
         true,
     )
 }
+enum AgentRecvStatus {
+    Message(PcMsg),
+    Timeout,
+    Disconnected,
+}
 
-/// System worker：只消费 system inbound 队列。
+const INBOUND_POLL_SLICE_MS: u64 = 200;
+const MAX_CONSECUTIVE_USER_MSGS: u8 = 4;
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-pub fn run_system_agent_loop(
+fn run_agent_loop_main(
     http: &mut dyn PlatformHttpClient,
     worker_llm: &(dyn LlmClient + Send + Sync),
     registry: &crate::tools::ToolRegistry,
     config: &AgentLoopConfig,
     user_inbound_tx: UserInboundTx,
+    user_inbound_rx: UserInboundRx,
     system_inbound_tx: SystemInboundTx,
     system_inbound_rx: InboundRx,
     outbound_tx: OutboundTx,
-) -> Result<()> {
-    run_agent_loop_lane(
-        http,
-        worker_llm,
-        registry,
-        config,
-        user_inbound_tx,
-        system_inbound_rx,
-        system_inbound_tx,
-        outbound_tx,
-        None,
-        AgentWorkerLane::System,
-        false,
-    )
-}
-
-/// 单队列 worker 主循环：由 user/system 两个入口复用同一处理逻辑。
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn run_agent_loop_lane(
-    http: &mut dyn PlatformHttpClient,
-    worker_llm: &(dyn LlmClient + Send + Sync),
-    registry: &crate::tools::ToolRegistry,
-    config: &AgentLoopConfig,
-    user_inbound_tx: UserInboundTx,
-    inbound_rx: InboundRx,
-    system_inbound_tx: SystemInboundTx,
-    outbound_tx: OutboundTx,
     mut typing_notifier: Option<TypingNotifier>,
-    worker_lane: AgentWorkerLane,
     bootstrap_pending_retry: bool,
 ) -> Result<()> {
-    let worker_lane_tag = worker_lane.as_str();
-
     // Track repeated LLM failure for same request body, avoid infinite retry.
     // Key: u64 hash of (channel, chat_id, content) — avoids per-message format! String alloc.
     // Value: (failure count, last failure time) — entries expire after 5 minutes.
@@ -2938,6 +2953,7 @@ fn run_agent_loop_lane(
     const FAILURE_EXPIRY: Duration = Duration::from_secs(300);
     const DEFER_EXPIRY: Duration = Duration::from_secs(300);
     const LATENCY_WARN_MS: u128 = 3000;
+    let mut consecutive_user_msgs = 0u8;
 
     if bootstrap_pending_retry {
         if let Ok(Some(m)) = config.pending_retry.load_pending_retry() {
@@ -2949,15 +2965,26 @@ fn run_agent_loop_lane(
 
     let recv_timeout = Duration::from_secs(INBOUND_RECV_TIMEOUT_SECS);
     loop {
-        let mut msg = match inbound_rx.recv_timeout(recv_timeout) {
-            Ok(m) => m,
-            Err(RecvTimeoutError::Timeout) => {
+        let prefer_system_once = consecutive_user_msgs >= MAX_CONSECUTIVE_USER_MSGS;
+        let mut msg = match recv_next_agent_msg(
+            &user_inbound_rx,
+            &system_inbound_rx,
+            recv_timeout,
+            prefer_system_once,
+        ) {
+            AgentRecvStatus::Message(m) => m,
+            AgentRecvStatus::Timeout => {
                 crate::platform::task_wdt::feed_current_task();
                 metrics::record_wdt_feed();
                 continue;
             }
-            Err(RecvTimeoutError::Disconnected) => break,
+            AgentRecvStatus::Disconnected => break,
         };
+        if msg.ingress == IngressKind::System {
+            consecutive_user_msgs = 0;
+        } else {
+            consecutive_user_msgs = consecutive_user_msgs.saturating_add(1);
+        }
         metrics::record_message_in();
         crate::platform::task_wdt::feed_current_task();
         let loc = (config.resolve_locale)();
@@ -2970,9 +2997,6 @@ fn run_agent_loop_lane(
             metrics::record_system_queue_wait_ms(queue_wait_ms);
         } else {
             metrics::record_user_queue_wait_ms(queue_wait_ms);
-        }
-        if try_run_lane_background_job(http, worker_llm, config, &system_inbound_tx, &msg) {
-            continue;
         }
 
         // Periodic GC: evict expired failure/defer entries to prevent unbounded growth.
@@ -2987,6 +3011,7 @@ fn run_agent_loop_lane(
             defer_tracker.retain(|_, (_, ts)| now_gc.duration_since(*ts) < DEFER_EXPIRY);
         }
 
+        let work_class = classify_system_work(msg.channel.as_ref(), msg.ingress);
         let msg_key = {
             let mut hasher = DefaultHasher::new();
             msg.channel.hash(&mut hasher);
@@ -3015,7 +3040,7 @@ fn run_agent_loop_lane(
 
         // Refresh heap state if stale before admission check.
         crate::orchestrator::refresh_heap_if_stale();
-        match crate::orchestrator::should_accept_inbound_pub(&msg.channel, &msg.chat_id) {
+        match crate::orchestrator::should_accept_inbound_pub(&msg.channel, msg.ingress) {
             AdmissionDecision::Accept => {}
             AdmissionDecision::Defer { delay_ms } => {
                 handle_admission_defer(
@@ -3040,6 +3065,20 @@ fn run_agent_loop_lane(
             }
         }
         let admission_ms = msg_start.elapsed().as_millis();
+
+        if work_class.is_background_job() && is_lane_background_job(&msg) {
+            run_background_job_with_accounting(
+                http,
+                worker_llm,
+                config,
+                &user_inbound_tx,
+                &system_inbound_tx,
+                &outbound_tx,
+                loc,
+                msg,
+            );
+            continue;
+        }
 
         // LLM 门控先于任务槽位获取与 typing 提示，确保：
         // 1. RetryLater 睡眠期间 active_agent_tasks 不被错误计为 1；
@@ -3080,7 +3119,7 @@ fn run_agent_loop_lane(
         if worker_prepare_ms >= 1000 {
             log::warn!(
                 "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} status=pre_worker_slow",
-                worker_lane_tag,
+                AGENT_LOOP_TAG,
                 msg.req_id.as_deref().unwrap_or_default(),
                 msg.channel,
                 msg.chat_id,
@@ -3106,7 +3145,7 @@ fn run_agent_loop_lane(
             Err(e) => {
                 handle_worker_path_error(
                     e,
-                    worker_lane_tag,
+                    AGENT_LOOP_TAG,
                     &mut msg,
                     loc,
                     msg_start,
@@ -3136,7 +3175,7 @@ fn run_agent_loop_lane(
             http,
             worker_llm,
             LaneTurnFinalizeContext {
-                worker_lane_tag,
+                worker_lane_tag: AGENT_LOOP_TAG,
                 config,
                 system_inbound_tx: &system_inbound_tx,
                 outbound_tx: &outbound_tx,
@@ -3164,6 +3203,64 @@ fn run_agent_loop_lane(
         );
     }
     Ok(())
+}
+
+fn recv_next_agent_msg(
+    user_inbound_rx: &UserInboundRx,
+    system_inbound_rx: &InboundRx,
+    recv_timeout: Duration,
+    prefer_system_once: bool,
+) -> AgentRecvStatus {
+    let poll_slice = recv_timeout.min(Duration::from_millis(INBOUND_POLL_SLICE_MS));
+    let deadline = Instant::now() + recv_timeout;
+    let mut user_disconnected = false;
+    let mut system_disconnected = false;
+
+    loop {
+        if prefer_system_once && !system_disconnected {
+            match system_inbound_rx.try_recv() {
+                Ok(msg) => return AgentRecvStatus::Message(msg),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => system_disconnected = true,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+
+        if !user_disconnected {
+            match user_inbound_rx.try_recv() {
+                Ok(msg) => return AgentRecvStatus::Message(msg),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => user_disconnected = true,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+
+        if !system_disconnected {
+            match system_inbound_rx.try_recv() {
+                Ok(msg) => return AgentRecvStatus::Message(msg),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => system_disconnected = true,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+
+        if user_disconnected && system_disconnected {
+            return AgentRecvStatus::Disconnected;
+        }
+        if Instant::now() >= deadline {
+            return AgentRecvStatus::Timeout;
+        }
+
+        let wait = deadline
+            .saturating_duration_since(Instant::now())
+            .min(poll_slice);
+        if !user_disconnected {
+            match user_inbound_rx.recv_timeout(wait) {
+                Ok(msg) => return AgentRecvStatus::Message(msg),
+                Err(RecvTimeoutError::Disconnected) => user_disconnected = true,
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+        } else {
+            std::thread::sleep(wait);
+        }
+    }
 }
 
 /// 完整 context + worker LLM + ReAct 循环，返回 (WorkerOutcome, telemetry)。不写 session，由调用方写。

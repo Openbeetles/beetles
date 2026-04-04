@@ -233,6 +233,7 @@ pub(crate) fn run_self_model_refresh_with_state(
         return Ok(SelfModelRefreshOutcome::Skipped);
     }
 
+    crate::platform::task_wdt::feed_current_task();
     let owned_recent;
     let recent = if let Some(preloaded) = recent_override {
         self_model_recent_window(preloaded, policy.recent_message_count)
@@ -242,6 +243,7 @@ pub(crate) fn run_self_model_refresh_with_state(
             .load_recent(input.chat_id, policy.recent_message_count)?;
         owned_recent.as_slice()
     };
+    crate::platform::task_wdt::feed_current_task();
     let refresh_input = build_self_model_refresh_input(
         existing_model.as_ref(),
         summary_text,
@@ -269,6 +271,7 @@ pub(crate) fn run_self_model_refresh_with_state(
         content: refresh_input,
     }];
 
+    crate::platform::task_wdt::feed_current_task();
     match llm.chat(
         http,
         SELF_MODEL_SYSTEM_PROMPT,
@@ -277,9 +280,11 @@ pub(crate) fn run_self_model_refresh_with_state(
         ToolChoicePolicy::Auto,
     ) {
         Ok(response) => {
+            crate::platform::task_wdt::feed_current_task();
             let Some(update) = parse_self_model_response(response.content.trim()) else {
                 return Ok(SelfModelRefreshOutcome::Skipped);
             };
+            crate::platform::task_wdt::feed_current_task();
             let latest_model = ctx.self_model_store.get(input.chat_id)?;
             let Some(merged) = merge_self_model_with_lease(
                 existing_model.as_ref(),
@@ -292,6 +297,7 @@ pub(crate) fn run_self_model_refresh_with_state(
             if latest_model.as_ref() == Some(&merged) {
                 return Ok(SelfModelRefreshOutcome::Skipped);
             }
+            crate::platform::task_wdt::feed_current_task();
             ctx.self_model_store.set(input.chat_id, &merged)?;
             Ok(SelfModelRefreshOutcome::Updated)
         }

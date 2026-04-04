@@ -43,9 +43,8 @@ pub mod runtime;
 pub mod skills;
 
 pub use agent::{
-    build_context, run_system_agent_loop, run_user_agent_loop, AgentLoopConfig, ContextParams,
-    StreamEditor, TypingNotifier, DEFAULT_MESSAGES_MAX_LEN, DEFAULT_SYSTEM_MAX_LEN,
-    SESSION_RECENT_N,
+    build_context, run_agent_loop, AgentLoopConfig, ContextParams, StreamEditor, TypingNotifier,
+    DEFAULT_MESSAGES_MAX_LEN, DEFAULT_SYSTEM_MAX_LEN, SESSION_RECENT_N,
 };
 pub use bus::{MessageBus, PcMsg, DEFAULT_CAPACITY, MAX_CONTENT_LEN};
 pub use channels::connect_wss;

@@ -14,8 +14,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::sync::{Arc, Condvar, Mutex};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-use std::thread::JoinHandle;
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
@@ -79,6 +77,7 @@ fn read_mic_i2s_pcm16(mic: &mut MicState, out: &mut [i16]) -> Result<usize> {
     if out.is_empty() {
         return Ok(0);
     }
+    crate::platform::task_wdt::feed_current_task();
     let sample_count = out.len();
     if mic.read_buf.len() < sample_count {
         mic.read_buf.resize(sample_count, 0);
@@ -100,6 +99,7 @@ fn read_mic_i2s_pcm16(mic: &mut MicState, out: &mut [i16]) -> Result<usize> {
     for i in 0..samples_read {
         out[i] = (buf32[i] >> 16) as i16;
     }
+    crate::platform::task_wdt::feed_current_task();
     Ok(samples_read)
 }
 
@@ -108,6 +108,7 @@ fn write_speaker_i2s_pcm16(speaker: &mut SpeakerState, buf: &[i16]) -> Result<()
     if buf.is_empty() {
         return Ok(());
     }
+    crate::platform::task_wdt::feed_current_task();
     if speaker.write_buf.len() < buf.len() {
         speaker.write_buf.resize(buf.len(), 0);
     }
@@ -134,6 +135,7 @@ fn write_speaker_i2s_pcm16(speaker: &mut SpeakerState, buf: &[i16]) -> Result<()
             byte_len,
         );
     }
+    crate::platform::task_wdt::feed_current_task();
     Ok(())
 }
 
@@ -628,7 +630,7 @@ pub(crate) struct AudioPipelineState {
     mic_enabled: bool,
     speaker_enabled: bool,
     shared: Arc<SharedAudioBuffers>,
-    worker: Option<JoinHandle<()>>,
+    worker: Option<crate::util::TaskHandle>,
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -738,6 +740,7 @@ impl AudioPipelineState {
                 let mut mic_frame = vec![0i16; 320];
                 let mut speaker_frame = vec![0i16; 1024];
                 loop {
+                    crate::platform::task_wdt::feed_current_task();
                     let loop_start = Instant::now();
                     crate::metrics::record_audio_worker_turn();
                     if worker_shared.stop.load(Ordering::Relaxed) {
@@ -755,6 +758,7 @@ impl AudioPipelineState {
                             worker_shared.as_ref(),
                             &mut speaker_frame,
                         ) {
+                            crate::platform::task_wdt::feed_current_task();
                             let speaker_write_start = Instant::now();
                             if let Err(e) = backend.write_speaker_frame_pcm16(&speaker_frame[..n]) {
                                 log::warn!("[audio] speaker frame write failed: {}", e);
@@ -769,6 +773,7 @@ impl AudioPipelineState {
 
                     if backend.mic_ready() && mic_read_needed {
                         crate::metrics::record_audio_mic_poll_turn();
+                        crate::platform::task_wdt::feed_current_task();
                         let mic_read_start = Instant::now();
                         match backend.read_mic_frame_pcm16(&mut mic_frame) {
                             Ok(n) if n > 0 => {
@@ -822,6 +827,7 @@ impl AudioPipelineState {
                         }
                     }
                     crate::metrics::record_audio_loop_us(loop_start.elapsed().as_micros());
+                    crate::platform::task_wdt::feed_current_task();
                 }
             },
         )

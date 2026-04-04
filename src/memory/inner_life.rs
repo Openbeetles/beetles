@@ -203,6 +203,7 @@ pub(crate) fn run_inner_life_refresh_with_state(
     }
 
     let policy = memory_policy(profile).inner_life;
+    crate::platform::task_wdt::feed_current_task();
     let owned_recent;
     let recent = if let Some(recent) = recent_override {
         recent_window(recent, policy.recent_message_count)
@@ -213,6 +214,7 @@ pub(crate) fn run_inner_life_refresh_with_state(
         recent_window(owned_recent.as_slice(), policy.recent_message_count)
     };
 
+    crate::platform::task_wdt::feed_current_task();
     let prompt = build_inner_life_refresh_input(
         existing_inner_life.as_ref(),
         summary_text,
@@ -238,6 +240,7 @@ pub(crate) fn run_inner_life_refresh_with_state(
         role: Cow::Borrowed("user"),
         content: prompt,
     }];
+    crate::platform::task_wdt::feed_current_task();
     let response = llm.chat(
         http,
         INNER_LIFE_SYSTEM_PROMPT,
@@ -245,9 +248,11 @@ pub(crate) fn run_inner_life_refresh_with_state(
         None,
         ToolChoicePolicy::Auto,
     )?;
+    crate::platform::task_wdt::feed_current_task();
     match parse_inner_life_response(response.content.trim(), input.now_secs) {
         ParsedInnerLifeResponse::Skip => Ok(InnerLifeRefreshOutcome::Skipped),
         ParsedInnerLifeResponse::Clear => {
+            crate::platform::task_wdt::feed_current_task();
             let latest = ctx.inner_life_store.get(input.chat_id)?;
             if whole_record_lease_advanced(
                 existing_inner_life.as_ref(),
@@ -261,6 +266,7 @@ pub(crate) fn run_inner_life_refresh_with_state(
                 return Ok(InnerLifeRefreshOutcome::Skipped);
             }
             if latest.is_some() {
+                crate::platform::task_wdt::feed_current_task();
                 ctx.inner_life_store.clear(input.chat_id)?;
                 Ok(InnerLifeRefreshOutcome::Cleared)
             } else {
@@ -268,6 +274,7 @@ pub(crate) fn run_inner_life_refresh_with_state(
             }
         }
         ParsedInnerLifeResponse::Update(next) => {
+            crate::platform::task_wdt::feed_current_task();
             let latest = ctx.inner_life_store.get(input.chat_id)?;
             if latest.as_ref() == Some(&next) {
                 return Ok(InnerLifeRefreshOutcome::Skipped);
@@ -283,6 +290,7 @@ pub(crate) fn run_inner_life_refresh_with_state(
             ) {
                 return Ok(InnerLifeRefreshOutcome::Skipped);
             }
+            crate::platform::task_wdt::feed_current_task();
             ctx.inner_life_store.set(input.chat_id, &next)?;
             Ok(InnerLifeRefreshOutcome::Updated)
         }

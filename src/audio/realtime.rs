@@ -3,8 +3,7 @@
 
 use crate::audio::capture::AudioRecordingGuard;
 use crate::channels::{
-    connect_wss_with_headers_and_profile, WssCloseInfo, WssConnectProfile, WssConnection,
-    WssEvent,
+    connect_wss_with_headers_and_profile, WssCloseInfo, WssConnectProfile, WssConnection, WssEvent,
 };
 use crate::config::{
     audio_realtime_enabled, AudioSegment, AUDIO_REALTIME_PCM16_SAMPLE_RATE,
@@ -463,7 +462,10 @@ fn drain_server_events(
                 wait = Duration::ZERO;
             }
             Some(WssEvent::Disconnected) => {
-                return Err(Error::config(REALTIME_TAG, "realtime websocket disconnected"));
+                return Err(Error::config(
+                    REALTIME_TAG,
+                    "realtime websocket disconnected",
+                ));
             }
             Some(WssEvent::Closed(close)) => {
                 return Err(Error::config(

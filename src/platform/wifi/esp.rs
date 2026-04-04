@@ -314,7 +314,11 @@ fn poll_sta_link(
             if ready_to_disable {
                 if let Some(config) = sta_softap_config {
                     if let Err(e) = set_softap_enabled(wifi, config, softap_enabled, false) {
-                        log::warn!("[{}] failed to disable SoftAP after STA connect: {}", TAG, e);
+                        log::warn!(
+                            "[{}] failed to disable SoftAP after STA connect: {}",
+                            TAG,
+                            e
+                        );
                     }
                 }
             }

@@ -3,11 +3,13 @@
 //! 不依赖编译期 `BOARD` / `TARGET` 推断机型（构建仍用 `BOARD` 选分区表，与运行时上报独立）。
 //! Runtime board id / hardware summary. Product SoCs: **ESP32-S3** (id 9) and **ESP32-P4** (18) only; others use `unsupported-soc-*` for diagnostics.
 
+#[allow(dead_code)]
 fn flash_mb_display(flash_bytes: u32) -> u32 {
     let mb = flash_bytes / (1024 * 1024);
     mb.max(1)
 }
 
+#[allow(dead_code)]
 fn cores_display(cores: u32) -> Option<String> {
     match cores {
         0 => None,
@@ -16,6 +18,7 @@ fn cores_display(cores: u32) -> Option<String> {
     }
 }
 
+#[allow(dead_code)]
 fn model_display_name(model_label: &str) -> String {
     if model_label.starts_with("Unsupported SoC") {
         format!("Beetle device ({})", model_label)
@@ -24,6 +27,7 @@ fn model_display_name(model_label: &str) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn human_hardware_summary(
     model_label: &str,
     flash_bytes: u32,

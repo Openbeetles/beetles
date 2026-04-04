@@ -460,6 +460,7 @@ pub(crate) fn run_world_sense_refresh_with_state(
     }
 
     let policy = memory_policy(profile).world_sense;
+    crate::platform::task_wdt::feed_current_task();
     let owned_recent;
     let recent = if let Some(recent) = recent_override {
         recent_window(recent, policy.recent_message_count)
@@ -469,6 +470,7 @@ pub(crate) fn run_world_sense_refresh_with_state(
             .load_recent(input.chat_id, policy.recent_message_count)?;
         recent_window(owned_recent.as_slice(), policy.recent_message_count)
     };
+    crate::platform::task_wdt::feed_current_task();
     let prompt = build_world_sense_refresh_input(
         existing_world_sense.as_ref(),
         snapshot,
@@ -483,6 +485,7 @@ pub(crate) fn run_world_sense_refresh_with_state(
         role: Cow::Borrowed("user"),
         content: prompt,
     }];
+    crate::platform::task_wdt::feed_current_task();
     let response = llm.chat(
         http,
         WORLD_SENSE_SYSTEM_PROMPT,
@@ -490,9 +493,11 @@ pub(crate) fn run_world_sense_refresh_with_state(
         None,
         ToolChoicePolicy::Auto,
     )?;
+    crate::platform::task_wdt::feed_current_task();
     match parse_world_sense_response(response.content.trim(), snapshot, input.now_secs) {
         ParsedWorldSenseResponse::Skip => Ok(WorldSenseRefreshOutcome::Skipped),
         ParsedWorldSenseResponse::Clear => {
+            crate::platform::task_wdt::feed_current_task();
             let latest = ctx.world_sense_store.get(input.chat_id)?;
             if whole_record_lease_advanced(
                 existing_world_sense.as_ref(),
@@ -505,6 +510,7 @@ pub(crate) fn run_world_sense_refresh_with_state(
             ) {
                 Ok(WorldSenseRefreshOutcome::Skipped)
             } else if latest.is_some() {
+                crate::platform::task_wdt::feed_current_task();
                 ctx.world_sense_store.clear(input.chat_id)?;
                 Ok(WorldSenseRefreshOutcome::Cleared)
             } else {
@@ -512,6 +518,7 @@ pub(crate) fn run_world_sense_refresh_with_state(
             }
         }
         ParsedWorldSenseResponse::Update(next) => {
+            crate::platform::task_wdt::feed_current_task();
             let latest = ctx.world_sense_store.get(input.chat_id)?;
             let lease_advanced = whole_record_lease_advanced(
                 existing_world_sense.as_ref(),
@@ -525,6 +532,7 @@ pub(crate) fn run_world_sense_refresh_with_state(
             if latest.as_ref() == Some(&next) || lease_advanced {
                 Ok(WorldSenseRefreshOutcome::Skipped)
             } else {
+                crate::platform::task_wdt::feed_current_task();
                 ctx.world_sense_store.set(input.chat_id, &next)?;
                 Ok(WorldSenseRefreshOutcome::Updated)
             }

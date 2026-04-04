@@ -15,8 +15,7 @@ use std::net::{Shutdown, TcpStream};
 use std::time::{Duration, Instant};
 
 use crate::channels::wss_gateway::connection::{
-    WssBinary, WssCloseInfo, WssConnectProfile, WssConnection, WssEvent,
-    MAX_WSS_SEND_PAYLOAD_BYTES,
+    WssBinary, WssCloseInfo, WssConnectProfile, WssConnection, WssEvent, MAX_WSS_SEND_PAYLOAD_BYTES,
 };
 use crate::error::{Error, Result};
 use tungstenite::stream::MaybeTlsStream;
@@ -181,8 +180,7 @@ impl WssConnection for LinuxWssConnection {
                 Ok(Message::Close(frame)) => {
                     return Ok(Some(WssEvent::Closed(frame.map(|frame| WssCloseInfo {
                         code: Some(frame.code.into()),
-                        reason: (!frame.reason.trim().is_empty())
-                            .then(|| frame.reason.to_string()),
+                        reason: (!frame.reason.trim().is_empty()).then(|| frame.reason.to_string()),
                     }))));
                 }
                 Ok(Message::Frame(_)) => {}
@@ -204,6 +202,7 @@ impl WssConnection for LinuxWssConnection {
     }
 }
 
+#[allow(dead_code)]
 pub fn connect_linux_wss_with_headers(
     url: &str,
     headers: &[(&str, &str)],

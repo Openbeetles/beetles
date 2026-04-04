@@ -17,13 +17,9 @@ pub fn thread_plan(name: &str) -> ThreadPlan {
             core: Some(SpawnCore::Core0),
             role: HttpThreadRole::Io,
         },
-        "agent_user_loop" => ThreadPlan {
+        "agent_loop" => ThreadPlan {
             core: Some(SpawnCore::Core1),
             role: HttpThreadRole::Interactive,
-        },
-        "agent_system_loop" => ThreadPlan {
-            core: Some(SpawnCore::Core1),
-            role: HttpThreadRole::Background,
         },
         "audio_io_worker" => ThreadPlan {
             core: Some(SpawnCore::Core1),

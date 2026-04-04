@@ -15,5 +15,5 @@ pub use context::{
     SESSION_RECENT_N,
 };
 pub use delivery::StreamEditor;
-pub use r#loop::{run_system_agent_loop, run_user_agent_loop, AgentLoopConfig, TypingNotifier};
+pub use r#loop::{run_agent_loop, AgentLoopConfig, TypingNotifier};
 pub use strategy::AgentRunStrategy;

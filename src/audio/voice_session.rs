@@ -22,12 +22,11 @@ use crate::constants::{
 };
 use crate::platform::PlatformHttpClient;
 use crate::util::{
-    spawn_guarded_with_profile_handle, HttpThreadRole, SpawnCore, STACK_VOICE_SESSION,
+    spawn_guarded_with_profile_handle, HttpThreadRole, SpawnCore, TaskHandle, STACK_VOICE_SESSION,
 };
 use crate::Platform;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Arc;
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 const TAG: &str = "voice_session";
@@ -53,12 +52,30 @@ impl Drop for VoiceExclusiveGuard {
     }
 }
 
+struct ExternalWssSuspendGuard;
+
+impl ExternalWssSuspendGuard {
+    fn enter() -> Self {
+        crate::state::request_external_wss_suspend();
+        Self
+    }
+}
+
+impl Drop for ExternalWssSuspendGuard {
+    fn drop(&mut self) {
+        crate::state::request_external_wss_resume();
+    }
+}
+
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-fn wait_for_external_wss_to_drain(platform: &dyn Platform) {
+fn wait_for_external_wss_to_suspend_and_drain(platform: &dyn Platform) {
     let deadline = std::time::Instant::now() + Duration::from_millis(REALTIME_WSS_DRAIN_WAIT_MS);
     while std::time::Instant::now() < deadline {
         crate::platform::task_wdt::feed_current_task();
         let active_wss = crate::orchestrator::snapshot().active_wss_count;
+        let mode_switched = !crate::state::external_wss_managed_present()
+            || crate::state::external_wss_suspended()
+            || (crate::state::external_wss_suspend_requested() && active_wss == 0);
         let snap = platform.memory_snapshot();
         let min_free = if snap.heap_free_spiram > 0 {
             TLS_ADMISSION_MIN_INTERNAL_BYTES as u32
@@ -68,19 +85,19 @@ fn wait_for_external_wss_to_drain(platform: &dyn Platform) {
         let enough_free = snap.heap_free_internal >= min_free;
         let enough_largest = snap.heap_free_spiram == 0
             || snap.heap_largest_block >= TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32;
-        if active_wss == 0 && enough_free && enough_largest {
+        if mode_switched && active_wss == 0 && enough_free && enough_largest {
             return;
         }
         std::thread::sleep(Duration::from_millis(REALTIME_WSS_DRAIN_POLL_MS));
     }
     log::warn!(
-        "[{}] timed out waiting for external WSS drain/resources before realtime connect",
+        "[{}] timed out waiting for external WSS suspend/resources before realtime connect",
         TAG,
     );
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-fn wait_for_external_wss_to_drain(_platform: &dyn Platform) {}
+fn wait_for_external_wss_to_suspend_and_drain(_platform: &dyn Platform) {}
 
 /// Events consumed by the voice session thread.
 #[derive(Debug)]
@@ -125,7 +142,7 @@ pub fn run_voice_session(cfg: VoiceSessionConfig, rx: Receiver<VoiceEvent>) {
 
     let (done_tx, done_rx) = mpsc::channel::<()>();
     let mut worker_busy = false;
-    let mut worker_handle: Option<JoinHandle<()>> = None;
+    let mut worker_handle: Option<TaskHandle> = None;
     let mut pending = PendingVoiceEvents::default();
 
     loop {
@@ -173,7 +190,7 @@ fn spawn_voice_session_worker(
     cfg: VoiceSessionConfig,
     task: VoiceWorkerTask,
     done_tx: mpsc::Sender<()>,
-) -> std::io::Result<JoinHandle<()>> {
+) -> std::io::Result<TaskHandle> {
     spawn_guarded_with_profile_handle(
         "voice_session_worker",
         STACK_VOICE_SESSION,
@@ -245,12 +262,14 @@ fn handle_wake_interaction<F>(
             log::warn!("[{}] speaker not ready, skipping realtime session", TAG);
             return;
         }
-        let _voice_exclusive = VoiceExclusiveGuard::enter();
+        let _external_wss_suspend = ExternalWssSuspendGuard::enter();
         log::info!(
-            "[{}] realtime session entering voice-exclusive mode (external WSS paused)",
+            "[{}] realtime session switching runtime mode (external WSS suspended)",
             TAG
         );
-        wait_for_external_wss_to_drain(cfg.platform.as_ref());
+        wait_for_external_wss_to_suspend_and_drain(cfg.platform.as_ref());
+        let _voice_exclusive = VoiceExclusiveGuard::enter();
+        log::info!("[{}] realtime session entering voice-exclusive mode", TAG);
         match run_realtime_session(cfg.platform.as_ref(), &cfg.audio_cfg, TAG) {
             Ok(session) => {
                 log::info!(
@@ -399,7 +418,7 @@ fn handle_speak<F>(
 }
 
 fn drain_worker_done(
-    worker_handle: &mut Option<JoinHandle<()>>,
+    worker_handle: &mut Option<TaskHandle>,
     done_rx: &mpsc::Receiver<()>,
     worker_busy: &mut bool,
 ) {

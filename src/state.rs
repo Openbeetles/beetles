@@ -24,6 +24,14 @@ static WIFI_STA_CONNECTED_SINCE_SECS: AtomicU32 = AtomicU32::new(0);
 static WIFI_STA_IP: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 /// 当前是否处于语音独占窗口；ESP 上对外 WSS 通道在该窗口内主动让路。
 static VOICE_EXCLUSIVE_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// 当前是否存在受统一模式切换管理的外部 WSS 通道。
+static EXTERNAL_WSS_MANAGED_PRESENT: AtomicBool = AtomicBool::new(false);
+/// 当前是否请求外部 WSS 进入 suspended 模式。
+static EXTERNAL_WSS_SUSPEND_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// 外部 WSS 是否已完成 suspended 模式切换。
+static EXTERNAL_WSS_SUSPENDED: AtomicBool = AtomicBool::new(false);
+/// 当前是否有后台自治/维护作业在 agent 执行面运行。
+static BACKGROUND_MAINTENANCE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone)]
 struct TimedError {
@@ -162,6 +170,56 @@ pub fn voice_exclusive_active() -> bool {
     VOICE_EXCLUSIVE_ACTIVE.load(Ordering::Relaxed)
 }
 
+/// 声明当前运行态存在受统一模式切换管理的外部 WSS 通道。
+pub fn set_external_wss_managed_present(active: bool) {
+    EXTERNAL_WSS_MANAGED_PRESENT.store(active, Ordering::Relaxed);
+    if !active {
+        EXTERNAL_WSS_SUSPEND_REQUESTED.store(false, Ordering::Relaxed);
+        EXTERNAL_WSS_SUSPENDED.store(false, Ordering::Relaxed);
+    }
+}
+
+/// 当前是否存在受控 external WSS。
+pub fn external_wss_managed_present() -> bool {
+    EXTERNAL_WSS_MANAGED_PRESENT.load(Ordering::Relaxed)
+}
+
+/// 请求 external WSS 进入 suspended 模式。
+pub fn request_external_wss_suspend() {
+    EXTERNAL_WSS_SUSPEND_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+/// 请求 external WSS 恢复 normal running 模式。
+pub fn request_external_wss_resume() {
+    EXTERNAL_WSS_SUSPEND_REQUESTED.store(false, Ordering::Relaxed);
+    EXTERNAL_WSS_SUSPENDED.store(false, Ordering::Relaxed);
+}
+
+/// 当前是否请求 external WSS 保持 suspended。
+pub fn external_wss_suspend_requested() -> bool {
+    EXTERNAL_WSS_SUSPEND_REQUESTED.load(Ordering::Relaxed)
+}
+
+/// 标记 external WSS 是否已经完成 suspended 模式切换。
+pub fn set_external_wss_suspended(active: bool) {
+    EXTERNAL_WSS_SUSPENDED.store(active, Ordering::Relaxed);
+}
+
+/// external WSS 当前是否已经处于 suspended 模式。
+pub fn external_wss_suspended() -> bool {
+    EXTERNAL_WSS_SUSPENDED.load(Ordering::Relaxed)
+}
+
+/// 设置后台自治/维护作业活动态。
+pub fn set_background_maintenance_active(active: bool) {
+    BACKGROUND_MAINTENANCE_ACTIVE.store(active, Ordering::Relaxed);
+}
+
+/// 当前是否有后台自治/维护作业在执行。
+pub fn background_maintenance_active() -> bool {
+    BACKGROUND_MAINTENANCE_ACTIVE.load(Ordering::Relaxed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,5 +260,27 @@ mod tests {
         assert!(voice_exclusive_active());
         set_voice_exclusive_active(false);
         assert!(!voice_exclusive_active());
+    }
+
+    #[test]
+    fn external_wss_mode_round_trips() {
+        set_external_wss_managed_present(true);
+        request_external_wss_suspend();
+        assert!(external_wss_suspend_requested());
+        set_external_wss_suspended(true);
+        assert!(external_wss_suspended());
+        request_external_wss_resume();
+        assert!(!external_wss_suspend_requested());
+        assert!(!external_wss_suspended());
+        set_external_wss_managed_present(false);
+        assert!(!external_wss_managed_present());
+    }
+
+    #[test]
+    fn background_maintenance_flag_round_trips() {
+        set_background_maintenance_active(true);
+        assert!(background_maintenance_active());
+        set_background_maintenance_active(false);
+        assert!(!background_maintenance_active());
     }
 }

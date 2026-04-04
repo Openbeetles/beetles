@@ -19,8 +19,8 @@ use beetle::LinuxPlatform;
 use beetle::Platform;
 use beetle::PlatformHttpClient;
 use beetle::{
-    parse_allowed_chat_ids, run_dispatch, run_system_agent_loop, run_user_agent_loop,
-    send_chat_action, AppConfig, MessageBus, DEFAULT_CAPACITY,
+    parse_allowed_chat_ids, run_agent_loop, run_dispatch, send_chat_action, AppConfig, MessageBus,
+    DEFAULT_CAPACITY,
 };
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
 use beetle::{DisplayChannelStatus, DisplayCommand, DisplayPressureLevel, DisplaySystemState};
@@ -1117,8 +1117,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         }
     }
 
-    let mut user_agent_handle: Option<std::thread::JoinHandle<()>> = None;
-    let mut system_agent_handle: Option<std::thread::JoinHandle<()>> = None;
+    let mut agent_handle: Option<beetle::util::TaskHandle> = None;
 
     // Agent / flush 与各通道工厂均经 `create_http_client`，与代理配置一致。
     if platform.create_http_client(config.as_ref()).is_ok() {
@@ -1208,8 +1207,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         let session_max = config.session_max_messages.clamp(1, 128) as usize;
         let agent_user_inbound_tx = user_inbound_tx;
         let agent_system_inbound_tx = system_inbound_tx;
-        let user_worker_user_inbound_tx = agent_user_inbound_tx.clone();
-        let system_worker_user_inbound_tx = agent_user_inbound_tx;
+        let worker_user_inbound_tx = agent_user_inbound_tx;
         let tg_token_for_typing = config.tg_token.clone();
         let typing_notifier: beetle::TypingNotifier = Box::new(move |ch, cid, http| {
             if ch == "telegram" {
@@ -1321,114 +1319,57 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             let _ = platform.display_command(DisplayCommand::UpdateBootProgress { stage: 4 });
         }
 
-        let user_plan = thread_plan("agent_user_loop");
+        let agent_plan = thread_plan("agent_loop");
         let tag = TAG;
-        let user_agent_registry = Arc::clone(&registry);
-        let user_agent_worker_llm = Arc::clone(&worker_llm);
-        let user_agent_platform = Arc::clone(&platform);
-        let user_agent_config_for_thread = Arc::clone(&config);
-        let user_agent_loop_config = Arc::clone(&agent_config);
-        let user_worker_system_inbound_tx = agent_system_inbound_tx.clone();
-        let user_worker_outbound_tx = outbound_tx.clone();
-        user_agent_handle = beetle::util::spawn_guarded_with_profile_handle(
-            "agent_user_loop",
+        let agent_registry = Arc::clone(&registry);
+        let agent_worker_llm = Arc::clone(&worker_llm);
+        let agent_platform = Arc::clone(&platform);
+        let agent_config_for_thread = Arc::clone(&config);
+        let agent_loop_config = Arc::clone(&agent_config);
+        let worker_system_inbound_tx = agent_system_inbound_tx.clone();
+        let worker_outbound_tx = outbound_tx.clone();
+        agent_handle = beetle::util::spawn_guarded_with_profile_handle(
+            "agent_loop",
             STACK_AGENT_LOOP,
-            user_plan.core,
-            user_plan.role,
+            agent_plan.core,
+            agent_plan.role,
             move || {
                 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
                 beetle::platform::task_wdt::register_current_task_to_task_wdt();
-                let mut agent_http = match user_agent_platform
-                    .create_http_client(user_agent_config_for_thread.as_ref())
-                {
-                    Ok(c) => c,
-                    Err(e) => {
-                        log::error!("[{}] agent_user_loop create_http_client failed: {}", tag, e);
-                        beetle::state::set_last_error(&e);
-                        beetle::runtime::request_restart_with_continuity_flush(
-                            Arc::clone(&user_agent_platform),
-                            None,
-                            "agent_user_loop_http_init_failed",
-                        );
-                        return;
-                    }
-                };
-                log::info!("[{}] agent_user_loop running on Core1 thread", tag);
-                if let Err(e) = run_user_agent_loop(
+                let mut agent_http =
+                    match agent_platform.create_http_client(agent_config_for_thread.as_ref()) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            log::error!("[{}] agent_loop create_http_client failed: {}", tag, e);
+                            beetle::state::set_last_error(&e);
+                            beetle::runtime::request_restart_with_continuity_flush(
+                                Arc::clone(&agent_platform),
+                                None,
+                                "agent_loop_http_init_failed",
+                            );
+                            return;
+                        }
+                    };
+                log::info!("[{}] agent_loop running on Core1 thread", tag);
+                if let Err(e) = run_agent_loop(
                     agent_http.as_mut(),
-                    user_agent_worker_llm.as_ref(),
-                    user_agent_registry.as_ref(),
-                    user_agent_loop_config.as_ref(),
-                    user_worker_user_inbound_tx,
+                    agent_worker_llm.as_ref(),
+                    agent_registry.as_ref(),
+                    agent_loop_config.as_ref(),
+                    worker_user_inbound_tx,
                     user_inbound_rx,
-                    user_worker_system_inbound_tx,
-                    user_worker_outbound_tx,
+                    worker_system_inbound_tx,
+                    system_inbound_rx,
+                    worker_outbound_tx,
                     Some(typing_notifier),
                 ) {
-                    log::warn!("[{}] agent_user_loop error: {}", tag, e);
+                    log::warn!("[{}] agent_loop error: {}", tag, e);
                     beetle::state::set_last_error(&e);
                 }
                 beetle::runtime::request_restart_with_continuity_flush(
-                    user_agent_platform,
+                    agent_platform,
                     None,
-                    "agent_user_loop_exit",
-                );
-            },
-        )
-        .ok();
-
-        let system_plan = thread_plan("agent_system_loop");
-        let system_agent_registry = Arc::clone(&registry);
-        let system_agent_worker_llm = Arc::clone(&worker_llm);
-        let system_agent_platform = Arc::clone(&platform);
-        let system_agent_config_for_thread = Arc::clone(&config);
-        let system_agent_loop_config = Arc::clone(&agent_config);
-        let system_worker_outbound_tx = outbound_tx.clone();
-        system_agent_handle = beetle::util::spawn_guarded_with_profile_handle(
-            "agent_system_loop",
-            STACK_AGENT_LOOP,
-            system_plan.core,
-            system_plan.role,
-            move || {
-                #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-                beetle::platform::task_wdt::register_current_task_to_task_wdt();
-                let mut agent_http = match system_agent_platform
-                    .create_http_client(system_agent_config_for_thread.as_ref())
-                {
-                    Ok(c) => c,
-                    Err(e) => {
-                        log::error!(
-                            "[{}] agent_system_loop create_http_client failed: {}",
-                            tag,
-                            e
-                        );
-                        beetle::state::set_last_error(&e);
-                        beetle::runtime::request_restart_with_continuity_flush(
-                            Arc::clone(&system_agent_platform),
-                            None,
-                            "agent_system_loop_http_init_failed",
-                        );
-                        return;
-                    }
-                };
-                log::info!("[{}] agent_system_loop running on Core1 thread", tag);
-                if let Err(e) = run_system_agent_loop(
-                    agent_http.as_mut(),
-                    system_agent_worker_llm.as_ref(),
-                    system_agent_registry.as_ref(),
-                    system_agent_loop_config.as_ref(),
-                    system_worker_user_inbound_tx,
-                    agent_system_inbound_tx,
-                    system_inbound_rx,
-                    system_worker_outbound_tx,
-                ) {
-                    log::warn!("[{}] agent_system_loop error: {}", tag, e);
-                    beetle::state::set_last_error(&e);
-                }
-                beetle::runtime::request_restart_with_continuity_flush(
-                    system_agent_platform,
-                    None,
-                    "agent_system_loop_exit",
+                    "agent_loop_exit",
                 );
             },
         )
@@ -1445,28 +1386,15 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
 
     loop {
         beetle::platform::task_wdt::feed_current_task();
-        if let Some(handle) = user_agent_handle.as_ref() {
+        if let Some(handle) = agent_handle.as_ref() {
             if handle.is_finished() {
-                if let Some(done) = user_agent_handle.take() {
+                if let Some(done) = agent_handle.take() {
                     let _ = done.join();
-                    log::error!("[{}] agent_user_loop exited; restart requested", TAG);
+                    log::error!("[{}] agent_loop exited; restart requested", TAG);
                     beetle::runtime::request_restart_with_continuity_flush(
                         Arc::clone(&platform),
                         None,
-                        "agent_user_loop_join_exit",
-                    );
-                }
-            }
-        }
-        if let Some(handle) = system_agent_handle.as_ref() {
-            if handle.is_finished() {
-                if let Some(done) = system_agent_handle.take() {
-                    let _ = done.join();
-                    log::error!("[{}] agent_system_loop exited; restart requested", TAG);
-                    beetle::runtime::request_restart_with_continuity_flush(
-                        Arc::clone(&platform),
-                        None,
-                        "agent_system_loop_join_exit",
+                        "agent_loop_join_exit",
                     );
                 }
             }

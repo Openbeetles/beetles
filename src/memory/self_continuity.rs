@@ -259,6 +259,7 @@ pub(crate) fn run_self_continuity_refresh_with_state(
     }
 
     let policy = memory_policy(profile).self_continuity;
+    crate::platform::task_wdt::feed_current_task();
     let owned_recent;
     let recent = if let Some(recent) = recent_override {
         recent_window(recent, policy.recent_message_count)
@@ -268,6 +269,7 @@ pub(crate) fn run_self_continuity_refresh_with_state(
             .load_recent(input.chat_id, policy.recent_message_count)?;
         recent_window(owned_recent.as_slice(), policy.recent_message_count)
     };
+    crate::platform::task_wdt::feed_current_task();
     let prompt = build_self_continuity_refresh_input(
         existing_continuity.as_ref(),
         summary_text,
@@ -286,6 +288,7 @@ pub(crate) fn run_self_continuity_refresh_with_state(
         role: Cow::Borrowed("user"),
         content: prompt,
     }];
+    crate::platform::task_wdt::feed_current_task();
     let response = llm.chat(
         http,
         SELF_CONTINUITY_SYSTEM_PROMPT,
@@ -293,14 +296,17 @@ pub(crate) fn run_self_continuity_refresh_with_state(
         None,
         ToolChoicePolicy::Auto,
     )?;
+    crate::platform::task_wdt::feed_current_task();
     match parse_self_continuity_response(response.content.trim(), existing_continuity.as_ref()) {
         ParsedSelfContinuityResponse::Skip => Ok(SelfContinuityRefreshOutcome::Skipped),
         ParsedSelfContinuityResponse::Clear => {
+            crate::platform::task_wdt::feed_current_task();
             let latest = ctx.self_continuity_store.get(input.chat_id)?;
             if latest.as_ref() != existing_continuity.as_ref() && latest.as_ref().is_some() {
                 return Ok(SelfContinuityRefreshOutcome::Skipped);
             }
             if latest.is_some() {
+                crate::platform::task_wdt::feed_current_task();
                 ctx.self_continuity_store.clear(input.chat_id)?;
                 Ok(SelfContinuityRefreshOutcome::Cleared)
             } else {
@@ -308,6 +314,7 @@ pub(crate) fn run_self_continuity_refresh_with_state(
             }
         }
         ParsedSelfContinuityResponse::Update(update) => {
+            crate::platform::task_wdt::feed_current_task();
             let latest = ctx.self_continuity_store.get(input.chat_id)?;
             let Some(next) = merge_self_continuity_with_lease(
                 existing_continuity.as_ref(),
@@ -321,6 +328,7 @@ pub(crate) fn run_self_continuity_refresh_with_state(
             if latest.as_ref() == Some(&next) {
                 return Ok(SelfContinuityRefreshOutcome::Skipped);
             }
+            crate::platform::task_wdt::feed_current_task();
             ctx.self_continuity_store.set(input.chat_id, &next)?;
             Ok(SelfContinuityRefreshOutcome::Updated)
         }

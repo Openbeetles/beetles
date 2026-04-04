@@ -64,6 +64,7 @@ pub fn run(
 
     let router_env = router::RouterEnv::new(inbound_tx.clone());
     esp_transport::register_all_esp_routes(&mut server, &ctx, &router_env, &config_store)?;
+    log::info!("[http_server] ESP config API serving until process exit");
     loop {
         std::thread::sleep(std::time::Duration::from_secs(3600));
     }

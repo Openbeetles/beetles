@@ -222,6 +222,7 @@ pub(crate) fn run_private_garden_governance_with_state(
     decision_override: Option<bool>,
     recent_override: Option<&[SessionMessage]>,
 ) -> Result<PrivateGardenGovernanceOutcome> {
+    crate::platform::task_wdt::feed_current_task();
     let snapshot = load_private_garden_snapshot(ctx.private_garden_store, input.chat_id)?;
     if !decision_override.unwrap_or_else(|| {
         should_refresh_private_garden(input, !snapshot.records.is_empty(), profile)
@@ -230,6 +231,7 @@ pub(crate) fn run_private_garden_governance_with_state(
     }
 
     let policy = memory_policy(profile).private_garden_governance;
+    crate::platform::task_wdt::feed_current_task();
     let owned_recent;
     let recent = if let Some(preloaded) = recent_override {
         private_garden_recent_window(preloaded, policy.recent_message_count)
@@ -240,6 +242,7 @@ pub(crate) fn run_private_garden_governance_with_state(
         private_garden_recent_window(owned_recent.as_slice(), policy.recent_message_count)
     };
 
+    crate::platform::task_wdt::feed_current_task();
     let governance_input = build_private_garden_governance_input(
         summary_text,
         execution_state,
@@ -259,6 +262,7 @@ pub(crate) fn run_private_garden_governance_with_state(
         content: governance_input,
     }];
 
+    crate::platform::task_wdt::feed_current_task();
     match llm.chat(
         http,
         PRIVATE_GARDEN_GOVERNANCE_SYSTEM_PROMPT,
@@ -267,10 +271,12 @@ pub(crate) fn run_private_garden_governance_with_state(
         ToolChoicePolicy::Auto,
     ) {
         Ok(response) => {
+            crate::platform::task_wdt::feed_current_task();
             let Some(raw) = parse_private_garden_governance_response(response.content.trim())
             else {
                 return Ok(PrivateGardenGovernanceOutcome::Skipped);
             };
+            crate::platform::task_wdt::feed_current_task();
             let latest_snapshot =
                 load_private_garden_snapshot(ctx.private_garden_store, input.chat_id)?;
             let (writes, moves, deletes) = normalize_private_garden_governance_actions(
@@ -283,9 +289,11 @@ pub(crate) fn run_private_garden_governance_with_state(
                 return Ok(PrivateGardenGovernanceOutcome::Skipped);
             }
             for path in &deletes {
+                crate::platform::task_wdt::feed_current_task();
                 let _ = ctx.private_garden_store.delete(input.chat_id, path)?;
             }
             for move_action in &moves {
+                crate::platform::task_wdt::feed_current_task();
                 let _ = ctx.private_garden_store.move_doc(
                     input.chat_id,
                     &move_action.from_path,
@@ -294,6 +302,7 @@ pub(crate) fn run_private_garden_governance_with_state(
                 )?;
             }
             for write in &writes {
+                crate::platform::task_wdt::feed_current_task();
                 let _ = ctx.private_garden_store.write(
                     input.chat_id,
                     &write.path,
@@ -322,6 +331,7 @@ fn load_private_garden_snapshot(
     store: &dyn PrivateGardenStore,
     chat_id: &str,
 ) -> Result<PrivateGardenSnapshot> {
+    crate::platform::task_wdt::feed_current_task();
     let mut records = store.list(chat_id, usize::MAX)?;
     records.sort_by(|a, b| {
         b.updated_at
@@ -330,6 +340,7 @@ fn load_private_garden_snapshot(
     });
     let mut docs = Vec::with_capacity(records.len());
     for record in &records {
+        crate::platform::task_wdt::feed_current_task();
         if let Some(doc) = store.read(chat_id, &record.path)? {
             docs.push(doc);
         }

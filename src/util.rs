@@ -710,7 +710,7 @@ pub fn is_private_url(url: &str) -> bool {
 // |---------------------------------------|------------------------|-------|-------|
 // | http_config_worker_*                  | DEFAULT_GUARD_STACK_SIZE (spawn_guarded) | 8 KB | 64 KB |
 // | qq_ws, feishu_ws                      | STACK_CHANNEL_WS       | 16 KB | 64 KB |
-// | agent_user_loop, agent_system_loop    | STACK_AGENT_LOOP       | 16 KB | 64 KB |
+// | agent_loop                            | STACK_AGENT_LOOP       | 16 KB | 64 KB |
 // | tg_sender, qq_sender, fs/dt/wc_sender | STACK_CHANNEL_SENDER   | 8 KB  | 64 KB |
 // | tg_poll                               | STACK_CHANNEL_SENDER   | 8 KB  | 64 KB |
 // | display                               | (inline 6144)          | 6 KB  | 6 KB  | ← no TLS, render chain ~3.5KB peak
@@ -741,7 +741,7 @@ pub const STACK_CHANNEL_WS: usize = 16384;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_CHANNEL_WS: usize = LINUX_RUSTLS_THREAD_STACK;
 
-/// `agent_user_loop` / `agent_system_loop`：LLM HTTPS + 工具调用。
+/// `agent_loop`：统一 agent 主执行面，承接用户消息与自治/system 作业。
 /// 保持 16KB；这轮观察到的 60s 后台崩溃根因是 idle self-runtime 误触发，
 /// 不是常规 agent 主链应长期吃更大栈。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -790,6 +790,8 @@ impl SpawnCore {
 
 /// 线程在 TLS 准入中的角色。
 pub type HttpThreadRole = crate::orchestrator::HttpThreadRole;
+/// 统一任务句柄：Linux/标准线程与 ESP 原生任务都走同一监管接口。
+pub type TaskHandle = crate::platform::task_affinity::TaskHandle;
 
 /// Spawn a named thread with panic protection. If the closure panics, the panic is caught
 /// and logged. This prevents silent thread death in long-running background loops.
@@ -829,28 +831,36 @@ pub fn spawn_guarded_with_profile<F>(
     let _ = spawn_guarded_with_profile_handle(name, stack_size, core, role, f);
 }
 
-/// 同 spawn_guarded_with_profile，但返回 JoinHandle 供主线程监管。
+/// 同 spawn_guarded_with_profile，但返回统一任务句柄供主线程监管。
 pub fn spawn_guarded_with_profile_handle<F>(
     name: &str,
     stack_size: usize,
     core: Option<SpawnCore>,
     role: HttpThreadRole,
     f: F,
-) -> std::io::Result<std::thread::JoinHandle<()>>
+) -> std::io::Result<TaskHandle>
 where
     F: FnOnce() + Send + 'static,
 {
     let tag = name.to_string();
     let tag_for_spawn = tag.clone();
     let core_target = core;
+    let spawn_surface = crate::platform::task_affinity::planned_spawn_surface(name);
     let wrapped = move || {
         crate::orchestrator::set_current_http_thread_role(role);
-        crate::runtime::thread_registry::register_thread(&tag, stack_size, core_target, role);
+        crate::runtime::thread_registry::register_thread(
+            &tag,
+            stack_size,
+            core_target,
+            role,
+            spawn_surface,
+        );
         log::info!(
-            "[thread] started name={} core_target={:?} role={:?}",
+            "[thread] started name={} core_target={:?} role={:?} surface={:?}",
             tag,
             core_target,
-            role
+            role,
+            spawn_surface
         );
         #[cfg(feature = "thread_panic_catch")]
         {
@@ -881,10 +891,11 @@ where
     );
     if let Err(e) = &spawn_res {
         log::error!(
-            "[thread] spawn failed name={} core_target={:?} role={:?} err={}",
+            "[thread] spawn failed name={} core_target={:?} role={:?} surface={:?} err={}",
             name,
             core,
             role,
+            spawn_surface,
             e
         );
     }

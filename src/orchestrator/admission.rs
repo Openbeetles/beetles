@@ -1,6 +1,7 @@
 //! 四维门禁决策：入站/出站/LLM/工具，基于统一资源快照做全局协调。
 //! Four-dimensional admission: inbound/outbound/LLM/tool, coordinated via unified resource snapshot.
 
+use crate::bus::IngressKind;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::constants::OUTBOUND_DEFER_DELAY_MS_CAUTIOUS;
 use crate::constants::TLS_ADMISSION_MIN_INTERNAL_BYTES;
@@ -10,6 +11,7 @@ use crate::constants::{
     LLM_RETRY_LATER_DELAY_MS, LOW_MEM_DEFER_SLEEP_MS, OUTBOUND_DEFER_DELAY_MS,
     PRESSURE_QUEUE_CONGESTION_THRESHOLD,
 };
+use crate::runtime::system_work::{classify_system_work, SystemWorkClass};
 use std::sync::atomic::Ordering;
 
 use super::pressure::PressureLevel;
@@ -120,15 +122,15 @@ fn cautious_outbound_defer_delay_ms(state: &OrchestratorState) -> u64 {
 /// Called by agent loop after receiving a message, before processing.
 pub fn should_accept_inbound(
     state: &OrchestratorState,
-    _channel: &str,
-    chat_id: &str,
+    channel: &str,
+    ingress: IngressKind,
 ) -> AdmissionDecision {
     let pressure = PressureLevel::from_byte(state.pressure_level.load(Ordering::Relaxed));
-    let is_cron = chat_id == "cron";
+    let work_class = classify_system_work(channel, ingress);
 
     match pressure {
         PressureLevel::Critical => {
-            if is_cron {
+            if work_class == SystemWorkClass::BackgroundLowPriority {
                 return AdmissionDecision::Reject {
                     reason: "critical_pressure_background",
                 };
@@ -138,10 +140,18 @@ pub fn should_accept_inbound(
             }
         }
         PressureLevel::Cautious => {
-            if is_cron {
-                return AdmissionDecision::Reject {
-                    reason: "cautious_cron_skip",
-                };
+            match work_class {
+                SystemWorkClass::BackgroundLowPriority => {
+                    return AdmissionDecision::Reject {
+                        reason: "cautious_background_skip",
+                    };
+                }
+                SystemWorkClass::Maintenance if is_queue_congested(state) => {
+                    return AdmissionDecision::Defer {
+                        delay_ms: LOW_MEM_DEFER_SLEEP_MS_MIN,
+                    };
+                }
+                _ => {}
             }
             AdmissionDecision::Accept
         }
@@ -277,7 +287,11 @@ pub fn background_outbound_yield_ms(state: &OrchestratorState) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::IngressKind;
     use crate::constants::{LLM_RETRY_LATER_DELAY_MS, TLS_ADMISSION_MIN_INTERNAL_BYTES};
+    use crate::runtime::system_work::{
+        CHANNEL_CRON, CHANNEL_POST_REPLY_MAINTENANCE, CHANNEL_SELF_RUNTIME,
+    };
 
     fn state_with_heap(internal: u32, largest: u32, pressure: PressureLevel) -> OrchestratorState {
         let s = OrchestratorState::new();
@@ -334,5 +348,40 @@ mod tests {
             PressureLevel::Cautious,
         );
         assert!(matches!(can_call_llm(&s), LlmDecision::RetryLater { .. }));
+    }
+
+    #[test]
+    fn cautious_rejects_low_priority_background_jobs() {
+        let s = state_with_heap(200_000, 200_000, PressureLevel::Cautious);
+        assert!(matches!(
+            should_accept_inbound(&s, CHANNEL_CRON, IngressKind::System),
+            AdmissionDecision::Reject {
+                reason: "cautious_background_skip"
+            }
+        ));
+    }
+
+    #[test]
+    fn cautious_defers_maintenance_when_queue_congested() {
+        let s = state_with_heap(200_000, 200_000, PressureLevel::Cautious);
+        s.inbound_depth
+            .store(PRESSURE_QUEUE_CONGESTION_THRESHOLD, Ordering::Relaxed);
+        assert!(matches!(
+            should_accept_inbound(&s, CHANNEL_SELF_RUNTIME, IngressKind::System),
+            AdmissionDecision::Defer { .. }
+        ));
+        assert!(matches!(
+            should_accept_inbound(&s, CHANNEL_POST_REPLY_MAINTENANCE, IngressKind::System),
+            AdmissionDecision::Defer { .. }
+        ));
+    }
+
+    #[test]
+    fn cautious_keeps_interactive_system_messages() {
+        let s = state_with_heap(200_000, 200_000, PressureLevel::Cautious);
+        assert!(matches!(
+            should_accept_inbound(&s, "qq_channel", IngressKind::System),
+            AdmissionDecision::Accept
+        ));
     }
 }

@@ -1602,6 +1602,7 @@ pub(crate) fn run_boundary_persona_refresh_with_state(
     if !should_refresh {
         return Ok(BoundaryPersonaRefreshOutcome::Skipped);
     }
+    crate::platform::task_wdt::feed_current_task();
     let outer_voice = ctx.outer_voice_store.get(input.chat_id)?;
     let prompt = build_boundary_persona_refresh_input(
         &state,
@@ -1618,6 +1619,7 @@ pub(crate) fn run_boundary_persona_refresh_with_state(
         role: Cow::Borrowed("user"),
         content: prompt,
     }];
+    crate::platform::task_wdt::feed_current_task();
     let response = llm.chat(
         http,
         BOUNDARY_PERSONA_REFRESH_SYSTEM_PROMPT,
@@ -1625,6 +1627,7 @@ pub(crate) fn run_boundary_persona_refresh_with_state(
         None,
         ToolChoicePolicy::Auto,
     )?;
+    crate::platform::task_wdt::feed_current_task();
     let parsed = parse_boundary_persona_refresh(
         response.content.trim(),
         &state.boundary_persona,
@@ -1660,6 +1663,7 @@ pub(crate) fn run_boundary_persona_refresh_with_state(
             input.now_secs,
         );
     }
+    crate::platform::task_wdt::feed_current_task();
     ctx.mental_privacy_store.set(input.chat_id, &state)?;
     Ok(BoundaryPersonaRefreshOutcome::Updated)
 }

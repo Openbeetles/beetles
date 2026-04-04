@@ -25,6 +25,7 @@ pub use esp_conn::{
 };
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[allow(unused_imports)]
 pub use linux_conn::{
     connect_linux_wss, connect_linux_wss_with_headers, connect_linux_wss_with_headers_and_profile,
     connect_linux_wss_with_profile, LinuxWssConnection,

@@ -298,6 +298,7 @@ pub(crate) fn run_private_doc_workspace_refresh_with_state(
         return Ok(PrivateDocWorkspaceRefreshOutcome::Skipped);
     }
 
+    crate::platform::task_wdt::feed_current_task();
     let owned_recent;
     let recent = if let Some(preloaded) = recent_override {
         private_docs_recent_window(preloaded, policy.recent_message_count)
@@ -307,6 +308,7 @@ pub(crate) fn run_private_doc_workspace_refresh_with_state(
             .load_recent(input.chat_id, policy.recent_message_count)?;
         owned_recent.as_slice()
     };
+    crate::platform::task_wdt::feed_current_task();
     let refresh_input = build_private_doc_workspace_refresh_input(
         existing_workspace.as_ref(),
         summary_text,
@@ -338,6 +340,7 @@ pub(crate) fn run_private_doc_workspace_refresh_with_state(
         content: refresh_input,
     }];
 
+    crate::platform::task_wdt::feed_current_task();
     match llm.chat(
         http,
         PRIVATE_DOC_WORKSPACE_SYSTEM_PROMPT,
@@ -346,9 +349,11 @@ pub(crate) fn run_private_doc_workspace_refresh_with_state(
         ToolChoicePolicy::Auto,
     ) {
         Ok(response) => {
+            crate::platform::task_wdt::feed_current_task();
             let Some(update) = parse_private_doc_workspace_response(response.content.trim()) else {
                 return Ok(PrivateDocWorkspaceRefreshOutcome::Skipped);
             };
+            crate::platform::task_wdt::feed_current_task();
             let latest_workspace = ctx.private_doc_store.get(input.chat_id)?;
             let Some(merged) = merge_private_doc_workspace_with_lease(
                 existing_workspace.as_ref(),
@@ -361,6 +366,7 @@ pub(crate) fn run_private_doc_workspace_refresh_with_state(
             if latest_workspace.as_ref() == Some(&merged) {
                 return Ok(PrivateDocWorkspaceRefreshOutcome::Skipped);
             }
+            crate::platform::task_wdt::feed_current_task();
             ctx.private_doc_store.set(input.chat_id, &merged)?;
             Ok(PrivateDocWorkspaceRefreshOutcome::Updated)
         }

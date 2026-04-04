@@ -297,6 +297,7 @@ pub(crate) fn run_autonomy_strategy_refresh_with_state(
     }
 
     let policy = memory_policy(profile).autonomy_strategy;
+    crate::platform::task_wdt::feed_current_task();
     let owned_recent;
     let recent = if let Some(recent) = recent_override {
         recent_window(recent, policy.recent_message_count)
@@ -306,6 +307,7 @@ pub(crate) fn run_autonomy_strategy_refresh_with_state(
             .load_recent(input.chat_id, policy.recent_message_count)?;
         recent_window(owned_recent.as_slice(), policy.recent_message_count)
     };
+    crate::platform::task_wdt::feed_current_task();
     let prompt = build_autonomy_strategy_refresh_input(
         existing_strategy.as_ref(),
         summary_text,
@@ -335,6 +337,7 @@ pub(crate) fn run_autonomy_strategy_refresh_with_state(
         role: Cow::Borrowed("user"),
         content: prompt,
     }];
+    crate::platform::task_wdt::feed_current_task();
     let response = llm.chat(
         http,
         AUTONOMY_STRATEGY_SYSTEM_PROMPT,
@@ -342,9 +345,11 @@ pub(crate) fn run_autonomy_strategy_refresh_with_state(
         None,
         ToolChoicePolicy::Auto,
     )?;
+    crate::platform::task_wdt::feed_current_task();
     match parse_autonomy_strategy_response(response.content.trim(), input.now_secs, profile) {
         ParsedAutonomyStrategyResponse::Skip => Ok(AutonomyStrategyRefreshOutcome::Skipped),
         ParsedAutonomyStrategyResponse::Clear => {
+            crate::platform::task_wdt::feed_current_task();
             let latest = ctx.autonomy_strategy_store.get(input.chat_id)?;
             if whole_record_lease_advanced(
                 existing_strategy.as_ref(),
@@ -358,6 +363,7 @@ pub(crate) fn run_autonomy_strategy_refresh_with_state(
                 return Ok(AutonomyStrategyRefreshOutcome::Skipped);
             }
             if latest.is_some() {
+                crate::platform::task_wdt::feed_current_task();
                 ctx.autonomy_strategy_store.clear(input.chat_id)?;
                 Ok(AutonomyStrategyRefreshOutcome::Cleared)
             } else {
@@ -365,6 +371,7 @@ pub(crate) fn run_autonomy_strategy_refresh_with_state(
             }
         }
         ParsedAutonomyStrategyResponse::Update(next) => {
+            crate::platform::task_wdt::feed_current_task();
             let latest = ctx.autonomy_strategy_store.get(input.chat_id)?;
             if latest.as_ref() == Some(&next) {
                 return Ok(AutonomyStrategyRefreshOutcome::Skipped);
@@ -380,6 +387,7 @@ pub(crate) fn run_autonomy_strategy_refresh_with_state(
             ) {
                 return Ok(AutonomyStrategyRefreshOutcome::Skipped);
             }
+            crate::platform::task_wdt::feed_current_task();
             ctx.autonomy_strategy_store.set(input.chat_id, &next)?;
             Ok(AutonomyStrategyRefreshOutcome::Updated)
         }

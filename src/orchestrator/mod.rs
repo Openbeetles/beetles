@@ -207,8 +207,11 @@ pub fn is_channel_healthy_pub(channel: &str) -> bool {
 }
 
 /// 入站准入决策。
-pub fn should_accept_inbound_pub(channel: &str, chat_id: &str) -> AdmissionDecision {
-    admission::should_accept_inbound(&STATE, channel, chat_id)
+pub fn should_accept_inbound_pub(
+    channel: &str,
+    ingress: crate::bus::IngressKind,
+) -> AdmissionDecision {
+    admission::should_accept_inbound(&STATE, channel, ingress)
 }
 
 /// 更新队列深度（由 heartbeat 定期调用）。
