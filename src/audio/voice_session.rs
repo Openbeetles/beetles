@@ -398,10 +398,9 @@ fn normalize_speak_text(text: &str) -> String {
 }
 
 fn should_play_wake_prompt(audio_cfg: &AudioSegment) -> bool {
-    audio_cfg.stt.provider == "baidu"
-        && audio_cfg.tts.provider == "baidu"
-        && !audio_cfg.stt.api_key.trim().is_empty()
-        && !audio_cfg.stt.api_secret.trim().is_empty()
+    audio_cfg.service_provider == "baidu"
+        && !audio_cfg.speech.api_key.trim().is_empty()
+        && !audio_cfg.speech.api_secret.trim().is_empty()
 }
 
 #[cfg(test)]

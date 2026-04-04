@@ -34,7 +34,7 @@ pub fn capture_and_transcribe(
     let text = stt_baidu::transcribe_pcm16_samples(
         http,
         baidu_token,
-        &audio_cfg.stt,
+        &audio_cfg.speech,
         captured.as_slice(),
         mic_sr,
     )?;
@@ -56,7 +56,7 @@ pub fn speak_text(
     let result = (|| match tts_baidu::stream_wav_pcm16le(
         http,
         baidu_token,
-        &audio_cfg.stt,
+        &audio_cfg.speech,
         &audio_cfg.tts,
         text,
         AUDIO_TTS_WRITE_CHUNK_SAMPLES,
@@ -69,8 +69,13 @@ pub fn speak_text(
     ) {
         Ok(samples) => Ok(samples),
         Err(error) if error.stage() == "tts_baidu_wav" => {
-            let wav =
-                tts_baidu::synthesize_wav(http, baidu_token, &audio_cfg.stt, &audio_cfg.tts, text)?;
+            let wav = tts_baidu::synthesize_wav(
+                http,
+                baidu_token,
+                &audio_cfg.speech,
+                &audio_cfg.tts,
+                text,
+            )?;
             tts_baidu::play_wav_pcm16le_chunks(&wav, AUDIO_TTS_WRITE_CHUNK_SAMPLES, |chunk| {
                 if first_pcm_at.is_none() {
                     first_pcm_at = Some(Instant::now());

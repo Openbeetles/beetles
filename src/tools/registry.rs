@@ -218,7 +218,10 @@ fn register_core_tools(
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
     ))]
     registry.register(Box::new(super::PdfReadTool));
-    #[cfg(feature = "tools_network_extra")]
+    #[cfg(all(
+        feature = "tools_network_extra",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     registry.register(Box::new(super::AnalyzeImageTool::new(config)));
     registry.register(Box::new(super::RemindAtTool::new(Arc::clone(
         remind_at_store,
@@ -278,7 +281,10 @@ fn register_extended_runtime_tools(
         Arc::clone(long_term_memory_store),
         platform.skill_storage(),
     )));
-    #[cfg(feature = "tools_network_extra")]
+    #[cfg(all(
+        feature = "tools_network_extra",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     registry.register(Box::new(super::HttpRequestTool));
     #[cfg(feature = "tools_diagnostics")]
     registry.register(Box::new(super::SessionManageTool::new(Arc::clone(
@@ -335,21 +341,20 @@ fn register_audio_tools(
     let Some(audio_cfg) = config.audio.clone() else {
         return None;
     };
-    let baidu_stt_credential_ok =
-        !audio_cfg.stt.api_key.trim().is_empty() && !audio_cfg.stt.api_secret.trim().is_empty();
-    let stt_ok = audio_cfg.stt.provider == "baidu"
-        && baidu_stt_credential_ok
+    let baidu_speech_credentials_ok =
+        !audio_cfg.speech.api_key.trim().is_empty() && !audio_cfg.speech.api_secret.trim().is_empty();
+    let speech_input_ok = audio_cfg.service_provider == "baidu"
+        && baidu_speech_credentials_ok
         && audio_cfg.microphone.enabled;
-    let tts_ok = audio_cfg.tts.provider == "baidu"
-        && audio_cfg.stt.provider == "baidu"
-        && baidu_stt_credential_ok
+    let speech_output_ok = audio_cfg.service_provider == "baidu"
+        && baidu_speech_credentials_ok
         && audio_cfg.speaker.enabled;
-    let baidu_token_cache = if audio_cfg.enabled && (stt_ok || tts_ok) {
+    let baidu_token_cache = if audio_cfg.enabled && (speech_input_ok || speech_output_ok) {
         Some(Arc::new(crate::audio::baidu_token::BaiduTokenCache::new()))
     } else {
         None
     };
-    if audio_cfg.enabled && stt_ok {
+    if audio_cfg.enabled && speech_input_ok {
         if let Some(ref cache) = baidu_token_cache {
             registry.register(Box::new(super::VoiceInputTool::new(
                 Arc::clone(platform),
@@ -358,7 +363,7 @@ fn register_audio_tools(
             )));
         }
     }
-    if audio_cfg.enabled && tts_ok {
+    if audio_cfg.enabled && speech_output_ok {
         if let Some(ref cache) = baidu_token_cache {
             registry.register(Box::new(super::VoiceOutputTool::new(
                 Arc::clone(platform),

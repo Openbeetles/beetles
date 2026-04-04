@@ -39,8 +39,7 @@ export interface AudioWakeWordConfig {
   wake_prompt: string
 }
 
-export interface AudioSttConfig {
-  provider: string
+export interface AudioSpeechConfig {
   api_url: string
   api_key: string
   api_secret: string
@@ -49,7 +48,6 @@ export interface AudioSttConfig {
 }
 
 export interface AudioTtsConfig {
-  provider: string
   voice: string
   rate: string
   pitch: string
@@ -87,24 +85,16 @@ export interface AudioLedIndicatorConfig {
 export interface AudioConfig {
   version: number
   enabled: boolean
+  service_provider: string
   microphone: AudioMicrophoneConfig
   speaker: AudioSpeakerConfig
   vad: AudioVadConfig
   wake_word: AudioWakeWordConfig
-  stt: AudioSttConfig
+  speech: AudioSpeechConfig
   tts: AudioTtsConfig
   realtime: AudioRealtimeConfig
   ambient_listening: AudioAmbientListeningConfig
   led_indicator: AudioLedIndicatorConfig
-}
-
-type LegacyAudioRealtimeConfig = Partial<AudioRealtimeConfig> & {
-  api_url?: string
-}
-
-type LegacyAudioConfig = Partial<AudioConfig> & {
-  conversation_mode?: string
-  realtime?: LegacyAudioRealtimeConfig | null
 }
 
 export const AUDIO_CONFIG_VERSION = 1
@@ -134,16 +124,8 @@ export const AUDIO_BUFFER_PRESETS = [512, 1024, 2048, 4096, 8192] as const
 export const AUDIO_VAD_THRESHOLD_PRESETS = [0.01, 0.02, 0.05, 0.08, 0.1, 0.2, 0.3, 0.5, 0.7] as const
 export const AUDIO_VAD_SILENCE_MS_PRESETS = [500, 750, 1000, 1500, 2000, 3000] as const
 
-export const AUDIO_STT_PROVIDERS = ['whisper', 'xunfei', 'baidu'] as const
-export const AUDIO_STT_LANGUAGES = ['zh', 'en', 'ja', 'ko'] as const
-export const AUDIO_TTS_PROVIDERS = ['edge', 'xunfei', 'baidu'] as const
-
-export const AUDIO_TTS_EDGE_VOICES = [
-  'zh-CN-XiaoxiaoNeural',
-  'zh-CN-YunxiNeural',
-  'en-US-JennyNeural',
-  'en-US-GuyNeural',
-] as const
+export const AUDIO_SPEECH_PROVIDERS = ['baidu', 'whisper', 'xunfei'] as const
+export const AUDIO_SPEECH_LANGUAGES = ['zh', 'en', 'ja', 'ko'] as const
 
 export const AUDIO_TTS_RATE_PRESETS = ['-20%', '-10%', '+0%', '+10%', '+20%'] as const
 export const AUDIO_TTS_PITCH_PRESETS = ['-10Hz', '-5Hz', '+0Hz', '+5Hz', '+10Hz'] as const
@@ -158,27 +140,11 @@ export const AUDIO_AMBIENT_SOUND_EVENT_PRESETS = [
 export const AUDIO_AMBIENT_COOLDOWN_PRESETS = [5, 10, 15, 30, 60] as const
 export const AUDIO_AMBIENT_CHECK_INTERVAL_PRESETS = [60, 120, 300, 600, 1800] as const
 
-export const DEFAULT_STT_API_URL_WHISPER = 'https://api.openai.com/v1/audio/transcriptions'
-export const DEFAULT_STT_API_URL_BAIDU = 'https://vop.baidu.com/server_api'
+export const DEFAULT_SPEECH_API_URL_WHISPER = 'https://api.openai.com/v1/audio/transcriptions'
+export const DEFAULT_SPEECH_API_URL_BAIDU = 'https://vop.baidu.com/server_api'
 export const DEFAULT_REALTIME_WS_URL_OPENAI = 'wss://api.openai.com/v1/realtime'
 export const DEFAULT_REALTIME_MODEL_OPENAI = 'gpt-realtime'
 export const DEFAULT_REALTIME_VOICE_OPENAI = 'alloy'
-
-function normalizeRealtimeWsUrl(raw: string | null | undefined): string {
-  const trimmed = (raw ?? '').trim()
-  if (!trimmed) return ''
-
-  const normalized = trimmed.startsWith('https://')
-    ? `wss://${trimmed.slice('https://'.length)}`
-    : trimmed.startsWith('http://')
-      ? `ws://${trimmed.slice('http://'.length)}`
-      : trimmed
-
-  const [path, query] = normalized.split('?', 2)
-  const basePath = path.replace(/\/+$/, '')
-  const nextPath = basePath.endsWith('/realtime') ? basePath : `${basePath}/realtime`
-  return query ? `${nextPath}?${query}` : nextPath
-}
 
 function defaultRealtimeConfig(): AudioRealtimeConfig {
   return {
@@ -202,26 +168,24 @@ export function audioRealtimeConfigured(c: Pick<AudioConfig, 'realtime'> | Audio
 }
 
 export function normalizeAudioConfigForSave(c: AudioConfig): AudioConfig {
-  const stt = { ...c.stt }
+  const speech = { ...c.speech }
   const realtime = { ...c.realtime }
 
-  if (stt.provider === 'baidu' && !stt.api_url.trim()) {
-    stt.api_url = DEFAULT_STT_API_URL_BAIDU
+  if (c.service_provider === 'baidu' && !speech.api_url.trim()) {
+    speech.api_url = DEFAULT_SPEECH_API_URL_BAIDU
   }
-  if (stt.provider === 'baidu' && !stt.model.trim()) {
-    stt.model = '1537'
+  if (c.service_provider === 'baidu' && !speech.model.trim()) {
+    speech.model = '1537'
   }
-  if (stt.provider === 'whisper' && !stt.api_url.trim()) {
-    stt.api_url = DEFAULT_STT_API_URL_WHISPER
+  if (c.service_provider === 'whisper' && !speech.api_url.trim()) {
+    speech.api_url = DEFAULT_SPEECH_API_URL_WHISPER
   }
-  if (stt.provider === 'whisper' && !stt.model.trim()) {
-    stt.model = 'whisper-1'
+  if (c.service_provider === 'whisper' && !speech.model.trim()) {
+    speech.model = 'whisper-1'
   }
 
   realtime.provider = 'openai_compatible'
   realtime.ws_url = realtime.ws_url.trim()
-    ? normalizeRealtimeWsUrl(realtime.ws_url)
-    : realtime.ws_url.trim()
   if (!realtime.model.trim()) {
     realtime.model = DEFAULT_REALTIME_MODEL_OPENAI
   }
@@ -229,20 +193,12 @@ export function normalizeAudioConfigForSave(c: AudioConfig): AudioConfig {
     realtime.voice = DEFAULT_REALTIME_VOICE_OPENAI
   }
 
-  return { ...c, stt, realtime }
+  return { ...c, speech, realtime }
 }
 
-export function normalizeAudioConfigFromDevice(raw: LegacyAudioConfig | null | undefined): AudioConfig {
+export function normalizeAudioConfigFromDevice(raw: Partial<AudioConfig> | null | undefined): AudioConfig {
   const base = defaultAudioConfig()
   if (!raw) return base
-
-  const rawRealtime = (raw.realtime ?? {}) as LegacyAudioRealtimeConfig
-  const migratedWsUrl =
-    typeof rawRealtime.ws_url === 'string'
-      ? normalizeRealtimeWsUrl(rawRealtime.ws_url)
-      : typeof rawRealtime.api_url === 'string' && rawRealtime.api_url.trim()
-        ? normalizeRealtimeWsUrl(rawRealtime.api_url)
-        : base.realtime.ws_url
 
   return {
     ...base,
@@ -271,9 +227,9 @@ export function normalizeAudioConfigFromDevice(raw: LegacyAudioConfig | null | u
       ...base.wake_word,
       ...(raw.wake_word ?? {}),
     },
-    stt: {
-      ...base.stt,
-      ...(raw.stt ?? {}),
+    speech: {
+      ...base.speech,
+      ...(raw.speech ?? {}),
     },
     tts: {
       ...base.tts,
@@ -281,8 +237,7 @@ export function normalizeAudioConfigFromDevice(raw: LegacyAudioConfig | null | u
     },
     realtime: {
       ...base.realtime,
-      ...rawRealtime,
-      ws_url: migratedWsUrl,
+      ...(raw.realtime ?? {}),
     },
     ambient_listening: {
       ...base.ambient_listening,
@@ -343,6 +298,7 @@ export function defaultAudioConfig(): AudioConfig {
   return {
     version: AUDIO_CONFIG_VERSION,
     enabled: false,
+    service_provider: 'baidu',
     microphone: {
       enabled: false,
       device_type: 'i2s_inmp441',
@@ -367,16 +323,14 @@ export function defaultAudioConfig(): AudioConfig {
       keyword: 'hiesp',
       wake_prompt: '你好，我在听，请说。',
     },
-    stt: {
-      provider: 'baidu',
-      api_url: DEFAULT_STT_API_URL_BAIDU,
+    speech: {
+      api_url: DEFAULT_SPEECH_API_URL_BAIDU,
       api_key: '',
       api_secret: '',
       model: '1537',
       language: 'zh',
     },
     tts: {
-      provider: 'baidu',
       voice: '0',
       rate: '+0%',
       pitch: '+0Hz',

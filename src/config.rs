@@ -998,8 +998,8 @@ const AUDIO_KEYWORD_MAX_LEN: usize = 64;
 const AUDIO_VOICE_MAX_LEN: usize = 64;
 const AUDIO_RATE_MAX_LEN: usize = 16;
 const AUDIO_PITCH_MAX_LEN: usize = 16;
-const AUDIO_STT_API_KEY_MAX_LEN: usize = 256;
-const AUDIO_STT_API_SECRET_MAX_LEN: usize = 256;
+const AUDIO_SPEECH_API_KEY_MAX_LEN: usize = 256;
+const AUDIO_SPEECH_API_SECRET_MAX_LEN: usize = 256;
 const AUDIO_SOUND_EVENTS_MAX: usize = 16;
 const AUDIO_SOUND_EVENT_MAX_LEN: usize = 32;
 const AUDIO_REALTIME_INSTRUCTIONS_MAX_LEN: usize = 1024;
@@ -1133,11 +1133,7 @@ pub struct AudioVadConfig {
 pub struct AudioRealtimeConfig {
     #[serde(default = "default_audio_realtime_provider")]
     pub provider: String,
-    #[serde(
-        default = "default_audio_realtime_ws_url",
-        alias = "api_url",
-        deserialize_with = "deserialize_audio_realtime_ws_url"
-    )]
+    #[serde(default = "default_audio_realtime_ws_url")]
     pub ws_url: String,
     #[serde(default)]
     pub api_key: String,
@@ -1147,47 +1143,6 @@ pub struct AudioRealtimeConfig {
     pub voice: String,
     #[serde(default)]
     pub instructions: String,
-}
-
-fn normalize_audio_realtime_ws_url(raw: &str) -> String {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return String::new();
-    }
-
-    let normalized = if let Some(rest) = trimmed.strip_prefix("https://") {
-        format!("wss://{rest}")
-    } else if let Some(rest) = trimmed.strip_prefix("http://") {
-        format!("ws://{rest}")
-    } else {
-        trimmed.to_string()
-    };
-
-    let (path, query) = match normalized.split_once('?') {
-        Some((path, query)) => (path.trim_end_matches('/').to_string(), Some(query)),
-        None => (normalized.trim_end_matches('/').to_string(), None),
-    };
-
-    let path = if path.ends_with("/realtime") {
-        path
-    } else {
-        format!("{path}/realtime")
-    };
-
-    match query {
-        Some(query) => format!("{path}?{query}"),
-        None => path,
-    }
-}
-
-fn deserialize_audio_realtime_ws_url<'de, D>(
-    deserializer: D,
-) -> std::result::Result<String, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let raw = String::deserialize(deserializer)?;
-    Ok(normalize_audio_realtime_ws_url(&raw))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1207,14 +1162,9 @@ fn default_wake_prompt() -> String {
     "你好，我在听，请说。".to_string()
 }
 
-/// 语音识别（STT）配置。
-/// For Baidu (`provider == "baidu"`), `api_key` / `api_secret` are the same application credentials
-/// used to obtain OAuth `access_token` for **both** STT and TTS; TTS does not carry separate keys.
-/// 百度场景下 `api_key`、`api_secret` 为语音应用凭证，**STT 与 TTS 共用**，换取的 token 两端通用。
+/// 语音服务配置：当前回退链路的识别与合成共用一套服务商、接口和鉴权字段。
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct AudioSttConfig {
-    #[serde(default)]
-    pub provider: String,
+pub struct AudioSpeechConfig {
     #[serde(default)]
     pub api_url: String,
     #[serde(default)]
@@ -1227,11 +1177,9 @@ pub struct AudioSttConfig {
     pub language: String,
 }
 
-/// 语音合成（TTS）音色与语速等。**百度 TTS** 的鉴权与 `AudioSttConfig` 共用 `api_key` / `api_secret`（见该结构体说明），本结构不含密钥字段。
+/// 语音合成（TTS）音色与语速等。当前语音服务链路共用 `AudioSpeechConfig` 的提供商与鉴权字段。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AudioTtsConfig {
-    #[serde(default)]
-    pub provider: String,
     #[serde(default)]
     pub voice: String,
     #[serde(default)]
@@ -1278,11 +1226,13 @@ pub struct AudioSegment {
     pub version: u32,
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default = "default_audio_service_provider")]
+    pub service_provider: String,
     pub microphone: AudioMicrophoneConfig,
     pub speaker: AudioSpeakerConfig,
     pub vad: AudioVadConfig,
     pub wake_word: AudioWakeWordConfig,
-    pub stt: AudioSttConfig,
+    pub speech: AudioSpeechConfig,
     pub tts: AudioTtsConfig,
     #[serde(default = "default_audio_realtime_config")]
     pub realtime: AudioRealtimeConfig,
@@ -1326,6 +1276,10 @@ fn default_audio_realtime_provider() -> String {
     "openai_compatible".to_string()
 }
 
+fn default_audio_service_provider() -> String {
+    "baidu".to_string()
+}
+
 fn default_audio_realtime_ws_url() -> String {
     "wss://api.openai.com/v1/realtime".to_string()
 }
@@ -1354,6 +1308,7 @@ pub fn default_disabled_audio_segment() -> AudioSegment {
     AudioSegment {
         version: AUDIO_CONFIG_VERSION,
         enabled: false,
+        service_provider: default_audio_service_provider(),
         microphone: AudioMicrophoneConfig {
             enabled: false,
             device_type: "i2s_inmp441".to_string(),
@@ -1387,8 +1342,7 @@ pub fn default_disabled_audio_segment() -> AudioSegment {
             keyword: "hiesp".to_string(),
             wake_prompt: default_wake_prompt(),
         },
-        stt: AudioSttConfig {
-            provider: "baidu".to_string(),
+        speech: AudioSpeechConfig {
             api_url: "https://vop.baidu.com/server_api".to_string(),
             api_key: String::new(),
             api_secret: String::new(),
@@ -1396,7 +1350,6 @@ pub fn default_disabled_audio_segment() -> AudioSegment {
             language: "zh".to_string(),
         },
         tts: AudioTtsConfig {
-            provider: "baidu".to_string(),
             voice: "0".to_string(),
             rate: "+0%".to_string(),
             pitch: "+0Hz".to_string(),
@@ -1673,11 +1626,10 @@ fn validate_audio_bits_per_sample(value: u16, field: &str) -> Result<()> {
     Ok(())
 }
 
-fn audio_can_use_legacy_baidu_speech(seg: &AudioSegment) -> bool {
-    seg.stt.provider == "baidu"
-        && seg.tts.provider == "baidu"
-        && !seg.stt.api_key.trim().is_empty()
-        && !seg.stt.api_secret.trim().is_empty()
+fn audio_can_use_baidu_speech_fallback(seg: &AudioSegment) -> bool {
+    seg.service_provider == "baidu"
+        && !seg.speech.api_key.trim().is_empty()
+        && !seg.speech.api_secret.trim().is_empty()
 }
 
 /// 私有：校验 AudioSegment 字段（引脚、采样率、阈值、字符串长度等）。
@@ -1733,10 +1685,10 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
                 "wake_word.enabled requires speaker.enabled == true",
             ));
         }
-        if !audio_realtime_enabled(seg) && !audio_can_use_legacy_baidu_speech(seg) {
+        if !audio_realtime_enabled(seg) && !audio_can_use_baidu_speech_fallback(seg) {
             return Err(Error::config(
                 "audio",
-                "wake_word.enabled requires realtime voice config or Baidu STT/TTS credentials for legacy fallback",
+                "wake_word.enabled requires realtime voice config or a configured speech fallback for the currently wired provider",
             ));
         }
         if wake_word_resolve_model(&seg.wake_word.keyword).is_none() {
@@ -1755,10 +1707,9 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
             ));
         }
     }
-    if seg.stt.provider.len() > CONFIG_FIELD_MAX_LEN
-        || seg.stt.model.len() > CONFIG_FIELD_MAX_LEN
-        || seg.stt.language.len() > CONFIG_FIELD_MAX_LEN
-        || seg.tts.provider.len() > CONFIG_FIELD_MAX_LEN
+    if seg.service_provider.len() > CONFIG_FIELD_MAX_LEN
+        || seg.speech.model.len() > CONFIG_FIELD_MAX_LEN
+        || seg.speech.language.len() > CONFIG_FIELD_MAX_LEN
         || seg.tts.voice.len() > AUDIO_VOICE_MAX_LEN
         || seg.tts.rate.len() > AUDIO_RATE_MAX_LEN
         || seg.tts.pitch.len() > AUDIO_PITCH_MAX_LEN
@@ -1786,28 +1737,28 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
             ),
         ));
     }
-    if seg.stt.api_key.len() > AUDIO_STT_API_KEY_MAX_LEN {
+    if seg.speech.api_key.len() > AUDIO_SPEECH_API_KEY_MAX_LEN {
         return Err(Error::config(
             "audio",
             format!(
-                "stt.api_key length must be <= {}",
-                AUDIO_STT_API_KEY_MAX_LEN
+                "speech.api_key length must be <= {}",
+                AUDIO_SPEECH_API_KEY_MAX_LEN
             ),
         ));
     }
-    if seg.stt.api_secret.len() > AUDIO_STT_API_SECRET_MAX_LEN {
+    if seg.speech.api_secret.len() > AUDIO_SPEECH_API_SECRET_MAX_LEN {
         return Err(Error::config(
             "audio",
             format!(
-                "stt.api_secret length must be <= {}",
-                AUDIO_STT_API_SECRET_MAX_LEN
+                "speech.api_secret length must be <= {}",
+                AUDIO_SPEECH_API_SECRET_MAX_LEN
             ),
         ));
     }
-    if seg.stt.api_url.len() > CONFIG_URL_MAX_LEN {
+    if seg.speech.api_url.len() > CONFIG_URL_MAX_LEN {
         return Err(Error::config(
             "audio",
-            format!("stt.api_url length must be <= {}", CONFIG_URL_MAX_LEN),
+            format!("speech.api_url length must be <= {}", CONFIG_URL_MAX_LEN),
         ));
     }
     if seg.realtime.ws_url.len() > CONFIG_URL_MAX_LEN {
@@ -1819,25 +1770,23 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
     if seg.enabled
         && !audio_realtime_enabled(seg)
         && seg.microphone.enabled
-        && seg.stt.provider == "baidu"
-        && (seg.stt.api_key.trim().is_empty() || seg.stt.api_secret.trim().is_empty())
+        && seg.service_provider == "baidu"
+        && (seg.speech.api_key.trim().is_empty() || seg.speech.api_secret.trim().is_empty())
     {
         return Err(Error::config(
             "audio",
-            "stt.api_key and stt.api_secret are required when stt.provider == baidu",
+            "speech.api_key and speech.api_secret are required when service_provider == baidu",
         ));
     }
     if seg.enabled
         && !audio_realtime_enabled(seg)
         && seg.speaker.enabled
-        && seg.tts.provider == "baidu"
-        && (seg.stt.provider != "baidu"
-            || seg.stt.api_key.trim().is_empty()
-            || seg.stt.api_secret.trim().is_empty())
+        && seg.service_provider == "baidu"
+        && (seg.speech.api_key.trim().is_empty() || seg.speech.api_secret.trim().is_empty())
     {
         return Err(Error::config(
             "audio",
-            "tts.provider == baidu requires stt.provider == baidu and non-empty stt.api_key/stt.api_secret",
+            "speaker fallback requires non-empty speech.api_key/speech.api_secret when service_provider == baidu",
         ));
     }
     if seg.enabled && audio_realtime_enabled(seg) {

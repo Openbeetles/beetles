@@ -2,7 +2,7 @@
 //! Baidu STT REST client.
 
 use super::baidu_token::BaiduTokenCache;
-use crate::config::AudioSttConfig;
+use crate::config::AudioSpeechConfig;
 use crate::error::{Error, Result};
 use crate::platform::{PlatformHttpClient, ResponseBody};
 use base64::Engine;
@@ -23,13 +23,13 @@ struct BaiduAsrResponse {
 pub fn transcribe_pcm16(
     http: &mut dyn PlatformHttpClient,
     token_cache: &BaiduTokenCache,
-    stt: &AudioSttConfig,
+    speech: &AudioSpeechConfig,
     pcm16le: &[u8],
     sample_rate: u32,
 ) -> Result<String> {
-    let token = token_cache.get_or_fetch(http, &stt.api_key, &stt.api_secret)?;
+    let token = token_cache.get_or_fetch(http, &speech.api_key, &speech.api_secret)?;
     let speech_b64 = base64::engine::general_purpose::STANDARD.encode(pcm16le);
-    let dev_pid = stt.model.trim().parse::<u32>().unwrap_or(1537);
+    let dev_pid = speech.model.trim().parse::<u32>().unwrap_or(1537);
     let body = serde_json::json!({
         "format": "pcm",
         "rate": sample_rate,
@@ -41,10 +41,10 @@ pub fn transcribe_pcm16(
         "dev_pid": dev_pid,
     })
     .to_string();
-    let api_url = if stt.api_url.trim().is_empty() {
+    let api_url = if speech.api_url.trim().is_empty() {
         BAIDU_STT_DEFAULT_URL
     } else {
-        stt.api_url.trim()
+        speech.api_url.trim()
     };
     let headers = [("Content-Type", "application/json")];
     let (status, body_buf) = http
@@ -56,12 +56,12 @@ pub fn transcribe_pcm16(
 pub fn transcribe_pcm16_samples(
     http: &mut dyn PlatformHttpClient,
     token_cache: &BaiduTokenCache,
-    stt: &AudioSttConfig,
+    speech: &AudioSpeechConfig,
     pcm16: &[i16],
     sample_rate: u32,
 ) -> Result<String> {
-    let token = token_cache.get_or_fetch(http, &stt.api_key, &stt.api_secret)?;
-    let dev_pid = stt.model.trim().parse::<u32>().unwrap_or(1537);
+    let token = token_cache.get_or_fetch(http, &speech.api_key, &speech.api_secret)?;
+    let dev_pid = speech.model.trim().parse::<u32>().unwrap_or(1537);
     let pcm_byte_len = pcm16.len() * 2;
 
     let prefix = format!(
@@ -105,10 +105,10 @@ pub fn transcribe_pcm16_samples(
     }
     body.extend_from_slice(suffix.as_bytes());
 
-    let api_url = if stt.api_url.trim().is_empty() {
+    let api_url = if speech.api_url.trim().is_empty() {
         BAIDU_STT_DEFAULT_URL
     } else {
-        stt.api_url.trim()
+        speech.api_url.trim()
     };
     let headers = [("Content-Type", "application/json")];
     let (status, body_buf) = http

@@ -46,20 +46,18 @@ import {
   AUDIO_REALTIME_PCM16_SAMPLE_RATE,
   AUDIO_SAMPLE_RATE_MAX,
   AUDIO_SAMPLE_RATE_MIN,
+  AUDIO_SPEECH_LANGUAGES,
+  AUDIO_SPEECH_PROVIDERS,
   AUDIO_SPEAKER_DEVICE_TYPES,
-  AUDIO_STT_LANGUAGES,
-  AUDIO_STT_PROVIDERS,
-  AUDIO_TTS_EDGE_VOICES,
   AUDIO_TTS_PITCH_PRESETS,
-  AUDIO_TTS_PROVIDERS,
   AUDIO_TTS_RATE_PRESETS,
   AUDIO_VAD_SILENCE_MS_PRESETS,
   AUDIO_VAD_THRESHOLD_PRESETS,
   ambientCooldownOptions,
   ambientIntervalOptions,
   bufferSelectOptions,
-  DEFAULT_STT_API_URL_BAIDU,
-  DEFAULT_STT_API_URL_WHISPER,
+  DEFAULT_SPEECH_API_URL_BAIDU,
+  DEFAULT_SPEECH_API_URL_WHISPER,
   audioRealtimeConfigured,
   defaultAudioConfig,
   normalizeAudioConfigFromDevice,
@@ -74,10 +72,6 @@ import {
 function asNumber(v: string): number | null {
   const n = Number(v)
   return Number.isFinite(n) ? n : null
-}
-
-function ttsEdgeVoiceOptions(current: string): string[] {
-  return unionStringPreset([...AUDIO_TTS_EDGE_VOICES], current)
 }
 
 function validateAudioConfig(
@@ -168,7 +162,7 @@ function validateAudioConfig(
     form.enabled &&
     form.wake_word.enabled &&
     !realtimeReady &&
-    (form.stt.provider !== 'baidu' || form.tts.provider !== 'baidu')
+    form.service_provider !== 'baidu'
   ) {
     return t('audioConfig.validation.wakeWordSpeechPipeline')
   }
@@ -177,22 +171,20 @@ function validateAudioConfig(
     form.enabled &&
     !realtimeReady &&
     form.microphone.enabled &&
-    form.stt.provider === 'baidu' &&
-    (!form.stt.api_key.trim() || !form.stt.api_secret.trim())
+    form.service_provider === 'baidu' &&
+    (!form.speech.api_key.trim() || !form.speech.api_secret.trim())
   ) {
-    return t('audioConfig.validation.sttCredentialRequired')
+    return t('audioConfig.validation.speechInputCredentialRequired')
   }
 
   if (
     form.enabled &&
     !realtimeReady &&
     form.speaker.enabled &&
-    form.tts.provider === 'baidu' &&
-    (form.stt.provider !== 'baidu' ||
-      !form.stt.api_key.trim() ||
-      !form.stt.api_secret.trim())
+    form.service_provider === 'baidu' &&
+    (!form.speech.api_key.trim() || !form.speech.api_secret.trim())
   ) {
-    return t('audioConfig.validation.ttsCredentialRequired')
+    return t('audioConfig.validation.speechOutputCredentialRequired')
   }
 
   if (form.enabled && realtimeReady) {
@@ -324,8 +316,8 @@ export function AudioConfigPanel() {
   const micOn = audioOn && form.microphone.enabled
   const spkOn = audioOn && form.speaker.enabled
   const showVadWake = micOn
-  const showStt = micOn
-  const showTts = spkOn
+  const showSpeechInput = micOn
+  const showSpeechOutput = spkOn
   const showRealtime = audioOn
   const showAmbientBlock = micOn
   const showLedBlock = audioOn
@@ -364,7 +356,7 @@ export function AudioConfigPanel() {
   const extrasStr = extraSoundEvents(form.ambient_listening.sound_events).join(', ')
   const speechRoutingDescription = realtimeReady
     ? t('audioConfig.realtimeActiveHelp')
-    : t('audioConfig.legacyFallbackHelp')
+    : t('audioConfig.speechFallbackHelp')
 
   const setSpeakerSampleRate = (sampleRate: number) => {
     setDraftSafe({
@@ -1057,346 +1049,230 @@ export function AudioConfigPanel() {
                       </FormSectionSub>
                     ) : null}
 
-                    {showStt || showTts ? (
-                      <FormSectionSub title={t('audioConfig.sectionSttTts')}>
+                    {showSpeechInput || showSpeechOutput ? (
+                      <FormSectionSub title={t('audioConfig.sectionSpeechService')}>
                         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
                           <Typography variant="body2" color="text.secondary">
                             {realtimeReady
-                              ? t('audioConfig.sttTtsFallbackHelp')
-                              : t('audioConfig.sttTtsPrimaryHelp')}
+                              ? t('audioConfig.speechFallbackReservedHelp')
+                              : t('audioConfig.speechPrimaryHelp')}
                           </Typography>
-                          {showStt ? (
-                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                              <Typography variant="subtitle2" color="text.secondary">
-                                {t('audioConfig.sttBlockTitle')}
-                              </Typography>
-                              <Box sx={fieldGridSx}>
-                                <FormControl size="small" fullWidth>
-                                  <InputLabel id="stt-prov">{t('audioConfig.sttProvider')}</InputLabel>
-                                  <Select
-                                    labelId="stt-prov"
-                                    label={t('audioConfig.sttProvider')}
-                                    value={form.stt.provider}
-                                    onChange={(e: SelectChangeEvent) => {
-                                      const p = e.target.value
-                                      setDraftSafe({
-                                        ...form,
-                                        stt: {
-                                          ...form.stt,
-                                          provider: p,
-                                          api_url:
-                                            p === 'whisper'
-                                              ? form.stt.api_url.trim()
-                                                ? form.stt.api_url
-                                                : DEFAULT_STT_API_URL_WHISPER
-                                              : p === 'baidu'
-                                                ? form.stt.api_url.trim()
-                                                  ? form.stt.api_url
-                                                  : DEFAULT_STT_API_URL_BAIDU
-                                                : form.stt.api_url,
-                                          model:
-                                            p === 'whisper'
-                                              ? 'whisper-1'
-                                              : p === 'baidu'
-                                                ? form.stt.model.trim()
-                                                  ? form.stt.model
-                                                  : '1537'
-                                                : form.stt.model,
-                                        },
-                                      })
-                                    }}
-                                  >
-                                    {unionStringPreset([...AUDIO_STT_PROVIDERS], form.stt.provider).map(
-                                      (p) => (
-                                        <MenuItem key={p} value={p}>
-                                          {(AUDIO_STT_PROVIDERS as readonly string[]).includes(p)
-                                            ? t(`audioConfig.sttProviderLabels.${p}`)
-                                            : p}
-                                        </MenuItem>
-                                      ),
-                                    )}
-                                  </Select>
-                                </FormControl>
-                                <TextField
-                                  size="small"
-                                  label={t('audioConfig.sttApiKey')}
-                                  type={isRevealed('audio_stt_api_key') ? 'text' : 'password'}
-                                  value={form.stt.api_key}
-                                  onChange={(e) =>
-                                    setDraftSafe({
-                                      ...form,
-                                      stt: { ...form.stt, api_key: e.target.value },
-                                    })
-                                  }
-                                  slotProps={{
-                                    htmlInput: {
-                                      style: { fontFamily: 'var(--font-mono)' },
-                                      ...getRevealHandlers('audio_stt_api_key'),
+                          <Box sx={fieldGridSx}>
+                            <FormControl size="small" fullWidth>
+                              <InputLabel id="speech-provider">{t('audioConfig.serviceProvider')}</InputLabel>
+                              <Select
+                                labelId="speech-provider"
+                                label={t('audioConfig.serviceProvider')}
+                                value={form.service_provider}
+                                onChange={(e: SelectChangeEvent) => {
+                                  const provider = e.target.value
+                                  setDraftSafe({
+                                    ...form,
+                                    service_provider: provider,
+                                    speech: {
+                                      ...form.speech,
+                                      api_url:
+                                        provider === 'whisper'
+                                          ? DEFAULT_SPEECH_API_URL_WHISPER
+                                          : provider === 'baidu'
+                                            ? DEFAULT_SPEECH_API_URL_BAIDU
+                                            : form.speech.api_url,
+                                      model:
+                                        provider === 'whisper'
+                                          ? 'whisper-1'
+                                          : provider === 'baidu'
+                                            ? '1537'
+                                            : form.speech.model,
                                     },
-                                  }}
-                                />
-                                {form.stt.provider === 'baidu' ? (
-                                  <TextField
-                                    size="small"
-                                    label={t('audioConfig.sttApiSecret')}
-                                    type={isRevealed('audio_stt_api_secret') ? 'text' : 'password'}
-                                    value={form.stt.api_secret}
-                                    onChange={(e) =>
-                                      setDraftSafe({
-                                        ...form,
-                                        stt: {
-                                          ...form.stt,
-                                          api_secret: e.target.value,
-                                        },
-                                      })
-                                    }
-                                    slotProps={{
-                                      htmlInput: {
-                                        style: { fontFamily: 'var(--font-mono)' },
-                                        ...getRevealHandlers('audio_stt_api_secret'),
-                                      },
-                                    }}
-                                  />
-                                ) : null}
-                              </Box>
-                              <Accordion defaultExpanded={false} disableGutters elevation={0} sx={accordionSx}>
-                                <AccordionSummary expandIcon={<ExpandMoreRounded />}>
-                                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                                    {t('audioConfig.accordionSttAdvanced')}
-                                  </Typography>
-                                </AccordionSummary>
-                                <AccordionDetails sx={{ pt: 0, px: 0 }}>
-                                  <Box sx={fieldGridSx}>
-                                    <FormControl size="small" fullWidth>
-                                      <InputLabel id="stt-lang">{t('audioConfig.sttLanguage')}</InputLabel>
-                                      <Select
-                                        labelId="stt-lang"
-                                        label={t('audioConfig.sttLanguage')}
-                                        value={form.stt.language}
-                                        onChange={(e: SelectChangeEvent) =>
-                                          setDraftSafe({
-                                            ...form,
-                                            stt: { ...form.stt, language: e.target.value },
-                                          })
-                                        }
-                                      >
-                                        {unionStringPreset(
-                                          [...AUDIO_STT_LANGUAGES],
-                                          form.stt.language,
-                                        ).map((lang) => (
-                                          <MenuItem key={lang} value={lang}>
-                                            {(AUDIO_STT_LANGUAGES as readonly string[]).includes(
-                                              lang,
-                                            )
-                                              ? t(`audioConfig.sttLangLabels.${lang}`)
-                                              : lang}
-                                          </MenuItem>
-                                        ))}
-                                      </Select>
-                                    </FormControl>
-                                    {form.stt.provider !== 'whisper' ? (
-                                      <>
-                                        <TextField
-                                          size="small"
-                                          label={t('audioConfig.sttModel')}
-                                          value={form.stt.model}
-                                          onChange={(e) =>
-                                            setDraftSafe({
-                                              ...form,
-                                              stt: {
-                                                ...form.stt,
-                                                model: e.target.value.trim(),
-                                              },
-                                            })
-                                          }
-                                        />
-                                        <TextField
-                                          size="small"
-                                          sx={{ gridColumn: { xs: '1', md: '1 / -1' } }}
-                                          label={t('audioConfig.sttApiUrl')}
-                                          value={form.stt.api_url}
-                                          onChange={(e) =>
-                                            setDraftSafe({
-                                              ...form,
-                                              stt: {
-                                                ...form.stt,
-                                                api_url: e.target.value.trim(),
-                                              },
-                                            })
-                                          }
-                                        />
-                                      </>
-                                    ) : null}
-                                  </Box>
-                                </AccordionDetails>
-                              </Accordion>
-                            </Box>
-                          ) : null}
-
-                          {showTts ? (
-                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                              <Typography variant="subtitle2" color="text.secondary">
-                                {t('audioConfig.ttsBlockTitle')}
+                                  })
+                                }}
+                              >
+                                {unionStringPreset([...AUDIO_SPEECH_PROVIDERS], form.service_provider).map(
+                                  (provider) => (
+                                    <MenuItem key={provider} value={provider}>
+                                      {(AUDIO_SPEECH_PROVIDERS as readonly string[]).includes(provider)
+                                        ? t(`audioConfig.serviceProviderLabels.${provider}`)
+                                        : provider}
+                                    </MenuItem>
+                                  ),
+                                )}
+                              </Select>
+                            </FormControl>
+                            {showSpeechInput ? (
+                              <TextField
+                                size="small"
+                                label={t('audioConfig.speechApiKey')}
+                                type={isRevealed('audio_speech_api_key') ? 'text' : 'password'}
+                                value={form.speech.api_key}
+                                onChange={(e) =>
+                                  setDraftSafe({
+                                    ...form,
+                                    speech: { ...form.speech, api_key: e.target.value },
+                                  })
+                                }
+                                slotProps={{
+                                  htmlInput: {
+                                    style: { fontFamily: 'var(--font-mono)' },
+                                    ...getRevealHandlers('audio_speech_api_key'),
+                                  },
+                                }}
+                              />
+                            ) : null}
+                            {showSpeechInput ? (
+                              <TextField
+                                size="small"
+                                label={t('audioConfig.speechApiSecret')}
+                                type={isRevealed('audio_speech_api_secret') ? 'text' : 'password'}
+                                value={form.speech.api_secret}
+                                onChange={(e) =>
+                                  setDraftSafe({
+                                    ...form,
+                                    speech: { ...form.speech, api_secret: e.target.value },
+                                  })
+                                }
+                                slotProps={{
+                                  htmlInput: {
+                                    style: { fontFamily: 'var(--font-mono)' },
+                                    ...getRevealHandlers('audio_speech_api_secret'),
+                                  },
+                                }}
+                              />
+                            ) : null}
+                            {showSpeechOutput ? (
+                              <TextField
+                                size="small"
+                                label={t('audioConfig.ttsVoice')}
+                                value={form.tts.voice}
+                                onChange={(e) =>
+                                  setDraftSafe({
+                                    ...form,
+                                    tts: { ...form.tts, voice: e.target.value.trim() },
+                                  })
+                                }
+                              />
+                            ) : null}
+                          </Box>
+                          <Accordion defaultExpanded={false} disableGutters elevation={0} sx={accordionSx}>
+                            <AccordionSummary expandIcon={<ExpandMoreRounded />}>
+                              <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                                {t('audioConfig.accordionSpeechAdvanced')}
                               </Typography>
+                            </AccordionSummary>
+                            <AccordionDetails sx={{ pt: 0, px: 0 }}>
                               <Box sx={fieldGridSx}>
-                                <FormControl size="small" fullWidth>
-                                  <InputLabel id="tts-prov">{t('audioConfig.ttsProvider')}</InputLabel>
-                                  <Select
-                                    labelId="tts-prov"
-                                    label={t('audioConfig.ttsProvider')}
-                                    value={form.tts.provider}
-                                    onChange={(e: SelectChangeEvent) => {
-                                      const p = e.target.value
-                                      setDraftSafe({
-                                        ...form,
-                                        tts: {
-                                          ...form.tts,
-                                          provider: p,
-                                          voice:
-                                            p === 'edge' && !form.tts.voice.trim()
-                                              ? 'zh-CN-XiaoxiaoNeural'
-                                              : form.tts.voice,
-                                        },
-                                      })
-                                    }}
-                                  >
-                                    {unionStringPreset([...AUDIO_TTS_PROVIDERS], form.tts.provider).map(
-                                      (p) => (
-                                        <MenuItem key={p} value={p}>
-                                          {(AUDIO_TTS_PROVIDERS as readonly string[]).includes(p)
-                                            ? t(`audioConfig.ttsProviderLabels.${p}`)
-                                            : p}
-                                        </MenuItem>
-                                      ),
-                                    )}
-                                  </Select>
-                                </FormControl>
-                                {form.tts.provider === 'edge' ? (
+                                {showSpeechInput ? (
                                   <FormControl size="small" fullWidth>
-                                    <InputLabel id="tts-voice">{t('audioConfig.ttsVoice')}</InputLabel>
+                                    <InputLabel id="speech-lang">{t('audioConfig.speechLanguage')}</InputLabel>
                                     <Select
-                                      labelId="tts-voice"
-                                      label={t('audioConfig.ttsVoice')}
-                                      value={form.tts.voice}
+                                      labelId="speech-lang"
+                                      label={t('audioConfig.speechLanguage')}
+                                      value={form.speech.language}
                                       onChange={(e: SelectChangeEvent) =>
                                         setDraftSafe({
                                           ...form,
-                                          tts: { ...form.tts, voice: e.target.value },
+                                          speech: { ...form.speech, language: e.target.value },
                                         })
                                       }
                                     >
-                                      {ttsEdgeVoiceOptions(form.tts.voice).map((v) => (
-                                        <MenuItem key={v} value={v}>
-                                          {v}
+                                      {unionStringPreset(
+                                        [...AUDIO_SPEECH_LANGUAGES],
+                                        form.speech.language,
+                                      ).map((lang) => (
+                                        <MenuItem key={lang} value={lang}>
+                                          {(AUDIO_SPEECH_LANGUAGES as readonly string[]).includes(lang)
+                                            ? t(`audioConfig.speechLangLabels.${lang}`)
+                                            : lang}
                                         </MenuItem>
                                       ))}
                                     </Select>
                                   </FormControl>
-                                ) : (
+                                ) : null}
+                                {showSpeechInput ? (
                                   <TextField
                                     size="small"
-                                    label={t('audioConfig.ttsVoice')}
-                                    value={form.tts.voice}
+                                    label={t('audioConfig.speechModel')}
+                                    value={form.speech.model}
                                     onChange={(e) =>
                                       setDraftSafe({
                                         ...form,
-                                        tts: { ...form.tts, voice: e.target.value.trim() },
+                                        speech: {
+                                          ...form.speech,
+                                          model: e.target.value.trim(),
+                                        },
                                       })
                                     }
                                   />
-                                )}
+                                ) : null}
+                                {showSpeechInput ? (
+                                  <TextField
+                                    size="small"
+                                    sx={{ gridColumn: { xs: '1', md: '1 / -1' } }}
+                                    label={t('audioConfig.speechApiUrl')}
+                                    value={form.speech.api_url}
+                                    onChange={(e) =>
+                                      setDraftSafe({
+                                        ...form,
+                                        speech: {
+                                          ...form.speech,
+                                          api_url: e.target.value.trim(),
+                                        },
+                                      })
+                                    }
+                                  />
+                                ) : null}
+                                {showSpeechOutput ? (
+                                  <FormControl size="small" fullWidth>
+                                    <InputLabel id="tts-rate">{t('audioConfig.ttsRate')}</InputLabel>
+                                    <Select
+                                      labelId="tts-rate"
+                                      label={t('audioConfig.ttsRate')}
+                                      value={form.tts.rate}
+                                      onChange={(e: SelectChangeEvent) =>
+                                        setDraftSafe({
+                                          ...form,
+                                          tts: { ...form.tts, rate: e.target.value },
+                                        })
+                                      }
+                                    >
+                                      {unionStringPreset(
+                                        [...AUDIO_TTS_RATE_PRESETS],
+                                        form.tts.rate,
+                                      ).map((rate) => (
+                                        <MenuItem key={rate} value={rate}>
+                                          {rate}
+                                        </MenuItem>
+                                      ))}
+                                    </Select>
+                                  </FormControl>
+                                ) : null}
+                                {showSpeechOutput ? (
+                                  <FormControl size="small" fullWidth>
+                                    <InputLabel id="tts-pitch">{t('audioConfig.ttsPitch')}</InputLabel>
+                                    <Select
+                                      labelId="tts-pitch"
+                                      label={t('audioConfig.ttsPitch')}
+                                      value={form.tts.pitch}
+                                      onChange={(e: SelectChangeEvent) =>
+                                        setDraftSafe({
+                                          ...form,
+                                          tts: { ...form.tts, pitch: e.target.value },
+                                        })
+                                      }
+                                    >
+                                      {unionStringPreset(
+                                        [...AUDIO_TTS_PITCH_PRESETS],
+                                        form.tts.pitch,
+                                      ).map((pitch) => (
+                                        <MenuItem key={pitch} value={pitch}>
+                                          {pitch}
+                                        </MenuItem>
+                                      ))}
+                                    </Select>
+                                  </FormControl>
+                                ) : null}
                               </Box>
-                              <Accordion defaultExpanded={false} disableGutters elevation={0} sx={accordionSx}>
-                                <AccordionSummary expandIcon={<ExpandMoreRounded />}>
-                                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                                    {t('audioConfig.accordionTtsAdvanced')}
-                                  </Typography>
-                                </AccordionSummary>
-                                <AccordionDetails sx={{ pt: 0, px: 0 }}>
-                                  <Box sx={fieldGridSx}>
-                                    {form.tts.provider === 'edge' ? (
-                                      <>
-                                        <FormControl size="small" fullWidth>
-                                          <InputLabel id="tts-rate">{t('audioConfig.ttsRate')}</InputLabel>
-                                          <Select
-                                            labelId="tts-rate"
-                                            label={t('audioConfig.ttsRate')}
-                                            value={form.tts.rate}
-                                            onChange={(e: SelectChangeEvent) =>
-                                              setDraftSafe({
-                                                ...form,
-                                                tts: { ...form.tts, rate: e.target.value },
-                                              })
-                                            }
-                                          >
-                                            {unionStringPreset(
-                                              [...AUDIO_TTS_RATE_PRESETS],
-                                              form.tts.rate,
-                                            ).map((r) => (
-                                              <MenuItem key={r} value={r}>
-                                                {r}
-                                              </MenuItem>
-                                            ))}
-                                          </Select>
-                                        </FormControl>
-                                        <FormControl size="small" fullWidth>
-                                          <InputLabel id="tts-pitch">{t('audioConfig.ttsPitch')}</InputLabel>
-                                          <Select
-                                            labelId="tts-pitch"
-                                            label={t('audioConfig.ttsPitch')}
-                                            value={form.tts.pitch}
-                                            onChange={(e: SelectChangeEvent) =>
-                                              setDraftSafe({
-                                                ...form,
-                                                tts: { ...form.tts, pitch: e.target.value },
-                                              })
-                                            }
-                                          >
-                                            {unionStringPreset(
-                                              [...AUDIO_TTS_PITCH_PRESETS],
-                                              form.tts.pitch,
-                                            ).map((p) => (
-                                              <MenuItem key={p} value={p}>
-                                                {p}
-                                              </MenuItem>
-                                            ))}
-                                          </Select>
-                                        </FormControl>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <TextField
-                                          size="small"
-                                          label={t('audioConfig.ttsRate')}
-                                          value={form.tts.rate}
-                                          onChange={(e) =>
-                                            setDraftSafe({
-                                              ...form,
-                                              tts: { ...form.tts, rate: e.target.value.trim() },
-                                            })
-                                          }
-                                        />
-                                        <TextField
-                                          size="small"
-                                          label={t('audioConfig.ttsPitch')}
-                                          value={form.tts.pitch}
-                                          onChange={(e) =>
-                                            setDraftSafe({
-                                              ...form,
-                                              tts: {
-                                                ...form.tts,
-                                                pitch: e.target.value.trim(),
-                                              },
-                                            })
-                                          }
-                                        />
-                                      </>
-                                    )}
-                                  </Box>
-                                </AccordionDetails>
-                              </Accordion>
-                            </Box>
-                          ) : null}
+                            </AccordionDetails>
+                          </Accordion>
                         </Box>
                       </FormSectionSub>
                     ) : null}

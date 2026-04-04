@@ -1,11 +1,13 @@
 //! 百度 TTS（REST）与 WAV(PCM16LE) 解析。
 //! Baidu TTS REST and WAV(PCM16LE) parsing.
 //!
-//! OAuth `access_token` is fetched with **`stt` credentials** (`api_key` / `api_secret`); Baidu uses one app key for both ASR and TTS.
-//! 鉴权与 STT 相同：使用配置里 `stt` 的密钥换 token，非独立 TTS 密钥。
+//! OAuth `access_token` is fetched with the shared speech credentials (`api_key` / `api_secret`);
+//! Baidu uses one app key for both ASR and TTS.
+//! 鉴权复用同一套语音服务密钥：使用配置里的 `speech.api_key` / `speech.api_secret` 换 token，
+//! 没有独立的 TTS 密钥。
 
 use super::baidu_token::BaiduTokenCache;
-use crate::config::{AudioSttConfig, AudioTtsConfig};
+use crate::config::{AudioSpeechConfig, AudioTtsConfig};
 use crate::error::{Error, Result};
 use crate::platform::{PlatformHttpClient, ResponseBody};
 use std::fmt::Write as _;
@@ -21,11 +23,11 @@ const MAX_TTS_SAMPLES: usize = 16_000 * 300;
 pub fn synthesize_wav(
     http: &mut dyn PlatformHttpClient,
     token_cache: &BaiduTokenCache,
-    stt: &AudioSttConfig,
+    speech: &AudioSpeechConfig,
     tts: &AudioTtsConfig,
     text: &str,
 ) -> Result<ResponseBody> {
-    let token = token_cache.get_or_fetch(http, &stt.api_key, &stt.api_secret)?;
+    let token = token_cache.get_or_fetch(http, &speech.api_key, &speech.api_secret)?;
     let body = build_tts_form_body(tts, text, &token);
     let headers = [("Content-Type", "application/x-www-form-urlencoded")];
     let (status, resp) = http
@@ -48,7 +50,7 @@ pub fn synthesize_wav(
 pub fn stream_wav_pcm16le<F>(
     http: &mut dyn PlatformHttpClient,
     token_cache: &BaiduTokenCache,
-    stt: &AudioSttConfig,
+    speech: &AudioSpeechConfig,
     tts: &AudioTtsConfig,
     text: &str,
     chunk_samples: usize,
@@ -57,7 +59,7 @@ pub fn stream_wav_pcm16le<F>(
 where
     F: FnMut(&[i16]) -> Result<()>,
 {
-    let token = token_cache.get_or_fetch(http, &stt.api_key, &stt.api_secret)?;
+    let token = token_cache.get_or_fetch(http, &speech.api_key, &speech.api_secret)?;
     let body = build_tts_form_body(tts, text, &token);
     let headers = [("Content-Type", "application/x-www-form-urlencoded")];
     let mut decoder = WavPcmStreamDecoder::new(chunk_samples.max(1));

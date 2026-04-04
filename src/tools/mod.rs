@@ -5,7 +5,10 @@ mod policy;
 mod registry;
 mod state_file_guard;
 
-#[cfg(feature = "tools_network_extra")]
+#[cfg(all(
+    feature = "tools_network_extra",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub mod analyze_image;
 pub mod board_info;
 pub mod calendar;
@@ -36,7 +39,10 @@ pub mod get_time;
 #[cfg(feature = "tools_diagnostics")]
 pub mod hardware;
 pub(crate) mod http_bridge;
-#[cfg(feature = "tools_network_extra")]
+#[cfg(all(
+    feature = "tools_network_extra",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub mod http_request;
 #[cfg(feature = "tools_diagnostics")]
 pub mod i2c_device;
@@ -83,7 +89,10 @@ pub mod web_fetch;
 #[cfg(feature = "tools_network_extra")]
 pub mod web_search;
 
-#[cfg(feature = "tools_network_extra")]
+#[cfg(all(
+    feature = "tools_network_extra",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use analyze_image::AnalyzeImageTool;
 pub use board_info::BoardInfoTool;
 pub use calendar::CalendarTool;
@@ -112,7 +121,10 @@ pub use files::FilesTool;
 pub use get_time::GetTimeTool;
 #[cfg(feature = "tools_diagnostics")]
 pub use hardware::DeviceControlTool;
-#[cfg(feature = "tools_network_extra")]
+#[cfg(all(
+    feature = "tools_network_extra",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use http_request::HttpRequestTool;
 #[cfg(feature = "tools_diagnostics")]
 pub use i2c_device::I2cDeviceTool;
