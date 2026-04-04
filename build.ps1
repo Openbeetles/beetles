@@ -98,6 +98,111 @@ function Write-BuildStatus {
   Write-Host ""
 }
 
+function Get-ModelPartitionOffset {
+  param([string]$PartitionCsv)
+  if (-not (Test-Path $PartitionCsv)) { return $null }
+  foreach ($line in Get-Content -Path $PartitionCsv) {
+    $trimmed = $line.Trim()
+    if (-not $trimmed -or $trimmed.StartsWith("#")) { continue }
+    $parts = $line.Split(",")
+    if ($parts.Count -lt 4) { continue }
+    $name = $parts[0].Trim()
+    $offset = $parts[3].Trim()
+    if ($name -eq "model" -and -not [string]::IsNullOrWhiteSpace($offset)) {
+      return $offset
+    }
+  }
+  return $null
+}
+
+function Get-SrModelsBin {
+  $buildDir = Join-Path $releaseDir "build"
+  if (-not (Test-Path $buildDir)) { return $null }
+  $matches = Get-ChildItem -Path $buildDir -Filter "srmodels.bin" -Recurse -File -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending
+  if ($matches) { return $matches[0].FullName }
+  return $null
+}
+
+function Get-FileMd5Hex {
+  param([string]$Path)
+  if (-not (Test-Path $Path)) { return $null }
+  return (Get-FileHash -Path $Path -Algorithm MD5).Hash.ToLowerInvariant()
+}
+
+function Get-DeviceRegionMd5Hex {
+  param(
+    [string]$ChosenPort,
+    [string]$Address,
+    [string]$Size
+  )
+  $output = & espflash checksum-md5 --port $ChosenPort --chip $flashChip $Address $Size 2>&1
+  if ($LASTEXITCODE -ne 0) { return $null }
+  $matches = [regex]::Matches(($output | Out-String), '\b[0-9a-fA-F]{32}\b')
+  if ($matches.Count -eq 0) { return $null }
+  return $matches[$matches.Count - 1].Value.ToLowerInvariant()
+}
+
+function Write-ModelPartition {
+  param([string]$ChosenPort)
+  $modelOffset = Get-ModelPartitionOffset -PartitionCsv $partitionCsv
+  if (-not $modelOffset) {
+    Write-Host "  Model partition:    not present in $partitionTable (wake-word model flash skipped)" -ForegroundColor Yellow
+    return $true
+  }
+
+  $modelBin = Get-SrModelsBin
+  if (-not $modelBin) {
+    Write-Host "Error: model partition exists but srmodels.bin was not generated." -ForegroundColor Red
+    Write-Host "  Expected under: $releaseDir\build\esp-idf-sys-*\out\build\srmodels\srmodels.bin" -ForegroundColor Gray
+    return $false
+  }
+
+  Write-Host ""
+  Write-Host "========== Flashing wake-word model ==========" -ForegroundColor Cyan
+  Write-Host ""
+  Write-Host "  Model image:  $modelBin" -ForegroundColor Gray
+  Write-Host "  Model offset: $modelOffset" -ForegroundColor Gray
+  if (-not $eraseBeforeFlash) {
+    $modelSize = (Get-Item -Path $modelBin).Length
+    $localMd5 = Get-FileMd5Hex -Path $modelBin
+    if ($localMd5) {
+      $deviceMd5 = Get-DeviceRegionMd5Hex -ChosenPort $ChosenPort -Address $modelOffset -Size $modelSize
+      if ($deviceMd5) {
+        Write-Host "  Model MD5(local):  $localMd5" -ForegroundColor Gray
+        Write-Host "  Model MD5(device): $deviceMd5" -ForegroundColor Gray
+        if ($localMd5 -eq $deviceMd5) {
+          Write-Host "✓ Wake-word model unchanged; skipping model flash." -ForegroundColor Green
+          return $true
+        }
+      } else {
+        Write-Host "  Model MD5(device): unavailable; model will be reflashed" -ForegroundColor Yellow
+      }
+    } else {
+      Write-Host "  Model MD5(local):  unavailable; model will be reflashed" -ForegroundColor Yellow
+    }
+  }
+  & espflash write-bin --port $ChosenPort --chip $flashChip $modelOffset $modelBin
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "Wake-word model flash failed (exit $LASTEXITCODE)." -ForegroundColor Red
+    return $false
+  }
+  Write-Host "✓ Wake-word model flashed." -ForegroundColor Green
+  return $true
+}
+
+function Start-EspMonitor {
+  param(
+    [string]$ChosenPort,
+    [string]$BinPath
+  )
+  if ($noMonitor) { return }
+  Write-Host ""
+  Write-Host "========== Opening serial monitor ==========" -ForegroundColor Cyan
+  Write-Host ""
+  & espflash monitor --port $ChosenPort --chip $flashChip --elf $BinPath
+}
+
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
   Write-Error "cargo not found. Install Rust: https://rustup.rs"
@@ -543,8 +648,16 @@ $cargoBuildCmd
             Write-Host "========== Flashing firmware ==========" -ForegroundColor Cyan
             Write-Host ""
             Write-Host "  Binary: $bin  |  Partition table: $(if ($partitionTableForFlash) { $partitionTableForFlash } else { $partitionCsv })" -ForegroundColor Gray
-            if ($noMonitor) { espflash flash --port $chosenPort --chip $flashChip @flashExtra $bin } else { espflash flash --port $chosenPort --chip $flashChip @flashExtra --monitor $bin }
-            exit $LASTEXITCODE
+            & espflash flash --port $chosenPort --chip $flashChip @flashExtra $bin
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            if (-not (Write-ModelPartition -ChosenPort $chosenPort)) { exit 1 }
+            Write-Host ""
+            Write-Host "✓ Flash complete." -ForegroundColor Green
+            if (-not $noMonitor) {
+              Start-EspMonitor -ChosenPort $chosenPort -BinPath $bin
+              exit $LASTEXITCODE
+            }
+            exit 0
           }
           exit $buildExit
         } finally {
@@ -621,5 +734,13 @@ if ($doFlash) {
   Write-Host "========== Flashing firmware ==========" -ForegroundColor Cyan
   Write-Host ""
   Write-Host "  Binary: $bin  |  Partition table: $(if ($partitionTableForFlash) { $partitionTableForFlash } else { $partitionCsv })" -ForegroundColor Gray
-  if ($noMonitor) { espflash flash --port $chosenPort --chip $flashChip @flashExtra $bin } else { espflash flash --port $chosenPort --chip $flashChip @flashExtra --monitor $bin }
+  & espflash flash --port $chosenPort --chip $flashChip @flashExtra $bin
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  if (-not (Write-ModelPartition -ChosenPort $chosenPort)) { exit 1 }
+  Write-Host ""
+  Write-Host "✓ Flash complete." -ForegroundColor Green
+  if (-not $noMonitor) {
+    Start-EspMonitor -ChosenPort $chosenPort -BinPath $bin
+    exit $LASTEXITCODE
+  }
 }

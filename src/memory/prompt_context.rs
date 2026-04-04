@@ -5,10 +5,6 @@ use crate::platform::SkillStorage;
 use crate::task::TaskStore;
 
 use super::{
-    AutonomyStrategyStore, ExecutionStateStore, InnerLifeStore, LongTermMemoryStore, MemoryProfile,
-    MemoryStore, MentalPrivacyStore, OuterVoiceStore, PrivateDocStore, PrivateGardenStore,
-    RemindAtStore, SelfContinuityStore, SelfModelStore, SessionMessage, SessionStore,
-    SessionSummaryStore, TurnLedgerStore, WorldSenseStore, WorldSnapshotContext,
     build_archive_evidence_block, build_self_state, build_world_snapshot, collect_private_targets,
     memory_capability_profile, memory_policy, parse_explicit_long_term_slot_query,
     recall_long_term_memory_block, render_autonomy_strategy_block,
@@ -17,6 +13,10 @@ use super::{
     render_private_doc_workspace_block, render_private_garden_block,
     render_self_authored_core_block, render_self_continuity_block, render_self_model_block,
     render_self_state_block, render_world_sense_block, render_world_snapshot_block,
+    AutonomyStrategyStore, ExecutionStateStore, InnerLifeStore, LongTermMemoryStore, MemoryProfile,
+    MemoryStore, MentalPrivacyStore, OuterVoiceStore, PrivateDocStore, PrivateGardenStore,
+    RemindAtStore, SelfContinuityStore, SelfModelStore, SessionMessage, SessionStore,
+    SessionSummaryStore, TurnLedgerStore, WorldSenseStore, WorldSnapshotContext,
 };
 
 pub struct PromptMemoryContext {
@@ -1121,130 +1121,96 @@ mod tests {
             Some("user prefers cold brew")
         );
         assert!(context.message_summary_text.is_none());
-        assert!(
-            context
-                .long_term_memory_text
-                .as_deref()
-                .unwrap_or_default()
-                .contains("Likes cold brew")
-        );
-        assert!(
-            context
-                .archive_evidence_text
-                .as_deref()
-                .unwrap_or_default()
-                .contains("Archive evidence")
-        );
-        assert!(
-            memory_store
-                .last_query
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_deref()
-                .unwrap_or_default()
-                .contains("user prefers cold brew")
-        );
-        assert!(
-            memory_store
-                .last_query
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_deref()
-                .unwrap_or_default()
-                .contains("重点是咖啡偏好和昵称")
-        );
-        assert!(
-            context
-                .execution_state_text
-                .as_deref()
-                .unwrap_or_default()
-                .contains("Goal: 收口 prompt memory")
-        );
-        assert!(
-            context
-                .world_snapshot_text
-                .as_deref()
-                .unwrap_or_default()
-                .contains("## World Snapshot")
-        );
-        assert!(
-            context
-                .world_sense_text
-                .as_deref()
-                .unwrap_or_default()
-                .contains("## World Sense")
-        );
-        assert!(
-            context
-                .self_state_text
-                .as_deref()
-                .unwrap_or_default()
-                .contains("## Self State")
-        );
-        assert!(
-            context
-                .self_authored_core_text
-                .as_deref()
-                .unwrap_or_default()
-                .contains("## Self-Authored Core")
-        );
-        assert!(
-            context
-                .self_model_text
-                .as_deref()
-                .unwrap_or_default()
-                .contains("## Self Continuity")
-        );
-        assert!(
-            context
-                .autonomy_strategy_text
-                .as_deref()
-                .unwrap_or_default()
-                .contains("## Autonomy Strategy")
-        );
-        assert!(
-            context
-                .outer_voice_text
-                .as_deref()
-                .unwrap_or_default()
-                .contains("## Outer Voice")
-        );
-        assert!(
-            context
-                .inner_life_text
-                .as_deref()
-                .unwrap_or_default()
-                .contains("## Inner Life")
-        );
-        assert!(
-            context
-                .self_continuity_text
-                .as_deref()
-                .unwrap_or_default()
-                .contains("## Self Continuity Extended")
-        );
-        assert!(
-            context
-                .private_workspace_text
-                .as_deref()
-                .unwrap_or_default()
-                .contains("## Inner Workspace")
-        );
-        assert!(
-            context
-                .private_garden_text
-                .as_deref()
-                .unwrap_or_default()
-                .contains("## Private Garden")
-        );
+        assert!(context
+            .long_term_memory_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Likes cold brew"));
+        assert!(context
+            .archive_evidence_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Archive evidence"));
+        assert!(memory_store
+            .last_query
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_deref()
+            .unwrap_or_default()
+            .contains("user prefers cold brew"));
+        assert!(memory_store
+            .last_query
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_deref()
+            .unwrap_or_default()
+            .contains("重点是咖啡偏好和昵称"));
+        assert!(context
+            .execution_state_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Goal: 收口 prompt memory"));
+        assert!(context
+            .world_snapshot_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## World Snapshot"));
+        assert!(context
+            .world_sense_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## World Sense"));
+        assert!(context
+            .self_state_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Self State"));
+        assert!(context
+            .self_authored_core_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Self-Authored Core"));
+        assert!(context
+            .self_model_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Self Continuity"));
+        assert!(context
+            .autonomy_strategy_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Autonomy Strategy"));
+        assert!(context
+            .outer_voice_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Outer Voice"));
+        assert!(context
+            .inner_life_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Inner Life"));
+        assert!(context
+            .self_continuity_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Self Continuity Extended"));
+        assert!(context
+            .private_workspace_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Inner Workspace"));
+        assert!(context
+            .private_garden_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Private Garden"));
         assert!(context.mental_privacy_adjudication_text.is_none());
-        assert!(
-            context
-                .runtime_skill_text
-                .as_deref()
-                .unwrap_or_default()
-                .contains("Runtime skills")
-        );
+        assert!(context
+            .runtime_skill_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Runtime skills"));
     }
 
     #[test]
@@ -1337,13 +1303,11 @@ mod tests {
             Some("user prefers cold brew")
         );
         assert!(context.long_term_memory_text.is_none());
-        assert!(
-            memory_store
-                .last_query
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .is_none()
-        );
+        assert!(memory_store
+            .last_query
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_none());
     }
 
     #[test]
@@ -1496,42 +1460,32 @@ mod tests {
 
         assert_eq!(context.summary_text.as_deref(), Some("summary"));
         assert!(context.long_term_memory_text.is_none());
-        assert!(
-            context
-                .self_state_text
-                .as_deref()
-                .unwrap_or_default()
-                .contains("## Self State")
-        );
-        assert!(
-            context
-                .self_model_text
-                .as_deref()
-                .unwrap_or_default()
-                .contains("我保持着连续性")
-        );
-        assert!(
-            context
-                .private_workspace_text
-                .as_deref()
-                .unwrap_or_default()
-                .contains("内在工作区")
-        );
-        assert!(
-            context
-                .outer_voice_text
-                .as_deref()
-                .unwrap_or_default()
-                .contains("## Outer Voice")
-        );
+        assert!(context
+            .self_state_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Self State"));
+        assert!(context
+            .self_model_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("我保持着连续性"));
+        assert!(context
+            .private_workspace_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("内在工作区"));
+        assert!(context
+            .outer_voice_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Outer Voice"));
         assert!(context.private_garden_text.is_none());
         assert_eq!(context.recent_messages.len(), 2);
-        assert!(
-            memory_store
-                .last_query
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .is_none()
-        );
+        assert!(memory_store
+            .last_query
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_none());
     }
 }

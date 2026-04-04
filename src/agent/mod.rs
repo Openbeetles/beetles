@@ -11,9 +11,9 @@ mod tool_guidance;
 mod tool_outcome;
 
 pub use context::{
-    ContextParams, DEFAULT_MESSAGES_MAX_LEN, DEFAULT_SYSTEM_MAX_LEN, SESSION_RECENT_N,
-    build_context,
+    build_context, ContextParams, DEFAULT_MESSAGES_MAX_LEN, DEFAULT_SYSTEM_MAX_LEN,
+    SESSION_RECENT_N,
 };
 pub use delivery::StreamEditor;
-pub use r#loop::{AgentLoopConfig, TypingNotifier, run_system_agent_loop, run_user_agent_loop};
+pub use r#loop::{run_system_agent_loop, run_user_agent_loop, AgentLoopConfig, TypingNotifier};
 pub use strategy::AgentRunStrategy;

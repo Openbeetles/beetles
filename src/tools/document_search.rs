@@ -6,9 +6,9 @@ use crate::tools::pdf_read::{
     extract_pdf_text, looks_like_pdf as bytes_look_like_pdf, normalize_pdf_text,
 };
 use crate::tools::web_fetch::{format_json_text, html_to_text, looks_like_html, looks_like_json};
-use crate::tools::{Tool, ToolContext, parse_tool_args};
+use crate::tools::{parse_tool_args, Tool, ToolContext};
 use crate::util::normalize_state_rel_path;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::cmp::Reverse;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -535,12 +535,10 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0]["path"], "docs/project/notes.md");
         assert_eq!(matches[0]["match"], "content");
-        assert!(
-            matches[0]["snippet"]
-                .as_str()
-                .unwrap()
-                .contains("LAN automation")
-        );
+        assert!(matches[0]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("LAN automation"));
     }
 
     #[test]
@@ -575,11 +573,9 @@ mod tests {
         let matches = parsed["matches"].as_array().unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0]["match"], "path");
-        assert!(
-            matches[0]["warning"]
-                .as_str()
-                .unwrap()
-                .contains("not readable text")
-        );
+        assert!(matches[0]["warning"]
+            .as_str()
+            .unwrap()
+            .contains("not readable text"));
     }
 }

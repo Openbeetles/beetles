@@ -1,17 +1,17 @@
 //! i2c_device 工具：I2C 总线通信。
 //! i2c_device tool: I2C bus communication.
 
-use crate::Platform;
 use crate::config::I2cDeviceEntry;
 use crate::constants::{
     I2C_MAX_READ_LEN, I2C_MAX_WRITE_LEN, I2C_READ_MIN_INTERVAL_MS, I2C_WRITE_MIN_INTERVAL_MS,
 };
 use crate::error::{Error, Result};
-use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args};
+use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
+use crate::Platform;
 use serde_json::json;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 /// 每设备运行时状态：上次操作时间 + 操作锁。

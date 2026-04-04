@@ -1,7 +1,7 @@
 //! Thread management utilities.
 //! 线程管理工具。
 
-use crate::util::{HttpThreadRole, SpawnCore, spawn_guarded_with_profile};
+use crate::util::{spawn_guarded_with_profile, HttpThreadRole, SpawnCore};
 
 #[derive(Clone, Copy)]
 pub struct ThreadPlan {

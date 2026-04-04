@@ -3,13 +3,13 @@
 use crate::error::Result;
 use crate::util::truncate_content_to_max;
 #[cfg(target_os = "linux")]
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 #[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
 
-use super::{MAX_SESSION_ENTRIES, MemoryStore, SessionStore, TurnLedger, TurnLedgerStore};
+use super::{MemoryStore, SessionStore, TurnLedger, TurnLedgerStore, MAX_SESSION_ENTRIES};
 
 pub const MAX_ARCHIVE_SEARCH_LIMIT: usize = 8;
 pub const MAX_ARCHIVE_GET_CONTENT_LEN: usize = 4 * 1024;
@@ -707,10 +707,8 @@ fn archive_sqlite_rebuild(
     tx.execute(
         "INSERT INTO archive_meta(key, value) VALUES('signature', ?1)
          ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        params![
-            serde_json::to_string(signature)
-                .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?
-        ],
+        params![serde_json::to_string(signature)
+            .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?],
     )
     .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
     tx.commit()

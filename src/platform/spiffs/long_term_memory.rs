@@ -3,12 +3,12 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryQuery, LongTermMemorySlot,
-    LongTermMemoryStore, MAX_LONG_TERM_MEMORY_ITEMS, REL_PATH_LONG_TERM_MEMORIES,
     canonicalize_long_term_memory_entry, compare_long_term_memory_query_results,
     govern_long_term_memory_entries, long_term_memory_entry_from_draft,
     long_term_memory_matches_query, merge_long_term_memory_entry, score_long_term_memory_recall,
-    touch_long_term_memory_usage,
+    touch_long_term_memory_usage, LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryQuery,
+    LongTermMemorySlot, LongTermMemoryStore, MAX_LONG_TERM_MEMORY_ITEMS,
+    REL_PATH_LONG_TERM_MEMORIES,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;

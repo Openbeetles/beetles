@@ -5,19 +5,19 @@
 use crate::platform::abstraction::{MemorySnapshot, Platform, StateFs};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::platform::{
-    NvsConfigStore,
-    display_driver::{DisplayState, install_display_state},
+    display_driver::{install_display_state, DisplayState},
     heartbeat_file::read_heartbeat_file,
     spiffs::{
-        SpiffsAutonomyStrategyStore, SpiffsCalendarProviderCredentialStore, SpiffsCalendarStore,
-        SpiffsExecutionStateStore, SpiffsImportantMessageStore, SpiffsInnerLifeStore,
-        SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
-        SpiffsMentalPrivacyStore, SpiffsOuterVoiceStore, SpiffsPendingRetryStore,
-        SpiffsPrivateDocStore, SpiffsPrivateGardenStore, SpiffsRemindAtStore,
-        SpiffsSelfContinuityStore, SpiffsSelfModelStore, SpiffsSessionStore,
+        spiffs_usage, SpiffsAutonomyStrategyStore, SpiffsCalendarProviderCredentialStore,
+        SpiffsCalendarStore, SpiffsExecutionStateStore, SpiffsImportantMessageStore,
+        SpiffsInnerLifeStore, SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore,
+        SpiffsMemoryStore, SpiffsMentalPrivacyStore, SpiffsOuterVoiceStore,
+        SpiffsPendingRetryStore, SpiffsPrivateDocStore, SpiffsPrivateGardenStore,
+        SpiffsRemindAtStore, SpiffsSelfContinuityStore, SpiffsSelfModelStore, SpiffsSessionStore,
         SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage, SpiffsTaskStore,
-        SpiffsTurnLedgerStore, SpiffsWorldSenseStore, spiffs_usage,
+        SpiffsTurnLedgerStore, SpiffsWorldSenseStore,
     },
+    NvsConfigStore,
 };
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::{

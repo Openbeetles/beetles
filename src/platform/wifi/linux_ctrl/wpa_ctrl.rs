@@ -5,8 +5,8 @@ use crate::error::Result;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use super::WPA_CTRL_INTERFACE_DIR;
 use super::ctrl_iface;
+use super::WPA_CTRL_INTERFACE_DIR;
 
 /// 发送一条控制命令并读取直到 `OK`/`FAIL`/`PONG`（与 wpa_cli 行为对齐）。
 /// Send one ctrl command and read until `OK`/`FAIL`/`PONG` (aligned with wpa_cli).

@@ -1,12 +1,12 @@
 //! Runtime continuity flush helpers for reboot/handoff boundaries.
 
-use crate::Platform;
 use crate::error::{Error, Result};
 use crate::memory::{
-    ContinuitySnapshot, ContinuitySnapshotExportContext, ContinuitySnapshotMode,
     export_continuity_snapshot, render_continuity_snapshot_markdown,
-    select_active_continuity_snapshot_chat_ids,
+    select_active_continuity_snapshot_chat_ids, ContinuitySnapshot,
+    ContinuitySnapshotExportContext, ContinuitySnapshotMode,
 };
+use crate::Platform;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

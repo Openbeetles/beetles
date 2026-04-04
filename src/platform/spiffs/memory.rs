@@ -3,7 +3,7 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    MAX_MEMORY_CONTENT_LEN, MAX_SOUL_USER_LEN, MemoryStore, REL_PATH_DAILY_DIR, REL_PATH_MEMORY,
+    MemoryStore, MAX_MEMORY_CONTENT_LEN, MAX_SOUL_USER_LEN, REL_PATH_DAILY_DIR, REL_PATH_MEMORY,
     REL_PATH_SOUL, REL_PATH_USER,
 };
 use std::path::PathBuf;

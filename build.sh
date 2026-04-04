@@ -1409,6 +1409,113 @@ get_flash_port() {
   done
 }
 
+get_model_partition_offset() {
+  [[ -f "$PARTITION_CSV" ]] || return 0
+  awk -F',' '
+    function trim(s) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+      return s
+    }
+    $0 !~ /^[[:space:]]*#/ && NF >= 4 {
+      name = trim($1)
+      offset = trim($4)
+      if (name == "model") {
+        print offset
+        exit
+      }
+    }
+  ' "$PARTITION_CSV"
+}
+
+find_srmodels_bin() {
+  local matches=()
+  shopt -s nullglob
+  matches=("$RELEASE_DIR"/build/esp-idf-sys-*/out/build/srmodels/srmodels.bin)
+  shopt -u nullglob
+  if (( ${#matches[@]} == 0 )); then
+    return 1
+  fi
+  ls -1t "${matches[@]}" 2>/dev/null | head -n1
+}
+
+file_md5_hex() {
+  local file="$1"
+  if command -v md5 >/dev/null 2>&1; then
+    md5 -q "$file" | tr '[:upper:]' '[:lower:]'
+    return 0
+  fi
+  if command -v md5sum >/dev/null 2>&1; then
+    md5sum "$file" | awk '{print tolower($1)}'
+    return 0
+  fi
+  if command -v openssl >/dev/null 2>&1; then
+    openssl dgst -md5 -r "$file" | awk '{print tolower($1)}'
+    return 0
+  fi
+  return 1
+}
+
+device_region_md5_hex() {
+  local address="$1" size="$2" output
+  if ! output="$(espflash checksum-md5 --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" "$address" "$size" 2>&1)"; then
+    return 1
+  fi
+  printf '%s\n' "$output" | grep -Eio '[0-9a-f]{32}' | tail -n1 | tr '[:upper:]' '[:lower:]'
+}
+
+flash_model_partition_if_present() {
+  local model_offset model_bin model_size local_md5 device_md5
+  model_offset="$(get_model_partition_offset)"
+  if [[ -z "$model_offset" ]]; then
+    echo "  Model partition:   not present in $PARTITION_TABLE (wake-word model flash skipped)"
+    return 0
+  fi
+
+  if ! model_bin="$(find_srmodels_bin)"; then
+    echo -e "${RED}Error: model partition exists but srmodels.bin was not generated.${NC}" >&2
+    echo "  Expected under: $RELEASE_DIR/build/esp-idf-sys-*/out/build/srmodels/srmodels.bin" >&2
+    return 1
+  fi
+
+  echo ""
+  echo "========== Flashing wake-word model =========="
+  echo ""
+  echo "  Model image:  $model_bin"
+  echo "  Model offset: $model_offset"
+  if [[ "${ERASE_BEFORE_FLASH:-0}" -ne 1 ]]; then
+    model_size="$(wc -c < "$model_bin" | tr -d '[:space:]')"
+    if local_md5="$(file_md5_hex "$model_bin")" && [[ -n "$local_md5" ]]; then
+      if device_md5="$(device_region_md5_hex "$model_offset" "$model_size")" && [[ -n "$device_md5" ]]; then
+        echo "  Model MD5(local):  $local_md5"
+        echo "  Model MD5(device): $device_md5"
+        if [[ "$local_md5" == "$device_md5" ]]; then
+          echo -e "${GREEN}✓ Wake-word model unchanged; skipping model flash.${NC}"
+          return 0
+        fi
+      else
+        echo "  Model MD5(device): unavailable; model will be reflashed"
+      fi
+    else
+      echo "  Model MD5(local):  unavailable; model will be reflashed"
+    fi
+  fi
+  if ! espflash write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" "$model_offset" "$model_bin"; then
+    echo "" >&2
+    echo -e "${RED}Wake-word model flash failed.${NC}" >&2
+    return 1
+  fi
+  echo -e "${GREEN}✓ Wake-word model flashed.${NC}"
+  return 0
+}
+
+open_monitor_if_requested() {
+  [[ -n "$NO_MONITOR" ]] && return 0
+  echo ""
+  echo "========== Opening serial monitor =========="
+  echo ""
+  espflash monitor --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" --elf "$BIN"
+}
+
 # ESP: full flash workflow (shared by --flash and interactive "deploy yes").
 run_esp_flash_workflow() {
   if [[ ! -f "$BIN" ]]; then
@@ -1490,24 +1597,20 @@ run_esp_flash_workflow() {
   echo ""
   echo "  Binary: $BIN"
   echo "  Partition table: $PARTITION_FOR_FLASH"
-  local FLASH_OK=0
-  if [[ -n "$NO_MONITOR" ]]; then
-    if espflash flash --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" "${FLASH_EXTRA[@]}" "$BIN"; then
-      FLASH_OK=1
-    fi
-  else
-    if espflash flash --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" "${FLASH_EXTRA[@]}" --monitor "$BIN"; then
-      FLASH_OK=1
-    fi
+  if ! espflash flash --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" "${FLASH_EXTRA[@]}" "$BIN"; then
+    print_flash_open_port_hints
+    return 1
   fi
-  if [[ "$FLASH_OK" -eq 1 ]]; then
-    echo ""
-    echo -e "${GREEN}✓ Flash complete.${NC}"
-    echo ""
-    return 0
+
+  if ! flash_model_partition_if_present; then
+    return 1
   fi
-  print_flash_open_port_hints
-  return 1
+
+  echo ""
+  echo -e "${GREEN}✓ Flash complete.${NC}"
+  echo ""
+  open_monitor_if_requested
+  return $?
 }
 
 # After build: one prompt for Linux (SSH) or ESP (USB flash), unless --flash or skipped.

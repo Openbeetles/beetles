@@ -8,8 +8,8 @@ mod webhook;
 
 mod ws;
 
-pub use send::{QqMsgIdCache, check_connectivity, flush_qq_channel_sends, run_qq_sender_loop};
+pub use send::{check_connectivity, flush_qq_channel_sends, run_qq_sender_loop, QqMsgIdCache};
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub use webhook::{QQ_WEBHOOK_BODY_MAX, QqHandlerResult, handle_webhook};
+pub use webhook::{handle_webhook, QqHandlerResult, QQ_WEBHOOK_BODY_MAX};
 
 pub use ws::run_qq_ws_loop;

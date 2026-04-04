@@ -3,10 +3,10 @@
 
 use crate::config::AppConfig;
 use crate::error::{Error, Result};
-use crate::tools::{Tool, ToolContext, parse_tool_args};
+use crate::tools::{parse_tool_args, Tool, ToolContext};
 use crate::util::percent_encode_query;
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 const TAG: &str = "tools::web_search";
 const BRAVE_SEARCH_URL: &str = "https://api.search.brave.com/res/v1/web/search";
@@ -283,12 +283,12 @@ fn build_search_response(
 
 #[cfg(test)]
 mod tests {
-    use super::{SearchResultItem, build_summary, parse_brave_results, parse_tavily_results};
+    use super::{build_summary, parse_brave_results, parse_tavily_results, SearchResultItem};
     use crate::error::Result;
     use crate::i18n::Locale;
     use crate::platform::ResponseBody;
     use crate::tools::{Tool, ToolContext, WebSearchTool};
-    use serde_json::{Value, json};
+    use serde_json::{json, Value};
 
     struct MockToolContext {
         post_status: u16,

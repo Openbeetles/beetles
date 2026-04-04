@@ -1,7 +1,7 @@
 //! Env 工具：环境变量访问（get/list）。
 
 use crate::error::{Error, Result};
-use crate::tools::{Tool, ToolContext, ToolMetadata, serialize_tool_output};
+use crate::tools::{serialize_tool_output, Tool, ToolContext, ToolMetadata};
 use serde::Serialize;
 use std::env;
 

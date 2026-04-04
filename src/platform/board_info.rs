@@ -169,7 +169,11 @@ pub(crate) fn cpu_core_count() -> u32 {
 ))]
 pub(crate) fn cpu_core_count() -> u32 {
     let n = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) };
-    if n > 0 { n as u32 } else { 0 }
+    if n > 0 {
+        n as u32
+    } else {
+        0
+    }
 }
 
 #[cfg(all(not(any(target_arch = "xtensa", target_arch = "riscv32")), not(unix)))]

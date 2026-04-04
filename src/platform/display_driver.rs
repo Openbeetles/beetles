@@ -11,8 +11,8 @@
 ))]
 use crate::display::is_framebuffer_config;
 use crate::display::{
-    DISPLAY_LAYOUT_REF_PX, DisplayChannelStatus, DisplayCommand, DisplayConfig, DisplayLayout,
-    DisplayPressureLevel, DisplaySystemState, compute_layout,
+    compute_layout, DisplayChannelStatus, DisplayCommand, DisplayConfig, DisplayLayout,
+    DisplayPressureLevel, DisplaySystemState, DISPLAY_LAYOUT_REF_PX,
 };
 use crate::error::{Error, Result};
 use std::convert::Infallible;
@@ -41,10 +41,10 @@ mod esp_backend {
     use crate::display::{DisplayColorOrder, DisplayDriver};
     use crate::platform::heap;
     use embedded_graphics_core::{
-        Pixel,
         draw_target::DrawTarget,
         geometry::{OriginDimensions, Size},
         pixelcolor::Rgb565,
+        Pixel,
     };
     use esp_idf_svc::sys::*;
 
@@ -339,7 +339,7 @@ mod esp_backend {
                     self.send_data(&[0x8A, 0xEE])?; // PWCTR5
                     self.send_cmd(0xC5)?;
                     self.send_data(&[0x0E])?; // VMCTR1
-                    // COLMOD: 16-bit RGB565 (ST7735 uses 0x05; ST7789 uses 0x55)
+                                              // COLMOD: 16-bit RGB565 (ST7735 uses 0x05; ST7789 uses 0x55)
                     self.send_cmd(0x3A)?;
                     self.send_data(&[0x05])?;
                     self.send_cmd(0xE0)?;
@@ -1013,7 +1013,7 @@ fn sysfs_write_brightness(bl_path: &str, percent: u8) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 use embedded_graphics::{
-    mono_font::{MonoTextStyle, ascii::FONT_6X13, ascii::FONT_9X18_BOLD},
+    mono_font::{ascii::FONT_6X13, ascii::FONT_9X18_BOLD, MonoTextStyle},
     prelude::*,
     primitives::{Circle, Ellipse, Line, PrimitiveStyle, Rectangle},
     text::Text,

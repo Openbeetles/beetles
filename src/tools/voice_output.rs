@@ -1,14 +1,14 @@
 //! voice_output：调用百度 TTS 并播放到喇叭。
 
-use crate::Platform;
 use crate::audio::baidu_token::BaiduTokenCache;
 use crate::audio::pipeline::speak_text;
 use crate::config::AudioSegment;
 use crate::constants::AUDIO_TTS_MAX_TEXT_LEN;
 use crate::error::{Error, Result};
 use crate::tools::http_bridge::ToolContextHttpClient;
-use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args};
-use serde_json::{Map, Value, json};
+use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
+use crate::Platform;
+use serde_json::{json, Map, Value};
 use std::sync::Arc;
 
 pub struct VoiceOutputTool {

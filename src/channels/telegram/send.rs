@@ -14,7 +14,7 @@ pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
     http: &mut H,
     loc: crate::i18n::Locale,
 ) -> super::super::connectivity::ChannelConnectivityItem {
-    use crate::i18n::{Message, tr};
+    use crate::i18n::{tr, Message};
     let configured = !config.tg_token.trim().is_empty();
     if !configured {
         return connectivity::item(

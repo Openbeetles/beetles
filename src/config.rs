@@ -3,8 +3,8 @@
 //! Build-time / env config with validation; secrets never logged or written to SPIFFS.
 
 use crate::display::{
-    DISPLAY_CONFIG_VERSION, DisplayConfig, default_disabled_display_config, is_framebuffer_config,
-    validate_display_config_core,
+    default_disabled_display_config, is_framebuffer_config, validate_display_config_core,
+    DisplayConfig, DISPLAY_CONFIG_VERSION,
 };
 use crate::error::{Error, Result};
 use crate::platform::ConfigStore;
@@ -2576,10 +2576,8 @@ mod tests {
         seg.realtime.ws_url = "wss://api.openai.com/v1/realtime".to_string();
 
         let error = validate_audio_segment(&seg).expect_err("wake realtime should enforce 24kHz");
-        assert!(
-            error
-                .to_string()
-                .contains("microphone.sample_rate must equal 24000 for realtime voice")
-        );
+        assert!(error
+            .to_string()
+            .contains("microphone.sample_rate must equal 24000 for realtime voice"));
     }
 }

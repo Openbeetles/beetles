@@ -1,9 +1,9 @@
 //! model_config 工具：运行时 LLM 模型配置管理。
 //! model_config tool: runtime LLM model configuration management.
 
-use crate::Platform;
 use crate::error::{Error, Result};
-use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args};
+use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
+use crate::Platform;
 use serde_json::json;
 use std::sync::Arc;
 

@@ -1,11 +1,11 @@
 //! network_scan 工具：WiFi 扫描与网络诊断。
 //! network_scan tool: WiFi scanning and network diagnostics.
 
-use crate::Platform;
 use crate::constants::NETWORK_SCAN_MIN_INTERVAL_MS;
 use crate::error::{Error, Result};
-use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args};
-use serde_json::{Value, json};
+use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
+use crate::Platform;
+use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 

@@ -7,12 +7,12 @@ use crate::tools::pdf_read::{
     extract_pdf_text, looks_like_pdf as bytes_look_like_pdf, normalize_pdf_text,
 };
 use crate::tools::web_fetch::{
-    WebFetchTool, format_json_text, html_to_text, looks_like_html, looks_like_json, normalize_text,
-    parse_max_chars, truncate_chars,
+    format_json_text, html_to_text, looks_like_html, looks_like_json, normalize_text,
+    parse_max_chars, truncate_chars, WebFetchTool,
 };
-use crate::tools::{PdfReadTool, Tool, ToolContext, parse_tool_args};
+use crate::tools::{parse_tool_args, PdfReadTool, Tool, ToolContext};
 use crate::util::normalize_state_rel_path;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 const TAG: &str = "tools::document_read";
@@ -269,12 +269,12 @@ fn build_local_document(
 
 #[cfg(test)]
 mod tests {
-    use super::{DocumentReadTool, EMPTY_DOCUMENT_WARNING, build_local_document};
+    use super::{build_local_document, DocumentReadTool, EMPTY_DOCUMENT_WARNING};
     use crate::error::Result;
     use crate::i18n::Locale;
     use crate::platform::{ResponseBody, StateFs};
-    use crate::tools::PdfReadTool;
     use crate::tools::pdf_read::test_pdf_fixture_bytes;
+    use crate::tools::PdfReadTool;
     use crate::tools::{Tool, ToolContext, ToolPolicyContext, WebFetchTool};
     use serde_json::Value;
     use std::collections::HashMap;

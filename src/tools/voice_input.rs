@@ -1,13 +1,13 @@
 //! voice_input：采集麦克风 PCM，能量断句后调用百度 STT。
 
-use crate::Platform;
 use crate::audio::baidu_token::BaiduTokenCache;
 use crate::audio::pipeline::capture_and_transcribe;
 use crate::config::AudioSegment;
 use crate::constants::AUDIO_CAPTURE_MAX_MS;
 use crate::error::{Error, Result};
 use crate::tools::http_bridge::ToolContextHttpClient;
-use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args};
+use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
+use crate::Platform;
 use std::sync::Arc;
 
 pub struct VoiceInputTool {

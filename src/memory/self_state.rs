@@ -6,13 +6,13 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
 use super::{
-    AUTONOMY_STRATEGY_TOTAL_CHAR_LIMIT, AutonomyGovernanceTendency, AutonomyStrategy,
-    INNER_LIFE_TOTAL_CHAR_LIMIT, InnerLife, MemoryProfile, PRIVATE_DOC_WORKSPACE_TOTAL_CHAR_LIMIT,
-    PRIVATE_GARDEN_MAX_DOCS_PER_CHAT, PRIVATE_GARDEN_TOTAL_BYTE_LIMIT, PrivateDocWorkspace,
-    PrivateGardenDocRecord, SELF_CONTINUITY_TOTAL_CHAR_LIMIT, SELF_MODEL_TOTAL_CHAR_LIMIT,
-    SelfContinuity, SelfModel, estimate_autonomy_strategy_chars, estimate_inner_life_chars,
+    estimate_autonomy_strategy_chars, estimate_inner_life_chars,
     estimate_private_doc_workspace_chars, estimate_self_continuity_chars,
-    estimate_self_model_chars, memory_policy,
+    estimate_self_model_chars, memory_policy, AutonomyGovernanceTendency, AutonomyStrategy,
+    InnerLife, MemoryProfile, PrivateDocWorkspace, PrivateGardenDocRecord, SelfContinuity,
+    SelfModel, AUTONOMY_STRATEGY_TOTAL_CHAR_LIMIT, INNER_LIFE_TOTAL_CHAR_LIMIT,
+    PRIVATE_DOC_WORKSPACE_TOTAL_CHAR_LIMIT, PRIVATE_GARDEN_MAX_DOCS_PER_CHAT,
+    PRIVATE_GARDEN_TOTAL_BYTE_LIMIT, SELF_CONTINUITY_TOTAL_CHAR_LIMIT, SELF_MODEL_TOTAL_CHAR_LIMIT,
 };
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]

@@ -1,17 +1,17 @@
 //! 出站分发：从 outbound_rx 取 PcMsg，按 channel 调用对应 MessageSink；按通道熔断，避免单通道拖垮全局。
 //! Outbound dispatch: recv from outbound_rx, send via MessageSink; per-channel circuit breaker.
 
-use crate::bus::{MAX_CONTENT_LEN, OutboundRx};
+use crate::bus::{OutboundRx, MAX_CONTENT_LEN};
 use crate::config::AppConfig;
 use crate::error::Result;
 use crate::metrics;
 use crate::orchestrator::AdmissionDecision;
 use crate::platform::PlatformHttpClient;
-use crate::util::{STACK_CHANNEL_SENDER, truncate_content_to_max};
+use crate::util::{truncate_content_to_max, STACK_CHANNEL_SENDER};
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// 出站发送抽象；各通道实现此 trait，由 main 注册到 ChannelSinks。

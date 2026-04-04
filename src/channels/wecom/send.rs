@@ -38,7 +38,7 @@ pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
     loc: crate::i18n::Locale,
 ) -> super::super::connectivity::ChannelConnectivityItem {
     use super::super::connectivity;
-    use crate::i18n::{Message, tr};
+    use crate::i18n::{tr, Message};
     let configured = !config.wecom_corp_id.trim().is_empty()
         && !config.wecom_corp_secret.trim().is_empty()
         && config.wecom_agent_id.trim().parse::<u32>().is_ok();

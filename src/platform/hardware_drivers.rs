@@ -58,9 +58,9 @@ const BUZZER_BEEP_MS: u64 = 100;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub fn drive_gpio_out(pins: &PinConfig, params: &Value) -> Result<String> {
     use esp_idf_svc::sys::{
-        ESP_OK, gpio_config_t, gpio_get_level, gpio_int_type_t_GPIO_INTR_DISABLE,
+        gpio_config_t, gpio_get_level, gpio_int_type_t_GPIO_INTR_DISABLE,
         gpio_mode_t_GPIO_MODE_OUTPUT, gpio_pulldown_t_GPIO_PULLDOWN_DISABLE,
-        gpio_pullup_t_GPIO_PULLUP_DISABLE, gpio_reset_pin, gpio_set_level,
+        gpio_pullup_t_GPIO_PULLUP_DISABLE, gpio_reset_pin, gpio_set_level, ESP_OK,
     };
 
     let pin = *pins
@@ -111,10 +111,10 @@ pub fn drive_gpio_out(pins: &PinConfig, params: &Value) -> Result<String> {
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub fn drive_gpio_in(pins: &PinConfig, _params: &Value, options: &Value) -> Result<String> {
     use esp_idf_svc::sys::{
-        ESP_OK, gpio_config_t, gpio_get_level, gpio_int_type_t_GPIO_INTR_DISABLE,
+        gpio_config_t, gpio_get_level, gpio_int_type_t_GPIO_INTR_DISABLE,
         gpio_mode_t_GPIO_MODE_INPUT, gpio_pulldown_t_GPIO_PULLDOWN_DISABLE,
         gpio_pulldown_t_GPIO_PULLDOWN_ENABLE, gpio_pullup_t_GPIO_PULLUP_DISABLE,
-        gpio_pullup_t_GPIO_PULLUP_ENABLE, gpio_reset_pin,
+        gpio_pullup_t_GPIO_PULLUP_ENABLE, gpio_reset_pin, ESP_OK,
     };
 
     let pin = *pins
@@ -180,9 +180,9 @@ pub fn drive_pwm_out(
     ledc_timer_index: u8,
 ) -> Result<String> {
     use esp_idf_svc::sys::{
-        ESP_OK, ledc_channel_config, ledc_channel_config_t, ledc_intr_type_t_LEDC_INTR_DISABLE,
+        ledc_channel_config, ledc_channel_config_t, ledc_intr_type_t_LEDC_INTR_DISABLE,
         ledc_mode_t_LEDC_LOW_SPEED_MODE, ledc_set_duty, ledc_timer_bit_t_LEDC_TIMER_13_BIT,
-        ledc_timer_config, ledc_timer_config_t, ledc_update_duty,
+        ledc_timer_config, ledc_timer_config_t, ledc_update_duty, ESP_OK,
     };
 
     let pin = *pins
@@ -268,11 +268,11 @@ pub fn drive_adc_in(pins: &PinConfig, _params: &Value, options: &Value) -> Resul
     #[cfg(esp_idf_version_at_least_6_0_0)]
     use esp_idf_svc::sys::adc_atten_t_ADC_ATTEN_DB_12;
     use esp_idf_svc::sys::{
-        ESP_OK, adc_atten_t_ADC_ATTEN_DB_0, adc_atten_t_ADC_ATTEN_DB_2_5,
-        adc_atten_t_ADC_ATTEN_DB_6, adc_bitwidth_t_ADC_BITWIDTH_12, adc_oneshot_chan_cfg_t,
-        adc_oneshot_config_channel, adc_oneshot_del_unit, adc_oneshot_new_unit, adc_oneshot_read,
-        adc_oneshot_unit_init_cfg_t, adc_ulp_mode_t_ADC_ULP_MODE_DISABLE, adc_unit_t_ADC_UNIT_1,
-        soc_periph_adc_rtc_clk_src_t_ADC_RTC_CLK_SRC_DEFAULT,
+        adc_atten_t_ADC_ATTEN_DB_0, adc_atten_t_ADC_ATTEN_DB_2_5, adc_atten_t_ADC_ATTEN_DB_6,
+        adc_bitwidth_t_ADC_BITWIDTH_12, adc_oneshot_chan_cfg_t, adc_oneshot_config_channel,
+        adc_oneshot_del_unit, adc_oneshot_new_unit, adc_oneshot_read, adc_oneshot_unit_init_cfg_t,
+        adc_ulp_mode_t_ADC_ULP_MODE_DISABLE, adc_unit_t_ADC_UNIT_1,
+        soc_periph_adc_rtc_clk_src_t_ADC_RTC_CLK_SRC_DEFAULT, ESP_OK,
     };
 
     let pin = *pins
@@ -354,9 +354,9 @@ pub fn drive_adc_in(pins: &PinConfig, _params: &Value, options: &Value) -> Resul
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub fn drive_buzzer(pins: &PinConfig, params: &Value) -> Result<String> {
     use esp_idf_svc::sys::{
-        ESP_OK, gpio_config_t, gpio_int_type_t_GPIO_INTR_DISABLE, gpio_mode_t_GPIO_MODE_OUTPUT,
+        gpio_config_t, gpio_int_type_t_GPIO_INTR_DISABLE, gpio_mode_t_GPIO_MODE_OUTPUT,
         gpio_pulldown_t_GPIO_PULLDOWN_DISABLE, gpio_pullup_t_GPIO_PULLUP_DISABLE, gpio_reset_pin,
-        gpio_set_level,
+        gpio_set_level, ESP_OK,
     };
 
     let pin = *pins
@@ -572,8 +572,9 @@ fn dht_pull_from_options(
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub fn drive_dht(pins: &PinConfig, _params: &Value, options: &Value) -> Result<String> {
     use esp_idf_svc::sys::{
-        ESP_OK, esp_rom_delay_us, gpio_config, gpio_config_t, gpio_int_type_t_GPIO_INTR_DISABLE,
+        esp_rom_delay_us, gpio_config, gpio_config_t, gpio_int_type_t_GPIO_INTR_DISABLE,
         gpio_mode_t_GPIO_MODE_INPUT, gpio_mode_t_GPIO_MODE_OUTPUT, gpio_reset_pin, gpio_set_level,
+        ESP_OK,
     };
 
     let pin = *pins
@@ -884,7 +885,7 @@ unsafe impl Send for I2cBusState {}
 impl I2cBusState {
     /// 使用配置的 SDA/SCL/频率创建 I2C master bus（端口 I2C_NUM_0）。
     pub(crate) fn new(sda: i32, scl: i32, freq_hz: u32) -> Result<Self> {
-        use esp_idf_svc::sys::{ESP_OK, i2c_new_master_bus};
+        use esp_idf_svc::sys::{i2c_new_master_bus, ESP_OK};
 
         let mut bus_config: esp_idf_svc::sys::i2c_master_bus_config_t =
             unsafe { core::mem::zeroed() };
@@ -910,7 +911,7 @@ impl I2cBusState {
 
     fn ensure_device(&mut self, addr: u8) -> Result<esp_idf_svc::sys::i2c_master_dev_handle_t> {
         use esp_idf_svc::sys::{
-            ESP_OK, i2c_addr_bit_len_t_I2C_ADDR_BIT_LEN_7, i2c_master_bus_add_device,
+            i2c_addr_bit_len_t_I2C_ADDR_BIT_LEN_7, i2c_master_bus_add_device, ESP_OK,
         };
 
         if let Some(&h) = self.devices.get(&addr) {
@@ -932,7 +933,7 @@ impl I2cBusState {
 
     /// 寄存器读：写寄存器地址后 repeated start 再读（`i2c_master_transmit_receive`）。
     pub(crate) fn read(&mut self, addr: u8, register: u8, len: usize) -> Result<Vec<u8>> {
-        use esp_idf_svc::sys::{ESP_OK, i2c_master_transmit_receive};
+        use esp_idf_svc::sys::{i2c_master_transmit_receive, ESP_OK};
 
         let dev = self.ensure_device(addr)?;
         let write_buf = [register];
@@ -955,7 +956,7 @@ impl I2cBusState {
 
     /// 寄存器写：单帧发送 `[register, ...data]`。
     pub(crate) fn write(&mut self, addr: u8, register: u8, data: &[u8]) -> Result<()> {
-        use esp_idf_svc::sys::{ESP_OK, i2c_master_transmit};
+        use esp_idf_svc::sys::{i2c_master_transmit, ESP_OK};
 
         let dev = self.ensure_device(addr)?;
         let mut buf = Vec::with_capacity(1 + data.len());
@@ -970,7 +971,7 @@ impl I2cBusState {
 
     /// 纯读：无寄存器前缀（`i2c_master_receive`），用于 SHT3x/AHT20 等测量后读回。
     pub(crate) fn receive(&mut self, addr: u8, len: usize) -> Result<Vec<u8>> {
-        use esp_idf_svc::sys::{ESP_OK, i2c_master_receive};
+        use esp_idf_svc::sys::{i2c_master_receive, ESP_OK};
 
         let dev = self.ensure_device(addr)?;
         let mut read_buf = vec![0u8; len];

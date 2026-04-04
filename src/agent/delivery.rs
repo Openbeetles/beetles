@@ -1,6 +1,6 @@
 use crate::bus::{IngressKind, OutboundTx, PcMsg};
 use crate::error::Result;
-use crate::i18n::{Locale as UiLocale, Message as UiMessage, tr};
+use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
 use crate::metrics;
 use crate::tools::{ToolOutboundDeliveryKind, ToolOutboundIntent, ToolOutboundTarget};
 use crate::util::truncate_content_to_max;

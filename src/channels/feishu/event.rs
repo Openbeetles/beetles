@@ -2,7 +2,7 @@
 //! 返回类型由 handler 层转换为 ApiResponse，避免 channels 依赖 platform::http_server。
 
 use crate::bus::InboundTx;
-use crate::config::{AppConfig, parse_allowed_chat_ids};
+use crate::config::{parse_allowed_chat_ids, AppConfig};
 
 use super::send::event_body_to_pcmsg;
 

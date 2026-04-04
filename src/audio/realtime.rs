@@ -1,17 +1,17 @@
 //! 实时语音会话：唤醒后建立 WSS，会话内持续上送 PCM，并接收模型返回的语音增量。
 //! Realtime voice session over WSS: stream PCM in, play audio deltas out.
 
-use crate::Platform;
 use crate::audio::capture::AudioRecordingGuard;
 use crate::channels::{
-    WssConnectProfile, WssConnection, WssEvent, connect_wss_with_headers_and_profile,
+    connect_wss_with_headers_and_profile, WssConnectProfile, WssConnection, WssEvent,
 };
 use crate::config::{
-    AUDIO_REALTIME_PCM16_SAMPLE_RATE, AUDIO_REALTIME_PROVIDER_OPENAI_COMPATIBLE,
-    AUDIO_REALTIME_PROVIDER_QWEN, AudioSegment, audio_realtime_enabled,
+    audio_realtime_enabled, AudioSegment, AUDIO_REALTIME_PCM16_SAMPLE_RATE,
+    AUDIO_REALTIME_PROVIDER_OPENAI_COMPATIBLE, AUDIO_REALTIME_PROVIDER_QWEN,
 };
 use crate::constants::AUDIO_CAPTURE_FRAME_SAMPLES;
 use crate::error::{Error, Result};
+use crate::Platform;
 use base64::Engine;
 use serde_json::json;
 use std::thread;
@@ -434,18 +434,16 @@ fn samples_to_ms(samples: usize) -> u128 {
 #[cfg(test)]
 mod tests {
     use super::{
-        REALTIME_OPENAI_BETA, RealtimeProvider, build_realtime_headers, build_session_update,
+        build_realtime_headers, build_session_update, RealtimeProvider, REALTIME_OPENAI_BETA,
     };
     use crate::config::default_disabled_audio_segment;
 
     #[test]
     fn openai_headers_include_beta_flag() {
         let headers = build_realtime_headers(RealtimeProvider::OpenAiCompatible, "Bearer token");
-        assert!(
-            headers
-                .iter()
-                .any(|(name, value)| *name == "openai-beta" && *value == REALTIME_OPENAI_BETA)
-        );
+        assert!(headers
+            .iter()
+            .any(|(name, value)| *name == "openai-beta" && *value == REALTIME_OPENAI_BETA));
     }
 
     #[test]
