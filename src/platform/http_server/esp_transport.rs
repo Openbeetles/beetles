@@ -385,6 +385,8 @@ const PAIRING_AND_CONFIG_ROUTES: &[EspRouteSpec] = &[
     ),
     EspRouteSpec::new("/api/wifi/scan", Method::Get, EspBodyMode::None),
     EspRouteSpec::new("/api/wifi/scan", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/api/hardware/discovery", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/api/hardware/discovery", Method::Options, EspBodyMode::None),
     EspRouteSpec::new("/api/csrf_token", Method::Get, EspBodyMode::None),
     EspRouteSpec::new("/api/csrf_token", Method::Options, EspBodyMode::None),
 ];

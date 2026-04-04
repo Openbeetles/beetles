@@ -20,6 +20,10 @@ import type { SkillItem } from '../api/endpoints/skills'
 import type { DisplayConfig } from '../types/displayConfig'
 import type { HardwareSegment } from '../types/hardwareConfig'
 import type { AudioConfig } from '../types/audioConfig'
+import type {
+  HardwareDiscoveryBus,
+  HardwareDiscoveryCapability,
+} from '../api/endpoints/hardware'
 
 export { API_ERROR }
 
@@ -55,6 +59,10 @@ export function useDeviceApi() {
         get: () => hardwareApi.getHardwareConfig(baseUrl ?? '', (pairingCode ?? '').trim()),
         save: (body: HardwareSegment) =>
           hardwareApi.saveHardwareConfig(baseUrl ?? '', (pairingCode ?? '').trim(), body),
+        discover: (
+          bus: HardwareDiscoveryBus,
+          capability: HardwareDiscoveryCapability,
+        ) => hardwareApi.discoverHardware(baseUrl ?? '', pairingCode ?? undefined, bus, capability),
       },
       soul: {
         get: () => soulUserApi.getSoul(baseUrl ?? ''),

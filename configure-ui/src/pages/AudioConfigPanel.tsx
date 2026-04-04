@@ -27,9 +27,12 @@ import {
 } from '../components/form'
 import { SettingsSection } from '../components/SettingsSection'
 import { useConfig } from '../hooks/useConfig'
+import { useDeviceApi } from '../hooks/useDeviceApi'
 import { useRevealedPasswordFields } from '../hooks/useRevealedPassword'
 import { useSaveFeedback } from '../hooks/useSaveFeedback'
 import { useUnsaved } from '../hooks/useUnsaved'
+import { useDeviceRuntimeKind, type DeviceRuntimeKind } from '../store/deviceStatusStore'
+import type { HardwareDiscoveryItem } from '../api/endpoints/hardware'
 import {
   AUDIO_AMBIENT_SOUND_EVENT_PRESETS,
   AUDIO_BITS_PER_SAMPLE_ALLOWED,
@@ -46,12 +49,14 @@ import {
   AUDIO_SPEECH_LANGUAGES,
   AUDIO_SPEECH_PROVIDERS,
   AUDIO_SPEAKER_DEVICE_TYPES,
+  AUDIO_SPEAKER_DEVICE_TYPES_LINUX,
   AUDIO_TTS_PITCH_PRESETS,
   AUDIO_TTS_RATE_PRESETS,
   AUDIO_VAD_SILENCE_MS_PRESETS,
   AUDIO_VAD_THRESHOLD_PRESETS,
   ambientCooldownOptions,
   ambientIntervalOptions,
+  audioSpeakerPinsOrDefault,
   bufferSelectOptions,
   DEFAULT_SPEECH_API_URL_BAIDU,
   DEFAULT_SPEECH_API_URL_WHISPER,
@@ -78,10 +83,12 @@ function asNumber(v: string): number | null {
 
 function validateAudioConfig(
   form: AudioConfig,
+  runtimeKind: DeviceRuntimeKind,
   t: (k: string) => string,
 ): string | null {
   const realtimeReady = audioRealtimeConfigured(form)
   const wakeVoicePipelineEnabled = form.enabled && form.wake_word.enabled
+  const speakerPins = audioSpeakerPinsOrDefault(form.speaker.pins)
 
   if (form.version !== AUDIO_CONFIG_VERSION) {
     return t('audioConfig.validation.version')
@@ -89,6 +96,10 @@ function validateAudioConfig(
   const pinInRange = (p: number) => p >= AUDIO_PIN_MIN && p <= AUDIO_PIN_MAX
   const srInRange = (v: number) => v >= AUDIO_SAMPLE_RATE_MIN && v <= AUDIO_SAMPLE_RATE_MAX
   const bitsValid = (v: number) => (AUDIO_BITS_PER_SAMPLE_ALLOWED as readonly number[]).includes(v)
+
+  if (runtimeKind === 'linux' && form.microphone.enabled) {
+    return t('audioConfig.validation.linuxMicrophoneUnsupported')
+  }
 
   if (form.microphone.enabled) {
     if (
@@ -113,15 +124,24 @@ function validateAudioConfig(
   }
 
   if (form.speaker.enabled) {
-    if (
-      !pinInRange(form.speaker.pins.ws) ||
-      !pinInRange(form.speaker.pins.sck) ||
-      !pinInRange(form.speaker.pins.dout)
-    ) {
-      return t('audioConfig.validation.pin')
-    }
-    if (form.speaker.pins.sd != null && !pinInRange(form.speaker.pins.sd)) {
-      return t('audioConfig.validation.pin')
+    if (runtimeKind === 'linux') {
+      if (form.speaker.device_type !== 'usb') {
+        return t('audioConfig.validation.linuxSpeakerDeviceType')
+      }
+      if (!form.speaker.device_ref?.trim()) {
+        return t('audioConfig.validation.speakerUsbRequired')
+      }
+    } else {
+      if (
+        !pinInRange(speakerPins.ws) ||
+        !pinInRange(speakerPins.sck) ||
+        !pinInRange(speakerPins.dout)
+      ) {
+        return t('audioConfig.validation.pin')
+      }
+      if (speakerPins.sd != null && !pinInRange(speakerPins.sd)) {
+        return t('audioConfig.validation.pin')
+      }
     }
     if (!srInRange(form.speaker.sample_rate)) {
       return t('audioConfig.validation.sampleRate')
@@ -251,8 +271,14 @@ function extraSoundEvents(events: string[]): string[] {
   )
 }
 
+function usbSpeakerSupportsInput(item: HardwareDiscoveryItem): boolean {
+  return item.capabilities.includes('audio_input')
+}
+
 export function AudioConfigPanel() {
   const { t } = useTranslation()
+  const runtimeKind = useDeviceRuntimeKind()
+  const { api } = useDeviceApi()
   const {
     audioConfig,
     audioLoading,
@@ -266,7 +292,26 @@ export function AudioConfigPanel() {
   const [draft, setDraft] = useState<AudioConfig | null>(null)
   const [audioTab, setAudioTab] = useState(0)
   const [saveRestartRequired, setSaveRestartRequired] = useState(false)
-  const form = normalizeAudioConfigFromDevice(draft ?? audioConfig ?? defaultAudioConfig())
+  const [usbAudioDevices, setUsbAudioDevices] = useState<HardwareDiscoveryItem[]>([])
+  const [usbAudioLoading, setUsbAudioLoading] = useState(false)
+  const [usbAudioError, setUsbAudioError] = useState<string | null>(null)
+  const linuxRuntime = runtimeKind === 'linux'
+  const rawForm = normalizeAudioConfigFromDevice(draft ?? audioConfig ?? defaultAudioConfig())
+  const form: AudioConfig = linuxRuntime
+    ? {
+        ...rawForm,
+        microphone: {
+          ...rawForm.microphone,
+          enabled: false,
+        },
+        speaker: {
+          ...rawForm.speaker,
+          device_type: 'usb',
+          pins: null,
+        },
+      }
+    : rawForm
+  const speakerPins = audioSpeakerPinsOrDefault(form.speaker.pins)
 
   useEffect(() => {
     void loadAudioConfig()
@@ -279,19 +324,8 @@ export function AudioConfigPanel() {
     setDraft(next)
   }
 
-  if (audioLoading && !audioConfig && !draft) {
-    return (
-      <SettingsSection
-        icon={<HearingRounded sx={{ fontSize: 'var(--icon-size-md)' }} />}
-        label={t('audioConfig.sectionMain')}
-      >
-        <FormLoadingSkeleton />
-      </SettingsSection>
-    )
-  }
-
   const save = async () => {
-    const err = validateAudioConfig(form, t)
+    const err = validateAudioConfig(form, runtimeKind, t)
     if (err) {
       saveFeedback.fail(err)
       return
@@ -328,10 +362,53 @@ export function AudioConfigPanel() {
   const showWakeWord = micOn
   const showSpeechInput = micOn
   const showSpeechOutput = spkOn
+  const showSpeechCredentials = showSpeechInput || showSpeechOutput
   const showRealtime = audioOn && form.wake_word.enabled
   const showAmbientBlock = micOn
   const showLedBlock = audioOn
   const showWakePrompt = form.wake_word.enabled
+  const speakerDeviceTypes = linuxRuntime
+    ? [...AUDIO_SPEAKER_DEVICE_TYPES_LINUX]
+    : [...AUDIO_SPEAKER_DEVICE_TYPES]
+  const speakerUsesUsbDevice = linuxRuntime && form.speaker.device_type === 'usb'
+  const selectedUsbAudioDevice =
+    usbAudioDevices.find((item) => item.device_ref === (form.speaker.device_ref ?? '')) ?? null
+  const usbAudioEmpty = !usbAudioLoading && usbAudioDevices.length === 0
+  const usbAudioFieldError = usbAudioError ?? (usbAudioEmpty ? t('audioConfig.speakerUsbScanEmpty') : null)
+
+  const refreshUsbAudioDevices = async () => {
+    if (!linuxRuntime || !audioOn || !spkOn || form.speaker.device_type !== 'usb') {
+      setUsbAudioDevices([])
+      setUsbAudioError(null)
+      setUsbAudioLoading(false)
+      return
+    }
+    setUsbAudioLoading(true)
+    const res = await api.hardware.discover('usb', 'audio_output')
+    if (res.ok && res.data) {
+      setUsbAudioDevices(Array.isArray(res.data.items) ? res.data.items : [])
+      setUsbAudioError(null)
+    } else {
+      setUsbAudioDevices([])
+      setUsbAudioError(res.error ?? t('audioConfig.speakerUsbScanFailed'))
+    }
+    setUsbAudioLoading(false)
+  }
+
+  useEffect(() => {
+    void refreshUsbAudioDevices()
+  }, [audioOn, api.hardware, form.speaker.device_type, linuxRuntime, spkOn])
+
+  if (audioLoading && !audioConfig && !draft) {
+    return (
+      <SettingsSection
+        icon={<HearingRounded sx={{ fontSize: 'var(--icon-size-md)' }} />}
+        label={t('audioConfig.sectionMain')}
+      >
+        <FormLoadingSkeleton />
+      </SettingsSection>
+    )
+  }
 
   const togglePresetSoundEvent = (ev: PresetSound) => {
     const extras = extraSoundEvents(form.ambient_listening.sound_events)
@@ -440,8 +517,8 @@ export function AudioConfigPanel() {
                 variant="scrollable"
                 allowScrollButtonsMobile
                 sx={{
-                  borderBottom: 1,
-                  borderColor: 'var(--border-subtle)',
+                  borderBottom: 'none',
+                  
                   minHeight: 44,
                   '& .MuiTab-root': {
                     minHeight: 44,
@@ -702,11 +779,11 @@ export function AudioConfigPanel() {
                           }
                         >
                           {unionStringPreset(
-                            [...AUDIO_SPEAKER_DEVICE_TYPES],
+                            speakerDeviceTypes,
                             form.speaker.device_type,
                           ).map((dt) => (
                             <MenuItem key={dt} value={dt}>
-                              {(AUDIO_SPEAKER_DEVICE_TYPES as readonly string[]).includes(dt)
+                              {([...AUDIO_SPEAKER_DEVICE_TYPES, ...AUDIO_SPEAKER_DEVICE_TYPES_LINUX] as readonly string[]).includes(dt)
                                 ? t(`audioConfig.deviceSpeaker.${dt}`)
                                 : dt}
                             </MenuItem>
@@ -732,107 +809,187 @@ export function AudioConfigPanel() {
                           ))}
                         </Select>
                       </FormControl>
+                      {speakerUsesUsbDevice ? (
+                        <Box
+                          sx={{
+                            display: 'flex',
+                            gap: 1.5,
+                            alignItems: 'stretch',
+                            flexWrap: {
+                              xs: 'wrap',
+                              md: 'nowrap',
+                            },
+                            gridColumn: {
+                              xs: 'span 1',
+                              md: 'span 1',
+                            },
+                          }}
+                        >
+                          <FormControl
+                            size="small"
+                            fullWidth
+                            sx={{
+                              flex: '1 1 auto',
+                            }}
+                          >
+                            <InputLabel id="spk-device-ref">{t('audioConfig.speakerUsbDevice')}</InputLabel>
+                            <Select
+                              labelId="spk-device-ref"
+                              label={t('audioConfig.speakerUsbDevice')}
+                              value={form.speaker.device_ref ?? ''}
+                              error={Boolean(usbAudioFieldError)}
+                              onChange={(e: SelectChangeEvent) =>
+                                setDraftSafe({
+                                  ...form,
+                                  speaker: { ...form.speaker, device_ref: e.target.value || null },
+                                })
+                              }
+                            >
+                              {usbAudioDevices.map((item) => (
+                                <MenuItem key={item.device_ref} value={item.device_ref}>
+                                  {usbSpeakerSupportsInput(item)
+                                    ? `${item.label} · ${t('audioConfig.speakerUsbComboSuffix')}`
+                                    : item.label}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                            {usbAudioFieldError ? (
+                              <Typography variant="body2" color="error.main" sx={{ mt: 0.75 }}>
+                                {usbAudioFieldError}
+                              </Typography>
+                            ) : null}
+                          </FormControl>
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            onClick={() => {
+                              void refreshUsbAudioDevices()
+                            }}
+                            disabled={usbAudioLoading}
+                            sx={{
+                              flexShrink: 0,
+                              minWidth: 96,
+                              height: 40,
+                              alignSelf: {
+                                xs: 'stretch',
+                                md: 'flex-start',
+                              },
+                            }}
+                          >
+                            {t('audioConfig.speakerUsbScanAction')}
+                          </Button>
+                        </Box>
+                      ) : null}
                     </Box>
                     <Box sx={fieldGridSx}>
-                            <FormControl size="small" fullWidth>
-                              <InputLabel id="spk-bits">{t('audioConfig.bitsPerSample')}</InputLabel>
-                              <Select
-                                labelId="spk-bits"
-                                label={t('audioConfig.bitsPerSample')}
-                                value={String(form.speaker.bits_per_sample)}
-                                onChange={(e: SelectChangeEvent) => {
-                                  const v = asNumber(e.target.value)
-                                  if (v == null) return
-                                  setDraftSafe({
-                                    ...form,
-                                    speaker: { ...form.speaker, bits_per_sample: Math.trunc(v) },
-                                  })
-                                }}
-                              >
-                                {AUDIO_BITS_PER_SAMPLE_ALLOWED.map((b) => (
-                                  <MenuItem key={b} value={String(b)}>
-                                    {b}
-                                  </MenuItem>
-                                ))}
-                              </Select>
-                            </FormControl>
-                            <TextField
-                              size="small"
-                              label={t('audioConfig.pinWs')}
-                              value={String(form.speaker.pins.ws)}
-                              onChange={(e) => {
-                                const v = asNumber(e.target.value)
-                                if (v == null) return
+                      <FormControl size="small" fullWidth>
+                        <InputLabel id="spk-bits">{t('audioConfig.bitsPerSample')}</InputLabel>
+                        <Select
+                          labelId="spk-bits"
+                          label={t('audioConfig.bitsPerSample')}
+                          value={String(form.speaker.bits_per_sample)}
+                          onChange={(e: SelectChangeEvent) => {
+                            const v = asNumber(e.target.value)
+                            if (v == null) return
+                            setDraftSafe({
+                              ...form,
+                              speaker: { ...form.speaker, bits_per_sample: Math.trunc(v) },
+                            })
+                          }}
+                        >
+                          {AUDIO_BITS_PER_SAMPLE_ALLOWED.map((b) => (
+                            <MenuItem key={b} value={String(b)}>
+                              {b}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                      {!speakerUsesUsbDevice ? (
+                        <>
+                          <TextField
+                            size="small"
+                            label={t('audioConfig.pinWs')}
+                            value={String(speakerPins.ws)}
+                            onChange={(e) => {
+                              const v = asNumber(e.target.value)
+                              if (v == null) return
+                              setDraftSafe({
+                                ...form,
+                                speaker: {
+                                  ...form.speaker,
+                                  pins: { ...speakerPins, ws: Math.trunc(v) },
+                                },
+                              })
+                            }}
+                          />
+                          <TextField
+                            size="small"
+                            label={t('audioConfig.pinSck')}
+                            value={String(speakerPins.sck)}
+                            onChange={(e) => {
+                              const v = asNumber(e.target.value)
+                              if (v == null) return
+                              setDraftSafe({
+                                ...form,
+                                speaker: {
+                                  ...form.speaker,
+                                  pins: { ...speakerPins, sck: Math.trunc(v) },
+                                },
+                              })
+                            }}
+                          />
+                          <TextField
+                            size="small"
+                            label={t('audioConfig.pinDout')}
+                            value={String(speakerPins.dout)}
+                            onChange={(e) => {
+                              const v = asNumber(e.target.value)
+                              if (v == null) return
+                              setDraftSafe({
+                                ...form,
+                                speaker: {
+                                  ...form.speaker,
+                                  pins: { ...speakerPins, dout: Math.trunc(v) },
+                                },
+                              })
+                            }}
+                          />
+                          <TextField
+                            size="small"
+                            label={t('audioConfig.pinSdOptional')}
+                            placeholder={t('audioConfig.pinOptionalPlaceholder')}
+                            value={speakerPins.sd != null ? String(speakerPins.sd) : ''}
+                            onChange={(e) => {
+                              const raw = e.target.value.trim()
+                              if (raw === '') {
                                 setDraftSafe({
                                   ...form,
                                   speaker: {
                                     ...form.speaker,
-                                    pins: { ...form.speaker.pins, ws: Math.trunc(v) },
-                                  },
-                                })
-                              }}
-                            />
-                            <TextField
-                              size="small"
-                              label={t('audioConfig.pinSck')}
-                              value={String(form.speaker.pins.sck)}
-                              onChange={(e) => {
-                                const v = asNumber(e.target.value)
-                                if (v == null) return
-                                setDraftSafe({
-                                  ...form,
-                                  speaker: {
-                                    ...form.speaker,
-                                    pins: { ...form.speaker.pins, sck: Math.trunc(v) },
-                                  },
-                                })
-                              }}
-                            />
-                            <TextField
-                              size="small"
-                              label={t('audioConfig.pinDout')}
-                              value={String(form.speaker.pins.dout)}
-                              onChange={(e) => {
-                                const v = asNumber(e.target.value)
-                                if (v == null) return
-                                setDraftSafe({
-                                  ...form,
-                                  speaker: {
-                                    ...form.speaker,
-                                    pins: { ...form.speaker.pins, dout: Math.trunc(v) },
-                                  },
-                                })
-                              }}
-                            />
-                            <TextField
-                              size="small"
-                              label={t('audioConfig.pinSdOptional')}
-                              placeholder={t('audioConfig.pinOptionalPlaceholder')}
-                              value={form.speaker.pins.sd != null ? String(form.speaker.pins.sd) : ''}
-                              onChange={(e) => {
-                                const raw = e.target.value.trim()
-                                if (raw === '') {
-                                  setDraftSafe({
-                                    ...form,
-                                    speaker: {
-                                      ...form.speaker,
-                                    pins: { ...form.speaker.pins, sd: null },
+                                    pins: { ...speakerPins, sd: null },
                                   },
                                 })
                                 return
                               }
-                                const v = asNumber(raw)
-                                if (v == null) return
-                                setDraftSafe({
-                                  ...form,
-                                  speaker: {
-                                    ...form.speaker,
-                                    pins: { ...form.speaker.pins, sd: Math.trunc(v) },
-                                  },
-                                })
-                              }}
-                            />
+                              const v = asNumber(raw)
+                              if (v == null) return
+                              setDraftSafe({
+                                ...form,
+                                speaker: {
+                                  ...form.speaker,
+                                  pins: { ...speakerPins, sd: Math.trunc(v) },
+                                },
+                              })
+                            }}
+                          />
+                        </>
+                      ) : null}
                     </Box>
+                    {speakerUsesUsbDevice && selectedUsbAudioDevice && usbSpeakerSupportsInput(selectedUsbAudioDevice) ? (
+                      <Typography variant="body2" color="text.secondary">
+                        {t('audioConfig.speakerUsbComboHint')}
+                      </Typography>
+                    ) : null}
                   </Box>
                 ) : null}
               </FormSectionSub>
@@ -896,7 +1053,7 @@ export function AudioConfigPanel() {
                                 )}
                               </Select>
                             </FormControl>
-                            {showSpeechInput ? (
+                            {showSpeechCredentials ? (
                               <TextField
                                 size="small"
                                 label={t('audioConfig.speechApiKey')}
@@ -916,7 +1073,7 @@ export function AudioConfigPanel() {
                                 }}
                               />
                             ) : null}
-                            {showSpeechInput ? (
+                            {showSpeechCredentials ? (
                               <TextField
                                 size="small"
                                 label={t('audioConfig.speechApiSecret')}

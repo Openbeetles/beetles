@@ -1,5 +1,5 @@
-import Box from '@mui/material/Box'
-import type { ReactNode } from 'react'
+import Box from "@mui/material/Box";
+import type { ReactNode } from "react";
 
 /** 表单内分组卡片：浅底 + 细边框，用于 LLM 源、可折叠区块等。 */
 export function FormCard({
@@ -7,29 +7,29 @@ export function FormCard({
   header,
   action,
 }: {
-  children: ReactNode
-  header?: ReactNode
-  action?: ReactNode
+  children: ReactNode;
+  header?: ReactNode;
+  action?: ReactNode;
 }) {
   return (
     <Box
       sx={{
         p: 2,
-        borderRadius: 'var(--radius-control)',
-        bgcolor: 'var(--surface)',
-        border: '1px solid color-mix(in srgb, var(--border) 18%, transparent)',
-        transition: 'border-color var(--transition-duration) ease',
-        '&:focus-within': {
-          borderColor: 'color-mix(in srgb, var(--primary) 22%, var(--border))',
+        borderRadius: "var(--radius-control)",
+        bgcolor: "var(--surface)",
+        border: "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
+        transition: "border-color var(--transition-duration) ease",
+        "&:focus-within": {
+          borderColor: "color-mix(in srgb, var(--primary) 22%, var(--border))",
         },
       }}
     >
       {(header || action) && (
         <Box
           sx={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
             mb: 1.5,
             gap: 1,
           }}
@@ -40,5 +40,5 @@ export function FormCard({
       )}
       {children}
     </Box>
-  )
+  );
 }

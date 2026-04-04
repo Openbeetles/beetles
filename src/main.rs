@@ -9,7 +9,6 @@ use beetle::memory::{MemoryStore, SessionStore};
 #[cfg(feature = "feishu")]
 use beetle::run_feishu_ws_loop;
 use beetle::runtime::{execute_stream_http_op, spawn_planned, thread_plan};
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use beetle::util::STACK_VOICE_CONTROL;
 use beetle::util::{STACK_AGENT_LOOP, STACK_CHANNEL_SENDER, STACK_CHANNEL_WS};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -37,6 +36,12 @@ const TAG: &str = "beetle";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 type HttpFactory = beetle::runtime::stream_http::HttpFactory;
+struct VoiceEventChannel {
+    wake_model_name: Option<String>,
+    speak_capable: bool,
+    tx: std::sync::mpsc::SyncSender<beetle::audio::voice_session::VoiceEvent>,
+    rx: std::sync::mpsc::Receiver<beetle::audio::voice_session::VoiceEvent>,
+}
 
 #[cfg(feature = "config_api")]
 struct HttpServerSpawnContext {
@@ -263,21 +268,24 @@ fn spawn_http_config_server(ctx: HttpServerSpawnContext) {
     });
 }
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn spawn_voice_session_if_ready(
     platform: &Arc<dyn Platform>,
     config: &Arc<AppConfig>,
     baidu_token_cache: Option<&Arc<beetle::audio::baidu_token::BaiduTokenCache>>,
     user_inbound_tx: &beetle::bus::InboundTx,
-    voice_event_tx_rx: &mut Option<(
-        String,
-        std::sync::mpsc::SyncSender<beetle::audio::voice_session::VoiceEvent>,
-        std::sync::mpsc::Receiver<beetle::audio::voice_session::VoiceEvent>,
-    )>,
+    voice_event_tx_rx: &mut Option<VoiceEventChannel>,
 ) {
-    let Some((model_name, voice_tx, voice_rx)) = voice_event_tx_rx.take() else {
+    let Some(VoiceEventChannel {
+        wake_model_name,
+        tx: voice_tx,
+        rx: voice_rx,
+        ..
+    }) = voice_event_tx_rx.take()
+    else {
         return;
     };
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    let _ = (&wake_model_name, &voice_tx);
     let Some(audio_cfg) = config.audio.as_ref() else {
         return;
     };
@@ -304,11 +312,136 @@ fn spawn_voice_session_if_ready(
             voice_rx,
         );
     });
-    platform.configure_wake_word(
-        model_name.as_str(),
-        audio_cfg.microphone.sample_rate,
-        voice_tx,
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    if let Some(model_name) = wake_model_name.as_deref() {
+        platform.configure_wake_word(
+            model_name,
+            audio_cfg.microphone.sample_rate,
+            voice_tx,
+        );
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct VoiceRuntimeCapabilities {
+    speak_capable: bool,
+    wake_capable: bool,
+}
+
+fn compute_voice_runtime_capabilities(
+    audio_cfg: &beetle::config::AudioSegment,
+    speaker_ready: bool,
+    mic_ready: bool,
+    wake_model_present: bool,
+    wake_supported_platform: bool,
+    has_baidu_token: bool,
+) -> VoiceRuntimeCapabilities {
+    let speak_capable = audio_cfg.speaker.enabled && speaker_ready && has_baidu_token;
+    let wake_capable = if !wake_supported_platform
+        || !audio_cfg.wake_word.enabled
+        || !audio_cfg.microphone.enabled
+        || !mic_ready
+        || !wake_model_present
+    {
+        false
+    } else if beetle::config::audio_realtime_enabled(audio_cfg) {
+        audio_cfg.speaker.enabled && speaker_ready
+    } else {
+        has_baidu_token
+    };
+    VoiceRuntimeCapabilities {
+        speak_capable,
+        wake_capable,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_voice_runtime_capabilities;
+    use beetle::config::default_disabled_audio_segment;
+
+    #[test]
+    fn voice_sink_requires_tts_token_even_if_speaker_ready() {
+        let mut audio = default_disabled_audio_segment();
+        audio.enabled = true;
+        audio.speaker.enabled = true;
+        let caps = compute_voice_runtime_capabilities(&audio, true, false, false, false, false);
+        assert!(!caps.speak_capable);
+        assert!(!caps.wake_capable);
+    }
+
+    #[test]
+    fn fallback_wake_runtime_requires_baidu_token() {
+        let mut audio = default_disabled_audio_segment();
+        audio.enabled = true;
+        audio.microphone.enabled = true;
+        audio.wake_word.enabled = true;
+        let caps = compute_voice_runtime_capabilities(&audio, false, true, true, true, false);
+        assert!(!caps.speak_capable);
+        assert!(!caps.wake_capable);
+    }
+
+    #[test]
+    fn realtime_wake_runtime_requires_mic_and_speaker_but_not_baidu_token() {
+        let mut audio = default_disabled_audio_segment();
+        audio.enabled = true;
+        audio.microphone.enabled = true;
+        audio.speaker.enabled = true;
+        audio.wake_word.enabled = true;
+        audio.realtime.provider = "openai_compatible".to_string();
+        audio.realtime.ws_url = "wss://example.invalid/realtime".to_string();
+        audio.realtime.api_key = "k".to_string();
+        audio.realtime.model = "gpt-realtime".to_string();
+        audio.realtime.voice = "alloy".to_string();
+
+        let caps = compute_voice_runtime_capabilities(&audio, true, true, true, true, false);
+        assert!(!caps.speak_capable);
+        assert!(caps.wake_capable);
+    }
+}
+
+fn build_voice_event_channel(
+    platform: &Arc<dyn Platform>,
+    config: &Arc<AppConfig>,
+    baidu_token_cache: Option<&Arc<beetle::audio::baidu_token::BaiduTokenCache>>,
+) -> Option<VoiceEventChannel> {
+    let audio_cfg = config.audio.as_ref()?;
+    if !audio_cfg.enabled {
+        return None;
+    }
+
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    let wake_model_name = if audio_cfg.wake_word.enabled {
+        beetle::config::wake_word_resolve_model(&audio_cfg.wake_word.keyword)
+    } else {
+        None
+    };
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    let wake_model_name: Option<String> = None;
+
+    let capabilities = compute_voice_runtime_capabilities(
+        audio_cfg,
+        platform.audio_speaker_ready(),
+        platform.audio_mic_ready(),
+        wake_model_name.is_some(),
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        true,
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        false,
+        baidu_token_cache.is_some(),
     );
+
+    if !capabilities.speak_capable && !capabilities.wake_capable {
+        return None;
+    }
+
+    let (vtx, vrx) = std::sync::mpsc::sync_channel(4);
+    Some(VoiceEventChannel {
+        wake_model_name,
+        speak_capable: capabilities.speak_capable,
+        tx: vtx,
+        rx: vrx,
+    })
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
@@ -909,30 +1042,10 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     );
     let registry = Arc::new(registry);
 
-    // ── Audio init + wake-word registration (ESP only, after MessageBus) ───
-    // Prepare the voice-session event channel here; wake_word::configure is deferred
-    // until the voice_session thread is confirmed startable.
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    let mut voice_event_tx_rx: Option<(
-        String,
-        std::sync::mpsc::SyncSender<beetle::audio::voice_session::VoiceEvent>,
-        std::sync::mpsc::Receiver<beetle::audio::voice_session::VoiceEvent>,
-    )>;
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    {
-        beetle::bootstrap::esp_init_audio(&platform, &config);
-        voice_event_tx_rx = None;
-        if let Some(audio_cfg) = config.audio.as_ref() {
-            if audio_cfg.enabled && audio_cfg.wake_word.enabled {
-                if let Some(model_name) =
-                    beetle::config::wake_word_resolve_model(&audio_cfg.wake_word.keyword)
-                {
-                    let (vtx, vrx) = std::sync::mpsc::sync_channel(4);
-                    voice_event_tx_rx = Some((model_name, vtx, vrx));
-                }
-            }
-        }
-    }
+    // ── Audio init + voice runtime preparation (after MessageBus) ──────────
+    beetle::bootstrap::init_audio_if_enabled(&platform, &config);
+    let mut voice_event_tx_rx =
+        build_voice_event_channel(&platform, &config, baidu_token_cache.as_ref());
 
     if !startup_self_check(memory_store.as_ref()) {
         log::error!(
@@ -1044,8 +1157,12 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     }
 
     // Register VoiceSink so dispatch routes channel="voice" replies to the voice session thread.
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    if let Some((_, ref vtx, _)) = voice_event_tx_rx {
+    if let Some(VoiceEventChannel {
+        speak_capable: true,
+        tx: ref vtx,
+        ..
+    }) = voice_event_tx_rx.as_ref()
+    {
         sinks.register(
             beetle::constants::VOICE_CHANNEL_NAME,
             Box::new(beetle::channels::VoiceSink::new(vtx.clone())),
@@ -1179,8 +1296,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             beetle::build_llm_clients(&config, Arc::clone(&resolve_locale_ui)),
         );
 
-        // ── Voice session thread (ESP only) ─────────────────────────────────
-        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        // ── Voice session thread (speaker / wake runtime) ───────────────────
         spawn_voice_session_if_ready(
             &platform,
             &config,

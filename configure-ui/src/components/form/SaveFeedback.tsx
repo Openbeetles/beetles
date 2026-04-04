@@ -52,7 +52,7 @@ export function SaveFeedback({
         bgcolor: isOk
           ? 'color-mix(in srgb, var(--semantic-success) 6%, transparent)'
           : 'color-mix(in srgb, var(--semantic-danger) 6%, transparent)',
-        border: '1px solid',
+        border: 'none',
         borderColor: isOk
           ? 'color-mix(in srgb, var(--semantic-success) 16%, transparent)'
           : 'color-mix(in srgb, var(--semantic-danger) 12%, transparent)',

@@ -73,6 +73,10 @@ pub fn wifi_sta_ip() -> Option<String> {
     crate::state::wifi_sta_ip()
 }
 
+pub fn lan_ipv4() -> Option<String> {
+    net::read_primary_lan_ipv4().ok().flatten()
+}
+
 /// Linux 启动后不阻塞全局启动流程；连接状态由后台与 API 查询。
 pub fn wait_for_network_ready() {}
 

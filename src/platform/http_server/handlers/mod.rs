@@ -58,6 +58,7 @@ pub mod config_reset;
 pub mod csrf_token;
 pub mod diagnose;
 pub mod health;
+pub mod hardware_discovery;
 pub mod memory;
 pub mod metrics;
 pub mod pairing;

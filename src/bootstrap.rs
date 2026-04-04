@@ -146,10 +146,9 @@ fn post_wifi_display_bootstrap(
     }
 }
 
-/// ESP 启动后音频初始化（从 bootstrap 移出，由 run_app 在 MessageBus 创建后调用）。
-/// Audio init after ESP boot (moved out of bootstrap; called by run_app after MessageBus).
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub fn esp_init_audio(platform: &Arc<dyn Platform>, config: &Arc<AppConfig>) {
+/// 启动后音频初始化（从 bootstrap 移出，由 run_app 在 MessageBus 创建后调用）。
+/// Audio init after boot (moved out of bootstrap; called by run_app after MessageBus).
+pub fn init_audio_if_enabled(platform: &Arc<dyn Platform>, config: &Arc<AppConfig>) {
     if let Some(audio_cfg) = config.audio.as_ref() {
         if audio_cfg.enabled {
             if let Err(e) = platform.init_audio(audio_cfg) {

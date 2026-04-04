@@ -44,6 +44,19 @@ pub fn read_sta_ip(iface: &str) -> Result<Option<String>> {
     rt.block_on(read_sta_ip_async(iface))
 }
 
+/// 返回当前默认上行接口的 IPv4，用于 system_info.lan_ip。
+/// Reads the IPv4 bound to the current default-route interface.
+pub fn read_primary_lan_ipv4() -> Result<Option<String>> {
+    let raw = std::fs::read_to_string("/proc/net/route").map_err(|e| Error::Other {
+        source: Box::new(e),
+        stage: "lan_ip",
+    })?;
+    let Some(iface) = default_route_iface(&raw) else {
+        return Ok(None);
+    };
+    read_sta_ip(&iface).map_err(|e| e.with_stage("lan_ip"))
+}
+
 async fn read_sta_ip_async(iface: &str) -> Result<Option<String>> {
     let (connection, handle, _) = new_connection().map_err(|e| Error::io("wifi_sta_ip", e))?;
     tokio::spawn(connection);
@@ -282,4 +295,42 @@ fn first_ipv4_from_message(msg: &AddressMessage) -> Option<Ipv4Addr> {
         }
     }
     locals.first().or(addrs.first()).copied()
+}
+
+fn default_route_iface(raw: &str) -> Option<String> {
+    for line in raw.lines().skip(1) {
+        let columns: Vec<&str> = line.split_whitespace().collect();
+        if columns.len() < 8 || columns[1] != "00000000" {
+            continue;
+        }
+        let iface = columns[0].trim();
+        if iface.is_empty() || iface == "lo" {
+            continue;
+        }
+        return Some(iface.to_string());
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_route_iface;
+
+    #[test]
+    fn default_route_iface_prefers_first_default_entry() {
+        let raw = "\
+Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n\
+lo\t00000000\t00000000\t0001\t0\t0\t0\t00000000\n\
+eth0\t00000000\t0101A8C0\t0003\t0\t0\t0\t00000000\n\
+wlan0\t0008A8C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\n";
+        assert_eq!(default_route_iface(raw).as_deref(), Some("eth0"));
+    }
+
+    #[test]
+    fn default_route_iface_returns_none_without_default_entry() {
+        let raw = "\
+Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n\
+wlan0\t0008A8C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\n";
+        assert_eq!(default_route_iface(raw), None);
+    }
 }

@@ -20,9 +20,9 @@ const STAT_GRID_SX = {
 
 const SECTION_PANEL_SX = {
   borderRadius: "var(--radius-control)",
-  border: "1px solid color-mix(in srgb, var(--border-subtle) 72%, transparent)",
-  bgcolor: "color-mix(in srgb, var(--border) 2.8%, var(--card))",
-  boxShadow: "var(--shadow-subtle)",
+  border: "none",
+  bgcolor: "var(--card)",
+  boxShadow: "none",
   px: { xs: 1.75, sm: 2.25 },
   py: 1.5,
   overflow: "hidden",
@@ -105,7 +105,7 @@ function StatRow({
         rowGap: { xs: 0.5, sm: 0 },
         alignItems: { xs: "start", sm: "center" },
         borderRadius: "var(--radius-chip)",
-        border: "1px solid color-mix(in srgb, var(--border-subtle) 72%, transparent)",
+        border: "none",
         bgcolor: "color-mix(in srgb, var(--foreground) 2%, transparent)",
         px: { xs: 1.125, sm: 1.35 },
         py: { xs: 0.875, sm: 1 },
@@ -113,8 +113,9 @@ function StatRow({
         transition:
           "border-color var(--transition-duration) ease, background-color var(--transition-duration) ease, box-shadow var(--transition-duration) var(--ease-out-smooth)",
         "&:hover": {
-          borderColor: "color-mix(in srgb, var(--primary) 14%, var(--border-subtle))",
-          boxShadow: "0 1px 0 color-mix(in srgb, var(--border) 28%, transparent)",
+          borderColor:
+            "color-mix(in srgb, var(--primary) 14%, var(--border-subtle))",
+          boxShadow: "none",
         },
       }}
     >
@@ -137,7 +138,9 @@ function StatRow({
         component="span"
         sx={{
           fontFamily: mono ? "var(--font-mono)" : "inherit",
-          fontSize: mono ? "var(--font-size-data-value)" : "var(--font-size-body-sm)",
+          fontSize: mono
+            ? "var(--font-size-data-value)"
+            : "var(--font-size-body-sm)",
           color:
             valueColor === "var(--text-primary)"
               ? valueColor
@@ -223,7 +226,7 @@ function SummaryCard({
     <Box
       sx={{
         borderRadius: "var(--radius-control)",
-        border: "1px solid color-mix(in srgb, var(--border-subtle) 76%, transparent)",
+        border: "none",
         bgcolor: "var(--card)",
         p: 1.5,
         minHeight: 88,
@@ -231,16 +234,22 @@ function SummaryCard({
         gridTemplateRows: "auto 1fr",
         gap: 0,
         alignContent: "stretch",
-        boxShadow: "var(--shadow-subtle)",
+        boxShadow: "none",
         transition:
           "border-color var(--transition-duration) ease, box-shadow var(--transition-duration) var(--ease-out-smooth)",
         "&:hover": {
-          borderColor: "color-mix(in srgb, var(--primary) 12%, var(--border-subtle))",
-          boxShadow: "var(--shadow-subtle)",
+          borderColor:
+            "color-mix(in srgb, var(--primary) 12%, var(--border-subtle))",
+          boxShadow: "none",
         },
       }}
     >
-      <Stack direction="row" alignItems="center" spacing={1} sx={{ minHeight: 36 }}>
+      <Stack
+        direction="row"
+        alignItems="center"
+        spacing={1}
+        sx={{ minHeight: 36 }}
+      >
         <Box
           sx={{
             color: "var(--primary)",
@@ -272,7 +281,7 @@ function SummaryCard({
         sx={{
           mt: 1.25,
           pt: 1.25,
-          borderTop: "1px solid color-mix(in srgb, var(--border-subtle) 55%, transparent)",
+          borderTop: "none",
         }}
       >
         <Typography
@@ -313,7 +322,7 @@ function SystemStatusLastError({
         mt: 0.5,
         p: 1.75,
         borderRadius: "var(--radius-control)",
-        border: "1px solid color-mix(in srgb, var(--border-subtle) 72%, transparent)",
+        border: "none",
         borderLeftWidth: "var(--accent-line-width, 3px)",
         borderLeftColor: isEmpty
           ? "color-mix(in srgb, var(--border-subtle) 85%, transparent)"
@@ -321,7 +330,7 @@ function SystemStatusLastError({
         bgcolor: isEmpty
           ? "color-mix(in srgb, var(--border) 2.5%, var(--card))"
           : "color-mix(in srgb, var(--semantic-danger) 4%, var(--card))",
-        boxShadow: "var(--shadow-subtle)",
+        boxShadow: "none",
       }}
     >
       <Typography
@@ -342,7 +351,7 @@ function SystemStatusLastError({
         sx={{
           mt: 1.25,
           pt: 1.25,
-          borderTop: "1px solid color-mix(in srgb, var(--border-subtle) 55%, transparent)",
+          borderTop: "none",
           fontFamily: "var(--font-mono)",
           fontSize: "var(--font-size-data-value)",
           color: isEmpty
@@ -364,10 +373,7 @@ export interface SystemStatusPanelProps {
   t: TFunction;
 }
 
-export function SystemStatusPanel({
-  healthData,
-  t,
-}: SystemStatusPanelProps) {
+export function SystemStatusPanel({ healthData, t }: SystemStatusPanelProps) {
   const res = healthData.resource;
   const met = healthData.metrics;
   const pressure = res?.pressure;
@@ -409,7 +415,9 @@ export function SystemStatusPanel({
           }
         />
         <SummaryCard
-          icon={<MonitorHeartOutlined sx={{ fontSize: "var(--icon-size-md)" }} />}
+          icon={
+            <MonitorHeartOutlined sx={{ fontSize: "var(--icon-size-md)" }} />
+          }
           label={t("device.systemStatusDisplayAvailable")}
           value={yesNo(healthData.display?.available, t)}
           valueColor={
@@ -497,11 +505,13 @@ export function SystemStatusPanel({
                   sx={{
                     height: 9,
                     borderRadius: "var(--radius-chip)",
-                    bgcolor: "color-mix(in srgb, var(--border) 22%, transparent)",
+                    bgcolor:
+                      "color-mix(in srgb, var(--border) 22%, transparent)",
                     overflow: "hidden",
                     "& .MuiLinearProgress-bar": {
                       borderRadius: "var(--radius-chip)",
-                      bgcolor: "color-mix(in srgb, var(--primary) 78%, var(--muted))",
+                      bgcolor:
+                        "color-mix(in srgb, var(--primary) 78%, var(--muted))",
                       transition: "transform 0.45s var(--ease-out-smooth)",
                     },
                   }}
@@ -557,17 +567,25 @@ export function SystemStatusPanel({
       <Section title={t("device.systemStatusGroupOps")}>
         <Box sx={STAT_GRID_SX}>
           {met?.llm_calls != null && (
-            <StatRow label={t("device.systemStatusLlmCalls")} value={String(met.llm_calls)} />
+            <StatRow
+              label={t("device.systemStatusLlmCalls")}
+              value={String(met.llm_calls)}
+            />
           )}
           {met?.tool_calls != null && (
-            <StatRow label={t("device.systemStatusToolCalls")} value={String(met.tool_calls)} />
+            <StatRow
+              label={t("device.systemStatusToolCalls")}
+              value={String(met.tool_calls)}
+            />
           )}
           {met?.tool_errors != null && (
             <StatRow
               label={t("device.systemStatusToolErrors")}
               value={String(met.tool_errors)}
               valueColor={
-                met.tool_errors > 0 ? "var(--semantic-warning)" : "var(--text-primary)"
+                met.tool_errors > 0
+                  ? "var(--semantic-warning)"
+                  : "var(--text-primary)"
               }
             />
           )}
@@ -582,7 +600,9 @@ export function SystemStatusPanel({
               label={t("device.systemStatusDispatchFail")}
               value={String(met.dispatch_send_fail)}
               valueColor={
-                met.dispatch_send_fail > 0 ? "var(--semantic-danger)" : "var(--text-primary)"
+                met.dispatch_send_fail > 0
+                  ? "var(--semantic-danger)"
+                  : "var(--text-primary)"
               }
             />
           )}
@@ -590,7 +610,11 @@ export function SystemStatusPanel({
             <StatRow
               label={t("device.systemStatusLlmErrors")}
               value={String(met.llm_errors)}
-              valueColor={met.llm_errors > 0 ? "var(--semantic-warning)" : "var(--text-primary)"}
+              valueColor={
+                met.llm_errors > 0
+                  ? "var(--semantic-warning)"
+                  : "var(--text-primary)"
+              }
             />
           )}
           {met?.errors_agent_chat != null && (
@@ -598,12 +622,17 @@ export function SystemStatusPanel({
               label={t("device.systemStatusChatErrors")}
               value={String(met.errors_agent_chat)}
               valueColor={
-                met.errors_agent_chat > 0 ? "var(--semantic-danger)" : "var(--text-primary)"
+                met.errors_agent_chat > 0
+                  ? "var(--semantic-danger)"
+                  : "var(--text-primary)"
               }
             />
           )}
           {met?.wdt_feeds != null && (
-            <StatRow label={t("device.systemStatusWdtFeeds")} value={String(met.wdt_feeds)} />
+            <StatRow
+              label={t("device.systemStatusWdtFeeds")}
+              value={String(met.wdt_feeds)}
+            />
           )}
         </Box>
       </Section>
@@ -635,27 +664,30 @@ export function SystemStatusPanel({
       {hasDetailedErrors ? (
         <Section title={t("device.systemStatusGroupErrors")}>
           <Box sx={STAT_GRID_SX}>
-            {met?.errors_agent_router != null && met.errors_agent_router > 0 && (
-              <StatRow
-                label={t("device.systemStatusErrRouter")}
-                value={String(met.errors_agent_router)}
-                valueColor="var(--semantic-danger)"
-              />
-            )}
-            {met?.errors_agent_context != null && met.errors_agent_context > 0 && (
-              <StatRow
-                label={t("device.systemStatusErrContext")}
-                value={String(met.errors_agent_context)}
-                valueColor="var(--semantic-danger)"
-              />
-            )}
-            {met?.errors_tool_execute != null && met.errors_tool_execute > 0 && (
-              <StatRow
-                label={t("device.systemStatusErrToolExec")}
-                value={String(met.errors_tool_execute)}
-                valueColor="var(--semantic-danger)"
-              />
-            )}
+            {met?.errors_agent_router != null &&
+              met.errors_agent_router > 0 && (
+                <StatRow
+                  label={t("device.systemStatusErrRouter")}
+                  value={String(met.errors_agent_router)}
+                  valueColor="var(--semantic-danger)"
+                />
+              )}
+            {met?.errors_agent_context != null &&
+              met.errors_agent_context > 0 && (
+                <StatRow
+                  label={t("device.systemStatusErrContext")}
+                  value={String(met.errors_agent_context)}
+                  valueColor="var(--semantic-danger)"
+                />
+              )}
+            {met?.errors_tool_execute != null &&
+              met.errors_tool_execute > 0 && (
+                <StatRow
+                  label={t("device.systemStatusErrToolExec")}
+                  value={String(met.errors_tool_execute)}
+                  valueColor="var(--semantic-danger)"
+                />
+              )}
             {met?.errors_llm_request != null && met.errors_llm_request > 0 && (
               <StatRow
                 label={t("device.systemStatusErrLlmReq")}
@@ -670,20 +702,22 @@ export function SystemStatusPanel({
                 valueColor="var(--semantic-danger)"
               />
             )}
-            {met?.errors_channel_dispatch != null && met.errors_channel_dispatch > 0 && (
-              <StatRow
-                label={t("device.systemStatusErrChDispatch")}
-                value={String(met.errors_channel_dispatch)}
-                valueColor="var(--semantic-danger)"
-              />
-            )}
-            {met?.errors_session_append != null && met.errors_session_append > 0 && (
-              <StatRow
-                label={t("device.systemStatusErrSession")}
-                value={String(met.errors_session_append)}
-                valueColor="var(--semantic-danger)"
-              />
-            )}
+            {met?.errors_channel_dispatch != null &&
+              met.errors_channel_dispatch > 0 && (
+                <StatRow
+                  label={t("device.systemStatusErrChDispatch")}
+                  value={String(met.errors_channel_dispatch)}
+                  valueColor="var(--semantic-danger)"
+                />
+              )}
+            {met?.errors_session_append != null &&
+              met.errors_session_append > 0 && (
+                <StatRow
+                  label={t("device.systemStatusErrSession")}
+                  value={String(met.errors_session_append)}
+                  valueColor="var(--semantic-danger)"
+                />
+              )}
             {met?.errors_other != null && met.errors_other > 0 && (
               <StatRow
                 label={t("device.systemStatusErrOther")}

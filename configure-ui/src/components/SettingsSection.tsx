@@ -1,20 +1,20 @@
-import Box from '@mui/material/Box'
-import Stack from '@mui/material/Stack'
-import Typography from '@mui/material/Typography'
-import type { PropsWithChildren, ReactNode } from 'react'
-import { CONFIG_PANEL_SX } from '../theme/panelStyles'
+import Box from "@mui/material/Box";
+import Stack from "@mui/material/Stack";
+import Typography from "@mui/material/Typography";
+import type { PropsWithChildren, ReactNode } from "react";
+import { CONFIG_PANEL_SX } from "../theme/panelStyles";
 
 interface SettingsSectionProps {
-  icon: ReactNode
-  label: string
+  icon: ReactNode;
+  label: string;
   /** 区块下方、内容区上方的简短说明 */
-  description?: string
-  accessory?: ReactNode
+  description?: string;
+  accessory?: ReactNode;
   /**
    * 标题行（图标+标题+accessory）下方的全宽区域，例如保存结果。
    * Keeps the title row a single-line flex; avoids a tall right column next to the title.
    */
-  belowTitleRow?: ReactNode
+  belowTitleRow?: ReactNode;
 }
 
 export function SettingsSection({
@@ -25,17 +25,17 @@ export function SettingsSection({
   belowTitleRow,
   children,
 }: PropsWithChildren<SettingsSectionProps>) {
-  const titleRowMb = belowTitleRow ? 1 : description ? 1 : 2
-  const belowRowMb = description ? 1 : 2
+  const titleRowMb = belowTitleRow ? 1 : description ? 1 : 2;
+  const belowRowMb = description ? 1 : 2;
 
   return (
     <Box
       sx={{
         ...CONFIG_PANEL_SX,
         p: 2.5,
-        transition: 'border-color var(--transition-duration) ease',
-        '&:hover': {
-          borderColor: 'color-mix(in srgb, var(--border) 32%, transparent)',
+        transition: "border-color var(--transition-duration) ease",
+        "&:hover": {
+          borderColor: "color-mix(in srgb, var(--border) 32%, transparent)",
         },
       }}
     >
@@ -50,9 +50,9 @@ export function SettingsSection({
         <Stack direction="row" alignItems="center" spacing={1.5}>
           <Box
             sx={{
-              color: 'color-mix(in srgb, var(--primary) 55%, var(--muted))',
-              display: 'flex',
-              alignItems: 'center',
+              color: "color-mix(in srgb, var(--primary) 55%, var(--muted))",
+              display: "flex",
+              alignItems: "center",
             }}
           >
             {icon}
@@ -60,11 +60,11 @@ export function SettingsSection({
           <Typography
             component="span"
             sx={{
-              fontSize: 'var(--font-size-body-sm)',
+              fontSize: "var(--font-size-body-sm)",
               fontWeight: 700,
-              letterSpacing: 'var(--letter-spacing-label)',
-              lineHeight: 'var(--line-height-tight)',
-              color: 'var(--foreground)',
+              letterSpacing: "var(--letter-spacing-label)",
+              lineHeight: "var(--line-height-tight)",
+              color: "var(--foreground)",
             }}
           >
             {label}
@@ -72,16 +72,18 @@ export function SettingsSection({
         </Stack>
         {accessory}
       </Stack>
-      {belowTitleRow ? <Box sx={{ mb: belowRowMb }}>{belowTitleRow}</Box> : null}
+      {belowTitleRow ? (
+        <Box sx={{ mb: belowRowMb }}>{belowTitleRow}</Box>
+      ) : null}
       {description && (
         <Typography
           variant="body2"
           sx={{
-            color: 'var(--muted)',
+            color: "var(--muted)",
             mb: 2,
-            fontSize: 'var(--font-size-caption)',
-            lineHeight: 'var(--line-height-normal)',
-            maxWidth: '52ch',
+            fontSize: "var(--font-size-caption)",
+            lineHeight: "var(--line-height-normal)",
+            maxWidth: "52ch",
           }}
         >
           {description}
@@ -89,5 +91,5 @@ export function SettingsSection({
       )}
       {children}
     </Box>
-  )
+  );
 }

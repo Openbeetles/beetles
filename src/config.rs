@@ -550,6 +550,7 @@ impl AppConfig {
                 if seg.version == 0 {
                     seg.version = AUDIO_CONFIG_VERSION;
                 }
+                normalize_audio_segment(&mut seg);
                 if let Err(e) = validate_audio_segment(&seg) {
                     log::warn!("[config] merge_audio_from_json validation failed: {}", e);
                     errors.push("audio_validation_failed".into());
@@ -994,6 +995,7 @@ const AUDIO_BUFFER_SIZE_MIN: usize = 256;
 const AUDIO_BUFFER_SIZE_MAX: usize = 16 * 1024;
 const AUDIO_BITS_PER_SAMPLE_ALLOWED: [u16; 3] = [16, 24, 32];
 const AUDIO_DEVICE_TYPE_MAX_LEN: usize = 32;
+const AUDIO_DEVICE_REF_MAX_LEN: usize = 256;
 const AUDIO_KEYWORD_MAX_LEN: usize = 64;
 const AUDIO_VOICE_MAX_LEN: usize = 64;
 const AUDIO_RATE_MAX_LEN: usize = 16;
@@ -1075,6 +1077,7 @@ pub fn wake_word_resolve_model(keyword: &str) -> Option<String> {
 }
 const AUDIO_MIC_DEVICE_PDM: &str = "pdm";
 const AUDIO_SPEAKER_DEVICE_I2S_MAX98357A: &str = "i2s_max98357a";
+const AUDIO_SPEAKER_DEVICE_USB: &str = "usb";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AudioMicPins {
@@ -1113,7 +1116,10 @@ pub struct AudioSpeakerConfig {
     pub enabled: bool,
     #[serde(default)]
     pub device_type: String,
-    pub pins: AudioSpeakerPins,
+    #[serde(default)]
+    pub device_ref: Option<String>,
+    #[serde(default)]
+    pub pins: Option<AudioSpeakerPins>,
     #[serde(default = "default_audio_sample_rate")]
     pub sample_rate: u32,
     #[serde(default = "default_audio_bits_per_sample")]
@@ -1377,12 +1383,13 @@ pub fn default_disabled_audio_segment() -> AudioSegment {
         speaker: AudioSpeakerConfig {
             enabled: false,
             device_type: "i2s_max98357a".to_string(),
-            pins: AudioSpeakerPins {
+            device_ref: None,
+            pins: Some(AudioSpeakerPins {
                 ws: 32,
                 sck: 33,
                 dout: 22,
                 sd: None,
-            },
+            }),
             sample_rate: default_audio_sample_rate(),
             bits_per_sample: default_audio_bits_per_sample(),
         },
@@ -1705,6 +1712,20 @@ fn audio_can_use_baidu_speech_fallback(seg: &AudioSegment) -> bool {
         && !seg.speech.api_secret.trim().is_empty()
 }
 
+fn normalize_audio_segment(seg: &mut AudioSegment) {
+    if seg
+        .speaker
+        .device_ref
+        .as_ref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        seg.speaker.device_ref = None;
+    }
+    if seg.speaker.device_type != AUDIO_SPEAKER_DEVICE_USB {
+        seg.speaker.device_ref = None;
+    }
+}
+
 /// 私有：校验 AudioSegment 字段（引脚、采样率、阈值、字符串长度等）。
 fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
     let wake_voice_pipeline_enabled = seg.enabled && seg.wake_word.enabled;
@@ -1727,6 +1748,20 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
             format!(
                 "microphone/speaker device_type length must be <= {}",
                 AUDIO_DEVICE_TYPE_MAX_LEN
+            ),
+        ));
+    }
+    if seg
+        .speaker
+        .device_ref
+        .as_ref()
+        .is_some_and(|value| value.len() > AUDIO_DEVICE_REF_MAX_LEN)
+    {
+        return Err(Error::config(
+            "audio",
+            format!(
+                "speaker.device_ref length must be <= {}",
+                AUDIO_DEVICE_REF_MAX_LEN
             ),
         ));
     }
@@ -2015,20 +2050,38 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
         }
     }
     if seg.speaker.enabled {
-        if seg.speaker.device_type != AUDIO_SPEAKER_DEVICE_I2S_MAX98357A {
-            return Err(Error::config(
-                "audio",
-                format!(
-                    "speaker.device_type must be {}",
-                    AUDIO_SPEAKER_DEVICE_I2S_MAX98357A
-                ),
-            ));
-        }
-        validate_pin_range(seg.speaker.pins.ws, "audio")?;
-        validate_pin_range(seg.speaker.pins.sck, "audio")?;
-        validate_pin_range(seg.speaker.pins.dout, "audio")?;
-        if let Some(sd) = seg.speaker.pins.sd {
-            validate_pin_range(sd, "audio")?;
+        match seg.speaker.device_type.as_str() {
+            AUDIO_SPEAKER_DEVICE_I2S_MAX98357A => {
+                let pins = seg.speaker.pins.as_ref().ok_or_else(|| {
+                    Error::config(
+                        "audio",
+                        "speaker.pins are required when speaker.device_type == i2s_max98357a",
+                    )
+                })?;
+                validate_pin_range(pins.ws, "audio")?;
+                validate_pin_range(pins.sck, "audio")?;
+                validate_pin_range(pins.dout, "audio")?;
+                if let Some(sd) = pins.sd {
+                    validate_pin_range(sd, "audio")?;
+                }
+            }
+            AUDIO_SPEAKER_DEVICE_USB => {
+                if seg.speaker.bits_per_sample != 16 {
+                    return Err(Error::config(
+                        "audio",
+                        "speaker.bits_per_sample must be 16 when speaker.device_type == usb",
+                    ));
+                }
+            }
+            _ => {
+                return Err(Error::config(
+                    "audio",
+                    format!(
+                        "speaker.device_type must be one of: {}, {}",
+                        AUDIO_SPEAKER_DEVICE_I2S_MAX98357A, AUDIO_SPEAKER_DEVICE_USB
+                    ),
+                ));
+            }
         }
         validate_audio_sample_rate(seg.speaker.sample_rate, "speaker.sample_rate")?;
         validate_audio_bits_per_sample(seg.speaker.bits_per_sample, "speaker.bits_per_sample")?;
@@ -2572,6 +2625,7 @@ pub fn save_audio_segment(writer: &dyn ConfigFileStore, body: &str) -> Result<()
     if seg.version == 0 {
         seg.version = AUDIO_CONFIG_VERSION;
     }
+    normalize_audio_segment(&mut seg);
     validate_audio_segment(&seg)?;
     let json =
         serde_json::to_string(&seg).map_err(|e| Error::config("serialize", e.to_string()))?;
@@ -2715,5 +2769,122 @@ mod tests {
         assert!(error
             .to_string()
             .contains("microphone.sample_rate must equal 16000 for realtime voice"));
+    }
+
+    #[test]
+    fn audio_validation_allows_usb_speaker_without_pins() {
+        let mut seg = default_disabled_audio_segment();
+        seg.enabled = true;
+        seg.speaker.enabled = true;
+        seg.speaker.device_type = AUDIO_SPEAKER_DEVICE_USB.to_string();
+        seg.speaker.device_ref = Some("usb:vid=1234:pid=5678:serial=test".to_string());
+        seg.speaker.pins = None;
+
+        assert!(validate_audio_segment(&seg).is_ok());
+    }
+
+    #[test]
+    fn audio_validation_rejects_non_16_bit_usb_speaker() {
+        let mut seg = default_disabled_audio_segment();
+        seg.enabled = true;
+        seg.speaker.enabled = true;
+        seg.speaker.device_type = AUDIO_SPEAKER_DEVICE_USB.to_string();
+        seg.speaker.device_ref = Some("usb:vid=1234:pid=5678:serial=test".to_string());
+        seg.speaker.pins = None;
+        seg.speaker.bits_per_sample = 24;
+
+        let error = validate_audio_segment(&seg).expect_err("usb speaker should require 16-bit");
+        assert!(error.to_string().contains("speaker.bits_per_sample must be 16"));
+    }
+
+    #[test]
+    fn audio_validation_requires_pins_for_i2s_speaker() {
+        let mut seg = default_disabled_audio_segment();
+        seg.enabled = true;
+        seg.speaker.enabled = true;
+        seg.speaker.pins = None;
+
+        let error = validate_audio_segment(&seg).expect_err("i2s speaker should require pins");
+        assert!(error.to_string().contains("speaker.pins are required"));
+    }
+
+    #[test]
+    fn save_audio_segment_normalizes_empty_usb_device_ref_to_none() {
+        struct MemoryFileStore(std::sync::Mutex<Option<Vec<u8>>>);
+
+        impl ConfigFileStore for MemoryFileStore {
+            fn read_config_file(&self, _rel_path: &str) -> Result<Option<Vec<u8>>> {
+                Ok(self.0.lock().unwrap_or_else(|e| e.into_inner()).clone())
+            }
+
+            fn write_config_file(&self, _rel_path: &str, data: &[u8]) -> Result<()> {
+                *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(data.to_vec());
+                Ok(())
+            }
+
+            fn remove_config_file(&self, _rel_path: &str) -> Result<()> {
+                *self.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                Ok(())
+            }
+        }
+
+        let store = MemoryFileStore(std::sync::Mutex::new(None));
+        let body = r#"{
+            "version": 1,
+            "enabled": true,
+            "service_provider": "baidu",
+            "microphone": {
+              "enabled": false,
+              "device_type": "i2s_inmp441",
+              "pins": { "ws": 25, "sck": 26, "din": 27 },
+              "sample_rate": 16000,
+              "bits_per_sample": 16,
+              "buffer_size": 1024
+            },
+            "speaker": {
+              "enabled": true,
+              "device_type": "usb",
+              "device_ref": "   ",
+              "sample_rate": 16000,
+              "bits_per_sample": 16
+            },
+            "vad": { "threshold": 0.5, "silence_duration_ms": 1000 },
+            "wake_word": { "enabled": false, "keyword": "hiesp", "wake_prompt": "你好，我在听，请说。" },
+            "speech": { "api_url": "https://vop.baidu.com/server_api", "api_key": "", "api_secret": "", "model": "1537", "language": "zh" },
+            "tts": { "voice": "0", "rate": "+0%", "pitch": "+0Hz" },
+            "realtime": {
+              "provider": "openai_compatible",
+              "ws_url": "wss://api.openai.com/v1/realtime",
+              "api_key": "",
+              "api_secret": "",
+              "app_id": "",
+              "model": "gpt-realtime",
+              "voice": "alloy",
+              "instructions": "",
+              "user_id": "",
+              "license_key": "",
+              "device_id": ""
+            },
+            "ambient_listening": {
+              "enabled": false,
+              "detect_emotions": true,
+              "sound_events": ["sigh"],
+              "cooldown_minutes": 10,
+              "check_interval_seconds": 300
+            },
+            "led_indicator": {
+              "enabled": false,
+              "pin": 2,
+              "states": { "listening": "breathing", "processing": "fast_blink", "speaking": "solid" }
+            }
+        }"#;
+
+        save_audio_segment(&store, body).expect("save audio");
+        let written = store
+            .read_config_file("config/audio.json")
+            .expect("read")
+            .expect("written");
+        let saved: AudioSegment = serde_json::from_slice(&written).expect("parse saved audio");
+        assert_eq!(saved.speaker.device_ref, None);
     }
 }

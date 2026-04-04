@@ -9,7 +9,10 @@ import RadioGroup from "@mui/material/RadioGroup";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
-import { FormFieldStack, FormSectionSubCollapsible } from "../../components/form";
+import {
+  FormFieldStack,
+  FormSectionSubCollapsible,
+} from "../../components/form";
 import {
   SOUL_SKILL_KEYS,
   SOUL_TRAIT_KEYS,
@@ -83,7 +86,10 @@ export function SoulFormBody({
 }) {
   return (
     <Stack spacing={2}>
-      <FormSectionSubCollapsible title={t("soulUser.soulGroupBasics")} defaultOpen>
+      <FormSectionSubCollapsible
+        title={t("soulUser.soulGroupBasics")}
+        defaultOpen
+      >
         <FormFieldStack>
           <TextField
             label={t("soulUser.soulFieldName")}
@@ -95,7 +101,11 @@ export function SoulFormBody({
           />
           <FormControl>
             <FormLabel
-              sx={{ fontSize: "var(--font-size-caption)", color: "var(--muted)", mb: 0.5 }}
+              sx={{
+                fontSize: "var(--font-size-caption)",
+                color: "var(--muted)",
+                mb: 0.5,
+              }}
             >
               {t("soulUser.soulFieldTone")}
             </FormLabel>
@@ -136,7 +146,10 @@ export function SoulFormBody({
         </FormFieldStack>
       </FormSectionSubCollapsible>
 
-      <FormSectionSubCollapsible title={t("soulUser.soulGroupStyle")} defaultOpen>
+      <FormSectionSubCollapsible
+        title={t("soulUser.soulGroupStyle")}
+        defaultOpen
+      >
         <FormFieldStack>
           <ChipSelectRow
             label={t("soulUser.soulFieldTraits")}
@@ -167,7 +180,10 @@ export function SoulFormBody({
         </FormFieldStack>
       </FormSectionSubCollapsible>
 
-      <FormSectionSubCollapsible title={t("soulUser.soulGroupExtra")} defaultOpen={false}>
+      <FormSectionSubCollapsible
+        title={t("soulUser.soulGroupExtra")}
+        defaultOpen={false}
+      >
         <TextField
           label={t("soulUser.soulFieldExtra")}
           value={form.extra}
@@ -195,19 +211,28 @@ export function UserFormBody({
 }) {
   return (
     <Stack spacing={2}>
-      <FormSectionSubCollapsible title={t("soulUser.userGroupBasics")} defaultOpen>
+      <FormSectionSubCollapsible
+        title={t("soulUser.userGroupBasics")}
+        defaultOpen
+      >
         <FormFieldStack>
           <TextField
             label={t("soulUser.userFieldNickname")}
             value={form.nickname}
-            onChange={(e) => setForm((p) => ({ ...p, nickname: e.target.value }))}
+            onChange={(e) =>
+              setForm((p) => ({ ...p, nickname: e.target.value }))
+            }
             size="small"
             fullWidth
             inputProps={{ maxLength: 128 }}
           />
           <FormControl>
             <FormLabel
-              sx={{ fontSize: "var(--font-size-caption)", color: "var(--muted)", mb: 0.5 }}
+              sx={{
+                fontSize: "var(--font-size-caption)",
+                color: "var(--muted)",
+                mb: 0.5,
+              }}
             >
               {t("soulUser.userFieldLang")}
             </FormLabel>
@@ -241,7 +266,11 @@ export function UserFormBody({
           </FormControl>
           <FormControl>
             <FormLabel
-              sx={{ fontSize: "var(--font-size-caption)", color: "var(--muted)", mb: 0.5 }}
+              sx={{
+                fontSize: "var(--font-size-caption)",
+                color: "var(--muted)",
+                mb: 0.5,
+              }}
             >
               {t("soulUser.userFieldReplyLength")}
             </FormLabel>
@@ -276,12 +305,17 @@ export function UserFormBody({
         </FormFieldStack>
       </FormSectionSubCollapsible>
 
-      <FormSectionSubCollapsible title={t("soulUser.userGroupProfile")} defaultOpen>
+      <FormSectionSubCollapsible
+        title={t("soulUser.userGroupProfile")}
+        defaultOpen
+      >
         <FormFieldStack>
           <TextField
             label={t("soulUser.userFieldOccupation")}
             value={form.occupation}
-            onChange={(e) => setForm((p) => ({ ...p, occupation: e.target.value }))}
+            onChange={(e) =>
+              setForm((p) => ({ ...p, occupation: e.target.value }))
+            }
             size="small"
             fullWidth
             inputProps={{ maxLength: 256 }}
@@ -302,7 +336,9 @@ export function UserFormBody({
           <TextField
             label={t("soulUser.userFieldTimezone")}
             value={form.timezone}
-            onChange={(e) => setForm((p) => ({ ...p, timezone: e.target.value }))}
+            onChange={(e) =>
+              setForm((p) => ({ ...p, timezone: e.target.value }))
+            }
             size="small"
             fullWidth
             placeholder={t("soulUser.userFieldTimezonePlaceholder")}
@@ -311,7 +347,10 @@ export function UserFormBody({
         </FormFieldStack>
       </FormSectionSubCollapsible>
 
-      <FormSectionSubCollapsible title={t("soulUser.userGroupExtra")} defaultOpen={false}>
+      <FormSectionSubCollapsible
+        title={t("soulUser.userGroupExtra")}
+        defaultOpen={false}
+      >
         <TextField
           label={t("soulUser.userFieldExtra")}
           value={form.extra}

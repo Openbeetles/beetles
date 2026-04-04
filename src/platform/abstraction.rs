@@ -81,6 +81,93 @@ pub trait SkillStorage: Send + Sync {
     fn remove(&self, name: &str) -> Result<()>;
 }
 
+/// Hardware discovery bus filter exposed through the config HTTP API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HardwareDiscoveryBus {
+    Usb,
+}
+
+impl HardwareDiscoveryBus {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim() {
+            "usb" => Some(Self::Usb),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Usb => "usb",
+        }
+    }
+}
+
+/// Capability filter for platform hardware discovery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HardwareCapability {
+    AudioOutput,
+    AudioInput,
+    Camera,
+    Serial,
+    Hid,
+}
+
+impl HardwareCapability {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim() {
+            "audio_output" => Some(Self::AudioOutput),
+            "audio_input" => Some(Self::AudioInput),
+            "camera" => Some(Self::Camera),
+            "serial" => Some(Self::Serial),
+            "hid" => Some(Self::Hid),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::AudioOutput => "audio_output",
+            Self::AudioInput => "audio_input",
+            Self::Camera => "camera",
+            Self::Serial => "serial",
+            Self::Hid => "hid",
+        }
+    }
+}
+
+/// Query for platform-scoped hardware discovery.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HardwareDiscoveryQuery {
+    pub bus: HardwareDiscoveryBus,
+    pub capability: HardwareCapability,
+}
+
+/// One discovered hardware item returned to the config UI.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HardwareDiscoveryItem {
+    pub device_ref: String,
+    pub label: String,
+    pub kind: String,
+    pub capabilities: Vec<HardwareCapability>,
+    pub is_default: bool,
+    pub metadata: Value,
+}
+
+/// Discovery response envelope, intentionally not a bare array.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HardwareDiscoveryResponse {
+    pub bus: HardwareDiscoveryBus,
+    pub capability: HardwareCapability,
+    pub items: Vec<HardwareDiscoveryItem>,
+}
+
+/// Platform-specific hardware discovery provider (USB audio devices, cameras, etc.).
+pub trait HardwareDiscovery: Send + Sync {
+    fn discover(&self, query: &HardwareDiscoveryQuery) -> Result<HardwareDiscoveryResponse>;
+}
+
 /// 统一 HTTP 客户端：仅 get/post/post_streaming/reset 方法，LlmHttpClient、ToolContext、ChannelHttpClient 由 lib 层 blanket 转发。
 pub trait PlatformHttpClient {
     fn get(&mut self, url: &str, headers: &[(&str, &str)]) -> Result<(u16, ResponseBody)>;
@@ -197,6 +284,14 @@ pub trait Platform: Send + Sync {
     /// WiFi 扫描句柄（SoftAP 就绪且底层已注册扫描时为 Some；STA 失败时仍应保留以便配网）；用于 GET /api/wifi/scan。
     fn wifi_scan(&self) -> Option<Arc<dyn crate::platform::WifiScan + Send + Sync>> {
         None
+    }
+    /// Hardware discovery handle (USB devices, cameras, serial peripherals, etc.).
+    fn hardware_discovery(&self) -> Option<Arc<dyn crate::platform::HardwareDiscovery + Send + Sync>> {
+        None
+    }
+    /// 当前对外可达的局域网 IPv4；Linux 应返回当前活跃上行接口地址，ESP 默认复用 STA IPv4。
+    fn lan_ipv4(&self) -> Option<String> {
+        self.wifi_sta_ip()
     }
     /// 当前 STA IPv4 地址（例如 192.168.1.42）；不可用时返回 None。
     fn wifi_sta_ip(&self) -> Option<String> {

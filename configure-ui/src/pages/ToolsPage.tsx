@@ -17,13 +17,13 @@ import { createAsyncState } from "../types/asyncState";
 const listItemSx = {
   py: 1.5,
   px: 2,
-  bgcolor: "var(--surface)",
-  border: "1px solid var(--border-subtle)",
+  bgcolor: "var(--card)",
+  border: "none", backgroundColor: "var(--card)",
   borderRadius: "var(--radius-control)",
   alignItems: "center",
-  transition: "border-color var(--transition-duration) ease",
+  transition: "background-color var(--transition-duration) ease",
   "&:focus-within": {
-    borderColor: "color-mix(in srgb, var(--primary) 35%, var(--border))",
+    backgroundColor: "color-mix(in srgb, var(--primary) 6%, var(--card))",
   },
 } as const;
 
@@ -73,8 +73,8 @@ export function ToolsPage() {
               sx={{
                 py: 2,
                 px: 2,
-                bgcolor: "var(--surface)",
-                border: "1px dashed var(--border-subtle)",
+                bgcolor: "var(--card)",
+                border: "none", backgroundColor: "color-mix(in srgb, var(--foreground) 3%, transparent)",
                 borderRadius: "var(--radius-control)",
               }}
             >

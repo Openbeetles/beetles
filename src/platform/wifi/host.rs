@@ -16,6 +16,11 @@ pub fn wifi_sta_ip() -> Option<String> {
     crate::state::wifi_sta_ip()
 }
 
+/// Host 上无专门 LAN 路由探测，默认沿用已缓存的 STA IPv4。
+pub fn lan_ipv4() -> Option<String> {
+    wifi_sta_ip()
+}
+
 /// 阻塞直到出站网络就绪；host 立即返回。
 pub fn wait_for_network_ready() {}
 

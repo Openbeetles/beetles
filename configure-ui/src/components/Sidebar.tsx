@@ -274,7 +274,8 @@ export function Sidebar({ drawer }: SidebarProps) {
             overflow: "hidden" as const,
             minHeight: 56,
             backgroundColor: "transparent",
-            border: "1px solid color-mix(in srgb, var(--primary) 26%, transparent)",
+            border:
+              "1px solid color-mix(in srgb, var(--primary) 26%, transparent)",
             boxShadow: [
               "inset 0 1px 0 color-mix(in srgb, var(--foreground) 10%, transparent)",
               "inset 0 -1px 0 color-mix(in srgb, var(--foreground) 7%, transparent)",

@@ -1,6 +1,6 @@
 //! GET /api/system_info：供系统信息页展示用，返回 product_name、system_status、current_time、firmware_version、locale、lan_ip。
 //! `current_time`：Host 用系统时钟；ESP 在 SNTP 同步后由 `util::current_unix_secs()` 提供 UTC 字符串，未同步时返回 "—"。
-//! `lan_ip`：STA 模式下路由器 DHCP 分配的 IPv4（点分十进制）；未连接或无地址时为 "—"。
+//! `lan_ip`：ESP 为 STA IPv4；Linux 为当前默认上行接口的 IPv4（点分十进制）；不可用时为 "—"。
 //! `board_id`：运行期拼装（ESP：`esp_chip_info`+Flash 与 manifest 档位对齐；Linux：`linux`）。`hardware_model`：ESP 为摘要句；Linux 为设备树/DMI 等（若有）。
 
 use super::HandlerContext;
@@ -111,7 +111,7 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let locale = config::get_locale(ctx.config_store.as_ref());
     let lan_ip = ctx
         .platform
-        .wifi_sta_ip()
+        .lan_ipv4()
         .unwrap_or_else(|| "—".to_string());
     #[allow(unused_mut)]
     let mut json = serde_json::json!({

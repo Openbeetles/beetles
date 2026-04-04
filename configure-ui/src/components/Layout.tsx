@@ -185,9 +185,9 @@ export function Layout({ onOpenSettings }: LayoutProps) {
     px: 2,
     py: 1.5,
     borderRadius: "var(--radius-card)",
-    border: "1px solid var(--border-subtle)",
+    border: "none",
     backgroundColor: "var(--card)",
-    boxShadow: "var(--shadow-card)",
+    boxShadow: "none",
   };
 
   return (
@@ -315,7 +315,7 @@ export function Layout({ onOpenSettings }: LayoutProps) {
                   maxWidth: "85vw",
                   boxSizing: "border-box",
                   backgroundColor: "var(--surface)",
-                  boxShadow: "var(--shadow-card)",
+                  boxShadow: "none",
                 },
               }}
             >

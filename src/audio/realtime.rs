@@ -296,6 +296,16 @@ pub fn run_realtime_session(
             break;
         }
 
+        // The ESP audio worker intentionally stops filling the shared mic ring while
+        // speaker playback is active. If the realtime loop still blocks on
+        // `read_mic_pcm_i16()` here, WSS receive draining stalls for up to the full
+        // mic read timeout, which turns downlink playback into audible stutter.
+        if state.audio_playing {
+            crate::platform::task_wdt::feed_current_task();
+            thread::sleep(Duration::from_millis(REALTIME_RECV_POLL_MS));
+            continue;
+        }
+
         let n = platform.read_mic_pcm_i16(&mut mic_frame)?;
         if n == 0 {
             crate::platform::task_wdt::feed_current_task();

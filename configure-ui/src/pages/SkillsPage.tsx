@@ -18,7 +18,11 @@ import DeleteOutlined from "@mui/icons-material/DeleteOutlined";
 import EditOutlined from "@mui/icons-material/EditOutlined";
 import ExtensionOutlined from "@mui/icons-material/ExtensionOutlined";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { FormFieldStack, InlineAlert, SectionLoadingSkeleton } from "../components/form";
+import {
+  FormFieldStack,
+  InlineAlert,
+  SectionLoadingSkeleton,
+} from "../components/form";
 import { SettingsSection } from "../components/SettingsSection";
 import { useDeviceApi, type SkillItem } from "../hooks/useDeviceApi";
 import { useToast } from "../hooks/useToast";
@@ -67,7 +71,11 @@ export function SkillsPage() {
         data: { skills: res.data.skills, order: res.data.order ?? [] },
       });
     } else {
-      setListState((prev) => ({ ...prev, loading: false, error: res.error ?? "" }));
+      setListState((prev) => ({
+        ...prev,
+        loading: false,
+        error: res.error ?? "",
+      }));
     }
   }, [api.skills, ready]);
 
@@ -86,7 +94,9 @@ export function SkillsPage() {
         ...prev,
         data: {
           ...prev.data,
-          skills: prev.data.skills.map((s) => (s.name === name ? { ...s, enabled } : s)),
+          skills: prev.data.skills.map((s) =>
+            s.name === name ? { ...s, enabled } : s,
+          ),
         },
       }));
   };
@@ -130,7 +140,10 @@ export function SkillsPage() {
   };
 
   const closeEditDialog = () => {
-    if (editContent !== editContentInitial && editContentInitial !== undefined) {
+    if (
+      editContent !== editContentInitial &&
+      editContentInitial !== undefined
+    ) {
       setDiscardEditOpen(true);
       return;
     }
@@ -219,7 +232,9 @@ export function SkillsPage() {
                 py: 2,
                 px: 2,
                 bgcolor: "var(--surface)",
-                border: "1px dashed var(--border-subtle)",
+                border: "none",
+                backgroundColor:
+                  "color-mix(in srgb, var(--foreground) 3%, transparent)",
                 borderRadius: "var(--radius-control)",
               }}
             >
@@ -250,12 +265,14 @@ export function SkillsPage() {
                   py: 1.5,
                   px: 2,
                   bgcolor: "var(--surface)",
-                  border: "1px solid var(--border-subtle)",
+                  border: "none",
+                  backgroundColor: "var(--surface)",
                   borderRadius: "var(--radius-control)",
                   display: "flex",
                   alignItems: "center",
                   gap: 1,
-                  transition: "border-color var(--transition-duration) ease",
+                  transition:
+                    "background-color var(--transition-duration) ease",
                   "&:focus-within": {
                     borderColor:
                       "color-mix(in srgb, var(--primary) 35%, var(--border))",
@@ -344,8 +361,9 @@ export function SkillsPage() {
           paper: {
             sx: {
               borderRadius: "var(--radius-card)",
-              border: "1px solid var(--border-subtle)",
-              boxShadow: "var(--shadow-card-hover)",
+              border: "none",
+              backgroundColor: "var(--surface)",
+              boxShadow: "none",
             },
           },
         }}
@@ -406,8 +424,9 @@ export function SkillsPage() {
           paper: {
             sx: {
               borderRadius: "var(--radius-card)",
-              border: "1px solid var(--border-subtle)",
-              boxShadow: "var(--shadow-card-hover)",
+              border: "none",
+              backgroundColor: "var(--surface)",
+              boxShadow: "none",
             },
           },
         }}

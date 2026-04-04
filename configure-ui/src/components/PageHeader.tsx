@@ -18,7 +18,7 @@ export function PageHeader({ title, description, variant = 'page' }: PageHeaderP
         ...(inBar ? { py: 1.5, flex: 1, minWidth: 0 } : { mb: 4, pb: 3 }),
         position: 'relative',
         ...(!inBar && {
-          borderBottom: '1px solid var(--border-subtle)',
+          borderBottom: 'none',
           '&::after': {
             content: '""',
             position: 'absolute',

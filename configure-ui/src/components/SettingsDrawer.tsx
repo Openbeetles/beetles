@@ -70,10 +70,10 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
           maxWidth: "100%",
           boxSizing: "border-box",
           border: "none",
-          borderLeft: "1px solid var(--border-subtle)",
+          borderLeft: "none",
           borderTopLeftRadius: "var(--radius-card)",
           borderBottomLeftRadius: "var(--radius-card)",
-          boxShadow: "var(--shadow-subtle)",
+          boxShadow: "none",
           backgroundColor: "var(--card)",
           transition:
             "border-color var(--transition-duration) ease, box-shadow var(--transition-duration) ease",
@@ -294,7 +294,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
           sx={{
             px: 2.5,
             py: 2,
-            borderTop: "1px solid var(--border-subtle)",
+            borderTop: "none",
           }}
         >
           <Box
@@ -303,7 +303,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
               height: "var(--icon-size-sm)",
               borderRadius: "var(--radius-chip)",
               background: "var(--surface)",
-              border: "1px solid var(--border-subtle)",
+              border: "none",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",

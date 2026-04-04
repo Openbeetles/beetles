@@ -13,19 +13,19 @@ import { SectionLoadProgress } from "./SectionLoadProgress";
 /** 与 SystemStatusPanel 小节面板一致：中性底，不用 --surface 色块 */
 const SECTION_PANEL_SX = {
   borderRadius: "var(--radius-control)",
-  border: "1px solid color-mix(in srgb, var(--border-subtle) 72%, transparent)",
-  bgcolor: "color-mix(in srgb, var(--border) 2.8%, var(--card))",
-  boxShadow: "var(--shadow-subtle)",
+  border: "none",
+  bgcolor: "var(--card)",
+  boxShadow: "none",
 } as const;
 
 /** 与 SystemStatusPanel StatRow 微卡片一致 */
 const MICRO_CELL_SX = {
   borderRadius: "var(--radius-chip)",
-  border: "1px solid color-mix(in srgb, var(--border-subtle) 72%, transparent)",
+  border: "none",
   bgcolor: "color-mix(in srgb, var(--foreground) 2%, transparent)",
 } as const;
 
-const ROW_DIVIDER = "1px solid color-mix(in srgb, var(--border-subtle) 55%, transparent)";
+const ROW_DIVIDER = "none";
 
 const CHANNEL_UNAVAIL = "channel connectivity unavailable";
 
@@ -37,7 +37,8 @@ function isI18nKey(msg: string): boolean {
 function resolveChannelConnectivityError(error: string, t: TFunction): string {
   const trimmed = error.trim();
   if (!trimmed) return t("device.channelConnectivityLoadFailedHint");
-  if (trimmed === CHANNEL_UNAVAIL) return t("device.channelConnectivityUnavailable");
+  if (trimmed === CHANNEL_UNAVAIL)
+    return t("device.channelConnectivityUnavailable");
   if (isI18nKey(trimmed)) return t(trimmed);
   return trimmed;
 }
@@ -99,8 +100,16 @@ function ChannelStatusPill({
   ok: boolean;
   statusLabel: string;
 }) {
-  const Icon = configured ? (ok ? CheckCircleOutlined : ErrorOutlined) : LinkOffOutlined;
-  const accent = configured ? (ok ? "var(--semantic-success)" : "var(--semantic-danger)") : "var(--muted)";
+  const Icon = configured
+    ? ok
+      ? CheckCircleOutlined
+      : ErrorOutlined
+    : LinkOffOutlined;
+  const accent = configured
+    ? ok
+      ? "var(--semantic-success)"
+      : "var(--semantic-danger)"
+    : "var(--muted)";
 
   return (
     <Box
@@ -119,12 +128,16 @@ function ChannelStatusPill({
         transition:
           "border-color var(--transition-duration) ease, box-shadow var(--transition-duration) var(--ease-out-smooth)",
         "&:hover": {
-          borderColor: "color-mix(in srgb, var(--primary) 14%, var(--border-subtle))",
-          boxShadow: "0 1px 0 color-mix(in srgb, var(--border) 28%, transparent)",
+          borderColor:
+            "color-mix(in srgb, var(--primary) 14%, var(--border-subtle))",
+          boxShadow: "none",
         },
       }}
     >
-      <Icon sx={{ fontSize: "var(--icon-size-sm)", flexShrink: 0 }} aria-hidden />
+      <Icon
+        sx={{ fontSize: "var(--icon-size-sm)", flexShrink: 0 }}
+        aria-hidden
+      />
       <Typography
         component="span"
         sx={{
@@ -197,7 +210,11 @@ function ChannelRow({
         >
           {label}
         </Typography>
-        <ChannelStatusPill configured={configured} ok={ok} statusLabel={statusText} />
+        <ChannelStatusPill
+          configured={configured}
+          ok={ok}
+          statusLabel={statusText}
+        />
       </Box>
       {showDetail && (
         <Typography
@@ -244,7 +261,8 @@ function LoadFailedState({
         ...SECTION_PANEL_SX,
         borderLeftWidth: "var(--accent-line-width, 3px)",
         borderLeftStyle: "solid",
-        borderLeftColor: "color-mix(in srgb, var(--semantic-danger) 72%, var(--border-subtle))",
+        borderLeftColor:
+          "color-mix(in srgb, var(--semantic-danger) 72%, var(--border-subtle))",
         bgcolor: "color-mix(in srgb, var(--semantic-danger) 4%, var(--card))",
       }}
     >
@@ -257,7 +275,8 @@ function LoadFailedState({
           width: { xs: "100%", sm: 44 },
           height: 44,
           ...MICRO_CELL_SX,
-          color: "color-mix(in srgb, var(--semantic-danger) 88%, var(--foreground))",
+          color:
+            "color-mix(in srgb, var(--semantic-danger) 88%, var(--foreground))",
         }}
       >
         <HubOutlined sx={{ fontSize: "var(--icon-size-lg)" }} aria-hidden />
@@ -287,7 +306,9 @@ function LoadFailedState({
         <Button
           size="small"
           variant="outlined"
-          startIcon={<RefreshRounded sx={{ fontSize: "var(--icon-size-sm)" }} />}
+          startIcon={
+            <RefreshRounded sx={{ fontSize: "var(--icon-size-sm)" }} />
+          }
           onClick={onRetry}
           sx={{
             alignSelf: "flex-start",
@@ -331,7 +352,9 @@ export function ChannelConnectivityPanel({
   const okCount = channels.filter((c) => c.configured && c.ok).length;
   const issueCount = channels.filter((c) => c.configured && !c.ok).length;
 
-  const errorDisplay = error.trim() ? resolveChannelConnectivityError(error, t) : "";
+  const errorDisplay = error.trim()
+    ? resolveChannelConnectivityError(error, t)
+    : "";
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 1.75 }}>
@@ -351,12 +374,33 @@ export function ChannelConnectivityPanel({
 
       {hasList && (
         <>
-          <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1, alignItems: "center" }}>
-            <StatPill label={t("device.channelStatTotal")} value={channels.length} />
-            <StatPill label={t("device.channelStatConfigured")} value={configuredCount} />
-            <StatPill label={t("device.channelStatOk")} value={okCount} accent="var(--semantic-success)" />
+          <Box
+            sx={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 1,
+              alignItems: "center",
+            }}
+          >
+            <StatPill
+              label={t("device.channelStatTotal")}
+              value={channels.length}
+            />
+            <StatPill
+              label={t("device.channelStatConfigured")}
+              value={configuredCount}
+            />
+            <StatPill
+              label={t("device.channelStatOk")}
+              value={okCount}
+              accent="var(--semantic-success)"
+            />
             {issueCount > 0 && (
-              <StatPill label={t("device.channelStatIssues")} value={issueCount} accent="var(--semantic-danger)" />
+              <StatPill
+                label={t("device.channelStatIssues")}
+                value={issueCount}
+                accent="var(--semantic-danger)"
+              />
             )}
           </Box>
 
@@ -372,8 +416,9 @@ export function ChannelConnectivityPanel({
                 ...SECTION_PANEL_SX,
                 borderLeftWidth: "var(--accent-line-width, 3px)",
                 borderLeftStyle: "solid",
-                borderLeftColor: "color-mix(in srgb, var(--semantic-warning) 72%, var(--border-subtle))",
-                bgcolor: "color-mix(in srgb, var(--border) 2.8%, var(--card))",
+                borderLeftColor:
+                  "color-mix(in srgb, var(--semantic-warning) 72%, var(--border-subtle))",
+                bgcolor: "var(--card)",
               }}
             >
               <Typography
@@ -409,7 +454,8 @@ export function ChannelConnectivityPanel({
             sx={{
               overflow: "hidden",
               opacity: loading ? 0.72 : 1,
-              transition: "opacity var(--transition-duration) var(--ease-emphasized)",
+              transition:
+                "opacity var(--transition-duration) var(--ease-emphasized)",
               pointerEvents: loading ? "none" : "auto",
               ...SECTION_PANEL_SX,
             }}
@@ -430,7 +476,11 @@ export function ChannelConnectivityPanel({
           {t("device.channelConnectivityNote")?.trim() ? (
             <Typography
               variant="caption"
-              sx={{ color: "var(--muted)", display: "block", lineHeight: "var(--line-height-relaxed)" }}
+              sx={{
+                color: "var(--muted)",
+                display: "block",
+                lineHeight: "var(--line-height-relaxed)",
+              }}
             >
               {t("device.channelConnectivityNote")}
             </Typography>

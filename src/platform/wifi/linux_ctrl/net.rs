@@ -13,6 +13,10 @@ pub fn read_sta_ip(iface: &str) -> Result<Option<String>> {
     super::net_rt::read_sta_ip(iface)
 }
 
+pub fn read_primary_lan_ipv4() -> Result<Option<String>> {
+    super::net_rt::read_primary_lan_ipv4()
+}
+
 pub fn ensure_root_or_cap_net_admin() -> Result<()> {
     super::net_rt::ensure_netlink_access()
 }

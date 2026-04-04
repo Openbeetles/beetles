@@ -56,7 +56,7 @@ export function InlineAlert({ message, onRetry }: InlineAlertProps) {
         px: 2,
         py: 1.5,
         borderRadius: 'var(--radius-control)',
-        border: '1px solid var(--border-subtle)',
+        border: "none",
         borderLeft: 'var(--accent-line-width, 3px) solid var(--semantic-danger)',
         backgroundColor: 'color-mix(in srgb, var(--semantic-danger) 5%, var(--surface))',
       }}

@@ -92,7 +92,7 @@ export function DeviceConfigLayout() {
       <Box
         sx={{
           flexShrink: 0,
-          borderBottom: "1px solid var(--border-subtle)",
+          borderBottom: "none",
           backgroundColor: "var(--surface)",
         }}
       >

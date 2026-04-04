@@ -5,6 +5,7 @@ use super::auth;
 use super::types::{IncomingRequest, OutgoingResponse, RestartAction, RouterEnv};
 use crate::error::{Error, Result};
 use crate::i18n::{locale_from_store, tr, Message};
+use crate::platform::{HardwareCapability, HardwareDiscoveryBus};
 use crate::platform::http_server::common::{
     self, ApiResponse, CORS_AND_TEXT_PLAIN, CORS_HEADERS, CORS_OPTIONS_HEADERS, CSS_HEADERS,
     HTML_HEADERS, JS_HEADERS, REDIRECT_PAIRING_HEADERS,
@@ -65,6 +66,28 @@ fn format_from_uri(uri: &str) -> Option<&str> {
         }
     }
     None
+}
+
+#[inline(never)]
+fn query_param_from_uri<'a>(uri: &'a str, key: &str) -> Option<&'a str> {
+    let query = uri.find('?').map(|i| &uri[i + 1..]).unwrap_or("");
+    for pair in query.split('&') {
+        let mut it = pair.splitn(2, '=');
+        if it.next().is_some_and(|k| k.eq_ignore_ascii_case(key)) {
+            return it.next().filter(|value| !value.is_empty());
+        }
+    }
+    None
+}
+
+#[inline(never)]
+fn hardware_bus_from_uri(uri: &str) -> Option<HardwareDiscoveryBus> {
+    query_param_from_uri(uri, "bus").and_then(HardwareDiscoveryBus::parse)
+}
+
+#[inline(never)]
+fn hardware_capability_from_uri(uri: &str) -> Option<HardwareCapability> {
+    query_param_from_uri(uri, "capability").and_then(HardwareCapability::parse)
 }
 
 #[inline(never)]
@@ -361,6 +384,44 @@ pub fn dispatch(
                 ))
             }
         },
+        ("GET", "/api/hardware/discovery") => {
+            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
+                return Ok(api_to_out(r));
+            }
+            let Some(bus) = hardware_bus_from_uri(uri) else {
+                return Ok(api_to_out(ApiResponse::err_400("missing or invalid bus")));
+            };
+            let Some(capability) = hardware_capability_from_uri(uri) else {
+                return Ok(api_to_out(ApiResponse::err_400("missing or invalid capability")));
+            };
+            match handlers::hardware_discovery::get_body(ctx, bus, capability) {
+                Ok(body) => Ok(OutgoingResponse::json(
+                    200,
+                    "OK",
+                    CORS_HEADERS,
+                    body.into_bytes(),
+                )),
+                Err(handlers::hardware_discovery::HardwareDiscoveryError::Unavailable) => {
+                    let body =
+                        serde_json::json!({ "error": "hardware discovery not available" }).to_string();
+                    Ok(OutgoingResponse::json(
+                        503,
+                        "Service Unavailable",
+                        CORS_HEADERS,
+                        body.into_bytes(),
+                    ))
+                }
+                Err(handlers::hardware_discovery::HardwareDiscoveryError::Other(e)) => {
+                    let body = serde_json::json!({ "error": e.to_string() }).to_string();
+                    Ok(OutgoingResponse::json(
+                        500,
+                        "Internal Server Error",
+                        CORS_HEADERS,
+                        body.into_bytes(),
+                    ))
+                }
+            }
+        }
         ("GET", "/api/health") => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));

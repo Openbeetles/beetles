@@ -46,10 +46,23 @@
 - **语音与工具 HTTP**：在 **orchestrator 准入**内收口——减少语音链路上的整段复制与重复建连；语音相关出站应复用 **注入的 `ToolContext` / 既有 HTTP 客户端**，禁止为省内存再开一套并行 TLS 栈。**Voice/tools: fewer copies, no redundant per-tool HTTP clients outside the injected path.**
 - **禁区（不放 PSRAM）**：**任务栈**、**DMA 描述符**、**Wi‑Fi / NVS 等 IDF 核心结构**须保留在 **internal DRAM**；实时或高频缓冲（如 SSE 行缓冲）按 `constants` 与现有设计留在 SRAM。**Stacks, DMA descriptors, Wi‑Fi/NVS internals stay internal; not SPIRAM.**
 
+### ESP32 运行态进阶治理（吸收 xiaozhi 后）
+
+- **先收模式，再做 admission**：新增 ESP 交互/联网能力时，先定义 steady-state mode、切换前置条件、挂起/恢复边界；不得只靠多开线程、补 permit、补重试来“允许共存”。
+- **禁止恢复第二条常驻重执行面**：ESP 运行态只允许一个 `agent_loop` 作为常驻 LLM/TLS 重执行面；后台自治、维护、self-runtime 作业必须在同一 agent plane 串行消费。
+- **管理面必须可驱逐**：`config_plane` 属 bootstrap / recovery plane；新增配置、诊断、对外服务若进入 ESP 主线，必须证明可暂停、可关闭，或其 steady-state 成本已被明确预算。
+- **外部通道服从 voice-exclusive**：外部 WSS / IM 长连必须是从属 plane；进入 realtime voice 前先完成 suspend，退出后再 resume，禁止“边切模式边抢 TLS”。
+
 ## 代码风格
 
 - 公共 API 必须有 rustdoc（中英均可）；新增模块在 `lib.rs` 或对应 `mod.rs` 中导出稳定接口。
 - 遵循 `rustfmt` 与 `clippy`（`cargo clippy` 无警告）；嵌入式注意栈与堆使用，大 buffer 使用 PSRAM。
+
+### 调试与验证策略（新增）
+
+- **默认禁止编译/构建**：除非用户**明确要求**，禁止主动运行任何会触发编译、链接、构建、测试、刷机或产物生成的命令，包括但不限于 `cargo build`、`cargo check`、`cargo test`、`cargo clippy`、`rustc`、`build.sh`、`build.ps1`、`idf.py`、`espflash`。
+- **只做静态检查**：默认只允许使用不会触发编译的命令检查代码规范或约束是否报错，例如 `rg`、`sed`、`git diff`、`./scripts/check_platform_isolation.sh`、以及其他明确为静态检查的脚本。
+- **分析已有输出，不得重跑构建**：若用户贴出编译/构建/测试日志，可直接基于日志分析；不得因为想验证结论而自行再次编译。
 
 ### 后台线程与资源
 

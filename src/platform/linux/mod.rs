@@ -3,8 +3,10 @@
 
 #[cfg(target_os = "linux")]
 pub(crate) mod display_fb;
+mod audio;
+mod hardware_discovery;
 
-use crate::platform::abstraction::{MemorySnapshot, Platform, StateFs};
+use crate::platform::abstraction::{HardwareDiscovery, MemorySnapshot, Platform, StateFs};
 use crate::platform::{
     display_driver::{install_display_state, DisplayState},
     heartbeat_file::read_heartbeat_file,
@@ -22,7 +24,7 @@ use crate::platform::{
 };
 use crate::{
     calendar::{CalendarProviderCredentialStore, CalendarStore},
-    config::AppConfig,
+    config::{AppConfig, AudioSegment},
     display::{DisplayCommand, DisplayConfig},
     memory::{
         AutonomyStrategyStore, ExecutionStateStore, ImportantMessageStore, InnerLifeStore,
@@ -64,7 +66,9 @@ pub struct LinuxPlatform {
     session_summary_store: Arc<SpiffsSessionSummaryStore>,
     turn_ledger_store: Arc<SpiffsTurnLedgerStore>,
     wifi_scan_handle: Mutex<Option<Arc<dyn crate::platform::WifiScan + Send + Sync>>>,
+    hardware_discovery_handle: Arc<dyn HardwareDiscovery + Send + Sync>,
     display_state: Mutex<Option<DisplayState>>,
+    audio_state: Mutex<Option<audio::LinuxSpeakerRuntime>>,
 }
 
 impl LinuxPlatform {
@@ -103,7 +107,9 @@ impl LinuxPlatform {
             session_summary_store: Arc::new(SpiffsSessionSummaryStore::new()),
             turn_ledger_store: Arc::new(SpiffsTurnLedgerStore::new()),
             wifi_scan_handle: Mutex::new(None),
+            hardware_discovery_handle: Arc::new(hardware_discovery::LinuxHardwareDiscovery::new()),
             display_state: Mutex::new(None),
+            audio_state: Mutex::new(None),
         }
     }
 }
@@ -184,6 +190,14 @@ impl Platform for LinuxPlatform {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+
+    fn hardware_discovery(&self) -> Option<Arc<dyn crate::platform::HardwareDiscovery + Send + Sync>> {
+        Some(Arc::clone(&self.hardware_discovery_handle))
+    }
+
+    fn lan_ipv4(&self) -> Option<String> {
+        crate::platform::wifi::lan_ipv4()
     }
 
     fn wifi_sta_ip(&self) -> Option<String> {
@@ -332,6 +346,47 @@ impl Platform for LinuxPlatform {
     fn init_display(&self, config: &DisplayConfig) -> crate::error::Result<()> {
         let mut guard = self.display_state.lock().unwrap_or_else(|e| e.into_inner());
         install_display_state(&mut guard, config)
+    }
+
+    fn init_audio(&self, config: &AudioSegment) -> crate::error::Result<()> {
+        let mut guard = self.audio_state.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = None;
+        if !config.enabled || !config.speaker.enabled {
+            return Ok(());
+        }
+        let runtime = audio::LinuxSpeakerRuntime::from_config(config)?;
+        log::info!(
+            "[platform::linux] audio initialized (speaker_ready=true, speaker={})",
+            runtime.selected_label()
+        );
+        *guard = Some(runtime);
+        Ok(())
+    }
+
+    fn audio_speaker_ready(&self) -> bool {
+        self.audio_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|state| state.ready())
+            .unwrap_or(false)
+    }
+
+    fn write_speaker_pcm_i16(&self, buf: &[i16]) -> crate::error::Result<()> {
+        let guard = self.audio_state.lock().unwrap_or_else(|e| e.into_inner());
+        let state = guard.as_ref().ok_or_else(|| {
+            crate::error::Error::config("audio_speaker", "Linux speaker runtime not initialized")
+        })?;
+        state.write_pcm_i16(buf)
+    }
+
+    fn speaker_buffered_samples(&self) -> usize {
+        self.audio_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|state| state.buffered_samples())
+            .unwrap_or(0)
     }
 
     fn display_available(&self) -> bool {

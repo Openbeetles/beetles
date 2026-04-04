@@ -23,7 +23,8 @@ export interface AudioMicrophoneConfig {
 export interface AudioSpeakerConfig {
   enabled: boolean
   device_type: string
-  pins: AudioSpeakerPins
+  device_ref?: string | null
+  pins?: AudioSpeakerPins | null
   sample_rate: number
   bits_per_sample: number
 }
@@ -102,6 +103,13 @@ export interface AudioConfig {
   led_indicator: AudioLedIndicatorConfig
 }
 
+const DEFAULT_AUDIO_SPEAKER_PINS: AudioSpeakerPins = {
+  ws: 32,
+  sck: 33,
+  dout: 22,
+  sd: null,
+}
+
 export const AUDIO_CONFIG_VERSION = 1
 export const AUDIO_PIN_MIN = 1
 export const AUDIO_PIN_MAX = 48
@@ -115,6 +123,7 @@ export const AUDIO_BITS_PER_SAMPLE_ALLOWED = [16, 24, 32] as const
 
 export const AUDIO_MIC_DEVICE_TYPES = ['i2s_inmp441', 'pdm'] as const
 export const AUDIO_SPEAKER_DEVICE_TYPES = ['i2s_max98357a'] as const
+export const AUDIO_SPEAKER_DEVICE_TYPES_LINUX = ['usb'] as const
 
 export const AUDIO_SAMPLE_RATE_PRESETS = [
   8_000,
@@ -279,6 +288,11 @@ export function normalizeAudioConfigForSave(c: AudioConfig): AudioConfig {
   const speech = { ...c.speech }
   const realtime = { ...c.realtime }
   const realtimeDefaults = realtimeProviderDefaults(realtime.provider)
+  const speaker: AudioSpeakerConfig = {
+    ...c.speaker,
+    device_ref: c.speaker.device_ref?.trim() || null,
+    pins: audioSpeakerPinsOrDefault(c.speaker.pins),
+  }
 
   if (c.service_provider === 'baidu' && !speech.api_url.trim()) {
     speech.api_url = DEFAULT_SPEECH_API_URL_BAIDU
@@ -307,7 +321,13 @@ export function normalizeAudioConfigForSave(c: AudioConfig): AudioConfig {
     realtime.voice = realtimeDefaults.voice
   }
 
-  return { ...c, speech, realtime }
+  if (speaker.device_type === 'usb') {
+    speaker.pins = null
+  } else {
+    speaker.device_ref = null
+  }
+
+  return { ...c, speech, realtime, speaker }
 }
 
 export function normalizeAudioConfigFromDevice(raw: Partial<AudioConfig> | null | undefined): AudioConfig {
@@ -328,10 +348,8 @@ export function normalizeAudioConfigFromDevice(raw: Partial<AudioConfig> | null 
     speaker: {
       ...base.speaker,
       ...(raw.speaker ?? {}),
-      pins: {
-        ...base.speaker.pins,
-        ...(raw.speaker?.pins ?? {}),
-      },
+      device_ref: raw.speaker?.device_ref?.trim() || null,
+      pins: audioSpeakerPinsOrDefault(raw.speaker?.pins),
     },
     vad: {
       ...base.vad,
@@ -430,7 +448,8 @@ export function defaultAudioConfig(): AudioConfig {
     speaker: {
       enabled: false,
       device_type: 'i2s_max98357a',
-      pins: { ws: 32, sck: 33, dout: 22, sd: null },
+      device_ref: null,
+      pins: { ...DEFAULT_AUDIO_SPEAKER_PINS },
       sample_rate: 16_000,
       bits_per_sample: 16,
     },
@@ -472,5 +491,14 @@ export function defaultAudioConfig(): AudioConfig {
         speaking: 'solid',
       },
     },
+  }
+}
+
+export function audioSpeakerPinsOrDefault(
+  pins: AudioSpeakerPins | null | undefined,
+): AudioSpeakerPins {
+  return {
+    ...DEFAULT_AUDIO_SPEAKER_PINS,
+    ...(pins ?? {}),
   }
 }
