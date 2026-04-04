@@ -1136,12 +1136,22 @@ pub struct AudioRealtimeConfig {
     pub ws_url: String,
     #[serde(default)]
     pub api_key: String,
+    #[serde(default)]
+    pub api_secret: String,
+    #[serde(default)]
+    pub app_id: String,
     #[serde(default = "default_audio_realtime_model")]
     pub model: String,
     #[serde(default = "default_audio_realtime_voice")]
     pub voice: String,
     #[serde(default)]
     pub instructions: String,
+    #[serde(default)]
+    pub user_id: String,
+    #[serde(default)]
+    pub license_key: String,
+    #[serde(default)]
+    pub device_id: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1275,10 +1285,13 @@ fn default_audio_check_interval_seconds() -> u32 {
 pub const AUDIO_REALTIME_PROVIDER_OPENAI_COMPATIBLE: &str = "openai_compatible";
 /// Alibaba Qwen realtime voice provider.
 pub const AUDIO_REALTIME_PROVIDER_QWEN: &str = "qwen";
+/// Baidu multimodal realtime voice provider.
+pub const AUDIO_REALTIME_PROVIDER_BAIDU: &str = "baidu";
 
 fn audio_realtime_default_ws_url(provider: &str) -> &'static str {
     match provider {
         AUDIO_REALTIME_PROVIDER_QWEN => "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime",
+        AUDIO_REALTIME_PROVIDER_BAIDU => "wss://rtc-aiotgw.exp.bcelive.com/v1/realtime",
         _ => "wss://api.openai.com/v1/realtime",
     }
 }
@@ -1301,7 +1314,9 @@ fn audio_realtime_default_voice(provider: &str) -> &'static str {
 pub fn audio_realtime_provider_supported(provider: &str) -> bool {
     matches!(
         provider,
-        AUDIO_REALTIME_PROVIDER_OPENAI_COMPATIBLE | AUDIO_REALTIME_PROVIDER_QWEN
+        AUDIO_REALTIME_PROVIDER_OPENAI_COMPATIBLE
+            | AUDIO_REALTIME_PROVIDER_QWEN
+            | AUDIO_REALTIME_PROVIDER_BAIDU
     )
 }
 
@@ -1330,10 +1345,15 @@ fn default_audio_realtime_config() -> AudioRealtimeConfig {
         provider: default_audio_realtime_provider(),
         ws_url: default_audio_realtime_ws_url(),
         api_key: String::new(),
+        api_secret: String::new(),
+        app_id: String::new(),
         model: default_audio_realtime_model(),
         voice: default_audio_realtime_voice(),
         instructions: "你是甲壳虫的语音助手。请直接口语化回应，简洁自然，默认使用中文。"
             .to_string(),
+        user_id: String::new(),
+        license_key: String::new(),
+        device_id: String::new(),
     }
 }
 
@@ -1414,12 +1434,32 @@ pub fn default_disabled_audio_segment() -> AudioSegment {
 }
 
 pub const AUDIO_REALTIME_PCM16_SAMPLE_RATE: u32 = 24_000;
+pub const AUDIO_REALTIME_BAIDU_SAMPLE_RATE: u32 = 16_000;
+
+pub fn audio_realtime_required_sample_rate(provider: &str) -> u32 {
+    match provider.trim() {
+        AUDIO_REALTIME_PROVIDER_BAIDU => AUDIO_REALTIME_BAIDU_SAMPLE_RATE,
+        _ => AUDIO_REALTIME_PCM16_SAMPLE_RATE,
+    }
+}
 
 pub fn audio_realtime_enabled(seg: &AudioSegment) -> bool {
-    !seg.realtime.api_key.trim().is_empty()
-        && !seg.realtime.model.trim().is_empty()
-        && !seg.realtime.voice.trim().is_empty()
-        && !seg.realtime.ws_url.trim().is_empty()
+    let provider = seg.realtime.provider.trim();
+    if !audio_realtime_provider_supported(provider) || seg.realtime.ws_url.trim().is_empty() {
+        return false;
+    }
+    match provider {
+        AUDIO_REALTIME_PROVIDER_BAIDU => {
+            !seg.realtime.app_id.trim().is_empty()
+                && !seg.realtime.api_key.trim().is_empty()
+                && !seg.realtime.api_secret.trim().is_empty()
+        }
+        _ => {
+            !seg.realtime.api_key.trim().is_empty()
+                && !seg.realtime.model.trim().is_empty()
+                && !seg.realtime.voice.trim().is_empty()
+        }
+    }
 }
 
 // ── Hardware device config constants ──
@@ -1756,12 +1796,15 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
         ));
     }
     if seg.realtime.provider.len() > CONFIG_FIELD_MAX_LEN
+        || seg.realtime.app_id.len() > CONFIG_FIELD_MAX_LEN
         || seg.realtime.model.len() > CONFIG_FIELD_MAX_LEN
         || seg.realtime.voice.len() > AUDIO_VOICE_MAX_LEN
+        || seg.realtime.user_id.len() > CONFIG_FIELD_MAX_LEN
+        || seg.realtime.device_id.len() > CONFIG_FIELD_MAX_LEN
     {
         return Err(Error::config(
             "audio",
-            "realtime provider/model/voice exceed max length",
+            "realtime provider/app_id/model/voice/user_id/device_id exceed max length",
         ));
     }
     if seg.realtime.instructions.len() > AUDIO_REALTIME_INSTRUCTIONS_MAX_LEN {
@@ -1787,6 +1830,33 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
             "audio",
             format!(
                 "speech.api_secret length must be <= {}",
+                AUDIO_SPEECH_API_SECRET_MAX_LEN
+            ),
+        ));
+    }
+    if seg.realtime.api_key.len() > AUDIO_SPEECH_API_KEY_MAX_LEN {
+        return Err(Error::config(
+            "audio",
+            format!(
+                "realtime.api_key length must be <= {}",
+                AUDIO_SPEECH_API_KEY_MAX_LEN
+            ),
+        ));
+    }
+    if seg.realtime.api_secret.len() > AUDIO_SPEECH_API_SECRET_MAX_LEN {
+        return Err(Error::config(
+            "audio",
+            format!(
+                "realtime.api_secret length must be <= {}",
+                AUDIO_SPEECH_API_SECRET_MAX_LEN
+            ),
+        ));
+    }
+    if seg.realtime.license_key.len() > AUDIO_SPEECH_API_SECRET_MAX_LEN {
+        return Err(Error::config(
+            "audio",
+            format!(
+                "realtime.license_key length must be <= {}",
                 AUDIO_SPEECH_API_SECRET_MAX_LEN
             ),
         ));
@@ -1826,6 +1896,7 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
         ));
     }
     if wake_realtime_enabled {
+        let provider = seg.realtime.provider.trim();
         if !seg.microphone.enabled {
             return Err(Error::config(
                 "audio",
@@ -1838,28 +1909,10 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
                 "realtime voice requires speaker.enabled == true",
             ));
         }
-        if !audio_realtime_provider_supported(seg.realtime.provider.as_str()) {
+        if !audio_realtime_provider_supported(provider) {
             return Err(Error::config(
                 "audio",
-                "realtime.provider must be one of: openai_compatible, qwen",
-            ));
-        }
-        if seg.realtime.api_key.trim().is_empty() {
-            return Err(Error::config(
-                "audio",
-                "realtime voice requires realtime.api_key",
-            ));
-        }
-        if seg.realtime.model.trim().is_empty() {
-            return Err(Error::config(
-                "audio",
-                "realtime voice requires realtime.model",
-            ));
-        }
-        if seg.realtime.voice.trim().is_empty() {
-            return Err(Error::config(
-                "audio",
-                "realtime voice requires realtime.voice",
+                "realtime.provider must be one of: openai_compatible, qwen, baidu",
             ));
         }
         if !seg.realtime.ws_url.starts_with("wss://") && !seg.realtime.ws_url.starts_with("ws://") {
@@ -1868,21 +1921,64 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
                 "realtime.ws_url must start with wss:// or ws://",
             ));
         }
-        if seg.microphone.sample_rate != AUDIO_REALTIME_PCM16_SAMPLE_RATE {
+        match provider {
+            AUDIO_REALTIME_PROVIDER_BAIDU => {
+                if seg.realtime.app_id.trim().is_empty() {
+                    return Err(Error::config(
+                        "audio",
+                        "baidu realtime requires realtime.app_id",
+                    ));
+                }
+                if seg.realtime.api_key.trim().is_empty() {
+                    return Err(Error::config(
+                        "audio",
+                        "baidu realtime requires realtime.api_key",
+                    ));
+                }
+                if seg.realtime.api_secret.trim().is_empty() {
+                    return Err(Error::config(
+                        "audio",
+                        "baidu realtime requires realtime.api_secret",
+                    ));
+                }
+            }
+            _ => {
+                if seg.realtime.api_key.trim().is_empty() {
+                    return Err(Error::config(
+                        "audio",
+                        "realtime voice requires realtime.api_key",
+                    ));
+                }
+                if seg.realtime.model.trim().is_empty() {
+                    return Err(Error::config(
+                        "audio",
+                        "realtime voice requires realtime.model",
+                    ));
+                }
+                if seg.realtime.voice.trim().is_empty() {
+                    return Err(Error::config(
+                        "audio",
+                        "realtime voice requires realtime.voice",
+                    ));
+                }
+            }
+        }
+        let required_sample_rate = audio_realtime_required_sample_rate(provider);
+        if seg.microphone.sample_rate != required_sample_rate {
             return Err(Error::config(
                 "audio",
                 format!(
                     "microphone.sample_rate must equal {} for realtime voice",
-                    AUDIO_REALTIME_PCM16_SAMPLE_RATE
+                    required_sample_rate
                 ),
             ));
         }
-        if seg.speaker.sample_rate != AUDIO_REALTIME_PCM16_SAMPLE_RATE {
+        if seg.speaker.sample_rate != required_sample_rate {
             return Err(Error::config(
                 "audio",
                 format!(
                     "speaker.sample_rate must equal {} for realtime voice",
-                    AUDIO_REALTIME_PCM16_SAMPLE_RATE
+                    required_sample_rate
                 ),
             ));
         }
@@ -2579,5 +2675,45 @@ mod tests {
         assert!(error
             .to_string()
             .contains("microphone.sample_rate must equal 24000 for realtime voice"));
+    }
+
+    #[test]
+    fn baidu_realtime_validation_allows_empty_model_and_voice() {
+        let mut seg = default_disabled_audio_segment();
+        seg.enabled = true;
+        seg.microphone.enabled = true;
+        seg.speaker.enabled = true;
+        seg.wake_word.enabled = true;
+        seg.realtime.provider = AUDIO_REALTIME_PROVIDER_BAIDU.to_string();
+        seg.realtime.ws_url =
+            audio_realtime_default_ws_url(AUDIO_REALTIME_PROVIDER_BAIDU).to_string();
+        seg.realtime.app_id = "app-id".to_string();
+        seg.realtime.api_key = "ak".to_string();
+        seg.realtime.api_secret = "sk".to_string();
+        seg.realtime.model.clear();
+        seg.realtime.voice.clear();
+
+        assert!(validate_audio_segment(&seg).is_ok());
+    }
+
+    #[test]
+    fn baidu_realtime_requires_16k_sample_rate() {
+        let mut seg = default_disabled_audio_segment();
+        seg.enabled = true;
+        seg.microphone.enabled = true;
+        seg.speaker.enabled = true;
+        seg.wake_word.enabled = true;
+        seg.realtime.provider = AUDIO_REALTIME_PROVIDER_BAIDU.to_string();
+        seg.realtime.ws_url =
+            audio_realtime_default_ws_url(AUDIO_REALTIME_PROVIDER_BAIDU).to_string();
+        seg.realtime.app_id = "app-id".to_string();
+        seg.realtime.api_key = "ak".to_string();
+        seg.realtime.api_secret = "sk".to_string();
+        seg.microphone.sample_rate = AUDIO_REALTIME_PCM16_SAMPLE_RATE;
+
+        let error = validate_audio_segment(&seg).expect_err("baidu realtime should enforce 16kHz");
+        assert!(error
+            .to_string()
+            .contains("microphone.sample_rate must equal 16000 for realtime voice"));
     }
 }

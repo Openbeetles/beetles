@@ -6,7 +6,7 @@ use crate::channels::{
     connect_wss_with_headers_and_profile, WssCloseInfo, WssConnectProfile, WssConnection, WssEvent,
 };
 use crate::config::{
-    audio_realtime_enabled, AudioSegment, AUDIO_REALTIME_PCM16_SAMPLE_RATE,
+    audio_realtime_enabled, AudioSegment, AUDIO_REALTIME_PROVIDER_BAIDU,
     AUDIO_REALTIME_PROVIDER_OPENAI_COMPATIBLE, AUDIO_REALTIME_PROVIDER_QWEN,
 };
 use crate::constants::AUDIO_CAPTURE_FRAME_SAMPLES;
@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 
 const REALTIME_TAG: &str = "audio::realtime";
 const REALTIME_OPENAI_BETA: &str = "realtime=v1";
+const REALTIME_BAIDU_AUDIO_CODEC: &str = "raw16k";
 const REALTIME_IDLE_TIMEOUT_SECS: u64 = 30;
 const REALTIME_INITIAL_SEND_RETRY_MS: u64 = 100;
 const REALTIME_INITIAL_SEND_RETRY_MAX: usize = 50;
@@ -40,6 +41,7 @@ static REALTIME_EVENT_COUNTER: AtomicU32 = AtomicU32::new(1);
 enum RealtimeProvider {
     OpenAiCompatible,
     Qwen,
+    Baidu,
 }
 
 impl RealtimeProvider {
@@ -47,6 +49,7 @@ impl RealtimeProvider {
         match raw {
             AUDIO_REALTIME_PROVIDER_OPENAI_COMPATIBLE => Ok(Self::OpenAiCompatible),
             AUDIO_REALTIME_PROVIDER_QWEN => Ok(Self::Qwen),
+            AUDIO_REALTIME_PROVIDER_BAIDU => Ok(Self::Baidu),
             _ => Err(Error::config(
                 REALTIME_TAG,
                 format!("unsupported realtime provider: {}", raw),
@@ -58,6 +61,7 @@ impl RealtimeProvider {
         match self {
             Self::OpenAiCompatible => "pcm16",
             Self::Qwen => "pcm",
+            Self::Baidu => REALTIME_BAIDU_AUDIO_CODEC,
         }
     }
 
@@ -65,11 +69,16 @@ impl RealtimeProvider {
         match self {
             Self::OpenAiCompatible => "pcm16",
             Self::Qwen => "pcm",
+            Self::Baidu => REALTIME_BAIDU_AUDIO_CODEC,
         }
     }
 
     fn requires_openai_beta_header(self) -> bool {
         matches!(self, Self::OpenAiCompatible)
+    }
+
+    fn uses_json_session_update(self) -> bool {
+        !matches!(self, Self::Baidu)
     }
 }
 
@@ -142,6 +151,7 @@ impl RealtimeUploadEncoder {
                     self.pcm_bytes.extend_from_slice(&sample.to_le_bytes());
                 }
             }
+            RealtimeProvider::Baidu => unreachable!("baidu upload uses raw binary frames"),
         }
 
         self.audio_b64.clear();
@@ -205,23 +215,30 @@ pub fn run_realtime_session(
     let _recording_guard = AudioRecordingGuard::new();
     let session_start = Instant::now();
     let provider = RealtimeProvider::parse(audio_cfg.realtime.provider.trim())?;
-    let ws_url = build_realtime_ws_url(audio_cfg)?;
-    let auth = format!("Bearer {}", audio_cfg.realtime.api_key.trim());
-    let headers = build_realtime_headers(provider, ws_url.as_str(), auth.as_str());
-    let mut conn = connect_realtime_wss_with_retry(platform, ws_url.as_str(), &headers)?;
+    let ws_url = build_realtime_ws_url(provider, audio_cfg)?;
+    let headers = build_realtime_headers(provider, audio_cfg, ws_url.as_str())?;
+    let header_refs: Vec<(&str, &str)> = headers
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect();
+    let mut conn = connect_realtime_wss_with_retry(platform, ws_url.as_str(), &header_refs)?;
     let mut state = RealtimeLoopState::new();
     let mut mic_frame = [0i16; AUDIO_CAPTURE_FRAME_SAMPLES];
     let mut upload_encoder = RealtimeUploadEncoder::new();
 
-    send_text_retry(
-        conn.as_mut(),
-        build_session_update(provider, audio_cfg).as_str(),
-        REALTIME_INITIAL_SEND_RETRY_MAX,
-    )?;
+    if provider.uses_json_session_update() {
+        send_text_retry(
+            conn.as_mut(),
+            build_session_update(provider, audio_cfg).as_str(),
+            REALTIME_INITIAL_SEND_RETRY_MAX,
+        )?;
+    }
     await_session_ready(
         conn.as_mut(),
         platform,
         &mut state,
+        provider,
+        audio_cfg,
         Duration::from_millis(REALTIME_SESSION_READY_TIMEOUT_MS),
     )?;
     log::info!("[{}] realtime session connected", log_tag);
@@ -232,6 +249,8 @@ pub fn run_realtime_session(
             conn.as_mut(),
             platform,
             &mut state,
+            provider,
+            audio_cfg,
             Duration::from_millis(REALTIME_RECV_POLL_MS),
         )?;
         if timed_out
@@ -265,8 +284,8 @@ pub fn run_realtime_session(
 
     Ok(RealtimeSessionResult {
         turns_completed: state.turns_completed,
-        input_audio_ms: samples_to_ms(state.input_samples),
-        output_audio_ms: samples_to_ms(state.output_samples),
+        input_audio_ms: samples_to_ms(state.input_samples, audio_cfg.microphone.sample_rate),
+        output_audio_ms: samples_to_ms(state.output_samples, audio_cfg.speaker.sample_rate),
         session_ms: session_start.elapsed().as_millis(),
     })
 }
@@ -341,16 +360,22 @@ fn wait_for_realtime_admission_window(platform: &dyn Platform) {
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn wait_for_realtime_admission_window(_platform: &dyn Platform) {}
 
-fn build_realtime_headers<'a>(
+fn build_realtime_headers(
     provider: RealtimeProvider,
+    audio_cfg: &AudioSegment,
     ws_url: &str,
-    auth: &'a str,
-) -> Vec<(&'static str, &'a str)> {
-    let mut headers = vec![("Authorization", auth)];
-    if provider.requires_openai_beta_header() && realtime_ws_url_needs_openai_beta(ws_url) {
-        headers.push(("OpenAI-Beta", REALTIME_OPENAI_BETA));
+) -> Result<Vec<(&'static str, String)>> {
+    let mut headers = Vec::new();
+    if provider != RealtimeProvider::Baidu {
+        headers.push((
+            "Authorization",
+            format!("Bearer {}", audio_cfg.realtime.api_key.trim()),
+        ));
     }
-    headers
+    if provider.requires_openai_beta_header() && realtime_ws_url_needs_openai_beta(ws_url) {
+        headers.push(("OpenAI-Beta", REALTIME_OPENAI_BETA.to_string()));
+    }
+    Ok(headers)
 }
 
 fn realtime_ws_url_needs_openai_beta(ws_url: &str) -> bool {
@@ -368,7 +393,11 @@ fn realtime_ws_url_needs_openai_beta(ws_url: &str) -> bool {
     authority.eq_ignore_ascii_case("api.openai.com")
 }
 
-fn build_realtime_ws_url(audio_cfg: &AudioSegment) -> Result<String> {
+fn build_realtime_ws_url(provider: RealtimeProvider, audio_cfg: &AudioSegment) -> Result<String> {
+    if provider == RealtimeProvider::Baidu {
+        return build_baidu_ws_url(audio_cfg);
+    }
+
     let base = audio_cfg.realtime.ws_url.trim().trim_end_matches('/');
     if base.is_empty() {
         return Err(Error::config(REALTIME_TAG, "realtime.ws_url is empty"));
@@ -380,6 +409,45 @@ fn build_realtime_ws_url(audio_cfg: &AudioSegment) -> Result<String> {
     let model = urlencoding::encode(audio_cfg.realtime.model.trim());
     let separator = if base.contains('?') { '&' } else { '?' };
     Ok(format!("{base}{separator}model={model}"))
+}
+
+fn build_baidu_ws_url(audio_cfg: &AudioSegment) -> Result<String> {
+    let base = audio_cfg.realtime.ws_url.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return Err(Error::config(REALTIME_TAG, "realtime.ws_url is empty"));
+    }
+
+    let cfg_json = build_baidu_cfg(audio_cfg)?;
+    let separator = if base.contains('?') { '&' } else { '?' };
+    Ok(format!(
+        "{base}{separator}app_id={}&ak={}&sk={}&ac={}&cfg={}",
+        urlencoding::encode(audio_cfg.realtime.app_id.trim()),
+        urlencoding::encode(audio_cfg.realtime.api_key.trim()),
+        urlencoding::encode(audio_cfg.realtime.api_secret.trim()),
+        REALTIME_BAIDU_AUDIO_CODEC,
+        urlencoding::encode(cfg_json.as_str()),
+    ))
+}
+
+fn build_baidu_cfg(audio_cfg: &AudioSegment) -> Result<String> {
+    let mut cfg = json!({
+        "audiocodec": REALTIME_BAIDU_AUDIO_CODEC,
+        "dfda": true,
+    });
+
+    let user_id = audio_cfg.realtime.user_id.trim();
+    if !user_id.is_empty() {
+        cfg["user_id"] = serde_json::Value::String(user_id.to_string());
+    }
+
+    let instructions = audio_cfg.realtime.instructions.trim();
+    if !instructions.is_empty() {
+        cfg["sceneRoleCfg"] = json!({
+            "prompt": instructions,
+        });
+    }
+
+    serde_json::to_string(&cfg).map_err(|e| Error::config(REALTIME_TAG, e.to_string()))
 }
 
 fn build_session_update(provider: RealtimeProvider, audio_cfg: &AudioSegment) -> String {
@@ -425,6 +493,7 @@ fn build_turn_detection(provider: RealtimeProvider, audio_cfg: &AudioSegment) ->
             "threshold": audio_cfg.vad.threshold,
             "silence_duration_ms": audio_cfg.vad.silence_duration_ms,
         }),
+        RealtimeProvider::Baidu => serde_json::Value::Null,
     }
 }
 
@@ -448,6 +517,8 @@ fn drain_server_events(
     conn: &mut dyn WssConnection,
     platform: &dyn Platform,
     state: &mut RealtimeLoopState,
+    provider: RealtimeProvider,
+    audio_cfg: &AudioSegment,
     timeout: Duration,
 ) -> Result<bool> {
     let mut wait = timeout;
@@ -458,7 +529,14 @@ fn drain_server_events(
         match conn.recv_timeout(wait)? {
             Some(WssEvent::Binary(data)) => {
                 saw_event = true;
-                handle_server_message(platform, state, data.as_slice())?;
+                let _ = process_server_frame(
+                    conn,
+                    platform,
+                    state,
+                    provider,
+                    audio_cfg,
+                    data.as_slice(),
+                )?;
                 wait = Duration::ZERO;
             }
             Some(WssEvent::Disconnected) => {
@@ -485,6 +563,8 @@ fn await_session_ready(
     conn: &mut dyn WssConnection,
     platform: &dyn Platform,
     state: &mut RealtimeLoopState,
+    provider: RealtimeProvider,
+    audio_cfg: &AudioSegment,
     timeout: Duration,
 ) -> Result<()> {
     let deadline = Instant::now() + timeout;
@@ -493,8 +573,14 @@ fn await_session_ready(
         let wait = deadline.saturating_duration_since(Instant::now());
         match conn.recv_timeout(wait.min(Duration::from_millis(REALTIME_RECV_POLL_MS)))? {
             Some(WssEvent::Binary(data)) => {
-                let ready = server_message_marks_session_ready(data.as_slice())?;
-                handle_server_message(platform, state, data.as_slice())?;
+                let ready = process_server_frame(
+                    conn,
+                    platform,
+                    state,
+                    provider,
+                    audio_cfg,
+                    data.as_slice(),
+                )?;
                 if ready {
                     return Ok(());
                 }
@@ -519,7 +605,11 @@ fn await_session_ready(
     }
     Err(Error::config(
         REALTIME_TAG,
-        "timed out waiting for realtime session.updated",
+        if provider == RealtimeProvider::Baidu {
+            "timed out waiting for baidu realtime ready signal"
+        } else {
+            "timed out waiting for realtime session.updated"
+        },
     ))
 }
 
@@ -535,7 +625,27 @@ fn server_message_marks_session_ready(payload: &[u8]) -> Result<bool> {
     ))
 }
 
-fn handle_server_message(
+fn process_server_frame(
+    conn: &mut dyn WssConnection,
+    platform: &dyn Platform,
+    state: &mut RealtimeLoopState,
+    provider: RealtimeProvider,
+    audio_cfg: &AudioSegment,
+    payload: &[u8],
+) -> Result<bool> {
+    match provider {
+        RealtimeProvider::Baidu => {
+            handle_baidu_server_message(conn, platform, state, audio_cfg, payload)
+        }
+        _ => {
+            let ready = server_message_marks_session_ready(payload)?;
+            handle_json_server_message(platform, state, payload)?;
+            Ok(ready)
+        }
+    }
+}
+
+fn handle_json_server_message(
     platform: &dyn Platform,
     state: &mut RealtimeLoopState,
     payload: &[u8],
@@ -585,19 +695,14 @@ fn handle_server_message(
             Ok(())
         }
         "response.output_audio.done" | "response.audio.done" => {
-            if state.audio_playing {
-                crate::orchestrator::set_audio_playing(false);
-                state.audio_playing = false;
-            }
+            stop_audio_playback(state);
             state.last_activity = Instant::now();
             Ok(())
         }
         "response.done" => {
-            if state.audio_playing {
-                crate::orchestrator::set_audio_playing(false);
-                state.audio_playing = false;
-            }
-            if state.awaiting_response {
+            let counted = state.awaiting_response;
+            stop_audio_playback(state);
+            if counted {
                 state.awaiting_response = false;
                 state.turns_completed = state.turns_completed.saturating_add(1);
             }
@@ -616,6 +721,141 @@ fn handle_server_message(
     }
 }
 
+fn handle_baidu_server_message(
+    conn: &mut dyn WssConnection,
+    platform: &dyn Platform,
+    state: &mut RealtimeLoopState,
+    audio_cfg: &AudioSegment,
+    payload: &[u8],
+) -> Result<bool> {
+    if let Some(text) = baidu_text_message(payload) {
+        return handle_baidu_text_message(conn, state, audio_cfg, text);
+    }
+
+    let pcm = decode_pcm16_bytes(strip_baidu_audio_prefix(payload))?;
+    if !pcm.is_empty() {
+        if !state.audio_playing {
+            crate::orchestrator::set_audio_playing(true);
+            state.audio_playing = true;
+        }
+        platform.write_speaker_pcm_i16(&pcm)?;
+        state.output_samples = state.output_samples.saturating_add(pcm.len());
+        state.awaiting_response = true;
+        state.last_activity = Instant::now();
+    }
+    Ok(false)
+}
+
+fn handle_baidu_text_message(
+    conn: &mut dyn WssConnection,
+    state: &mut RealtimeLoopState,
+    audio_cfg: &AudioSegment,
+    text: &str,
+) -> Result<bool> {
+    let message = text.trim();
+    if message.is_empty() {
+        return Ok(false);
+    }
+
+    if message.starts_with("[E]:[LIC]:[MUST]") {
+        send_text_retry(
+            conn,
+            build_baidu_license_activation(audio_cfg)?.as_str(),
+            REALTIME_INITIAL_SEND_RETRY_MAX,
+        )?;
+        state.last_activity = Instant::now();
+        return Ok(false);
+    }
+    if message.starts_with("[E]:[LIC]:[RES]:[FAILED]") {
+        return Err(Error::config(
+            "realtime_voice_ws",
+            format!("baidu realtime license activation failed: {}", message),
+        ));
+    }
+    if message.starts_with("[E]:[MEDIA]:[READY]:1") {
+        state.last_activity = Instant::now();
+        return Ok(true);
+    }
+    if message.starts_with("[E]:[TTS_BEGIN_SPEAKING]")
+        || message.starts_with("[E]:[VOICE_COMING]")
+        || message.starts_with("[A]:")
+        || message.starts_with("[Q]:")
+    {
+        state.awaiting_response = true;
+        state.last_activity = Instant::now();
+        return Ok(false);
+    }
+    if message.starts_with("[E]:[TTS_END_SPEAKING]") {
+        let counted = state.awaiting_response || state.audio_playing;
+        stop_audio_playback(state);
+        if counted {
+            state.awaiting_response = false;
+            state.turns_completed = state.turns_completed.saturating_add(1);
+        }
+        state.last_activity = Instant::now();
+        return Ok(false);
+    }
+    if message.starts_with("[E]:") && message.contains("[ERROR]") {
+        return Err(Error::config(
+            "realtime_voice_ws",
+            format!("baidu realtime error: {}", message),
+        ));
+    }
+
+    state.last_activity = Instant::now();
+    Ok(false)
+}
+
+fn baidu_text_message(payload: &[u8]) -> Option<&str> {
+    if payload.first().copied() != Some(b'[') {
+        return None;
+    }
+    std::str::from_utf8(payload).ok()
+}
+
+fn build_baidu_license_activation(audio_cfg: &AudioSegment) -> Result<String> {
+    let sn = audio_cfg.realtime.device_id.trim();
+    let key = audio_cfg.realtime.license_key.trim();
+    if sn.is_empty() || key.is_empty() {
+        return Err(Error::config(
+            REALTIME_TAG,
+            "baidu realtime license activation requires realtime.device_id and realtime.license_key",
+        ));
+    }
+    let uid = audio_cfg
+        .realtime
+        .user_id
+        .trim()
+        .strip_prefix('\u{feff}')
+        .unwrap_or(audio_cfg.realtime.user_id.trim());
+    let uid = if uid.is_empty() { sn } else { uid };
+    Ok(format!(
+        "[E]:[LIC]:[ACTIVE]:{}",
+        json!({
+            "sn": sn,
+            "key": key,
+            "uId": uid,
+        })
+    ))
+}
+
+fn strip_baidu_audio_prefix(payload: &[u8]) -> &[u8] {
+    if !payload.starts_with(b"[A]:[PCM]:[RAW]:") {
+        return payload;
+    }
+
+    let mut colon_count = 0usize;
+    for (idx, byte) in payload.iter().enumerate() {
+        if *byte == b':' {
+            colon_count += 1;
+            if colon_count == 9 {
+                return payload.get(idx + 1..).unwrap_or(&[]);
+            }
+        }
+    }
+    payload
+}
+
 fn append_audio_frame(
     conn: &mut dyn WssConnection,
     encoder: &mut RealtimeUploadEncoder,
@@ -623,7 +863,16 @@ fn append_audio_frame(
     pcm: &[i16],
 ) -> Result<()> {
     crate::platform::task_wdt::feed_current_task();
-    conn.send_text(encoder.build_append_event(provider, pcm))
+    match provider {
+        RealtimeProvider::Baidu => {
+            let mut bytes = Vec::with_capacity(pcm.len().saturating_mul(2));
+            for sample in pcm {
+                bytes.extend_from_slice(&sample.to_le_bytes());
+            }
+            conn.send_binary_owned(bytes)
+        }
+        _ => conn.send_text(encoder.build_append_event(provider, pcm)),
+    }
 }
 
 fn summarize_close(close: Option<&WssCloseInfo>) -> String {
@@ -647,6 +896,16 @@ fn decode_pcm16_delta(delta_b64: &str) -> Result<Vec<i16>> {
             "pcm16 delta length must be even",
         ));
     }
+    decode_pcm16_bytes(bytes.as_slice())
+}
+
+fn decode_pcm16_bytes(bytes: &[u8]) -> Result<Vec<i16>> {
+    if bytes.len() % 2 != 0 {
+        return Err(Error::config(
+            "realtime_voice_parse",
+            "pcm16 payload length must be even",
+        ));
+    }
     let mut pcm = Vec::with_capacity(bytes.len() / 2);
     for chunk in bytes.chunks_exact(2) {
         pcm.push(i16::from_le_bytes([chunk[0], chunk[1]]));
@@ -654,16 +913,25 @@ fn decode_pcm16_delta(delta_b64: &str) -> Result<Vec<i16>> {
     Ok(pcm)
 }
 
-fn samples_to_ms(samples: usize) -> u128 {
-    (samples as u128).saturating_mul(1000) / (AUDIO_REALTIME_PCM16_SAMPLE_RATE as u128)
+fn stop_audio_playback(state: &mut RealtimeLoopState) {
+    if state.audio_playing {
+        crate::orchestrator::set_audio_playing(false);
+        state.audio_playing = false;
+    }
+}
+
+fn samples_to_ms(samples: usize, sample_rate_hz: u32) -> u128 {
+    let rate = sample_rate_hz.max(1) as u128;
+    (samples as u128).saturating_mul(1000) / rate
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        build_realtime_headers, build_session_update, realtime_ws_url_needs_openai_beta,
-        server_message_marks_session_ready, RealtimeProvider, RealtimeUploadEncoder,
-        REALTIME_OPENAI_BETA,
+        build_baidu_license_activation, build_realtime_headers, build_realtime_ws_url,
+        build_session_update, realtime_ws_url_needs_openai_beta,
+        server_message_marks_session_ready, strip_baidu_audio_prefix, RealtimeProvider,
+        RealtimeUploadEncoder, REALTIME_OPENAI_BETA,
     };
     use crate::config::default_disabled_audio_segment;
 
@@ -671,9 +939,10 @@ mod tests {
     fn openai_headers_include_beta_flag() {
         let headers = build_realtime_headers(
             RealtimeProvider::OpenAiCompatible,
+            &default_disabled_audio_segment(),
             "wss://api.openai.com/v1/realtime?model=gpt-realtime",
-            "Bearer token",
-        );
+        )
+        .unwrap();
         assert!(headers
             .iter()
             .any(|(name, value)| *name == "OpenAI-Beta" && *value == REALTIME_OPENAI_BETA));
@@ -683,9 +952,10 @@ mod tests {
     fn compatible_non_openai_url_skips_beta_flag() {
         let headers = build_realtime_headers(
             RealtimeProvider::OpenAiCompatible,
+            &default_disabled_audio_segment(),
             "wss://example.com/v1/realtime?model=gpt-realtime",
-            "Bearer token",
-        );
+        )
+        .unwrap();
         assert!(!headers.iter().any(|(name, _)| *name == "OpenAI-Beta"));
     }
 
@@ -747,5 +1017,41 @@ mod tests {
         assert!(server_message_marks_session_ready(br#"{"type":"session.updated"}"#).unwrap());
         assert!(!server_message_marks_session_ready(br#"{"type":"session.created"}"#).unwrap());
         assert!(!server_message_marks_session_ready(br#"{"type":"response.created"}"#).unwrap());
+    }
+
+    #[test]
+    fn baidu_ws_url_contains_direct_auth_params() {
+        let mut cfg = default_disabled_audio_segment();
+        cfg.realtime.provider = "baidu".to_string();
+        cfg.realtime.ws_url = "wss://rtc-aiotgw.exp.bcelive.com/v1/realtime".to_string();
+        cfg.realtime.app_id = "app-1".to_string();
+        cfg.realtime.api_key = "ak-1".to_string();
+        cfg.realtime.api_secret = "sk-1".to_string();
+        cfg.realtime.instructions = "请默认中文简洁回复".to_string();
+
+        let url = build_realtime_ws_url(RealtimeProvider::Baidu, &cfg).unwrap();
+        assert!(url.contains("app_id=app-1"));
+        assert!(url.contains("ak=ak-1"));
+        assert!(url.contains("sk=sk-1"));
+        assert!(url.contains("ac=raw16k"));
+        assert!(url.contains("cfg="));
+    }
+
+    #[test]
+    fn baidu_license_activation_uses_user_or_device_id() {
+        let mut cfg = default_disabled_audio_segment();
+        cfg.realtime.license_key = "lic-key".to_string();
+        cfg.realtime.device_id = "dev-1".to_string();
+
+        let payload = build_baidu_license_activation(&cfg).unwrap();
+        assert!(payload.contains("\"sn\":\"dev-1\""));
+        assert!(payload.contains("\"key\":\"lic-key\""));
+        assert!(payload.contains("\"uId\":\"dev-1\""));
+    }
+
+    #[test]
+    fn strip_baidu_prefixed_audio_payload() {
+        let payload = b"[A]:[PCM]:[RAW]:0:1:2:3:4:5:\x01\x00\x02\x00";
+        assert_eq!(strip_baidu_audio_prefix(payload), b"\x01\x00\x02\x00");
     }
 }
