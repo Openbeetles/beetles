@@ -405,6 +405,10 @@ pub trait RemindAtStore: Send + Sync {
     fn add(&self, channel: &str, chat_id: &str, at_unix_secs: u64, context: &str) -> Result<()>;
     /// 移除并返回一条 at <= now 的条目（任选其一）；无到点项返回 Ok(None)。
     fn pop_due(&self, now_unix_secs: u64) -> Result<Option<(String, String, String)>>;
+    /// 返回下一条提醒的最早触发时间；无待触发项则返回 Ok(None)。
+    fn next_due_at(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
     /// 查询当前会话未到点提醒，按 at 升序返回，limit 由调用方控制。
     fn list_upcoming(
         &self,

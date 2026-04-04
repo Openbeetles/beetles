@@ -1,7 +1,7 @@
-//! 合并 cron + heartbeat + remind 为单线程后台定时器。
-//! Merged background timer: cron, heartbeat, and remind in one thread to save ~20KB SRAM.
+//! 合并 cron + heartbeat + remind/task 为单线程后台定时器。
+//! Merged background timer: cron, heartbeat, and remind/task in one thread to save ~20KB SRAM.
 //!
-//! Tick 间隔 10s，分频：heartbeat 每 3 tick (30s)，cron/remind 每 6 tick (60s)。
+//! heartbeat / cron 维持固定周期；remind/task 根据最近 deadline 唤醒，避免固定 60s 粗轮询。
 
 use crate::bus::SystemInboundTx;
 use crate::cron::{CronTickState, SensorWatchContext};
@@ -13,13 +13,57 @@ use crate::memory::{
 };
 use crate::task::TaskStore;
 use std::sync::atomic::AtomicUsize;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 const TAG: &str = "bg_timer";
-const TICK_INTERVAL_SECS: u64 = 10;
-const HEARTBEAT_DIVISOR: u32 = 3; // 30s
-const CRON_REMIND_DIVISOR: u32 = 6; // 60s
+const HEARTBEAT_INTERVAL_SECS: u64 = 30;
+const CRON_INTERVAL_SECS: u64 = 60;
+
+fn wake_state() -> &'static (Mutex<u64>, Condvar) {
+    static STATE: OnceLock<(Mutex<u64>, Condvar)> = OnceLock::new();
+    STATE.get_or_init(|| (Mutex::new(0), Condvar::new()))
+}
+
+pub fn notify_deadline_changed() {
+    let (lock, cv) = wake_state();
+    let mut generation = lock.lock().unwrap_or_else(|e| e.into_inner());
+    *generation = generation.wrapping_add(1);
+    cv.notify_one();
+}
+
+fn wait_until_or_notified(deadline: Instant) {
+    let now = Instant::now();
+    if deadline <= now {
+        return;
+    }
+    let timeout = deadline.saturating_duration_since(now);
+    let (lock, cv) = wake_state();
+    let generation = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = cv
+        .wait_timeout(generation, timeout)
+        .unwrap_or_else(|e| e.into_inner());
+}
+
+fn advance_periodic_deadline(deadline: &mut Instant, interval: Duration, now: Instant) {
+    while *deadline <= now {
+        *deadline += interval;
+    }
+}
+
+fn unix_deadline_to_instant(
+    next_due_at: Option<u64>,
+    now_unix_secs: u64,
+    now: Instant,
+) -> Option<Instant> {
+    next_due_at.map(|due_at| {
+        if due_at <= now_unix_secs {
+            now
+        } else {
+            now + Duration::from_secs(due_at - now_unix_secs)
+        }
+    })
+}
 
 /// 聚合 bg_timer 线程所需的全部依赖。
 pub struct BgTimerContext {
@@ -51,21 +95,46 @@ pub struct BgTimerContext {
 pub fn run_bg_timer(ctx: BgTimerContext) {
     crate::util::spawn_guarded_with_profile(
         "bg_timer",
-        6144,
+        8192,
         Some(crate::util::SpawnCore::Core1),
         crate::util::HttpThreadRole::Background,
         move || {
-            let interval = Duration::from_secs(TICK_INTERVAL_SECS);
-            let mut tick: u32 = 0;
+            let heartbeat_interval = Duration::from_secs(HEARTBEAT_INTERVAL_SECS);
+            let cron_interval = Duration::from_secs(CRON_INTERVAL_SECS);
             let mut heartbeat_state = HeartbeatTickState::new();
             let mut cron_state = CronTickState::new();
+            let mut next_heartbeat_at = Instant::now() + heartbeat_interval;
+            let mut next_cron_at = Instant::now() + cron_interval;
 
             loop {
-                std::thread::sleep(interval);
-                tick = tick.wrapping_add(1);
+                let now = Instant::now();
+                let now_unix_secs = crate::util::current_unix_secs();
+                let next_remind_at = unix_deadline_to_instant(
+                    ctx.remind_store.next_due_at().ok().flatten(),
+                    now_unix_secs,
+                    now,
+                );
+                let next_task_at = unix_deadline_to_instant(
+                    ctx.task_store.next_due_at().ok().flatten(),
+                    now_unix_secs,
+                    now,
+                );
+                let next_wake_at = [
+                    Some(next_heartbeat_at),
+                    Some(next_cron_at),
+                    next_remind_at,
+                    next_task_at,
+                ]
+                .into_iter()
+                .flatten()
+                .min()
+                .unwrap_or(now + heartbeat_interval);
+                wait_until_or_notified(next_wake_at);
 
-                // heartbeat: every 3 ticks (30s)
-                if tick.is_multiple_of(HEARTBEAT_DIVISOR) {
+                let now = Instant::now();
+                let now_unix_secs = crate::util::current_unix_secs();
+
+                if now >= next_heartbeat_at {
                     crate::heartbeat::heartbeat_tick(
                         ctx.version,
                         &ctx.system_inbound_tx,
@@ -78,10 +147,10 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
                         &ctx.resolve_locale,
                         &mut heartbeat_state,
                     );
+                    advance_periodic_deadline(&mut next_heartbeat_at, heartbeat_interval, now);
                 }
 
-                // cron + remind + task due: every 6 ticks (60s)
-                if tick.is_multiple_of(CRON_REMIND_DIVISOR) {
+                if now >= next_cron_at {
                     crate::cron::cron_tick(
                         &ctx.system_inbound_tx,
                         ctx.memory_store.as_ref(),
@@ -90,35 +159,51 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
                         &mut cron_state,
                     );
 
-                    crate::memory::remind_tick(
-                        ctx.remind_store.as_ref(),
-                        &ctx.system_inbound_tx,
-                        &ctx.resolve_locale,
-                    );
-
-                    crate::task::task_due_tick(
-                        ctx.task_store.as_ref(),
-                        &ctx.system_inbound_tx,
-                        &ctx.resolve_locale,
-                    );
-
                     crate::memory::self_runtime_tick(
                         &ctx.system_inbound_tx,
                         ctx.session_store.as_ref(),
                         ctx.self_continuity_store.as_ref(),
                         ctx.autonomy_strategy_store.as_ref(),
                         ctx.memory_profile,
-                        crate::util::current_unix_secs(),
+                        now_unix_secs,
+                    );
+                    advance_periodic_deadline(&mut next_cron_at, cron_interval, now);
+                }
+
+                if ctx
+                    .remind_store
+                    .next_due_at()
+                    .ok()
+                    .flatten()
+                    .is_some_and(|due_at| due_at <= now_unix_secs)
+                {
+                    crate::memory::remind_tick(
+                        ctx.remind_store.as_ref(),
+                        &ctx.system_inbound_tx,
+                        &ctx.resolve_locale,
+                    );
+                }
+
+                if ctx
+                    .task_store
+                    .next_due_at()
+                    .ok()
+                    .flatten()
+                    .is_some_and(|due_at| due_at <= now_unix_secs)
+                {
+                    crate::task::task_due_tick(
+                        ctx.task_store.as_ref(),
+                        &ctx.system_inbound_tx,
+                        &ctx.resolve_locale,
                     );
                 }
             }
         },
     );
     log::info!(
-        "[{}] bg_timer started (tick {}s, heartbeat every {}s, cron/remind/task every {}s)",
+        "[{}] bg_timer started (heartbeat every {}s, cron every {}s, remind/task deadline-driven)",
         TAG,
-        TICK_INTERVAL_SECS,
-        TICK_INTERVAL_SECS * HEARTBEAT_DIVISOR as u64,
-        TICK_INTERVAL_SECS * CRON_REMIND_DIVISOR as u64
+        HEARTBEAT_INTERVAL_SECS,
+        CRON_INTERVAL_SECS
     );
 }

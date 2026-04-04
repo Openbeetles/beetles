@@ -7,6 +7,11 @@ use crate::i18n::locale_from_store;
 pub fn body(ctx: &HandlerContext) -> Result<String, String> {
     let loc = locale_from_store(ctx.config_store.as_ref());
     let config = ctx.config().clone();
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    if !crate::state::wifi_sta_settled_for_outbound(3) {
+        let snapshot = crate::channels::build_unavailable_snapshot(&config, loc);
+        return serde_json::to_string(&snapshot).map_err(|e| e.to_string());
+    }
     let mut http = ctx
         .platform
         .create_http_client(&config)

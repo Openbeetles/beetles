@@ -2,6 +2,7 @@
 //! 支持 AT_MESSAGE_CREATE（频道）、GROUP_AT_MESSAGE_CREATE（群聊）、C2C_MESSAGE_CREATE（私聊）。
 
 mod send;
+mod token;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 mod webhook;
 

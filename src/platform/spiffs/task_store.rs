@@ -37,6 +37,13 @@ impl SpiffsTaskStore {
         }
     }
 
+    /// 预热进程内缓存；在平台初始化阶段调用，把首次磁盘读取从低栈后台线程前移。
+    pub fn warm_cache(&self) -> Result<()> {
+        self.store
+            .with_cached_mut(|_| Ok(StoreOp::clean(())))
+            .map(|_| ())
+    }
+
     fn trim_if_needed(map: &mut HashMap<String, StoredTaskItem>) {
         while map.len() > MAX_TASK_ITEMS {
             let remove_id = map
@@ -79,20 +86,24 @@ impl TaskStore for SpiffsTaskStore {
     }
 
     fn upsert(&self, task: &TaskItem) -> Result<()> {
-        self.store.with_cached_mut(|map| {
+        let changed = self.store.with_cached_mut(|map| {
             let normalized = normalize_task_item(task.clone())?;
             let next_item = StoredTaskItem(normalized);
             if map.get(&next_item.0.id) == Some(&next_item) {
-                return Ok(StoreOp::clean(()));
+                return Ok(StoreOp::clean(false));
             }
             map.insert(next_item.0.id.clone(), next_item);
             Self::trim_if_needed(map);
-            Ok(StoreOp::dirty(()))
-        })
+            Ok(StoreOp::dirty(true))
+        })?;
+        if changed {
+            crate::bg_timer::notify_deadline_changed();
+        }
+        Ok(())
     }
 
     fn delete(&self, channel: &str, chat_id: &str, id: &str) -> Result<bool> {
-        self.store.with_cached_mut(|map| {
+        let removed = self.store.with_cached_mut(|map| {
             let matched = map
                 .get(id)
                 .map(|item| item.0.channel == channel && item.0.chat_id == chat_id)
@@ -102,7 +113,11 @@ impl TaskStore for SpiffsTaskStore {
             }
             let removed = map.remove(id).is_some();
             Ok(StoreOp::with_dirty(removed, removed))
-        })
+        })?;
+        if removed {
+            crate::bg_timer::notify_deadline_changed();
+        }
+        Ok(removed)
     }
 
     fn claim_due(&self, now_unix_secs: u64, limit: usize) -> Result<Vec<TaskItem>> {
@@ -139,6 +154,22 @@ impl TaskStore for SpiffsTaskStore {
                 }
             }
             Ok(StoreOp::dirty(due))
+        })
+    }
+
+    fn next_due_at(&self) -> Result<Option<u64>> {
+        self.store.with_cached_mut(|map| {
+            Ok(StoreOp::clean(
+                map.values()
+                    .filter_map(|item| {
+                        let task = &item.0;
+                        (task.due_at_unix_secs != 0
+                            && task.due_notified_at_unix_secs == 0
+                            && !task.status.is_terminal())
+                        .then_some(task.due_at_unix_secs)
+                    })
+                    .min(),
+            ))
         })
     }
 }

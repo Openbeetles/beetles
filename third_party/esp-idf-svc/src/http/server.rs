@@ -39,6 +39,7 @@ use core::marker::PhantomData;
 use core::net::Ipv4Addr;
 #[cfg(esp_idf_lwip_ipv6)]
 use core::net::Ipv6Addr;
+use log::debug;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::*;
 use core::{ffi, ptr};
@@ -388,7 +389,9 @@ impl<'a> EspHttpServer<'a> {
             }
         }
 
-        info!("Started Httpd server with config {conf:?}");
+        // beetle: keep server bootstrap visible only at debug level on embedded builds.
+        // Route registration can easily flood the serial console and hide real faults.
+        debug!("Started Httpd server with config {conf:?}");
 
         let server = Self {
             sd: handle,
@@ -555,7 +558,8 @@ impl<'a> EspHttpServer<'a> {
 
         esp!(unsafe { crate::sys::httpd_register_uri_handler(self.sd, &conf) })?;
 
-        info!(
+        // beetle: downgrade per-route registration noise to debug for the same reason.
+        debug!(
             "Registered Httpd server handler {:?} for URI \"{}\"",
             method,
             c_str.to_str().unwrap()

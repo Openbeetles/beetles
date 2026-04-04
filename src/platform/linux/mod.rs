@@ -131,6 +131,12 @@ impl Platform for LinuxPlatform {
         // Host 须先创建状态根，`nvs/pc_cfg.json` 依赖 `state_mount_path`。
         self.init_spiffs()?;
         self.init_nvs()?;
+        if let Err(e) = self.remind_at_store.warm_cache() {
+            log::warn!("[platform::linux] warm remind cache failed: {}", e);
+        }
+        if let Err(e) = self.task_store.warm_cache() {
+            log::warn!("[platform::linux] warm task cache failed: {}", e);
+        }
         Ok(())
     }
 

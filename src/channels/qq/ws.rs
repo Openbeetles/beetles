@@ -10,9 +10,8 @@ use crate::channels::ChannelHttpClient;
 use crate::error::{Error, Result};
 use crate::memory::PendingRetryStore;
 
-use super::send::{
-    cache_msg_id, QqMsgIdCache, QqTokenRequest, QqTokenResponse, QQ_GET_APP_ACCESS_TOKEN_URL,
-};
+use super::send::{cache_msg_id, QqMsgIdCache};
+use super::token::fetch_qq_access_token;
 
 const TAG: &str = "qq_ws";
 const QQ_GATEWAY_URL: &str = "https://api.sgroup.qq.com/gateway";
@@ -86,64 +85,30 @@ fn get_qq_access_token<H: ChannelHttpClient + ?Sized>(
     app_id: &str,
     client_secret: &str,
 ) -> Result<String> {
-    let body = QqTokenRequest {
-        app_id: app_id.to_string(),
-        client_secret: client_secret.to_string(),
-    };
-    let body_bytes = serde_json::to_vec(&body).map_err(|e| Error::Other {
-        source: Box::new(e),
-        stage: "qq_ws_token",
-    })?;
-    let (status, resp_body) = http
-        .http_post(QQ_GET_APP_ACCESS_TOKEN_URL, &body_bytes)
-        .map_err(|e| Error::Other {
-            source: Box::new(e),
-            stage: "qq_ws_token",
-        })?;
-    if status >= 400 {
-        return Err(Error::Http {
-            status_code: status,
-            stage: "qq_ws_token",
-        });
-    }
-    let r: QqTokenResponse =
-        serde_json::from_slice(resp_body.as_ref()).map_err(|e| Error::Other {
-            source: Box::new(e),
-            stage: "qq_ws_token",
-        })?;
-    r.access_token.filter(|t| !t.is_empty()).ok_or_else(|| {
-        // 打印响应体帮助诊断 QQ API 返回的错误信息
-        let body_preview =
-            String::from_utf8_lossy(&resp_body.as_ref()[..resp_body.as_ref().len().min(256)]);
-        log::warn!(
-            "[qq_ws] token response has no access_token, body: {}",
-            body_preview
-        );
-        Error::Other {
-            source: Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "qq_ws no access_token",
-            )),
-            stage: "qq_ws_token",
-        }
-    })
+    fetch_qq_access_token(http, app_id, client_secret, "qq_ws_token")
 }
 
 fn get_gateway_url<H: ChannelHttpClient + ?Sized>(http: &mut H, token: &str) -> Result<String> {
     let auth = format!("QQBot {}", token);
     let headers = [("Authorization", auth.as_str())];
-    let (status, resp_body) = http
-        .http_get_with_headers(QQ_GATEWAY_URL, &headers)
-        .map_err(|e| Error::Other {
-            source: Box::new(e),
-            stage: "qq_ws_gateway",
-        })?;
+    let (status, resp_body) = match http.http_get_with_headers(QQ_GATEWAY_URL, &headers) {
+        Ok(resp) => resp,
+        Err(e) => {
+            crate::metrics::record_channel_http_result(false);
+            return Err(Error::Other {
+                source: Box::new(e),
+                stage: "qq_ws_gateway",
+            });
+        }
+    };
     if status >= 400 {
+        crate::metrics::record_channel_http_result(false);
         return Err(Error::Http {
             status_code: status,
             stage: "qq_ws_gateway",
         });
     }
+    crate::metrics::record_channel_http_result(true);
     #[derive(serde::Deserialize)]
     struct GatewayResp {
         url: Option<String>,

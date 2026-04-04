@@ -50,6 +50,13 @@ impl SpiffsRemindAtStore {
             ),
         }
     }
+
+    /// 预热进程内缓存；避免 bg_timer 首轮在小栈线程中同步读盘。
+    pub fn warm_cache(&self) -> Result<()> {
+        self.store
+            .with_cached_mut(|_| Ok(StoreOp::clean(())))
+            .map(|_| ())
+    }
 }
 
 impl Default for SpiffsRemindAtStore {
@@ -72,7 +79,9 @@ impl RemindAtStore for SpiffsRemindAtStore {
                 list.truncate(REMIND_AT_MAX_ENTRIES);
             }
             Ok(StoreOp::dirty(()))
-        })
+        })?;
+        crate::bg_timer::notify_deadline_changed();
+        Ok(())
     }
 
     fn pop_due(&self, now_unix_secs: u64) -> Result<Option<(String, String, String)>> {
@@ -89,6 +98,14 @@ impl RemindAtStore for SpiffsRemindAtStore {
                 removed.chat_id,
                 removed.context,
             ))))
+        })
+    }
+
+    fn next_due_at(&self) -> Result<Option<u64>> {
+        self.store.with_cached_mut(|list| {
+            Ok(StoreOp::clean(
+                list.iter().map(|entry| entry.at_unix_secs).min(),
+            ))
         })
     }
 

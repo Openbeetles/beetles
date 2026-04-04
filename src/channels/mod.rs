@@ -16,6 +16,8 @@ pub(crate) mod wecom;
 mod wss_gateway;
 
 pub use connectivity::{build_snapshot, ChannelConnectivityItem, ChannelConnectivitySnapshot};
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub use connectivity::build_unavailable_snapshot;
 pub use dingtalk::{flush_dingtalk_sends, run_dingtalk_sender_loop};
 pub use dispatch::{build_channel_sinks, spawn_sender_threads, ChannelRxSet};
 pub use dispatch::{run_dispatch, ChannelSinks, MessageSink, QueuedSink};

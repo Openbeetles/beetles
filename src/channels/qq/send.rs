@@ -6,6 +6,7 @@ use crate::config::AppConfig;
 use crate::error::Error;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use crate::error::Result;
+use crate::error::{Error as BeetleError, Result as BeetleResult};
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use ed25519_dalek::{Signer, SigningKey};
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -13,6 +14,8 @@ use hex;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use super::token::{fetch_qq_access_token, fetch_qq_access_token_with_expiry};
 
 /// 单条消息最大字符数，与现有通道对齐。
 const QQ_MAX_MESSAGE_LEN: usize = 4096;
@@ -137,43 +140,8 @@ pub fn cache_msg_id(cache: &QqMsgIdCache, chat_id: &str, msg_id: &str) -> crate:
     Ok(())
 }
 
-pub const QQ_GET_APP_ACCESS_TOKEN_URL: &str = "https://bots.qq.com/app/getAppAccessToken";
 const QQ_MESSAGES_BASE: &str = "https://api.sgroup.qq.com/channels";
 const QQ_V2_BASE: &str = "https://api.sgroup.qq.com/v2";
-
-#[derive(serde::Serialize)]
-pub struct QqTokenRequest {
-    #[serde(rename = "appId")]
-    pub app_id: String,
-    #[serde(rename = "clientSecret")]
-    pub client_secret: String,
-}
-
-#[derive(serde::Deserialize)]
-pub struct QqTokenResponse {
-    pub access_token: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_u64_or_string")]
-    #[allow(dead_code)]
-    pub expires_in: u64,
-}
-
-/// QQ API 的 expires_in 可能返回数字或字符串，兼容两种格式。
-fn deserialize_u64_or_string<'de, D>(deserializer: D) -> std::result::Result<u64, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::Deserialize;
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum U64OrString {
-        U64(u64),
-        Str(String),
-    }
-    match U64OrString::deserialize(deserializer)? {
-        U64OrString::U64(v) => Ok(v),
-        U64OrString::Str(s) => s.parse::<u64>().map_err(serde::de::Error::custom),
-    }
-}
 
 /// 连通性检查：供 GET /api/channel_connectivity 使用。
 pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
@@ -193,120 +161,41 @@ pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
             Some(tr(Message::ConnectivityNotConfigured, loc)),
         );
     }
-    let body = QqTokenRequest {
-        app_id: config.qq_channel_app_id.trim().to_string(),
-        client_secret: config.qq_channel_secret.trim().to_string(),
-    };
-    let body_bytes = match serde_json::to_vec(&body) {
-        Ok(b) => b,
+    match fetch_qq_access_token(
+        http,
+        config.qq_channel_app_id.trim(),
+        config.qq_channel_secret.trim(),
+        "qq_connectivity",
+    ) {
+        Ok(_) => connectivity::item("qq_channel", configured, true, None),
         Err(e) => {
-            log::warn!("[qq_connectivity] json: {}", e);
-            return connectivity::item(
-                "qq_channel",
-                configured,
-                false,
-                Some(tr(Message::ConnectivityCheckFailed, loc)),
-            );
+            log::warn!("[qq_connectivity] {}", e);
+            let message = match e {
+                BeetleError::Http { status_code, .. } if status_code >= 400 => {
+                    tr(Message::ConnectivityTokenInvalid, loc)
+                }
+                BeetleError::Config { .. } => tr(Message::ConnectivityTokenInvalid, loc),
+                _ => tr(Message::ConnectivityCheckFailed, loc),
+            };
+            connectivity::item("qq_channel", configured, false, Some(message))
         }
-    };
-    let (status, resp_body) = match http.http_post(QQ_GET_APP_ACCESS_TOKEN_URL, &body_bytes) {
-        Ok(r) => r,
-        Err(e) => {
-            log::warn!("[qq_connectivity] post: {}", e);
-            return connectivity::item(
-                "qq_channel",
-                configured,
-                false,
-                Some(tr(Message::ConnectivityCheckFailed, loc)),
-            );
-        }
-    };
-    if status >= 400 {
-        log::warn!("[qq_connectivity] status {}", status);
-        return connectivity::item(
-            "qq_channel",
-            configured,
-            false,
-            Some(tr(Message::ConnectivityTokenInvalid, loc)),
-        );
-    }
-    let r: QqTokenResponse = match serde_json::from_slice(resp_body.as_ref()) {
-        Ok(x) => x,
-        Err(e) => {
-            log::warn!("[qq_connectivity] parse: {}", e);
-            return connectivity::item(
-                "qq_channel",
-                configured,
-                false,
-                Some(tr(Message::ConnectivityCheckFailed, loc)),
-            );
-        }
-    };
-    match r.access_token {
-        Some(t) if !t.is_empty() => connectivity::item("qq_channel", configured, true, None),
-        _ => connectivity::item(
-            "qq_channel",
-            configured,
-            false,
-            Some(tr(Message::ConnectivityTokenInvalid, loc)),
-        ),
     }
 }
 
-/// Returns `(access_token, expires_in_secs)` from QQ API for caching.
 fn acquire_qq_token_with_expiry<H: ChannelHttpClient>(
     http: &mut H,
     app_id: &str,
     secret: &str,
-) -> Option<(String, u64)> {
-    const TAG: &str = "qq_send";
-    let body = QqTokenRequest {
-        app_id: app_id.to_string(),
-        client_secret: secret.to_string(),
-    };
-    let body_bytes = match serde_json::to_vec(&body) {
-        Ok(b) => b,
-        Err(e) => {
-            log::warn!("[{}] token json: {}", TAG, e);
-            return None;
-        }
-    };
-    let (status, resp_body) = match http.http_post(QQ_GET_APP_ACCESS_TOKEN_URL, &body_bytes) {
-        Ok(r) => r,
-        Err(e) => {
-            log::warn!("[{}] getAppAccessToken failed: {}", TAG, e);
-            return None;
-        }
-    };
-    if status >= 400 {
-        log::warn!("[{}] getAppAccessToken status={}", TAG, status);
-        return None;
-    }
-    let token_resp: QqTokenResponse = match serde_json::from_slice(resp_body.as_ref()) {
-        Ok(t) => t,
-        Err(e) => {
-            log::warn!("[{}] token parse: {}", TAG, e);
-            return None;
-        }
-    };
-    match token_resp.access_token {
-        Some(t) if !t.is_empty() => {
-            let exp = token_resp.expires_in.max(60);
-            Some((t, exp))
-        }
-        _ => {
-            log::warn!("[{}] no access_token in response", TAG);
-            None
-        }
-    }
+) -> BeetleResult<(String, u64)> {
+    fetch_qq_access_token_with_expiry(http, app_id, secret, "qq_send_token")
 }
 
 fn acquire_qq_token<H: ChannelHttpClient>(
     http: &mut H,
     app_id: &str,
     secret: &str,
-) -> Option<String> {
-    acquire_qq_token_with_expiry(http, app_id, secret).map(|(t, _)| t)
+) -> BeetleResult<String> {
+    fetch_qq_access_token(http, app_id, secret, "qq_send_token")
 }
 
 /// 根据 chat_id 前缀确定 API 端点：
@@ -444,8 +333,11 @@ pub fn flush_qq_channel_sends<H: ChannelHttpClient>(
         return;
     }
     let token = match acquire_qq_token(http, app_id, secret) {
-        Some(t) => t,
-        None => return,
+        Ok(t) => t,
+        Err(e) => {
+            log::warn!("[qq_flush] acquire token failed: {}", e);
+            return;
+        }
     };
     while let Ok((chat_id, content, req_id)) = rx.try_recv() {
         let msg_id = pop_msg_id(&cache, &chat_id);
@@ -524,14 +416,20 @@ where
             };
             let token_start = std::time::Instant::now();
             match acquire_qq_token_with_expiry(h, app_id, secret) {
-                Some((t, exp_secs)) => {
+                Ok((t, exp_secs)) => {
                     let keep = exp_secs.saturating_sub(QQ_TOKEN_CACHE_MARGIN_SECS).max(30);
                     *token_cache = Some((t.clone(), now + std::time::Duration::from_secs(keep)));
                     token_opt = Some(t);
                     token_wait_ms = token_wait_ms.saturating_add(token_start.elapsed().as_millis());
                 }
-                None => {
+                Err(e) => {
                     token_wait_ms = token_wait_ms.saturating_add(token_start.elapsed().as_millis());
+                    log::warn!(
+                        "[{}] acquire token failed (attempt {}): {}",
+                        TAG,
+                        retry + 1,
+                        e
+                    );
                     *http = None;
                     continue;
                 }

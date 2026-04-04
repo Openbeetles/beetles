@@ -26,8 +26,13 @@ const STA_POLL_INTERVAL_MS: u64 = 5_000;
 /// 发起 connect() 后的冷却期（毫秒）：给 WiFi 驱动足够时间完成 auth/assoc/DHCP，
 /// 冷却期内不再检查也不再发起 connect()，避免频繁重连干扰驱动状态机。
 const STA_RECONNECT_COOLDOWN_MS: u64 = 15_000;
+/// 连续多少次 poll 都确认 STA 链路不在，才触发一次 reconnect。
+/// 避免瞬时读不到 netif/IP 就自激重连。
+const STA_LINK_MISS_THRESHOLD: u8 = 2;
 /// 当前启动是否期望 STA 出站网络；纯 SoftAP 配网模式下为 false，避免全局等待卡死。
 static WIFI_STA_EXPECTED: AtomicBool = AtomicBool::new(false);
+/// STA 刚拿到 IP 后额外等待一小段时间，再允许外联 DNS/TLS，减少启动瞬间假失败。
+const STA_OUTBOUND_READY_GRACE_SECS: u64 = 3;
 
 /// 其他线程查询 WiFi STA 是否就绪（已连接且有 IP）。
 pub fn is_wifi_sta_connected() -> bool {
@@ -50,7 +55,7 @@ pub fn wait_for_network_ready() {
     }
     crate::platform::task_wdt::register_current_task_to_task_wdt();
     let deadline = Instant::now() + Duration::from_secs(WIFI_ESP_CONNECT_MAIN_WAIT_SECS);
-    while !is_wifi_sta_connected() {
+    while !crate::state::wifi_sta_settled_for_outbound(STA_OUTBOUND_READY_GRACE_SECS) {
         crate::platform::task_wdt::feed_current_task();
         if Instant::now() >= deadline {
             log::warn!(
@@ -209,11 +214,12 @@ fn run_scan_loop(
     } else {
         None
     };
+    let mut sta_link_miss_count = 0u8;
     let mut next_sta_poll = Instant::now();
 
     loop {
         if has_sta && Instant::now() >= next_sta_poll {
-            poll_sta_link(wifi, &mut cooldown_until);
+            poll_sta_link(wifi, &mut cooldown_until, &mut sta_link_miss_count);
             next_sta_poll = Instant::now() + Duration::from_millis(STA_POLL_INTERVAL_MS);
             continue;
         }
@@ -251,21 +257,31 @@ fn run_scan_loop(
     }
 }
 
-fn poll_sta_link(wifi: &mut BlockingWifi<EspWifi>, cooldown_until: &mut Option<Instant>) {
+fn poll_sta_link(
+    wifi: &mut BlockingWifi<EspWifi>,
+    cooldown_until: &mut Option<Instant>,
+    sta_link_miss_count: &mut u8,
+) {
     let sta_l2 = wifi.wifi().driver().is_sta_connected().unwrap_or(false);
-    let sta_ip_ok = read_sta_ipv4_string()
-        .map(|s| s != "0.0.0.0")
-        .unwrap_or(false);
+    let sta_ip = read_sta_ipv4_string().filter(|s| s != "0.0.0.0");
+    let sta_ip_ok = sta_ip.is_some();
     let sta_link_up = sta_l2 || sta_ip_ok;
+    let was_connected = crate::state::wifi_sta_connected();
 
-    if sta_ip_ok {
-        if !crate::state::wifi_sta_connected() {
+    if let Some(ip) = sta_ip {
+        if !was_connected {
             log::info!("[{}] STA connected (detected in poll)", TAG);
         }
-        update_sta_ip_cache();
+        crate::state::set_wifi_sta_state(true, Some(ip));
+        *sta_link_miss_count = 0;
+    } else if sta_l2 {
+        // L2 仍在线时保留既有 STA 状态，避免 netif/IP 读的瞬时空窗把上层误判为断网。
+        *sta_link_miss_count = 0;
     } else {
-        if crate::state::wifi_sta_connected() && !sta_link_up {
+        *sta_link_miss_count = sta_link_miss_count.saturating_add(1);
+        if was_connected && *sta_link_miss_count == 1 {
             log::warn!("[{}] STA disconnected, will reconnect", TAG);
+            crate::metrics::record_wifi_failure_stage("wifi_sta_link_down");
         }
         crate::state::clear_wifi_sta_state();
     }
@@ -278,17 +294,23 @@ fn poll_sta_link(wifi: &mut BlockingWifi<EspWifi>, cooldown_until: &mut Option<I
         *cooldown_until = None;
         return;
     }
+    if *sta_link_miss_count < STA_LINK_MISS_THRESHOLD {
+        return;
+    }
 
     crate::state::clear_wifi_sta_state();
+    crate::metrics::record_wifi_reconnect();
     match wifi.connect() {
         Ok(()) => {
             log::info!(
-                "[{}] STA connect() issued, cooldown {}ms",
+                "[{}] STA connect() issued after {} misses, cooldown {}ms",
                 TAG,
+                *sta_link_miss_count,
                 STA_RECONNECT_COOLDOWN_MS
             );
         }
         Err(e) => {
+            crate::metrics::record_wifi_failure_stage("wifi_connect");
             log::warn!("[{}] STA connect() failed: {}", TAG, e);
         }
     }
@@ -506,11 +528,6 @@ fn do_connect(
     // 导致 STA 获取 IP 后 1-2s 内断连。改为 connect() 成功即报告 ready，由 scan_loop 检测 IP。
     let _ = result_tx.send(Ok(()));
     run_scan_loop(&mut wifi, &scan_req_rx, &scan_resp_tx, true, true);
-}
-
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-fn update_sta_ip_cache() {
-    crate::state::set_wifi_sta_state(true, read_sta_ipv4_string());
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]

@@ -86,6 +86,65 @@ fn webhook_item(config: &AppConfig, loc: Locale) -> ChannelConnectivityItem {
     item("webhook", configured, configured, message)
 }
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn active_channel_configured(config: &AppConfig) -> bool {
+    match config.enabled_channel.as_str() {
+        "telegram" => !config.tg_token.trim().is_empty(),
+        "feishu" => {
+            !config.feishu_app_id.trim().is_empty() && !config.feishu_app_secret.trim().is_empty()
+        }
+        "dingtalk" => !config.dingtalk_webhook_url.trim().is_empty(),
+        "wecom" => {
+            !config.wecom_corp_id.trim().is_empty()
+                && !config.wecom_agent_id.trim().is_empty()
+                && !config.wecom_corp_secret.trim().is_empty()
+        }
+        "qq_channel" => {
+            !config.qq_channel_app_id.trim().is_empty() && !config.qq_channel_secret.trim().is_empty()
+        }
+        _ => false,
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub fn build_unavailable_snapshot(config: &AppConfig, loc: Locale) -> ChannelConnectivitySnapshot {
+    let active_id = config.enabled_channel.as_str();
+    let active_configured = active_channel_configured(config);
+    let unavailable = Some(tr(Message::ChannelConnectivityUnavailable, loc));
+    ChannelConnectivitySnapshot {
+        channels: vec![
+            if active_id == "telegram" {
+                item("telegram", active_configured, false, unavailable.clone())
+            } else {
+                disabled_item("telegram", loc)
+            },
+            if active_id == "feishu" {
+                item("feishu", active_configured, false, unavailable.clone())
+            } else {
+                disabled_item("feishu", loc)
+            },
+            if active_id == "dingtalk" {
+                item("dingtalk", active_configured, false, unavailable.clone())
+            } else {
+                disabled_item("dingtalk", loc)
+            },
+            if active_id == "wecom" {
+                item("wecom", active_configured, false, unavailable.clone())
+            } else {
+                disabled_item("wecom", loc)
+            },
+            if active_id == "qq_channel" {
+                item("qq_channel", active_configured, false, unavailable)
+            } else {
+                disabled_item("qq_channel", loc)
+            },
+            webhook_item(config, loc),
+        ],
+        checked_at_unix_secs: Some(crate::util::current_unix_secs()),
+        stale: true,
+    }
+}
+
 /// 按固定顺序返回通道连通性结果。
 /// 仅当前 `enabled_channel` 执行真实探测；其他通道返回当前未启用。
 pub fn build_snapshot<H: crate::channels::ChannelHttpClient + ?Sized>(

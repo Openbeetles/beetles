@@ -2,7 +2,7 @@
 //! In-process shared state (e.g. last error) for CLI and HTTP.
 
 use crate::error::Error;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -18,6 +18,8 @@ static MEMORY_LOAD_OK: AtomicBool = AtomicBool::new(false);
 static SOUL_LOAD_OK: AtomicBool = AtomicBool::new(false);
 /// 当前 WiFi STA 是否已拿到有效 IP。
 static WIFI_STA_CONNECTED: AtomicBool = AtomicBool::new(false);
+/// 当前 WiFi STA 连通状态建立时间（unix secs）；供外联探测做短暂 settle window。
+static WIFI_STA_CONNECTED_SINCE_SECS: AtomicU32 = AtomicU32::new(0);
 /// 当前 WiFi STA IPv4。
 static WIFI_STA_IP: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
@@ -107,7 +109,14 @@ pub fn get_soul_load_ok() -> bool {
 
 /// 更新当前 WiFi STA 状态；业务域只读此状态，不直接依赖 platform helper。
 pub fn set_wifi_sta_state(connected: bool, ip: Option<String>) {
-    WIFI_STA_CONNECTED.store(connected, Ordering::Relaxed);
+    let was_connected = WIFI_STA_CONNECTED.swap(connected, Ordering::Relaxed);
+    if connected {
+        if !was_connected {
+            WIFI_STA_CONNECTED_SINCE_SECS.store(now_unix_secs() as u32, Ordering::Relaxed);
+        }
+    } else {
+        WIFI_STA_CONNECTED_SINCE_SECS.store(0, Ordering::Relaxed);
+    }
     if let Ok(mut g) = WIFI_STA_IP.get_or_init(|| Mutex::new(None)).lock() {
         *g = if connected { ip } else { None };
     }
@@ -121,6 +130,15 @@ pub fn clear_wifi_sta_state() {
 /// WiFi STA 是否已连通并获得 IP。
 pub fn wifi_sta_connected() -> bool {
     WIFI_STA_CONNECTED.load(Ordering::Relaxed)
+}
+
+/// WiFi STA 已连通且稳定超过指定秒数，适合发起 DNS/TLS 等外联。
+pub fn wifi_sta_settled_for_outbound(min_connected_secs: u64) -> bool {
+    if !wifi_sta_connected() {
+        return false;
+    }
+    let since = WIFI_STA_CONNECTED_SINCE_SECS.load(Ordering::Relaxed) as u64;
+    since != 0 && now_unix_secs().saturating_sub(since) >= min_connected_secs
 }
 
 /// 当前 WiFi STA IPv4。
@@ -157,5 +175,12 @@ mod tests {
         clear_wifi_sta_state();
         assert!(!wifi_sta_connected());
         assert_eq!(wifi_sta_ip(), None);
+    }
+
+    #[test]
+    fn wifi_sta_must_settle_before_outbound_ready() {
+        set_wifi_sta_state(true, Some("192.168.1.2".to_string()));
+        assert!(!wifi_sta_settled_for_outbound(1));
+        clear_wifi_sta_state();
     }
 }

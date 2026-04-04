@@ -152,12 +152,22 @@ impl Platform for Esp32Platform {
 
     fn init(&self) -> crate::error::Result<()> {
         esp_idf_svc::sys::link_patches();
-        esp_idf_svc::log::EspLogger::initialize_default();
-        // 屏蔽 HTTP 服务器每个 URI 注册的 Info 日志，减少刷屏（0.52+ 使用 EspIdfLogFilter）
-        let _ = esp_idf_svc::log::EspIdfLogFilter::new()
-            .set_target_level("esp_idf_svc::http::server", log::LevelFilter::Warn);
+        let logger = esp_idf_svc::log::init_from_esp_idf();
+        // 尽量压低 esp-idf-svc httpd 的注册日志；若 target filter 失效，vendored esp-idf-svc
+        // 里也已把对应日志降到了 debug，这里保留为额外兜底。
+        for target in ["esp_idf_svc::http::server", "esp-idf-svc::http::server"] {
+            let _ = logger
+                .filter()
+                .set_target_level(target, log::LevelFilter::Warn);
+        }
         self.init_nvs()?;
         self.init_spiffs()?;
+        if let Err(e) = self.remind_at_store.warm_cache() {
+            log::warn!("[platform::esp32] warm remind cache failed: {}", e);
+        }
+        if let Err(e) = self.task_store.warm_cache() {
+            log::warn!("[platform::esp32] warm task cache failed: {}", e);
+        }
         Ok(())
     }
 

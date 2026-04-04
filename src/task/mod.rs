@@ -99,6 +99,10 @@ pub trait TaskStore: Send + Sync {
     fn upsert(&self, task: &TaskItem) -> Result<()>;
     fn delete(&self, channel: &str, chat_id: &str, id: &str) -> Result<bool>;
     fn claim_due(&self, now_unix_secs: u64, limit: usize) -> Result<Vec<TaskItem>>;
+    /// 返回最早待提醒任务的 due_at；无待提醒任务则返回 Ok(None)。
+    fn next_due_at(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
 }
 
 pub fn normalize_task_item(mut task: TaskItem) -> Result<TaskItem> {
