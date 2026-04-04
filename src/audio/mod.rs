@@ -5,6 +5,7 @@ pub mod baidu_token;
 pub mod capture;
 pub mod energy;
 pub mod pipeline;
+pub mod realtime;
 pub mod stt_baidu;
 pub mod tts_baidu;
 pub mod voice_session;

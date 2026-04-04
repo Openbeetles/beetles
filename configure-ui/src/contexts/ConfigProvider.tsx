@@ -10,6 +10,7 @@ import type { DisplayConfig } from "../types/displayConfig";
 import { normalizeDisplayConfig } from "../types/displayConfig";
 import type { HardwareSegment } from "../types/hardwareConfig";
 import type { AudioConfig } from "../types/audioConfig";
+import { normalizeAudioConfigFromDevice } from "../types/audioConfig";
 import { ensureHardwareDeviceIds } from "../util/hardwareDeviceId";
 import { ConfigContext } from "./ConfigContext";
 import { useDeviceApi } from "../hooks/useDeviceApi";
@@ -259,7 +260,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       setLoading: setAudioLoading,
       setError: setAudioError,
       fetch: () => api.audio.get() as Promise<ApiResult<AudioConfig>>,
-      applySuccess: (data) => setAudioConfig(data),
+      applySuccess: (data) => setAudioConfig(normalizeAudioConfigFromDevice(data)),
       clearData: () => setAudioConfig(null),
       isCurrent: () => deviceSessionKeyRef.current === sessionKey,
     });

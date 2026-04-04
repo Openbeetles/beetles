@@ -177,6 +177,39 @@ impl WssConnection for EspWssConnection {
         Ok(())
     }
 
+    fn send_text(&mut self, text: &str) -> Result<()> {
+        if text.len() > MAX_WSS_SEND_PAYLOAD_BYTES {
+            return Err(Error::Other {
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "wss payload too large: {} > {}",
+                        text.len(),
+                        MAX_WSS_SEND_PAYLOAD_BYTES
+                    ),
+                )),
+                stage: "wss_esp_send",
+            });
+        }
+        let rc = unsafe {
+            sys::esp_websocket_client_send_text(
+                self.handle,
+                text.as_ptr() as *const core::ffi::c_char,
+                text.len() as i32,
+                self.send_timeout_ticks,
+            )
+        };
+        if rc < 0 {
+            return Err(Error::Other {
+                source: Box::new(std::io::Error::other(format!(
+                    "esp_websocket_client_send_text rc={rc}"
+                ))),
+                stage: "wss_esp_send",
+            });
+        }
+        Ok(())
+    }
+
     fn recv_timeout(&mut self, timeout: Duration) -> Result<Option<WssEvent>> {
         Self::recv_to_event(self.rx.recv_timeout(timeout))
     }
@@ -260,17 +293,39 @@ unsafe fn map_ws_event(
 const WSS_TLS_ADMISSION_TIMEOUT_SECS: u64 = 30;
 
 pub fn connect_esp_wss(url: &str) -> Result<EspWssConnection> {
+    connect_esp_wss_with_headers(url, &[])
+}
+
+pub fn connect_esp_wss_with_headers(
+    url: &str,
+    headers: &[(&str, &str)],
+) -> Result<EspWssConnection> {
     let _permit = crate::orchestrator::request_http_permit(
         crate::orchestrator::Priority::High,
         Duration::from_secs(WSS_TLS_ADMISSION_TIMEOUT_SECS),
     )?;
 
     let url_c = CString::new(url).map_err(|e| Error::config("wss_esp_connect", e.to_string()))?;
+    let header_block = headers
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}\r\n"))
+        .collect::<String>();
+    let headers_c = if header_block.is_empty() {
+        None
+    } else {
+        Some(
+            CString::new(header_block)
+                .map_err(|e| Error::config("wss_esp_connect", e.to_string()))?,
+        )
+    };
     let timeout = Duration::from_millis(CONNECT_TIMEOUT_MS);
     let send_timeout_ticks = TickType::from(timeout).0;
 
     let mut config = sys::esp_websocket_client_config_t::default();
     config.uri = url_c.as_ptr();
+    if let Some(headers_c) = headers_c.as_ref() {
+        config.headers = headers_c.as_ptr();
+    }
     config.buffer_size = DEFAULT_WSS_BUFFER_SIZE as i32;
     config.transport = sys::esp_websocket_transport_t_WEBSOCKET_TRANSPORT_OVER_SSL;
     config.use_global_ca_store = false;

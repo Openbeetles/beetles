@@ -9,8 +9,9 @@
 
 use crate::audio::baidu_token::BaiduTokenCache;
 use crate::audio::pipeline::{capture_and_transcribe, speak_text};
+use crate::audio::realtime::run_realtime_session;
 use crate::bus::{PcMsg, TrackedSender};
-use crate::config::AudioSegment;
+use crate::config::{audio_realtime_enabled, AudioSegment};
 use crate::constants::{AUDIO_CAPTURE_MAX_MS, VOICE_CHANNEL_NAME, VOICE_DEVICE_CHAT_ID};
 use crate::platform::PlatformHttpClient;
 use crate::util::{
@@ -58,7 +59,11 @@ pub struct VoiceSessionConfig {
 
 /// Entry point for the voice session scheduler thread. Blocks on `rx` until the channel closes.
 pub fn run_voice_session(cfg: VoiceSessionConfig, rx: Receiver<VoiceEvent>) {
-    log::info!("[{}] started", TAG);
+    log::info!(
+        "[{}] started realtime_enabled={}",
+        TAG,
+        audio_realtime_enabled(&cfg.audio_cfg)
+    );
 
     let (worker_tx, worker_rx) = mpsc::sync_channel::<VoiceWorkerTask>(1);
     let (done_tx, done_rx) = mpsc::channel::<()>();
@@ -166,6 +171,37 @@ fn handle_wake_interaction<F>(
     log::info!("[{}] wake detected, starting voice interaction", TAG);
     crate::metrics::record_wake_word_trigger();
 
+    if audio_realtime_enabled(&cfg.audio_cfg) {
+        if !cfg.platform.audio_mic_ready() {
+            log::warn!("[{}] microphone not ready, skipping realtime session", TAG);
+            return;
+        }
+        if !cfg.platform.audio_speaker_ready() {
+            log::warn!("[{}] speaker not ready, skipping realtime session", TAG);
+            return;
+        }
+        match run_realtime_session(cfg.platform.as_ref(), &cfg.audio_cfg, TAG) {
+            Ok(session) => {
+                log::info!(
+                    "[{}] realtime session finished turns={} input_ms={} output_ms={} duration_ms={}",
+                    TAG,
+                    session.turns_completed,
+                    session.input_audio_ms,
+                    session.output_audio_ms,
+                    session.session_ms
+                );
+                if session.output_audio_ms > 0 {
+                    crate::metrics::record_voice_output_play_ms(session.output_audio_ms);
+                }
+            }
+            Err(error) => {
+                log::warn!("[{}] realtime voice session failed: {}", TAG, error);
+                crate::metrics::record_voice_tool_failure("voice_session_realtime");
+            }
+        }
+        return;
+    }
+
     if !ensure_http(http, cfg.make_http.as_ref()) {
         return;
     }
@@ -174,7 +210,10 @@ fn handle_wake_interaction<F>(
         None => return,
     };
 
-    if !cfg.wake_prompt.is_empty() && cfg.platform.audio_speaker_ready() {
+    if should_play_wake_prompt(&cfg.audio_cfg)
+        && !cfg.wake_prompt.is_empty()
+        && cfg.platform.audio_speaker_ready()
+    {
         let tts_result = speak_text(
             cfg.platform.as_ref(),
             &cfg.audio_cfg,
@@ -191,6 +230,7 @@ fn handle_wake_interaction<F>(
         log::warn!("[{}] microphone not ready, skipping capture", TAG);
         return;
     }
+
     let text = match capture_and_transcribe(
         cfg.platform.as_ref(),
         &cfg.audio_cfg,
@@ -355,6 +395,13 @@ fn handle_voice_event(
 
 fn normalize_speak_text(text: &str) -> String {
     crate::util::truncate_content_to_max(text.trim(), MAX_PENDING_SPEAK_CHARS).into_owned()
+}
+
+fn should_play_wake_prompt(audio_cfg: &AudioSegment) -> bool {
+    audio_cfg.stt.provider == "baidu"
+        && audio_cfg.tts.provider == "baidu"
+        && !audio_cfg.stt.api_key.trim().is_empty()
+        && !audio_cfg.stt.api_secret.trim().is_empty()
 }
 
 #[cfg(test)]

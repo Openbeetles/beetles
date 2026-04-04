@@ -19,7 +19,7 @@ use crate::channels::wss_gateway::connection::{
 };
 use crate::error::{Error, Result};
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{protocol::Message, WebSocket};
+use tungstenite::{client::IntoClientRequest, protocol::Message, WebSocket};
 
 /// 与 `esp_conn` 一致。
 const WSS_TLS_ADMISSION_TIMEOUT_SECS: u64 = 10;
@@ -93,6 +93,13 @@ impl Drop for LinuxWssConnection {
 impl WssConnection for LinuxWssConnection {
     fn send_binary(&mut self, data: &[u8]) -> Result<()> {
         self.send_binary_owned(data.to_vec())
+    }
+
+    fn send_text(&mut self, text: &str) -> Result<()> {
+        self.ws
+            .send(Message::Text(text.to_string().into()))
+            .map_err(|e| map_tungstenite("wss_linux_send", e))?;
+        Ok(())
     }
 
     fn send_binary_owned(&mut self, data: Vec<u8>) -> Result<()> {
@@ -171,11 +178,10 @@ impl WssConnection for LinuxWssConnection {
     }
 }
 
-/// 建立 WSS 连接（`wss://`）；与 ESP 相同在握手前申请 orchestrator TLS 准入。
-///
-/// 使用 `TcpStream::connect_timeout` 限制 TCP 建连时间（避免默认 127s+ SYN 超时），
-/// 并设置 read / write timeout 防止后续 `ws.send()` / `ws.read()` 无限阻塞。
-pub fn connect_linux_wss(url: &str) -> Result<LinuxWssConnection> {
+pub fn connect_linux_wss_with_headers(
+    url: &str,
+    headers: &[(&str, &str)],
+) -> Result<LinuxWssConnection> {
     let _permit = crate::orchestrator::request_http_permit(
         crate::orchestrator::Priority::Normal,
         Duration::from_secs(WSS_TLS_ADMISSION_TIMEOUT_SECS),
@@ -187,7 +193,21 @@ pub fn connect_linux_wss(url: &str) -> Result<LinuxWssConnection> {
     tcp.set_write_timeout(Some(Duration::from_secs(SOCKET_WRITE_TIMEOUT_SECS)))
         .map_err(|e| map_io("wss_linux_connect", e))?;
 
-    let (ws, _resp) = tungstenite::client_tls(url, tcp).map_err(|e| Error::Other {
+    let mut request = url
+        .into_client_request()
+        .map_err(|e| Error::config("wss_linux_connect", e.to_string()))?;
+    {
+        let req_headers = request.headers_mut();
+        for (name, value) in headers {
+            let header_name = tungstenite::http::header::HeaderName::from_bytes(name.as_bytes())
+                .map_err(|e| Error::config("wss_linux_connect", e.to_string()))?;
+            let header_value = tungstenite::http::HeaderValue::from_str(value)
+                .map_err(|e| Error::config("wss_linux_connect", e.to_string()))?;
+            req_headers.insert(header_name, header_value);
+        }
+    }
+
+    let (ws, _resp) = tungstenite::client_tls(request, tcp).map_err(|e| Error::Other {
         source: Box::new(std::io::Error::other(e.to_string())),
         stage: "wss_linux_connect",
     })?;
@@ -196,6 +216,14 @@ pub fn connect_linux_wss(url: &str) -> Result<LinuxWssConnection> {
         ws,
         last_read_timeout: Some(Duration::from_secs(SOCKET_READ_TIMEOUT_SECS)),
     })
+}
+
+/// 建立 WSS 连接（`wss://`）；与 ESP 相同在握手前申请 orchestrator TLS 准入。
+///
+/// 使用 `TcpStream::connect_timeout` 限制 TCP 建连时间（避免默认 127s+ SYN 超时），
+/// 并设置 read / write timeout 防止后续 `ws.send()` / `ws.read()` 无限阻塞。
+pub fn connect_linux_wss(url: &str) -> Result<LinuxWssConnection> {
+    connect_linux_wss_with_headers(url, &[])
 }
 
 /// 从 `wss://host:port/path` 中提取 `host:port`（默认 443）。

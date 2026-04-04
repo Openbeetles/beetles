@@ -43,7 +43,7 @@ pub use telegram::{
 pub use voice_sink::VoiceSink;
 pub use websocket::{WebSocketSink, MAX_WS_CONNECTIONS, MAX_WS_MESSAGE_LEN};
 pub use wecom::{flush_wecom_sends, run_wecom_sender_loop};
-pub use wss_gateway::connect_wss;
+pub use wss_gateway::{connect_wss, connect_wss_with_headers, WssConnection, WssEvent};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub use wss_gateway::{connect_esp_wss, EspWssConnection};
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]

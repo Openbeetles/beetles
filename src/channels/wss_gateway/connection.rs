@@ -1,5 +1,5 @@
-//! WSS 传输抽象：发二进制帧、带超时收事件。实现由 platform 或 cfg 模块提供。
-//! Transport abstraction for WSS: send binary frame, receive events with timeout.
+//! WSS 传输抽象：发文本/二进制帧、带超时收事件。实现由 platform 或 cfg 模块提供。
+//! Transport abstraction for WSS: send text/binary frames, receive events with timeout.
 
 use crate::error::Result;
 use std::time::Duration;
@@ -78,6 +78,10 @@ pub enum WssEvent {
 /// 带超时收一条事件：有数据返回 Some(ev)，超时返回 None；连接断开等错误返回 Err。
 pub trait WssConnection {
     fn send_binary(&mut self, data: &[u8]) -> Result<()>;
+    /// 发送 UTF-8 文本帧；默认退化为按字节发送。
+    fn send_text(&mut self, text: &str) -> Result<()> {
+        self.send_binary(text.as_bytes())
+    }
     /// 发送已拥有所有权的二进制负载；默认实现转调 `send_binary`。
     /// Send owned binary payload; default implementation forwards to `send_binary`.
     fn send_binary_owned(&mut self, data: Vec<u8>) -> Result<()> {
