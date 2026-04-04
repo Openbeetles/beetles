@@ -18,7 +18,7 @@ use std::time::Duration;
 
 pub use admission::{AdmissionDecision, LlmDecision, ToolDecision};
 pub use channel_health::is_channel_healthy;
-pub use permit::{AgentTaskGuard, HttpPermitGuard, HttpThreadRole, Priority};
+pub use permit::{AgentTaskGuard, HttpPermitGuard, HttpThreadRole, Priority, WssSessionGuard};
 pub use pressure::{PressureLevel, ResourceBudget};
 pub use state::ResourceSnapshot;
 
@@ -144,12 +144,13 @@ pub fn format_resource_baseline_line() -> String {
             s.heap_largest_block_internal.to_string()
         };
         return format!(
-            "resource pressure={:?} mem_available={} heap_spiram={} heap_largest={} active_http={} agent_tasks={} inbound={} outbound={}",
+            "resource pressure={:?} mem_available={} heap_spiram={} heap_largest={} active_http={} active_wss={} agent_tasks={} inbound={} outbound={}",
             s.pressure,
             s.heap_free_internal,
             s.heap_free_spiram,
             largest,
             s.active_http_count,
+            s.active_wss_count,
             s.active_agent_tasks,
             s.inbound_depth,
             s.outbound_depth,
@@ -157,12 +158,13 @@ pub fn format_resource_baseline_line() -> String {
     }
     #[cfg(not(target_os = "linux"))]
     format!(
-        "resource pressure={:?} heap_internal={} heap_spiram={} heap_largest={} active_http={} agent_tasks={} inbound={} outbound={}",
+        "resource pressure={:?} heap_internal={} heap_spiram={} heap_largest={} active_http={} active_wss={} agent_tasks={} inbound={} outbound={}",
         s.pressure,
         s.heap_free_internal,
         s.heap_free_spiram,
         s.heap_largest_block_internal,
         s.active_http_count,
+        s.active_wss_count,
         s.active_agent_tasks,
         s.inbound_depth,
         s.outbound_depth,
@@ -185,6 +187,11 @@ pub fn set_current_http_thread_role(role: HttpThreadRole) {
 /// 应在准入通过后、开始处理消息前立即调用，确保整个任务生命周期内 `active_agent_tasks > 0`。
 pub fn begin_agent_task() -> AgentTaskGuard {
     AgentTaskGuard::new(&STATE)
+}
+
+/// 标记一个已建立的 WSS 会话开始存活；返回 RAII guard，Drop 时自动递减。
+pub fn begin_wss_session() -> WssSessionGuard {
+    WssSessionGuard::new(&STATE)
 }
 
 /// 记录通道发送结果（成功/失败）。

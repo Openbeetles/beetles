@@ -1,7 +1,7 @@
 //! 原子状态聚合：堆、socket、压力等级、通道健康，全部固定大小 + 原子变量，零堆分配。
 //! Atomic state aggregation: heap, socket, pressure, channel health — fixed-size + atomics, zero heap alloc.
 
-use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use std::sync::{Mutex, OnceLock};
 
@@ -45,8 +45,11 @@ pub struct OrchestratorState {
     /// Internal heap baseline (set on first update_heap, used for relative usage calculation).
     pub heap_baseline_internal: AtomicU32,
 
-    // 连接计数（permit acquire/release 时增减）
+    // 连接计数
     pub active_http_count: AtomicU32,
+    /// 已建立的长期 WSS 会话数（握手完成后持有，断开即释放）。
+    /// Number of established long-lived WSS sessions (held after handshake completes).
+    pub active_wss_count: AtomicU32,
 
     /// Agent 正在处理的任务数（AgentTaskGuard 持有期间非零）。
     /// Number of agent tasks currently in flight (non-zero while AgentTaskGuard is held).
@@ -90,6 +93,7 @@ impl OrchestratorState {
             heap_largest_block: AtomicU32::new(u32::MAX),
             heap_baseline_internal: AtomicU32::new(0),
             active_http_count: AtomicU32::new(0),
+            active_wss_count: AtomicU32::new(0),
             active_agent_tasks: AtomicU32::new(0),
             pressure_level: AtomicU8::new(0), // PressureLevel::Normal
             channel_health: [
@@ -155,6 +159,7 @@ pub struct ResourceSnapshot {
     /// internal 堆最大连续空闲块（字节）；ESP 上用于 TLS 碎片门禁。Linux 上为 **0（N/A）**，与 `MemAvailable` 映射的 `heap_free_internal` 分开表述。
     pub heap_largest_block_internal: u32,
     pub active_http_count: u32,
+    pub active_wss_count: u32,
     /// Agent 当前处理中的任务数（0 表示空闲）。
     pub active_agent_tasks: u32,
     pub inbound_depth: u32,
@@ -205,6 +210,7 @@ impl ResourceSnapshot {
             heap_free_spiram: state.heap_free_spiram.load(Ordering::Relaxed),
             heap_largest_block_internal: state.heap_largest_block.load(Ordering::Relaxed),
             active_http_count: state.active_http_count.load(Ordering::Relaxed),
+            active_wss_count: state.active_wss_count.load(Ordering::Relaxed),
             active_agent_tasks: state.active_agent_tasks.load(Ordering::Relaxed),
             inbound_depth: state.inbound_depth.load(Ordering::Relaxed),
             outbound_depth: state.outbound_depth.load(Ordering::Relaxed),

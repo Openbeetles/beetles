@@ -94,6 +94,8 @@ pub fn compute_pressure(state: &OrchestratorState) -> PressureLevel {
     let spiram = state.heap_free_spiram.load(Ordering::Relaxed) as usize;
     let baseline = state.heap_baseline_internal.load(Ordering::Relaxed) as usize;
     let active_http = state.active_http_count.load(Ordering::Relaxed);
+    let active_wss = state.active_wss_count.load(Ordering::Relaxed);
+    let active_network = active_http.saturating_add(active_wss);
     let queue_total =
         state.inbound_depth.load(Ordering::Relaxed) + state.outbound_depth.load(Ordering::Relaxed);
 
@@ -125,7 +127,7 @@ pub fn compute_pressure(state: &OrchestratorState) -> PressureLevel {
     }
 
     // Cautious: 连接数过高
-    if active_http >= MAX_CONCURRENT_HTTP as u32 {
+    if active_network >= MAX_CONCURRENT_HTTP as u32 {
         return PressureLevel::Cautious;
     }
 

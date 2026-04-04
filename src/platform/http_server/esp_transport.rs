@@ -252,7 +252,7 @@ fn write_outgoing<C: Connection>(
 }
 
 #[inline(never)]
-pub(super) fn esp_dispatch_route<C: Connection>(
+fn esp_dispatch_route<C: Connection>(
     ctx: &Arc<HandlerContext>,
     store: &Arc<dyn ConfigStore + Send + Sync>,
     executor: &EspRouteExecutor,

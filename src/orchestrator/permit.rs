@@ -8,8 +8,8 @@ use crate::constants::{
     TLS_ADMISSION_NO_PSRAM_MIN_BYTES,
 };
 use crate::error::{Error, Result};
-use std::sync::Mutex;
 use std::sync::atomic::Ordering;
+use std::sync::Mutex;
 use std::time::Duration;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::time::Instant;
@@ -130,6 +130,25 @@ impl Drop for HttpPermitGuard {
     }
 }
 
+/// RAII guard：持有期间表示一个已建立的 WSS 长连接存活。
+/// RAII guard: represents one established long-lived WSS session while held.
+pub struct WssSessionGuard {
+    state: &'static OrchestratorState,
+}
+
+impl WssSessionGuard {
+    pub(super) fn new(state: &'static OrchestratorState) -> Self {
+        state.active_wss_count.fetch_add(1, Ordering::Relaxed);
+        Self { state }
+    }
+}
+
+impl Drop for WssSessionGuard {
+    fn drop(&mut self) {
+        self.state.active_wss_count.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// RAII guard：持有期间 `active_agent_tasks` 非零，Drop 时递减。
 /// Held for the full lifetime of a single agent task (from admission to reply sent).
 /// RAII guard: keeps `active_agent_tasks` > 0 while held, decrements on drop.
@@ -174,13 +193,15 @@ pub fn request_http_permit(
         });
     }
 
-    // 检查 active_http_count：若 >= MAX_CONCURRENT_HTTP，低优先级直接拒绝
-    let active = state.active_http_count.load(Ordering::Relaxed);
-    if active >= MAX_CONCURRENT_HTTP as u32 && priority < Priority::High {
+    // 检查瞬时请求 + 已建立长连占用：若总占用过高，低优先级直接拒绝。
+    let active_http = state.active_http_count.load(Ordering::Relaxed);
+    let active_wss = state.active_wss_count.load(Ordering::Relaxed);
+    let active_network = active_http.saturating_add(active_wss);
+    if active_network >= MAX_CONCURRENT_HTTP as u32 && priority < Priority::High {
         return Err(Error::Other {
             source: Box::new(std::io::Error::other(format!(
-                "max concurrent HTTP reached ({}/{}), low priority rejected",
-                active, MAX_CONCURRENT_HTTP
+                "max active network sessions reached (http={}, wss={}, limit={}), low priority rejected",
+                active_http, active_wss, MAX_CONCURRENT_HTTP
             ))),
             stage: "tls_admission",
         });

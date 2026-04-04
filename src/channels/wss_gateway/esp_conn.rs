@@ -13,7 +13,7 @@ use esp_idf_svc::hal::delay::TickType;
 use esp_idf_svc::sys;
 use std::collections::VecDeque;
 use std::ffi::CString;
-use std::sync::{Mutex, OnceLock, mpsc};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// TCP keep-alive：30s idle + 3*10s probe = 最慢 60s 检测到死连接。
@@ -40,6 +40,7 @@ struct EspWssTuning {
     pingpong_timeout_sec: u64,
     ping_interval_sec: u32,
     event_queue_capacity: usize,
+    data_overflow_policy: DataOverflowPolicy,
 }
 
 impl EspWssTuning {
@@ -53,6 +54,7 @@ impl EspWssTuning {
                 pingpong_timeout_sec: 60,
                 ping_interval_sec: 10,
                 event_queue_capacity: 32,
+                data_overflow_policy: DataOverflowPolicy::DropNewest,
             },
             WssConnectProfile::Realtime => Self {
                 buffer_size: 4096,
@@ -62,9 +64,16 @@ impl EspWssTuning {
                 pingpong_timeout_sec: 20,
                 ping_interval_sec: 5,
                 event_queue_capacity: 64,
+                data_overflow_policy: DataOverflowPolicy::DropOldestBinary,
             },
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum DataOverflowPolicy {
+    DropNewest,
+    DropOldestBinary,
 }
 
 fn take_event_buf(min_capacity: usize) -> Vec<u8> {
@@ -95,13 +104,119 @@ fn recycle_event_buf(mut buf: Vec<u8>) {
     }
 }
 
-struct CallbackState {
-    tx: mpsc::SyncSender<EspConnEvent>,
-}
-
-enum EspConnEvent {
+enum QueuedWsEvent {
     Connected,
     Event(WssEvent),
+}
+
+impl QueuedWsEvent {
+    fn is_binary(&self) -> bool {
+        matches!(self, Self::Event(WssEvent::Binary(_)))
+    }
+}
+
+struct CallbackInbox {
+    events: VecDeque<QueuedWsEvent>,
+    capacity: usize,
+    data_overflow_policy: DataOverflowPolicy,
+}
+
+impl CallbackInbox {
+    fn new(capacity: usize, data_overflow_policy: DataOverflowPolicy) -> Self {
+        Self {
+            events: VecDeque::with_capacity(capacity),
+            capacity,
+            data_overflow_policy,
+        }
+    }
+
+    fn pop_front(&mut self) -> Option<QueuedWsEvent> {
+        self.events.pop_front()
+    }
+
+    fn remove_oldest_binary(&mut self) -> bool {
+        if let Some(idx) = self.events.iter().position(QueuedWsEvent::is_binary) {
+            let _ = self.events.remove(idx);
+            return true;
+        }
+        false
+    }
+
+    fn push(&mut self, event: QueuedWsEvent) -> bool {
+        match event {
+            control @ (QueuedWsEvent::Connected
+            | QueuedWsEvent::Event(WssEvent::Disconnected)
+            | QueuedWsEvent::Event(WssEvent::Closed)) => {
+                if self.events.len() >= self.capacity && !self.remove_oldest_binary() {
+                    let _ = self.events.pop_front();
+                }
+                self.events.push_back(control);
+                true
+            }
+            binary @ QueuedWsEvent::Event(WssEvent::Binary(_)) => {
+                if self.events.len() < self.capacity {
+                    self.events.push_back(binary);
+                    return true;
+                }
+                match self.data_overflow_policy {
+                    DataOverflowPolicy::DropNewest => false,
+                    DataOverflowPolicy::DropOldestBinary => {
+                        if self.remove_oldest_binary() {
+                            self.events.push_back(binary);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct CallbackState {
+    inbox: Mutex<CallbackInbox>,
+    wake: Condvar,
+}
+
+impl CallbackState {
+    fn new(capacity: usize, data_overflow_policy: DataOverflowPolicy) -> Self {
+        Self {
+            inbox: Mutex::new(CallbackInbox::new(capacity, data_overflow_policy)),
+            wake: Condvar::new(),
+        }
+    }
+
+    fn push_event(&self, event: QueuedWsEvent) -> bool {
+        let mut inbox = self.inbox.lock().unwrap_or_else(|e| e.into_inner());
+        let queued = inbox.push(event);
+        if queued {
+            self.wake.notify_all();
+        }
+        queued
+    }
+
+    fn wait_event(&self, timeout: Duration) -> Option<QueuedWsEvent> {
+        let deadline = Instant::now() + timeout;
+        let mut inbox = self.inbox.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if let Some(event) = inbox.pop_front() {
+                return Some(event);
+            }
+            let wait = deadline.saturating_duration_since(Instant::now());
+            if wait.is_zero() {
+                return None;
+            }
+            let (next, timeout_result) = self
+                .wake
+                .wait_timeout(inbox, wait)
+                .unwrap_or_else(|e| e.into_inner());
+            inbox = next;
+            if timeout_result.timed_out() && inbox.events.is_empty() {
+                return None;
+            }
+        }
+    }
 }
 
 fn defer_callback_state_release(state: Box<CallbackState>) {
@@ -109,8 +224,39 @@ fn defer_callback_state_release(state: Box<CallbackState>) {
         Instant::now() + Duration::from_millis(CALLBACK_STATE_RECLAIM_DELAY_MS),
         Box::new(move || drop(state)),
     ) {
-        std::mem::forget(task);
-        log::error!("[wss] critical delayed release queue full; callback state retained");
+        let shared_task = Arc::new(Mutex::new(Some(task)));
+        let shared_task_for_thread = Arc::clone(&shared_task);
+        log::error!(
+            "[wss] critical delayed release queue full; falling back to dedicated reclaimer"
+        );
+        match crate::util::spawn_guarded_with_profile_handle(
+            "wss_cb_reclaim",
+            4096,
+            Some(crate::util::SpawnCore::Core1),
+            crate::util::HttpThreadRole::Background,
+            move || {
+                std::thread::sleep(Duration::from_millis(CALLBACK_STATE_RECLAIM_DELAY_MS));
+                if let Some(task) = shared_task_for_thread
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                {
+                    task();
+                }
+            },
+        ) {
+            Ok(_handle) => {}
+            Err(e) => {
+                log::error!(
+                    "[wss] fallback callback-state reclaimer spawn failed: {}; blocking release",
+                    e
+                );
+                std::thread::sleep(Duration::from_millis(CALLBACK_STATE_RECLAIM_DELAY_MS));
+                if let Some(task) = shared_task.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                    task();
+                }
+            }
+        }
     }
 }
 
@@ -124,8 +270,8 @@ pub struct EspWssConnection {
     send_timeout_ticks: sys::TickType_t,
     max_send_payload_bytes: usize,
     callback_state: Option<Box<CallbackState>>,
-    rx: mpsc::Receiver<EspConnEvent>,
     pending_events: VecDeque<WssEvent>,
+    _wss_session_guard: Option<crate::orchestrator::WssSessionGuard>,
 }
 
 unsafe impl Send for EspWssConnection {}
@@ -166,20 +312,21 @@ impl Drop for EspWssConnection {
 }
 
 impl EspWssConnection {
-    fn recv_to_event(
-        r: std::result::Result<EspConnEvent, mpsc::RecvTimeoutError>,
-    ) -> Result<Option<WssEvent>> {
-        match r {
-            Ok(EspConnEvent::Event(ev)) => Ok(Some(ev)),
-            Ok(EspConnEvent::Connected) => Ok(None),
-            Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(Error::Other {
-                source: Box::new(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionReset,
-                    "wss event channel disconnected",
-                )),
-                stage: "wss_esp_recv",
-            }),
+    fn wait_callback_event(&self, timeout: Duration) -> Result<Option<QueuedWsEvent>> {
+        let state = self.callback_state.as_ref().ok_or_else(|| Error::Other {
+            source: Box::new(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "wss callback state unavailable",
+            )),
+            stage: "wss_esp_recv",
+        })?;
+        Ok(state.wait_event(timeout))
+    }
+
+    fn recv_to_event(&self, timeout: Duration) -> Result<Option<WssEvent>> {
+        match self.wait_callback_event(timeout)? {
+            Some(QueuedWsEvent::Event(ev)) => Ok(Some(ev)),
+            Some(QueuedWsEvent::Connected) | None => Ok(None),
         }
     }
 
@@ -187,25 +334,19 @@ impl EspWssConnection {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             let wait = deadline.saturating_duration_since(Instant::now());
-            match self.rx.recv_timeout(wait) {
-                Ok(EspConnEvent::Connected) => return Ok(()),
-                Ok(EspConnEvent::Event(WssEvent::Binary(data))) => {
+            match self.wait_callback_event(wait)? {
+                Some(QueuedWsEvent::Connected) => return Ok(()),
+                Some(QueuedWsEvent::Event(WssEvent::Binary(data))) => {
                     self.pending_events.push_back(WssEvent::Binary(data));
                 }
-                Ok(EspConnEvent::Event(WssEvent::Disconnected))
-                | Ok(EspConnEvent::Event(WssEvent::Closed)) => {
+                Some(QueuedWsEvent::Event(WssEvent::Disconnected))
+                | Some(QueuedWsEvent::Event(WssEvent::Closed)) => {
                     return Err(Error::config(
                         "wss_esp_connect",
                         "websocket closed before handshake completed",
                     ));
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => break,
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err(Error::config(
-                        "wss_esp_connect",
-                        "websocket event channel closed during connect",
-                    ));
-                }
+                None => break,
             }
         }
         Err(Error::config(
@@ -289,7 +430,7 @@ impl WssConnection for EspWssConnection {
         if let Some(event) = self.pending_events.pop_front() {
             return Ok(Some(event));
         }
-        Self::recv_to_event(self.rx.recv_timeout(timeout))
+        self.recv_to_event(timeout)
     }
 }
 
@@ -306,8 +447,8 @@ extern "C" fn handle_ws_event(
     let event =
         unsafe { map_ws_event(event_id, event_data as *mut sys::esp_websocket_event_data_t) };
     if let Some(event) = event {
-        if state.tx.try_send(event).is_err() {
-            log::warn!("[wss] event channel full, dropping event");
+        if !state.push_event(event) {
+            log::warn!("[wss] event inbox full, dropping binary event");
         }
     }
 }
@@ -315,7 +456,7 @@ extern "C" fn handle_ws_event(
 unsafe fn map_ws_event(
     event_id: i32,
     event_data: *mut sys::esp_websocket_event_data_t,
-) -> Option<EspConnEvent> {
+) -> Option<QueuedWsEvent> {
     match event_id {
         sys::esp_websocket_event_id_t_WEBSOCKET_EVENT_ERROR => {
             if let Some(data) = event_data.as_ref() {
@@ -327,17 +468,17 @@ unsafe fn map_ws_event(
                     data.error_handle.esp_transport_sock_errno
                 );
             }
-            Some(EspConnEvent::Event(WssEvent::Disconnected))
+            Some(QueuedWsEvent::Event(WssEvent::Disconnected))
         }
-        sys::esp_websocket_event_id_t_WEBSOCKET_EVENT_CONNECTED => Some(EspConnEvent::Connected),
+        sys::esp_websocket_event_id_t_WEBSOCKET_EVENT_CONNECTED => Some(QueuedWsEvent::Connected),
         sys::esp_websocket_event_id_t_WEBSOCKET_EVENT_BEFORE_CONNECT
         | sys::esp_websocket_event_id_t_WEBSOCKET_EVENT_BEGIN
         | sys::esp_websocket_event_id_t_WEBSOCKET_EVENT_FINISH => None,
         sys::esp_websocket_event_id_t_WEBSOCKET_EVENT_DISCONNECTED => {
-            Some(EspConnEvent::Event(WssEvent::Disconnected))
+            Some(QueuedWsEvent::Event(WssEvent::Disconnected))
         }
         sys::esp_websocket_event_id_t_WEBSOCKET_EVENT_CLOSED => {
-            Some(EspConnEvent::Event(WssEvent::Closed))
+            Some(QueuedWsEvent::Event(WssEvent::Closed))
         }
         sys::esp_websocket_event_id_t_WEBSOCKET_EVENT_DATA => {
             let data = event_data.as_ref()?;
@@ -347,18 +488,18 @@ unsafe fn map_ws_event(
                     let ptr = data.data_ptr as *const u8;
                     if ptr.is_null() && len > 0 {
                         log::warn!("[wss] websocket data event has null payload pointer");
-                        return Some(EspConnEvent::Event(WssEvent::Disconnected));
+                        return Some(QueuedWsEvent::Event(WssEvent::Disconnected));
                     }
                     let mut buf = take_event_buf(len);
                     if len > 0 {
                         let bytes = std::slice::from_raw_parts(ptr, len);
                         buf.extend_from_slice(bytes);
                     }
-                    Some(EspConnEvent::Event(WssEvent::Binary(
+                    Some(QueuedWsEvent::Event(WssEvent::Binary(
                         WssBinary::from_vec_with_recycler(buf, recycle_event_buf),
                     )))
                 }
-                8 => Some(EspConnEvent::Event(WssEvent::Closed)),
+                8 => Some(QueuedWsEvent::Event(WssEvent::Closed)),
                 9 | 10 => None,
                 opcode => {
                     log::debug!("[wss] ignore websocket opcode={}", opcode);
@@ -436,8 +577,10 @@ pub fn connect_esp_wss_with_headers_and_profile(
         return Err(Error::esp("wss_esp_connect", sys::ESP_FAIL));
     }
 
-    let (tx, rx) = mpsc::sync_channel::<EspConnEvent>(tuning.event_queue_capacity);
-    let mut callback_state = Box::new(CallbackState { tx });
+    let mut callback_state = Box::new(CallbackState::new(
+        tuning.event_queue_capacity,
+        tuning.data_overflow_policy,
+    ));
     let callback_ptr = callback_state.as_mut() as *mut CallbackState as *mut core::ffi::c_void;
 
     let rc = unsafe {
@@ -474,12 +617,13 @@ pub fn connect_esp_wss_with_headers_and_profile(
         send_timeout_ticks,
         max_send_payload_bytes: tuning.max_send_payload_bytes,
         callback_state: Some(callback_state),
-        rx,
         pending_events: VecDeque::new(),
+        _wss_session_guard: None,
     };
     if let Err(e) = conn.wait_until_connected(tuning.connect_timeout) {
         drop(conn);
         return Err(e);
     }
+    conn._wss_session_guard = Some(crate::orchestrator::begin_wss_session());
     Ok(conn)
 }

@@ -13,12 +13,12 @@ use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 
 use super::{
-    AutonomyStrategy, AutonomyStrategyStore, ExecutionState, ExecutionStateStore, MemoryProfile,
-    RemindAtStore, SelfContinuity, SelfContinuityStore, SessionMessage, SessionStore,
-    SessionSummaryStore, WorldSensePolicy, WorldSenseStore,
-    llm_json::{LlmJsonPayload, get_object_text, parse_llm_json_payload},
+    llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload},
     memory_policy, render_autonomy_strategy_block, render_execution_state_block,
-    render_self_continuity_block, whole_record_lease_advanced,
+    render_self_continuity_block, whole_record_lease_advanced, AutonomyStrategy,
+    AutonomyStrategyStore, ExecutionState, ExecutionStateStore, MemoryProfile, RemindAtStore,
+    SelfContinuity, SelfContinuityStore, SessionMessage, SessionStore, SessionSummaryStore,
+    WorldSensePolicy, WorldSenseStore,
 };
 
 pub const WORLD_SENSE_SYSTEM_PROMPT: &str = "You maintain the assistant's private world-sense layer. Return JSON only: either null or one object with fields current_scene, body_state, social_field, world_changes, external_focus. This layer describes the outer situation you currently feel yourself to be in: environment, device/body condition, interaction field, and what in the outside world deserves attention now. Do not write self-model, inner-life drift, or transcript summary. Keep it compact, situational, and current.";
@@ -40,6 +40,7 @@ pub struct WorldSnapshot {
     pub pressure: PressureLevel,
     pub memory_available_bytes: u32,
     pub active_http_count: u32,
+    pub active_wss_count: u32,
     pub active_agent_tasks: u32,
     pub inbound_depth: u32,
     pub outbound_depth: u32,
@@ -255,6 +256,7 @@ pub fn build_world_snapshot(ctx: WorldSnapshotContext<'_>) -> WorldSnapshot {
         pressure: resource.pressure,
         memory_available_bytes: resource.heap_free_internal,
         active_http_count: resource.active_http_count,
+        active_wss_count: resource.active_wss_count,
         active_agent_tasks: resource.active_agent_tasks,
         inbound_depth: resource.inbound_depth,
         outbound_depth: resource.outbound_depth,
@@ -296,11 +298,12 @@ pub fn render_world_snapshot_block(snapshot: &WorldSnapshot, max_len: usize) -> 
     );
     let _ = writeln!(
         out,
-        "Device/body: pressure={:?}, wifi_connected={}, mem_available_kb={}, active_http={}, audio_recording={}, audio_playing={}.",
+        "Device/body: pressure={:?}, wifi_connected={}, mem_available_kb={}, active_http={}, active_wss={}, audio_recording={}, audio_playing={}.",
         snapshot.pressure,
         snapshot.wifi_connected,
         snapshot.memory_available_bytes / 1024,
         snapshot.active_http_count,
+        snapshot.active_wss_count,
         snapshot.audio_recording,
         snapshot.audio_playing
     );
@@ -375,6 +378,7 @@ pub fn world_snapshot_fingerprint(snapshot: &WorldSnapshot) -> u64 {
     format!("{:?}", snapshot.pressure).hash(&mut hasher);
     snapshot.memory_available_bytes.hash(&mut hasher);
     snapshot.active_http_count.hash(&mut hasher);
+    snapshot.active_wss_count.hash(&mut hasher);
     snapshot.active_agent_tasks.hash(&mut hasher);
     snapshot.inbound_depth.hash(&mut hasher);
     snapshot.outbound_depth.hash(&mut hasher);
@@ -804,6 +808,7 @@ mod tests {
             pressure: PressureLevel::Normal,
             memory_available_bytes: 512 * 1024,
             active_http_count: 1,
+            active_wss_count: 1,
             active_agent_tasks: 0,
             inbound_depth: 0,
             outbound_depth: 0,
@@ -855,6 +860,7 @@ mod tests {
                 pressure: PressureLevel::Normal,
                 memory_available_bytes: 512 * 1024,
                 active_http_count: 1,
+                active_wss_count: 1,
                 active_agent_tasks: 0,
                 inbound_depth: 0,
                 outbound_depth: 0,

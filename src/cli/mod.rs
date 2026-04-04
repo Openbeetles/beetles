@@ -3,12 +3,12 @@
 
 use crate::config::{self, AppConfig};
 use crate::error::Error;
-use crate::memory::{MemoryStore, REL_PATH_SESSIONS_DIR, SessionStore};
+use crate::memory::{MemoryStore, SessionStore, REL_PATH_SESSIONS_DIR};
 use crate::platform::ConfigStore;
 use crate::state;
 use std::io::{self, BufRead, Write};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Instant;
 
 const TAG: &str = "cli";
@@ -249,11 +249,12 @@ fn cmd_baseline(_ctx: &CliContext) -> String {
     let metrics = crate::metrics::snapshot();
     let thread_line = crate::runtime::thread_registry::format_baseline_log_line();
     format!(
-        "baseline:\n  pressure: {:?}\n  heap_internal: {}\n  heap_spiram: {}\n  active_http: {}\n  active_agent_tasks: {}\n  metrics: {}\n  threads: {}\n",
+        "baseline:\n  pressure: {:?}\n  heap_internal: {}\n  heap_spiram: {}\n  active_http: {}\n  active_wss: {}\n  active_agent_tasks: {}\n  metrics: {}\n  threads: {}\n",
         resource.pressure,
         resource.heap_free_internal,
         resource.heap_free_spiram,
         resource.active_http_count,
+        resource.active_wss_count,
         resource.active_agent_tasks,
         metrics.to_baseline_log_line(),
         thread_line,
