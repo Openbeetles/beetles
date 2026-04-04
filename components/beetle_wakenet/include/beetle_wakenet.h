@@ -42,9 +42,12 @@ typedef enum {
  *
  * @param model_name  Full WakeNet model name, e.g. "wn9_hiesp".
  *                    Must match a model present in the "model" flash partition.
+ * @param input_sample_rate_hz  Incoming mono PCM sample rate from the mic path.
+ *                              Supported: 16000 or 24000. 24 kHz input is
+ *                              normalized to the detector's 16 kHz rate.
  * @return BEETLE_WN_OK on success, negative error code on failure.
  */
-beetle_wn_err_t beetle_wakenet_init(const char *model_name);
+beetle_wn_err_t beetle_wakenet_init(const char *model_name, int input_sample_rate_hz);
 
 /**
  * @brief Feed a frame of 16-bit PCM samples.
@@ -56,7 +59,7 @@ beetle_wn_err_t beetle_wakenet_init(const char *model_name);
  *
  * Safe to call with n == 0 (no-op).
  *
- * @param pcm      Pointer to 16-bit signed PCM, mono, 16 kHz.
+ * @param pcm      Pointer to 16-bit signed PCM, mono, at the configured input rate.
  * @param samples  Number of samples (NOT bytes).
  * @return BEETLE_WN_DETECTED if triggered, BEETLE_WN_NO otherwise.
  */

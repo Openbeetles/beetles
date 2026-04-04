@@ -30,6 +30,7 @@ typedef struct {
     int                    chunk_size;  /* samples per detect() call */
     int16_t               *accumulator; /* PSRAM staging buffer      */
     int                    acc_pos;     /* samples buffered so far   */
+    int                    input_sample_rate_hz;
     int16_t                resample_tail[2];
     int                    resample_tail_len;
 } beetle_wn_ctx_t;
@@ -70,9 +71,13 @@ static beetle_wn_result_t feed_detect_sample(int16_t sample) {
 
 /* ── public API ───────────────────────────────────────────────────────────── */
 
-beetle_wn_err_t beetle_wakenet_init(const char *model_name) {
+beetle_wn_err_t beetle_wakenet_init(const char *model_name, int input_sample_rate_hz) {
     /* destroy any previous instance first */
     ctx_destroy();
+
+    if (input_sample_rate_hz != 16000 && input_sample_rate_hz != 24000) {
+        return BEETLE_WN_ERR_STATE;
+    }
 
     /* mount the "model" SPIFFS partition if not already mounted */
     if (s_models == NULL) {
@@ -124,6 +129,7 @@ beetle_wn_err_t beetle_wakenet_init(const char *model_name) {
     s_ctx->chunk_size = chunk_size;
     s_ctx->accumulator = acc;
     s_ctx->acc_pos    = 0;
+    s_ctx->input_sample_rate_hz = input_sample_rate_hz;
     s_ctx->resample_tail_len = 0;
 
     return BEETLE_WN_OK;
@@ -134,8 +140,18 @@ beetle_wn_result_t beetle_wakenet_feed(const int16_t *pcm, int samples) {
         return BEETLE_WN_NO;
     }
 
+    if (s_ctx->input_sample_rate_hz == 16000) {
+        for (int i = 0; i < samples; ++i) {
+            if (feed_detect_sample(pcm[i]) == BEETLE_WN_DETECTED) {
+                s_ctx->resample_tail_len = 0;
+                return BEETLE_WN_DETECTED;
+            }
+        }
+        return BEETLE_WN_NO;
+    }
+
     /*
-     * The mic path currently delivers 24 kHz PCM while WakeNet expects 16 kHz.
+     * 24 kHz mic path -> 16 kHz detector path.
      * Downsample with a tiny 3:2 rational stepper:
      *   in:  s0 s1 s2
      *   out: s0, lerp(s1,s2,0.5)

@@ -6,7 +6,8 @@ use crate::error::Result;
 use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
 
-pub const REL_PATH_TURN_LEDGERS: &str = "memory/turn_ledgers.json";
+pub const REL_PATH_TURN_LEDGERS: &str = "memory/turn_ledgers";
+pub const REL_PATH_TURN_LEDGERS_LEGACY: &str = "memory/turn_ledgers.json";
 const TURN_LEDGER_PREVIEW_MAX_CHARS: usize = 240;
 const TURN_LEDGER_REASON_MAX_CHARS: usize = 96;
 

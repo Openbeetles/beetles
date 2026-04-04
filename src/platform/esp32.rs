@@ -394,9 +394,10 @@ impl Platform for Esp32Platform {
     fn configure_wake_word(
         &self,
         model_name: &str,
+        input_sample_rate_hz: u32,
         voice_tx: std::sync::mpsc::SyncSender<crate::audio::voice_session::VoiceEvent>,
     ) {
-        crate::platform::wake_word::configure(model_name, voice_tx);
+        crate::platform::wake_word::configure(model_name, input_sample_rate_hz, voice_tx);
     }
 
     fn shutdown_wake_word(&self) {

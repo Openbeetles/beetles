@@ -304,7 +304,11 @@ fn spawn_voice_session_if_ready(
             voice_rx,
         );
     });
-    platform.configure_wake_word(model_name.as_str(), voice_tx);
+    platform.configure_wake_word(
+        model_name.as_str(),
+        audio_cfg.microphone.sample_rate,
+        voice_tx,
+    );
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]

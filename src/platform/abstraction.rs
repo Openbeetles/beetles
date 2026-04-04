@@ -295,6 +295,7 @@ pub trait Platform: Send + Sync {
     fn configure_wake_word(
         &self,
         _model_name: &str,
+        _input_sample_rate_hz: u32,
         _voice_tx: std::sync::mpsc::SyncSender<crate::audio::voice_session::VoiceEvent>,
     ) {
     }

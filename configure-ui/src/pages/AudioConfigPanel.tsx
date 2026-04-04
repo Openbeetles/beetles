@@ -40,7 +40,6 @@ import {
   AUDIO_MIC_DEVICE_TYPES,
   AUDIO_PIN_MAX,
   AUDIO_PIN_MIN,
-  AUDIO_REALTIME_PCM16_SAMPLE_RATE,
   AUDIO_REALTIME_PROVIDERS,
   AUDIO_SAMPLE_RATE_MAX,
   AUDIO_SAMPLE_RATE_MIN,
@@ -62,6 +61,7 @@ import {
   normalizeAudioConfigFromDevice,
   normalizeAudioConfigForSave,
   realtimeModelAfterProviderChange,
+  realtimeRequiredSampleRate,
   realtimeVoiceAfterProviderChange,
   realtimeWsUrlAfterProviderChange,
   sampleRateSelectOptions,
@@ -195,14 +195,26 @@ function validateAudioConfig(
     if (!audioRealtimeProviderSupported(form.realtime.provider)) {
       return t('audioConfig.validation.realtimeProvider')
     }
-    if (!form.realtime.api_key.trim()) {
-      return t('audioConfig.validation.realtimeApiKey')
-    }
-    if (!form.realtime.model.trim()) {
-      return t('audioConfig.validation.realtimeModel')
-    }
-    if (!form.realtime.voice.trim()) {
-      return t('audioConfig.validation.realtimeVoice')
+    if (form.realtime.provider === 'baidu') {
+      if (!form.realtime.app_id.trim()) {
+        return t('audioConfig.validation.realtimeAppId')
+      }
+      if (!form.realtime.api_key.trim()) {
+        return t('audioConfig.validation.realtimeApiKey')
+      }
+      if (!form.realtime.api_secret.trim()) {
+        return t('audioConfig.validation.realtimeApiSecret')
+      }
+    } else {
+      if (!form.realtime.api_key.trim()) {
+        return t('audioConfig.validation.realtimeApiKey')
+      }
+      if (!form.realtime.model.trim()) {
+        return t('audioConfig.validation.realtimeModel')
+      }
+      if (!form.realtime.voice.trim()) {
+        return t('audioConfig.validation.realtimeVoice')
+      }
     }
     if (
       !form.realtime.ws_url.startsWith('wss://') &&
@@ -210,9 +222,10 @@ function validateAudioConfig(
     ) {
       return t('audioConfig.validation.realtimeWsUrl')
     }
+    const requiredSampleRate = realtimeRequiredSampleRate(form.realtime.provider)
     if (
-      form.microphone.sample_rate !== AUDIO_REALTIME_PCM16_SAMPLE_RATE ||
-      form.speaker.sample_rate !== AUDIO_REALTIME_PCM16_SAMPLE_RATE
+      form.microphone.sample_rate !== requiredSampleRate ||
+      form.speaker.sample_rate !== requiredSampleRate
     ) {
       return t('audioConfig.validation.realtimeSampleRate')
     }
@@ -308,6 +321,8 @@ export function AudioConfigPanel() {
   const audioOn = form.enabled
   const realtimeReady = audioRealtimeConfigured(form)
   const realtimeWakeEnabled = realtimeReady && form.wake_word.enabled
+  const realtimeProviderIsBaidu = form.realtime.provider === 'baidu'
+  const realtimeSampleRate = realtimeRequiredSampleRate(form.realtime.provider)
   const micOn = audioOn && form.microphone.enabled
   const spkOn = audioOn && form.speaker.enabled
   const showWakeWord = micOn
@@ -1120,7 +1135,7 @@ export function AudioConfigPanel() {
                             </Typography>
                           ) : null}
                           <Typography variant="body2" color="text.secondary">
-                            {`${t('audioConfig.realtimeSampleRateHint')} ${AUDIO_REALTIME_PCM16_SAMPLE_RATE} Hz`}
+                            {`${t('audioConfig.realtimeSampleRateHint')} ${realtimeSampleRate} Hz`}
                           </Typography>
                           <Box sx={fieldGridSx}>
                             <FormControl size="small" fullWidth>
@@ -1131,8 +1146,27 @@ export function AudioConfigPanel() {
                                 value={form.realtime.provider}
                                 onChange={(e: SelectChangeEvent) => {
                                   const provider = e.target.value
+                                  const oldRequiredSampleRate = realtimeRequiredSampleRate(
+                                    form.realtime.provider,
+                                  )
+                                  const newRequiredSampleRate =
+                                    realtimeRequiredSampleRate(provider)
                                   setDraftSafe({
                                     ...form,
+                                    microphone: {
+                                      ...form.microphone,
+                                      sample_rate:
+                                        form.microphone.sample_rate === oldRequiredSampleRate
+                                          ? newRequiredSampleRate
+                                          : form.microphone.sample_rate,
+                                    },
+                                    speaker: {
+                                      ...form.speaker,
+                                      sample_rate:
+                                        form.speaker.sample_rate === oldRequiredSampleRate
+                                          ? newRequiredSampleRate
+                                          : form.speaker.sample_rate,
+                                    },
                                     realtime: {
                                       ...form.realtime,
                                       provider,
@@ -1169,7 +1203,11 @@ export function AudioConfigPanel() {
                             </FormControl>
                             <TextField
                               size="small"
-                              label={t('audioConfig.realtimeApiKey')}
+                              label={t(
+                                realtimeProviderIsBaidu
+                                  ? 'audioConfig.realtimeAk'
+                                  : 'audioConfig.realtimeApiKey',
+                              )}
                               type={isRevealed('audio_realtime_api_key') ? 'text' : 'password'}
                               value={form.realtime.api_key}
                               onChange={(e) =>
@@ -1185,34 +1223,80 @@ export function AudioConfigPanel() {
                                 },
                               }}
                             />
-                            <TextField
-                              size="small"
-                              label={t('audioConfig.realtimeModel')}
-                              value={form.realtime.model}
-                              onChange={(e) =>
-                                setDraftSafe({
-                                  ...form,
-                                  realtime: {
-                                    ...form.realtime,
-                                    model: e.target.value.trim(),
-                                  },
-                                })
-                              }
-                            />
-                            <TextField
-                              size="small"
-                              label={t('audioConfig.realtimeVoice')}
-                              value={form.realtime.voice}
-                              onChange={(e) =>
-                                setDraftSafe({
-                                  ...form,
-                                  realtime: {
-                                    ...form.realtime,
-                                    voice: e.target.value.trim(),
-                                  },
-                                })
-                              }
-                            />
+                            {realtimeProviderIsBaidu ? (
+                              <>
+                                <TextField
+                                  size="small"
+                                  label={t('audioConfig.realtimeAppId')}
+                                  value={form.realtime.app_id}
+                                  onChange={(e) =>
+                                    setDraftSafe({
+                                      ...form,
+                                      realtime: {
+                                        ...form.realtime,
+                                        app_id: e.target.value.trim(),
+                                      },
+                                    })
+                                  }
+                                />
+                                <TextField
+                                  size="small"
+                                  label={t('audioConfig.realtimeApiSecret')}
+                                  type={
+                                    isRevealed('audio_realtime_api_secret')
+                                      ? 'text'
+                                      : 'password'
+                                  }
+                                  value={form.realtime.api_secret}
+                                  onChange={(e) =>
+                                    setDraftSafe({
+                                      ...form,
+                                      realtime: {
+                                        ...form.realtime,
+                                        api_secret: e.target.value,
+                                      },
+                                    })
+                                  }
+                                  slotProps={{
+                                    htmlInput: {
+                                      style: { fontFamily: 'var(--font-mono)' },
+                                      ...getRevealHandlers('audio_realtime_api_secret'),
+                                    },
+                                  }}
+                                />
+                              </>
+                            ) : (
+                              <>
+                                <TextField
+                                  size="small"
+                                  label={t('audioConfig.realtimeModel')}
+                                  value={form.realtime.model}
+                                  onChange={(e) =>
+                                    setDraftSafe({
+                                      ...form,
+                                      realtime: {
+                                        ...form.realtime,
+                                        model: e.target.value.trim(),
+                                      },
+                                    })
+                                  }
+                                />
+                                <TextField
+                                  size="small"
+                                  label={t('audioConfig.realtimeVoice')}
+                                  value={form.realtime.voice}
+                                  onChange={(e) =>
+                                    setDraftSafe({
+                                      ...form,
+                                      realtime: {
+                                        ...form.realtime,
+                                        voice: e.target.value.trim(),
+                                      },
+                                    })
+                                  }
+                                />
+                              </>
+                            )}
                           </Box>
                           <Box sx={fieldGridSx}>
                             <TextField
@@ -1225,11 +1309,71 @@ export function AudioConfigPanel() {
                                   ...form,
                                   realtime: {
                                     ...form.realtime,
-                                    ws_url: e.target.value.trim(),
-                                  },
-                                })
-                              }
+                                  ws_url: e.target.value.trim(),
+                                },
+                              })
+                            }
                             />
+                            {realtimeProviderIsBaidu ? (
+                              <>
+                                <TextField
+                                  size="small"
+                                  label={t('audioConfig.realtimeUserId')}
+                                  helperText={t('audioConfig.realtimeUserIdHelp')}
+                                  value={form.realtime.user_id}
+                                  onChange={(e) =>
+                                    setDraftSafe({
+                                      ...form,
+                                      realtime: {
+                                        ...form.realtime,
+                                        user_id: e.target.value.trim(),
+                                      },
+                                    })
+                                  }
+                                />
+                                <TextField
+                                  size="small"
+                                  label={t('audioConfig.realtimeDeviceId')}
+                                  helperText={t('audioConfig.realtimeDeviceIdHelp')}
+                                  value={form.realtime.device_id}
+                                  onChange={(e) =>
+                                    setDraftSafe({
+                                      ...form,
+                                      realtime: {
+                                        ...form.realtime,
+                                        device_id: e.target.value.trim(),
+                                      },
+                                    })
+                                  }
+                                />
+                                <TextField
+                                  size="small"
+                                  label={t('audioConfig.realtimeLicenseKey')}
+                                  helperText={t('audioConfig.realtimeLicenseKeyHelp')}
+                                  type={
+                                    isRevealed('audio_realtime_license_key')
+                                      ? 'text'
+                                      : 'password'
+                                  }
+                                  value={form.realtime.license_key}
+                                  onChange={(e) =>
+                                    setDraftSafe({
+                                      ...form,
+                                      realtime: {
+                                        ...form.realtime,
+                                        license_key: e.target.value,
+                                      },
+                                    })
+                                  }
+                                  slotProps={{
+                                    htmlInput: {
+                                      style: { fontFamily: 'var(--font-mono)' },
+                                      ...getRevealHandlers('audio_realtime_license_key'),
+                                    },
+                                  }}
+                                />
+                              </>
+                            ) : null}
                             <TextField
                               size="small"
                               multiline

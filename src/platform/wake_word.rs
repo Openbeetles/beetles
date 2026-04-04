@@ -26,7 +26,10 @@ mod imp {
     // ── C ABI bindings ────────────────────────────────────────────────────────
 
     extern "C" {
-        fn beetle_wakenet_init(model_name: *const std::os::raw::c_char) -> i32;
+        fn beetle_wakenet_init(
+            model_name: *const std::os::raw::c_char,
+            input_sample_rate_hz: i32,
+        ) -> i32;
         fn beetle_wakenet_feed(pcm: *const i16, samples: i32) -> i32;
         fn beetle_wakenet_reset();
         fn beetle_wakenet_destroy();
@@ -40,6 +43,8 @@ mod imp {
     struct WakeWordRuntime {
         /// WakeNet model name as passed to beetle_wakenet_init.
         model_name: String,
+        /// Incoming PCM sample rate from the mic path.
+        input_sample_rate_hz: u32,
         /// Sender to the voice session thread.
         voice_tx: SyncSender<VoiceEvent>,
         /// Monotonic timestamp of the last successful trigger.
@@ -83,7 +88,11 @@ mod imp {
     ///
     /// Must be called from `run_app`, **after** `MessageBus` is created and
     /// `init_audio` has been called.
-    pub fn configure(model_name: &str, voice_tx: SyncSender<VoiceEvent>) {
+    pub fn configure(
+        model_name: &str,
+        input_sample_rate_hz: u32,
+        voice_tx: SyncSender<VoiceEvent>,
+    ) {
         let c_model = match CString::new(model_name) {
             Ok(s) => s,
             Err(e) => {
@@ -91,33 +100,47 @@ mod imp {
                 return;
             }
         };
+        if input_sample_rate_hz != 16_000 && input_sample_rate_hz != 24_000 {
+            log::error!(
+                "[wake_word] unsupported input sample rate {}; wake word disabled",
+                input_sample_rate_hz
+            );
+            return;
+        }
 
         ARMED.store(false, Ordering::Release);
         let mut state = state().lock().unwrap_or_else(|e| e.into_inner());
         let previous_model = state
             .runtime
             .as_ref()
-            .map(|runtime| runtime.model_name.clone());
+            .map(|runtime| (runtime.model_name.clone(), runtime.input_sample_rate_hz));
 
         let engine_ready = unsafe {
             beetle_wakenet_destroy();
-            let rc = beetle_wakenet_init(c_model.as_ptr());
+            let rc = beetle_wakenet_init(c_model.as_ptr(), input_sample_rate_hz as i32);
             if rc == BEETLE_WN_OK {
-                if let Some(previous_model) = previous_model.as_deref() {
+                if let Some((previous_model, previous_rate)) = previous_model.as_ref() {
                     log::info!(
-                        "[wake_word] WakeNet reconfigured (from={}, to={})",
+                        "[wake_word] WakeNet reconfigured (from={}@{}Hz, to={}@{}Hz)",
                         previous_model,
-                        model_name
+                        previous_rate,
+                        model_name,
+                        input_sample_rate_hz
                     );
                 } else {
-                    log::info!("[wake_word] WakeNet init ok (model={})", model_name);
+                    log::info!(
+                        "[wake_word] WakeNet init ok (model={}, input={}Hz)",
+                        model_name,
+                        input_sample_rate_hz
+                    );
                 }
                 true
             } else {
                 log::error!(
-                    "[wake_word] WakeNet init failed (rc={}, model={}); wake word disabled",
+                    "[wake_word] WakeNet init failed (rc={}, model={}, input={}Hz); wake word disabled",
                     rc,
-                    model_name
+                    model_name,
+                    input_sample_rate_hz
                 );
                 false
             }
@@ -125,6 +148,7 @@ mod imp {
 
         let runtime = WakeWordRuntime {
             model_name: model_name.to_string(),
+            input_sample_rate_hz,
             voice_tx,
             last_trigger_millis: AtomicU32::new(0),
         };
@@ -136,10 +160,17 @@ mod imp {
     pub fn shutdown() {
         ARMED.store(false, Ordering::Release);
         let mut state = state().lock().unwrap_or_else(|e| e.into_inner());
-        let previous_model = state.runtime.take().map(|runtime| runtime.model_name);
+        let previous_model = state
+            .runtime
+            .take()
+            .map(|runtime| (runtime.model_name, runtime.input_sample_rate_hz));
         unsafe { beetle_wakenet_destroy() };
-        if let Some(previous_model) = previous_model {
-            log::info!("[wake_word] WakeNet destroyed (model={})", previous_model);
+        if let Some((previous_model, previous_rate)) = previous_model {
+            log::info!(
+                "[wake_word] WakeNet destroyed (model={} input={}Hz)",
+                previous_model,
+                previous_rate
+            );
         }
     }
 

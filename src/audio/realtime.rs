@@ -216,6 +216,12 @@ pub fn run_realtime_session(
     let session_start = Instant::now();
     let provider = RealtimeProvider::parse(audio_cfg.realtime.provider.trim())?;
     let ws_url = build_realtime_ws_url(provider, audio_cfg)?;
+    log::info!(
+        "[{}] realtime ws connect provider={} url={}",
+        log_tag,
+        audio_cfg.realtime.provider.trim(),
+        redact_realtime_ws_url(provider, ws_url.as_str())
+    );
     let headers = build_realtime_headers(provider, audio_cfg, ws_url.as_str())?;
     let header_refs: Vec<(&str, &str)> = headers
         .iter()
@@ -420,7 +426,7 @@ fn build_baidu_ws_url(audio_cfg: &AudioSegment) -> Result<String> {
     let cfg_json = build_baidu_cfg(audio_cfg)?;
     let separator = if base.contains('?') { '&' } else { '?' };
     Ok(format!(
-        "{base}{separator}app_id={}&ak={}&sk={}&ac={}&cfg={}",
+        "{base}{separator}a={}&ak={}&sk={}&ac={}&cfg={}",
         urlencoding::encode(audio_cfg.realtime.app_id.trim()),
         urlencoding::encode(audio_cfg.realtime.api_key.trim()),
         urlencoding::encode(audio_cfg.realtime.api_secret.trim()),
@@ -448,6 +454,43 @@ fn build_baidu_cfg(audio_cfg: &AudioSegment) -> Result<String> {
     }
 
     serde_json::to_string(&cfg).map_err(|e| Error::config(REALTIME_TAG, e.to_string()))
+}
+
+fn redact_realtime_ws_url(provider: RealtimeProvider, url: &str) -> String {
+    if provider != RealtimeProvider::Baidu {
+        return crate::util::scrub_credentials(url);
+    }
+
+    let Some((base, query)) = url.split_once('?') else {
+        return url.to_string();
+    };
+    let mut redacted = String::with_capacity(url.len());
+    redacted.push_str(base);
+    redacted.push('?');
+    for (index, pair) in query.split('&').enumerate() {
+        if index > 0 {
+            redacted.push('&');
+        }
+        let Some((key, value)) = pair.split_once('=') else {
+            redacted.push_str(pair);
+            continue;
+        };
+        redacted.push_str(key);
+        redacted.push('=');
+        match key {
+            "a" | "ak" | "sk" => {
+                let prefix = value.chars().take(4).collect::<String>();
+                if prefix.is_empty() {
+                    redacted.push_str("[REDACTED]");
+                } else {
+                    redacted.push_str(prefix.as_str());
+                    redacted.push_str("...[REDACTED]");
+                }
+            }
+            _ => redacted.push_str(value),
+        }
+    }
+    redacted
 }
 
 fn build_session_update(provider: RealtimeProvider, audio_cfg: &AudioSegment) -> String {
@@ -832,8 +875,8 @@ fn build_baidu_license_activation(audio_cfg: &AudioSegment) -> Result<String> {
     Ok(format!(
         "[E]:[LIC]:[ACTIVE]:{}",
         json!({
-            "sn": sn,
-            "key": key,
+            "devId": sn,
+            "licKey": key,
             "uId": uid,
         })
     ))
@@ -929,7 +972,7 @@ fn samples_to_ms(samples: usize, sample_rate_hz: u32) -> u128 {
 mod tests {
     use super::{
         build_baidu_license_activation, build_realtime_headers, build_realtime_ws_url,
-        build_session_update, realtime_ws_url_needs_openai_beta,
+        build_session_update, realtime_ws_url_needs_openai_beta, redact_realtime_ws_url,
         server_message_marks_session_ready, strip_baidu_audio_prefix, RealtimeProvider,
         RealtimeUploadEncoder, REALTIME_OPENAI_BETA,
     };
@@ -1030,7 +1073,7 @@ mod tests {
         cfg.realtime.instructions = "请默认中文简洁回复".to_string();
 
         let url = build_realtime_ws_url(RealtimeProvider::Baidu, &cfg).unwrap();
-        assert!(url.contains("app_id=app-1"));
+        assert!(url.contains("a=app-1"));
         assert!(url.contains("ak=ak-1"));
         assert!(url.contains("sk=sk-1"));
         assert!(url.contains("ac=raw16k"));
@@ -1044,9 +1087,20 @@ mod tests {
         cfg.realtime.device_id = "dev-1".to_string();
 
         let payload = build_baidu_license_activation(&cfg).unwrap();
-        assert!(payload.contains("\"sn\":\"dev-1\""));
-        assert!(payload.contains("\"key\":\"lic-key\""));
+        assert!(payload.contains("\"devId\":\"dev-1\""));
+        assert!(payload.contains("\"licKey\":\"lic-key\""));
         assert!(payload.contains("\"uId\":\"dev-1\""));
+    }
+
+    #[test]
+    fn redact_baidu_ws_url_masks_credentials_but_keeps_shape() {
+        let url = "wss://rtc-aiotgw.exp.bcelive.com/v1/realtime?a=app-1&ak=abcdefghi&sk=xyz987654&ac=raw16k&cfg=%7B%7D";
+        let redacted = redact_realtime_ws_url(RealtimeProvider::Baidu, url);
+        assert!(redacted.contains("a=app-...[REDACTED]"));
+        assert!(redacted.contains("ak=abcd...[REDACTED]"));
+        assert!(redacted.contains("sk=xyz9...[REDACTED]"));
+        assert!(redacted.contains("ac=raw16k"));
+        assert!(redacted.contains("cfg=%7B%7D"));
     }
 
     #[test]

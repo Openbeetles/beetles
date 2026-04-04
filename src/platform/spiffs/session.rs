@@ -70,29 +70,35 @@ fn session_path(chat_id: &str) -> Result<(PathBuf, bool)> {
     Ok((p, write_header))
 }
 
-fn parse_jsonl_line(line: &str) -> Option<SessionMessage> {
+enum ParsedJsonlLine {
+    Ignored,
+    Message(SessionMessage),
+    RepairedMessage(SessionMessage),
+    Invalid,
+}
+
+struct SessionFileSnapshot {
+    messages: VecDeque<SessionMessage>,
+    message_count: usize,
+    malformed_lines: usize,
+    has_data: bool,
+    ends_with_newline: bool,
+    needs_repair: bool,
+}
+
+fn parse_jsonl_line(line: &str) -> ParsedJsonlLine {
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') {
-        return None;
+        return ParsedJsonlLine::Ignored;
     }
     match serde_json::from_str::<SessionMessage>(line) {
-        Ok(m) => Some(m),
-        Err(e_strict) => {
+        Ok(m) => ParsedJsonlLine::Message(m),
+        Err(_) => {
             let mut iter = serde_json::Deserializer::from_str(line).into_iter::<SessionMessage>();
             match iter.next() {
-                Some(Ok(m)) => {
-                    log::warn!(
-                        "[{}] strict parse failed ({}); using first message JSON only",
-                        TAG,
-                        e_strict
-                    );
-                    Some(m)
-                }
-                Some(Err(e)) => {
-                    log::warn!("[{}] skip bad line: {}", TAG, e);
-                    None
-                }
-                None => None,
+                Some(Ok(m)) => ParsedJsonlLine::RepairedMessage(m),
+                Some(Err(_)) => ParsedJsonlLine::Invalid,
+                None => ParsedJsonlLine::Ignored,
             }
         }
     }
@@ -110,31 +116,66 @@ fn parse_chat_id_header(line: &str) -> Option<String> {
     None
 }
 
-/// 统计 JSONL 中会话消息行数（与 `append` 慢路径解析规则一致：可选首行 `# chat_id:`，其余为 `serde_json` 行）。
-/// 不反序列化 JSON，仅以 `trim` 后以 `{` 开头作为消息行，与 `SessionMessage` 序列化形态一致。
-fn count_session_message_lines(buf: &[u8]) -> usize {
+fn scan_session_file(buf: &[u8]) -> SessionFileSnapshot {
+    let mut messages = VecDeque::with_capacity(MAX_SESSION_ENTRIES);
+    let mut message_count = 0usize;
+    let mut malformed_lines = 0usize;
     let mut first = true;
-    let mut n = 0usize;
-    for line in buf.split(|&b| b == b'\n') {
-        if line.is_empty() {
+    let mut needs_repair = !buf.is_empty() && !buf.ends_with(b"\n");
+
+    for raw_line in buf.split(|&b| b == b'\n') {
+        if raw_line.is_empty() {
             continue;
         }
-        if let Ok(s) = std::str::from_utf8(line) {
-            let t = s.trim();
-            if t.is_empty() {
-                continue;
-            }
-            if first && parse_chat_id_header(t).is_some() {
-                first = false;
-                continue;
-            }
+        let Ok(line) = std::str::from_utf8(raw_line) else {
+            malformed_lines = malformed_lines.saturating_add(1);
+            needs_repair = true;
             first = false;
-            if t.starts_with('{') {
-                n += 1;
-            }
+            continue;
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
         }
+        if first && parse_chat_id_header(trimmed).is_some() {
+            first = false;
+            continue;
+        }
+        first = false;
+        let parsed = parse_jsonl_line(trimmed);
+        let message = match parsed {
+            ParsedJsonlLine::Ignored => None,
+            ParsedJsonlLine::Message(message) => Some(message),
+            ParsedJsonlLine::RepairedMessage(message) => {
+                malformed_lines = malformed_lines.saturating_add(1);
+                needs_repair = true;
+                Some(message)
+            }
+            ParsedJsonlLine::Invalid => {
+                malformed_lines = malformed_lines.saturating_add(1);
+                needs_repair = true;
+                None
+            }
+        };
+        let Some(message) = message else {
+            continue;
+        };
+        if messages.len() == MAX_SESSION_ENTRIES {
+            messages.pop_front();
+            needs_repair = true;
+        }
+        messages.push_back(message);
+        message_count = messages.len();
     }
-    n
+
+    SessionFileSnapshot {
+        messages,
+        message_count,
+        malformed_lines,
+        has_data: !buf.is_empty(),
+        ends_with_newline: buf.ends_with(b"\n"),
+        needs_repair,
+    }
 }
 
 fn count_path(path: &Path) -> PathBuf {
@@ -231,10 +272,45 @@ fn append_session_line_unlocked(
     Ok(())
 }
 
-fn load_count_snapshot_unlocked(path: &Path) -> (usize, Vec<u8>) {
+fn build_session_body<'a>(
+    chat_id: &str,
+    write_header: bool,
+    messages: impl IntoIterator<Item = &'a SessionMessage>,
+) -> Result<String> {
+    let mut body = String::new();
+    if write_header {
+        body.push_str(CHAT_ID_HEADER_PREFIX);
+        body.push_str(chat_id);
+        body.push('\n');
+    }
+    for message in messages {
+        let line = serde_json::to_string(message)
+            .map_err(|e| Error::config("session_write", e.to_string()))?;
+        body.push_str(&line);
+        body.push('\n');
+    }
+    Ok(body)
+}
+
+fn load_session_snapshot_unlocked(
+    path: &Path,
+    chat_id: &str,
+    write_header: bool,
+) -> Result<SessionFileSnapshot> {
     let existing_buf = read_existing_file_unlocked(path).unwrap_or_default();
-    let count = count_session_message_lines(&existing_buf).min(MAX_SESSION_ENTRIES);
-    (count, existing_buf)
+    let snapshot = scan_session_file(&existing_buf);
+    if snapshot.needs_repair {
+        let body = build_session_body(chat_id, write_header, snapshot.messages.iter())?;
+        write_session_body_unlocked(path, body.as_bytes())?;
+        log::warn!(
+            "[{}] repaired session chat_id={} bad_lines={} kept_messages={}",
+            TAG,
+            chat_id,
+            snapshot.malformed_lines,
+            snapshot.messages.len()
+        );
+    }
+    Ok(snapshot)
 }
 
 fn resolve_chat_id_from_session_filename(dir: &mut PathBuf, name: &str) -> Option<String> {
@@ -342,36 +418,6 @@ impl SpiffsSessionStore {
         }
     }
 
-    fn load_recent_snapshot_unlocked(path: &Path, cap: usize) -> Result<VecDeque<SessionMessage>> {
-        let cap = cap.min(MAX_SESSION_ENTRIES);
-        if cap == 0 {
-            return Ok(VecDeque::new());
-        }
-        let buf = read_existing_file_unlocked(path).unwrap_or_default();
-        Ok(Self::recent_from_buf(&buf, cap))
-    }
-
-    fn recent_from_buf(buf: &[u8], cap: usize) -> VecDeque<SessionMessage> {
-        let mut recent = VecDeque::with_capacity(cap);
-        for raw_line in buf.split(|&b| b == b'\n') {
-            if raw_line.is_empty() {
-                continue;
-            }
-            if let Ok(s) = std::str::from_utf8(raw_line) {
-                if parse_chat_id_header(s).is_some() {
-                    continue;
-                }
-                if let Some(m) = parse_jsonl_line(s) {
-                    if recent.len() == cap {
-                        recent.pop_front();
-                    }
-                    recent.push_back(m);
-                }
-            }
-        }
-        recent
-    }
-
     fn upsert_recent_cache(
         recent_cache: &mut HashMap<String, VecDeque<SessionMessage>>,
         chat_id: &str,
@@ -409,19 +455,22 @@ impl SessionStore for SpiffsSessionStore {
         with_fs_lock(|| {
             let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
             let mut recent_cache = self.recent.lock().unwrap_or_else(|e| e.into_inner());
-            let (msg_count, existing_buf) = match counts.get(chat_id).copied() {
-                Some(count) => (count, None),
-                None => {
-                    let (count, buf) = load_count_snapshot_unlocked(&path);
-                    counts.insert(chat_id.to_string(), count);
-                    (count, Some(buf))
-                }
-            };
+            let (msg_count, existing_has_data, existing_ends_with_newline, existing_messages) =
+                match counts.get(chat_id).copied() {
+                    Some(count) => (count, false, true, None),
+                    None => {
+                        let snapshot =
+                            load_session_snapshot_unlocked(&path, chat_id, write_header)?;
+                        let count = snapshot.message_count;
+                        let has_data = snapshot.has_data;
+                        let ends_with_newline = snapshot.ends_with_newline || snapshot.needs_repair;
+                        let messages = snapshot.messages;
+                        counts.insert(chat_id.to_string(), count);
+                        (count, has_data, ends_with_newline, Some(messages))
+                    }
+                };
             if msg_count < MAX_SESSION_ENTRIES {
-                let prepend_newline = existing_buf
-                    .as_deref()
-                    .map(|buf| !buf.is_empty() && !buf.ends_with(b"\n"))
-                    .unwrap_or(false);
+                let prepend_newline = existing_has_data && !existing_ends_with_newline;
                 append_session_line_unlocked(&path, write_header, chat_id, prepend_newline, &line)?;
                 if let Some(recent) = recent_cache.get_mut(chat_id) {
                     if recent.len() == MAX_SESSION_ENTRIES {
@@ -440,10 +489,10 @@ impl SessionStore for SpiffsSessionStore {
             let mut messages = if let Some(recent) = recent_cache.get(chat_id) {
                 recent.clone()
             } else {
-                let loaded = if let Some(buf) = existing_buf.as_deref() {
-                    Self::recent_from_buf(buf, MAX_SESSION_ENTRIES)
+                let loaded = if let Some(messages) = existing_messages {
+                    messages
                 } else {
-                    Self::load_recent_snapshot_unlocked(&path, MAX_SESSION_ENTRIES)?
+                    load_session_snapshot_unlocked(&path, chat_id, write_header)?.messages
                 };
                 Self::upsert_recent_cache(&mut recent_cache, chat_id, loaded.clone());
                 loaded
@@ -453,26 +502,7 @@ impl SessionStore for SpiffsSessionStore {
                 messages.pop_front();
             }
 
-            let cap = messages
-                .len()
-                .saturating_mul(MAX_SESSION_MESSAGE_LEN.saturating_add(1))
-                .saturating_add(if write_header {
-                    CHAT_ID_HEADER_PREFIX.len() + chat_id.len() + 2
-                } else {
-                    0
-                })
-                .saturating_add(1);
-            let mut body = String::with_capacity(cap);
-            if write_header {
-                body.push_str(CHAT_ID_HEADER_PREFIX);
-                body.push_str(chat_id);
-                body.push('\n');
-            }
-            for m in messages.iter() {
-                let json_line = serde_json::to_string(m).unwrap_or_default();
-                body.push_str(&json_line);
-                body.push('\n');
-            }
+            let body = build_session_body(chat_id, write_header, messages.iter())?;
             write_session_body_unlocked(&path, body.as_bytes())?;
             Self::upsert_recent_cache(&mut recent_cache, chat_id, messages.clone());
             counts.insert(chat_id.to_string(), messages.len());
@@ -484,7 +514,7 @@ impl SessionStore for SpiffsSessionStore {
     }
 
     fn load_recent(&self, chat_id: &str, n: usize) -> Result<Vec<SessionMessage>> {
-        let (path, _) = session_path(chat_id)?;
+        let (path, write_header) = session_path(chat_id)?;
         let cap = n.min(MAX_SESSION_ENTRIES);
         if cap == 0 {
             return Ok(Vec::new());
@@ -499,7 +529,15 @@ impl SessionStore for SpiffsSessionStore {
             let start = recent.len().saturating_sub(cap);
             return Ok(recent.into_iter().skip(start).collect());
         }
-        let recent = Self::load_recent_snapshot_unlocked(&path, cap)?;
+        let recent = with_fs_lock(|| {
+            let snapshot = load_session_snapshot_unlocked(&path, chat_id, write_header)?;
+            let start = snapshot.messages.len().saturating_sub(cap);
+            Ok(snapshot
+                .messages
+                .into_iter()
+                .skip(start)
+                .collect::<VecDeque<_>>())
+        })?;
         if cap == MAX_SESSION_ENTRIES {
             let mut recent_cache = self.recent.lock().unwrap_or_else(|e| e.into_inner());
             Self::upsert_recent_cache(&mut recent_cache, chat_id, recent.clone());
@@ -518,7 +556,7 @@ impl SessionStore for SpiffsSessionStore {
                 return Ok(MAX_SESSION_ENTRIES);
             }
         }
-        let (path, _) = session_path(chat_id)?;
+        let (path, write_header) = session_path(chat_id)?;
         if let Some(count) = self
             .counts
             .lock()
@@ -530,9 +568,9 @@ impl SessionStore for SpiffsSessionStore {
         }
         with_fs_lock(|| {
             let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
-            let (count, _) = load_count_snapshot_unlocked(&path);
-            counts.insert(chat_id.to_string(), count);
-            Ok(count)
+            let snapshot = load_session_snapshot_unlocked(&path, chat_id, write_header)?;
+            counts.insert(chat_id.to_string(), snapshot.message_count);
+            Ok(snapshot.message_count)
         })
     }
 
@@ -636,7 +674,7 @@ impl SessionStore for SpiffsSessionStore {
 
 #[cfg(test)]
 mod tests {
-    use super::count_session_message_lines;
+    use super::scan_session_file;
 
     #[test]
     fn counts_only_message_lines() {
@@ -645,12 +683,17 @@ mod tests {
 
 {"role":"assistant","content":"world"}
 "#;
-        assert_eq!(count_session_message_lines(raw), 2);
+        let snapshot = scan_session_file(raw);
+        assert_eq!(snapshot.message_count, 2);
+        assert!(!snapshot.needs_repair);
     }
 
     #[test]
-    fn ignores_non_json_payload_lines() {
-        let raw = b"note\n# chat_id: demo\n{}\nnot-json\n";
-        assert_eq!(count_session_message_lines(raw), 1);
+    fn repairs_non_json_payload_lines() {
+        let raw = b"note\n# chat_id: demo\n{\"role\":\"user\",\"content\":\"ok\"}\nnot-json\n";
+        let snapshot = scan_session_file(raw);
+        assert_eq!(snapshot.message_count, 1);
+        assert!(snapshot.needs_repair);
+        assert_eq!(snapshot.malformed_lines, 2);
     }
 }

@@ -119,17 +119,21 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
                     now_unix_secs,
                     now,
                 );
+                let next_delayed_task_at =
+                    now + crate::runtime::next_delayed_task_wait(heartbeat_interval);
                 let next_wake_at = [
                     Some(next_heartbeat_at),
                     Some(next_cron_at),
                     next_remind_at,
                     next_task_at,
+                    Some(next_delayed_task_at),
                 ]
                 .into_iter()
                 .flatten()
                 .min()
                 .unwrap_or(now + heartbeat_interval);
                 wait_until_or_notified(next_wake_at);
+                crate::runtime::service_delayed_tasks();
 
                 let now = Instant::now();
                 let now_unix_secs = crate::util::current_unix_secs();

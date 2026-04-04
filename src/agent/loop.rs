@@ -96,6 +96,7 @@ const ASSISTANT_COMPACT_PREVIEW_CHARS: usize = 160;
 const ASSISTANT_COMPACT_TAIL_CHARS: usize = 48;
 const POST_REPLY_MAINTENANCE_USER_PREVIEW_CHARS: usize = 512;
 const POST_REPLY_MAINTENANCE_REPLY_PREVIEW_CHARS: usize = 768;
+const POST_REPLY_MAINTENANCE_DELAY_MS: u64 = 1_500;
 const PLAN_SYSTEM_SUFFIX: &str = "\n\n## Internal planning\nBefore solving the latest user request, create a short internal execution plan. Return 3-6 concise numbered steps only. Do not answer the user. Do not call tools in this planning step.";
 const FINAL_RECOVERY_SYSTEM_SUFFIX: &str = "\n\n## Final delivery\nThe tool-execution budget for this turn is exhausted. Do not call any tool. Using only the completed tool results and current conclusions already present in this conversation, produce the final user-facing answer now. Do not output execution transcripts, numbered step logs, or future-step sections.";
 
@@ -153,6 +154,18 @@ fn is_lane_background_job(msg: &PcMsg) -> bool {
     is_long_term_memory_refresh_job(msg)
         || is_post_reply_maintenance_job(msg)
         || is_self_runtime_job(msg)
+}
+
+fn background_enqueue_block_reason() -> Option<&'static str> {
+    if crate::state::voice_exclusive_active() {
+        return Some("voice_exclusive_active");
+    }
+    let snap = crate::orchestrator::snapshot();
+    if snap.active_agent_tasks > 0 || snap.inbound_depth > 0 || snap.outbound_depth > 0 {
+        Some("message_queues_busy")
+    } else {
+        None
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2032,30 +2045,84 @@ fn enqueue_post_reply_maintenance_job(
             return false;
         }
     };
-    let job = match PcMsg::new_system(CHANNEL_POST_REPLY_MAINTENANCE, msg.chat_id.as_ref(), body) {
-        Ok(job) => job,
-        Err(error) => {
-            log::warn!(
-                "[agent_memory] maintenance job build failed chat_id={}: {}",
-                msg.chat_id,
-                error
-            );
-            return false;
+    let system_inbound_tx = system_inbound_tx.clone();
+    let chat_id = msg.chat_id.to_string();
+    let scheduled = crate::runtime::schedule_delayed_task(
+        Instant::now() + Duration::from_millis(POST_REPLY_MAINTENANCE_DELAY_MS),
+        Box::new(move || {
+            if let Some(reason) = background_enqueue_block_reason() {
+                log::debug!(
+                    "[agent_memory] skip delayed maintenance enqueue because {} chat_id={}",
+                    reason,
+                    chat_id
+                );
+                return;
+            }
+            let job = match PcMsg::new_system(CHANNEL_POST_REPLY_MAINTENANCE, &chat_id, body) {
+                Ok(job) => job,
+                Err(error) => {
+                    log::warn!(
+                        "[agent_memory] maintenance job build failed chat_id={}: {}",
+                        chat_id,
+                        error
+                    );
+                    return;
+                }
+            };
+            match system_inbound_tx.try_send(job) {
+                Ok(()) => {}
+                Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                    log::debug!(
+                        "[agent_memory] skip maintenance enqueue because system queue is full chat_id={}",
+                        chat_id
+                    );
+                }
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    log::warn!(
+                        "[agent_memory] maintenance enqueue failed: system queue disconnected"
+                    );
+                }
+            }
+        }),
+    );
+    if !scheduled {
+        log::debug!(
+            "[agent_memory] delayed queue full, skip maintenance schedule chat_id={}",
+            msg.chat_id
+        );
+    }
+    scheduled
+}
+
+fn maybe_yield_background_job_to_pending_user(
+    background_msg: PcMsg,
+    user_inbound_rx: &UserInboundRx,
+    system_inbound_tx: &SystemInboundTx,
+) -> PcMsg {
+    match user_inbound_rx.try_recv() {
+        Ok(user_msg) => {
+            let mut background_msg = background_msg;
+            background_msg.enqueue_ts_ms = now_unix_ms();
+            match system_inbound_tx.try_send(background_msg) {
+                Ok(()) => {
+                    log::debug!(
+                        "[agent] yielded background job to pending user chat_id={}",
+                        user_msg.chat_id
+                    );
+                }
+                Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                    log::warn!("[agent] background yield requeue dropped: system queue full");
+                }
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    log::warn!(
+                        "[agent] background yield requeue failed: system queue disconnected"
+                    );
+                }
+            }
+            user_msg
         }
-    };
-    match system_inbound_tx.try_send(job) {
-        Ok(()) => true,
-        Err(std::sync::mpsc::TrySendError::Full(_)) => {
-            log::debug!(
-                "[agent_memory] skip maintenance enqueue because system queue is full chat_id={}",
-                msg.chat_id
-            );
-            false
-        }
-        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-            log::warn!("[agent_memory] maintenance enqueue failed: system queue disconnected");
-            false
-        }
+        Err(std::sync::mpsc::TryRecvError::Empty)
+        | Err(std::sync::mpsc::TryRecvError::Disconnected) => background_msg,
     }
 }
 
@@ -2980,6 +3047,13 @@ fn run_agent_loop_main(
             }
             AgentRecvStatus::Disconnected => break,
         };
+        if msg.ingress == IngressKind::System && is_lane_background_job(&msg) {
+            msg = maybe_yield_background_job_to_pending_user(
+                msg,
+                &user_inbound_rx,
+                &system_inbound_tx,
+            );
+        }
         if msg.ingress == IngressKind::System {
             consecutive_user_msgs = 0;
         } else {

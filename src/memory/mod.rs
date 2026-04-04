@@ -251,6 +251,7 @@ pub(crate) use skill_routing::{route_long_term_draft, MemoryPlane};
 pub use turn_ledger::{
     build_turn_ledger_start, normalize_turn_preview, normalize_turn_reason, TurnDeliveryLedger,
     TurnLedger, TurnLedgerStatus, TurnLedgerStore, REL_PATH_TURN_LEDGERS,
+    REL_PATH_TURN_LEDGERS_LEGACY,
 };
 pub(crate) use world_sense::run_world_sense_refresh_with_state;
 pub use world_sense::{

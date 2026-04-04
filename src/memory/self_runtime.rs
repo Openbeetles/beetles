@@ -15,6 +15,7 @@ use crate::util::{current_unix_secs, scrub_credentials, truncate_content_to_max}
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt::Write as _;
+use std::time::{Duration, Instant};
 
 use super::{
     autonomy_idle_interval_secs, build_archive_evidence_block, build_self_state,
@@ -55,6 +56,8 @@ use super::{
 
 pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's inward autonomy runtime. Respect the current autonomy strategy unless the latest world state or self-state clearly requires a different emphasis. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_private_docs, private_docs_intent, private_docs_action, refresh_private_garden, private_garden_intent, private_garden_action, refresh_self_model, self_model_intent, self_model_sources, refresh_self_continuity, self_continuity_intent, self_continuity_sources, refresh_boundary_persona, boundary_persona_intent, refresh_outer_voice, outer_voice_intent, outer_voice_sources, boundary_flush, boundary_flush_reason, request_factual_refresh, factual_reconcile_action, factual_reconcile_intent. Use true only when that layer should change now. Runtime governance actions are hold, rewrite, compress, or cleanup. factual_reconcile_action is hold, reinforce, correct, conflict, or stale. self_model, self_continuity, boundary_persona, and outer_voice are upward distillation layers: refresh them only when private evolution or newer world/boundary state has produced a better stable core that should influence future main replies. Source lists should name the layers that actually deserve upward distillation, such as inner_life, private_docs, private_garden, self_model, self_continuity, boundary_persona, outer_voice, world_sense, autonomy_strategy, or recent_transcript. Favor autonomy, but do not churn memory without gain.";
 pub const SELF_RUNTIME_CHANNEL: &str = "_self_runtime";
+const SELF_RUNTIME_POST_REPLY_DELAY_MS: u64 = 1_500;
+const SELF_RUNTIME_IDLE_TICK_DELAY_MS: u64 = 5_000;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1216,7 +1219,7 @@ pub fn enqueue_self_runtime_post_reply(
     tool_calls: u32,
     external_content_used: bool,
 ) -> bool {
-    enqueue_self_runtime_job(
+    schedule_self_runtime_job(
         system_inbound_tx,
         chat_id,
         SelfRuntimeJobPayload {
@@ -1228,11 +1231,12 @@ pub fn enqueue_self_runtime_post_reply(
             external_content_used,
             now_secs: current_unix_secs(),
         },
+        SELF_RUNTIME_POST_REPLY_DELAY_MS,
     )
 }
 
 pub fn enqueue_self_runtime_idle_tick(system_inbound_tx: &SystemInboundTx, chat_id: &str) -> bool {
-    enqueue_self_runtime_job(
+    schedule_self_runtime_job(
         system_inbound_tx,
         chat_id,
         SelfRuntimeJobPayload {
@@ -1244,10 +1248,43 @@ pub fn enqueue_self_runtime_idle_tick(system_inbound_tx: &SystemInboundTx, chat_
             external_content_used: false,
             now_secs: current_unix_secs(),
         },
+        SELF_RUNTIME_IDLE_TICK_DELAY_MS,
     )
 }
 
-fn enqueue_self_runtime_job(
+fn schedule_self_runtime_job(
+    system_inbound_tx: &SystemInboundTx,
+    chat_id: &str,
+    payload: SelfRuntimeJobPayload,
+    delay_ms: u64,
+) -> bool {
+    let system_inbound_tx = system_inbound_tx.clone();
+    let chat_id = chat_id.to_string();
+    let delayed_chat_id = chat_id.clone();
+    let scheduled = crate::runtime::schedule_delayed_task(
+        Instant::now() + Duration::from_millis(delay_ms),
+        Box::new(move || {
+            if let Some(reason) = self_runtime_enqueue_block_reason(payload.trigger) {
+                log::debug!(
+                    "[self_runtime] skip delayed enqueue because {} chat_id={}",
+                    reason,
+                    delayed_chat_id
+                );
+                return;
+            }
+            let _ = enqueue_self_runtime_job_now(&system_inbound_tx, &delayed_chat_id, payload);
+        }),
+    );
+    if !scheduled {
+        log::debug!(
+            "[self_runtime] delayed queue full, skip schedule chat_id={}",
+            chat_id
+        );
+    }
+    scheduled
+}
+
+fn enqueue_self_runtime_job_now(
     system_inbound_tx: &SystemInboundTx,
     chat_id: &str,
     payload: SelfRuntimeJobPayload,
@@ -1288,6 +1325,19 @@ fn enqueue_self_runtime_job(
             false
         }
     }
+}
+
+fn self_runtime_enqueue_block_reason(trigger: SelfRuntimeTrigger) -> Option<&'static str> {
+    if crate::state::voice_exclusive_active() {
+        return Some("voice_exclusive_active");
+    }
+    if let Some(reason) = idle_self_runtime_scheduler_block_reason() {
+        return Some(reason);
+    }
+    if matches!(trigger, SelfRuntimeTrigger::IdleTick) {
+        return idle_self_runtime_block_reason();
+    }
+    None
 }
 
 pub fn self_runtime_tick(
