@@ -28,6 +28,10 @@ const STA_POLL_INTERVAL_MS: u64 = 5_000;
 /// 发起 connect() 后的冷却期（毫秒）：给 WiFi 驱动足够时间完成 auth/assoc/DHCP，
 /// 冷却期内不再检查也不再发起 connect()，避免频繁重连干扰驱动状态机。
 const STA_RECONNECT_COOLDOWN_MS: u64 = 15_000;
+/// STA 刚拿到 DHCP 地址后，不要立刻把 APSTA 切成纯 STA。
+/// ESP-IDF 6.0 在 DHCP / netif 事件刚落地的瞬间切 mode，偶发会撞进 pthread 断言。
+/// 这里等一个稳定窗口，再执行 SoftAP auto-close。
+const STA_SOFTAP_DISABLE_GRACE_MS: u64 = 2_500;
 /// 连续多少次 poll 都确认 STA 链路不在，才触发一次 reconnect。
 /// 避免瞬时读不到 netif/IP 就自激重连。
 const STA_LINK_MISS_THRESHOLD: u8 = 2;
@@ -231,6 +235,7 @@ fn run_scan_loop(
     };
     let mut sta_link_miss_count = 0u8;
     let mut next_sta_poll = Instant::now();
+    let mut sta_ip_stable_since: Option<Instant> = None;
     // Mixed mode starts with SoftAP enabled whenever STA is configured.
     // The previous inverted initialization kept this false, so the auto-close
     // branch never ran even after STA acquired a DHCP lease.
@@ -242,6 +247,7 @@ fn run_scan_loop(
                 wifi,
                 &mut cooldown_until,
                 &mut sta_link_miss_count,
+                &mut sta_ip_stable_since,
                 &mut softap_enabled,
                 sta_softap_config,
             );
@@ -286,6 +292,7 @@ fn poll_sta_link(
     wifi: &mut BlockingWifi<EspWifi>,
     cooldown_until: &mut Option<Instant>,
     sta_link_miss_count: &mut u8,
+    sta_ip_stable_since: &mut Option<Instant>,
     softap_enabled: &mut bool,
     sta_softap_config: Option<&StaSoftApConfig>,
 ) {
@@ -300,18 +307,25 @@ fn poll_sta_link(
             log::info!("[{}] STA connected (detected in poll)", TAG);
         }
         crate::state::set_wifi_sta_state(true, Some(ip));
+        let stable_since = sta_ip_stable_since.get_or_insert_with(Instant::now);
         if *softap_enabled {
-            if let Some(config) = sta_softap_config {
-                if let Err(e) = set_softap_enabled(wifi, config, softap_enabled, false) {
-                    log::warn!("[{}] failed to disable SoftAP after STA connect: {}", TAG, e);
+            let ready_to_disable =
+                stable_since.elapsed() >= Duration::from_millis(STA_SOFTAP_DISABLE_GRACE_MS);
+            if ready_to_disable {
+                if let Some(config) = sta_softap_config {
+                    if let Err(e) = set_softap_enabled(wifi, config, softap_enabled, false) {
+                        log::warn!("[{}] failed to disable SoftAP after STA connect: {}", TAG, e);
+                    }
                 }
             }
         }
         *sta_link_miss_count = 0;
     } else if sta_l2 {
         // L2 仍在线时保留既有 STA 状态，避免 netif/IP 读的瞬时空窗把上层误判为断网。
+        *sta_ip_stable_since = None;
         *sta_link_miss_count = 0;
     } else {
+        *sta_ip_stable_since = None;
         *sta_link_miss_count = sta_link_miss_count.saturating_add(1);
         if was_connected && *sta_link_miss_count == 1 {
             log::warn!("[{}] STA disconnected, will reconnect", TAG);

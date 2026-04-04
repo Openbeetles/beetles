@@ -319,7 +319,7 @@ fn load_self_runtime_state(
     chat_id: &str,
     payload: &SelfRuntimeJobPayload,
     profile: MemoryProfile,
-) -> LoadedSelfRuntimeState {
+) -> Box<LoadedSelfRuntimeState> {
     let summary_text = ctx
         .session_summary_store
         .get_with_count(chat_id)
@@ -382,7 +382,7 @@ fn load_self_runtime_state(
                 ),
         )
         .unwrap_or_default();
-    LoadedSelfRuntimeState {
+    Box::new(LoadedSelfRuntimeState {
         summary_text,
         execution_state,
         self_model,
@@ -397,7 +397,7 @@ fn load_self_runtime_state(
         prior_user_channel,
         world_snapshot,
         recent,
-    }
+    })
 }
 
 fn refresh_world_and_autonomy(
@@ -408,7 +408,7 @@ fn refresh_world_and_autonomy(
     payload: &SelfRuntimeJobPayload,
     profile: MemoryProfile,
     state: &LoadedSelfRuntimeState,
-) -> SelfRuntimeRefreshPrelude {
+) -> Box<SelfRuntimeRefreshPrelude> {
     let ingress = self_runtime_ingress(payload.trigger);
     let world_policy = memory_policy(profile).world_sense;
     let world_snapshot_changed = state.world_sense.as_ref().is_some_and(|existing| {
@@ -550,13 +550,13 @@ fn refresh_world_and_autonomy(
         payload.now_secs,
         profile,
     );
-    SelfRuntimeRefreshPrelude {
+    Box::new(SelfRuntimeRefreshPrelude {
         world_sense_result,
         autonomy_strategy_result,
         refreshed_world_sense,
         refreshed_autonomy_strategy,
         runtime_self_state,
-    }
+    })
 }
 
 fn unix_day_bucket(now_secs: u64) -> u64 {
@@ -676,8 +676,9 @@ fn execute_self_runtime_actions(
     profile: MemoryProfile,
     state: &LoadedSelfRuntimeState,
     prelude: &SelfRuntimeRefreshPrelude,
-) -> SelfRuntimeActionResults {
+) -> Box<SelfRuntimeActionResults> {
     let boundary_signal = detect_boundary_flush_signal(payload, state, prelude);
+    crate::platform::task_wdt::feed_current_task();
     let query_hint = if !payload.user_content.trim().is_empty() {
         payload.user_content.as_str()
     } else {
@@ -700,6 +701,7 @@ fn execute_self_runtime_actions(
             external_content_used: payload.external_content_used,
         },
     );
+    crate::platform::task_wdt::feed_current_task();
     let factual_snapshot = governance.factual_plane_snapshot;
     let mut decision = match decide_self_runtime(
         http,
@@ -741,7 +743,7 @@ fn execute_self_runtime_actions(
             &boundary_signal,
         )),
         Err(error) => {
-            return SelfRuntimeActionResults {
+            return Box::new(SelfRuntimeActionResults {
                 decision: None,
                 inner_life_result: Err(error),
                 private_doc_result: Ok(PrivateDocWorkspaceRefreshOutcome::Skipped),
@@ -750,9 +752,10 @@ fn execute_self_runtime_actions(
                 private_garden_result: Ok(PrivateGardenGovernanceOutcome::Skipped),
                 boundary_persona_result: Ok(BoundaryPersonaRefreshOutcome::Skipped),
                 outer_voice_result: Ok(OuterVoiceRefreshOutcome::Skipped),
-            };
+            });
         }
     };
+    crate::platform::task_wdt::feed_current_task();
     let mut refreshed_inner_life = state.inner_life.clone();
     let mut refreshed_private_docs = state.private_docs.clone();
     let mut refreshed_private_garden_docs = state.private_garden_docs.clone();
@@ -804,6 +807,7 @@ fn execute_self_runtime_actions(
         .ok()
         .flatten()
         .or(refreshed_inner_life);
+    crate::platform::task_wdt::feed_current_task();
     let private_doc_result = if decision_ref.is_some_and(|d| d.refresh_private_docs) {
         run_private_doc_workspace_refresh_with_state(
             http,
@@ -852,6 +856,7 @@ fn execute_self_runtime_actions(
         .ok()
         .flatten()
         .or(refreshed_private_docs);
+    crate::platform::task_wdt::feed_current_task();
     let private_garden_result = if decision_ref.is_some_and(|d| d.refresh_private_garden) {
         run_private_garden_governance_with_state(
             http,
@@ -895,6 +900,7 @@ fn execute_self_runtime_actions(
         .private_garden_store
         .list(chat_id, usize::MAX)
         .unwrap_or(refreshed_private_garden_docs);
+    crate::platform::task_wdt::feed_current_task();
     re_finalize_staged_self_runtime_decision(
         &mut decision,
         state,
@@ -907,6 +913,7 @@ fn execute_self_runtime_actions(
         refreshed_outer_voice.as_ref(),
         refreshed_mental_privacy.as_ref(),
     );
+    crate::platform::task_wdt::feed_current_task();
     let decision_ref = decision.as_ref();
     let self_model_result = if decision_ref.is_some_and(|d| d.refresh_self_model) {
         run_self_model_refresh_with_state(
@@ -953,6 +960,7 @@ fn execute_self_runtime_actions(
         .ok()
         .flatten()
         .or(refreshed_self_model);
+    crate::platform::task_wdt::feed_current_task();
     re_finalize_staged_self_runtime_decision(
         &mut decision,
         state,
@@ -965,6 +973,7 @@ fn execute_self_runtime_actions(
         refreshed_outer_voice.as_ref(),
         refreshed_mental_privacy.as_ref(),
     );
+    crate::platform::task_wdt::feed_current_task();
     let decision_ref = decision.as_ref();
     let self_continuity_result = if decision_ref.is_some_and(|d| d.refresh_self_continuity) {
         run_self_continuity_refresh_with_state(
@@ -1015,6 +1024,7 @@ fn execute_self_runtime_actions(
         .ok()
         .flatten()
         .or(refreshed_self_continuity);
+    crate::platform::task_wdt::feed_current_task();
     re_finalize_staged_self_runtime_decision(
         &mut decision,
         state,
@@ -1027,6 +1037,7 @@ fn execute_self_runtime_actions(
         refreshed_outer_voice.as_ref(),
         refreshed_mental_privacy.as_ref(),
     );
+    crate::platform::task_wdt::feed_current_task();
     let decision_ref = decision.as_ref();
     let boundary_persona_result = if decision_ref.is_some_and(|d| d.refresh_boundary_persona) {
         let trigger = match payload.trigger {
@@ -1068,6 +1079,7 @@ fn execute_self_runtime_actions(
         .ok()
         .flatten()
         .or(refreshed_mental_privacy);
+    crate::platform::task_wdt::feed_current_task();
     re_finalize_staged_self_runtime_decision(
         &mut decision,
         state,
@@ -1080,6 +1092,7 @@ fn execute_self_runtime_actions(
         refreshed_outer_voice.as_ref(),
         refreshed_mental_privacy.as_ref(),
     );
+    crate::platform::task_wdt::feed_current_task();
     let decision_ref = decision.as_ref();
     let outer_voice_result = if decision_ref.is_some_and(|d| d.refresh_outer_voice) {
         run_outer_voice_refresh_with_state(
@@ -1123,7 +1136,8 @@ fn execute_self_runtime_actions(
     } else {
         Ok(OuterVoiceRefreshOutcome::Skipped)
     };
-    SelfRuntimeActionResults {
+    crate::platform::task_wdt::feed_current_task();
+    Box::new(SelfRuntimeActionResults {
         decision,
         inner_life_result,
         private_doc_result,
@@ -1132,7 +1146,7 @@ fn execute_self_runtime_actions(
         private_garden_result,
         boundary_persona_result,
         outer_voice_result,
-    }
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1409,13 +1423,22 @@ pub fn run_self_runtime(
     chat_id: &str,
     payload: &SelfRuntimeJobPayload,
     profile: MemoryProfile,
-) -> SelfRuntimeOutcome {
+) -> Box<SelfRuntimeOutcome> {
     let state = load_self_runtime_state(&ctx, chat_id, payload, profile);
     crate::platform::task_wdt::feed_current_task();
-    let prelude = refresh_world_and_autonomy(http, llm, &ctx, chat_id, payload, profile, &state);
+    let prelude =
+        refresh_world_and_autonomy(http, llm, &ctx, chat_id, payload, profile, state.as_ref());
     crate::platform::task_wdt::feed_current_task();
-    let action_results =
-        execute_self_runtime_actions(http, llm, &ctx, chat_id, payload, profile, &state, &prelude);
+    let action_results = execute_self_runtime_actions(
+        http,
+        llm,
+        &ctx,
+        chat_id,
+        payload,
+        profile,
+        state.as_ref(),
+        prelude.as_ref(),
+    );
     crate::platform::task_wdt::feed_current_task();
 
     let _ = touch_self_continuity_runtime(
@@ -1444,7 +1467,7 @@ pub fn run_self_runtime(
         crate::platform::task_wdt::feed_current_task();
     }
 
-    SelfRuntimeOutcome {
+    Box::new(SelfRuntimeOutcome {
         decision: action_results.decision,
         world_sense_result: prelude.world_sense_result,
         autonomy_strategy_result: prelude.autonomy_strategy_result,
@@ -1455,7 +1478,7 @@ pub fn run_self_runtime(
         private_garden_result: action_results.private_garden_result,
         boundary_persona_result: action_results.boundary_persona_result,
         outer_voice_result: action_results.outer_voice_result,
-    }
+    })
 }
 
 #[cfg(test)]

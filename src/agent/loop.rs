@@ -47,9 +47,9 @@ use crate::memory::{
     PersonaPriorityRuntimeState, PostReplyMemoryMaintenanceContext,
     PostReplyMemoryMaintenanceInput, PrivateDocStore, PrivateGardenStore, PromptMemoryContext,
     PromptMemoryContextParams, RemindAtStore, SelfContinuityStore, SelfModelStore,
-    SelfRuntimeContext, SelfRuntimeOutcome, SessionStore, SessionSummaryRefreshOutcome,
-    SessionSummaryStore, TurnDeliveryLedger, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
-    WorldSenseStore, SELF_RUNTIME_CHANNEL,
+    SelfRuntimeContext, SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore,
+    TurnDeliveryLedger, TurnLedger, TurnLedgerStatus, TurnLedgerStore, WorldSenseStore,
+    SELF_RUNTIME_CHANNEL,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
@@ -2276,7 +2276,7 @@ fn run_self_runtime_job(
         current_primary_message_delivered: false,
         locale: loc,
     };
-    let outcome: SelfRuntimeOutcome = run_self_runtime(
+    let outcome = run_self_runtime(
         &mut llm_ctx,
         worker_llm,
         SelfRuntimeContext {
@@ -2303,7 +2303,19 @@ fn run_self_runtime_job(
         &payload,
         config.memory_profile,
     );
-    if let Some(decision) = outcome.decision.as_ref() {
+    let crate::memory::SelfRuntimeOutcome {
+        decision,
+        world_sense_result,
+        autonomy_strategy_result,
+        inner_life_result,
+        private_doc_result,
+        self_model_result,
+        self_continuity_result,
+        private_garden_result,
+        boundary_persona_result,
+        outer_voice_result,
+    } = *outcome;
+    if let Some(decision) = decision.as_ref() {
         log::info!(
             "[self_runtime] {} trigger={:?} inner_life={} private_docs={} private_docs_action={} self_model={} self_continuity={} private_garden={} private_garden_action={} boundary_persona={} outer_voice={} boundary_flush={} boundary_reason={:?} factual_refresh={} factual_action={} inner_life_intent={:?} private_docs_intent={:?} self_model_intent={:?} self_continuity_intent={:?} private_garden_intent={:?} boundary_persona_intent={:?} outer_voice_intent={:?} factual_reconcile_intent={:?}",
             msg.chat_id,
@@ -2361,7 +2373,7 @@ fn run_self_runtime_job(
             }
         }
     }
-    match outcome.world_sense_result {
+    match world_sense_result {
         Ok(crate::memory::WorldSenseRefreshOutcome::Updated) => {
             log::info!("[agent_world_sense] updated for {}", msg.chat_id);
         }
@@ -2371,7 +2383,7 @@ fn run_self_runtime_job(
         Ok(crate::memory::WorldSenseRefreshOutcome::Skipped) => {}
         Err(error) => log::warn!("[agent_world_sense] failed: {}", error),
     }
-    match outcome.autonomy_strategy_result {
+    match autonomy_strategy_result {
         Ok(crate::memory::AutonomyStrategyRefreshOutcome::Updated) => {
             log::info!("[agent_autonomy_strategy] updated for {}", msg.chat_id);
         }
@@ -2381,7 +2393,7 @@ fn run_self_runtime_job(
         Ok(crate::memory::AutonomyStrategyRefreshOutcome::Skipped) => {}
         Err(error) => log::warn!("[agent_autonomy_strategy] failed: {}", error),
     }
-    match outcome.outer_voice_result {
+    match outer_voice_result {
         Ok(crate::memory::OuterVoiceRefreshOutcome::Updated) => {
             log::info!("[agent_outer_voice] updated for {}", msg.chat_id);
         }
@@ -2391,7 +2403,7 @@ fn run_self_runtime_job(
         Ok(crate::memory::OuterVoiceRefreshOutcome::Skipped) => {}
         Err(error) => log::warn!("[agent_outer_voice] failed: {}", error),
     }
-    match outcome.inner_life_result {
+    match inner_life_result {
         Ok(crate::memory::InnerLifeRefreshOutcome::Updated) => {
             log::info!("[agent_inner_life] updated for {}", msg.chat_id);
         }
@@ -2401,21 +2413,21 @@ fn run_self_runtime_job(
         Ok(crate::memory::InnerLifeRefreshOutcome::Skipped) => {}
         Err(error) => log::warn!("[agent_inner_life] failed: {}", error),
     }
-    match outcome.private_doc_result {
+    match private_doc_result {
         Ok(crate::memory::PrivateDocWorkspaceRefreshOutcome::Updated) => {
             log::info!("[self_runtime_private_docs] updated for {}", msg.chat_id);
         }
         Ok(crate::memory::PrivateDocWorkspaceRefreshOutcome::Skipped) => {}
         Err(error) => log::warn!("[self_runtime_private_docs] failed: {}", error),
     }
-    match outcome.self_model_result {
+    match self_model_result {
         Ok(crate::memory::SelfModelRefreshOutcome::Updated) => {
             log::info!("[agent_self_model] updated for {}", msg.chat_id);
         }
         Ok(crate::memory::SelfModelRefreshOutcome::Skipped) => {}
         Err(error) => log::warn!("[agent_self_model] failed: {}", error),
     }
-    match outcome.self_continuity_result {
+    match self_continuity_result {
         Ok(crate::memory::SelfContinuityRefreshOutcome::Updated) => {
             log::info!("[agent_self_continuity] updated for {}", msg.chat_id);
         }
@@ -2425,7 +2437,7 @@ fn run_self_runtime_job(
         Ok(crate::memory::SelfContinuityRefreshOutcome::Skipped) => {}
         Err(error) => log::warn!("[agent_self_continuity] failed: {}", error),
     }
-    match outcome.private_garden_result {
+    match private_garden_result {
         Ok(crate::memory::PrivateGardenGovernanceOutcome::Updated {
             writes,
             moves,
@@ -2442,7 +2454,7 @@ fn run_self_runtime_job(
         Ok(crate::memory::PrivateGardenGovernanceOutcome::Skipped) => {}
         Err(error) => log::warn!("[self_runtime_private_garden] failed: {}", error),
     }
-    match outcome.boundary_persona_result {
+    match boundary_persona_result {
         Ok(crate::memory::BoundaryPersonaRefreshOutcome::Updated) => {
             log::info!("[agent_boundary_persona] updated for {}", msg.chat_id);
         }
