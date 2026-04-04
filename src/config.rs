@@ -1003,7 +1003,6 @@ const AUDIO_SPEECH_API_SECRET_MAX_LEN: usize = 256;
 const AUDIO_SOUND_EVENTS_MAX: usize = 16;
 const AUDIO_SOUND_EVENT_MAX_LEN: usize = 32;
 const AUDIO_REALTIME_INSTRUCTIONS_MAX_LEN: usize = 1024;
-const AUDIO_REALTIME_MAX_OUTPUT_TOKENS: u32 = 4096;
 const AUDIO_MIC_DEVICE_I2S_INMP441: &str = "i2s_inmp441";
 /// Maximum length for `wake_word.wake_prompt`.
 const AUDIO_WAKE_PROMPT_MAX_LEN: usize = 256;
@@ -1272,8 +1271,42 @@ fn default_audio_check_interval_seconds() -> u32 {
     300
 }
 
+/// OpenAI / OpenAI-compatible realtime voice provider.
+pub const AUDIO_REALTIME_PROVIDER_OPENAI_COMPATIBLE: &str = "openai_compatible";
+/// Alibaba Qwen realtime voice provider.
+pub const AUDIO_REALTIME_PROVIDER_QWEN: &str = "qwen";
+
+fn audio_realtime_default_ws_url(provider: &str) -> &'static str {
+    match provider {
+        AUDIO_REALTIME_PROVIDER_QWEN => "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime",
+        _ => "wss://api.openai.com/v1/realtime",
+    }
+}
+
+fn audio_realtime_default_model(provider: &str) -> &'static str {
+    match provider {
+        AUDIO_REALTIME_PROVIDER_QWEN => "qwen3.5-omni-plus-realtime",
+        _ => "gpt-realtime",
+    }
+}
+
+fn audio_realtime_default_voice(provider: &str) -> &'static str {
+    match provider {
+        AUDIO_REALTIME_PROVIDER_QWEN => "Cherry",
+        _ => "alloy",
+    }
+}
+
+/// Return whether the realtime voice provider string is supported by the current firmware.
+pub fn audio_realtime_provider_supported(provider: &str) -> bool {
+    matches!(
+        provider,
+        AUDIO_REALTIME_PROVIDER_OPENAI_COMPATIBLE | AUDIO_REALTIME_PROVIDER_QWEN
+    )
+}
+
 fn default_audio_realtime_provider() -> String {
-    "openai_compatible".to_string()
+    AUDIO_REALTIME_PROVIDER_OPENAI_COMPATIBLE.to_string()
 }
 
 fn default_audio_service_provider() -> String {
@@ -1281,15 +1314,15 @@ fn default_audio_service_provider() -> String {
 }
 
 fn default_audio_realtime_ws_url() -> String {
-    "wss://api.openai.com/v1/realtime".to_string()
+    audio_realtime_default_ws_url(AUDIO_REALTIME_PROVIDER_OPENAI_COMPATIBLE).to_string()
 }
 
 fn default_audio_realtime_model() -> String {
-    "gpt-realtime".to_string()
+    audio_realtime_default_model(AUDIO_REALTIME_PROVIDER_OPENAI_COMPATIBLE).to_string()
 }
 
 fn default_audio_realtime_voice() -> String {
-    "alloy".to_string()
+    audio_realtime_default_voice(AUDIO_REALTIME_PROVIDER_OPENAI_COMPATIBLE).to_string()
 }
 
 fn default_audio_realtime_config() -> AudioRealtimeConfig {
@@ -1634,6 +1667,9 @@ fn audio_can_use_baidu_speech_fallback(seg: &AudioSegment) -> bool {
 
 /// 私有：校验 AudioSegment 字段（引脚、采样率、阈值、字符串长度等）。
 fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
+    let wake_voice_pipeline_enabled = seg.enabled && seg.wake_word.enabled;
+    let wake_realtime_enabled = wake_voice_pipeline_enabled && audio_realtime_enabled(seg);
+
     if seg.version != AUDIO_CONFIG_VERSION {
         return Err(Error::config(
             "audio",
@@ -1672,7 +1708,7 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
             ),
         ));
     }
-    if seg.wake_word.enabled {
+    if wake_voice_pipeline_enabled {
         if !seg.microphone.enabled {
             return Err(Error::config(
                 "audio",
@@ -1685,7 +1721,7 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
                 "wake_word.enabled requires speaker.enabled == true",
             ));
         }
-        if !audio_realtime_enabled(seg) && !audio_can_use_baidu_speech_fallback(seg) {
+        if !wake_realtime_enabled && !audio_can_use_baidu_speech_fallback(seg) {
             return Err(Error::config(
                 "audio",
                 "wake_word.enabled requires realtime voice config or a configured speech fallback for the currently wired provider",
@@ -1767,8 +1803,8 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
             format!("realtime.ws_url length must be <= {}", CONFIG_URL_MAX_LEN),
         ));
     }
-    if seg.enabled
-        && !audio_realtime_enabled(seg)
+    if wake_voice_pipeline_enabled
+        && !wake_realtime_enabled
         && seg.microphone.enabled
         && seg.service_provider == "baidu"
         && (seg.speech.api_key.trim().is_empty() || seg.speech.api_secret.trim().is_empty())
@@ -1778,8 +1814,8 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
             "speech.api_key and speech.api_secret are required when service_provider == baidu",
         ));
     }
-    if seg.enabled
-        && !audio_realtime_enabled(seg)
+    if wake_voice_pipeline_enabled
+        && !wake_realtime_enabled
         && seg.speaker.enabled
         && seg.service_provider == "baidu"
         && (seg.speech.api_key.trim().is_empty() || seg.speech.api_secret.trim().is_empty())
@@ -1789,7 +1825,7 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
             "speaker fallback requires non-empty speech.api_key/speech.api_secret when service_provider == baidu",
         ));
     }
-    if seg.enabled && audio_realtime_enabled(seg) {
+    if wake_realtime_enabled {
         if !seg.microphone.enabled {
             return Err(Error::config(
                 "audio",
@@ -1802,10 +1838,10 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
                 "realtime voice requires speaker.enabled == true",
             ));
         }
-        if seg.realtime.provider != "openai_compatible" {
+        if !audio_realtime_provider_supported(seg.realtime.provider.as_str()) {
             return Err(Error::config(
                 "audio",
-                "realtime.provider currently must be openai_compatible",
+                "realtime.provider must be one of: openai_compatible, qwen",
             ));
         }
         if seg.realtime.api_key.trim().is_empty() {
@@ -1826,8 +1862,7 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
                 "realtime voice requires realtime.voice",
             ));
         }
-        if !seg.realtime.ws_url.starts_with("wss://") && !seg.realtime.ws_url.starts_with("ws://")
-        {
+        if !seg.realtime.ws_url.starts_with("wss://") && !seg.realtime.ws_url.starts_with("ws://") {
             return Err(Error::config(
                 "audio",
                 "realtime.ws_url must start with wss:// or ws://",
@@ -2498,4 +2533,51 @@ pub fn parse_allowed_chat_ids(s: &str) -> Vec<String> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audio_validation_allows_empty_speech_fallback_when_wake_word_disabled() {
+        let mut seg = default_disabled_audio_segment();
+        seg.enabled = true;
+        seg.microphone.enabled = true;
+        seg.speaker.enabled = true;
+
+        assert!(validate_audio_segment(&seg).is_ok());
+    }
+
+    #[test]
+    fn audio_validation_ignores_hidden_realtime_config_when_wake_word_disabled() {
+        let mut seg = default_disabled_audio_segment();
+        seg.enabled = true;
+        seg.microphone.enabled = true;
+        seg.speaker.enabled = true;
+        seg.realtime.api_key = "test-key".to_string();
+        seg.realtime.model = "gpt-realtime".to_string();
+        seg.realtime.voice = "alloy".to_string();
+        seg.realtime.ws_url = "wss://api.openai.com/v1/realtime".to_string();
+
+        assert!(validate_audio_segment(&seg).is_ok());
+    }
+
+    #[test]
+    fn audio_validation_requires_realtime_sample_rate_when_wake_word_enabled() {
+        let mut seg = default_disabled_audio_segment();
+        seg.enabled = true;
+        seg.microphone.enabled = true;
+        seg.speaker.enabled = true;
+        seg.wake_word.enabled = true;
+        seg.realtime.api_key = "test-key".to_string();
+        seg.realtime.model = "gpt-realtime".to_string();
+        seg.realtime.voice = "alloy".to_string();
+        seg.realtime.ws_url = "wss://api.openai.com/v1/realtime".to_string();
+
+        let error = validate_audio_segment(&seg).expect_err("wake realtime should enforce 24kHz");
+        assert!(error
+            .to_string()
+            .contains("microphone.sample_rate must equal 24000 for realtime voice"));
+    }
 }

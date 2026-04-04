@@ -15,9 +15,9 @@ mod websocket;
 pub(crate) mod wecom;
 mod wss_gateway;
 
-pub use connectivity::{build_snapshot, ChannelConnectivityItem, ChannelConnectivitySnapshot};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub use connectivity::build_unavailable_snapshot;
+pub use connectivity::{build_snapshot, ChannelConnectivityItem, ChannelConnectivitySnapshot};
 pub use dingtalk::{flush_dingtalk_sends, run_dingtalk_sender_loop};
 pub use dispatch::{build_channel_sinks, spawn_sender_threads, ChannelRxSet};
 pub use dispatch::{run_dispatch, ChannelSinks, MessageSink, QueuedSink};
@@ -43,11 +43,11 @@ pub use telegram::{
 pub use voice_sink::VoiceSink;
 pub use websocket::{WebSocketSink, MAX_WS_CONNECTIONS, MAX_WS_MESSAGE_LEN};
 pub use wecom::{flush_wecom_sends, run_wecom_sender_loop};
-pub use wss_gateway::{connect_wss, connect_wss_with_headers, WssConnection, WssEvent};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub use wss_gateway::{connect_esp_wss, EspWssConnection};
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use wss_gateway::{connect_linux_wss, LinuxWssConnection};
+pub use wss_gateway::{connect_wss, connect_wss_with_headers, WssConnection, WssEvent};
 
 /// 占位 sink：打日志并返回 Ok，供 8.1 验收。
 pub struct LogSink {

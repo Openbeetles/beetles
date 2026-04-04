@@ -100,7 +100,8 @@ fn active_channel_configured(config: &AppConfig) -> bool {
                 && !config.wecom_corp_secret.trim().is_empty()
         }
         "qq_channel" => {
-            !config.qq_channel_app_id.trim().is_empty() && !config.qq_channel_secret.trim().is_empty()
+            !config.qq_channel_app_id.trim().is_empty()
+                && !config.qq_channel_secret.trim().is_empty()
         }
         _ => false,
     }

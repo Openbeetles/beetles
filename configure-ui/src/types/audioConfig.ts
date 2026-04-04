@@ -126,6 +126,9 @@ export const AUDIO_VAD_SILENCE_MS_PRESETS = [500, 750, 1000, 1500, 2000, 3000] a
 
 export const AUDIO_SPEECH_PROVIDERS = ['baidu', 'whisper', 'xunfei'] as const
 export const AUDIO_SPEECH_LANGUAGES = ['zh', 'en', 'ja', 'ko'] as const
+export const AUDIO_REALTIME_PROVIDERS = ['openai_compatible', 'qwen'] as const
+
+export type AudioRealtimeProvider = (typeof AUDIO_REALTIME_PROVIDERS)[number]
 
 export const AUDIO_TTS_RATE_PRESETS = ['-20%', '-10%', '+0%', '+10%', '+20%'] as const
 export const AUDIO_TTS_PITCH_PRESETS = ['-10Hz', '-5Hz', '+0Hz', '+5Hz', '+10Hz'] as const
@@ -142,17 +145,97 @@ export const AUDIO_AMBIENT_CHECK_INTERVAL_PRESETS = [60, 120, 300, 600, 1800] as
 
 export const DEFAULT_SPEECH_API_URL_WHISPER = 'https://api.openai.com/v1/audio/transcriptions'
 export const DEFAULT_SPEECH_API_URL_BAIDU = 'https://vop.baidu.com/server_api'
+export const DEFAULT_REALTIME_PROVIDER: AudioRealtimeProvider = 'openai_compatible'
 export const DEFAULT_REALTIME_WS_URL_OPENAI = 'wss://api.openai.com/v1/realtime'
 export const DEFAULT_REALTIME_MODEL_OPENAI = 'gpt-realtime'
 export const DEFAULT_REALTIME_VOICE_OPENAI = 'alloy'
+export const DEFAULT_REALTIME_WS_URL_QWEN = 'wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime'
+export const DEFAULT_REALTIME_MODEL_QWEN = 'qwen3.5-omni-plus-realtime'
+export const DEFAULT_REALTIME_VOICE_QWEN = 'Cherry'
 
-function defaultRealtimeConfig(): AudioRealtimeConfig {
-  return {
-    provider: 'openai_compatible',
+interface AudioRealtimeProviderDefaults {
+  ws_url: string
+  model: string
+  voice: string
+}
+
+const AUDIO_REALTIME_PROVIDER_DEFAULTS: Record<AudioRealtimeProvider, AudioRealtimeProviderDefaults> = {
+  openai_compatible: {
     ws_url: DEFAULT_REALTIME_WS_URL_OPENAI,
-    api_key: '',
     model: DEFAULT_REALTIME_MODEL_OPENAI,
     voice: DEFAULT_REALTIME_VOICE_OPENAI,
+  },
+  qwen: {
+    ws_url: DEFAULT_REALTIME_WS_URL_QWEN,
+    model: DEFAULT_REALTIME_MODEL_QWEN,
+    voice: DEFAULT_REALTIME_VOICE_QWEN,
+  },
+}
+
+export function audioRealtimeProviderSupported(provider: string): provider is AudioRealtimeProvider {
+  return (AUDIO_REALTIME_PROVIDERS as readonly string[]).includes(provider)
+}
+
+export function realtimeProviderDefaults(provider: string): AudioRealtimeProviderDefaults {
+  if (audioRealtimeProviderSupported(provider)) {
+    return AUDIO_REALTIME_PROVIDER_DEFAULTS[provider]
+  }
+  return AUDIO_REALTIME_PROVIDER_DEFAULTS[DEFAULT_REALTIME_PROVIDER]
+}
+
+export function realtimeModelAfterProviderChange(
+  currentModel: string,
+  oldProvider: string,
+  newProvider: string,
+): string {
+  const trimmed = currentModel.trim()
+  if (!trimmed) {
+    return realtimeProviderDefaults(newProvider).model
+  }
+  if (trimmed === realtimeProviderDefaults(oldProvider).model.trim()) {
+    return realtimeProviderDefaults(newProvider).model
+  }
+  return currentModel
+}
+
+export function realtimeWsUrlAfterProviderChange(
+  currentUrl: string,
+  oldProvider: string,
+  newProvider: string,
+): string {
+  const trimmed = currentUrl.trim()
+  if (!trimmed) {
+    return realtimeProviderDefaults(newProvider).ws_url
+  }
+  if (trimmed === realtimeProviderDefaults(oldProvider).ws_url.trim()) {
+    return realtimeProviderDefaults(newProvider).ws_url
+  }
+  return currentUrl
+}
+
+export function realtimeVoiceAfterProviderChange(
+  currentVoice: string,
+  oldProvider: string,
+  newProvider: string,
+): string {
+  const trimmed = currentVoice.trim()
+  if (!trimmed) {
+    return realtimeProviderDefaults(newProvider).voice
+  }
+  if (trimmed === realtimeProviderDefaults(oldProvider).voice.trim()) {
+    return realtimeProviderDefaults(newProvider).voice
+  }
+  return currentVoice
+}
+
+function defaultRealtimeConfig(provider: AudioRealtimeProvider = DEFAULT_REALTIME_PROVIDER): AudioRealtimeConfig {
+  const defaults = realtimeProviderDefaults(provider)
+  return {
+    provider,
+    ws_url: defaults.ws_url,
+    api_key: '',
+    model: defaults.model,
+    voice: defaults.voice,
     instructions: '你是甲壳虫的语音助手。请直接口语化回应，简洁自然，默认使用中文。',
   }
 }
@@ -170,6 +253,7 @@ export function audioRealtimeConfigured(c: Pick<AudioConfig, 'realtime'> | Audio
 export function normalizeAudioConfigForSave(c: AudioConfig): AudioConfig {
   const speech = { ...c.speech }
   const realtime = { ...c.realtime }
+  const realtimeDefaults = realtimeProviderDefaults(realtime.provider)
 
   if (c.service_provider === 'baidu' && !speech.api_url.trim()) {
     speech.api_url = DEFAULT_SPEECH_API_URL_BAIDU
@@ -184,13 +268,18 @@ export function normalizeAudioConfigForSave(c: AudioConfig): AudioConfig {
     speech.model = 'whisper-1'
   }
 
-  realtime.provider = 'openai_compatible'
+  if (!audioRealtimeProviderSupported(realtime.provider)) {
+    realtime.provider = DEFAULT_REALTIME_PROVIDER
+  }
   realtime.ws_url = realtime.ws_url.trim()
+  if (!realtime.ws_url) {
+    realtime.ws_url = realtimeDefaults.ws_url
+  }
   if (!realtime.model.trim()) {
-    realtime.model = DEFAULT_REALTIME_MODEL_OPENAI
+    realtime.model = realtimeDefaults.model
   }
   if (!realtime.voice.trim()) {
-    realtime.voice = DEFAULT_REALTIME_VOICE_OPENAI
+    realtime.voice = realtimeDefaults.voice
   }
 
   return { ...c, speech, realtime }

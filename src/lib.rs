@@ -101,10 +101,11 @@ pub use tools::{
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 pub use tools::{
-    DocumentExtractTool, DocumentReadTool, DocumentSearchTool, PdfReadTool, WebFetchTool,
+    DocumentExtractTool, DocumentReadTool, DocumentSearchTool, HttpRequestTool, PdfReadTool,
+    WebFetchTool,
 };
 #[cfg(feature = "tools_network_extra")]
-pub use tools::{HttpRequestTool, ModelConfigTool, ProxyConfigTool, WebSearchTool};
+pub use tools::{ModelConfigTool, ProxyConfigTool, WebSearchTool};
 
 /// 任何 PlatformHttpClient 均可作为 LlmHttpClient 使用。
 /// ToolContext 的实现由 `tools::http_bridge::HttpClientToolContext` 承载（含会话元数据），

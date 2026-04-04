@@ -341,8 +341,8 @@ fn register_audio_tools(
     let Some(audio_cfg) = config.audio.clone() else {
         return None;
     };
-    let baidu_speech_credentials_ok =
-        !audio_cfg.speech.api_key.trim().is_empty() && !audio_cfg.speech.api_secret.trim().is_empty();
+    let baidu_speech_credentials_ok = !audio_cfg.speech.api_key.trim().is_empty()
+        && !audio_cfg.speech.api_secret.trim().is_empty();
     let speech_input_ok = audio_cfg.service_provider == "baidu"
         && baidu_speech_credentials_ok
         && audio_cfg.microphone.enabled;

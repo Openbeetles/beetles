@@ -3,7 +3,10 @@
 
 use crate::audio::capture::AudioRecordingGuard;
 use crate::channels::{connect_wss_with_headers, WssConnection, WssEvent};
-use crate::config::{audio_realtime_enabled, AudioSegment, AUDIO_REALTIME_PCM16_SAMPLE_RATE};
+use crate::config::{
+    audio_realtime_enabled, AudioSegment, AUDIO_REALTIME_PCM16_SAMPLE_RATE,
+    AUDIO_REALTIME_PROVIDER_OPENAI_COMPATIBLE, AUDIO_REALTIME_PROVIDER_QWEN,
+};
 use crate::constants::AUDIO_CAPTURE_FRAME_SAMPLES;
 use crate::error::{Error, Result};
 use crate::Platform;
@@ -20,6 +23,43 @@ const REALTIME_INITIAL_SEND_RETRY_MAX: usize = 50;
 const REALTIME_RECV_POLL_MS: u64 = 20;
 const REALTIME_SERVER_VAD_IDLE_TIMEOUT_MS: u32 = 8_000;
 const REALTIME_SERVER_VAD_PREFIX_PADDING_MS: u32 = 300;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RealtimeProvider {
+    OpenAiCompatible,
+    Qwen,
+}
+
+impl RealtimeProvider {
+    fn parse(raw: &str) -> Result<Self> {
+        match raw {
+            AUDIO_REALTIME_PROVIDER_OPENAI_COMPATIBLE => Ok(Self::OpenAiCompatible),
+            AUDIO_REALTIME_PROVIDER_QWEN => Ok(Self::Qwen),
+            _ => Err(Error::config(
+                REALTIME_TAG,
+                format!("unsupported realtime provider: {}", raw),
+            )),
+        }
+    }
+
+    fn input_audio_format(self) -> &'static str {
+        match self {
+            Self::OpenAiCompatible => "pcm16",
+            Self::Qwen => "pcm",
+        }
+    }
+
+    fn output_audio_format(self) -> &'static str {
+        match self {
+            Self::OpenAiCompatible => "pcm16",
+            Self::Qwen => "pcm",
+        }
+    }
+
+    fn requires_openai_beta_header(self) -> bool {
+        matches!(self, Self::OpenAiCompatible)
+    }
+}
 
 pub struct RealtimeSessionResult {
     pub turns_completed: u32,
@@ -64,19 +104,17 @@ pub fn run_realtime_session(
 
     let _recording_guard = AudioRecordingGuard::new();
     let session_start = Instant::now();
+    let provider = RealtimeProvider::parse(audio_cfg.realtime.provider.trim())?;
     let ws_url = build_realtime_ws_url(audio_cfg)?;
     let auth = format!("Bearer {}", audio_cfg.realtime.api_key.trim());
-    let headers = [
-        ("authorization", auth.as_str()),
-        ("openai-beta", REALTIME_OPENAI_BETA),
-    ];
+    let headers = build_realtime_headers(provider, auth.as_str());
     let mut conn = connect_realtime_wss(ws_url.as_str(), &headers)?;
     let mut state = RealtimeLoopState::new();
     let mut mic_frame = [0i16; AUDIO_CAPTURE_FRAME_SAMPLES];
 
     send_text_retry(
         conn.as_mut(),
-        build_session_update(audio_cfg).as_str(),
+        build_session_update(provider, audio_cfg).as_str(),
         REALTIME_INITIAL_SEND_RETRY_MAX,
     )?;
     log::info!("[{}] realtime session connected", log_tag);
@@ -123,6 +161,17 @@ fn connect_realtime_wss(url: &str, headers: &[(&str, &str)]) -> Result<Box<dyn W
     Ok(Box::new(connect_wss_with_headers(url, headers)?))
 }
 
+fn build_realtime_headers<'a>(
+    provider: RealtimeProvider,
+    auth: &'a str,
+) -> Vec<(&'static str, &'a str)> {
+    let mut headers = vec![("authorization", auth)];
+    if provider.requires_openai_beta_header() {
+        headers.push(("openai-beta", REALTIME_OPENAI_BETA));
+    }
+    headers
+}
+
 fn build_realtime_ws_url(audio_cfg: &AudioSegment) -> Result<String> {
     let base = audio_cfg.realtime.ws_url.trim().trim_end_matches('/');
     if base.is_empty() {
@@ -137,21 +186,13 @@ fn build_realtime_ws_url(audio_cfg: &AudioSegment) -> Result<String> {
     Ok(format!("{base}{separator}model={model}"))
 }
 
-fn build_session_update(audio_cfg: &AudioSegment) -> String {
+fn build_session_update(provider: RealtimeProvider, audio_cfg: &AudioSegment) -> String {
     let mut session = json!({
         "modalities": ["audio", "text"],
         "voice": audio_cfg.realtime.voice.trim(),
-        "input_audio_format": "pcm16",
-        "output_audio_format": "pcm16",
-        "turn_detection": {
-            "type": "server_vad",
-            "threshold": audio_cfg.vad.threshold,
-            "silence_duration_ms": audio_cfg.vad.silence_duration_ms,
-            "prefix_padding_ms": REALTIME_SERVER_VAD_PREFIX_PADDING_MS,
-            "idle_timeout_ms": REALTIME_SERVER_VAD_IDLE_TIMEOUT_MS,
-            "create_response": true,
-            "interrupt_response": true
-        }
+        "input_audio_format": provider.input_audio_format(),
+        "output_audio_format": provider.output_audio_format(),
+        "turn_detection": build_turn_detection(provider, audio_cfg),
     });
 
     let instructions = audio_cfg.realtime.instructions.trim();
@@ -164,6 +205,26 @@ fn build_session_update(audio_cfg: &AudioSegment) -> String {
         "session": session,
     })
     .to_string()
+}
+
+fn build_turn_detection(provider: RealtimeProvider, audio_cfg: &AudioSegment) -> serde_json::Value {
+    match provider {
+        RealtimeProvider::OpenAiCompatible => json!({
+            "type": "server_vad",
+            "threshold": audio_cfg.vad.threshold,
+            "silence_duration_ms": audio_cfg.vad.silence_duration_ms,
+            "prefix_padding_ms": REALTIME_SERVER_VAD_PREFIX_PADDING_MS,
+            "idle_timeout_ms": REALTIME_SERVER_VAD_IDLE_TIMEOUT_MS,
+            "create_response": true,
+            "interrupt_response": true
+        }),
+        RealtimeProvider::Qwen => json!({
+            "type": "server_vad",
+            "threshold": audio_cfg.vad.threshold,
+            "silence_duration_ms": audio_cfg.vad.silence_duration_ms,
+            "prefix_padding_ms": REALTIME_SERVER_VAD_PREFIX_PADDING_MS,
+        }),
+    }
 }
 
 fn send_text_retry(conn: &mut dyn WssConnection, text: &str, attempts: usize) -> Result<()> {
@@ -326,4 +387,35 @@ fn decode_pcm16_delta(delta_b64: &str) -> Result<Vec<i16>> {
 
 fn samples_to_ms(samples: usize) -> u128 {
     (samples as u128).saturating_mul(1000) / (AUDIO_REALTIME_PCM16_SAMPLE_RATE as u128)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_realtime_headers, build_session_update, RealtimeProvider, REALTIME_OPENAI_BETA,
+    };
+    use crate::config::default_disabled_audio_segment;
+
+    #[test]
+    fn openai_headers_include_beta_flag() {
+        let headers = build_realtime_headers(RealtimeProvider::OpenAiCompatible, "Bearer token");
+        assert!(headers
+            .iter()
+            .any(|(name, value)| *name == "openai-beta" && *value == REALTIME_OPENAI_BETA));
+    }
+
+    #[test]
+    fn qwen_session_update_uses_pcm_audio_format() {
+        let mut cfg = default_disabled_audio_segment();
+        cfg.realtime.provider = "qwen".to_string();
+        cfg.realtime.model = "qwen3.5-omni-plus-realtime".to_string();
+        cfg.realtime.voice = "Cherry".to_string();
+        cfg.realtime.api_key = "token".to_string();
+        cfg.realtime.ws_url = "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime".to_string();
+        let payload = build_session_update(RealtimeProvider::Qwen, &cfg);
+        assert!(payload.contains("\"input_audio_format\":\"pcm\""));
+        assert!(payload.contains("\"output_audio_format\":\"pcm\""));
+        assert!(!payload.contains("idle_timeout_ms"));
+        assert!(!payload.contains("create_response"));
+    }
 }

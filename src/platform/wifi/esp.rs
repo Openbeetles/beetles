@@ -21,6 +21,8 @@ const TAG: &str = "platform::wifi";
 const SCAN_RESP_TIMEOUT: Duration = Duration::from_secs(WIFI_SCAN_TIMEOUT_SECS);
 const SCAN_RETRY: u32 = 3;
 const SCAN_RETRY_DELAY: Duration = Duration::from_millis(400);
+/// WiFi worker 负责 ESP WiFi 驱动 + 扫描 + STA 保活；给 Core0 略多栈余量，避免把驱动 wait/scan 路径挤到过窄栈上。
+const WIFI_WORKER_STACK_BYTES: usize = 12_288;
 /// STA 状态轮询间隔（毫秒）。
 const STA_POLL_INTERVAL_MS: u64 = 5_000;
 /// 发起 connect() 后的冷却期（毫秒）：给 WiFi 驱动足够时间完成 auth/assoc/DHCP，
@@ -142,7 +144,7 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
     let (scan_resp_tx, scan_resp_rx) = mpsc::channel::<ScanResponse>();
     crate::util::spawn_guarded_with_profile(
         "wifi_worker",
-        8192,
+        WIFI_WORKER_STACK_BYTES,
         Some(crate::util::SpawnCore::Core0),
         crate::util::HttpThreadRole::Io,
         move || {
@@ -191,9 +193,11 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
 /// `has_sta` 为 true 时才做 STA 保活检测（纯 AP 模式不需要）。
 /// `initial_cooldown` 为 true 时首轮进入冷却（初始 `connect()` 刚发起，等驱动完成，不要抢跑）。
 ///
-/// **重连策略**：只调 `wifi.connect()` 发起重连，**不调 `wait_netif_up()`**。
-/// `wait_netif_up()` 会阻塞线程数秒，阻止 WiFi 驱动处理内部事件，导致
-/// Mixed(AP+STA) 模式下 STA 反复断连。改为非阻塞后靠后续 poll 自然检测到连接恢复。
+/// **重连策略**：只调用底层 `esp_wifi_connect()` 发起一次非阻塞重连，不使用
+/// `BlockingWifi::connect()`。后者会在 `wifi_worker` 中同步等待到“已连接”再返回，
+/// 把本线程整个卡进等待路径；在 AP+STA 混合模式下，这会让应用层保活循环与驱动
+/// 状态迁移互相顶牛，最终表现为反复断连，严重时还会把 Core0 上的网络栈拖进异常状态。
+/// 改为“只提交连接请求，后续轮询观察结果”，避免应用层对底层状态机做阻塞式二次驱动。
 ///
 /// **判定 STA 是否仍在线**：勿单独使用 `Wifi::is_connected()`。在 APSTA 下该值为
 /// `(AP started) ∧ (STA connected)`，与 SoftAP 事件不同步时会出现短暂假阴性，进而误触发
@@ -300,8 +304,9 @@ fn poll_sta_link(
 
     crate::state::clear_wifi_sta_state();
     crate::metrics::record_wifi_reconnect();
-    match wifi.connect() {
+    match issue_sta_connect(wifi) {
         Ok(()) => {
+            *sta_link_miss_count = 0;
             log::info!(
                 "[{}] STA connect() issued after {} misses, cooldown {}ms",
                 TAG,
@@ -315,6 +320,13 @@ fn poll_sta_link(
         }
     }
     *cooldown_until = Some(Instant::now() + Duration::from_millis(STA_RECONNECT_COOLDOWN_MS));
+}
+
+fn issue_sta_connect(wifi: &mut BlockingWifi<EspWifi>) -> Result<()> {
+    wifi.wifi_mut().connect().map_err(|e| Error::Other {
+        source: Box::new(e),
+        stage: "wifi_connect",
+    })
 }
 
 fn perform_wifi_scan(wifi: &mut BlockingWifi<EspWifi>) -> ScanResponse {
@@ -510,10 +522,7 @@ fn do_connect(
         TAG,
         SOFTAP_SSID
     );
-    if let Err(e) = wifi.connect().map_err(|e| Error::Other {
-        source: Box::new(e),
-        stage: "wifi_connect",
-    }) {
+    if let Err(e) = issue_sta_connect(&mut wifi) {
         log::warn!(
             "[{}] STA connect failed (SoftAP stays up for provisioning): {}",
             TAG,
@@ -524,8 +533,8 @@ fn do_connect(
         run_scan_loop(&mut wifi, &scan_req_rx, &scan_resp_tx, true, false);
         return;
     }
-    // 不调 wait_netif_up()：阻塞 wifi_worker 线程会阻止驱动处理 Mixed 模式内部事件，
-    // 导致 STA 获取 IP 后 1-2s 内断连。改为 connect() 成功即报告 ready，由 scan_loop 检测 IP。
+    // 这里只提交一次底层 connect 请求；是否真正拿到 IP 交给后续 scan_loop 观测，
+    // 不在启动路径同步等待，避免把 wifi_worker 卡进阻塞 connect。
     let _ = result_tx.send(Ok(()));
     run_scan_loop(&mut wifi, &scan_req_rx, &scan_resp_tx, true, true);
 }
