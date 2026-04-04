@@ -1,13 +1,13 @@
 //! HTTP(S) 客户端：GET/POST、超时、响应体大小上限；可选 proxy（CONNECT 未实现时返回错误）。
 //! HTTP(S) client: GET/POST, timeout, response size limit; optional proxy.
 
-use crate::config::{AppConfig, parse_proxy_url_to_host_port};
+use crate::config::{parse_proxy_url_to_host_port, AppConfig};
 use crate::error::{Error, Result};
 use crate::orchestrator::Priority;
-use crate::platform::ResponseBody;
 use crate::platform::heap::alloc_spiram_buffer;
-use embedded_svc::http::Method;
+use crate::platform::ResponseBody;
 use embedded_svc::http::client::Client as HttpClient;
+use embedded_svc::http::Method;
 use embedded_svc::io::{Read, Write};
 use esp_idf_svc::http::client::{Configuration as HttpConfig, EspHttpConnection};
 use esp_idf_svc::io::EspIOError;
@@ -74,9 +74,9 @@ where
 /// ESP 上单次 TLS 准入等待最长时间（与请求超时同量级，避免长时间占锁）。
 const TLS_ADMISSION_TIMEOUT_SECS: u64 = 30;
 
-/// 封装 EspHttpConnection，提供 GET/POST，超时与响应体上限；可选 proxy（CONNECT 隧道暂未实现）。
+/// 封装 ESP HTTP 请求参数；连接对象按请求临时创建并在请求结束后立即释放，
+/// 避免 agent / sender / stream editor 这类长生命周期线程长期占住 internal heap。
 pub struct EspHttpClient {
-    conn: EspHttpConnection,
     /// 若设置，请求应经 CONNECT 隧道；当前未实现则 get/post 返回错误。
     proxy_host: Option<String>,
     #[allow(dead_code)]
@@ -122,17 +122,11 @@ impl EspHttpClient {
                 TAG
             );
         }
-        let config = Self::default_http_config();
-        let conn = EspHttpConnection::new(&config).map_err(|e| Error::Other {
-            source: Box::new(e),
-            stage: "http_client_new",
-        })?;
         let (proxy_host, proxy_port) = match proxy {
             Some((h, p)) => (Some(h), Some(p)),
             None => (None, None),
         };
         Ok(EspHttpClient {
-            conn,
             proxy_host,
             proxy_port,
             priority,
@@ -153,12 +147,12 @@ impl EspHttpClient {
         Ok(())
     }
 
-    fn prepare_connection(&mut self) -> Result<()> {
-        if self.conn.is_request_initiated() || self.conn.is_response_initiated() {
-            log::debug!("[{}] connection is not in initial phase, recreating", TAG);
-            self.replace_connection()?;
-        }
-        Ok(())
+    fn open_connection() -> Result<EspHttpConnection> {
+        let config = Self::default_http_config();
+        EspHttpConnection::new(&config).map_err(|e| Error::Other {
+            source: Box::new(e),
+            stage: "http_client_new",
+        })
     }
 
     fn execute_request<T, F>(&mut self, action: F) -> Result<T>
@@ -175,19 +169,12 @@ impl EspHttpClient {
             self.priority,
             std::time::Duration::from_secs(admission_timeout_secs.max(1)),
         )?;
-
-        self.prepare_connection()?;
-
-        action(&mut self.conn)
+        let mut conn = Self::open_connection()?;
+        action(&mut conn)
     }
 
-    /// 替换为新建连接，用于重试前恢复 "initial" 状态（submit 失败后底层连接不可复用）。
+    /// 请求级连接模型下，无需保留旧连接；保留此入口给统一 trait 调用方使用。
     pub fn replace_connection(&mut self) -> Result<()> {
-        let config = Self::default_http_config();
-        self.conn = EspHttpConnection::new(&config).map_err(|e| Error::Other {
-            source: Box::new(e),
-            stage: "http_client_replace",
-        })?;
         Ok(())
     }
 
@@ -376,7 +363,7 @@ const PSRAM_RESPONSE_PREALLOC_THRESHOLD: usize = 8 * 1024;
 /// 最多 drain 的字节数，防止无限读取恶意超长响应。
 const MAX_DRAIN_BYTES: usize = 512 * 1024;
 
-/// 将响应体读空（最多 MAX_DRAIN_BYTES），便于连接回到 initial 状态供下次请求使用。
+/// 将响应体读空（最多 MAX_DRAIN_BYTES），便于当前请求在收尾阶段尽快释放底层连接资源。
 fn drain_response<R: Read>(r: &mut R)
 where
     R::Error: std::error::Error + 'static,

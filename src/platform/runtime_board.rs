@@ -3,9 +3,49 @@
 //! 不依赖编译期 `BOARD` / `TARGET` 推断机型（构建仍用 `BOARD` 选分区表，与运行时上报独立）。
 //! Runtime board id / hardware summary. Product SoCs: **ESP32-S3** (id 9) and **ESP32-P4** (18) only; others use `unsupported-soc-*` for diagnostics.
 
+fn flash_mb_display(flash_bytes: u32) -> u32 {
+    let mb = flash_bytes / (1024 * 1024);
+    mb.max(1)
+}
+
+fn cores_display(cores: u32) -> Option<String> {
+    match cores {
+        0 => None,
+        1 => Some("single-core".to_string()),
+        2 => Some("dual-core".to_string()),
+        n => Some(format!("{} cores", n)),
+    }
+}
+
+fn model_display_name(model_label: &str) -> String {
+    if model_label.starts_with("Unsupported SoC") {
+        format!("Beetle device ({})", model_label)
+    } else {
+        format!("Beetle {}", model_label)
+    }
+}
+
+fn human_hardware_summary(
+    model_label: &str,
+    flash_bytes: u32,
+    cores: u32,
+    has_psram: bool,
+) -> String {
+    let mut parts = vec![format!("{}MB Flash", flash_mb_display(flash_bytes))];
+    if let Some(core_text) = cores_display(cores) {
+        parts.push(core_text);
+    }
+    parts.push(if has_psram {
+        "with PSRAM".to_string()
+    } else {
+        "without PSRAM".to_string()
+    });
+    format!("{} ({})", model_display_name(model_label), parts.join(", "))
+}
+
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 mod esp {
-    use esp_idf_svc::sys::{ESP_OK, esp_flash_default_chip, esp_flash_get_physical_size};
+    use esp_idf_svc::sys::{esp_flash_default_chip, esp_flash_get_physical_size, ESP_OK};
 
     /// 与 `esp_hw_support/include/esp_chip_info.h` 中 `esp_chip_info_t` 布局一致。
     /// `esp-idf-sys` 绑定未导出 `esp_chip_info` 时由本地 `extern "C"` 链接 IDF。
@@ -91,16 +131,7 @@ mod esp {
         let model = info.model as u32;
         let pretty = model_id_label(model);
         let flash = read_flash_bytes();
-        let flash_mb = flash / (1024 * 1024);
-        let psram_note = if has_psram {
-            "PSRAM present"
-        } else {
-            "no PSRAM (or not in use)"
-        };
-        format!(
-            "{}, ~{} MB flash, {} cores, silicon rev {}, {}",
-            pretty, flash_mb, info.cores, info.revision, psram_note
-        )
+        super::human_hardware_summary(&pretty, flash, info.cores as u32, has_psram)
     }
 
     pub(super) fn chip_model_revision_cores() -> (String, u32, u32) {
@@ -147,4 +178,25 @@ pub fn hardware_summary_line(has_psram: bool) -> String {
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub fn esp_chip_model_revision_cores() -> (String, u32, u32) {
     esp::chip_model_revision_cores()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::human_hardware_summary;
+
+    #[test]
+    fn formats_supported_soc_for_humans() {
+        assert_eq!(
+            human_hardware_summary("ESP32-S3", 16 * 1024 * 1024, 2, true),
+            "Beetle ESP32-S3 (16MB Flash, dual-core, with PSRAM)"
+        );
+    }
+
+    #[test]
+    fn formats_unknown_soc_without_diagnostic_noise() {
+        assert_eq!(
+            human_hardware_summary("Unsupported SoC (id 7)", 8 * 1024 * 1024, 1, false),
+            "Beetle device (Unsupported SoC (id 7)) (8MB Flash, single-core, without PSRAM)"
+        );
+    }
 }

@@ -264,12 +264,12 @@ fn spawn_voice_session_if_ready(
     let Some((model_name, voice_tx, voice_rx)) = voice_event_tx_rx.take() else {
         return;
     };
-    let (Some(audio_cfg), Some(bt_cache)) = (config.audio.as_ref(), baidu_token_cache) else {
+    let Some(audio_cfg) = config.audio.as_ref() else {
         return;
     };
     let vs_platform = Arc::clone(platform);
     let vs_audio = audio_cfg.clone();
-    let vs_token = Arc::clone(bt_cache);
+    let vs_token = baidu_token_cache.cloned();
     let vs_pf = Arc::clone(platform);
     let vs_cfg = Arc::clone(config);
     let vs_make_http: Arc<

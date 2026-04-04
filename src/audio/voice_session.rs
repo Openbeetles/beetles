@@ -7,19 +7,19 @@
 //! - `run_voice_session` coalesces events and dispatches one task at a time to
 //!   `voice_session_worker`, so long STT/TTS calls no longer block event intake.
 
-use crate::Platform;
 use crate::audio::baidu_token::BaiduTokenCache;
 use crate::audio::pipeline::{capture_and_transcribe, speak_text};
 use crate::audio::realtime::run_realtime_session;
 use crate::bus::{PcMsg, TrackedSender};
-use crate::config::{AudioSegment, audio_realtime_enabled};
+use crate::config::{audio_realtime_enabled, AudioSegment};
 use crate::constants::{AUDIO_CAPTURE_MAX_MS, VOICE_CHANNEL_NAME, VOICE_DEVICE_CHAT_ID};
 use crate::platform::PlatformHttpClient;
 use crate::util::{
-    HttpThreadRole, STACK_VOICE_SESSION, SpawnCore, spawn_guarded_with_profile_handle,
+    spawn_guarded_with_profile_handle, HttpThreadRole, SpawnCore, STACK_VOICE_SESSION,
 };
-use std::sync::Arc;
+use crate::Platform;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -51,7 +51,7 @@ struct PendingVoiceEvents {
 pub struct VoiceSessionConfig {
     pub platform: Arc<dyn Platform>,
     pub audio_cfg: AudioSegment,
-    pub baidu_token: Arc<BaiduTokenCache>,
+    pub baidu_token: Option<Arc<BaiduTokenCache>>,
     pub make_http: Arc<dyn Fn() -> crate::error::Result<Box<dyn PlatformHttpClient>> + Send + Sync>,
     pub inbound_tx: TrackedSender<PcMsg>,
     pub wake_prompt: String,
@@ -131,11 +131,9 @@ fn run_voice_session_worker(
     let mut http: Option<Box<dyn PlatformHttpClient>> = None;
 
     let ensure_http = |h: &mut Option<Box<dyn PlatformHttpClient>>,
-                       make: &(
-                            dyn Fn() -> crate::error::Result<Box<dyn PlatformHttpClient>>
-                                + Send
-                                + Sync
-                        )| {
+                       make: &(dyn Fn() -> crate::error::Result<Box<dyn PlatformHttpClient>>
+                             + Send
+                             + Sync)| {
         if h.is_none() {
             match make() {
                 Ok(client) => *h = Some(client),
@@ -216,10 +214,18 @@ fn handle_wake_interaction<F>(
         && !cfg.wake_prompt.is_empty()
         && cfg.platform.audio_speaker_ready()
     {
+        let Some(baidu_token) = cfg.baidu_token.as_deref() else {
+            log::warn!(
+                "[{}] wake prompt requested but baidu token cache unavailable",
+                TAG
+            );
+            crate::metrics::record_voice_tool_failure("voice_session_tts");
+            return;
+        };
         let tts_result = speak_text(
             cfg.platform.as_ref(),
             &cfg.audio_cfg,
-            cfg.baidu_token.as_ref(),
+            baidu_token,
             client.as_mut(),
             &cfg.wake_prompt,
         );
@@ -233,10 +239,19 @@ fn handle_wake_interaction<F>(
         return;
     }
 
+    let Some(baidu_token) = cfg.baidu_token.as_deref() else {
+        log::warn!(
+            "[{}] baidu speech fallback unavailable, skipping capture/transcribe",
+            TAG
+        );
+        crate::metrics::record_voice_tool_failure("voice_session_stt");
+        return;
+    };
+
     let text = match capture_and_transcribe(
         cfg.platform.as_ref(),
         &cfg.audio_cfg,
-        cfg.baidu_token.as_ref(),
+        baidu_token,
         client.as_mut(),
         AUDIO_CAPTURE_MAX_MS,
         TAG,
@@ -286,11 +301,16 @@ fn handle_speak<F>(
         Some(client) => client,
         None => return,
     };
+    let Some(baidu_token) = cfg.baidu_token.as_deref() else {
+        log::warn!("[{}] baidu speech fallback unavailable, dropping TTS", TAG);
+        crate::metrics::record_voice_tool_failure("voice_session_tts");
+        return;
+    };
 
     let tts_result = speak_text(
         cfg.platform.as_ref(),
         &cfg.audio_cfg,
-        cfg.baidu_token.as_ref(),
+        baidu_token,
         client.as_mut(),
         text,
     );
