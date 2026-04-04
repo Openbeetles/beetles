@@ -2,6 +2,7 @@
 //! Realtime voice session over WSS: stream PCM in, play audio deltas out.
 
 use crate::audio::capture::AudioRecordingGuard;
+use crate::audio::energy::{EndpointConfig, EndpointEvent, EndpointState};
 use crate::channels::{
     connect_wss_with_headers_and_profile, WssCloseInfo, WssConnectProfile, WssConnection, WssEvent,
 };
@@ -9,7 +10,7 @@ use crate::config::{
     audio_realtime_enabled, AudioSegment, AUDIO_REALTIME_PROVIDER_BAIDU,
     AUDIO_REALTIME_PROVIDER_OPENAI_COMPATIBLE, AUDIO_REALTIME_PROVIDER_QWEN,
 };
-use crate::constants::AUDIO_CAPTURE_FRAME_SAMPLES;
+use crate::constants::{AUDIO_CAPTURE_FRAME_SAMPLES, AUDIO_TTS_WRITE_CHUNK_SAMPLES};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::constants::{
     TLS_ADMISSION_MIN_INTERNAL_BYTES, TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES,
@@ -33,9 +34,16 @@ const REALTIME_RECV_POLL_MS: u64 = 20;
 const REALTIME_SESSION_READY_TIMEOUT_MS: u64 = 1_500;
 const REALTIME_SERVER_VAD_IDLE_TIMEOUT_MS: u32 = 8_000;
 const REALTIME_SERVER_VAD_PREFIX_PADDING_MS: u32 = 300;
+// Baidu realtime currently streams raw16k PCM over WSS rather than xiaozhi's
+// Opus packet path, so the downlink is more burst-sensitive and needs a thicker
+// software buffer on ESP to avoid audible underruns on normal Wi-Fi jitter.
+const REALTIME_PLAYBACK_TARGET_BUFFER_MS: u32 = 480;
+const REALTIME_PLAYBACK_REFILL_LOW_WATER_MS: u32 = 240;
 const REALTIME_TLS_ADMISSION_RETRY_MAX: usize = 12;
 const REALTIME_TLS_ADMISSION_RETRY_MS: u64 = 150;
 static REALTIME_EVENT_COUNTER: AtomicU32 = AtomicU32::new(1);
+static BAIDU_LICENSE_SKIP_ACTIVATION_FOR_BOOT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RealtimeProvider {
@@ -92,9 +100,15 @@ pub struct RealtimeSessionResult {
 struct RealtimeLoopState {
     awaiting_response: bool,
     audio_playing: bool,
+    session_ready: bool,
+    baidu_license_activation_attempted: bool,
+    baidu_license_already_used: bool,
+    baidu_license_failure_message: Option<String>,
+    baidu_session_usable: bool,
     turns_completed: u32,
     input_samples: usize,
     output_samples: usize,
+    pending_output_pcm: Vec<i16>,
     last_activity: Instant,
 }
 
@@ -103,9 +117,15 @@ impl RealtimeLoopState {
         Self {
             awaiting_response: false,
             audio_playing: false,
+            session_ready: false,
+            baidu_license_activation_attempted: false,
+            baidu_license_already_used: false,
+            baidu_license_failure_message: None,
+            baidu_session_usable: false,
             turns_completed: 0,
             input_samples: 0,
             output_samples: 0,
+            pending_output_pcm: Vec::with_capacity(AUDIO_TTS_WRITE_CHUNK_SAMPLES * 2),
             last_activity: Instant::now(),
         }
     }
@@ -231,6 +251,15 @@ pub fn run_realtime_session(
     let mut state = RealtimeLoopState::new();
     let mut mic_frame = [0i16; AUDIO_CAPTURE_FRAME_SAMPLES];
     let mut upload_encoder = RealtimeUploadEncoder::new();
+    let frame_ms = ((AUDIO_CAPTURE_FRAME_SAMPLES as u64) * 1000
+        / (audio_cfg.microphone.sample_rate.max(8_000) as u64))
+        .clamp(1, 40) as u32;
+    let endpoint_cfg = EndpointConfig {
+        threshold: audio_cfg.vad.threshold,
+        silence_duration_ms: audio_cfg.vad.silence_duration_ms,
+    };
+    let mut endpoint = EndpointState::new();
+    let mut local_speech_active = false;
 
     if provider.uses_json_session_update() {
         send_text_retry(
@@ -274,18 +303,34 @@ pub fn run_realtime_session(
             continue;
         }
 
-        append_audio_frame(
-            conn.as_mut(),
-            &mut upload_encoder,
-            provider,
-            &mic_frame[..n.min(mic_frame.len())],
-        )?;
+        let chunk = &mic_frame[..n.min(mic_frame.len())];
+        match endpoint.update(chunk, frame_ms, &endpoint_cfg) {
+            EndpointEvent::SpeechStart => local_speech_active = true,
+            EndpointEvent::SpeechEnd => local_speech_active = false,
+            EndpointEvent::None => {}
+        }
+
+        append_audio_frame(conn.as_mut(), &mut upload_encoder, provider, chunk)?;
         state.input_samples = state.input_samples.saturating_add(n);
-        state.last_activity = Instant::now();
+        if local_speech_active {
+            state.last_activity = Instant::now();
+        }
     }
 
     if state.audio_playing {
         crate::orchestrator::set_audio_playing(false);
+    }
+
+    if let Some(message) = state.baidu_license_failure_message.take() {
+        if !state.baidu_session_usable {
+            return Err(Error::config(
+                "realtime_voice_ws",
+                format!(
+                    "baidu realtime license activation failed before session became usable: {}",
+                    message
+                ),
+            ));
+        }
     }
 
     Ok(RealtimeSessionResult {
@@ -682,7 +727,7 @@ fn process_server_frame(
         }
         _ => {
             let ready = server_message_marks_session_ready(payload)?;
-            handle_json_server_message(platform, state, payload)?;
+            handle_json_server_message(platform, state, audio_cfg, payload)?;
             Ok(ready)
         }
     }
@@ -691,6 +736,7 @@ fn process_server_frame(
 fn handle_json_server_message(
     platform: &dyn Platform,
     state: &mut RealtimeLoopState,
+    audio_cfg: &AudioSegment,
     payload: &[u8],
 ) -> Result<()> {
     let value: serde_json::Value = serde_json::from_slice(payload)
@@ -727,24 +773,25 @@ fn handle_json_server_message(
                 .ok_or_else(|| Error::config("realtime_voice_parse", "audio delta missing"))?;
             let pcm = decode_pcm16_delta(delta)?;
             if !pcm.is_empty() {
-                if !state.audio_playing {
-                    crate::orchestrator::set_audio_playing(true);
-                    state.audio_playing = true;
-                }
-                platform.write_speaker_pcm_i16(&pcm)?;
-                state.output_samples = state.output_samples.saturating_add(pcm.len());
+                queue_output_audio(
+                    platform,
+                    state,
+                    audio_cfg.speaker.sample_rate,
+                    pcm.as_slice(),
+                    false,
+                )?;
                 state.last_activity = Instant::now();
             }
             Ok(())
         }
         "response.output_audio.done" | "response.audio.done" => {
-            stop_audio_playback(state);
+            stop_audio_playback(platform, state)?;
             state.last_activity = Instant::now();
             Ok(())
         }
         "response.done" => {
             let counted = state.awaiting_response;
-            stop_audio_playback(state);
+            stop_audio_playback(platform, state)?;
             if counted {
                 state.awaiting_response = false;
                 state.turns_completed = state.turns_completed.saturating_add(1);
@@ -772,17 +819,19 @@ fn handle_baidu_server_message(
     payload: &[u8],
 ) -> Result<bool> {
     if let Some(text) = baidu_text_message(payload) {
-        return handle_baidu_text_message(conn, state, audio_cfg, text);
+        return handle_baidu_text_message(conn, platform, state, audio_cfg, text);
     }
 
     let pcm = decode_pcm16_bytes(strip_baidu_audio_prefix(payload))?;
     if !pcm.is_empty() {
-        if !state.audio_playing {
-            crate::orchestrator::set_audio_playing(true);
-            state.audio_playing = true;
-        }
-        platform.write_speaker_pcm_i16(&pcm)?;
-        state.output_samples = state.output_samples.saturating_add(pcm.len());
+        mark_baidu_session_usable(state);
+        queue_output_audio(
+            platform,
+            state,
+            audio_cfg.speaker.sample_rate,
+            pcm.as_slice(),
+            false,
+        )?;
         state.awaiting_response = true;
         state.last_activity = Instant::now();
     }
@@ -791,6 +840,7 @@ fn handle_baidu_server_message(
 
 fn handle_baidu_text_message(
     conn: &mut dyn WssConnection,
+    platform: &dyn Platform,
     state: &mut RealtimeLoopState,
     audio_cfg: &AudioSegment,
     text: &str,
@@ -801,6 +851,32 @@ fn handle_baidu_text_message(
     }
 
     if message.starts_with("[E]:[LIC]:[MUST]") {
+        if BAIDU_LICENSE_SKIP_ACTIVATION_FOR_BOOT.load(Ordering::Relaxed) {
+            log::info!(
+                "[{}] baidu license activation requested again, but this boot already proved the session is usable after LIC; skipping redundant activation",
+                REALTIME_TAG
+            );
+            state.last_activity = Instant::now();
+            return Ok(false);
+        }
+        if state.baidu_license_activation_attempted || state.baidu_license_already_used {
+            log::warn!(
+                "[{}] baidu license activation requested again in the same session; ignoring duplicate request device_id={} user_id={}",
+                REALTIME_TAG,
+                redact_identity(audio_cfg.realtime.device_id.as_str()),
+                redact_identity(audio_cfg.realtime.user_id.as_str()),
+            );
+            state.last_activity = Instant::now();
+            return Ok(false);
+        }
+        state.baidu_license_activation_attempted = true;
+        log::info!(
+            "[{}] baidu license activation requested app_id={} device_id={} user_id={}",
+            REALTIME_TAG,
+            redact_identity(audio_cfg.realtime.app_id.as_str()),
+            redact_identity(audio_cfg.realtime.device_id.as_str()),
+            redact_identity(audio_cfg.realtime.user_id.as_str()),
+        );
         send_text_retry(
             conn,
             build_baidu_license_activation(audio_cfg)?.as_str(),
@@ -810,12 +886,17 @@ fn handle_baidu_text_message(
         return Ok(false);
     }
     if message.starts_with("[E]:[LIC]:[RES]:[FAILED]") {
-        return Err(Error::config(
-            "realtime_voice_ws",
-            format!("baidu realtime license activation failed: {}", message),
-        ));
+        state.baidu_license_failure_message = Some(message.to_string());
+        log::warn!(
+            "[{}] baidu license activation returned failure; deferring final classification until session usability is known: {}",
+            REALTIME_TAG,
+            message
+        );
+        state.last_activity = Instant::now();
+        return Ok(false);
     }
     if message.starts_with("[E]:[MEDIA]:[READY]:1") {
+        state.session_ready = true;
         state.last_activity = Instant::now();
         return Ok(true);
     }
@@ -824,13 +905,14 @@ fn handle_baidu_text_message(
         || message.starts_with("[A]:")
         || message.starts_with("[Q]:")
     {
+        mark_baidu_session_usable(state);
         state.awaiting_response = true;
         state.last_activity = Instant::now();
         return Ok(false);
     }
     if message.starts_with("[E]:[TTS_END_SPEAKING]") {
         let counted = state.awaiting_response || state.audio_playing;
-        stop_audio_playback(state);
+        stop_audio_playback(platform, state)?;
         if counted {
             state.awaiting_response = false;
             state.turns_completed = state.turns_completed.saturating_add(1);
@@ -847,6 +929,18 @@ fn handle_baidu_text_message(
 
     state.last_activity = Instant::now();
     Ok(false)
+}
+
+fn mark_baidu_session_usable(state: &mut RealtimeLoopState) {
+    state.baidu_session_usable = true;
+    if state.baidu_license_failure_message.take().is_some() {
+        state.baidu_license_already_used = true;
+        BAIDU_LICENSE_SKIP_ACTIVATION_FOR_BOOT.store(true, Ordering::Relaxed);
+        log::info!(
+            "[{}] baidu session remained usable after LIC failure; suppressing future activation attempts for this boot",
+            REALTIME_TAG
+        );
+    }
 }
 
 fn baidu_text_message(payload: &[u8]) -> Option<&str> {
@@ -872,14 +966,47 @@ fn build_baidu_license_activation(audio_cfg: &AudioSegment) -> Result<String> {
         .strip_prefix('\u{feff}')
         .unwrap_or(audio_cfg.realtime.user_id.trim());
     let uid = if uid.is_empty() { sn } else { uid };
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "devId".to_string(),
+        serde_json::Value::String(sn.to_string()),
+    );
+    payload.insert(
+        "licKey".to_string(),
+        serde_json::Value::String(key.to_string()),
+    );
+    payload.insert(
+        "uId".to_string(),
+        serde_json::Value::String(uid.to_string()),
+    );
     Ok(format!(
         "[E]:[LIC]:[ACTIVE]:{}",
-        json!({
-            "devId": sn,
-            "licKey": key,
-            "uId": uid,
-        })
+        serde_json::Value::Object(payload)
     ))
+}
+
+fn redact_identity(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return "(empty)".to_string();
+    }
+    let total = trimmed.chars().count();
+    if total <= 8 {
+        return format!(
+            "{}...[REDACTED]",
+            trimmed.chars().take(2).collect::<String>()
+        );
+    }
+    let head = trimmed.chars().take(4).collect::<String>();
+    let tail = trimmed
+        .chars()
+        .rev()
+        .take(2)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    format!("{head}...[REDACTED]...{tail}")
 }
 
 fn strip_baidu_audio_prefix(payload: &[u8]) -> &[u8] {
@@ -956,11 +1083,102 @@ fn decode_pcm16_bytes(bytes: &[u8]) -> Result<Vec<i16>> {
     Ok(pcm)
 }
 
-fn stop_audio_playback(state: &mut RealtimeLoopState) {
+fn playback_target_buffer_samples(sample_rate_hz: u32) -> usize {
+    ((sample_rate_hz.max(1) as usize) * (REALTIME_PLAYBACK_TARGET_BUFFER_MS as usize) / 1000)
+        .max(AUDIO_TTS_WRITE_CHUNK_SAMPLES)
+}
+
+fn playback_refill_low_water_samples(sample_rate_hz: u32) -> usize {
+    ((sample_rate_hz.max(1) as usize) * (REALTIME_PLAYBACK_REFILL_LOW_WATER_MS as usize) / 1000)
+        .max(AUDIO_TTS_WRITE_CHUNK_SAMPLES)
+}
+
+fn queue_output_audio(
+    platform: &dyn Platform,
+    state: &mut RealtimeLoopState,
+    sample_rate_hz: u32,
+    pcm: &[i16],
+    force_flush_all: bool,
+) -> Result<()> {
+    if pcm.is_empty() && !force_flush_all {
+        return Ok(());
+    }
+    if !pcm.is_empty() {
+        state.pending_output_pcm.extend_from_slice(pcm);
+        state.output_samples = state.output_samples.saturating_add(pcm.len());
+    }
+
+    let target_buffer_samples = playback_target_buffer_samples(sample_rate_hz);
+    let refill_low_water_samples = playback_refill_low_water_samples(sample_rate_hz);
+    let speaker_depth_samples = platform.speaker_buffered_samples();
+    let combined_buffered_samples =
+        speaker_depth_samples.saturating_add(state.pending_output_pcm.len());
+
+    if !state.audio_playing && combined_buffered_samples < target_buffer_samples && !force_flush_all
+    {
+        return Ok(());
+    }
+    let mut just_started = false;
+    if !state.audio_playing && !state.pending_output_pcm.is_empty() {
+        crate::orchestrator::set_audio_playing(true);
+        state.audio_playing = true;
+        just_started = true;
+    }
+    flush_output_audio(
+        platform,
+        state,
+        target_buffer_samples,
+        refill_low_water_samples,
+        force_flush_all,
+        just_started,
+    )
+}
+
+fn flush_output_audio(
+    platform: &dyn Platform,
+    state: &mut RealtimeLoopState,
+    target_buffer_samples: usize,
+    refill_low_water_samples: usize,
+    force_flush_all: bool,
+    just_started: bool,
+) -> Result<()> {
+    // Model the playout buffer the way xiaozhi does conceptually: once refill starts,
+    // drive this flush toward a fixed target depth instead of re-sampling the shared
+    // speaker ring after every chunk. The worker drains that ring concurrently, so
+    // "actual depth right now" is too jittery to be the sole refill decision signal.
+    let mut refilling = force_flush_all || just_started;
+    let mut estimated_depth_samples = platform.speaker_buffered_samples();
+
+    while !state.pending_output_pcm.is_empty() {
+        if !force_flush_all {
+            if !refilling {
+                if estimated_depth_samples > refill_low_water_samples {
+                    break;
+                }
+                refilling = true;
+            }
+            if estimated_depth_samples >= target_buffer_samples {
+                break;
+            }
+        }
+
+        let chunk_len = AUDIO_TTS_WRITE_CHUNK_SAMPLES.min(state.pending_output_pcm.len());
+        platform.write_speaker_pcm_i16(&state.pending_output_pcm[..chunk_len])?;
+        state.pending_output_pcm.drain(..chunk_len);
+        estimated_depth_samples = estimated_depth_samples.saturating_add(chunk_len);
+    }
+    Ok(())
+}
+
+fn stop_audio_playback(platform: &dyn Platform, state: &mut RealtimeLoopState) -> Result<()> {
+    if !state.pending_output_pcm.is_empty() {
+        queue_output_audio(platform, state, 1, &[], true)?;
+    }
     if state.audio_playing {
         crate::orchestrator::set_audio_playing(false);
         state.audio_playing = false;
     }
+    Ok(())
 }
 
 fn samples_to_ms(samples: usize, sample_rate_hz: u32) -> u128 {
@@ -1081,7 +1299,7 @@ mod tests {
     }
 
     #[test]
-    fn baidu_license_activation_uses_user_or_device_id() {
+    fn baidu_license_activation_falls_back_to_device_id_when_user_id_is_empty() {
         let mut cfg = default_disabled_audio_segment();
         cfg.realtime.license_key = "lic-key".to_string();
         cfg.realtime.device_id = "dev-1".to_string();
@@ -1090,6 +1308,19 @@ mod tests {
         assert!(payload.contains("\"devId\":\"dev-1\""));
         assert!(payload.contains("\"licKey\":\"lic-key\""));
         assert!(payload.contains("\"uId\":\"dev-1\""));
+    }
+
+    #[test]
+    fn baidu_license_activation_uses_explicit_user_id_only() {
+        let mut cfg = default_disabled_audio_segment();
+        cfg.realtime.license_key = "lic-key".to_string();
+        cfg.realtime.device_id = "dev-1".to_string();
+        cfg.realtime.user_id = "user-1".to_string();
+
+        let payload = build_baidu_license_activation(&cfg).unwrap();
+        assert!(payload.contains("\"devId\":\"dev-1\""));
+        assert!(payload.contains("\"licKey\":\"lic-key\""));
+        assert!(payload.contains("\"uId\":\"user-1\""));
     }
 
     #[test]

@@ -330,6 +330,11 @@ pub trait Platform: Send + Sync {
         ))
     }
 
+    /// 当前喇叭输出队列中已缓冲的采样数。默认 0（平台未暴露队列深度）。
+    fn speaker_buffered_samples(&self) -> usize {
+        0
+    }
+
     /// 语音前后处理硬件加速是否可用（如 PDM 专用路径/NPU/向量加速）。
     fn speech_accel_available(&self) -> bool {
         false

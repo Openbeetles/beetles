@@ -26,6 +26,9 @@ export interface MetricsSnapshotData {
   wifi_reconnect_total?: number
   wifi_ap_restart_total?: number
   wifi_last_failure_stage?: string
+  audio_speaker_queue_depth_last_samples?: number
+  audio_speaker_queue_depth_min_samples?: number
+  audio_speaker_underrun_total?: number
 }
 
 /** 与固件 `orchestrator::ChannelHealthSnapshot` 一致。 */

@@ -601,6 +601,7 @@ fn pop_speaker_frame_if_available(shared: &SharedAudioBuffers, out: &mut [i16]) 
     if n == 0 {
         return None;
     }
+    crate::metrics::record_audio_speaker_queue_depth_last_samples(guard.len());
     shared.speaker_cv.notify_one();
     Some(n)
 }
@@ -615,6 +616,54 @@ fn wait_for_speaker_work_or_stop(shared: &SharedAudioBuffers, timeout: Duration)
         .speaker_cv
         .wait_timeout(guard, timeout)
         .unwrap_or_else(|e| e.into_inner());
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn current_speaker_buffered_samples(shared: &SharedAudioBuffers) -> usize {
+    shared
+        .speaker
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .len()
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn update_speaker_playback_metrics(
+    shared: &SharedAudioBuffers,
+    audio_playing: bool,
+    prev_audio_playing: &mut bool,
+    saw_buffered_audio: &mut bool,
+    underrun_reported: &mut bool,
+) {
+    let depth = current_speaker_buffered_samples(shared);
+    crate::metrics::record_audio_speaker_queue_depth_last_samples(depth);
+
+    if !audio_playing {
+        *prev_audio_playing = false;
+        *saw_buffered_audio = false;
+        *underrun_reported = false;
+        return;
+    }
+
+    if !*prev_audio_playing {
+        crate::metrics::reset_audio_speaker_queue_depth_min_samples();
+        *saw_buffered_audio = false;
+        *underrun_reported = false;
+    }
+
+    if depth > 0 {
+        *saw_buffered_audio = true;
+        *underrun_reported = false;
+        crate::metrics::record_audio_speaker_queue_depth_min_candidate(depth);
+    } else if *saw_buffered_audio {
+        crate::metrics::record_audio_speaker_queue_depth_min_candidate(0);
+        if !*underrun_reported {
+            crate::metrics::record_audio_speaker_underrun();
+            *underrun_reported = true;
+        }
+    }
+
+    *prev_audio_playing = true;
 }
 
 fn should_read_mic_frame(
@@ -739,6 +788,9 @@ impl AudioPipelineState {
                 crate::platform::task_wdt::register_current_task_to_task_wdt();
                 let mut mic_frame = vec![0i16; 320];
                 let mut speaker_frame = vec![0i16; 1024];
+                let mut prev_audio_playing = false;
+                let mut speaker_saw_buffered_audio = false;
+                let mut speaker_underrun_reported = false;
                 loop {
                     crate::platform::task_wdt::feed_current_task();
                     let loop_start = Instant::now();
@@ -769,6 +821,20 @@ impl AudioPipelineState {
                                 progressed = true;
                             }
                         }
+                    }
+
+                    if backend.speaker_ready() {
+                        update_speaker_playback_metrics(
+                            worker_shared.as_ref(),
+                            audio_playing,
+                            &mut prev_audio_playing,
+                            &mut speaker_saw_buffered_audio,
+                            &mut speaker_underrun_reported,
+                        );
+                    } else {
+                        prev_audio_playing = false;
+                        speaker_saw_buffered_audio = false;
+                        speaker_underrun_reported = false;
                     }
 
                     if backend.mic_ready() && mic_read_needed {
@@ -851,6 +917,10 @@ impl AudioPipelineState {
         self.speaker_enabled
     }
 
+    pub fn speaker_buffered_samples(&self) -> usize {
+        current_speaker_buffered_samples(self.shared.as_ref())
+    }
+
     pub fn read_mic_pcm_i16(&self, out: &mut [i16]) -> Result<usize> {
         if !self.mic_enabled {
             return Err(Error::config("audio_mic", "microphone not initialized"));
@@ -901,6 +971,7 @@ impl AudioPipelineState {
             }
             let n = guard.push_slice_blocking(&buf[written..]);
             written += n;
+            crate::metrics::record_audio_speaker_queue_depth_last_samples(guard.len());
             self.shared.speaker_cv.notify_one();
         }
         Ok(())

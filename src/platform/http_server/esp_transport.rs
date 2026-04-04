@@ -235,7 +235,7 @@ fn write_outgoing<C: Connection>(
         let restart_reason = restart_reason.to_string();
         crate::util::spawn_guarded_with_profile(
             "restart_defer",
-            4096,
+            crate::util::STACK_HTTP_ROUTE_WORKER,
             Some(crate::util::SpawnCore::Core0),
             crate::util::HttpThreadRole::Background,
             move || {

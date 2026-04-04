@@ -448,6 +448,15 @@ impl Platform for Esp32Platform {
         state.write_speaker_pcm_i16(buf)
     }
 
+    fn speaker_buffered_samples(&self) -> usize {
+        self.audio_state
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|s| s.speaker_buffered_samples())
+            .unwrap_or(0)
+    }
+
     fn display_available(&self) -> bool {
         self.display_state
             .lock()
