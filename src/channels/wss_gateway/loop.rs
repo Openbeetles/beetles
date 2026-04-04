@@ -24,6 +24,17 @@ const WDT_RECV_CHUNK_SECS: u64 = 25;
 const WIFI_WAIT_MAX_SECS: u64 = 60;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const WIFI_OUTBOUND_SETTLE_SECS: u64 = 3;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+const VOICE_EXCLUSIVE_WAIT_MS: u64 = 500;
+
+fn format_wss_close_event(event: &WssEvent) -> String {
+    match event {
+        WssEvent::Closed(Some(info)) => info.summary(),
+        WssEvent::Closed(None) => "peer closed".to_string(),
+        WssEvent::Disconnected => "transport disconnected".to_string(),
+        WssEvent::Binary(_) => "binary frame".to_string(),
+    }
+}
 
 /// 阻塞等待 WiFi STA 就绪，每 2s 轮询，最多 `WIFI_WAIT_MAX_SECS`。返回 true 表示已就绪，false 表示超时仍继续尝试。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -58,6 +69,28 @@ fn wait_for_wifi(_tag: &str) -> bool {
     true
 }
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn wait_for_voice_exclusive_release(tag: &str) {
+    let mut logged = false;
+    while crate::state::voice_exclusive_active() {
+        if !logged {
+            log::info!(
+                "[{}] external WSS paused for active realtime voice session",
+                tag
+            );
+            logged = true;
+        }
+        crate::platform::task_wdt::feed_current_task();
+        std::thread::sleep(Duration::from_millis(VOICE_EXCLUSIVE_WAIT_MS));
+    }
+    if logged {
+        log::info!("[{}] external WSS resume after realtime voice session", tag);
+    }
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn wait_for_voice_exclusive_release(_tag: &str) {}
+
 /// 各通道在 main 中独立线程调用，泛型 `D`/`H`/`C` 为不同实现；有意保留多组单态以隔离 TLS/HTTP 与重连语义，
 /// 而非合并为 enum（体积换可维护性；若前序优化仍不足再评估）。
 pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
@@ -78,6 +111,7 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
     crate::platform::task_wdt::register_current_task_to_task_wdt();
     let mut backoff_secs = crate::orchestrator::current_budget().reconnect_backoff_secs;
     loop {
+        wait_for_voice_exclusive_release(tag);
         wait_for_wifi(tag);
 
         let mut http = match create_http() {
@@ -129,8 +163,13 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                         continue;
                     }
                 },
-                Ok(Some(WssEvent::Disconnected)) | Ok(Some(WssEvent::Closed)) => {
-                    log::info!("[{}] disconnected before hello", tag);
+                Ok(Some(event @ WssEvent::Disconnected))
+                | Ok(Some(event @ WssEvent::Closed(_))) => {
+                    log::info!(
+                        "[{}] disconnected before hello: {}",
+                        tag,
+                        format_wss_close_event(&event)
+                    );
                     drop(conn);
                     sleep_with_wdt(backoff_secs);
                     backoff_secs = (backoff_secs * 2).min(BACKOFF_MAX_SECS);
@@ -182,7 +221,28 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
 
         while !session_ended {
             crate::platform::task_wdt::feed_current_task();
-            match conn.recv_timeout(recv_chunk) {
+            #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+            if crate::state::voice_exclusive_active() {
+                log::info!(
+                    "[{}] disconnecting external WSS for realtime voice session",
+                    tag
+                );
+                session_ended = true;
+                continue;
+            }
+
+            let recv_wait = {
+                #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+                {
+                    recv_chunk.min(Duration::from_millis(VOICE_EXCLUSIVE_WAIT_MS))
+                }
+                #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+                {
+                    recv_chunk
+                }
+            };
+
+            match conn.recv_timeout(recv_wait) {
                 Ok(Some(WssEvent::Binary(data))) => {
                     last_heartbeat = Instant::now();
                     log::debug!("[{}] recv binary len={}", tag, data.len());
@@ -304,8 +364,13 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                         }
                     }
                 }
-                Ok(Some(WssEvent::Disconnected)) | Ok(Some(WssEvent::Closed)) => {
-                    log::info!("[{}] wss disconnected or closed", tag);
+                Ok(Some(event @ WssEvent::Disconnected))
+                | Ok(Some(event @ WssEvent::Closed(_))) => {
+                    log::info!(
+                        "[{}] wss disconnected or closed: {}",
+                        tag,
+                        format_wss_close_event(&event)
+                    );
                     session_ended = true;
                 }
                 Ok(None) => {

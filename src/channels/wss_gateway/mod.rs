@@ -13,7 +13,7 @@ mod esp_conn;
 mod linux_conn;
 
 #[allow(unused_imports)]
-pub use connection::{WssConnectProfile, WssConnection, WssEvent};
+pub use connection::{WssCloseInfo, WssConnectProfile, WssConnection, WssEvent};
 pub use driver::{WssGatewayDriver, WssRecvAction, WssSessionState};
 pub use r#loop::run_wss_gateway_loop;
 

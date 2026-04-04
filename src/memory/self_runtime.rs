@@ -1,6 +1,11 @@
 //! 自治运行层：由 LLM 决定是否经营自己的内在空间。
 
 use crate::bus::{IngressKind, PcMsg, SystemInboundTx};
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use crate::constants::{
+    TLS_ADMISSION_MIN_INTERNAL_BYTES, TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES,
+    TLS_ADMISSION_NO_PSRAM_MIN_BYTES,
+};
 use crate::error::Result;
 use crate::llm::{LlmClient, LlmHttpClient, Message, ToolChoicePolicy};
 use crate::orchestrator::PressureLevel;
@@ -1267,8 +1272,17 @@ pub fn self_runtime_tick(
     profile: MemoryProfile,
     now_secs: u64,
 ) {
+    if let Some(reason) = idle_self_runtime_block_reason() {
+        log::debug!(
+            "[self_runtime] skip idle tick enqueue because {}",
+            reason
+        );
+        return;
+    }
+
     let policy = memory_policy(profile).self_runtime;
     let capability = memory_capability_profile(profile);
+    let uptime_secs = crate::platform::time::uptime_secs();
     let chat_ids = match session_store.list_chat_ids() {
         Ok(chat_ids) => chat_ids,
         Err(error) => {
@@ -1295,11 +1309,13 @@ pub fn self_runtime_tick(
                 continue;
             }
         };
-        let active = continuity
+        let last_user_turn_at = continuity
             .as_ref()
             .map(|c| c.last_user_turn_at)
             .unwrap_or(0);
-        if active > 0 && now_secs.saturating_sub(active) > policy.active_chat_window_secs {
+        if last_user_turn_at > 0
+            && now_secs.saturating_sub(last_user_turn_at) > policy.active_chat_window_secs
+        {
             continue;
         }
         let last_autonomy = continuity
@@ -1322,13 +1338,68 @@ pub fn self_runtime_tick(
             None if strategy.is_some() => continue,
             None => policy.idle_tick_interval_secs,
         };
-        if last_autonomy > 0 && now_secs.saturating_sub(last_autonomy) < idle_interval_secs {
+        if !idle_self_runtime_due(
+            now_secs,
+            uptime_secs,
+            last_user_turn_at,
+            last_autonomy,
+            idle_interval_secs,
+        ) {
             continue;
         }
         if enqueue_self_runtime_idle_tick(system_inbound_tx, &chat_id) {
             enqueued += 1;
         }
     }
+}
+
+fn idle_self_runtime_due(
+    now_secs: u64,
+    uptime_secs: u64,
+    last_user_turn_at: u64,
+    last_autonomy_run_at: u64,
+    idle_interval_secs: u64,
+) -> bool {
+    if last_autonomy_run_at > 0 {
+        return now_secs.saturating_sub(last_autonomy_run_at) >= idle_interval_secs;
+    }
+
+    // First idle runtime after boot should still respect the strategy cadence instead of
+    // firing immediately on the first 60s cron tick.
+    if last_user_turn_at > 0 && now_secs.saturating_sub(last_user_turn_at) < idle_interval_secs {
+        return false;
+    }
+
+    uptime_secs >= idle_interval_secs
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn idle_self_runtime_block_reason() -> Option<&'static str> {
+    if crate::state::voice_exclusive_active() {
+        return Some("voice_exclusive_active");
+    }
+
+    let pressure = crate::orchestrator::refresh_heap_if_stale();
+    let snap = crate::orchestrator::snapshot();
+    let min_internal = if snap.heap_free_spiram > 0 {
+        TLS_ADMISSION_MIN_INTERNAL_BYTES as u32
+    } else {
+        TLS_ADMISSION_NO_PSRAM_MIN_BYTES as u32
+    };
+    let fragmented = snap.heap_free_spiram > 0
+        && snap.heap_largest_block_internal < TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32;
+    if pressure != PressureLevel::Normal {
+        Some("resource_pressure")
+    } else if snap.heap_free_internal < min_internal || fragmented {
+        Some("tls_headroom_reserved")
+    } else {
+        None
+    }
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn idle_self_runtime_block_reason() -> Option<&'static str> {
+    None
 }
 
 pub fn run_self_runtime(
@@ -2689,5 +2760,13 @@ mod tests {
         assert!(decision
             .outer_voice_sources
             .contains(&"autonomy_strategy".to_string()));
+    }
+
+    #[test]
+    fn first_idle_tick_waits_for_strategy_cadence() {
+        assert!(!idle_self_runtime_due(1_000, 60, 980, 0, 480));
+        assert!(!idle_self_runtime_due(1_000, 300, 400, 0, 900));
+        assert!(idle_self_runtime_due(1_000, 900, 0, 0, 900));
+        assert!(idle_self_runtime_due(1_000, 900, 50, 100, 900));
     }
 }

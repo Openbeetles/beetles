@@ -4,7 +4,7 @@
 #![cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 
 use crate::channels::wss_gateway::connection::{
-    WssBinary, WssConnectProfile, WssConnection, WssEvent,
+    WssBinary, WssCloseInfo, WssConnectProfile, WssConnection, WssEvent,
 };
 use crate::error::{Error, Result};
 use std::ffi::{c_char, CString};
@@ -64,6 +64,11 @@ unsafe extern "C" {
     fn beetle_wss_recv(
         client: *mut BeetleWssClient,
         timeout_ms: u32,
+        out_event: *mut BeetleWssEvent,
+    ) -> i32;
+    fn beetle_wss_get_last_close_code(client: *mut BeetleWssClient, out_code: *mut u16) -> bool;
+    fn beetle_wss_copy_last_close_reason(
+        client: *mut BeetleWssClient,
         out_event: *mut BeetleWssEvent,
     ) -> i32;
     fn beetle_wss_free_event(event: *mut BeetleWssEvent);
@@ -281,7 +286,7 @@ impl WssConnection for EspWssConnection {
                 Ok(Some(WssEvent::Binary(WssBinary::from_vec(data))))
             }
             BEETLE_WSS_TIMEOUT => Ok(None),
-            BEETLE_WSS_CLOSED => Ok(Some(WssEvent::Closed)),
+            BEETLE_WSS_CLOSED => Ok(Some(WssEvent::Closed(read_close_info(self.raw)?))),
             BEETLE_WSS_DISCONNECTED => Ok(Some(WssEvent::Disconnected)),
             other => {
                 unsafe {
@@ -290,6 +295,43 @@ impl WssConnection for EspWssConnection {
                 Err(status_to_error("wss_esp_recv", other))
             }
         }
+    }
+}
+
+fn read_close_info(raw: *mut BeetleWssClient) -> Result<Option<WssCloseInfo>> {
+    let mut code = 0u16;
+    let code = unsafe { beetle_wss_get_last_close_code(raw, &mut code) }.then_some(code);
+
+    let mut event = BeetleWssEvent {
+        data: std::ptr::null_mut(),
+        len: 0,
+    };
+    let reason = match unsafe { beetle_wss_copy_last_close_reason(raw, &mut event) } {
+        BEETLE_WSS_OK => {
+            if event.len == 0 || event.data.is_null() {
+                None
+            } else {
+                let bytes = unsafe { std::slice::from_raw_parts(event.data, event.len) };
+                Some(String::from_utf8_lossy(bytes).trim().to_string())
+                    .filter(|text| !text.is_empty())
+            }
+        }
+        other => {
+            unsafe {
+                beetle_wss_free_event(&mut event);
+            }
+            return Err(status_to_error("wss_esp_close_reason", other));
+        }
+    };
+
+    unsafe {
+        beetle_wss_free_event(&mut event);
+    }
+
+    if code.is_none() && reason.is_none() {
+        Ok(None)
+    } else {
+        Ok(Some(WssCloseInfo { code, reason }))
     }
 }
 

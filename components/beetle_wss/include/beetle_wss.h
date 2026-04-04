@@ -70,6 +70,14 @@ beetle_wss_status_t beetle_wss_recv(
     uint32_t timeout_ms,
     beetle_wss_event_t *out_event);
 
+bool beetle_wss_get_last_close_code(
+    beetle_wss_client_t *client,
+    uint16_t *out_code);
+
+beetle_wss_status_t beetle_wss_copy_last_close_reason(
+    beetle_wss_client_t *client,
+    beetle_wss_event_t *out_event);
+
 void beetle_wss_free_event(beetle_wss_event_t *event);
 
 void beetle_wss_close(beetle_wss_client_t *client, uint32_t timeout_ms);

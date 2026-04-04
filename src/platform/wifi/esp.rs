@@ -1,5 +1,5 @@
 //! WiFi：SoftAP（配置热点） + 可选 STA（连接用户路由器）。
-//! 单次初始化，AP 始终开启以便通过 192.168.4.1 访问配置 API。
+//! 初次启动先开 SoftAP；一旦 STA 真正拿到本地 IP，则自动关闭 SoftAP 释放 SRAM。
 //! 支持通过通道向 WiFi 线程请求扫描，供 GET /api/wifi/scan 使用。
 
 use crate::config::AppConfig;
@@ -35,6 +35,12 @@ const STA_LINK_MISS_THRESHOLD: u8 = 2;
 static WIFI_STA_EXPECTED: AtomicBool = AtomicBool::new(false);
 /// STA 刚拿到 IP 后额外等待一小段时间，再允许外联 DNS/TLS，减少启动瞬间假失败。
 const STA_OUTBOUND_READY_GRACE_SECS: u64 = 3;
+
+#[derive(Clone)]
+struct StaSoftApConfig {
+    sta: ClientConfiguration,
+    ap: AccessPointConfiguration,
+}
 
 /// 其他线程查询 WiFi STA 是否就绪（已连接且有 IP）。
 pub fn is_wifi_sta_connected() -> bool {
@@ -127,8 +133,9 @@ impl WifiScan for WifiScanHandle {
     }
 }
 
-/// 启动 WiFi：始终开 SoftAP（SSID Beetle）；若 config 中 wifi_ssid 非空则同时连 STA。
-/// 返回 `Ok(Some(handle))` 表示 SoftAP 已就绪且可请求扫描；STA 失败或超时仍返回 `Some`，
+/// 启动 WiFi：若配置了 STA，则先开 SoftAP+STA，待 STA 真正拿到 IP 后自动关闭 SoftAP；
+/// 若未配置 STA，则保持纯 SoftAP。
+/// 返回 `Ok(Some(handle))` 表示 WiFi 驱动已就绪且可请求扫描；STA 失败或超时仍返回 `Some`，
 /// 以便用户连热点改配；`is_wifi_sta_connected()` 反映 STA 是否真正连上。
 pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
     let ssid = config.wifi_ssid.clone();
@@ -154,7 +161,10 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
 
     let result = match rx.recv_timeout(Duration::from_secs(WIFI_ESP_CONNECT_MAIN_WAIT_SECS)) {
         Ok(Ok(())) => {
-            log::info!("[{}] WiFi ready (AP up, STA connected if configured)", TAG);
+            log::info!(
+                "[{}] WiFi ready (SoftAP bootstrap active; STA will auto-close AP after DHCP)",
+                TAG
+            );
             Ok(Some(WifiScanHandle {
                 req_tx: scan_req_tx,
                 resp_rx: Arc::new(Mutex::new(scan_resp_rx)),
@@ -212,6 +222,7 @@ fn run_scan_loop(
     scan_resp_tx: &mpsc::Sender<ScanResponse>,
     has_sta: bool,
     initial_cooldown: bool,
+    sta_softap_config: Option<&StaSoftApConfig>,
 ) {
     let mut cooldown_until: Option<Instant> = if initial_cooldown {
         Some(Instant::now() + Duration::from_millis(STA_RECONNECT_COOLDOWN_MS))
@@ -220,10 +231,20 @@ fn run_scan_loop(
     };
     let mut sta_link_miss_count = 0u8;
     let mut next_sta_poll = Instant::now();
+    // Mixed mode starts with SoftAP enabled whenever STA is configured.
+    // The previous inverted initialization kept this false, so the auto-close
+    // branch never ran even after STA acquired a DHCP lease.
+    let mut softap_enabled = true;
 
     loop {
         if has_sta && Instant::now() >= next_sta_poll {
-            poll_sta_link(wifi, &mut cooldown_until, &mut sta_link_miss_count);
+            poll_sta_link(
+                wifi,
+                &mut cooldown_until,
+                &mut sta_link_miss_count,
+                &mut softap_enabled,
+                sta_softap_config,
+            );
             next_sta_poll = Instant::now() + Duration::from_millis(STA_POLL_INTERVAL_MS);
             continue;
         }
@@ -265,6 +286,8 @@ fn poll_sta_link(
     wifi: &mut BlockingWifi<EspWifi>,
     cooldown_until: &mut Option<Instant>,
     sta_link_miss_count: &mut u8,
+    softap_enabled: &mut bool,
+    sta_softap_config: Option<&StaSoftApConfig>,
 ) {
     let sta_l2 = wifi.wifi().driver().is_sta_connected().unwrap_or(false);
     let sta_ip = read_sta_ipv4_string().filter(|s| s != "0.0.0.0");
@@ -277,6 +300,13 @@ fn poll_sta_link(
             log::info!("[{}] STA connected (detected in poll)", TAG);
         }
         crate::state::set_wifi_sta_state(true, Some(ip));
+        if *softap_enabled {
+            if let Some(config) = sta_softap_config {
+                if let Err(e) = set_softap_enabled(wifi, config, softap_enabled, false) {
+                    log::warn!("[{}] failed to disable SoftAP after STA connect: {}", TAG, e);
+                }
+            }
+        }
         *sta_link_miss_count = 0;
     } else if sta_l2 {
         // L2 仍在线时保留既有 STA 状态，避免 netif/IP 读的瞬时空窗把上层误判为断网。
@@ -302,6 +332,17 @@ fn poll_sta_link(
         return;
     }
 
+    if !*softap_enabled {
+        if let Some(config) = sta_softap_config {
+            if let Err(e) = set_softap_enabled(wifi, config, softap_enabled, true) {
+                log::warn!(
+                    "[{}] failed to restore SoftAP after STA disconnect: {}",
+                    TAG,
+                    e
+                );
+            }
+        }
+    }
     crate::state::clear_wifi_sta_state();
     crate::metrics::record_wifi_reconnect();
     match issue_sta_connect(wifi) {
@@ -327,6 +368,41 @@ fn issue_sta_connect(wifi: &mut BlockingWifi<EspWifi>) -> Result<()> {
         source: Box::new(e),
         stage: "wifi_connect",
     })
+}
+
+fn set_softap_enabled(
+    wifi: &mut BlockingWifi<EspWifi>,
+    config: &StaSoftApConfig,
+    softap_enabled: &mut bool,
+    enable: bool,
+) -> Result<()> {
+    if *softap_enabled == enable {
+        return Ok(());
+    }
+
+    let next = if enable {
+        Configuration::Mixed(config.sta.clone(), config.ap.clone())
+    } else {
+        Configuration::Client(config.sta.clone())
+    };
+    wifi.set_configuration(&next).map_err(|e| Error::Other {
+        source: Box::new(e),
+        stage: "wifi_set_config",
+    })?;
+
+    if enable {
+        if let Err(e) = crate::platform::softap_ip::set_softap_ip() {
+            log::warn!("[{}] SoftAP IP set failed after restore: {}", TAG, e);
+        }
+        log::info!("[{}] SoftAP restored because STA is unavailable", TAG);
+    } else {
+        log::info!(
+            "[{}] STA obtained local IP; SoftAP stopped to free WiFi SRAM",
+            TAG
+        );
+    }
+    *softap_enabled = enable;
+    Ok(())
 }
 
 fn perform_wifi_scan(wifi: &mut BlockingWifi<EspWifi>) -> ScanResponse {
@@ -449,7 +525,7 @@ fn do_connect(
         }
         log::info!("[{}] SoftAP started (SSID: {})", TAG, SOFTAP_SSID);
         let _ = result_tx.send(Ok(()));
-        run_scan_loop(&mut wifi, &scan_req_rx, &scan_resp_tx, false, false);
+        run_scan_loop(&mut wifi, &scan_req_rx, &scan_resp_tx, false, false, None);
         return;
     }
 
@@ -491,6 +567,10 @@ fn do_connect(
         },
         (Err(e), _) | (_, Err(e)) => return send_err(e),
     };
+    let sta_softap_config = StaSoftApConfig {
+        sta: sta_config.clone(),
+        ap: ap_config_mixed.clone(),
+    };
 
     if let Err(e) = wifi
         .set_configuration(&Configuration::Mixed(sta_config, ap_config_mixed))
@@ -524,19 +604,33 @@ fn do_connect(
     );
     if let Err(e) = issue_sta_connect(&mut wifi) {
         log::warn!(
-            "[{}] STA connect failed (SoftAP stays up for provisioning): {}",
+            "[{}] STA connect failed (SoftAP remains active for provisioning): {}",
             TAG,
             e
         );
         clear_sta_ip_cache();
         let _ = result_tx.send(Ok(()));
-        run_scan_loop(&mut wifi, &scan_req_rx, &scan_resp_tx, true, false);
+        run_scan_loop(
+            &mut wifi,
+            &scan_req_rx,
+            &scan_resp_tx,
+            true,
+            false,
+            Some(&sta_softap_config),
+        );
         return;
     }
     // 这里只提交一次底层 connect 请求；是否真正拿到 IP 交给后续 scan_loop 观测，
     // 不在启动路径同步等待，避免把 wifi_worker 卡进阻塞 connect。
     let _ = result_tx.send(Ok(()));
-    run_scan_loop(&mut wifi, &scan_req_rx, &scan_resp_tx, true, true);
+    run_scan_loop(
+        &mut wifi,
+        &scan_req_rx,
+        &scan_resp_tx,
+        true,
+        true,
+        Some(&sta_softap_config),
+    );
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]

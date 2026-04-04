@@ -10,11 +10,13 @@
 #include <strings.h>
 
 #include "esp_crt_bundle.h"
+#include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_tls.h"
 #include "lwip/sockets.h"
 
+#define BEETLE_WSS_LOG_TAG "beetle_wss"
 #define BEETLE_WSS_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 #define BEETLE_WSS_DEFAULT_PORT 443
 #define BEETLE_WSS_DEFAULT_CONNECT_TIMEOUT_MS 10000U
@@ -44,6 +46,10 @@ struct beetle_wss_client {
     size_t fragment_len;
     size_t fragment_cap;
     uint8_t fragment_opcode;
+    bool has_last_close_code;
+    uint16_t last_close_code;
+    uint8_t *last_close_reason;
+    size_t last_close_reason_len;
 };
 
 typedef struct {
@@ -232,6 +238,48 @@ static void beetle_wss_event_reset(beetle_wss_event_t *event) {
     }
     event->data = NULL;
     event->len = 0;
+}
+
+static void beetle_wss_reset_last_close(beetle_wss_client_t *client) {
+    if (client == NULL) {
+        return;
+    }
+    client->has_last_close_code = false;
+    client->last_close_code = 0U;
+    free(client->last_close_reason);
+    client->last_close_reason = NULL;
+    client->last_close_reason_len = 0U;
+}
+
+static beetle_wss_status_t beetle_wss_store_close_payload(
+    beetle_wss_client_t *client,
+    const uint8_t *payload,
+    size_t payload_len
+) {
+    if (client == NULL) {
+        return BEETLE_WSS_ERR_INVALID_ARG;
+    }
+
+    beetle_wss_reset_last_close(client);
+
+    if (payload == NULL || payload_len == 0U) {
+        return BEETLE_WSS_OK;
+    }
+    if (payload_len >= 2U) {
+        client->has_last_close_code = true;
+        client->last_close_code = ((uint16_t) payload[0] << 8U) | (uint16_t) payload[1];
+    }
+    if (payload_len > 2U) {
+        size_t reason_len = payload_len - 2U;
+        client->last_close_reason = (uint8_t *) malloc(reason_len);
+        if (client->last_close_reason == NULL) {
+            beetle_wss_reset_last_close(client);
+            return BEETLE_WSS_ERR_NOMEM;
+        }
+        memcpy(client->last_close_reason, payload + 2U, reason_len);
+        client->last_close_reason_len = reason_len;
+    }
+    return BEETLE_WSS_OK;
 }
 
 static void beetle_wss_free_url(beetle_wss_url_t *url) {
@@ -637,12 +685,14 @@ static beetle_wss_status_t beetle_wss_verify_handshake_response(
     bool saw_connection = false;
     bool saw_accept = false;
     beetle_wss_status_t result = BEETLE_WSS_ERR_PROTOCOL;
+    const char *status_line = NULL;
 
     char *saveptr = NULL;
     char *line = strtok_r(headers, "\r\n", &saveptr);
     if (line == NULL) {
         goto cleanup;
     }
+    status_line = line;
     if (strncmp(line, "HTTP/1.1 101", 12U) != 0 && strncmp(line, "HTTP/1.0 101", 12U) != 0) {
         goto cleanup;
     }
@@ -676,6 +726,16 @@ static beetle_wss_status_t beetle_wss_verify_handshake_response(
     }
 
 cleanup:
+    if (result != BEETLE_WSS_OK) {
+        ESP_LOGW(
+            BEETLE_WSS_LOG_TAG,
+            "websocket handshake rejected status=\"%s\" upgrade=%d connection=%d accept=%d",
+            status_line == NULL ? "(missing)" : status_line,
+            saw_upgrade ? 1 : 0,
+            saw_connection ? 1 : 0,
+            saw_accept ? 1 : 0
+        );
+    }
     free(headers);
     return result;
 }
@@ -1158,6 +1218,11 @@ beetle_wss_status_t beetle_wss_recv(
                 break;
 
             case 0x08U:
+                status = beetle_wss_store_close_payload(client, payload, (size_t) payload_len);
+                if (status != BEETLE_WSS_OK) {
+                    beetle_wss_consume_rx(client, header_len + (size_t) payload_len);
+                    return status;
+                }
                 if (!client->close_sent) {
                     (void) beetle_wss_send_frame(client, 0x08U, payload, (size_t) payload_len, timeout_ms);
                 }
@@ -1185,6 +1250,37 @@ beetle_wss_status_t beetle_wss_recv(
     }
 }
 
+bool beetle_wss_get_last_close_code(
+    beetle_wss_client_t *client,
+    uint16_t *out_code
+) {
+    if (client == NULL || out_code == NULL || !client->has_last_close_code) {
+        return false;
+    }
+    *out_code = client->last_close_code;
+    return true;
+}
+
+beetle_wss_status_t beetle_wss_copy_last_close_reason(
+    beetle_wss_client_t *client,
+    beetle_wss_event_t *out_event
+) {
+    if (client == NULL || out_event == NULL) {
+        return BEETLE_WSS_ERR_INVALID_ARG;
+    }
+    beetle_wss_event_reset(out_event);
+    if (client->last_close_reason == NULL || client->last_close_reason_len == 0U) {
+        return BEETLE_WSS_OK;
+    }
+    out_event->data = (uint8_t *) malloc(client->last_close_reason_len);
+    if (out_event->data == NULL) {
+        return BEETLE_WSS_ERR_NOMEM;
+    }
+    memcpy(out_event->data, client->last_close_reason, client->last_close_reason_len);
+    out_event->len = client->last_close_reason_len;
+    return BEETLE_WSS_OK;
+}
+
 void beetle_wss_free_event(beetle_wss_event_t *event) {
     if (event == NULL) {
         return;
@@ -1209,6 +1305,7 @@ void beetle_wss_destroy(beetle_wss_client_t *client) {
         client->tls = NULL;
     }
     free(client->rx_buf);
+    beetle_wss_reset_last_close(client);
     beetle_wss_reset_fragment(client);
     free(client);
 }

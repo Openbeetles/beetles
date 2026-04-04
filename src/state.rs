@@ -22,6 +22,8 @@ static WIFI_STA_CONNECTED: AtomicBool = AtomicBool::new(false);
 static WIFI_STA_CONNECTED_SINCE_SECS: AtomicU32 = AtomicU32::new(0);
 /// 当前 WiFi STA IPv4。
 static WIFI_STA_IP: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+/// 当前是否处于语音独占窗口；ESP 上对外 WSS 通道在该窗口内主动让路。
+static VOICE_EXCLUSIVE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone)]
 struct TimedError {
@@ -150,6 +152,16 @@ pub fn wifi_sta_ip() -> Option<String> {
         .and_then(|g| g.clone())
 }
 
+/// 设置语音独占状态；仅表示高资源的 realtime 会话窗口，不影响待机唤醒监听。
+pub fn set_voice_exclusive_active(active: bool) {
+    VOICE_EXCLUSIVE_ACTIVE.store(active, Ordering::Relaxed);
+}
+
+/// 当前是否处于语音独占状态。
+pub fn voice_exclusive_active() -> bool {
+    VOICE_EXCLUSIVE_ACTIVE.load(Ordering::Relaxed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +194,13 @@ mod tests {
         set_wifi_sta_state(true, Some("192.168.1.2".to_string()));
         assert!(!wifi_sta_settled_for_outbound(1));
         clear_wifi_sta_state();
+    }
+
+    #[test]
+    fn voice_exclusive_flag_round_trips() {
+        set_voice_exclusive_active(true);
+        assert!(voice_exclusive_active());
+        set_voice_exclusive_active(false);
+        assert!(!voice_exclusive_active());
     }
 }

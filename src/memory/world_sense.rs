@@ -394,8 +394,11 @@ pub fn world_snapshot_fingerprint(snapshot: &WorldSnapshot) -> u64 {
     snapshot.high_priority_tasks.hash(&mut hasher);
     snapshot.upcoming_reminders.hash(&mut hasher);
     snapshot.next_reminder_at.hash(&mut hasher);
-    snapshot.user_idle_secs.hash(&mut hasher);
-    snapshot.autonomy_idle_secs.hash(&mut hasher);
+    // Do not hash the raw idle counters here. They move every second, which turns every
+    // idle tick into an artificial "world changed" signal and wakes background LLM work
+    // even when the qualitative world state is unchanged. The derived fields above
+    // (`interaction_mode`, `activity_rhythm`, `situational_pull`) already capture the
+    // meaningful bucket transitions.
     hasher.finish()
 }
 
@@ -905,5 +908,53 @@ mod tests {
         .expect("world sense block");
         assert!(block.contains("## World Sense"));
         assert!(block.contains("External focus"));
+    }
+
+    #[test]
+    fn world_snapshot_fingerprint_ignores_raw_idle_counter_drift() {
+        let mut first = WorldSnapshot {
+            weekday: "Wednesday".to_string(),
+            hour: 19,
+            day_phase: "evening".to_string(),
+            interaction_mode: "paused_exchange".to_string(),
+            activity_rhythm: "steady".to_string(),
+            situational_pull: "light_watch".to_string(),
+            resource_tension: "light".to_string(),
+            pressure: PressureLevel::Normal,
+            memory_available_bytes: 512 * 1024,
+            active_http_count: 0,
+            active_wss_count: 1,
+            active_agent_tasks: 0,
+            inbound_depth: 0,
+            outbound_depth: 0,
+            storage_used_kb: 8,
+            storage_total_kb: 64,
+            wifi_connected: true,
+            audio_recording: false,
+            audio_playing: false,
+            source_channel: "qq_channel".to_string(),
+            open_tasks: 0,
+            in_progress_tasks: 0,
+            due_tasks: 0,
+            high_priority_tasks: 0,
+            upcoming_reminders: 0,
+            next_reminder_at: 0,
+            user_idle_secs: 600,
+            autonomy_idle_secs: 120,
+        };
+        let mut second = first.clone();
+        second.user_idle_secs = 660;
+        second.autonomy_idle_secs = 180;
+
+        assert_eq!(
+            world_snapshot_fingerprint(&first),
+            world_snapshot_fingerprint(&second)
+        );
+
+        second.activity_rhythm = "autonomy_dormant".to_string();
+        assert_ne!(
+            world_snapshot_fingerprint(&first),
+            world_snapshot_fingerprint(&second)
+        );
     }
 }

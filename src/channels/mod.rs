@@ -48,8 +48,8 @@ pub use wss_gateway::{connect_esp_wss, EspWssConnection};
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use wss_gateway::{connect_linux_wss, LinuxWssConnection};
 pub use wss_gateway::{
-    connect_wss, connect_wss_with_headers, connect_wss_with_headers_and_profile, WssConnectProfile,
-    WssConnection, WssEvent,
+    connect_wss, connect_wss_with_headers, connect_wss_with_headers_and_profile, WssCloseInfo,
+    WssConnectProfile, WssConnection, WssEvent,
 };
 
 /// 占位 sink：打日志并返回 Ok，供 8.1 验收。

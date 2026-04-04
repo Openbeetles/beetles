@@ -15,7 +15,8 @@ use std::net::{Shutdown, TcpStream};
 use std::time::{Duration, Instant};
 
 use crate::channels::wss_gateway::connection::{
-    WssBinary, WssConnectProfile, WssConnection, WssEvent, MAX_WSS_SEND_PAYLOAD_BYTES,
+    WssBinary, WssCloseInfo, WssConnectProfile, WssConnection, WssEvent,
+    MAX_WSS_SEND_PAYLOAD_BYTES,
 };
 use crate::error::{Error, Result};
 use tungstenite::stream::MaybeTlsStream;
@@ -177,12 +178,18 @@ impl WssConnection for LinuxWssConnection {
                     }
                 }
                 Ok(Message::Pong(_)) => {}
-                Ok(Message::Close(_)) => return Ok(Some(WssEvent::Closed)),
+                Ok(Message::Close(frame)) => {
+                    return Ok(Some(WssEvent::Closed(frame.map(|frame| WssCloseInfo {
+                        code: Some(frame.code.into()),
+                        reason: (!frame.reason.trim().is_empty())
+                            .then(|| frame.reason.to_string()),
+                    }))));
+                }
                 Ok(Message::Frame(_)) => {}
                 Err(e) if is_timed_out_or_would_block(&e) => continue,
                 Err(e @ tungstenite::Error::ConnectionClosed) => {
                     log::debug!("[wss_linux] read ended: {}", e);
-                    return Ok(Some(WssEvent::Closed));
+                    return Ok(Some(WssEvent::Closed(None)));
                 }
                 Err(e @ tungstenite::Error::AlreadyClosed) => {
                     log::debug!("[wss_linux] read ended: {}", e);

@@ -20,7 +20,7 @@ fn model_display_name(model_label: &str) -> String {
     if model_label.starts_with("Unsupported SoC") {
         format!("Beetle device ({})", model_label)
     } else {
-        format!("Beetle {}", model_label)
+        model_label.to_string()
     }
 }
 
@@ -34,11 +34,9 @@ fn human_hardware_summary(
     if let Some(core_text) = cores_display(cores) {
         parts.push(core_text);
     }
-    parts.push(if has_psram {
-        "with PSRAM".to_string()
-    } else {
-        "without PSRAM".to_string()
-    });
+    if !has_psram {
+        parts.push("without PSRAM".to_string());
+    }
     format!("{} ({})", model_display_name(model_label), parts.join(", "))
 }
 
@@ -187,7 +185,7 @@ mod tests {
     fn formats_supported_soc_for_humans() {
         assert_eq!(
             human_hardware_summary("ESP32-S3", 16 * 1024 * 1024, 2, true),
-            "Beetle ESP32-S3 (16MB Flash, 2-core CPU, with PSRAM)"
+            "ESP32-S3 (16MB Flash, 2-core CPU)"
         );
     }
 

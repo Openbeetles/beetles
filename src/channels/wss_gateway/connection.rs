@@ -71,10 +71,31 @@ impl Drop for WssBinary {
 
 /// 单次收到的 WSS 事件。
 #[derive(Debug)]
+pub struct WssCloseInfo {
+    pub code: Option<u16>,
+    pub reason: Option<String>,
+}
+
+impl WssCloseInfo {
+    pub fn summary(&self) -> String {
+        match (self.code, self.reason.as_deref()) {
+            (Some(code), Some(reason)) if !reason.trim().is_empty() => {
+                format!("code={} reason={}", code, reason.trim())
+            }
+            (Some(code), _) => format!("code={}", code),
+            (None, Some(reason)) if !reason.trim().is_empty() => {
+                format!("reason={}", reason.trim())
+            }
+            _ => "peer closed".to_string(),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum WssEvent {
     Binary(WssBinary),
     Disconnected,
-    Closed,
+    Closed(Option<WssCloseInfo>),
 }
 
 /// 带超时收一条事件：有数据返回 Some(ev)，超时返回 None；连接断开等错误返回 Err。
