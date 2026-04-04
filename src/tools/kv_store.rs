@@ -3,10 +3,10 @@
 //! kv_store tool: persistent key-value store via `StateFs` JSON file.
 //! Supports get / set / delete / list_keys; used for cross-session LLM memory.
 
+use crate::StateFs;
 use crate::constants::{KV_STORE_MAX_ENTRIES, KV_STORE_MAX_KEY_LEN, KV_STORE_MAX_VALUE_LEN};
 use crate::error::{Error, Result};
-use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
-use crate::StateFs;
+use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;

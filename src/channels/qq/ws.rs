@@ -3,15 +3,15 @@
 //! 与 HTTP webhook 可并存，由 main 按配置决定是否 spawn。
 
 use crate::bus::PcMsg;
-use crate::channels::wss_gateway::{
-    run_wss_gateway_loop, WssConnection, WssGatewayDriver, WssRecvAction, WssSessionState,
-};
 use crate::channels::ChannelHttpClient;
+use crate::channels::wss_gateway::{
+    WssConnection, WssGatewayDriver, WssRecvAction, WssSessionState, run_wss_gateway_loop,
+};
 use crate::error::{Error, Result};
 use crate::memory::PendingRetryStore;
 
-use super::send::{cache_msg_id, QqMsgIdCache};
-use super::token::fetch_qq_access_token;
+use super::send::{QqMsgIdCache, cache_msg_id};
+use super::token::fetch_qq_access_token_with_expiry;
 
 const TAG: &str = "qq_ws";
 const QQ_GATEWAY_URL: &str = "https://api.sgroup.qq.com/gateway";
@@ -29,6 +29,7 @@ const C2C_MESSAGE_CREATE: &str = "C2C_MESSAGE_CREATE";
 const PUBLIC_GUILD_MESSAGES_INTENT: u64 = 1 << 30;
 /// 群聊与私聊 intent（GROUP_AT_MESSAGE_CREATE + C2C_MESSAGE_CREATE）
 const GROUP_AND_C2C_INTENT: u64 = 1 << 25;
+const QQ_TOKEN_REFRESH_SKEW_SECS: u64 = 60;
 
 #[derive(serde::Deserialize)]
 struct QqGatewayEnvelope {
@@ -80,14 +81,6 @@ fn build_heartbeat_payload(seq: u64) -> Vec<u8> {
     format!("{{\"op\":{},\"d\":{}}}", QQ_OP_HEARTBEAT, seq).into_bytes()
 }
 
-fn get_qq_access_token<H: ChannelHttpClient + ?Sized>(
-    http: &mut H,
-    app_id: &str,
-    client_secret: &str,
-) -> Result<String> {
-    fetch_qq_access_token(http, app_id, client_secret, "qq_ws_token")
-}
-
 fn get_gateway_url<H: ChannelHttpClient + ?Sized>(http: &mut H, token: &str) -> Result<String> {
     let auth = format!("QQBot {}", token);
     let headers = [("Authorization", auth.as_str())];
@@ -129,10 +122,15 @@ fn get_gateway_url<H: ChannelHttpClient + ?Sized>(http: &mut H, token: &str) -> 
 }
 
 /// QQ WSS 协议驱动：取 token + GET gateway、Hello(op=10)、Identify(op=2)、心跳(op=1)、Dispatch 解析。
+struct CachedQqToken {
+    value: String,
+    refresh_after_unix_secs: u64,
+}
+
 struct QqWssDriver {
     app_id: String,
     client_secret: String,
-    cached_token: Option<String>,
+    cached_token: Option<CachedQqToken>,
     last_seq: Option<u64>,
     msg_id_cache: QqMsgIdCache,
 }
@@ -154,14 +152,59 @@ impl QqWssDriver {
             log::warn!("[{}] cache_msg_id failed: {}", TAG, e);
         }
     }
+
+    fn cached_token_value(&self) -> Option<&str> {
+        let now = crate::util::current_unix_secs();
+        self.cached_token
+            .as_ref()
+            .filter(|token| now < token.refresh_after_unix_secs)
+            .map(|token| token.value.as_str())
+    }
+
+    fn invalidate_cached_token(&mut self) {
+        self.cached_token = None;
+    }
+
+    fn fetch_and_cache_token(&mut self, http: &mut dyn ChannelHttpClient) -> Result<String> {
+        let (token, expires_in_secs) = fetch_qq_access_token_with_expiry(
+            http,
+            &self.app_id,
+            &self.client_secret,
+            "qq_ws_token",
+        )?;
+        let now = crate::util::current_unix_secs();
+        let usable_for_secs = expires_in_secs
+            .saturating_sub(QQ_TOKEN_REFRESH_SKEW_SECS)
+            .max(1);
+        self.cached_token = Some(CachedQqToken {
+            value: token.clone(),
+            refresh_after_unix_secs: now.saturating_add(usable_for_secs),
+        });
+        Ok(token)
+    }
+
+    fn ensure_token(&mut self, http: &mut dyn ChannelHttpClient) -> Result<String> {
+        if let Some(token) = self.cached_token_value() {
+            return Ok(token.to_string());
+        }
+        self.fetch_and_cache_token(http)
+    }
 }
 
 impl WssGatewayDriver for QqWssDriver {
     fn get_url(&mut self, http: &mut dyn ChannelHttpClient) -> Result<String> {
-        let token = get_qq_access_token(http, &self.app_id, &self.client_secret)?;
+        let token = self.ensure_token(http)?;
         log::debug!("[{}] token obtained", TAG);
-        self.cached_token = Some(token.clone());
-        let url = get_gateway_url(http, &token)?;
+        let url = match get_gateway_url(http, &token) {
+            Ok(url) => url,
+            Err(e) if e.http_status_code() == Some(401) => {
+                log::warn!("[{}] gateway rejected cached token, refreshing once", TAG);
+                self.invalidate_cached_token();
+                let refreshed = self.fetch_and_cache_token(http)?;
+                get_gateway_url(http, &refreshed)?
+            }
+            Err(e) => return Err(e),
+        };
         log::debug!("[{}] gateway url len={}", TAG, url.len());
         Ok(url)
     }
@@ -188,9 +231,8 @@ impl WssGatewayDriver for QqWssDriver {
             .and_then(|d| d.heartbeat_interval)
             .unwrap_or(45_000);
         let identify_payload = self
-            .cached_token
-            .as_ref()
-            .map(|token| build_identify_payload(token))
+            .cached_token_value()
+            .map(build_identify_payload)
             .filter(|v| !v.is_empty());
         log::info!("[{}] hello ok, heartbeat_interval_ms={}", TAG, interval);
         Ok(WssSessionState {
@@ -282,6 +324,7 @@ impl WssGatewayDriver for QqWssDriver {
             }
             QQ_OP_INVALID_SESSION => {
                 log::warn!("[{}] invalid session", TAG);
+                self.invalidate_cached_token();
                 Ok(WssRecvAction::Disconnect)
             }
             _ => Ok(WssRecvAction::Ignore),

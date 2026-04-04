@@ -8,9 +8,8 @@ use crate::constants::{
     TLS_ADMISSION_NO_PSRAM_MIN_BYTES,
 };
 use crate::error::{Error, Result};
-use std::cell::Cell;
-use std::sync::atomic::Ordering;
 use std::sync::Mutex;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::time::Instant;
@@ -35,16 +34,77 @@ pub enum HttpThreadRole {
     Background,
 }
 
-thread_local! {
-    static HTTP_THREAD_ROLE: Cell<HttpThreadRole> = const { Cell::new(HttpThreadRole::Background) };
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+mod thread_role_store {
+    use super::HttpThreadRole;
+    use std::sync::{Mutex, OnceLock};
+
+    const ROLE_SLOTS_MAX: usize = 16;
+
+    fn role_slots() -> &'static Mutex<Vec<(usize, HttpThreadRole)>> {
+        static SLOTS: OnceLock<Mutex<Vec<(usize, HttpThreadRole)>>> = OnceLock::new();
+        SLOTS.get_or_init(|| Mutex::new(Vec::with_capacity(ROLE_SLOTS_MAX)))
+    }
+
+    #[inline]
+    fn current_task_key() -> usize {
+        unsafe { esp_idf_svc::sys::xTaskGetCurrentTaskHandle() as usize }
+    }
+
+    pub fn set_current_http_thread_role(role: HttpThreadRole) {
+        let task_key = current_task_key();
+        if task_key == 0 {
+            return;
+        }
+        let mut slots = role_slots().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, current_role)) = slots.iter_mut().find(|(key, _)| *key == task_key) {
+            *current_role = role;
+            return;
+        }
+        if slots.len() >= ROLE_SLOTS_MAX {
+            slots.remove(0);
+        }
+        slots.push((task_key, role));
+    }
+
+    pub fn current_http_thread_role() -> HttpThreadRole {
+        let task_key = current_task_key();
+        if task_key == 0 {
+            return HttpThreadRole::Background;
+        }
+        let slots = role_slots().lock().unwrap_or_else(|e| e.into_inner());
+        slots
+            .iter()
+            .find(|(key, _)| *key == task_key)
+            .map(|(_, role)| *role)
+            .unwrap_or(HttpThreadRole::Background)
+    }
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+mod thread_role_store {
+    use super::HttpThreadRole;
+    use std::cell::Cell;
+
+    thread_local! {
+        static HTTP_THREAD_ROLE: Cell<HttpThreadRole> = const { Cell::new(HttpThreadRole::Background) };
+    }
+
+    pub fn set_current_http_thread_role(role: HttpThreadRole) {
+        HTTP_THREAD_ROLE.with(|r| r.set(role));
+    }
+
+    pub fn current_http_thread_role() -> HttpThreadRole {
+        HTTP_THREAD_ROLE.with(Cell::get)
+    }
 }
 
 pub fn set_current_http_thread_role(role: HttpThreadRole) {
-    HTTP_THREAD_ROLE.with(|r| r.set(role));
+    thread_role_store::set_current_http_thread_role(role);
 }
 
 pub fn current_http_thread_role() -> HttpThreadRole {
-    HTTP_THREAD_ROLE.with(Cell::get)
+    thread_role_store::current_http_thread_role()
 }
 
 /// HTTP 请求优先级。

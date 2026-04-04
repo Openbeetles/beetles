@@ -2,10 +2,10 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    build_private_garden_usage, summarize_private_garden_directories, PrivateGardenStore,
-    PRIVATE_GARDEN_MAX_DOCS_PER_CHAT,
+    PRIVATE_GARDEN_MAX_DOCS_PER_CHAT, PrivateGardenStore, build_private_garden_usage,
+    summarize_private_garden_directories,
 };
-use crate::tools::{parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata};
+use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args, serialize_tool_output};
 use crate::util::current_unix_secs;
 use serde::Serialize;
 use serde_json::Value;

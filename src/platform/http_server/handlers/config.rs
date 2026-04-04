@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use super::HandlerContext;
 
-/// GET /api/config：从缓存返回完整配置 JSON（含密钥）+ locale。
+/// GET /api/config：从缓存返回完整配置 JSON（含密钥）+ locale。路由层要求配对码。
 pub fn get_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let config = ctx.config();
     let mut j: Value = serde_json::to_value(&*config).map_err(|e| to_io(e.to_string()))?;
@@ -73,7 +73,7 @@ pub fn post_system(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std:
     }
 }
 
-/// GET /api/config/hardware：返回 HardwareSegment JSON（文件不存在时返回空 devices）。
+/// GET /api/config/hardware：返回 HardwareSegment JSON（文件不存在时返回空 devices）。路由层要求配对码。
 pub fn get_hardware_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     match ctx
         .config_file_store
@@ -100,7 +100,7 @@ pub fn post_hardware(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, st
     }
 }
 
-/// GET /api/config/audio：返回 AudioSegment JSON（文件不存在时返回 disabled 默认配置）。
+/// GET /api/config/audio：返回 AudioSegment JSON（文件不存在时返回 disabled 默认配置）。路由层要求配对码。
 pub fn get_audio_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     config::get_audio_segment(ctx.config_file_store.as_ref()).map_err(|e| to_io(e.to_string()))
 }
@@ -119,7 +119,7 @@ pub fn post_audio(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::
     }
 }
 
-/// GET /api/config/display：返回 DisplayConfig JSON（文件不存在时返回 disabled 默认配置）。
+/// GET /api/config/display：返回 DisplayConfig JSON（文件不存在时返回 disabled 默认配置）。路由层要求配对码。
 pub fn get_display_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     config::get_display_segment(ctx.config_file_store.as_ref()).map_err(|e| to_io(e.to_string()))
 }

@@ -202,9 +202,8 @@ pub fn dispatch(
             let r = handlers::pairing::post_body(ctx, body_str);
             Ok(api_to_out(r))
         }
-        // 已激活后 GET 不要求本次请求带配对码（内嵌 /wifi 页无头拉配置）；写操作仍走 guard_pairing_csrf。
         ("GET", "/api/config") => {
-            if let Some(r) = auth::require_activated(store) {
+            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
                 return Ok(api_to_out(r));
             }
             let body = handlers::config::get_body(ctx)
@@ -259,7 +258,7 @@ pub fn dispatch(
             Ok(api_to_out(r))
         }
         ("GET", "/api/config/hardware") => {
-            if let Some(r) = auth::require_activated(store) {
+            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
                 return Ok(api_to_out(r));
             }
             let body = handlers::config::get_hardware_body(ctx)
@@ -281,7 +280,7 @@ pub fn dispatch(
             Ok(api_to_out(r))
         }
         ("GET", "/api/config/audio") => {
-            if let Some(r) = auth::require_activated(store) {
+            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
                 return Ok(api_to_out(r));
             }
             let body = handlers::config::get_audio_body(ctx)
@@ -309,7 +308,7 @@ pub fn dispatch(
             Ok(out)
         }
         ("GET", "/api/config/display") => {
-            if let Some(r) = auth::require_activated(store) {
+            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
                 return Ok(api_to_out(r));
             }
             let body = handlers::config::get_display_body(ctx)

@@ -132,11 +132,7 @@ pub fn spiffs_usage() -> Option<(usize, usize)> {
             let ret = unsafe {
                 esp_idf_svc::sys::esp_spiffs_info(std::ptr::null(), &mut total, &mut used)
             };
-            if ret == 0 {
-                Some((total, used))
-            } else {
-                None
-            }
+            if ret == 0 { Some((total, used)) } else { None }
         })
     }
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -305,6 +301,6 @@ pub use self_model::SpiffsSelfModelStore;
 pub use session::SpiffsSessionStore;
 pub use session_summary::SpiffsSessionSummaryStore;
 pub use skill_meta::SpiffsSkillMetaStore;
-pub use skill_storage::{default_skill_storage_arc, SpiffsSkillStorage};
+pub use skill_storage::{SpiffsSkillStorage, default_skill_storage_arc};
 pub use task_store::SpiffsTaskStore;
 pub use world_sense::SpiffsWorldSenseStore;

@@ -9,8 +9,8 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    memory_policy, MemoryProfile, SessionMessage, SessionStore, SessionSummaryPolicy,
-    SessionSummaryStore,
+    MemoryProfile, SessionMessage, SessionStore, SessionSummaryPolicy, SessionSummaryStore,
+    memory_policy,
 };
 
 const SESSION_SUMMARY_SYSTEM_PROMPT: &str = "You are a conversation summarizer. Compress the following conversation into a concise summary (max 800 chars) preserving user intent, durable facts, preferences, active work, and pending tasks. Do not preserve secrets, credentials, raw tool payloads, copied document passages, verbose logs, or large quoted external content. Prefer the conversational state over reproducing retrieved material. Reply with the summary only.";

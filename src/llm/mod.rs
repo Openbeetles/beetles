@@ -19,8 +19,8 @@ pub use openai_compatible::OpenAiCompatibleClient;
 
 pub use compat::{LlmModelCompat, ToolCallSupport};
 pub use types::{
-    LlmResponse, Message, StopReason, StreamProgressFn, ToolCall, ToolChoicePolicy, ToolSpec,
-    MAX_MESSAGE_CONTENT_LEN, MAX_REQUEST_BODY_LEN,
+    LlmResponse, MAX_MESSAGE_CONTENT_LEN, MAX_REQUEST_BODY_LEN, Message, StopReason,
+    StreamProgressFn, ToolCall, ToolChoicePolicy, ToolSpec,
 };
 
 use crate::config::{AppConfig, LlmSource};

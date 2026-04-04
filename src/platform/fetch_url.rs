@@ -2,8 +2,8 @@
 //! Synchronous GET URL to bytes; used with an injected `PlatformHttpClient`.
 
 use crate::error::Result;
-use crate::platform::response::check_2xx_and_truncate;
 use crate::platform::PlatformHttpClient;
+use crate::platform::response::check_2xx_and_truncate;
 
 /// 用已有的 HTTP 客户端 GET url，返回 body 截断至 max_len。
 pub fn fetch_url_with_client(

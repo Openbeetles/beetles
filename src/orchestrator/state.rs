@@ -1,7 +1,7 @@
 //! 原子状态聚合：堆、socket、压力等级、通道健康，全部固定大小 + 原子变量，零堆分配。
 //! Atomic state aggregation: heap, socket, pressure, channel health — fixed-size + atomics, zero heap alloc.
 
-use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use std::sync::{Mutex, OnceLock};
 

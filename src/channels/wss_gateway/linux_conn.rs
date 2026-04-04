@@ -15,20 +15,37 @@ use std::net::{Shutdown, TcpStream};
 use std::time::{Duration, Instant};
 
 use crate::channels::wss_gateway::connection::{
-    WssBinary, WssConnection, WssEvent, MAX_WSS_SEND_PAYLOAD_BYTES,
+    MAX_WSS_SEND_PAYLOAD_BYTES, WssBinary, WssConnectProfile, WssConnection, WssEvent,
 };
 use crate::error::{Error, Result};
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{client::IntoClientRequest, protocol::Message, WebSocket};
+use tungstenite::{WebSocket, client::IntoClientRequest, protocol::Message};
 
-/// 与 `esp_conn` 一致。
-const WSS_TLS_ADMISSION_TIMEOUT_SECS: u64 = 10;
-/// 与 `wss_gateway/loop.rs` 中 `WDT_RECV_CHUNK_SECS` 一致（单次 `read` 阻塞上限）。
-const SOCKET_READ_TIMEOUT_SECS: u64 = 25;
-/// TCP write 超时；防止网络异常时 `ws.send()` 无限阻塞。
-const SOCKET_WRITE_TIMEOUT_SECS: u64 = 15;
-/// TCP connect 超时；避免 DNS/路由不可达时阻塞 127s+。
-const TCP_CONNECT_TIMEOUT_SECS: u64 = 15;
+struct LinuxWssTuning {
+    tls_admission_timeout_secs: u64,
+    socket_read_timeout_secs: u64,
+    socket_write_timeout_secs: u64,
+    tcp_connect_timeout_secs: u64,
+}
+
+impl LinuxWssTuning {
+    fn for_profile(profile: WssConnectProfile) -> Self {
+        match profile {
+            WssConnectProfile::Gateway => Self {
+                tls_admission_timeout_secs: 10,
+                socket_read_timeout_secs: 25,
+                socket_write_timeout_secs: 15,
+                tcp_connect_timeout_secs: 15,
+            },
+            WssConnectProfile::Realtime => Self {
+                tls_admission_timeout_secs: 10,
+                socket_read_timeout_secs: 10,
+                socket_write_timeout_secs: 10,
+                tcp_connect_timeout_secs: 10,
+            },
+        }
+    }
+}
 
 fn map_io(stage: &'static str, e: std::io::Error) -> Error {
     Error::Other {
@@ -82,6 +99,7 @@ fn is_timed_out_or_would_block(e: &tungstenite::Error) -> bool {
 pub struct LinuxWssConnection {
     ws: WebSocket<MaybeTlsStream<TcpStream>>,
     last_read_timeout: Option<Duration>,
+    read_timeout_cap: Duration,
 }
 
 impl Drop for LinuxWssConnection {
@@ -124,7 +142,7 @@ impl WssConnection for LinuxWssConnection {
 
     fn recv_timeout(&mut self, timeout: Duration) -> Result<Option<WssEvent>> {
         let deadline = Instant::now() + timeout;
-        let chunk_cap = Duration::from_secs(SOCKET_READ_TIMEOUT_SECS);
+        let chunk_cap = self.read_timeout_cap;
 
         loop {
             let now = Instant::now();
@@ -182,15 +200,33 @@ pub fn connect_linux_wss_with_headers(
     url: &str,
     headers: &[(&str, &str)],
 ) -> Result<LinuxWssConnection> {
+    connect_linux_wss_with_headers_and_profile(url, headers, WssConnectProfile::Gateway)
+}
+
+pub fn connect_linux_wss_with_profile(
+    url: &str,
+    profile: WssConnectProfile,
+) -> Result<LinuxWssConnection> {
+    connect_linux_wss_with_headers_and_profile(url, &[], profile)
+}
+
+pub fn connect_linux_wss_with_headers_and_profile(
+    url: &str,
+    headers: &[(&str, &str)],
+    profile: WssConnectProfile,
+) -> Result<LinuxWssConnection> {
+    let tuning = LinuxWssTuning::for_profile(profile);
     let _permit = crate::orchestrator::request_http_permit(
         crate::orchestrator::Priority::Normal,
-        Duration::from_secs(WSS_TLS_ADMISSION_TIMEOUT_SECS),
+        Duration::from_secs(tuning.tls_admission_timeout_secs),
     )?;
 
-    let tcp = tcp_connect_with_timeout(url)?;
-    tcp.set_read_timeout(Some(Duration::from_secs(SOCKET_READ_TIMEOUT_SECS)))
+    let tcp = tcp_connect_with_timeout(url, tuning.tcp_connect_timeout_secs)?;
+    tcp.set_read_timeout(Some(Duration::from_secs(tuning.socket_read_timeout_secs)))
         .map_err(|e| map_io("wss_linux_connect", e))?;
-    tcp.set_write_timeout(Some(Duration::from_secs(SOCKET_WRITE_TIMEOUT_SECS)))
+    tcp.set_write_timeout(Some(Duration::from_secs(tuning.socket_write_timeout_secs)))
+        .map_err(|e| map_io("wss_linux_connect", e))?;
+    tcp.set_nodelay(true)
         .map_err(|e| map_io("wss_linux_connect", e))?;
 
     let mut request = url
@@ -214,7 +250,8 @@ pub fn connect_linux_wss_with_headers(
 
     Ok(LinuxWssConnection {
         ws,
-        last_read_timeout: Some(Duration::from_secs(SOCKET_READ_TIMEOUT_SECS)),
+        last_read_timeout: Some(Duration::from_secs(tuning.socket_read_timeout_secs)),
+        read_timeout_cap: Duration::from_secs(tuning.socket_read_timeout_secs),
     })
 }
 
@@ -223,7 +260,7 @@ pub fn connect_linux_wss_with_headers(
 /// 使用 `TcpStream::connect_timeout` 限制 TCP 建连时间（避免默认 127s+ SYN 超时），
 /// 并设置 read / write timeout 防止后续 `ws.send()` / `ws.read()` 无限阻塞。
 pub fn connect_linux_wss(url: &str) -> Result<LinuxWssConnection> {
-    connect_linux_wss_with_headers(url, &[])
+    connect_linux_wss_with_profile(url, WssConnectProfile::Gateway)
 }
 
 /// 从 `wss://host:port/path` 中提取 `host:port`（默认 443）。
@@ -242,7 +279,7 @@ fn parse_wss_host_port(url: &str) -> Option<String> {
     }
 }
 
-fn tcp_connect_with_timeout(url: &str) -> Result<TcpStream> {
+fn tcp_connect_with_timeout(url: &str, timeout_secs: u64) -> Result<TcpStream> {
     use std::net::ToSocketAddrs;
 
     let host_port = parse_wss_host_port(url).ok_or_else(|| Error::Other {
@@ -264,6 +301,6 @@ fn tcp_connect_with_timeout(url: &str) -> Result<TcpStream> {
             stage: "wss_linux_dns",
         })?;
 
-    TcpStream::connect_timeout(&addr, Duration::from_secs(TCP_CONNECT_TIMEOUT_SECS))
+    TcpStream::connect_timeout(&addr, Duration::from_secs(timeout_secs))
         .map_err(|e| map_io("wss_linux_tcp_connect", e))
 }

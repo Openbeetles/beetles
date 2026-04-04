@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use super::{
-    archive_search::normalize_archive_match_text, memory_capability_profile, ArchiveRecordSource,
-    ArchiveSearchHit, MemoryProfile,
+    ArchiveRecordSource, ArchiveSearchHit, MemoryProfile,
+    archive_search::normalize_archive_match_text, memory_capability_profile,
 };
 
 #[derive(Clone, Copy)]

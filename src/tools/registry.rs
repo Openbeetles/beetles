@@ -5,8 +5,8 @@ use crate::config::AppConfig;
 use crate::error::{Error, Result};
 use crate::llm::ToolSpec as LlmToolSpec;
 use crate::tools::{
-    Tool, ToolExecutionOutcome, ToolMetadata, ToolPolicyContext, MAX_TOOL_ARGS_LEN,
-    MAX_TOOL_RESULT_LEN,
+    MAX_TOOL_ARGS_LEN, MAX_TOOL_RESULT_LEN, Tool, ToolExecutionOutcome, ToolMetadata,
+    ToolPolicyContext,
 };
 use crate::util::truncate_to_byte_len;
 use indexmap::IndexMap;

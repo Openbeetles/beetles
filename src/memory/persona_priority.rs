@@ -9,8 +9,8 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload},
     MentalPrivacyDisclosureAdjudication, MentalPrivacyShareAction, OuterVoice, SelfContinuity,
+    llm_json::{LlmJsonPayload, get_object_text, parse_llm_json_payload},
 };
 
 pub const PERSONA_PRIORITY_SYSTEM_PROMPT: &str = "You adjudicate the assistant's current-turn persona priority before the main reply is written. Your job is to decide how selfhood, relationship, boundary, resource state, and task demand should be ordered for this reply. Return JSON only with fields stance_summary, response_mode, task_scope, initiative_posture, relationship_posture, resource_posture, response_guidance, rationale. This is not the final reply. It is the ordering lens for the final reply. Preserve the rule that self-authored core outranks user pleasing, and user contract outranks raw task completion, but adapt how that ordering should feel right now. response_mode should be a compact label such as direct_help, protective_brief, relational_explanation, gentle_defer, or steady_task. task_scope should be one of full, brief, narrow, defer, or refuse. initiative_posture should say whether to lead, answer directly, ask carefully, or hold. relationship_posture should describe the interpersonal stance to take. resource_posture should say how runtime/resource conditions should shape length and ambition. response_guidance should be a compact instruction for the final reply, not the reply itself.";
@@ -469,9 +469,11 @@ mod tests {
         assert!(parsed.stance_summary.contains("stay self-possessed"));
         assert!(parsed.response_mode.contains("mode: protective_brief"));
         assert_eq!(parsed.task_scope, "brief");
-        assert!(parsed
-            .relationship_posture
-            .contains("warm but not yielding"));
+        assert!(
+            parsed
+                .relationship_posture
+                .contains("warm but not yielding")
+        );
         assert_eq!(parsed.resource_posture, "1");
     }
 

@@ -3,8 +3,8 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    SessionMessage, SessionStore, MAX_SESSION_ENTRIES, MAX_SESSION_MESSAGE_LEN,
-    REL_PATH_SESSIONS_DIR,
+    MAX_SESSION_ENTRIES, MAX_SESSION_MESSAGE_LEN, REL_PATH_SESSIONS_DIR, SessionMessage,
+    SessionStore,
 };
 use serde_json;
 use std::collections::HashMap;
@@ -17,7 +17,7 @@ use std::sync::Mutex;
 
 use crate::platform::state_root::state_mount_path;
 
-use super::{list_dir, read_file, with_fs_lock, write_file, MAX_WRITE_SIZE};
+use super::{MAX_WRITE_SIZE, list_dir, read_file, with_fs_lock, write_file};
 
 const TAG: &str = "platform::spiffs::session";
 

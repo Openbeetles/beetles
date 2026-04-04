@@ -54,20 +54,20 @@ pub use http_client::EspHttpClient;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use linux::LinuxPlatform;
 pub use nvs::{
-    default_config_store, default_config_store_arc, erase_namespace, init_nvs, read_string,
-    write_string, NvsConfigStore,
+    NvsConfigStore, default_config_store, default_config_store_arc, erase_namespace, init_nvs,
+    read_string, write_string,
 };
 pub use response_body::ResponseBody;
 pub use sntp::init_sntp;
 pub use spiffs::{
-    default_skill_storage_arc, init_spiffs, spiffs_base_string, spiffs_usage,
     SpiffsCalendarProviderCredentialStore, SpiffsCalendarStore,
     SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
     SpiffsMentalPrivacyStore, SpiffsSessionStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
-    SpiffsTaskStore, SpiffsTurnLedgerStore,
+    SpiffsTaskStore, SpiffsTurnLedgerStore, default_skill_storage_arc, init_spiffs,
+    spiffs_base_string, spiffs_usage,
 };
 pub use state_root::state_mount_path;
 pub use wifi::{
-    connect as connect_wifi, is_wifi_sta_connected, wait_for_network_ready, WifiApEntry, WifiScan,
-    WifiScanHandle,
+    WifiApEntry, WifiScan, WifiScanHandle, connect as connect_wifi, is_wifi_sta_connected,
+    wait_for_network_ready,
 };

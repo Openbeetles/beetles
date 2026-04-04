@@ -6,7 +6,7 @@ use crate::memory::RemindAtStore;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::cached_json::{load_json_or_default, CachedJsonFileStore, StoreOp};
+use super::cached_json::{CachedJsonFileStore, StoreOp, load_json_or_default};
 use super::state_path_join;
 
 const REL_PATH_REMIND_AT: &str = "memory/remind_at.json";

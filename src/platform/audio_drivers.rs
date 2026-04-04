@@ -63,7 +63,7 @@ const I2S_IO_TIMEOUT_MS: u32 = 1000;
 const PORT_TICK_PERIOD_MS: u32 = 10;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-const AUDIO_IDLE_SLEEP_MS: u64 = 20;
+const AUDIO_IDLE_SLEEP_MS_DEEP: u64 = 250;
 
 /// Check ESP-IDF return code; wrap non-OK as `Error::Esp`.
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -512,11 +512,7 @@ impl AudioRingBuffer {
     #[inline]
     fn tail(&self) -> usize {
         let t = self.head + self.len;
-        if t >= self.cap {
-            t - self.cap
-        } else {
-            t
-        }
+        if t >= self.cap { t - self.cap } else { t }
     }
 
     fn push_slice_drop_oldest(&mut self, input: &[i16]) {
@@ -807,17 +803,18 @@ impl AudioPipelineState {
                     if !progressed {
                         crate::metrics::record_audio_worker_idle_turn();
                         crate::platform::task_wdt::feed_current_task();
+                        let idle_sleep_ms = if mic_read_needed {
+                            2
+                        } else {
+                            AUDIO_IDLE_SLEEP_MS_DEEP
+                        };
                         if backend.speaker_ready() && (!backend.mic_ready() || !mic_read_needed) {
                             wait_for_speaker_work_or_stop(
                                 worker_shared.as_ref(),
-                                Duration::from_millis(AUDIO_IDLE_SLEEP_MS),
+                                Duration::from_millis(idle_sleep_ms),
                             );
                         } else {
-                            std::thread::sleep(Duration::from_millis(if mic_read_needed {
-                                2
-                            } else {
-                                AUDIO_IDLE_SLEEP_MS
-                            }));
+                            std::thread::sleep(Duration::from_millis(idle_sleep_ms));
                         }
                     }
                     crate::metrics::record_audio_loop_us(loop_start.elapsed().as_micros());

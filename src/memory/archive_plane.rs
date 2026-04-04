@@ -4,8 +4,8 @@ use crate::memory::{MemoryStore, SessionStore, TurnLedgerStore};
 use crate::util::truncate_content_to_max;
 
 use super::{
-    memory_capability_profile, search_archive_records, select_archive_hits_for_prompt,
-    ArchiveSearchQuery, MemoryProfile, MAX_ARCHIVE_SEARCH_LIMIT,
+    ArchiveSearchQuery, MAX_ARCHIVE_SEARCH_LIMIT, MemoryProfile, memory_capability_profile,
+    search_archive_records, select_archive_hits_for_prompt,
 };
 
 const MAX_ARCHIVE_EVIDENCE_BLOCK_LEN: usize = 768;

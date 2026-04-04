@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use crate::error::Result;
-use crate::i18n::{tr, Locale, Message as UiMessage};
+use crate::i18n::{Locale, Message as UiMessage, tr};
 use crate::llm::{
     LlmClient, LlmHttpClient, LlmResponse, Message, StopReason, ToolChoicePolicy, ToolSpec,
 };

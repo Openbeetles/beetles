@@ -1,7 +1,7 @@
 //! SPIFFS 实现的 World Sense 存储。单文件 memory/world_sense.json。
 
 use crate::error::Result;
-use crate::memory::{WorldSense, WorldSenseStore, REL_PATH_WORLD_SENSE};
+use crate::memory::{REL_PATH_WORLD_SENSE, WorldSense, WorldSenseStore};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

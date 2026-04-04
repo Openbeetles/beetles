@@ -9,7 +9,7 @@
 mod catalog;
 mod error;
 
-pub use catalog::{tr, Message, SensorWatchThresholdKind};
+pub use catalog::{Message, SensorWatchThresholdKind, tr};
 pub use error::tr_error;
 
 use crate::platform::ConfigStore;
@@ -25,11 +25,7 @@ pub enum Locale {
 impl Locale {
     /// 与 [`crate::config::get_locale`] 语义一致：`en` 为英文，其余为中文。
     pub fn from_storage(s: &str) -> Self {
-        if s == "en" {
-            Locale::En
-        } else {
-            Locale::Zh
-        }
+        if s == "en" { Locale::En } else { Locale::Zh }
     }
 }
 
@@ -41,7 +37,7 @@ pub fn locale_from_store(store: &dyn ConfigStore) -> Locale {
 #[cfg(test)]
 mod tests {
     use super::catalog::{Message, SensorWatchThresholdKind};
-    use super::{tr, Locale};
+    use super::{Locale, tr};
 
     fn assert_nonempty_both(msg: Message) {
         let zh = tr(msg.clone(), Locale::Zh);

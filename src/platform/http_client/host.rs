@@ -4,7 +4,7 @@
 use std::io::Read;
 use std::time::Duration;
 
-use crate::config::{parse_proxy_url_to_host_port, AppConfig};
+use crate::config::{AppConfig, parse_proxy_url_to_host_port};
 use crate::error::{Error, Result};
 use crate::orchestrator::Priority;
 use crate::platform::ResponseBody;

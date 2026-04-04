@@ -13,21 +13,27 @@ mod esp_conn;
 mod linux_conn;
 
 #[allow(unused_imports)]
-pub use connection::{WssConnection, WssEvent};
+pub use connection::{WssConnectProfile, WssConnection, WssEvent};
 pub use driver::{WssGatewayDriver, WssRecvAction, WssSessionState};
 pub use r#loop::run_wss_gateway_loop;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 #[allow(unused_imports)]
-pub use esp_conn::{connect_esp_wss, connect_esp_wss_with_headers, EspWssConnection};
+pub use esp_conn::{
+    EspWssConnection, connect_esp_wss, connect_esp_wss_with_headers_and_profile,
+    connect_esp_wss_with_profile,
+};
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub use linux_conn::{connect_linux_wss, connect_linux_wss_with_headers, LinuxWssConnection};
+pub use linux_conn::{
+    LinuxWssConnection, connect_linux_wss, connect_linux_wss_with_headers,
+    connect_linux_wss_with_headers_and_profile, connect_linux_wss_with_profile,
+};
 
 /// 平台 WSS 建连：ESP 用 `esp-idf` websocket；Linux 用 `tungstenite`+rustls。供 `run_*_ws_loop` 注入。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub fn connect_wss(url: &str) -> crate::error::Result<esp_conn::EspWssConnection> {
-    esp_conn::connect_esp_wss(url)
+    esp_conn::connect_esp_wss_with_profile(url, WssConnectProfile::Gateway)
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -35,12 +41,21 @@ pub fn connect_wss_with_headers(
     url: &str,
     headers: &[(&str, &str)],
 ) -> crate::error::Result<esp_conn::EspWssConnection> {
-    esp_conn::connect_esp_wss_with_headers(url, headers)
+    esp_conn::connect_esp_wss_with_headers_and_profile(url, headers, WssConnectProfile::Gateway)
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub fn connect_wss_with_headers_and_profile(
+    url: &str,
+    headers: &[(&str, &str)],
+    profile: WssConnectProfile,
+) -> crate::error::Result<esp_conn::EspWssConnection> {
+    esp_conn::connect_esp_wss_with_headers_and_profile(url, headers, profile)
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub fn connect_wss(url: &str) -> crate::error::Result<linux_conn::LinuxWssConnection> {
-    linux_conn::connect_linux_wss(url)
+    linux_conn::connect_linux_wss_with_profile(url, WssConnectProfile::Gateway)
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -48,5 +63,14 @@ pub fn connect_wss_with_headers(
     url: &str,
     headers: &[(&str, &str)],
 ) -> crate::error::Result<linux_conn::LinuxWssConnection> {
-    linux_conn::connect_linux_wss_with_headers(url, headers)
+    linux_conn::connect_linux_wss_with_headers_and_profile(url, headers, WssConnectProfile::Gateway)
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub fn connect_wss_with_headers_and_profile(
+    url: &str,
+    headers: &[(&str, &str)],
+    profile: WssConnectProfile,
+) -> crate::error::Result<linux_conn::LinuxWssConnection> {
+    linux_conn::connect_linux_wss_with_headers_and_profile(url, headers, profile)
 }

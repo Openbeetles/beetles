@@ -35,8 +35,14 @@
 (function(){
   var B=PC.BASE,formMsg=document.getElementById('formMsg'),ssid=document.getElementById('ssid'),pass=document.getElementById('pass');
   fetch(B+'/api/pairing_code').then(function(r){ return r.json(); })
-    .then(function(j){ if(j.locale)PC.setLocale(j.locale); if(!j.code_set){ location.href=B+'/pairing'; return; } return fetch(B+'/api/config').then(function(r){ if(!r.ok){ location.href=B+'/pairing'; return null; } return r.json(); }); })
-    .then(function(j){ if(j&&j.wifi_ssid)ssid.value=j.wifi_ssid; })
+    .then(function(j){
+      if(j.locale)PC.setLocale(j.locale);
+      if(!j.code_set){ location.href=B+'/pairing'; return; }
+      PC.requestWithCode('GET','/api/config',null,function(x){
+        if(!x.ok){ PC.showMsg(formMsg,(x.j&&x.j.error)||PC.t('pairing_fail'),true); return; }
+        if(x.j&&x.j.wifi_ssid)ssid.value=x.j.wifi_ssid;
+      });
+    })
     .catch(function(){ location.href=B+'/pairing'; });
   document.getElementById('btnSave').onclick=function(){
     PC.requestWithCode('POST','/api/config/wifi',JSON.stringify({wifi_ssid:(ssid.value||'').trim(),wifi_pass:pass.value}),function(x){

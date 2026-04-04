@@ -1,7 +1,7 @@
 //! SPIFFS 实现的 PendingRetryStore。单文件 memory/pending_retry.json，存 { msg, replay_count }；
 //! replay_count 达上限后不再注入，避免重复饥饿。
 
-use crate::bus::{PcMsg, MAX_CONTENT_LEN};
+use crate::bus::{MAX_CONTENT_LEN, PcMsg};
 use crate::constants::PENDING_RETRY_MAX_REPLAY;
 use crate::error::{Error, Result};
 use crate::memory::{PendingRetryStore, REL_PATH_PENDING_RETRY};

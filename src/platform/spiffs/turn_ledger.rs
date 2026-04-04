@@ -1,7 +1,7 @@
 //! SPIFFS 实现的最近一轮执行账本存储。单文件 memory/turn_ledgers.json。
 
 use crate::error::Result;
-use crate::memory::{TurnLedger, TurnLedgerStore, REL_PATH_TURN_LEDGERS};
+use crate::memory::{REL_PATH_TURN_LEDGERS, TurnLedger, TurnLedgerStore};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

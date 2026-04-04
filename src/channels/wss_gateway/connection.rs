@@ -4,12 +4,14 @@
 use crate::error::Result;
 use std::time::Duration;
 
-/// 与 ESP `esp_websocket_client` 默认 buffer 对齐（仅嵌入式构建使用）。
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub(crate) const DEFAULT_WSS_BUFFER_SIZE: usize = 4096;
-/// 应用层 `send_binary` 最大字节数（ESP 与客户端 buffer 对齐；主机/Linux 需容纳 QQ Identify 等较长 JSON）。
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub(crate) const MAX_WSS_SEND_PAYLOAD_BYTES: usize = DEFAULT_WSS_BUFFER_SIZE - 32;
+/// WSS 连接使用场景。当前只区分“网关长连”和“实时语音”，避免把超时、buffer 与节奏策略硬编码死。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WssConnectProfile {
+    Gateway,
+    Realtime,
+}
+
+/// Linux 侧单次发送上限；ESP 上由各连接实例按 profile 决定。
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub(crate) const MAX_WSS_SEND_PAYLOAD_BYTES: usize = 64 * 1024;
 

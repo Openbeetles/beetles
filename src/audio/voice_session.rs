@@ -7,19 +7,19 @@
 //! - `run_voice_session` coalesces events and dispatches one task at a time to
 //!   `voice_session_worker`, so long STT/TTS calls no longer block event intake.
 
+use crate::Platform;
 use crate::audio::baidu_token::BaiduTokenCache;
 use crate::audio::pipeline::{capture_and_transcribe, speak_text};
 use crate::audio::realtime::run_realtime_session;
 use crate::bus::{PcMsg, TrackedSender};
-use crate::config::{audio_realtime_enabled, AudioSegment};
+use crate::config::{AudioSegment, audio_realtime_enabled};
 use crate::constants::{AUDIO_CAPTURE_MAX_MS, VOICE_CHANNEL_NAME, VOICE_DEVICE_CHAT_ID};
 use crate::platform::PlatformHttpClient;
 use crate::util::{
-    spawn_guarded_with_profile_handle, HttpThreadRole, SpawnCore, STACK_VOICE_SESSION,
+    HttpThreadRole, STACK_VOICE_SESSION, SpawnCore, spawn_guarded_with_profile_handle,
 };
-use crate::Platform;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -131,9 +131,11 @@ fn run_voice_session_worker(
     let mut http: Option<Box<dyn PlatformHttpClient>> = None;
 
     let ensure_http = |h: &mut Option<Box<dyn PlatformHttpClient>>,
-                       make: &(dyn Fn() -> crate::error::Result<Box<dyn PlatformHttpClient>>
-                             + Send
-                             + Sync)| {
+                       make: &(
+                            dyn Fn() -> crate::error::Result<Box<dyn PlatformHttpClient>>
+                                + Send
+                                + Sync
+                        )| {
         if h.is_none() {
             match make() {
                 Ok(client) => *h = Some(client),

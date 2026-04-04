@@ -1,24 +1,6 @@
 //! 任务看门狗：将当前任务加入 TWDT，使 HTTP 请求与空闲等待时 feed 有效，避免 "task not found"。
 //! Task watchdog: add current task to TWDT so feed/reset during HTTP or idle recv_timeout is valid.
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-use core::cell::Cell;
-
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-std::thread_local! {
-    static TASK_WDT_REGISTERED: Cell<bool> = const { Cell::new(false) };
-}
-
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-fn mark_current_task_registered(registered: bool) {
-    TASK_WDT_REGISTERED.with(|flag| flag.set(registered));
-}
-
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-fn current_task_registered() -> bool {
-    TASK_WDT_REGISTERED.with(Cell::get)
-}
-
 /// 将当前任务加入任务看门狗。在运行 agent 循环（会发起长时间 HTTP）的线程中调用一次即可。
 /// 幂等：同一任务多次调用安全。IDF 5+ 先查 `esp_task_wdt_status`，已订阅则不再 `add`，避免 IDF 侧
 /// `task is already subscribed`（`esp_task_wdt_add` 返回 `ESP_ERR_INVALID_ARG` / 258）。IDF 4 无 status API
@@ -34,7 +16,6 @@ pub fn register_current_task_to_task_wdt() {
     {
         let st = unsafe { esp_idf_svc::sys::esp_task_wdt_status(core::ptr::null_mut()) };
         if st == ESP_OK {
-            mark_current_task_registered(true);
             return;
         }
         if st != ESP_ERR_NOT_FOUND && st != ESP_ERR_INVALID_STATE {
@@ -44,10 +25,8 @@ pub fn register_current_task_to_task_wdt() {
 
     let ret = unsafe { esp_idf_svc::sys::esp_task_wdt_add(core::ptr::null_mut()) };
     if ret == ESP_OK || ret == ESP_ERR_INVALID_ARG {
-        mark_current_task_registered(true);
         return;
     }
-    mark_current_task_registered(false);
     if ret != ESP_OK && ret != ESP_ERR_INVALID_ARG && ret != ESP_ERR_INVALID_STATE {
         log::warn!("[platform::task_wdt] esp_task_wdt_add failed: {}", ret);
     }
@@ -62,9 +41,6 @@ pub fn register_current_task_to_task_wdt() {}
     esp_idf_version_major = "4"
 ))]
 pub fn feed_current_task() {
-    if !current_task_registered() {
-        return;
-    }
     unsafe {
         let _ = esp_idf_svc::sys::esp_task_wdt_feed();
     }
@@ -77,14 +53,9 @@ pub fn feed_current_task() {
 pub fn feed_current_task() {
     const ESP_OK: i32 = 0;
     const ESP_ERR_NOT_FOUND: i32 = 0x105;
-    if !current_task_registered() {
-        return;
-    }
     unsafe {
         let ret = esp_idf_svc::sys::esp_task_wdt_reset();
-        if ret == ESP_ERR_NOT_FOUND {
-            mark_current_task_registered(false);
-        } else if ret != ESP_OK {
+        if ret != ESP_OK && ret != ESP_ERR_NOT_FOUND {
             log::warn!("[platform::task_wdt] esp_task_wdt_reset failed: {}", ret);
         }
     }

@@ -37,7 +37,7 @@ pub fn run(
     let server_config = Configuration {
         max_open_sockets: MAX_OPEN_SOCKETS,
         max_uri_handlers: 96,
-        stack_size: 12 * 1024,
+        stack_size: 16 * 1024,
         ..Default::default()
     };
 

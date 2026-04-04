@@ -1,7 +1,7 @@
 use crate::platform::SkillStorage;
 use crate::skills::{
-    get_skill_content, runtime_skill_name_for_topic, write_skill, RuntimeSkillWrite,
-    MAX_SKILL_CONTENT_LEN,
+    MAX_SKILL_CONTENT_LEN, RuntimeSkillWrite, get_skill_content, runtime_skill_name_for_topic,
+    write_skill,
 };
 use crate::util::truncate_content_to_max;
 
@@ -1312,10 +1312,12 @@ mod tests {
             retrieve_runtime_skill_hits(&storage, "继续 network setup", Some("chat-1"), 200, 3);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].record.topic, "network_setup");
-        assert!(hits[0]
-            .reasons
-            .iter()
-            .any(|reason| reason.contains("exact topic")));
+        assert!(
+            hits[0]
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("exact topic"))
+        );
     }
 
     #[test]
@@ -1388,18 +1390,24 @@ mod tests {
             &get_skill_content(&storage, "runtime_skill__wifi_setup").unwrap(),
         )
         .unwrap();
-        assert!(merged
-            .supersedes
-            .iter()
-            .any(|name| name == "runtime_skill__wifi_verification"));
-        assert!(merged
-            .component_topics
-            .iter()
-            .any(|topic| topic == "wifi_setup"));
-        assert!(merged
-            .component_topics
-            .iter()
-            .any(|topic| topic == "wifi setup"));
+        assert!(
+            merged
+                .supersedes
+                .iter()
+                .any(|name| name == "runtime_skill__wifi_verification")
+        );
+        assert!(
+            merged
+                .component_topics
+                .iter()
+                .any(|topic| topic == "wifi_setup")
+        );
+        assert!(
+            merged
+                .component_topics
+                .iter()
+                .any(|topic| topic == "wifi setup")
+        );
         assert_eq!(merged.citations.len(), 2);
     }
 

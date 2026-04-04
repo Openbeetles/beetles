@@ -2,6 +2,7 @@
 //! ESP HTTP server thin adapter: map `Request` → `router::IncomingRequest` → write response.
 
 use crate::error::Result;
+use crate::i18n::{locale_from_store, tr, Message};
 use crate::platform::http_server::common::{
     self, ApiResponse, BodyReadError, HandlerResult, CORS_HEADERS, POST_BODY_MAX_LEN,
 };
@@ -15,6 +16,7 @@ use embedded_svc::http::server::Request;
 use embedded_svc::http::{Headers, Method};
 use esp_idf_svc::http::server::Connection;
 use esp_idf_svc::http::server::EspHttpServer;
+use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,6 +42,100 @@ impl EspRouteSpec {
             body_mode,
         }
     }
+}
+
+const ESP_ROUTE_EXEC_QUEUE_CAPACITY: usize = 4;
+const ESP_ROUTE_EXEC_TIMEOUT: Duration = Duration::from_secs(20);
+
+struct EspRouteJob {
+    incoming: IncomingRequest,
+    reply_tx: SyncSender<OutgoingResponse>,
+}
+
+#[derive(Clone)]
+struct EspRouteExecutor {
+    submit_tx: SyncSender<EspRouteJob>,
+}
+
+impl EspRouteExecutor {
+    fn execute(&self, store: &dyn ConfigStore, incoming: IncomingRequest) -> OutgoingResponse {
+        let (reply_tx, reply_rx) = sync_channel(1);
+        if let Err(e) = self.submit_tx.send(EspRouteJob { incoming, reply_tx }) {
+            return internal_server_error_response(
+                store,
+                "http_route_exec_submit",
+                format!("dispatch queue unavailable: {}", e),
+            );
+        }
+        match reply_rx.recv_timeout(ESP_ROUTE_EXEC_TIMEOUT) {
+            Ok(out) => out,
+            Err(RecvTimeoutError::Timeout) => internal_server_error_response(
+                store,
+                "http_route_exec_wait",
+                "dispatch timed out".to_string(),
+            ),
+            Err(RecvTimeoutError::Disconnected) => internal_server_error_response(
+                store,
+                "http_route_exec_wait",
+                "dispatch worker stopped".to_string(),
+            ),
+        }
+    }
+}
+
+fn internal_server_error_response(
+    store: &dyn ConfigStore,
+    stage: &'static str,
+    detail: String,
+) -> OutgoingResponse {
+    log::warn!("{}: {}", stage, detail);
+    let loc = locale_from_store(store);
+    let msg = tr(Message::OperationFailed, loc);
+    OutgoingResponse {
+        status: 500,
+        status_text: "Internal Server Error",
+        headers: CORS_HEADERS,
+        body: ApiResponse::err_500(&msg).body,
+        restart: RestartAction::None,
+    }
+}
+
+fn run_esp_route_executor(
+    ctx: Arc<HandlerContext>,
+    env: RouterEnv,
+    store: Arc<dyn ConfigStore + Send + Sync>,
+    rx: Receiver<EspRouteJob>,
+) {
+    while let Ok(job) = rx.recv() {
+        let out = match router::dispatch(ctx.as_ref(), &env, job.incoming) {
+            Ok(out) => out,
+            Err(e) => internal_server_error_response(
+                store.as_ref(),
+                "http_router_dispatch",
+                e.to_string(),
+            ),
+        };
+        let _ = job.reply_tx.send(out);
+    }
+}
+
+fn spawn_esp_route_executor(
+    ctx: &Arc<HandlerContext>,
+    env: &RouterEnv,
+    config_store: &Arc<dyn ConfigStore + Send + Sync>,
+) -> EspRouteExecutor {
+    let (submit_tx, rx) = sync_channel(ESP_ROUTE_EXEC_QUEUE_CAPACITY);
+    let ctx = Arc::clone(ctx);
+    let env = env.clone();
+    let store = Arc::clone(config_store);
+    crate::util::spawn_guarded_with_profile(
+        "http_route_exec",
+        crate::util::STACK_HTTP_ROUTE_WORKER,
+        Some(crate::util::SpawnCore::Core1),
+        crate::util::HttpThreadRole::Io,
+        move || run_esp_route_executor(ctx, env, store, rx),
+    );
+    EspRouteExecutor { submit_tx }
 }
 
 fn method_as_str(m: Method) -> &'static str {
@@ -158,8 +254,8 @@ fn write_outgoing<C: Connection>(
 #[inline(never)]
 pub(super) fn esp_dispatch_route<C: Connection>(
     ctx: &Arc<HandlerContext>,
-    env: &RouterEnv,
     store: &Arc<dyn ConfigStore + Send + Sync>,
+    executor: &EspRouteExecutor,
     mut req: Request<C>,
     method: Method,
     body_mode: EspBodyMode,
@@ -177,13 +273,7 @@ pub(super) fn esp_dispatch_route<C: Connection>(
         headers,
         body,
     };
-    let out = match router::dispatch(ctx.as_ref(), env, incoming) {
-        Ok(o) => o,
-        Err(e) => {
-            log::warn!("http router dispatch: {}", e);
-            return Err(common::to_io(e));
-        }
-    };
+    let out = executor.execute(store.as_ref(), incoming);
     write_outgoing(ctx, req, out, restart_reason.as_str())
 }
 
@@ -192,16 +282,16 @@ pub(super) fn esp_dispatch_route<C: Connection>(
 fn register_esp_route(
     server: &mut EspHttpServer<'static>,
     ctx: &Arc<HandlerContext>,
-    env: &RouterEnv,
     config_store: &Arc<dyn ConfigStore + Send + Sync>,
+    executor: &EspRouteExecutor,
     spec: EspRouteSpec,
 ) -> Result<()> {
     let ctx = Arc::clone(ctx);
-    let env = env.clone();
     let store = Arc::clone(config_store);
+    let executor = executor.clone();
     server
         .fn_handler(spec.path, spec.method, move |req| -> HandlerResult {
-            esp_dispatch_route(&ctx, &env, &store, req, spec.method, spec.body_mode)
+            esp_dispatch_route(&ctx, &store, &executor, req, spec.method, spec.body_mode)
         })
         .map_err(|e| crate::error::Error::Other {
             source: Box::new(e),
@@ -215,12 +305,12 @@ fn register_esp_route(
 fn register_esp_route_specs(
     server: &mut EspHttpServer<'static>,
     ctx: &Arc<HandlerContext>,
-    env: &RouterEnv,
     config_store: &Arc<dyn ConfigStore + Send + Sync>,
+    executor: &EspRouteExecutor,
     specs: &[EspRouteSpec],
 ) -> Result<()> {
     for spec in specs {
-        register_esp_route(server, ctx, env, config_store, *spec)?;
+        register_esp_route(server, ctx, config_store, executor, *spec)?;
     }
     Ok(())
 }
@@ -366,10 +456,10 @@ const ACTION_ROUTES: &[EspRouteSpec] = &[
 fn register_static_page_routes(
     server: &mut EspHttpServer<'static>,
     ctx: &Arc<HandlerContext>,
-    env: &RouterEnv,
     config_store: &Arc<dyn ConfigStore + Send + Sync>,
+    executor: &EspRouteExecutor,
 ) -> Result<()> {
-    register_esp_route_specs(server, ctx, env, config_store, STATIC_PAGE_ROUTES)
+    register_esp_route_specs(server, ctx, config_store, executor, STATIC_PAGE_ROUTES)
 }
 
 #[cold]
@@ -377,10 +467,16 @@ fn register_static_page_routes(
 fn register_pairing_and_config_routes(
     server: &mut EspHttpServer<'static>,
     ctx: &Arc<HandlerContext>,
-    env: &RouterEnv,
     config_store: &Arc<dyn ConfigStore + Send + Sync>,
+    executor: &EspRouteExecutor,
 ) -> Result<()> {
-    register_esp_route_specs(server, ctx, env, config_store, PAIRING_AND_CONFIG_ROUTES)
+    register_esp_route_specs(
+        server,
+        ctx,
+        config_store,
+        executor,
+        PAIRING_AND_CONFIG_ROUTES,
+    )
 }
 
 #[cold]
@@ -388,10 +484,10 @@ fn register_pairing_and_config_routes(
 fn register_observability_routes(
     server: &mut EspHttpServer<'static>,
     ctx: &Arc<HandlerContext>,
-    env: &RouterEnv,
     config_store: &Arc<dyn ConfigStore + Send + Sync>,
+    executor: &EspRouteExecutor,
 ) -> Result<()> {
-    register_esp_route_specs(server, ctx, env, config_store, OBSERVABILITY_ROUTES)
+    register_esp_route_specs(server, ctx, config_store, executor, OBSERVABILITY_ROUTES)
 }
 
 #[cold]
@@ -399,10 +495,10 @@ fn register_observability_routes(
 fn register_memory_and_skill_routes(
     server: &mut EspHttpServer<'static>,
     ctx: &Arc<HandlerContext>,
-    env: &RouterEnv,
     config_store: &Arc<dyn ConfigStore + Send + Sync>,
+    executor: &EspRouteExecutor,
 ) -> Result<()> {
-    register_esp_route_specs(server, ctx, env, config_store, MEMORY_AND_SKILL_ROUTES)
+    register_esp_route_specs(server, ctx, config_store, executor, MEMORY_AND_SKILL_ROUTES)
 }
 
 #[cold]
@@ -410,10 +506,10 @@ fn register_memory_and_skill_routes(
 fn register_action_routes(
     server: &mut EspHttpServer<'static>,
     ctx: &Arc<HandlerContext>,
-    env: &RouterEnv,
     config_store: &Arc<dyn ConfigStore + Send + Sync>,
+    executor: &EspRouteExecutor,
 ) -> Result<()> {
-    register_esp_route_specs(server, ctx, env, config_store, ACTION_ROUTES)
+    register_esp_route_specs(server, ctx, config_store, executor, ACTION_ROUTES)
 }
 
 #[cfg(feature = "ota")]
@@ -434,10 +530,10 @@ const OTA_ROUTES: &[EspRouteSpec] = &[
 fn register_optional_feature_routes(
     server: &mut EspHttpServer<'static>,
     ctx: &Arc<HandlerContext>,
-    env: &RouterEnv,
     config_store: &Arc<dyn ConfigStore + Send + Sync>,
+    executor: &EspRouteExecutor,
 ) -> Result<()> {
-    register_esp_route_specs(server, ctx, env, config_store, OTA_ROUTES)?;
+    register_esp_route_specs(server, ctx, config_store, executor, OTA_ROUTES)?;
     Ok(())
 }
 
@@ -447,8 +543,8 @@ fn register_optional_feature_routes(
 fn register_optional_feature_routes(
     _server: &mut EspHttpServer<'static>,
     _ctx: &Arc<HandlerContext>,
-    _env: &RouterEnv,
     _config_store: &Arc<dyn ConfigStore + Send + Sync>,
+    _executor: &EspRouteExecutor,
 ) -> Result<()> {
     Ok(())
 }
@@ -460,11 +556,12 @@ pub(super) fn register_all_esp_routes(
     env: &RouterEnv,
     config_store: &Arc<dyn ConfigStore + Send + Sync>,
 ) -> Result<()> {
-    register_static_page_routes(server, ctx, env, config_store)?;
-    register_pairing_and_config_routes(server, ctx, env, config_store)?;
-    register_observability_routes(server, ctx, env, config_store)?;
-    register_memory_and_skill_routes(server, ctx, env, config_store)?;
-    register_action_routes(server, ctx, env, config_store)?;
-    register_optional_feature_routes(server, ctx, env, config_store)?;
+    let executor = spawn_esp_route_executor(ctx, env, config_store);
+    register_static_page_routes(server, ctx, config_store, &executor)?;
+    register_pairing_and_config_routes(server, ctx, config_store, &executor)?;
+    register_observability_routes(server, ctx, config_store, &executor)?;
+    register_memory_and_skill_routes(server, ctx, config_store, &executor)?;
+    register_action_routes(server, ctx, config_store, &executor)?;
+    register_optional_feature_routes(server, ctx, config_store, &executor)?;
     Ok(())
 }

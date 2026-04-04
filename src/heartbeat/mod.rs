@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::i18n::{tr, Locale, Message as UiMessage};
+use crate::i18n::{Locale, Message as UiMessage, tr};
 
 const TAG: &str = "heartbeat";
 const TASK_THROTTLE_SECS: u64 = 30;

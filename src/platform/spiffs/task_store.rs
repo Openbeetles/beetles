@@ -2,13 +2,13 @@
 
 use crate::error::Result;
 use crate::task::{
-    filter_tasks, normalize_task_item, TaskItem, TaskQuery, TaskStore, REL_PATH_TASKS,
+    REL_PATH_TASKS, TaskItem, TaskQuery, TaskStore, filter_tasks, normalize_task_item,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use super::cached_json::{load_json_or_default, CachedJsonFileStore, StoreOp};
+use super::cached_json::{CachedJsonFileStore, StoreOp, load_json_or_default};
 use super::state_path_join;
 
 const MAX_TASK_ITEMS: usize = 256;

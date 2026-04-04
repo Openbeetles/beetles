@@ -1,6 +1,6 @@
 //! Route durable writes between canonical factual memory and procedural runtime skills.
 
-use crate::skills::{runtime_skill_name_for_topic, RuntimeSkillWrite};
+use crate::skills::{RuntimeSkillWrite, runtime_skill_name_for_topic};
 
 use super::{LongTermMemoryDraft, LongTermMemoryKind, LongTermMemorySourceType};
 

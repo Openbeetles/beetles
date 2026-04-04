@@ -715,7 +715,8 @@ pub fn is_private_url(url: &str) -> bool {
 // | tg_poll                               | STACK_CHANNEL_SENDER   | 8 KB  | 64 KB |
 // | display                               | (inline 6144)          | 6 KB  | 6 KB  | ← no TLS, render chain ~3.5KB peak
 // | audio_io_worker                       | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS, I2S + WakeNet NN
-// | http_server                           | (inline 6144)          | 6 KB  | 6 KB  | ← no TLS, config pre-loaded by main
+// | http_server                           | (inline 6144)          | 6 KB  | 6 KB  | ← wrapper thread only; IDF httpd has its own task
+// | http_route_exec                       | STACK_HTTP_ROUTE_WORKER| 16 KB | 16 KB | ← ESP config/router work offloaded from IDF callback
 // | dispatch                              | (inline 4096)          | 4 KB  | 4 KB  | ← no TLS/HTTP, recv+queue only
 // | bg_timer                              | (inline 6144)          | 6 KB  | 6 KB  | ← no TLS, MetricsSnapshot 352B peak
 // | heartbeat, cli_repl                  | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS
@@ -764,6 +765,10 @@ pub const STACK_VOICE_CONTROL: usize = 8192;
 pub const STACK_VOICE_SESSION: usize = 8192;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_VOICE_SESSION: usize = LINUX_RUSTLS_THREAD_STACK;
+
+/// `http_route_exec`：ESP HTTP 配置/状态路由执行线程。
+/// 该线程承接 SPIFFS/NVS/serde 等重活，避免压在 IDF HTTPD 回调线程上。
+pub const STACK_HTTP_ROUTE_WORKER: usize = 16 * 1024;
 
 /// 线程目标核心。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -6,19 +6,16 @@
 #![cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 
 use crate::channels::wss_gateway::connection::{
-    WssBinary, WssConnection, WssEvent, DEFAULT_WSS_BUFFER_SIZE, MAX_WSS_SEND_PAYLOAD_BYTES,
+    WssBinary, WssConnectProfile, WssConnection, WssEvent,
 };
 use crate::error::{Error, Result};
 use esp_idf_svc::hal::delay::TickType;
 use esp_idf_svc::sys;
+use std::collections::VecDeque;
 use std::ffi::CString;
-use std::sync::{mpsc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
-const CONNECT_TIMEOUT_MS: u64 = 10_000;
-const DEFAULT_WS_TIMEOUT_MS: u64 = 30_000;
-/// pingpong 超时：配合 TCP keep-alive 更快发现死连接（原 120s 太慢）。
-const DEFAULT_PINGPONG_TIMEOUT_SEC: u64 = 60;
 /// TCP keep-alive：30s idle + 3*10s probe = 最慢 60s 检测到死连接。
 const KEEPALIVE_IDLE_SECS: u64 = 30;
 const KEEPALIVE_INTERVAL_SECS: u64 = 10;
@@ -30,9 +27,45 @@ const CLOSE_TIMEOUT_TICKS: u32 = 200;
 /// `esp_websocket_client_destroy()` 未提供显式 unregister API；为避免销毁尾声若仍有回调落到
 /// 已释放指针上，Rust 侧将 callback state 再保留一小段宽限期。
 const CALLBACK_STATE_RECLAIM_DELAY_MS: u64 = 2_000;
-/// 缓冲池容量：单通道场景（飞书或 QQ 二选一），4 个缓冲区足够应对突发流量。
-const EVENT_BUF_POOL_MAX: usize = 4;
+/// 缓冲池容量：WSS 事件负载复用池上限；覆盖网关 + realtime 并发场景，避免高频帧反复分配。
+const EVENT_BUF_POOL_MAX: usize = 8;
+const MAX_RECYCLED_EVENT_BUFFER_BYTES: usize = 8 * 1024;
 static EVENT_BUF_POOL: OnceLock<Mutex<Vec<Vec<u8>>>> = OnceLock::new();
+
+struct EspWssTuning {
+    buffer_size: usize,
+    max_send_payload_bytes: usize,
+    connect_timeout: Duration,
+    network_timeout_ms: u64,
+    pingpong_timeout_sec: u64,
+    ping_interval_sec: u32,
+    event_queue_capacity: usize,
+}
+
+impl EspWssTuning {
+    fn for_profile(profile: WssConnectProfile) -> Self {
+        match profile {
+            WssConnectProfile::Gateway => Self {
+                buffer_size: 4096,
+                max_send_payload_bytes: 4096 - 32,
+                connect_timeout: Duration::from_secs(10),
+                network_timeout_ms: 30_000,
+                pingpong_timeout_sec: 60,
+                ping_interval_sec: 10,
+                event_queue_capacity: 32,
+            },
+            WssConnectProfile::Realtime => Self {
+                buffer_size: 4096,
+                max_send_payload_bytes: 4096 - 32,
+                connect_timeout: Duration::from_secs(10),
+                network_timeout_ms: 15_000,
+                pingpong_timeout_sec: 20,
+                ping_interval_sec: 5,
+                event_queue_capacity: 64,
+            },
+        }
+    }
+}
 
 fn take_event_buf(min_capacity: usize) -> Vec<u8> {
     let pool = EVENT_BUF_POOL.get_or_init(|| Mutex::new(Vec::with_capacity(EVENT_BUF_POOL_MAX)));
@@ -50,7 +83,7 @@ fn take_event_buf(min_capacity: usize) -> Vec<u8> {
 }
 
 fn recycle_event_buf(mut buf: Vec<u8>) {
-    if buf.capacity() > (DEFAULT_WSS_BUFFER_SIZE * 2) {
+    if buf.capacity() > MAX_RECYCLED_EVENT_BUFFER_BYTES {
         return;
     }
     buf.clear();
@@ -63,7 +96,12 @@ fn recycle_event_buf(mut buf: Vec<u8>) {
 }
 
 struct CallbackState {
-    tx: mpsc::SyncSender<WssEvent>,
+    tx: mpsc::SyncSender<EspConnEvent>,
+}
+
+enum EspConnEvent {
+    Connected,
+    Event(WssEvent),
 }
 
 fn defer_callback_state_release(state: Box<CallbackState>) {
@@ -84,8 +122,10 @@ fn defer_callback_state_release(state: Box<CallbackState>) {
 pub struct EspWssConnection {
     handle: sys::esp_websocket_client_handle_t,
     send_timeout_ticks: sys::TickType_t,
+    max_send_payload_bytes: usize,
     callback_state: Option<Box<CallbackState>>,
-    rx: mpsc::Receiver<WssEvent>,
+    rx: mpsc::Receiver<EspConnEvent>,
+    pending_events: VecDeque<WssEvent>,
 }
 
 unsafe impl Send for EspWssConnection {}
@@ -127,10 +167,11 @@ impl Drop for EspWssConnection {
 
 impl EspWssConnection {
     fn recv_to_event(
-        r: std::result::Result<WssEvent, mpsc::RecvTimeoutError>,
+        r: std::result::Result<EspConnEvent, mpsc::RecvTimeoutError>,
     ) -> Result<Option<WssEvent>> {
         match r {
-            Ok(ev) => Ok(Some(ev)),
+            Ok(EspConnEvent::Event(ev)) => Ok(Some(ev)),
+            Ok(EspConnEvent::Connected) => Ok(None),
             Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(Error::Other {
                 source: Box::new(std::io::Error::new(
@@ -141,18 +182,52 @@ impl EspWssConnection {
             }),
         }
     }
+
+    fn wait_until_connected(&mut self, timeout: Duration) -> Result<()> {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            let wait = deadline.saturating_duration_since(Instant::now());
+            match self.rx.recv_timeout(wait) {
+                Ok(EspConnEvent::Connected) => return Ok(()),
+                Ok(EspConnEvent::Event(WssEvent::Binary(data))) => {
+                    self.pending_events.push_back(WssEvent::Binary(data));
+                }
+                Ok(EspConnEvent::Event(WssEvent::Disconnected))
+                | Ok(EspConnEvent::Event(WssEvent::Closed)) => {
+                    return Err(Error::config(
+                        "wss_esp_connect",
+                        "websocket closed before handshake completed",
+                    ));
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(Error::config(
+                        "wss_esp_connect",
+                        "websocket event channel closed during connect",
+                    ));
+                }
+            }
+        }
+        Err(Error::config(
+            "wss_esp_connect",
+            format!(
+                "websocket connect timed out after {}ms",
+                timeout.as_millis()
+            ),
+        ))
+    }
 }
 
 impl WssConnection for EspWssConnection {
     fn send_binary(&mut self, data: &[u8]) -> Result<()> {
-        if data.len() > MAX_WSS_SEND_PAYLOAD_BYTES {
+        if data.len() > self.max_send_payload_bytes {
             return Err(Error::Other {
                 source: Box::new(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     format!(
                         "wss payload too large: {} > {}",
                         data.len(),
-                        MAX_WSS_SEND_PAYLOAD_BYTES
+                        self.max_send_payload_bytes
                     ),
                 )),
                 stage: "wss_esp_send",
@@ -178,14 +253,14 @@ impl WssConnection for EspWssConnection {
     }
 
     fn send_text(&mut self, text: &str) -> Result<()> {
-        if text.len() > MAX_WSS_SEND_PAYLOAD_BYTES {
+        if text.len() > self.max_send_payload_bytes {
             return Err(Error::Other {
                 source: Box::new(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     format!(
                         "wss payload too large: {} > {}",
                         text.len(),
-                        MAX_WSS_SEND_PAYLOAD_BYTES
+                        self.max_send_payload_bytes
                     ),
                 )),
                 stage: "wss_esp_send",
@@ -211,6 +286,9 @@ impl WssConnection for EspWssConnection {
     }
 
     fn recv_timeout(&mut self, timeout: Duration) -> Result<Option<WssEvent>> {
+        if let Some(event) = self.pending_events.pop_front() {
+            return Ok(Some(event));
+        }
         Self::recv_to_event(self.rx.recv_timeout(timeout))
     }
 }
@@ -237,7 +315,7 @@ extern "C" fn handle_ws_event(
 unsafe fn map_ws_event(
     event_id: i32,
     event_data: *mut sys::esp_websocket_event_data_t,
-) -> Option<WssEvent> {
+) -> Option<EspConnEvent> {
     match event_id {
         sys::esp_websocket_event_id_t_WEBSOCKET_EVENT_ERROR => {
             if let Some(data) = event_data.as_ref() {
@@ -249,14 +327,18 @@ unsafe fn map_ws_event(
                     data.error_handle.esp_transport_sock_errno
                 );
             }
-            Some(WssEvent::Disconnected)
+            Some(EspConnEvent::Event(WssEvent::Disconnected))
         }
-        sys::esp_websocket_event_id_t_WEBSOCKET_EVENT_CONNECTED
-        | sys::esp_websocket_event_id_t_WEBSOCKET_EVENT_BEFORE_CONNECT
+        sys::esp_websocket_event_id_t_WEBSOCKET_EVENT_CONNECTED => Some(EspConnEvent::Connected),
+        sys::esp_websocket_event_id_t_WEBSOCKET_EVENT_BEFORE_CONNECT
         | sys::esp_websocket_event_id_t_WEBSOCKET_EVENT_BEGIN
         | sys::esp_websocket_event_id_t_WEBSOCKET_EVENT_FINISH => None,
-        sys::esp_websocket_event_id_t_WEBSOCKET_EVENT_DISCONNECTED => Some(WssEvent::Disconnected),
-        sys::esp_websocket_event_id_t_WEBSOCKET_EVENT_CLOSED => Some(WssEvent::Closed),
+        sys::esp_websocket_event_id_t_WEBSOCKET_EVENT_DISCONNECTED => {
+            Some(EspConnEvent::Event(WssEvent::Disconnected))
+        }
+        sys::esp_websocket_event_id_t_WEBSOCKET_EVENT_CLOSED => {
+            Some(EspConnEvent::Event(WssEvent::Closed))
+        }
         sys::esp_websocket_event_id_t_WEBSOCKET_EVENT_DATA => {
             let data = event_data.as_ref()?;
             match data.op_code {
@@ -265,19 +347,18 @@ unsafe fn map_ws_event(
                     let ptr = data.data_ptr as *const u8;
                     if ptr.is_null() && len > 0 {
                         log::warn!("[wss] websocket data event has null payload pointer");
-                        return Some(WssEvent::Disconnected);
+                        return Some(EspConnEvent::Event(WssEvent::Disconnected));
                     }
                     let mut buf = take_event_buf(len);
                     if len > 0 {
                         let bytes = std::slice::from_raw_parts(ptr, len);
                         buf.extend_from_slice(bytes);
                     }
-                    Some(WssEvent::Binary(WssBinary::from_vec_with_recycler(
-                        buf,
-                        recycle_event_buf,
+                    Some(EspConnEvent::Event(WssEvent::Binary(
+                        WssBinary::from_vec_with_recycler(buf, recycle_event_buf),
                     )))
                 }
-                8 => Some(WssEvent::Closed),
+                8 => Some(EspConnEvent::Event(WssEvent::Closed)),
                 9 | 10 => None,
                 opcode => {
                     log::debug!("[wss] ignore websocket opcode={}", opcode);
@@ -293,12 +374,20 @@ unsafe fn map_ws_event(
 const WSS_TLS_ADMISSION_TIMEOUT_SECS: u64 = 30;
 
 pub fn connect_esp_wss(url: &str) -> Result<EspWssConnection> {
-    connect_esp_wss_with_headers(url, &[])
+    connect_esp_wss_with_profile(url, WssConnectProfile::Gateway)
 }
 
-pub fn connect_esp_wss_with_headers(
+pub fn connect_esp_wss_with_profile(
+    url: &str,
+    profile: WssConnectProfile,
+) -> Result<EspWssConnection> {
+    connect_esp_wss_with_headers_and_profile(url, &[], profile)
+}
+
+pub fn connect_esp_wss_with_headers_and_profile(
     url: &str,
     headers: &[(&str, &str)],
+    profile: WssConnectProfile,
 ) -> Result<EspWssConnection> {
     let _permit = crate::orchestrator::request_http_permit(
         crate::orchestrator::Priority::High,
@@ -318,15 +407,15 @@ pub fn connect_esp_wss_with_headers(
                 .map_err(|e| Error::config("wss_esp_connect", e.to_string()))?,
         )
     };
-    let timeout = Duration::from_millis(CONNECT_TIMEOUT_MS);
-    let send_timeout_ticks = TickType::from(timeout).0;
+    let tuning = EspWssTuning::for_profile(profile);
+    let send_timeout_ticks = TickType::from(tuning.connect_timeout).0;
 
     let mut config = sys::esp_websocket_client_config_t::default();
     config.uri = url_c.as_ptr();
     if let Some(headers_c) = headers_c.as_ref() {
         config.headers = headers_c.as_ptr();
     }
-    config.buffer_size = DEFAULT_WSS_BUFFER_SIZE as i32;
+    config.buffer_size = tuning.buffer_size as i32;
     config.transport = sys::esp_websocket_transport_t_WEBSOCKET_TRANSPORT_OVER_SSL;
     config.use_global_ca_store = false;
     config.disable_auto_reconnect = true;
@@ -334,9 +423,9 @@ pub fn connect_esp_wss_with_headers(
     {
         config.crt_bundle_attach = Some(sys::esp_crt_bundle_attach);
     }
-    config.pingpong_timeout_sec = DEFAULT_PINGPONG_TIMEOUT_SEC as i32;
-    config.network_timeout_ms = DEFAULT_WS_TIMEOUT_MS as i32;
-    config.ping_interval_sec = 10;
+    config.pingpong_timeout_sec = tuning.pingpong_timeout_sec as i32;
+    config.network_timeout_ms = tuning.network_timeout_ms as i32;
+    config.ping_interval_sec = tuning.ping_interval_sec as usize;
     config.keep_alive_enable = true;
     config.keep_alive_idle = KEEPALIVE_IDLE_SECS as i32;
     config.keep_alive_interval = KEEPALIVE_INTERVAL_SECS as i32;
@@ -347,7 +436,7 @@ pub fn connect_esp_wss_with_headers(
         return Err(Error::esp("wss_esp_connect", sys::ESP_FAIL));
     }
 
-    let (tx, rx) = mpsc::sync_channel::<WssEvent>(32);
+    let (tx, rx) = mpsc::sync_channel::<EspConnEvent>(tuning.event_queue_capacity);
     let mut callback_state = Box::new(CallbackState { tx });
     let callback_ptr = callback_state.as_mut() as *mut CallbackState as *mut core::ffi::c_void;
 
@@ -377,13 +466,20 @@ pub fn connect_esp_wss_with_headers(
     }
 
     log::info!(
-        "wss client started (handshake runs asynchronously), url_len={}",
+        "wss client started, waiting for handshake completion, url_len={}",
         url.len()
     );
-    Ok(EspWssConnection {
+    let mut conn = EspWssConnection {
         handle,
         send_timeout_ticks,
+        max_send_payload_bytes: tuning.max_send_payload_bytes,
         callback_state: Some(callback_state),
         rx,
-    })
+        pending_events: VecDeque::new(),
+    };
+    if let Err(e) = conn.wait_until_connected(tuning.connect_timeout) {
+        drop(conn);
+        return Err(e);
+    }
+    Ok(conn)
 }

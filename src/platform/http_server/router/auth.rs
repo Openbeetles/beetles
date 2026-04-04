@@ -17,8 +17,8 @@ pub fn require_activated(store: &dyn ConfigStore) -> Option<ApiResponse> {
     None
 }
 
-/// 写操作鉴权：已激活且本次请求带配对码（header / query，与 `guard_pairing_csrf` 一致）。
-/// GET 类配置读取用 `require_activated`，不要求带头，以便固件内嵌页在设置码后无头 `fetch`。
+/// 配对码鉴权：已激活且本次请求带配对码（header / query，与 `guard_pairing_csrf` 一致）。
+/// 用于所有敏感配置读写接口；写操作额外叠加 CSRF。
 pub fn require_pairing_code(
     store: &dyn ConfigStore,
     uri: &str,

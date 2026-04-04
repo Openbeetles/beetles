@@ -26,7 +26,7 @@ pub struct HandlerContext {
 }
 
 impl HandlerContext {
-    /// 借用缓存配置的读锁。httpd 任务为单线程，不会死锁。
+    /// 借用缓存配置的读锁。
     pub fn config(&self) -> std::sync::RwLockReadGuard<'_, AppConfig> {
         self.cached_config.read().unwrap_or_else(|e| e.into_inner())
     }

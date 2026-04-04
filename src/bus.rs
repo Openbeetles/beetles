@@ -3,9 +3,9 @@
 
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
-use std::sync::Arc;
 
 pub use crate::constants::{DEFAULT_CAPACITY, MAX_CONTENT_LEN};
 pub use crate::util::{truncate_content_to_max, truncate_to_byte_len};

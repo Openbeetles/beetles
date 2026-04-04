@@ -5,8 +5,8 @@ use crate::bus::PcMsg;
 use crate::error::Result;
 use crate::llm::Message;
 use crate::memory::{
-    append_system_prompt_base, append_system_prompt_daily_note, build_context_messages,
-    ImportantMessageStore, MemoryStore, SessionMessage, SessionStore,
+    ImportantMessageStore, MemoryStore, SessionMessage, SessionStore, append_system_prompt_base,
+    append_system_prompt_daily_note, build_context_messages,
 };
 use crate::state;
 use std::fmt::Write as _;

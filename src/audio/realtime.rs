@@ -1,15 +1,17 @@
 //! 实时语音会话：唤醒后建立 WSS，会话内持续上送 PCM，并接收模型返回的语音增量。
 //! Realtime voice session over WSS: stream PCM in, play audio deltas out.
 
+use crate::Platform;
 use crate::audio::capture::AudioRecordingGuard;
-use crate::channels::{connect_wss_with_headers, WssConnection, WssEvent};
+use crate::channels::{
+    WssConnectProfile, WssConnection, WssEvent, connect_wss_with_headers_and_profile,
+};
 use crate::config::{
-    audio_realtime_enabled, AudioSegment, AUDIO_REALTIME_PCM16_SAMPLE_RATE,
-    AUDIO_REALTIME_PROVIDER_OPENAI_COMPATIBLE, AUDIO_REALTIME_PROVIDER_QWEN,
+    AUDIO_REALTIME_PCM16_SAMPLE_RATE, AUDIO_REALTIME_PROVIDER_OPENAI_COMPATIBLE,
+    AUDIO_REALTIME_PROVIDER_QWEN, AudioSegment, audio_realtime_enabled,
 };
 use crate::constants::AUDIO_CAPTURE_FRAME_SAMPLES;
 use crate::error::{Error, Result};
-use crate::Platform;
 use base64::Engine;
 use serde_json::json;
 use std::thread;
@@ -90,6 +92,43 @@ impl RealtimeLoopState {
     }
 }
 
+struct RealtimeUploadEncoder {
+    pcm_bytes: Vec<u8>,
+    audio_b64: String,
+    event_json: String,
+}
+
+impl RealtimeUploadEncoder {
+    fn new() -> Self {
+        let pcm_capacity = AUDIO_CAPTURE_FRAME_SAMPLES * 2;
+        let b64_capacity = ((pcm_capacity + 2) / 3) * 4;
+        Self {
+            pcm_bytes: Vec::with_capacity(pcm_capacity),
+            audio_b64: String::with_capacity(b64_capacity),
+            event_json: String::with_capacity(b64_capacity + 64),
+        }
+    }
+
+    fn build_append_event(&mut self, pcm: &[i16]) -> &str {
+        self.pcm_bytes.clear();
+        self.pcm_bytes.reserve(pcm.len().saturating_mul(2));
+        for sample in pcm {
+            self.pcm_bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+
+        self.audio_b64.clear();
+        base64::engine::general_purpose::STANDARD
+            .encode_string(self.pcm_bytes.as_slice(), &mut self.audio_b64);
+
+        self.event_json.clear();
+        self.event_json
+            .push_str("{\"type\":\"input_audio_buffer.append\",\"audio\":\"");
+        self.event_json.push_str(self.audio_b64.as_str());
+        self.event_json.push_str("\"}");
+        self.event_json.as_str()
+    }
+}
+
 pub fn run_realtime_session(
     platform: &dyn Platform,
     audio_cfg: &AudioSegment,
@@ -111,6 +150,7 @@ pub fn run_realtime_session(
     let mut conn = connect_realtime_wss(ws_url.as_str(), &headers)?;
     let mut state = RealtimeLoopState::new();
     let mut mic_frame = [0i16; AUDIO_CAPTURE_FRAME_SAMPLES];
+    let mut upload_encoder = RealtimeUploadEncoder::new();
 
     send_text_retry(
         conn.as_mut(),
@@ -140,7 +180,11 @@ pub fn run_realtime_session(
             continue;
         }
 
-        append_audio_frame(conn.as_mut(), &mic_frame[..n.min(mic_frame.len())])?;
+        append_audio_frame(
+            conn.as_mut(),
+            &mut upload_encoder,
+            &mic_frame[..n.min(mic_frame.len())],
+        )?;
         state.input_samples = state.input_samples.saturating_add(n);
         state.last_activity = Instant::now();
     }
@@ -158,7 +202,11 @@ pub fn run_realtime_session(
 }
 
 fn connect_realtime_wss(url: &str, headers: &[(&str, &str)]) -> Result<Box<dyn WssConnection>> {
-    Ok(Box::new(connect_wss_with_headers(url, headers)?))
+    Ok(Box::new(connect_wss_with_headers_and_profile(
+        url,
+        headers,
+        WssConnectProfile::Realtime,
+    )?))
 }
 
 fn build_realtime_headers<'a>(
@@ -349,18 +397,12 @@ fn handle_server_message(
     }
 }
 
-fn append_audio_frame(conn: &mut dyn WssConnection, pcm: &[i16]) -> Result<()> {
-    let mut bytes = Vec::with_capacity(pcm.len() * 2);
-    for sample in pcm {
-        bytes.extend_from_slice(&sample.to_le_bytes());
-    }
-    let audio = base64::engine::general_purpose::STANDARD.encode(bytes);
-    let event = json!({
-        "type": "input_audio_buffer.append",
-        "audio": audio,
-    })
-    .to_string();
-    conn.send_text(&event)
+fn append_audio_frame(
+    conn: &mut dyn WssConnection,
+    encoder: &mut RealtimeUploadEncoder,
+    pcm: &[i16],
+) -> Result<()> {
+    conn.send_text(encoder.build_append_event(pcm))
 }
 
 fn decode_pcm16_delta(delta_b64: &str) -> Result<Vec<i16>> {
@@ -392,16 +434,18 @@ fn samples_to_ms(samples: usize) -> u128 {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_realtime_headers, build_session_update, RealtimeProvider, REALTIME_OPENAI_BETA,
+        REALTIME_OPENAI_BETA, RealtimeProvider, build_realtime_headers, build_session_update,
     };
     use crate::config::default_disabled_audio_segment;
 
     #[test]
     fn openai_headers_include_beta_flag() {
         let headers = build_realtime_headers(RealtimeProvider::OpenAiCompatible, "Bearer token");
-        assert!(headers
-            .iter()
-            .any(|(name, value)| *name == "openai-beta" && *value == REALTIME_OPENAI_BETA));
+        assert!(
+            headers
+                .iter()
+                .any(|(name, value)| *name == "openai-beta" && *value == REALTIME_OPENAI_BETA)
+        );
     }
 
     #[test]

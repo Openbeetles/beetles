@@ -150,7 +150,7 @@ pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
     loc: crate::i18n::Locale,
 ) -> super::super::connectivity::ChannelConnectivityItem {
     use super::super::connectivity;
-    use crate::i18n::{tr, Message};
+    use crate::i18n::{Message, tr};
     let configured =
         !config.qq_channel_app_id.trim().is_empty() && !config.qq_channel_secret.trim().is_empty();
     if !configured {

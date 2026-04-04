@@ -8,12 +8,12 @@
 use crate::display::DisplayConfig;
 use crate::error::{Error, Result};
 use embedded_graphics_core::{
+    Pixel,
     draw_target::DrawTarget,
     geometry::{OriginDimensions, Size},
     pixelcolor::Rgb565,
-    Pixel,
 };
-use embedded_graphics_framebuf::{backends::FrameBufferBackend, FrameBuf};
+use embedded_graphics_framebuf::{FrameBuf, backends::FrameBufferBackend};
 use std::convert::Infallible;
 use std::os::unix::io::RawFd;
 

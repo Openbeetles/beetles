@@ -358,7 +358,7 @@ pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
     loc: crate::i18n::Locale,
 ) -> super::super::connectivity::ChannelConnectivityItem {
     use super::super::connectivity;
-    use crate::i18n::{tr, Message};
+    use crate::i18n::{Message, tr};
     let configured =
         !config.feishu_app_id.trim().is_empty() && !config.feishu_app_secret.trim().is_empty();
     if !configured {
