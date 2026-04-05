@@ -10,14 +10,15 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload},
+    ExecutionState, ExecutionStateStore, InnerLifePolicy, InnerLifeStore, InternalMemoryLayerFocus,
+    LongTermMemoryStore, MemoryProfile, PrivateDocStore, PrivateDocWorkspace, SelfContinuity,
+    SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
+    SessionSummaryStore,
+    llm_json::{LlmJsonPayload, get_object_text, parse_llm_json_payload},
     memory_policy, render_execution_state_block, render_internal_memory_topology_block,
     render_private_doc_workspace_block, render_private_memory_boundary_block,
     render_self_continuity_block, render_self_model_block, render_shared_factual_plane_block,
-    whole_record_lease_advanced, ExecutionState, ExecutionStateStore, InnerLifePolicy,
-    InnerLifeStore, InternalMemoryLayerFocus, LongTermMemoryStore, MemoryProfile, PrivateDocStore,
-    PrivateDocWorkspace, SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore,
-    SessionMessage, SessionStore, SessionSummaryStore,
+    whole_record_lease_advanced,
 };
 
 pub const INNER_LIFE_SYSTEM_PROMPT: &str = "You maintain the AI assistant's private inner life. Return JSON only: either null or one object with fields internal_monologue, private_journal, emotional_drift, attention_drift. This layer is subjective, first-person is allowed, and it may carry ambiguity, mood, or inward texture. It must stay compact. Do not copy transcript lines, generic assistant boilerplate, raw tool payloads, secrets, or factual memory that belongs elsewhere. Durable objective material belongs in the shared factual plane, and durable private identity belongs in self-continuity or self-model; use this layer for active inward afterglow, emotional movement, and current attentional drift.";
@@ -457,9 +458,11 @@ mod tests {
         let ParsedInnerLifeResponse::Update(parsed) = parse_inner_life_response(&raw, 7) else {
             panic!("expected parsed inner life");
         };
-        assert!(parsed
-            .internal_monologue
-            .contains("thought: stabilize parser"));
+        assert!(
+            parsed
+                .internal_monologue
+                .contains("thought: stabilize parser")
+        );
         assert_eq!(parsed.private_journal, "fixed warning; kept semantics");
         assert_eq!(parsed.emotional_drift, "true");
         assert_eq!(parsed.attention_drift, "3");

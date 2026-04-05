@@ -5,7 +5,7 @@
 
 use super::HandlerContext;
 use crate::config;
-use crate::i18n::{locale_from_store, tr, Message};
+use crate::i18n::{Message, locale_from_store, tr};
 use crate::platform::http_server::common::to_io;
 use crate::state;
 use std::sync::atomic::Ordering;
@@ -124,6 +124,22 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         "audio_duplex_profile": audio_caps.profile(),
         "audio_duplex_capabilities": audio_caps,
     });
+
+    if let Some(obj) = json.as_object_mut() {
+        match ctx.platform.storage_media() {
+            Ok(media) => {
+                obj.insert("storage_media".to_string(), serde_json::json!(media));
+            }
+            Err(e) => {
+                log::warn!("[system_info] storage media probe failed: {}", e);
+                obj.insert("storage_media".to_string(), serde_json::json!([]));
+                obj.insert(
+                    "storage_media_error".to_string(),
+                    serde_json::json!(e.to_string()),
+                );
+            }
+        }
+    }
 
     // Linux 特有字段——统一从 board_info 共享函数取值，避免重复解析 /proc。
     #[cfg(target_os = "linux")]

@@ -5,6 +5,7 @@ export const zhCN = {
       tagline: '配置',
     },
     nav: {
+      brandHome: '返回首页',
       device: '连接设备',
       deviceConfig: '设备配置',
       aiConfig: 'AI 配置',
@@ -421,6 +422,7 @@ export const zhCN = {
       errorNetwork: '网络异常，请检查连接后重试。',
       deviceDisconnectedCache: '设备已断开，当前为缓存数据，仅供查看。',
       clearCache: '清空缓存',
+      editDeviceConnection: '编辑设备连接',
       sectionSystem: '系统',
       sectionSystemDesc: 'WiFi、代理与会话等系统项。',
       sectionProxy: '代理',
@@ -669,6 +671,8 @@ export const zhCN = {
       importOk: '技能导入成功',
       discardEditTitle: '放弃修改？',
       discardEditDesc: '当前有未保存的修改，关闭将丢失。确定放弃？',
+      discardImportTitle: '放弃导入？',
+      discardImportDesc: '已填写 URL 或技能名称，关闭将清空。确定放弃？',
     },
     tools: {
       pageTitle: '工具管理',
@@ -716,7 +720,7 @@ export const zhCN = {
       dark: '深色',
       blue: '蓝色',
       teal: '青绿',
-      logo: 'Logo（紫青）',
+      logo: '紫青',
       firmware: '固件内置',
     },
   },

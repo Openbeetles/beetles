@@ -93,7 +93,7 @@ export function DeviceConfigLayout() {
         sx={{
           flexShrink: 0,
           borderBottom: "none",
-          backgroundColor: "var(--surface)",
+          backgroundColor: "var(--card)",
         }}
       >
         <Tabs
@@ -102,8 +102,6 @@ export function DeviceConfigLayout() {
           sx={{
             minHeight: 48,
             "& .MuiTab-root": {
-              textTransform: "none",
-              fontWeight: 600,
               fontSize: "var(--font-size-body-sm)",
             },
           }}

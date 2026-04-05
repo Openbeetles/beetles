@@ -3,6 +3,7 @@ import Box from "@mui/material/Box";
 import CssBaseline from "@mui/material/CssBaseline";
 import { ThemeProvider } from "@mui/material/styles";
 import { createAppTheme } from "../theme/appTheme";
+import { BEETLE_AMBIENT_BACKDROP_SX } from "../theme/beetleAmbientBackdrop";
 import { useAppPreferences } from "../hooks/useAppPreferences";
 import i18n from "../i18n";
 
@@ -32,7 +33,7 @@ const gradientBackground = {
   },
 } as const;
 
-/** 主内容区 PCB 点阵见 [theme/pcbSurface.ts]：opaque surface 会挡住本层，故画在 Layout main 上 */
+/** 主内容区 PCB 点阵见 [theme/pcbSurface.ts]；全局甲壳虫氛围见 [theme/beetleAmbientBackdrop.ts]。 */
 
 export function ThemeAndBaseline({ children }: PropsWithChildren) {
   const { language, themeMode, themeBrand } = useAppPreferences();
@@ -54,6 +55,7 @@ export function ThemeAndBaseline({ children }: PropsWithChildren) {
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <Box aria-hidden sx={gradientBackground} />
+      <Box aria-hidden sx={BEETLE_AMBIENT_BACKDROP_SX} />
       <Box sx={{ position: "relative", zIndex: 1 }}>{children}</Box>
     </ThemeProvider>
   );

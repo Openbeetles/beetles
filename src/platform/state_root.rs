@@ -3,6 +3,8 @@
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use crate::error::{Error, Result};
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+use crate::memory::REL_PATH_SESSIONS_DIR;
 use std::path::PathBuf;
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -20,6 +22,8 @@ pub(crate) fn init_host_state_root() -> Result<()> {
     let root = resolve_host_state_root()?;
     std::fs::create_dir_all(&root).map_err(|e| Error::io("state_root", e))?;
     std::fs::create_dir_all(root.join("nvs")).map_err(|e| Error::io("state_root", e))?;
+    std::fs::create_dir_all(root.join(REL_PATH_SESSIONS_DIR))
+        .map_err(|e| Error::io("state_root", e))?;
     // `SpiffsSkillStorage::list_names` uses read_dir; host must have the dir (unlike single-file stores).
     std::fs::create_dir_all(root.join("skills")).map_err(|e| Error::io("state_root", e))?;
     STATE_ROOT

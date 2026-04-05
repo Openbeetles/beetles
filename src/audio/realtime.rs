@@ -1,14 +1,15 @@
 //! 实时语音会话：唤醒后建立 WSS，会话内持续上送 PCM，并接收模型返回的语音增量。
 //! Realtime voice session over WSS: stream PCM in, play audio deltas out.
 
+use crate::Platform;
 use crate::audio::capture::AudioRecordingGuard;
-use crate::audio::energy::{normalized_rms, EndpointConfig, EndpointEvent, EndpointState};
+use crate::audio::energy::{EndpointConfig, EndpointEvent, EndpointState, normalized_rms};
 use crate::channels::{
-    connect_wss_with_headers_and_profile, WssCloseInfo, WssConnectProfile, WssConnection, WssEvent,
+    WssCloseInfo, WssConnectProfile, WssConnection, WssEvent, connect_wss_with_headers_and_profile,
 };
 use crate::config::{
-    audio_realtime_enabled, AudioSegment, AUDIO_REALTIME_PROVIDER_BAIDU,
-    AUDIO_REALTIME_PROVIDER_OPENAI_COMPATIBLE, AUDIO_REALTIME_PROVIDER_QWEN,
+    AUDIO_REALTIME_PROVIDER_BAIDU, AUDIO_REALTIME_PROVIDER_OPENAI_COMPATIBLE,
+    AUDIO_REALTIME_PROVIDER_QWEN, AudioSegment, audio_realtime_enabled,
 };
 use crate::constants::{AUDIO_CAPTURE_FRAME_SAMPLES, AUDIO_TTS_WRITE_CHUNK_SAMPLES};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -18,7 +19,6 @@ use crate::constants::{
 };
 use crate::error::{Error, Result};
 use crate::platform::AudioDuplexCapabilities;
-use crate::Platform;
 use base64::Engine;
 use serde_json::json;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -351,11 +351,7 @@ impl Drop for RealtimeSessionCleanup<'_> {
 
 fn next_turn_generation(current: u32) -> u32 {
     let next = current.wrapping_add(1);
-    if next == 0 {
-        1
-    } else {
-        next
-    }
+    if next == 0 { 1 } else { next }
 }
 
 struct RealtimeUploadEncoder {
@@ -1767,10 +1763,10 @@ fn samples_to_ms(samples: usize, sample_rate_hz: u32) -> u128 {
 #[cfg(test)]
 mod tests {
     use super::{
+        REALTIME_OPENAI_BETA, RealtimeProvider, RealtimeUploadEncoder,
         build_baidu_license_activation, build_realtime_headers, build_realtime_ws_url,
         build_session_update, realtime_ws_url_needs_openai_beta, redact_realtime_ws_url,
-        server_message_marks_session_ready, strip_baidu_audio_prefix, RealtimeProvider,
-        RealtimeUploadEncoder, REALTIME_OPENAI_BETA,
+        server_message_marks_session_ready, strip_baidu_audio_prefix,
     };
     use crate::config::default_disabled_audio_segment;
 
@@ -1782,9 +1778,11 @@ mod tests {
             "wss://api.openai.com/v1/realtime?model=gpt-realtime",
         )
         .unwrap();
-        assert!(headers
-            .iter()
-            .any(|(name, value)| *name == "OpenAI-Beta" && *value == REALTIME_OPENAI_BETA));
+        assert!(
+            headers
+                .iter()
+                .any(|(name, value)| *name == "OpenAI-Beta" && *value == REALTIME_OPENAI_BETA)
+        );
     }
 
     #[test]

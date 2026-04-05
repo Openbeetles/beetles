@@ -2,13 +2,13 @@
 
 use crate::error::Result;
 use crate::platform::SkillStorage;
-use crate::skills::{govern_runtime_skills, RuntimeSkillGovernanceOutcome};
+use crate::skills::{RuntimeSkillGovernanceOutcome, govern_runtime_skills};
 use crate::util::{current_unix_secs, truncate_content_to_max};
 
 use super::{
-    build_archive_reconcile_drafts, maintain_archive_search_backend, LongTermMemoryDraft,
-    LongTermMemoryStore, MemoryProfile, MemoryStore, SessionStore, SessionSummaryStore,
-    TurnLedgerStore,
+    LongTermMemoryDraft, LongTermMemoryStore, MemoryProfile, MemoryStore, SessionStore,
+    SessionSummaryStore, TurnLedgerStore, build_archive_reconcile_drafts,
+    maintain_archive_search_backend,
 };
 
 const DAILY_AGGREGATE_MARKER: &str = "<!-- beetle:hygiene:daily-aggregate -->";
@@ -480,10 +480,12 @@ mod tests {
         assert_eq!(changed, 2);
         let aggregate = store.get_daily_note("2026-03-archive.md").unwrap();
         assert!(aggregate.contains("2026-03-01.md"));
-        assert!(store
-            .get_daily_note("2026-03-01.md")
-            .unwrap()
-            .contains("Archived into"));
+        assert!(
+            store
+                .get_daily_note("2026-03-01.md")
+                .unwrap()
+                .contains("Archived into")
+        );
     }
 
     #[test]
@@ -494,10 +496,12 @@ mod tests {
         let rolled =
             rollup_aging_transcripts(&session_store, &summary_store, &memory_store).unwrap();
         assert_eq!(rolled, 1);
-        assert!(memory_store
-            .get_daily_note("transcript-aging-chat-1.md")
-            .unwrap()
-            .contains("summary"));
+        assert!(
+            memory_store
+                .get_daily_note("transcript-aging-chat-1.md")
+                .unwrap()
+                .contains("summary")
+        );
     }
 
     #[test]
@@ -586,10 +590,12 @@ probe"#,
         );
 
         assert_eq!(outcome.runtime_skill_governance.pruned, 1);
-        assert!(skill_storage
-            .files
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_empty());
+        assert!(
+            skill_storage
+                .files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty()
+        );
     }
 }

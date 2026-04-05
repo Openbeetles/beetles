@@ -396,7 +396,11 @@ export function AudioConfigPanel() {
   }
 
   useEffect(() => {
-    void refreshUsbAudioDevices()
+    queueMicrotask(() => {
+      void refreshUsbAudioDevices()
+    })
+    // refreshUsbAudioDevices 为组件内异步闭包，纳入 deps 会导致每轮渲染重跑
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- USB 列表随音频开关/设备类型刷新
   }, [audioOn, api.hardware, form.speaker.device_type, linuxRuntime, spkOn])
 
   if (audioLoading && !audioConfig && !draft) {
@@ -503,7 +507,7 @@ export function AudioConfigPanel() {
               label={t('audioConfig.enabled')}
             />
             {!audioOn ? (
-              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              <Typography variant="body2" sx={{ mt: 1, color: "var(--muted)" }}>
                 {t('audioConfig.hintEnableAudioFirst')}
               </Typography>
             ) : null}
@@ -522,8 +526,7 @@ export function AudioConfigPanel() {
                   minHeight: 44,
                   '& .MuiTab-root': {
                     minHeight: 44,
-                    textTransform: 'none',
-                    fontSize: '0.875rem',
+                    fontSize: 'var(--font-size-body-sm)',
                   },
                 }}
               >
@@ -986,7 +989,7 @@ export function AudioConfigPanel() {
                       ) : null}
                     </Box>
                     {speakerUsesUsbDevice && selectedUsbAudioDevice && usbSpeakerSupportsInput(selectedUsbAudioDevice) ? (
-                      <Typography variant="body2" color="text.secondary">
+                      <Typography variant="body2" sx={{ color: "var(--muted)" }}>
                         {t('audioConfig.speakerUsbComboHint')}
                       </Typography>
                     ) : null}
@@ -999,7 +1002,7 @@ export function AudioConfigPanel() {
                 {activeAudioTab === 1 && (
                   <>
                     <FormSectionSub title={t('audioConfig.sectionSpeechRouting')}>
-                      <Typography variant="body2" color="text.secondary">
+                      <Typography variant="body2" sx={{ color: "var(--muted)" }}>
                         {speechRoutingDescription}
                       </Typography>
                     </FormSectionSub>
@@ -1008,7 +1011,7 @@ export function AudioConfigPanel() {
                       <FormSectionSubCollapsible title={t('audioConfig.sectionSpeechService')}>
                         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
                           {realtimeWakeEnabled ? (
-                            <Typography variant="body2" color="text.secondary">
+                            <Typography variant="body2" sx={{ color: "var(--muted)" }}>
                               {t('audioConfig.speechFallbackReservedHelp')}
                             </Typography>
                           ) : null}
@@ -1287,11 +1290,11 @@ export function AudioConfigPanel() {
                       <FormSectionSubCollapsible title={t('audioConfig.sectionRealtime')}>
                         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                           {realtimeReady ? (
-                            <Typography variant="body2" color="text.secondary">
+                            <Typography variant="body2" sx={{ color: "var(--muted)" }}>
                               {t('audioConfig.realtimeConfiguredHelp')}
                             </Typography>
                           ) : null}
-                          <Typography variant="body2" color="text.secondary">
+                          <Typography variant="body2" sx={{ color: "var(--muted)" }}>
                             {`${t('audioConfig.realtimeSampleRateHint')} ${realtimeSampleRate} Hz`}
                           </Typography>
                           <Box sx={fieldGridSx}>
@@ -1600,7 +1603,7 @@ export function AudioConfigPanel() {
                               label={t('audioConfig.ambientDetectEmotions')}
                             />
                             <Box sx={{ gridColumn: '1 / -1' }}>
-                              <Typography variant="caption" color="text.secondary" display="block">
+                              <Typography variant="caption" display="block" sx={{ color: "var(--muted)" }}>
                                 {t('audioConfig.soundEventsPick')}
                               </Typography>
                               <FormGroup row sx={{ flexWrap: 'wrap', gap: 0.5, mt: 0.5 }}>

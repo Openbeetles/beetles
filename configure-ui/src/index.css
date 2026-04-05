@@ -10,3 +10,33 @@
 *::after {
   box-sizing: border-box;
 }
+
+/* BeetleIcon（与 beetle_site CyberBeetleMark 一致的翅/核心动效，前缀避免冲突） */
+@keyframes beetle-wing-flap-left {
+  0% {
+    transform: rotate(0deg) skewY(0deg);
+  }
+  100% {
+    transform: rotate(-20deg) skewY(5deg);
+  }
+}
+
+@keyframes beetle-wing-flap-right {
+  0% {
+    transform: rotate(0deg) skewY(0deg);
+  }
+  100% {
+    transform: rotate(20deg) skewY(-5deg);
+  }
+}
+
+@keyframes beetle-pulse-glow {
+  0% {
+    filter: drop-shadow(0 0 2px var(--primary));
+    opacity: 0.6;
+  }
+  100% {
+    filter: drop-shadow(0 0 12px var(--primary));
+    opacity: 1;
+  }
+}

@@ -2,22 +2,22 @@
 //! ESP HTTP server thin adapter: map `Request` → `router::IncomingRequest` → write response.
 
 use crate::error::Result;
-use crate::i18n::{locale_from_store, tr, Message};
+use crate::i18n::{Message, locale_from_store, tr};
+use crate::platform::ConfigStore;
 use crate::platform::http_server::common::{
-    self, ApiResponse, BodyReadError, HandlerResult, CORS_HEADERS, POST_BODY_MAX_LEN,
+    self, ApiResponse, BodyReadError, CORS_HEADERS, HandlerResult, POST_BODY_MAX_LEN,
 };
 use crate::platform::http_server::handlers::HandlerContext;
 use crate::platform::http_server::router::{
     self, IncomingRequest, OutgoingResponse, RestartAction, RouterEnv,
 };
-use crate::platform::ConfigStore;
 use embedded_io::Write as _;
 use embedded_svc::http::server::Request;
 use embedded_svc::http::{Headers, Method};
 use esp_idf_svc::http::server::Connection;
 use esp_idf_svc::http::server::EspHttpServer;
-use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 use std::time::Duration;
 
 #[derive(Clone, Copy)]
@@ -386,7 +386,11 @@ const PAIRING_AND_CONFIG_ROUTES: &[EspRouteSpec] = &[
     EspRouteSpec::new("/api/wifi/scan", Method::Get, EspBodyMode::None),
     EspRouteSpec::new("/api/wifi/scan", Method::Options, EspBodyMode::None),
     EspRouteSpec::new("/api/hardware/discovery", Method::Get, EspBodyMode::None),
-    EspRouteSpec::new("/api/hardware/discovery", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new(
+        "/api/hardware/discovery",
+        Method::Options,
+        EspBodyMode::None,
+    ),
     EspRouteSpec::new("/api/csrf_token", Method::Get, EspBodyMode::None),
     EspRouteSpec::new("/api/csrf_token", Method::Options, EspBodyMode::None),
 ];

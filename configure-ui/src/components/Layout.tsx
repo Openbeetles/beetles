@@ -9,6 +9,7 @@ import {
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Drawer from "@mui/material/Drawer";
+import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import { useTheme } from "@mui/material/styles";
 import useMediaQuery from "@mui/material/useMediaQuery";
@@ -25,6 +26,7 @@ import { TopBar } from "./TopBar";
 import { NavBlockerContext } from "../contexts/NavBlockerContext";
 import { PcbDecorOverlay } from "./PcbDecorOverlay";
 import { MAIN_SURFACE_PCB_SX } from "../theme/pcbSurface";
+import { SHELL_CHROME_SURFACE_SX } from "../theme/shellChromeSurface";
 import { UnsavedContext } from "../contexts/UnsavedContext";
 import { useConfig } from "../hooks/useConfig";
 import { useToast } from "../hooks/useToast";
@@ -52,12 +54,23 @@ function MainSurface({ children }: { children: ReactNode }) {
         overflow: "auto",
         pt: 3,
         pb: 5,
-        px: { xs: 2, md: 3 },
+        /** 水平不设 padding：丝印底与顶栏同宽；内层与 TopBar/DeviceBanner 的 px:2 对齐 */
+        px: 0,
         width: "100%",
       }}
     >
       <PcbDecorOverlay />
-      <Box sx={{ position: "relative", zIndex: 1 }}>{children}</Box>
+      <Box
+        sx={{
+          position: "relative",
+          zIndex: 1,
+          px: 2,
+          maxWidth: "100%",
+          boxSizing: "border-box",
+        }}
+      >
+        {children}
+      </Box>
     </Box>
   );
 }
@@ -77,13 +90,29 @@ export function Layout({ onOpenSettings }: LayoutProps) {
   const [refreshingCache, setRefreshingCache] = useState(false);
   const [refreshCountdown, setRefreshCountdown] =
     useState(AUTO_REFRESH_SECONDS);
+  /** 离线缓存蒙层下允许进入「连接设备」修改地址；离开该页或重连后恢复提示 */
+  const [suppressDisconnectedCacheOverlay, setSuppressDisconnectedCacheOverlay] =
+    useState(false);
   const showRestartBanner = restartPhase !== "idle";
   const showDisconnectedCacheBanner =
-    !deviceConnected && config != null && !showRestartBanner;
+    !deviceConnected &&
+    config != null &&
+    !showRestartBanner &&
+    !suppressDisconnectedCacheOverlay;
   const sidebarAsDrawer = useMediaQuery(
     theme.breakpoints.down(SIDEBAR_DRAWER_BREAKPOINT),
   );
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  useEffect(() => {
+    if (!deviceConnected) return;
+    queueMicrotask(() => setSuppressDisconnectedCacheOverlay(false));
+  }, [deviceConnected]);
+
+  useEffect(() => {
+    if (location.pathname === "/device") return;
+    queueMicrotask(() => setSuppressDisconnectedCacheOverlay(false));
+  }, [location.pathname]);
 
   const attemptNavigate = useCallback(
     (path: string) => {
@@ -201,7 +230,8 @@ export function Layout({ onOpenSettings }: LayoutProps) {
           display: "flex",
           height: "100vh",
           overflow: "hidden",
-          backgroundColor: "var(--background)",
+          /** 透明以便 ThemeAndBaseline 的 fixed 渐变 / 甲壳虫层透出；壳层自身用 SHELL_CHROME_SURFACE_SX */
+          backgroundColor: "transparent",
         }}
       >
         <ConfirmDialog
@@ -248,6 +278,9 @@ export function Layout({ onOpenSettings }: LayoutProps) {
               role="status"
               sx={{
                 ...statusOverlayCardSx,
+                flexDirection: "column",
+                alignItems: "stretch",
+                gap: 1.5,
                 borderLeft: "var(--accent-line-width) solid var(--semantic-warning)",
               }}
             >
@@ -257,47 +290,65 @@ export function Layout({ onOpenSettings }: LayoutProps) {
                   color: "var(--semantic-warning)",
                   fontWeight: 600,
                   fontSize: "var(--font-size-body-sm)",
-                  flex: 1,
-                  minWidth: 0,
                 }}
               >
                 {t("config.deviceDisconnectedCache")}
               </Typography>
-              <Button
-                size="small"
-                variant="contained"
-                onClick={() => {
-                  void handleRefreshCachedConfig();
-                }}
-                disabled={refreshingCache}
-                sx={{
-                  flexShrink: 0,
-                  borderRadius: "var(--radius-control)",
-                  backgroundColor: "var(--primary)",
-                  color: "var(--primary-fg)",
-                  "&:hover:not(:disabled)": {
-                    backgroundColor:
-                      "color-mix(in srgb, var(--primary) 86%, black)",
-                  },
-                }}
+              <Stack
+                direction="row"
+                flexWrap="wrap"
+                gap={1}
+                justifyContent="flex-end"
               >
-                {refreshingCache
-                  ? `${t("common.loading")}…`
-                  : `${t("common.retry")} (${refreshCountdown}s)`}
-              </Button>
-              <Button
-                size="small"
-                variant="outlined"
-                onClick={clearCachedConfig}
-                sx={{
-                  flexShrink: 0,
-                  borderRadius: "var(--radius-control)",
-                  borderColor: "var(--semantic-warning)",
-                  color: "var(--semantic-warning)",
-                }}
-              >
-                {t("config.clearCache")}
-              </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={() => {
+                    setSuppressDisconnectedCacheOverlay(true);
+                    navigate("/device");
+                  }}
+                  sx={{
+                    borderRadius: "var(--radius-control)",
+                    borderColor: "var(--primary)",
+                    color: "var(--primary)",
+                  }}
+                >
+                  {t("config.editDeviceConnection")}
+                </Button>
+                <Button
+                  size="small"
+                  variant="contained"
+                  onClick={() => {
+                    void handleRefreshCachedConfig();
+                  }}
+                  disabled={refreshingCache}
+                  sx={{
+                    borderRadius: "var(--radius-control)",
+                    backgroundColor: "var(--primary)",
+                    color: "var(--primary-fg)",
+                    "&:hover:not(:disabled)": {
+                      backgroundColor:
+                        "color-mix(in srgb, var(--primary) 86%, black)",
+                    },
+                  }}
+                >
+                  {refreshingCache
+                    ? `${t("common.loading")}…`
+                    : `${t("common.retry")} (${refreshCountdown}s)`}
+                </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={clearCachedConfig}
+                  sx={{
+                    borderRadius: "var(--radius-control)",
+                    borderColor: "var(--semantic-warning)",
+                    color: "var(--semantic-warning)",
+                  }}
+                >
+                  {t("config.clearCache")}
+                </Button>
+              </Stack>
             </Box>
           </>
         )}
@@ -317,8 +368,8 @@ export function Layout({ onOpenSettings }: LayoutProps) {
                   width: SIDEBAR_DRAWER_WIDTH,
                   maxWidth: "85vw",
                   boxSizing: "border-box",
-                  backgroundColor: "var(--surface)",
                   boxShadow: "none",
+                  ...SHELL_CHROME_SURFACE_SX,
                 },
               }}
             >

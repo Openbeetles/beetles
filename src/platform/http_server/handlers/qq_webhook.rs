@@ -1,7 +1,7 @@
 //! POST /api/webhook/qq：QQ 频道机器人回调。URL 校验、事件验签与入队；body 读取与长度校验由 mod 完成。
 
 use crate::channels::QQ_WEBHOOK_BODY_MAX;
-use crate::i18n::{locale_from_store, tr, Message};
+use crate::i18n::{Message, locale_from_store, tr};
 use crate::platform::http_server::common::ApiResponse;
 
 /// QQ webhook 成功时的响应：URL 校验返回 token+signature；事件已处理返回 200 空 body。

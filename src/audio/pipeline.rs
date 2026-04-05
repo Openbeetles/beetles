@@ -1,14 +1,14 @@
 //! 共享语音编排：收口采集+转写、TTS+播放两条主链，供 voice_session 与语音工具共用。
 //! Shared voice pipeline helpers for capture/transcribe and TTS playback.
 
+use crate::Platform;
 use crate::audio::baidu_token::BaiduTokenCache;
-use crate::audio::capture::{capture_speech, AudioRecordingGuard};
+use crate::audio::capture::{AudioRecordingGuard, capture_speech};
 use crate::audio::{stt_baidu, tts_baidu};
 use crate::config::AudioSegment;
 use crate::constants::AUDIO_TTS_WRITE_CHUNK_SAMPLES;
 use crate::error::Result;
 use crate::platform::PlatformHttpClient;
-use crate::Platform;
 use std::time::Instant;
 
 pub struct VoicePlaybackStats {

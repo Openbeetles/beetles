@@ -3,12 +3,12 @@
 
 use crate::config::{self, AppConfig};
 use crate::error::Error;
-use crate::memory::{MemoryStore, SessionStore, REL_PATH_SESSIONS_DIR};
+use crate::memory::{MemoryStore, REL_PATH_SESSIONS_DIR, SessionStore};
 use crate::platform::ConfigStore;
 use crate::state;
 use std::io::{self, BufRead, Write};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 const TAG: &str = "cli";

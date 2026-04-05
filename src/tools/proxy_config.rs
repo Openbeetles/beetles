@@ -3,7 +3,7 @@
 
 use crate::error::{Error, Result};
 use crate::platform::ConfigStore;
-use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
+use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args};
 use serde_json::json;
 use std::sync::Arc;
 

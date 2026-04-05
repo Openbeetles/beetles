@@ -89,11 +89,11 @@ fn disk_usage_for_path(path: &std::path::Path) -> Option<(u64, u64, u64)> {
 /// 返回 state_root 所在文件系统的 (total_bytes, used_bytes)，语义对齐 ESP `spiffs_usage`。
 /// Non-unix 返回 None。
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub fn host_state_root_usage() -> Option<(usize, usize)> {
+pub fn host_state_root_usage() -> Option<(u64, u64)> {
     #[cfg(unix)]
     {
         let path = crate::platform::state_mount_path();
-        disk_usage_for_path(&path).map(|(total, used, _free)| (total as usize, used as usize))
+        disk_usage_for_path(&path).map(|(total, used, _free)| (total, used))
     }
     #[cfg(not(unix))]
     {
@@ -169,11 +169,7 @@ pub(crate) fn cpu_core_count() -> u32 {
 ))]
 pub(crate) fn cpu_core_count() -> u32 {
     let n = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) };
-    if n > 0 {
-        n as u32
-    } else {
-        0
-    }
+    if n > 0 { n as u32 } else { 0 }
 }
 
 #[cfg(all(not(any(target_arch = "xtensa", target_arch = "riscv32")), not(unix)))]

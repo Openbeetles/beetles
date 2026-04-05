@@ -1,5 +1,5 @@
 export type ThemeMode = 'light' | 'dark'
-/** logo：取自 `public/logo.png` 主色（深紫主色 + 电青强调） */
+/** 默认品牌 `logo`：与侧栏矢量甲壳虫标 + favicon 主色体系对齐 */
 export type ThemeBrand = 'blue' | 'teal' | 'logo' | 'firmware'
 
 /**

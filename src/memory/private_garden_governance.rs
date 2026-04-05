@@ -12,16 +12,16 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use super::{
+    AutonomyStrategy, ExecutionState, ExecutionStateStore, InternalMemoryLayerFocus, MemoryProfile,
+    PRIVATE_GARDEN_MAX_DOC_BYTES, PrivateDocStore, PrivateDocWorkspace, PrivateGardenDoc,
+    PrivateGardenDocRecord, PrivateGardenGovernancePolicy, PrivateGardenStore, SelfModel,
+    SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
     build_private_garden_preview, build_private_garden_usage, build_self_state,
-    llm_json::{coerce_json_string_list, coerce_json_text, parse_llm_json_payload, LlmJsonPayload},
+    llm_json::{LlmJsonPayload, coerce_json_string_list, coerce_json_text, parse_llm_json_payload},
     memory_policy, normalize_private_garden_doc_path, render_autonomy_strategy_block,
     render_execution_state_block, render_internal_memory_topology_block,
     render_private_doc_workspace_block, render_self_model_block, render_self_state_block,
-    summarize_private_garden_directories, AutonomyStrategy, ExecutionState, ExecutionStateStore,
-    InternalMemoryLayerFocus, MemoryProfile, PrivateDocStore, PrivateDocWorkspace,
-    PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenGovernancePolicy, PrivateGardenStore,
-    SelfModel, SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
-    PRIVATE_GARDEN_MAX_DOC_BYTES,
+    summarize_private_garden_directories,
 };
 
 pub const PRIVATE_GARDEN_GOVERNANCE_SYSTEM_PROMPT: &str = "You govern a persistent AI assistant's private garden: a free-form, self-owned internal workspace. Return JSON only: either null, or one object with optional writes, moves, and deletes fields. writes must be an array of objects {path, content}; each write replaces the full document body at that path. moves must be an array of objects {from_path, to_path} for reorganizing or renaming existing documents. deletes must be an array of document paths to remove. Use this workspace for private drafts, internal organization, and exploratory self-work, not shared factual memory. Keep documents current by rewriting, merging, or relocating in place instead of accumulating a history trail. Create new docs only when they materially improve continuity or organization. Delete stale, duplicated, or low-value scratch material when useful. Do not copy raw tool payloads, logs, large quotes, secrets, or transcript fragments. Do not duplicate stable kernel material that already belongs in the governed private self-model or typed private docs. Return null when no garden change is worth making.";
@@ -1070,18 +1070,24 @@ mod tests {
                 deletes: 1
             }
         );
-        assert!(private_garden_store
-            .read("chat-1", "scratch/old.md")
-            .unwrap()
-            .is_none());
-        assert!(private_garden_store
-            .read("chat-1", "journal/active.md")
-            .unwrap()
-            .is_some());
-        assert!(private_garden_store
-            .read("chat-1", "journal/live.md")
-            .unwrap()
-            .is_some());
+        assert!(
+            private_garden_store
+                .read("chat-1", "scratch/old.md")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            private_garden_store
+                .read("chat-1", "journal/active.md")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            private_garden_store
+                .read("chat-1", "journal/live.md")
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]

@@ -2,12 +2,12 @@
 
 use crate::error::Result;
 use crate::platform::state_mount_path;
+use crate::platform::wifi::linux_ctrl::HOSTAPD_CTRL_INTERFACE_DIR;
 use crate::platform::wifi::linux_ctrl::hostapd_ctrl;
 use crate::platform::wifi::linux_ctrl::net;
 use crate::platform::wifi::linux_ctrl::process::{
     is_pid_alive, run_checked, signal_pid as signal_process, write_secure_atomic,
 };
-use crate::platform::wifi::linux_ctrl::HOSTAPD_CTRL_INTERFACE_DIR;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -28,7 +28,7 @@ fn kill_and_wait(pid: u32) {
         std::thread::sleep(Duration::from_millis(100));
     }
     let _ = signal_process(pid, false); // SIGKILL
-                                        // 给内核最多 500ms 回收 socket
+    // 给内核最多 500ms 回收 socket
     std::thread::sleep(Duration::from_millis(500));
 }
 
@@ -112,6 +112,7 @@ pub fn start_ap_on_channel(iface: &str, ssid: &str, ip: &str, channel: u8) -> Re
         );
         DEFAULT_SOFTAP_CHANNEL
     };
+    net::wait_iface_kernel_ready(iface, "wifi_ap_iface_ready")?;
     net::setup_ap_address(iface, &format!("{}/24", ip))?;
 
     let hostapd_conf_body = format!(
@@ -160,6 +161,7 @@ pub fn start_ap_on_channel(iface: &str, ssid: &str, ip: &str, channel: u8) -> Re
         stop_ap(iface);
         return Err(e);
     }
+    net::wait_iface_kernel_ready(iface, "wifi_dnsmasq_iface_ready")?;
     // Single-token `--opt=path` avoids any ambiguity with multi-arg parsing on embedded dnsmasq.
     let dnsmasq_cf = format!("--conf-file={}", dnsmasq_conf_file.display());
     let dnsmasq_pf = format!("--pid-file={}", dnsmasq_pid.display());

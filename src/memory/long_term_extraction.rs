@@ -7,7 +7,7 @@ use crate::error::Result;
 use crate::llm::{LlmClient, LlmHttpClient, Message, ToolChoicePolicy};
 use crate::orchestrator::PressureLevel;
 use crate::platform::SkillStorage;
-use crate::skills::{upsert_runtime_skill, RuntimeSkillWrite};
+use crate::skills::{RuntimeSkillWrite, upsert_runtime_skill};
 use crate::util::{scrub_credentials, truncate_content_to_max};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -15,14 +15,14 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use super::{
-    build_archive_evidence_block, memory_policy, render_long_term_memory_block,
-    run_memory_governance_kernel, search_archive_records, ArchiveRecordSource, ArchiveSearchHit,
-    ArchiveSearchQuery, LongTermExtractionPolicy, LongTermMemoryConfidence, LongTermMemoryDraft,
-    LongTermMemoryEntry, LongTermMemoryFreshness, LongTermMemoryKind, LongTermMemorySlot,
-    LongTermMemorySourceScope, LongTermMemorySourceType, LongTermMemoryStaleHint,
-    LongTermMemoryStore, MemoryGovernanceContext, MemoryGovernanceInput, MemoryProfile,
-    MemoryStore, SessionMessage, SessionStore, SessionSummaryStore, TurnLedgerStore,
-    MAX_LONG_TERM_MEMORY_ITEMS,
+    ArchiveRecordSource, ArchiveSearchHit, ArchiveSearchQuery, LongTermExtractionPolicy,
+    LongTermMemoryConfidence, LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryFreshness,
+    LongTermMemoryKind, LongTermMemorySlot, LongTermMemorySourceScope, LongTermMemorySourceType,
+    LongTermMemoryStaleHint, LongTermMemoryStore, MAX_LONG_TERM_MEMORY_ITEMS,
+    MemoryGovernanceContext, MemoryGovernanceInput, MemoryProfile, MemoryStore, SessionMessage,
+    SessionStore, SessionSummaryStore, TurnLedgerStore, build_archive_evidence_block,
+    memory_policy, render_long_term_memory_block, run_memory_governance_kernel,
+    search_archive_records,
 };
 
 /// 长期记忆提取状态存储路径（相对状态根）。
@@ -2598,11 +2598,13 @@ mod tests {
 
         outcome.persist(&store, "chat-1");
 
-        assert!(store
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_none());
+        assert!(
+            store
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_none()
+        );
         assert_eq!(*store.clears.lock().unwrap_or_else(|e| e.into_inner()), 1);
     }
 

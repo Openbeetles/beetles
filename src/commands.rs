@@ -1,11 +1,10 @@
-//! CLI 子命令系统（仅 Linux）
-//! 使用 clap 实现完整的子命令结构
+//! Linux CLI command tree implemented with clap.
 
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "beetle")]
-#[command(version, about = "甲壳虫 AI Agent", long_about = None)]
+#[command(version, about = "Beetle AI Agent", long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -13,52 +12,55 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// 启动 Agent 服务
+    /// Start the agent service in the foreground
     Run {
-        /// 配置文件路径
+        /// Optional config file path
         #[arg(short, long)]
         config: Option<String>,
     },
 
-    /// 配置管理
+    /// Manage configuration values
     Config {
         #[command(subcommand)]
         action: ConfigAction,
     },
 
-    /// 系统状态
+    /// Show system status
     Status {
-        /// 输出 JSON 格式
+        /// Output JSON instead of plain text
         #[arg(long)]
         json: bool,
-        /// 附带输出指定 chat_id 的最近一轮执行账本
+        /// Include the latest turn ledger for the specified chat_id
         #[arg(long)]
         chat_id: Option<String>,
     },
 
-    /// 诊断工具
+    /// Restart the Beetle service or process
+    Restart,
+
+    /// Run diagnostic checks
     Doctor,
 
-    /// 版本信息
+    /// Print version information
     Version,
 }
 
 #[derive(Subcommand)]
 pub enum ConfigAction {
-    /// 获取配置值
+    /// Get a configuration value
     Get {
-        /// 配置键（如 llm.provider）
+        /// Config key, for example `llm.provider`
         key: String,
     },
 
-    /// 设置配置值
+    /// Set a configuration value
     Set {
-        /// 配置键
+        /// Config key
         key: String,
-        /// 配置值
+        /// Config value
         value: String,
     },
 
-    /// 列出所有配置
+    /// List all configuration values
     List,
 }

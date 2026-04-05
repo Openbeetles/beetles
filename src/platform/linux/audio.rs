@@ -9,12 +9,12 @@ const STAGE: &str = "audio_init";
 #[cfg(target_os = "linux")]
 mod imp {
     use super::{AudioSegment, Error, Result, STAGE};
-    use crate::util::{spawn_guarded_with_profile_handle, HttpThreadRole, SpawnCore, TaskHandle};
-    use alsa::pcm::{Access, Format, HwParams, State, PCM};
+    use crate::util::{HttpThreadRole, SpawnCore, TaskHandle, spawn_guarded_with_profile_handle};
+    use alsa::pcm::{Access, Format, HwParams, PCM, State};
     use alsa::{Direction, ValueOr};
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc::{self, Receiver, SyncSender};
-    use std::sync::Arc;
 
     use super::super::hardware_discovery::resolve_usb_audio_output_device;
 
@@ -310,18 +310,21 @@ mod imp {
 
     fn open_playback_pcm(pcm_name: &str, sample_rate: u32) -> Result<(PCM, usize)> {
         let pcm = PCM::new(pcm_name, Direction::Playback, false).map_err(map_other(STAGE))?;
-        let hwp = HwParams::any(&pcm).map_err(map_other(STAGE))?;
-        hwp.set_access(Access::RWInterleaved)
-            .map_err(map_other(STAGE))?;
-        hwp.set_format(Format::s16()).map_err(map_other(STAGE))?;
+        let channels = {
+            let hwp = HwParams::any(&pcm).map_err(map_other(STAGE))?;
+            hwp.set_access(Access::RWInterleaved)
+                .map_err(map_other(STAGE))?;
+            hwp.set_format(Format::s16()).map_err(map_other(STAGE))?;
 
-        let channels = if hwp.set_channels(1).is_ok() { 1 } else { 2 };
-        if channels == 2 {
-            hwp.set_channels(2).map_err(map_other(STAGE))?;
-        }
-        hwp.set_rate(sample_rate, ValueOr::Nearest)
-            .map_err(map_other(STAGE))?;
-        pcm.hw_params(&hwp).map_err(map_other(STAGE))?;
+            let channels = if hwp.set_channels(1).is_ok() { 1 } else { 2 };
+            if channels == 2 {
+                hwp.set_channels(2).map_err(map_other(STAGE))?;
+            }
+            hwp.set_rate(sample_rate, ValueOr::Nearest)
+                .map_err(map_other(STAGE))?;
+            pcm.hw_params(&hwp).map_err(map_other(STAGE))?;
+            channels
+        };
         pcm.prepare().map_err(map_other(STAGE))?;
         Ok((pcm, channels))
     }

@@ -1,7 +1,7 @@
 //! GET /api/pairing_code：返回是否已设置配对码（不返回明文）及当前 locale。POST：仅未设置时接受 body 设置码。
 
 use crate::config;
-use crate::i18n::{locale_from_store, tr, Message};
+use crate::i18n::{Message, locale_from_store, tr};
 use crate::platform::http_server::common::ApiResponse;
 use crate::platform::pairing;
 

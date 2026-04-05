@@ -1,6 +1,6 @@
 //! GET/POST/DELETE /api/skills、POST /api/skills/import：技能列表、单技能内容、排序、启用/禁用、写入、删除、URL 导入。
 
-use crate::i18n::{locale_from_store, tr, tr_error, Message};
+use crate::i18n::{Message, locale_from_store, tr, tr_error};
 use crate::platform::http_server::common::ApiResponse;
 use crate::skills;
 use crate::state;

@@ -46,7 +46,7 @@ fn human_hardware_summary(
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 mod esp {
-    use esp_idf_svc::sys::{esp_flash_default_chip, esp_flash_get_physical_size, ESP_OK};
+    use esp_idf_svc::sys::{ESP_OK, esp_flash_default_chip, esp_flash_get_physical_size};
 
     /// 与 `esp_hw_support/include/esp_chip_info.h` 中 `esp_chip_info_t` 布局一致。
     /// `esp-idf-sys` 绑定未导出 `esp_chip_info` 时由本地 `extern "C"` 链接 IDF。

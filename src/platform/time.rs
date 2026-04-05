@@ -5,11 +5,7 @@
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub fn uptime_secs() -> u64 {
     let us = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
-    if us >= 0 {
-        us as u64 / 1_000_000
-    } else {
-        0
-    }
+    if us >= 0 { us as u64 / 1_000_000 } else { 0 }
 }
 
 /// Linux：读 `/proc/uptime` 获取内核运行时间（与 systemd 重启无关）；

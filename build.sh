@@ -42,6 +42,7 @@ Notes:
   - On macOS building Linux musl, auto mode uses Docker only if the daemon is running; otherwise musl-cross (Homebrew).
   - Force local: BUILD_METHOD=local ./build.sh
   - Force Docker: BUILD_METHOD=docker ./build.sh
+  - Force remote: BUILD_METHOD=remote ./build.sh
   - For Linux builds, this script uses Rust stable toolchain.
 EOF
 }
@@ -87,9 +88,15 @@ DO_DEPLOY_LINUX=""
 NO_MONITOR=""
 NO_DEPLOY_PROMPT=""
 FLASH_NO_ERASE=""
-BUILD_METHOD="${BUILD_METHOD:-auto}" # auto | docker | local
+BUILD_METHOD="${BUILD_METHOD:-auto}" # auto | docker | local | remote
 BUILD_PROFILE="release"
 BUILD_ARGS=()
+REMOTE_BUILD_ROLE=""
+REMOTE_BUILD_DIR=""
+REMOTE_BUILD_BIN=""
+REMOTE_BUILD_TARGET_ENV=""
+REMOTE_BUILD_ACTIVE=0
+REMOTE_TARGET_PREPARED=0
 for arg in "$@"; do
   case "$arg" in
     -h|--help)       show_help; exit 0 ;;
@@ -221,6 +228,51 @@ linux_deploy_array_contains() {
     return 1
 }
 
+linux_set_paths_for_selected_arch() {
+    case "$SELECTED_ARCH" in
+        x86_64)
+            BINARY_PATH="target/x86_64-unknown-linux-musl/release/beetle"
+            EMBED_DEPS_ARCH="x86_64"
+            ;;
+        x86_64-gnu)
+            BINARY_PATH="target/x86_64-unknown-linux-gnu/release/beetle"
+            EMBED_DEPS_ARCH="x86_64"
+            ;;
+        armv7)
+            BINARY_PATH="target/armv7-unknown-linux-musleabihf/release/beetle"
+            EMBED_DEPS_ARCH="armv7"
+            ;;
+        armv7-gnu)
+            BINARY_PATH="target/armv7-unknown-linux-gnueabihf/release/beetle"
+            EMBED_DEPS_ARCH="armv7"
+            ;;
+        aarch64)
+            BINARY_PATH="target/aarch64-unknown-linux-musl/release/beetle"
+            EMBED_DEPS_ARCH="aarch64"
+            ;;
+        aarch64-gnu)
+            BINARY_PATH="target/aarch64-unknown-linux-gnu/release/beetle"
+            EMBED_DEPS_ARCH="aarch64"
+            ;;
+        *)
+            echo -e "${RED}Error: unknown arch key: $SELECTED_ARCH${NC}"
+            exit 1
+            ;;
+    esac
+}
+
+linux_selected_arch_from_target() {
+    case "$1" in
+        x86_64-unknown-linux-musl) echo "x86_64" ;;
+        x86_64-unknown-linux-gnu) echo "x86_64-gnu" ;;
+        armv7-unknown-linux-musleabihf) echo "armv7" ;;
+        armv7-unknown-linux-gnueabihf) echo "armv7-gnu" ;;
+        aarch64-unknown-linux-musl) echo "aarch64" ;;
+        aarch64-unknown-linux-gnu) echo "aarch64-gnu" ;;
+        *) return 1 ;;
+    esac
+}
+
 # Select architecture
 linux_deploy_select_arch() {
     local available=($(linux_deploy_detect_binaries))
@@ -276,36 +328,7 @@ linux_deploy_select_arch() {
         SELECTED_ARCH="${available[$((choice-1))]}"
     fi
 
-    case "$SELECTED_ARCH" in
-        x86_64)
-            BINARY_PATH="target/x86_64-unknown-linux-musl/release/beetle"
-            EMBED_DEPS_ARCH="x86_64"
-            ;;
-        x86_64-gnu)
-            BINARY_PATH="target/x86_64-unknown-linux-gnu/release/beetle"
-            EMBED_DEPS_ARCH="x86_64"
-            ;;
-        armv7)
-            BINARY_PATH="target/armv7-unknown-linux-musleabihf/release/beetle"
-            EMBED_DEPS_ARCH="armv7"
-            ;;
-        armv7-gnu)
-            BINARY_PATH="target/armv7-unknown-linux-gnueabihf/release/beetle"
-            EMBED_DEPS_ARCH="armv7"
-            ;;
-        aarch64)
-            BINARY_PATH="target/aarch64-unknown-linux-musl/release/beetle"
-            EMBED_DEPS_ARCH="aarch64"
-            ;;
-        aarch64-gnu)
-            BINARY_PATH="target/aarch64-unknown-linux-gnu/release/beetle"
-            EMBED_DEPS_ARCH="aarch64"
-            ;;
-        *)
-            echo -e "${RED}Error: unknown arch key: $SELECTED_ARCH${NC}"
-            exit 1
-            ;;
-    esac
+    linux_set_paths_for_selected_arch
 
     echo ""
 }
@@ -327,6 +350,7 @@ linux_deploy_load_deploy_defaults() {
     DEFAULT_DEVICE_IP=""
     DEFAULT_DEVICE_USER="root"
     DEFAULT_SSH_PORT="22"
+    DEFAULT_REMOTE_BUILD_DIR="/tmp/beetle-build"
     if [ ! -f "$DEPLOY_DEFAULTS_FILE" ]; then
         return 0
     fi
@@ -338,6 +362,7 @@ linux_deploy_load_deploy_defaults() {
             DEVICE_IP=*) DEFAULT_DEVICE_IP="${line#DEVICE_IP=}" ;;
             DEVICE_USER=*) DEFAULT_DEVICE_USER="${line#DEVICE_USER=}" ;;
             SSH_PORT=*) DEFAULT_SSH_PORT="${line#SSH_PORT=}" ;;
+            REMOTE_BUILD_DIR=*) DEFAULT_REMOTE_BUILD_DIR="${line#REMOTE_BUILD_DIR=}" ;;
         esac
     done <"$DEPLOY_DEFAULTS_FILE"
 }
@@ -351,27 +376,28 @@ linux_deploy_save_deploy_defaults() {
             printf 'DEVICE_IP=%s\n' "$DEVICE_IP"
             printf 'DEVICE_USER=%s\n' "$DEVICE_USER"
             printf 'SSH_PORT=%s\n' "$SSH_PORT"
+            printf 'REMOTE_BUILD_DIR=%s\n' "${REMOTE_BUILD_DIR:-$DEFAULT_REMOTE_BUILD_DIR}"
         } >"${DEPLOY_DEFAULTS_FILE}.tmp"
         mv "${DEPLOY_DEFAULTS_FILE}.tmp" "$DEPLOY_DEFAULTS_FILE"
     )
 }
 
-# Input device information
+# Input remote host information
 linux_deploy_input_device_info() {
-    echo "========== Device Information =========="
+    echo "========== Target Host Information =========="
     echo ""
     linux_deploy_load_deploy_defaults
 
     if [ -n "$DEFAULT_DEVICE_IP" ]; then
-        echo -e "${GREEN}Saved target: ${DEFAULT_DEVICE_USER}@${DEFAULT_DEVICE_IP}:${DEFAULT_SSH_PORT}${NC}"
+        echo -e "${GREEN}Saved host: ${DEFAULT_DEVICE_USER}@${DEFAULT_DEVICE_IP}:${DEFAULT_SSH_PORT}${NC}"
         echo "(Press Enter to keep; password is not saved — use SSH keys for passwordless login)"
         echo ""
     fi
 
     if [ -n "$DEFAULT_DEVICE_IP" ]; then
-        read -p "Device IP address [$DEFAULT_DEVICE_IP]: " DEVICE_IP
+        read -p "Host IP address [$DEFAULT_DEVICE_IP]: " DEVICE_IP
     else
-        read -p "Device IP address: " DEVICE_IP
+        read -p "Host IP address: " DEVICE_IP
     fi
     DEVICE_IP=${DEVICE_IP:-$DEFAULT_DEVICE_IP}
     if [ -z "$DEVICE_IP" ]; then
@@ -391,8 +417,127 @@ linux_deploy_input_device_info() {
     fi
 
     echo ""
-    echo -e "${BLUE}Target device: ${DEVICE_USER}@${DEVICE_IP}:${SSH_PORT}${NC}"
+    echo -e "${BLUE}Target host: ${DEVICE_USER}@${DEVICE_IP}:${SSH_PORT}${NC}"
     echo ""
+}
+
+linux_prepare_remote_target() {
+    if [ "${REMOTE_TARGET_PREPARED:-0}" = "1" ]; then
+        return 0
+    fi
+    linux_deploy_input_device_info
+    linux_deploy_setup_ssh_mux
+    trap linux_deploy_cleanup_ssh_mux EXIT INT TERM
+    linux_deploy_test_connection
+    linux_deploy_detect_device_arch
+    REMOTE_TARGET_PREPARED=1
+}
+
+linux_remote_input_build_dir() {
+    echo "========== Remote Build Directory =========="
+    echo ""
+    linux_deploy_load_deploy_defaults
+    read -p "Remote project directory [${DEFAULT_REMOTE_BUILD_DIR}]: " REMOTE_BUILD_DIR
+    REMOTE_BUILD_DIR=${REMOTE_BUILD_DIR:-$DEFAULT_REMOTE_BUILD_DIR}
+    case "$REMOTE_BUILD_DIR" in
+        ""|"/")
+            echo -e "${RED}Error: remote project directory must not be empty or /${NC}"
+            exit 1
+            ;;
+        *"'"*)
+            echo -e "${RED}Error: remote project directory must not contain single quotes${NC}"
+            exit 1
+            ;;
+    esac
+    echo ""
+    echo -e "${BLUE}Remote project directory: ${REMOTE_BUILD_DIR}${NC}"
+    echo ""
+    linux_deploy_save_deploy_defaults
+}
+
+linux_remote_select_build_role() {
+    local default_role="1"
+    echo "========== Remote Build Result =========="
+    echo ""
+    echo "  1) Build + deploy on this host"
+    echo "  2) Build on remote, pull artifact back to local, then continue SSH deploy"
+    echo "  3) Build on remote only; leave artifact on remote"
+    echo ""
+    read -p "Select mode [1-3] (default ${default_role}): " remote_role
+    remote_role=${remote_role:-$default_role}
+    case "$remote_role" in
+        1) REMOTE_BUILD_ROLE="deploy" ;;
+        2) REMOTE_BUILD_ROLE="pull_deploy" ;;
+        3) REMOTE_BUILD_ROLE="leave" ;;
+        *)
+            echo -e "${RED}Error: invalid remote build mode: $remote_role${NC}"
+            exit 1
+            ;;
+    esac
+    echo ""
+}
+
+linux_apply_docker_target_for_platform() {
+    case "$PLATFORM_CHOICE" in
+        2) BUILD_TARGET="x86_64-unknown-linux-musl" ;;
+        3) BUILD_TARGET="armv7-unknown-linux-musleabihf" ;;
+        4) BUILD_TARGET="aarch64-unknown-linux-musl" ;;
+    esac
+}
+
+linux_prepare_remote_build_context() {
+    linux_prepare_remote_target
+    linux_remote_input_build_dir
+    linux_remote_select_build_role
+
+    local selected_family=""
+    local remote_family=""
+
+    case "$PLATFORM_CHOICE" in
+        2) selected_family="x86_64" ;;
+        3) selected_family="armv7" ;;
+        4) selected_family="aarch64" ;;
+        *)
+            echo -e "${RED}Error: remote build only supports Linux targets${NC}"
+            exit 1
+            ;;
+    esac
+
+    case "${DEVICE_ARCH:-}" in
+        x86_64)
+            remote_family="x86_64"
+            BUILD_TARGET="x86_64-unknown-linux-gnu"
+            REMOTE_BUILD_TARGET_ENV="linux"
+            ;;
+        armv7l|armv6l)
+            remote_family="armv7"
+            BUILD_TARGET="armv7-unknown-linux-gnueabihf"
+            REMOTE_BUILD_TARGET_ENV="linux-armv7"
+            ;;
+        aarch64|arm64)
+            remote_family="aarch64"
+            BUILD_TARGET="aarch64-unknown-linux-gnu"
+            REMOTE_BUILD_TARGET_ENV="linux-aarch64"
+            ;;
+        *)
+            echo -e "${RED}Error: unsupported remote Linux architecture: ${DEVICE_ARCH:-unknown}${NC}"
+            exit 1
+            ;;
+    esac
+
+    if [ "$selected_family" != "$remote_family" ]; then
+        echo -e "${RED}Error: selected platform does not match remote host architecture${NC}"
+        echo "  Selected platform family: $selected_family"
+        echo "  Remote host architecture: ${DEVICE_ARCH:-unknown}"
+        echo "Remote build currently supports native builds on a matching remote Linux host."
+        exit 1
+    fi
+
+    SELECTED_ARCH=$(linux_selected_arch_from_target "$BUILD_TARGET") || {
+        echo -e "${RED}Error: unsupported remote build target: $BUILD_TARGET${NC}"
+        exit 1
+    }
+    linux_set_paths_for_selected_arch
 }
 
 # Reuse one SSH connection for the whole script so password (or keyboard-interactive)
@@ -720,8 +865,14 @@ linux_deploy_upload_files() {
     linux_deploy_upload_embed_deps
 
     echo "Uploading release payload for ${DEPLOY_RELEASE_NAME} ..."
-    scp "${SSH_MUX_OPTS[@]}" -P "$SSH_PORT" "$BINARY_PATH" \
-        "${DEVICE_USER}@${DEVICE_IP}:${REMOTE_TMP_BIN}"
+    if [ "${REMOTE_BUILD_ACTIVE:-0}" = "1" ] && [ "${REMOTE_BUILD_ROLE:-}" = "deploy" ] && [ -n "${REMOTE_BUILD_BIN:-}" ]; then
+        echo "Using remote-built binary: $REMOTE_BUILD_BIN"
+        ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
+            "cp '$REMOTE_BUILD_BIN' '$REMOTE_TMP_BIN' && chmod 755 '$REMOTE_TMP_BIN'"
+    else
+        scp "${SSH_MUX_OPTS[@]}" -P "$SSH_PORT" "$BINARY_PATH" \
+            "${DEVICE_USER}@${DEVICE_IP}:${REMOTE_TMP_BIN}"
+    fi
     scp "${SSH_MUX_OPTS[@]}" -P "$SSH_PORT" packaging/linux/README.txt \
         "${DEVICE_USER}@${DEVICE_IP}:${REMOTE_TMP_README}"
     scp "${SSH_MUX_OPTS[@]}" -P "$SSH_PORT" packaging/linux/hardware.json.example \
@@ -1010,12 +1161,13 @@ linux_deploy_main() {
     echo "  Beetle Linux Deployment"
     echo "=========================================="
     echo ""
-    linux_deploy_input_device_info
-    linux_deploy_setup_ssh_mux
-    trap linux_deploy_cleanup_ssh_mux EXIT INT TERM
-    linux_deploy_test_connection
-    linux_deploy_detect_device_arch
-    linux_deploy_select_arch
+    linux_prepare_remote_target
+    if [ "${REMOTE_BUILD_ACTIVE:-0}" = "1" ] && [ "${REMOTE_BUILD_ROLE:-}" = "deploy" ]; then
+        echo "Using remote-built ${SELECTED_ARCH} artifact from ${REMOTE_BUILD_BIN}"
+        echo ""
+    else
+        linux_deploy_select_arch
+    fi
     linux_deploy_fetch_embed_deps_from_url
     linux_deploy_probe_remote_install_state
     linux_deploy_select_deploy_mode
@@ -1033,8 +1185,6 @@ if [[ -n "$DO_DEPLOY_LINUX" ]]; then
   linux_deploy_main
   exit $?
 fi
-
-command -v cargo &>/dev/null || { echo "Error: cargo not found. Install Rust: https://rustup.rs" >&2; exit 1; }
 
 run_linux_docker_build() {
   local target="$1"
@@ -1057,6 +1207,149 @@ run_linux_docker_build() {
     echo "Error: Docker build not supported for target: $target" >&2
     exit 1
   fi
+}
+
+run_linux_remote_build() {
+  echo "  Remote build over SSH"
+  echo ""
+  echo "========== Sync Project To Remote =========="
+  echo "  Host: ${DEVICE_USER}@${DEVICE_IP}:${SSH_PORT}"
+  echo "  Dir:  ${REMOTE_BUILD_DIR}"
+  echo ""
+
+  ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
+    "REMOTE_BUILD_DIR='$REMOTE_BUILD_DIR' sh -s" << 'REMOTE_EOF'
+set -eu
+
+case "$REMOTE_BUILD_DIR" in
+    ""|"/")
+        echo "Refusing to sync to unsafe remote build directory: $REMOTE_BUILD_DIR" >&2
+        exit 1
+        ;;
+esac
+
+rm -rf "$REMOTE_BUILD_DIR"
+mkdir -p "$REMOTE_BUILD_DIR"
+REMOTE_EOF
+
+  COPYFILE_DISABLE=1 tar \
+    --disable-copyfile \
+    --no-xattrs \
+    --no-mac-metadata \
+    --exclude='./target' \
+    --exclude='./.git' \
+    --exclude='./.idea' \
+    --exclude='./.vscode' \
+    --exclude='./.DS_Store' \
+    -cf - . | ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
+      "tar -xf - -C '$REMOTE_BUILD_DIR'"
+
+  echo -e "${GREEN}✓ Source synced${NC}"
+  echo ""
+  echo "========== Build On Remote =========="
+  echo "  Target: $BUILD_TARGET"
+  echo ""
+
+  ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
+    "REMOTE_BUILD_DIR='$REMOTE_BUILD_DIR' REMOTE_TARGET_ENV='$REMOTE_BUILD_TARGET_ENV' sh -s" << 'REMOTE_EOF'
+set -eu
+cd "$REMOTE_BUILD_DIR"
+export PATH="$HOME/.cargo/bin:$PATH"
+TARGET="$REMOTE_TARGET_ENV" BUILD_METHOD=local BEETLE_SKIP_DEPLOY_PROMPT=1 ./build.sh --no-deploy
+REMOTE_EOF
+
+  ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
+    "[ -f '$REMOTE_BUILD_BIN' ]" || {
+      echo "Error: remote build finished but artifact not found: $REMOTE_BUILD_BIN" >&2
+      exit 1
+    }
+}
+
+linux_remote_pull_artifact_to_local() {
+  echo ""
+  echo "========== Fetch Remote Artifact =========="
+  echo "  Remote: $REMOTE_BUILD_BIN"
+  echo "  Local:  $BIN"
+  echo ""
+  mkdir -p "$(dirname "$BIN")"
+  scp "${SSH_MUX_OPTS[@]}" -P "$SSH_PORT" \
+    "${DEVICE_USER}@${DEVICE_IP}:${REMOTE_BUILD_BIN}" "$BIN"
+  chmod 755 "$BIN" 2>/dev/null || true
+  echo -e "${GREEN}✓ Artifact fetched to local workspace${NC}"
+  echo ""
+}
+
+linux_running_in_container() {
+  [[ -f /.dockerenv ]] && return 0
+  [[ -f /run/.containerenv ]] && return 0
+  if [[ -r /proc/1/cgroup ]] && grep -Eiq '(docker|containerd|kubepods|podman|lxc)' /proc/1/cgroup; then
+    return 0
+  fi
+  return 1
+}
+
+select_linux_build_method() {
+  if [[ ! "$BUILD_TARGET" =~ -unknown-linux ]]; then
+    return 0
+  fi
+
+  if linux_running_in_container; then
+    case "$BUILD_METHOD" in
+      auto)
+        BUILD_METHOD="local"
+        echo "  Detected container environment, auto-selecting local build."
+        return 0
+        ;;
+      docker)
+        echo "Error: BUILD_METHOD=docker is not supported when build.sh is already running inside a container." >&2
+        echo "Use BUILD_METHOD=local or BUILD_METHOD=remote instead." >&2
+        exit 1
+        ;;
+      local|remote)
+        return 0
+        ;;
+      *)
+        echo "Error: BUILD_METHOD must be one of: auto, docker, local, remote" >&2
+        exit 1
+        ;;
+    esac
+  fi
+
+  case "$BUILD_METHOD" in
+    local|docker|remote) return 0 ;;
+    auto) ;;
+    *)
+      echo "Error: BUILD_METHOD must be one of: auto, docker, local, remote" >&2
+      exit 1
+      ;;
+  esac
+
+  if [[ ! -t 0 ]]; then
+    return 0
+  fi
+
+  local default_choice="1"
+  if [[ "$(uname -s)" == "Darwin" ]] && command -v docker &>/dev/null && docker info &>/dev/null; then
+    default_choice="2"
+  fi
+
+  echo ""
+  echo "========== Linux Build Method =========="
+  echo "  1) Local build on this machine"
+  echo "  2) Docker build on this machine"
+  echo "  3) Remote build over SSH"
+  echo ""
+  read -r -p "Select method [1-3] (default ${default_choice}): " build_choice
+  build_choice=${build_choice:-$default_choice}
+  case "$build_choice" in
+    1) BUILD_METHOD="local" ;;
+    2) BUILD_METHOD="docker" ;;
+    3) BUILD_METHOD="remote" ;;
+    *)
+      echo "Error: invalid Linux build method: $build_choice" >&2
+      exit 1
+      ;;
+  esac
 }
 select_build_platform() {
   # If TARGET env is set, skip interactive prompt.
@@ -1142,15 +1435,27 @@ if [[ $PLATFORM_CHOICE -eq 2 || $PLATFORM_CHOICE -eq 3 || $PLATFORM_CHOICE -eq 4
       LOCAL_LINKER_CMD="aarch64-linux-musl-gcc"
     fi
 
-    # Docker CLI alone is not enough (Desktop may be off); require a running daemon for auto mode.
+  else
+    echo "$MSG_UNKNOWN_OS $CURRENT_OS, $MSG_TRY_NATIVE"
+    BUILD_TARGET="x86_64-unknown-linux-gnu"
+  fi
+
+  select_linux_build_method
+
+  if [[ "$BUILD_METHOD" == "docker" ]]; then
+    linux_apply_docker_target_for_platform
+  fi
+
+  if [[ "$BUILD_METHOD" == "remote" ]]; then
+    linux_prepare_remote_build_context
+  elif [[ "$CURRENT_OS" == "Darwin" ]]; then
+    # Docker CLI alone is not enough (Desktop may be off); require a running daemon for auto/local mode.
     HAS_DOCKER_CLI=0
     command -v docker &>/dev/null && HAS_DOCKER_CLI=1
     HAS_DOCKER_DAEMON=0
     if [[ $HAS_DOCKER_CLI -eq 1 ]] && docker info &>/dev/null; then
       HAS_DOCKER_DAEMON=1
     fi
-    HAS_LOCAL_LINKER=0
-    command -v "$LOCAL_LINKER_CMD" &>/dev/null && HAS_LOCAL_LINKER=1
 
     case "$BUILD_METHOD" in
       docker)
@@ -1173,6 +1478,7 @@ if [[ $PLATFORM_CHOICE -eq 2 || $PLATFORM_CHOICE -eq 3 || $PLATFORM_CHOICE -eq 4
         # Prefer Docker only when the daemon responds (avoids broken socket when Desktop is off).
         if [[ $HAS_DOCKER_DAEMON -eq 1 ]]; then
           USE_DOCKER=1
+          linux_apply_docker_target_for_platform
           echo "  Auto-selected Docker build (daemon reachable)."
         else
           USE_DOCKER=""
@@ -1184,13 +1490,19 @@ if [[ $PLATFORM_CHOICE -eq 2 || $PLATFORM_CHOICE -eq 3 || $PLATFORM_CHOICE -eq 4
         fi
         ;;
       *)
-        echo "Error: BUILD_METHOD must be one of: auto, docker, local" >&2
+        echo "Error: BUILD_METHOD must be one of: auto, docker, local, remote" >&2
         exit 1
         ;;
     esac
-  else
-    echo "$MSG_UNKNOWN_OS $CURRENT_OS, $MSG_TRY_NATIVE"
-    BUILD_TARGET="x86_64-unknown-linux-gnu"
+  elif [[ "$CURRENT_OS" == "Linux" ]]; then
+    case "$BUILD_METHOD" in
+      docker) USE_DOCKER=1 ;;
+      local|auto) USE_DOCKER="" ;;
+      *)
+        echo "Error: BUILD_METHOD must be one of: auto, docker, local, remote" >&2
+        exit 1
+        ;;
+    esac
   fi
 
   BUILD_FEATURES=""
@@ -1284,6 +1596,9 @@ fi
 EFFECTIVE_TARGET_DIR="${CARGO_TARGET_DIR:-$SCRIPT_ROOT/target}"
 RELEASE_DIR="$EFFECTIVE_TARGET_DIR/$BUILD_TARGET/$BUILD_PROFILE"
 BIN="$RELEASE_DIR/beetle"
+if [[ "$BUILD_METHOD" == "remote" ]] && [[ -n "${REMOTE_BUILD_DIR:-}" ]]; then
+  REMOTE_BUILD_BIN="$REMOTE_BUILD_DIR/target/$BUILD_TARGET/$BUILD_PROFILE/beetle"
+fi
 BOOTLOADER_BIN="$RELEASE_DIR/bootloader.bin"
 PARTITION_TABLE_BIN="$RELEASE_DIR/partition-table.bin"
 PARTITION_CSV="$SCRIPT_ROOT/$PARTITION_TABLE"
@@ -1680,6 +1995,41 @@ if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then
   echo "========== $MSG_LINUX_MODE =========="
   echo "  Target: $BUILD_TARGET"
 
+  if [[ "$BUILD_METHOD" == "remote" ]]; then
+    REMOTE_BUILD_ACTIVE=1
+    run_linux_remote_build
+
+    case "${REMOTE_BUILD_ROLE:-}" in
+      deploy)
+        linux_deploy_main
+        exit 0
+        ;;
+      pull_deploy)
+        linux_remote_pull_artifact_to_local
+        REMOTE_BUILD_ACTIVE=0
+        linux_deploy_cleanup_ssh_mux
+        REMOTE_TARGET_PREPARED=0
+        SSH_MUX_DIR=""
+        DEVICE_IP=""
+        DEVICE_USER=""
+        SSH_PORT=""
+        linux_deploy_main
+        exit 0
+        ;;
+      leave)
+        echo ""
+        echo "========== Remote Build Complete =========="
+        echo "  Artifact kept on remote host:"
+        echo "    $REMOTE_BUILD_BIN"
+        exit 0
+        ;;
+      *)
+        echo "Error: unknown remote build role: ${REMOTE_BUILD_ROLE:-}" >&2
+        exit 1
+        ;;
+    esac
+  fi
+
   # 检查是否在 macOS 上构建 Linux musl
   if [[ "$BUILD_TARGET" =~ -unknown-linux-musl ]] && [[ "$(uname -s)" == "Darwin" ]]; then
     echo "  $MSG_DETECTED_MACOS"
@@ -1821,6 +2171,9 @@ EOF
   fi
 
   # 添加 target
+  if [[ -z "${USE_DOCKER:-}" ]]; then
+    command -v cargo &>/dev/null || { echo "Error: cargo not found. Install Rust: https://rustup.rs" >&2; exit 1; }
+  fi
   if ! rustup +stable target list --installed | grep -q "$BUILD_TARGET"; then
     echo "  Adding target: $BUILD_TARGET"
     rustup +stable target add "$BUILD_TARGET"

@@ -1,29 +1,30 @@
 //! Agent ReAct 循环：入站一条 → context → chat（含 tool_use 多轮）→ 会话持久化 → 出站一条。
 //! 仅依赖 trait；HTTP/Tool 由 main 注入同一实现（如 EspHttpClient）。
+use super::StreamEditor;
 use super::delivery::{DeliveryReport, DeliverySession, ToolIntentDelivery};
 use super::final_reply::finalize_user_visible_reply;
 use super::request_plan::AgentRequestPlan;
 use super::strategy::{
-    append_execution_plan, blocker_end_turn_followup, build_success_tool_round_guidance,
-    build_tool_round_guidance, detect_ping_pong_tool_rounds, empty_final_answer_followup,
-    final_answer_followup, repeated_answer_followup, should_generate_execution_plan,
-    stalled_end_turn_followup, AgentRunStrategy, SuccessfulToolRoundSummary,
+    AgentRunStrategy, SuccessfulToolRoundSummary, append_execution_plan, blocker_end_turn_followup,
+    build_success_tool_round_guidance, build_tool_round_guidance, detect_ping_pong_tool_rounds,
+    empty_final_answer_followup, final_answer_followup, repeated_answer_followup,
+    should_generate_execution_plan, stalled_end_turn_followup,
 };
 use super::tool_guidance::{
-    build_success_tool_execution_guidance, record_successful_tool_result,
-    round_used_external_content, SuccessfulToolRoundObservations,
+    SuccessfulToolRoundObservations, build_success_tool_execution_guidance,
+    record_successful_tool_result, round_used_external_content,
 };
 use super::tool_outcome::{
-    classify_tool_error, denied_tool_assessment, summarize_tool_blocker,
-    unavailable_tool_assessment, ToolBlockerSummary, ToolFailureSummary,
+    ToolBlockerSummary, ToolFailureSummary, classify_tool_error, denied_tool_assessment,
+    summarize_tool_blocker, unavailable_tool_assessment,
 };
-use super::StreamEditor;
+use crate::PlatformHttpClient;
 use crate::agent::context::{
-    build_context, estimate_post_memory_system_tail_len, PostMemoryTailParams, RuntimeContext,
+    PostMemoryTailParams, RuntimeContext, build_context, estimate_post_memory_system_tail_len,
 };
 use crate::bus::{
-    InboundRx, IngressKind, OutboundTx, PcMsg, SystemInboundTx, UserInboundRx, UserInboundTx,
-    MAX_CONTENT_LEN,
+    InboundRx, IngressKind, MAX_CONTENT_LEN, OutboundTx, PcMsg, SystemInboundTx, UserInboundRx,
+    UserInboundTx,
 };
 use crate::constants::{
     AGENT_MARKER_MARK_IMPORTANT, AGENT_MARKER_SIGNAL_COMFORT, AGENT_MARKER_STOP,
@@ -31,31 +32,30 @@ use crate::constants::{
     MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
 };
 use crate::error::Result;
-use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
+use crate::i18n::{Locale as UiLocale, Message as UiMessage, tr};
 use crate::llm::{LlmClient, Message, StopReason, ToolChoicePolicy};
 use crate::memory::{
-    build_turn_ledger_start, load_prompt_memory_context, memory_policy, normalize_turn_preview,
-    normalize_turn_reason, recall_long_term_memory_block, run_long_term_memory_refresh,
-    run_mental_privacy_disclosure_adjudication, run_mental_privacy_review,
-    run_post_reply_memory_maintenance, run_self_runtime, AutonomyStrategyStore, EmotionSignalStore,
-    ExecutionStateStore, ImportantMessageStore, InnerLifeStore, LongTermMemoryExtractionStateStore,
-    LongTermMemoryRefreshContext, LongTermMemoryRefreshOutcome,
-    LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore, MemoryStore,
-    MentalPrivacyDisclosureAdjudicationContext, MentalPrivacyDisclosureAdjudicationInput,
-    MentalPrivacyReviewContext, MentalPrivacyReviewInput, MentalPrivacyStore, OuterVoiceStore,
-    PendingRetryStore, PersonaPriorityAdjudicationInput, PersonaPriorityGrounding,
-    PersonaPriorityRuntimeState, PostReplyMemoryMaintenanceContext,
+    AutonomyStrategyStore, EmotionSignalStore, ExecutionStateStore, ImportantMessageStore,
+    InnerLifeStore, LongTermMemoryExtractionStateStore, LongTermMemoryRefreshContext,
+    LongTermMemoryRefreshOutcome, LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore,
+    MemoryStore, MentalPrivacyDisclosureAdjudicationContext,
+    MentalPrivacyDisclosureAdjudicationInput, MentalPrivacyReviewContext, MentalPrivacyReviewInput,
+    MentalPrivacyStore, OuterVoiceStore, PendingRetryStore, PersonaPriorityAdjudicationInput,
+    PersonaPriorityGrounding, PersonaPriorityRuntimeState, PostReplyMemoryMaintenanceContext,
     PostReplyMemoryMaintenanceInput, PrivateDocStore, PrivateGardenStore, PromptMemoryContext,
     PromptMemoryContextParams, RemindAtStore, SelfContinuityStore, SelfModelStore,
     SelfRuntimeContext, SessionMessage, SessionStore, SessionSummaryRefreshOutcome,
     SessionSummaryStore, TurnDeliveryLedger, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
-    WorldSenseStore,
+    WorldSenseStore, build_turn_ledger_start, load_prompt_memory_context, memory_policy,
+    normalize_turn_preview, normalize_turn_reason, recall_long_term_memory_block,
+    run_long_term_memory_refresh, run_mental_privacy_disclosure_adjudication,
+    run_mental_privacy_review, run_post_reply_memory_maintenance, run_self_runtime,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
 use crate::runtime::system_work::{
-    classify_system_work, CHANNEL_CRON, CHANNEL_LONG_TERM_MEMORY_REFRESH,
-    CHANNEL_POST_REPLY_MAINTENANCE, CHANNEL_SELF_RUNTIME,
+    CHANNEL_CRON, CHANNEL_LONG_TERM_MEMORY_REFRESH, CHANNEL_POST_REPLY_MAINTENANCE,
+    CHANNEL_SELF_RUNTIME, classify_system_work,
 };
 use crate::state;
 use crate::tools::http_bridge::HttpClientToolContext;
@@ -64,16 +64,15 @@ use crate::util::{
     push_json_string_escaped, remove_substrings_all_trim, strip_agent_stop_confirmation,
     truncate_content_to_max, usize_to_decimal_buf,
 };
-use crate::PlatformHttpClient;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 /// 最大 ReAct 轮数（含首轮 chat），防止无限 tool 循环。
 const MAX_REACT_ROUNDS: usize = 10;
@@ -920,11 +919,7 @@ fn hash_tool_round(call_keys: &[u64]) -> u64 {
 }
 
 fn tool_result_status_attr(call_failed: bool) -> &'static str {
-    if call_failed {
-        "error"
-    } else {
-        "ok"
-    }
+    if call_failed { "error" } else { "ok" }
 }
 
 fn failure_kind_attr(
@@ -4765,9 +4760,11 @@ mod tests {
         ];
         compact_early_tool_rounds(&mut messages, 1);
         assert!(messages[1].content.contains("head analysis"));
-        assert!(messages[1]
-            .content
-            .contains("final decision: use file /tmp/result.json"));
+        assert!(
+            messages[1]
+                .content
+                .contains("final decision: use file /tmp/result.json")
+        );
         assert!(messages[1].content.contains("[compressed]"));
         assert!(messages[1].content.contains(" ... "));
     }

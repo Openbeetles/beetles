@@ -10,7 +10,7 @@ pub trait ChannelHttpClient {
         headers: &[(&str, &str)],
     ) -> Result<(u16, crate::platform::ResponseBody)>;
     fn http_post(&mut self, url: &str, body: &[u8])
-        -> Result<(u16, crate::platform::ResponseBody)>;
+    -> Result<(u16, crate::platform::ResponseBody)>;
     fn http_post_with_headers(
         &mut self,
         url: &str,

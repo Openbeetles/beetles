@@ -410,9 +410,9 @@ fn looks_like_explicit_limitation(content: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Result;
     use crate::llm::{LlmHttpClient, LlmModelCompat, Message, StopReason, ToolChoicePolicy};
     use crate::tools::{Tool, ToolMetadata};
-    use crate::Result;
     struct VisibleTool;
     struct NamedTool {
         name: &'static str,
@@ -562,9 +562,10 @@ mod tests {
             &PromptGuidedLlm,
             AgentRunStrategy::LinuxEnhanced,
         );
-        assert!(plan
-            .missing_tool_followup(0, false, "我来总结一下当前情况。")
-            .is_some());
+        assert!(
+            plan.missing_tool_followup(0, false, "我来总结一下当前情况。")
+                .is_some()
+        );
     }
 
     #[test]
@@ -579,9 +580,10 @@ mod tests {
             &PromptGuidedLlm,
             AgentRunStrategy::LinuxEnhanced,
         );
-        assert!(plan
-            .missing_tool_followup(0, false, "我无法访问该日志，当前可用工具也不能读取它。")
-            .is_none());
+        assert!(
+            plan.missing_tool_followup(0, false, "我无法访问该日志，当前可用工具也不能读取它。")
+                .is_none()
+        );
     }
 
     #[test]
@@ -592,9 +594,10 @@ mod tests {
         let plan =
             AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::LinuxEnhanced);
         assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Auto);
-        assert!(plan
-            .missing_tool_followup(0, false, "1+1 等于 2。")
-            .is_none());
+        assert!(
+            plan.missing_tool_followup(0, false, "1+1 等于 2。")
+                .is_none()
+        );
     }
 
     #[test]

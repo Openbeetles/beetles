@@ -8,19 +8,19 @@
 use crate::display::DisplayConfig;
 use crate::error::{Error, Result};
 use embedded_graphics_core::{
+    Pixel,
     draw_target::DrawTarget,
     geometry::{OriginDimensions, Size},
     pixelcolor::Rgb565,
-    Pixel,
 };
-use embedded_graphics_framebuf::{backends::FrameBufferBackend, FrameBuf};
+use embedded_graphics_framebuf::{FrameBuf, backends::FrameBufferBackend};
 use std::convert::Infallible;
 use std::os::unix::io::RawFd;
 
 // ── Linux framebuffer ioctl 常量（来自 include/uapi/linux/fb.h）────────────────
-// 用 c_int：musl 下 Ioctl = c_int；通过 `as libc::c_int` 传递。
-const FBIOGET_VSCREENINFO: libc::c_int = 0x4600_u32 as libc::c_int;
-const FBIOGET_FSCREENINFO: libc::c_int = 0x4602_u32 as libc::c_int;
+// 统一用 libc::Ioctl，兼容新版 libc 在不同目标上的 request 类型差异。
+const FBIOGET_VSCREENINFO: libc::Ioctl = 0x4600_u32 as libc::Ioctl;
+const FBIOGET_FSCREENINFO: libc::Ioctl = 0x4602_u32 as libc::Ioctl;
 
 /// fb_bitfield（来自 uapi/linux/fb.h）
 #[repr(C)]

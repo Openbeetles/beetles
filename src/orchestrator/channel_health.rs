@@ -4,7 +4,7 @@
 use crate::constants::{CHANNEL_FAIL_COOLDOWN_SECS, CHANNEL_FAIL_THRESHOLD};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use super::state::{channel_to_index, OrchestratorState};
+use super::state::{OrchestratorState, channel_to_index};
 
 /// 每通道健康状态——全部原子，无锁。
 /// Per-channel health state — all atomic, no locks.

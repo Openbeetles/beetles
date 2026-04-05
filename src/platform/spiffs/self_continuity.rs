@@ -1,7 +1,7 @@
 //! SPIFFS 实现的 Self Continuity 存储。单文件 memory/self_continuities.json。
 
 use crate::error::Result;
-use crate::memory::{SelfContinuity, SelfContinuityStore, REL_PATH_SELF_CONTINUITIES};
+use crate::memory::{REL_PATH_SELF_CONTINUITIES, SelfContinuity, SelfContinuityStore};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

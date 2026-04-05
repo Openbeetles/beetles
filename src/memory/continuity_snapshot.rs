@@ -639,10 +639,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(snapshot.long_term_memory.len(), 2);
-        assert!(snapshot
-            .long_term_memory
-            .iter()
-            .all(|entry| entry.kind != LongTermMemoryKind::Task));
+        assert!(
+            snapshot
+                .long_term_memory
+                .iter()
+                .all(|entry| entry.kind != LongTermMemoryKind::Task)
+        );
     }
 
     #[test]

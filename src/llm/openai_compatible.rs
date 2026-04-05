@@ -5,7 +5,7 @@
 use crate::config::{AppConfig, LlmSource};
 use crate::error::{Error, Result};
 use crate::llm::compat::model_compat_for_source;
-use crate::llm::types::{LlmResponse, StopReason, ToolCall, MAX_REQUEST_BODY_LEN};
+use crate::llm::types::{LlmResponse, MAX_REQUEST_BODY_LEN, StopReason, ToolCall};
 use crate::llm::{LlmClient, LlmHttpClient, LlmModelCompat, Message, ToolChoicePolicy, ToolSpec};
 use serde::Deserialize;
 
@@ -622,7 +622,7 @@ fn do_request_streaming(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_request_body, OpenAiCompatibleClient};
+    use super::{OpenAiCompatibleClient, build_request_body};
     use crate::config::LlmSource;
     use crate::llm::{Message, ToolCallSupport, ToolChoicePolicy, ToolSpec};
 

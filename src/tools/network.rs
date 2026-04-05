@@ -1,8 +1,8 @@
 //! Structured host network inspection and probing.
 
 use crate::error::{Error, Result};
-use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
-use serde_json::{json, Value};
+use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args};
+use serde_json::{Value, json};
 #[cfg(any(target_os = "linux", test))]
 use std::net::Ipv4Addr;
 use std::net::ToSocketAddrs;
@@ -392,7 +392,7 @@ fn extract_numbers(raw: &str) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        http_probe, parse_default_route, parse_ping_summary, parse_resolv_conf, NetworkTool,
+        NetworkTool, http_probe, parse_default_route, parse_ping_summary, parse_resolv_conf,
     };
     use crate::error::Result;
     use crate::i18n::Locale;

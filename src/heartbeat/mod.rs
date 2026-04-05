@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::i18n::{tr, Locale, Message as UiMessage};
+use crate::i18n::{Locale, Message as UiMessage, tr};
 
 const TAG: &str = "heartbeat";
 const TASK_THROTTLE_SECS: u64 = 30;
@@ -198,7 +198,11 @@ pub(crate) fn heartbeat_tick(
 /// 存储用量（KB）。经 [`crate::Platform::spiffs_usage`]；无数据时为 (0, 0)。
 fn storage_usage_kb(platform: &dyn crate::Platform) -> (u32, u32) {
     match platform.spiffs_usage() {
-        Some((total, used)) => ((used / 1024) as u32, (total / 1024) as u32),
+        Some((total, used)) => {
+            let used_kb = (used / 1024).min(u32::MAX as u64) as u32;
+            let total_kb = (total / 1024).min(u32::MAX as u64) as u32;
+            (used_kb, total_kb)
+        }
         None => (0, 0),
     }
 }

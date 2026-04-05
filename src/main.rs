@@ -918,6 +918,40 @@ fn handle_doctor_command(platform: &Arc<dyn Platform>) {
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn handle_restart_command(platform: &Arc<dyn Platform>) {
+    if std::path::Path::new("/etc/systemd/system/beetle.service").exists() {
+        match std::process::Command::new("systemctl")
+            .args(["restart", "beetle"])
+            .status()
+        {
+            Ok(status) if status.success() => {
+                println!("beetle service restart requested.");
+                return;
+            }
+            Ok(status) => {
+                eprintln!(
+                    "systemctl restart beetle failed with exit status: {}",
+                    status
+                );
+                std::process::exit(status.code().unwrap_or(1));
+            }
+            Err(e) => {
+                eprintln!("failed to run systemctl restart beetle: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    log::warn!("[{}] systemd service not found; falling back to process restart", TAG);
+    beetle::runtime::request_restart_with_continuity_flush(
+        Arc::clone(platform),
+        None,
+        "cli_restart",
+    );
+    println!("restart requested.");
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn main() {
     use beetle::commands::{Cli, Commands};
 
@@ -954,6 +988,9 @@ fn main() {
         }
         Commands::Status { json, chat_id } => {
             handle_status_command(&platform, json, chat_id.as_deref());
+        }
+        Commands::Restart => {
+            handle_restart_command(&platform);
         }
         Commands::Doctor => {
             handle_doctor_command(&platform);

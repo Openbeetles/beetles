@@ -24,7 +24,7 @@ pub fn diagnose(
     outbound_depth: usize,
     last_error: Option<String>,
     storage_ok: bool,
-    spiffs_ok: Option<(usize, usize)>,
+    spiffs_ok: Option<(u64, u64)>,
     nvs_ok: bool,
     memory_loaded: bool,
     soul_loaded: bool,

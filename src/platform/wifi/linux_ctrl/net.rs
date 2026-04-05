@@ -2,6 +2,7 @@
 //! 数据面地址管理经 rtnetlink；接口创建/删除与信道读取经 nl80211 GENL（不再依赖 `iw`）。
 
 use crate::error::{Error, Result};
+use std::ffi::CString;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -30,8 +31,33 @@ pub fn clear_ipv4_addresses(iface: &str) -> Result<()> {
 /// 使用 nl80211 NEW_INTERFACE；不再调用 `iw dev <phy> interface add <ap> type __ap`。
 pub fn create_virtual_ap_iface(phy_iface: &str, ap_iface: &str) -> Result<()> {
     super::nl80211::create_virtual_ap_iface(phy_iface, ap_iface)?;
-    wait_iface_sysfs_ready(ap_iface, "wifi_virt_iface_add")?;
+    wait_iface_kernel_ready(ap_iface, "wifi_virt_iface_add")?;
     Ok(())
+}
+
+/// 等待接口同时出现在 sysfs 与内核 netdevice 表中。
+/// 仅看 `/sys/class/net/<iface>` 不足以证明 dnsmasq / if_nametoindex 已可见，
+/// 尤其是强退后同名虚拟接口重建时，sysfs 出现和用户态可解析之间可能仍有短暂窗口。
+pub fn wait_iface_kernel_ready(name: &str, stage: &'static str) -> Result<()> {
+    let path = Path::new("/sys/class/net").join(name);
+    let c_name = CString::new(name)
+        .map_err(|_| Error::config(stage, format!("invalid iface name '{}'", name)))?;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        let ifindex = unsafe { libc::if_nametoindex(c_name.as_ptr()) };
+        if path.exists() && ifindex != 0 {
+            std::thread::sleep(Duration::from_millis(150));
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    Err(Error::config(
+        stage,
+        format!(
+            "timeout waiting for kernel-visible iface {}",
+            path.display()
+        ),
+    ))
 }
 
 /// 读取当前 WiFi 信道号（通过 nl80211 GET_INTERFACE → ATTR_WIPHY_FREQ）。
@@ -50,21 +76,4 @@ pub fn delete_virtual_iface(ap_iface: &str) -> Result<()> {
         }
         Err(e) => Err(e),
     }
-}
-
-/// NEW_INTERFACE 后 sysfs 与 rtnetlink 可能短暂不一致；轮询 sysfs 就绪。
-fn wait_iface_sysfs_ready(name: &str, stage: &'static str) -> Result<()> {
-    let path = Path::new("/sys/class/net").join(name);
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while Instant::now() < deadline {
-        if path.exists() {
-            std::thread::sleep(Duration::from_millis(150));
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    Err(Error::config(
-        stage,
-        format!("timeout waiting for sysfs {}", path.display()),
-    ))
 }

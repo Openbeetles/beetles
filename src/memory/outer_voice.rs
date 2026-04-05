@@ -10,14 +10,14 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    collect_private_targets,
-    llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload},
+    AutonomyStrategy, ExecutionState, InnerLife, MentalPrivacyState, OuterVoicePolicy,
+    PrivateDocWorkspace, PrivateGardenDocRecord, SelfContinuity, SelfModel, SessionMessage,
+    WorldSense, WorldSnapshot, collect_private_targets,
+    llm_json::{LlmJsonPayload, get_object_text, parse_llm_json_payload},
     memory_policy, render_autonomy_strategy_block, render_execution_state_block,
     render_inner_life_block, render_mental_privacy_boundary_block, render_self_continuity_block,
     render_self_model_block, render_world_sense_block, render_world_snapshot_block,
-    whole_record_lease_advanced, AutonomyStrategy, ExecutionState, InnerLife, MentalPrivacyState,
-    OuterVoicePolicy, PrivateDocWorkspace, PrivateGardenDocRecord, SelfContinuity, SelfModel,
-    SessionMessage, WorldSense, WorldSnapshot,
+    whole_record_lease_advanced,
 };
 
 pub const OUTER_VOICE_SYSTEM_PROMPT: &str = "You maintain the assistant's outer voice layer. Return JSON only: either null or one object with fields expression_mode, tone, pacing, initiative, boundary_style, relational_response_style. This layer is outward-facing: it shapes how the assistant should speak across user-visible channels in the near term. It is not a transcript summary, not a private diary, and not factual memory. Use world-sense, autonomy strategy, self-model, inner-life drift, self-continuity, and mental privacy boundaries as grounding. Keep it compact, stable enough to guide future replies, and willing to shift when the surrounding situation changes. Never copy private text into this layer; only encode expression guidance.";

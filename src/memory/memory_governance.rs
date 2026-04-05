@@ -1,9 +1,9 @@
 //! Cross-plane governance kernel for canonical shared memory coordination.
 
 use super::{
-    build_shared_factual_plane_snapshot, memory_capability_profile, MemoryProfile, MemoryStore,
-    SessionMessage, SessionStore, SharedFactualPlaneSnapshot, SharedFactualReconcileAction,
-    TurnLedgerStore,
+    MemoryProfile, MemoryStore, SessionMessage, SessionStore, SharedFactualPlaneSnapshot,
+    SharedFactualReconcileAction, TurnLedgerStore, build_shared_factual_plane_snapshot,
+    memory_capability_profile,
 };
 
 pub struct MemoryGovernanceContext<'a> {

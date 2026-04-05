@@ -8,11 +8,13 @@ mod esp_transport;
 
 use crate::error::{Error, Result};
 use std::sync::Arc;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::time::Duration;
 
 pub(crate) mod common;
 mod handlers;
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const CONFIG_PLANE_POLL_MS: u64 = 500;
 
 struct ConfigPlaneActiveGuard;
@@ -265,12 +267,14 @@ pub fn run(
         let server = Arc::clone(&server);
         let ctx = Arc::clone(&ctx);
         let router_env = router_env.clone();
-        crate::util::spawn_guarded(&worker_name, move || loop {
-            match server.recv() {
-                Ok(request) => handle_linux_request(&ctx, &router_env, request),
-                Err(e) => {
-                    log::warn!("http_config_recv: {}", e);
-                    break;
+        crate::util::spawn_guarded(&worker_name, move || {
+            loop {
+                match server.recv() {
+                    Ok(request) => handle_linux_request(&ctx, &router_env, request),
+                    Err(e) => {
+                        log::warn!("http_config_recv: {}", e);
+                        break;
+                    }
                 }
             }
         });

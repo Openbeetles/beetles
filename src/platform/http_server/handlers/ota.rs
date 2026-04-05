@@ -2,7 +2,7 @@
 //! GET /api/ota/check：按板型与渠道查 manifest，返回是否有更新及 url。
 
 use crate::error::Error;
-use crate::i18n::{locale_from_store, tr, tr_error, Message};
+use crate::i18n::{Message, locale_from_store, tr, tr_error};
 use crate::platform::http_server::common::ApiResponse;
 
 use super::HandlerContext;

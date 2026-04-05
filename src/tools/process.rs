@@ -1,8 +1,8 @@
 //! Process inspection tool for host Linux.
 
 use crate::error::{Error, Result};
-use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
-use serde_json::{json, Value};
+use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args};
+use serde_json::{Value, json};
 
 const DEFAULT_PROCESS_LIST_LIMIT: usize = 16;
 const MAX_PROCESS_LIST_LIMIT: usize = 64;

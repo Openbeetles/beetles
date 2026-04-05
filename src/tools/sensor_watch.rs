@@ -6,11 +6,11 @@ use crate::constants::{
     SENSOR_WATCH_MAX_ALERT_LEN, SENSOR_WATCH_MAX_ENTRIES, SENSOR_WATCH_MIN_INTERVAL_SECS,
 };
 use crate::error::{Error, Result};
-use crate::i18n::{tr, Message as UiMessage, SensorWatchThresholdKind};
+use crate::i18n::{Message as UiMessage, SensorWatchThresholdKind, tr};
 use crate::memory::MemoryStore;
-use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
+use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 /// 持久化文件路径。

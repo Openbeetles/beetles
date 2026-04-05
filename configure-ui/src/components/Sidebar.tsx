@@ -1,4 +1,9 @@
-import { type MouseEvent, type ReactElement, useContext } from "react";
+import {
+  type MouseEvent,
+  type ReactElement,
+  useContext,
+  useRef,
+} from "react";
 import Box from "@mui/material/Box";
 import List from "@mui/material/List";
 import ListItemButton from "@mui/material/ListItemButton";
@@ -17,13 +22,14 @@ import DevicesOtherOutlined from "@mui/icons-material/DevicesOtherOutlined";
 import SmartToyOutlined from "@mui/icons-material/SmartToyOutlined";
 import { BeetleIcon } from "./BeetleIcon";
 import { useTranslation } from "react-i18next";
-import { Link, useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { NavBlockerContext } from "../contexts/NavBlockerContext";
 import { SIDEBAR_WIDTH_EXPANDED, TOP_BAR_MIN_HEIGHT } from "../config/layout";
 import { useDevice } from "../hooks/useDevice";
 import { useDeviceApi, type DeviceHintReason } from "../hooks/useDeviceApi";
 import { useToast } from "../hooks/useToast";
 import { sidebarNavSelectedPcbOverlaySx } from "../theme/pcbSurface";
+import { SHELL_CHROME_SURFACE_SX } from "../theme/shellChromeSurface";
 
 function getNavBlockedMessageKey(reason: DeviceHintReason): string {
   switch (reason) {
@@ -45,6 +51,9 @@ function displayHost(baseUrl: string): string {
     return baseUrl;
   }
 }
+
+/** 同一阻断原因下避免连点导航重复 Toast */
+const NAV_BLOCK_TOAST_COOLDOWN_MS = 2500;
 
 const NAV_ITEMS: { path: string; labelKey: string; icon: ReactElement }[] = [
   { path: "/device", labelKey: "nav.device", icon: <LinkRounded /> },
@@ -82,6 +91,7 @@ interface SidebarProps {
 export function Sidebar({ drawer }: SidebarProps) {
   const { t } = useTranslation();
   const location = useLocation();
+  const navigate = useNavigate();
   const navBlocker = useContext(NavBlockerContext);
   const { baseUrl } = useDevice();
   const {
@@ -91,6 +101,9 @@ export function Sidebar({ drawer }: SidebarProps) {
     deviceHintReason,
   } = useDeviceApi();
   const { showToast } = useToast();
+  const lastNavBlockToastRef = useRef<{ key: string; at: number } | null>(
+    null,
+  );
   const pathname = location.pathname;
   /** 仅在设备已连接且无需提示时允许跳转；设备页始终可点。checking/unreachable/未激活/无配对码均禁用 */
   const canNavigate = (path: string) =>
@@ -106,22 +119,42 @@ export function Sidebar({ drawer }: SidebarProps) {
         height: "100vh",
         display: "flex",
         flexDirection: "column",
-        backgroundColor: "var(--surface)",
+        ...SHELL_CHROME_SURFACE_SX,
+        ...(!drawer && {
+          borderRight:
+            "1px solid color-mix(in srgb, var(--border) 38%, transparent)",
+        }),
         transition:
           "width var(--transition-duration-emphasized) var(--ease-emphasized)",
       }}
     >
       <Stack
-        component={Link}
-        to="/"
+        component="button"
+        type="button"
         direction="row"
         alignItems="center"
         spacing={1.5}
+        onClick={(e) => {
+          e.preventDefault();
+          if (navBlocker?.attemptNavigate) {
+            navBlocker.attemptNavigate("/");
+          } else {
+            navigate("/");
+          }
+        }}
+        aria-label={t("nav.brandHome")}
         sx={{
           minHeight: TOP_BAR_MIN_HEIGHT,
           px: drawer ? 2 : 2,
+          border: 0,
+          margin: 0,
+          background: "none",
+          cursor: "pointer",
+          font: "inherit",
+          textAlign: "inherit",
           textDecoration: "none",
           color: "inherit",
+          width: "100%",
           transition:
             "padding var(--transition-duration) ease, opacity var(--transition-duration) ease",
           "&:hover": { opacity: 0.9 },
@@ -130,8 +163,8 @@ export function Sidebar({ drawer }: SidebarProps) {
         <BeetleIcon
           aria-hidden
           sx={{
-            width: "var(--icon-container-sm)",
-            height: "var(--icon-container-sm)",
+            width: "var(--icon-container-md)",
+            height: "var(--icon-container-md)",
             borderRadius: "var(--radius-control)",
           }}
         />
@@ -177,14 +210,29 @@ export function Sidebar({ drawer }: SidebarProps) {
         }}
       >
         <Stack
-          component={Link}
-          to="/device"
+          component="button"
+          type="button"
           direction="row"
           alignItems="center"
           spacing={1.25}
+          onClick={(e) => {
+            e.preventDefault();
+            if (navBlocker?.attemptNavigate) {
+              navBlocker.attemptNavigate("/device");
+            } else {
+              navigate("/device");
+            }
+          }}
+          aria-label={t("device.pageTitle")}
           sx={{
             flex: 1,
             minWidth: 0,
+            border: 0,
+            margin: 0,
+            background: "none",
+            cursor: "pointer",
+            font: "inherit",
+            textAlign: "left",
             textDecoration: "none",
             color: "inherit",
             "&:hover": {
@@ -327,6 +375,16 @@ export function Sidebar({ drawer }: SidebarProps) {
           const handleNavClick = (e: MouseEvent<HTMLElement>) => {
             if (!allowNav) {
               e.preventDefault();
+              const key = deviceHintReason ?? "unknown";
+              const now = Date.now();
+              const prev = lastNavBlockToastRef.current;
+              if (
+                prev?.key === key &&
+                now - prev.at < NAV_BLOCK_TOAST_COOLDOWN_MS
+              ) {
+                return;
+              }
+              lastNavBlockToastRef.current = { key, at: now };
               showToast(t(getNavBlockedMessageKey(deviceHintReason)), {
                 variant: "warning",
               });

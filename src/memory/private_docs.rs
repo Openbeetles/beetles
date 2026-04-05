@@ -11,16 +11,15 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    build_self_state,
-    llm_json::{coerce_json_text, parse_llm_json_payload, LlmJsonPayload},
+    AutonomyStrategy, ExecutionState, ExecutionStateStore, InnerLife, InternalMemoryLayerFocus,
+    LongTermMemoryStore, MemoryProfile, PrivateDocStore, PrivateDocsPolicy, PrivateGardenDocRecord,
+    SelfContinuity, SelfModel, SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
+    WorldSense, build_self_state,
+    llm_json::{LlmJsonPayload, coerce_json_text, parse_llm_json_payload},
     memory_policy, render_autonomy_strategy_block, render_execution_state_block,
     render_inner_life_block, render_internal_memory_topology_block,
     render_private_memory_boundary_block, render_self_continuity_block, render_self_model_block,
     render_self_state_block, render_shared_factual_plane_block, render_world_sense_block,
-    AutonomyStrategy, ExecutionState, ExecutionStateStore, InnerLife, InternalMemoryLayerFocus,
-    LongTermMemoryStore, MemoryProfile, PrivateDocStore, PrivateDocsPolicy, PrivateGardenDocRecord,
-    SelfContinuity, SelfModel, SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
-    WorldSense,
 };
 
 pub const PRIVATE_DOC_WORKSPACE_SYSTEM_PROMPT: &str = "You maintain a compact governed private document workspace for a persistent embodied AI assistant. Return JSON only: one object whose fields may include inner_journal, relationship_notes, self_reflection, private_plan. Omit unchanged fields. Use an empty string only when a document should be cleared because it is no longer helpful. These documents are private, subjective, and compact. They must not replace factual memory or copy the transcript. The canonical shared factual plane owns durable objective facts; use shared facts only as grounding. Treat current autonomy strategy, world-sense, and self-state capacity as real constraints: only write material that should stay load-bearing in the governed workspace rather than remaining in inner-life or the free private garden. Keep each field concise, concrete, and continuity-preserving. inner_journal captures the inward afterglow of recent interaction. relationship_notes captures how the relationship currently feels or is shifting. self_reflection captures how the assistant sees its own stance or change. private_plan captures inward next-step framing, not a user-facing promise list. Avoid secrets, raw tool payloads, copied logs, generic assistant boilerplate, or long quotes.";
@@ -1241,17 +1240,21 @@ mod tests {
 
         assert_eq!(outcome, PrivateDocWorkspaceRefreshOutcome::Updated);
         let stored = private_doc_store.get("c1").unwrap().unwrap();
-        assert!(stored
-            .inner_journal
-            .as_ref()
-            .unwrap()
-            .content
-            .contains("工作区"));
-        assert!(stored
-            .private_plan
-            .as_ref()
-            .unwrap()
-            .content
-            .contains("治理"));
+        assert!(
+            stored
+                .inner_journal
+                .as_ref()
+                .unwrap()
+                .content
+                .contains("工作区")
+        );
+        assert!(
+            stored
+                .private_plan
+                .as_ref()
+                .unwrap()
+                .content
+                .contains("治理")
+        );
     }
 }

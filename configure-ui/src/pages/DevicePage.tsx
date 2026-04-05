@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -23,11 +23,17 @@ import {
 import { fetchSystemInfoCoalesced } from "../session/systemInfoCoordinator";
 import { SystemStatusPanel } from "../components/SystemStatusPanel";
 import { SectionLoadProgress } from "../components/SectionLoadProgress";
+import { useUnsaved } from "../hooks/useUnsaved";
 
 const DEFAULT_DEVICE_BASE_URL = "http://192.168.4.1";
 
+function normalizeDeviceUrl(u: string): string {
+  return u.trim().replace(/\/$/, "") || DEFAULT_DEVICE_BASE_URL;
+}
+
 export function DevicePage() {
   const { t } = useTranslation();
+  const { setDirty } = useUnsaved();
   const { baseUrl, pairingCode, setBaseUrl, setPairingCode } = useDevice();
   const { api, deviceConnected } = useDeviceApi();
   const [urlInput, setUrlInput] = useState(baseUrl || DEFAULT_DEVICE_BASE_URL);
@@ -46,6 +52,36 @@ export function DevicePage() {
   const [healthLoading, setHealthLoading] = useState(false);
   const [healthError, setHealthError] = useState("");
   const [saveStatus, setSaveStatus] = useState<"idle" | "ok">("idle");
+
+  /** 设备上下文（地址/配对码）会话变化时同步输入框，避免与其它入口写入脱节 */
+  const deviceSessionKey = `${baseUrl ?? ""}\0${pairingCode ?? ""}`;
+  const prevDeviceSessionKeyRef = useRef(deviceSessionKey);
+  useEffect(() => {
+    if (deviceSessionKey === prevDeviceSessionKeyRef.current) return;
+    prevDeviceSessionKeyRef.current = deviceSessionKey;
+    const nextUrl = baseUrl || DEFAULT_DEVICE_BASE_URL;
+    const nextCode = pairingCode ?? "";
+    queueMicrotask(() => {
+      setUrlInput(nextUrl);
+      setCodeInput(nextCode);
+    });
+  }, [deviceSessionKey, baseUrl, pairingCode]);
+
+  const connectionDraftDirty = useMemo(() => {
+    const draftUrl = normalizeDeviceUrl(urlInput);
+    const savedUrl = normalizeDeviceUrl(baseUrl ?? "");
+    const draftCode = (codeInput ?? "").trim();
+    const savedCode = (pairingCode ?? "").trim();
+    return draftUrl !== savedUrl || draftCode !== savedCode;
+  }, [urlInput, codeInput, baseUrl, pairingCode]);
+
+  useEffect(() => {
+    setDirty(connectionDraftDirty);
+  }, [connectionDraftDirty, setDirty]);
+
+  useEffect(() => {
+    return () => setDirty(false);
+  }, [setDirty]);
 
   const handleSave = () => {
     const url = urlInput.trim().replace(/\/$/, "") || DEFAULT_DEVICE_BASE_URL;

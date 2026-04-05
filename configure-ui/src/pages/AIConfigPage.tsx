@@ -324,7 +324,7 @@ export function AIConfigPage() {
         }
       >
         {!config && !loading && (
-          <Typography variant="body2" color="text.secondary" sx={{ pb: 2 }}>
+          <Typography variant="body2" sx={{ pb: 2, color: "var(--muted)" }}>
             {t("config.hintSaveNeedDevice")}
           </Typography>
         )}
@@ -345,7 +345,7 @@ export function AIConfigPage() {
             label={t("config.llmStream")}
             sx={{ mb: 1 }}
           />
-          <Typography variant="caption" color="text.secondary" sx={{ ml: 7, mt: -1, mb: 2 }}>
+          <Typography variant="caption" sx={{ ml: 7, mt: -1, mb: 2, color: "var(--muted)" }}>
             {t("config.llmStreamHelp")}
           </Typography>
           {sources.map((row, i) => (

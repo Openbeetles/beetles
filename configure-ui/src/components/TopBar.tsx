@@ -15,6 +15,7 @@ import { useToast } from "../hooks/useToast";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { PageHeader } from "./PageHeader";
 import { TOP_BAR_MIN_HEIGHT } from "../config/layout";
+import { SHELL_CHROME_SURFACE_SX } from "../theme/shellChromeSurface";
 
 const PATH_TO_META: Record<string, { titleKey: string; descKey: string }> = {
   "/device": { titleKey: "device.pageTitle", descKey: "device.pageDesc" },
@@ -104,7 +105,7 @@ export function TopBar({ onMenuClick, onOpenSettings }: TopBarProps) {
         alignItems: "center",
         justifyContent: "space-between",
         px: 2,
-        backgroundColor: "var(--surface)",
+        ...SHELL_CHROME_SURFACE_SX,
         borderBottom:
           "1px solid color-mix(in srgb, var(--border) 22%, transparent)",
         gap: 2,

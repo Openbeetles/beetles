@@ -4,13 +4,13 @@
 use super::auth;
 use super::types::{IncomingRequest, OutgoingResponse, RestartAction, RouterEnv};
 use crate::error::{Error, Result};
-use crate::i18n::{locale_from_store, tr, Message};
-use crate::platform::{HardwareCapability, HardwareDiscoveryBus};
+use crate::i18n::{Message, locale_from_store, tr};
 use crate::platform::http_server::common::{
     self, ApiResponse, CORS_AND_TEXT_PLAIN, CORS_HEADERS, CORS_OPTIONS_HEADERS, CSS_HEADERS,
     HTML_HEADERS, JS_HEADERS, REDIRECT_PAIRING_HEADERS,
 };
 use crate::platform::http_server::handlers::{self, HandlerContext};
+use crate::platform::{HardwareCapability, HardwareDiscoveryBus};
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use std::sync::Arc;
 
@@ -392,7 +392,9 @@ pub fn dispatch(
                 return Ok(api_to_out(ApiResponse::err_400("missing or invalid bus")));
             };
             let Some(capability) = hardware_capability_from_uri(uri) else {
-                return Ok(api_to_out(ApiResponse::err_400("missing or invalid capability")));
+                return Ok(api_to_out(ApiResponse::err_400(
+                    "missing or invalid capability",
+                )));
             };
             match handlers::hardware_discovery::get_body(ctx, bus, capability) {
                 Ok(body) => Ok(OutgoingResponse::json(
@@ -402,8 +404,8 @@ pub fn dispatch(
                     body.into_bytes(),
                 )),
                 Err(handlers::hardware_discovery::HardwareDiscoveryError::Unavailable) => {
-                    let body =
-                        serde_json::json!({ "error": "hardware discovery not available" }).to_string();
+                    let body = serde_json::json!({ "error": "hardware discovery not available" })
+                        .to_string();
                     Ok(OutgoingResponse::json(
                         503,
                         "Service Unavailable",

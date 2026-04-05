@@ -1,8 +1,8 @@
 //! POST /api/webhook：校验 webhook token 后把 body 作为 PcMsg 入队。
 
 use crate::bus::{InboundTx, PcMsg};
-use crate::i18n::{locale_from_store, tr, Message};
-use crate::platform::http_server::common::{constant_time_eq, ApiResponse};
+use crate::i18n::{Message, locale_from_store, tr};
+use crate::platform::http_server::common::{ApiResponse, constant_time_eq};
 
 use super::HandlerContext;
 

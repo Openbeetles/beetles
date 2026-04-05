@@ -1,12 +1,12 @@
 //! Telegram 入站 long poll：getUpdates，解析消息入队，命令处理。
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
-use crate::bus::{InboundTx, OutboundTx, PcMsg, MAX_CONTENT_LEN};
+use crate::bus::{InboundTx, MAX_CONTENT_LEN, OutboundTx, PcMsg};
 use crate::channels::ChannelHttpClient;
 use crate::error::{Error, Result};
-use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
+use crate::i18n::{Locale as UiLocale, Message as UiMessage, tr};
 use crate::memory::{PendingRetryStore, SessionStore};
 
 use super::send::set_message_reaction;

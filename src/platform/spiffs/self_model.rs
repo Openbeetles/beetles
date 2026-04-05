@@ -1,7 +1,7 @@
 //! SPIFFS 实现的 Self Model 存储。单文件 memory/self_models.json。
 
 use crate::error::Result;
-use crate::memory::{SelfModel, SelfModelStore, REL_PATH_SELF_MODELS};
+use crate::memory::{REL_PATH_SELF_MODELS, SelfModel, SelfModelStore};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

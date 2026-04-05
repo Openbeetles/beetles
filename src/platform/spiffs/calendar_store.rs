@@ -1,15 +1,15 @@
 //! SPIFFS / state-root backed calendar store.
 
 use crate::calendar::{
-    filter_calendar_events, normalize_calendar_event, CalendarEvent, CalendarQuery, CalendarStore,
-    REL_PATH_CALENDAR_EVENTS,
+    CalendarEvent, CalendarQuery, CalendarStore, REL_PATH_CALENDAR_EVENTS, filter_calendar_events,
+    normalize_calendar_event,
 };
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use super::cached_json::{load_json_or_default, CachedJsonFileStore, StoreOp};
+use super::cached_json::{CachedJsonFileStore, StoreOp, load_json_or_default};
 use super::state_path_join;
 
 const MAX_CALENDAR_EVENTS: usize = 256;

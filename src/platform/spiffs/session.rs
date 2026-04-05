@@ -3,8 +3,8 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    SessionMessage, SessionStore, MAX_SESSION_ENTRIES, MAX_SESSION_MESSAGE_LEN,
-    REL_PATH_SESSIONS_DIR,
+    MAX_SESSION_ENTRIES, MAX_SESSION_MESSAGE_LEN, REL_PATH_SESSIONS_DIR, SessionMessage,
+    SessionStore,
 };
 use serde_json;
 use std::collections::HashMap;
@@ -17,7 +17,7 @@ use std::sync::Mutex;
 
 use crate::platform::state_root::state_mount_path;
 
-use super::{list_dir, read_file, with_fs_lock, write_file, MAX_WRITE_SIZE};
+use super::{MAX_WRITE_SIZE, list_dir, read_file, with_fs_lock, write_file};
 
 const TAG: &str = "platform::spiffs::session";
 
@@ -184,6 +184,29 @@ fn count_path(path: &Path) -> PathBuf {
     PathBuf::from(value)
 }
 
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn ensure_session_parent_dir(path: &Path, stage: &'static str) -> Result<()> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).map_err(|e| Error::io(stage, e))?;
+    }
+    Ok(())
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn ensure_session_parent_dir(_path: &Path, _stage: &'static str) -> Result<()> {
+    Ok(())
+}
+
+fn ensure_sessions_dir_exists(stage: &'static str) -> Result<()> {
+    let mut dir = state_mount_path();
+    dir.push(REL_PATH_SESSIONS_DIR);
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    {
+        std::fs::create_dir_all(&dir).map_err(|e| Error::io(stage, e))?;
+    }
+    Ok(())
+}
+
 fn read_existing_file_unlocked(path: &Path) -> Result<Vec<u8>> {
     let path_str = path
         .to_str()
@@ -208,6 +231,7 @@ fn read_existing_file_unlocked(path: &Path) -> Result<Vec<u8>> {
 }
 
 fn write_session_body_unlocked(path: &Path, data: &[u8]) -> Result<()> {
+    ensure_session_parent_dir(path, "session_write")?;
     let path_str = path
         .to_str()
         .ok_or_else(|| Error::config("session_write", "invalid path"))?;
@@ -229,6 +253,7 @@ fn append_session_lines_unlocked(
     if lines.is_empty() {
         return Ok(());
     }
+    ensure_session_parent_dir(path, "session_append")?;
     let path_str = path
         .to_str()
         .ok_or_else(|| Error::config("session_append", "invalid path"))?;
@@ -383,6 +408,7 @@ impl SpiffsSessionStore {
 
         let mut p = state_mount_path();
         p.push(REL_PATH_SESSIONS_DIR);
+        ensure_sessions_dir_exists("session_list")?;
         let names = match list_dir(&p) {
             Ok(n) => n,
             Err(e) => {
@@ -636,6 +662,7 @@ impl SessionStore for SpiffsSessionStore {
     fn gc_stale(&self, max_age_secs: u64) -> Result<usize> {
         let mut p = state_mount_path();
         p.push(REL_PATH_SESSIONS_DIR);
+        ensure_sessions_dir_exists("session_gc")?;
         let names = match list_dir(&p) {
             Ok(n) => n,
             Err(_) => return Ok(0),

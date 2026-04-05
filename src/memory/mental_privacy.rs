@@ -9,17 +9,17 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use super::{
+    InnerLife, InnerLifeStore, OuterVoice, OuterVoiceStore, PrivateDocStore, PrivateDocWorkspace,
+    PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenDocRole, PrivateGardenStore,
+    SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage,
     classify_private_garden_doc_path,
     llm_json::{
-        coerce_json_text, get_object_bool, get_object_string_list, get_object_text,
-        parse_llm_json_payload, LlmJsonPayload,
+        LlmJsonPayload, coerce_json_text, get_object_bool, get_object_string_list, get_object_text,
+        parse_llm_json_payload,
     },
     normalize_private_garden_doc_path, render_inner_life_block, render_outer_voice_block,
     render_private_doc_workspace_block, render_private_garden_block, render_self_continuity_block,
-    render_self_model_block, InnerLife, InnerLifeStore, OuterVoice, OuterVoiceStore,
-    PrivateDocStore, PrivateDocWorkspace, PrivateGardenDoc, PrivateGardenDocRecord,
-    PrivateGardenDocRole, PrivateGardenStore, SelfContinuity, SelfContinuityStore, SelfModel,
-    SelfModelStore, SessionMessage,
+    render_self_model_block,
 };
 
 const MENTAL_PRIVACY_MAX_LOG_ENTRIES: usize = 32;
@@ -2144,9 +2144,11 @@ mod tests {
             parsed.share_action,
             Some(MentalPrivacyShareAction::AllowSummary)
         );
-        assert!(parsed
-            .response
-            .contains("text: I can summarize that boundary."));
+        assert!(
+            parsed
+                .response
+                .contains("text: I can summarize that boundary.")
+        );
         assert_eq!(parsed.touched_targets.len(), 2);
     }
 

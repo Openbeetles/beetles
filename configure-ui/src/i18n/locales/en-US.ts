@@ -5,6 +5,7 @@ export const enUS = {
       tagline: 'Config',
     },
     nav: {
+      brandHome: 'Back to home',
       device: 'Device',
       deviceConfig: 'Device config',
       aiConfig: 'AI config',
@@ -421,6 +422,7 @@ export const enUS = {
       errorNetwork: 'Network error. Check connection and retry.',
       deviceDisconnectedCache: 'Device disconnected. Showing cached data (read-only).',
       clearCache: 'Clear cache',
+      editDeviceConnection: 'Edit device connection',
       sectionSystem: 'System',
       sectionSystemDesc: 'WiFi, proxy, session and other system options.',
       sectionProxy: 'Proxy',
@@ -672,6 +674,9 @@ export const enUS = {
       importOk: 'Skill imported',
       discardEditTitle: 'Discard changes?',
       discardEditDesc: 'You have unsaved changes. Close without saving?',
+      discardImportTitle: 'Discard import?',
+      discardImportDesc:
+        'You entered a URL or skill name. Closing will clear them. Continue?',
     },
     tools: {
       pageTitle: 'Tools',
@@ -719,7 +724,7 @@ export const enUS = {
       dark: 'Dark',
       blue: 'Blue',
       teal: 'Teal',
-      logo: 'Logo (violet & cyan)',
+      logo: 'Violet & cyan',
       firmware: 'Firmware',
     },
   },

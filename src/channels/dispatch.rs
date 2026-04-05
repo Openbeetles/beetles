@@ -1,18 +1,18 @@
 //! 出站分发：从 outbound_rx 取 PcMsg，按 channel 调用对应 MessageSink；按通道熔断，避免单通道拖垮全局。
 //! Outbound dispatch: recv from outbound_rx, send via MessageSink; per-channel circuit breaker.
 
-use crate::bus::{OutboundRx, MAX_CONTENT_LEN};
+use crate::bus::{MAX_CONTENT_LEN, OutboundRx};
 use crate::config::AppConfig;
 use crate::constants::VOICE_CHANNEL_NAME;
 use crate::error::Result;
 use crate::metrics;
 use crate::orchestrator::AdmissionDecision;
 use crate::platform::PlatformHttpClient;
-use crate::util::{truncate_content_to_max, STACK_CHANNEL_SENDER};
+use crate::util::{STACK_CHANNEL_SENDER, truncate_content_to_max};
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::Duration;
 
 /// 出站发送抽象；各通道实现此 trait，由 main 注册到 ChannelSinks。
@@ -118,7 +118,7 @@ fn record_channel_ok(channel: &str) {
 }
 
 fn outbound_blocked(msg: &crate::bus::PcMsg) -> bool {
-    crate::state::voice_exclusive_active() && msg.channel.as_str() != VOICE_CHANNEL_NAME
+    crate::state::voice_exclusive_active() && msg.channel.as_ref() != VOICE_CHANNEL_NAME
 }
 
 fn push_buffered_msg(

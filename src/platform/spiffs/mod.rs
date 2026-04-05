@@ -159,7 +159,7 @@ pub fn init_spiffs() -> Result<()> {
 }
 
 /// 返回 SPIFFS 总字节数与已用字节数；用于启动自检或运维。失败返回 None（如未挂载）。host 返回 None。
-pub fn spiffs_usage() -> Option<(usize, usize)> {
+pub fn spiffs_usage() -> Option<(u64, u64)> {
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     {
         with_fs_lock_value(|| {
@@ -169,7 +169,7 @@ pub fn spiffs_usage() -> Option<(usize, usize)> {
                 esp_idf_svc::sys::esp_spiffs_info(std::ptr::null(), &mut total, &mut used)
             };
             if ret == 0 {
-                Some((total, used))
+                Some((total as u64, used as u64))
             } else {
                 None
             }
@@ -341,6 +341,6 @@ pub use self_model::SpiffsSelfModelStore;
 pub use session::SpiffsSessionStore;
 pub use session_summary::SpiffsSessionSummaryStore;
 pub use skill_meta::SpiffsSkillMetaStore;
-pub use skill_storage::{default_skill_storage_arc, CachedSkillStorage, SpiffsSkillStorage};
+pub use skill_storage::{CachedSkillStorage, SpiffsSkillStorage, default_skill_storage_arc};
 pub use task_store::SpiffsTaskStore;
 pub use world_sense::SpiffsWorldSenseStore;

@@ -4,7 +4,7 @@
 use crate::error::Error;
 
 use super::catalog::Message;
-use super::{tr, Locale};
+use super::{Locale, tr};
 
 /// HTTP / API 等对用户的错误文案（已按语言本地化）。
 pub fn tr_error(err: &Error, loc: Locale) -> String {

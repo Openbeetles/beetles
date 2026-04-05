@@ -4,8 +4,8 @@ use crate::error::Result;
 
 use super::archive_search::ArchiveSearchBackendKind;
 use super::{
-    search_archive_records, select_archive_hits_for_prompt, ArchiveRecordSource,
-    ArchiveSearchQuery, MemoryProfile, MemoryStore, SessionStore, TurnLedgerStore,
+    ArchiveRecordSource, ArchiveSearchQuery, MemoryProfile, MemoryStore, SessionStore,
+    TurnLedgerStore, search_archive_records, select_archive_hits_for_prompt,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]

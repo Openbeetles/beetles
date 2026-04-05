@@ -697,7 +697,7 @@ export function HardwareGpioPanel() {
             <Box
               sx={{
                 typography: "body2",
-                color: "text.secondary",
+                color: "var(--muted)",
                 mb: 2,
               }}
             >

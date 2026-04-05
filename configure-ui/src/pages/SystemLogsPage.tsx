@@ -94,7 +94,7 @@ export function SystemLogsPage() {
         label={t("systemLogs.sectionLogs")}
       >
         {!ready ? (
-          <Typography variant="body2" color="text.secondary">
+          <Typography variant="body2" sx={{ color: "var(--muted)" }}>
             {t("device.pageDesc")}
           </Typography>
         ) : logsState.loading ? (
@@ -179,7 +179,7 @@ export function SystemLogsPage() {
               </Box>
             )}
             {!logsState.data.health && logsState.data.diagnose.length === 0 && !logsState.loading && ready && (
-              <Typography variant="body2" color="text.secondary">
+              <Typography variant="body2" sx={{ color: "var(--muted)" }}>
                 {t("systemLogs.emptyLogs")}
               </Typography>
             )}

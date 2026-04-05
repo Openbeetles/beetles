@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Dialog from "@mui/material/Dialog";
+import type { DialogProps } from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
@@ -17,6 +18,7 @@ import AddLink from "@mui/icons-material/AddLink";
 import DeleteOutlined from "@mui/icons-material/DeleteOutlined";
 import EditOutlined from "@mui/icons-material/EditOutlined";
 import ExtensionOutlined from "@mui/icons-material/ExtensionOutlined";
+import WarningAmberRounded from "@mui/icons-material/WarningAmberRounded";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import {
   FormFieldStack,
@@ -27,6 +29,10 @@ import { SettingsSection } from "../components/SettingsSection";
 import { useDeviceApi, type SkillItem } from "../hooks/useDeviceApi";
 import { useToast } from "../hooks/useToast";
 import { createAsyncState } from "../types/asyncState";
+import {
+  SETTINGS_SECTION_LIST_EMPTY_SX,
+  SETTINGS_SECTION_LIST_ROW_SX,
+} from "../theme/listItemStyles";
 
 const MAX_CONTENT = 32 * 1024;
 
@@ -49,6 +55,7 @@ export function SkillsPage() {
   const [importName, setImportName] = useState("");
   const [importSaving, setImportSaving] = useState(false);
   const [importError, setImportError] = useState("");
+  const [importDiscardOpen, setImportDiscardOpen] = useState(false);
   const [deleteTargetName, setDeleteTargetName] = useState<string | null>(null);
   const [deleteSaving, setDeleteSaving] = useState(false);
   const [discardEditOpen, setDiscardEditOpen] = useState(false);
@@ -121,6 +128,9 @@ export function SkillsPage() {
     if (res.ok) {
       setEditContentInitial(editContent);
       setEditName(null);
+      showToast(t("common.saveOk"), { variant: "success" });
+    } else {
+      showToast(res.error ?? t("common.error"), { variant: "error" });
     }
   };
 
@@ -154,6 +164,33 @@ export function SkillsPage() {
     setEditName(null);
   };
 
+  const closeImportDialogFully = useCallback(() => {
+    setImportOpen(false);
+    setImportUrl("");
+    setImportName("");
+    setImportError("");
+    setImportDiscardOpen(false);
+  }, []);
+
+  const requestCloseImport = useCallback(() => {
+    if (importSaving) return;
+    if (importUrl.trim() || importName.trim()) {
+      setImportDiscardOpen(true);
+      return;
+    }
+    closeImportDialogFully();
+  }, [importSaving, importUrl, importName, closeImportDialogFully]);
+
+  const handleImportDialogClose: DialogProps["onClose"] = useCallback(
+    (_e, reason) => {
+      if (importSaving) return;
+      if (reason === "backdropClick" || reason === "escapeKeyDown") {
+        requestCloseImport();
+      }
+    },
+    [importSaving, requestCloseImport],
+  );
+
   const handleImport = async () => {
     const url = importUrl.trim();
     const name = importName.trim();
@@ -178,9 +215,7 @@ export function SkillsPage() {
     const res = await api.skills.import(url, name);
     setImportSaving(false);
     if (res.ok) {
-      setImportOpen(false);
-      setImportUrl("");
-      setImportName("");
+      closeImportDialogFully();
       showToast(t("skills.importOk"), { variant: "success" });
       loadList();
     } else {
@@ -227,24 +262,14 @@ export function SkillsPage() {
           <SectionLoadingSkeleton />
         ) : listToShow.length === 0 ? (
           <List dense disablePadding>
-            <ListItem
-              sx={{
-                py: 2,
-                px: 2,
-                bgcolor: "var(--surface)",
-                border: "none",
-                backgroundColor:
-                  "color-mix(in srgb, var(--foreground) 3%, transparent)",
-                borderRadius: "var(--radius-control)",
-              }}
-            >
+            <ListItem sx={SETTINGS_SECTION_LIST_EMPTY_SX}>
               <ListItemText
                 primary={t("skills.emptyList")}
                 slotProps={{
                   primary: {
                     variant: "body2",
                     sx: {
-                      color: "text.secondary",
+                      color: "var(--muted)",
                       fontSize: "var(--font-size-caption)",
                     },
                   },
@@ -256,27 +281,15 @@ export function SkillsPage() {
           <List
             dense
             disablePadding
-            sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}
+            sx={{ display: "flex", flexDirection: "column", gap: 1 }}
           >
             {listToShow.map((skill) => (
               <ListItem
                 key={skill.name}
                 sx={{
-                  py: 1.5,
-                  px: 2,
-                  bgcolor: "var(--surface)",
-                  border: "none",
-                  backgroundColor: "var(--surface)",
-                  borderRadius: "var(--radius-control)",
+                  ...SETTINGS_SECTION_LIST_ROW_SX,
                   display: "flex",
-                  alignItems: "center",
                   gap: 1,
-                  transition:
-                    "background-color var(--transition-duration) ease",
-                  "&:focus-within": {
-                    borderColor:
-                      "color-mix(in srgb, var(--primary) 35%, var(--border))",
-                  },
                 }}
                 secondaryAction={
                   <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
@@ -352,6 +365,16 @@ export function SkillsPage() {
         confirmLabel={t("common.confirm")}
         onConfirm={confirmDiscardEdit}
       />
+      <ConfirmDialog
+        open={importDiscardOpen}
+        onClose={() => setImportDiscardOpen(false)}
+        title={t("skills.discardImportTitle")}
+        description={t("skills.discardImportDesc")}
+        icon={<WarningAmberRounded />}
+        confirmColor="error"
+        confirmLabel={t("common.confirm")}
+        onConfirm={closeImportDialogFully}
+      />
       <Dialog
         open={!!editName}
         onClose={() => !editSaving && closeEditDialog()}
@@ -417,7 +440,7 @@ export function SkillsPage() {
 
       <Dialog
         open={importOpen}
-        onClose={() => !importSaving && setImportOpen(false)}
+        onClose={handleImportDialogClose}
         maxWidth="sm"
         fullWidth
         slotProps={{
@@ -471,7 +494,7 @@ export function SkillsPage() {
         </DialogContent>
         <DialogActions sx={{ px: 2.5, pb: 2 }}>
           <Button
-            onClick={() => setImportOpen(false)}
+            onClick={requestCloseImport}
             disabled={importSaving}
             sx={{ borderRadius: "var(--radius-control)" }}
           >

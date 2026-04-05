@@ -141,7 +141,7 @@ export function ChannelsConfigPage() {
         }
       >
         {!form ? (
-          <Typography variant="body2" color="text.secondary" sx={{ py: 2 }}>
+          <Typography variant="body2" sx={{ py: 2, color: "var(--muted)" }}>
             {t("config.hintSaveNeedDevice")}
           </Typography>
         ) : (

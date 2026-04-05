@@ -15,11 +15,11 @@ use std::net::{Shutdown, TcpStream};
 use std::time::{Duration, Instant};
 
 use crate::channels::wss_gateway::connection::{
-    WssBinary, WssCloseInfo, WssConnectProfile, WssConnection, WssEvent, MAX_WSS_SEND_PAYLOAD_BYTES,
+    MAX_WSS_SEND_PAYLOAD_BYTES, WssBinary, WssCloseInfo, WssConnectProfile, WssConnection, WssEvent,
 };
 use crate::error::{Error, Result};
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{client::IntoClientRequest, protocol::Message, WebSocket};
+use tungstenite::{WebSocket, client::IntoClientRequest, protocol::Message};
 
 struct LinuxWssTuning {
     tls_admission_timeout_secs: u64,

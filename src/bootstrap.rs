@@ -1,12 +1,12 @@
 //! Bootstrap utilities for beetle application.
 //! 应用启动引导工具。
 
-use crate::config::{self, AppConfig};
 use crate::Platform;
+use crate::config::{self, AppConfig};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
 use crate::{
-    constants::SOFTAP_DEFAULT_IPV4, DisplayChannelStatus, DisplayCommand, DisplayPressureLevel,
-    DisplaySystemState,
+    DisplayChannelStatus, DisplayCommand, DisplayPressureLevel, DisplaySystemState,
+    constants::SOFTAP_DEFAULT_IPV4,
 };
 use std::sync::Arc;
 
@@ -156,7 +156,7 @@ pub fn init_audio_if_enabled(platform: &Arc<dyn Platform>, config: &Arc<AppConfi
             } else {
                 let caps = platform.audio_duplex_capabilities();
                 log::info!(
-                    "[{}] audio initialized (profile={} mic={} speaker={} duplex={} barge_in={} reference={} aec={:?})",
+                    "[{}] audio initialized (profile={} mic={} speaker={} duplex={} barge_in={} reference={:?} aec={:?})",
                     TAG,
                     caps.profile().as_str(),
                     caps.microphone_input,

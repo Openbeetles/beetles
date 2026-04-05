@@ -1,7 +1,7 @@
 //! 原子状态聚合：堆、socket、压力等级、通道健康，全部固定大小 + 原子变量，零堆分配。
 //! Atomic state aggregation: heap, socket, pressure, channel health — fixed-size + atomics, zero heap alloc.
 
-use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use std::sync::{Mutex, OnceLock};
 
@@ -233,14 +233,8 @@ impl ResourceSnapshot {
             storage_total_kb: state.storage_total_kb.load(Ordering::Relaxed),
             audio_recording: state.audio_recording.load(Ordering::Relaxed) != 0,
             audio_playing: state.audio_playing.load(Ordering::Relaxed) != 0,
-            audio_interrupt_listening: state
-                .audio_interrupt_listening
-                .load(Ordering::Relaxed)
-                != 0,
-            audio_interrupt_requested: state
-                .audio_interrupt_requested
-                .load(Ordering::Relaxed)
-                != 0,
+            audio_interrupt_listening: state.audio_interrupt_listening.load(Ordering::Relaxed) != 0,
+            audio_interrupt_requested: state.audio_interrupt_requested.load(Ordering::Relaxed) != 0,
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             cpu_usage_percent: get_cpu_usage(),
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]

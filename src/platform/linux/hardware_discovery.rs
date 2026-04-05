@@ -20,9 +20,7 @@ pub(crate) struct ResolvedUsbAudioDevice {
 
 #[cfg(target_os = "linux")]
 mod imp {
-    use super::{
-        Error, ResolvedUsbAudioDevice, Result, STAGE,
-    };
+    use super::{Error, ResolvedUsbAudioDevice, Result, STAGE};
     use crate::platform::{
         HardwareCapability, HardwareDiscovery, HardwareDiscoveryItem, HardwareDiscoveryQuery,
         HardwareDiscoveryResponse,
@@ -99,7 +97,11 @@ mod imp {
                     }),
                 });
             }
-            items.sort_by(|a, b| a.label.cmp(&b.label).then_with(|| a.device_ref.cmp(&b.device_ref)));
+            items.sort_by(|a, b| {
+                a.label
+                    .cmp(&b.label)
+                    .then_with(|| a.device_ref.cmp(&b.device_ref))
+            });
             Ok(HardwareDiscoveryResponse {
                 bus: query.bus,
                 capability: query.capability,
@@ -115,8 +117,11 @@ mod imp {
             .into_iter()
             .filter(|device| device.playback_pcm.is_some())
             .collect();
-        output_devices
-            .sort_by(|a, b| a.label.cmp(&b.label).then_with(|| a.device_ref.cmp(&b.device_ref)));
+        output_devices.sort_by(|a, b| {
+            a.label
+                .cmp(&b.label)
+                .then_with(|| a.device_ref.cmp(&b.device_ref))
+        });
 
         if let Some(device_ref) = device_ref {
             for device in output_devices {
@@ -197,7 +202,10 @@ mod imp {
             }
         }
 
-        Ok(merged.into_values().map(UsbAudioDeviceBuilder::finish).collect())
+        Ok(merged
+            .into_values()
+            .map(UsbAudioDeviceBuilder::finish)
+            .collect())
     }
 
     fn sound_capabilities(card_index: usize) -> Result<(Vec<usize>, Vec<usize>)> {

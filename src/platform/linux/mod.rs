@@ -5,23 +5,23 @@ mod audio;
 #[cfg(target_os = "linux")]
 pub(crate) mod display_fb;
 mod hardware_discovery;
+mod storage_media;
 
 use crate::platform::abstraction::{HardwareDiscovery, MemorySnapshot, Platform, StateFs};
 use crate::platform::{
-    display_driver::{install_display_state, DisplayState},
+    NvsConfigStore,
+    display_driver::{DisplayState, install_display_state},
     heartbeat_file::read_heartbeat_file,
     spiffs::{
-        spiffs_usage, CachedSkillStorage, SpiffsAutonomyStrategyStore,
-        SpiffsCalendarProviderCredentialStore, SpiffsCalendarStore, SpiffsExecutionStateStore,
-        SpiffsImportantMessageStore, SpiffsInnerLifeStore,
-        SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
-        SpiffsMentalPrivacyStore, SpiffsOuterVoiceStore, SpiffsPendingRetryStore,
-        SpiffsPrivateDocStore, SpiffsPrivateGardenStore, SpiffsRemindAtStore,
-        SpiffsSelfContinuityStore, SpiffsSelfModelStore, SpiffsSessionStore,
+        CachedSkillStorage, SpiffsAutonomyStrategyStore, SpiffsCalendarProviderCredentialStore,
+        SpiffsCalendarStore, SpiffsExecutionStateStore, SpiffsImportantMessageStore,
+        SpiffsInnerLifeStore, SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore,
+        SpiffsMemoryStore, SpiffsMentalPrivacyStore, SpiffsOuterVoiceStore,
+        SpiffsPendingRetryStore, SpiffsPrivateDocStore, SpiffsPrivateGardenStore,
+        SpiffsRemindAtStore, SpiffsSelfContinuityStore, SpiffsSelfModelStore, SpiffsSessionStore,
         SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage, SpiffsTaskStore,
-        SpiffsTurnLedgerStore, SpiffsWorldSenseStore,
+        SpiffsTurnLedgerStore, SpiffsWorldSenseStore, spiffs_usage,
     },
-    NvsConfigStore,
 };
 use crate::runtime::write_back::{
     BufferedAutonomyStrategyStore, BufferedExecutionStateStore, BufferedImportantMessageStore,
@@ -255,6 +255,10 @@ impl Platform for LinuxPlatform {
         crate::platform::wifi::wifi_sta_ip()
     }
 
+    fn storage_media(&self) -> crate::error::Result<Vec<crate::platform::StorageMediaInfo>> {
+        storage_media::discover()
+    }
+
     fn memory_store(&self) -> Arc<dyn MemoryStore + Send + Sync> {
         Arc::clone(&self.memory_store) as Arc<dyn MemoryStore + Send + Sync>
     }
@@ -376,7 +380,7 @@ impl Platform for LinuxPlatform {
         self.create_http_client(config)
     }
 
-    fn spiffs_usage(&self) -> Option<(usize, usize)> {
+    fn spiffs_usage(&self) -> Option<(u64, u64)> {
         spiffs_usage()
     }
 

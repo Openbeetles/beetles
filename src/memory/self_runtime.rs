@@ -18,11 +18,27 @@ use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use super::{
-    autonomy_idle_interval_secs, build_archive_evidence_block, build_self_state,
-    build_world_snapshot,
+    AutonomyGovernanceTendency, AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput,
+    AutonomyStrategyRefreshOutcome, AutonomyStrategyStore, BoundaryPersonaRefreshContext,
+    BoundaryPersonaRefreshInput, BoundaryPersonaRefreshOutcome, ExecutionStateStore,
+    InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome, InnerLifeStore,
+    InternalMemoryLayerFocus, LongTermMemoryStore, MemoryGovernanceContext, MemoryGovernanceInput,
+    MemoryHygieneContext, MemoryProfile, MemoryStore, MentalPrivacyStore, OuterVoiceRefreshContext,
+    OuterVoiceRefreshInput, OuterVoiceRefreshOutcome, OuterVoiceStore, PrivateDocStore,
+    PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
+    PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
+    PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, PrivateGardenStore,
+    RemindAtStore, SelfContinuityRefreshContext, SelfContinuityRefreshInput,
+    SelfContinuityRefreshOutcome, SelfContinuityStore, SelfMemorySpaceBottleneck,
+    SelfMemorySpacePressure, SelfModelRefreshContext, SelfModelRefreshInput,
+    SelfModelRefreshOutcome, SelfModelStore, SelfState, SessionStore, SessionSummaryStore,
+    SharedFactualPlaneSnapshot, SharedFactualReconcileAction, TurnLedgerStore,
+    WorldSenseRefreshContext, WorldSenseRefreshInput, WorldSenseRefreshOutcome, WorldSenseStore,
+    WorldSnapshotContext, autonomy_idle_interval_secs, build_archive_evidence_block,
+    build_self_state, build_world_snapshot,
     llm_json::{
-        get_object_bool, get_object_string_list, get_object_text, parse_llm_json_payload,
-        LlmJsonPayload,
+        LlmJsonPayload, get_object_bool, get_object_string_list, get_object_text,
+        parse_llm_json_payload,
     },
     memory_capability_profile, memory_policy, render_autonomy_strategy_block,
     render_execution_state_block, render_inner_life_block, render_internal_memory_topology_block,
@@ -35,23 +51,7 @@ use super::{
     run_outer_voice_refresh_with_state, run_private_doc_workspace_refresh_with_state,
     run_private_garden_governance_with_state, run_self_continuity_refresh_with_state,
     run_self_model_refresh_with_state, run_world_sense_refresh_with_state,
-    touch_self_continuity_runtime, AutonomyGovernanceTendency, AutonomyStrategyRefreshContext,
-    AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome, AutonomyStrategyStore,
-    BoundaryPersonaRefreshContext, BoundaryPersonaRefreshInput, BoundaryPersonaRefreshOutcome,
-    ExecutionStateStore, InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome,
-    InnerLifeStore, InternalMemoryLayerFocus, LongTermMemoryStore, MemoryGovernanceContext,
-    MemoryGovernanceInput, MemoryHygieneContext, MemoryProfile, MemoryStore, MentalPrivacyStore,
-    OuterVoiceRefreshContext, OuterVoiceRefreshInput, OuterVoiceRefreshOutcome, OuterVoiceStore,
-    PrivateDocStore, PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
-    PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
-    PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, PrivateGardenStore,
-    RemindAtStore, SelfContinuityRefreshContext, SelfContinuityRefreshInput,
-    SelfContinuityRefreshOutcome, SelfContinuityStore, SelfMemorySpaceBottleneck,
-    SelfMemorySpacePressure, SelfModelRefreshContext, SelfModelRefreshInput,
-    SelfModelRefreshOutcome, SelfModelStore, SelfState, SessionStore, SessionSummaryStore,
-    SharedFactualPlaneSnapshot, SharedFactualReconcileAction, TurnLedgerStore,
-    WorldSenseRefreshContext, WorldSenseRefreshInput, WorldSenseRefreshOutcome, WorldSenseStore,
-    WorldSnapshotContext,
+    touch_self_continuity_runtime,
 };
 
 pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's inward autonomy runtime. Respect the current autonomy strategy unless the latest world state or self-state clearly requires a different emphasis. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_private_docs, private_docs_intent, private_docs_action, refresh_private_garden, private_garden_intent, private_garden_action, refresh_self_model, self_model_intent, self_model_sources, refresh_self_continuity, self_continuity_intent, self_continuity_sources, refresh_boundary_persona, boundary_persona_intent, refresh_outer_voice, outer_voice_intent, outer_voice_sources, boundary_flush, boundary_flush_reason, request_factual_refresh, factual_reconcile_action, factual_reconcile_intent. Use true only when that layer should change now. Runtime governance actions are hold, rewrite, compress, or cleanup. factual_reconcile_action is hold, reinforce, correct, conflict, or stale. self_model, self_continuity, boundary_persona, and outer_voice are upward distillation layers: refresh them only when private evolution or newer world/boundary state has produced a better stable core that should influence future main replies. Source lists should name the layers that actually deserve upward distillation, such as inner_life, private_docs, private_garden, self_model, self_continuity, boundary_persona, outer_voice, world_sense, autonomy_strategy, or recent_transcript. Favor autonomy, but do not churn memory without gain.";
@@ -2683,23 +2683,31 @@ mod tests {
             parsed.self_continuity_sources,
             vec!["self_model".to_string(), "recent_transcript".to_string()]
         );
-        assert!(parsed
-            .private_garden_intent
-            .contains("path: journal/today.md"));
-        assert!(parsed
-            .boundary_persona_intent
-            .contains("stabilize boundary stance"));
-        assert!(parsed
-            .outer_voice_intent
-            .contains("why: express new stance"));
+        assert!(
+            parsed
+                .private_garden_intent
+                .contains("path: journal/today.md")
+        );
+        assert!(
+            parsed
+                .boundary_persona_intent
+                .contains("stabilize boundary stance")
+        );
+        assert!(
+            parsed
+                .outer_voice_intent
+                .contains("why: express new stance")
+        );
         assert_eq!(
             parsed.outer_voice_sources,
             vec!["boundary_persona".to_string(), "world_sense".to_string()]
         );
         assert!(parsed.boundary_flush_reason.contains("daily_boundary"));
-        assert!(parsed
-            .factual_reconcile_intent
-            .contains("why: recent transcript diverges"));
+        assert!(
+            parsed
+                .factual_reconcile_intent
+                .contains("why: recent transcript diverges")
+        );
     }
 
     #[test]
@@ -2735,9 +2743,11 @@ mod tests {
         );
 
         assert!(decision.refresh_private_docs);
-        assert!(decision
-            .private_docs_intent
-            .contains("Compress governed docs"));
+        assert!(
+            decision
+                .private_docs_intent
+                .contains("Compress governed docs")
+        );
         assert_eq!(
             decision.private_docs_action,
             SelfRuntimeGovernanceAction::Compress
@@ -2780,9 +2790,11 @@ mod tests {
         );
 
         assert!(decision.refresh_private_garden);
-        assert!(decision
-            .private_garden_intent
-            .contains("Rewrite and reorganize"));
+        assert!(
+            decision
+                .private_garden_intent
+                .contains("Rewrite and reorganize")
+        );
         assert!(!decision.refresh_private_docs);
         assert_eq!(
             decision.private_garden_action,
@@ -2843,19 +2855,27 @@ mod tests {
         assert!(decision.refresh_self_model);
         assert!(decision.refresh_self_continuity);
         assert!(decision.refresh_outer_voice);
-        assert!(decision
-            .self_model_intent
-            .contains("redistill a steadier kernel"));
-        assert!(decision
-            .self_continuity_intent
-            .contains("continuity bridge"));
+        assert!(
+            decision
+                .self_model_intent
+                .contains("redistill a steadier kernel")
+        );
+        assert!(
+            decision
+                .self_continuity_intent
+                .contains("continuity bridge")
+        );
         assert!(decision.outer_voice_intent.contains("outward expression"));
-        assert!(decision
-            .self_continuity_sources
-            .contains(&"world_sense".to_string()));
-        assert!(decision
-            .outer_voice_sources
-            .contains(&"autonomy_strategy".to_string()));
+        assert!(
+            decision
+                .self_continuity_sources
+                .contains(&"world_sense".to_string())
+        );
+        assert!(
+            decision
+                .outer_voice_sources
+                .contains(&"autonomy_strategy".to_string())
+        );
     }
 
     #[test]

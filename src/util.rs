@@ -284,18 +284,10 @@ pub fn parse_iso8601(s: &str) -> Option<u64> {
     let s = s.trim_end_matches('Z');
     let s = if let Some(pos) = s.rfind('+') {
         // Ensure it's a timezone offset (after the T), not part of the date
-        if pos > 10 {
-            &s[..pos]
-        } else {
-            s
-        }
+        if pos > 10 { &s[..pos] } else { s }
     } else if let Some(pos) = s.rfind('-') {
         // Only treat as tz offset if after time part (pos > 16 means after HH:MM:SS)
-        if pos > 16 {
-            &s[..pos]
-        } else {
-            s
-        }
+        if pos > 16 { &s[..pos] } else { s }
     } else {
         s
     };
@@ -529,11 +521,7 @@ fn secret_prefix(s: &str) -> &str {
     for (idx, ch) in s.char_indices().take(4) {
         end = idx + ch.len_utf8();
     }
-    if end == 0 {
-        s
-    } else {
-        &s[..end]
-    }
+    if end == 0 { s } else { &s[..end] }
 }
 
 /// 常量时间比较，避免 token 时序侧信道。

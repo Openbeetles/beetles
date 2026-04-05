@@ -12,22 +12,10 @@ import { ToolGlyph } from "./toolIcons";
 import type { ToolInfo } from "../api/endpoints/tools";
 import { useDeviceApi } from "../hooks/useDeviceApi";
 import { createAsyncState } from "../types/asyncState";
-
-/** 与表单区块 token 一致：细描边 + 略浅底，在白色 Section 内形成独立格。 */
-const listItemSx = {
-  py: 1.5,
-  px: 2,
-  bgcolor: "var(--input-idle-well)",
-  border: "1px solid var(--form-outline-rest)",
-  borderRadius: "var(--radius-control)",
-  alignItems: "center",
-  boxSizing: "border-box" as const,
-  transition: "background-color var(--transition-duration) ease, border-color var(--transition-duration) ease",
-  "&:focus-within": {
-    backgroundColor: "color-mix(in srgb, var(--primary) 5%, var(--input-idle-well))",
-    borderColor: "color-mix(in srgb, var(--primary) 22%, var(--border))",
-  },
-} as const;
+import {
+  SETTINGS_SECTION_LIST_EMPTY_SX,
+  SETTINGS_SECTION_LIST_ROW_SX,
+} from "../theme/listItemStyles";
 
 export function ToolsPage() {
   const { t } = useTranslation();
@@ -71,16 +59,7 @@ export function ToolsPage() {
           <SectionLoadingSkeleton />
         ) : state.error ? null : state.data.length === 0 ? (
           <List dense disablePadding>
-            <ListItem
-              sx={{
-                py: 2,
-                px: 2,
-                bgcolor: "var(--input-idle-well)",
-                border: "1px solid var(--form-outline-rest)",
-                borderRadius: "var(--radius-control)",
-                boxSizing: "border-box",
-              }}
-            >
+            <ListItem sx={SETTINGS_SECTION_LIST_EMPTY_SX}>
               <ListItemText
                 primary={t("tools.emptyList")}
                 slotProps={{
@@ -112,7 +91,7 @@ export function ToolsPage() {
             {state.data.map((tool) => (
               <ListItem
                 key={tool.name}
-                sx={listItemSx}
+                sx={SETTINGS_SECTION_LIST_ROW_SX}
                 aria-label={t(tool.i18n_key, { defaultValue: tool.name })}
               >
                 <ListItemIcon

@@ -353,8 +353,37 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
       },
       MuiTabs: {
         styleOverrides: {
+          root: {
+            backgroundColor: 'var(--card)',
+            borderBottom: '1px solid var(--form-outline-rest)',
+          },
           indicator: {
             height: 'var(--accent-line-height)',
+          },
+        },
+      },
+      MuiTab: {
+        styleOverrides: {
+          root: {
+            textTransform: 'none',
+            fontWeight: 600,
+            color: 'var(--muted)',
+            '&.Mui-selected': {
+              color: 'var(--primary)',
+            },
+          },
+        },
+      },
+      MuiTabScrollButton: {
+        styleOverrides: {
+          root: {
+            color: 'var(--muted)',
+            backgroundColor: 'var(--card)',
+            '&:hover': {
+              backgroundColor:
+                'color-mix(in srgb, var(--foreground) 5%, var(--card))',
+              color: 'var(--foreground)',
+            },
           },
         },
       },

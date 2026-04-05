@@ -176,7 +176,7 @@ export function SystemConfigPage() {
         }
       >
         {!form ? (
-          <Typography variant="body2" color="text.secondary" sx={{ py: 2 }}>
+          <Typography variant="body2" sx={{ py: 2, color: "var(--muted)" }}>
             {t("config.hintSaveNeedDevice")}
           </Typography>
         ) : (
@@ -306,7 +306,7 @@ export function SystemConfigPage() {
         </FormSectionSub>
 
         <FormSectionSub title={t("config.session")}>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+          <Typography variant="body2" sx={{ mb: 1, color: "var(--muted)" }}>
             {t("config.sessionMaxMessages")}: {form.session_max_messages}
           </Typography>
           <Slider

@@ -4,7 +4,7 @@
 use crate::calendar::{CalendarProviderCredentialStore, CalendarStore};
 use crate::config::{AppConfig, AudioSegment, PinConfig};
 use crate::display::{DisplayCommand, DisplayConfig};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::memory::{
     AutonomyStrategyStore, ExecutionStateStore, ImportantMessageStore, InnerLifeStore,
     LongTermMemoryStore, MemoryProfile, MemoryStore, MentalPrivacyStore, OuterVoiceStore,
@@ -92,6 +92,39 @@ impl AudioDuplexProfile {
             Self::DuplexPlatformAec => "duplex_platform_aec",
         }
     }
+}
+
+/// 存储介质类型。用于统一表达 ESP SPIFFS、Linux mmc/nvme/usb 等底层介质。
+/// Storage media kind across targets (SPIFFS, SD/eMMC/NVMe/USB, virtual mounts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageMediaKind {
+    Spiffs,
+    SdCard,
+    Emmc,
+    UsbMassStorage,
+    Nvme,
+    Virtual,
+    Unknown,
+}
+
+/// 平台探测到的一条存储介质记录。
+/// One discovered storage medium record exposed through the platform contract.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StorageMediaInfo {
+    pub id: String,
+    pub kind: StorageMediaKind,
+    pub label: String,
+    pub present: bool,
+    pub mounted: bool,
+    pub mount_path: Option<String>,
+    pub filesystem: Option<String>,
+    pub source: Option<String>,
+    pub removable: bool,
+    pub is_system_root: bool,
+    pub is_state_root: bool,
+    pub capacity_bytes: Option<u64>,
+    pub free_bytes: Option<u64>,
 }
 
 /// 当前平台在已初始化音频拓扑下的双工/打断能力快照。
@@ -249,7 +282,10 @@ impl AudioDuplexCapabilities {
     }
 
     pub const fn profile(self) -> AudioDuplexProfile {
-        if self.echo_cancellation == AudioEchoCancellationCapability::Platform {
+        if matches!(
+            self.echo_cancellation,
+            AudioEchoCancellationCapability::Platform
+        ) {
             return AudioDuplexProfile::DuplexPlatformAec;
         }
         match (
@@ -523,6 +559,11 @@ pub trait Platform: Send + Sync {
     fn wifi_sta_ip(&self) -> Option<String> {
         None
     }
+    /// 返回平台可见的存储介质列表。Linux 可返回 mmc/nvme/usb/virtual mount；
+    /// ESP 后续可返回 SPIFFS/SD/FATFS。默认空列表，表示当前平台未实现探测。
+    fn storage_media(&self) -> Result<Vec<StorageMediaInfo>> {
+        Ok(Vec::new())
+    }
     fn memory_store(&self) -> Arc<dyn MemoryStore + Send + Sync>;
     fn long_term_memory_store(&self) -> Arc<dyn LongTermMemoryStore + Send + Sync>;
     fn long_term_memory_extraction_state_store(
@@ -560,14 +601,14 @@ pub trait Platform: Send + Sync {
     ) -> Result<Box<dyn PlatformHttpClient>> {
         self.create_http_client(config)
     }
-    fn spiffs_usage(&self) -> Option<(usize, usize)>;
+    fn spiffs_usage(&self) -> Option<(u64, u64)>;
     fn read_heartbeat_file(&self) -> Result<String>;
 
     /// 板级状态 JSON（芯片、堆、运行时间、压力、WiFi、SPIFFS）。默认实现委托 `platform/board_info`；新平台可覆写。
     fn board_info_json(&self) -> Result<String> {
         let mut payload: serde_json::Value =
             serde_json::from_str(&crate::platform::board_info::board_info_json_string())
-                .map_err(|e| Error::platform("board_info_json", e.to_string()))?;
+                .map_err(|e| Error::config("board_info_json", e.to_string()))?;
         if let Some(obj) = payload.as_object_mut() {
             let audio_caps = self.audio_duplex_capabilities();
             obj.insert(
@@ -577,9 +618,21 @@ pub trait Platform: Send + Sync {
                     "duplex_capabilities": audio_caps,
                 }),
             );
+            match self.storage_media() {
+                Ok(media) => {
+                    obj.insert("storage_media".to_string(), serde_json::json!(media));
+                }
+                Err(e) => {
+                    log::warn!("[platform] storage media probe failed: {}", e);
+                    obj.insert("storage_media".to_string(), serde_json::json!([]));
+                    obj.insert(
+                        "storage_media_error".to_string(),
+                        serde_json::json!(e.to_string()),
+                    );
+                }
+            }
         }
-        serde_json::to_string(&payload)
-            .map_err(|e| Error::platform("board_info_json", e.to_string()))
+        serde_json::to_string(&payload).map_err(|e| Error::config("board_info_json", e.to_string()))
     }
 
     /// 读状态根配置文件（相对路径如 `config/llm.json`）。不存在返回 `Ok(None)`。经 `state_fs` 唯一路径。

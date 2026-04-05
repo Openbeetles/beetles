@@ -54,7 +54,7 @@ function SoulUserLayoutShell() {
         sx={{
           flexShrink: 0,
           borderBottom: "none",
-          backgroundColor: "var(--surface)",
+          backgroundColor: "var(--card)",
         }}
       >
         <Tabs
@@ -63,8 +63,6 @@ function SoulUserLayoutShell() {
           sx={{
             minHeight: 48,
             "& .MuiTab-root": {
-              textTransform: "none",
-              fontWeight: 600,
               fontSize: "var(--font-size-body-sm)",
             },
           }}
