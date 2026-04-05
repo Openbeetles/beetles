@@ -12,8 +12,8 @@ use std::fmt::Write as _;
 use super::{
     collect_private_targets,
     llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload},
-    memory_policy, render_autonomy_strategy_block, render_execution_state_block,
-    render_inner_life_block, render_mental_privacy_boundary_block,
+    memory_policy, relationship_scope_id, render_autonomy_strategy_block,
+    render_execution_state_block, render_inner_life_block, render_mental_privacy_boundary_block,
     render_recent_persona_evidence_block, render_self_continuity_block, render_self_model_block,
     render_world_sense_block, render_world_snapshot_block, whole_record_lease_advanced,
     AutonomyStrategy, ExecutionState, InnerLife, MentalPrivacyState, OuterVoicePolicy,
@@ -171,6 +171,7 @@ pub(crate) fn run_outer_voice_refresh_with_state(
     decision_override: Option<bool>,
     recent_override: Option<&[SessionMessage]>,
 ) -> Result<OuterVoiceRefreshOutcome> {
+    let relationship_id = relationship_scope_id(input.channel, input.chat_id);
     let should_refresh = decision_override.unwrap_or_else(|| {
         memory_policy(profile)
             .outer_voice
@@ -218,7 +219,7 @@ pub(crate) fn run_outer_voice_refresh_with_state(
         ParsedOuterVoiceResponse::Skip => Ok(OuterVoiceRefreshOutcome::Skipped),
         ParsedOuterVoiceResponse::Clear => {
             crate::platform::task_wdt::feed_current_task();
-            let latest = ctx.outer_voice_store.get(input.chat_id)?;
+            let latest = ctx.outer_voice_store.get(&relationship_id)?;
             if whole_record_lease_advanced(
                 existing_outer_voice.as_ref(),
                 latest.as_ref(),
@@ -232,7 +233,7 @@ pub(crate) fn run_outer_voice_refresh_with_state(
             }
             if latest.is_some() {
                 crate::platform::task_wdt::feed_current_task();
-                ctx.outer_voice_store.clear(input.chat_id)?;
+                ctx.outer_voice_store.clear(&relationship_id)?;
                 Ok(OuterVoiceRefreshOutcome::Cleared)
             } else {
                 Ok(OuterVoiceRefreshOutcome::Skipped)
@@ -240,7 +241,7 @@ pub(crate) fn run_outer_voice_refresh_with_state(
         }
         ParsedOuterVoiceResponse::Update(next) => {
             crate::platform::task_wdt::feed_current_task();
-            let latest = ctx.outer_voice_store.get(input.chat_id)?;
+            let latest = ctx.outer_voice_store.get(&relationship_id)?;
             if latest.as_ref() == Some(&next) {
                 return Ok(OuterVoiceRefreshOutcome::Skipped);
             }
@@ -256,7 +257,7 @@ pub(crate) fn run_outer_voice_refresh_with_state(
                 return Ok(OuterVoiceRefreshOutcome::Skipped);
             }
             crate::platform::task_wdt::feed_current_task();
-            ctx.outer_voice_store.set(input.chat_id, &next)?;
+            ctx.outer_voice_store.set(&relationship_id, &next)?;
             Ok(OuterVoiceRefreshOutcome::Updated)
         }
     }

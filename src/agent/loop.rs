@@ -40,19 +40,21 @@ use crate::memory::{
     normalize_turn_preview, normalize_turn_reason, recall_long_term_memory_block,
     render_recent_persona_evidence_block, run_long_term_memory_refresh,
     run_mental_privacy_disclosure_adjudication, run_mental_privacy_review,
-    run_post_reply_memory_maintenance, run_self_runtime, AutonomyStrategyStore, EmotionSignalStore,
-    ExecutionStateStore, ImportantMessageStore, InnerLifeStore, LongTermMemoryExtractionStateStore,
-    LongTermMemoryRefreshContext, LongTermMemoryRefreshOutcome,
-    LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore, MemoryStore,
-    MentalPrivacyDisclosureAdjudicationContext, MentalPrivacyDisclosureAdjudicationInput,
-    MentalPrivacyReviewContext, MentalPrivacyReviewInput, MentalPrivacyReviewOutcome,
-    MentalPrivacyStore, OuterVoiceStore, PendingRetryStore, PersonaPriorityAdjudication,
-    PersonaPriorityAdjudicationInput, PersonaPriorityGrounding, PersonaPriorityRuntimeState,
-    PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput, PrivateDocStore,
-    PrivateGardenStore, PromptMemoryContext, PromptMemoryContextParams, RemindAtStore,
-    SelfContinuityStore, SelfModelStore, SelfRuntimeContext, SessionMessage, SessionStore,
+    run_post_reply_memory_maintenance, run_self_runtime, upsert_relationship_topology_entry,
+    AutonomyStrategyStore, EmotionSignalStore, ExecutionStateStore, ImportantMessageStore,
+    InnerLifeStore, LongTermMemoryExtractionStateStore, LongTermMemoryRefreshContext,
+    LongTermMemoryRefreshOutcome, LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore,
+    MemoryStore, MentalPrivacyDisclosureAdjudicationContext,
+    MentalPrivacyDisclosureAdjudicationInput, MentalPrivacyReviewContext,
+    MentalPrivacyReviewInput, MentalPrivacyReviewOutcome, MentalPrivacyStore, OuterVoiceStore,
+    PendingRetryStore, PersonaPriorityAdjudication, PersonaPriorityAdjudicationInput,
+    PersonaPriorityGrounding, PersonaPriorityRuntimeState, PostReplyMemoryMaintenanceContext,
+    PostReplyMemoryMaintenanceInput, PrivateDocStore, PrivateGardenStore, PromptMemoryContext,
+    PromptMemoryContextParams, RelationshipTopologyStore, RemindAtStore, SelfContinuityStore,
+    SelfModelStore, SelfRuntimeContext, SessionMessage, SessionStore,
     SessionSummaryRefreshOutcome, SessionSummaryStore, TurnDeliveryLedger, TurnLedger,
-    TurnLedgerStatus, TurnLedgerStore, TurnPersonaLedger, TurnPersonaReviewLedger, WorldSenseStore,
+    TurnLedgerStatus, TurnLedgerStore, TurnPersonaLedger, TurnPersonaReviewLedger,
+    WorldSenseStore,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
@@ -374,6 +376,7 @@ fn prepare_worker_conversation<'a>(
     let prompt_memory_system_budget = budget
         .system_prompt_max
         .saturating_sub(post_memory_tail_len);
+    let relationship_id = crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id);
     let mental_privacy_adjudication = if msg.ingress == IngressKind::User {
         match run_mental_privacy_disclosure_adjudication(
             tool_ctx,
@@ -387,6 +390,7 @@ fn prepare_worker_conversation<'a>(
                 private_garden_store: config.private_garden_store.as_ref(),
             },
             MentalPrivacyDisclosureAdjudicationInput {
+                channel: &msg.channel,
                 chat_id: &msg.chat_id,
                 user_content: &msg.content,
                 now_secs: runtime.now_secs,
@@ -417,6 +421,7 @@ fn prepare_worker_conversation<'a>(
         long_term_memory_store: config.long_term_memory_store.as_ref(),
         execution_state_store: config.execution_state_store.as_ref(),
         self_model_store: config.self_model_store.as_ref(),
+        self_authored_core_store: config.self_authored_core_store.as_ref(),
         world_sense_store: config.world_sense_store.as_ref(),
         autonomy_strategy_store: config.autonomy_strategy_store.as_ref(),
         outer_voice_store: config.outer_voice_store.as_ref(),
@@ -439,17 +444,18 @@ fn prepare_worker_conversation<'a>(
                     420,
                 )
             });
+    let recent_persona_evidence =
+        load_recent_persona_evidence(config.turn_ledger_store.as_ref(), &relationship_id)
+            .ok()
+            .flatten();
     let persona_priority_runtime = PersonaPriorityRuntimeState {
         pressure: runtime.pressure,
         system_budget: prompt_memory_system_budget,
         self_continuity: prompt_memory.self_continuity.as_ref(),
         outer_voice: prompt_memory.outer_voice.as_ref(),
         disclosure_adjudication: mental_privacy_adjudication.as_ref(),
+        recent_persona_evidence: recent_persona_evidence.as_ref(),
     };
-    let recent_persona_evidence =
-        load_recent_persona_evidence(config.turn_ledger_store.as_ref(), &msg.chat_id)
-            .ok()
-            .flatten();
     let recent_persona_evidence_text = recent_persona_evidence
         .as_ref()
         .and_then(|evidence| render_recent_persona_evidence_block(evidence, 420));
@@ -873,6 +879,49 @@ fn persist_turn_ledger(
         log::warn!(
             "[agent_turn] failed to persist ledger stage={} chat_id={}: {}",
             stage,
+            chat_id,
+            error
+        );
+    }
+}
+
+fn sync_user_turn_relationship_topology(
+    config: &AgentLoopConfig,
+    channel: &str,
+    chat_id: &str,
+    now_secs: u64,
+) {
+    let relationship_id = crate::memory::relationship_scope_id(channel, chat_id);
+    let turn_ledger = config.turn_ledger_store.get(&relationship_id).ok().flatten();
+    let mental_privacy_state = config
+        .mental_privacy_store
+        .get(&relationship_id)
+        .ok()
+        .flatten();
+    let outer_voice = config.outer_voice_store.get(&relationship_id).ok().flatten();
+    let world_sense = config.world_sense_store.get(&relationship_id).ok().flatten();
+    let recent_persona_evidence =
+        load_recent_persona_evidence(config.turn_ledger_store.as_ref(), &relationship_id)
+            .ok()
+            .flatten();
+    if let Err(error) = upsert_relationship_topology_entry(
+        config.relationship_topology_store.as_ref(),
+        crate::memory::RelationshipTopologyUpsertInput {
+            channel,
+            chat_id,
+            now_secs,
+            touch_user_turn: true,
+            touch_runtime_refresh: false,
+            turn_ledger: turn_ledger.as_ref(),
+            mental_privacy_state: mental_privacy_state.as_ref(),
+            outer_voice: outer_voice.as_ref(),
+            world_sense: world_sense.as_ref(),
+            recent_persona_evidence: recent_persona_evidence.as_ref(),
+        },
+    ) {
+        log::warn!(
+            "[agent_relationship_topology] user-turn sync failed channel={} chat_id={}: {}",
+            channel,
             chat_id,
             error
         );
@@ -1588,6 +1637,7 @@ fn handle_worker_path_error(
     config: &AgentLoopConfig,
     turn_ledger: &mut TurnLedger,
 ) {
+    let relationship_id = crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id);
     let llm_ms = msg_start
         .elapsed()
         .as_millis()
@@ -1602,7 +1652,7 @@ fn handle_worker_path_error(
     turn_ledger.reply_preview = normalize_turn_preview(&tr(UiMessage::NodeMaintenance, loc));
     persist_turn_ledger(
         config.turn_ledger_store.as_ref(),
-        &msg.chat_id,
+        &relationship_id,
         turn_ledger,
         "error",
     );
@@ -1705,6 +1755,7 @@ fn maybe_apply_mental_privacy_review(
             private_garden_store: config.private_garden_store.as_ref(),
         },
         MentalPrivacyReviewInput {
+            channel: &msg.channel,
             chat_id: &msg.chat_id,
             user_content: &msg.content,
             draft_reply: &reply_content,
@@ -2164,19 +2215,28 @@ fn finalize_lane_turn(
                 && mental_privacy_review.reply_content.trim() != review_input_before.trim(),
         )
     } else {
+        let relationship_id = crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id);
         config
             .turn_ledger_store
-            .get(&msg.chat_id)
+            .get(&relationship_id)
             .ok()
             .flatten()
             .and_then(|ledger| ledger.persona)
     };
     persist_turn_ledger(
         config.turn_ledger_store.as_ref(),
-        &msg.chat_id,
+        &crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id),
         &turn_ledger,
         "finish",
     );
+    if msg.ingress == IngressKind::User {
+        sync_user_turn_relationship_topology(
+            config,
+            msg.channel.as_ref(),
+            msg.chat_id.as_ref(),
+            turn_ledger.finished_at_ms / 1000,
+        );
+    }
     metrics::record_react_rounds(worker_latency.react_rounds);
     metrics::record_tool_calls_last(worker_latency.tool_calls);
     metrics::record_ttft_ms(worker_latency.ttft_ms.unwrap_or(0));
@@ -2538,6 +2598,8 @@ fn run_self_runtime_job(
             execution_state_store: config.execution_state_store.as_ref(),
             long_term_memory_store: config.long_term_memory_store.as_ref(),
             self_model_store: config.self_model_store.as_ref(),
+            self_authored_core_store: config.self_authored_core_store.as_ref(),
+            relationship_topology_store: config.relationship_topology_store.as_ref(),
             world_sense_store: config.world_sense_store.as_ref(),
             autonomy_strategy_store: config.autonomy_strategy_store.as_ref(),
             outer_voice_store: config.outer_voice_store.as_ref(),
@@ -2562,6 +2624,7 @@ fn run_self_runtime_job(
         inner_life_result,
         private_doc_result,
         self_model_result,
+        self_authored_core_result,
         self_continuity_result,
         private_garden_result,
         boundary_persona_result,
@@ -2569,13 +2632,14 @@ fn run_self_runtime_job(
     } = *outcome;
     if let Some(decision) = decision.as_ref() {
         log::info!(
-            "[self_runtime] {} trigger={:?} inner_life={} private_docs={} private_docs_action={} self_model={} self_continuity={} private_garden={} private_garden_action={} boundary_persona={} outer_voice={} boundary_flush={} boundary_reason={:?} factual_refresh={} factual_action={} inner_life_intent={:?} private_docs_intent={:?} self_model_intent={:?} self_continuity_intent={:?} private_garden_intent={:?} boundary_persona_intent={:?} outer_voice_intent={:?} factual_reconcile_intent={:?}",
+            "[self_runtime] {} trigger={:?} inner_life={} private_docs={} private_docs_action={} self_model={} self_authored_core={} self_continuity={} private_garden={} private_garden_action={} boundary_persona={} outer_voice={} boundary_flush={} boundary_reason={:?} factual_refresh={} factual_action={} inner_life_intent={:?} private_docs_intent={:?} self_model_intent={:?} self_authored_core_intent={:?} self_continuity_intent={:?} private_garden_intent={:?} boundary_persona_intent={:?} outer_voice_intent={:?} factual_reconcile_intent={:?}",
             msg.chat_id,
             payload.trigger,
             decision.refresh_inner_life,
             decision.refresh_private_docs,
             decision.private_docs_action.label(),
             decision.refresh_self_model,
+            decision.refresh_self_authored_core,
             decision.refresh_self_continuity,
             decision.refresh_private_garden,
             decision.private_garden_action.label(),
@@ -2592,6 +2656,8 @@ fn run_self_runtime_job(
                 .then_some(decision.private_docs_intent.as_str()),
             (!decision.self_model_intent.trim().is_empty())
                 .then_some(decision.self_model_intent.as_str()),
+            (!decision.self_authored_core_intent.trim().is_empty())
+                .then_some(decision.self_authored_core_intent.as_str()),
             (!decision.self_continuity_intent.trim().is_empty())
                 .then_some(decision.self_continuity_intent.as_str()),
             (!decision.private_garden_intent.trim().is_empty())
@@ -2678,6 +2744,13 @@ fn run_self_runtime_job(
         }
         Ok(crate::memory::SelfModelRefreshOutcome::Skipped) => {}
         Err(error) => log::warn!("[agent_self_model] failed: {}", error),
+    }
+    match self_authored_core_result {
+        Ok(crate::memory::SelfAuthoredCoreRefreshOutcome::Updated) => {
+            log::info!("[agent_self_authored_core] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::SelfAuthoredCoreRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_self_authored_core] failed: {}", error),
     }
     match self_continuity_result {
         Ok(crate::memory::SelfContinuityRefreshOutcome::Updated) => {
@@ -3127,11 +3200,13 @@ pub struct AgentLoopConfig {
     pub session_summary_store: Arc<dyn SessionSummaryStore + Send + Sync>,
     pub execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
     pub self_model_store: Arc<dyn SelfModelStore + Send + Sync>,
+    pub self_authored_core_store: Arc<dyn crate::memory::SelfAuthoredCoreStore + Send + Sync>,
     pub world_sense_store: Arc<dyn WorldSenseStore + Send + Sync>,
     pub autonomy_strategy_store: Arc<dyn AutonomyStrategyStore + Send + Sync>,
     pub outer_voice_store: Arc<dyn OuterVoiceStore + Send + Sync>,
     pub inner_life_store: Arc<dyn InnerLifeStore + Send + Sync>,
     pub self_continuity_store: Arc<dyn SelfContinuityStore + Send + Sync>,
+    pub relationship_topology_store: Arc<dyn RelationshipTopologyStore + Send + Sync>,
     pub private_doc_store: Arc<dyn PrivateDocStore + Send + Sync>,
     pub private_garden_store: Arc<dyn PrivateGardenStore + Send + Sync>,
     pub mental_privacy_store: Arc<dyn MentalPrivacyStore + Send + Sync>,
@@ -3378,7 +3453,7 @@ fn run_agent_loop_main(
         );
         persist_turn_ledger(
             config.turn_ledger_store.as_ref(),
-            &msg.chat_id,
+            &crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id),
             &turn_ledger,
             "start",
         );
@@ -4236,6 +4311,27 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct StubSelfAuthoredCoreStore;
+
+    impl crate::memory::SelfAuthoredCoreStore for StubSelfAuthoredCoreStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<crate::memory::SelfAuthoredCore>> {
+            Ok(None)
+        }
+
+        fn set(
+            &self,
+            _scope_id: &str,
+            _core: &crate::memory::SelfAuthoredCore,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
     struct StubWorldSenseStore;
 
     impl WorldSenseStore for StubWorldSenseStore {
@@ -4316,6 +4412,27 @@ mod tests {
         }
 
         fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubRelationshipTopologyStore;
+
+    impl RelationshipTopologyStore for StubRelationshipTopologyStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<crate::memory::RelationshipTopology>> {
+            Ok(None)
+        }
+
+        fn set(
+            &self,
+            _scope_id: &str,
+            _topology: &crate::memory::RelationshipTopology,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
             Ok(())
         }
     }
@@ -4655,11 +4772,13 @@ mod tests {
             session_summary_store: Arc::new(StubSessionSummaryStore),
             execution_state_store: Arc::new(StubExecutionStateStore),
             self_model_store: Arc::new(StubSelfModelStore),
+            self_authored_core_store: Arc::new(StubSelfAuthoredCoreStore),
             world_sense_store: Arc::new(StubWorldSenseStore),
             autonomy_strategy_store: Arc::new(StubAutonomyStrategyStore),
             outer_voice_store: Arc::new(StubOuterVoiceStore),
             inner_life_store: Arc::new(StubInnerLifeStore),
             self_continuity_store: Arc::new(StubSelfContinuityStore),
+            relationship_topology_store: Arc::new(StubRelationshipTopologyStore),
             private_doc_store: Arc::new(StubPrivateDocStore),
             private_garden_store: Arc::new(StubPrivateGardenStore),
             mental_privacy_store: Arc::new(StubMentalPrivacyStore),
@@ -5068,6 +5187,11 @@ mod tests {
         let llm = SequenceStubLlm {
             responses: Mutex::new(vec![
                 LlmResponse {
+                    content: r#"{"stance_summary":"reply directly","priority_order":["self_authored_core","boundary","user_contract","relationship","task","resources"],"response_mode":"steady_task","task_scope":"full","initiative_posture":"answer directly","relationship_posture":"steady","resource_posture":"normal","response_guidance":"reply directly","rationale":"test"}"#.to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
                     content: "[tool_use]".to_string(),
                     stop_reason: StopReason::ToolUse,
                     tool_calls: Some(vec![crate::llm::ToolCall {
@@ -5124,12 +5248,19 @@ mod tests {
                 msg: PcMsg::new_inbound("qq_channel", "chat-1", "直接回答", false)
                     .expect("message"),
                 registry_mode: BenchmarkRegistryMode::Empty,
-                responses: vec![LlmResponse {
-                    content: "直接答复".to_string(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                }],
-                expected_llm_calls: 1,
+                responses: vec![
+                    LlmResponse {
+                        content: r#"{"stance_summary":"reply directly","priority_order":["self_authored_core","boundary","user_contract","relationship","task","resources"],"response_mode":"steady_task","task_scope":"full","initiative_posture":"answer directly","relationship_posture":"steady","resource_posture":"normal","response_guidance":"reply directly","rationale":"test"}"#.to_string(),
+                        stop_reason: StopReason::EndTurn,
+                        tool_calls: None,
+                    },
+                    LlmResponse {
+                        content: "直接答复".to_string(),
+                        stop_reason: StopReason::EndTurn,
+                        tool_calls: None,
+                    },
+                ],
+                expected_llm_calls: 2,
                 expected_react_rounds: 1,
                 expected_tool_calls: 0,
                 expected_streamed: false,
@@ -5143,6 +5274,11 @@ mod tests {
                     .expect("message"),
                 registry_mode: BenchmarkRegistryMode::MessagePrimary,
                 responses: vec![
+                    LlmResponse {
+                        content: r#"{"stance_summary":"reply directly","priority_order":["self_authored_core","boundary","user_contract","relationship","task","resources"],"response_mode":"steady_task","task_scope":"full","initiative_posture":"answer directly","relationship_posture":"steady","resource_posture":"normal","response_guidance":"reply directly","rationale":"test"}"#.to_string(),
+                        stop_reason: StopReason::EndTurn,
+                        tool_calls: None,
+                    },
                     LlmResponse {
                         content: "[tool_use]".to_string(),
                         stop_reason: StopReason::ToolUse,
@@ -5159,7 +5295,7 @@ mod tests {
                         tool_calls: None,
                     },
                 ],
-                expected_llm_calls: 2,
+                expected_llm_calls: 3,
                 expected_react_rounds: 2,
                 expected_tool_calls: 1,
                 expected_streamed: true,
@@ -5173,6 +5309,11 @@ mod tests {
                     .expect("message"),
                 registry_mode: BenchmarkRegistryMode::MessagePrimary,
                 responses: vec![
+                    LlmResponse {
+                        content: r#"{"stance_summary":"reply directly","priority_order":["self_authored_core","boundary","user_contract","relationship","task","resources"],"response_mode":"steady_task","task_scope":"full","initiative_posture":"answer directly","relationship_posture":"steady","resource_posture":"normal","response_guidance":"reply directly","rationale":"test"}"#.to_string(),
+                        stop_reason: StopReason::EndTurn,
+                        tool_calls: None,
+                    },
                     LlmResponse {
                         content: "[tool_use]".to_string(),
                         stop_reason: StopReason::ToolUse,
@@ -5194,7 +5335,7 @@ mod tests {
                         tool_calls: None,
                     },
                 ],
-                expected_llm_calls: 3,
+                expected_llm_calls: 4,
                 expected_react_rounds: 3,
                 expected_tool_calls: 1,
                 expected_streamed: false,

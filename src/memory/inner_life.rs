@@ -10,6 +10,7 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
+    board_subject_scope_id,
     llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload},
     memory_policy, render_execution_state_block, render_internal_memory_topology_block,
     render_private_doc_workspace_block, render_private_memory_boundary_block,
@@ -154,15 +155,16 @@ pub fn run_inner_life_refresh(
     input: InnerLifeRefreshInput<'_>,
     profile: MemoryProfile,
 ) -> Result<InnerLifeRefreshOutcome> {
-    let existing = ctx.inner_life_store.get(input.chat_id)?;
+    let subject_id = board_subject_scope_id();
+    let existing = ctx.inner_life_store.get(subject_id)?;
     let summary_text = ctx
         .session_summary_store
         .get_with_count(input.chat_id)?
         .map(|(summary, _)| summary);
     let execution_state = ctx.execution_state_store.get(input.chat_id)?;
-    let self_model = ctx.self_model_store.get(input.chat_id)?;
-    let private_docs = ctx.private_doc_store.get(input.chat_id)?;
-    let self_continuity = ctx.self_continuity_store.get(input.chat_id)?;
+    let self_model = ctx.self_model_store.get(subject_id)?;
+    let private_docs = ctx.private_doc_store.get(subject_id)?;
+    let self_continuity = ctx.self_continuity_store.get(subject_id)?;
     run_inner_life_refresh_with_state(
         http,
         llm,
@@ -196,6 +198,7 @@ pub(crate) fn run_inner_life_refresh_with_state(
     decision_override: Option<bool>,
     recent_override: Option<&[SessionMessage]>,
 ) -> Result<InnerLifeRefreshOutcome> {
+    let subject_id = board_subject_scope_id();
     if !decision_override
         .unwrap_or_else(|| should_refresh_inner_life(input, existing_inner_life.is_some(), profile))
     {
@@ -253,7 +256,7 @@ pub(crate) fn run_inner_life_refresh_with_state(
         ParsedInnerLifeResponse::Skip => Ok(InnerLifeRefreshOutcome::Skipped),
         ParsedInnerLifeResponse::Clear => {
             crate::platform::task_wdt::feed_current_task();
-            let latest = ctx.inner_life_store.get(input.chat_id)?;
+            let latest = ctx.inner_life_store.get(subject_id)?;
             if whole_record_lease_advanced(
                 existing_inner_life.as_ref(),
                 latest.as_ref(),
@@ -267,7 +270,7 @@ pub(crate) fn run_inner_life_refresh_with_state(
             }
             if latest.is_some() {
                 crate::platform::task_wdt::feed_current_task();
-                ctx.inner_life_store.clear(input.chat_id)?;
+                ctx.inner_life_store.clear(subject_id)?;
                 Ok(InnerLifeRefreshOutcome::Cleared)
             } else {
                 Ok(InnerLifeRefreshOutcome::Skipped)
@@ -275,7 +278,7 @@ pub(crate) fn run_inner_life_refresh_with_state(
         }
         ParsedInnerLifeResponse::Update(next) => {
             crate::platform::task_wdt::feed_current_task();
-            let latest = ctx.inner_life_store.get(input.chat_id)?;
+            let latest = ctx.inner_life_store.get(subject_id)?;
             if latest.as_ref() == Some(&next) {
                 return Ok(InnerLifeRefreshOutcome::Skipped);
             }
@@ -291,7 +294,7 @@ pub(crate) fn run_inner_life_refresh_with_state(
                 return Ok(InnerLifeRefreshOutcome::Skipped);
             }
             crate::platform::task_wdt::feed_current_task();
-            ctx.inner_life_store.set(input.chat_id, &next)?;
+            ctx.inner_life_store.set(subject_id, &next)?;
             Ok(InnerLifeRefreshOutcome::Updated)
         }
     }

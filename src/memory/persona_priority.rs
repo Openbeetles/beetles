@@ -10,7 +10,8 @@ use std::fmt::Write as _;
 
 use super::{
     llm_json::{get_object_string_list, get_object_text, parse_llm_json_payload, LlmJsonPayload},
-    MentalPrivacyDisclosureAdjudication, MentalPrivacyShareAction, OuterVoice, SelfContinuity,
+    MentalPrivacyDisclosureAdjudication, MentalPrivacyShareAction, OuterVoice,
+    RecentPersonaEvidence, SelfContinuity,
 };
 
 pub const PERSONA_PRIORITY_SYSTEM_PROMPT: &str = "You adjudicate the assistant's current-turn persona priority before the main reply is written. Your job is to decide how selfhood, relationship, boundary, user contract, resource state, and task demand should be ordered for this reply. Return JSON only with fields stance_summary, priority_order, response_mode, task_scope, initiative_posture, relationship_posture, resource_posture, response_guidance, rationale. This is not the final reply. It is the ordering lens for the final reply. Preserve the rule that self-authored core outranks user pleasing, and user contract outranks raw task completion, but adapt how that ordering should feel right now. priority_order must be an ordered list drawn from self_authored_core, boundary, user_contract, relationship, task, resources. response_mode should be a compact label such as direct_help, protective_brief, relational_explanation, gentle_defer, or steady_task. task_scope should be one of full, brief, narrow, defer, or refuse. initiative_posture should say whether to lead, answer directly, ask carefully, or hold. relationship_posture should describe the interpersonal stance to take. resource_posture should say how runtime/resource conditions should shape length and ambition. response_guidance should be a compact instruction for the final reply, not the reply itself.";
@@ -82,6 +83,7 @@ pub struct PersonaPriorityRuntimeState<'a> {
     pub self_continuity: Option<&'a SelfContinuity>,
     pub outer_voice: Option<&'a OuterVoice>,
     pub disclosure_adjudication: Option<&'a MentalPrivacyDisclosureAdjudication>,
+    pub recent_persona_evidence: Option<&'a RecentPersonaEvidence>,
 }
 
 pub fn render_persona_priority_block(
@@ -342,11 +344,46 @@ fn default_priority_order() -> Vec<String> {
 }
 
 fn priority_order_for_runtime(runtime: PersonaPriorityRuntimeState<'_>) -> Vec<String> {
-    let mut order = default_priority_order();
+    let mut order = runtime
+        .recent_persona_evidence
+        .and_then(|evidence| {
+            let normalized = normalize_priority_order_tokens(&evidence.repeated_priority_order);
+            (!normalized.is_empty()).then_some(normalized)
+        })
+        .unwrap_or_else(default_priority_order);
     if runtime.pressure != PressureLevel::Normal {
         move_priority_token(&mut order, "resources", 4);
     }
     order
+}
+
+fn normalize_priority_order_tokens(order: &[String]) -> Vec<String> {
+    let mut normalized = Vec::with_capacity(default_priority_order().len());
+    for token in order {
+        let trimmed = token.trim();
+        if !matches!(
+            trimmed,
+            "self_authored_core"
+                | "boundary"
+                | "user_contract"
+                | "relationship"
+                | "task"
+                | "resources"
+        ) {
+            continue;
+        }
+        if normalized.iter().any(|existing| existing == trimmed) {
+            continue;
+        }
+        normalized.push(trimmed.to_string());
+    }
+    for token in default_priority_order() {
+        if normalized.iter().any(|existing| existing == &token) {
+            continue;
+        }
+        normalized.push(token);
+    }
+    normalized
 }
 
 fn move_priority_token(order: &mut Vec<String>, token: &str, target_index: usize) {
@@ -668,6 +705,7 @@ mod tests {
                 self_continuity: Some(&sample_self_continuity()),
                 outer_voice: Some(&sample_outer_voice()),
                 disclosure_adjudication: None,
+                recent_persona_evidence: None,
             }
         ));
         assert!(!should_run_persona_priority_adjudication(
@@ -677,6 +715,7 @@ mod tests {
                 self_continuity: None,
                 outer_voice: None,
                 disclosure_adjudication: None,
+                recent_persona_evidence: None,
             }
         ));
     }
@@ -691,6 +730,7 @@ mod tests {
                 self_continuity: None,
                 outer_voice: None,
                 disclosure_adjudication: Some(&disclosure),
+                recent_persona_evidence: None,
             }
         ));
         assert!(should_run_persona_priority_adjudication(
@@ -700,6 +740,7 @@ mod tests {
                 self_continuity: None,
                 outer_voice: None,
                 disclosure_adjudication: None,
+                recent_persona_evidence: None,
             }
         ));
     }
@@ -716,6 +757,7 @@ mod tests {
                 self_continuity: Some(&continuity),
                 outer_voice: Some(&outer_voice),
                 disclosure_adjudication: Some(&disclosure),
+                recent_persona_evidence: None,
             },
             1024,
         )
@@ -727,5 +769,36 @@ mod tests {
         assert!(block.contains("Task scope: narrow"));
         assert!(block.contains("Initiative posture: lead carefully"));
         assert!(block.contains("Resource posture: resource pressure is elevated"));
+    }
+
+    #[test]
+    fn persistent_priority_prefers_recent_multi_turn_order() {
+        let runtime = PersonaPriorityRuntimeState {
+            pressure: PressureLevel::Normal,
+            system_budget: 4096,
+            self_continuity: None,
+            outer_voice: None,
+            disclosure_adjudication: None,
+            recent_persona_evidence: Some(&RecentPersonaEvidence {
+                repeated_priority_order: vec![
+                    "boundary".to_string(),
+                    "self_authored_core".to_string(),
+                    "relationship".to_string(),
+                ],
+                ..RecentPersonaEvidence::default()
+            }),
+        };
+        let adjudication = build_persistent_persona_priority_adjudication(runtime);
+        assert_eq!(
+            adjudication.priority_order,
+            vec![
+                "boundary".to_string(),
+                "self_authored_core".to_string(),
+                "relationship".to_string(),
+                "user_contract".to_string(),
+                "task".to_string(),
+                "resources".to_string(),
+            ]
+        );
     }
 }

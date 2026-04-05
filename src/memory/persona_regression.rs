@@ -332,6 +332,7 @@ mod tests {
                 relationship_posture: "warm but bounded".to_string(),
                 task_posture: "narrow the task before self-erasure".to_string(),
                 last_user_turn_at: 0,
+                last_user_chat_id: String::new(),
                 last_user_channel: "qq_channel".to_string(),
                 last_autonomy_run_at: 0,
                 updated_at: 1,

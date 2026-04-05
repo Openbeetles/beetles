@@ -8,9 +8,10 @@ use crate::orchestrator::PressureLevel;
 use crate::platform::SkillStorage;
 
 use super::{
-    evaluate_long_term_memory_extraction_turn, load_session_summary_snapshot,
-    mark_long_term_memory_extraction_requested, memory_capability_profile, memory_policy,
-    normalize_private_garden_doc_path, persist_long_term_memory_extraction_state,
+    board_subject_scope_id, evaluate_long_term_memory_extraction_turn,
+    load_session_summary_snapshot, mark_long_term_memory_extraction_requested,
+    memory_capability_profile, memory_policy, normalize_private_garden_doc_path,
+    persist_long_term_memory_extraction_state, relationship_scope_id,
     run_execution_state_refresh_with_state, run_internal_memory_routing_with_state,
     run_memory_governance_kernel, run_memory_hygiene_jobs,
     run_private_doc_workspace_refresh_with_state, run_private_garden_governance_with_state,
@@ -122,12 +123,13 @@ fn collect_maintenance_baseline(
     ctx: &PostReplyMemoryMaintenanceContext<'_>,
     input: &PostReplyMemoryMaintenanceInput<'_>,
 ) -> MaintenanceBaseline {
+    let subject_id = board_subject_scope_id();
     let after_count = ctx.session_store.message_count(input.chat_id).unwrap_or(0);
     let initial_summary_snapshot =
         load_session_summary_snapshot(ctx.session_summary_store, input.chat_id);
     let execution_state = ctx.execution_state_store.get(input.chat_id);
-    let self_model = ctx.self_model_store.get(input.chat_id);
-    let private_docs = ctx.private_doc_store.get(input.chat_id);
+    let self_model = ctx.self_model_store.get(subject_id);
+    let private_docs = ctx.private_doc_store.get(subject_id);
     let summary_should_refresh = super::should_refresh_session_summary(
         after_count,
         initial_summary_snapshot.last_summary_count,
@@ -421,9 +423,11 @@ fn run_private_memory_maintenance_passes(
     recent: &MaintenanceRecentWindows,
     shared: &SharedMaintenancePasses,
 ) -> PrivateMaintenancePasses {
+    let subject_id = board_subject_scope_id();
+    let relationship_id = relationship_scope_id(input.channel, input.chat_id);
     crate::platform::task_wdt::feed_current_task();
     let recent_persona_evidence =
-        super::load_recent_persona_evidence(ctx.turn_ledger_store, input.chat_id)
+        super::load_recent_persona_evidence(ctx.turn_ledger_store, &relationship_id)
             .ok()
             .flatten();
     let self_model_result = match &baseline.self_model {
@@ -472,7 +476,7 @@ fn run_private_memory_maintenance_passes(
         )),
     };
     crate::platform::task_wdt::feed_current_task();
-    let latest_self_model = match ctx.self_model_store.get(input.chat_id) {
+    let latest_self_model = match ctx.self_model_store.get(subject_id) {
         Ok(model) => model,
         Err(error) => {
             log::warn!(
@@ -552,7 +556,7 @@ fn run_private_memory_maintenance_passes(
             Ok(0)
         };
     crate::platform::task_wdt::feed_current_task();
-    let latest_private_workspace = match ctx.private_doc_store.get(input.chat_id) {
+    let latest_private_workspace = match ctx.private_doc_store.get(subject_id) {
         Ok(workspace) => workspace,
         Err(error) => {
             log::warn!(

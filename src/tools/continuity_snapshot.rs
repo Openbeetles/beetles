@@ -4,8 +4,8 @@ use crate::error::{Error, Result};
 use crate::memory::{
     ContinuitySnapshot, ContinuitySnapshotExportContext, ContinuitySnapshotImportContext,
     ContinuitySnapshotImportMode, ContinuitySnapshotMode, ExecutionStateStore, LongTermMemoryStore,
-    SelfContinuityStore, SelfModelStore, SessionSummaryStore, export_continuity_snapshot,
-    import_continuity_snapshot, render_continuity_snapshot_markdown,
+    SelfAuthoredCoreStore, SelfContinuityStore, SelfModelStore, SessionSummaryStore,
+    export_continuity_snapshot, import_continuity_snapshot, render_continuity_snapshot_markdown,
 };
 use crate::platform::StateFs;
 use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args};
@@ -21,6 +21,7 @@ pub struct ContinuitySnapshotTool {
     session_summary_store: Arc<dyn SessionSummaryStore + Send + Sync>,
     execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
     self_model_store: Arc<dyn SelfModelStore + Send + Sync>,
+    self_authored_core_store: Arc<dyn SelfAuthoredCoreStore + Send + Sync>,
     self_continuity_store: Arc<dyn SelfContinuityStore + Send + Sync>,
 }
 
@@ -31,6 +32,7 @@ impl ContinuitySnapshotTool {
         session_summary_store: Arc<dyn SessionSummaryStore + Send + Sync>,
         execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
         self_model_store: Arc<dyn SelfModelStore + Send + Sync>,
+        self_authored_core_store: Arc<dyn SelfAuthoredCoreStore + Send + Sync>,
         self_continuity_store: Arc<dyn SelfContinuityStore + Send + Sync>,
     ) -> Self {
         Self {
@@ -39,6 +41,7 @@ impl ContinuitySnapshotTool {
             session_summary_store,
             execution_state_store,
             self_model_store,
+            self_authored_core_store,
             self_continuity_store,
         }
     }
@@ -102,6 +105,7 @@ impl Tool for ContinuitySnapshotTool {
                         session_summary_store: self.session_summary_store.as_ref(),
                         execution_state_store: self.execution_state_store.as_ref(),
                         self_model_store: self.self_model_store.as_ref(),
+                        self_authored_core_store: self.self_authored_core_store.as_ref(),
                         self_continuity_store: self.self_continuity_store.as_ref(),
                     },
                     &chat_id,
@@ -170,6 +174,7 @@ impl Tool for ContinuitySnapshotTool {
                         session_summary_store: self.session_summary_store.as_ref(),
                         execution_state_store: self.execution_state_store.as_ref(),
                         self_model_store: self.self_model_store.as_ref(),
+                        self_authored_core_store: self.self_authored_core_store.as_ref(),
                         self_continuity_store: self.self_continuity_store.as_ref(),
                     },
                     &chat_id,

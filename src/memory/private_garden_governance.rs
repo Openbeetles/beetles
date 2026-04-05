@@ -12,7 +12,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use super::{
-    build_private_garden_preview, build_private_garden_usage, build_self_state,
+    board_subject_scope_id, build_private_garden_preview, build_private_garden_usage,
+    build_self_state,
     llm_json::{coerce_json_string_list, coerce_json_text, parse_llm_json_payload, LlmJsonPayload},
     memory_policy, normalize_private_garden_doc_path, render_autonomy_strategy_block,
     render_execution_state_block, render_internal_memory_topology_block,
@@ -144,6 +145,7 @@ pub fn run_private_garden_governance(
     input: PrivateGardenGovernanceInput<'_>,
     profile: MemoryProfile,
 ) -> Result<PrivateGardenGovernanceOutcome> {
+    let subject_id = board_subject_scope_id();
     let summary_text = match ctx.session_summary_store.get_with_count(input.chat_id) {
         Ok(entry) => entry.map(|(summary, _)| summary),
         Err(error) => {
@@ -166,7 +168,7 @@ pub fn run_private_garden_governance(
             None
         }
     };
-    let self_model = match ctx.self_model_store.get(input.chat_id) {
+    let self_model = match ctx.self_model_store.get(subject_id) {
         Ok(model) => model,
         Err(error) => {
             log::warn!(
@@ -177,7 +179,7 @@ pub fn run_private_garden_governance(
             None
         }
     };
-    let private_workspace = match ctx.private_doc_store.get(input.chat_id) {
+    let private_workspace = match ctx.private_doc_store.get(subject_id) {
         Ok(workspace) => workspace,
         Err(error) => {
             log::warn!(

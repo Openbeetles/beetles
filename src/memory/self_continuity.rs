@@ -10,6 +10,7 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
+    board_subject_scope_id,
     llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload},
     memory_policy, render_execution_state_block, render_inner_life_block,
     render_internal_memory_topology_block, render_private_doc_workspace_block,
@@ -43,6 +44,8 @@ pub struct SelfContinuity {
     pub task_posture: String,
     #[serde(default)]
     pub last_user_turn_at: u64,
+    #[serde(default)]
+    pub last_user_chat_id: String,
     #[serde(default)]
     pub last_user_channel: String,
     #[serde(default)]
@@ -186,8 +189,13 @@ pub fn render_self_continuity_block(continuity: &SelfContinuity, max_len: usize)
     if normalized.last_user_turn_at > 0 || normalized.last_autonomy_run_at > 0 {
         let _ = writeln!(
             out,
-            "Runtime anchors: last_user_turn_at={} last_user_channel={} last_autonomy_run_at={}",
+            "Runtime anchors: last_user_turn_at={} last_user_chat_id={} last_user_channel={} last_autonomy_run_at={}",
             normalized.last_user_turn_at,
+            if normalized.last_user_chat_id.trim().is_empty() {
+                "n/a"
+            } else {
+                normalized.last_user_chat_id.trim()
+            },
             if normalized.last_user_channel.trim().is_empty() {
                 "n/a"
             } else {
@@ -207,15 +215,16 @@ pub fn run_self_continuity_refresh(
     input: SelfContinuityRefreshInput<'_>,
     profile: MemoryProfile,
 ) -> Result<SelfContinuityRefreshOutcome> {
-    let existing = ctx.self_continuity_store.get(input.chat_id)?;
+    let subject_id = board_subject_scope_id();
+    let existing = ctx.self_continuity_store.get(subject_id)?;
     let summary_text = ctx
         .session_summary_store
         .get_with_count(input.chat_id)?
         .map(|(summary, _)| summary);
     let execution_state = ctx.execution_state_store.get(input.chat_id)?;
-    let self_model = ctx.self_model_store.get(input.chat_id)?;
-    let private_docs = ctx.private_doc_store.get(input.chat_id)?;
-    let inner_life = ctx.inner_life_store.get(input.chat_id)?;
+    let self_model = ctx.self_model_store.get(subject_id)?;
+    let private_docs = ctx.private_doc_store.get(subject_id)?;
+    let inner_life = ctx.inner_life_store.get(subject_id)?;
     run_self_continuity_refresh_with_state(
         http,
         llm,
@@ -228,7 +237,6 @@ pub fn run_self_continuity_refresh(
         self_model.as_ref(),
         private_docs.as_ref(),
         inner_life.as_ref(),
-        None,
         None,
         None,
         &[],
@@ -256,6 +264,7 @@ pub(crate) fn run_self_continuity_refresh_with_state(
     decision_override: Option<bool>,
     recent_override: Option<&[SessionMessage]>,
 ) -> Result<SelfContinuityRefreshOutcome> {
+    let subject_id = board_subject_scope_id();
     if !decision_override.unwrap_or_else(|| {
         should_refresh_self_continuity(input, existing_continuity.is_some(), profile)
     }) {
@@ -306,13 +315,13 @@ pub(crate) fn run_self_continuity_refresh_with_state(
         ParsedSelfContinuityResponse::Skip => Ok(SelfContinuityRefreshOutcome::Skipped),
         ParsedSelfContinuityResponse::Clear => {
             crate::platform::task_wdt::feed_current_task();
-            let latest = ctx.self_continuity_store.get(input.chat_id)?;
+            let latest = ctx.self_continuity_store.get(subject_id)?;
             if latest.as_ref() != existing_continuity.as_ref() && latest.as_ref().is_some() {
                 return Ok(SelfContinuityRefreshOutcome::Skipped);
             }
             if latest.is_some() {
                 crate::platform::task_wdt::feed_current_task();
-                ctx.self_continuity_store.clear(input.chat_id)?;
+                ctx.self_continuity_store.clear(subject_id)?;
                 Ok(SelfContinuityRefreshOutcome::Cleared)
             } else {
                 Ok(SelfContinuityRefreshOutcome::Skipped)
@@ -320,7 +329,7 @@ pub(crate) fn run_self_continuity_refresh_with_state(
         }
         ParsedSelfContinuityResponse::Update(update) => {
             crate::platform::task_wdt::feed_current_task();
-            let latest = ctx.self_continuity_store.get(input.chat_id)?;
+            let latest = ctx.self_continuity_store.get(subject_id)?;
             let Some(next) = merge_self_continuity_with_lease(
                 existing_continuity.as_ref(),
                 latest.as_ref(),
@@ -334,7 +343,7 @@ pub(crate) fn run_self_continuity_refresh_with_state(
                 return Ok(SelfContinuityRefreshOutcome::Skipped);
             }
             crate::platform::task_wdt::feed_current_task();
-            ctx.self_continuity_store.set(input.chat_id, &next)?;
+            ctx.self_continuity_store.set(subject_id, &next)?;
             Ok(SelfContinuityRefreshOutcome::Updated)
         }
     }
@@ -342,16 +351,18 @@ pub(crate) fn run_self_continuity_refresh_with_state(
 
 pub fn touch_self_continuity_runtime(
     store: &dyn SelfContinuityStore,
-    chat_id: &str,
+    subject_id: &str,
     now_secs: u64,
     touch_user_turn: bool,
     touch_autonomy_run: bool,
+    user_chat_id: Option<&str>,
     source_channel: Option<&str>,
 ) -> Result<()> {
-    let baseline = store.get(chat_id)?;
+    let baseline = store.get(subject_id)?;
     let mut continuity = baseline.clone().unwrap_or_default();
     if touch_user_turn {
         continuity.last_user_turn_at = now_secs;
+        continuity.last_user_chat_id = normalize_runtime_chat_id(user_chat_id);
         continuity.last_user_channel = normalize_runtime_channel(source_channel);
     }
     if touch_autonomy_run {
@@ -361,11 +372,12 @@ pub fn touch_self_continuity_runtime(
         .updated_at
         .max(continuity.last_user_turn_at)
         .max(continuity.last_autonomy_run_at);
-    let latest = store.get(chat_id)?;
+    let latest = store.get(subject_id)?;
     if latest.as_ref() != baseline.as_ref() {
         continuity = latest.unwrap_or_default();
         if touch_user_turn {
             continuity.last_user_turn_at = now_secs;
+            continuity.last_user_chat_id = normalize_runtime_chat_id(user_chat_id);
             continuity.last_user_channel = normalize_runtime_channel(source_channel);
         }
         if touch_autonomy_run {
@@ -380,7 +392,7 @@ pub fn touch_self_continuity_runtime(
         || continuity.last_user_turn_at > 0
         || continuity.last_autonomy_run_at > 0
     {
-        store.set(chat_id, &continuity)?;
+        store.set(subject_id, &continuity)?;
     }
     Ok(())
 }
@@ -652,6 +664,7 @@ fn normalize_self_continuity(
     normalize_field(&mut continuity.priority_posture);
     normalize_field(&mut continuity.relationship_posture);
     normalize_field(&mut continuity.task_posture);
+    continuity.last_user_chat_id = normalize_runtime_chat_id(Some(&continuity.last_user_chat_id));
     continuity.last_user_channel = normalize_runtime_channel(Some(&continuity.last_user_channel));
     continuity.updated_at = updated_at
         .max(continuity.last_user_turn_at)
@@ -667,6 +680,14 @@ fn normalize_runtime_channel(channel: Option<&str>) -> String {
         .map(str::trim)
         .filter(|value| !value.is_empty() && *value != "cron" && !value.starts_with('_'))
         .map(|value| truncate_content_to_max(value, 48).into_owned())
+        .unwrap_or_default()
+}
+
+fn normalize_runtime_chat_id(chat_id: Option<&str>) -> String {
+    chat_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| truncate_content_to_max(value, 96).into_owned())
         .unwrap_or_default()
 }
 
@@ -730,6 +751,7 @@ mod tests {
                 relationship_posture: "关系要温和，但不以自我让渡换取顺滑".to_string(),
                 task_posture: "先收窄，再在边界内完成任务".to_string(),
                 last_user_turn_at: 12,
+                last_user_chat_id: "chat-1".to_string(),
                 last_user_channel: "qq_channel".to_string(),
                 last_autonomy_run_at: 15,
                 updated_at: 15,
@@ -741,6 +763,7 @@ mod tests {
         assert!(block.contains("Priority posture"));
         assert!(block.contains("Task posture"));
         assert!(block.contains("Runtime anchors"));
+        assert!(block.contains("last_user_chat_id=chat-1"));
         assert!(block.contains("last_user_channel=qq_channel"));
     }
 }

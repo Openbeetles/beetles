@@ -5,18 +5,20 @@ use crate::platform::SkillStorage;
 use crate::task::TaskStore;
 
 use super::{
-    build_archive_evidence_block, build_self_state, build_world_snapshot, collect_private_targets,
-    memory_capability_profile, memory_policy, parse_explicit_long_term_slot_query,
-    recall_long_term_memory_block, render_autonomy_strategy_block,
-    render_exact_long_term_memory_block, render_execution_state_block, render_inner_life_block,
-    render_mental_privacy_boundary_block, render_outer_voice_block,
+    board_subject_scope_id, build_archive_evidence_block, build_self_state, build_world_snapshot,
+    collect_private_targets, memory_capability_profile, memory_policy,
+    parse_explicit_long_term_slot_query, recall_long_term_memory_block, relationship_scope_id,
+    render_autonomy_strategy_block, render_exact_long_term_memory_block,
+    render_execution_state_block, render_inner_life_block, render_mental_privacy_boundary_block,
+    render_outer_voice_block, render_persistent_self_authored_core_block,
     render_private_doc_workspace_block, render_private_garden_block,
     render_self_authored_core_block, render_self_continuity_block, render_self_model_block,
     render_self_state_block, render_world_sense_block, render_world_snapshot_block,
-    AutonomyStrategyStore, ExecutionStateStore, InnerLifeStore, LongTermMemoryStore, MemoryProfile,
-    MemoryStore, MentalPrivacyStore, OuterVoiceStore, PrivateDocStore, PrivateGardenStore,
-    RemindAtStore, SelfContinuityStore, SelfModelStore, SessionMessage, SessionStore,
-    SessionSummaryStore, TurnLedgerStore, WorldSenseStore, WorldSnapshotContext,
+    AutonomyStrategyStore, ExecutionStateStore, InnerLifeStore, LongTermMemoryStore,
+    MemoryProfile, MemoryStore, MentalPrivacyStore, OuterVoiceStore, PrivateDocStore,
+    PrivateGardenStore, RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore,
+    SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore, TurnLedgerStore,
+    WorldSenseStore, WorldSnapshotContext,
 };
 
 pub struct PromptMemoryContext {
@@ -61,6 +63,7 @@ pub struct PromptMemoryContextParams<'a> {
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
     pub self_model_store: &'a dyn SelfModelStore,
+    pub self_authored_core_store: &'a dyn SelfAuthoredCoreStore,
     pub world_sense_store: &'a dyn WorldSenseStore,
     pub autonomy_strategy_store: &'a dyn AutonomyStrategyStore,
     pub outer_voice_store: &'a dyn OuterVoiceStore,
@@ -76,6 +79,8 @@ pub struct PromptMemoryContextParams<'a> {
 }
 
 pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> PromptMemoryContext {
+    let subject_id = board_subject_scope_id();
+    let relationship_id = relationship_scope_id(params.current_channel, params.chat_id);
     let recall_policy = memory_policy(params.profile).long_term_recall;
     let recent_message_limit = params
         .recent_messages_limit
@@ -110,18 +115,19 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
                 memory_policy(params.profile).execution_state.render_max_len,
             )
         });
-    let self_model = params.self_model_store.get(params.chat_id).ok().flatten();
+    let self_model = params.self_model_store.get(subject_id).ok().flatten();
+    let persistent_self_authored_core = params
+        .self_authored_core_store
+        .get(subject_id)
+        .ok()
+        .flatten();
     let self_model_text = self_model.as_ref().and_then(|model| {
         render_self_model_block(
             model,
             memory_policy(params.profile).self_model.render_max_len,
         )
     });
-    let self_continuity = params
-        .self_continuity_store
-        .get(params.chat_id)
-        .ok()
-        .flatten();
+    let self_continuity = params.self_continuity_store.get(subject_id).ok().flatten();
     let world_snapshot = build_world_snapshot(WorldSnapshotContext {
         chat_id: params.chat_id,
         source_channel: params.current_channel,
@@ -134,7 +140,11 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         &world_snapshot,
         memory_policy(params.profile).world_sense.snapshot_max_len,
     );
-    let world_sense = params.world_sense_store.get(params.chat_id).ok().flatten();
+    let world_sense = params
+        .world_sense_store
+        .get(&relationship_id)
+        .ok()
+        .flatten();
     let world_sense_text = world_sense.as_ref().and_then(|world_sense| {
         render_world_sense_block(
             world_sense,
@@ -143,7 +153,7 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
     });
     let autonomy_strategy = params
         .autonomy_strategy_store
-        .get(params.chat_id)
+        .get(subject_id)
         .ok()
         .flatten();
     let autonomy_strategy_text = autonomy_strategy.as_ref().and_then(|strategy| {
@@ -154,14 +164,18 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
                 .render_max_len,
         )
     });
-    let outer_voice = params.outer_voice_store.get(params.chat_id).ok().flatten();
+    let outer_voice = params
+        .outer_voice_store
+        .get(&relationship_id)
+        .ok()
+        .flatten();
     let outer_voice_text = outer_voice.as_ref().and_then(|outer_voice| {
         render_outer_voice_block(
             outer_voice,
             memory_policy(params.profile).outer_voice.render_max_len,
         )
     });
-    let inner_life = params.inner_life_store.get(params.chat_id).ok().flatten();
+    let inner_life = params.inner_life_store.get(subject_id).ok().flatten();
     let inner_life_text = inner_life.as_ref().and_then(|inner_life| {
         render_inner_life_block(
             inner_life,
@@ -174,7 +188,7 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
             memory_policy(params.profile).self_continuity.render_max_len,
         )
     });
-    let private_workspace = params.private_doc_store.get(params.chat_id).ok().flatten();
+    let private_workspace = params.private_doc_store.get(subject_id).ok().flatten();
     let private_workspace_text = private_workspace.as_ref().and_then(|workspace| {
         render_private_doc_workspace_block(
             workspace,
@@ -199,7 +213,7 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         .flatten();
     let mental_privacy_state = params
         .mental_privacy_store
-        .get(params.chat_id)
+        .get(&relationship_id)
         .ok()
         .flatten();
     let mental_privacy_targets = collect_private_targets(
@@ -214,13 +228,18 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         &mental_privacy_targets,
         420,
     );
-    let self_authored_core_text = render_self_authored_core_block(
-        self_model.as_ref(),
-        self_continuity.as_ref(),
-        outer_voice.as_ref(),
-        mental_privacy_state.as_ref(),
-        420,
-    );
+    let self_authored_core_text = persistent_self_authored_core
+        .as_ref()
+        .and_then(|core| render_persistent_self_authored_core_block(core, 420))
+        .or_else(|| {
+            render_self_authored_core_block(
+                self_model.as_ref(),
+                self_continuity.as_ref(),
+                outer_voice.as_ref(),
+                mental_privacy_state.as_ref(),
+                420,
+            )
+        });
     let self_state_text = render_self_state_block(
         &build_self_state(
             self_model.as_ref(),
@@ -361,9 +380,9 @@ mod tests {
         LongTermMemorySlot, LongTermMemoryStore, MemoryStore, MentalPrivacyState,
         MentalPrivacyStore, OuterVoice, OuterVoiceStore, PrivateDocEntry, PrivateDocStore,
         PrivateDocWorkspace, PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenStore,
-        SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage,
-        SessionStore, SessionSummaryStore, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
-        WorldSense, WorldSenseStore,
+        SelfAuthoredCore, SelfAuthoredCoreStore, SelfContinuity, SelfContinuityStore, SelfModel,
+        SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore, TurnLedger,
+        TurnLedgerStatus, TurnLedgerStore, WorldSense, WorldSenseStore,
     };
     use crate::platform::SkillStorage;
     use crate::task::{TaskItem, TaskQuery, TaskStore};
@@ -770,6 +789,27 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct StubSelfAuthoredCoreStore {
+        core: Mutex<Option<SelfAuthoredCore>>,
+    }
+
+    impl SelfAuthoredCoreStore for StubSelfAuthoredCoreStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<SelfAuthoredCore>> {
+            Ok(self.core.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _scope_id: &str, core: &SelfAuthoredCore) -> Result<()> {
+            *self.core.lock().unwrap_or_else(|e| e.into_inner()) = Some(core.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            *self.core.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
     struct StubPrivateDocStore {
         workspace: Mutex<Option<PrivateDocWorkspace>>,
     }
@@ -986,6 +1026,7 @@ mod tests {
                 ..SelfModel::default()
             })),
         };
+        let self_authored_core_store = StubSelfAuthoredCoreStore::default();
         let world_sense_store = StubWorldSenseStore {
             value: Mutex::new(Some(WorldSense {
                 current_scene: "Quiet evening with a live user thread.".to_string(),
@@ -1043,6 +1084,7 @@ mod tests {
                 relationship_posture: "关系保持温和，但不自我让渡".to_string(),
                 task_posture: "先收窄后推进".to_string(),
                 last_user_turn_at: 88,
+                last_user_chat_id: "chat-1".to_string(),
                 last_user_channel: "qq_channel".to_string(),
                 last_autonomy_run_at: 99,
                 updated_at: 99,
@@ -1103,6 +1145,7 @@ mod tests {
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
             self_model_store: &self_model_store,
+            self_authored_core_store: &self_authored_core_store,
             world_sense_store: &world_sense_store,
             autonomy_strategy_store: &autonomy_strategy_store,
             outer_voice_store: &outer_voice_store,
@@ -1253,6 +1296,7 @@ mod tests {
         let turn_ledger_store = StubTurnLedgerStore::default();
         let execution_state_store = StubExecutionStateStore::default();
         let self_model_store = StubSelfModelStore::default();
+        let self_authored_core_store = StubSelfAuthoredCoreStore::default();
         let world_sense_store = StubWorldSenseStore::default();
         let autonomy_strategy_store = StubAutonomyStrategyStore::default();
         let outer_voice_store = StubOuterVoiceStore::default();
@@ -1281,6 +1325,7 @@ mod tests {
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
             self_model_store: &self_model_store,
+            self_authored_core_store: &self_authored_core_store,
             world_sense_store: &world_sense_store,
             autonomy_strategy_store: &autonomy_strategy_store,
             outer_voice_store: &outer_voice_store,
@@ -1342,6 +1387,7 @@ mod tests {
                 ..SelfModel::default()
             })),
         };
+        let self_authored_core_store = StubSelfAuthoredCoreStore::default();
         let world_sense_store = StubWorldSenseStore {
             value: Mutex::new(Some(WorldSense {
                 current_scene: "Fast path but still inside an active chat.".to_string(),
@@ -1399,6 +1445,7 @@ mod tests {
                 relationship_posture: "简短，但别失去人味和边界".to_string(),
                 task_posture: "用最小必要幅度完成当前回应".to_string(),
                 last_user_turn_at: 80,
+                last_user_chat_id: "chat-1".to_string(),
                 last_user_channel: "qq_channel".to_string(),
                 last_autonomy_run_at: 90,
                 updated_at: 90,
@@ -1446,6 +1493,7 @@ mod tests {
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
             self_model_store: &self_model_store,
+            self_authored_core_store: &self_authored_core_store,
             world_sense_store: &world_sense_store,
             autonomy_strategy_store: &autonomy_strategy_store,
             outer_voice_store: &outer_voice_store,
@@ -1489,5 +1537,74 @@ mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .is_none());
+    }
+
+    #[test]
+    fn persistent_self_authored_core_overrides_fallback_render() {
+        let session_store = StubSessionStore::default();
+        let archive_memory_store = StubMemoryStore::default();
+        let summary_store = StubSessionSummaryStore::default();
+        let memory_store = StubLongTermMemoryStore::default();
+        let turn_ledger_store = StubTurnLedgerStore::default();
+        let execution_state_store = StubExecutionStateStore::default();
+        let self_model_store = StubSelfModelStore {
+            model: Mutex::new(Some(SelfModel {
+                continuity_anchor: "fallback anchor".to_string(),
+                self_narrative: "fallback narrative".to_string(),
+                updated_at: 1,
+                ..SelfModel::default()
+            })),
+        };
+        let self_authored_core_store = StubSelfAuthoredCoreStore {
+            core: Mutex::new(Some(SelfAuthoredCore {
+                identity_anchor: "persistent board self".to_string(),
+                inward_stance: "stable persistent stance".to_string(),
+                updated_at: 8,
+                ..SelfAuthoredCore::default()
+            })),
+        };
+        let world_sense_store = StubWorldSenseStore::default();
+        let autonomy_strategy_store = StubAutonomyStrategyStore::default();
+        let outer_voice_store = StubOuterVoiceStore::default();
+        let inner_life_store = StubInnerLifeStore::default();
+        let self_continuity_store = StubSelfContinuityStore::default();
+        let private_doc_store = StubPrivateDocStore::default();
+        let private_garden_store = StubPrivateGardenStore::default();
+        let mental_privacy_store = StubMentalPrivacyStore::default();
+        let skill_storage = StubSkillStorage::default();
+        let context = load_prompt_memory_context(PromptMemoryContextParams {
+            chat_id: "chat-1",
+            current_channel: "qq_channel",
+            user_query: "继续",
+            system_max_len: 1024,
+            now_secs: 100,
+            profile: MemoryProfile::Standard,
+            recent_messages_limit: 8,
+            load_long_term_memory: false,
+            include_private_garden_projection: false,
+            session_store: &session_store,
+            memory_store: &archive_memory_store,
+            session_summary_store: &summary_store,
+            long_term_memory_store: &memory_store,
+            execution_state_store: &execution_state_store,
+            self_model_store: &self_model_store,
+            self_authored_core_store: &self_authored_core_store,
+            world_sense_store: &world_sense_store,
+            autonomy_strategy_store: &autonomy_strategy_store,
+            outer_voice_store: &outer_voice_store,
+            inner_life_store: &inner_life_store,
+            self_continuity_store: &self_continuity_store,
+            private_doc_store: &private_doc_store,
+            private_garden_store: &private_garden_store,
+            mental_privacy_store: &mental_privacy_store,
+            remind_store: &StubRemindAtStore,
+            task_store: &StubTaskStore,
+            turn_ledger_store: &turn_ledger_store,
+            skill_storage: &skill_storage,
+        });
+
+        let rendered = context.self_authored_core_text.unwrap_or_default();
+        assert!(rendered.contains("persistent board self"));
+        assert!(!rendered.contains("fallback anchor"));
     }
 }

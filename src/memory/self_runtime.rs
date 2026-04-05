@@ -14,47 +14,54 @@ use crate::task::TaskStore;
 use crate::util::{current_unix_secs, scrub_credentials, truncate_content_to_max};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use super::{
-    autonomy_idle_interval_secs, build_archive_evidence_block, build_self_state,
-    build_world_snapshot,
+    autonomy_idle_interval_secs, board_subject_scope_id, build_archive_evidence_block,
+    build_self_state, build_world_snapshot,
     llm_json::{
         get_object_bool, get_object_string_list, get_object_text, parse_llm_json_payload,
         LlmJsonPayload,
     },
-    load_recent_persona_evidence, memory_capability_profile, memory_policy,
+    load_recent_persona_evidence, memory_capability_profile, memory_policy, relationship_scope_id,
     render_autonomy_strategy_block, render_execution_state_block,
     render_internal_memory_topology_block, render_mental_privacy_boundary_block,
     render_private_memory_boundary_block, render_recent_persona_evidence_block,
-    render_self_authored_core_block, render_self_state_block, render_world_sense_block,
-    render_world_snapshot_block, run_autonomy_strategy_refresh_with_state,
-    run_boundary_persona_refresh_with_state, run_inner_life_refresh_with_state,
-    run_memory_governance_kernel, run_memory_hygiene_jobs, run_outer_voice_refresh_with_state,
-    run_private_doc_workspace_refresh_with_state, run_private_garden_governance_with_state,
+    render_relationship_topology_block,
+    render_persistent_self_authored_core_block, render_self_authored_core_block,
+    render_self_state_block, render_world_sense_block, render_world_snapshot_block,
+    run_autonomy_strategy_refresh_with_state, run_boundary_persona_refresh_with_state,
+    run_inner_life_refresh_with_state, run_memory_governance_kernel, run_memory_hygiene_jobs,
+    run_outer_voice_refresh_with_state, run_private_doc_workspace_refresh_with_state,
+    run_private_garden_governance_with_state, run_self_authored_core_refresh_with_state,
     run_self_continuity_refresh_with_state, run_self_model_refresh_with_state,
-    run_world_sense_refresh_with_state, touch_self_continuity_runtime, AutonomyGovernanceTendency,
-    AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome,
-    AutonomyStrategyStore, BoundaryPersonaRefreshContext, BoundaryPersonaRefreshInput,
-    BoundaryPersonaRefreshOutcome, ExecutionStateStore, InnerLifeRefreshContext,
-    InnerLifeRefreshInput, InnerLifeRefreshOutcome, InnerLifeStore, InternalMemoryLayerFocus,
-    LongTermMemoryStore, MemoryGovernanceContext, MemoryGovernanceInput, MemoryHygieneContext,
-    MemoryProfile, MemoryStore, MentalPrivacyStore, OuterVoiceRefreshContext,
-    OuterVoiceRefreshInput, OuterVoiceRefreshOutcome, OuterVoiceStore, PrivateDocStore,
+    run_world_sense_refresh_with_state, touch_self_continuity_runtime,
+    AutonomyGovernanceTendency, AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput,
+    AutonomyStrategyRefreshOutcome, AutonomyStrategyStore, BoundaryPersonaRefreshContext,
+    BoundaryPersonaRefreshInput, BoundaryPersonaRefreshOutcome, ExecutionStateStore,
+    InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome, InnerLifeStore,
+    InternalMemoryLayerFocus, LongTermMemoryStore, MemoryGovernanceContext,
+    MemoryGovernanceInput, MemoryHygieneContext, MemoryProfile, MemoryStore,
+    MentalPrivacyStore, OuterVoiceRefreshContext, OuterVoiceRefreshInput,
+    OuterVoiceRefreshOutcome, OuterVoiceStore, PrivateDocStore,
     PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
     PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
     PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, PrivateGardenStore,
-    RemindAtStore, SelfContinuityRefreshContext, SelfContinuityRefreshInput,
-    SelfContinuityRefreshOutcome, SelfContinuityStore, SelfMemorySpaceBottleneck,
-    SelfMemorySpacePressure, SelfModelRefreshContext, SelfModelRefreshInput,
-    SelfModelRefreshOutcome, SelfModelStore, SelfState, SessionStore, SessionSummaryStore,
-    SharedFactualPlaneSnapshot, SharedFactualReconcileAction, TurnLedgerStore,
-    WorldSenseRefreshContext, WorldSenseRefreshInput, WorldSenseRefreshOutcome, WorldSenseStore,
-    WorldSnapshotContext,
+    RelationshipSelectorInput, RelationshipTopology, RelationshipTopologyStore,
+    RemindAtStore, SelfAuthoredCoreRefreshContext, SelfAuthoredCoreRefreshInput,
+    select_relationship_topology_targets, upsert_relationship_topology_entry,
+    SelfAuthoredCoreRefreshOutcome, SelfAuthoredCoreStore, SelfContinuityRefreshContext,
+    SelfContinuityRefreshInput, SelfContinuityRefreshOutcome, SelfContinuityStore,
+    SelfMemorySpaceBottleneck, SelfMemorySpacePressure, SelfModelRefreshContext,
+    SelfModelRefreshInput, SelfModelRefreshOutcome, SelfModelStore, SelfState, SessionStore,
+    SessionSummaryStore, SharedFactualPlaneSnapshot, SharedFactualReconcileAction,
+    TurnLedgerStore, WorldSenseRefreshContext, WorldSenseRefreshInput,
+    WorldSenseRefreshOutcome, WorldSenseStore, WorldSnapshotContext,
 };
 
-pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's inward autonomy runtime. Respect the current autonomy strategy unless the latest world state, self-state, or recent multi-turn persona evidence clearly requires a different emphasis. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_private_docs, private_docs_intent, private_docs_action, refresh_private_garden, private_garden_intent, private_garden_action, refresh_self_model, self_model_intent, self_model_sources, refresh_self_continuity, self_continuity_intent, self_continuity_sources, refresh_boundary_persona, boundary_persona_intent, refresh_outer_voice, outer_voice_intent, outer_voice_sources, boundary_flush, boundary_flush_reason, request_factual_refresh, factual_reconcile_action, factual_reconcile_intent. Use true only when that layer should change now. Runtime governance actions are hold, rewrite, compress, or cleanup. factual_reconcile_action is hold, reinforce, correct, conflict, or stale. self_model, self_continuity, boundary_persona, and outer_voice are upward distillation layers: refresh them only when private evolution or newer world/boundary state has produced a better stable core that should influence future main replies. Source lists should name the layers that actually deserve upward distillation, such as inner_life, private_docs, private_garden, self_model, self_continuity, boundary_persona, outer_voice, world_sense, autonomy_strategy, recent_persona_evidence, or recent_transcript. Treat recent persona evidence as multi-turn support, never as one-turn automatic promotion authority. Favor autonomy, but do not churn memory without gain.";
+pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's inward autonomy runtime. Respect the current autonomy strategy unless the latest world state, self-state, or recent multi-turn persona evidence clearly requires a different emphasis. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_private_docs, private_docs_intent, private_docs_action, refresh_private_garden, private_garden_intent, private_garden_action, refresh_self_model, self_model_intent, self_model_sources, refresh_self_continuity, self_continuity_intent, self_continuity_sources, refresh_self_authored_core, self_authored_core_intent, self_authored_core_sources, refresh_boundary_persona, boundary_persona_intent, refresh_outer_voice, outer_voice_intent, outer_voice_sources, boundary_flush, boundary_flush_reason, request_factual_refresh, factual_reconcile_action, factual_reconcile_intent. Use true only when that layer should change now. Runtime governance actions are hold, rewrite, compress, or cleanup. factual_reconcile_action is hold, reinforce, correct, conflict, or stale. self_model, self_continuity, self_authored_core, boundary_persona, and outer_voice are upward distillation layers: refresh them only when private evolution or newer world/boundary state has produced a better stable core that should influence future main replies. self_authored_core is the board-level core above chat relationships; do not promote one-turn spikes or one-chat quirks into it. Source lists should name the layers that actually deserve upward distillation, such as inner_life, private_docs, private_garden, self_model, self_continuity, self_authored_core, boundary_persona, outer_voice, world_sense, autonomy_strategy, recent_persona_evidence, or recent_transcript. Treat recent persona evidence as multi-turn support, never as one-turn automatic promotion authority. Favor autonomy, but do not churn memory without gain.";
 pub const SELF_RUNTIME_CHANNEL: &str = "_self_runtime";
 const SELF_RUNTIME_POST_REPLY_DELAY_MS: u64 = 1_500;
 const SELF_RUNTIME_IDLE_TICK_DELAY_MS: u64 = 5_000;
@@ -101,6 +108,12 @@ pub struct SelfRuntimeDecision {
     #[serde(default)]
     pub self_model_sources: Vec<String>,
     #[serde(default)]
+    pub refresh_self_authored_core: bool,
+    #[serde(default)]
+    pub self_authored_core_intent: String,
+    #[serde(default)]
+    pub self_authored_core_sources: Vec<String>,
+    #[serde(default)]
     pub refresh_self_continuity: bool,
     #[serde(default)]
     pub self_continuity_intent: String,
@@ -141,10 +154,12 @@ pub struct SelfRuntimeContext<'a> {
     pub execution_state_store: &'a dyn ExecutionStateStore,
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
     pub self_model_store: &'a dyn SelfModelStore,
+    pub self_authored_core_store: &'a dyn SelfAuthoredCoreStore,
     pub private_doc_store: &'a dyn PrivateDocStore,
     pub private_garden_store: &'a dyn PrivateGardenStore,
     pub inner_life_store: &'a dyn InnerLifeStore,
     pub self_continuity_store: &'a dyn SelfContinuityStore,
+    pub relationship_topology_store: &'a dyn RelationshipTopologyStore,
     pub world_sense_store: &'a dyn WorldSenseStore,
     pub autonomy_strategy_store: &'a dyn AutonomyStrategyStore,
     pub outer_voice_store: &'a dyn OuterVoiceStore,
@@ -162,6 +177,7 @@ pub struct SelfRuntimeOutcome {
     pub inner_life_result: Result<InnerLifeRefreshOutcome>,
     pub private_doc_result: Result<PrivateDocWorkspaceRefreshOutcome>,
     pub self_model_result: Result<SelfModelRefreshOutcome>,
+    pub self_authored_core_result: Result<SelfAuthoredCoreRefreshOutcome>,
     pub self_continuity_result: Result<SelfContinuityRefreshOutcome>,
     pub private_garden_result: Result<PrivateGardenGovernanceOutcome>,
     pub boundary_persona_result: Result<BoundaryPersonaRefreshOutcome>,
@@ -172,15 +188,19 @@ struct LoadedSelfRuntimeState {
     summary_text: Option<String>,
     execution_state: Option<crate::memory::ExecutionState>,
     self_model: Option<crate::memory::SelfModel>,
+    self_authored_core: Option<crate::memory::SelfAuthoredCore>,
     private_docs: Option<crate::memory::PrivateDocWorkspace>,
     private_garden_docs: Vec<crate::memory::PrivateGardenDocRecord>,
     inner_life: Option<crate::memory::InnerLife>,
     self_continuity: Option<crate::memory::SelfContinuity>,
+    relationship_topology: Option<crate::memory::RelationshipTopology>,
     world_sense: Option<crate::memory::WorldSense>,
     autonomy_strategy: Option<crate::memory::AutonomyStrategy>,
     outer_voice: Option<crate::memory::OuterVoice>,
     mental_privacy_state: Option<crate::memory::MentalPrivacyState>,
     recent_persona_evidence: Option<crate::memory::RecentPersonaEvidence>,
+    active_relationship_scope_id: String,
+    active_relationship_channel: String,
     prior_user_channel: String,
     world_snapshot: crate::memory::WorldSnapshot,
     recent: Vec<crate::memory::SessionMessage>,
@@ -199,6 +219,7 @@ struct SelfRuntimeActionResults {
     inner_life_result: Result<InnerLifeRefreshOutcome>,
     private_doc_result: Result<PrivateDocWorkspaceRefreshOutcome>,
     self_model_result: Result<SelfModelRefreshOutcome>,
+    self_authored_core_result: Result<SelfAuthoredCoreRefreshOutcome>,
     self_continuity_result: Result<SelfContinuityRefreshOutcome>,
     private_garden_result: Result<PrivateGardenGovernanceOutcome>,
     boundary_persona_result: Result<BoundaryPersonaRefreshOutcome>,
@@ -214,6 +235,7 @@ struct PersonaDistillationSnapshot {
     autonomy_strategy_at: u64,
     recent_persona_evidence_at: u64,
     self_model_at: u64,
+    self_authored_core_at: u64,
     self_continuity_at: u64,
     outer_voice_at: u64,
     has_inner_life: bool,
@@ -326,6 +348,7 @@ fn load_self_runtime_state(
     payload: &SelfRuntimeJobPayload,
     profile: MemoryProfile,
 ) -> Box<LoadedSelfRuntimeState> {
+    let subject_id = board_subject_scope_id();
     let summary_text = ctx
         .session_summary_store
         .get_with_count(chat_id)
@@ -333,28 +356,51 @@ fn load_self_runtime_state(
         .flatten()
         .map(|(summary, _)| summary);
     let execution_state = ctx.execution_state_store.get(chat_id).ok().flatten();
-    let self_model = ctx.self_model_store.get(chat_id).ok().flatten();
-    let private_docs = ctx.private_doc_store.get(chat_id).ok().flatten();
+    let self_model = ctx.self_model_store.get(subject_id).ok().flatten();
+    let self_authored_core = ctx.self_authored_core_store.get(subject_id).ok().flatten();
+    let private_docs = ctx.private_doc_store.get(subject_id).ok().flatten();
     let private_garden_docs = ctx
         .private_garden_store
         .list(chat_id, usize::MAX)
         .unwrap_or_default();
-    let inner_life = ctx.inner_life_store.get(chat_id).ok().flatten();
-    let self_continuity = ctx.self_continuity_store.get(chat_id).ok().flatten();
+    let inner_life = ctx.inner_life_store.get(subject_id).ok().flatten();
+    let self_continuity = ctx.self_continuity_store.get(subject_id).ok().flatten();
+    let relationship_topology = ctx.relationship_topology_store.get(subject_id).ok().flatten();
     let prior_user_channel = self_continuity
         .as_ref()
         .map(|continuity| continuity.last_user_channel.trim().to_string())
         .unwrap_or_default();
-    let world_sense = ctx.world_sense_store.get(chat_id).ok().flatten();
-    let autonomy_strategy = ctx.autonomy_strategy_store.get(chat_id).ok().flatten();
-    let outer_voice = ctx.outer_voice_store.get(chat_id).ok().flatten();
-    let mental_privacy_state = ctx.mental_privacy_store.get(chat_id).ok().flatten();
-    let recent_persona_evidence = load_recent_persona_evidence(ctx.turn_ledger_store, chat_id)
+    let (active_relationship_scope_id, active_relationship_channel) =
+        resolve_runtime_relationship_scope(
+            chat_id,
+            payload,
+            self_continuity.as_ref(),
+            relationship_topology.as_ref(),
+        );
+    let world_sense = ctx
+        .world_sense_store
+        .get(&active_relationship_scope_id)
         .ok()
         .flatten();
+    let autonomy_strategy = ctx.autonomy_strategy_store.get(subject_id).ok().flatten();
+    let outer_voice = ctx
+        .outer_voice_store
+        .get(&active_relationship_scope_id)
+        .ok()
+        .flatten();
+    let mental_privacy_state = ctx
+        .mental_privacy_store
+        .get(&active_relationship_scope_id)
+        .ok()
+        .flatten();
+    let recent_persona_evidence =
+        load_recent_persona_evidence(ctx.turn_ledger_store, &active_relationship_scope_id)
+            .ok()
+            .flatten();
     let self_continuity = if payload.trigger == SelfRuntimeTrigger::PostReply {
         let mut continuity = self_continuity.unwrap_or_default();
         continuity.last_user_turn_at = payload.now_secs;
+        continuity.last_user_chat_id = chat_id.trim().to_string();
         continuity.last_user_channel = payload.source_channel.trim().to_string();
         Some(continuity)
     } else {
@@ -362,7 +408,7 @@ fn load_self_runtime_state(
     };
     let world_snapshot = build_world_snapshot(WorldSnapshotContext {
         chat_id,
-        source_channel: &payload.source_channel,
+        source_channel: &active_relationship_channel,
         now_secs: payload.now_secs,
         self_continuity: self_continuity.as_ref(),
         remind_store: ctx.remind_store,
@@ -395,19 +441,130 @@ fn load_self_runtime_state(
         summary_text,
         execution_state,
         self_model,
+        self_authored_core,
         private_docs,
         private_garden_docs,
         inner_life,
         self_continuity,
+        relationship_topology,
         world_sense,
         autonomy_strategy,
         outer_voice,
         mental_privacy_state,
         recent_persona_evidence,
+        active_relationship_scope_id,
+        active_relationship_channel,
         prior_user_channel,
         world_snapshot,
         recent,
     })
+}
+
+fn resolve_runtime_relationship_scope(
+    chat_id: &str,
+    payload: &SelfRuntimeJobPayload,
+    self_continuity: Option<&crate::memory::SelfContinuity>,
+    relationship_topology: Option<&RelationshipTopology>,
+) -> (String, String) {
+    let requested_channel = payload.source_channel.trim();
+    if payload.trigger == SelfRuntimeTrigger::PostReply {
+        return (
+            relationship_scope_id(requested_channel, chat_id),
+            requested_channel.to_string(),
+        );
+    }
+    if !requested_channel.is_empty() && requested_channel != "self_runtime_idle" {
+        return (
+            relationship_scope_id(requested_channel, chat_id),
+            requested_channel.to_string(),
+        );
+    }
+    if let Some(entry) =
+        pick_runtime_relationship_entry_for_chat(relationship_topology, chat_id, requested_channel)
+    {
+        return (entry.scope_id.clone(), entry.channel.clone());
+    }
+    if let Some(channel) = self_continuity.and_then(|continuity| {
+        (continuity.last_user_chat_id.trim() == chat_id)
+            .then_some(continuity.last_user_channel.trim())
+            .filter(|value| !value.is_empty())
+    }) {
+        return (relationship_scope_id(channel, chat_id), channel.to_string());
+    }
+    (
+        relationship_scope_id(requested_channel, chat_id),
+        requested_channel.to_string(),
+    )
+}
+
+fn pick_runtime_relationship_entry_for_chat<'a>(
+    relationship_topology: Option<&'a RelationshipTopology>,
+    chat_id: &str,
+    preferred_channel: &str,
+) -> Option<&'a crate::memory::RelationshipTopologyEntry> {
+    let topology = relationship_topology?;
+    let preferred_channel = preferred_channel.trim();
+    topology
+        .entries
+        .iter()
+        .filter(|entry| entry.is_meaningful() && entry.chat_id.trim() == chat_id)
+        .max_by(|left, right| {
+            let left_preferred = (!preferred_channel.is_empty()
+                && left.channel.trim() == preferred_channel) as u8;
+            let right_preferred = (!preferred_channel.is_empty()
+                && right.channel.trim() == preferred_channel) as u8;
+            left_preferred
+                .cmp(&right_preferred)
+                .then_with(|| left.latest_overlay_at().cmp(&right.latest_overlay_at()))
+        })
+}
+
+fn sync_self_runtime_relationship_topology(
+    ctx: &SelfRuntimeContext<'_>,
+    relationship_channel: &str,
+    chat_id: &str,
+    now_secs: u64,
+) {
+    let relationship_channel = relationship_channel.trim();
+    let chat_id = chat_id.trim();
+    if relationship_channel.is_empty() || chat_id.is_empty() {
+        return;
+    }
+    let relationship_id = relationship_scope_id(relationship_channel, chat_id);
+    let turn_ledger = ctx.turn_ledger_store.get(&relationship_id).ok().flatten();
+    let mental_privacy_state = ctx
+        .mental_privacy_store
+        .get(&relationship_id)
+        .ok()
+        .flatten();
+    let outer_voice = ctx.outer_voice_store.get(&relationship_id).ok().flatten();
+    let world_sense = ctx.world_sense_store.get(&relationship_id).ok().flatten();
+    let recent_persona_evidence =
+        load_recent_persona_evidence(ctx.turn_ledger_store, &relationship_id)
+            .ok()
+            .flatten();
+    if let Err(error) = upsert_relationship_topology_entry(
+        ctx.relationship_topology_store,
+        crate::memory::RelationshipTopologyUpsertInput {
+            channel: relationship_channel,
+            chat_id,
+            now_secs,
+            touch_user_turn: false,
+            touch_runtime_refresh: true,
+            turn_ledger: turn_ledger.as_ref(),
+            mental_privacy_state: mental_privacy_state.as_ref(),
+            outer_voice: outer_voice.as_ref(),
+            world_sense: world_sense.as_ref(),
+            recent_persona_evidence: recent_persona_evidence.as_ref(),
+        },
+    ) {
+        log::warn!(
+            "[self_runtime] relationship topology sync failed channel={} chat_id={}: {}",
+            relationship_channel,
+            chat_id,
+            error
+        );
+    }
 }
 
 fn refresh_world_and_autonomy(
@@ -419,6 +576,8 @@ fn refresh_world_and_autonomy(
     profile: MemoryProfile,
     state: &LoadedSelfRuntimeState,
 ) -> Box<SelfRuntimeRefreshPrelude> {
+    let subject_id = board_subject_scope_id();
+    let relationship_id = state.active_relationship_scope_id.as_str();
     let ingress = self_runtime_ingress(payload.trigger);
     let world_policy = memory_policy(profile).world_sense;
     let world_snapshot_changed = state.world_sense.as_ref().is_some_and(|existing| {
@@ -432,7 +591,7 @@ fn refresh_world_and_autonomy(
                 WorldSenseRefreshInput {
                     chat_id,
                     ingress,
-                    channel: &payload.source_channel,
+                    channel: &state.active_relationship_channel,
                     user_content: &payload.user_content,
                     reply_content: &payload.reply_content,
                     pressure: PressureLevel::Normal,
@@ -462,7 +621,7 @@ fn refresh_world_and_autonomy(
         WorldSenseRefreshInput {
             chat_id,
             ingress,
-            channel: &payload.source_channel,
+            channel: &state.active_relationship_channel,
             user_content: &payload.user_content,
             reply_content: &payload.reply_content,
             pressure: PressureLevel::Normal,
@@ -482,7 +641,7 @@ fn refresh_world_and_autonomy(
     crate::platform::task_wdt::feed_current_task();
     let refreshed_world_sense = ctx
         .world_sense_store
-        .get(chat_id)
+        .get(&relationship_id)
         .ok()
         .flatten()
         .or(state.world_sense.clone());
@@ -493,7 +652,7 @@ fn refresh_world_and_autonomy(
                 AutonomyStrategyRefreshInput {
                     chat_id,
                     ingress,
-                    channel: &payload.source_channel,
+                    channel: &state.active_relationship_channel,
                     user_content: &payload.user_content,
                     reply_content: &payload.reply_content,
                     pressure: PressureLevel::Normal,
@@ -526,7 +685,7 @@ fn refresh_world_and_autonomy(
         AutonomyStrategyRefreshInput {
             chat_id,
             ingress,
-            channel: &payload.source_channel,
+            channel: &state.active_relationship_channel,
             user_content: &payload.user_content,
             reply_content: &payload.reply_content,
             pressure: PressureLevel::Normal,
@@ -550,7 +709,7 @@ fn refresh_world_and_autonomy(
     crate::platform::task_wdt::feed_current_task();
     let refreshed_autonomy_strategy = ctx
         .autonomy_strategy_store
-        .get(chat_id)
+        .get(subject_id)
         .ok()
         .flatten()
         .or(state.autonomy_strategy.clone());
@@ -634,6 +793,7 @@ fn build_persona_distillation_snapshot_from_layers(
     private_garden_docs: &[crate::memory::PrivateGardenDocRecord],
     inner_life: Option<&crate::memory::InnerLife>,
     self_model: Option<&crate::memory::SelfModel>,
+    self_authored_core: Option<&crate::memory::SelfAuthoredCore>,
     self_continuity: Option<&crate::memory::SelfContinuity>,
     outer_voice: Option<&crate::memory::OuterVoice>,
     mental_privacy_state: Option<&crate::memory::MentalPrivacyState>,
@@ -675,6 +835,7 @@ fn build_persona_distillation_snapshot_from_layers(
         autonomy_strategy_at,
         recent_persona_evidence_at,
         self_model_at: self_model.map(|model| model.updated_at).unwrap_or(0),
+        self_authored_core_at: self_authored_core.map(|core| core.updated_at).unwrap_or(0),
         self_continuity_at: self_continuity
             .map(|continuity| continuity.updated_at)
             .unwrap_or(0),
@@ -698,6 +859,8 @@ fn execute_self_runtime_actions(
     state: &LoadedSelfRuntimeState,
     prelude: &SelfRuntimeRefreshPrelude,
 ) -> Box<SelfRuntimeActionResults> {
+    let subject_id = board_subject_scope_id();
+    let relationship_id = state.active_relationship_scope_id.as_str();
     let boundary_signal = detect_boundary_flush_signal(payload, state, prelude);
     crate::platform::task_wdt::feed_current_task();
     let query_hint = if !payload.user_content.trim().is_empty() {
@@ -736,12 +899,15 @@ fn execute_self_runtime_actions(
         state.summary_text.as_deref(),
         state.execution_state.as_ref(),
         state.self_model.as_ref(),
+        state.self_authored_core.as_ref(),
         state.private_docs.as_ref(),
         &state.private_garden_docs,
         state.inner_life.as_ref(),
         state.self_continuity.as_ref(),
         state.outer_voice.as_ref(),
         state.mental_privacy_state.as_ref(),
+        state.relationship_topology.as_ref(),
+        state.active_relationship_scope_id.as_str(),
         state.recent_persona_evidence.as_ref(),
         prelude.refreshed_world_sense.as_ref(),
         &state.world_snapshot,
@@ -757,6 +923,7 @@ fn execute_self_runtime_actions(
             prelude.refreshed_autonomy_strategy.as_ref(),
             &prelude.runtime_self_state,
             state.self_model.is_some(),
+            state.self_authored_core.is_some(),
             state.private_docs.is_some(),
             !state.private_garden_docs.is_empty(),
             state.outer_voice.is_some(),
@@ -770,6 +937,7 @@ fn execute_self_runtime_actions(
                 inner_life_result: Err(error),
                 private_doc_result: Ok(PrivateDocWorkspaceRefreshOutcome::Skipped),
                 self_model_result: Ok(SelfModelRefreshOutcome::Skipped),
+                self_authored_core_result: Ok(SelfAuthoredCoreRefreshOutcome::Skipped),
                 self_continuity_result: Ok(SelfContinuityRefreshOutcome::Skipped),
                 private_garden_result: Ok(PrivateGardenGovernanceOutcome::Skipped),
                 boundary_persona_result: Ok(BoundaryPersonaRefreshOutcome::Skipped),
@@ -782,9 +950,10 @@ fn execute_self_runtime_actions(
     let mut refreshed_private_docs = state.private_docs.clone();
     let mut refreshed_private_garden_docs = state.private_garden_docs.clone();
     let mut refreshed_self_model = state.self_model.clone();
+    let refreshed_self_authored_core = state.self_authored_core.clone();
     let mut refreshed_self_continuity = state.self_continuity.clone();
     let mut refreshed_mental_privacy = state.mental_privacy_state.clone();
-    let refreshed_outer_voice = state.outer_voice.clone();
+    let mut refreshed_outer_voice = state.outer_voice.clone();
     let decision_ref = decision.as_ref();
     let inner_life_result = if decision_ref.is_some_and(|d| d.refresh_inner_life) {
         crate::platform::task_wdt::feed_current_task();
@@ -826,7 +995,7 @@ fn execute_self_runtime_actions(
     };
     refreshed_inner_life = ctx
         .inner_life_store
-        .get(chat_id)
+        .get(subject_id)
         .ok()
         .flatten()
         .or(refreshed_inner_life);
@@ -876,7 +1045,7 @@ fn execute_self_runtime_actions(
     };
     refreshed_private_docs = ctx
         .private_doc_store
-        .get(chat_id)
+        .get(subject_id)
         .ok()
         .flatten()
         .or(refreshed_private_docs);
@@ -934,6 +1103,7 @@ fn execute_self_runtime_actions(
         &refreshed_private_garden_docs,
         refreshed_inner_life.as_ref(),
         refreshed_self_model.as_ref(),
+        refreshed_self_authored_core.as_ref(),
         refreshed_self_continuity.as_ref(),
         refreshed_outer_voice.as_ref(),
         refreshed_mental_privacy.as_ref(),
@@ -984,7 +1154,7 @@ fn execute_self_runtime_actions(
     };
     refreshed_self_model = ctx
         .self_model_store
-        .get(chat_id)
+        .get(subject_id)
         .ok()
         .flatten()
         .or(refreshed_self_model);
@@ -997,6 +1167,7 @@ fn execute_self_runtime_actions(
         &refreshed_private_garden_docs,
         refreshed_inner_life.as_ref(),
         refreshed_self_model.as_ref(),
+        refreshed_self_authored_core.as_ref(),
         refreshed_self_continuity.as_ref(),
         refreshed_outer_voice.as_ref(),
         refreshed_mental_privacy.as_ref(),
@@ -1051,7 +1222,7 @@ fn execute_self_runtime_actions(
     };
     refreshed_self_continuity = ctx
         .self_continuity_store
-        .get(chat_id)
+        .get(subject_id)
         .ok()
         .flatten()
         .or(refreshed_self_continuity);
@@ -1064,6 +1235,7 @@ fn execute_self_runtime_actions(
         &refreshed_private_garden_docs,
         refreshed_inner_life.as_ref(),
         refreshed_self_model.as_ref(),
+        refreshed_self_authored_core.as_ref(),
         refreshed_self_continuity.as_ref(),
         refreshed_outer_voice.as_ref(),
         refreshed_mental_privacy.as_ref(),
@@ -1085,6 +1257,7 @@ fn execute_self_runtime_actions(
                 outer_voice_store: ctx.outer_voice_store,
             },
             BoundaryPersonaRefreshInput {
+                channel: &state.active_relationship_channel,
                 chat_id,
                 trigger,
                 intent: decision_ref
@@ -1109,7 +1282,7 @@ fn execute_self_runtime_actions(
     };
     refreshed_mental_privacy = ctx
         .mental_privacy_store
-        .get(chat_id)
+        .get(&relationship_id)
         .ok()
         .flatten()
         .or(refreshed_mental_privacy);
@@ -1122,6 +1295,7 @@ fn execute_self_runtime_actions(
         &refreshed_private_garden_docs,
         refreshed_inner_life.as_ref(),
         refreshed_self_model.as_ref(),
+        refreshed_self_authored_core.as_ref(),
         refreshed_self_continuity.as_ref(),
         refreshed_outer_voice.as_ref(),
         refreshed_mental_privacy.as_ref(),
@@ -1140,7 +1314,7 @@ fn execute_self_runtime_actions(
             OuterVoiceRefreshInput {
                 chat_id,
                 ingress: IngressKind::System,
-                channel: SELF_RUNTIME_CHANNEL,
+                channel: &state.active_relationship_channel,
                 user_content: &payload.user_content,
                 reply_content: &payload.reply_content,
                 pressure: PressureLevel::Normal,
@@ -1173,12 +1347,72 @@ fn execute_self_runtime_actions(
     } else {
         Ok(OuterVoiceRefreshOutcome::Skipped)
     };
+    refreshed_outer_voice = ctx
+        .outer_voice_store
+        .get(&relationship_id)
+        .ok()
+        .flatten()
+        .or(refreshed_outer_voice);
+    crate::platform::task_wdt::feed_current_task();
+    let decision_ref = decision.as_ref();
+    let self_authored_core_result = if decision_ref.is_some_and(|d| d.refresh_self_authored_core) {
+        let self_state_text = render_self_state_block(
+            &build_self_state(
+                refreshed_self_model.as_ref(),
+                refreshed_private_docs.as_ref(),
+                prelude.refreshed_autonomy_strategy.as_ref(),
+                refreshed_inner_life.as_ref(),
+                refreshed_self_continuity.as_ref(),
+                &refreshed_private_garden_docs,
+                payload.now_secs,
+                profile,
+            ),
+            memory_policy(profile).self_state.render_max_len,
+        );
+        crate::platform::task_wdt::feed_current_task();
+        run_self_authored_core_refresh_with_state(
+            http,
+            llm,
+            SelfAuthoredCoreRefreshContext {
+                self_authored_core_store: ctx.self_authored_core_store,
+            },
+            SelfAuthoredCoreRefreshInput {
+                chat_id: subject_id,
+                ingress: IngressKind::System,
+                channel: SELF_RUNTIME_CHANNEL,
+                user_content: &payload.user_content,
+                reply_content: &payload.reply_content,
+                pressure: PressureLevel::Normal,
+                tool_calls: payload.tool_calls,
+                now_secs: payload.now_secs,
+            },
+            refreshed_self_authored_core.clone(),
+            refreshed_self_model.as_ref(),
+            refreshed_self_continuity.as_ref(),
+            refreshed_outer_voice.as_ref(),
+            refreshed_mental_privacy.as_ref(),
+            state.recent_persona_evidence.as_ref(),
+            prelude.refreshed_world_sense.as_ref(),
+            prelude.refreshed_autonomy_strategy.as_ref(),
+            self_state_text.as_deref(),
+            decision_ref.and_then(|d| {
+                (!d.self_authored_core_intent.trim().is_empty())
+                    .then_some(d.self_authored_core_intent.as_str())
+            }),
+            decision_ref
+                .map(|d| d.self_authored_core_sources.as_slice())
+                .unwrap_or(&[]),
+        )
+    } else {
+        Ok(SelfAuthoredCoreRefreshOutcome::Skipped)
+    };
     crate::platform::task_wdt::feed_current_task();
     Box::new(SelfRuntimeActionResults {
         decision,
         inner_life_result,
         private_doc_result,
         self_model_result,
+        self_authored_core_result,
         self_continuity_result,
         private_garden_result,
         boundary_persona_result,
@@ -1195,6 +1429,7 @@ fn re_finalize_staged_self_runtime_decision(
     refreshed_private_garden_docs: &[crate::memory::PrivateGardenDocRecord],
     refreshed_inner_life: Option<&crate::memory::InnerLife>,
     refreshed_self_model: Option<&crate::memory::SelfModel>,
+    refreshed_self_authored_core: Option<&crate::memory::SelfAuthoredCore>,
     refreshed_self_continuity: Option<&crate::memory::SelfContinuity>,
     refreshed_outer_voice: Option<&crate::memory::OuterVoice>,
     refreshed_mental_privacy: Option<&crate::memory::MentalPrivacyState>,
@@ -1208,6 +1443,7 @@ fn re_finalize_staged_self_runtime_decision(
         refreshed_private_garden_docs,
         refreshed_inner_life,
         refreshed_self_model,
+        refreshed_self_authored_core,
         refreshed_self_continuity,
         refreshed_outer_voice,
         refreshed_mental_privacy,
@@ -1228,6 +1464,7 @@ fn re_finalize_staged_self_runtime_decision(
         !refreshed_private_garden_docs.is_empty(),
         refreshed_inner_life.is_some(),
         refreshed_self_model.is_some(),
+        refreshed_self_authored_core.is_some(),
         refreshed_self_continuity.is_some(),
         refreshed_outer_voice.is_some(),
         refreshed_mental_privacy.is_some(),
@@ -1260,12 +1497,20 @@ pub fn enqueue_self_runtime_post_reply(
 }
 
 pub fn enqueue_self_runtime_idle_tick(system_inbound_tx: &SystemInboundTx, chat_id: &str) -> bool {
+    enqueue_self_runtime_idle_tick_for_relation(system_inbound_tx, chat_id, "self_runtime_idle")
+}
+
+fn enqueue_self_runtime_idle_tick_for_relation(
+    system_inbound_tx: &SystemInboundTx,
+    chat_id: &str,
+    source_channel: &str,
+) -> bool {
     schedule_self_runtime_job(
         system_inbound_tx,
         chat_id,
         SelfRuntimeJobPayload {
             trigger: SelfRuntimeTrigger::IdleTick,
-            source_channel: "self_runtime_idle".to_string(),
+            source_channel: source_channel.to_string(),
             user_content: String::new(),
             reply_content: String::new(),
             tool_calls: 0,
@@ -1369,6 +1614,7 @@ pub fn self_runtime_tick(
     session_store: &dyn SessionStore,
     self_continuity_store: &dyn SelfContinuityStore,
     autonomy_strategy_store: &dyn AutonomyStrategyStore,
+    relationship_topology_store: &dyn RelationshipTopologyStore,
     profile: MemoryProfile,
     now_secs: u64,
 ) {
@@ -1388,63 +1634,130 @@ pub fn self_runtime_tick(
         }
     };
     let mut enqueued = 0usize;
+    let subject_id = board_subject_scope_id();
+    let continuity = match self_continuity_store.get(subject_id) {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!(
+                "[self_runtime] failed to read subject continuity: {}",
+                error
+            );
+            return;
+        }
+    };
+    let strategy = match autonomy_strategy_store.get(subject_id) {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!(
+                "[self_runtime] failed to read subject autonomy strategy: {}",
+                error
+            );
+            None
+        }
+    };
+    let last_user_turn_at = continuity
+        .as_ref()
+        .map(|c| c.last_user_turn_at)
+        .unwrap_or(0);
+    if last_user_turn_at > 0
+        && now_secs.saturating_sub(last_user_turn_at) > policy.active_chat_window_secs
+    {
+        return;
+    }
+    let last_autonomy = continuity
+        .as_ref()
+        .map(|c| c.last_autonomy_run_at)
+        .unwrap_or(0);
+    let preferred_chat_id = continuity
+        .as_ref()
+        .map(|c| c.last_user_chat_id.trim())
+        .filter(|value| !value.is_empty());
+    let preferred_channel = continuity
+        .as_ref()
+        .map(|c| c.last_user_channel.trim())
+        .filter(|value| !value.is_empty());
+    let idle_interval_secs = match autonomy_idle_interval_secs(strategy.as_ref(), profile) {
+        Some(interval) => interval,
+        None if strategy.is_some() => return,
+        None => policy.idle_tick_interval_secs,
+    };
+    if !idle_self_runtime_due(
+        now_secs,
+        uptime_secs,
+        last_user_turn_at,
+        last_autonomy,
+        idle_interval_secs,
+    ) {
+        return;
+    }
+
+    let max_jobs_per_tick = policy
+        .max_jobs_per_tick
+        .min(capability.runtime_max_jobs_per_tick);
+    let topology = match relationship_topology_store.get(subject_id) {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!(
+                "[self_runtime] failed to read relationship topology: {}",
+                error
+            );
+            None
+        }
+    };
+    let mut scheduled_chat_ids = HashSet::with_capacity(max_jobs_per_tick);
+    if let Some(topology) = topology.as_ref() {
+        let targets = select_relationship_topology_targets(
+            Some(topology),
+            RelationshipSelectorInput {
+                preferred_chat_id,
+                preferred_channel,
+                now_secs,
+                max_targets: max_jobs_per_tick,
+                active_window_secs: policy.active_chat_window_secs,
+                runtime_cooldown_secs: idle_interval_secs,
+            },
+        );
+        for target in targets {
+            if enqueued >= max_jobs_per_tick {
+                break;
+            }
+            if !scheduled_chat_ids.insert(target.chat_id.clone()) {
+                continue;
+            }
+            if enqueue_self_runtime_idle_tick_for_relation(
+                system_inbound_tx,
+                &target.chat_id,
+                &target.channel,
+            ) {
+                enqueued += 1;
+            }
+        }
+    }
+
+    if enqueued >= max_jobs_per_tick {
+        return;
+    }
+
     for chat_id in chat_ids {
-        let max_jobs_per_tick = policy
-            .max_jobs_per_tick
-            .min(capability.runtime_max_jobs_per_tick);
         if enqueued >= max_jobs_per_tick {
             break;
         }
-        let continuity = match self_continuity_store.get(&chat_id) {
-            Ok(value) => value,
-            Err(error) => {
-                log::warn!(
-                    "[self_runtime] failed to read continuity for {}: {}",
-                    chat_id,
-                    error
-                );
-                continue;
-            }
-        };
-        let last_user_turn_at = continuity
-            .as_ref()
-            .map(|c| c.last_user_turn_at)
-            .unwrap_or(0);
-        if last_user_turn_at > 0
-            && now_secs.saturating_sub(last_user_turn_at) > policy.active_chat_window_secs
-        {
+        if preferred_chat_id.is_some_and(|preferred| preferred != chat_id) {
             continue;
         }
-        let last_autonomy = continuity
-            .as_ref()
-            .map(|c| c.last_autonomy_run_at)
-            .unwrap_or(0);
-        let strategy = match autonomy_strategy_store.get(&chat_id) {
-            Ok(value) => value,
-            Err(error) => {
-                log::warn!(
-                    "[self_runtime] failed to read autonomy strategy for {}: {}",
-                    chat_id,
-                    error
-                );
-                None
-            }
+        if !scheduled_chat_ids.insert(chat_id.clone()) {
+            continue;
+        }
+        let fallback_channel = if preferred_chat_id == Some(chat_id.as_str()) {
+            preferred_channel.unwrap_or("self_runtime_idle")
+        } else {
+            "self_runtime_idle"
         };
-        let idle_interval_secs = match autonomy_idle_interval_secs(strategy.as_ref(), profile) {
-            Some(interval) => interval,
-            None if strategy.is_some() => continue,
-            None => policy.idle_tick_interval_secs,
-        };
-        if !idle_self_runtime_due(
-            now_secs,
-            uptime_secs,
-            last_user_turn_at,
-            last_autonomy,
-            idle_interval_secs,
+        if enqueue_self_runtime_idle_tick_for_relation(
+            system_inbound_tx,
+            &chat_id,
+            fallback_channel,
         ) {
-            continue;
-        }
-        if enqueue_self_runtime_idle_tick(system_inbound_tx, &chat_id) {
             enqueued += 1;
         }
     }
@@ -1554,11 +1867,19 @@ pub fn run_self_runtime(
 
     let _ = touch_self_continuity_runtime(
         ctx.self_continuity_store,
-        chat_id,
+        board_subject_scope_id(),
         payload.now_secs,
         payload.trigger == SelfRuntimeTrigger::PostReply,
         true,
+        Some(chat_id),
         Some(payload.source_channel.as_str()),
+    );
+    crate::platform::task_wdt::feed_current_task();
+    sync_self_runtime_relationship_topology(
+        &ctx,
+        state.active_relationship_channel.as_str(),
+        chat_id,
+        payload.now_secs,
     );
     crate::platform::task_wdt::feed_current_task();
     if matches!(payload.trigger, SelfRuntimeTrigger::IdleTick) {
@@ -1591,6 +1912,7 @@ pub fn run_self_runtime(
         inner_life_result: action_results.inner_life_result,
         private_doc_result: action_results.private_doc_result,
         self_model_result: action_results.self_model_result,
+        self_authored_core_result: action_results.self_authored_core_result,
         self_continuity_result: action_results.self_continuity_result,
         private_garden_result: action_results.private_garden_result,
         boundary_persona_result: action_results.boundary_persona_result,
@@ -1606,6 +1928,7 @@ fn normalize_self_runtime_decision(
     self_state: &SelfState,
     distillation_snapshot: &PersonaDistillationSnapshot,
     has_self_model: bool,
+    has_self_authored_core: bool,
     has_private_docs: bool,
     has_private_garden_docs: bool,
     has_inner_life: bool,
@@ -1621,6 +1944,7 @@ fn normalize_self_runtime_decision(
         autonomy_strategy,
         self_state,
         has_self_model,
+        has_self_authored_core,
         has_private_docs,
         has_private_garden_docs,
         has_outer_voice,
@@ -1635,6 +1959,7 @@ fn normalize_self_runtime_decision(
         has_private_garden_docs,
         has_inner_life,
         has_self_model,
+        has_self_authored_core,
         has_self_continuity,
         has_outer_voice,
         has_mental_privacy,
@@ -1647,6 +1972,7 @@ fn normalize_initial_self_runtime_decision(
     autonomy_strategy: Option<&crate::memory::AutonomyStrategy>,
     self_state: &SelfState,
     has_self_model: bool,
+    has_self_authored_core: bool,
     has_private_docs: bool,
     has_private_garden_docs: bool,
     has_outer_voice: bool,
@@ -1659,6 +1985,7 @@ fn normalize_initial_self_runtime_decision(
             &mut decision,
             self_state,
             has_self_model,
+            has_self_authored_core,
             factual_snapshot,
             boundary_signal,
             has_private_docs,
@@ -1693,6 +2020,7 @@ fn normalize_initial_self_runtime_decision(
         &mut decision,
         self_state,
         has_self_model,
+        has_self_authored_core,
         factual_snapshot,
         boundary_signal,
         has_private_docs,
@@ -1711,6 +2039,7 @@ fn finalize_self_runtime_decision(
     has_private_garden_docs: bool,
     has_inner_life: bool,
     has_self_model: bool,
+    has_self_authored_core: bool,
     has_self_continuity: bool,
     has_outer_voice: bool,
     has_mental_privacy: bool,
@@ -1722,6 +2051,7 @@ fn finalize_self_runtime_decision(
         has_private_garden_docs,
         has_inner_life,
         has_self_model,
+        has_self_authored_core,
         has_self_continuity,
         has_outer_voice,
         has_mental_privacy,
@@ -1732,6 +2062,7 @@ fn finalize_self_runtime_decision(
         has_private_garden_docs,
         has_inner_life,
         has_self_model,
+        has_self_authored_core,
         has_self_continuity,
         has_outer_voice,
         has_mental_privacy,
@@ -1746,6 +2077,7 @@ fn normalize_boundary_and_factual_decisions(
     decision: &mut SelfRuntimeDecision,
     self_state: &SelfState,
     has_self_model: bool,
+    has_self_authored_core: bool,
     factual_snapshot: &SharedFactualPlaneSnapshot,
     boundary_signal: &SelfRuntimeBoundarySignal,
     has_private_docs: bool,
@@ -1763,6 +2095,14 @@ fn normalize_boundary_and_factual_decisions(
             if decision.self_model_intent.trim().is_empty() {
                 decision.self_model_intent =
                     "Distill this turn's private-state change into a steadier self core"
+                        .to_string();
+            }
+        }
+        if has_self_authored_core || has_self_model {
+            decision.refresh_self_authored_core = true;
+            if decision.self_authored_core_intent.trim().is_empty() {
+                decision.self_authored_core_intent =
+                    "Re-distill the board-level self core after a meaningful boundary shift"
                         .to_string();
             }
         }
@@ -1854,6 +2194,7 @@ fn normalize_persona_distillation_lag(
     has_private_garden_docs: bool,
     has_inner_life: bool,
     has_self_model: bool,
+    _has_self_authored_core: bool,
     has_self_continuity: bool,
     has_outer_voice: bool,
     has_mental_privacy: bool,
@@ -1893,6 +2234,49 @@ fn normalize_persona_distillation_lag(
             &mut decision.self_model_sources,
             snapshot.has_recent_persona_evidence
                 && snapshot.recent_persona_evidence_at > snapshot.self_model_at,
+            "recent_persona_evidence",
+        );
+    }
+
+    let self_authored_core_upstream_at = snapshot
+        .self_model_at
+        .max(snapshot.self_continuity_at)
+        .max(snapshot.boundary_state_at)
+        .max(snapshot.outer_voice_at)
+        .max(snapshot.recent_persona_evidence_at);
+    if self_authored_core_upstream_at > snapshot.self_authored_core_at
+        && (has_self_model || has_self_continuity || has_outer_voice || has_mental_privacy)
+    {
+        decision.refresh_self_authored_core = true;
+        if decision.self_authored_core_intent.trim().is_empty() {
+            decision.self_authored_core_intent =
+                "Re-distill the stable board-level self core from the latest long-horizon persona layers".to_string();
+        }
+        push_runtime_source_if(
+            &mut decision.self_authored_core_sources,
+            has_self_model && snapshot.self_model_at > snapshot.self_authored_core_at,
+            "self_model",
+        );
+        push_runtime_source_if(
+            &mut decision.self_authored_core_sources,
+            has_self_continuity
+                && snapshot.self_continuity_at > snapshot.self_authored_core_at,
+            "self_continuity",
+        );
+        push_runtime_source_if(
+            &mut decision.self_authored_core_sources,
+            has_outer_voice && snapshot.outer_voice_at > snapshot.self_authored_core_at,
+            "outer_voice",
+        );
+        push_runtime_source_if(
+            &mut decision.self_authored_core_sources,
+            has_mental_privacy && snapshot.boundary_state_at > snapshot.self_authored_core_at,
+            "boundary_persona",
+        );
+        push_runtime_source_if(
+            &mut decision.self_authored_core_sources,
+            snapshot.has_recent_persona_evidence
+                && snapshot.recent_persona_evidence_at > snapshot.self_authored_core_at,
             "recent_persona_evidence",
         );
     }
@@ -2010,8 +2394,9 @@ fn normalize_runtime_distillation_decisions(
     has_private_garden_docs: bool,
     has_inner_life: bool,
     has_self_model: bool,
+    has_self_authored_core: bool,
     has_self_continuity: bool,
-    _has_outer_voice: bool,
+    has_outer_voice: bool,
     has_mental_privacy: bool,
     has_world_sense: bool,
     has_autonomy_strategy: bool,
@@ -2033,6 +2418,18 @@ fn normalize_runtime_distillation_decisions(
             (has_private_docs, "private_docs"),
             (has_private_garden_docs, "private_garden"),
             (has_mental_privacy, "boundary_persona"),
+            (has_recent_persona_evidence, "recent_persona_evidence"),
+        ],
+    );
+    normalize_runtime_source_list(
+        &mut decision.self_authored_core_sources,
+        decision.refresh_self_authored_core,
+        &[
+            (has_self_model, "self_model"),
+            (has_self_authored_core, "self_authored_core"),
+            (has_self_continuity, "self_continuity"),
+            (has_mental_privacy, "boundary_persona"),
+            (has_outer_voice, "outer_voice"),
             (has_recent_persona_evidence, "recent_persona_evidence"),
         ],
     );
@@ -2067,6 +2464,13 @@ fn normalize_runtime_distillation_decisions(
     } else if decision.self_model_intent.trim().is_empty() {
         decision.self_model_intent =
             "Distill stable private-state changes into self_model".to_string();
+    }
+    if !decision.refresh_self_authored_core {
+        decision.self_authored_core_intent.clear();
+    } else if decision.self_authored_core_intent.trim().is_empty() {
+        decision.self_authored_core_intent =
+            "Refresh the board-level self-authored core from the latest stable persona layers"
+                .to_string();
     }
     if !decision.refresh_self_continuity {
         decision.self_continuity_intent.clear();
@@ -2133,6 +2537,9 @@ fn normalize_runtime_source_id(raw: &str) -> Option<String> {
         "private_docs" | "private_doc_workspace" => Some("private_docs".to_string()),
         "private_garden" | "garden" => Some("private_garden".to_string()),
         "self_model" => Some("self_model".to_string()),
+        "self_authored_core" | "board_core" | "board_self_core" => {
+            Some("self_authored_core".to_string())
+        }
         "self_continuity" => Some("self_continuity".to_string()),
         "boundary_persona" | "mental_privacy" => Some("boundary_persona".to_string()),
         "outer_voice" => Some("outer_voice".to_string()),
@@ -2344,12 +2751,15 @@ fn decide_self_runtime(
     summary_text: Option<&str>,
     execution_state: Option<&crate::memory::ExecutionState>,
     self_model: Option<&crate::memory::SelfModel>,
+    self_authored_core: Option<&crate::memory::SelfAuthoredCore>,
     private_docs: Option<&crate::memory::PrivateDocWorkspace>,
     private_garden_docs: &[crate::memory::PrivateGardenDocRecord],
     inner_life: Option<&crate::memory::InnerLife>,
     self_continuity: Option<&crate::memory::SelfContinuity>,
     outer_voice: Option<&crate::memory::OuterVoice>,
     mental_privacy_state: Option<&crate::memory::MentalPrivacyState>,
+    relationship_topology: Option<&RelationshipTopology>,
+    current_relationship_scope_id: &str,
     recent_persona_evidence: Option<&crate::memory::RecentPersonaEvidence>,
     world_sense: Option<&crate::memory::WorldSense>,
     world_snapshot: &crate::memory::WorldSnapshot,
@@ -2445,13 +2855,18 @@ fn decide_self_runtime(
     ) {
         let _ = writeln!(input, "\n{}\n", self_state_text);
     }
-    if let Some(block) = render_self_authored_core_block(
-        self_model,
-        self_continuity,
-        outer_voice,
-        mental_privacy_state,
-        policy.grounding_max_len,
-    ) {
+    if let Some(block) = self_authored_core
+        .and_then(|core| render_persistent_self_authored_core_block(core, policy.grounding_max_len))
+        .or_else(|| {
+            render_self_authored_core_block(
+                self_model,
+                self_continuity,
+                outer_voice,
+                mental_privacy_state,
+                policy.grounding_max_len,
+            )
+        })
+    {
         let _ = writeln!(input, "\n{}\n", block);
     }
     if let Some(block) = render_internal_memory_topology_block(
@@ -2463,6 +2878,16 @@ fn decide_self_runtime(
         InternalMemoryLayerFocus::Router,
         policy.grounding_max_len,
     ) {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if let Some(block) = relationship_topology.and_then(|topology| {
+        render_relationship_topology_block(
+            topology,
+            payload.now_secs,
+            Some(current_relationship_scope_id),
+            policy.grounding_max_len,
+        )
+    }) {
         let _ = writeln!(input, "\n{}\n", block);
     }
     if let Some(block) = world_sense
@@ -2516,7 +2941,7 @@ fn decide_self_runtime(
             "Latest turn used external content/tools that may have changed what deserves inward organization."
         );
     }
-    input.push_str("Source ids you may reference for upward distillation: inner_life, private_docs, private_garden, self_model, self_continuity, boundary_persona, outer_voice, world_sense, autonomy_strategy, recent_persona_evidence, recent_transcript.\n");
+    input.push_str("Source ids you may reference for upward distillation: inner_life, private_docs, private_garden, self_model, self_authored_core, self_continuity, boundary_persona, outer_voice, world_sense, autonomy_strategy, recent_persona_evidence, recent_transcript.\n");
     input.push_str("Recent transcript:\n");
     for message in recent {
         let preview = truncate_content_to_max(&message.content, policy.transcript_preview_chars);
@@ -2560,6 +2985,10 @@ fn parse_self_runtime_decision(raw: &str) -> SelfRuntimeDecision {
         refresh_self_model: get_object_bool(object, "refresh_self_model").unwrap_or(false),
         self_model_intent: get_object_text(object, "self_model_intent"),
         self_model_sources: parse_runtime_sources(object, "self_model_sources"),
+        refresh_self_authored_core: get_object_bool(object, "refresh_self_authored_core")
+            .unwrap_or(false),
+        self_authored_core_intent: get_object_text(object, "self_authored_core_intent"),
+        self_authored_core_sources: parse_runtime_sources(object, "self_authored_core_sources"),
         refresh_self_continuity: get_object_bool(object, "refresh_self_continuity")
             .unwrap_or(false),
         self_continuity_intent: get_object_text(object, "self_continuity_intent"),
@@ -2663,6 +3092,7 @@ mod tests {
             autonomy_strategy_at: 17,
             recent_persona_evidence_at: 19,
             self_model_at: 10,
+            self_authored_core_at: 9,
             self_continuity_at: 10,
             outer_voice_at: 9,
             has_inner_life: true,
@@ -2683,6 +3113,9 @@ mod tests {
             "refresh_self_model": true,
             "self_model_intent": { "goal": "distill self core" },
             "self_model_sources": ["private_docs", "inner-life"],
+            "refresh_self_authored_core": true,
+            "self_authored_core_intent": { "goal": "refresh board core" },
+            "self_authored_core_sources": ["self_model", "boundary persona"],
             "refresh_self_continuity": false,
             "self_continuity_intent": 0,
             "self_continuity_sources": ["self_model", "recent transcript"],
@@ -2705,6 +3138,7 @@ mod tests {
         assert!(parsed.refresh_inner_life);
         assert!(parsed.refresh_private_docs);
         assert!(parsed.refresh_self_model);
+        assert!(parsed.refresh_self_authored_core);
         assert!(parsed.refresh_private_garden);
         assert!(parsed.refresh_boundary_persona);
         assert!(parsed.refresh_outer_voice);
@@ -2728,6 +3162,13 @@ mod tests {
         assert_eq!(
             parsed.self_model_sources,
             vec!["private_docs".to_string(), "inner_life".to_string()]
+        );
+        assert!(parsed
+            .self_authored_core_intent
+            .contains("goal: refresh board core"));
+        assert_eq!(
+            parsed.self_authored_core_sources,
+            vec!["self_model".to_string(), "boundary_persona".to_string()]
         );
         assert_eq!(parsed.self_continuity_intent, "0");
         assert_eq!(
@@ -2775,6 +3216,7 @@ mod tests {
             &sample_self_state(),
             &PersonaDistillationSnapshot::default(),
             true,
+            false,
             true,
             false,
             true,
@@ -2821,6 +3263,7 @@ mod tests {
             &PersonaDistillationSnapshot::default(),
             true,
             false,
+            false,
             true,
             true,
             false,
@@ -2856,6 +3299,7 @@ mod tests {
             true,
             true,
             true,
+            true,
             &SharedFactualPlaneSnapshot::default(),
             &SelfRuntimeBoundarySignal {
                 reasons: vec![SelfRuntimeBoundaryReason::DailyBoundary],
@@ -2867,6 +3311,7 @@ mod tests {
         assert!(decision.refresh_private_docs);
         assert!(decision.refresh_private_garden);
         assert!(decision.refresh_self_model);
+        assert!(decision.refresh_self_authored_core);
         assert!(decision.refresh_boundary_persona);
         assert!(decision.refresh_outer_voice);
     }
@@ -2887,11 +3332,13 @@ mod tests {
             true,
             true,
             true,
+            true,
             &SharedFactualPlaneSnapshot::default(),
             &SelfRuntimeBoundarySignal::default(),
         );
 
         assert!(decision.refresh_self_model);
+        assert!(decision.refresh_self_authored_core);
         assert!(decision.refresh_self_continuity);
         assert!(decision.refresh_outer_voice);
         assert!(decision
@@ -2901,6 +3348,12 @@ mod tests {
             .self_continuity_intent
             .contains("continuity bridge"));
         assert!(decision.outer_voice_intent.contains("outward expression"));
+        assert!(decision
+            .self_authored_core_intent
+            .contains("board-level self core"));
+        assert!(decision
+            .self_authored_core_sources
+            .contains(&"boundary_persona".to_string()));
         assert!(decision
             .self_model_sources
             .contains(&"recent_persona_evidence".to_string()));

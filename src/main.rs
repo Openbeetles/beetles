@@ -1069,6 +1069,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         platform.execution_state_store();
     let self_model_store: Arc<dyn beetle::memory::SelfModelStore + Send + Sync> =
         platform.self_model_store();
+    let self_authored_core_store: Arc<dyn beetle::memory::SelfAuthoredCoreStore + Send + Sync> =
+        platform.self_authored_core_store();
     let world_sense_store: Arc<dyn beetle::memory::WorldSenseStore + Send + Sync> =
         platform.world_sense_store();
     let autonomy_strategy_store: Arc<dyn beetle::memory::AutonomyStrategyStore + Send + Sync> =
@@ -1079,6 +1081,9 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         platform.inner_life_store();
     let self_continuity_store: Arc<dyn beetle::memory::SelfContinuityStore + Send + Sync> =
         platform.self_continuity_store();
+    let relationship_topology_store: Arc<
+        dyn beetle::memory::RelationshipTopologyStore + Send + Sync,
+    > = platform.relationship_topology_store();
     let private_doc_store: Arc<dyn beetle::memory::PrivateDocStore + Send + Sync> =
         platform.private_doc_store();
     let private_garden_store: Arc<dyn beetle::memory::PrivateGardenStore + Send + Sync> =
@@ -1219,6 +1224,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         memory_profile: platform.memory_profile(),
         autonomy_strategy_store: Arc::clone(&autonomy_strategy_store),
         self_continuity_store: Arc::clone(&self_continuity_store),
+        relationship_topology_store: Arc::clone(&relationship_topology_store),
         memory_store: Some(Arc::clone(&memory_store)),
         sensor_watch: Some(beetle::cron::SensorWatchContext {
             platform: Arc::clone(&platform),
@@ -1491,11 +1497,13 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             session_summary_store: Arc::clone(&session_summary_store),
             execution_state_store: Arc::clone(&execution_state_store),
             self_model_store: Arc::clone(&self_model_store),
+            self_authored_core_store: Arc::clone(&self_authored_core_store),
             world_sense_store: Arc::clone(&world_sense_store),
             autonomy_strategy_store: Arc::clone(&autonomy_strategy_store),
             outer_voice_store: Arc::clone(&outer_voice_store),
             inner_life_store: Arc::clone(&inner_life_store),
             self_continuity_store: Arc::clone(&self_continuity_store),
+            relationship_topology_store: Arc::clone(&relationship_topology_store),
             private_doc_store: Arc::clone(&private_doc_store),
             private_garden_store: Arc::clone(&private_garden_store),
             mental_privacy_store: Arc::clone(&mental_privacy_store),

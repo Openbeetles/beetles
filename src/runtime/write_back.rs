@@ -7,7 +7,8 @@ use crate::memory::{
     AutonomyStrategy, AutonomyStrategyStore, ExecutionState, ExecutionStateStore,
     ImportantMessageStore, InnerLife, InnerLifeStore, LongTermMemoryExtractionState,
     LongTermMemoryExtractionStateStore, MentalPrivacyState, MentalPrivacyStore, OuterVoice,
-    OuterVoiceStore, SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore,
+    OuterVoiceStore, RelationshipTopology, RelationshipTopologyStore, SelfAuthoredCore,
+    SelfAuthoredCoreStore, SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore,
     SessionMessage, SessionStore, SessionSummaryStore, TurnLedger, TurnLedgerStore, WorldSense,
     WorldSenseStore,
 };
@@ -246,6 +247,12 @@ define_buffered_chat_store!(
     "self_model_write_back"
 );
 define_buffered_chat_store!(
+    BufferedSelfAuthoredCoreStore,
+    SelfAuthoredCoreStore,
+    SelfAuthoredCore,
+    "self_authored_core_write_back"
+);
+define_buffered_chat_store!(
     BufferedWorldSenseStore,
     WorldSenseStore,
     WorldSense,
@@ -280,6 +287,12 @@ define_buffered_chat_store!(
     MentalPrivacyStore,
     MentalPrivacyState,
     "mental_privacy_write_back"
+);
+define_buffered_chat_store!(
+    BufferedRelationshipTopologyStore,
+    RelationshipTopologyStore,
+    RelationshipTopology,
+    "relationship_topology_write_back"
 );
 define_buffered_chat_store!(
     BufferedLongTermExtractionStateStore,

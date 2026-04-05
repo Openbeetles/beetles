@@ -8,8 +8,8 @@ use crate::cron::{CronTickState, SensorWatchContext};
 use crate::heartbeat::HeartbeatTickState;
 use crate::i18n::Locale;
 use crate::memory::{
-    AutonomyStrategyStore, MemoryProfile, MemoryStore, RemindAtStore, SelfContinuityStore,
-    SessionStore,
+    AutonomyStrategyStore, MemoryProfile, MemoryStore, RelationshipTopologyStore,
+    RemindAtStore, SelfContinuityStore, SessionStore,
 };
 use crate::task::TaskStore;
 use std::sync::atomic::AtomicUsize;
@@ -82,6 +82,7 @@ pub struct BgTimerContext {
     pub memory_profile: MemoryProfile,
     pub autonomy_strategy_store: Arc<dyn AutonomyStrategyStore + Send + Sync>,
     pub self_continuity_store: Arc<dyn SelfContinuityStore + Send + Sync>,
+    pub relationship_topology_store: Arc<dyn RelationshipTopologyStore + Send + Sync>,
     // cron
     pub memory_store: Option<Arc<dyn MemoryStore + Send + Sync>>,
     pub sensor_watch: Option<SensorWatchContext>,
@@ -178,6 +179,7 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
                         ctx.session_store.as_ref(),
                         ctx.self_continuity_store.as_ref(),
                         ctx.autonomy_strategy_store.as_ref(),
+                        ctx.relationship_topology_store.as_ref(),
                         ctx.memory_profile,
                         now_unix_secs,
                     );

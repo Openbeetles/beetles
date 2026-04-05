@@ -37,13 +37,16 @@ pub fn flush_reboot_continuity_bundle(
 ) -> Result<usize> {
     let session_store = platform.session_store();
     let self_continuity_store = platform.self_continuity_store();
+    let relationship_topology_store = platform.relationship_topology_store();
     let long_term_memory_store = platform.long_term_memory_store();
     let session_summary_store = platform.session_summary_store();
     let execution_state_store = platform.execution_state_store();
     let self_model_store = platform.self_model_store();
+    let self_authored_core_store = platform.self_authored_core_store();
     let chat_ids = select_active_continuity_snapshot_chat_ids(
         session_store.as_ref(),
         self_continuity_store.as_ref(),
+        relationship_topology_store.as_ref(),
         preferred_chat_id,
         now_secs,
         CONTINUITY_FLUSH_ACTIVE_WINDOW_SECS,
@@ -57,6 +60,7 @@ pub fn flush_reboot_continuity_bundle(
         session_summary_store: session_summary_store.as_ref(),
         execution_state_store: execution_state_store.as_ref(),
         self_model_store: self_model_store.as_ref(),
+        self_authored_core_store: self_authored_core_store.as_ref(),
         self_continuity_store: self_continuity_store.as_ref(),
     };
     let mut snapshots = Vec::with_capacity(chat_ids.len());
@@ -67,6 +71,7 @@ pub fn flush_reboot_continuity_bundle(
                 session_summary_store: export_ctx.session_summary_store,
                 execution_state_store: export_ctx.execution_state_store,
                 self_model_store: export_ctx.self_model_store,
+                self_authored_core_store: export_ctx.self_authored_core_store,
                 self_continuity_store: export_ctx.self_continuity_store,
             },
             chat_id,

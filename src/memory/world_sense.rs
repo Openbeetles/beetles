@@ -13,12 +13,13 @@ use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 
 use super::{
+    board_subject_scope_id,
     llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload},
-    memory_policy, render_autonomy_strategy_block, render_execution_state_block,
-    render_self_continuity_block, whole_record_lease_advanced, AutonomyStrategy,
-    AutonomyStrategyStore, ExecutionState, ExecutionStateStore, MemoryProfile, RemindAtStore,
-    SelfContinuity, SelfContinuityStore, SessionMessage, SessionStore, SessionSummaryStore,
-    WorldSensePolicy, WorldSenseStore,
+    memory_policy, relationship_scope_id, render_autonomy_strategy_block,
+    render_execution_state_block, render_self_continuity_block, whole_record_lease_advanced,
+    AutonomyStrategy, AutonomyStrategyStore, ExecutionState, ExecutionStateStore, MemoryProfile,
+    RemindAtStore, SelfContinuity, SelfContinuityStore, SessionMessage, SessionStore,
+    SessionSummaryStore, WorldSensePolicy, WorldSenseStore,
 };
 
 pub const WORLD_SENSE_SYSTEM_PROMPT: &str = "You maintain the assistant's private world-sense layer. Return JSON only: either null or one object with fields current_scene, body_state, social_field, world_changes, external_focus. This layer describes the outer situation you currently feel yourself to be in: environment, device/body condition, interaction field, and what in the outside world deserves attention now. Do not write self-model, inner-life drift, or transcript summary. Keep it compact, situational, and current.";
@@ -410,14 +411,16 @@ pub fn run_world_sense_refresh(
     snapshot: &WorldSnapshot,
     profile: MemoryProfile,
 ) -> Result<WorldSenseRefreshOutcome> {
-    let existing_world_sense = ctx.world_sense_store.get(input.chat_id)?;
+    let subject_id = board_subject_scope_id();
+    let relationship_id = relationship_scope_id(input.channel, input.chat_id);
+    let existing_world_sense = ctx.world_sense_store.get(&relationship_id)?;
     let summary_text = ctx
         .session_summary_store
         .get_with_count(input.chat_id)?
         .map(|(summary, _)| summary);
     let execution_state = ctx.execution_state_store.get(input.chat_id)?;
-    let self_continuity = ctx.self_continuity_store.get(input.chat_id)?;
-    let autonomy_strategy = ctx.autonomy_strategy_store.get(input.chat_id)?;
+    let self_continuity = ctx.self_continuity_store.get(subject_id)?;
+    let autonomy_strategy = ctx.autonomy_strategy_store.get(subject_id)?;
     run_world_sense_refresh_with_state(
         http,
         llm,
@@ -451,6 +454,7 @@ pub(crate) fn run_world_sense_refresh_with_state(
     decision_override: Option<bool>,
     recent_override: Option<&[SessionMessage]>,
 ) -> Result<WorldSenseRefreshOutcome> {
+    let relationship_id = relationship_scope_id(input.channel, input.chat_id);
     if !decision_override.unwrap_or_else(|| {
         memory_policy(profile)
             .world_sense
@@ -498,7 +502,7 @@ pub(crate) fn run_world_sense_refresh_with_state(
         ParsedWorldSenseResponse::Skip => Ok(WorldSenseRefreshOutcome::Skipped),
         ParsedWorldSenseResponse::Clear => {
             crate::platform::task_wdt::feed_current_task();
-            let latest = ctx.world_sense_store.get(input.chat_id)?;
+            let latest = ctx.world_sense_store.get(&relationship_id)?;
             if whole_record_lease_advanced(
                 existing_world_sense.as_ref(),
                 latest.as_ref(),
@@ -511,7 +515,7 @@ pub(crate) fn run_world_sense_refresh_with_state(
                 Ok(WorldSenseRefreshOutcome::Skipped)
             } else if latest.is_some() {
                 crate::platform::task_wdt::feed_current_task();
-                ctx.world_sense_store.clear(input.chat_id)?;
+                ctx.world_sense_store.clear(&relationship_id)?;
                 Ok(WorldSenseRefreshOutcome::Cleared)
             } else {
                 Ok(WorldSenseRefreshOutcome::Skipped)
@@ -519,7 +523,7 @@ pub(crate) fn run_world_sense_refresh_with_state(
         }
         ParsedWorldSenseResponse::Update(next) => {
             crate::platform::task_wdt::feed_current_task();
-            let latest = ctx.world_sense_store.get(input.chat_id)?;
+            let latest = ctx.world_sense_store.get(&relationship_id)?;
             let lease_advanced = whole_record_lease_advanced(
                 existing_world_sense.as_ref(),
                 latest.as_ref(),
@@ -533,7 +537,7 @@ pub(crate) fn run_world_sense_refresh_with_state(
                 Ok(WorldSenseRefreshOutcome::Skipped)
             } else {
                 crate::platform::task_wdt::feed_current_task();
-                ctx.world_sense_store.set(input.chat_id, &next)?;
+                ctx.world_sense_store.set(&relationship_id, &next)?;
                 Ok(WorldSenseRefreshOutcome::Updated)
             }
         }

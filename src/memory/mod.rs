@@ -33,10 +33,12 @@ mod private_garden_governance;
 mod profile;
 mod prompt_context;
 mod recent_persona_evidence;
+mod relationship_topology;
 mod self_authored_core;
 mod self_continuity;
 mod self_model;
 mod self_runtime;
+mod self_scope;
 mod self_state;
 mod session_summary_refresh;
 mod shared_factual_plane;
@@ -217,7 +219,20 @@ pub use recent_persona_evidence::{
     render_recent_persona_evidence_block, RecentPersonaEvidence,
     RECENT_PERSONA_EVIDENCE_HISTORY_LOOKBACK, RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
 };
-pub use self_authored_core::render_self_authored_core_block;
+pub use relationship_topology::{
+    render_relationship_topology_block, select_relationship_topology_targets,
+    upsert_relationship_topology_entry, RelationshipSelectionTarget, RelationshipSelectorInput,
+    RelationshipTopology, RelationshipTopologyEntry, RelationshipTopologyRefreshOutcome,
+    RelationshipTopologyStore, RelationshipTopologyUpsertInput,
+    REL_PATH_RELATIONSHIP_TOPOLOGIES,
+};
+pub(crate) use self_authored_core::run_self_authored_core_refresh_with_state;
+pub use self_authored_core::{
+    render_persistent_self_authored_core_block, render_self_authored_core_block,
+    SelfAuthoredCore, SelfAuthoredCoreRefreshContext, SelfAuthoredCoreRefreshInput,
+    SelfAuthoredCoreRefreshOutcome, SELF_AUTHORED_CORE_SYSTEM_PROMPT,
+    SELF_AUTHORED_CORE_TOTAL_CHAR_LIMIT,
+};
 pub(crate) use self_continuity::estimate_self_continuity_chars;
 pub(crate) use self_continuity::run_self_continuity_refresh_with_state;
 pub use self_continuity::{
@@ -237,6 +252,7 @@ pub use self_runtime::{
     self_runtime_tick, SelfRuntimeContext, SelfRuntimeDecision, SelfRuntimeJobPayload,
     SelfRuntimeOutcome, SelfRuntimeTrigger, SELF_RUNTIME_CHANNEL, SELF_RUNTIME_SYSTEM_PROMPT,
 };
+pub use self_scope::{board_subject_scope_id, relationship_scope_id, BOARD_SUBJECT_SCOPE_ID};
 pub use self_state::{
     build_self_state, render_self_state_block, SelfAutonomyState, SelfAutonomyStatus,
     SelfInnerState, SelfMemoryGovernancePosture, SelfMemorySpaceActivity,
@@ -314,6 +330,8 @@ pub const REL_PATH_AUTONOMY_STRATEGIES: &str = "memory/autonomy_strategies.json"
 pub const REL_PATH_INNER_LIFE: &str = "memory/inner_life.json";
 /// 相对路径：Self Continuity（单文件 JSON，chat_id -> continuity + runtime anchors）。
 pub const REL_PATH_SELF_CONTINUITIES: &str = "memory/self_continuities.json";
+/// 相对路径：Self-Authored Core（单文件 JSON，scope_id -> persistent board-level self core）。
+pub const REL_PATH_SELF_AUTHORED_CORES: &str = "memory/self_authored_cores.json";
 /// 相对路径：私有工作区（单文件 JSON，chat_id -> typed private docs workspace）。
 pub const REL_PATH_PRIVATE_DOC_WORKSPACES: &str = "memory/private_doc_workspaces.json";
 /// 相对路径：私有花园索引（单文件 JSON，chat_id -> free-form garden doc metadata）。
@@ -340,6 +358,13 @@ pub trait SelfModelStore: Send + Sync {
     fn get(&self, chat_id: &str) -> Result<Option<SelfModel>>;
     fn set(&self, chat_id: &str, model: &SelfModel) -> Result<()>;
     fn clear(&self, chat_id: &str) -> Result<()>;
+}
+
+/// Self-Authored Core 存储。保存板级主体可跨 chat 继承的稳定自我核心。
+pub trait SelfAuthoredCoreStore: Send + Sync {
+    fn get(&self, scope_id: &str) -> Result<Option<SelfAuthoredCore>>;
+    fn set(&self, scope_id: &str, core: &SelfAuthoredCore) -> Result<()>;
+    fn clear(&self, scope_id: &str) -> Result<()>;
 }
 
 /// LLM 世界感知层。保存模型自己压缩的外部处境感觉。

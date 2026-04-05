@@ -11,7 +11,7 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    build_self_state,
+    board_subject_scope_id, build_self_state,
     llm_json::{coerce_json_text, parse_llm_json_payload, LlmJsonPayload},
     memory_policy, render_autonomy_strategy_block, render_execution_state_block,
     render_inner_life_block, render_internal_memory_topology_block,
@@ -215,7 +215,8 @@ pub fn run_private_doc_workspace_refresh(
     input: PrivateDocWorkspaceRefreshInput<'_>,
     profile: MemoryProfile,
 ) -> Result<PrivateDocWorkspaceRefreshOutcome> {
-    let existing_workspace = ctx.private_doc_store.get(input.chat_id)?;
+    let subject_id = board_subject_scope_id();
+    let existing_workspace = ctx.private_doc_store.get(subject_id)?;
     let summary_text = match ctx.session_summary_store.get_with_count(input.chat_id) {
         Ok(entry) => entry.map(|(summary, _)| summary),
         Err(error) => {
@@ -238,7 +239,7 @@ pub fn run_private_doc_workspace_refresh(
             None
         }
     };
-    let self_model = match ctx.self_model_store.get(input.chat_id) {
+    let self_model = match ctx.self_model_store.get(subject_id) {
         Ok(model) => model,
         Err(error) => {
             log::warn!(
@@ -291,6 +292,7 @@ pub(crate) fn run_private_doc_workspace_refresh_with_state(
     decision_override: Option<bool>,
     recent_override: Option<&[SessionMessage]>,
 ) -> Result<PrivateDocWorkspaceRefreshOutcome> {
+    let subject_id = board_subject_scope_id();
     let policy = memory_policy(profile).private_docs;
     if !decision_override.unwrap_or_else(|| {
         should_refresh_private_doc_workspace(input, existing_workspace.is_some(), profile)
@@ -354,7 +356,7 @@ pub(crate) fn run_private_doc_workspace_refresh_with_state(
                 return Ok(PrivateDocWorkspaceRefreshOutcome::Skipped);
             };
             crate::platform::task_wdt::feed_current_task();
-            let latest_workspace = ctx.private_doc_store.get(input.chat_id)?;
+            let latest_workspace = ctx.private_doc_store.get(subject_id)?;
             let Some(merged) = merge_private_doc_workspace_with_lease(
                 existing_workspace.as_ref(),
                 latest_workspace.as_ref(),
@@ -367,7 +369,7 @@ pub(crate) fn run_private_doc_workspace_refresh_with_state(
                 return Ok(PrivateDocWorkspaceRefreshOutcome::Skipped);
             }
             crate::platform::task_wdt::feed_current_task();
-            ctx.private_doc_store.set(input.chat_id, &merged)?;
+            ctx.private_doc_store.set(subject_id, &merged)?;
             Ok(PrivateDocWorkspaceRefreshOutcome::Updated)
         }
         Err(error) => {
@@ -1037,6 +1039,7 @@ mod tests {
                 relationship_posture: "对外保持温和，但不拿私域换顺滑".to_string(),
                 task_posture: "优先收束，再在边界内推进任务".to_string(),
                 last_user_turn_at: 10,
+                last_user_chat_id: "chat-1".to_string(),
                 last_user_channel: "qq_channel".to_string(),
                 last_autonomy_run_at: 20,
                 updated_at: 2,
@@ -1242,7 +1245,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(outcome, PrivateDocWorkspaceRefreshOutcome::Updated);
-        let stored = private_doc_store.get("c1").unwrap().unwrap();
+        let stored = private_doc_store
+            .get(board_subject_scope_id())
+            .unwrap()
+            .unwrap();
         assert!(stored
             .inner_journal
             .as_ref()

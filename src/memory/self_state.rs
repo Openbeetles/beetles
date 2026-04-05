@@ -554,6 +554,7 @@ mod tests {
                 relationship_posture: "r".repeat(220),
                 task_posture: "s".repeat(220),
                 last_user_turn_at: 10,
+                last_user_chat_id: "chat-1".to_string(),
                 last_user_channel: "qq_channel".to_string(),
                 last_autonomy_run_at: 10,
                 updated_at: 10,

@@ -10,12 +10,12 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    build_self_state,
+    board_subject_scope_id, build_self_state,
     llm_json::{
         coerce_json_text, get_object_bool, get_object_text, get_object_u64, parse_llm_json_payload,
         LlmJsonPayload,
     },
-    memory_policy, render_execution_state_block, render_inner_life_block,
+    memory_policy, relationship_scope_id, render_execution_state_block, render_inner_life_block,
     render_private_doc_workspace_block, render_private_garden_block,
     render_private_memory_boundary_block, render_self_continuity_block, render_self_model_block,
     render_self_state_block, render_shared_factual_plane_block, render_world_sense_block,
@@ -235,18 +235,20 @@ pub fn run_autonomy_strategy_refresh(
     input: AutonomyStrategyRefreshInput<'_>,
     profile: MemoryProfile,
 ) -> Result<AutonomyStrategyRefreshOutcome> {
-    let existing_strategy = ctx.autonomy_strategy_store.get(input.chat_id)?;
+    let subject_id = board_subject_scope_id();
+    let relationship_id = relationship_scope_id(input.channel, input.chat_id);
+    let existing_strategy = ctx.autonomy_strategy_store.get(subject_id)?;
     let summary_text = ctx
         .session_summary_store
         .get_with_count(input.chat_id)?
         .map(|(summary, _)| summary);
     let execution_state = ctx.execution_state_store.get(input.chat_id)?;
-    let self_model = ctx.self_model_store.get(input.chat_id)?;
-    let inner_life = ctx.inner_life_store.get(input.chat_id)?;
-    let self_continuity = ctx.self_continuity_store.get(input.chat_id)?;
-    let private_docs = ctx.private_doc_store.get(input.chat_id)?;
+    let self_model = ctx.self_model_store.get(subject_id)?;
+    let inner_life = ctx.inner_life_store.get(subject_id)?;
+    let self_continuity = ctx.self_continuity_store.get(subject_id)?;
+    let private_docs = ctx.private_doc_store.get(subject_id)?;
     let private_garden_docs = ctx.private_garden_store.list(input.chat_id, usize::MAX)?;
-    let world_sense = ctx.world_sense_store.get(input.chat_id)?;
+    let world_sense = ctx.world_sense_store.get(&relationship_id)?;
     run_autonomy_strategy_refresh_with_state(
         http,
         llm,
@@ -288,6 +290,7 @@ pub(crate) fn run_autonomy_strategy_refresh_with_state(
     decision_override: Option<bool>,
     recent_override: Option<&[SessionMessage]>,
 ) -> Result<AutonomyStrategyRefreshOutcome> {
+    let subject_id = board_subject_scope_id();
     if !decision_override.unwrap_or_else(|| {
         memory_policy(profile)
             .autonomy_strategy
@@ -350,7 +353,7 @@ pub(crate) fn run_autonomy_strategy_refresh_with_state(
         ParsedAutonomyStrategyResponse::Skip => Ok(AutonomyStrategyRefreshOutcome::Skipped),
         ParsedAutonomyStrategyResponse::Clear => {
             crate::platform::task_wdt::feed_current_task();
-            let latest = ctx.autonomy_strategy_store.get(input.chat_id)?;
+            let latest = ctx.autonomy_strategy_store.get(subject_id)?;
             if whole_record_lease_advanced(
                 existing_strategy.as_ref(),
                 latest.as_ref(),
@@ -364,7 +367,7 @@ pub(crate) fn run_autonomy_strategy_refresh_with_state(
             }
             if latest.is_some() {
                 crate::platform::task_wdt::feed_current_task();
-                ctx.autonomy_strategy_store.clear(input.chat_id)?;
+                ctx.autonomy_strategy_store.clear(subject_id)?;
                 Ok(AutonomyStrategyRefreshOutcome::Cleared)
             } else {
                 Ok(AutonomyStrategyRefreshOutcome::Skipped)
@@ -372,7 +375,7 @@ pub(crate) fn run_autonomy_strategy_refresh_with_state(
         }
         ParsedAutonomyStrategyResponse::Update(next) => {
             crate::platform::task_wdt::feed_current_task();
-            let latest = ctx.autonomy_strategy_store.get(input.chat_id)?;
+            let latest = ctx.autonomy_strategy_store.get(subject_id)?;
             if latest.as_ref() == Some(&next) {
                 return Ok(AutonomyStrategyRefreshOutcome::Skipped);
             }
@@ -388,7 +391,7 @@ pub(crate) fn run_autonomy_strategy_refresh_with_state(
                 return Ok(AutonomyStrategyRefreshOutcome::Skipped);
             }
             crate::platform::task_wdt::feed_current_task();
-            ctx.autonomy_strategy_store.set(input.chat_id, &next)?;
+            ctx.autonomy_strategy_store.set(subject_id, &next)?;
             Ok(AutonomyStrategyRefreshOutcome::Updated)
         }
     }

@@ -253,6 +253,7 @@ fn register_core_tools(
         platform.session_summary_store(),
         platform.execution_state_store(),
         platform.self_model_store(),
+        platform.self_authored_core_store(),
         platform.self_continuity_store(),
     )));
     #[cfg(feature = "tools_diagnostics")]

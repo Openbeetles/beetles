@@ -12,6 +12,7 @@ use std::collections::HashSet;
 use std::fmt::Write as _;
 
 use super::{
+    board_subject_scope_id,
     llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload},
     memory_policy, render_execution_state_block, render_internal_memory_topology_block,
     render_private_memory_boundary_block, render_recent_persona_evidence_block,
@@ -258,7 +259,8 @@ pub fn run_self_model_refresh(
     input: SelfModelRefreshInput<'_>,
     profile: MemoryProfile,
 ) -> Result<SelfModelRefreshOutcome> {
-    let existing_model = ctx.self_model_store.get(input.chat_id)?;
+    let subject_id = board_subject_scope_id();
+    let existing_model = ctx.self_model_store.get(subject_id)?;
     let summary_text = match ctx.session_summary_store.get_with_count(input.chat_id) {
         Ok(entry) => entry.map(|(summary, _)| summary),
         Err(error) => {
@@ -294,7 +296,6 @@ pub fn run_self_model_refresh(
         &[],
         None,
         None,
-        None,
         &[],
         None,
         None,
@@ -318,6 +319,7 @@ pub(crate) fn run_self_model_refresh_with_state(
     decision_override: Option<bool>,
     recent_override: Option<&[SessionMessage]>,
 ) -> Result<SelfModelRefreshOutcome> {
+    let subject_id = board_subject_scope_id();
     let policy = memory_policy(profile).self_model;
     if !decision_override
         .unwrap_or_else(|| should_refresh_self_model(input, existing_model.is_some(), profile))
@@ -378,7 +380,7 @@ pub(crate) fn run_self_model_refresh_with_state(
                 return Ok(SelfModelRefreshOutcome::Skipped);
             };
             crate::platform::task_wdt::feed_current_task();
-            let latest_model = ctx.self_model_store.get(input.chat_id)?;
+            let latest_model = ctx.self_model_store.get(subject_id)?;
             let Some(merged) = merge_self_model_with_lease(
                 existing_model.as_ref(),
                 latest_model.as_ref(),
@@ -391,7 +393,7 @@ pub(crate) fn run_self_model_refresh_with_state(
                 return Ok(SelfModelRefreshOutcome::Skipped);
             }
             crate::platform::task_wdt::feed_current_task();
-            ctx.self_model_store.set(input.chat_id, &merged)?;
+            ctx.self_model_store.set(subject_id, &merged)?;
             Ok(SelfModelRefreshOutcome::Updated)
         }
         Err(error) => {
@@ -1187,7 +1189,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(outcome, SelfModelRefreshOutcome::Updated);
-        let stored = self_model_store.get("c1").unwrap().unwrap();
+        let stored = self_model_store
+            .get(board_subject_scope_id())
+            .unwrap()
+            .unwrap();
         assert!(stored.self_narrative.contains("共享事实层"));
         assert_eq!(
             summary_store.get("c1").unwrap().as_deref(),
