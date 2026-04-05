@@ -298,6 +298,8 @@ fn handle_wake_interaction<F>(
                     crate::metrics::record_voice_tool_failure("voice_session_realtime");
                 }
             }
+            #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+            crate::platform::wake_word::reset_after_session();
             log::info!("[{}] realtime session left voice-exclusive mode", TAG);
         } else {
             log::info!(

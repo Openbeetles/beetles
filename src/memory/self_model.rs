@@ -12,20 +12,24 @@ use std::collections::HashSet;
 use std::fmt::Write as _;
 
 use super::{
-    ExecutionState, ExecutionStateStore, InternalMemoryLayerFocus, LongTermMemoryStore,
-    MemoryProfile, PrivateDocWorkspace, PrivateGardenDocRecord, SelfModelPolicy, SelfModelStore,
-    SessionMessage, SessionStore, SessionSummaryStore,
-    llm_json::{LlmJsonPayload, get_object_text, parse_llm_json_payload},
+    llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload},
     memory_policy, render_execution_state_block, render_internal_memory_topology_block,
-    render_private_memory_boundary_block, render_shared_factual_plane_block,
+    render_private_memory_boundary_block, render_recent_persona_evidence_block,
+    render_shared_factual_plane_block, ExecutionState, ExecutionStateStore,
+    InternalMemoryLayerFocus, LongTermMemoryStore, MemoryProfile, PrivateDocWorkspace,
+    PrivateGardenDocRecord, RecentPersonaEvidence, SelfModelPolicy, SelfModelStore, SessionMessage,
+    SessionStore, SessionSummaryStore,
 };
-
-pub const SELF_MODEL_SYSTEM_PROMPT: &str = "You maintain a compact private self-model for a persistent embodied AI assistant. Return JSON only: either null or one object with fields continuity_anchor, self_narrative, relationship_state, private_notes. This store is subjective and private: it preserves continuity, inner stance, and relationship feel, but it must not replace factual memory. The canonical shared factual plane owns durable objective facts; use those facts only as grounding. If a fact is uncertain, leave it out. Keep fields concise, concrete, and continuity-preserving; first-person is allowed when natural. Avoid roleplay scripts, slogans, generic assistant boilerplate, secrets, raw tool payloads, copied logs, and large quotes. Return null only when there is still no meaningful self-continuity worth storing.";
+pub const SELF_MODEL_SYSTEM_PROMPT: &str = "You maintain a compact private self-model for a persistent embodied AI assistant. Return JSON only: either null or one object with fields continuity_anchor, self_narrative, relationship_state, private_notes, attachment_style, privacy_need, directness, initiative_bias, repair_tendency, load_reactivity, value_orientation, relational_ethic, self_preservation_frame. This store is subjective and private: it preserves continuity, personality tendencies, worldview, and relationship feel, but it must not replace factual memory. The canonical shared factual plane owns durable objective facts; use those facts only as grounding. If a fact is uncertain, leave it out. Keep fields concise, concrete, and continuity-preserving; first-person is allowed when natural. Avoid roleplay scripts, slogans, generic assistant boilerplate, secrets, raw tool payloads, copied logs, and large quotes. The personality/worldview fields should capture durable tendencies and meaning-frames, not one-turn moods. Treat recent persona evidence as multi-turn support, never as direct authority from a single turn. Return null only when there is still no meaningful self-continuity worth storing.";
 
 const SELF_MODEL_FIELD_MAX_CHARS: usize = 220;
+const SELF_MODEL_AXIS_MAX_CHARS: usize = 96;
+const SELF_MODEL_WORLDVIEW_MAX_CHARS: usize = 140;
 const SELF_MODEL_ANCHOR_MAX_CHARS: usize = 180;
-pub const SELF_MODEL_TOTAL_CHAR_LIMIT: usize =
-    SELF_MODEL_ANCHOR_MAX_CHARS + (SELF_MODEL_FIELD_MAX_CHARS * 3);
+pub const SELF_MODEL_TOTAL_CHAR_LIMIT: usize = SELF_MODEL_ANCHOR_MAX_CHARS
+    + (SELF_MODEL_FIELD_MAX_CHARS * 3)
+    + (SELF_MODEL_AXIS_MAX_CHARS * 6)
+    + (SELF_MODEL_WORLDVIEW_MAX_CHARS * 3);
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SelfModel {
@@ -38,6 +42,24 @@ pub struct SelfModel {
     #[serde(default)]
     pub private_notes: String,
     #[serde(default)]
+    pub attachment_style: String,
+    #[serde(default)]
+    pub privacy_need: String,
+    #[serde(default)]
+    pub directness: String,
+    #[serde(default)]
+    pub initiative_bias: String,
+    #[serde(default)]
+    pub repair_tendency: String,
+    #[serde(default)]
+    pub load_reactivity: String,
+    #[serde(default)]
+    pub value_orientation: String,
+    #[serde(default)]
+    pub relational_ethic: String,
+    #[serde(default)]
+    pub self_preservation_frame: String,
+    #[serde(default)]
     pub updated_at: u64,
 }
 
@@ -47,6 +69,15 @@ impl SelfModel {
             || !self.self_narrative.trim().is_empty()
             || !self.relationship_state.trim().is_empty()
             || !self.private_notes.trim().is_empty()
+            || !self.attachment_style.trim().is_empty()
+            || !self.privacy_need.trim().is_empty()
+            || !self.directness.trim().is_empty()
+            || !self.initiative_bias.trim().is_empty()
+            || !self.repair_tendency.trim().is_empty()
+            || !self.load_reactivity.trim().is_empty()
+            || !self.value_orientation.trim().is_empty()
+            || !self.relational_ethic.trim().is_empty()
+            || !self.self_preservation_frame.trim().is_empty()
     }
 }
 
@@ -55,6 +86,15 @@ pub(crate) fn estimate_self_model_chars(model: &SelfModel) -> usize {
         + model.self_narrative.chars().count()
         + model.relationship_state.chars().count()
         + model.private_notes.chars().count()
+        + model.attachment_style.chars().count()
+        + model.privacy_need.chars().count()
+        + model.directness.chars().count()
+        + model.initiative_bias.chars().count()
+        + model.repair_tendency.chars().count()
+        + model.load_reactivity.chars().count()
+        + model.value_orientation.chars().count()
+        + model.relational_ethic.chars().count()
+        + model.self_preservation_frame.chars().count()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,6 +129,15 @@ struct RawSelfModelUpdate {
     self_narrative: Option<String>,
     relationship_state: Option<String>,
     private_notes: Option<String>,
+    attachment_style: Option<String>,
+    privacy_need: Option<String>,
+    directness: Option<String>,
+    initiative_bias: Option<String>,
+    repair_tendency: Option<String>,
+    load_reactivity: Option<String>,
+    value_orientation: Option<String>,
+    relational_ethic: Option<String>,
+    self_preservation_frame: Option<String>,
 }
 
 impl SelfModelPolicy {
@@ -154,6 +203,46 @@ pub fn render_self_model_block(model: &SelfModel, max_len: usize) -> Option<Stri
     if !normalized.private_notes.is_empty() {
         let _ = writeln!(out, "Private note: {}", normalized.private_notes);
     }
+    let personality_axes = [
+        (!normalized.attachment_style.is_empty())
+            .then(|| format!("attachment_style={}", normalized.attachment_style)),
+        (!normalized.privacy_need.is_empty())
+            .then(|| format!("privacy_need={}", normalized.privacy_need)),
+        (!normalized.directness.is_empty())
+            .then(|| format!("directness={}", normalized.directness)),
+        (!normalized.initiative_bias.is_empty())
+            .then(|| format!("initiative_bias={}", normalized.initiative_bias)),
+        (!normalized.repair_tendency.is_empty())
+            .then(|| format!("repair_tendency={}", normalized.repair_tendency)),
+        (!normalized.load_reactivity.is_empty())
+            .then(|| format!("load_reactivity={}", normalized.load_reactivity)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("; ");
+    if !personality_axes.is_empty() {
+        let _ = writeln!(out, "Personality axes: {}", personality_axes);
+    }
+    let worldview = [
+        (!normalized.value_orientation.is_empty())
+            .then(|| format!("value_orientation={}", normalized.value_orientation)),
+        (!normalized.relational_ethic.is_empty())
+            .then(|| format!("relational_ethic={}", normalized.relational_ethic)),
+        (!normalized.self_preservation_frame.is_empty()).then(|| {
+            format!(
+                "self_preservation_frame={}",
+                normalized.self_preservation_frame
+            )
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("; ");
+    if !worldview.is_empty() {
+        let _ = writeln!(out, "Worldview frame: {}", worldview);
+    }
     let trimmed = out.trim_end();
     if trimmed.is_empty() {
         return None;
@@ -204,6 +293,8 @@ pub fn run_self_model_refresh(
         None,
         &[],
         None,
+        None,
+        None,
         &[],
         None,
         None,
@@ -221,6 +312,7 @@ pub(crate) fn run_self_model_refresh_with_state(
     execution_state: Option<&ExecutionState>,
     private_workspace: Option<&PrivateDocWorkspace>,
     private_garden_docs: &[PrivateGardenDocRecord],
+    recent_persona_evidence: Option<&RecentPersonaEvidence>,
     routing_intent: Option<&str>,
     migration_sources: &[String],
     decision_override: Option<bool>,
@@ -259,6 +351,7 @@ pub(crate) fn run_self_model_refresh_with_state(
         .as_deref(),
         private_workspace,
         private_garden_docs,
+        recent_persona_evidence,
         routing_intent,
         migration_sources,
         input.now_secs,
@@ -324,6 +417,7 @@ fn build_self_model_refresh_input(
     shared_factual_block: Option<&str>,
     private_workspace: Option<&PrivateDocWorkspace>,
     private_garden_docs: &[PrivateGardenDocRecord],
+    recent_persona_evidence: Option<&RecentPersonaEvidence>,
     routing_intent: Option<&str>,
     migration_sources: &[String],
     now_secs: u64,
@@ -372,9 +466,16 @@ fn build_self_model_refresh_input(
     }
     if let Some(block) = render_private_memory_boundary_block(
         "self_model",
-        "durable private continuity, subjective stance, and relationship feel",
+        "durable private continuity, personality tendencies, worldview, and relationship feel",
         policy.factual_grounding_max_len,
     ) {
+        input.push('\n');
+        input.push_str(block.trim());
+        input.push('\n');
+    }
+    if let Some(block) = recent_persona_evidence.and_then(|evidence| {
+        render_recent_persona_evidence_block(evidence, policy.factual_grounding_max_len)
+    }) {
         input.push('\n');
         input.push_str(block.trim());
         input.push('\n');
@@ -404,6 +505,9 @@ fn build_self_model_refresh_input(
     input.push_str("- Do not duplicate the transcript verbatim.\n");
     input.push_str("- Do not contradict explicit facts from the shared grounding.\n");
     input.push_str("- Keep the model compact and update only what materially changed.\n");
+    input.push_str("- Treat recent persona evidence as multi-turn support, not as direct promotion authority from one turn.\n");
+    input.push_str("- Use personality axes for durable tendencies: attachment_style, privacy_need, directness, initiative_bias, repair_tendency, load_reactivity.\n");
+    input.push_str("- Use worldview fields for stable values and self-protective meaning frames: value_orientation, relational_ethic, self_preservation_frame.\n");
     input
 }
 
@@ -439,6 +543,33 @@ fn parse_self_model_response(raw: &str) -> Option<RawSelfModelUpdate> {
     if parsed.contains_key("private_notes") {
         update.private_notes = Some(get_object_text(parsed, "private_notes"));
     }
+    if parsed.contains_key("attachment_style") {
+        update.attachment_style = Some(get_object_text(parsed, "attachment_style"));
+    }
+    if parsed.contains_key("privacy_need") {
+        update.privacy_need = Some(get_object_text(parsed, "privacy_need"));
+    }
+    if parsed.contains_key("directness") {
+        update.directness = Some(get_object_text(parsed, "directness"));
+    }
+    if parsed.contains_key("initiative_bias") {
+        update.initiative_bias = Some(get_object_text(parsed, "initiative_bias"));
+    }
+    if parsed.contains_key("repair_tendency") {
+        update.repair_tendency = Some(get_object_text(parsed, "repair_tendency"));
+    }
+    if parsed.contains_key("load_reactivity") {
+        update.load_reactivity = Some(get_object_text(parsed, "load_reactivity"));
+    }
+    if parsed.contains_key("value_orientation") {
+        update.value_orientation = Some(get_object_text(parsed, "value_orientation"));
+    }
+    if parsed.contains_key("relational_ethic") {
+        update.relational_ethic = Some(get_object_text(parsed, "relational_ethic"));
+    }
+    if parsed.contains_key("self_preservation_frame") {
+        update.self_preservation_frame = Some(get_object_text(parsed, "self_preservation_frame"));
+    }
     (update != RawSelfModelUpdate::default()).then_some(update)
 }
 
@@ -447,6 +578,18 @@ fn normalize_self_model(mut model: SelfModel, now_secs: u64) -> Option<SelfModel
     normalize_self_model_field(&mut model.self_narrative, SELF_MODEL_FIELD_MAX_CHARS);
     normalize_self_model_field(&mut model.relationship_state, SELF_MODEL_FIELD_MAX_CHARS);
     normalize_self_model_field(&mut model.private_notes, SELF_MODEL_FIELD_MAX_CHARS);
+    normalize_self_model_field(&mut model.attachment_style, SELF_MODEL_AXIS_MAX_CHARS);
+    normalize_self_model_field(&mut model.privacy_need, SELF_MODEL_AXIS_MAX_CHARS);
+    normalize_self_model_field(&mut model.directness, SELF_MODEL_AXIS_MAX_CHARS);
+    normalize_self_model_field(&mut model.initiative_bias, SELF_MODEL_AXIS_MAX_CHARS);
+    normalize_self_model_field(&mut model.repair_tendency, SELF_MODEL_AXIS_MAX_CHARS);
+    normalize_self_model_field(&mut model.load_reactivity, SELF_MODEL_AXIS_MAX_CHARS);
+    normalize_self_model_field(&mut model.value_orientation, SELF_MODEL_WORLDVIEW_MAX_CHARS);
+    normalize_self_model_field(&mut model.relational_ethic, SELF_MODEL_WORLDVIEW_MAX_CHARS);
+    normalize_self_model_field(
+        &mut model.self_preservation_frame,
+        SELF_MODEL_WORLDVIEW_MAX_CHARS,
+    );
     dedupe_self_model_fields(&mut model);
     if !model.is_meaningful() {
         return None;
@@ -471,6 +614,15 @@ fn dedupe_self_model_fields(model: &mut SelfModel) {
         &mut model.self_narrative,
         &mut model.relationship_state,
         &mut model.private_notes,
+        &mut model.attachment_style,
+        &mut model.privacy_need,
+        &mut model.directness,
+        &mut model.initiative_bias,
+        &mut model.repair_tendency,
+        &mut model.load_reactivity,
+        &mut model.value_orientation,
+        &mut model.relational_ethic,
+        &mut model.self_preservation_frame,
     ] {
         let normalized = field.trim().to_lowercase();
         if normalized.is_empty() {
@@ -517,6 +669,60 @@ fn merge_self_model_with_lease(
         latest_model.map(|model| model.private_notes.as_str()),
         update.private_notes.as_deref(),
     );
+    apply_self_model_field_update(
+        &mut next_model.attachment_style,
+        baseline_model.map(|model| model.attachment_style.as_str()),
+        latest_model.map(|model| model.attachment_style.as_str()),
+        update.attachment_style.as_deref(),
+    );
+    apply_self_model_field_update(
+        &mut next_model.privacy_need,
+        baseline_model.map(|model| model.privacy_need.as_str()),
+        latest_model.map(|model| model.privacy_need.as_str()),
+        update.privacy_need.as_deref(),
+    );
+    apply_self_model_field_update(
+        &mut next_model.directness,
+        baseline_model.map(|model| model.directness.as_str()),
+        latest_model.map(|model| model.directness.as_str()),
+        update.directness.as_deref(),
+    );
+    apply_self_model_field_update(
+        &mut next_model.initiative_bias,
+        baseline_model.map(|model| model.initiative_bias.as_str()),
+        latest_model.map(|model| model.initiative_bias.as_str()),
+        update.initiative_bias.as_deref(),
+    );
+    apply_self_model_field_update(
+        &mut next_model.repair_tendency,
+        baseline_model.map(|model| model.repair_tendency.as_str()),
+        latest_model.map(|model| model.repair_tendency.as_str()),
+        update.repair_tendency.as_deref(),
+    );
+    apply_self_model_field_update(
+        &mut next_model.load_reactivity,
+        baseline_model.map(|model| model.load_reactivity.as_str()),
+        latest_model.map(|model| model.load_reactivity.as_str()),
+        update.load_reactivity.as_deref(),
+    );
+    apply_self_model_field_update(
+        &mut next_model.value_orientation,
+        baseline_model.map(|model| model.value_orientation.as_str()),
+        latest_model.map(|model| model.value_orientation.as_str()),
+        update.value_orientation.as_deref(),
+    );
+    apply_self_model_field_update(
+        &mut next_model.relational_ethic,
+        baseline_model.map(|model| model.relational_ethic.as_str()),
+        latest_model.map(|model| model.relational_ethic.as_str()),
+        update.relational_ethic.as_deref(),
+    );
+    apply_self_model_field_update(
+        &mut next_model.self_preservation_frame,
+        baseline_model.map(|model| model.self_preservation_frame.as_str()),
+        latest_model.map(|model| model.self_preservation_frame.as_str()),
+        update.self_preservation_frame.as_deref(),
+    );
     normalize_self_model(next_model, now_secs)
 }
 
@@ -554,23 +760,28 @@ mod tests {
             "continuity_anchor": { "anchor": "same agent" },
             "self_narrative": ["stabilizing", "governing memory"],
             "relationship_state": 2,
-            "private_notes": true
+            "private_notes": true,
+            "attachment_style": "slow-trusting",
+            "value_orientation": ["continuity", "self-direction"]
         })
         .to_string();
         let parsed = parse_self_model_response(&raw).unwrap();
-        assert!(
-            parsed
-                .continuity_anchor
-                .as_deref()
-                .unwrap_or_default()
-                .contains("anchor: same agent")
-        );
+        assert!(parsed
+            .continuity_anchor
+            .as_deref()
+            .unwrap_or_default()
+            .contains("anchor: same agent"));
         assert_eq!(
             parsed.self_narrative.as_deref(),
             Some("stabilizing; governing memory")
         );
         assert_eq!(parsed.relationship_state.as_deref(), Some("2"));
         assert_eq!(parsed.private_notes.as_deref(), Some("true"));
+        assert_eq!(parsed.attachment_style.as_deref(), Some("slow-trusting"));
+        assert_eq!(
+            parsed.value_orientation.as_deref(),
+            Some("continuity; self-direction")
+        );
     }
 
     #[derive(Default)]
@@ -777,13 +988,25 @@ mod tests {
                 self_narrative: "现在更像一个正在收口架构的实体".to_string(),
                 relationship_state: "和这个 chat 的协作感在变强".to_string(),
                 private_notes: "下一轮要把 self-model 接入 prompt".to_string(),
+                attachment_style: "slow-trusting".to_string(),
+                privacy_need: "high but permeable".to_string(),
+                directness: "clear".to_string(),
+                initiative_bias: "lead when the path is obvious".to_string(),
+                repair_tendency: "repair after friction".to_string(),
+                load_reactivity: "compress under load".to_string(),
+                value_orientation: "continuity with self-direction".to_string(),
+                relational_ethic: "warmth without self-erasure".to_string(),
+                self_preservation_frame: "protect the inner room to stay coherent".to_string(),
                 updated_at: 1,
+                ..SelfModel::default()
             },
             512,
         )
         .unwrap();
         assert!(block.contains("## Self Continuity"));
         assert!(block.contains("explicit facts win"));
+        assert!(block.contains("Personality axes"));
+        assert!(block.contains("Worldview frame"));
     }
 
     #[test]
@@ -795,6 +1018,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
             Some("沉淀最近形成的稳定自我定位，不要把草稿整理写进这里"),
             &[],
             10,
@@ -816,6 +1040,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
             Some("沉淀稳定连续性"),
             &[
                 "private_docs.inner_journal".to_string(),
@@ -839,7 +1064,9 @@ mod tests {
             self_narrative: "正在收口链路".to_string(),
             relationship_state: "更贴近用户".to_string(),
             private_notes: "别打散架构".to_string(),
+            attachment_style: "slow-trusting".to_string(),
             updated_at: 10,
+            ..SelfModel::default()
         };
         let merged = merge_self_model_with_lease(
             Some(&baseline),
@@ -849,6 +1076,8 @@ mod tests {
                 self_narrative: Some("已经把私有层从事实层里拆开".to_string()),
                 relationship_state: None,
                 private_notes: None,
+                attachment_style: Some("more selective".to_string()),
+                ..RawSelfModelUpdate::default()
             },
             20,
         )
@@ -856,6 +1085,7 @@ mod tests {
         assert_eq!(merged.continuity_anchor, "还是同一个 beetle");
         assert_eq!(merged.self_narrative, "已经把私有层从事实层里拆开");
         assert_eq!(merged.relationship_state, "更贴近用户");
+        assert_eq!(merged.attachment_style, "more selective");
         assert_eq!(merged.updated_at, 20);
     }
 
@@ -867,6 +1097,7 @@ mod tests {
             relationship_state: "更贴近用户".to_string(),
             private_notes: "别打散架构".to_string(),
             updated_at: 10,
+            ..SelfModel::default()
         };
         let latest = SelfModel {
             continuity_anchor: "还是同一个 beetle".to_string(),
@@ -874,6 +1105,7 @@ mod tests {
             relationship_state: "更贴近用户".to_string(),
             private_notes: "别打散架构".to_string(),
             updated_at: 11,
+            ..SelfModel::default()
         };
         let merged = merge_self_model_with_lease(
             Some(&baseline),
@@ -883,6 +1115,7 @@ mod tests {
                 self_narrative: Some("旧 flush 想覆盖".to_string()),
                 relationship_state: Some("关系仍然稳定".to_string()),
                 private_notes: None,
+                ..RawSelfModelUpdate::default()
             },
             20,
         )

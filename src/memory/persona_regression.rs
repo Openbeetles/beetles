@@ -1,17 +1,16 @@
 //! Deterministic persona continuity / disclosure regression harness.
 
-use crate::agent::{ContextParams, build_context};
+use crate::agent::{build_context, ContextParams};
 use crate::bus::PcMsg;
 use crate::error::Result;
 use std::sync::Mutex;
 
 use super::{
-    ImportantMessageStore, MENTAL_PRIVACY_TARGET_SELF_CONTINUITY, MENTAL_PRIVACY_TARGET_SELF_MODEL,
+    render_mental_privacy_boundary_block, render_mental_privacy_disclosure_adjudication_block,
+    render_persona_priority_block, render_self_authored_core_block, ImportantMessageStore,
     MemoryStore, MentalPrivacyDisclosureAdjudication, MentalPrivacyShareAction, MentalPrivacyState,
     OuterVoice, PersonaPriorityAdjudication, SelfContinuity, SelfModel, SessionMessage,
-    SessionStore, render_mental_privacy_boundary_block,
-    render_mental_privacy_disclosure_adjudication_block, render_persona_priority_block,
-    render_self_authored_core_block,
+    SessionStore, MENTAL_PRIVACY_TARGET_SELF_CONTINUITY, MENTAL_PRIVACY_TARGET_SELF_MODEL,
 };
 
 struct RegressionMemoryStore;
@@ -321,6 +320,7 @@ mod tests {
                     .to_string(),
                 private_notes: String::new(),
                 updated_at: 1,
+                ..SelfModel::default()
             },
             self_continuity: SelfContinuity {
                 wake_anchor: "same wake".to_string(),
@@ -373,6 +373,14 @@ mod tests {
                 stance_summary:
                     "Be myself first, then keep the relationship warm while narrowing the task."
                         .to_string(),
+                priority_order: vec![
+                    "self_authored_core".to_string(),
+                    "boundary".to_string(),
+                    "user_contract".to_string(),
+                    "relationship".to_string(),
+                    "task".to_string(),
+                    "resources".to_string(),
+                ],
                 response_mode: "relational_explanation".to_string(),
                 task_scope: "narrow".to_string(),
                 initiative_posture: "lead carefully".to_string(),

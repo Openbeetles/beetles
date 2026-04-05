@@ -92,7 +92,11 @@ fn truncate_messages_to_len(
     let protected_idx = protected_offset_from_end.and_then(|offset| {
         let len = messages.len();
         let idx = len.saturating_sub(1).saturating_sub(offset as usize);
-        if idx < len { Some(idx) } else { None }
+        if idx < len {
+            Some(idx)
+        } else {
+            None
+        }
     });
     let mut indices_to_remove = Vec::new();
     for (index, message) in messages.iter().enumerate() {

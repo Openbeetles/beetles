@@ -639,12 +639,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(snapshot.long_term_memory.len(), 2);
-        assert!(
-            snapshot
-                .long_term_memory
-                .iter()
-                .all(|entry| entry.kind != LongTermMemoryKind::Task)
-        );
+        assert!(snapshot
+            .long_term_memory
+            .iter()
+            .all(|entry| entry.kind != LongTermMemoryKind::Task));
     }
 
     #[test]
@@ -666,6 +664,7 @@ mod tests {
                 relationship_state: String::new(),
                 private_notes: String::new(),
                 updated_at: 11,
+                ..SelfModel::default()
             }),
             self_continuity: Some(SelfContinuity {
                 wake_anchor: "same wake".to_string(),

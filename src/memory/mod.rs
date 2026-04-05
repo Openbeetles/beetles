@@ -32,6 +32,7 @@ mod private_garden;
 mod private_garden_governance;
 mod profile;
 mod prompt_context;
+mod recent_persona_evidence;
 mod self_authored_core;
 mod self_continuity;
 mod self_model;
@@ -46,39 +47,39 @@ mod write_coordination;
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use archive_benchmark::{
-    ArchiveBenchmarkCase, ArchiveBenchmarkResult, run_archive_benchmark_case,
-    run_archive_benchmark_suite,
+    run_archive_benchmark_case, run_archive_benchmark_suite, ArchiveBenchmarkCase,
+    ArchiveBenchmarkResult,
 };
 pub use archive_plane::build_archive_evidence_block;
 pub(crate) use archive_search::maintain_archive_search_backend;
 pub(crate) use archive_search::parse_daily_note_observed_at;
 pub use archive_search::{
-    ArchiveRecord, ArchiveRecordLocator, ArchiveRecordSource, ArchiveSearchHit, ArchiveSearchQuery,
-    MAX_ARCHIVE_GET_CONTENT_LEN, MAX_ARCHIVE_SEARCH_LIMIT, archive_get_default_content_len,
-    get_archive_record, search_archive_records,
+    archive_get_default_content_len, get_archive_record, search_archive_records, ArchiveRecord,
+    ArchiveRecordLocator, ArchiveRecordSource, ArchiveSearchHit, ArchiveSearchQuery,
+    MAX_ARCHIVE_GET_CONTENT_LEN, MAX_ARCHIVE_SEARCH_LIMIT,
 };
 pub(crate) use archive_selector::select_archive_hits_for_prompt;
 pub(crate) use autonomy_strategy::estimate_autonomy_strategy_chars;
-pub use autonomy_strategy::{
-    AUTONOMY_STRATEGY_SYSTEM_PROMPT, AUTONOMY_STRATEGY_TOTAL_CHAR_LIMIT,
-    AutonomyGovernanceTendency, AutonomyStrategy, AutonomyStrategyRefreshContext,
-    AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome, render_autonomy_strategy_block,
-    run_autonomy_strategy_refresh,
-};
 pub(crate) use autonomy_strategy::{
     autonomy_idle_interval_secs, run_autonomy_strategy_refresh_with_state,
+};
+pub use autonomy_strategy::{
+    render_autonomy_strategy_block, run_autonomy_strategy_refresh, AutonomyGovernanceTendency,
+    AutonomyStrategy, AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput,
+    AutonomyStrategyRefreshOutcome, AUTONOMY_STRATEGY_SYSTEM_PROMPT,
+    AUTONOMY_STRATEGY_TOTAL_CHAR_LIMIT,
 };
 pub use context_window::build_context_messages;
 pub(crate) use continuity_snapshot::select_active_continuity_snapshot_chat_ids;
 pub use continuity_snapshot::{
+    export_continuity_snapshot, import_continuity_snapshot, render_continuity_snapshot_markdown,
     ContinuitySnapshot, ContinuitySnapshotExportContext, ContinuitySnapshotImportContext,
     ContinuitySnapshotImportMode, ContinuitySnapshotImportOutcome, ContinuitySnapshotMode,
-    export_continuity_snapshot, import_continuity_snapshot, render_continuity_snapshot_markdown,
 };
 pub use execution_state::{
-    EXECUTION_STATE_SYSTEM_PROMPT, ExecutionState, ExecutionStateRefreshContext,
-    ExecutionStateRefreshInput, ExecutionStateRefreshOutcome, ExecutionStateStore, ExecutionStatus,
-    REL_PATH_EXECUTION_STATES, render_execution_state_block, run_execution_state_refresh,
+    render_execution_state_block, run_execution_state_refresh, ExecutionState,
+    ExecutionStateRefreshContext, ExecutionStateRefreshInput, ExecutionStateRefreshOutcome,
+    ExecutionStateStore, ExecutionStatus, EXECUTION_STATE_SYSTEM_PROMPT, REL_PATH_EXECUTION_STATES,
 };
 pub(crate) use execution_state::{
     run_execution_state_refresh_with_state, should_refresh_execution_state,
@@ -88,28 +89,17 @@ pub use hygiene::{MemoryHygieneContext, MemoryHygieneOutcome};
 pub(crate) use inner_life::estimate_inner_life_chars;
 pub(crate) use inner_life::run_inner_life_refresh_with_state;
 pub use inner_life::{
-    INNER_LIFE_SYSTEM_PROMPT, INNER_LIFE_TOTAL_CHAR_LIMIT, InnerLife, InnerLifeRefreshContext,
-    InnerLifeRefreshInput, InnerLifeRefreshOutcome, render_inner_life_block,
-    run_inner_life_refresh,
+    render_inner_life_block, run_inner_life_refresh, InnerLife, InnerLifeRefreshContext,
+    InnerLifeRefreshInput, InnerLifeRefreshOutcome, INNER_LIFE_SYSTEM_PROMPT,
+    INNER_LIFE_TOTAL_CHAR_LIMIT,
 };
 pub(crate) use internal_memory_routing::run_internal_memory_routing_with_state;
 pub use internal_memory_routing::{
-    INTERNAL_MEMORY_ROUTING_SYSTEM_PROMPT, InternalMemoryRoutingDecision,
-    InternalMemoryRoutingInput,
+    InternalMemoryRoutingDecision, InternalMemoryRoutingInput,
+    INTERNAL_MEMORY_ROUTING_SYSTEM_PROMPT,
 };
 pub(crate) use internal_memory_topology::{
-    InternalMemoryLayerFocus, render_internal_memory_topology_block,
-};
-pub use long_term::{
-    LongTermMemoryConfidence, LongTermMemoryDraft, LongTermMemoryEntry,
-    LongTermMemoryEvidenceState, LongTermMemoryEvidenceSummary, LongTermMemoryFreshness,
-    LongTermMemoryKind, LongTermMemoryQuery, LongTermMemorySlot, LongTermMemorySlotLookup,
-    LongTermMemorySourceScope, LongTermMemorySourceType, LongTermMemoryStaleHint,
-    LongTermMemoryStore, MAX_LONG_TERM_MEMORY_BLOCK_LEN, MAX_LONG_TERM_MEMORY_CONTENT_LEN,
-    MAX_LONG_TERM_MEMORY_ITEMS, MAX_LONG_TERM_MEMORY_KEYWORD_LEN, MAX_LONG_TERM_MEMORY_KEYWORDS,
-    REL_PATH_LONG_TERM_MEMORIES, long_term_memory_evidence_summary, lookup_long_term_memory_slot,
-    parse_explicit_long_term_slot_query, recall_long_term_memory_block,
-    render_exact_long_term_memory_block, render_long_term_memory_block,
+    render_internal_memory_topology_block, InternalMemoryLayerFocus,
 };
 pub(crate) use long_term::{
     canonicalize_long_term_memory_entry, compare_long_term_memory_query_results,
@@ -118,146 +108,169 @@ pub(crate) use long_term::{
     long_term_memory_matches_query, merge_long_term_memory_entry, recall_long_term_memory_entries,
     score_long_term_memory_recall, touch_long_term_memory_usage,
 };
+pub use long_term::{
+    long_term_memory_evidence_summary, lookup_long_term_memory_slot,
+    parse_explicit_long_term_slot_query, recall_long_term_memory_block,
+    render_exact_long_term_memory_block, render_long_term_memory_block, LongTermMemoryConfidence,
+    LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryEvidenceState,
+    LongTermMemoryEvidenceSummary, LongTermMemoryFreshness, LongTermMemoryKind,
+    LongTermMemoryQuery, LongTermMemorySlot, LongTermMemorySlotLookup, LongTermMemorySourceScope,
+    LongTermMemorySourceType, LongTermMemoryStaleHint, LongTermMemoryStore,
+    MAX_LONG_TERM_MEMORY_BLOCK_LEN, MAX_LONG_TERM_MEMORY_CONTENT_LEN, MAX_LONG_TERM_MEMORY_ITEMS,
+    MAX_LONG_TERM_MEMORY_KEYWORDS, MAX_LONG_TERM_MEMORY_KEYWORD_LEN, REL_PATH_LONG_TERM_MEMORIES,
+};
 pub use long_term_extraction::{
-    LONG_TERM_MEMORY_EXTRACTION_BATCH, LONG_TERM_MEMORY_EXTRACTION_RECENT_N,
-    LONG_TERM_MEMORY_EXTRACTION_SYSTEM_PROMPT, LongTermMemoryExtractionState,
-    LongTermMemoryExtractionStateStore, LongTermMemoryExtractionTurnDecision,
-    LongTermMemoryExtractionTurnInput, LongTermMemoryRefreshContext, LongTermMemoryRefreshOutcome,
-    ParsedLongTermMemoryExtraction, REL_PATH_LONG_TERM_EXTRACTION_STATES,
     apply_long_term_memory_extraction, build_long_term_memory_extraction_input,
     evaluate_long_term_memory_extraction_turn, mark_long_term_memory_extraction_deferred,
     mark_long_term_memory_extraction_processed, mark_long_term_memory_extraction_requested,
     parse_long_term_memory_extraction_response, persist_long_term_memory_extraction_state,
-    run_long_term_memory_refresh,
+    run_long_term_memory_refresh, LongTermMemoryExtractionState,
+    LongTermMemoryExtractionStateStore, LongTermMemoryExtractionTurnDecision,
+    LongTermMemoryExtractionTurnInput, LongTermMemoryRefreshContext, LongTermMemoryRefreshOutcome,
+    ParsedLongTermMemoryExtraction, LONG_TERM_MEMORY_EXTRACTION_BATCH,
+    LONG_TERM_MEMORY_EXTRACTION_RECENT_N, LONG_TERM_MEMORY_EXTRACTION_SYSTEM_PROMPT,
+    REL_PATH_LONG_TERM_EXTRACTION_STATES,
 };
 pub use maintenance::{
-    LongTermMemoryRefreshRequestOutcome, PostReplyMemoryMaintenanceContext,
-    PostReplyMemoryMaintenanceInput, PostReplyMemoryMaintenanceOutcome,
-    run_post_reply_memory_maintenance,
+    run_post_reply_memory_maintenance, LongTermMemoryRefreshRequestOutcome,
+    PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput,
+    PostReplyMemoryMaintenanceOutcome,
 };
 pub(crate) use memory_governance::run_memory_governance_kernel;
 pub use memory_governance::{
     MemoryGovernanceContext, MemoryGovernanceInput, MemoryGovernanceOutcome,
-};
-pub use mental_privacy::{
-    BoundaryDisclosureStyle, BoundaryPersonaPosture, BoundaryPersonaRefreshContext,
-    BoundaryPersonaRefreshInput, BoundaryPersonaRefreshOutcome, BoundaryPersonaState,
-    MENTAL_PRIVACY_SYSTEM_CONSTRAINT, MENTAL_PRIVACY_TARGET_INNER_LIFE,
-    MENTAL_PRIVACY_TARGET_SELF_CONTINUITY, MENTAL_PRIVACY_TARGET_SELF_MODEL,
-    MentalPrivacyConsentLog, MentalPrivacyDisclosureAdjudication,
-    MentalPrivacyDisclosureAdjudicationContext, MentalPrivacyDisclosureAdjudicationInput,
-    MentalPrivacyEnvelope, MentalPrivacyLayer, MentalPrivacyLogStage, MentalPrivacyOwnerAccessMode,
-    MentalPrivacyQuotePolicy, MentalPrivacyRequester, MentalPrivacyReviewContext,
-    MentalPrivacyReviewInput, MentalPrivacyReviewOutcome, MentalPrivacyShareAction,
-    MentalPrivacyState, MentalPrivacyStore, MentalPrivacyVisibility,
-    REL_PATH_MENTAL_PRIVACY_STATES, RelationalBoundaryState,
-    run_mental_privacy_disclosure_adjudication,
 };
 pub(crate) use mental_privacy::{
     collect_private_targets, render_mental_privacy_boundary_block,
     render_mental_privacy_disclosure_adjudication_block, run_boundary_persona_refresh_with_state,
     run_mental_privacy_review,
 };
+pub use mental_privacy::{
+    run_mental_privacy_disclosure_adjudication, BoundaryDisclosureStyle, BoundaryPersonaPosture,
+    BoundaryPersonaRefreshContext, BoundaryPersonaRefreshInput, BoundaryPersonaRefreshOutcome,
+    BoundaryPersonaState, MentalPrivacyConsentLog, MentalPrivacyDisclosureAdjudication,
+    MentalPrivacyDisclosureAdjudicationContext, MentalPrivacyDisclosureAdjudicationInput,
+    MentalPrivacyEnvelope, MentalPrivacyLayer, MentalPrivacyLogStage, MentalPrivacyOwnerAccessMode,
+    MentalPrivacyQuotePolicy, MentalPrivacyRequester, MentalPrivacyReviewContext,
+    MentalPrivacyReviewInput, MentalPrivacyReviewOutcome, MentalPrivacyShareAction,
+    MentalPrivacyState, MentalPrivacyStore, MentalPrivacyVisibility, RelationalBoundaryState,
+    MENTAL_PRIVACY_SYSTEM_CONSTRAINT, MENTAL_PRIVACY_TARGET_INNER_LIFE,
+    MENTAL_PRIVACY_TARGET_SELF_CONTINUITY, MENTAL_PRIVACY_TARGET_SELF_MODEL,
+    REL_PATH_MENTAL_PRIVACY_STATES,
+};
 pub(crate) use outer_voice::run_outer_voice_refresh_with_state;
 pub use outer_voice::{
-    OUTER_VOICE_SYSTEM_PROMPT, OUTER_VOICE_TOTAL_CHAR_LIMIT, OuterVoice, OuterVoiceRefreshContext,
-    OuterVoiceRefreshInput, OuterVoiceRefreshOutcome, render_outer_voice_block,
+    render_outer_voice_block, OuterVoice, OuterVoiceRefreshContext, OuterVoiceRefreshInput,
+    OuterVoiceRefreshOutcome, OUTER_VOICE_SYSTEM_PROMPT, OUTER_VOICE_TOTAL_CHAR_LIMIT,
 };
 pub use persona_priority::{
-    PERSONA_PRIORITY_SYSTEM_PROMPT, PersonaPriorityAdjudication, PersonaPriorityAdjudicationInput,
-    PersonaPriorityGrounding, PersonaPriorityRuntimeState,
-    render_persistent_persona_priority_block, render_persona_priority_block,
-    run_persona_priority_adjudication, should_run_persona_priority_adjudication,
+    build_persistent_persona_priority_adjudication, render_persistent_persona_priority_block,
+    render_persona_priority_block, run_persona_priority_adjudication,
+    should_run_persona_priority_adjudication, PersonaPriorityAdjudication,
+    PersonaPriorityAdjudicationInput, PersonaPriorityGrounding, PersonaPriorityRuntimeState,
+    PERSONA_PRIORITY_SYSTEM_PROMPT,
 };
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use persona_regression::{
-    PersonaContinuityCase, PersonaContinuityResult, run_persona_continuity_case,
-    run_persona_continuity_suite,
+    run_persona_continuity_case, run_persona_continuity_suite, PersonaContinuityCase,
+    PersonaContinuityResult,
 };
 pub(crate) use private_docs::estimate_private_doc_workspace_chars;
 pub use private_docs::{
-    PRIVATE_DOC_WORKSPACE_SYSTEM_PROMPT, PRIVATE_DOC_WORKSPACE_TOTAL_CHAR_LIMIT, PrivateDocEntry,
+    render_private_doc_workspace_block, run_private_doc_workspace_refresh, PrivateDocEntry,
     PrivateDocWorkspace, PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
-    PrivateDocWorkspaceRefreshOutcome, render_private_doc_workspace_block,
-    run_private_doc_workspace_refresh,
+    PrivateDocWorkspaceRefreshOutcome, PRIVATE_DOC_WORKSPACE_SYSTEM_PROMPT,
+    PRIVATE_DOC_WORKSPACE_TOTAL_CHAR_LIMIT,
 };
 pub(crate) use private_docs::{
     run_private_doc_workspace_refresh_with_state, should_refresh_private_doc_workspace,
 };
 pub(crate) use private_garden::build_private_garden_preview;
 pub use private_garden::{
-    PRIVATE_GARDEN_MAX_DOC_BYTES, PRIVATE_GARDEN_MAX_DOCS_PER_CHAT,
-    PRIVATE_GARDEN_TOTAL_BYTE_LIMIT, PrivateGardenDirectorySummary, PrivateGardenDoc,
-    PrivateGardenDocRecord, PrivateGardenDocRole, PrivateGardenUsage, build_private_garden_usage,
-    classify_private_garden_doc_path, normalize_private_garden_doc_path,
-    render_private_garden_block, summarize_private_garden_directories,
+    build_private_garden_usage, classify_private_garden_doc_path,
+    normalize_private_garden_doc_path, render_private_garden_block,
+    summarize_private_garden_directories, PrivateGardenDirectorySummary, PrivateGardenDoc,
+    PrivateGardenDocRecord, PrivateGardenDocRole, PrivateGardenUsage,
+    PRIVATE_GARDEN_MAX_DOCS_PER_CHAT, PRIVATE_GARDEN_MAX_DOC_BYTES,
+    PRIVATE_GARDEN_TOTAL_BYTE_LIMIT,
 };
 pub use private_garden_governance::{
-    PRIVATE_GARDEN_GOVERNANCE_SYSTEM_PROMPT, PrivateGardenGovernanceContext,
-    PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, run_private_garden_governance,
+    run_private_garden_governance, PrivateGardenGovernanceContext, PrivateGardenGovernanceInput,
+    PrivateGardenGovernanceOutcome, PRIVATE_GARDEN_GOVERNANCE_SYSTEM_PROMPT,
 };
 pub(crate) use private_garden_governance::{
     run_private_garden_governance_with_state, should_refresh_private_garden,
 };
 pub(crate) use profile::{
+    memory_capability_profile, memory_policy, shared_long_term_governance_policy,
     AutonomyStrategyPolicy, ExecutionStatePolicy, InnerLifePolicy, InternalMemoryRoutingPolicy,
     LongTermExtractionPolicy, LongTermRecallPolicy, OuterVoicePolicy, PrivateDocsPolicy,
     PrivateGardenGovernancePolicy, SelfContinuityPolicy, SelfModelPolicy, SessionSummaryPolicy,
-    WorldSensePolicy, memory_capability_profile, memory_policy, shared_long_term_governance_policy,
+    WorldSensePolicy,
 };
 pub use profile::{MemoryCapabilityClass, MemoryHygieneLevel, MemoryProfile};
 pub use prompt_context::{
-    PromptMemoryContext, PromptMemoryContextParams, load_prompt_memory_context,
+    load_prompt_memory_context, PromptMemoryContext, PromptMemoryContextParams,
+};
+pub use recent_persona_evidence::{
+    derive_recent_persona_evidence, load_recent_persona_evidence,
+    render_recent_persona_evidence_block, RecentPersonaEvidence,
+    RECENT_PERSONA_EVIDENCE_HISTORY_LOOKBACK, RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
 };
 pub use self_authored_core::render_self_authored_core_block;
 pub(crate) use self_continuity::estimate_self_continuity_chars;
 pub(crate) use self_continuity::run_self_continuity_refresh_with_state;
 pub use self_continuity::{
-    SELF_CONTINUITY_SYSTEM_PROMPT, SELF_CONTINUITY_TOTAL_CHAR_LIMIT, SelfContinuity,
-    SelfContinuityRefreshContext, SelfContinuityRefreshInput, SelfContinuityRefreshOutcome,
     render_self_continuity_block, run_self_continuity_refresh, touch_self_continuity_runtime,
+    SelfContinuity, SelfContinuityRefreshContext, SelfContinuityRefreshInput,
+    SelfContinuityRefreshOutcome, SELF_CONTINUITY_SYSTEM_PROMPT, SELF_CONTINUITY_TOTAL_CHAR_LIMIT,
 };
 pub(crate) use self_model::estimate_self_model_chars;
 pub use self_model::{
-    SELF_MODEL_SYSTEM_PROMPT, SELF_MODEL_TOTAL_CHAR_LIMIT, SelfModel, SelfModelRefreshContext,
-    SelfModelRefreshInput, SelfModelRefreshOutcome, render_self_model_block,
-    run_self_model_refresh,
+    render_self_model_block, run_self_model_refresh, SelfModel, SelfModelRefreshContext,
+    SelfModelRefreshInput, SelfModelRefreshOutcome, SELF_MODEL_SYSTEM_PROMPT,
+    SELF_MODEL_TOTAL_CHAR_LIMIT,
 };
 pub(crate) use self_model::{run_self_model_refresh_with_state, should_refresh_self_model};
 pub use self_runtime::{
-    SELF_RUNTIME_CHANNEL, SELF_RUNTIME_SYSTEM_PROMPT, SelfRuntimeContext, SelfRuntimeDecision,
-    SelfRuntimeJobPayload, SelfRuntimeOutcome, SelfRuntimeTrigger, enqueue_self_runtime_idle_tick,
-    enqueue_self_runtime_post_reply, run_self_runtime, self_runtime_tick,
+    enqueue_self_runtime_idle_tick, enqueue_self_runtime_post_reply, run_self_runtime,
+    self_runtime_tick, SelfRuntimeContext, SelfRuntimeDecision, SelfRuntimeJobPayload,
+    SelfRuntimeOutcome, SelfRuntimeTrigger, SELF_RUNTIME_CHANNEL, SELF_RUNTIME_SYSTEM_PROMPT,
 };
 pub use self_state::{
-    SelfAutonomyState, SelfAutonomyStatus, SelfInnerState, SelfMemoryGovernancePosture,
-    SelfMemorySpaceActivity, SelfMemorySpaceBottleneck, SelfMemorySpacePressure,
-    SelfMemorySpaceState, SelfState, build_self_state, render_self_state_block,
+    build_self_state, render_self_state_block, SelfAutonomyState, SelfAutonomyStatus,
+    SelfInnerState, SelfMemoryGovernancePosture, SelfMemorySpaceActivity,
+    SelfMemorySpaceBottleneck, SelfMemorySpacePressure, SelfMemorySpaceState, SelfState,
 };
 pub use session_summary_refresh::{
-    SessionSummaryRefreshContext, SessionSummaryRefreshOutcome, fallback_session_summary,
-    run_session_summary_refresh, should_refresh_session_summary,
+    fallback_session_summary, run_session_summary_refresh, should_refresh_session_summary,
+    SessionSummaryRefreshContext, SessionSummaryRefreshOutcome,
 };
 pub(crate) use session_summary_refresh::{
     load_session_summary_snapshot, run_session_summary_refresh_with_snapshot,
 };
 pub(crate) use shared_factual_plane::{
-    SharedFactualPlaneSnapshot, SharedFactualReconcileAction, build_archive_reconcile_drafts,
-    build_shared_factual_plane_snapshot, render_private_memory_boundary_block,
-    render_shared_factual_plane_block,
+    build_archive_reconcile_drafts, build_shared_factual_plane_snapshot,
+    render_private_memory_boundary_block, render_shared_factual_plane_block,
+    SharedFactualPlaneSnapshot, SharedFactualReconcileAction,
 };
-pub(crate) use skill_routing::{MemoryPlane, route_long_term_draft};
+pub(crate) use skill_routing::{route_long_term_draft, MemoryPlane};
 pub use turn_ledger::{
-    REL_PATH_TURN_LEDGERS, REL_PATH_TURN_LEDGERS_LEGACY, TurnDeliveryLedger, TurnLedger,
-    TurnLedgerStatus, TurnLedgerStore, build_turn_ledger_start, normalize_turn_preview,
-    normalize_turn_reason,
+    build_turn_ledger_start, build_turn_persona_disclosure_ledger,
+    build_turn_persona_priority_ledger, normalize_turn_persona_scope,
+    normalize_turn_persona_targets, normalize_turn_preview, normalize_turn_reason,
+    render_turn_persona_ledger_block, turn_ledger_observed_at_ms, TurnDeliveryLedger, TurnLedger,
+    TurnLedgerStatus, TurnLedgerStore, TurnPersonaDisclosureLedger, TurnPersonaLedger,
+    TurnPersonaPressureLevel, TurnPersonaPriorityLedger, TurnPersonaReviewLedger,
+    REL_PATH_TURN_LEDGERS, REL_PATH_TURN_LEDGERS_LEGACY, REL_PATH_TURN_LEDGER_HISTORY,
+    TURN_LEDGER_HISTORY_MAX_ITEMS,
 };
 pub(crate) use world_sense::run_world_sense_refresh_with_state;
 pub use world_sense::{
-    WORLD_SENSE_SYSTEM_PROMPT, WORLD_SENSE_TOTAL_CHAR_LIMIT, WorldSense, WorldSenseRefreshContext,
-    WorldSenseRefreshInput, WorldSenseRefreshOutcome, WorldSnapshot, WorldSnapshotContext,
     build_world_snapshot, render_world_sense_block, render_world_snapshot_block,
-    run_world_sense_refresh, world_snapshot_fingerprint,
+    run_world_sense_refresh, world_snapshot_fingerprint, WorldSense, WorldSenseRefreshContext,
+    WorldSenseRefreshInput, WorldSenseRefreshOutcome, WorldSnapshot, WorldSnapshotContext,
+    WORLD_SENSE_SYSTEM_PROMPT, WORLD_SENSE_TOTAL_CHAR_LIMIT,
 };
 pub(crate) use write_coordination::whole_record_lease_advanced;
 

@@ -1,30 +1,29 @@
 //! Agent ReAct 循环：入站一条 → context → chat（含 tool_use 多轮）→ 会话持久化 → 出站一条。
 //! 仅依赖 trait；HTTP/Tool 由 main 注入同一实现（如 EspHttpClient）。
-use super::StreamEditor;
 use super::delivery::{DeliveryReport, DeliverySession, ToolIntentDelivery};
 use super::final_reply::finalize_user_visible_reply;
 use super::request_plan::AgentRequestPlan;
 use super::strategy::{
-    AgentRunStrategy, SuccessfulToolRoundSummary, append_execution_plan, blocker_end_turn_followup,
-    build_success_tool_round_guidance, build_tool_round_guidance, detect_ping_pong_tool_rounds,
-    empty_final_answer_followup, final_answer_followup, repeated_answer_followup,
-    should_generate_execution_plan, stalled_end_turn_followup,
+    append_execution_plan, blocker_end_turn_followup, build_success_tool_round_guidance,
+    build_tool_round_guidance, detect_ping_pong_tool_rounds, empty_final_answer_followup,
+    final_answer_followup, repeated_answer_followup, should_generate_execution_plan,
+    stalled_end_turn_followup, AgentRunStrategy, SuccessfulToolRoundSummary,
 };
 use super::tool_guidance::{
-    SuccessfulToolRoundObservations, build_success_tool_execution_guidance,
-    record_successful_tool_result, round_used_external_content,
+    build_success_tool_execution_guidance, record_successful_tool_result,
+    round_used_external_content, SuccessfulToolRoundObservations,
 };
 use super::tool_outcome::{
-    ToolBlockerSummary, ToolFailureSummary, classify_tool_error, denied_tool_assessment,
-    summarize_tool_blocker, unavailable_tool_assessment,
+    classify_tool_error, denied_tool_assessment, summarize_tool_blocker,
+    unavailable_tool_assessment, ToolBlockerSummary, ToolFailureSummary,
 };
-use crate::PlatformHttpClient;
+use super::StreamEditor;
 use crate::agent::context::{
-    PostMemoryTailParams, RuntimeContext, build_context, estimate_post_memory_system_tail_len,
+    build_context, estimate_post_memory_system_tail_len, PostMemoryTailParams, RuntimeContext,
 };
 use crate::bus::{
-    InboundRx, IngressKind, MAX_CONTENT_LEN, OutboundTx, PcMsg, SystemInboundTx, UserInboundRx,
-    UserInboundTx,
+    InboundRx, IngressKind, OutboundTx, PcMsg, SystemInboundTx, UserInboundRx, UserInboundTx,
+    MAX_CONTENT_LEN,
 };
 use crate::constants::{
     AGENT_MARKER_MARK_IMPORTANT, AGENT_MARKER_SIGNAL_COMFORT, AGENT_MARKER_STOP,
@@ -32,30 +31,34 @@ use crate::constants::{
     MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
 };
 use crate::error::Result;
-use crate::i18n::{Locale as UiLocale, Message as UiMessage, tr};
+use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
 use crate::llm::{LlmClient, Message, StopReason, ToolChoicePolicy};
 use crate::memory::{
-    AutonomyStrategyStore, EmotionSignalStore, ExecutionStateStore, ImportantMessageStore,
-    InnerLifeStore, LongTermMemoryExtractionStateStore, LongTermMemoryRefreshContext,
-    LongTermMemoryRefreshOutcome, LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore,
-    MemoryStore, MentalPrivacyDisclosureAdjudicationContext,
-    MentalPrivacyDisclosureAdjudicationInput, MentalPrivacyReviewContext, MentalPrivacyReviewInput,
-    MentalPrivacyStore, OuterVoiceStore, PendingRetryStore, PersonaPriorityAdjudicationInput,
-    PersonaPriorityGrounding, PersonaPriorityRuntimeState, PostReplyMemoryMaintenanceContext,
-    PostReplyMemoryMaintenanceInput, PrivateDocStore, PrivateGardenStore, PromptMemoryContext,
-    PromptMemoryContextParams, RemindAtStore, SelfContinuityStore, SelfModelStore,
-    SelfRuntimeContext, SessionMessage, SessionStore, SessionSummaryRefreshOutcome,
-    SessionSummaryStore, TurnDeliveryLedger, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
-    WorldSenseStore, build_turn_ledger_start, load_prompt_memory_context, memory_policy,
+    build_turn_ledger_start, build_turn_persona_disclosure_ledger,
+    build_turn_persona_priority_ledger, load_prompt_memory_context, load_recent_persona_evidence,
+    memory_policy, normalize_turn_persona_scope, normalize_turn_persona_targets,
     normalize_turn_preview, normalize_turn_reason, recall_long_term_memory_block,
-    run_long_term_memory_refresh, run_mental_privacy_disclosure_adjudication,
-    run_mental_privacy_review, run_post_reply_memory_maintenance, run_self_runtime,
+    render_recent_persona_evidence_block, run_long_term_memory_refresh,
+    run_mental_privacy_disclosure_adjudication, run_mental_privacy_review,
+    run_post_reply_memory_maintenance, run_self_runtime, AutonomyStrategyStore, EmotionSignalStore,
+    ExecutionStateStore, ImportantMessageStore, InnerLifeStore, LongTermMemoryExtractionStateStore,
+    LongTermMemoryRefreshContext, LongTermMemoryRefreshOutcome,
+    LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore, MemoryStore,
+    MentalPrivacyDisclosureAdjudicationContext, MentalPrivacyDisclosureAdjudicationInput,
+    MentalPrivacyReviewContext, MentalPrivacyReviewInput, MentalPrivacyReviewOutcome,
+    MentalPrivacyStore, OuterVoiceStore, PendingRetryStore, PersonaPriorityAdjudication,
+    PersonaPriorityAdjudicationInput, PersonaPriorityGrounding, PersonaPriorityRuntimeState,
+    PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput, PrivateDocStore,
+    PrivateGardenStore, PromptMemoryContext, PromptMemoryContextParams, RemindAtStore,
+    SelfContinuityStore, SelfModelStore, SelfRuntimeContext, SessionMessage, SessionStore,
+    SessionSummaryRefreshOutcome, SessionSummaryStore, TurnDeliveryLedger, TurnLedger,
+    TurnLedgerStatus, TurnLedgerStore, TurnPersonaLedger, TurnPersonaReviewLedger, WorldSenseStore,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
 use crate::runtime::system_work::{
-    CHANNEL_CRON, CHANNEL_LONG_TERM_MEMORY_REFRESH, CHANNEL_POST_REPLY_MAINTENANCE,
-    CHANNEL_SELF_RUNTIME, classify_system_work,
+    classify_system_work, CHANNEL_CRON, CHANNEL_LONG_TERM_MEMORY_REFRESH,
+    CHANNEL_POST_REPLY_MAINTENANCE, CHANNEL_SELF_RUNTIME,
 };
 use crate::state;
 use crate::tools::http_bridge::HttpClientToolContext;
@@ -64,15 +67,16 @@ use crate::util::{
     push_json_string_escaped, remove_substrings_all_trim, strip_agent_stop_confirmation,
     truncate_content_to_max, usize_to_decimal_buf,
 };
+use crate::PlatformHttpClient;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 /// 最大 ReAct 轮数（含首轮 chat），防止无限 tool 循环。
 const MAX_REACT_ROUNDS: usize = 10;
@@ -188,7 +192,11 @@ fn should_defer_background_job(msg: &PcMsg) -> Option<(&'static str, u64)> {
     None
 }
 
-fn requeue_background_job_with_delay(msg: PcMsg, system_inbound_tx: &SystemInboundTx, delay_ms: u64) {
+fn requeue_background_job_with_delay(
+    msg: PcMsg,
+    system_inbound_tx: &SystemInboundTx,
+    delay_ms: u64,
+) {
     let delayed_tx = system_inbound_tx.clone();
     let mut delayed_msg = msg;
     delayed_msg.enqueue_ts_ms = now_unix_ms();
@@ -260,6 +268,9 @@ struct WorkerRunTelemetry {
     any_tool_used: bool,
     external_content_used: bool,
     used_final_answer_recovery: bool,
+    pressure: crate::orchestrator::PressureLevel,
+    mental_privacy_adjudication: Option<crate::memory::MentalPrivacyDisclosureAdjudication>,
+    persona_priority_adjudication: Option<PersonaPriorityAdjudication>,
 }
 
 struct PreparedWorkerConversation {
@@ -269,6 +280,9 @@ struct PreparedWorkerConversation {
     system_scratch: String,
     interactive_fast_path: bool,
     prompt_memory_system_budget: usize,
+    pressure: crate::orchestrator::PressureLevel,
+    mental_privacy_adjudication: Option<crate::memory::MentalPrivacyDisclosureAdjudication>,
+    persona_priority_adjudication: Option<PersonaPriorityAdjudication>,
 }
 
 struct ToolCallExecutionResult {
@@ -432,9 +446,18 @@ fn prepare_worker_conversation<'a>(
         outer_voice: prompt_memory.outer_voice.as_ref(),
         disclosure_adjudication: mental_privacy_adjudication.as_ref(),
     };
-    prompt_memory.persona_priority_text = if msg.ingress == IngressKind::User {
-        let fallback =
-            crate::memory::render_persistent_persona_priority_block(persona_priority_runtime, 420);
+    let recent_persona_evidence =
+        load_recent_persona_evidence(config.turn_ledger_store.as_ref(), &msg.chat_id)
+            .ok()
+            .flatten();
+    let recent_persona_evidence_text = recent_persona_evidence
+        .as_ref()
+        .and_then(|evidence| render_recent_persona_evidence_block(evidence, 420));
+    let persistent_persona_priority =
+        crate::memory::build_persistent_persona_priority_adjudication(persona_priority_runtime);
+    let persistent_persona_priority_text =
+        crate::memory::render_persona_priority_block(&persistent_persona_priority, 420);
+    let persona_priority_adjudication = if msg.ingress == IngressKind::User {
         if crate::memory::should_run_persona_priority_adjudication(persona_priority_runtime) {
             match crate::memory::run_persona_priority_adjudication(
                 tool_ctx,
@@ -448,6 +471,7 @@ fn prepare_worker_conversation<'a>(
                 },
                 PersonaPriorityGrounding {
                     self_authored_core_text: prompt_memory.self_authored_core_text.as_deref(),
+                    recent_persona_evidence_text: recent_persona_evidence_text.as_deref(),
                     world_snapshot_text: prompt_memory.world_snapshot_text.as_deref(),
                     world_sense_text: prompt_memory.world_sense_text.as_deref(),
                     self_state_text: prompt_memory.self_state_text.as_deref(),
@@ -460,23 +484,30 @@ fn prepare_worker_conversation<'a>(
                     disclosure_adjudication: mental_privacy_adjudication.as_ref(),
                 },
             ) {
-                Ok(result) => result
-                    .as_ref()
-                    .and_then(|adjudication| {
-                        crate::memory::render_persona_priority_block(adjudication, 420)
-                    })
-                    .or(fallback),
+                Ok(result) => result.or_else(|| {
+                    persistent_persona_priority_text
+                        .as_ref()
+                        .map(|_| persistent_persona_priority.clone())
+                }),
                 Err(error) => {
                     log::warn!("[agent_persona_priority] failed: {}", error);
-                    fallback
+                    persistent_persona_priority_text
+                        .as_ref()
+                        .map(|_| persistent_persona_priority.clone())
                 }
             }
         } else {
-            fallback
+            persistent_persona_priority_text
+                .as_ref()
+                .map(|_| persistent_persona_priority.clone())
         }
     } else {
         None
     };
+    prompt_memory.persona_priority_text = persona_priority_adjudication
+        .as_ref()
+        .and_then(|adjudication| crate::memory::render_persona_priority_block(adjudication, 420))
+        .or(persistent_persona_priority_text);
     let (mut system, messages) = build_context(&super::ContextParams {
         msg,
         memory: config.memory_store.as_ref(),
@@ -545,6 +576,9 @@ fn prepare_worker_conversation<'a>(
         system_scratch,
         interactive_fast_path,
         prompt_memory_system_budget,
+        pressure: runtime.pressure,
+        mental_privacy_adjudication,
+        persona_priority_adjudication,
     })
 }
 
@@ -953,7 +987,11 @@ fn hash_tool_round(call_keys: &[u64]) -> u64 {
 }
 
 fn tool_result_status_attr(call_failed: bool) -> &'static str {
-    if call_failed { "error" } else { "ok" }
+    if call_failed {
+        "error"
+    } else {
+        "ok"
+    }
 }
 
 fn failure_kind_attr(
@@ -1632,9 +1670,14 @@ fn maybe_apply_mental_privacy_review(
     msg: &PcMsg,
     loc: UiLocale,
     reply_content: String,
-) -> String {
+) -> MentalPrivacyReviewOutcome {
     if msg.ingress != IngressKind::User || reply_content.trim().is_empty() {
-        return reply_content;
+        return MentalPrivacyReviewOutcome {
+            reply_content,
+            action: crate::memory::MentalPrivacyShareAction::AllowOriginal,
+            applied: false,
+            touched_targets: Vec::new(),
+        };
     }
 
     let t0 = metrics::record_llm_call_start();
@@ -1670,15 +1713,99 @@ fn maybe_apply_mental_privacy_review(
     ) {
         Ok(review) => {
             metrics::record_llm_call_end(t0);
-            review.reply_content
+            review
         }
         Err(error) => {
             metrics::record_llm_call_end(t0);
             metrics::record_llm_error();
             log::warn!("[agent_mental_privacy] review failed: {}", error);
-            reply_content
+            MentalPrivacyReviewOutcome {
+                reply_content,
+                action: crate::memory::MentalPrivacyShareAction::AllowOriginal,
+                applied: false,
+                touched_targets: Vec::new(),
+            }
         }
     }
+}
+
+fn turn_persona_scope_from_share_action(
+    action: crate::memory::MentalPrivacyShareAction,
+) -> &'static str {
+    match action {
+        crate::memory::MentalPrivacyShareAction::Refuse => "refuse",
+        crate::memory::MentalPrivacyShareAction::Defer => "defer",
+        crate::memory::MentalPrivacyShareAction::AllowSummary
+        | crate::memory::MentalPrivacyShareAction::AllowRedactedExcerpt
+        | crate::memory::MentalPrivacyShareAction::ExplainWithoutQuote => "narrow",
+        crate::memory::MentalPrivacyShareAction::AllowRaw => "brief",
+        crate::memory::MentalPrivacyShareAction::AllowOriginal => "full",
+    }
+}
+
+fn derive_turn_persona_reply_scope(
+    is_interrupt: bool,
+    priority: Option<&PersonaPriorityAdjudication>,
+    disclosure: Option<&crate::memory::MentalPrivacyDisclosureAdjudication>,
+    review: &MentalPrivacyReviewOutcome,
+) -> String {
+    if is_interrupt {
+        return "interrupt".to_string();
+    }
+    let scope = priority
+        .map(|priority| priority.task_scope.trim())
+        .filter(|scope| !scope.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            disclosure.map(|adjudication| {
+                turn_persona_scope_from_share_action(adjudication.share_action).to_string()
+            })
+        })
+        .or_else(|| {
+            review
+                .applied
+                .then(|| turn_persona_scope_from_share_action(review.action).to_string())
+        })
+        .unwrap_or_else(|| "full".to_string());
+    normalize_turn_persona_scope(&scope)
+}
+
+fn build_turn_persona_targets(
+    disclosure: Option<&crate::memory::MentalPrivacyDisclosureAdjudication>,
+    review: &MentalPrivacyReviewOutcome,
+) -> Vec<String> {
+    let mut targets = disclosure
+        .map(|adjudication| adjudication.targets.clone())
+        .unwrap_or_default();
+    targets.extend(review.touched_targets.iter().cloned());
+    normalize_turn_persona_targets(&targets)
+}
+
+fn build_turn_persona_ledger(
+    pressure: crate::orchestrator::PressureLevel,
+    tool_calls: u32,
+    delivered: bool,
+    is_interrupt: bool,
+    disclosure: Option<&crate::memory::MentalPrivacyDisclosureAdjudication>,
+    priority: Option<&PersonaPriorityAdjudication>,
+    review: &MentalPrivacyReviewOutcome,
+    review_rewrite_applied: bool,
+) -> Option<TurnPersonaLedger> {
+    let persona = TurnPersonaLedger {
+        disclosure: disclosure.map(build_turn_persona_disclosure_ledger),
+        priority: priority.map(build_turn_persona_priority_ledger),
+        review: TurnPersonaReviewLedger {
+            action: review.action,
+            applied: review.applied,
+            rewrite_applied: review_rewrite_applied,
+        },
+        touched_targets: build_turn_persona_targets(disclosure, review),
+        pressure: pressure.into(),
+        tool_calls,
+        reply_scope: derive_turn_persona_reply_scope(is_interrupt, priority, disclosure, review),
+        reply_delivered: delivered,
+    };
+    persona.is_meaningful().then_some(persona)
 }
 
 #[cold]
@@ -1803,6 +1930,9 @@ fn finalize_lane_turn(
         any_tool_used,
         external_content_used,
         used_final_answer_recovery,
+        pressure,
+        mental_privacy_adjudication,
+        persona_priority_adjudication,
     } = telemetry;
 
     let (mut reply_content, is_interrupt, reply_already_delivered, apply_finalizer) = match outcome
@@ -1838,9 +1968,17 @@ fn finalize_lane_turn(
     if !is_interrupt && apply_finalizer {
         reply_content = finalize_user_visible_reply(config.strategy, &reply_content);
     }
+    let review_input_before = reply_content.clone();
+    let mut mental_privacy_review = MentalPrivacyReviewOutcome {
+        reply_content: reply_content.clone(),
+        action: crate::memory::MentalPrivacyShareAction::AllowOriginal,
+        applied: false,
+        touched_targets: Vec::new(),
+    };
     if !is_interrupt {
-        reply_content =
+        mental_privacy_review =
             maybe_apply_mental_privacy_review(http, worker_llm, config, &msg, loc, reply_content);
+        reply_content = mental_privacy_review.reply_content.clone();
     }
     if !is_interrupt
         && reply_content.trim().is_empty()
@@ -2013,6 +2151,26 @@ fn finalize_lane_turn(
     turn_ledger.total_ms = total_ms.min(u64::MAX as u128) as u64;
     turn_ledger.ttft_ms = worker_latency.ttft_ms.unwrap_or(0).min(u64::MAX as u128) as u64;
     turn_ledger.delivery = build_turn_delivery_ledger(delivery);
+    turn_ledger.persona = if msg.ingress == IngressKind::User {
+        build_turn_persona_ledger(
+            pressure,
+            worker_latency.tool_calls,
+            delivered,
+            is_interrupt,
+            mental_privacy_adjudication.as_ref(),
+            persona_priority_adjudication.as_ref(),
+            &mental_privacy_review,
+            mental_privacy_review.applied
+                && mental_privacy_review.reply_content.trim() != review_input_before.trim(),
+        )
+    } else {
+        config
+            .turn_ledger_store
+            .get(&msg.chat_id)
+            .ok()
+            .flatten()
+            .and_then(|ledger| ledger.persona)
+    };
     persist_turn_ledger(
         config.turn_ledger_store.as_ref(),
         &msg.chat_id,
@@ -3282,6 +3440,9 @@ fn run_agent_loop_main(
             any_tool_used,
             external_content_used,
             used_final_answer_recovery,
+            pressure,
+            mental_privacy_adjudication,
+            persona_priority_adjudication,
         } = telemetry;
         finalize_lane_turn(
             http,
@@ -3311,6 +3472,9 @@ fn run_agent_loop_main(
                 any_tool_used,
                 external_content_used,
                 used_final_answer_recovery,
+                pressure,
+                mental_privacy_adjudication,
+                persona_priority_adjudication,
             },
         );
     }
@@ -3422,6 +3586,9 @@ fn run_worker_path(
         mut system_scratch,
         interactive_fast_path,
         prompt_memory_system_budget,
+        pressure,
+        mental_privacy_adjudication,
+        persona_priority_adjudication,
     } = prepare_worker_conversation(
         worker_llm,
         msg,
@@ -3581,6 +3748,9 @@ fn run_worker_path(
                     any_tool_used,
                     external_content_used,
                     used_final_answer_recovery,
+                    pressure,
+                    mental_privacy_adjudication: mental_privacy_adjudication.clone(),
+                    persona_priority_adjudication: persona_priority_adjudication.clone(),
                 };
                 return Ok((WorkerOutcome::Interrupt(confirmation), telemetry));
             }
@@ -3813,6 +3983,9 @@ fn run_worker_path(
                 any_tool_used,
                 external_content_used,
                 used_final_answer_recovery,
+                pressure,
+                mental_privacy_adjudication: mental_privacy_adjudication.clone(),
+                persona_priority_adjudication: persona_priority_adjudication.clone(),
             };
             return Ok((WorkerOutcome::Interrupt(confirmation), telemetry));
         }
@@ -3846,6 +4019,9 @@ fn run_worker_path(
             any_tool_used,
             external_content_used,
             used_final_answer_recovery,
+            pressure,
+            mental_privacy_adjudication,
+            persona_priority_adjudication,
         },
     ))
 }
@@ -4791,11 +4967,9 @@ mod tests {
         ];
         compact_early_tool_rounds(&mut messages, 1);
         assert!(messages[1].content.contains("head analysis"));
-        assert!(
-            messages[1]
-                .content
-                .contains("final decision: use file /tmp/result.json")
-        );
+        assert!(messages[1]
+            .content
+            .contains("final decision: use file /tmp/result.json"));
         assert!(messages[1].content.contains("[compressed]"));
         assert!(messages[1].content.contains(" ... "));
     }

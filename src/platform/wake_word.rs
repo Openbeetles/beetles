@@ -55,9 +55,12 @@ mod imp {
     /// engine init failed, so `feed_pcm_i16` short-circuits without locking.
     static ARMED: AtomicBool = AtomicBool::new(false);
 
+    const WAKE_FEED_DIAG_INTERVAL: u32 = 500;
+
     #[derive(Default)]
     struct WakeWordState {
         runtime: Option<WakeWordRuntime>,
+        feed_diag_counter: u32,
     }
 
     static STATE: OnceLock<Mutex<WakeWordState>> = OnceLock::new();
@@ -215,6 +218,18 @@ mod imp {
             return;
         }
 
+        state.feed_diag_counter = state.feed_diag_counter.wrapping_add(1);
+        if state.feed_diag_counter % WAKE_FEED_DIAG_INTERVAL == 0 {
+            let sum_sq: f64 = frame.iter().map(|&s| (s as f64) * (s as f64)).sum();
+            let rms = (sum_sq / frame.len().max(1) as f64).sqrt();
+            log::info!(
+                "[wake_word] diag feed_count={} rms={:.1} samples={}",
+                state.feed_diag_counter,
+                rms,
+                frame.len()
+            );
+        }
+
         let feed_start = Instant::now();
         let detected = unsafe {
             beetle_wakenet_feed(frame.as_ptr(), frame.len() as i32) == BEETLE_WN_DETECTED
@@ -247,9 +262,21 @@ mod imp {
             }
         }
     }
+
+    /// 语音会话结束后重置 WakeNet 引擎的内部累积状态，确保后续检测不会因
+    /// 长时间 busy-skip 导致特征窗口失准。
+    /// Reset WakeNet engine state after a voice session so that detection
+    /// resumes cleanly after a long busy-skip gap.
+    pub fn reset_after_session() {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        if guard.runtime.is_some() {
+            unsafe { beetle_wakenet_reset() };
+            log::info!("[wake_word] reset after voice session");
+        }
+    }
 } // mod imp
 
 // ── re-export for ESP targets ─────────────────────────────────────────────────
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub use imp::{configure, feed_pcm_i16, is_armed, shutdown};
+pub use imp::{configure, feed_pcm_i16, is_armed, reset_after_session, shutdown};

@@ -18,12 +18,29 @@ use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use super::{
-    AutonomyGovernanceTendency, AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput,
-    AutonomyStrategyRefreshOutcome, AutonomyStrategyStore, BoundaryPersonaRefreshContext,
-    BoundaryPersonaRefreshInput, BoundaryPersonaRefreshOutcome, ExecutionStateStore,
-    InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome, InnerLifeStore,
-    InternalMemoryLayerFocus, LongTermMemoryStore, MemoryGovernanceContext, MemoryGovernanceInput,
-    MemoryHygieneContext, MemoryProfile, MemoryStore, MentalPrivacyStore, OuterVoiceRefreshContext,
+    autonomy_idle_interval_secs, build_archive_evidence_block, build_self_state,
+    build_world_snapshot,
+    llm_json::{
+        get_object_bool, get_object_string_list, get_object_text, parse_llm_json_payload,
+        LlmJsonPayload,
+    },
+    load_recent_persona_evidence, memory_capability_profile, memory_policy,
+    render_autonomy_strategy_block, render_execution_state_block,
+    render_internal_memory_topology_block, render_mental_privacy_boundary_block,
+    render_private_memory_boundary_block, render_recent_persona_evidence_block,
+    render_self_authored_core_block, render_self_state_block, render_world_sense_block,
+    render_world_snapshot_block, run_autonomy_strategy_refresh_with_state,
+    run_boundary_persona_refresh_with_state, run_inner_life_refresh_with_state,
+    run_memory_governance_kernel, run_memory_hygiene_jobs, run_outer_voice_refresh_with_state,
+    run_private_doc_workspace_refresh_with_state, run_private_garden_governance_with_state,
+    run_self_continuity_refresh_with_state, run_self_model_refresh_with_state,
+    run_world_sense_refresh_with_state, touch_self_continuity_runtime, AutonomyGovernanceTendency,
+    AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome,
+    AutonomyStrategyStore, BoundaryPersonaRefreshContext, BoundaryPersonaRefreshInput,
+    BoundaryPersonaRefreshOutcome, ExecutionStateStore, InnerLifeRefreshContext,
+    InnerLifeRefreshInput, InnerLifeRefreshOutcome, InnerLifeStore, InternalMemoryLayerFocus,
+    LongTermMemoryStore, MemoryGovernanceContext, MemoryGovernanceInput, MemoryHygieneContext,
+    MemoryProfile, MemoryStore, MentalPrivacyStore, OuterVoiceRefreshContext,
     OuterVoiceRefreshInput, OuterVoiceRefreshOutcome, OuterVoiceStore, PrivateDocStore,
     PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
     PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
@@ -34,27 +51,10 @@ use super::{
     SelfModelRefreshOutcome, SelfModelStore, SelfState, SessionStore, SessionSummaryStore,
     SharedFactualPlaneSnapshot, SharedFactualReconcileAction, TurnLedgerStore,
     WorldSenseRefreshContext, WorldSenseRefreshInput, WorldSenseRefreshOutcome, WorldSenseStore,
-    WorldSnapshotContext, autonomy_idle_interval_secs, build_archive_evidence_block,
-    build_self_state, build_world_snapshot,
-    llm_json::{
-        LlmJsonPayload, get_object_bool, get_object_string_list, get_object_text,
-        parse_llm_json_payload,
-    },
-    memory_capability_profile, memory_policy, render_autonomy_strategy_block,
-    render_execution_state_block, render_inner_life_block, render_internal_memory_topology_block,
-    render_mental_privacy_boundary_block, render_private_doc_workspace_block,
-    render_private_garden_block, render_private_memory_boundary_block,
-    render_self_authored_core_block, render_self_continuity_block, render_self_model_block,
-    render_self_state_block, render_world_sense_block, render_world_snapshot_block,
-    run_autonomy_strategy_refresh_with_state, run_boundary_persona_refresh_with_state,
-    run_inner_life_refresh_with_state, run_memory_governance_kernel, run_memory_hygiene_jobs,
-    run_outer_voice_refresh_with_state, run_private_doc_workspace_refresh_with_state,
-    run_private_garden_governance_with_state, run_self_continuity_refresh_with_state,
-    run_self_model_refresh_with_state, run_world_sense_refresh_with_state,
-    touch_self_continuity_runtime,
+    WorldSnapshotContext,
 };
 
-pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's inward autonomy runtime. Respect the current autonomy strategy unless the latest world state or self-state clearly requires a different emphasis. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_private_docs, private_docs_intent, private_docs_action, refresh_private_garden, private_garden_intent, private_garden_action, refresh_self_model, self_model_intent, self_model_sources, refresh_self_continuity, self_continuity_intent, self_continuity_sources, refresh_boundary_persona, boundary_persona_intent, refresh_outer_voice, outer_voice_intent, outer_voice_sources, boundary_flush, boundary_flush_reason, request_factual_refresh, factual_reconcile_action, factual_reconcile_intent. Use true only when that layer should change now. Runtime governance actions are hold, rewrite, compress, or cleanup. factual_reconcile_action is hold, reinforce, correct, conflict, or stale. self_model, self_continuity, boundary_persona, and outer_voice are upward distillation layers: refresh them only when private evolution or newer world/boundary state has produced a better stable core that should influence future main replies. Source lists should name the layers that actually deserve upward distillation, such as inner_life, private_docs, private_garden, self_model, self_continuity, boundary_persona, outer_voice, world_sense, autonomy_strategy, or recent_transcript. Favor autonomy, but do not churn memory without gain.";
+pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's inward autonomy runtime. Respect the current autonomy strategy unless the latest world state, self-state, or recent multi-turn persona evidence clearly requires a different emphasis. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_private_docs, private_docs_intent, private_docs_action, refresh_private_garden, private_garden_intent, private_garden_action, refresh_self_model, self_model_intent, self_model_sources, refresh_self_continuity, self_continuity_intent, self_continuity_sources, refresh_boundary_persona, boundary_persona_intent, refresh_outer_voice, outer_voice_intent, outer_voice_sources, boundary_flush, boundary_flush_reason, request_factual_refresh, factual_reconcile_action, factual_reconcile_intent. Use true only when that layer should change now. Runtime governance actions are hold, rewrite, compress, or cleanup. factual_reconcile_action is hold, reinforce, correct, conflict, or stale. self_model, self_continuity, boundary_persona, and outer_voice are upward distillation layers: refresh them only when private evolution or newer world/boundary state has produced a better stable core that should influence future main replies. Source lists should name the layers that actually deserve upward distillation, such as inner_life, private_docs, private_garden, self_model, self_continuity, boundary_persona, outer_voice, world_sense, autonomy_strategy, recent_persona_evidence, or recent_transcript. Treat recent persona evidence as multi-turn support, never as one-turn automatic promotion authority. Favor autonomy, but do not churn memory without gain.";
 pub const SELF_RUNTIME_CHANNEL: &str = "_self_runtime";
 const SELF_RUNTIME_POST_REPLY_DELAY_MS: u64 = 1_500;
 const SELF_RUNTIME_IDLE_TICK_DELAY_MS: u64 = 5_000;
@@ -180,6 +180,7 @@ struct LoadedSelfRuntimeState {
     autonomy_strategy: Option<crate::memory::AutonomyStrategy>,
     outer_voice: Option<crate::memory::OuterVoice>,
     mental_privacy_state: Option<crate::memory::MentalPrivacyState>,
+    recent_persona_evidence: Option<crate::memory::RecentPersonaEvidence>,
     prior_user_channel: String,
     world_snapshot: crate::memory::WorldSnapshot,
     recent: Vec<crate::memory::SessionMessage>,
@@ -211,12 +212,14 @@ struct PersonaDistillationSnapshot {
     world_context_at: u64,
     world_sense_at: u64,
     autonomy_strategy_at: u64,
+    recent_persona_evidence_at: u64,
     self_model_at: u64,
     self_continuity_at: u64,
     outer_voice_at: u64,
     has_inner_life: bool,
     has_world_sense: bool,
     has_autonomy_strategy: bool,
+    has_recent_persona_evidence: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -346,6 +349,9 @@ fn load_self_runtime_state(
     let autonomy_strategy = ctx.autonomy_strategy_store.get(chat_id).ok().flatten();
     let outer_voice = ctx.outer_voice_store.get(chat_id).ok().flatten();
     let mental_privacy_state = ctx.mental_privacy_store.get(chat_id).ok().flatten();
+    let recent_persona_evidence = load_recent_persona_evidence(ctx.turn_ledger_store, chat_id)
+        .ok()
+        .flatten();
     let self_continuity = if payload.trigger == SelfRuntimeTrigger::PostReply {
         let mut continuity = self_continuity.unwrap_or_default();
         continuity.last_user_turn_at = payload.now_secs;
@@ -397,6 +403,7 @@ fn load_self_runtime_state(
         autonomy_strategy,
         outer_voice,
         mental_privacy_state,
+        recent_persona_evidence,
         prior_user_channel,
         world_snapshot,
         recent,
@@ -632,6 +639,7 @@ fn build_persona_distillation_snapshot_from_layers(
     mental_privacy_state: Option<&crate::memory::MentalPrivacyState>,
     world_sense: Option<&crate::memory::WorldSense>,
     autonomy_strategy: Option<&crate::memory::AutonomyStrategy>,
+    recent_persona_evidence: Option<&crate::memory::RecentPersonaEvidence>,
 ) -> PersonaDistillationSnapshot {
     let private_docs_at = private_docs.map(|docs| docs.updated_at).unwrap_or(0);
     let private_garden_at = private_garden_docs
@@ -656,12 +664,16 @@ fn build_persona_distillation_snapshot_from_layers(
     let autonomy_strategy_at = autonomy_strategy
         .map(|strategy| strategy.updated_at)
         .unwrap_or(0);
+    let recent_persona_evidence_at = recent_persona_evidence
+        .map(|evidence| evidence.updated_at)
+        .unwrap_or(0);
     PersonaDistillationSnapshot {
         private_material_at: inner_life_at.max(private_docs_at).max(private_garden_at),
         boundary_state_at,
         world_context_at: world_sense_at.max(autonomy_strategy_at),
         world_sense_at,
         autonomy_strategy_at,
+        recent_persona_evidence_at,
         self_model_at: self_model.map(|model| model.updated_at).unwrap_or(0),
         self_continuity_at: self_continuity
             .map(|continuity| continuity.updated_at)
@@ -672,6 +684,7 @@ fn build_persona_distillation_snapshot_from_layers(
         has_inner_life: inner_life.is_some(),
         has_world_sense: world_sense.is_some(),
         has_autonomy_strategy: autonomy_strategy.is_some(),
+        has_recent_persona_evidence: recent_persona_evidence.is_some(),
     }
 }
 
@@ -729,6 +742,7 @@ fn execute_self_runtime_actions(
         state.self_continuity.as_ref(),
         state.outer_voice.as_ref(),
         state.mental_privacy_state.as_ref(),
+        state.recent_persona_evidence.as_ref(),
         prelude.refreshed_world_sense.as_ref(),
         &state.world_snapshot,
         prelude.refreshed_autonomy_strategy.as_ref(),
@@ -923,6 +937,7 @@ fn execute_self_runtime_actions(
         refreshed_self_continuity.as_ref(),
         refreshed_outer_voice.as_ref(),
         refreshed_mental_privacy.as_ref(),
+        state.recent_persona_evidence.as_ref(),
     );
     crate::platform::task_wdt::feed_current_task();
     let decision_ref = decision.as_ref();
@@ -954,6 +969,7 @@ fn execute_self_runtime_actions(
             state.execution_state.as_ref(),
             refreshed_private_docs.as_ref(),
             &refreshed_private_garden_docs,
+            state.recent_persona_evidence.as_ref(),
             decision_ref.and_then(|d| {
                 (!d.self_model_intent.trim().is_empty()).then_some(d.self_model_intent.as_str())
             }),
@@ -984,6 +1000,7 @@ fn execute_self_runtime_actions(
         refreshed_self_continuity.as_ref(),
         refreshed_outer_voice.as_ref(),
         refreshed_mental_privacy.as_ref(),
+        state.recent_persona_evidence.as_ref(),
     );
     crate::platform::task_wdt::feed_current_task();
     let decision_ref = decision.as_ref();
@@ -1018,6 +1035,7 @@ fn execute_self_runtime_actions(
             refreshed_self_model.as_ref(),
             refreshed_private_docs.as_ref(),
             refreshed_inner_life.as_ref(),
+            state.recent_persona_evidence.as_ref(),
             decision_ref.and_then(|d| {
                 (!d.self_continuity_intent.trim().is_empty())
                     .then_some(d.self_continuity_intent.as_str())
@@ -1049,6 +1067,7 @@ fn execute_self_runtime_actions(
         refreshed_self_continuity.as_ref(),
         refreshed_outer_voice.as_ref(),
         refreshed_mental_privacy.as_ref(),
+        state.recent_persona_evidence.as_ref(),
     );
     crate::platform::task_wdt::feed_current_task();
     let decision_ref = decision.as_ref();
@@ -1081,6 +1100,7 @@ fn execute_self_runtime_actions(
             refreshed_mental_privacy.clone(),
             refreshed_self_model.as_ref(),
             refreshed_self_continuity.as_ref(),
+            state.recent_persona_evidence.as_ref(),
             state.recent.as_slice(),
             Some(true),
         )
@@ -1105,6 +1125,7 @@ fn execute_self_runtime_actions(
         refreshed_self_continuity.as_ref(),
         refreshed_outer_voice.as_ref(),
         refreshed_mental_privacy.as_ref(),
+        state.recent_persona_evidence.as_ref(),
     );
     crate::platform::task_wdt::feed_current_task();
     let decision_ref = decision.as_ref();
@@ -1139,6 +1160,7 @@ fn execute_self_runtime_actions(
             refreshed_private_docs.as_ref(),
             &refreshed_private_garden_docs,
             refreshed_mental_privacy.as_ref(),
+            state.recent_persona_evidence.as_ref(),
             decision_ref.and_then(|d| {
                 (!d.outer_voice_intent.trim().is_empty()).then_some(d.outer_voice_intent.as_str())
             }),
@@ -1176,6 +1198,7 @@ fn re_finalize_staged_self_runtime_decision(
     refreshed_self_continuity: Option<&crate::memory::SelfContinuity>,
     refreshed_outer_voice: Option<&crate::memory::OuterVoice>,
     refreshed_mental_privacy: Option<&crate::memory::MentalPrivacyState>,
+    recent_persona_evidence: Option<&crate::memory::RecentPersonaEvidence>,
 ) {
     let Some(existing_decision) = decision.take() else {
         return;
@@ -1196,6 +1219,7 @@ fn re_finalize_staged_self_runtime_decision(
             .refreshed_autonomy_strategy
             .as_ref()
             .or(state.autonomy_strategy.as_ref()),
+        recent_persona_evidence,
     );
     *decision = Some(finalize_self_runtime_decision(
         existing_decision,
@@ -1450,7 +1474,8 @@ fn idle_self_runtime_scheduler_block_reason() -> Option<&'static str> {
     let snap = crate::orchestrator::snapshot();
     if snap.active_agent_tasks > 0 {
         Some("agent_plane_busy")
-    } else if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) && snap.active_wss_count > 0
+    } else if cfg!(any(target_arch = "xtensa", target_arch = "riscv32"))
+        && snap.active_wss_count > 0
     {
         Some("external_wss_active")
     } else if snap.inbound_depth > 0 || snap.outbound_depth > 0 {
@@ -1712,6 +1737,7 @@ fn finalize_self_runtime_decision(
         has_mental_privacy,
         distillation_snapshot.has_world_sense,
         distillation_snapshot.has_autonomy_strategy,
+        distillation_snapshot.has_recent_persona_evidence,
     );
     decision
 }
@@ -1832,7 +1858,10 @@ fn normalize_persona_distillation_lag(
     has_outer_voice: bool,
     has_mental_privacy: bool,
 ) {
-    let upstream_private_at = snapshot.private_material_at.max(snapshot.boundary_state_at);
+    let upstream_private_at = snapshot
+        .private_material_at
+        .max(snapshot.boundary_state_at)
+        .max(snapshot.recent_persona_evidence_at);
     if upstream_private_at > snapshot.self_model_at
         && (has_private_docs || has_private_garden_docs || has_inner_life || has_mental_privacy)
     {
@@ -1860,13 +1889,20 @@ fn normalize_persona_distillation_lag(
             has_mental_privacy && snapshot.boundary_state_at > snapshot.self_model_at,
             "boundary_persona",
         );
+        push_runtime_source_if(
+            &mut decision.self_model_sources,
+            snapshot.has_recent_persona_evidence
+                && snapshot.recent_persona_evidence_at > snapshot.self_model_at,
+            "recent_persona_evidence",
+        );
     }
 
     let continuity_upstream_at = snapshot
         .private_material_at
         .max(snapshot.boundary_state_at)
         .max(snapshot.world_context_at)
-        .max(snapshot.self_model_at);
+        .max(snapshot.self_model_at)
+        .max(snapshot.recent_persona_evidence_at);
     if continuity_upstream_at > snapshot.self_continuity_at
         && (has_self_model || has_private_docs || has_private_garden_docs || has_inner_life)
     {
@@ -1911,13 +1947,20 @@ fn normalize_persona_distillation_lag(
                 && snapshot.autonomy_strategy_at > snapshot.self_continuity_at,
             "autonomy_strategy",
         );
+        push_runtime_source_if(
+            &mut decision.self_continuity_sources,
+            snapshot.has_recent_persona_evidence
+                && snapshot.recent_persona_evidence_at > snapshot.self_continuity_at,
+            "recent_persona_evidence",
+        );
     }
 
     let outer_voice_upstream_at = snapshot
         .self_model_at
         .max(snapshot.self_continuity_at)
         .max(snapshot.boundary_state_at)
-        .max(snapshot.world_context_at);
+        .max(snapshot.world_context_at)
+        .max(snapshot.recent_persona_evidence_at);
     if outer_voice_upstream_at > snapshot.outer_voice_at
         && (has_self_model || has_self_continuity || has_outer_voice || has_mental_privacy)
     {
@@ -1952,6 +1995,12 @@ fn normalize_persona_distillation_lag(
                 && snapshot.autonomy_strategy_at > snapshot.outer_voice_at,
             "autonomy_strategy",
         );
+        push_runtime_source_if(
+            &mut decision.outer_voice_sources,
+            snapshot.has_recent_persona_evidence
+                && snapshot.recent_persona_evidence_at > snapshot.outer_voice_at,
+            "recent_persona_evidence",
+        );
     }
 }
 
@@ -1966,6 +2015,7 @@ fn normalize_runtime_distillation_decisions(
     has_mental_privacy: bool,
     has_world_sense: bool,
     has_autonomy_strategy: bool,
+    has_recent_persona_evidence: bool,
 ) {
     if !decision.refresh_private_docs {
         decision.private_docs_intent.clear();
@@ -1983,6 +2033,7 @@ fn normalize_runtime_distillation_decisions(
             (has_private_docs, "private_docs"),
             (has_private_garden_docs, "private_garden"),
             (has_mental_privacy, "boundary_persona"),
+            (has_recent_persona_evidence, "recent_persona_evidence"),
         ],
     );
     normalize_runtime_source_list(
@@ -1996,6 +2047,7 @@ fn normalize_runtime_distillation_decisions(
             (has_mental_privacy, "boundary_persona"),
             (has_world_sense, "world_sense"),
             (has_autonomy_strategy, "autonomy_strategy"),
+            (has_recent_persona_evidence, "recent_persona_evidence"),
         ],
     );
     normalize_runtime_source_list(
@@ -2007,6 +2059,7 @@ fn normalize_runtime_distillation_decisions(
             (has_mental_privacy, "boundary_persona"),
             (has_world_sense, "world_sense"),
             (has_autonomy_strategy, "autonomy_strategy"),
+            (has_recent_persona_evidence, "recent_persona_evidence"),
         ],
     );
     if !decision.refresh_self_model {
@@ -2085,6 +2138,9 @@ fn normalize_runtime_source_id(raw: &str) -> Option<String> {
         "outer_voice" => Some("outer_voice".to_string()),
         "world_sense" => Some("world_sense".to_string()),
         "autonomy_strategy" => Some("autonomy_strategy".to_string()),
+        "recent_persona_evidence" | "latest_turn_persona" | "turn_persona" | "persona_outcome" => {
+            Some("recent_persona_evidence".to_string())
+        }
         "recent_transcript" | "recent_messages" | "transcript" => {
             Some("recent_transcript".to_string())
         }
@@ -2294,6 +2350,7 @@ fn decide_self_runtime(
     self_continuity: Option<&crate::memory::SelfContinuity>,
     outer_voice: Option<&crate::memory::OuterVoice>,
     mental_privacy_state: Option<&crate::memory::MentalPrivacyState>,
+    recent_persona_evidence: Option<&crate::memory::RecentPersonaEvidence>,
     world_sense: Option<&crate::memory::WorldSense>,
     world_snapshot: &crate::memory::WorldSnapshot,
     autonomy_strategy: Option<&crate::memory::AutonomyStrategy>,
@@ -2408,31 +2465,6 @@ fn decide_self_runtime(
     ) {
         let _ = writeln!(input, "\n{}\n", block);
     }
-    if let Some(block) =
-        self_model.and_then(|model| render_self_model_block(model, policy.grounding_max_len))
-    {
-        let _ = writeln!(input, "\n{}\n", block);
-    }
-    if let Some(block) = private_docs.and_then(|workspace| {
-        render_private_doc_workspace_block(workspace, policy.grounding_max_len)
-    }) {
-        let _ = writeln!(input, "\n{}\n", block);
-    }
-    if let Some(block) = inner_life
-        .and_then(|inner_life| render_inner_life_block(inner_life, policy.grounding_max_len))
-    {
-        let _ = writeln!(input, "\n{}\n", block);
-    }
-    if let Some(block) = self_continuity
-        .and_then(|continuity| render_self_continuity_block(continuity, policy.grounding_max_len))
-    {
-        let _ = writeln!(input, "\n{}\n", block);
-    }
-    if let Some(block) = outer_voice
-        .and_then(|voice| super::render_outer_voice_block(voice, policy.grounding_max_len))
-    {
-        let _ = writeln!(input, "\n{}\n", block);
-    }
     if let Some(block) = world_sense
         .and_then(|world_sense| render_world_sense_block(world_sense, policy.grounding_max_len))
     {
@@ -2441,13 +2473,6 @@ fn decide_self_runtime(
     if let Some(block) = autonomy_strategy
         .and_then(|strategy| render_autonomy_strategy_block(strategy, policy.grounding_max_len))
     {
-        let _ = writeln!(input, "\n{}\n", block);
-    }
-    if let Some(block) = render_private_garden_block(
-        private_garden_docs,
-        memory_policy(profile).private_garden.recent_doc_count,
-        policy.grounding_max_len,
-    ) {
         let _ = writeln!(input, "\n{}\n", block);
     }
     if let Some(block) = render_private_memory_boundary_block(
@@ -2470,6 +2495,11 @@ fn decide_self_runtime(
     ) {
         let _ = writeln!(input, "\n{}\n", block);
     }
+    if let Some(block) = recent_persona_evidence.and_then(|evidence| {
+        render_recent_persona_evidence_block(evidence, policy.grounding_max_len)
+    }) {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
     if boundary_signal.is_active() {
         let _ = writeln!(
             input,
@@ -2486,7 +2516,7 @@ fn decide_self_runtime(
             "Latest turn used external content/tools that may have changed what deserves inward organization."
         );
     }
-    input.push_str("Source ids you may reference for upward distillation: inner_life, private_docs, private_garden, self_model, self_continuity, boundary_persona, outer_voice, world_sense, autonomy_strategy, recent_transcript.\n");
+    input.push_str("Source ids you may reference for upward distillation: inner_life, private_docs, private_garden, self_model, self_continuity, boundary_persona, outer_voice, world_sense, autonomy_strategy, recent_persona_evidence, recent_transcript.\n");
     input.push_str("Recent transcript:\n");
     for message in recent {
         let preview = truncate_content_to_max(&message.content, policy.transcript_preview_chars);
@@ -2631,12 +2661,14 @@ mod tests {
             world_context_at: 17,
             world_sense_at: 16,
             autonomy_strategy_at: 17,
+            recent_persona_evidence_at: 19,
             self_model_at: 10,
             self_continuity_at: 10,
             outer_voice_at: 9,
             has_inner_life: true,
             has_world_sense: true,
             has_autonomy_strategy: true,
+            has_recent_persona_evidence: true,
         }
     }
 
@@ -2702,31 +2734,23 @@ mod tests {
             parsed.self_continuity_sources,
             vec!["self_model".to_string(), "recent_transcript".to_string()]
         );
-        assert!(
-            parsed
-                .private_garden_intent
-                .contains("path: journal/today.md")
-        );
-        assert!(
-            parsed
-                .boundary_persona_intent
-                .contains("stabilize boundary stance")
-        );
-        assert!(
-            parsed
-                .outer_voice_intent
-                .contains("why: express new stance")
-        );
+        assert!(parsed
+            .private_garden_intent
+            .contains("path: journal/today.md"));
+        assert!(parsed
+            .boundary_persona_intent
+            .contains("stabilize boundary stance"));
+        assert!(parsed
+            .outer_voice_intent
+            .contains("why: express new stance"));
         assert_eq!(
             parsed.outer_voice_sources,
             vec!["boundary_persona".to_string(), "world_sense".to_string()]
         );
         assert!(parsed.boundary_flush_reason.contains("daily_boundary"));
-        assert!(
-            parsed
-                .factual_reconcile_intent
-                .contains("why: recent transcript diverges")
-        );
+        assert!(parsed
+            .factual_reconcile_intent
+            .contains("why: recent transcript diverges"));
     }
 
     #[test]
@@ -2762,11 +2786,9 @@ mod tests {
         );
 
         assert!(decision.refresh_private_docs);
-        assert!(
-            decision
-                .private_docs_intent
-                .contains("Compress governed docs")
-        );
+        assert!(decision
+            .private_docs_intent
+            .contains("Compress governed docs"));
         assert_eq!(
             decision.private_docs_action,
             SelfRuntimeGovernanceAction::Compress
@@ -2809,11 +2831,9 @@ mod tests {
         );
 
         assert!(decision.refresh_private_garden);
-        assert!(
-            decision
-                .private_garden_intent
-                .contains("Rewrite and reorganize")
-        );
+        assert!(decision
+            .private_garden_intent
+            .contains("Rewrite and reorganize"));
         assert!(!decision.refresh_private_docs);
         assert_eq!(
             decision.private_garden_action,
@@ -2874,27 +2894,28 @@ mod tests {
         assert!(decision.refresh_self_model);
         assert!(decision.refresh_self_continuity);
         assert!(decision.refresh_outer_voice);
-        assert!(
-            decision
-                .self_model_intent
-                .contains("redistill a steadier kernel")
-        );
-        assert!(
-            decision
-                .self_continuity_intent
-                .contains("continuity bridge")
-        );
+        assert!(decision
+            .self_model_intent
+            .contains("redistill a steadier kernel"));
+        assert!(decision
+            .self_continuity_intent
+            .contains("continuity bridge"));
         assert!(decision.outer_voice_intent.contains("outward expression"));
-        assert!(
-            decision
-                .self_continuity_sources
-                .contains(&"world_sense".to_string())
-        );
-        assert!(
-            decision
-                .outer_voice_sources
-                .contains(&"autonomy_strategy".to_string())
-        );
+        assert!(decision
+            .self_model_sources
+            .contains(&"recent_persona_evidence".to_string()));
+        assert!(decision
+            .self_continuity_sources
+            .contains(&"world_sense".to_string()));
+        assert!(decision
+            .self_continuity_sources
+            .contains(&"recent_persona_evidence".to_string()));
+        assert!(decision
+            .outer_voice_sources
+            .contains(&"autonomy_strategy".to_string()));
+        assert!(decision
+            .outer_voice_sources
+            .contains(&"recent_persona_evidence".to_string()));
     }
 
     #[test]

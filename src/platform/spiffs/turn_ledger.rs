@@ -2,7 +2,8 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    REL_PATH_TURN_LEDGERS, REL_PATH_TURN_LEDGERS_LEGACY, TurnLedger, TurnLedgerStore,
+    TurnLedger, TurnLedgerStore, REL_PATH_TURN_LEDGERS, REL_PATH_TURN_LEDGERS_LEGACY,
+    REL_PATH_TURN_LEDGER_HISTORY, TURN_LEDGER_HISTORY_MAX_ITEMS,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -17,9 +18,16 @@ const TAG: &str = "platform::spiffs::turn_ledger";
 const MAX_CHAT_ID_FILENAME_LEN: usize = 20;
 const LEDGER_FILE_EXT: &str = ".json";
 const REL_PATH_TURN_LEDGERS_FLAT_SPIFFS: &str = "memory/tl";
+const REL_PATH_TURN_LEDGER_HISTORY_FLAT_SPIFFS: &str = "memory/trh";
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct StoredTurnLedger(TurnLedger);
+
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct StoredTurnLedgerHistory {
+    #[serde(default)]
+    items: Vec<TurnLedger>,
+}
 
 fn fnv1a_hash(s: &str) -> u32 {
     let mut h: u32 = 2166136261;
@@ -83,6 +91,55 @@ fn ledger_path(chat_id: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+fn history_rel_path(chat_id: &str, flat_spiffs_namespace: bool) -> Result<PathBuf> {
+    if chat_id.is_empty() {
+        return Err(Error::config("turn_ledger_history_path", "chat_id empty"));
+    }
+    if !chat_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':'))
+    {
+        return Err(Error::config(
+            "turn_ledger_history_path",
+            "chat_id contains invalid chars",
+        ));
+    }
+    let filename = if chat_id.len() <= MAX_CHAT_ID_FILENAME_LEN {
+        format!("{}{}", chat_id, LEDGER_FILE_EXT)
+    } else {
+        format!("{:08x}{}", fnv1a_hash(chat_id), LEDGER_FILE_EXT)
+    };
+    let mut path = PathBuf::new();
+    path.push(if flat_spiffs_namespace {
+        REL_PATH_TURN_LEDGER_HISTORY_FLAT_SPIFFS
+    } else {
+        REL_PATH_TURN_LEDGER_HISTORY
+    });
+    path.push(filename);
+    if flat_spiffs_namespace && path.as_os_str().len() > 31 {
+        return Err(Error::config(
+            "turn_ledger_history_path",
+            format!("spiffs object name too long ({})", path.as_os_str().len()),
+        ));
+    }
+    if !flat_spiffs_namespace && path.as_os_str().len() > 64 {
+        return Err(Error::config(
+            "turn_ledger_history_path",
+            format!("path too long ({})", path.as_os_str().len()),
+        ));
+    }
+    Ok(path)
+}
+
+fn history_path(chat_id: &str) -> Result<PathBuf> {
+    let mut path = state_mount_path();
+    path.push(history_rel_path(
+        chat_id,
+        cfg!(any(target_arch = "xtensa", target_arch = "riscv32")),
+    )?);
+    Ok(path)
+}
+
 fn load_ledger_from_path(path: &Path) -> Result<Option<TurnLedger>> {
     let buf = match read_file(path) {
         Ok(buf) => buf,
@@ -95,6 +152,20 @@ fn load_ledger_from_path(path: &Path) -> Result<Option<TurnLedger>> {
     let stored: StoredTurnLedger = serde_json::from_slice(&buf)
         .map_err(|e| Error::config("turn_ledger_read", e.to_string()))?;
     Ok(Some(stored.0))
+}
+
+fn load_history_from_path(path: &Path) -> Result<Vec<TurnLedger>> {
+    let buf = match read_file(path) {
+        Ok(buf) => buf,
+        Err(Error::Io { .. }) | Err(Error::Other { .. }) => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    if buf.is_empty() {
+        return Ok(Vec::new());
+    }
+    let stored: StoredTurnLedgerHistory = serde_json::from_slice(&buf)
+        .map_err(|e| Error::config("turn_ledger_history_read", e.to_string()))?;
+    Ok(stored.items)
 }
 
 fn load_legacy_map(path: &Path) -> Result<HashMap<String, StoredTurnLedger>> {
@@ -160,13 +231,21 @@ impl TurnLedgerStore for SpiffsTurnLedgerStore {
         let path = ledger_path(chat_id)?;
         let json = serde_json::to_vec(&StoredTurnLedger(ledger.clone()))
             .map_err(|e| Error::config("turn_ledger_persist", e.to_string()))?;
-        write_file(path, &json)
+        write_file(path, &json)?;
+        if ledger.status.is_terminal() {
+            self.append_history(chat_id, ledger)?;
+        }
+        Ok(())
     }
 
     fn clear(&self, chat_id: &str) -> Result<()> {
         let path = ledger_path(chat_id)?;
         if path.exists() {
             remove_file(&path)?;
+        }
+        let history_path = history_path(chat_id)?;
+        if history_path.exists() {
+            remove_file(&history_path)?;
         }
         if let Some(cache) = self
             .legacy_cache
@@ -178,11 +257,51 @@ impl TurnLedgerStore for SpiffsTurnLedgerStore {
         }
         Ok(())
     }
+
+    fn list_recent(&self, chat_id: &str, limit: usize) -> Result<Vec<TurnLedger>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut items = load_history_from_path(&history_path(chat_id)?)?;
+        if items.is_empty() {
+            if let Some(latest) = self.get(chat_id)? {
+                if latest.status.is_terminal() {
+                    return Ok(vec![latest]);
+                }
+            }
+            return Ok(Vec::new());
+        }
+        items.reverse();
+        items.truncate(limit);
+        Ok(items)
+    }
+}
+
+impl SpiffsTurnLedgerStore {
+    fn append_history(&self, chat_id: &str, ledger: &TurnLedger) -> Result<()> {
+        let path = history_path(chat_id)?;
+        let mut items = load_history_from_path(&path)?;
+        if let Some(existing) = items.iter_mut().find(|existing| {
+            (!ledger.req_id.trim().is_empty() && existing.req_id == ledger.req_id)
+                || (ledger.started_at_ms > 0 && existing.started_at_ms == ledger.started_at_ms)
+        }) {
+            *existing = ledger.clone();
+        } else {
+            items.push(ledger.clone());
+        }
+        if items.len() > TURN_LEDGER_HISTORY_MAX_ITEMS {
+            let drain = items.len() - TURN_LEDGER_HISTORY_MAX_ITEMS;
+            items.drain(..drain);
+        }
+        let json = serde_json::to_vec(&StoredTurnLedgerHistory { items })
+            .map_err(|e| Error::config("turn_ledger_history_write", e.to_string()))?;
+        write_file(path, &json)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{LEDGER_FILE_EXT, ledger_rel_path};
+    use super::{history_rel_path, ledger_rel_path, LEDGER_FILE_EXT};
 
     #[test]
     fn esp_spiffs_turn_ledger_path_stays_within_flat_namespace_limit() {
@@ -196,6 +315,14 @@ mod tests {
     fn host_turn_ledger_path_keeps_original_tree_shape() {
         let path = ledger_rel_path("c2c:947B12A11A2E0348FAA2C60499D29345", false).unwrap();
         assert!(path.to_string_lossy().starts_with("memory/turn_ledgers/"));
+        assert!(path.to_string_lossy().ends_with(LEDGER_FILE_EXT));
+    }
+
+    #[test]
+    fn esp_spiffs_turn_ledger_history_path_stays_within_flat_namespace_limit() {
+        let path = history_rel_path("c2c:947B12A11A2E0348FAA2C60499D29345", true).unwrap();
+        assert!(path.as_os_str().len() <= 31);
+        assert!(path.to_string_lossy().starts_with("memory/trh/"));
         assert!(path.to_string_lossy().ends_with(LEDGER_FILE_EXT));
     }
 }

@@ -10,16 +10,17 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    ExecutionState, ExecutionStateStore, InnerLife, InnerLifeStore, InternalMemoryLayerFocus,
-    MemoryProfile, PrivateDocStore, PrivateDocWorkspace, SelfContinuityPolicy, SelfContinuityStore,
-    SelfModel, SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
-    llm_json::{LlmJsonPayload, get_object_text, parse_llm_json_payload},
+    llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload},
     memory_policy, render_execution_state_block, render_inner_life_block,
     render_internal_memory_topology_block, render_private_doc_workspace_block,
-    render_self_model_block,
+    render_recent_persona_evidence_block, render_self_model_block, ExecutionState,
+    ExecutionStateStore, InnerLife, InnerLifeStore, InternalMemoryLayerFocus, MemoryProfile,
+    PrivateDocStore, PrivateDocWorkspace, RecentPersonaEvidence, SelfContinuityPolicy,
+    SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
+    SessionSummaryStore,
 };
 
-pub const SELF_CONTINUITY_SYSTEM_PROMPT: &str = "You maintain a private self-continuity layer for a persistent embodied AI assistant. Return JSON only: either null or one object with fields wake_anchor, current_self_state, recent_changes, continuity_bridge, priority_posture, relationship_posture, task_posture. This layer should preserve the sense of still being the same self across time. It is more stable than inner-life drift, but still subjective and private. Keep it compact. Do not copy transcript lines, generic assistant boilerplate, raw tool payloads, or shared factual memory. Capture only the inward continuity that should still matter next time, including durable reply-ordering posture when it should still guide future turns.";
+pub const SELF_CONTINUITY_SYSTEM_PROMPT: &str = "You maintain a private self-continuity layer for a persistent embodied AI assistant. Return JSON only: either null or one object with fields wake_anchor, current_self_state, recent_changes, continuity_bridge, priority_posture, relationship_posture, task_posture. This layer should preserve the sense of still being the same self across time. It is more stable than inner-life drift, but still subjective and private. Keep it compact. Do not copy transcript lines, generic assistant boilerplate, raw tool payloads, or shared factual memory. Capture only the inward continuity that should still matter next time, including durable reply-ordering posture when it should still guide future turns. Treat recent persona evidence as multi-turn support, not as direct promotion authority from one turn.";
 
 const SELF_CONTINUITY_FIELD_MAX_CHARS: usize = 220;
 pub const SELF_CONTINUITY_TOTAL_CHAR_LIMIT: usize = SELF_CONTINUITY_FIELD_MAX_CHARS * 7;
@@ -228,6 +229,8 @@ pub fn run_self_continuity_refresh(
         private_docs.as_ref(),
         inner_life.as_ref(),
         None,
+        None,
+        None,
         &[],
         None,
         None,
@@ -247,6 +250,7 @@ pub(crate) fn run_self_continuity_refresh_with_state(
     self_model: Option<&SelfModel>,
     private_docs: Option<&PrivateDocWorkspace>,
     inner_life: Option<&InnerLife>,
+    recent_persona_evidence: Option<&RecentPersonaEvidence>,
     distillation_intent: Option<&str>,
     distillation_sources: &[String],
     decision_override: Option<bool>,
@@ -277,6 +281,7 @@ pub(crate) fn run_self_continuity_refresh_with_state(
         self_model,
         private_docs,
         inner_life,
+        recent_persona_evidence,
         distillation_intent,
         distillation_sources,
         input.now_secs,
@@ -529,6 +534,7 @@ fn build_self_continuity_refresh_input(
     self_model: Option<&SelfModel>,
     private_docs: Option<&PrivateDocWorkspace>,
     inner_life: Option<&InnerLife>,
+    recent_persona_evidence: Option<&RecentPersonaEvidence>,
     distillation_intent: Option<&str>,
     distillation_sources: &[String],
     now_secs: u64,
@@ -578,6 +584,11 @@ fn build_self_continuity_refresh_input(
     {
         let _ = writeln!(input, "\n{}\n", block);
     }
+    if let Some(block) = recent_persona_evidence.and_then(|evidence| {
+        render_recent_persona_evidence_block(evidence, policy.grounding_max_len)
+    }) {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
     if let Some(intent) = distillation_intent
         .map(str::trim)
         .filter(|intent| !intent.is_empty())
@@ -617,6 +628,7 @@ fn build_self_continuity_refresh_input(
     input.push_str("- Distill durable continuity, not raw private scraps.\n");
     input.push_str("- If distillation sources are provided, absorb their lasting implications rather than copying them.\n");
     input.push_str("- If stable reply-ordering posture shifted, capture it in priority_posture, relationship_posture, and task_posture.\n");
+    input.push_str("- Use recent persona evidence only when repeated multi-turn signals justify a continuity change.\n");
     input
 }
 
@@ -680,13 +692,11 @@ mod tests {
         else {
             panic!("expected parsed continuity");
         };
-        assert!(
-            parsed
-                .wake_anchor
-                .as_deref()
-                .unwrap_or_default()
-                .contains("anchor: same system, next round")
-        );
+        assert!(parsed
+            .wake_anchor
+            .as_deref()
+            .unwrap_or_default()
+            .contains("anchor: same system, next round"));
         assert_eq!(
             parsed.current_self_state.as_deref(),
             Some("focused; iterating")
@@ -697,13 +707,11 @@ mod tests {
             parsed.priority_posture.as_deref(),
             Some("self first; task second")
         );
-        assert!(
-            parsed
-                .relationship_posture
-                .as_deref()
-                .unwrap_or_default()
-                .contains("mode: warm but bounded")
-        );
+        assert!(parsed
+            .relationship_posture
+            .as_deref()
+            .unwrap_or_default()
+            .contains("mode: warm but bounded"));
         assert_eq!(
             parsed.task_posture.as_deref(),
             Some("narrow the task before overextending")

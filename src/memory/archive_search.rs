@@ -3,13 +3,16 @@
 use crate::error::Result;
 use crate::util::truncate_content_to_max;
 #[cfg(target_os = "linux")]
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 #[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
 
-use super::{MAX_SESSION_ENTRIES, MemoryStore, SessionStore, TurnLedger, TurnLedgerStore};
+use super::{
+    render_turn_persona_ledger_block, MemoryStore, SessionStore, TurnLedger, TurnLedgerStore,
+    MAX_SESSION_ENTRIES,
+};
 
 pub const MAX_ARCHIVE_SEARCH_LIMIT: usize = 8;
 pub const MAX_ARCHIVE_GET_CONTENT_LEN: usize = 4 * 1024;
@@ -707,10 +710,8 @@ fn archive_sqlite_rebuild(
     tx.execute(
         "INSERT INTO archive_meta(key, value) VALUES('signature', ?1)
          ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        params![
-            serde_json::to_string(signature)
-                .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?
-        ],
+        params![serde_json::to_string(signature)
+            .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?],
     )
     .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
     tx.commit()
@@ -1600,7 +1601,7 @@ fn collect_archive_chat_ids(
 }
 
 fn render_turn_log_content(ledger: &TurnLedger) -> String {
-    [
+    let mut parts = [
         (!ledger.reason.trim().is_empty()).then(|| format!("reason={}", ledger.reason.trim())),
         (!ledger.user_preview.trim().is_empty())
             .then(|| format!("user={}", ledger.user_preview.trim())),
@@ -1609,8 +1610,18 @@ fn render_turn_log_content(ledger: &TurnLedger) -> String {
     ]
     .into_iter()
     .flatten()
-    .collect::<Vec<_>>()
-    .join("; ")
+    .collect::<Vec<_>>();
+    if let Some(persona_summary) = (ledger.ingress == crate::bus::IngressKind::User)
+        .then_some(ledger.persona.as_ref())
+        .flatten()
+        .and_then(|persona| {
+            render_turn_persona_ledger_block(persona, 320)
+                .map(|block| block.lines().skip(1).collect::<Vec<_>>().join(" | "))
+        })
+    {
+        parts.push(format!("persona={}", persona_summary));
+    }
+    parts.join("; ")
 }
 
 fn turn_log_observed_at(ledger: &TurnLedger) -> Option<u64> {

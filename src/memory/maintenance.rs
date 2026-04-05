@@ -8,16 +8,7 @@ use crate::orchestrator::PressureLevel;
 use crate::platform::SkillStorage;
 
 use super::{
-    ExecutionStateRefreshContext, ExecutionStateRefreshInput, ExecutionStateRefreshOutcome,
-    ExecutionStateStore, InternalMemoryRoutingDecision, InternalMemoryRoutingInput,
-    LongTermMemoryExtractionStateStore, LongTermMemoryExtractionTurnInput, LongTermMemoryStore,
-    MemoryGovernanceContext, MemoryGovernanceInput, MemoryHygieneContext, MemoryProfile,
-    MemoryStore, PrivateDocStore, PrivateDocWorkspaceRefreshContext,
-    PrivateDocWorkspaceRefreshInput, PrivateDocWorkspaceRefreshOutcome,
-    PrivateGardenGovernanceContext, PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome,
-    PrivateGardenStore, SelfModelRefreshContext, SelfModelRefreshInput, SelfModelRefreshOutcome,
-    SelfModelStore, SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore,
-    TurnLedgerStore, evaluate_long_term_memory_extraction_turn, load_session_summary_snapshot,
+    evaluate_long_term_memory_extraction_turn, load_session_summary_snapshot,
     mark_long_term_memory_extraction_requested, memory_capability_profile, memory_policy,
     normalize_private_garden_doc_path, persist_long_term_memory_extraction_state,
     run_execution_state_refresh_with_state, run_internal_memory_routing_with_state,
@@ -25,7 +16,16 @@ use super::{
     run_private_doc_workspace_refresh_with_state, run_private_garden_governance_with_state,
     run_self_model_refresh_with_state, run_session_summary_refresh_with_snapshot,
     should_refresh_execution_state, should_refresh_private_doc_workspace,
-    should_refresh_private_garden, should_refresh_self_model,
+    should_refresh_private_garden, should_refresh_self_model, ExecutionStateRefreshContext,
+    ExecutionStateRefreshInput, ExecutionStateRefreshOutcome, ExecutionStateStore,
+    InternalMemoryRoutingDecision, InternalMemoryRoutingInput, LongTermMemoryExtractionStateStore,
+    LongTermMemoryExtractionTurnInput, LongTermMemoryStore, MemoryGovernanceContext,
+    MemoryGovernanceInput, MemoryHygieneContext, MemoryProfile, MemoryStore, PrivateDocStore,
+    PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
+    PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
+    PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, PrivateGardenStore,
+    SelfModelRefreshContext, SelfModelRefreshInput, SelfModelRefreshOutcome, SelfModelStore,
+    SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore, TurnLedgerStore,
 };
 
 pub struct PostReplyMemoryMaintenanceContext<'a> {
@@ -422,6 +422,10 @@ fn run_private_memory_maintenance_passes(
     shared: &SharedMaintenancePasses,
 ) -> PrivateMaintenancePasses {
     crate::platform::task_wdt::feed_current_task();
+    let recent_persona_evidence =
+        super::load_recent_persona_evidence(ctx.turn_ledger_store, input.chat_id)
+            .ok()
+            .flatten();
     let self_model_result = match &baseline.self_model {
         Ok(existing_model) => run_self_model_refresh_with_state(
             http,
@@ -453,6 +457,7 @@ fn run_private_memory_maintenance_passes(
                 .ok()
                 .and_then(|workspace| workspace.as_ref()),
             baseline.private_garden_docs.as_deref().unwrap_or(&[]),
+            recent_persona_evidence.as_ref(),
             shared.internal_memory_decision.self_model_intent.as_deref(),
             shared
                 .internal_memory_decision
@@ -1467,13 +1472,11 @@ mod tests {
             outcome.extraction_request_outcome,
             LongTermMemoryRefreshRequestOutcome::NotRequested
         );
-        assert!(
-            extraction_state_store
-                .state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .is_none()
-        );
+        assert!(extraction_state_store
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_none());
     }
 
     #[test]
@@ -1718,18 +1721,14 @@ mod tests {
         );
 
         assert_eq!(outcome.private_garden_upstream_cleanup_result.unwrap(), 1);
-        assert!(
-            private_garden_store
-                .read("chat-1", "journal/promoted.md")
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            private_garden_store
-                .read("chat-1", "scratch/stale.md")
-                .unwrap()
-                .is_none()
-        );
+        assert!(private_garden_store
+            .read("chat-1", "journal/promoted.md")
+            .unwrap()
+            .is_none());
+        assert!(private_garden_store
+            .read("chat-1", "scratch/stale.md")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

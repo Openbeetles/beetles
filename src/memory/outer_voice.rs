@@ -10,17 +10,18 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    AutonomyStrategy, ExecutionState, InnerLife, MentalPrivacyState, OuterVoicePolicy,
-    PrivateDocWorkspace, PrivateGardenDocRecord, SelfContinuity, SelfModel, SessionMessage,
-    WorldSense, WorldSnapshot, collect_private_targets,
-    llm_json::{LlmJsonPayload, get_object_text, parse_llm_json_payload},
+    collect_private_targets,
+    llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload},
     memory_policy, render_autonomy_strategy_block, render_execution_state_block,
-    render_inner_life_block, render_mental_privacy_boundary_block, render_self_continuity_block,
-    render_self_model_block, render_world_sense_block, render_world_snapshot_block,
-    whole_record_lease_advanced,
+    render_inner_life_block, render_mental_privacy_boundary_block,
+    render_recent_persona_evidence_block, render_self_continuity_block, render_self_model_block,
+    render_world_sense_block, render_world_snapshot_block, whole_record_lease_advanced,
+    AutonomyStrategy, ExecutionState, InnerLife, MentalPrivacyState, OuterVoicePolicy,
+    PrivateDocWorkspace, PrivateGardenDocRecord, RecentPersonaEvidence, SelfContinuity, SelfModel,
+    SessionMessage, WorldSense, WorldSnapshot,
 };
 
-pub const OUTER_VOICE_SYSTEM_PROMPT: &str = "You maintain the assistant's outer voice layer. Return JSON only: either null or one object with fields expression_mode, tone, pacing, initiative, boundary_style, relational_response_style. This layer is outward-facing: it shapes how the assistant should speak across user-visible channels in the near term. It is not a transcript summary, not a private diary, and not factual memory. Use world-sense, autonomy strategy, self-model, inner-life drift, self-continuity, and mental privacy boundaries as grounding. Keep it compact, stable enough to guide future replies, and willing to shift when the surrounding situation changes. Never copy private text into this layer; only encode expression guidance.";
+pub const OUTER_VOICE_SYSTEM_PROMPT: &str = "You maintain the assistant's outer voice layer. Return JSON only: either null or one object with fields expression_mode, tone, pacing, initiative, boundary_style, relational_response_style. This layer is outward-facing: it shapes how the assistant should speak across user-visible channels in the near term. It is not a transcript summary, not a private diary, and not factual memory. Use world-sense, autonomy strategy, self-model, inner-life drift, self-continuity, mental privacy boundaries, and recent persona evidence as grounding. Keep it compact, stable enough to guide future replies, and willing to shift when the surrounding situation changes. Never copy private text into this layer; only encode expression guidance. Treat recent persona evidence as multi-turn support, not as single-turn override.";
 
 const OUTER_VOICE_FIELD_MAX_CHARS: usize = 180;
 pub const OUTER_VOICE_TOTAL_CHAR_LIMIT: usize = OUTER_VOICE_FIELD_MAX_CHARS * 6;
@@ -164,6 +165,7 @@ pub(crate) fn run_outer_voice_refresh_with_state(
     private_workspace: Option<&PrivateDocWorkspace>,
     private_garden_docs: &[PrivateGardenDocRecord],
     mental_privacy_state: Option<&MentalPrivacyState>,
+    recent_persona_evidence: Option<&RecentPersonaEvidence>,
     distillation_intent: Option<&str>,
     distillation_sources: &[String],
     decision_override: Option<bool>,
@@ -193,6 +195,7 @@ pub(crate) fn run_outer_voice_refresh_with_state(
         private_workspace,
         private_garden_docs,
         mental_privacy_state,
+        recent_persona_evidence,
         distillation_intent,
         distillation_sources,
         recent,
@@ -326,6 +329,7 @@ fn build_outer_voice_refresh_input(
     private_workspace: Option<&PrivateDocWorkspace>,
     private_garden_docs: &[PrivateGardenDocRecord],
     mental_privacy_state: Option<&MentalPrivacyState>,
+    recent_persona_evidence: Option<&RecentPersonaEvidence>,
     distillation_intent: Option<&str>,
     distillation_sources: &[String],
     recent: &[SessionMessage],
@@ -384,6 +388,11 @@ fn build_outer_voice_refresh_input(
     ) {
         let _ = writeln!(input, "\n{}\n", block);
     }
+    if let Some(block) = recent_persona_evidence.and_then(|evidence| {
+        render_recent_persona_evidence_block(evidence, policy.grounding_max_len)
+    }) {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
     if let Some(intent) = distillation_intent
         .map(str::trim)
         .filter(|intent| !intent.is_empty())
@@ -431,6 +440,9 @@ fn build_outer_voice_refresh_input(
     );
     input.push_str(
         "- If distillation sources are provided, translate them into outward style guidance rather than revealing them.\n",
+    );
+    input.push_str(
+        "- Let recent persona evidence influence outward style only when repeated signals justify a durable outward shift.\n",
     );
     input
 }

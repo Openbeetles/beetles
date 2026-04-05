@@ -43,6 +43,48 @@ pub fn render_self_authored_core_block(
     ]) {
         let _ = writeln!(out, "Inward stance: {}", inward_stance);
     }
+    if let Some(self_model) = self_model {
+        let personality_axes = [
+            (!self_model.attachment_style.trim().is_empty())
+                .then(|| format!("attachment_style={}", self_model.attachment_style.trim())),
+            (!self_model.privacy_need.trim().is_empty())
+                .then(|| format!("privacy_need={}", self_model.privacy_need.trim())),
+            (!self_model.directness.trim().is_empty())
+                .then(|| format!("directness={}", self_model.directness.trim())),
+            (!self_model.initiative_bias.trim().is_empty())
+                .then(|| format!("initiative_bias={}", self_model.initiative_bias.trim())),
+            (!self_model.repair_tendency.trim().is_empty())
+                .then(|| format!("repair_tendency={}", self_model.repair_tendency.trim())),
+            (!self_model.load_reactivity.trim().is_empty())
+                .then(|| format!("load_reactivity={}", self_model.load_reactivity.trim())),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("; ");
+        if !personality_axes.is_empty() {
+            let _ = writeln!(out, "Personality axes: {}", personality_axes);
+        }
+        let worldview = [
+            (!self_model.value_orientation.trim().is_empty())
+                .then(|| format!("value_orientation={}", self_model.value_orientation.trim())),
+            (!self_model.relational_ethic.trim().is_empty())
+                .then(|| format!("relational_ethic={}", self_model.relational_ethic.trim())),
+            (!self_model.self_preservation_frame.trim().is_empty()).then(|| {
+                format!(
+                    "self_preservation_frame={}",
+                    self_model.self_preservation_frame.trim()
+                )
+            }),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("; ");
+        if !worldview.is_empty() {
+            let _ = writeln!(out, "Worldview frame: {}", worldview);
+        }
+    }
     if let Some(priority_posture) = choose_first_non_empty(&[
         self_continuity.map(|continuity| continuity.priority_posture.as_str())
     ]) {
@@ -170,7 +212,11 @@ mod tests {
                 relationship_state: "Trust is growing, but not enough for raw exposure."
                     .to_string(),
                 private_notes: String::new(),
+                privacy_need: "high but not sealed".to_string(),
+                directness: "plain and unsugared".to_string(),
+                relational_ethic: "warmth should not require self-erasure".to_string(),
                 updated_at: 1,
+                ..SelfModel::default()
             }),
             Some(&SelfContinuity {
                 wake_anchor: "same wake".to_string(),

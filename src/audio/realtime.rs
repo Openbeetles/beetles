@@ -35,13 +35,13 @@ const REALTIME_SESSION_READY_TIMEOUT_MS: u64 = 1_500;
 const REALTIME_SERVER_VAD_IDLE_TIMEOUT_MS: u32 = 8_000;
 const REALTIME_SERVER_VAD_PREFIX_PADDING_MS: u32 = 300;
 const REALTIME_NO_SPEECH_TIMEOUT_MS: u64 = 4_000;
-const REALTIME_POST_RESPONSE_IDLE_TIMEOUT_MS: u64 = 2_000;
+const REALTIME_POST_RESPONSE_IDLE_TIMEOUT_MS: u64 = 5_000;
 const REALTIME_RESPONSE_WAIT_TIMEOUT_MS: u64 = 8_000;
 const REALTIME_ENDPOINT_THRESHOLD_MAX: f32 = 0.12;
 // Baidu realtime currently streams raw16k PCM over WSS rather than xiaozhi's
 // Opus packet path, so the downlink is more burst-sensitive and needs a thicker
 // software buffer on ESP to avoid audible underruns on normal Wi-Fi jitter.
-const REALTIME_PLAYBACK_TARGET_BUFFER_MS: u32 = 600;
+const REALTIME_PLAYBACK_TARGET_BUFFER_MS: u32 = 800;
 const REALTIME_INTERRUPT_BASELINE_MS: u64 = 180;
 const REALTIME_INTERRUPT_SPEECH_MIN_MS: u32 = 180;
 const REALTIME_INTERRUPT_THRESHOLD_MIN: f32 = 0.18;
@@ -1765,9 +1765,7 @@ fn should_hold_local_capture_for_server_response(
 ) -> bool {
     matches!(provider, RealtimeProvider::Baidu)
         && !state.suppress_server_audio_until_turn_end
-        && (state.awaiting_response
-            || state.baidu_response_active
-            || state.current_turn_received_server_activity)
+        && (state.awaiting_response || state.baidu_response_active)
         && !state.audio_playing
 }
 

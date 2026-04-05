@@ -170,9 +170,7 @@ fn flush_map<T, V>(
 fn should_retry_write_back_error(error: &Error) -> bool {
     match error {
         Error::Config { .. } => false,
-        Error::Io { source, .. } => {
-            !matches!(source.raw_os_error(), Some(36 | 63 | 91))
-        }
+        Error::Io { source, .. } => !matches!(source.raw_os_error(), Some(36 | 63 | 91)),
         _ => true,
     }
 }
@@ -368,6 +366,31 @@ impl TurnLedgerStore for BufferedTurnLedgerStore {
         self.cache_value(chat_id, None);
         self.schedule_flush();
         Ok(())
+    }
+
+    fn list_recent(&self, chat_id: &str, limit: usize) -> Result<Vec<TurnLedger>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut recent = self.inner.list_recent(chat_id, limit)?;
+        if let Some(pending) = self.pending.peek(chat_id) {
+            match pending {
+                Some(ledger) if ledger.status.is_terminal() => {
+                    recent.retain(|existing| {
+                        let same_req_id =
+                            !ledger.req_id.trim().is_empty() && existing.req_id == ledger.req_id;
+                        let same_started_at = ledger.started_at_ms > 0
+                            && existing.started_at_ms == ledger.started_at_ms;
+                        !(same_req_id || same_started_at)
+                    });
+                    recent.insert(0, ledger);
+                }
+                None => return Ok(Vec::new()),
+                _ => {}
+            }
+        }
+        recent.truncate(limit);
+        Ok(recent)
     }
 }
 

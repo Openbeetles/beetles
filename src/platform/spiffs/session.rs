@@ -3,8 +3,8 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    MAX_SESSION_ENTRIES, MAX_SESSION_MESSAGE_LEN, REL_PATH_SESSIONS_DIR, SessionMessage,
-    SessionStore,
+    SessionMessage, SessionStore, MAX_SESSION_ENTRIES, MAX_SESSION_MESSAGE_LEN,
+    REL_PATH_SESSIONS_DIR,
 };
 use serde_json;
 use std::collections::HashMap;
@@ -17,7 +17,7 @@ use std::sync::Mutex;
 
 use crate::platform::state_root::state_mount_path;
 
-use super::{MAX_WRITE_SIZE, list_dir, read_file, with_fs_lock, write_file};
+use super::{list_dir, read_file, with_fs_lock, write_file, MAX_WRITE_SIZE};
 
 const TAG: &str = "platform::spiffs::session";
 
@@ -197,7 +197,7 @@ fn ensure_session_parent_dir(_path: &Path, _stage: &'static str) -> Result<()> {
     Ok(())
 }
 
-fn ensure_sessions_dir_exists(_stage: &'static str) -> Result<()> {
+fn ensure_sessions_dir_exists(stage: &'static str) -> Result<()> {
     let mut dir = state_mount_path();
     dir.push(REL_PATH_SESSIONS_DIR);
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
