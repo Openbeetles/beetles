@@ -155,7 +155,7 @@ fn handle_linux_request(
         let restart_reason = format!("http_restart{}", path);
         crate::util::spawn_guarded_with_profile(
             "restart_defer",
-            crate::util::STACK_HTTP_ROUTE_WORKER,
+            crate::util::STACK_RESTART_DEFER,
             Some(crate::util::SpawnCore::Core0),
             crate::util::HttpThreadRole::Background,
             move || {

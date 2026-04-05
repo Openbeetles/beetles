@@ -19,7 +19,7 @@ import { BeetleIcon } from "./BeetleIcon";
 import { useTranslation } from "react-i18next";
 import { Link, useLocation } from "react-router-dom";
 import { NavBlockerContext } from "../contexts/NavBlockerContext";
-import { SIDEBAR_WIDTH_EXPANDED } from "../config/layout";
+import { SIDEBAR_WIDTH_EXPANDED, TOP_BAR_MIN_HEIGHT } from "../config/layout";
 import { useDevice } from "../hooks/useDevice";
 import { useDeviceApi, type DeviceHintReason } from "../hooks/useDeviceApi";
 import { useToast } from "../hooks/useToast";
@@ -118,7 +118,7 @@ export function Sidebar({ drawer }: SidebarProps) {
         alignItems="center"
         spacing={1.5}
         sx={{
-          minHeight: 56,
+          minHeight: TOP_BAR_MIN_HEIGHT,
           px: drawer ? 2 : 2,
           textDecoration: "none",
           color: "inherit",
@@ -165,7 +165,7 @@ export function Sidebar({ drawer }: SidebarProps) {
           backgroundColor: baseUrl
             ? "var(--surface)"
             : "color-mix(in srgb, var(--semantic-danger) 5%, var(--card))",
-          borderLeftWidth: "var(--accent-line-width, 3px)",
+          borderLeftWidth: "var(--accent-line-width)",
           borderLeftColor: baseUrl
             ? "var(--semantic-success)"
             : "var(--semantic-danger)",
@@ -191,17 +191,18 @@ export function Sidebar({ drawer }: SidebarProps) {
               backgroundColor: "transparent",
             },
             "&:focus-visible": {
-              outline: "2px solid var(--primary)",
-              outlineOffset: 2,
+              outline:
+                "var(--focus-ring-width) solid color-mix(in srgb, var(--primary) 55%, transparent)",
+              outlineOffset: "var(--focus-ring-offset)",
               borderRadius: "var(--radius-control)",
             },
           }}
         >
           <Box
             sx={{
-              width: 6,
-              height: 6,
-              borderRadius: "2px",
+              width: "var(--dot-size)",
+              height: "var(--dot-size)",
+              borderRadius: "50%",
               backgroundColor: baseUrl
                 ? "var(--semantic-success)"
                 : "var(--semantic-danger)",
@@ -268,7 +269,7 @@ export function Sidebar({ drawer }: SidebarProps) {
           const navSelectedHoverGrad =
             "linear-gradient(165deg, color-mix(in srgb, var(--primary) 12%, var(--surface)) 0%, color-mix(in srgb, var(--primary) 22%, var(--card)) 100%)";
           const navSelectedPcbShared = {
-            borderRadius: 2,
+            borderRadius: "var(--radius-control)",
             color: "var(--primary)",
             position: "relative" as const,
             overflow: "hidden" as const,

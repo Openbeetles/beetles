@@ -259,7 +259,7 @@ function LoadFailedState({
         gap: 1.5,
         p: 1.75,
         ...SECTION_PANEL_SX,
-        borderLeftWidth: "var(--accent-line-width, 3px)",
+        borderLeftWidth: "var(--accent-line-width)",
         borderLeftStyle: "solid",
         borderLeftColor:
           "color-mix(in srgb, var(--semantic-danger) 72%, var(--border-subtle))",
@@ -414,7 +414,7 @@ export function ChannelConnectivityPanel({
                 px: 1.5,
                 py: 1.25,
                 ...SECTION_PANEL_SX,
-                borderLeftWidth: "var(--accent-line-width, 3px)",
+                borderLeftWidth: "var(--accent-line-width)",
                 borderLeftStyle: "solid",
                 borderLeftColor:
                   "color-mix(in srgb, var(--semantic-warning) 72%, var(--border-subtle))",

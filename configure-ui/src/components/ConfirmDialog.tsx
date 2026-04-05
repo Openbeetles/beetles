@@ -95,7 +95,7 @@ export function ConfirmDialog({
         paper: {
           sx: {
             width: "100%",
-            maxWidth: wide ? undefined : 360,
+            maxWidth: wide ? undefined : 'var(--dialog-narrow-max-width)',
             borderRadius: "var(--radius-card)",
             border: "none",
             boxShadow: "none",
@@ -110,8 +110,8 @@ export function ConfirmDialog({
           {icon && (
             <Box
               sx={{
-                width: 40,
-                height: 40,
+                width: "var(--icon-container-lg)",
+                height: "var(--icon-container-lg)",
                 borderRadius: "var(--radius-chip)",
                 display: "flex",
                 alignItems: "center",
@@ -121,7 +121,13 @@ export function ConfirmDialog({
                 backgroundColor: "color-mix(in srgb, var(--foreground) 6%, transparent)",
               }}
             >
-              <Box component="span" sx={{ display: "flex", "& > svg": { fontSize: 22 } }}>
+              <Box
+                component="span"
+                sx={{
+                  display: "flex",
+                  "& > svg": { fontSize: "var(--icon-size-md)" },
+                }}
+              >
                 {icon}
               </Box>
             </Box>

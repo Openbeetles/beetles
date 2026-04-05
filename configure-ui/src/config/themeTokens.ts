@@ -85,6 +85,19 @@ export const LAYOUT_TOKENS = {
   carouselSlideDurationMs: 520,
   /** 轮播与右侧资讯卡叠压宽度（px） */
   carouselOverlapPx: 24,
+  /**
+   * 全屏状态遮罩（重启中、离线缓存等）的 backdrop blur（px）。
+   * 与导航栏 `glassBlur` 解耦：遮罩需更强分离度。
+   */
+  overlayBackdropBlurPx: 12,
+  /** 顶栏下状态卡片最大宽度（px），与 `calc(100vw - gutter)` 配合 */
+  statusOverlayCardMaxPx: 520,
+  /** 状态卡片相对视口水平安全边距（px） */
+  statusOverlayCardInsetPx: 24,
+  /** 页面主标题下渐变装饰条长度（px） */
+  pageHeaderAccentBarWidthPx: 48,
+  /** 窄幅确认弹窗内容最大宽度（px），与 MUI maxWidth xs 搭配 */
+  dialogNarrowMaxWidthPx: 360,
   /** hover 上浮位移（px），用于卡片等；控制台面板固定为 0 */
   hoverLiftY: 0,
   /** hover 右移位移（px），用于“更多”链接、箭头等 */

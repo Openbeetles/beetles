@@ -47,6 +47,7 @@ use crate::memory::{
     PersonaPriorityRuntimeState, PostReplyMemoryMaintenanceContext,
     PostReplyMemoryMaintenanceInput, PrivateDocStore, PrivateGardenStore, PromptMemoryContext,
     PromptMemoryContextParams, RemindAtStore, SelfContinuityStore, SelfModelStore,
+    SessionMessage,
     SelfRuntimeContext, SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore,
     TurnDeliveryLedger, TurnLedger, TurnLedgerStatus, TurnLedgerStore, WorldSenseStore,
 };
@@ -1855,20 +1856,6 @@ fn finalize_lane_turn(
         return;
     }
 
-    let session_start = Instant::now();
-    if let Err(e) = config
-        .session_store
-        .append(&msg.chat_id, "user", &msg.content)
-    {
-        log::warn!("[agent_session] append user failed: {}", e);
-        metrics::record_error_by_stage("session_append");
-    }
-    worker_latency.session_write_ms = worker_latency
-        .session_write_ms
-        .saturating_add(session_start.elapsed().as_millis());
-    llm_failure_count.remove(&msg_key);
-    defer_tracker.remove(&msg_key);
-
     let outbound_start = Instant::now();
     let delivered = if reply_already_delivered {
         crate::platform::task_wdt::feed_current_task();
@@ -1897,18 +1884,35 @@ fn finalize_lane_turn(
         0
     };
 
-    if delivered {
-        let session_assistant_start = Instant::now();
-        if let Err(e) = config
+    let session_start = Instant::now();
+    let session_write_result = if delivered {
+        let entries = [
+            SessionMessage {
+                role: "user".to_string(),
+                content: msg.content.clone(),
+            },
+            SessionMessage {
+                role: "assistant".to_string(),
+                content: reply_content.clone(),
+            },
+        ];
+        config.session_store.append_batch(&msg.chat_id, &entries)
+    } else {
+        config
             .session_store
-            .append(&msg.chat_id, "assistant", &reply_content)
-        {
-            log::warn!("[agent_session] append assistant failed: {}", e);
-            metrics::record_error_by_stage("session_append");
-        }
-        worker_latency.session_write_ms = worker_latency
-            .session_write_ms
-            .saturating_add(session_assistant_start.elapsed().as_millis());
+            .append(&msg.chat_id, "user", &msg.content)
+    };
+    if let Err(e) = session_write_result {
+        log::warn!("[agent_session] append failed: {}", e);
+        metrics::record_error_by_stage("session_append");
+    }
+    worker_latency.session_write_ms = worker_latency
+        .session_write_ms
+        .saturating_add(session_start.elapsed().as_millis());
+    llm_failure_count.remove(&msg_key);
+    defer_tracker.remove(&msg_key);
+
+    if delivered {
         if mark_important {
             let _ = config
                 .important_message_store

@@ -35,6 +35,14 @@ use crate::{
 };
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::sync::{Arc, Mutex, RwLock};
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use crate::runtime::write_back::{
+    BufferedAutonomyStrategyStore, BufferedExecutionStateStore, BufferedImportantMessageStore,
+    BufferedInnerLifeStore, BufferedLongTermExtractionStateStore, BufferedMentalPrivacyStore,
+    BufferedOuterVoiceStore, BufferedSelfContinuityStore, BufferedSelfModelStore,
+    BufferedSessionStore, BufferedSessionSummaryStore, BufferedTurnLedgerStore,
+    BufferedWorldSenseStore,
+};
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 /// ESP32 平台实现。
@@ -45,26 +53,27 @@ pub struct Esp32Platform {
     skill_meta_store: Arc<SpiffsSkillMetaStore>,
     memory_store: Arc<SpiffsMemoryStore>,
     long_term_memory_store: Arc<SpiffsLongTermMemoryStore>,
-    long_term_memory_extraction_state_store: Arc<SpiffsLongTermMemoryExtractionStateStore>,
-    session_store: Arc<SpiffsSessionStore>,
+    long_term_memory_extraction_state_store:
+        Arc<dyn LongTermMemoryExtractionStateStore + Send + Sync>,
+    session_store: Arc<dyn SessionStore + Send + Sync>,
     pending_retry_store: Arc<SpiffsPendingRetryStore>,
     calendar_store: Arc<SpiffsCalendarStore>,
     calendar_provider_credential_store: Arc<SpiffsCalendarProviderCredentialStore>,
     task_store: Arc<SpiffsTaskStore>,
-    execution_state_store: Arc<SpiffsExecutionStateStore>,
-    self_model_store: Arc<SpiffsSelfModelStore>,
-    world_sense_store: Arc<SpiffsWorldSenseStore>,
-    autonomy_strategy_store: Arc<SpiffsAutonomyStrategyStore>,
-    outer_voice_store: Arc<SpiffsOuterVoiceStore>,
-    inner_life_store: Arc<SpiffsInnerLifeStore>,
-    self_continuity_store: Arc<SpiffsSelfContinuityStore>,
+    execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
+    self_model_store: Arc<dyn SelfModelStore + Send + Sync>,
+    world_sense_store: Arc<dyn WorldSenseStore + Send + Sync>,
+    autonomy_strategy_store: Arc<dyn AutonomyStrategyStore + Send + Sync>,
+    outer_voice_store: Arc<dyn OuterVoiceStore + Send + Sync>,
+    inner_life_store: Arc<dyn InnerLifeStore + Send + Sync>,
+    self_continuity_store: Arc<dyn SelfContinuityStore + Send + Sync>,
     private_doc_store: Arc<SpiffsPrivateDocStore>,
     private_garden_store: Arc<SpiffsPrivateGardenStore>,
-    mental_privacy_store: Arc<SpiffsMentalPrivacyStore>,
-    important_message_store: Arc<SpiffsImportantMessageStore>,
+    mental_privacy_store: Arc<dyn MentalPrivacyStore + Send + Sync>,
+    important_message_store: Arc<dyn ImportantMessageStore + Send + Sync>,
     remind_at_store: Arc<SpiffsRemindAtStore>,
-    session_summary_store: Arc<SpiffsSessionSummaryStore>,
-    turn_ledger_store: Arc<SpiffsTurnLedgerStore>,
+    session_summary_store: Arc<dyn SessionSummaryStore + Send + Sync>,
+    turn_ledger_store: Arc<dyn TurnLedgerStore + Send + Sync>,
     wifi_scan_handle: Mutex<Option<Arc<dyn crate::platform::WifiScan + Send + Sync>>>,
     display_state: Mutex<Option<DisplayState>>,
     i2c_state: Mutex<Option<crate::platform::hardware_drivers::I2cBusState>>,
@@ -76,6 +85,51 @@ impl Esp32Platform {
     pub fn new() -> Self {
         let state_fs: Arc<dyn StateFs + Send + Sync> =
             Arc::new(crate::platform::state_fs::Esp32StateFs);
+        let long_term_memory_extraction_state_store =
+            BufferedLongTermExtractionStateStore::wrap(Arc::new(
+                SpiffsLongTermMemoryExtractionStateStore::new(),
+            )
+                as Arc<dyn LongTermMemoryExtractionStateStore + Send + Sync>);
+        let session_store = BufferedSessionStore::wrap(
+            Arc::new(SpiffsSessionStore::new()) as Arc<dyn SessionStore + Send + Sync>
+        );
+        let execution_state_store = BufferedExecutionStateStore::wrap(
+            Arc::new(SpiffsExecutionStateStore::new()) as Arc<dyn ExecutionStateStore + Send + Sync>
+        );
+        let self_model_store = BufferedSelfModelStore::wrap(
+            Arc::new(SpiffsSelfModelStore::new()) as Arc<dyn SelfModelStore + Send + Sync>
+        );
+        let world_sense_store = BufferedWorldSenseStore::wrap(
+            Arc::new(SpiffsWorldSenseStore::new()) as Arc<dyn WorldSenseStore + Send + Sync>
+        );
+        let autonomy_strategy_store = BufferedAutonomyStrategyStore::wrap(
+            Arc::new(SpiffsAutonomyStrategyStore::new())
+                as Arc<dyn AutonomyStrategyStore + Send + Sync>
+        );
+        let outer_voice_store = BufferedOuterVoiceStore::wrap(
+            Arc::new(SpiffsOuterVoiceStore::new()) as Arc<dyn OuterVoiceStore + Send + Sync>
+        );
+        let inner_life_store = BufferedInnerLifeStore::wrap(
+            Arc::new(SpiffsInnerLifeStore::new()) as Arc<dyn InnerLifeStore + Send + Sync>
+        );
+        let self_continuity_store = BufferedSelfContinuityStore::wrap(
+            Arc::new(SpiffsSelfContinuityStore::new())
+                as Arc<dyn SelfContinuityStore + Send + Sync>
+        );
+        let mental_privacy_store = BufferedMentalPrivacyStore::wrap(
+            Arc::new(SpiffsMentalPrivacyStore::new()) as Arc<dyn MentalPrivacyStore + Send + Sync>
+        );
+        let important_message_store = BufferedImportantMessageStore::wrap(
+            Arc::new(SpiffsImportantMessageStore::new())
+                as Arc<dyn ImportantMessageStore + Send + Sync>
+        );
+        let session_summary_store = BufferedSessionSummaryStore::wrap(
+            Arc::new(SpiffsSessionSummaryStore::new())
+                as Arc<dyn SessionSummaryStore + Send + Sync>
+        );
+        let turn_ledger_store = BufferedTurnLedgerStore::wrap(
+            Arc::new(SpiffsTurnLedgerStore::new()) as Arc<dyn TurnLedgerStore + Send + Sync>
+        );
         Self {
             state_fs,
             config_store: Arc::new(NvsConfigStore),
@@ -83,30 +137,28 @@ impl Esp32Platform {
             skill_meta_store: Arc::new(SpiffsSkillMetaStore),
             memory_store: Arc::new(SpiffsMemoryStore::new()),
             long_term_memory_store: Arc::new(SpiffsLongTermMemoryStore::new()),
-            long_term_memory_extraction_state_store: Arc::new(
-                SpiffsLongTermMemoryExtractionStateStore::new(),
-            ),
-            session_store: Arc::new(SpiffsSessionStore::new()),
+            long_term_memory_extraction_state_store,
+            session_store,
             pending_retry_store: Arc::new(SpiffsPendingRetryStore::new()),
             calendar_store: Arc::new(SpiffsCalendarStore::new()),
             calendar_provider_credential_store: Arc::new(
                 SpiffsCalendarProviderCredentialStore::new(),
             ),
             task_store: Arc::new(SpiffsTaskStore::new()),
-            execution_state_store: Arc::new(SpiffsExecutionStateStore::new()),
-            self_model_store: Arc::new(SpiffsSelfModelStore::new()),
-            world_sense_store: Arc::new(SpiffsWorldSenseStore::new()),
-            autonomy_strategy_store: Arc::new(SpiffsAutonomyStrategyStore::new()),
-            outer_voice_store: Arc::new(SpiffsOuterVoiceStore::new()),
-            inner_life_store: Arc::new(SpiffsInnerLifeStore::new()),
-            self_continuity_store: Arc::new(SpiffsSelfContinuityStore::new()),
+            execution_state_store,
+            self_model_store,
+            world_sense_store,
+            autonomy_strategy_store,
+            outer_voice_store,
+            inner_life_store,
+            self_continuity_store,
             private_doc_store: Arc::new(SpiffsPrivateDocStore::new()),
             private_garden_store: Arc::new(SpiffsPrivateGardenStore::new()),
-            mental_privacy_store: Arc::new(SpiffsMentalPrivacyStore::new()),
-            important_message_store: Arc::new(SpiffsImportantMessageStore::new()),
+            mental_privacy_store,
+            important_message_store,
             remind_at_store: Arc::new(SpiffsRemindAtStore::new()),
-            session_summary_store: Arc::new(SpiffsSessionSummaryStore::new()),
-            turn_ledger_store: Arc::new(SpiffsTurnLedgerStore::new()),
+            session_summary_store,
+            turn_ledger_store,
             wifi_scan_handle: Mutex::new(None),
             display_state: Mutex::new(None),
             i2c_state: Mutex::new(None),
@@ -223,11 +275,10 @@ impl Platform for Esp32Platform {
         &self,
     ) -> Arc<dyn LongTermMemoryExtractionStateStore + Send + Sync> {
         Arc::clone(&self.long_term_memory_extraction_state_store)
-            as Arc<dyn LongTermMemoryExtractionStateStore + Send + Sync>
     }
 
     fn session_store(&self) -> Arc<dyn SessionStore + Send + Sync> {
-        Arc::clone(&self.session_store) as Arc<dyn SessionStore + Send + Sync>
+        Arc::clone(&self.session_store)
     }
 
     fn pending_retry_store(&self) -> Arc<dyn PendingRetryStore + Send + Sync> {
@@ -250,31 +301,31 @@ impl Platform for Esp32Platform {
     }
 
     fn execution_state_store(&self) -> Arc<dyn ExecutionStateStore + Send + Sync> {
-        Arc::clone(&self.execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>
+        Arc::clone(&self.execution_state_store)
     }
 
     fn self_model_store(&self) -> Arc<dyn SelfModelStore + Send + Sync> {
-        Arc::clone(&self.self_model_store) as Arc<dyn SelfModelStore + Send + Sync>
+        Arc::clone(&self.self_model_store)
     }
 
     fn world_sense_store(&self) -> Arc<dyn WorldSenseStore + Send + Sync> {
-        Arc::clone(&self.world_sense_store) as Arc<dyn WorldSenseStore + Send + Sync>
+        Arc::clone(&self.world_sense_store)
     }
 
     fn autonomy_strategy_store(&self) -> Arc<dyn AutonomyStrategyStore + Send + Sync> {
-        Arc::clone(&self.autonomy_strategy_store) as Arc<dyn AutonomyStrategyStore + Send + Sync>
+        Arc::clone(&self.autonomy_strategy_store)
     }
 
     fn outer_voice_store(&self) -> Arc<dyn OuterVoiceStore + Send + Sync> {
-        Arc::clone(&self.outer_voice_store) as Arc<dyn OuterVoiceStore + Send + Sync>
+        Arc::clone(&self.outer_voice_store)
     }
 
     fn inner_life_store(&self) -> Arc<dyn InnerLifeStore + Send + Sync> {
-        Arc::clone(&self.inner_life_store) as Arc<dyn InnerLifeStore + Send + Sync>
+        Arc::clone(&self.inner_life_store)
     }
 
     fn self_continuity_store(&self) -> Arc<dyn SelfContinuityStore + Send + Sync> {
-        Arc::clone(&self.self_continuity_store) as Arc<dyn SelfContinuityStore + Send + Sync>
+        Arc::clone(&self.self_continuity_store)
     }
 
     fn private_doc_store(&self) -> Arc<dyn PrivateDocStore + Send + Sync> {
@@ -286,11 +337,11 @@ impl Platform for Esp32Platform {
     }
 
     fn mental_privacy_store(&self) -> Arc<dyn MentalPrivacyStore + Send + Sync> {
-        Arc::clone(&self.mental_privacy_store) as Arc<dyn MentalPrivacyStore + Send + Sync>
+        Arc::clone(&self.mental_privacy_store)
     }
 
     fn important_message_store(&self) -> Arc<dyn ImportantMessageStore + Send + Sync> {
-        Arc::clone(&self.important_message_store) as Arc<dyn ImportantMessageStore + Send + Sync>
+        Arc::clone(&self.important_message_store)
     }
 
     fn remind_at_store(&self) -> Arc<dyn RemindAtStore + Send + Sync> {
@@ -298,11 +349,11 @@ impl Platform for Esp32Platform {
     }
 
     fn session_summary_store(&self) -> Arc<dyn SessionSummaryStore + Send + Sync> {
-        Arc::clone(&self.session_summary_store) as Arc<dyn SessionSummaryStore + Send + Sync>
+        Arc::clone(&self.session_summary_store)
     }
 
     fn turn_ledger_store(&self) -> Arc<dyn TurnLedgerStore + Send + Sync> {
-        Arc::clone(&self.turn_ledger_store) as Arc<dyn TurnLedgerStore + Send + Sync>
+        Arc::clone(&self.turn_ledger_store)
     }
 
     fn skill_storage(&self) -> Arc<dyn crate::platform::SkillStorage + Send + Sync> {
@@ -455,6 +506,19 @@ impl Platform for Esp32Platform {
             .as_ref()
             .map(|s| s.speaker_buffered_samples())
             .unwrap_or(0)
+    }
+
+    fn clear_speaker_buffer(&self) -> crate::error::Result<()> {
+        let state = self
+            .audio_state
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| {
+                crate::error::Error::config("audio_speaker", "audio pipeline not initialized")
+            })?;
+        state.clear_speaker_buffer()
     }
 
     fn display_available(&self) -> bool {

@@ -562,6 +562,11 @@ impl AudioRingBuffer {
         self.len -= n;
         n
     }
+
+    fn clear(&mut self) {
+        self.head = 0;
+        self.len = 0;
+    }
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -670,8 +675,12 @@ fn should_read_mic_frame(
     audio_recording: bool,
     audio_playing: bool,
     wake_word_armed: bool,
+    interrupt_listening: bool,
 ) -> bool {
-    !audio_playing && (audio_recording || wake_word_armed)
+    if audio_playing {
+        return interrupt_listening;
+    }
+    audio_recording || wake_word_armed
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -801,9 +810,14 @@ impl AudioPipelineState {
                     let mut progressed = false;
                     let audio_playing = crate::orchestrator::is_audio_playing();
                     let audio_recording = crate::orchestrator::is_audio_recording();
+                    let interrupt_listening = crate::orchestrator::is_audio_interrupt_listening();
                     let wake_word_armed = crate::platform::wake_word::is_armed();
-                    let mic_read_needed =
-                        should_read_mic_frame(audio_recording, audio_playing, wake_word_armed);
+                    let mic_read_needed = should_read_mic_frame(
+                        audio_recording,
+                        audio_playing,
+                        wake_word_armed,
+                        interrupt_listening,
+                    );
 
                     if backend.speaker_ready() {
                         if let Some(n) = pop_speaker_frame_if_available(
@@ -921,6 +935,17 @@ impl AudioPipelineState {
         current_speaker_buffered_samples(self.shared.as_ref())
     }
 
+    pub fn clear_speaker_buffer(&self) -> Result<()> {
+        if !self.speaker_enabled {
+            return Err(Error::config("audio_speaker", "speaker not initialized"));
+        }
+        let mut guard = self.shared.speaker.lock().unwrap_or_else(|e| e.into_inner());
+        guard.clear();
+        crate::metrics::record_audio_speaker_queue_depth_last_samples(0);
+        self.shared.speaker_cv.notify_all();
+        Ok(())
+    }
+
     pub fn read_mic_pcm_i16(&self, out: &mut [i16]) -> Result<usize> {
         if !self.mic_enabled {
             return Err(Error::config("audio_mic", "microphone not initialized"));
@@ -996,17 +1021,18 @@ mod tests {
 
     #[test]
     fn mic_polling_stays_off_when_no_consumer_exists() {
-        assert!(!should_read_mic_frame(false, false, false));
+        assert!(!should_read_mic_frame(false, false, false, false));
     }
 
     #[test]
     fn mic_polling_turns_on_for_recording_or_wake_word() {
-        assert!(should_read_mic_frame(true, false, false));
-        assert!(should_read_mic_frame(false, false, true));
+        assert!(should_read_mic_frame(true, false, false, false));
+        assert!(should_read_mic_frame(false, false, true, false));
     }
 
     #[test]
-    fn audio_playback_suppresses_mic_polling() {
-        assert!(!should_read_mic_frame(true, true, true));
+    fn audio_playback_only_reads_when_interrupt_listening_is_enabled() {
+        assert!(!should_read_mic_frame(true, true, true, false));
+        assert!(should_read_mic_frame(true, true, true, true));
     }
 }

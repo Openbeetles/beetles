@@ -50,9 +50,17 @@ export function SettingsSection({
         <Stack direction="row" alignItems="center" spacing={1.5}>
           <Box
             sx={{
-              color: "color-mix(in srgb, var(--primary) 55%, var(--muted))",
+              width: "var(--icon-container-sm)",
+              height: "var(--icon-container-sm)",
+              borderRadius: "var(--radius-control)",
               display: "flex",
               alignItems: "center",
+              justifyContent: "center",
+              flexShrink: 0,
+              color: "color-mix(in srgb, var(--primary) 55%, var(--muted))",
+              bgcolor: "color-mix(in srgb, var(--primary) 5%, transparent)",
+              transition:
+                "background-color var(--transition-duration) ease, color var(--transition-duration) ease",
             }}
           >
             {icon}

@@ -430,6 +430,12 @@ pub trait Platform: Send + Sync {
         0
     }
 
+    /// 清空当前喇叭软件/平台缓冲，供 realtime 打断时立即丢弃陈旧下行音频。
+    /// Default no-op so non-audio platforms do not need a special implementation.
+    fn clear_speaker_buffer(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// 语音前后处理硬件加速是否可用（如 PDM 专用路径/NPU/向量加速）。
     fn speech_accel_available(&self) -> bool {
         false

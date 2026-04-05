@@ -772,6 +772,11 @@ pub const STACK_VOICE_SESSION: usize = LINUX_RUSTLS_THREAD_STACK;
 /// 该线程承接 SPIFFS/NVS/serde 等重活，避免压在 IDF HTTPD 回调线程上。
 pub const STACK_HTTP_ROUTE_WORKER: usize = 16 * 1024;
 
+/// `restart_defer`：HTTP/CLI 触发的延迟重启线程。
+/// 该线程会做 continuity snapshot 导出、serde、SPIFFS 写回与最终 restart，
+/// 不能继续复用普通路由执行线程的 16KB 预算。
+pub const STACK_RESTART_DEFER: usize = 32 * 1024;
+
 /// 线程目标核心。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpawnCore {

@@ -40,8 +40,9 @@ export function DeviceBanner() {
         gap: 2,
         px: 2,
         py: 1.25,
-        borderBottom: "none",
-        borderLeft: "var(--accent-line-width, 3px) solid var(--semantic-warning)",
+        borderBottom:
+          "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
+        borderLeft: "var(--accent-line-width) solid var(--semantic-warning)",
         backgroundColor:
           "color-mix(in srgb, var(--semantic-warning) 4%, var(--surface))",
       }}

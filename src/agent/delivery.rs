@@ -886,10 +886,7 @@ mod tests {
     }
 
     fn delayed_task_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        LOCK.get_or_init(|| std::sync::Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        crate::runtime::delayed_task::delayed_task_test_guard()
     }
 
     #[test]

@@ -296,6 +296,54 @@ pub fn is_audio_playing() -> bool {
         != 0
 }
 
+/// 设置播放期打断监听标志。
+/// Set playback-period barge-in listening flag.
+pub fn set_audio_interrupt_listening(active: bool) {
+    STATE.audio_interrupt_listening.store(
+        if active { 1 } else { 0 },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    if !active {
+        STATE
+            .audio_interrupt_requested
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// 当前是否打开了播放期打断监听。
+/// Whether playback-period barge-in listening is armed.
+pub fn is_audio_interrupt_listening() -> bool {
+    STATE
+        .audio_interrupt_listening
+        .load(std::sync::atomic::Ordering::Relaxed)
+        != 0
+}
+
+/// 请求当前实时语音会话执行本地打断。
+/// Request a local barge-in against the active realtime session.
+pub fn request_audio_interrupt() {
+    STATE
+        .audio_interrupt_requested
+        .store(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 清空待处理打断请求。
+/// Clear pending local barge-in request.
+pub fn clear_audio_interrupt_request() {
+    STATE
+        .audio_interrupt_requested
+        .store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 读取并消费一次本地打断请求。
+/// Read and consume one pending local barge-in request.
+pub fn take_audio_interrupt_request() -> bool {
+    STATE
+        .audio_interrupt_requested
+        .swap(0, std::sync::atomic::Ordering::Relaxed)
+        != 0
+}
+
 /// 启动时打印 TLS 准入基线。
 /// Log TLS admission baseline at startup.
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]

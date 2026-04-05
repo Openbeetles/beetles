@@ -77,6 +77,12 @@ pub struct OrchestratorState {
     /// 喇叭播放中标志（0=idle, 1=playing）。voice_output 工具设置，显示循环读取。
     /// Speaker playing flag (0=idle, 1=playing). Set by voice_output tool, read by display loop.
     pub audio_playing: AtomicU8,
+    /// 播放期是否保持打断监听（0=off, 1=on）。
+    /// Whether playback-period barge-in listening is armed (0=off, 1=on).
+    pub audio_interrupt_listening: AtomicU8,
+    /// 当前是否有待消费的本地打断请求（0=none, 1=pending）。
+    /// Whether a local barge-in request is pending (0=none, 1=pending).
+    pub audio_interrupt_requested: AtomicU8,
 }
 
 impl Default for OrchestratorState {
@@ -110,6 +116,8 @@ impl OrchestratorState {
             storage_total_kb: AtomicU32::new(0),
             audio_recording: AtomicU8::new(0),
             audio_playing: AtomicU8::new(0),
+            audio_interrupt_listening: AtomicU8::new(0),
+            audio_interrupt_requested: AtomicU8::new(0),
         }
     }
 
@@ -173,6 +181,10 @@ pub struct ResourceSnapshot {
     pub audio_recording: bool,
     /// 喇叭是否正在播放。
     pub audio_playing: bool,
+    /// 播放期本地打断监听是否已打开。
+    pub audio_interrupt_listening: bool,
+    /// 是否存在待处理的本地打断请求。
+    pub audio_interrupt_requested: bool,
     /// Linux 特有：CPU 使用率（百分比）
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     pub cpu_usage_percent: f32,
@@ -221,6 +233,14 @@ impl ResourceSnapshot {
             storage_total_kb: state.storage_total_kb.load(Ordering::Relaxed),
             audio_recording: state.audio_recording.load(Ordering::Relaxed) != 0,
             audio_playing: state.audio_playing.load(Ordering::Relaxed) != 0,
+            audio_interrupt_listening: state
+                .audio_interrupt_listening
+                .load(Ordering::Relaxed)
+                != 0,
+            audio_interrupt_requested: state
+                .audio_interrupt_requested
+                .load(Ordering::Relaxed)
+                != 0,
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             cpu_usage_percent: get_cpu_usage(),
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]

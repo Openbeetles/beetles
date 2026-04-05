@@ -190,8 +190,14 @@ mod imp {
             return;
         }
         crate::metrics::record_wake_word_feed_call();
-        // Skip while voice capture or speaker playback is active.
-        if crate::orchestrator::is_audio_recording() || crate::orchestrator::is_audio_playing() {
+        let interrupt_listening = crate::orchestrator::is_audio_interrupt_listening();
+        // Realtime playback interrupt mode keeps mic + wake-word feed alive so the
+        // active session can be cut locally; other busy modes still suppress feed.
+        if crate::orchestrator::is_audio_recording() && !interrupt_listening {
+            crate::metrics::record_wake_word_feed_skip_busy();
+            return;
+        }
+        if crate::orchestrator::is_audio_playing() && !interrupt_listening {
             crate::metrics::record_wake_word_feed_skip_busy();
             return;
         }
@@ -217,6 +223,18 @@ mod imp {
 
         if detected {
             crate::metrics::record_wake_word_feed_detect();
+            if crate::orchestrator::is_audio_playing() && interrupt_listening {
+                log::info!(
+                    "[wake_word] interrupt requested keyword={}",
+                    runtime.model_name
+                );
+                runtime
+                    .last_trigger_millis
+                    .store(now_millis, Ordering::Relaxed);
+                unsafe { beetle_wakenet_reset() };
+                crate::orchestrator::request_audio_interrupt();
+                return;
+            }
             log::info!("[wake_word] triggered keyword={}", runtime.model_name);
             runtime
                 .last_trigger_millis

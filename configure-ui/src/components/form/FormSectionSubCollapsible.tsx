@@ -28,9 +28,10 @@ export function FormSectionSubCollapsible({
     <Box
       sx={{
         "&:not(:first-of-type)": { mt: 2 },
-        border: "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
+        border: "1px solid var(--form-outline-rest)",
         borderRadius: "var(--radius-control)",
         overflow: "hidden",
+        bgcolor: "var(--form-group-well)",
       }}
     >
       <Box
@@ -54,8 +55,9 @@ export function FormSectionSubCollapsible({
             bgcolor: "color-mix(in srgb, var(--primary) 4%, transparent)",
           },
           "&:focus-visible": {
-            outline: "2px solid var(--primary)",
-            outlineOffset: 2,
+            outline:
+              "var(--focus-ring-width) solid color-mix(in srgb, var(--primary) 55%, transparent)",
+            outlineOffset: "var(--focus-ring-offset)",
           },
         }}
         aria-expanded={open}

@@ -194,8 +194,16 @@ linux_deploy_detect_binaries() {
         binaries+=("armv7")
     fi
 
+    if [ -f "target/armv7-unknown-linux-gnueabihf/release/beetle" ]; then
+        binaries+=("armv7-gnu")
+    fi
+
     if [ -f "target/aarch64-unknown-linux-musl/release/beetle" ]; then
         binaries+=("aarch64")
+    fi
+
+    if [ -f "target/aarch64-unknown-linux-gnu/release/beetle" ]; then
+        binaries+=("aarch64-gnu")
     fi
 
     echo "${binaries[@]}"
@@ -233,10 +241,18 @@ linux_deploy_select_arch() {
             fi
             ;;
         armv7l)
-            linux_deploy_array_contains "armv7" "${available[@]}" && recommended_arch="armv7"
+            if linux_deploy_array_contains "armv7" "${available[@]}"; then
+                recommended_arch="armv7"
+            elif linux_deploy_array_contains "armv7-gnu" "${available[@]}"; then
+                recommended_arch="armv7-gnu"
+            fi
             ;;
         aarch64)
-            linux_deploy_array_contains "aarch64" "${available[@]}" && recommended_arch="aarch64"
+            if linux_deploy_array_contains "aarch64" "${available[@]}"; then
+                recommended_arch="aarch64"
+            elif linux_deploy_array_contains "aarch64-gnu" "${available[@]}"; then
+                recommended_arch="aarch64-gnu"
+            fi
             ;;
     esac
 
@@ -273,8 +289,16 @@ linux_deploy_select_arch() {
             BINARY_PATH="target/armv7-unknown-linux-musleabihf/release/beetle"
             EMBED_DEPS_ARCH="armv7"
             ;;
+        armv7-gnu)
+            BINARY_PATH="target/armv7-unknown-linux-gnueabihf/release/beetle"
+            EMBED_DEPS_ARCH="armv7"
+            ;;
         aarch64)
             BINARY_PATH="target/aarch64-unknown-linux-musl/release/beetle"
+            EMBED_DEPS_ARCH="aarch64"
+            ;;
+        aarch64-gnu)
+            BINARY_PATH="target/aarch64-unknown-linux-gnu/release/beetle"
             EMBED_DEPS_ARCH="aarch64"
             ;;
         *)
@@ -1093,9 +1117,14 @@ if [[ $PLATFORM_CHOICE -eq 2 || $PLATFORM_CHOICE -eq 3 || $PLATFORM_CHOICE -eq 4
   # 检测当前系统
   CURRENT_OS="$(uname -s)"
   if [[ "$CURRENT_OS" == "Linux" ]]; then
-    # 在 Linux 上，直接用原生构建
+    # 在 Linux 上，优先使用与当前架构匹配的原生 GNU target；musl 主要用于 macOS/host 交叉产物。
+    CURRENT_ARCH="$(uname -m)"
     if [[ $PLATFORM_CHOICE -eq 2 ]]; then
       BUILD_TARGET="x86_64-unknown-linux-gnu"
+    elif [[ $PLATFORM_CHOICE -eq 3 ]] && [[ "$CURRENT_ARCH" == "armv7l" || "$CURRENT_ARCH" == "armv6l" ]]; then
+      BUILD_TARGET="armv7-unknown-linux-gnueabihf"
+    elif [[ $PLATFORM_CHOICE -eq 4 ]] && [[ "$CURRENT_ARCH" == "aarch64" || "$CURRENT_ARCH" == "arm64" ]]; then
+      BUILD_TARGET="aarch64-unknown-linux-gnu"
     fi
     echo "  $MSG_DETECTED_LINUX"
   elif [[ "$CURRENT_OS" == "Darwin" ]]; then

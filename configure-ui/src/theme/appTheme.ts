@@ -137,6 +137,24 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             '--surface': tokens.surface,
             '--muted': tokens.muted,
             '--border': tokens.border,
+            /**
+             * 表单层次（派生自 border + card，随品牌/深浅切换）：
+             * 浅色下 Section 多为白 card，嵌套分组与输入框需更明显「井」与描边。
+             */
+            '--form-group-well': `color-mix(in srgb, ${tokens.border} ${mode === 'light' ? 14 : 10}%, ${tokens.card})`,
+            '--input-idle-well': `color-mix(in srgb, ${tokens.border} ${mode === 'light' ? 12 : 6}%, ${tokens.card})`,
+            '--form-outline-rest':
+              mode === 'light'
+                ? 'color-mix(in srgb, var(--border) 26%, transparent)'
+                : 'color-mix(in srgb, var(--border) 20%, transparent)',
+            '--outlined-border-rest':
+              mode === 'light'
+                ? 'color-mix(in srgb, var(--border) 36%, transparent)'
+                : 'color-mix(in srgb, var(--border) 28%, transparent)',
+            '--outlined-border-hover':
+              mode === 'light'
+                ? 'color-mix(in srgb, var(--border) 48%, transparent)'
+                : 'color-mix(in srgb, var(--border) 42%, transparent)',
             '--primary': tokens.primary,
             '--primary-soft': tokens.primarySoft,
             '--primary-fg': tokens.primaryFg,
@@ -182,6 +200,11 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             '--indicator-dot-active-width': `${LAYOUT_TOKENS.indicatorDotActiveWidthPx}px`,
             '--carousel-slide-duration': `${LAYOUT_TOKENS.carouselSlideDurationMs}ms`,
             '--carousel-overlap': `${LAYOUT_TOKENS.carouselOverlapPx}px`,
+            '--overlay-backdrop-blur': `${LAYOUT_TOKENS.overlayBackdropBlurPx}px`,
+            '--status-overlay-card-max': `${LAYOUT_TOKENS.statusOverlayCardMaxPx}px`,
+            '--status-overlay-card-inset': `${LAYOUT_TOKENS.statusOverlayCardInsetPx}px`,
+            '--page-header-accent-width': `${LAYOUT_TOKENS.pageHeaderAccentBarWidthPx}px`,
+            '--dialog-narrow-max-width': `${LAYOUT_TOKENS.dialogNarrowMaxWidthPx}px`,
             '--hover-lift-y': `${LAYOUT_TOKENS.hoverLiftY}px`,
             '--hover-shift-x': `${LAYOUT_TOKENS.hoverShiftX}px`,
             '--letter-spacing-tight': LAYOUT_TOKENS.letterSpacingTight,
@@ -347,10 +370,10 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
         styleOverrides: {
           root: {
             borderRadius: R,
-            backgroundColor: 'color-mix(in srgb, var(--border) 5%, var(--card))',
+            backgroundColor: 'var(--input-idle-well)',
             transition: 'background-color var(--transition-duration) ease, box-shadow var(--transition-duration) var(--ease-out-smooth)',
             '& .MuiOutlinedInput-notchedOutline': {
-              borderColor: 'color-mix(in srgb, var(--border) 28%, transparent)',
+              borderColor: 'var(--outlined-border-rest)',
               transition: 'border-color var(--transition-duration-emphasized) var(--ease-emphasized), border-width var(--transition-duration) ease',
             },
             '& .MuiInputBase-input::placeholder': {
@@ -358,7 +381,7 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
               color: 'var(--muted)',
             },
             '&:hover .MuiOutlinedInput-notchedOutline': {
-              borderColor: 'color-mix(in srgb, var(--border) 42%, transparent)',
+              borderColor: 'var(--outlined-border-hover)',
             },
             '&.Mui-focused': {
               backgroundColor: 'var(--card)',

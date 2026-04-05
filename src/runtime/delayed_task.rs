@@ -75,6 +75,7 @@ fn schedule_delayed_task_with_priority(
     task: DelayedTask,
 ) -> std::result::Result<(), DelayedTask> {
     let mut dropped_best_effort = false;
+    let mut notify_deadline_changed = false;
     let mut task = Some(task);
     let due_now = {
         let mut pending = state().pending.lock().unwrap_or_else(|e| e.into_inner());
@@ -93,6 +94,7 @@ fn schedule_delayed_task_with_priority(
                         priority,
                         task: task.take(),
                     });
+                    notify_deadline_changed = true;
                 }
             }
             DelayedTaskPriority::Critical => {
@@ -108,11 +110,15 @@ fn schedule_delayed_task_with_priority(
                         priority,
                         task: task.take(),
                     });
+                    notify_deadline_changed = true;
                 }
             }
         }
         due_now
     };
+    if notify_deadline_changed {
+        crate::bg_timer::notify_deadline_changed();
+    }
     execute_jobs(due_now);
     if dropped_best_effort {
         log::warn!("[delayed_task] dropped oldest best-effort job to reserve critical capacity");
@@ -163,6 +169,14 @@ pub fn reset_delayed_tasks_for_tests() {
 }
 
 #[cfg(test)]
+pub fn delayed_task_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
 fn pending_counts_for_tests() -> (usize, usize) {
     let pending = state().pending.lock().unwrap_or_else(|e| e.into_inner());
     let best_effort = pending
@@ -181,16 +195,9 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    fn test_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-    }
-
     #[test]
     fn service_delayed_tasks_runs_due_jobs_in_due_order() {
-        let _guard = test_lock();
+        let _guard = delayed_task_test_guard();
         reset_delayed_tasks_for_tests();
         let executed = Arc::new(Mutex::new(Vec::new()));
         let now = Instant::now();
@@ -214,7 +221,7 @@ mod tests {
 
     #[test]
     fn next_delayed_task_wait_caps_to_soonest_due_job() {
-        let _guard = test_lock();
+        let _guard = delayed_task_test_guard();
         reset_delayed_tasks_for_tests();
         let now = Instant::now();
         schedule_delayed_task(now + Duration::from_millis(15), Box::new(|| {}));
@@ -226,7 +233,7 @@ mod tests {
 
     #[test]
     fn best_effort_queue_has_hard_cap() {
-        let _guard = test_lock();
+        let _guard = delayed_task_test_guard();
         reset_delayed_tasks_for_tests();
         let due_at = Instant::now() + Duration::from_secs(60);
         for _ in 0..DELAYED_TASK_BEST_EFFORT_MAX {
@@ -241,7 +248,7 @@ mod tests {
 
     #[test]
     fn critical_job_can_evict_oldest_best_effort_when_total_is_full() {
-        let _guard = test_lock();
+        let _guard = delayed_task_test_guard();
         reset_delayed_tasks_for_tests();
         let due_at = Instant::now() + Duration::from_secs(60);
         for _ in 0..DELAYED_TASK_BEST_EFFORT_MAX {

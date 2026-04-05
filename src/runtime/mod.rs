@@ -7,6 +7,7 @@ pub mod stream_http;
 pub mod system_work;
 pub mod thread_registry;
 pub mod thread_util;
+pub mod write_back;
 
 pub use continuity_flush::{flush_reboot_continuity_bundle, request_restart_with_continuity_flush};
 pub use delayed_task::{

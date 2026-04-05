@@ -2,7 +2,7 @@
 //! Realtime voice session over WSS: stream PCM in, play audio deltas out.
 
 use crate::audio::capture::AudioRecordingGuard;
-use crate::audio::energy::{EndpointConfig, EndpointEvent, EndpointState};
+use crate::audio::energy::{normalized_rms, EndpointConfig, EndpointEvent, EndpointState};
 use crate::channels::{
     connect_wss_with_headers_and_profile, WssCloseInfo, WssConnectProfile, WssConnection, WssEvent,
 };
@@ -27,18 +27,25 @@ use std::time::{Duration, Instant};
 const REALTIME_TAG: &str = "audio::realtime";
 const REALTIME_OPENAI_BETA: &str = "realtime=v1";
 const REALTIME_BAIDU_AUDIO_CODEC: &str = "raw16k";
-const REALTIME_IDLE_TIMEOUT_SECS: u64 = 30;
 const REALTIME_INITIAL_SEND_RETRY_MS: u64 = 100;
 const REALTIME_INITIAL_SEND_RETRY_MAX: usize = 50;
 const REALTIME_RECV_POLL_MS: u64 = 20;
 const REALTIME_SESSION_READY_TIMEOUT_MS: u64 = 1_500;
 const REALTIME_SERVER_VAD_IDLE_TIMEOUT_MS: u32 = 8_000;
 const REALTIME_SERVER_VAD_PREFIX_PADDING_MS: u32 = 300;
+const REALTIME_NO_SPEECH_TIMEOUT_MS: u64 = 4_000;
+const REALTIME_POST_RESPONSE_IDLE_TIMEOUT_MS: u64 = 2_000;
+const REALTIME_RESPONSE_WAIT_TIMEOUT_MS: u64 = 8_000;
 // Baidu realtime currently streams raw16k PCM over WSS rather than xiaozhi's
 // Opus packet path, so the downlink is more burst-sensitive and needs a thicker
 // software buffer on ESP to avoid audible underruns on normal Wi-Fi jitter.
 const REALTIME_PLAYBACK_TARGET_BUFFER_MS: u32 = 480;
 const REALTIME_PLAYBACK_REFILL_LOW_WATER_MS: u32 = 240;
+const REALTIME_INTERRUPT_BASELINE_MS: u64 = 180;
+const REALTIME_INTERRUPT_SPEECH_MIN_MS: u32 = 180;
+const REALTIME_INTERRUPT_THRESHOLD_MIN: f32 = 0.18;
+const REALTIME_INTERRUPT_THRESHOLD_MARGIN: f32 = 0.08;
+const REALTIME_INTERRUPT_THRESHOLD_MULTIPLIER: f32 = 2.0;
 const REALTIME_TLS_ADMISSION_RETRY_MAX: usize = 12;
 const REALTIME_TLS_ADMISSION_RETRY_MS: u64 = 150;
 static REALTIME_EVENT_COUNTER: AtomicU32 = AtomicU32::new(1);
@@ -101,6 +108,7 @@ struct RealtimeLoopState {
     awaiting_response: bool,
     audio_playing: bool,
     session_ready: bool,
+    suppress_server_audio_until_turn_end: bool,
     baidu_license_activation_attempted: bool,
     baidu_license_already_used: bool,
     baidu_license_failure_message: Option<String>,
@@ -109,6 +117,15 @@ struct RealtimeLoopState {
     input_samples: usize,
     output_samples: usize,
     pending_output_pcm: Vec<i16>,
+    pending_output_offset: usize,
+    session_ready_at: Option<Instant>,
+    first_local_speech_at: Option<Instant>,
+    last_local_speech_end_at: Option<Instant>,
+    playback_finished_at: Option<Instant>,
+    current_turn_received_server_activity: bool,
+    interrupt_baseline_deadline: Option<Instant>,
+    interrupt_baseline_peak: f32,
+    interrupt_speech_ms: u32,
     last_activity: Instant,
 }
 
@@ -118,6 +135,7 @@ impl RealtimeLoopState {
             awaiting_response: false,
             audio_playing: false,
             session_ready: false,
+            suppress_server_audio_until_turn_end: false,
             baidu_license_activation_attempted: false,
             baidu_license_already_used: false,
             baidu_license_failure_message: None,
@@ -126,8 +144,138 @@ impl RealtimeLoopState {
             input_samples: 0,
             output_samples: 0,
             pending_output_pcm: Vec::with_capacity(AUDIO_TTS_WRITE_CHUNK_SAMPLES * 2),
+            pending_output_offset: 0,
+            session_ready_at: None,
+            first_local_speech_at: None,
+            last_local_speech_end_at: None,
+            playback_finished_at: None,
+            current_turn_received_server_activity: false,
+            interrupt_baseline_deadline: None,
+            interrupt_baseline_peak: 0.0,
+            interrupt_speech_ms: 0,
             last_activity: Instant::now(),
         }
+    }
+
+    fn pending_output_len(&self) -> usize {
+        self.pending_output_pcm
+            .len()
+            .saturating_sub(self.pending_output_offset)
+    }
+
+    fn pending_output_is_empty(&self) -> bool {
+        self.pending_output_len() == 0
+    }
+
+    fn pending_output_chunk(&self, max_samples: usize) -> &[i16] {
+        let start = self.pending_output_offset;
+        let end = (start + max_samples.min(self.pending_output_len())).min(self.pending_output_pcm.len());
+        &self.pending_output_pcm[start..end]
+    }
+
+    fn consume_pending_output(&mut self, samples: usize) {
+        self.pending_output_offset =
+            (self.pending_output_offset + samples).min(self.pending_output_pcm.len());
+        if self.pending_output_offset >= self.pending_output_pcm.len() {
+            self.pending_output_pcm.clear();
+            self.pending_output_offset = 0;
+            return;
+        }
+        if self.pending_output_offset >= AUDIO_TTS_WRITE_CHUNK_SAMPLES * 4
+            && self.pending_output_offset * 2 >= self.pending_output_pcm.len()
+        {
+            let start = self.pending_output_offset;
+            let remaining = self.pending_output_pcm.len() - start;
+            self.pending_output_pcm.copy_within(start.., 0);
+            self.pending_output_pcm.truncate(remaining);
+            self.pending_output_offset = 0;
+        }
+    }
+
+    fn clear_pending_output(&mut self) {
+        self.pending_output_pcm.clear();
+        self.pending_output_offset = 0;
+    }
+
+    fn mark_session_ready(&mut self, now: Instant) {
+        self.session_ready = true;
+        self.session_ready_at = Some(now);
+        self.last_activity = now;
+    }
+
+    fn mark_local_speech_start(&mut self, now: Instant) {
+        if self.first_local_speech_at.is_none() {
+            self.first_local_speech_at = Some(now);
+        }
+        self.awaiting_response = false;
+        self.current_turn_received_server_activity = false;
+        self.last_local_speech_end_at = None;
+        self.playback_finished_at = None;
+        self.last_activity = now;
+    }
+
+    fn mark_local_speech_frame(&mut self, now: Instant) {
+        self.last_activity = now;
+    }
+
+    fn mark_local_speech_end(&mut self, now: Instant) {
+        self.awaiting_response = true;
+        self.current_turn_received_server_activity = false;
+        self.last_local_speech_end_at = Some(now);
+        self.last_activity = now;
+    }
+
+    fn mark_server_response_activity(&mut self, now: Instant) {
+        self.current_turn_received_server_activity = true;
+        self.last_activity = now;
+    }
+
+    fn start_audio_playback(&mut self, now: Instant) {
+        if self.audio_playing {
+            return;
+        }
+        self.audio_playing = true;
+        self.playback_finished_at = None;
+        self.interrupt_baseline_deadline =
+            Some(now + Duration::from_millis(REALTIME_INTERRUPT_BASELINE_MS));
+        self.interrupt_baseline_peak = 0.0;
+        self.interrupt_speech_ms = 0;
+        crate::orchestrator::set_audio_playing(true);
+        crate::orchestrator::set_audio_interrupt_listening(true);
+    }
+
+    fn finish_audio_playback(&mut self, now: Instant) {
+        if !self.audio_playing {
+            return;
+        }
+        self.audio_playing = false;
+        self.playback_finished_at = Some(now);
+        self.interrupt_baseline_deadline = None;
+        self.interrupt_baseline_peak = 0.0;
+        self.interrupt_speech_ms = 0;
+        crate::orchestrator::set_audio_interrupt_listening(false);
+        crate::orchestrator::set_audio_playing(false);
+    }
+}
+
+struct RealtimeSessionCleanup<'a> {
+    platform: &'a dyn Platform,
+}
+
+impl<'a> RealtimeSessionCleanup<'a> {
+    fn new(platform: &'a dyn Platform) -> Self {
+        crate::orchestrator::clear_audio_interrupt_request();
+        crate::orchestrator::set_audio_interrupt_listening(false);
+        Self { platform }
+    }
+}
+
+impl Drop for RealtimeSessionCleanup<'_> {
+    fn drop(&mut self) {
+        let _ = self.platform.clear_speaker_buffer();
+        crate::orchestrator::set_audio_interrupt_listening(false);
+        crate::orchestrator::clear_audio_interrupt_request();
+        crate::orchestrator::set_audio_playing(false);
     }
 }
 
@@ -233,6 +381,7 @@ pub fn run_realtime_session(
     }
 
     let _recording_guard = AudioRecordingGuard::new();
+    let _cleanup = RealtimeSessionCleanup::new(platform);
     let session_start = Instant::now();
     let provider = RealtimeProvider::parse(audio_cfg.realtime.provider.trim())?;
     let ws_url = build_realtime_ws_url(provider, audio_cfg)?;
@@ -288,19 +437,16 @@ pub fn run_realtime_session(
             audio_cfg,
             Duration::from_millis(REALTIME_RECV_POLL_MS),
         )?;
-        if timed_out
-            && !state.awaiting_response
-            && !state.audio_playing
-            && state.last_activity.elapsed() >= Duration::from_secs(REALTIME_IDLE_TIMEOUT_SECS)
-        {
+        let now = Instant::now();
+        update_playback_state(platform, &mut state, audio_cfg.speaker.sample_rate, now)?;
+        if crate::orchestrator::take_audio_interrupt_request() {
+            handle_local_interrupt(conn.as_mut(), platform, &mut state, provider, now)?;
+        }
+        if timed_out && should_exit_realtime_session(&state, now) {
             break;
         }
 
-        // The ESP audio worker intentionally stops filling the shared mic ring while
-        // speaker playback is active. If the realtime loop still blocks on
-        // `read_mic_pcm_i16()` here, WSS receive draining stalls for up to the full
-        // mic read timeout, which turns downlink playback into audible stutter.
-        if state.audio_playing {
+        if state.audio_playing && !crate::orchestrator::is_audio_interrupt_listening() {
             crate::platform::task_wdt::feed_current_task();
             thread::sleep(Duration::from_millis(REALTIME_RECV_POLL_MS));
             continue;
@@ -314,21 +460,38 @@ pub fn run_realtime_session(
         }
 
         let chunk = &mic_frame[..n.min(mic_frame.len())];
+        let now = Instant::now();
         match endpoint.update(chunk, frame_ms, &endpoint_cfg) {
-            EndpointEvent::SpeechStart => local_speech_active = true,
-            EndpointEvent::SpeechEnd => local_speech_active = false,
-            EndpointEvent::None => {}
+            EndpointEvent::SpeechStart => {
+                local_speech_active = true;
+                state.mark_local_speech_start(now);
+            }
+            EndpointEvent::SpeechEnd => {
+                local_speech_active = false;
+                state.mark_local_speech_end(now);
+            }
+            EndpointEvent::None => {
+                if local_speech_active {
+                    state.mark_local_speech_frame(now);
+                }
+            }
+        }
+
+        if local_speech_active
+            && state.audio_playing
+            && should_trigger_playback_interrupt(&mut state, audio_cfg, chunk, frame_ms, now)
+        {
+            handle_local_interrupt(conn.as_mut(), platform, &mut state, provider, now)?;
         }
 
         append_audio_frame(conn.as_mut(), &mut upload_encoder, provider, chunk)?;
         state.input_samples = state.input_samples.saturating_add(n);
-        if local_speech_active {
-            state.last_activity = Instant::now();
-        }
-    }
-
-    if state.audio_playing {
-        crate::orchestrator::set_audio_playing(false);
+        update_playback_state(
+            platform,
+            &mut state,
+            audio_cfg.speaker.sample_rate,
+            Instant::now(),
+        )?;
     }
 
     if let Some(message) = state.baidu_license_failure_message.take() {
@@ -755,28 +918,37 @@ fn handle_json_server_message(
         .get("type")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
+    let now = Instant::now();
 
     match event_type {
         "session.created" | "session.updated" | "input_audio_buffer.committed" => {
-            state.last_activity = Instant::now();
+            if event_type == "session.updated" && !state.session_ready {
+                state.mark_session_ready(now);
+            } else {
+                state.last_activity = now;
+            }
             Ok(())
         }
         "response.created" => {
             state.awaiting_response = true;
-            state.last_activity = Instant::now();
+            state.mark_server_response_activity(now);
             Ok(())
         }
         "input_audio_buffer.speech_started" => {
             state.awaiting_response = false;
-            state.last_activity = Instant::now();
+            state.last_activity = now;
             Ok(())
         }
         "input_audio_buffer.speech_stopped" => {
             state.awaiting_response = true;
-            state.last_activity = Instant::now();
+            state.last_activity = now;
             Ok(())
         }
         "response.output_audio.delta" | "response.audio.delta" => {
+            if state.suppress_server_audio_until_turn_end {
+                state.last_activity = now;
+                return Ok(());
+            }
             let delta = value
                 .get("delta")
                 .and_then(|v| v.as_str())
@@ -788,25 +960,33 @@ fn handle_json_server_message(
                     state,
                     audio_cfg.speaker.sample_rate,
                     pcm.as_slice(),
-                    false,
                 )?;
-                state.last_activity = Instant::now();
+                state.awaiting_response = true;
+                state.mark_server_response_activity(now);
             }
             Ok(())
         }
         "response.output_audio.done" | "response.audio.done" => {
-            stop_audio_playback(platform, state)?;
-            state.last_activity = Instant::now();
+            flush_pending_output(platform, state, true)?;
+            state.last_activity = now;
             Ok(())
         }
         "response.done" => {
+            if state.suppress_server_audio_until_turn_end {
+                state.suppress_server_audio_until_turn_end = false;
+                state.last_activity = now;
+                return Ok(());
+            }
             let counted = state.awaiting_response;
-            stop_audio_playback(platform, state)?;
+            flush_pending_output(platform, state, true)?;
             if counted {
                 state.awaiting_response = false;
                 state.turns_completed = state.turns_completed.saturating_add(1);
             }
-            state.last_activity = Instant::now();
+            if !state.audio_playing {
+                state.playback_finished_at = Some(now);
+            }
+            state.last_activity = now;
             Ok(())
         }
         "error" => {
@@ -835,15 +1015,18 @@ fn handle_baidu_server_message(
     let pcm = decode_pcm16_bytes(strip_baidu_audio_prefix(payload))?;
     if !pcm.is_empty() {
         mark_baidu_session_usable(state);
+        if state.suppress_server_audio_until_turn_end {
+            state.last_activity = Instant::now();
+            return Ok(false);
+        }
         queue_output_audio(
             platform,
             state,
             audio_cfg.speaker.sample_rate,
             pcm.as_slice(),
-            false,
         )?;
         state.awaiting_response = true;
-        state.last_activity = Instant::now();
+        state.mark_server_response_activity(Instant::now());
     }
     Ok(false)
 }
@@ -856,6 +1039,7 @@ fn handle_baidu_text_message(
     text: &str,
 ) -> Result<bool> {
     let message = text.trim();
+    let now = Instant::now();
     if message.is_empty() {
         return Ok(false);
     }
@@ -866,7 +1050,7 @@ fn handle_baidu_text_message(
                 "[{}] baidu license activation requested again, but this boot already proved the session is usable after LIC; skipping redundant activation",
                 REALTIME_TAG
             );
-            state.last_activity = Instant::now();
+            state.last_activity = now;
             return Ok(false);
         }
         if state.baidu_license_activation_attempted || state.baidu_license_already_used {
@@ -876,7 +1060,7 @@ fn handle_baidu_text_message(
                 redact_identity(audio_cfg.realtime.device_id.as_str()),
                 redact_identity(audio_cfg.realtime.user_id.as_str()),
             );
-            state.last_activity = Instant::now();
+            state.last_activity = now;
             return Ok(false);
         }
         state.baidu_license_activation_attempted = true;
@@ -892,7 +1076,7 @@ fn handle_baidu_text_message(
             build_baidu_license_activation(audio_cfg)?.as_str(),
             REALTIME_INITIAL_SEND_RETRY_MAX,
         )?;
-        state.last_activity = Instant::now();
+        state.last_activity = now;
         return Ok(false);
     }
     if message.starts_with("[E]:[LIC]:[RES]:[FAILED]") {
@@ -902,12 +1086,11 @@ fn handle_baidu_text_message(
             REALTIME_TAG,
             message
         );
-        state.last_activity = Instant::now();
+        state.last_activity = now;
         return Ok(false);
     }
     if message.starts_with("[E]:[MEDIA]:[READY]:1") {
-        state.session_ready = true;
-        state.last_activity = Instant::now();
+        state.mark_session_ready(now);
         return Ok(true);
     }
     if message.starts_with("[E]:[TTS_BEGIN_SPEAKING]")
@@ -916,18 +1099,30 @@ fn handle_baidu_text_message(
         || message.starts_with("[Q]:")
     {
         mark_baidu_session_usable(state);
+        if state.suppress_server_audio_until_turn_end {
+            state.last_activity = now;
+            return Ok(false);
+        }
         state.awaiting_response = true;
-        state.last_activity = Instant::now();
+        state.mark_server_response_activity(now);
         return Ok(false);
     }
     if message.starts_with("[E]:[TTS_END_SPEAKING]") {
+        if state.suppress_server_audio_until_turn_end {
+            state.suppress_server_audio_until_turn_end = false;
+            state.last_activity = now;
+            return Ok(false);
+        }
         let counted = state.awaiting_response || state.audio_playing;
-        stop_audio_playback(platform, state)?;
+        flush_pending_output(platform, state, true)?;
         if counted {
             state.awaiting_response = false;
             state.turns_completed = state.turns_completed.saturating_add(1);
         }
-        state.last_activity = Instant::now();
+        if !state.audio_playing {
+            state.playback_finished_at = Some(now);
+        }
+        state.last_activity = now;
         return Ok(false);
     }
     if message.starts_with("[E]:") && message.contains("[ERROR]") {
@@ -937,7 +1132,7 @@ fn handle_baidu_text_message(
         ));
     }
 
-    state.last_activity = Instant::now();
+    state.last_activity = now;
     Ok(false)
 }
 
@@ -1108,30 +1303,25 @@ fn queue_output_audio(
     state: &mut RealtimeLoopState,
     sample_rate_hz: u32,
     pcm: &[i16],
-    force_flush_all: bool,
 ) -> Result<()> {
-    if pcm.is_empty() && !force_flush_all {
+    if pcm.is_empty() {
         return Ok(());
     }
-    if !pcm.is_empty() {
-        state.pending_output_pcm.extend_from_slice(pcm);
-        state.output_samples = state.output_samples.saturating_add(pcm.len());
-    }
+    state.pending_output_pcm.extend_from_slice(pcm);
+    state.output_samples = state.output_samples.saturating_add(pcm.len());
 
     let target_buffer_samples = playback_target_buffer_samples(sample_rate_hz);
     let refill_low_water_samples = playback_refill_low_water_samples(sample_rate_hz);
     let speaker_depth_samples = platform.speaker_buffered_samples();
     let combined_buffered_samples =
-        speaker_depth_samples.saturating_add(state.pending_output_pcm.len());
+        speaker_depth_samples.saturating_add(state.pending_output_len());
 
-    if !state.audio_playing && combined_buffered_samples < target_buffer_samples && !force_flush_all
-    {
+    if !state.audio_playing && combined_buffered_samples < target_buffer_samples {
         return Ok(());
     }
     let mut just_started = false;
-    if !state.audio_playing && !state.pending_output_pcm.is_empty() {
-        crate::orchestrator::set_audio_playing(true);
-        state.audio_playing = true;
+    if !state.audio_playing && !state.pending_output_is_empty() {
+        state.start_audio_playback(Instant::now());
         just_started = true;
     }
     flush_output_audio(
@@ -1139,7 +1329,7 @@ fn queue_output_audio(
         state,
         target_buffer_samples,
         refill_low_water_samples,
-        force_flush_all,
+        false,
         just_started,
     )
 }
@@ -1152,43 +1342,177 @@ fn flush_output_audio(
     force_flush_all: bool,
     just_started: bool,
 ) -> Result<()> {
-    // Model the playout buffer the way xiaozhi does conceptually: once refill starts,
-    // drive this flush toward a fixed target depth instead of re-sampling the shared
-    // speaker ring after every chunk. The worker drains that ring concurrently, so
-    // "actual depth right now" is too jittery to be the sole refill decision signal.
-    let mut refilling = force_flush_all || just_started;
-    let mut estimated_depth_samples = platform.speaker_buffered_samples();
-
-    while !state.pending_output_pcm.is_empty() {
+    while !state.pending_output_is_empty() {
+        let speaker_depth_samples = platform.speaker_buffered_samples();
         if !force_flush_all {
-            if !refilling {
-                if estimated_depth_samples > refill_low_water_samples {
-                    break;
-                }
-                refilling = true;
+            let refill_needed = just_started || speaker_depth_samples <= refill_low_water_samples;
+            if !refill_needed {
+                break;
             }
-            if estimated_depth_samples >= target_buffer_samples {
+            if speaker_depth_samples >= target_buffer_samples {
                 break;
             }
         }
 
-        let chunk_len = AUDIO_TTS_WRITE_CHUNK_SAMPLES.min(state.pending_output_pcm.len());
-        platform.write_speaker_pcm_i16(&state.pending_output_pcm[..chunk_len])?;
-        state.pending_output_pcm.drain(..chunk_len);
-        estimated_depth_samples = estimated_depth_samples.saturating_add(chunk_len);
+        let chunk_len = AUDIO_TTS_WRITE_CHUNK_SAMPLES.min(state.pending_output_len());
+        let chunk = state.pending_output_chunk(chunk_len);
+        platform.write_speaker_pcm_i16(chunk)?;
+        state.consume_pending_output(chunk_len);
     }
     Ok(())
 }
 
-fn stop_audio_playback(platform: &dyn Platform, state: &mut RealtimeLoopState) -> Result<()> {
-    if !state.pending_output_pcm.is_empty() {
-        queue_output_audio(platform, state, 1, &[], true)?;
+fn flush_pending_output(
+    platform: &dyn Platform,
+    state: &mut RealtimeLoopState,
+    force_flush_all: bool,
+) -> Result<()> {
+    if state.pending_output_is_empty() {
+        return Ok(());
     }
-    if state.audio_playing {
-        crate::orchestrator::set_audio_playing(false);
-        state.audio_playing = false;
+    if !state.audio_playing {
+        state.start_audio_playback(Instant::now());
+    }
+    flush_output_audio(
+        platform,
+        state,
+        playback_target_buffer_samples(1),
+        playback_refill_low_water_samples(1),
+        force_flush_all,
+        false,
+    )
+}
+
+fn update_playback_state(
+    platform: &dyn Platform,
+    state: &mut RealtimeLoopState,
+    sample_rate_hz: u32,
+    now: Instant,
+) -> Result<()> {
+    if !state.pending_output_is_empty() {
+        flush_output_audio(
+            platform,
+            state,
+            playback_target_buffer_samples(sample_rate_hz),
+            playback_refill_low_water_samples(sample_rate_hz),
+            false,
+            false,
+        )?;
+    }
+    if state.audio_playing
+        && state.pending_output_is_empty()
+        && platform.speaker_buffered_samples() == 0
+    {
+        state.finish_audio_playback(now);
     }
     Ok(())
+}
+
+fn should_trigger_playback_interrupt(
+    state: &mut RealtimeLoopState,
+    audio_cfg: &AudioSegment,
+    pcm: &[i16],
+    frame_ms: u32,
+    now: Instant,
+) -> bool {
+    let rms = normalized_rms(pcm);
+    if let Some(deadline) = state.interrupt_baseline_deadline {
+        if now < deadline {
+            state.interrupt_baseline_peak = state.interrupt_baseline_peak.max(rms);
+            return false;
+        }
+        state.interrupt_baseline_deadline = None;
+    }
+
+    let threshold = (audio_cfg.vad.threshold * REALTIME_INTERRUPT_THRESHOLD_MULTIPLIER)
+        .max(state.interrupt_baseline_peak + REALTIME_INTERRUPT_THRESHOLD_MARGIN)
+        .max(REALTIME_INTERRUPT_THRESHOLD_MIN)
+        .min(0.95);
+    if rms >= threshold {
+        state.interrupt_speech_ms = state.interrupt_speech_ms.saturating_add(frame_ms);
+    } else {
+        state.interrupt_speech_ms = 0;
+    }
+    state.interrupt_speech_ms >= REALTIME_INTERRUPT_SPEECH_MIN_MS
+}
+
+fn should_exit_realtime_session(state: &RealtimeLoopState, now: Instant) -> bool {
+    if let Some(session_ready_at) = state.session_ready_at {
+        if state.first_local_speech_at.is_none()
+            && !state.awaiting_response
+            && !state.audio_playing
+            && now.duration_since(session_ready_at)
+                >= Duration::from_millis(REALTIME_NO_SPEECH_TIMEOUT_MS)
+        {
+            return true;
+        }
+    }
+
+    if let Some(last_speech_end_at) = state.last_local_speech_end_at {
+        if state.awaiting_response
+            && !state.current_turn_received_server_activity
+            && !state.suppress_server_audio_until_turn_end
+            && now.duration_since(last_speech_end_at)
+                >= Duration::from_millis(REALTIME_RESPONSE_WAIT_TIMEOUT_MS)
+        {
+            return true;
+        }
+    }
+
+    if let Some(playback_finished_at) = state.playback_finished_at {
+        if !state.awaiting_response
+            && !state.audio_playing
+            && now.duration_since(playback_finished_at)
+                >= Duration::from_millis(REALTIME_POST_RESPONSE_IDLE_TIMEOUT_MS)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn handle_local_interrupt(
+    conn: &mut dyn WssConnection,
+    platform: &dyn Platform,
+    state: &mut RealtimeLoopState,
+    provider: RealtimeProvider,
+    now: Instant,
+) -> Result<()> {
+    if !state.audio_playing && state.pending_output_is_empty() && !state.awaiting_response {
+        return Ok(());
+    }
+
+    match provider {
+        RealtimeProvider::OpenAiCompatible | RealtimeProvider::Qwen => {
+            if let Err(error) = send_text_retry(
+                conn,
+                build_response_cancel_event().as_str(),
+                REALTIME_INITIAL_SEND_RETRY_MAX,
+            ) {
+                log::warn!("[{}] realtime cancel send failed: {}", REALTIME_TAG, error);
+            }
+        }
+        RealtimeProvider::Baidu => {}
+    }
+
+    state.suppress_server_audio_until_turn_end = true;
+    state.awaiting_response = false;
+    state.current_turn_received_server_activity = false;
+    state.playback_finished_at = None;
+    state.clear_pending_output();
+    platform.clear_speaker_buffer()?;
+    state.finish_audio_playback(now);
+    state.last_activity = now;
+    log::info!("[{}] local interrupt accepted; playback aborted", REALTIME_TAG);
+    Ok(())
+}
+
+fn build_response_cancel_event() -> String {
+    json!({
+        "event_id": next_realtime_event_id("cancel"),
+        "type": "response.cancel",
+    })
+    .to_string()
 }
 
 fn samples_to_ms(samples: usize, sample_rate_hz: u32) -> u128 {

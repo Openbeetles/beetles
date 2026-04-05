@@ -22,13 +22,20 @@ mod imp {
     const STACK_LINUX_AUDIO_SPEAKER: usize = 8192;
 
     enum SpeakerWorkerMsg {
-        Samples(Vec<i16>),
+        Samples {
+            generation: usize,
+            samples: Vec<i16>,
+        },
+        Clear {
+            generation: usize,
+        },
         Stop,
     }
 
     pub(crate) struct LinuxSpeakerRuntime {
         tx: SyncSender<SpeakerWorkerMsg>,
         buffered_samples: Arc<AtomicUsize>,
+        generation: Arc<AtomicUsize>,
         ready: Arc<AtomicBool>,
         selected_label: String,
         worker: Option<TaskHandle>,
@@ -69,8 +76,10 @@ mod imp {
             let (tx, rx) = mpsc::sync_channel(SPEAKER_QUEUE_CAPACITY);
             let (init_tx, init_rx) = mpsc::sync_channel(1);
             let buffered_samples = Arc::new(AtomicUsize::new(0));
+            let generation = Arc::new(AtomicUsize::new(0));
             let ready = Arc::new(AtomicBool::new(false));
             let worker_buffered = Arc::clone(&buffered_samples);
+            let worker_generation = Arc::clone(&generation);
             let worker_ready = Arc::clone(&ready);
             let worker_name = format!("linux_audio_speaker({})", selected_label);
 
@@ -87,6 +96,7 @@ mod imp {
                         init_tx,
                         rx,
                         worker_buffered,
+                        worker_generation,
                         worker_ready,
                     )
                 },
@@ -111,6 +121,7 @@ mod imp {
             Ok(Self {
                 tx,
                 buffered_samples,
+                generation,
                 ready,
                 selected_label,
                 worker: Some(worker),
@@ -134,11 +145,14 @@ mod imp {
                 return Err(Error::config("audio_speaker", "Linux USB speaker not ready"));
             }
             let owned = buf.to_vec();
+            let generation = self.generation.load(Ordering::Relaxed);
             self.buffered_samples
                 .fetch_add(owned.len(), Ordering::Relaxed);
-            if let Err(error) = self.tx.send(SpeakerWorkerMsg::Samples(owned)) {
-                self.buffered_samples
-                    .fetch_sub(buf.len(), Ordering::Relaxed);
+            if let Err(error) = self.tx.send(SpeakerWorkerMsg::Samples {
+                generation,
+                samples: owned,
+            }) {
+                subtract_buffered_samples(self.buffered_samples.as_ref(), buf.len());
                 self.ready.store(false, Ordering::Relaxed);
                 return Err(Error::Other {
                     source: Box::new(error),
@@ -146,6 +160,20 @@ mod imp {
                 });
             }
             Ok(())
+        }
+
+        pub fn clear_buffer(&self) -> Result<()> {
+            if !self.ready() {
+                return Err(Error::config("audio_speaker", "Linux USB speaker not ready"));
+            }
+            let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
+            self.buffered_samples.store(0, Ordering::Relaxed);
+            self.tx
+                .send(SpeakerWorkerMsg::Clear { generation })
+                .map_err(|error| Error::Other {
+                    source: Box::new(error),
+                    stage: "audio_speaker",
+                })
         }
     }
 
@@ -166,6 +194,7 @@ mod imp {
         init_tx: SyncSender<std::result::Result<(), String>>,
         rx: Receiver<SpeakerWorkerMsg>,
         buffered_samples: Arc<AtomicUsize>,
+        generation: Arc<AtomicUsize>,
         ready: Arc<AtomicBool>,
     ) {
         let result = (|| -> Result<()> {
@@ -182,10 +211,17 @@ mod imp {
             };
             let io = pcm.io_i16().map_err(map_other("audio_speaker"))?;
             let mut stereo_buf = Vec::<i16>::new();
+            let mut active_generation = generation.load(Ordering::Relaxed);
 
             while let Ok(msg) = rx.recv() {
                 match msg {
-                    SpeakerWorkerMsg::Samples(samples) => {
+                    SpeakerWorkerMsg::Samples {
+                        generation,
+                        samples,
+                    } => {
+                        if generation != active_generation {
+                            continue;
+                        }
                         let sample_count = samples.len();
                         let write_buf: &[i16];
                         if channels == 1 {
@@ -202,10 +238,16 @@ mod imp {
                         }
                         if let Err(error) = write_all_frames(&pcm, &io, write_buf, channels) {
                             ready.store(false, Ordering::Relaxed);
-                            buffered_samples.fetch_sub(sample_count, Ordering::Relaxed);
+                            subtract_buffered_samples(buffered_samples.as_ref(), sample_count);
                             return Err(error);
                         }
-                        buffered_samples.fetch_sub(sample_count, Ordering::Relaxed);
+                        subtract_buffered_samples(buffered_samples.as_ref(), sample_count);
+                    }
+                    SpeakerWorkerMsg::Clear { generation } => {
+                        active_generation = generation;
+                        buffered_samples.store(0, Ordering::Relaxed);
+                        pcm.drop().map_err(map_other("audio_speaker"))?;
+                        pcm.prepare().map_err(map_other("audio_speaker"))?;
                     }
                     SpeakerWorkerMsg::Stop => break,
                 }
@@ -289,6 +331,12 @@ mod imp {
             stage,
         }
     }
+
+    fn subtract_buffered_samples(counter: &AtomicUsize, samples: usize) {
+        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            Some(current.saturating_sub(samples))
+        });
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -318,6 +366,13 @@ mod imp {
         }
 
         pub fn write_pcm_i16(&self, _buf: &[i16]) -> Result<()> {
+            Err(Error::config(
+                "audio_speaker",
+                "Linux USB speaker runtime is only available on target_os=linux",
+            ))
+        }
+
+        pub fn clear_buffer(&self) -> Result<()> {
             Err(Error::config(
                 "audio_speaker",
                 "Linux USB speaker runtime is only available on target_os=linux",

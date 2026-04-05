@@ -498,6 +498,13 @@ pub struct SessionMessage {
 /// 按 chat_id 的会话存储。实现由 platform 注入（如 SpiffsSessionStore）。
 pub trait SessionStore: Send + Sync {
     fn append(&self, chat_id: &str, role: &str, content: &str) -> Result<()>;
+    /// 批量追加多条消息；默认逐条 `append`。实现可覆写为单锁/单次 fsync 的热路径优化。
+    fn append_batch(&self, chat_id: &str, messages: &[SessionMessage]) -> Result<()> {
+        for message in messages {
+            self.append(chat_id, &message.role, &message.content)?;
+        }
+        Ok(())
+    }
     fn load_recent(&self, chat_id: &str, n: usize) -> Result<Vec<SessionMessage>>;
     /// 返回当前会话消息条数（不含可选头注释）。默认实现回退到 `load_recent(MAX_SESSION_ENTRIES)`。
     /// Implementations should override with an O(file-scan) fast path when possible.

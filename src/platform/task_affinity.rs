@@ -243,6 +243,10 @@ mod imp {
         }
     }
 
+    pub fn current_task_handle_key() -> usize {
+        unsafe { esp_idf_hal::sys::xTaskGetCurrentTaskHandle() as usize }
+    }
+
     pub fn spawn_named_with_affinity<F>(
         name: String,
         stack_size: usize,
@@ -282,6 +286,10 @@ mod imp {
         TaskSpawnSurface::StdThread
     }
 
+    pub fn current_task_handle_key() -> usize {
+        0
+    }
+
     pub fn spawn_named_with_affinity<F>(
         name: String,
         stack_size: usize,
@@ -300,5 +308,6 @@ mod imp {
 }
 
 pub use imp::planned_spawn_surface;
+pub use imp::current_task_handle_key;
 pub use imp::spawn_named_with_affinity;
 pub use imp::TaskHandle;

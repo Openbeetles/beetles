@@ -219,13 +219,16 @@ fn write_session_body_unlocked(path: &Path, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn append_session_line_unlocked(
+fn append_session_lines_unlocked(
     path: &Path,
     write_header: bool,
     chat_id: &str,
     prepend_newline: bool,
-    line: &str,
+    lines: &[String],
 ) -> Result<()> {
+    if lines.is_empty() {
+        return Ok(());
+    }
     let path_str = path
         .to_str()
         .ok_or_else(|| Error::config("session_append", "invalid path"))?;
@@ -240,16 +243,18 @@ fn append_session_line_unlocked(
             let mut body = String::with_capacity(
                 CHAT_ID_HEADER_PREFIX.len()
                     + chat_id.len()
-                    + line.len()
-                    + if write_header { 3 } else { 1 },
+                    + lines.iter().map(|line| line.len() + 1).sum::<usize>()
+                    + if write_header { 2 } else { 0 },
             );
             if write_header {
                 body.push_str(CHAT_ID_HEADER_PREFIX);
                 body.push_str(chat_id);
                 body.push('\n');
             }
-            body.push_str(line);
-            body.push('\n');
+            for line in lines {
+                body.push_str(line);
+                body.push('\n');
+            }
             return write_session_body_unlocked(path, body.as_bytes());
         }
         Err(error) => return Err(Error::io("session_append", error)),
@@ -264,9 +269,11 @@ fn append_session_line_unlocked(
         file.write_all(b"\n")
             .map_err(|e| Error::io("session_append", e))?;
     }
-    file.write_all(line.as_bytes())
-        .and_then(|_| file.write_all(b"\n"))
-        .map_err(|e| Error::io("session_append", e))?;
+    for line in lines {
+        file.write_all(line.as_bytes())
+            .and_then(|_| file.write_all(b"\n"))
+            .map_err(|e| Error::io("session_append", e))?;
+    }
     file.sync_all()
         .map_err(|e| Error::io("session_append", e))?;
     Ok(())
@@ -434,21 +441,34 @@ impl SpiffsSessionStore {
 
 impl SessionStore for SpiffsSessionStore {
     fn append(&self, chat_id: &str, role: &str, content: &str) -> Result<()> {
-        let msg = SessionMessage {
-            role: role.to_string(),
-            content: content.to_string(),
-        };
-        let line = serde_json::to_string(&msg)
-            .map_err(|e| Error::config("session_append", e.to_string()))?;
-        if line.len() > MAX_SESSION_MESSAGE_LEN {
-            return Err(Error::config(
-                "session_append",
-                format!(
-                    "message serialized len {} exceeds {}",
-                    line.len(),
-                    MAX_SESSION_MESSAGE_LEN
-                ),
-            ));
+        self.append_batch(
+            chat_id,
+            &[SessionMessage {
+                role: role.to_string(),
+                content: content.to_string(),
+            }],
+        )
+    }
+
+    fn append_batch(&self, chat_id: &str, new_messages: &[SessionMessage]) -> Result<()> {
+        if new_messages.is_empty() {
+            return Ok(());
+        }
+        let mut lines = Vec::with_capacity(new_messages.len());
+        for msg in new_messages {
+            let line = serde_json::to_string(msg)
+                .map_err(|e| Error::config("session_append", e.to_string()))?;
+            if line.len() > MAX_SESSION_MESSAGE_LEN {
+                return Err(Error::config(
+                    "session_append",
+                    format!(
+                        "message serialized len {} exceeds {}",
+                        line.len(),
+                        MAX_SESSION_MESSAGE_LEN
+                    ),
+                ));
+            }
+            lines.push(line);
         }
 
         let (path, write_header) = session_path(chat_id)?;
@@ -469,16 +489,27 @@ impl SessionStore for SpiffsSessionStore {
                         (count, has_data, ends_with_newline, Some(messages))
                     }
                 };
-            if msg_count < MAX_SESSION_ENTRIES {
+            if msg_count.saturating_add(new_messages.len()) <= MAX_SESSION_ENTRIES {
                 let prepend_newline = existing_has_data && !existing_ends_with_newline;
-                append_session_line_unlocked(&path, write_header, chat_id, prepend_newline, &line)?;
+                append_session_lines_unlocked(
+                    &path,
+                    write_header,
+                    chat_id,
+                    prepend_newline,
+                    &lines,
+                )?;
                 if let Some(recent) = recent_cache.get_mut(chat_id) {
-                    if recent.len() == MAX_SESSION_ENTRIES {
-                        recent.pop_front();
+                    for msg in new_messages {
+                        if recent.len() == MAX_SESSION_ENTRIES {
+                            recent.pop_front();
+                        }
+                        recent.push_back(msg.clone());
                     }
-                    recent.push_back(msg.clone());
                 }
-                counts.insert(chat_id.to_string(), msg_count.saturating_add(1));
+                counts.insert(
+                    chat_id.to_string(),
+                    msg_count.saturating_add(new_messages.len()),
+                );
                 drop(recent_cache);
                 drop(counts);
                 self.note_chat_id_present(chat_id);
@@ -497,7 +528,9 @@ impl SessionStore for SpiffsSessionStore {
                 Self::upsert_recent_cache(&mut recent_cache, chat_id, loaded.clone());
                 loaded
             };
-            messages.push_back(msg.clone());
+            for msg in new_messages {
+                messages.push_back(msg.clone());
+            }
             while messages.len() > MAX_SESSION_ENTRIES {
                 messages.pop_front();
             }

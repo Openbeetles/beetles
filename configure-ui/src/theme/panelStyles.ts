@@ -6,5 +6,6 @@ export const CONFIG_PANEL_SX = {
   borderRadius: "var(--radius-card)",
   bgcolor: "var(--card)",
   border: "1px solid color-mix(in srgb, var(--border) 28%, transparent)",
-  boxShadow: "none",
+  /** 极轻顶边，白天模式下让白 card 与 surface 区分离更清晰 */
+  boxShadow: "var(--shadow-subtle)",
 } as const

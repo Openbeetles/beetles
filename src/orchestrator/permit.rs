@@ -48,7 +48,7 @@ mod thread_role_store {
 
     #[inline]
     fn current_task_key() -> usize {
-        unsafe { esp_idf_svc::sys::xTaskGetCurrentTaskHandle() as usize }
+        crate::platform::task_affinity::current_task_handle_key()
     }
 
     pub fn set_current_http_thread_role(role: HttpThreadRole) {

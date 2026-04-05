@@ -179,7 +179,7 @@ function Section({
         <Box
           aria-hidden
           sx={{
-            width: "var(--accent-line-width, 3px)",
+            width: "var(--accent-line-width)",
             height: 16,
             alignSelf: "center",
             borderRadius: 1,
@@ -323,7 +323,7 @@ function SystemStatusLastError({
         p: 1.75,
         borderRadius: "var(--radius-control)",
         border: "none",
-        borderLeftWidth: "var(--accent-line-width, 3px)",
+        borderLeftWidth: "var(--accent-line-width)",
         borderLeftColor: isEmpty
           ? "color-mix(in srgb, var(--border-subtle) 85%, transparent)"
           : "color-mix(in srgb, var(--semantic-danger) 72%, var(--border-subtle))",

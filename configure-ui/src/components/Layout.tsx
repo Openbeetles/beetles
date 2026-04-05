@@ -14,7 +14,10 @@ import { useTheme } from "@mui/material/styles";
 import useMediaQuery from "@mui/material/useMediaQuery";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { SIDEBAR_DRAWER_BREAKPOINT } from "../config/layout";
+import {
+  SIDEBAR_DRAWER_BREAKPOINT,
+  SIDEBAR_DRAWER_WIDTH,
+} from "../config/layout";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DeviceBanner } from "./DeviceBanner";
 import { Sidebar } from "./Sidebar";
@@ -164,8 +167,8 @@ export function Layout({ onOpenSettings }: LayoutProps) {
     zIndex: 1100,
     pointerEvents: "auto" as const,
     backgroundColor: "color-mix(in srgb, var(--foreground) 10%, transparent)",
-    backdropFilter: "blur(12px)",
-    WebkitBackdropFilter: "blur(12px)",
+    backdropFilter: "blur(var(--overlay-backdrop-blur))",
+    WebkitBackdropFilter: "blur(var(--overlay-backdrop-blur))",
   };
 
   const statusOverlayCardSx = {
@@ -175,7 +178,8 @@ export function Layout({ onOpenSettings }: LayoutProps) {
     transform: "translate(-50%, -50%)",
     zIndex: 1101,
     pointerEvents: "auto" as const,
-    width: "min(520px, calc(100vw - 24px))",
+    width:
+      "min(var(--status-overlay-card-max), calc(100vw - var(--status-overlay-card-inset)))",
     maxWidth: "100%",
     boxSizing: "border-box" as const,
     display: "flex",
@@ -218,7 +222,7 @@ export function Layout({ onOpenSettings }: LayoutProps) {
               sx={{
                 ...statusOverlayCardSx,
                 justifyContent: "center",
-                borderLeft: "var(--accent-line-width, 3px) solid var(--muted)",
+                borderLeft: "var(--accent-line-width) solid var(--muted)",
               }}
             >
               <Typography
@@ -244,8 +248,7 @@ export function Layout({ onOpenSettings }: LayoutProps) {
               role="status"
               sx={{
                 ...statusOverlayCardSx,
-                borderLeft:
-                  "var(--accent-line-width, 3px) solid var(--semantic-warning)",
+                borderLeft: "var(--accent-line-width) solid var(--semantic-warning)",
               }}
             >
               <Typography
@@ -311,7 +314,7 @@ export function Layout({ onOpenSettings }: LayoutProps) {
               }}
               sx={{
                 "& .MuiDrawer-paper": {
-                  width: 280,
+                  width: SIDEBAR_DRAWER_WIDTH,
                   maxWidth: "85vw",
                   boxSizing: "border-box",
                   backgroundColor: "var(--surface)",
