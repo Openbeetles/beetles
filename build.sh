@@ -1296,15 +1296,14 @@ esac
 
 parent_dir=$(dirname "$REMOTE_BUILD_DIR")
 mkdir -p "$parent_dir"
+rm -rf "$REMOTE_BUILD_DIR"
+mkdir -p "$REMOTE_BUILD_DIR"
 avail_kb=$(df -Pk "$parent_dir" | awk 'NR==2 { print $4 + 0 }')
 need_kb=$((PAYLOAD_KB + 262144))
 if [ "$avail_kb" -lt "$need_kb" ]; then
-    echo "Not enough free space on remote filesystem for sync: available ${avail_kb}KB, need at least ${need_kb}KB." >&2
+    echo "Not enough free space on remote filesystem after clearing old build dir: available ${avail_kb}KB, need at least ${need_kb}KB." >&2
     exit 1
 fi
-
-rm -rf "$REMOTE_BUILD_DIR"
-mkdir -p "$REMOTE_BUILD_DIR"
 REMOTE_EOF
 
   COPYFILE_DISABLE=1 tar \
