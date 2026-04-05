@@ -8,12 +8,14 @@ use rtnetlink::packet_route::{
     address::{AddressAttribute, AddressMessage},
 };
 use rtnetlink::{Handle, LinkUnspec, new_connection};
+use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 
 static RTNETLINK_RUNTIME: OnceLock<std::result::Result<Runtime, String>> = OnceLock::new();
+const RTNETLINK_OP_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn rtnetlink_runtime() -> Result<&'static Runtime> {
     match RTNETLINK_RUNTIME.get_or_init(|| {
@@ -34,6 +36,19 @@ fn map_rt_stage(e: rtnetlink::Error, stage: &'static str) -> Error {
     Error::Other {
         source: Box::new(e),
         stage,
+    }
+}
+
+async fn rt_call<T, F>(stage: &'static str, future: F) -> Result<T>
+where
+    F: Future<Output = std::result::Result<T, rtnetlink::Error>>,
+{
+    match tokio::time::timeout(RTNETLINK_OP_TIMEOUT, future).await {
+        Ok(result) => result.map_err(|e| map_rt_stage(e, stage)),
+        Err(_) => Err(Error::config(
+            stage,
+            format!("rtnetlink timeout after {:?}", RTNETLINK_OP_TIMEOUT),
+        )),
     }
 }
 
@@ -62,11 +77,7 @@ async fn read_sta_ip_async(iface: &str) -> Result<Option<String>> {
     tokio::spawn(connection);
 
     let mut links = handle.link().get().match_name(iface.to_string()).execute();
-    let Some(link) = links
-        .try_next()
-        .await
-        .map_err(|e| map_rt_stage(e, "wifi_sta_ip"))?
-    else {
+    let Some(link) = rt_call("wifi_sta_ip", links.try_next()).await? else {
         return Ok(None);
     };
 
@@ -76,11 +87,7 @@ async fn read_sta_ip_async(iface: &str) -> Result<Option<String>> {
         .set_link_index_filter(link.header.index)
         .execute();
 
-    while let Some(msg) = addresses
-        .try_next()
-        .await
-        .map_err(|e| map_rt_stage(e, "wifi_sta_ip"))?
-    {
+    while let Some(msg) = rt_call("wifi_sta_ip", addresses.try_next()).await? {
         if msg.header.family != AddressFamily::Inet {
             continue;
         }
@@ -110,11 +117,7 @@ async fn clear_ipv4_addresses_async(iface: &str) -> Result<()> {
     tokio::spawn(connection);
 
     let mut links = handle.link().get().match_name(iface.to_string()).execute();
-    let Some(link) = links
-        .try_next()
-        .await
-        .map_err(|e| map_rt_stage(e, "wifi_sta_ip_flush"))?
-    else {
+    let Some(link) = rt_call("wifi_sta_ip_flush", links.try_next()).await? else {
         return Err(Error::config("wifi_sta_ip_flush", "interface not found"));
     };
 
@@ -182,37 +185,40 @@ async fn setup_ap_address_try(iface: &str, ipv4: Ipv4Addr, prefix: u8) -> Result
     tokio::spawn(connection);
 
     let mut links = handle.link().get().match_name(iface.to_string()).execute();
-    let Some(link) = links
-        .try_next()
-        .await
-        .map_err(|e| map_rt_stage(e, "wifi_ap_ip_flush"))?
-    else {
+    let Some(link) = rt_call("wifi_ap_ip_flush", links.try_next()).await? else {
         return Err(Error::config("wifi_ap_ip_flush", "interface not found"));
     };
     let index = link.header.index;
 
     // Virtual `type __ap` ifaces: bring link up before address dump/add avoids ENODEV on some drivers.
-    let _ = handle
-        .link()
-        .set(LinkUnspec::new_with_index(index).up().build())
-        .execute()
-        .await;
+    let _ = rt_call(
+        "wifi_ap_link_prepare",
+        handle
+            .link()
+            .set(LinkUnspec::new_with_index(index).up().build())
+            .execute(),
+    )
+    .await;
 
     flush_iface_addresses(&handle, index).await?;
 
-    handle
-        .address()
-        .add(index, IpAddr::V4(ipv4), prefix)
-        .execute()
-        .await
-        .map_err(|e| map_rt_stage(e, "wifi_ap_ip_add"))?;
+    rt_call(
+        "wifi_ap_ip_add",
+        handle
+            .address()
+            .add(index, IpAddr::V4(ipv4), prefix)
+            .execute(),
+    )
+    .await?;
 
-    handle
-        .link()
-        .set(LinkUnspec::new_with_index(index).up().build())
-        .execute()
-        .await
-        .map_err(|e| map_rt_stage(e, "wifi_ap_link_up"))?;
+    rt_call(
+        "wifi_ap_link_up",
+        handle
+            .link()
+            .set(LinkUnspec::new_with_index(index).up().build())
+            .execute(),
+    )
+    .await?;
 
     Ok(())
 }
@@ -223,17 +229,8 @@ async fn flush_iface_addresses(handle: &Handle, index: u32) -> Result<()> {
         .get()
         .set_link_index_filter(index)
         .execute();
-    while let Some(addr) = addresses
-        .try_next()
-        .await
-        .map_err(|e| map_rt_stage(e, "wifi_ap_ip_flush"))?
-    {
-        handle
-            .address()
-            .del(addr)
-            .execute()
-            .await
-            .map_err(|e| map_rt_stage(e, "wifi_ap_ip_flush"))?;
+    while let Some(addr) = rt_call("wifi_ap_ip_flush", addresses.try_next()).await? {
+        rt_call("wifi_ap_ip_flush", handle.address().del(addr).execute()).await?;
     }
     Ok(())
 }
@@ -272,10 +269,7 @@ async fn ensure_netlink_access_async() -> Result<()> {
     let (connection, handle, _) = new_connection().map_err(|e| Error::io("wifi_permission", e))?;
     tokio::spawn(connection);
     let mut links = handle.link().get().execute();
-    let _ = links
-        .try_next()
-        .await
-        .map_err(|e| map_rt_stage(e, "wifi_permission"))?;
+    let _ = rt_call("wifi_permission", links.try_next()).await?;
     Ok(())
 }
 

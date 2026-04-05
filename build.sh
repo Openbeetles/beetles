@@ -109,6 +109,198 @@ for arg in "$@"; do
   esac
 done
 
+linux_detect_pkg_manager() {
+    local pm
+    for pm in apt-get dnf yum pacman zypper apk; do
+        if command -v "$pm" >/dev/null 2>&1; then
+            printf '%s\n' "$pm"
+            return 0
+        fi
+    done
+    return 1
+}
+
+run_with_privilege() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+        return $?
+    fi
+    if command -v sudo >/dev/null 2>&1; then
+        sudo "$@"
+        return $?
+    fi
+    return 1
+}
+
+print_linux_build_prereq_help() {
+    local pm="$1"
+    echo ""
+    echo "Linux native build prerequisites are missing."
+    echo "This build needs: compiler toolchain, pkg-config, ALSA headers, libudev headers, and Rust."
+    case "$pm" in
+        apt-get)
+            echo "Run:"
+            echo "  sudo apt-get update"
+            echo "  sudo apt-get install -y ca-certificates curl wget build-essential pkg-config libasound2-dev libudev-dev"
+            ;;
+        dnf)
+            echo "Run:"
+            echo "  sudo dnf install -y ca-certificates curl wget gcc gcc-c++ make pkgconf-pkg-config alsa-lib-devel systemd-devel"
+            ;;
+        yum)
+            echo "Run:"
+            echo "  sudo yum install -y ca-certificates curl wget gcc gcc-c++ make pkgconf-pkg-config alsa-lib-devel systemd-devel"
+            ;;
+        pacman)
+            echo "Run:"
+            echo "  sudo pacman -Sy --noconfirm ca-certificates curl wget base-devel pkgconf alsa-lib systemd"
+            ;;
+        zypper)
+            echo "Run:"
+            echo "  sudo zypper --non-interactive install ca-certificates curl wget gcc gcc-c++ make pkgconf-pkg-config alsa-devel systemd-devel"
+            ;;
+        apk)
+            echo "Run:"
+            echo "  sudo apk add --no-cache ca-certificates curl wget build-base pkgconf alsa-lib-dev eudev-dev"
+            ;;
+        *)
+            echo "Install a compiler, pkg-config, ALSA development headers, libudev/systemd development headers, curl or wget, and Rust."
+            ;;
+    esac
+    echo "Rust toolchain:"
+    echo "  curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable"
+    echo ""
+}
+
+install_linux_build_prereqs() {
+    local pm="$1"
+    case "$pm" in
+        apt-get)
+            run_with_privilege env DEBIAN_FRONTEND=noninteractive apt-get update || return 1
+            run_with_privilege env DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl wget build-essential pkg-config libasound2-dev libudev-dev || return 1
+            ;;
+        dnf)
+            run_with_privilege dnf install -y ca-certificates curl wget gcc gcc-c++ make pkgconf-pkg-config alsa-lib-devel systemd-devel || return 1
+            ;;
+        yum)
+            run_with_privilege yum install -y ca-certificates curl wget gcc gcc-c++ make pkgconf-pkg-config alsa-lib-devel systemd-devel || return 1
+            ;;
+        pacman)
+            run_with_privilege pacman -Sy --noconfirm ca-certificates curl wget base-devel pkgconf alsa-lib systemd || return 1
+            ;;
+        zypper)
+            run_with_privilege zypper --non-interactive install ca-certificates curl wget gcc gcc-c++ make pkgconf-pkg-config alsa-devel systemd-devel || return 1
+            ;;
+        apk)
+            run_with_privilege apk add --no-cache ca-certificates curl wget build-base pkgconf alsa-lib-dev eudev-dev || return 1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+ensure_local_rust_toolchain() {
+    export PATH="${HOME}/.cargo/bin:${PATH}"
+    if command -v cargo >/dev/null 2>&1 && command -v rustup >/dev/null 2>&1; then
+        return 0
+    fi
+
+    echo ""
+    echo "========== Preparing Rust Toolchain =========="
+
+    if ! command -v rustup >/dev/null 2>&1; then
+        if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+            if [[ "$(uname -s)" == "Linux" ]]; then
+                local pm=""
+                pm=$(linux_detect_pkg_manager 2>/dev/null || true)
+                if [[ -n "$pm" ]]; then
+                    echo "  curl/wget not found. Installing Linux build prerequisites first ..."
+                    install_linux_build_prereqs "$pm" || {
+                        print_linux_build_prereq_help "$pm"
+                        echo "Error: failed to install Linux build prerequisites automatically." >&2
+                        exit 1
+                    }
+                fi
+            fi
+        fi
+
+        if command -v curl >/dev/null 2>&1; then
+            echo "  Installing rustup + stable toolchain ..."
+            curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
+        elif command -v wget >/dev/null 2>&1; then
+            echo "  Installing rustup + stable toolchain ..."
+            wget -qO- https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+        else
+            echo "Error: neither curl nor wget is available, so Rust cannot be installed automatically." >&2
+            if [[ "$(uname -s)" == "Linux" ]]; then
+                print_linux_build_prereq_help "$(linux_detect_pkg_manager 2>/dev/null || true)"
+            else
+                echo "Install Rust from: https://rustup.rs" >&2
+            fi
+            exit 1
+        fi
+    fi
+
+    export PATH="${HOME}/.cargo/bin:${PATH}"
+    if ! command -v cargo >/dev/null 2>&1 || ! command -v rustup >/dev/null 2>&1; then
+        echo "Error: Rust toolchain is still unavailable after rustup install." >&2
+        echo "Install Rust from: https://rustup.rs" >&2
+        exit 1
+    fi
+}
+
+ensure_local_stable_toolchain() {
+    ensure_local_rust_toolchain
+
+    if cargo +stable -V >/dev/null 2>&1 && rustup +stable target list >/dev/null 2>&1; then
+        return 0
+    fi
+
+    echo ""
+    echo "========== Preparing Stable Rust Toolchain =========="
+    rustup toolchain install stable --profile minimal
+
+    if ! cargo +stable -V >/dev/null 2>&1 || ! rustup +stable target list >/dev/null 2>&1; then
+        echo "Error: stable Rust toolchain is still unavailable after rustup install." >&2
+        exit 1
+    fi
+}
+
+ensure_local_linux_native_build_prereqs() {
+    local pm=""
+
+    if [[ "$(uname -s)" != "Linux" ]]; then
+        return 0
+    fi
+    if [[ ! "$BUILD_TARGET" =~ -unknown-linux-gnu$ ]]; then
+        return 0
+    fi
+
+    if command -v cc >/dev/null 2>&1 \
+        && command -v pkg-config >/dev/null 2>&1 \
+        && pkg-config --exists alsa libudev 2>/dev/null; then
+        return 0
+    fi
+
+    pm=$(linux_detect_pkg_manager 2>/dev/null || true)
+    echo ""
+    echo "========== Preparing Native Linux Build Environment =========="
+
+    if [[ -n "$pm" ]]; then
+        echo "  Installing missing native build prerequisites using $pm ..."
+        install_linux_build_prereqs "$pm" || {
+            print_linux_build_prereq_help "$pm"
+            echo "Error: failed to install Linux build prerequisites automatically." >&2
+            exit 1
+        }
+    else
+        print_linux_build_prereq_help ""
+        echo "Error: unsupported package manager for automatic prerequisite install." >&2
+        exit 1
+    fi
+}
+
 # --- Linux SSH deploy (merged from former deploy-linux.sh) ---
 linux_deploy_fetch_embed_deps_from_url() {
     if [ -z "${BEETLE_EMBED_DEPS_URL:-}" ]; then
@@ -350,7 +542,7 @@ linux_deploy_load_deploy_defaults() {
     DEFAULT_DEVICE_IP=""
     DEFAULT_DEVICE_USER="root"
     DEFAULT_SSH_PORT="22"
-    DEFAULT_REMOTE_BUILD_DIR="/tmp/beetle-build"
+    DEFAULT_REMOTE_BUILD_DIR="/root/beetle-build"
     if [ ! -f "$DEPLOY_DEFAULTS_FILE" ]; then
         return 0
     fi
@@ -442,6 +634,11 @@ linux_remote_input_build_dir() {
     case "$REMOTE_BUILD_DIR" in
         ""|"/")
             echo -e "${RED}Error: remote project directory must not be empty or /${NC}"
+            exit 1
+            ;;
+        /dev/*)
+            echo -e "${RED}Error: remote project directory must be a mounted directory, not a /dev block device path${NC}"
+            echo -e "${YELLOW}Use something like /root/beetle-build or /opt/beetle-build${NC}"
             exit 1
             ;;
         *"'"*)
@@ -1292,6 +1489,10 @@ case "$REMOTE_BUILD_DIR" in
         echo "Refusing to sync to unsafe remote build directory: $REMOTE_BUILD_DIR" >&2
         exit 1
         ;;
+    /dev/*)
+        echo "Refusing to sync to block device path: $REMOTE_BUILD_DIR" >&2
+        exit 1
+        ;;
 esac
 
 parent_dir=$(dirname "$REMOTE_BUILD_DIR")
@@ -1327,8 +1528,119 @@ REMOTE_EOF
   ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
     "REMOTE_BUILD_DIR='$REMOTE_BUILD_DIR' REMOTE_TARGET_ENV='$REMOTE_BUILD_TARGET_ENV' sh -s" << 'REMOTE_EOF'
 set -eu
+
+ensure_remote_linux_build_prereqs() {
+  need_pkg=0
+  pkg_manager=""
+  install_prefix=""
+
+  if ! command -v cc >/dev/null 2>&1; then
+    need_pkg=1
+  fi
+  if ! command -v pkg-config >/dev/null 2>&1; then
+    need_pkg=1
+  elif ! pkg-config --exists alsa libudev 2>/dev/null; then
+    need_pkg=1
+  fi
+  if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+    need_pkg=1
+  fi
+
+  if [ "$need_pkg" -eq 0 ]; then
+    return 0
+  fi
+
+  for pm in apt-get dnf yum pacman zypper apk; do
+    if command -v "$pm" >/dev/null 2>&1; then
+      pkg_manager="$pm"
+      break
+    fi
+  done
+  if [ -z "$pkg_manager" ]; then
+    echo "Error: remote host is missing build prerequisites (compiler/pkg-config/alsa/libudev/curl), and no supported package manager was found." >&2
+    exit 1
+  fi
+
+  if [ "$(id -u)" -ne 0 ]; then
+    if command -v sudo >/dev/null 2>&1; then
+      install_prefix="sudo"
+    else
+      echo "Error: remote host needs build prerequisites; rerun with root or a user that has sudo." >&2
+      exit 1
+    fi
+  fi
+
+  echo "  Installing remote build prerequisites via $pkg_manager ..."
+  case "$pkg_manager" in
+    apt-get)
+      ${install_prefix:+$install_prefix } env DEBIAN_FRONTEND=noninteractive apt-get update
+      ${install_prefix:+$install_prefix } env DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl wget build-essential pkg-config libasound2-dev libudev-dev
+      ;;
+    dnf)
+      ${install_prefix:+$install_prefix } dnf install -y ca-certificates curl wget gcc gcc-c++ make pkgconf-pkg-config alsa-lib-devel systemd-devel
+      ;;
+    yum)
+      ${install_prefix:+$install_prefix } yum install -y ca-certificates curl wget gcc gcc-c++ make pkgconf-pkg-config alsa-lib-devel systemd-devel
+      ;;
+    pacman)
+      ${install_prefix:+$install_prefix } pacman -Sy --noconfirm ca-certificates curl wget base-devel pkgconf alsa-lib systemd
+      ;;
+    zypper)
+      ${install_prefix:+$install_prefix } zypper --non-interactive install ca-certificates curl wget gcc gcc-c++ make pkgconf-pkg-config alsa-devel systemd-devel
+      ;;
+    apk)
+      ${install_prefix:+$install_prefix } apk add --no-cache ca-certificates curl wget build-base pkgconf alsa-lib-dev eudev-dev
+      ;;
+  esac
+}
+
+ensure_remote_rust_toolchain() {
+  export PATH="$HOME/.cargo/bin:$PATH"
+  if command -v cargo >/dev/null 2>&1 && command -v rustup >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if ! command -v rustup >/dev/null 2>&1; then
+    installer=""
+    if command -v curl >/dev/null 2>&1; then
+      installer='curl https://sh.rustup.rs -sSf'
+    elif command -v wget >/dev/null 2>&1; then
+      installer='wget -qO- https://sh.rustup.rs'
+    else
+      echo "Error: rustup is missing and neither curl nor wget is available to install it." >&2
+      exit 1
+    fi
+
+    echo "  Installing rustup + stable toolchain on remote host ..."
+    sh -c "$installer" | sh -s -- -y --profile minimal --default-toolchain stable
+  fi
+
+  export PATH="$HOME/.cargo/bin:$PATH"
+  command -v cargo >/dev/null 2>&1 && command -v rustup >/dev/null 2>&1 || {
+    echo "Error: Rust toolchain is still unavailable after rustup install." >&2
+    exit 1
+  }
+}
+
+ensure_remote_stable_toolchain() {
+  ensure_remote_rust_toolchain
+
+  if cargo +stable -V >/dev/null 2>&1 && rustup +stable target list >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "  Installing or repairing remote stable Rust toolchain ..."
+  rustup toolchain install stable --profile minimal
+
+  if ! cargo +stable -V >/dev/null 2>&1 || ! rustup +stable target list >/dev/null 2>&1; then
+    echo "Error: remote stable Rust toolchain is still unavailable after rustup install." >&2
+    exit 1
+  fi
+}
+
 cd "$REMOTE_BUILD_DIR"
-export PATH="$HOME/.cargo/bin:$PATH"
+ensure_remote_linux_build_prereqs
+ensure_remote_stable_toolchain
 TARGET="$REMOTE_TARGET_ENV" BUILD_METHOD=local BEETLE_SKIP_DEPLOY_PROMPT=1 ./build.sh --no-deploy
 REMOTE_EOF
 
@@ -1660,6 +1972,7 @@ echo ""
 if printf '%s\n' "${BUILD_ARGS[@]}" | grep -qx "clean"; then
   echo "========== Step: Cleaning build artifacts =========="
   echo "  Running: cargo clean (project root)..."
+  ensure_local_stable_toolchain
   CLEAN_ARGS=()
   for a in "${BUILD_ARGS[@]}"; do [[ "$a" != "clean" ]] && CLEAN_ARGS+=("$a"); done
   cargo clean "${CLEAN_ARGS[@]}"
@@ -2246,7 +2559,8 @@ EOF
 
   # 添加 target
   if [[ -z "${USE_DOCKER:-}" ]]; then
-    command -v cargo &>/dev/null || { echo "Error: cargo not found. Install Rust: https://rustup.rs" >&2; exit 1; }
+    ensure_local_stable_toolchain
+    ensure_local_linux_native_build_prereqs
   fi
   if ! rustup +stable target list --installed | grep -q "$BUILD_TARGET"; then
     echo "  Adding target: $BUILD_TARGET"
@@ -2257,6 +2571,7 @@ EOF
   SKIP_ESP_TOOLCHAIN=1
 else
   # --- ESP toolchain PATH (platform-specific, same role as build.ps1 Set-EspPath) ---
+  ensure_local_stable_toolchain
   set_esp_path() {
     for f in "$HOME/export-esp.sh" "$HOME/.espup/export-esp.sh" "$HOME/.local/share/esp-rs/export-esp.sh"; do
       [[ -f "$f" ]] && { source "$f"; return; }
