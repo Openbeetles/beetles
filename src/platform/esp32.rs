@@ -8,16 +8,25 @@ use crate::platform::{
     display_driver::{install_display_state, DisplayState},
     heartbeat_file::read_heartbeat_file,
     spiffs::{
-        spiffs_usage, SpiffsAutonomyStrategyStore, SpiffsCalendarProviderCredentialStore,
-        SpiffsCalendarStore, SpiffsExecutionStateStore, SpiffsImportantMessageStore,
-        SpiffsInnerLifeStore, SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore,
-        SpiffsMemoryStore, SpiffsMentalPrivacyStore, SpiffsOuterVoiceStore,
-        SpiffsPendingRetryStore, SpiffsPrivateDocStore, SpiffsPrivateGardenStore,
-        SpiffsRemindAtStore, SpiffsSelfContinuityStore, SpiffsSelfModelStore, SpiffsSessionStore,
+        spiffs_usage, CachedSkillStorage, SpiffsAutonomyStrategyStore,
+        SpiffsCalendarProviderCredentialStore, SpiffsCalendarStore, SpiffsExecutionStateStore,
+        SpiffsImportantMessageStore, SpiffsInnerLifeStore,
+        SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
+        SpiffsMentalPrivacyStore, SpiffsOuterVoiceStore, SpiffsPendingRetryStore,
+        SpiffsPrivateDocStore, SpiffsPrivateGardenStore, SpiffsRemindAtStore,
+        SpiffsSelfContinuityStore, SpiffsSelfModelStore, SpiffsSessionStore,
         SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage, SpiffsTaskStore,
         SpiffsTurnLedgerStore, SpiffsWorldSenseStore,
     },
     NvsConfigStore,
+};
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use crate::runtime::write_back::{
+    BufferedAutonomyStrategyStore, BufferedExecutionStateStore, BufferedImportantMessageStore,
+    BufferedInnerLifeStore, BufferedLongTermExtractionStateStore, BufferedMentalPrivacyStore,
+    BufferedOuterVoiceStore, BufferedSelfContinuityStore, BufferedSelfModelStore,
+    BufferedSessionStore, BufferedSessionSummaryStore, BufferedTurnLedgerStore,
+    BufferedWorldSenseStore,
 };
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::{
@@ -35,21 +44,13 @@ use crate::{
 };
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::sync::{Arc, Mutex, RwLock};
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-use crate::runtime::write_back::{
-    BufferedAutonomyStrategyStore, BufferedExecutionStateStore, BufferedImportantMessageStore,
-    BufferedInnerLifeStore, BufferedLongTermExtractionStateStore, BufferedMentalPrivacyStore,
-    BufferedOuterVoiceStore, BufferedSelfContinuityStore, BufferedSelfModelStore,
-    BufferedSessionStore, BufferedSessionSummaryStore, BufferedTurnLedgerStore,
-    BufferedWorldSenseStore,
-};
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 /// ESP32 平台实现。
 pub struct Esp32Platform {
     state_fs: Arc<dyn StateFs + Send + Sync>,
     config_store: Arc<NvsConfigStore>,
-    skill_storage: Arc<SpiffsSkillStorage>,
+    skill_storage: Arc<dyn crate::platform::SkillStorage + Send + Sync>,
     skill_meta_store: Arc<SpiffsSkillMetaStore>,
     memory_store: Arc<SpiffsMemoryStore>,
     long_term_memory_store: Arc<SpiffsLongTermMemoryStore>,
@@ -85,55 +86,50 @@ impl Esp32Platform {
     pub fn new() -> Self {
         let state_fs: Arc<dyn StateFs + Send + Sync> =
             Arc::new(crate::platform::state_fs::Esp32StateFs);
-        let long_term_memory_extraction_state_store =
-            BufferedLongTermExtractionStateStore::wrap(Arc::new(
-                SpiffsLongTermMemoryExtractionStateStore::new(),
-            )
-                as Arc<dyn LongTermMemoryExtractionStateStore + Send + Sync>);
+        let long_term_memory_extraction_state_store = BufferedLongTermExtractionStateStore::wrap(
+            Arc::new(SpiffsLongTermMemoryExtractionStateStore::new())
+                as Arc<dyn LongTermMemoryExtractionStateStore + Send + Sync>,
+        );
         let session_store = BufferedSessionStore::wrap(
             Arc::new(SpiffsSessionStore::new()) as Arc<dyn SessionStore + Send + Sync>
         );
-        let execution_state_store = BufferedExecutionStateStore::wrap(
-            Arc::new(SpiffsExecutionStateStore::new()) as Arc<dyn ExecutionStateStore + Send + Sync>
-        );
+        let execution_state_store =
+            BufferedExecutionStateStore::wrap(Arc::new(SpiffsExecutionStateStore::new())
+                as Arc<dyn ExecutionStateStore + Send + Sync>);
         let self_model_store = BufferedSelfModelStore::wrap(
             Arc::new(SpiffsSelfModelStore::new()) as Arc<dyn SelfModelStore + Send + Sync>
         );
         let world_sense_store = BufferedWorldSenseStore::wrap(
-            Arc::new(SpiffsWorldSenseStore::new()) as Arc<dyn WorldSenseStore + Send + Sync>
+            Arc::new(SpiffsWorldSenseStore::new()) as Arc<dyn WorldSenseStore + Send + Sync>,
         );
-        let autonomy_strategy_store = BufferedAutonomyStrategyStore::wrap(
-            Arc::new(SpiffsAutonomyStrategyStore::new())
-                as Arc<dyn AutonomyStrategyStore + Send + Sync>
-        );
+        let autonomy_strategy_store =
+            BufferedAutonomyStrategyStore::wrap(Arc::new(SpiffsAutonomyStrategyStore::new())
+                as Arc<dyn AutonomyStrategyStore + Send + Sync>);
         let outer_voice_store = BufferedOuterVoiceStore::wrap(
-            Arc::new(SpiffsOuterVoiceStore::new()) as Arc<dyn OuterVoiceStore + Send + Sync>
+            Arc::new(SpiffsOuterVoiceStore::new()) as Arc<dyn OuterVoiceStore + Send + Sync>,
         );
         let inner_life_store = BufferedInnerLifeStore::wrap(
             Arc::new(SpiffsInnerLifeStore::new()) as Arc<dyn InnerLifeStore + Send + Sync>
         );
-        let self_continuity_store = BufferedSelfContinuityStore::wrap(
-            Arc::new(SpiffsSelfContinuityStore::new())
-                as Arc<dyn SelfContinuityStore + Send + Sync>
-        );
-        let mental_privacy_store = BufferedMentalPrivacyStore::wrap(
-            Arc::new(SpiffsMentalPrivacyStore::new()) as Arc<dyn MentalPrivacyStore + Send + Sync>
-        );
-        let important_message_store = BufferedImportantMessageStore::wrap(
-            Arc::new(SpiffsImportantMessageStore::new())
-                as Arc<dyn ImportantMessageStore + Send + Sync>
-        );
-        let session_summary_store = BufferedSessionSummaryStore::wrap(
-            Arc::new(SpiffsSessionSummaryStore::new())
-                as Arc<dyn SessionSummaryStore + Send + Sync>
-        );
+        let self_continuity_store =
+            BufferedSelfContinuityStore::wrap(Arc::new(SpiffsSelfContinuityStore::new())
+                as Arc<dyn SelfContinuityStore + Send + Sync>);
+        let mental_privacy_store =
+            BufferedMentalPrivacyStore::wrap(Arc::new(SpiffsMentalPrivacyStore::new())
+                as Arc<dyn MentalPrivacyStore + Send + Sync>);
+        let important_message_store =
+            BufferedImportantMessageStore::wrap(Arc::new(SpiffsImportantMessageStore::new())
+                as Arc<dyn ImportantMessageStore + Send + Sync>);
+        let session_summary_store =
+            BufferedSessionSummaryStore::wrap(Arc::new(SpiffsSessionSummaryStore::new())
+                as Arc<dyn SessionSummaryStore + Send + Sync>);
         let turn_ledger_store = BufferedTurnLedgerStore::wrap(
-            Arc::new(SpiffsTurnLedgerStore::new()) as Arc<dyn TurnLedgerStore + Send + Sync>
+            Arc::new(SpiffsTurnLedgerStore::new()) as Arc<dyn TurnLedgerStore + Send + Sync>,
         );
         Self {
             state_fs,
             config_store: Arc::new(NvsConfigStore),
-            skill_storage: Arc::new(SpiffsSkillStorage),
+            skill_storage: CachedSkillStorage::wrap(Arc::new(SpiffsSkillStorage)),
             skill_meta_store: Arc::new(SpiffsSkillMetaStore),
             memory_store: Arc::new(SpiffsMemoryStore::new()),
             long_term_memory_store: Arc::new(SpiffsLongTermMemoryStore::new()),
@@ -473,6 +469,32 @@ impl Platform for Esp32Platform {
             .unwrap_or(false)
     }
 
+    fn audio_reference_ready(&self) -> bool {
+        self.audio_state
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|s| s.reference_ready())
+            .unwrap_or(false)
+    }
+
+    fn audio_duplex_capabilities(&self) -> crate::platform::AudioDuplexCapabilities {
+        let state = self.audio_state.read().unwrap_or_else(|e| e.into_inner());
+        match state.as_ref() {
+            Some(audio) if audio.mic_ready() && audio.speaker_ready() => {
+                if audio.reference_ready() {
+                    crate::platform::AudioDuplexCapabilities::duplex_with_playback_reference()
+                } else {
+                    crate::platform::AudioDuplexCapabilities::duplex_without_aec()
+                }
+            }
+            Some(audio) if audio.speaker_ready() => {
+                crate::platform::AudioDuplexCapabilities::speaker_only()
+            }
+            _ => crate::platform::AudioDuplexCapabilities::unavailable(),
+        }
+    }
+
     fn read_mic_pcm_i16(&self, out: &mut [i16]) -> crate::error::Result<usize> {
         let state = self
             .audio_state
@@ -497,6 +519,19 @@ impl Platform for Esp32Platform {
                 crate::error::Error::config("audio_speaker", "audio pipeline not initialized")
             })?;
         state.write_speaker_pcm_i16(buf)
+    }
+
+    fn read_playback_reference_pcm_i16(&self, out: &mut [i16]) -> crate::error::Result<usize> {
+        let state = self
+            .audio_state
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| {
+                crate::error::Error::config("audio_reference", "audio pipeline not initialized")
+            })?;
+        state.read_playback_reference_pcm_i16(out)
     }
 
     fn speaker_buffered_samples(&self) -> usize {

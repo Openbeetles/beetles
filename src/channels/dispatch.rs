@@ -3,6 +3,7 @@
 
 use crate::bus::{OutboundRx, MAX_CONTENT_LEN};
 use crate::config::AppConfig;
+use crate::constants::VOICE_CHANNEL_NAME;
 use crate::error::Result;
 use crate::metrics;
 use crate::orchestrator::AdmissionDecision;
@@ -114,6 +115,29 @@ fn record_channel_fail(channel: &str) {
 
 fn record_channel_ok(channel: &str) {
     crate::orchestrator::record_channel_result_pub(channel, true);
+}
+
+fn outbound_blocked(msg: &crate::bus::PcMsg) -> bool {
+    crate::state::voice_exclusive_active() && msg.channel.as_str() != VOICE_CHANNEL_NAME
+}
+
+fn push_buffered_msg(
+    tag: &str,
+    cooldown_buffer: &mut VecDeque<crate::bus::PcMsg>,
+    msg: crate::bus::PcMsg,
+) {
+    if cooldown_buffer.len() < COOLDOWN_BUFFER_MAX {
+        cooldown_buffer.push_back(msg);
+        return;
+    }
+    log::warn!(
+        "[{}] req_id={} channel={} deferred buffer full, dropping oldest",
+        tag,
+        msg.req_id.as_deref().unwrap_or("-"),
+        msg.channel
+    );
+    cooldown_buffer.pop_front();
+    cooldown_buffer.push_back(msg);
 }
 
 fn replay_cooldown_buffer_with<FH, FS>(
@@ -244,24 +268,31 @@ pub fn run_dispatch(outbound_rx: OutboundRx, sinks: Arc<ChannelSinks>) {
         }
 
         // Replay buffered messages whose channel is out of cooldown
-        replay_cooldown_buffer_with(&mut cooldown_buffer, is_channel_in_cooldown, |buffered| {
-            let buffered_content = truncate_content_to_max(&buffered.content, MAX_CONTENT_LEN);
-            dispatch_via_sink(TAG, sinks.as_ref(), buffered, &buffered_content)
-        });
+        replay_cooldown_buffer_with(
+            &mut cooldown_buffer,
+            |channel| is_channel_in_cooldown(channel),
+            |buffered| {
+                if outbound_blocked(buffered) {
+                    return false;
+                }
+                let buffered_content = truncate_content_to_max(&buffered.content, MAX_CONTENT_LEN);
+                dispatch_via_sink(TAG, sinks.as_ref(), buffered, &buffered_content)
+            },
+        );
+
+        if outbound_blocked(&msg) {
+            log::info!(
+                "[{}] req_id={} channel={} deferred while voice-exclusive is active",
+                TAG,
+                msg.req_id.as_deref().unwrap_or("-"),
+                msg.channel
+            );
+            push_buffered_msg(TAG, &mut cooldown_buffer, msg);
+            continue;
+        }
 
         if is_channel_in_cooldown(&msg.channel) {
-            if cooldown_buffer.len() < COOLDOWN_BUFFER_MAX {
-                cooldown_buffer.push_back(msg);
-            } else {
-                log::warn!(
-                    "[{}] req_id={} channel={} cooldown buffer full, dropping oldest",
-                    TAG,
-                    msg.req_id.as_deref().unwrap_or("-"),
-                    msg.channel
-                );
-                cooldown_buffer.pop_front();
-                cooldown_buffer.push_back(msg);
-            }
+            push_buffered_msg(TAG, &mut cooldown_buffer, msg);
             continue;
         }
         let _ = dispatch_via_sink(TAG, sinks.as_ref(), &msg, &content);

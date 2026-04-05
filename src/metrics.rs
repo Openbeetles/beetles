@@ -50,6 +50,14 @@ static VOICE_OUTPUT_TTS_HTTP_LAST_MS: AtomicU32 = AtomicU32::new(0);
 static VOICE_OUTPUT_PLAY_LAST_MS: AtomicU32 = AtomicU32::new(0);
 static VOICE_INPUT_FAIL_TOTAL: AtomicU32 = AtomicU32::new(0);
 static VOICE_OUTPUT_FAIL_TOTAL: AtomicU32 = AtomicU32::new(0);
+static VOICE_INTERRUPT_REQUEST_TOTAL: AtomicU32 = AtomicU32::new(0);
+static VOICE_INTERRUPT_ACCEPT_TOTAL: AtomicU32 = AtomicU32::new(0);
+static VOICE_CANCEL_SENT_TOTAL: AtomicU32 = AtomicU32::new(0);
+static VOICE_STALE_AUDIO_DROP_TOTAL: AtomicU32 = AtomicU32::new(0);
+static VOICE_INTERRUPT_REFERENCE_SUPPRESS_TOTAL: AtomicU32 = AtomicU32::new(0);
+static VOICE_NO_SPEECH_TIMEOUT_TOTAL: AtomicU32 = AtomicU32::new(0);
+static VOICE_RESPONSE_WAIT_TIMEOUT_TOTAL: AtomicU32 = AtomicU32::new(0);
+static VOICE_POST_PLAYBACK_TIMEOUT_TOTAL: AtomicU32 = AtomicU32::new(0);
 static WAKE_WORD_TRIGGER_TOTAL: AtomicU32 = AtomicU32::new(0);
 static AUDIO_WORKER_TURNS_TOTAL: AtomicU32 = AtomicU32::new(0);
 static AUDIO_WORKER_IDLE_TURNS_TOTAL: AtomicU32 = AtomicU32::new(0);
@@ -59,6 +67,9 @@ static AUDIO_MIC_ZERO_READ_TOTAL: AtomicU32 = AtomicU32::new(0);
 static AUDIO_LOOP_LAST_US: AtomicU32 = AtomicU32::new(0);
 static AUDIO_MIC_READ_LAST_US: AtomicU32 = AtomicU32::new(0);
 static AUDIO_SPEAKER_WRITE_LAST_US: AtomicU32 = AtomicU32::new(0);
+static AUDIO_REFERENCE_FRAMES_TOTAL: AtomicU32 = AtomicU32::new(0);
+static AUDIO_REFERENCE_ZERO_READ_TOTAL: AtomicU32 = AtomicU32::new(0);
+static AUDIO_REFERENCE_QUEUE_DEPTH_LAST_SAMPLES: AtomicU32 = AtomicU32::new(0);
 static AUDIO_SPEAKER_QUEUE_DEPTH_LAST_SAMPLES: AtomicU32 = AtomicU32::new(0);
 static AUDIO_SPEAKER_QUEUE_DEPTH_MIN_SAMPLES: AtomicU32 = AtomicU32::new(u32::MAX);
 static AUDIO_SPEAKER_UNDERRUN_TOTAL: AtomicU32 = AtomicU32::new(0);
@@ -261,6 +272,46 @@ pub fn record_voice_output_play_ms(ms: u128) {
 }
 
 #[inline]
+pub fn record_voice_interrupt_requested() {
+    VOICE_INTERRUPT_REQUEST_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_voice_interrupt_accepted() {
+    VOICE_INTERRUPT_ACCEPT_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_voice_cancel_sent() {
+    VOICE_CANCEL_SENT_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_voice_stale_audio_drop() {
+    VOICE_STALE_AUDIO_DROP_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_voice_interrupt_reference_suppressed() {
+    VOICE_INTERRUPT_REFERENCE_SUPPRESS_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_voice_no_speech_timeout() {
+    VOICE_NO_SPEECH_TIMEOUT_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_voice_response_wait_timeout() {
+    VOICE_RESPONSE_WAIT_TIMEOUT_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_voice_post_playback_timeout() {
+    VOICE_POST_PLAYBACK_TIMEOUT_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
 pub fn record_wake_word_trigger() {
     WAKE_WORD_TRIGGER_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
@@ -303,6 +354,22 @@ pub fn record_audio_mic_read_us(us: u128) {
 #[inline]
 pub fn record_audio_speaker_write_us(us: u128) {
     AUDIO_SPEAKER_WRITE_LAST_US.store(us.min(u32::MAX as u128) as u32, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_audio_reference_frame_read() {
+    AUDIO_REFERENCE_FRAMES_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_audio_reference_zero_read() {
+    AUDIO_REFERENCE_ZERO_READ_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_audio_reference_queue_depth_last_samples(samples: usize) {
+    AUDIO_REFERENCE_QUEUE_DEPTH_LAST_SAMPLES
+        .store(samples.min(u32::MAX as usize) as u32, Ordering::Relaxed);
 }
 
 #[inline]
@@ -496,6 +563,17 @@ pub fn snapshot() -> MetricsSnapshot {
         voice_output_play_last_ms: VOICE_OUTPUT_PLAY_LAST_MS.load(Ordering::Relaxed) as u64,
         voice_input_fail_total: VOICE_INPUT_FAIL_TOTAL.load(Ordering::Relaxed) as u64,
         voice_output_fail_total: VOICE_OUTPUT_FAIL_TOTAL.load(Ordering::Relaxed) as u64,
+        voice_interrupt_request_total: VOICE_INTERRUPT_REQUEST_TOTAL.load(Ordering::Relaxed) as u64,
+        voice_interrupt_accept_total: VOICE_INTERRUPT_ACCEPT_TOTAL.load(Ordering::Relaxed) as u64,
+        voice_cancel_sent_total: VOICE_CANCEL_SENT_TOTAL.load(Ordering::Relaxed) as u64,
+        voice_stale_audio_drop_total: VOICE_STALE_AUDIO_DROP_TOTAL.load(Ordering::Relaxed) as u64,
+        voice_interrupt_reference_suppress_total: VOICE_INTERRUPT_REFERENCE_SUPPRESS_TOTAL
+            .load(Ordering::Relaxed) as u64,
+        voice_no_speech_timeout_total: VOICE_NO_SPEECH_TIMEOUT_TOTAL.load(Ordering::Relaxed) as u64,
+        voice_response_wait_timeout_total: VOICE_RESPONSE_WAIT_TIMEOUT_TOTAL.load(Ordering::Relaxed)
+            as u64,
+        voice_post_playback_timeout_total: VOICE_POST_PLAYBACK_TIMEOUT_TOTAL.load(Ordering::Relaxed)
+            as u64,
         wake_word_trigger_total: WAKE_WORD_TRIGGER_TOTAL.load(Ordering::Relaxed) as u64,
         audio_worker_turns_total: AUDIO_WORKER_TURNS_TOTAL.load(Ordering::Relaxed) as u64,
         audio_worker_idle_turns_total: AUDIO_WORKER_IDLE_TURNS_TOTAL.load(Ordering::Relaxed) as u64,
@@ -505,6 +583,11 @@ pub fn snapshot() -> MetricsSnapshot {
         audio_loop_last_us: AUDIO_LOOP_LAST_US.load(Ordering::Relaxed) as u64,
         audio_mic_read_last_us: AUDIO_MIC_READ_LAST_US.load(Ordering::Relaxed) as u64,
         audio_speaker_write_last_us: AUDIO_SPEAKER_WRITE_LAST_US.load(Ordering::Relaxed) as u64,
+        audio_reference_frames_total: AUDIO_REFERENCE_FRAMES_TOTAL.load(Ordering::Relaxed) as u64,
+        audio_reference_zero_read_total: AUDIO_REFERENCE_ZERO_READ_TOTAL.load(Ordering::Relaxed)
+            as u64,
+        audio_reference_queue_depth_last_samples: AUDIO_REFERENCE_QUEUE_DEPTH_LAST_SAMPLES
+            .load(Ordering::Relaxed) as u64,
         audio_speaker_queue_depth_last_samples: AUDIO_SPEAKER_QUEUE_DEPTH_LAST_SAMPLES
             .load(Ordering::Relaxed) as u64,
         audio_speaker_queue_depth_min_samples: if speaker_depth_min == u32::MAX {
@@ -586,6 +669,14 @@ pub struct MetricsSnapshot {
     pub voice_output_play_last_ms: u64,
     pub voice_input_fail_total: u64,
     pub voice_output_fail_total: u64,
+    pub voice_interrupt_request_total: u64,
+    pub voice_interrupt_accept_total: u64,
+    pub voice_cancel_sent_total: u64,
+    pub voice_stale_audio_drop_total: u64,
+    pub voice_interrupt_reference_suppress_total: u64,
+    pub voice_no_speech_timeout_total: u64,
+    pub voice_response_wait_timeout_total: u64,
+    pub voice_post_playback_timeout_total: u64,
     pub wake_word_trigger_total: u64,
     pub audio_worker_turns_total: u64,
     pub audio_worker_idle_turns_total: u64,
@@ -595,6 +686,9 @@ pub struct MetricsSnapshot {
     pub audio_loop_last_us: u64,
     pub audio_mic_read_last_us: u64,
     pub audio_speaker_write_last_us: u64,
+    pub audio_reference_frames_total: u64,
+    pub audio_reference_zero_read_total: u64,
+    pub audio_reference_queue_depth_last_samples: u64,
     pub audio_speaker_queue_depth_last_samples: u64,
     pub audio_speaker_queue_depth_min_samples: u64,
     pub audio_speaker_underrun_total: u64,
@@ -637,7 +731,7 @@ impl MetricsSnapshot {
         let mut buf = String::with_capacity(384);
         let _ = write!(
             buf,
-            "metrics msg_in={} msg_out={} llm_calls={} llm_err={} llm_last_ms={} ttft_last_ms={} e2e_last_ms={} post_reply_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} user_done={} sys_done={} cron_done={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} wdt_feeds={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} voice_in_capture_ms={} voice_in_stt_http_ms={} voice_out_tts_http_ms={} voice_out_play_ms={} voice_in_fail={} voice_out_fail={} wake_word_trigger={} audio_turns={} audio_idle={} audio_mic_poll={} audio_mic_frames={} audio_mic_zero={} audio_loop_last_us={} audio_mic_read_last_us={} audio_spk_write_last_us={} audio_spk_depth_last={} audio_spk_depth_min={} audio_spk_underrun={} wake_feed_calls={} wake_feed_busy_skip={} wake_feed_cooldown_skip={} wake_feed_detect={} wake_feed_last_us={} spiffs_ops={} spiffs_contention={} spiffs_wait_last_us={} spiffs_wait_total_us={} spiffs_hold_last_us={} spiffs_hold_total_us={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={} shttp_reuse={} shttp_create={} shttp_reset={} shttp_invalidate={}",
+            "metrics msg_in={} msg_out={} llm_calls={} llm_err={} llm_last_ms={} ttft_last_ms={} e2e_last_ms={} post_reply_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} user_done={} sys_done={} cron_done={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} wdt_feeds={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} voice_in_capture_ms={} voice_in_stt_http_ms={} voice_out_tts_http_ms={} voice_out_play_ms={} voice_in_fail={} voice_out_fail={} voice_interrupt_req={} voice_interrupt_accept={} voice_cancel_sent={} voice_stale_drop={} voice_interrupt_ref_suppress={} voice_no_speech_to={} voice_resp_wait_to={} voice_post_play_to={} wake_word_trigger={} audio_turns={} audio_idle={} audio_mic_poll={} audio_mic_frames={} audio_mic_zero={} audio_loop_last_us={} audio_mic_read_last_us={} audio_spk_write_last_us={} audio_ref_frames={} audio_ref_zero={} audio_ref_depth_last={} audio_spk_depth_last={} audio_spk_depth_min={} audio_spk_underrun={} wake_feed_calls={} wake_feed_busy_skip={} wake_feed_cooldown_skip={} wake_feed_detect={} wake_feed_last_us={} spiffs_ops={} spiffs_contention={} spiffs_wait_last_us={} spiffs_wait_total_us={} spiffs_hold_last_us={} spiffs_hold_total_us={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={} shttp_reuse={} shttp_create={} shttp_reset={} shttp_invalidate={}",
             self.messages_in,
             self.messages_out,
             self.llm_calls,
@@ -672,6 +766,14 @@ impl MetricsSnapshot {
             self.voice_output_play_last_ms,
             self.voice_input_fail_total,
             self.voice_output_fail_total,
+            self.voice_interrupt_request_total,
+            self.voice_interrupt_accept_total,
+            self.voice_cancel_sent_total,
+            self.voice_stale_audio_drop_total,
+            self.voice_interrupt_reference_suppress_total,
+            self.voice_no_speech_timeout_total,
+            self.voice_response_wait_timeout_total,
+            self.voice_post_playback_timeout_total,
             self.wake_word_trigger_total,
             self.audio_worker_turns_total,
             self.audio_worker_idle_turns_total,
@@ -681,6 +783,9 @@ impl MetricsSnapshot {
             self.audio_loop_last_us,
             self.audio_mic_read_last_us,
             self.audio_speaker_write_last_us,
+            self.audio_reference_frames_total,
+            self.audio_reference_zero_read_total,
+            self.audio_reference_queue_depth_last_samples,
             self.audio_speaker_queue_depth_last_samples,
             self.audio_speaker_queue_depth_min_samples,
             self.audio_speaker_underrun_total,

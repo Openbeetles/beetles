@@ -62,6 +62,10 @@ const PORT_TICK_PERIOD_MS: u32 = 10;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const AUDIO_IDLE_SLEEP_MS_DEEP: u64 = 250;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+const AUDIO_SPEAKER_WRITE_MIN_SAMPLES: usize = 320;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+const AUDIO_SPEAKER_COALESCE_WAIT_MS: u64 = 12;
 
 /// Check ESP-IDF return code; wrap non-OK as `Error::Esp`.
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -596,19 +600,62 @@ struct SharedAudioBuffers {
     mic_cv: Condvar,
     speaker: Mutex<AudioRingBuffer>,
     speaker_cv: Condvar,
+    reference: Mutex<AudioRingBuffer>,
+    reference_cv: Condvar,
     stop: AtomicBool,
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-fn pop_speaker_frame_if_available(shared: &SharedAudioBuffers, out: &mut [i16]) -> Option<usize> {
+fn pop_speaker_frame_for_output(
+    shared: &SharedAudioBuffers,
+    out: &mut [i16],
+    min_samples: usize,
+    coalesce_wait: Duration,
+) -> Option<usize> {
     let mut guard = shared.speaker.lock().unwrap_or_else(|e| e.into_inner());
-    let n = guard.pop_into(out);
-    if n == 0 {
-        return None;
+    let deadline = Instant::now() + coalesce_wait;
+    loop {
+        let available = guard.len();
+        if available == 0 {
+            if shared.stop.load(Ordering::Relaxed) {
+                return None;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            let waited = shared
+                .speaker_cv
+                .wait_timeout(guard, remaining)
+                .unwrap_or_else(|e| e.into_inner());
+            guard = waited.0;
+            if waited.1.timed_out() && guard.len() == 0 {
+                return None;
+            }
+            continue;
+        }
+        if available < min_samples
+            && !shared.stop.load(Ordering::Relaxed)
+            && Instant::now() < deadline
+        {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if !remaining.is_zero() {
+                let waited = shared
+                    .speaker_cv
+                    .wait_timeout(guard, remaining)
+                    .unwrap_or_else(|e| e.into_inner());
+                guard = waited.0;
+                continue;
+            }
+        }
+        let n = guard.pop_into(out);
+        if n == 0 {
+            return None;
+        }
+        crate::metrics::record_audio_speaker_queue_depth_last_samples(guard.len());
+        shared.speaker_cv.notify_one();
+        return Some(n);
     }
-    crate::metrics::record_audio_speaker_queue_depth_last_samples(guard.len());
-    shared.speaker_cv.notify_one();
-    Some(n)
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -630,6 +677,17 @@ fn current_speaker_buffered_samples(shared: &SharedAudioBuffers) -> usize {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .len()
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn push_playback_reference_frame(shared: &SharedAudioBuffers, samples: &[i16]) {
+    if samples.is_empty() {
+        return;
+    }
+    let mut guard = shared.reference.lock().unwrap_or_else(|e| e.into_inner());
+    guard.push_slice_drop_oldest(samples);
+    crate::metrics::record_audio_reference_queue_depth_last_samples(guard.len());
+    shared.reference_cv.notify_one();
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -743,6 +801,8 @@ impl AudioPipelineState {
             mic_cv: Condvar::new(),
             speaker: Mutex::new(AudioRingBuffer::with_capacity(speaker_cap)),
             speaker_cv: Condvar::new(),
+            reference: Mutex::new(AudioRingBuffer::with_capacity(speaker_cap)),
+            reference_cv: Condvar::new(),
             stop: AtomicBool::new(false),
         });
 
@@ -820,9 +880,11 @@ impl AudioPipelineState {
                     );
 
                     if backend.speaker_ready() {
-                        if let Some(n) = pop_speaker_frame_if_available(
+                        if let Some(n) = pop_speaker_frame_for_output(
                             worker_shared.as_ref(),
                             &mut speaker_frame,
+                            AUDIO_SPEAKER_WRITE_MIN_SAMPLES.min(speaker_frame.len()),
+                            Duration::from_millis(AUDIO_SPEAKER_COALESCE_WAIT_MS),
                         ) {
                             crate::platform::task_wdt::feed_current_task();
                             let speaker_write_start = Instant::now();
@@ -831,6 +893,10 @@ impl AudioPipelineState {
                             } else {
                                 crate::metrics::record_audio_speaker_write_us(
                                     speaker_write_start.elapsed().as_micros(),
+                                );
+                                push_playback_reference_frame(
+                                    worker_shared.as_ref(),
+                                    &speaker_frame[..n],
                                 );
                                 progressed = true;
                             }
@@ -931,6 +997,11 @@ impl AudioPipelineState {
         self.speaker_enabled
     }
 
+    #[inline]
+    pub fn reference_ready(&self) -> bool {
+        self.speaker_enabled
+    }
+
     pub fn speaker_buffered_samples(&self) -> usize {
         current_speaker_buffered_samples(self.shared.as_ref())
     }
@@ -939,10 +1010,24 @@ impl AudioPipelineState {
         if !self.speaker_enabled {
             return Err(Error::config("audio_speaker", "speaker not initialized"));
         }
-        let mut guard = self.shared.speaker.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self
+            .shared
+            .speaker
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         guard.clear();
         crate::metrics::record_audio_speaker_queue_depth_last_samples(0);
         self.shared.speaker_cv.notify_all();
+        drop(guard);
+
+        let mut reference_guard = self
+            .shared
+            .reference
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        reference_guard.clear();
+        crate::metrics::record_audio_reference_queue_depth_last_samples(0);
+        self.shared.reference_cv.notify_all();
         Ok(())
     }
 
@@ -963,6 +1048,31 @@ impl AudioPipelineState {
             guard = waited.0;
         }
         let n = guard.pop_into(out);
+        Ok(n)
+    }
+
+    pub fn read_playback_reference_pcm_i16(&self, out: &mut [i16]) -> Result<usize> {
+        if !self.reference_ready() {
+            return Err(Error::config(
+                "audio_reference",
+                "playback reference not initialized",
+            ));
+        }
+        if out.is_empty() {
+            return Ok(0);
+        }
+        let mut guard = self
+            .shared
+            .reference
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let n = guard.pop_into(out);
+        crate::metrics::record_audio_reference_queue_depth_last_samples(guard.len());
+        if n > 0 {
+            crate::metrics::record_audio_reference_frame_read();
+        } else {
+            crate::metrics::record_audio_reference_zero_read();
+        }
         Ok(n)
     }
 
@@ -1009,6 +1119,7 @@ impl Drop for AudioPipelineState {
         self.shared.stop.store(true, Ordering::Relaxed);
         self.shared.mic_cv.notify_all();
         self.shared.speaker_cv.notify_all();
+        self.shared.reference_cv.notify_all();
         if let Some(handle) = self.worker.take() {
             let _ = handle.join();
         }

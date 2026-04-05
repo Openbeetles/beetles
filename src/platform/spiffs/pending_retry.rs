@@ -7,6 +7,7 @@ use crate::error::{Error, Result};
 use crate::memory::{PendingRetryStore, REL_PATH_PENDING_RETRY};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use super::{read_file, state_path_join, write_file};
 
@@ -14,19 +15,57 @@ fn full_path() -> PathBuf {
     state_path_join(REL_PATH_PENDING_RETRY)
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct PendingRetryEntry {
     msg: PcMsg,
     #[serde(default)]
     replay_count: u32,
 }
 
-/// 无状态；路径固定为 SPIFFS_BASE + REL_PATH_PENDING_RETRY。
-pub struct SpiffsPendingRetryStore;
+#[derive(Default)]
+struct PendingRetryCache {
+    loaded: bool,
+    entry: Option<PendingRetryEntry>,
+}
+
+/// 单槽 pending_retry，带进程内镜像，避免每次 save 先读盘。
+pub struct SpiffsPendingRetryStore {
+    cache: Mutex<PendingRetryCache>,
+}
 
 impl SpiffsPendingRetryStore {
     pub fn new() -> Self {
-        SpiffsPendingRetryStore
+        Self {
+            cache: Mutex::new(PendingRetryCache::default()),
+        }
+    }
+
+    fn load_cache_locked(cache: &mut PendingRetryCache) {
+        if cache.loaded {
+            return;
+        }
+        cache.loaded = true;
+        let path = full_path();
+        let buf = match read_file(&path) {
+            Ok(buf) => buf,
+            Err(_) => return,
+        };
+        if buf.len() <= 2 {
+            return;
+        }
+        cache.entry = match serde_json::from_slice::<PendingRetryEntry>(&buf) {
+            Ok(entry) => Some(entry),
+            Err(_) => match serde_json::from_slice::<PcMsg>(&buf) {
+                Ok(msg) => Some(PendingRetryEntry {
+                    msg,
+                    replay_count: 1,
+                }),
+                Err(_) => {
+                    log::warn!("[spiffs_pending_retry] load parse failed");
+                    None
+                }
+            },
+        };
     }
 }
 
@@ -48,58 +87,57 @@ impl PendingRetryStore for SpiffsPendingRetryStore {
                 ),
             ));
         }
-        let path = full_path();
-        let replay_count = match read_file(&path) {
-            Ok(buf) if buf.len() > 2 => serde_json::from_slice::<PendingRetryEntry>(&buf)
-                .map(|e| {
-                    e.replay_count
-                        .saturating_add(1)
-                        .min(PENDING_RETRY_MAX_REPLAY)
-                })
-                .unwrap_or(1),
-            _ => 1,
-        };
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        Self::load_cache_locked(&mut cache);
+        let replay_count = cache
+            .entry
+            .as_ref()
+            .map(|entry| {
+                entry
+                    .replay_count
+                    .saturating_add(1)
+                    .min(PENDING_RETRY_MAX_REPLAY)
+            })
+            .unwrap_or(1);
         let entry = PendingRetryEntry {
             msg: msg.clone(),
             replay_count,
         };
         let json = serde_json::to_vec(&entry)
             .map_err(|e| Error::config("pending_retry_save", e.to_string()))?;
-        write_file(full_path(), &json)
+        write_file(full_path(), &json)?;
+        cache.entry = Some(entry);
+        Ok(())
     }
 
     fn load_pending_retry(&self) -> Result<Option<PcMsg>> {
-        let path = full_path();
-        let buf = match read_file(&path) {
-            Ok(b) => b,
-            Err(_) => return Ok(None),
-        };
-        if buf.len() <= 2 {
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        Self::load_cache_locked(&mut cache);
+        let Some((replay_count, msg)) = cache
+            .entry
+            .as_ref()
+            .map(|entry| (entry.replay_count, entry.msg.clone()))
+        else {
             return Ok(None);
-        }
-        let entry: PendingRetryEntry = match serde_json::from_slice(&buf) {
-            Ok(e) => e,
-            Err(_) => {
-                if let Ok(m) = serde_json::from_slice::<PcMsg>(&buf) {
-                    return Ok(Some(m));
-                }
-                log::warn!("[spiffs_pending_retry] load parse failed");
-                return Ok(None);
-            }
         };
-        if entry.replay_count >= PENDING_RETRY_MAX_REPLAY {
-            let _ = write_file(&path, b"{}");
+        if replay_count >= PENDING_RETRY_MAX_REPLAY {
+            let _ = write_file(&full_path(), b"{}");
+            cache.entry = None;
             log::info!(
                 "[spiffs_pending_retry] replay_count {} >= {}, cleared",
-                entry.replay_count,
+                replay_count,
                 PENDING_RETRY_MAX_REPLAY
             );
             return Ok(None);
         }
-        Ok(Some(entry.msg))
+        Ok(Some(msg))
     }
 
     fn clear_pending_retry(&self) -> Result<()> {
-        write_file(full_path(), b"{}")
+        write_file(full_path(), b"{}")?;
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        cache.loaded = true;
+        cache.entry = None;
+        Ok(())
     }
 }

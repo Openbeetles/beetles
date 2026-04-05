@@ -7,7 +7,7 @@ This tarball is for integrators and manual trials. **End-user one-click / SSH in
 
 Binary
 ------
-- `beetle`: statically linked (musl). `./build.sh --deploy-linux` installs to `/opt/beetle/releases/<release>/`, updates `/opt/beetle/current`, and also keeps `/opt/beetle/beetle` as a compatibility shortcut to the current binary.
+- `beetle`: statically linked (musl). `./build.sh --deploy-linux` installs to `/opt/beetle/releases/<release>/`, updates `/opt/beetle/current`, and creates `/usr/local/bin/beetle -> /opt/beetle/current/beetle` as the global command entry.
 - **WiFi addressing**: Beetle sets AP/STA addresses via **rtnetlink** in-process; the **`ip` utility is not required** for those steps (you still need `wpa_supplicant` / `hostapd` / `dnsmasq` / `iw` where the code invokes them).
 
 Config API (optional)

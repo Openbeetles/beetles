@@ -47,9 +47,9 @@ use crate::memory::{
     PersonaPriorityRuntimeState, PostReplyMemoryMaintenanceContext,
     PostReplyMemoryMaintenanceInput, PrivateDocStore, PrivateGardenStore, PromptMemoryContext,
     PromptMemoryContextParams, RemindAtStore, SelfContinuityStore, SelfModelStore,
-    SessionMessage,
-    SelfRuntimeContext, SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore,
-    TurnDeliveryLedger, TurnLedger, TurnLedgerStatus, TurnLedgerStore, WorldSenseStore,
+    SelfRuntimeContext, SessionMessage, SessionStore, SessionSummaryRefreshOutcome,
+    SessionSummaryStore, TurnDeliveryLedger, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
+    WorldSenseStore,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
@@ -2982,7 +2982,6 @@ pub fn run_agent_loop(
         system_inbound_rx,
         outbound_tx,
         typing_notifier,
-        true,
     )
 }
 enum AgentRecvStatus {
@@ -3006,7 +3005,6 @@ fn run_agent_loop_main(
     system_inbound_rx: InboundRx,
     outbound_tx: OutboundTx,
     mut typing_notifier: Option<TypingNotifier>,
-    bootstrap_pending_retry: bool,
 ) -> Result<()> {
     // Track repeated LLM failure for same request body, avoid infinite retry.
     // Key: u64 hash of (channel, chat_id, content) — avoids per-message format! String alloc.
@@ -3025,14 +3023,6 @@ fn run_agent_loop_main(
     const DEFER_EXPIRY: Duration = Duration::from_secs(300);
     const LATENCY_WARN_MS: u128 = 3000;
     let mut consecutive_user_msgs = 0u8;
-
-    if bootstrap_pending_retry {
-        if let Ok(Some(m)) = config.pending_retry.load_pending_retry() {
-            let _ = config.pending_retry.clear_pending_retry();
-            let inbound_tx = choose_inbound_tx(m.ingress, &user_inbound_tx, &system_inbound_tx);
-            let _ = inbound_tx.send(m);
-        }
-    }
 
     let recv_timeout = Duration::from_secs(INBOUND_RECV_TIMEOUT_SECS);
     loop {

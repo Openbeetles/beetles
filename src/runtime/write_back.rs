@@ -274,7 +274,10 @@ define_buffered_chat_store!(
 pub struct BufferedTurnLedgerStore {
     inner: Arc<dyn TurnLedgerStore + Send + Sync>,
     pending: Arc<PendingMapBuffer<TurnLedger>>,
+    cache: Arc<Mutex<HashMap<String, Option<TurnLedger>>>>,
 }
+
+const TURN_LEDGER_CACHE_MAX_CHATS: usize = 64;
 
 impl BufferedTurnLedgerStore {
     pub fn wrap(
@@ -283,6 +286,7 @@ impl BufferedTurnLedgerStore {
         Arc::new(Self {
             inner,
             pending: Arc::new(PendingMapBuffer::new("turn_ledger_write_back")),
+            cache: Arc::new(Mutex::new(HashMap::new())),
         }) as Arc<dyn TurnLedgerStore + Send + Sync>
     }
 
@@ -292,6 +296,14 @@ impl BufferedTurnLedgerStore {
             Arc::clone(&self.pending),
             Self::apply_pending,
         );
+    }
+
+    fn cache_value(&self, chat_id: &str, value: Option<TurnLedger>) {
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        if !cache.contains_key(chat_id) && cache.len() >= TURN_LEDGER_CACHE_MAX_CHATS {
+            cache.clear();
+        }
+        cache.insert(chat_id.to_string(), value);
     }
 
     fn apply_pending(
@@ -311,17 +323,30 @@ impl TurnLedgerStore for BufferedTurnLedgerStore {
         if let Some(value) = self.pending.peek(chat_id) {
             return Ok(value);
         }
-        self.inner.get(chat_id)
+        if let Some(value) = self
+            .cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(chat_id)
+            .cloned()
+        {
+            return Ok(value);
+        }
+        let loaded = self.inner.get(chat_id)?;
+        self.cache_value(chat_id, loaded.clone());
+        Ok(loaded)
     }
 
     fn set(&self, chat_id: &str, ledger: &TurnLedger) -> Result<()> {
         self.pending.store_set(chat_id, ledger.clone());
+        self.cache_value(chat_id, Some(ledger.clone()));
         self.schedule_flush();
         Ok(())
     }
 
     fn clear(&self, chat_id: &str) -> Result<()> {
         self.pending.store_clear(chat_id);
+        self.cache_value(chat_id, None);
         self.schedule_flush();
         Ok(())
     }

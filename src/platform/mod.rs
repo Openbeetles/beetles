@@ -43,6 +43,7 @@ pub mod wake_word;
 pub mod wifi;
 
 pub use abstraction::{
+    AudioDuplexCapabilities, AudioEchoCancellationCapability, AudioReferenceCapability,
     ConfigStore, HardwareCapability, HardwareDiscovery, HardwareDiscoveryBus,
     HardwareDiscoveryItem, HardwareDiscoveryQuery, HardwareDiscoveryResponse, MemorySnapshot,
     Platform, PlatformHttpClient, SkillMetaStore, SkillStorage, StateFs,

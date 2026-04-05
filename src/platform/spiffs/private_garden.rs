@@ -7,13 +7,15 @@ use crate::memory::{
     PRIVATE_GARDEN_MAX_DOC_BYTES, REL_PATH_PRIVATE_GARDEN_DIR, REL_PATH_PRIVATE_GARDEN_INDEX,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use super::cached_json::{load_json_or_default, CachedJsonFileStore, StoreOp};
 use super::{read_file, remove_file, state_path_join, write_file};
 
 const MAX_PRIVATE_GARDEN_CHATS: usize = 32;
+const PRIVATE_GARDEN_DOC_CACHE_MAX: usize = 24;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct StoredGardenIndex {
@@ -59,8 +61,68 @@ fn chat_doc_rel_path(chat_id: &str, doc_path: &str) -> String {
     )
 }
 
+fn doc_cache_key(chat_id: &str, doc_path: &str) -> String {
+    format!("{chat_id}\n{doc_path}")
+}
+
+#[derive(Default)]
+struct PrivateGardenDocCache {
+    docs: HashMap<String, PrivateGardenDoc>,
+    order: VecDeque<String>,
+}
+
+impl PrivateGardenDocCache {
+    fn get(&mut self, chat_id: &str, record: &PrivateGardenDocRecord) -> Option<PrivateGardenDoc> {
+        let key = doc_cache_key(chat_id, &record.path);
+        let cached = self.docs.get(&key).cloned();
+        match cached {
+            Some(doc) if doc.updated_at == record.updated_at && doc.revision == record.revision => {
+                self.touch(&key);
+                Some(doc)
+            }
+            Some(_) => {
+                self.remove_key(&key);
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn insert(&mut self, chat_id: &str, doc: PrivateGardenDoc) {
+        let key = doc_cache_key(chat_id, &doc.path);
+        self.remove_key(&key);
+        self.docs.insert(key.clone(), doc);
+        self.order.push_back(key);
+        while self.docs.len() > PRIVATE_GARDEN_DOC_CACHE_MAX {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.docs.remove(&oldest);
+        }
+    }
+
+    fn remove(&mut self, chat_id: &str, doc_path: &str) {
+        self.remove_key(&doc_cache_key(chat_id, doc_path));
+    }
+
+    fn remove_key(&mut self, key: &str) {
+        self.docs.remove(key);
+        if let Some(index) = self.order.iter().position(|entry| entry == key) {
+            self.order.remove(index);
+        }
+    }
+
+    fn touch(&mut self, key: &str) {
+        if let Some(index) = self.order.iter().position(|entry| entry == key) {
+            self.order.remove(index);
+        }
+        self.order.push_back(key.to_string());
+    }
+}
+
 pub struct SpiffsPrivateGardenStore {
     index: CachedJsonFileStore<StoredGardenIndex>,
+    doc_cache: Mutex<PrivateGardenDocCache>,
 }
 
 impl SpiffsPrivateGardenStore {
@@ -73,7 +135,33 @@ impl SpiffsPrivateGardenStore {
                 "private_garden_cache",
                 "private_garden_persist",
             ),
+            doc_cache: Mutex::new(PrivateGardenDocCache::default()),
         }
+    }
+
+    fn cache_doc(&self, chat_id: &str, doc: PrivateGardenDoc) {
+        self.doc_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(chat_id, doc);
+    }
+
+    fn get_cached_doc(
+        &self,
+        chat_id: &str,
+        record: &PrivateGardenDocRecord,
+    ) -> Option<PrivateGardenDoc> {
+        self.doc_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(chat_id, record)
+    }
+
+    fn remove_cached_doc(&self, chat_id: &str, doc_path: &str) {
+        self.doc_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(chat_id, doc_path);
     }
 }
 
@@ -113,6 +201,9 @@ impl PrivateGardenStore for SpiffsPrivateGardenStore {
             let Some(record) = chat.docs.iter().find(|doc| doc.path == doc_path) else {
                 return Ok(StoreOp::clean(None));
             };
+            if let Some(doc) = self.get_cached_doc(chat_id, record) {
+                return Ok(StoreOp::clean(Some(doc)));
+            }
             let rel_path = chat_doc_rel_path(chat_id, &doc_path);
             let buf = match read_file(state_path_join(&rel_path)) {
                 Ok(buf) => buf,
@@ -124,12 +215,14 @@ impl PrivateGardenStore for SpiffsPrivateGardenStore {
             let content = String::from_utf8(buf).map_err(|_| {
                 Error::config("private_garden_read", "stored document is not valid UTF-8")
             })?;
-            Ok(StoreOp::clean(Some(PrivateGardenDoc {
+            let doc = PrivateGardenDoc {
                 path: doc_path,
                 content,
                 updated_at: record.updated_at,
                 revision: record.revision,
-            })))
+            };
+            self.cache_doc(chat_id, doc.clone());
+            Ok(StoreOp::clean(Some(doc)))
         })
     }
 
@@ -152,6 +245,7 @@ impl PrivateGardenStore for SpiffsPrivateGardenStore {
                 if let Some(evicted_chat_id) = index.chats.keys().next().cloned() {
                     if let Some(evicted_chat) = index.chats.remove(&evicted_chat_id) {
                         for doc in evicted_chat.docs {
+                            self.remove_cached_doc(&evicted_chat_id, &doc.path);
                             let _ = remove_file(state_path_join(chat_doc_rel_path(
                                 &evicted_chat_id,
                                 &doc.path,
@@ -187,6 +281,7 @@ impl PrivateGardenStore for SpiffsPrivateGardenStore {
                     .map(|(idx, doc)| (idx, doc.clone()))
                 {
                     chat.docs.remove(evict_idx);
+                    self.remove_cached_doc(chat_id, &evicted.path);
                     let _ = remove_file(state_path_join(chat_doc_rel_path(chat_id, &evicted.path)));
                 }
             }
@@ -198,6 +293,15 @@ impl PrivateGardenStore for SpiffsPrivateGardenStore {
             } else {
                 chat.docs.push(next.clone());
             }
+            self.cache_doc(
+                chat_id,
+                PrivateGardenDoc {
+                    path: next.path.clone(),
+                    content: content.to_string(),
+                    updated_at: next.updated_at,
+                    revision: next.revision,
+                },
+            );
             Ok(StoreOp::dirty(next))
         })
     }
@@ -245,6 +349,7 @@ impl PrivateGardenStore for SpiffsPrivateGardenStore {
             let _ = remove_file(state_path_join(&rel_from_path));
             let removed = chat.docs.remove(from_idx);
             if let Some(existing_to_idx) = chat.docs.iter().position(|doc| doc.path == to_path) {
+                self.remove_cached_doc(chat_id, &to_path);
                 chat.docs.remove(existing_to_idx);
             }
 
@@ -259,6 +364,16 @@ impl PrivateGardenStore for SpiffsPrivateGardenStore {
             if chat.docs.is_empty() {
                 index.chats.remove(chat_id);
             }
+            self.remove_cached_doc(chat_id, &from_path);
+            self.cache_doc(
+                chat_id,
+                PrivateGardenDoc {
+                    path: next.path.clone(),
+                    content,
+                    updated_at: next.updated_at,
+                    revision: next.revision,
+                },
+            );
             Ok(StoreOp::dirty(Some(next)))
         })
     }
@@ -275,6 +390,7 @@ impl PrivateGardenStore for SpiffsPrivateGardenStore {
             let removed = chat.docs.remove(idx);
             let remove_chat_entry = chat.docs.is_empty();
             let _ = remove_file(state_path_join(chat_doc_rel_path(chat_id, &removed.path)));
+            self.remove_cached_doc(chat_id, &removed.path);
             if remove_chat_entry {
                 index.chats.remove(chat_id);
             }

@@ -8,9 +8,32 @@ mod esp_transport;
 
 use crate::error::{Error, Result};
 use std::sync::Arc;
+use std::time::Duration;
 
 pub(crate) mod common;
 mod handlers;
+
+const CONFIG_PLANE_POLL_MS: u64 = 500;
+
+struct ConfigPlaneActiveGuard;
+
+impl ConfigPlaneActiveGuard {
+    fn enter() -> Self {
+        crate::state::set_config_plane_active(true);
+        Self
+    }
+}
+
+impl Drop for ConfigPlaneActiveGuard {
+    fn drop(&mut self) {
+        crate::state::set_config_plane_active(false);
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn esp_config_plane_desired() -> bool {
+    !crate::state::wifi_sta_connected()
+}
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 #[allow(clippy::too_many_arguments)]
@@ -33,40 +56,49 @@ pub fn run(
     let skill_meta_store = platform.skill_meta_store();
     use crate::platform::http_server::common::MAX_OPEN_SOCKETS;
     use esp_idf_svc::http::server::{Configuration, EspHttpServer};
-
-    let server_config = Configuration {
-        max_open_sockets: MAX_OPEN_SOCKETS,
-        max_uri_handlers: 96,
-        stack_size: 16 * 1024,
-        ..Default::default()
-    };
-
-    let mut server = EspHttpServer::new(&server_config).map_err(|e| Error::Other {
-        source: Box::new(e),
-        stage: "http_server_new",
-    })?;
-
-    let ctx = Arc::new(handlers::HandlerContext {
-        config_store: Arc::clone(&config_store),
-        config_file_store: Arc::clone(&config_file_store),
-        platform: Arc::clone(&platform),
-        memory_store: Arc::clone(&memory_store),
-        session_store: Arc::clone(&session_store),
-        skill_storage: Arc::clone(&skill_storage),
-        skill_meta_store: Arc::clone(&skill_meta_store),
-        tool_registry,
-        inbound_depth: Arc::clone(&inbound_depth),
-        outbound_depth: Arc::clone(&outbound_depth),
-        version: Arc::from(env!("CARGO_PKG_VERSION")),
-        board_id: Arc::from(crate::platform::runtime_board::resolved_board_id()),
-        cached_config: shared_config,
-    });
-
-    let router_env = router::RouterEnv::new(inbound_tx.clone());
-    esp_transport::register_all_esp_routes(&mut server, &ctx, &router_env, &config_store)?;
-    log::info!("[http_server] ESP config API serving until process exit");
     loop {
-        std::thread::sleep(std::time::Duration::from_secs(3600));
+        while !esp_config_plane_desired() {
+            crate::state::set_config_plane_active(false);
+            std::thread::sleep(Duration::from_millis(CONFIG_PLANE_POLL_MS));
+        }
+
+        let _active_guard = ConfigPlaneActiveGuard::enter();
+        let server_config = Configuration {
+            max_open_sockets: MAX_OPEN_SOCKETS,
+            max_uri_handlers: 96,
+            stack_size: 16 * 1024,
+            ..Default::default()
+        };
+
+        let mut server = EspHttpServer::new(&server_config).map_err(|e| Error::Other {
+            source: Box::new(e),
+            stage: "http_server_new",
+        })?;
+
+        let ctx = Arc::new(handlers::HandlerContext {
+            config_store: Arc::clone(&config_store),
+            config_file_store: Arc::clone(&config_file_store),
+            platform: Arc::clone(&platform),
+            memory_store: Arc::clone(&memory_store),
+            session_store: Arc::clone(&session_store),
+            skill_storage: Arc::clone(&skill_storage),
+            skill_meta_store: Arc::clone(&skill_meta_store),
+            tool_registry: Arc::clone(&tool_registry),
+            inbound_depth: Arc::clone(&inbound_depth),
+            outbound_depth: Arc::clone(&outbound_depth),
+            version: Arc::from(env!("CARGO_PKG_VERSION")),
+            board_id: Arc::from(crate::platform::runtime_board::resolved_board_id()),
+            cached_config: Arc::clone(&shared_config),
+        });
+
+        let router_env = router::RouterEnv::new(inbound_tx.clone());
+        esp_transport::register_all_esp_routes(&mut server, &ctx, &router_env, &config_store)?;
+        log::info!("[http_server] ESP config API serving (bootstrap/recovery plane)");
+
+        while esp_config_plane_desired() {
+            std::thread::sleep(Duration::from_millis(CONFIG_PLANE_POLL_MS));
+        }
+        log::info!("[http_server] ESP config API suspended (STA steady-state)");
     }
 }
 
@@ -223,6 +255,7 @@ pub fn run(
         source: Box::new(std::io::Error::other(e.to_string())),
         stage: "http_config_listen",
     })?);
+    let _active_guard = ConfigPlaneActiveGuard::enter();
     log::info!(
         "beetle HTTP config API listening on {} (override with BEETLE_CONFIG_HTTP_LISTEN)",
         listen

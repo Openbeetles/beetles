@@ -2,6 +2,7 @@
 //! Firmware version is embedded for OTA and ops.
 //! Startup order: NVS → SPIFFS → config → WiFi → memory/session stores → MessageBus → self-check → cron/heartbeat/sinks/dispatch/CLI → agent_loop.
 //! ESP32: no graceful shutdown; process runs until power off.
+use beetle::bus::IngressKind;
 use beetle::channels::connect_wss;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
 use beetle::constants::SOFTAP_DEFAULT_IPV4;
@@ -128,6 +129,29 @@ fn ensure_storage_ready(memory_store: &dyn MemoryStore) {
     }
 }
 
+fn bootstrap_pending_retry_into_inbound(
+    pending_retry: &dyn beetle::memory::PendingRetryStore,
+    user_inbound_tx: &beetle::bus::UserInboundTx,
+    system_inbound_tx: &beetle::bus::SystemInboundTx,
+) {
+    let Ok(Some(msg)) = pending_retry.load_pending_retry() else {
+        return;
+    };
+    if let Err(error) = pending_retry.clear_pending_retry() {
+        log::warn!(
+            "[main] pending_retry clear failed during bootstrap: {}",
+            error
+        );
+    }
+    let inbound_tx = match msg.ingress {
+        IngressKind::User => user_inbound_tx,
+        IngressKind::System => system_inbound_tx,
+    };
+    if let Err(error) = inbound_tx.try_send(msg) {
+        log::warn!("[main] pending_retry bootstrap enqueue failed: {}", error);
+    }
+}
+
 /// Telegram 流式编辑器：复用同一 TLS 连接，避免每次 edit 重新握手。
 struct TelegramStreamEditor {
     token: String,
@@ -244,7 +268,7 @@ fn compute_refresh_secs(
 
 #[cfg(feature = "config_api")]
 fn spawn_http_config_server(ctx: HttpServerSpawnContext) {
-    spawn_planned("http_server", 6144, move || {
+    spawn_planned("config_plane_watch", 6144, move || {
         if let Err(e) = beetle::platform::http_server::run(
             ctx.platform,
             ctx.tool_registry,
@@ -314,11 +338,7 @@ fn spawn_voice_session_if_ready(
     });
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     if let Some(model_name) = wake_model_name.as_deref() {
-        platform.configure_wake_word(
-            model_name,
-            audio_cfg.microphone.sample_rate,
-            voice_tx,
-        );
+        platform.configure_wake_word(model_name, audio_cfg.microphone.sample_rate, voice_tx);
     }
 }
 
@@ -1025,6 +1045,11 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     let outbound_depth = Arc::clone(&bus.outbound_depth);
     let user_inbound_tx = bus.inbound_tx;
     let outbound_tx = bus.outbound_tx;
+    bootstrap_pending_retry_into_inbound(
+        pending_retry_store.as_ref(),
+        &user_inbound_tx,
+        &system_inbound_tx,
+    );
     let qq_msg_id_cache: beetle::channels::QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
     #[allow(unused_variables)]
     let (registry, baidu_token_cache) = beetle::build_default_registry(

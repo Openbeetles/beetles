@@ -317,7 +317,7 @@ DEPLOY_DEFAULTS_FILE="$DEPLOY_DEFAULTS_DIR/deploy-linux.defaults"
 DEPLOY_ROOT="/opt/beetle"
 DEPLOY_RELEASES_DIR="$DEPLOY_ROOT/releases"
 DEPLOY_CURRENT_LINK="$DEPLOY_ROOT/current"
-DEPLOY_COMPAT_BIN="$DEPLOY_ROOT/beetle"
+DEPLOY_GLOBAL_BIN="/usr/local/bin/beetle"
 DEPLOY_STATE_DIR="/var/lib/beetle"
 DEPLOY_SERVICE_PATH="/etc/systemd/system/beetle.service"
 DEPLOY_INIT_PATH="/etc/init.d/beetle"
@@ -475,7 +475,7 @@ linux_deploy_probe_remote_install_state() {
     REMOTE_SERVICE_ACTIVE=0
     REMOTE_SERVICE_ENABLED=0
     REMOTE_HAS_CURRENT_BIN=0
-    REMOTE_HAS_COMPAT_BIN=0
+    REMOTE_HAS_GLOBAL_BIN=0
     REMOTE_CURRENT_TARGET=""
 
     local out line key value
@@ -496,10 +496,10 @@ linux_deploy_probe_remote_install_state() {
             else
                 echo HAS_CURRENT_BIN=0
             fi
-            if [ -x /opt/beetle/beetle ]; then
-                echo HAS_COMPAT_BIN=1
+            if [ -x /usr/local/bin/beetle ]; then
+                echo HAS_GLOBAL_BIN=1
             else
-                echo HAS_COMPAT_BIN=0
+                echo HAS_GLOBAL_BIN=0
             fi
             if [ -L /opt/beetle/current ]; then
                 target=$(readlink -f /opt/beetle/current 2>/dev/null || readlink /opt/beetle/current 2>/dev/null || true)
@@ -534,7 +534,7 @@ linux_deploy_probe_remote_install_state() {
             SERVICE_ACTIVE) REMOTE_SERVICE_ACTIVE=${value:-0} ;;
             SERVICE_ENABLED) REMOTE_SERVICE_ENABLED=${value:-0} ;;
             HAS_CURRENT_BIN) REMOTE_HAS_CURRENT_BIN=${value:-0} ;;
-            HAS_COMPAT_BIN) REMOTE_HAS_COMPAT_BIN=${value:-0} ;;
+            HAS_GLOBAL_BIN) REMOTE_HAS_GLOBAL_BIN=${value:-0} ;;
             CURRENT_TARGET) REMOTE_CURRENT_TARGET=$value ;;
         esac
     done <<<"$out"
@@ -557,8 +557,8 @@ linux_deploy_probe_remote_install_state() {
     if [ -n "$REMOTE_CURRENT_TARGET" ]; then
         echo "  Current target: $REMOTE_CURRENT_TARGET"
     fi
-    if [ "$REMOTE_HAS_COMPAT_BIN" = "1" ]; then
-        echo "  Compat binary: $DEPLOY_COMPAT_BIN present"
+    if [ "$REMOTE_HAS_GLOBAL_BIN" = "1" ]; then
+        echo "  Global command: $DEPLOY_GLOBAL_BIN present"
     fi
     if [ "$REMOTE_HAS_SERVICE" = "1" ]; then
         if [ "$REMOTE_SERVICE_ACTIVE" = "1" ]; then
@@ -575,7 +575,7 @@ linux_deploy_probe_remote_install_state() {
 # Select deployment mode
 linux_deploy_select_deploy_mode() {
     local default_mode="2"
-    if [ "${REMOTE_HAS_SERVICE:-0}" = "1" ] || [ "${REMOTE_HAS_CURRENT_BIN:-0}" = "1" ] || [ "${REMOTE_HAS_COMPAT_BIN:-0}" = "1" ]; then
+    if [ "${REMOTE_HAS_SERVICE:-0}" = "1" ] || [ "${REMOTE_HAS_CURRENT_BIN:-0}" = "1" ] || [ "${REMOTE_HAS_GLOBAL_BIN:-0}" = "1" ]; then
         default_mode="3"
     fi
 
@@ -786,11 +786,11 @@ linux_deploy_install_payloads() {
     echo ""
 
     ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
-        "DEPLOY_ROOT='$DEPLOY_ROOT' DEPLOY_RELEASES_DIR='$DEPLOY_RELEASES_DIR' DEPLOY_CURRENT_LINK='$DEPLOY_CURRENT_LINK' DEPLOY_COMPAT_BIN='$DEPLOY_COMPAT_BIN' DEPLOY_STATE_DIR='$DEPLOY_STATE_DIR' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' DEPLOY_INIT_PATH='$DEPLOY_INIT_PATH' DEPLOY_ENV_PATH='$DEPLOY_ENV_PATH' DEPLOY_RELEASE_NAME='$DEPLOY_RELEASE_NAME' REMOTE_TMP_BIN='$REMOTE_TMP_BIN' REMOTE_TMP_SERVICE='$REMOTE_TMP_SERVICE' REMOTE_TMP_INIT='$REMOTE_TMP_INIT' REMOTE_TMP_ENV='$REMOTE_TMP_ENV' REMOTE_TMP_README='$REMOTE_TMP_README' REMOTE_TMP_HWJSON='$REMOTE_TMP_HWJSON' sh -s" << 'REMOTE_EOF'
+        "DEPLOY_ROOT='$DEPLOY_ROOT' DEPLOY_RELEASES_DIR='$DEPLOY_RELEASES_DIR' DEPLOY_CURRENT_LINK='$DEPLOY_CURRENT_LINK' DEPLOY_GLOBAL_BIN='$DEPLOY_GLOBAL_BIN' DEPLOY_STATE_DIR='$DEPLOY_STATE_DIR' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' DEPLOY_INIT_PATH='$DEPLOY_INIT_PATH' DEPLOY_ENV_PATH='$DEPLOY_ENV_PATH' DEPLOY_RELEASE_NAME='$DEPLOY_RELEASE_NAME' REMOTE_TMP_BIN='$REMOTE_TMP_BIN' REMOTE_TMP_SERVICE='$REMOTE_TMP_SERVICE' REMOTE_TMP_INIT='$REMOTE_TMP_INIT' REMOTE_TMP_ENV='$REMOTE_TMP_ENV' REMOTE_TMP_README='$REMOTE_TMP_README' REMOTE_TMP_HWJSON='$REMOTE_TMP_HWJSON' sh -s" << 'REMOTE_EOF'
 set -eu
 
 release_dir="$DEPLOY_RELEASES_DIR/$DEPLOY_RELEASE_NAME"
-mkdir -p "$DEPLOY_RELEASES_DIR" "$DEPLOY_ROOT/bin" "$DEPLOY_STATE_DIR" "$DEPLOY_STATE_DIR/config"
+mkdir -p "$DEPLOY_RELEASES_DIR" "$DEPLOY_ROOT/bin" "$DEPLOY_STATE_DIR" "$DEPLOY_STATE_DIR/config" "$(dirname "$DEPLOY_GLOBAL_BIN")"
 chmod 700 "$DEPLOY_STATE_DIR" "$DEPLOY_STATE_DIR/config" 2>/dev/null || true
 
 if [ -e "$release_dir" ]; then
@@ -805,8 +805,6 @@ mkdir -p "$release_dir"
 
 if [ -x "$DEPLOY_CURRENT_LINK/beetle" ]; then
     cp -pf "$DEPLOY_CURRENT_LINK/beetle" "$DEPLOY_ROOT/beetle.prev" || true
-elif [ -x "$DEPLOY_COMPAT_BIN" ] && [ ! -L "$DEPLOY_COMPAT_BIN" ]; then
-    cp -pf "$DEPLOY_COMPAT_BIN" "$DEPLOY_ROOT/beetle.prev" || true
 fi
 
 chmod 755 "$REMOTE_TMP_BIN"
@@ -826,10 +824,11 @@ if [ -e "$DEPLOY_CURRENT_LINK" ] && [ ! -L "$DEPLOY_CURRENT_LINK" ]; then
     rm -rf "$DEPLOY_CURRENT_LINK"
 fi
 ln -sfn "$release_dir" "$DEPLOY_CURRENT_LINK"
-ln -sfn "$DEPLOY_CURRENT_LINK/beetle" "$DEPLOY_COMPAT_BIN"
+ln -sfn "$DEPLOY_CURRENT_LINK/beetle" "$DEPLOY_GLOBAL_BIN"
 if [ -f "$release_dir/README.txt" ]; then
     ln -sfn "$DEPLOY_CURRENT_LINK/README.txt" "$DEPLOY_ROOT/README.txt"
 fi
+rm -f "$DEPLOY_ROOT/beetle"
 
 if [ -f "$REMOTE_TMP_SERVICE" ]; then
     mv "$REMOTE_TMP_SERVICE" "$DEPLOY_SERVICE_PATH"
@@ -852,6 +851,7 @@ rm -f "$REMOTE_TMP_SERVICE" "$REMOTE_TMP_INIT" "$REMOTE_TMP_ENV" "$REMOTE_TMP_RE
 
 echo "✓ Installed release: $release_dir"
 echo "✓ Current symlink: $DEPLOY_CURRENT_LINK -> $release_dir"
+echo "✓ Global command: $DEPLOY_GLOBAL_BIN -> $DEPLOY_CURRENT_LINK/beetle"
 REMOTE_EOF
 
     echo ""
@@ -915,7 +915,7 @@ linux_deploy_verify_remote_install() {
     echo ""
 
     ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
-        "DEPLOY_ROOT='$DEPLOY_ROOT' DEPLOY_CURRENT_LINK='$DEPLOY_CURRENT_LINK' DEPLOY_COMPAT_BIN='$DEPLOY_COMPAT_BIN' DEPLOY_STATE_DIR='$DEPLOY_STATE_DIR' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' sh -s" << 'REMOTE_EOF'
+        "DEPLOY_ROOT='$DEPLOY_ROOT' DEPLOY_CURRENT_LINK='$DEPLOY_CURRENT_LINK' DEPLOY_GLOBAL_BIN='$DEPLOY_GLOBAL_BIN' DEPLOY_STATE_DIR='$DEPLOY_STATE_DIR' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' sh -s" << 'REMOTE_EOF'
 set -eu
 
 echo "Paths:"
@@ -925,10 +925,10 @@ if [ -L "$DEPLOY_CURRENT_LINK" ]; then
 else
     echo "  current -> (missing)"
 fi
-if [ -e "$DEPLOY_COMPAT_BIN" ]; then
-    ls -l "$DEPLOY_COMPAT_BIN"
+if [ -e "$DEPLOY_GLOBAL_BIN" ]; then
+    ls -l "$DEPLOY_GLOBAL_BIN"
 else
-    echo "  compat binary -> missing"
+    echo "  global command -> missing"
 fi
 if [ -e "$DEPLOY_SERVICE_PATH" ]; then
     echo "  service file -> $DEPLOY_SERVICE_PATH"
@@ -974,13 +974,14 @@ linux_deploy_show_next_steps() {
     fi
     echo "  1. Main paths:"
     echo "     - Current release: $DEPLOY_CURRENT_LINK"
-    echo "     - Binary shortcut: $DEPLOY_COMPAT_BIN"
+    echo "     - Global command: $DEPLOY_GLOBAL_BIN"
     echo "     - State directory: $DEPLOY_STATE_DIR"
     echo "     - Service config: $DEPLOY_SERVICE_PATH"
     echo ""
     echo "  2. Start beetle manually if needed:"
-    echo "     - Direct run: $DEPLOY_COMPAT_BIN"
-    echo "     - Or: nohup $DEPLOY_COMPAT_BIN >> /var/log/beetle.log 2>&1 &"
+    echo "     - Direct run: beetle"
+    echo "     - Or full path: $DEPLOY_CURRENT_LINK/beetle"
+    echo "     - Or: nohup beetle >> /var/log/beetle.log 2>&1 &"
     echo ""
     if [ "${REMOTE_HAS_SYSTEMD:-0}" = "1" ] && [ "${REMOTE_HAS_SERVICE:-0}" = "1" ]; then
         if [ "${REMOTE_SERVICE_ACTIVE:-0}" = "1" ]; then

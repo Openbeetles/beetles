@@ -192,10 +192,7 @@ pub fn snapshot() -> ThreadRegistrySnapshot {
 /// 返回当前运行模式快照；用于识别 config/channel/voice/agent 平面是否常驻。
 pub fn runtime_mode_snapshot() -> RuntimeModeSnapshot {
     let guard = registry().lock().unwrap_or_else(|e| e.into_inner());
-    let config_plane_alive = guard.iter().any(|entry| {
-        entry.alive
-            && thread_profile(entry.name.as_str()).execution_class == ThreadExecutionClass::Config
-    });
+    let config_plane_alive = crate::state::config_plane_active();
     let channel_plane_alive = guard.iter().any(|entry| {
         entry.alive
             && thread_profile(entry.name.as_str()).execution_class == ThreadExecutionClass::Channel
@@ -487,13 +484,21 @@ fn thread_profile(name: &str) -> ThreadProfile {
                 mode_sensitive: true,
             }
         }
-        "http_server" | "http_route_exec" => ThreadProfile {
+        "http_route_exec" => ThreadProfile {
             execution_class: ThreadExecutionClass::Config,
             risk_class: ThreadRiskClass::High,
             tls_capable: true,
             http_capable: true,
             wss_capable: false,
             mode_sensitive: true,
+        },
+        "config_plane_watch" => ThreadProfile {
+            execution_class: ThreadExecutionClass::Runtime,
+            risk_class: ThreadRiskClass::Low,
+            tls_capable: false,
+            http_capable: false,
+            wss_capable: false,
+            mode_sensitive: false,
         },
         "wifi_worker" => ThreadProfile {
             execution_class: ThreadExecutionClass::Platform,

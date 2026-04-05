@@ -1,9 +1,9 @@
 //! Linux / host 的 `Platform` 实现：与 ESP 相同存储布局（`state_mount_path`），HTTP 由 `ureq` 客户端提供。
 //! Linux/host Platform: same on-disk layout as ESP; HTTP via `ureq` client.
 
+mod audio;
 #[cfg(target_os = "linux")]
 pub(crate) mod display_fb;
-mod audio;
 mod hardware_discovery;
 
 use crate::platform::abstraction::{HardwareDiscovery, MemorySnapshot, Platform, StateFs};
@@ -11,16 +11,24 @@ use crate::platform::{
     display_driver::{install_display_state, DisplayState},
     heartbeat_file::read_heartbeat_file,
     spiffs::{
-        spiffs_usage, SpiffsAutonomyStrategyStore, SpiffsCalendarProviderCredentialStore,
-        SpiffsCalendarStore, SpiffsExecutionStateStore, SpiffsImportantMessageStore,
-        SpiffsInnerLifeStore, SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore,
-        SpiffsMemoryStore, SpiffsMentalPrivacyStore, SpiffsOuterVoiceStore,
-        SpiffsPendingRetryStore, SpiffsPrivateDocStore, SpiffsPrivateGardenStore,
-        SpiffsRemindAtStore, SpiffsSelfContinuityStore, SpiffsSelfModelStore, SpiffsSessionStore,
+        spiffs_usage, CachedSkillStorage, SpiffsAutonomyStrategyStore,
+        SpiffsCalendarProviderCredentialStore, SpiffsCalendarStore, SpiffsExecutionStateStore,
+        SpiffsImportantMessageStore, SpiffsInnerLifeStore,
+        SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
+        SpiffsMentalPrivacyStore, SpiffsOuterVoiceStore, SpiffsPendingRetryStore,
+        SpiffsPrivateDocStore, SpiffsPrivateGardenStore, SpiffsRemindAtStore,
+        SpiffsSelfContinuityStore, SpiffsSelfModelStore, SpiffsSessionStore,
         SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage, SpiffsTaskStore,
         SpiffsTurnLedgerStore, SpiffsWorldSenseStore,
     },
     NvsConfigStore,
+};
+use crate::runtime::write_back::{
+    BufferedAutonomyStrategyStore, BufferedExecutionStateStore, BufferedImportantMessageStore,
+    BufferedInnerLifeStore, BufferedLongTermExtractionStateStore, BufferedMentalPrivacyStore,
+    BufferedOuterVoiceStore, BufferedSelfContinuityStore, BufferedSelfModelStore,
+    BufferedSessionStore, BufferedSessionSummaryStore, BufferedTurnLedgerStore,
+    BufferedWorldSenseStore,
 };
 use crate::{
     calendar::{CalendarProviderCredentialStore, CalendarStore},
@@ -35,20 +43,13 @@ use crate::{
     },
     task::TaskStore,
 };
-use crate::runtime::write_back::{
-    BufferedAutonomyStrategyStore, BufferedExecutionStateStore, BufferedImportantMessageStore,
-    BufferedInnerLifeStore, BufferedLongTermExtractionStateStore, BufferedMentalPrivacyStore,
-    BufferedOuterVoiceStore, BufferedSelfContinuityStore, BufferedSelfModelStore,
-    BufferedSessionStore, BufferedSessionSummaryStore, BufferedTurnLedgerStore,
-    BufferedWorldSenseStore,
-};
 use std::sync::{Arc, Mutex};
 
 /// Linux / host 平台实现（musl 等 CI 与本地 `cargo build`）。
 pub struct LinuxPlatform {
     state_fs: Arc<dyn StateFs + Send + Sync>,
     config_store: Arc<NvsConfigStore>,
-    skill_storage: Arc<SpiffsSkillStorage>,
+    skill_storage: Arc<dyn crate::platform::SkillStorage + Send + Sync>,
     skill_meta_store: Arc<SpiffsSkillMetaStore>,
     memory_store: Arc<SpiffsMemoryStore>,
     long_term_memory_store: Arc<SpiffsLongTermMemoryStore>,
@@ -83,55 +84,50 @@ impl LinuxPlatform {
     pub fn new() -> Self {
         let state_fs: Arc<dyn StateFs + Send + Sync> =
             Arc::new(crate::platform::state_fs::LinuxStateFs);
-        let long_term_memory_extraction_state_store =
-            BufferedLongTermExtractionStateStore::wrap(Arc::new(
-                SpiffsLongTermMemoryExtractionStateStore::new(),
-            )
-                as Arc<dyn LongTermMemoryExtractionStateStore + Send + Sync>);
+        let long_term_memory_extraction_state_store = BufferedLongTermExtractionStateStore::wrap(
+            Arc::new(SpiffsLongTermMemoryExtractionStateStore::new())
+                as Arc<dyn LongTermMemoryExtractionStateStore + Send + Sync>,
+        );
         let session_store = BufferedSessionStore::wrap(
             Arc::new(SpiffsSessionStore::new()) as Arc<dyn SessionStore + Send + Sync>
         );
-        let execution_state_store = BufferedExecutionStateStore::wrap(
-            Arc::new(SpiffsExecutionStateStore::new()) as Arc<dyn ExecutionStateStore + Send + Sync>
-        );
+        let execution_state_store =
+            BufferedExecutionStateStore::wrap(Arc::new(SpiffsExecutionStateStore::new())
+                as Arc<dyn ExecutionStateStore + Send + Sync>);
         let self_model_store = BufferedSelfModelStore::wrap(
             Arc::new(SpiffsSelfModelStore::new()) as Arc<dyn SelfModelStore + Send + Sync>
         );
         let world_sense_store = BufferedWorldSenseStore::wrap(
-            Arc::new(SpiffsWorldSenseStore::new()) as Arc<dyn WorldSenseStore + Send + Sync>
+            Arc::new(SpiffsWorldSenseStore::new()) as Arc<dyn WorldSenseStore + Send + Sync>,
         );
-        let autonomy_strategy_store = BufferedAutonomyStrategyStore::wrap(
-            Arc::new(SpiffsAutonomyStrategyStore::new())
-                as Arc<dyn AutonomyStrategyStore + Send + Sync>
-        );
+        let autonomy_strategy_store =
+            BufferedAutonomyStrategyStore::wrap(Arc::new(SpiffsAutonomyStrategyStore::new())
+                as Arc<dyn AutonomyStrategyStore + Send + Sync>);
         let outer_voice_store = BufferedOuterVoiceStore::wrap(
-            Arc::new(SpiffsOuterVoiceStore::new()) as Arc<dyn OuterVoiceStore + Send + Sync>
+            Arc::new(SpiffsOuterVoiceStore::new()) as Arc<dyn OuterVoiceStore + Send + Sync>,
         );
         let inner_life_store = BufferedInnerLifeStore::wrap(
             Arc::new(SpiffsInnerLifeStore::new()) as Arc<dyn InnerLifeStore + Send + Sync>
         );
-        let self_continuity_store = BufferedSelfContinuityStore::wrap(
-            Arc::new(SpiffsSelfContinuityStore::new())
-                as Arc<dyn SelfContinuityStore + Send + Sync>
-        );
-        let mental_privacy_store = BufferedMentalPrivacyStore::wrap(
-            Arc::new(SpiffsMentalPrivacyStore::new()) as Arc<dyn MentalPrivacyStore + Send + Sync>
-        );
-        let important_message_store = BufferedImportantMessageStore::wrap(
-            Arc::new(SpiffsImportantMessageStore::new())
-                as Arc<dyn ImportantMessageStore + Send + Sync>
-        );
-        let session_summary_store = BufferedSessionSummaryStore::wrap(
-            Arc::new(SpiffsSessionSummaryStore::new())
-                as Arc<dyn SessionSummaryStore + Send + Sync>
-        );
+        let self_continuity_store =
+            BufferedSelfContinuityStore::wrap(Arc::new(SpiffsSelfContinuityStore::new())
+                as Arc<dyn SelfContinuityStore + Send + Sync>);
+        let mental_privacy_store =
+            BufferedMentalPrivacyStore::wrap(Arc::new(SpiffsMentalPrivacyStore::new())
+                as Arc<dyn MentalPrivacyStore + Send + Sync>);
+        let important_message_store =
+            BufferedImportantMessageStore::wrap(Arc::new(SpiffsImportantMessageStore::new())
+                as Arc<dyn ImportantMessageStore + Send + Sync>);
+        let session_summary_store =
+            BufferedSessionSummaryStore::wrap(Arc::new(SpiffsSessionSummaryStore::new())
+                as Arc<dyn SessionSummaryStore + Send + Sync>);
         let turn_ledger_store = BufferedTurnLedgerStore::wrap(
-            Arc::new(SpiffsTurnLedgerStore::new()) as Arc<dyn TurnLedgerStore + Send + Sync>
+            Arc::new(SpiffsTurnLedgerStore::new()) as Arc<dyn TurnLedgerStore + Send + Sync>,
         );
         Self {
             state_fs,
             config_store: Arc::new(NvsConfigStore),
-            skill_storage: Arc::new(SpiffsSkillStorage),
+            skill_storage: CachedSkillStorage::wrap(Arc::new(SpiffsSkillStorage)),
             skill_meta_store: Arc::new(SpiffsSkillMetaStore),
             memory_store: Arc::new(SpiffsMemoryStore::new()),
             long_term_memory_store: Arc::new(SpiffsLongTermMemoryStore::new()),
@@ -243,7 +239,9 @@ impl Platform for LinuxPlatform {
             .clone()
     }
 
-    fn hardware_discovery(&self) -> Option<Arc<dyn crate::platform::HardwareDiscovery + Send + Sync>> {
+    fn hardware_discovery(
+        &self,
+    ) -> Option<Arc<dyn crate::platform::HardwareDiscovery + Send + Sync>> {
         Some(Arc::clone(&self.hardware_discovery_handle))
     }
 
@@ -420,6 +418,21 @@ impl Platform for LinuxPlatform {
             .as_ref()
             .map(|state| state.ready())
             .unwrap_or(false)
+    }
+
+    fn audio_duplex_capabilities(&self) -> crate::platform::AudioDuplexCapabilities {
+        let speaker_ready = self
+            .audio_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|state| state.ready())
+            .unwrap_or(false);
+        if speaker_ready {
+            crate::platform::AudioDuplexCapabilities::speaker_only()
+        } else {
+            crate::platform::AudioDuplexCapabilities::unavailable()
+        }
     }
 
     fn write_speaker_pcm_i16(&self, buf: &[i16]) -> crate::error::Result<()> {

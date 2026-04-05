@@ -47,6 +47,83 @@ pub struct MemorySnapshot {
     pub heap_largest_block: u32,
 }
 
+/// 语音回放参考能力。当前只暴露真实已实现的能力，避免伪 AEC 口径。
+/// Playback reference capability. Exposes only implemented capabilities to avoid fake AEC claims.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioReferenceCapability {
+    None,
+    PlaybackMonitor,
+    InputReference,
+}
+
+/// 回声消除能力。`Platform` 表示平台已提供真实 AEC 路径，非“未来可做”占位。
+/// Echo-cancellation capability. `Platform` means a real implemented AEC path exists today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioEchoCancellationCapability {
+    None,
+    Platform,
+}
+
+/// 当前平台在已初始化音频拓扑下的双工/打断能力快照。
+/// Snapshot of duplex / barge-in capability for the initialized audio topology.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct AudioDuplexCapabilities {
+    pub microphone_input: bool,
+    pub speaker_output: bool,
+    pub concurrent_capture_playback: bool,
+    pub barge_in: bool,
+    pub reference_capture: AudioReferenceCapability,
+    pub echo_cancellation: AudioEchoCancellationCapability,
+}
+
+impl AudioDuplexCapabilities {
+    pub const fn unavailable() -> Self {
+        Self {
+            microphone_input: false,
+            speaker_output: false,
+            concurrent_capture_playback: false,
+            barge_in: false,
+            reference_capture: AudioReferenceCapability::None,
+            echo_cancellation: AudioEchoCancellationCapability::None,
+        }
+    }
+
+    pub const fn speaker_only() -> Self {
+        Self {
+            microphone_input: false,
+            speaker_output: true,
+            concurrent_capture_playback: false,
+            barge_in: false,
+            reference_capture: AudioReferenceCapability::None,
+            echo_cancellation: AudioEchoCancellationCapability::None,
+        }
+    }
+
+    pub const fn duplex_without_aec() -> Self {
+        Self {
+            microphone_input: true,
+            speaker_output: true,
+            concurrent_capture_playback: true,
+            barge_in: true,
+            reference_capture: AudioReferenceCapability::None,
+            echo_cancellation: AudioEchoCancellationCapability::None,
+        }
+    }
+
+    pub const fn duplex_with_playback_reference() -> Self {
+        Self {
+            microphone_input: true,
+            speaker_output: true,
+            concurrent_capture_playback: true,
+            barge_in: true,
+            reference_capture: AudioReferenceCapability::PlaybackMonitor,
+            echo_cancellation: AudioEchoCancellationCapability::None,
+        }
+    }
+}
+
 /// 配置键值存储抽象（如 NVS）。用于 config、pairing、skills 的 NVS 部分。
 pub trait ConfigStore: Send + Sync {
     fn read_string(&self, key: &str) -> Result<Option<String>>;
@@ -286,7 +363,9 @@ pub trait Platform: Send + Sync {
         None
     }
     /// Hardware discovery handle (USB devices, cameras, serial peripherals, etc.).
-    fn hardware_discovery(&self) -> Option<Arc<dyn crate::platform::HardwareDiscovery + Send + Sync>> {
+    fn hardware_discovery(
+        &self,
+    ) -> Option<Arc<dyn crate::platform::HardwareDiscovery + Send + Sync>> {
         None
     }
     /// 当前对外可达的局域网 IPv4；Linux 应返回当前活跃上行接口地址，ESP 默认复用 STA IPv4。
@@ -409,6 +488,24 @@ pub trait Platform: Send + Sync {
         false
     }
 
+    /// 回放参考链路是否可用。该链路表示平台能提供“当前实际送往扬声器的数据参考”，
+    /// 可用于本地打断判定或未来真实 AEC；默认 false。
+    fn audio_reference_ready(&self) -> bool {
+        false
+    }
+
+    /// 当前已初始化音频拓扑的双工/打断能力。默认根据 mic/speaker 就绪情况给出保守结论。
+    fn audio_duplex_capabilities(&self) -> AudioDuplexCapabilities {
+        match (self.audio_mic_ready(), self.audio_speaker_ready()) {
+            (true, true) if self.audio_reference_ready() => {
+                AudioDuplexCapabilities::duplex_with_playback_reference()
+            }
+            (true, true) => AudioDuplexCapabilities::duplex_without_aec(),
+            (false, true) => AudioDuplexCapabilities::speaker_only(),
+            _ => AudioDuplexCapabilities::unavailable(),
+        }
+    }
+
     /// 读取 PCM i16 单声道采样帧；返回实际样本数。默认返回不支持错误。
     fn read_mic_pcm_i16(&self, _out: &mut [i16]) -> Result<usize> {
         Err(crate::error::Error::config(
@@ -422,6 +519,14 @@ pub trait Platform: Send + Sync {
         Err(crate::error::Error::config(
             "audio_speaker",
             "Speaker output not supported on this platform",
+        ))
+    }
+
+    /// 读取与扬声器实际输出对齐的 PCM i16 参考帧。默认返回不支持错误。
+    fn read_playback_reference_pcm_i16(&self, _out: &mut [i16]) -> Result<usize> {
+        Err(crate::error::Error::config(
+            "audio_reference",
+            "Playback reference input not supported on this platform",
         ))
     }
 

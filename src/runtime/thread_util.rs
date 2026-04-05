@@ -12,7 +12,7 @@ pub struct ThreadPlan {
 pub fn thread_plan(name: &str) -> ThreadPlan {
     match name {
         "wifi_worker" | "dispatch" | "tg_poll" | "feishu_ws" | "qq_ws" | "tg_sender"
-        | "fs_sender" | "dt_sender" | "wc_sender" | "qq_sender" | "http_server"
+        | "fs_sender" | "dt_sender" | "wc_sender" | "qq_sender" | "config_plane_watch"
         | "restart_defer" => ThreadPlan {
             core: Some(SpawnCore::Core0),
             role: HttpThreadRole::Io,

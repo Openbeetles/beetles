@@ -32,6 +32,8 @@ static EXTERNAL_WSS_SUSPEND_REQUESTED: AtomicBool = AtomicBool::new(false);
 static EXTERNAL_WSS_SUSPENDED: AtomicBool = AtomicBool::new(false);
 /// 当前是否有后台自治/维护作业在 agent 执行面运行。
 static BACKGROUND_MAINTENANCE_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// 当前 config plane 是否真正处于 active serving 状态。
+static CONFIG_PLANE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone)]
 struct TimedError {
@@ -220,6 +222,16 @@ pub fn background_maintenance_active() -> bool {
     BACKGROUND_MAINTENANCE_ACTIVE.load(Ordering::Relaxed)
 }
 
+/// 设置 config plane 活动态；用于区分“有监督线程常驻”与“HTTP 配置面真正对外服务”。
+pub fn set_config_plane_active(active: bool) {
+    CONFIG_PLANE_ACTIVE.store(active, Ordering::Relaxed);
+}
+
+/// 当前 config plane 是否真正处于 active serving 状态。
+pub fn config_plane_active() -> bool {
+    CONFIG_PLANE_ACTIVE.load(Ordering::Relaxed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,5 +294,13 @@ mod tests {
         assert!(background_maintenance_active());
         set_background_maintenance_active(false);
         assert!(!background_maintenance_active());
+    }
+
+    #[test]
+    fn config_plane_flag_round_trips() {
+        set_config_plane_active(true);
+        assert!(config_plane_active());
+        set_config_plane_active(false);
+        assert!(!config_plane_active());
     }
 }

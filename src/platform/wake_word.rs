@@ -232,6 +232,7 @@ mod imp {
                     .last_trigger_millis
                     .store(now_millis, Ordering::Relaxed);
                 unsafe { beetle_wakenet_reset() };
+                crate::metrics::record_voice_interrupt_requested();
                 crate::orchestrator::request_audio_interrupt();
                 return;
             }
