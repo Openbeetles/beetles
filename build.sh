@@ -1209,16 +1209,82 @@ run_linux_docker_build() {
   fi
 }
 
+linux_remote_sync_entries() {
+  # Remote Linux build only needs the actual Cargo project inputs.
+  # Never archive the workspace root: this repo also contains local SDKs,
+  # caches, docs, and experiments that can be tens of GB.
+  local path
+  for path in \
+    .cargo \
+    Cargo.toml \
+    Cargo.lock \
+    build.rs \
+    build.sh \
+    cfg.toml \
+    rust-toolchain.toml \
+    board_presets.toml \
+    components \
+    components_esp32s3.lock \
+    packaging \
+    partitions.csv \
+    partitions_8mb.csv \
+    partitions_32mb.csv \
+    sdkconfig.defaults \
+    sdkconfig.defaults.esp32s3 \
+    sdkconfig.defaults.esp32s3.board \
+    src \
+    third_party/esp-idf-hal \
+    third_party/esp-idf-svc \
+    third_party/esp-idf-sys \
+    third_party/espressif__esp-dsp
+  do
+    if [ -e "$SCRIPT_ROOT/$path" ] || [ -L "$SCRIPT_ROOT/$path" ]; then
+      printf '%s\n' "$path"
+    fi
+  done
+}
+
+linux_remote_sync_payload_kb() {
+  local total=0
+  local path
+  local size
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    size=$(du -sk "$SCRIPT_ROOT/$path" 2>/dev/null | awk 'NR==1 { print $1 + 0 }')
+    total=$((total + size))
+  done < <(linux_remote_sync_entries)
+
+  printf '%s\n' "$total"
+}
+
 run_linux_remote_build() {
+  local sync_manifest
+  local payload_kb
+  local payload_mib
+
+  sync_manifest=$(mktemp "${TMPDIR:-/tmp}/beetle-remote-sync.XXXXXX")
+  linux_remote_sync_entries > "$sync_manifest"
+  if [ ! -s "$sync_manifest" ]; then
+    rm -f "$sync_manifest"
+    echo "Error: remote sync manifest is empty" >&2
+    exit 1
+  fi
+
+  payload_kb=$(linux_remote_sync_payload_kb)
+  payload_mib=$(((payload_kb + 1023) / 1024))
+
   echo "  Remote build over SSH"
   echo ""
   echo "========== Sync Project To Remote =========="
   echo "  Host: ${DEVICE_USER}@${DEVICE_IP}:${SSH_PORT}"
   echo "  Dir:  ${REMOTE_BUILD_DIR}"
+  echo "  Set:  Cargo project inputs only"
+  echo "  Size: ~${payload_mib} MiB"
   echo ""
 
   ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
-    "REMOTE_BUILD_DIR='$REMOTE_BUILD_DIR' sh -s" << 'REMOTE_EOF'
+    "REMOTE_BUILD_DIR='$REMOTE_BUILD_DIR' PAYLOAD_KB='$payload_kb' sh -s" << 'REMOTE_EOF'
 set -eu
 
 case "$REMOTE_BUILD_DIR" in
@@ -1228,6 +1294,15 @@ case "$REMOTE_BUILD_DIR" in
         ;;
 esac
 
+parent_dir=$(dirname "$REMOTE_BUILD_DIR")
+mkdir -p "$parent_dir"
+avail_kb=$(df -Pk "$parent_dir" | awk 'NR==2 { print $4 + 0 }')
+need_kb=$((PAYLOAD_KB + 262144))
+if [ "$avail_kb" -lt "$need_kb" ]; then
+    echo "Not enough free space on remote filesystem for sync: available ${avail_kb}KB, need at least ${need_kb}KB." >&2
+    exit 1
+fi
+
 rm -rf "$REMOTE_BUILD_DIR"
 mkdir -p "$REMOTE_BUILD_DIR"
 REMOTE_EOF
@@ -1236,13 +1311,13 @@ REMOTE_EOF
     --disable-copyfile \
     --no-xattrs \
     --no-mac-metadata \
-    --exclude='./target' \
-    --exclude='./.git' \
-    --exclude='./.idea' \
-    --exclude='./.vscode' \
-    --exclude='./.DS_Store' \
-    -cf - . | ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
+    --exclude='.DS_Store' \
+    --exclude='*/.DS_Store' \
+    --exclude='._*' \
+    --exclude='*/._*' \
+    -cf - -T "$sync_manifest" | ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
       "tar -xf - -C '$REMOTE_BUILD_DIR'"
+  rm -f "$sync_manifest"
 
   echo -e "${GREEN}✓ Source synced${NC}"
   echo ""
