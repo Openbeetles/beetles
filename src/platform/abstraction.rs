@@ -66,6 +66,34 @@ pub enum AudioEchoCancellationCapability {
     Platform,
 }
 
+/// 双工能力档位。用于把音频平台能力压缩成闭集，不允许业务层自己猜。
+/// Closed-set duplex profile so upper layers consume one stable platform contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioDuplexProfile {
+    Unavailable,
+    SpeakerOnly,
+    MicrophoneOnly,
+    DuplexNoReference,
+    DuplexPlaybackReference,
+    DuplexInputReference,
+    DuplexPlatformAec,
+}
+
+impl AudioDuplexProfile {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unavailable => "unavailable",
+            Self::SpeakerOnly => "speaker_only",
+            Self::MicrophoneOnly => "microphone_only",
+            Self::DuplexNoReference => "duplex_no_reference",
+            Self::DuplexPlaybackReference => "duplex_playback_reference",
+            Self::DuplexInputReference => "duplex_input_reference",
+            Self::DuplexPlatformAec => "duplex_platform_aec",
+        }
+    }
+}
+
 /// 当前平台在已初始化音频拓扑下的双工/打断能力快照。
 /// Snapshot of duplex / barge-in capability for the initialized audio topology.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -101,6 +129,17 @@ impl AudioDuplexCapabilities {
         }
     }
 
+    pub const fn microphone_only() -> Self {
+        Self {
+            microphone_input: true,
+            speaker_output: false,
+            concurrent_capture_playback: false,
+            barge_in: false,
+            reference_capture: AudioReferenceCapability::None,
+            echo_cancellation: AudioEchoCancellationCapability::None,
+        }
+    }
+
     pub const fn duplex_without_aec() -> Self {
         Self {
             microphone_input: true,
@@ -120,6 +159,114 @@ impl AudioDuplexCapabilities {
             barge_in: true,
             reference_capture: AudioReferenceCapability::PlaybackMonitor,
             echo_cancellation: AudioEchoCancellationCapability::None,
+        }
+    }
+
+    pub const fn duplex_with_input_reference() -> Self {
+        Self {
+            microphone_input: true,
+            speaker_output: true,
+            concurrent_capture_playback: true,
+            barge_in: true,
+            reference_capture: AudioReferenceCapability::InputReference,
+            echo_cancellation: AudioEchoCancellationCapability::None,
+        }
+    }
+
+    pub const fn duplex_with_platform_aec() -> Self {
+        Self {
+            microphone_input: true,
+            speaker_output: true,
+            concurrent_capture_playback: true,
+            barge_in: true,
+            reference_capture: AudioReferenceCapability::InputReference,
+            echo_cancellation: AudioEchoCancellationCapability::Platform,
+        }
+    }
+
+    /// 规范化能力快照，确保 profile 与字段组合不会出现自相矛盾的口径。
+    pub fn normalized(self) -> Self {
+        let mut caps = self;
+        if !caps.microphone_input {
+            caps.concurrent_capture_playback = false;
+            caps.barge_in = false;
+            caps.echo_cancellation = AudioEchoCancellationCapability::None;
+        }
+        if !caps.speaker_output {
+            caps.concurrent_capture_playback = false;
+            caps.barge_in = false;
+            caps.reference_capture = AudioReferenceCapability::None;
+            caps.echo_cancellation = AudioEchoCancellationCapability::None;
+        }
+        if !caps.concurrent_capture_playback {
+            caps.barge_in = false;
+        }
+        if caps.echo_cancellation == AudioEchoCancellationCapability::Platform {
+            caps.microphone_input = true;
+            caps.speaker_output = true;
+            caps.concurrent_capture_playback = true;
+            caps.barge_in = true;
+            if caps.reference_capture == AudioReferenceCapability::None {
+                caps.reference_capture = AudioReferenceCapability::InputReference;
+            }
+        }
+        caps
+    }
+
+    pub const fn has_microphone_input(self) -> bool {
+        self.microphone_input
+    }
+
+    pub const fn has_speaker_output(self) -> bool {
+        self.speaker_output
+    }
+
+    pub const fn has_reference_capture(self) -> bool {
+        !matches!(self.reference_capture, AudioReferenceCapability::None)
+    }
+
+    pub const fn supports_concurrent_capture_playback(self) -> bool {
+        self.concurrent_capture_playback
+    }
+
+    pub const fn supports_barge_in(self) -> bool {
+        self.barge_in && self.concurrent_capture_playback
+    }
+
+    pub const fn has_platform_aec(self) -> bool {
+        matches!(
+            self.echo_cancellation,
+            AudioEchoCancellationCapability::Platform
+        )
+    }
+
+    pub const fn requires_capture_upload_suspend_during_playback(self) -> bool {
+        self.concurrent_capture_playback && self.has_reference_capture() && !self.has_platform_aec()
+    }
+
+    pub const fn can_run_realtime_session(self) -> bool {
+        self.microphone_input && self.speaker_output
+    }
+
+    pub const fn profile(self) -> AudioDuplexProfile {
+        if self.echo_cancellation == AudioEchoCancellationCapability::Platform {
+            return AudioDuplexProfile::DuplexPlatformAec;
+        }
+        match (
+            self.microphone_input,
+            self.speaker_output,
+            self.reference_capture,
+        ) {
+            (false, false, _) => AudioDuplexProfile::Unavailable,
+            (false, true, _) => AudioDuplexProfile::SpeakerOnly,
+            (true, false, _) => AudioDuplexProfile::MicrophoneOnly,
+            (true, true, AudioReferenceCapability::None) => AudioDuplexProfile::DuplexNoReference,
+            (true, true, AudioReferenceCapability::PlaybackMonitor) => {
+                AudioDuplexProfile::DuplexPlaybackReference
+            }
+            (true, true, AudioReferenceCapability::InputReference) => {
+                AudioDuplexProfile::DuplexInputReference
+            }
         }
     }
 }
@@ -418,7 +565,21 @@ pub trait Platform: Send + Sync {
 
     /// 板级状态 JSON（芯片、堆、运行时间、压力、WiFi、SPIFFS）。默认实现委托 `platform/board_info`；新平台可覆写。
     fn board_info_json(&self) -> Result<String> {
-        Ok(crate::platform::board_info::board_info_json_string())
+        let mut payload: serde_json::Value =
+            serde_json::from_str(&crate::platform::board_info::board_info_json_string())
+                .map_err(|e| Error::platform("board_info_json", e.to_string()))?;
+        if let Some(obj) = payload.as_object_mut() {
+            let audio_caps = self.audio_duplex_capabilities();
+            obj.insert(
+                "audio".to_string(),
+                serde_json::json!({
+                    "duplex_profile": audio_caps.profile(),
+                    "duplex_capabilities": audio_caps,
+                }),
+            );
+        }
+        serde_json::to_string(&payload)
+            .map_err(|e| Error::platform("board_info_json", e.to_string()))
     }
 
     /// 读状态根配置文件（相对路径如 `config/llm.json`）。不存在返回 `Ok(None)`。经 `state_fs` 唯一路径。
@@ -478,32 +639,26 @@ pub trait Platform: Send + Sync {
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     fn shutdown_wake_word(&self) {}
 
-    /// 麦克风链路是否可用。默认 false。
+    /// 麦克风链路是否可用。默认从 `audio_duplex_capabilities()` 派生。
     fn audio_mic_ready(&self) -> bool {
-        false
+        self.audio_duplex_capabilities().has_microphone_input()
     }
 
-    /// 喇叭链路是否可用。默认 false。
+    /// 喇叭链路是否可用。默认从 `audio_duplex_capabilities()` 派生。
     fn audio_speaker_ready(&self) -> bool {
-        false
+        self.audio_duplex_capabilities().has_speaker_output()
     }
 
     /// 回放参考链路是否可用。该链路表示平台能提供“当前实际送往扬声器的数据参考”，
-    /// 可用于本地打断判定或未来真实 AEC；默认 false。
+    /// 可用于本地打断判定或未来真实 AEC；默认从 `audio_duplex_capabilities()` 派生。
     fn audio_reference_ready(&self) -> bool {
-        false
+        self.audio_duplex_capabilities().has_reference_capture()
     }
 
-    /// 当前已初始化音频拓扑的双工/打断能力。默认根据 mic/speaker 就绪情况给出保守结论。
+    /// 当前已初始化音频拓扑的双工/打断能力。平台实现必须返回真实已落地的能力快照，
+    /// 不允许业务层再根据 ready 状态自行推导更强口径。
     fn audio_duplex_capabilities(&self) -> AudioDuplexCapabilities {
-        match (self.audio_mic_ready(), self.audio_speaker_ready()) {
-            (true, true) if self.audio_reference_ready() => {
-                AudioDuplexCapabilities::duplex_with_playback_reference()
-            }
-            (true, true) => AudioDuplexCapabilities::duplex_without_aec(),
-            (false, true) => AudioDuplexCapabilities::speaker_only(),
-            _ => AudioDuplexCapabilities::unavailable(),
-        }
+        AudioDuplexCapabilities::unavailable()
     }
 
     /// 读取 PCM i16 单声道采样帧；返回实际样本数。默认返回不支持错误。
@@ -520,6 +675,16 @@ pub trait Platform: Send + Sync {
             "audio_speaker",
             "Speaker output not supported on this platform",
         ))
+    }
+
+    /// 尝试非阻塞写入 PCM i16 单声道采样帧；返回实际接收的采样数。
+    /// 默认回退到阻塞写完整段，供未实现软队列的平台保持兼容。
+    fn try_write_speaker_pcm_i16(&self, buf: &[i16]) -> Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        self.write_speaker_pcm_i16(buf)?;
+        Ok(buf.len())
     }
 
     /// 读取与扬声器实际输出对齐的 PCM i16 参考帧。默认返回不支持错误。
@@ -684,5 +849,41 @@ pub trait Platform: Send + Sync {
             "drive_i2c_sensor",
             "I2C sensor not supported on this platform",
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        AudioDuplexCapabilities, AudioDuplexProfile, AudioEchoCancellationCapability,
+        AudioReferenceCapability,
+    };
+
+    #[test]
+    fn platform_aec_contract_normalizes_to_input_reference_duplex() {
+        let caps = AudioDuplexCapabilities {
+            microphone_input: true,
+            speaker_output: true,
+            concurrent_capture_playback: false,
+            barge_in: false,
+            reference_capture: AudioReferenceCapability::None,
+            echo_cancellation: AudioEchoCancellationCapability::Platform,
+        }
+        .normalized();
+        assert_eq!(caps.profile(), AudioDuplexProfile::DuplexPlatformAec);
+        assert!(caps.concurrent_capture_playback);
+        assert!(caps.barge_in);
+        assert_eq!(
+            caps.reference_capture,
+            AudioReferenceCapability::InputReference
+        );
+    }
+
+    #[test]
+    fn speaker_only_contract_does_not_claim_reference_or_aec() {
+        let caps = AudioDuplexCapabilities::speaker_only().normalized();
+        assert_eq!(caps.profile(), AudioDuplexProfile::SpeakerOnly);
+        assert!(!caps.has_reference_capture());
+        assert!(!caps.has_platform_aec());
     }
 }

@@ -395,6 +395,11 @@ export const enUS = {
       errorBoundaryTitle: 'Something went wrong',
       errorBoundaryDesc: 'An error occurred. Click Retry or refresh the page.',
       na: '—',
+      openMenu: 'Open side navigation',
+    },
+    form: {
+      expandSection: 'Expand section: {{title}}',
+      collapseSection: 'Collapse section: {{title}}',
     },
     config: {
       sectionLlm: 'LLM',

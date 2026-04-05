@@ -17,9 +17,7 @@ use crate::constants::{
     TLS_ADMISSION_NO_PSRAM_MIN_BYTES,
 };
 use crate::error::{Error, Result};
-use crate::platform::{
-    AudioDuplexCapabilities, AudioEchoCancellationCapability, AudioReferenceCapability,
-};
+use crate::platform::AudioDuplexCapabilities;
 use crate::Platform;
 use base64::Engine;
 use serde_json::json;
@@ -52,6 +50,7 @@ const REALTIME_INTERRUPT_THRESHOLD_MULTIPLIER: f32 = 2.0;
 const REALTIME_INTERRUPT_REFERENCE_ACTIVE_MIN: f32 = 0.06;
 const REALTIME_INTERRUPT_REFERENCE_SUBTRACT_SCALE: f32 = 0.65;
 const REALTIME_LOCAL_SPEECH_COMMIT_MIN_MS: u32 = 160;
+const REALTIME_LOCAL_SPEECH_WINDOW_MAX_MS: u32 = 12_000;
 const REALTIME_TLS_ADMISSION_RETRY_MAX: usize = 12;
 const REALTIME_TLS_ADMISSION_RETRY_MS: u64 = 150;
 static REALTIME_EVENT_COUNTER: AtomicU32 = AtomicU32::new(1);
@@ -254,6 +253,11 @@ impl RealtimeLoopState {
         self.last_activity = now;
     }
 
+    fn force_finish_local_speech_window(&mut self, now: Instant) {
+        self.finish_local_speech_window(now);
+        self.last_activity = now;
+    }
+
     fn commit_local_turn(&mut self, now: Instant) {
         if self.current_local_turn_committed {
             self.last_activity = now;
@@ -307,9 +311,7 @@ impl RealtimeLoopState {
         self.interrupt_baseline_peak = 0.0;
         self.interrupt_speech_ms = 0;
         crate::orchestrator::set_audio_playing(true);
-        crate::orchestrator::set_audio_interrupt_listening(
-            self.duplex_caps.barge_in && self.duplex_caps.concurrent_capture_playback,
-        );
+        crate::orchestrator::set_audio_interrupt_listening(self.duplex_caps.supports_barge_in());
     }
 
     fn finish_audio_playback(&mut self, now: Instant) {
@@ -460,13 +462,25 @@ pub fn run_realtime_session(
     let _recording_guard = AudioRecordingGuard::new();
     let _cleanup = RealtimeSessionCleanup::new(platform);
     let session_start = Instant::now();
-    let duplex_caps = platform.audio_duplex_capabilities();
+    let duplex_caps = platform.audio_duplex_capabilities().normalized();
+    if !duplex_caps.can_run_realtime_session() {
+        return Err(Error::config(
+            REALTIME_TAG,
+            format!(
+                "realtime session requires duplex audio contract, got {}",
+                duplex_caps.profile().as_str()
+            ),
+        ));
+    }
     let provider = RealtimeProvider::parse(audio_cfg.realtime.provider.trim())?;
     let ws_url = build_realtime_ws_url(provider, audio_cfg)?;
     log::info!(
-        "[{}] realtime ws connect provider={} url={}",
+        "[{}] realtime ws connect provider={} audio_profile={} reference={:?} aec={:?} url={}",
         log_tag,
         audio_cfg.realtime.provider.trim(),
+        duplex_caps.profile().as_str(),
+        duplex_caps.reference_capture,
+        duplex_caps.echo_cancellation,
         redact_realtime_ws_url(provider, ws_url.as_str())
     );
     let headers = build_realtime_headers(provider, audio_cfg, ws_url.as_str())?;
@@ -600,6 +614,19 @@ pub fn run_realtime_session(
                     state.extend_local_speech_window(now, frame_ms);
                 }
             }
+        }
+
+        if local_speech_active
+            && state.current_local_speech_ms >= REALTIME_LOCAL_SPEECH_WINDOW_MAX_MS
+        {
+            log::info!(
+                "[{}] force closing long local speech window at {}ms without endpoint release",
+                REALTIME_TAG,
+                state.current_local_speech_ms
+            );
+            state.force_finish_local_speech_window(now);
+            endpoint.reset();
+            local_speech_active = false;
         }
 
         if local_speech_active
@@ -1514,8 +1541,11 @@ fn flush_output_audio(
 
         let chunk_len = AUDIO_TTS_WRITE_CHUNK_SAMPLES.min(state.pending_output_len());
         let chunk = state.pending_output_chunk(chunk_len);
-        platform.write_speaker_pcm_i16(chunk)?;
-        state.consume_pending_output(chunk_len);
+        let written = platform.try_write_speaker_pcm_i16(chunk)?;
+        if written == 0 {
+            break;
+        }
+        state.consume_pending_output(written.min(chunk_len));
     }
     Ok(())
 }
@@ -1568,8 +1598,9 @@ fn update_playback_state(
 
 fn should_suspend_capture_upload(state: &RealtimeLoopState) -> bool {
     state.audio_playing
-        && state.duplex_caps.reference_capture != AudioReferenceCapability::None
-        && state.duplex_caps.echo_cancellation == AudioEchoCancellationCapability::None
+        && state
+            .duplex_caps
+            .requires_capture_upload_suspend_during_playback()
 }
 
 fn read_reference_frame_if_available(
@@ -1577,7 +1608,7 @@ fn read_reference_frame_if_available(
     duplex_caps: &AudioDuplexCapabilities,
     out: &mut [i16],
 ) -> usize {
-    if duplex_caps.reference_capture == AudioReferenceCapability::None {
+    if !duplex_caps.has_reference_capture() {
         return 0;
     }
     match platform.read_playback_reference_pcm_i16(out) {

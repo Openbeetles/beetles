@@ -395,6 +395,11 @@ export const zhCN = {
       errorBoundaryTitle: '出了点问题',
       errorBoundaryDesc: '页面发生错误，请点击重试或刷新页面。',
       na: '—',
+      openMenu: '打开侧边导航',
+    },
+    form: {
+      expandSection: '展开区块：{{title}}',
+      collapseSection: '收起区块：{{title}}',
     },
     config: {
       sectionLlm: 'LLM',

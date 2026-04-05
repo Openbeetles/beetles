@@ -109,10 +109,8 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let firmware_version = ctx.version.as_ref();
     let ota_available = cfg!(feature = "ota");
     let locale = config::get_locale(ctx.config_store.as_ref());
-    let lan_ip = ctx
-        .platform
-        .lan_ipv4()
-        .unwrap_or_else(|| "—".to_string());
+    let lan_ip = ctx.platform.lan_ipv4().unwrap_or_else(|| "—".to_string());
+    let audio_caps = ctx.platform.audio_duplex_capabilities();
     #[allow(unused_mut)]
     let mut json = serde_json::json!({
         "product_name": product_name,
@@ -123,6 +121,8 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         "ota_available": ota_available,
         "locale": locale,
         "lan_ip": lan_ip,
+        "audio_duplex_profile": audio_caps.profile(),
+        "audio_duplex_capabilities": audio_caps,
     });
 
     // Linux 特有字段——统一从 board_info 共享函数取值，避免重复解析 /proc。

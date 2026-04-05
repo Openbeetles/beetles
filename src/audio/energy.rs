@@ -53,6 +53,12 @@ impl EndpointState {
             EndpointEvent::None
         }
     }
+
+    /// 强制清空断句状态，供会话层在长时间卡住时收口当前语音窗。
+    pub fn reset(&mut self) {
+        self.in_speech = false;
+        self.silence_acc_ms = 0;
+    }
 }
 
 impl Default for EndpointState {

@@ -382,8 +382,9 @@ export function AIConfigPage() {
                     opacity: sources.length <= 1 ? 0.5 : 1,
                     borderRadius: "var(--radius-control)",
                     "&:focus-visible": {
-                      outline: "2px solid var(--primary)",
-                      outlineOffset: 2,
+                      outline:
+                        "var(--focus-ring-width) solid color-mix(in srgb, var(--primary) 55%, transparent)",
+                      outlineOffset: "var(--focus-ring-offset)",
                     },
                   }}
                   aria-label={t("common.remove")}

@@ -91,11 +91,13 @@ pub(crate) fn heartbeat_tick(
     state: &mut HeartbeatTickState,
 ) {
     state.round = state.round.wrapping_add(1);
+    let voice_exclusive = crate::state::voice_exclusive_active();
 
     // Session GC: run every SESSION_GC_INTERVAL_ROUNDS rounds.
-    if state
-        .round
-        .is_multiple_of(crate::constants::SESSION_GC_INTERVAL_ROUNDS)
+    if !voice_exclusive
+        && state
+            .round
+            .is_multiple_of(crate::constants::SESSION_GC_INTERVAL_ROUNDS)
     {
         match session_store.gc_stale(crate::constants::SESSION_GC_MAX_AGE_SECS) {
             Ok(n) if n > 0 => {
@@ -107,9 +109,10 @@ pub(crate) fn heartbeat_tick(
     }
 
     // Session/storage metrics: collect every SESSION_METRICS_INTERVAL_ROUNDS rounds.
-    if state
-        .round
-        .is_multiple_of(crate::constants::SESSION_METRICS_INTERVAL_ROUNDS)
+    if !voice_exclusive
+        && state
+            .round
+            .is_multiple_of(crate::constants::SESSION_METRICS_INTERVAL_ROUNDS)
     {
         let sess_count = session_store
             .list_chat_ids()
@@ -151,6 +154,10 @@ pub(crate) fn heartbeat_tick(
         TAG,
         crate::runtime::thread_registry::format_runtime_mode_log_line()
     );
+
+    if voice_exclusive {
+        return;
+    }
 
     let content = read_heartbeat();
     let Some(task_content) = first_pending_task(&content) else {

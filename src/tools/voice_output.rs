@@ -51,8 +51,15 @@ impl Tool for VoiceOutputTool {
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
         let result = (|| {
             log_audio_resource_snapshot("voice_output_start");
-            if !self.platform.audio_speaker_ready() {
-                return Err(Error::config("tool_voice_output", "speaker not ready"));
+            let duplex_caps = self.platform.audio_duplex_capabilities();
+            if !duplex_caps.has_speaker_output() {
+                return Err(Error::config(
+                    "tool_voice_output",
+                    format!(
+                        "speaker unavailable under audio contract profile={}",
+                        duplex_caps.profile().as_str()
+                    ),
+                ));
             }
             let text = parse_voice_output_text(args)?;
             if text.len() > AUDIO_TTS_MAX_TEXT_LEN {

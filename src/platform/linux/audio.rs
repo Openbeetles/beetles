@@ -10,7 +10,7 @@ const STAGE: &str = "audio_init";
 mod imp {
     use super::{AudioSegment, Error, Result, STAGE};
     use crate::util::{spawn_guarded_with_profile_handle, HttpThreadRole, SpawnCore, TaskHandle};
-    use alsa::pcm::{Access, Format, HwParams, PCM, State};
+    use alsa::pcm::{Access, Format, HwParams, State, PCM};
     use alsa::{Direction, ValueOr};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc::{self, Receiver, SyncSender};
@@ -101,7 +101,9 @@ mod imp {
                     )
                 },
             )
-            .map_err(|e| Error::config(STAGE, format!("spawn linux audio speaker failed: {}", e)))?;
+            .map_err(|e| {
+                Error::config(STAGE, format!("spawn linux audio speaker failed: {}", e))
+            })?;
 
             match init_rx.recv() {
                 Ok(Ok(())) => {}
@@ -142,7 +144,10 @@ mod imp {
 
         pub fn write_pcm_i16(&self, buf: &[i16]) -> Result<()> {
             if !self.ready() {
-                return Err(Error::config("audio_speaker", "Linux USB speaker not ready"));
+                return Err(Error::config(
+                    "audio_speaker",
+                    "Linux USB speaker not ready",
+                ));
             }
             let owned = buf.to_vec();
             let generation = self.generation.load(Ordering::Relaxed);
@@ -162,9 +167,44 @@ mod imp {
             Ok(())
         }
 
+        pub fn try_write_pcm_i16(&self, buf: &[i16]) -> Result<usize> {
+            if !self.ready() {
+                return Err(Error::config(
+                    "audio_speaker",
+                    "Linux USB speaker not ready",
+                ));
+            }
+            if buf.is_empty() {
+                return Ok(0);
+            }
+            let owned = buf.to_vec();
+            let generation = self.generation.load(Ordering::Relaxed);
+            match self.tx.try_send(SpeakerWorkerMsg::Samples {
+                generation,
+                samples: owned,
+            }) {
+                Ok(()) => {
+                    self.buffered_samples
+                        .fetch_add(buf.len(), Ordering::Relaxed);
+                    Ok(buf.len())
+                }
+                Err(std::sync::mpsc::TrySendError::Full(_)) => Ok(0),
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    self.ready.store(false, Ordering::Relaxed);
+                    Err(Error::config(
+                        "audio_speaker",
+                        "Linux USB speaker worker disconnected",
+                    ))
+                }
+            }
+        }
+
         pub fn clear_buffer(&self) -> Result<()> {
             if !self.ready() {
-                return Err(Error::config("audio_speaker", "Linux USB speaker not ready"));
+                return Err(Error::config(
+                    "audio_speaker",
+                    "Linux USB speaker not ready",
+                ));
             }
             let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
             self.buffered_samples.store(0, Ordering::Relaxed);
@@ -298,7 +338,10 @@ mod imp {
             match io.writei(frames) {
                 Ok(written_frames) => {
                     if written_frames == 0 {
-                        return Err(Error::config("audio_speaker", "ALSA write returned 0 frames"));
+                        return Err(Error::config(
+                            "audio_speaker",
+                            "ALSA write returned 0 frames",
+                        ));
                     }
                     offset = offset.saturating_add(written_frames.saturating_mul(channels));
                 }
@@ -366,6 +409,13 @@ mod imp {
         }
 
         pub fn write_pcm_i16(&self, _buf: &[i16]) -> Result<()> {
+            Err(Error::config(
+                "audio_speaker",
+                "Linux USB speaker runtime is only available on target_os=linux",
+            ))
+        }
+
+        pub fn try_write_pcm_i16(&self, _buf: &[i16]) -> Result<usize> {
             Err(Error::config(
                 "audio_speaker",
                 "Linux USB speaker runtime is only available on target_os=linux",

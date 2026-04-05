@@ -14,12 +14,19 @@ struct DisplayHealth {
 }
 
 #[derive(serde::Serialize)]
+struct AudioHealth {
+    duplex_profile: crate::platform::AudioDuplexProfile,
+    duplex_capabilities: crate::platform::AudioDuplexCapabilities,
+}
+
+#[derive(serde::Serialize)]
 struct HealthBody {
     wifi: &'static str,
     inbound_depth: usize,
     outbound_depth: usize,
     last_error: String,
     display: DisplayHealth,
+    audio: AudioHealth,
     metrics: metrics::MetricsSnapshot,
     resource: orchestrator::ResourceSnapshot,
     threads: runtime::ThreadRegistrySnapshot,
@@ -34,6 +41,7 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         "disconnected"
     };
     let last_err = state::get_current_error().unwrap_or_else(|| "none".to_string());
+    let audio_caps = ctx.platform.audio_duplex_capabilities();
     let payload = HealthBody {
         wifi,
         inbound_depth: ctx.inbound_depth.load(Ordering::Relaxed),
@@ -41,6 +49,10 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         last_error: last_err,
         display: DisplayHealth {
             available: ctx.platform.display_available(),
+        },
+        audio: AudioHealth {
+            duplex_profile: audio_caps.profile(),
+            duplex_capabilities: audio_caps,
         },
         metrics: metrics::snapshot(),
         resource: orchestrator::snapshot(),

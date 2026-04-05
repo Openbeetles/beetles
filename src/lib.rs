@@ -85,7 +85,10 @@ pub use platform::{
     connect_wifi, init_nvs, init_spiffs, spiffs_base_string, spiffs_usage, state_mount_path,
     EspHttpClient, LinuxPlatform, SpiffsLongTermMemoryStore, SpiffsMemoryStore, SpiffsSessionStore,
 };
-pub use platform::{ConfigStore, MemorySnapshot, Platform, SkillStorage, StateFs};
+pub use platform::{
+    AudioDuplexCapabilities, AudioDuplexProfile, AudioEchoCancellationCapability,
+    AudioReferenceCapability, ConfigStore, MemorySnapshot, Platform, SkillStorage, StateFs,
+};
 pub use tools::{
     build_default_registry, CalendarTool, DefaultRegistryDeps, FileEditTool, FileWriteTool,
     FilesTool, GetTimeTool, KvStoreTool, PrivateGardenTool, RemindAtTool, TaskTool, Tool,

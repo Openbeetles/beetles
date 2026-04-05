@@ -350,22 +350,22 @@ struct VoiceRuntimeCapabilities {
 
 fn compute_voice_runtime_capabilities(
     audio_cfg: &beetle::config::AudioSegment,
-    speaker_ready: bool,
-    mic_ready: bool,
+    duplex_caps: beetle::AudioDuplexCapabilities,
     wake_model_present: bool,
     wake_supported_platform: bool,
     has_baidu_token: bool,
 ) -> VoiceRuntimeCapabilities {
-    let speak_capable = audio_cfg.speaker.enabled && speaker_ready && has_baidu_token;
+    let speak_capable =
+        audio_cfg.speaker.enabled && duplex_caps.has_speaker_output() && has_baidu_token;
     let wake_capable = if !wake_supported_platform
         || !audio_cfg.wake_word.enabled
         || !audio_cfg.microphone.enabled
-        || !mic_ready
+        || !duplex_caps.has_microphone_input()
         || !wake_model_present
     {
         false
     } else if beetle::config::audio_realtime_enabled(audio_cfg) {
-        audio_cfg.speaker.enabled && speaker_ready
+        audio_cfg.speaker.enabled && duplex_caps.can_run_realtime_session()
     } else {
         has_baidu_token
     };
@@ -385,7 +385,13 @@ mod tests {
         let mut audio = default_disabled_audio_segment();
         audio.enabled = true;
         audio.speaker.enabled = true;
-        let caps = compute_voice_runtime_capabilities(&audio, true, false, false, false, false);
+        let caps = compute_voice_runtime_capabilities(
+            &audio,
+            beetle::AudioDuplexCapabilities::speaker_only(),
+            false,
+            false,
+            false,
+        );
         assert!(!caps.speak_capable);
         assert!(!caps.wake_capable);
     }
@@ -396,7 +402,13 @@ mod tests {
         audio.enabled = true;
         audio.microphone.enabled = true;
         audio.wake_word.enabled = true;
-        let caps = compute_voice_runtime_capabilities(&audio, false, true, true, true, false);
+        let caps = compute_voice_runtime_capabilities(
+            &audio,
+            beetle::AudioDuplexCapabilities::microphone_only(),
+            true,
+            true,
+            false,
+        );
         assert!(!caps.speak_capable);
         assert!(!caps.wake_capable);
     }
@@ -414,7 +426,13 @@ mod tests {
         audio.realtime.model = "gpt-realtime".to_string();
         audio.realtime.voice = "alloy".to_string();
 
-        let caps = compute_voice_runtime_capabilities(&audio, true, true, true, true, false);
+        let caps = compute_voice_runtime_capabilities(
+            &audio,
+            beetle::AudioDuplexCapabilities::duplex_with_playback_reference(),
+            true,
+            true,
+            false,
+        );
         assert!(!caps.speak_capable);
         assert!(caps.wake_capable);
     }
@@ -439,10 +457,10 @@ fn build_voice_event_channel(
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     let wake_model_name: Option<String> = None;
 
+    let duplex_caps = platform.audio_duplex_capabilities();
     let capabilities = compute_voice_runtime_capabilities(
         audio_cfg,
-        platform.audio_speaker_ready(),
-        platform.audio_mic_ready(),
+        duplex_caps,
         wake_model_name.is_some(),
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
         true,

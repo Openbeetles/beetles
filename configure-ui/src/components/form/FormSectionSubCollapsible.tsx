@@ -1,10 +1,11 @@
 import { useState } from "react";
 import Box from "@mui/material/Box";
 import Collapse from "@mui/material/Collapse";
-import Typography from "@mui/material/Typography";
 import ExpandMore from "@mui/icons-material/ExpandMore";
 import ExpandLess from "@mui/icons-material/ExpandLess";
 import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
+import { SectionSubTitleRow } from "./SectionSubTitleRow";
 
 interface FormSectionSubCollapsibleProps {
   title: string;
@@ -20,6 +21,7 @@ export function FormSectionSubCollapsible({
   defaultOpen = true,
   action,
 }: FormSectionSubCollapsibleProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(defaultOpen);
   const headerId = `header-${title.replace(/\s/g, "-")}`;
   const collapseId = `collapse-${title.replace(/\s/g, "-")}`;
@@ -45,14 +47,18 @@ export function FormSectionSubCollapsible({
           width: "100%",
           p: 1.5,
           border: 0,
-          background: "transparent",
+          /** 与下方内容区错层：可读作「折叠头 / 把手条」 */
+          backgroundColor:
+            "color-mix(in srgb, var(--foreground) 3.5%, var(--form-group-well))",
+          borderBottom: "1px solid var(--form-outline-rest)",
           cursor: "pointer",
           color: "var(--foreground)",
           font: "inherit",
           textAlign: "left",
           transition: "background-color var(--transition-duration) ease",
           "&:hover": {
-            bgcolor: "color-mix(in srgb, var(--primary) 4%, transparent)",
+            backgroundColor:
+              "color-mix(in srgb, var(--primary) 7%, var(--form-group-well))",
           },
           "&:focus-visible": {
             outline:
@@ -63,21 +69,13 @@ export function FormSectionSubCollapsible({
         aria-expanded={open}
         aria-controls={collapseId}
         id={headerId}
+        aria-label={
+          open
+            ? t("form.collapseSection", { title })
+            : t("form.expandSection", { title })
+        }
       >
-        <Box sx={{ display: "flex", alignItems: "center" }}>
-          <Typography
-            variant="caption"
-            sx={{
-              fontWeight: 600,
-              letterSpacing: "var(--letter-spacing-label)",
-              color: "var(--muted)",
-              textTransform: "uppercase",
-              fontSize: "var(--font-size-overline)",
-            }}
-          >
-            {title}
-          </Typography>
-        </Box>
+        <SectionSubTitleRow title={title} accentStretch />
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
           {action != null ? (
             <Box
@@ -91,17 +89,24 @@ export function FormSectionSubCollapsible({
           <Box
             component="span"
             sx={{
-              color: "var(--muted)",
-              p: 0.5,
               display: "inline-flex",
               alignItems: "center",
+              justifyContent: "center",
+              width: "var(--icon-container-md)",
+              height: "var(--icon-container-md)",
+              borderRadius: "var(--radius-chip)",
+              flexShrink: 0,
+              color: "var(--primary)",
+              bgcolor: "color-mix(in srgb, var(--primary) 10%, transparent)",
+              transition:
+                "background-color var(--transition-duration) ease, color var(--transition-duration) ease",
             }}
             aria-hidden
           >
             {open ? (
-              <ExpandLess fontSize="small" />
+              <ExpandLess sx={{ fontSize: "var(--icon-size-md)" }} />
             ) : (
-              <ExpandMore fontSize="small" />
+              <ExpandMore sx={{ fontSize: "var(--icon-size-md)" }} />
             )}
           </Box>
         </Box>
@@ -116,6 +121,8 @@ export function FormSectionSubCollapsible({
             display: "flex",
             flexDirection: "column",
             gap: 2,
+            /** 与头部分离：内层略亮，表单项区域更易扫读 */
+            bgcolor: "var(--input-idle-well)",
           }}
         >
           {children}

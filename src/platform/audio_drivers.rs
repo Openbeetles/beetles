@@ -10,7 +10,7 @@ use crate::platform::heap::{alloc_spiram_buffer, free_spiram_buffer};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::runtime::thread_plan;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::sync::{Arc, Condvar, Mutex};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -66,6 +66,8 @@ const AUDIO_IDLE_SLEEP_MS_DEEP: u64 = 250;
 const AUDIO_SPEAKER_WRITE_MIN_SAMPLES: usize = 320;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const AUDIO_SPEAKER_COALESCE_WAIT_MS: u64 = 12;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+const AUDIO_REFERENCE_READ_WAIT_MS: u64 = 4;
 
 /// Check ESP-IDF return code; wrap non-OK as `Error::Esp`.
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -602,6 +604,7 @@ struct SharedAudioBuffers {
     speaker_cv: Condvar,
     reference: Mutex<AudioRingBuffer>,
     reference_cv: Condvar,
+    speaker_generation: AtomicU32,
     stop: AtomicBool,
 }
 
@@ -611,7 +614,7 @@ fn pop_speaker_frame_for_output(
     out: &mut [i16],
     min_samples: usize,
     coalesce_wait: Duration,
-) -> Option<usize> {
+) -> Option<(usize, u32)> {
     let mut guard = shared.speaker.lock().unwrap_or_else(|e| e.into_inner());
     let deadline = Instant::now() + coalesce_wait;
     loop {
@@ -652,9 +655,10 @@ fn pop_speaker_frame_for_output(
         if n == 0 {
             return None;
         }
+        let generation = shared.speaker_generation.load(Ordering::Relaxed);
         crate::metrics::record_audio_speaker_queue_depth_last_samples(guard.len());
         shared.speaker_cv.notify_one();
-        return Some(n);
+        return Some((n, generation));
     }
 }
 
@@ -803,6 +807,7 @@ impl AudioPipelineState {
             speaker_cv: Condvar::new(),
             reference: Mutex::new(AudioRingBuffer::with_capacity(speaker_cap)),
             reference_cv: Condvar::new(),
+            speaker_generation: AtomicU32::new(1),
             stop: AtomicBool::new(false),
         });
 
@@ -880,12 +885,20 @@ impl AudioPipelineState {
                     );
 
                     if backend.speaker_ready() {
-                        if let Some(n) = pop_speaker_frame_for_output(
+                        if let Some((n, generation)) = pop_speaker_frame_for_output(
                             worker_shared.as_ref(),
                             &mut speaker_frame,
                             AUDIO_SPEAKER_WRITE_MIN_SAMPLES.min(speaker_frame.len()),
                             Duration::from_millis(AUDIO_SPEAKER_COALESCE_WAIT_MS),
                         ) {
+                            if generation
+                                != worker_shared.speaker_generation.load(Ordering::Relaxed)
+                            {
+                                crate::metrics::record_audio_speaker_queue_depth_last_samples(
+                                    current_speaker_buffered_samples(worker_shared.as_ref()),
+                                );
+                                continue;
+                            }
                             crate::platform::task_wdt::feed_current_task();
                             let speaker_write_start = Instant::now();
                             if let Err(e) = backend.write_speaker_frame_pcm16(&speaker_frame[..n]) {
@@ -999,7 +1012,20 @@ impl AudioPipelineState {
 
     #[inline]
     pub fn reference_ready(&self) -> bool {
-        self.speaker_enabled
+        self.mic_enabled && self.speaker_enabled
+    }
+
+    #[inline]
+    pub fn duplex_capabilities(&self) -> crate::platform::AudioDuplexCapabilities {
+        match (self.mic_enabled, self.speaker_enabled) {
+            (true, true) if self.reference_ready() => {
+                crate::platform::AudioDuplexCapabilities::duplex_with_playback_reference()
+            }
+            (true, true) => crate::platform::AudioDuplexCapabilities::duplex_without_aec(),
+            (true, false) => crate::platform::AudioDuplexCapabilities::microphone_only(),
+            (false, true) => crate::platform::AudioDuplexCapabilities::speaker_only(),
+            (false, false) => crate::platform::AudioDuplexCapabilities::unavailable(),
+        }
     }
 
     pub fn speaker_buffered_samples(&self) -> usize {
@@ -1016,6 +1042,9 @@ impl AudioPipelineState {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         guard.clear();
+        self.shared
+            .speaker_generation
+            .fetch_add(1, Ordering::Relaxed);
         crate::metrics::record_audio_speaker_queue_depth_last_samples(0);
         self.shared.speaker_cv.notify_all();
         drop(guard);
@@ -1066,6 +1095,14 @@ impl AudioPipelineState {
             .reference
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        if guard.len() == 0 {
+            let waited = self
+                .shared
+                .reference_cv
+                .wait_timeout(guard, Duration::from_millis(AUDIO_REFERENCE_READ_WAIT_MS))
+                .unwrap_or_else(|e| e.into_inner());
+            guard = waited.0;
+        }
         let n = guard.pop_into(out);
         crate::metrics::record_audio_reference_queue_depth_last_samples(guard.len());
         if n > 0 {
@@ -1110,6 +1147,26 @@ impl AudioPipelineState {
             self.shared.speaker_cv.notify_one();
         }
         Ok(())
+    }
+
+    pub fn try_write_speaker_pcm_i16(&self, buf: &[i16]) -> Result<usize> {
+        if !self.speaker_enabled {
+            return Err(Error::config("audio_speaker", "speaker not initialized"));
+        }
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let mut guard = self
+            .shared
+            .speaker
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let written = guard.push_slice_blocking(buf);
+        crate::metrics::record_audio_speaker_queue_depth_last_samples(guard.len());
+        if written > 0 {
+            self.shared.speaker_cv.notify_one();
+        }
+        Ok(written)
     }
 }
 

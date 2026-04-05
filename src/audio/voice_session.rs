@@ -252,14 +252,15 @@ fn handle_wake_interaction<F>(
 {
     log::info!("[{}] wake detected, starting voice interaction", TAG);
     crate::metrics::record_wake_word_trigger();
+    let duplex_caps = cfg.platform.audio_duplex_capabilities();
 
     if audio_realtime_enabled(&cfg.audio_cfg) {
-        if !cfg.platform.audio_mic_ready() {
-            log::warn!("[{}] microphone not ready, skipping realtime session", TAG);
-            return;
-        }
-        if !cfg.platform.audio_speaker_ready() {
-            log::warn!("[{}] speaker not ready, skipping realtime session", TAG);
+        if !duplex_caps.can_run_realtime_session() {
+            log::warn!(
+                "[{}] realtime session unavailable under audio contract profile={}",
+                TAG,
+                duplex_caps.profile().as_str()
+            );
             return;
         }
         let _external_wss_suspend = ExternalWssSuspendGuard::enter();
@@ -303,7 +304,7 @@ fn handle_wake_interaction<F>(
 
     if should_play_wake_prompt(&cfg.audio_cfg)
         && !cfg.wake_prompt.is_empty()
-        && cfg.platform.audio_speaker_ready()
+        && duplex_caps.has_speaker_output()
     {
         let Some(baidu_token) = cfg.baidu_token.as_deref() else {
             log::warn!(
@@ -325,8 +326,12 @@ fn handle_wake_interaction<F>(
         }
     }
 
-    if !cfg.platform.audio_mic_ready() {
-        log::warn!("[{}] microphone not ready, skipping capture", TAG);
+    if !duplex_caps.has_microphone_input() {
+        log::warn!(
+            "[{}] microphone unavailable under audio contract profile={}, skipping capture",
+            TAG,
+            duplex_caps.profile().as_str()
+        );
         return;
     }
 
@@ -380,9 +385,14 @@ fn handle_speak<F>(
     ) -> bool,
 {
     log::info!("[{}] speaking agent reply ({} chars)", TAG, text.len());
+    let duplex_caps = cfg.platform.audio_duplex_capabilities();
 
-    if !cfg.platform.audio_speaker_ready() {
-        log::warn!("[{}] speaker not ready, dropping TTS", TAG);
+    if !duplex_caps.has_speaker_output() {
+        log::warn!(
+            "[{}] speaker unavailable under audio contract profile={}, dropping TTS",
+            TAG,
+            duplex_caps.profile().as_str()
+        );
         return;
     }
     if !ensure_http(http, cfg.make_http.as_ref()) {

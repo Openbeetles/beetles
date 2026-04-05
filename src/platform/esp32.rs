@@ -79,6 +79,7 @@ pub struct Esp32Platform {
     display_state: Mutex<Option<DisplayState>>,
     i2c_state: Mutex<Option<crate::platform::hardware_drivers::I2cBusState>>,
     audio_state: RwLock<Option<Arc<crate::platform::audio_drivers::AudioPipelineState>>>,
+    audio_capabilities: RwLock<crate::platform::AudioDuplexCapabilities>,
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -159,6 +160,7 @@ impl Esp32Platform {
             display_state: Mutex::new(None),
             i2c_state: Mutex::new(None),
             audio_state: RwLock::new(None),
+            audio_capabilities: RwLock::new(crate::platform::AudioDuplexCapabilities::unavailable()),
         }
     }
 }
@@ -421,18 +423,43 @@ impl Platform for Esp32Platform {
         if !config.enabled {
             crate::platform::wake_word::shutdown();
             *self.audio_state.write().unwrap_or_else(|e| e.into_inner()) = None;
+            *self
+                .audio_capabilities
+                .write()
+                .unwrap_or_else(|e| e.into_inner()) =
+                crate::platform::AudioDuplexCapabilities::unavailable();
             return Ok(());
         }
         crate::platform::wake_word::shutdown();
         match crate::platform::audio_drivers::AudioPipelineState::from_config(config) {
             Ok(state) => {
+                let capabilities = state.duplex_capabilities().normalized();
                 *self.audio_state.write().unwrap_or_else(|e| e.into_inner()) =
                     Some(Arc::new(state));
+                *self
+                    .audio_capabilities
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner()) = capabilities;
+                log::info!(
+                    "[platform::esp32] audio contract profile={} mic={} speaker={} duplex={} barge_in={} reference={} aec={:?}",
+                    capabilities.profile().as_str(),
+                    capabilities.microphone_input,
+                    capabilities.speaker_output,
+                    capabilities.concurrent_capture_playback,
+                    capabilities.barge_in,
+                    capabilities.reference_capture,
+                    capabilities.echo_cancellation,
+                );
                 Ok(())
             }
             Err(e) => {
                 crate::platform::wake_word::shutdown();
                 *self.audio_state.write().unwrap_or_else(|e| e.into_inner()) = None;
+                *self
+                    .audio_capabilities
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner()) =
+                    crate::platform::AudioDuplexCapabilities::unavailable();
                 Err(e)
             }
         }
@@ -451,48 +478,11 @@ impl Platform for Esp32Platform {
         crate::platform::wake_word::shutdown();
     }
 
-    fn audio_mic_ready(&self) -> bool {
-        self.audio_state
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .map(|s| s.mic_ready())
-            .unwrap_or(false)
-    }
-
-    fn audio_speaker_ready(&self) -> bool {
-        self.audio_state
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .map(|s| s.speaker_ready())
-            .unwrap_or(false)
-    }
-
-    fn audio_reference_ready(&self) -> bool {
-        self.audio_state
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .map(|s| s.reference_ready())
-            .unwrap_or(false)
-    }
-
     fn audio_duplex_capabilities(&self) -> crate::platform::AudioDuplexCapabilities {
-        let state = self.audio_state.read().unwrap_or_else(|e| e.into_inner());
-        match state.as_ref() {
-            Some(audio) if audio.mic_ready() && audio.speaker_ready() => {
-                if audio.reference_ready() {
-                    crate::platform::AudioDuplexCapabilities::duplex_with_playback_reference()
-                } else {
-                    crate::platform::AudioDuplexCapabilities::duplex_without_aec()
-                }
-            }
-            Some(audio) if audio.speaker_ready() => {
-                crate::platform::AudioDuplexCapabilities::speaker_only()
-            }
-            _ => crate::platform::AudioDuplexCapabilities::unavailable(),
-        }
+        *self
+            .audio_capabilities
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     fn read_mic_pcm_i16(&self, out: &mut [i16]) -> crate::error::Result<usize> {
@@ -519,6 +509,19 @@ impl Platform for Esp32Platform {
                 crate::error::Error::config("audio_speaker", "audio pipeline not initialized")
             })?;
         state.write_speaker_pcm_i16(buf)
+    }
+
+    fn try_write_speaker_pcm_i16(&self, buf: &[i16]) -> crate::error::Result<usize> {
+        let state = self
+            .audio_state
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| {
+                crate::error::Error::config("audio_speaker", "audio pipeline not initialized")
+            })?;
+        state.try_write_speaker_pcm_i16(buf)
     }
 
     fn read_playback_reference_pcm_i16(&self, out: &mut [i16]) -> crate::error::Result<usize> {

@@ -2577,8 +2577,26 @@ fn run_background_job_with_accounting(
     system_inbound_tx: &SystemInboundTx,
     outbound_tx: &OutboundTx,
     loc: UiLocale,
-    msg: PcMsg,
+    mut msg: PcMsg,
 ) {
+    if crate::state::voice_exclusive_active() {
+        let delayed_tx = system_inbound_tx.clone();
+        msg.enqueue_ts_ms = now_unix_ms();
+        let due_at = Instant::now() + Duration::from_millis(500);
+        let delayed_msg = msg;
+        if !crate::runtime::schedule_delayed_task(
+            due_at,
+            Box::new(move || {
+                let _ = delayed_tx.try_send(delayed_msg);
+            }),
+        ) {
+            log::debug!(
+                "[agent] delayed background job requeue skipped during voice-exclusive: delayed queue full"
+            );
+        }
+        return;
+    }
+
     let msg = match handle_llm_gate(
         msg,
         loc,

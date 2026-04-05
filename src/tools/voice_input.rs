@@ -50,8 +50,15 @@ impl Tool for VoiceInputTool {
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
         let result = (|| {
             log_audio_resource_snapshot("voice_input_start");
-            if !self.platform.audio_mic_ready() {
-                return Err(Error::config("tool_voice_input", "microphone not ready"));
+            let duplex_caps = self.platform.audio_duplex_capabilities();
+            if !duplex_caps.has_microphone_input() {
+                return Err(Error::config(
+                    "tool_voice_input",
+                    format!(
+                        "microphone unavailable under audio contract profile={}",
+                        duplex_caps.profile().as_str()
+                    ),
+                ));
             }
             let obj = parse_tool_args(args, "tool_voice_input")?;
             let max_ms = obj

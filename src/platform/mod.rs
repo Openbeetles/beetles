@@ -43,10 +43,10 @@ pub mod wake_word;
 pub mod wifi;
 
 pub use abstraction::{
-    AudioDuplexCapabilities, AudioEchoCancellationCapability, AudioReferenceCapability,
-    ConfigStore, HardwareCapability, HardwareDiscovery, HardwareDiscoveryBus,
-    HardwareDiscoveryItem, HardwareDiscoveryQuery, HardwareDiscoveryResponse, MemorySnapshot,
-    Platform, PlatformHttpClient, SkillMetaStore, SkillStorage, StateFs,
+    AudioDuplexCapabilities, AudioDuplexProfile, AudioEchoCancellationCapability,
+    AudioReferenceCapability, ConfigStore, HardwareCapability, HardwareDiscovery,
+    HardwareDiscoveryBus, HardwareDiscoveryItem, HardwareDiscoveryQuery, HardwareDiscoveryResponse,
+    MemorySnapshot, Platform, PlatformHttpClient, SkillMetaStore, SkillStorage, StateFs,
 };
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub use esp32::Esp32Platform;

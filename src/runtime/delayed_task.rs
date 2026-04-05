@@ -60,6 +60,27 @@ fn take_due_jobs_locked(pending: &mut Vec<DelayedTaskJob>, now: Instant) -> Vec<
     due
 }
 
+fn take_due_jobs_locked_with_policy(
+    pending: &mut Vec<DelayedTaskJob>,
+    now: Instant,
+    allow_best_effort: bool,
+) -> Vec<DelayedTaskJob> {
+    if allow_best_effort {
+        return take_due_jobs_locked(pending, now);
+    }
+    let mut due = Vec::new();
+    let mut index = 0usize;
+    while index < pending.len() {
+        let job = &pending[index];
+        if job.due_at <= now && job.priority == DelayedTaskPriority::Critical {
+            due.push(pending.swap_remove(index));
+        } else {
+            index += 1;
+        }
+    }
+    due
+}
+
 fn oldest_best_effort_index(pending: &[DelayedTaskJob]) -> Option<usize> {
     pending
         .iter()
@@ -77,9 +98,11 @@ fn schedule_delayed_task_with_priority(
     let mut dropped_best_effort = false;
     let mut notify_deadline_changed = false;
     let mut task = Some(task);
+    let allow_best_effort = !crate::state::voice_exclusive_active();
     let due_now = {
         let mut pending = state().pending.lock().unwrap_or_else(|e| e.into_inner());
-        let due_now = take_due_jobs_locked(&mut pending, Instant::now());
+        let due_now =
+            take_due_jobs_locked_with_policy(&mut pending, Instant::now(), allow_best_effort);
         match priority {
             DelayedTaskPriority::BestEffort => {
                 let best_effort_count = pending
@@ -141,9 +164,10 @@ pub fn schedule_critical_delayed_task(
 }
 
 pub fn service_delayed_tasks() {
+    let allow_best_effort = !crate::state::voice_exclusive_active();
     let due = {
         let mut pending = state().pending.lock().unwrap_or_else(|e| e.into_inner());
-        take_due_jobs_locked(&mut pending, Instant::now())
+        take_due_jobs_locked_with_policy(&mut pending, Instant::now(), allow_best_effort)
     };
     execute_jobs(due);
 }
@@ -151,8 +175,10 @@ pub fn service_delayed_tasks() {
 pub fn next_delayed_task_wait(max_wait: Duration) -> Duration {
     let pending = state().pending.lock().unwrap_or_else(|e| e.into_inner());
     let now = Instant::now();
+    let allow_best_effort = !crate::state::voice_exclusive_active();
     pending
         .iter()
+        .filter(|job| allow_best_effort || job.priority == DelayedTaskPriority::Critical)
         .map(|job| job.due_at.saturating_duration_since(now))
         .min()
         .map(|wait| wait.min(max_wait))

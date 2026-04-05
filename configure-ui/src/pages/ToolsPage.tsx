@@ -13,17 +13,19 @@ import type { ToolInfo } from "../api/endpoints/tools";
 import { useDeviceApi } from "../hooks/useDeviceApi";
 import { createAsyncState } from "../types/asyncState";
 
-/** 与 `SkillsPage` 列表行一致：扁平 surface、细边框、无阴影。 */
+/** 与表单区块 token 一致：细描边 + 略浅底，在白色 Section 内形成独立格。 */
 const listItemSx = {
   py: 1.5,
   px: 2,
-  bgcolor: "var(--card)",
-  border: "none", backgroundColor: "var(--card)",
+  bgcolor: "var(--input-idle-well)",
+  border: "1px solid var(--form-outline-rest)",
   borderRadius: "var(--radius-control)",
   alignItems: "center",
-  transition: "background-color var(--transition-duration) ease",
+  boxSizing: "border-box" as const,
+  transition: "background-color var(--transition-duration) ease, border-color var(--transition-duration) ease",
   "&:focus-within": {
-    backgroundColor: "color-mix(in srgb, var(--primary) 6%, var(--card))",
+    backgroundColor: "color-mix(in srgb, var(--primary) 5%, var(--input-idle-well))",
+    borderColor: "color-mix(in srgb, var(--primary) 22%, var(--border))",
   },
 } as const;
 
@@ -73,9 +75,10 @@ export function ToolsPage() {
               sx={{
                 py: 2,
                 px: 2,
-                bgcolor: "var(--card)",
-                border: "none", backgroundColor: "color-mix(in srgb, var(--foreground) 3%, transparent)",
+                bgcolor: "var(--input-idle-well)",
+                border: "1px solid var(--form-outline-rest)",
                 borderRadius: "var(--radius-control)",
+                boxSizing: "border-box",
               }}
             >
               <ListItemText
@@ -84,7 +87,7 @@ export function ToolsPage() {
                   primary: {
                     variant: "body2",
                     sx: {
-                      color: "text.secondary",
+                      color: "var(--muted)",
                       fontSize: "var(--font-size-caption)",
                     },
                   },
@@ -98,7 +101,7 @@ export function ToolsPage() {
             disablePadding
             sx={{
               display: "grid",
-              gap: 0.5,
+              gap: 1,
               gridTemplateColumns: {
                 xs: "minmax(0, 1fr)",
                 sm: "repeat(2, minmax(0, 1fr))",

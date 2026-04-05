@@ -109,16 +109,25 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
             loop {
                 let now = Instant::now();
                 let now_unix_secs = crate::util::current_unix_secs();
-                let next_remind_at = unix_deadline_to_instant(
-                    ctx.remind_store.next_due_at().ok().flatten(),
-                    now_unix_secs,
-                    now,
-                );
-                let next_task_at = unix_deadline_to_instant(
-                    ctx.task_store.next_due_at().ok().flatten(),
-                    now_unix_secs,
-                    now,
-                );
+                let voice_exclusive = crate::state::voice_exclusive_active();
+                let next_remind_at = if voice_exclusive {
+                    None
+                } else {
+                    unix_deadline_to_instant(
+                        ctx.remind_store.next_due_at().ok().flatten(),
+                        now_unix_secs,
+                        now,
+                    )
+                };
+                let next_task_at = if voice_exclusive {
+                    None
+                } else {
+                    unix_deadline_to_instant(
+                        ctx.task_store.next_due_at().ok().flatten(),
+                        now_unix_secs,
+                        now,
+                    )
+                };
                 let next_delayed_task_at =
                     now + crate::runtime::next_delayed_task_wait(heartbeat_interval);
                 let next_wake_at = [
@@ -137,6 +146,7 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
 
                 let now = Instant::now();
                 let now_unix_secs = crate::util::current_unix_secs();
+                let voice_exclusive = crate::state::voice_exclusive_active();
 
                 if now >= next_heartbeat_at {
                     crate::heartbeat::heartbeat_tick(
@@ -154,7 +164,7 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
                     advance_periodic_deadline(&mut next_heartbeat_at, heartbeat_interval, now);
                 }
 
-                if now >= next_cron_at {
+                if now >= next_cron_at && !voice_exclusive {
                     crate::cron::cron_tick(
                         &ctx.system_inbound_tx,
                         ctx.memory_store.as_ref(),
@@ -172,14 +182,17 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
                         now_unix_secs,
                     );
                     advance_periodic_deadline(&mut next_cron_at, cron_interval, now);
+                } else if now >= next_cron_at {
+                    advance_periodic_deadline(&mut next_cron_at, cron_interval, now);
                 }
 
-                if ctx
-                    .remind_store
-                    .next_due_at()
-                    .ok()
-                    .flatten()
-                    .is_some_and(|due_at| due_at <= now_unix_secs)
+                if !voice_exclusive
+                    && ctx
+                        .remind_store
+                        .next_due_at()
+                        .ok()
+                        .flatten()
+                        .is_some_and(|due_at| due_at <= now_unix_secs)
                 {
                     crate::memory::remind_tick(
                         ctx.remind_store.as_ref(),
@@ -188,12 +201,13 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
                     );
                 }
 
-                if ctx
-                    .task_store
-                    .next_due_at()
-                    .ok()
-                    .flatten()
-                    .is_some_and(|due_at| due_at <= now_unix_secs)
+                if !voice_exclusive
+                    && ctx
+                        .task_store
+                        .next_due_at()
+                        .ok()
+                        .flatten()
+                        .is_some_and(|due_at| due_at <= now_unix_secs)
                 {
                     crate::task::task_due_tick(
                         ctx.task_store.as_ref(),

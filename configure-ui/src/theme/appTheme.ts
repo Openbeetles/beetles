@@ -354,7 +354,7 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
       MuiTabs: {
         styleOverrides: {
           indicator: {
-            height: 2,
+            height: 'var(--accent-line-height)',
           },
         },
       },

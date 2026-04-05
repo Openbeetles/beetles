@@ -78,6 +78,7 @@ pub struct LinuxPlatform {
     hardware_discovery_handle: Arc<dyn HardwareDiscovery + Send + Sync>,
     display_state: Mutex<Option<DisplayState>>,
     audio_state: Mutex<Option<audio::LinuxSpeakerRuntime>>,
+    audio_capabilities: Mutex<crate::platform::AudioDuplexCapabilities>,
 }
 
 impl LinuxPlatform {
@@ -157,6 +158,7 @@ impl LinuxPlatform {
             hardware_discovery_handle: Arc::new(hardware_discovery::LinuxHardwareDiscovery::new()),
             display_state: Mutex::new(None),
             audio_state: Mutex::new(None),
+            audio_capabilities: Mutex::new(crate::platform::AudioDuplexCapabilities::unavailable()),
         }
     }
 }
@@ -399,40 +401,34 @@ impl Platform for LinuxPlatform {
     fn init_audio(&self, config: &AudioSegment) -> crate::error::Result<()> {
         let mut guard = self.audio_state.lock().unwrap_or_else(|e| e.into_inner());
         *guard = None;
+        *self
+            .audio_capabilities
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) =
+            crate::platform::AudioDuplexCapabilities::unavailable();
         if !config.enabled || !config.speaker.enabled {
             return Ok(());
         }
         let runtime = audio::LinuxSpeakerRuntime::from_config(config)?;
+        let capabilities = crate::platform::AudioDuplexCapabilities::speaker_only().normalized();
         log::info!(
-            "[platform::linux] audio initialized (speaker_ready=true, speaker={})",
-            runtime.selected_label()
+            "[platform::linux] audio initialized (speaker={}, profile={})",
+            runtime.selected_label(),
+            capabilities.profile().as_str()
         );
         *guard = Some(runtime);
+        *self
+            .audio_capabilities
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = capabilities;
         Ok(())
     }
 
-    fn audio_speaker_ready(&self) -> bool {
-        self.audio_state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .map(|state| state.ready())
-            .unwrap_or(false)
-    }
-
     fn audio_duplex_capabilities(&self) -> crate::platform::AudioDuplexCapabilities {
-        let speaker_ready = self
-            .audio_state
+        *self
+            .audio_capabilities
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .map(|state| state.ready())
-            .unwrap_or(false);
-        if speaker_ready {
-            crate::platform::AudioDuplexCapabilities::speaker_only()
-        } else {
-            crate::platform::AudioDuplexCapabilities::unavailable()
-        }
     }
 
     fn write_speaker_pcm_i16(&self, buf: &[i16]) -> crate::error::Result<()> {
@@ -441,6 +437,14 @@ impl Platform for LinuxPlatform {
             crate::error::Error::config("audio_speaker", "Linux speaker runtime not initialized")
         })?;
         state.write_pcm_i16(buf)
+    }
+
+    fn try_write_speaker_pcm_i16(&self, buf: &[i16]) -> crate::error::Result<usize> {
+        let guard = self.audio_state.lock().unwrap_or_else(|e| e.into_inner());
+        let state = guard.as_ref().ok_or_else(|| {
+            crate::error::Error::config("audio_speaker", "Linux speaker runtime not initialized")
+        })?;
+        state.try_write_pcm_i16(buf)
     }
 
     fn speaker_buffered_samples(&self) -> usize {

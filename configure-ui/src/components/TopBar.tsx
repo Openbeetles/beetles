@@ -129,7 +129,7 @@ export function TopBar({ onMenuClick, onOpenSettings }: TopBarProps) {
                   "color-mix(in srgb, var(--foreground) 6%, transparent)",
               },
             }}
-            aria-label="Open menu"
+            aria-label={t("common.openMenu")}
           >
             <MenuRounded />
           </IconButton>

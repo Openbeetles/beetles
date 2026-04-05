@@ -154,11 +154,17 @@ pub fn init_audio_if_enabled(platform: &Arc<dyn Platform>, config: &Arc<AppConfi
             if let Err(e) = platform.init_audio(audio_cfg) {
                 log::warn!("[{}] audio init failed (degraded): {}", TAG, e);
             } else {
+                let caps = platform.audio_duplex_capabilities();
                 log::info!(
-                    "[{}] audio initialized (mic_ready={}, speaker_ready={})",
+                    "[{}] audio initialized (profile={} mic={} speaker={} duplex={} barge_in={} reference={} aec={:?})",
                     TAG,
-                    platform.audio_mic_ready(),
-                    platform.audio_speaker_ready()
+                    caps.profile().as_str(),
+                    caps.microphone_input,
+                    caps.speaker_output,
+                    caps.concurrent_capture_playback,
+                    caps.barge_in,
+                    caps.reference_capture,
+                    caps.echo_cancellation
                 );
             }
         }
