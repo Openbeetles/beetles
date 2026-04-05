@@ -34,7 +34,10 @@ impl Drop for ConfigPlaneActiveGuard {
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn esp_config_plane_desired() -> bool {
-    !crate::state::wifi_sta_connected()
+    // User-facing recovery/config access must remain reachable after STA joins.
+    // On ESP this server is therefore a budgeted steady-state capability, not a
+    // bootstrap-only plane that disappears after initial provisioning.
+    true
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -95,7 +98,7 @@ pub fn run(
 
         let router_env = router::RouterEnv::new(inbound_tx.clone());
         esp_transport::register_all_esp_routes(&mut server, &ctx, &router_env, &config_store)?;
-        log::info!("[http_server] ESP config API serving (bootstrap/recovery plane)");
+        log::info!("[http_server] ESP config API serving (WiFi LAN + recovery plane)");
 
         while esp_config_plane_desired() {
             std::thread::sleep(Duration::from_millis(CONFIG_PLANE_POLL_MS));

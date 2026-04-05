@@ -16,4 +16,4 @@ pub use delayed_task::{
 };
 pub use stream_http::{execute_stream_http_op, invalidate_stream_http_slot};
 pub use thread_registry::ThreadRegistrySnapshot;
-pub use thread_util::{ThreadPlan, spawn_planned, thread_plan};
+pub use thread_util::{ThreadPlan, spawn_planned, spawn_planned_handle, thread_plan};

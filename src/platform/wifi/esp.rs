@@ -1,5 +1,6 @@
 //! WiFi：SoftAP（配置热点） + 可选 STA（连接用户路由器）。
-//! 初次启动先开 SoftAP；一旦 STA 真正拿到本地 IP，则自动关闭 SoftAP 释放 SRAM。
+//! 初次启动先开 SoftAP；当启用了配置/急救面时，STA 拿到 IP 后也继续保留 SoftAP，
+//! 避免设备在运行期失去用户可达的恢复入口。
 //! 支持通过通道向 WiFi 线程请求扫描，供 GET /api/wifi/scan 使用。
 
 use crate::config::AppConfig;
@@ -39,6 +40,10 @@ const STA_LINK_MISS_THRESHOLD: u8 = 2;
 static WIFI_STA_EXPECTED: AtomicBool = AtomicBool::new(false);
 /// STA 刚拿到 IP 后额外等待一小段时间，再允许外联 DNS/TLS，减少启动瞬间假失败。
 const STA_OUTBOUND_READY_GRACE_SECS: u64 = 3;
+
+fn should_keep_softap_available_for_recovery() -> bool {
+    cfg!(feature = "config_api")
+}
 
 #[derive(Clone)]
 struct StaSoftApConfig {
@@ -137,7 +142,8 @@ impl WifiScan for WifiScanHandle {
     }
 }
 
-/// 启动 WiFi：若配置了 STA，则先开 SoftAP+STA，待 STA 真正拿到 IP 后自动关闭 SoftAP；
+/// 启动 WiFi：若配置了 STA，则先开 SoftAP+STA；
+/// 当配置/急救面启用时，STA 真正拿到 IP 后仍保留 SoftAP，确保用户始终可回到恢复入口；
 /// 若未配置 STA，则保持纯 SoftAP。
 /// 返回 `Ok(Some(handle))` 表示 WiFi 驱动已就绪且可请求扫描；STA 失败或超时仍返回 `Some`，
 /// 以便用户连热点改配；`is_wifi_sta_connected()` 反映 STA 是否真正连上。
@@ -165,10 +171,17 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
 
     let result = match rx.recv_timeout(Duration::from_secs(WIFI_ESP_CONNECT_MAIN_WAIT_SECS)) {
         Ok(Ok(())) => {
-            log::info!(
-                "[{}] WiFi ready (SoftAP bootstrap active; STA will auto-close AP after DHCP)",
-                TAG
-            );
+            if has_sta && should_keep_softap_available_for_recovery() {
+                log::info!(
+                    "[{}] WiFi ready (SoftAP recovery path stays available after STA DHCP)",
+                    TAG
+                );
+            } else {
+                log::info!(
+                    "[{}] WiFi ready (SoftAP bootstrap active; STA will auto-close AP after DHCP)",
+                    TAG
+                );
+            }
             Ok(Some(WifiScanHandle {
                 req_tx: scan_req_tx,
                 resp_rx: Arc::new(Mutex::new(scan_resp_rx)),
@@ -311,7 +324,7 @@ fn poll_sta_link(
         if *softap_enabled {
             let ready_to_disable =
                 stable_since.elapsed() >= Duration::from_millis(STA_SOFTAP_DISABLE_GRACE_MS);
-            if ready_to_disable {
+            if ready_to_disable && !should_keep_softap_available_for_recovery() {
                 if let Some(config) = sta_softap_config {
                     if let Err(e) = set_softap_enabled(wifi, config, softap_enabled, false) {
                         log::warn!(

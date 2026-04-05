@@ -168,6 +168,40 @@ fn background_enqueue_block_reason() -> Option<&'static str> {
     }
 }
 
+const IDLE_SELF_RUNTIME_RETRY_DELAY_MS: u64 = 5_000;
+
+fn should_defer_background_job(msg: &PcMsg) -> Option<(&'static str, u64)> {
+    if !is_self_runtime_job(msg) {
+        return None;
+    }
+    let payload: crate::memory::SelfRuntimeJobPayload = serde_json::from_str(&msg.content).ok()?;
+    if payload.trigger != crate::memory::SelfRuntimeTrigger::IdleTick {
+        return None;
+    }
+    let snap = crate::orchestrator::snapshot();
+    if snap.active_wss_count > 0 {
+        return Some(("external_wss_active", IDLE_SELF_RUNTIME_RETRY_DELAY_MS));
+    }
+    if snap.inbound_depth > 0 || snap.outbound_depth > 0 {
+        return Some(("message_queues_busy", 1_000));
+    }
+    None
+}
+
+fn requeue_background_job_with_delay(msg: PcMsg, system_inbound_tx: &SystemInboundTx, delay_ms: u64) {
+    let delayed_tx = system_inbound_tx.clone();
+    let mut delayed_msg = msg;
+    delayed_msg.enqueue_ts_ms = now_unix_ms();
+    if !crate::runtime::schedule_delayed_task(
+        Instant::now() + Duration::from_millis(delay_ms),
+        Box::new(move || {
+            let _ = delayed_tx.try_send(delayed_msg);
+        }),
+    ) {
+        log::debug!("[agent] delayed background job requeue skipped: delayed queue full");
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct PostReplyMaintenanceJobPayload {
     ingress: IngressKind,
@@ -2572,23 +2606,20 @@ fn run_background_job_with_accounting(
     system_inbound_tx: &SystemInboundTx,
     outbound_tx: &OutboundTx,
     loc: UiLocale,
-    mut msg: PcMsg,
+    msg: PcMsg,
 ) {
     if crate::state::voice_exclusive_active() {
-        let delayed_tx = system_inbound_tx.clone();
-        msg.enqueue_ts_ms = now_unix_ms();
-        let due_at = Instant::now() + Duration::from_millis(500);
-        let delayed_msg = msg;
-        if !crate::runtime::schedule_delayed_task(
-            due_at,
-            Box::new(move || {
-                let _ = delayed_tx.try_send(delayed_msg);
-            }),
-        ) {
-            log::debug!(
-                "[agent] delayed background job requeue skipped during voice-exclusive: delayed queue full"
-            );
-        }
+        requeue_background_job_with_delay(msg, system_inbound_tx, 500);
+        return;
+    }
+    if let Some((reason, delay_ms)) = should_defer_background_job(&msg) {
+        log::debug!(
+            "[agent] defer background job channel={} chat_id={} because {}",
+            msg.channel,
+            msg.chat_id,
+            reason
+        );
+        requeue_background_job_with_delay(msg, system_inbound_tx, delay_ms);
         return;
     }
 

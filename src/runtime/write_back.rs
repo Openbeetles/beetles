@@ -2,7 +2,7 @@
 //! 将热路径上的小型持久化写入从用户/语音临界区中移出，复用现有 delayed task，
 //! 不新增常驻线程。
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::memory::{
     AutonomyStrategy, AutonomyStrategyStore, ExecutionState, ExecutionStateStore,
     ImportantMessageStore, InnerLife, InnerLifeStore, LongTermMemoryExtractionState,
@@ -146,7 +146,16 @@ fn flush_map<T, V>(
                 chat_id,
                 error
             );
-            failed.insert(chat_id, value);
+            if should_retry_write_back_error(&error) {
+                failed.insert(chat_id, value);
+            } else {
+                log::warn!(
+                    "[write_back:{}] dropping non-retryable pending write chat_id={} stage={}",
+                    pending.label,
+                    chat_id,
+                    error.stage()
+                );
+            }
         }
     }
     if !failed.is_empty() {
@@ -155,6 +164,16 @@ fn flush_map<T, V>(
     pending.clear_scheduled();
     if pending.has_pending() {
         schedule_map_flush(inner, pending, apply);
+    }
+}
+
+fn should_retry_write_back_error(error: &Error) -> bool {
+    match error {
+        Error::Config { .. } => false,
+        Error::Io { source, .. } => {
+            !matches!(source.raw_os_error(), Some(36 | 63 | 91))
+        }
+        _ => true,
     }
 }
 
@@ -471,7 +490,15 @@ fn flush_session_summary_store(
                 chat_id,
                 error
             );
-            failed.insert(chat_id, value);
+            if should_retry_write_back_error(&error) {
+                failed.insert(chat_id, value);
+            } else {
+                log::warn!(
+                    "[write_back:session_summary_write_back] dropping non-retryable pending write chat_id={} stage={}",
+                    chat_id,
+                    error.stage()
+                );
+            }
         }
     }
     if !failed.is_empty() {
@@ -686,7 +713,15 @@ fn flush_session_store(
                 chat_id,
                 error
             );
-            failed.insert(chat_id, write);
+            if should_retry_write_back_error(&error) {
+                failed.insert(chat_id, write);
+            } else {
+                log::warn!(
+                    "[write_back:session_store] dropping non-retryable pending write chat_id={} stage={}",
+                    chat_id,
+                    error.stage()
+                );
+            }
         }
     }
     if !failed.is_empty() {

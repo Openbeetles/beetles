@@ -8,6 +8,12 @@ use crate::constants::{AUDIO_CAPTURE_FRAME_SAMPLES, AUDIO_STT_MAX_PCM_BYTES};
 use crate::error::{Error, Result};
 use std::time::Instant;
 
+const CAPTURE_ENDPOINT_THRESHOLD_MAX: f32 = 0.12;
+
+fn capture_endpoint_threshold(cfg_threshold: f32) -> f32 {
+    cfg_threshold.clamp(0.0, 1.0).min(CAPTURE_ENDPOINT_THRESHOLD_MAX)
+}
+
 /// RAII guard：创建时设 orchestrator 录音标志，Drop 时清除。
 /// Ensures wake-word detection is suppressed while mic capture is active.
 pub struct AudioRecordingGuard;
@@ -48,7 +54,7 @@ pub fn capture_speech(
     let frame_ms =
         ((AUDIO_CAPTURE_FRAME_SAMPLES as u64) * 1000 / (mic_sr as u64)).clamp(1, 40) as u32;
     let endpoint_cfg = EndpointConfig {
-        threshold: audio_cfg.vad.threshold,
+        threshold: capture_endpoint_threshold(audio_cfg.vad.threshold),
         silence_duration_ms: audio_cfg.vad.silence_duration_ms,
     };
     let mut endpoint = EndpointState::new();

@@ -1450,11 +1450,22 @@ fn idle_self_runtime_scheduler_block_reason() -> Option<&'static str> {
     let snap = crate::orchestrator::snapshot();
     if snap.active_agent_tasks > 0 {
         Some("agent_plane_busy")
+    } else if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) && snap.active_wss_count > 0
+    {
+        Some("external_wss_active")
     } else if snap.inbound_depth > 0 || snap.outbound_depth > 0 {
         Some("message_queues_busy")
     } else {
         None
     }
+}
+
+fn idle_memory_hygiene_budget_allows_run() -> bool {
+    let snap = crate::orchestrator::snapshot();
+    snap.active_wss_count == 0
+        && snap.active_agent_tasks == 0
+        && snap.inbound_depth == 0
+        && snap.outbound_depth == 0
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -1524,20 +1535,26 @@ pub fn run_self_runtime(
     );
     crate::platform::task_wdt::feed_current_task();
     if matches!(payload.trigger, SelfRuntimeTrigger::IdleTick) {
-        let _ = run_memory_hygiene_jobs(
-            MemoryHygieneContext {
-                session_store: ctx.session_store,
-                session_summary_store: ctx.session_summary_store,
-                memory_store: ctx.memory_store,
-                turn_ledger_store: ctx.turn_ledger_store,
-                long_term_memory_store: ctx.long_term_memory_store,
-                skill_storage: ctx.skill_storage,
-            },
-            chat_id,
-            profile,
-            payload.now_secs,
-        );
-        crate::platform::task_wdt::feed_current_task();
+        if idle_memory_hygiene_budget_allows_run() {
+            let _ = run_memory_hygiene_jobs(
+                MemoryHygieneContext {
+                    session_store: ctx.session_store,
+                    session_summary_store: ctx.session_summary_store,
+                    memory_store: ctx.memory_store,
+                    turn_ledger_store: ctx.turn_ledger_store,
+                    long_term_memory_store: ctx.long_term_memory_store,
+                    skill_storage: ctx.skill_storage,
+                },
+                chat_id,
+                profile,
+                payload.now_secs,
+            );
+            crate::platform::task_wdt::feed_current_task();
+        } else {
+            log::debug!(
+                "[self_runtime] skip idle memory hygiene this tick because write budget is reserved"
+            );
+        }
     }
 
     Box::new(SelfRuntimeOutcome {

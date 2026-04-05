@@ -9,9 +9,9 @@ use beetle::constants::SOFTAP_DEFAULT_IPV4;
 use beetle::memory::{MemoryStore, SessionStore};
 #[cfg(feature = "feishu")]
 use beetle::run_feishu_ws_loop;
-use beetle::runtime::{execute_stream_http_op, spawn_planned, thread_plan};
+use beetle::runtime::{execute_stream_http_op, spawn_planned, spawn_planned_handle, thread_plan};
 use beetle::util::STACK_VOICE_CONTROL;
-use beetle::util::{STACK_AGENT_LOOP, STACK_CHANNEL_SENDER, STACK_CHANNEL_WS};
+use beetle::util::{STACK_AGENT_LOOP, STACK_CHANNEL_SENDER, STACK_CHANNEL_WS, STACK_DISPATCH};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use beetle::Esp32Platform;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -267,8 +267,10 @@ fn compute_refresh_secs(
 }
 
 #[cfg(feature = "config_api")]
-fn spawn_http_config_server(ctx: HttpServerSpawnContext) {
-    spawn_planned("config_plane_watch", 6144, move || {
+fn spawn_http_config_server(
+    ctx: HttpServerSpawnContext,
+) -> std::io::Result<beetle::util::TaskHandle> {
+    spawn_planned_handle("config_plane_watch", 6144, move || {
         if let Err(e) = beetle::platform::http_server::run(
             ctx.platform,
             ctx.tool_registry,
@@ -289,7 +291,7 @@ fn spawn_http_config_server(ctx: HttpServerSpawnContext) {
         ) {
             log::warn!("[{}] HTTP config API server error: {}", TAG, e);
         }
-    });
+    })
 }
 
 fn spawn_voice_session_if_ready(
@@ -323,7 +325,7 @@ fn spawn_voice_session_if_ready(
     > = Arc::new(move || vs_pf.create_http_client(vs_cfg.as_ref()));
     let vs_inbound_tx = user_inbound_tx.clone();
     let vs_prompt = audio_cfg.wake_word.wake_prompt.clone();
-    spawn_planned("voice_session", STACK_VOICE_CONTROL, move || {
+    if let Err(error) = spawn_planned_handle("voice_session", STACK_VOICE_CONTROL, move || {
         beetle::audio::voice_session::run_voice_session(
             beetle::audio::voice_session::VoiceSessionConfig {
                 platform: vs_platform,
@@ -335,7 +337,12 @@ fn spawn_voice_session_if_ready(
             },
             voice_rx,
         );
-    });
+    }) {
+        let error = beetle::Error::io("voice_session_spawn", error);
+        log::error!("[{}] voice_session spawn failed: {}", TAG, error);
+        beetle::state::set_last_error(&error);
+        return;
+    }
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     if let Some(model_name) = wake_model_name.as_deref() {
         platform.configure_wake_word(model_name, audio_cfg.microphone.sample_rate, voice_tx);
@@ -1153,7 +1160,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     let shared_runtime_config = Arc::new(RwLock::new((*config).clone()));
     #[cfg(feature = "config_api")]
     {
-        spawn_http_config_server(HttpServerSpawnContext {
+        match spawn_http_config_server(HttpServerSpawnContext {
             platform: Arc::clone(&platform),
             tool_registry: Arc::clone(&registry),
             inbound_depth: Arc::clone(&user_inbound_depth),
@@ -1171,18 +1178,32 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             qq_app_id: config.qq_channel_app_id.clone(),
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             qq_secret: config.qq_channel_secret.clone(),
-        });
-        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        log::info!(
-            "[{}] HTTP config API server started (SoftAP: {})",
-            TAG,
-            SOFTAP_DEFAULT_IPV4
-        );
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        log::info!(
-            "[{}] HTTP config API server started (config API on LAN; BEETLE_CONFIG_HTTP_LISTEN, default 0.0.0.0:80)",
-            TAG
-        );
+        }) {
+            Ok(_) => {
+                #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+                log::info!(
+                    "[{}] HTTP config API server started (ESP WiFi config API; bootstrap SoftAP at {})",
+                    TAG,
+                    SOFTAP_DEFAULT_IPV4
+                );
+                #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+                log::info!(
+                    "[{}] HTTP config API server started (config API on LAN; BEETLE_CONFIG_HTTP_LISTEN, default 0.0.0.0:80)",
+                    TAG
+                );
+            }
+            Err(error) => {
+                let error = beetle::Error::io("config_plane_spawn", error);
+                log::error!("[{}] HTTP config API server spawn failed: {}", TAG, error);
+                beetle::state::set_last_error(&error);
+                beetle::runtime::request_restart_with_continuity_flush(
+                    Arc::clone(&platform),
+                    None,
+                    "config_plane_spawn_failed",
+                );
+                return;
+            }
+        }
     }
 
     beetle::bg_timer::run_bg_timer(beetle::bg_timer::BgTimerContext {
@@ -1324,9 +1345,19 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     if platform.create_http_client(config.as_ref()).is_ok() {
         let outbound_rx_for_dispatch = outbound_rx;
         let sinks_clone = Arc::clone(&sinks);
-        spawn_planned("dispatch", 4096, move || {
+        if let Err(error) = spawn_planned_handle("dispatch", STACK_DISPATCH, move || {
             run_dispatch(outbound_rx_for_dispatch, sinks_clone)
-        });
+        }) {
+            let error = beetle::Error::io("dispatch_spawn", error);
+            log::error!("[{}] dispatch spawn failed: {}", TAG, error);
+            beetle::state::set_last_error(&error);
+            beetle::runtime::request_restart_with_continuity_flush(
+                Arc::clone(&platform),
+                None,
+                "dispatch_spawn_failed",
+            );
+            return;
+        }
 
         if enabled_channel == "telegram" && !config.tg_token.trim().is_empty() {
             let tg_token = config.tg_token.clone();
@@ -1528,7 +1559,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         let agent_loop_config = Arc::clone(&agent_config);
         let worker_system_inbound_tx = agent_system_inbound_tx.clone();
         let worker_outbound_tx = outbound_tx.clone();
-        agent_handle = beetle::util::spawn_guarded_with_profile_handle(
+        agent_handle = match beetle::util::spawn_guarded_with_profile_handle(
             "agent_loop",
             STACK_AGENT_LOOP,
             agent_plan.core,
@@ -1572,8 +1603,20 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                     "agent_loop_exit",
                 );
             },
-        )
-        .ok();
+        ) {
+            Ok(handle) => Some(handle),
+            Err(error) => {
+                let error = beetle::Error::io("agent_loop_spawn", error);
+                log::error!("[{}] agent_loop spawn failed: {}", TAG, error);
+                beetle::state::set_last_error(&error);
+                beetle::runtime::request_restart_with_continuity_flush(
+                    Arc::clone(&platform),
+                    None,
+                    "agent_loop_spawn_failed",
+                );
+                return;
+            }
+        };
     } else {
         log::warn!(
             "[{}] HTTP client not available (create_http_client failed): dispatch, agent, Telegram poll, and outbound sender threads were not started. On Linux, ensure ureq/rustls stack and network; see dev-docs/linux-platform-plan.md.",

@@ -16,6 +16,7 @@ use super::{read_file, remove_file, state_path_join, write_file};
 const TAG: &str = "platform::spiffs::turn_ledger";
 const MAX_CHAT_ID_FILENAME_LEN: usize = 20;
 const LEDGER_FILE_EXT: &str = ".json";
+const REL_PATH_TURN_LEDGERS_FLAT_SPIFFS: &str = "memory/tl";
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct StoredTurnLedger(TurnLedger);
@@ -33,7 +34,7 @@ fn legacy_full_path() -> PathBuf {
     state_path_join(REL_PATH_TURN_LEDGERS_LEGACY)
 }
 
-fn ledger_path(chat_id: &str) -> Result<PathBuf> {
+fn ledger_rel_path(chat_id: &str, flat_spiffs_namespace: bool) -> Result<PathBuf> {
     if chat_id.is_empty() {
         return Err(Error::config("turn_ledger_path", "chat_id empty"));
     }
@@ -46,20 +47,39 @@ fn ledger_path(chat_id: &str) -> Result<PathBuf> {
             "chat_id contains invalid chars",
         ));
     }
-    let mut path = state_mount_path();
-    path.push(REL_PATH_TURN_LEDGERS);
     let filename = if chat_id.len() <= MAX_CHAT_ID_FILENAME_LEN {
         format!("{}{}", chat_id, LEDGER_FILE_EXT)
     } else {
         format!("{:08x}{}", fnv1a_hash(chat_id), LEDGER_FILE_EXT)
     };
+    let mut path = PathBuf::new();
+    path.push(if flat_spiffs_namespace {
+        REL_PATH_TURN_LEDGERS_FLAT_SPIFFS
+    } else {
+        REL_PATH_TURN_LEDGERS
+    });
     path.push(filename);
-    if path.as_os_str().len() > 64 {
+    if flat_spiffs_namespace && path.as_os_str().len() > 31 {
+        return Err(Error::config(
+            "turn_ledger_path",
+            format!("spiffs object name too long ({})", path.as_os_str().len()),
+        ));
+    }
+    if !flat_spiffs_namespace && path.as_os_str().len() > 64 {
         return Err(Error::config(
             "turn_ledger_path",
             format!("path too long ({})", path.as_os_str().len()),
         ));
     }
+    Ok(path)
+}
+
+fn ledger_path(chat_id: &str) -> Result<PathBuf> {
+    let mut path = state_mount_path();
+    path.push(ledger_rel_path(
+        chat_id,
+        cfg!(any(target_arch = "xtensa", target_arch = "riscv32")),
+    )?);
     Ok(path)
 }
 
@@ -157,5 +177,25 @@ impl TurnLedgerStore for SpiffsTurnLedgerStore {
             cache.remove(chat_id);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LEDGER_FILE_EXT, ledger_rel_path};
+
+    #[test]
+    fn esp_spiffs_turn_ledger_path_stays_within_flat_namespace_limit() {
+        let path = ledger_rel_path("c2c:947B12A11A2E0348FAA2C60499D29345", true).unwrap();
+        assert!(path.as_os_str().len() <= 31);
+        assert!(path.to_string_lossy().starts_with("memory/tl/"));
+        assert!(path.to_string_lossy().ends_with(LEDGER_FILE_EXT));
+    }
+
+    #[test]
+    fn host_turn_ledger_path_keeps_original_tree_shape() {
+        let path = ledger_rel_path("c2c:947B12A11A2E0348FAA2C60499D29345", false).unwrap();
+        assert!(path.to_string_lossy().starts_with("memory/turn_ledgers/"));
+        assert!(path.to_string_lossy().ends_with(LEDGER_FILE_EXT));
     }
 }

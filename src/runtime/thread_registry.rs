@@ -192,6 +192,7 @@ pub fn snapshot() -> ThreadRegistrySnapshot {
 /// 返回当前运行模式快照；用于识别 config/channel/voice/agent 平面是否常驻。
 pub fn runtime_mode_snapshot() -> RuntimeModeSnapshot {
     let guard = registry().lock().unwrap_or_else(|e| e.into_inner());
+    let background_maintenance_active = crate::state::background_maintenance_active();
     let config_plane_alive = crate::state::config_plane_active();
     let channel_plane_alive = guard.iter().any(|entry| {
         entry.alive
@@ -207,11 +208,11 @@ pub fn runtime_mode_snapshot() -> RuntimeModeSnapshot {
     let user_agent_lane_alive = guard
         .iter()
         .any(|entry| entry.alive && entry.name == "agent_loop");
-    let system_agent_lane_alive = false;
+    let system_agent_lane_alive = agent_plane_alive && background_maintenance_active;
     RuntimeModeSnapshot {
         wifi_sta_connected: crate::state::wifi_sta_connected(),
         voice_exclusive_active: crate::state::voice_exclusive_active(),
-        background_maintenance_active: crate::state::background_maintenance_active(),
+        background_maintenance_active,
         config_plane_alive,
         channel_plane_alive,
         voice_plane_alive,

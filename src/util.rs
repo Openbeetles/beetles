@@ -705,7 +705,7 @@ pub fn is_private_url(url: &str) -> bool {
 // | audio_io_worker                       | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS, I2S + WakeNet NN
 // | http_server                           | (inline 6144)          | 6 KB  | 6 KB  | ← wrapper thread only; IDF httpd has its own task
 // | http_route_exec                       | STACK_HTTP_ROUTE_WORKER| 16 KB | 16 KB | ← ESP config/router work offloaded from IDF callback
-// | dispatch                              | (inline 4096)          | 4 KB  | 4 KB  | ← no TLS/HTTP, recv+queue only
+// | dispatch                              | STACK_DISPATCH         | 8 KB  | 8 KB  | ← delayed-task service + admission + retry/cooldown replay
 // | bg_timer                              | (inline 6144)          | 6 KB  | 6 KB  | ← no TLS, MetricsSnapshot 352B peak
 // | heartbeat, cli_repl                  | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS
 // | voice_session                         | STACK_VOICE_CONTROL    | 16 KB | 8 KB  | ← realtime voice now runs inline here on ESP
@@ -743,6 +743,11 @@ pub const STACK_AGENT_LOOP: usize = LINUX_RUSTLS_THREAD_STACK;
 pub const STACK_CHANNEL_SENDER: usize = 8192;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_CHANNEL_SENDER: usize = LINUX_RUSTLS_THREAD_STACK;
+
+/// `dispatch`：出站调度线程。
+/// 当前职责已包含 delayed-task service、orchestrator admission、cooldown replay
+/// 与 send retry，不再适合维持 4KB 小栈。
+pub const STACK_DISPATCH: usize = 8192;
 
 /// `voice_session`：语音会话线程，STT + TTS 均需 HTTPS。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]

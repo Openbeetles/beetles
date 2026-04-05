@@ -1,7 +1,7 @@
 //! Thread management utilities.
 //! 线程管理工具。
 
-use crate::util::{HttpThreadRole, SpawnCore, spawn_guarded_with_profile};
+use crate::util::{HttpThreadRole, SpawnCore, TaskHandle, spawn_guarded_with_profile_handle};
 
 #[derive(Clone, Copy)]
 pub struct ThreadPlan {
@@ -46,6 +46,13 @@ pub fn spawn_planned<F>(name: &str, stack_size: usize, f: F)
 where
     F: FnOnce() + Send + 'static,
 {
+    let _ = spawn_planned_handle(name, stack_size, f);
+}
+
+pub fn spawn_planned_handle<F>(name: &str, stack_size: usize, f: F) -> std::io::Result<TaskHandle>
+where
+    F: FnOnce() + Send + 'static,
+{
     let plan = thread_plan(name);
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     if plan.core.is_none() {
@@ -54,5 +61,5 @@ where
             name
         );
     }
-    spawn_guarded_with_profile(name, stack_size, plan.core, plan.role, f);
+    spawn_guarded_with_profile_handle(name, stack_size, plan.core, plan.role, f)
 }
