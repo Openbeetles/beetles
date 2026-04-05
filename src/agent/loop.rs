@@ -179,7 +179,7 @@ fn should_defer_background_job(msg: &PcMsg) -> Option<(&'static str, u64)> {
         return None;
     }
     let snap = crate::orchestrator::snapshot();
-    if snap.active_wss_count > 0 {
+    if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) && snap.active_wss_count > 0 {
         return Some(("external_wss_active", IDLE_SELF_RUNTIME_RETRY_DELAY_MS));
     }
     if snap.inbound_depth > 0 || snap.outbound_depth > 0 {

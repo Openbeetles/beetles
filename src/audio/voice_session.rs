@@ -7,6 +7,9 @@
 //! - `run_voice_session` coalesces events and dispatches one task at a time
 //! - Realtime wake interactions run inline on the always-on `voice_session`
 //!   thread on ESP to avoid an extra 16KB worker stack at the TLS peak
+//! - Linux keeps realtime wake interactions on `voice_session_worker`, so the
+//!   always-on scheduler thread remains responsive and does not inherit ESP's
+//!   voice-exclusive runtime-mode switch
 //! - Non-realtime STT/TTS fallback still uses `voice_session_worker`
 
 use crate::Platform;
@@ -239,7 +242,9 @@ fn run_voice_task(cfg: &VoiceSessionConfig, task: VoiceWorkerTask) {
 }
 
 fn should_run_voice_task_inline(cfg: &VoiceSessionConfig, task: &VoiceWorkerTask) -> bool {
-    matches!(task, VoiceWorkerTask::WakeInteraction) && audio_realtime_enabled(&cfg.audio_cfg)
+    cfg!(any(target_arch = "xtensa", target_arch = "riscv32"))
+        && matches!(task, VoiceWorkerTask::WakeInteraction)
+        && audio_realtime_enabled(&cfg.audio_cfg)
 }
 
 fn handle_wake_interaction<F>(
@@ -265,34 +270,60 @@ fn handle_wake_interaction<F>(
             );
             return;
         }
-        let _external_wss_suspend = ExternalWssSuspendGuard::enter();
-        log::info!(
-            "[{}] realtime session switching runtime mode (external WSS suspended)",
-            TAG
-        );
-        wait_for_external_wss_to_suspend_and_drain(cfg.platform.as_ref());
-        let _voice_exclusive = VoiceExclusiveGuard::enter();
-        log::info!("[{}] realtime session entering voice-exclusive mode", TAG);
-        match run_realtime_session(cfg.platform.as_ref(), &cfg.audio_cfg, TAG) {
-            Ok(session) => {
-                log::info!(
-                    "[{}] realtime session finished turns={} input_ms={} output_ms={} duration_ms={}",
-                    TAG,
-                    session.turns_completed,
-                    session.input_audio_ms,
-                    session.output_audio_ms,
-                    session.session_ms
-                );
-                if session.output_audio_ms > 0 {
-                    crate::metrics::record_voice_output_play_ms(session.output_audio_ms);
+        if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
+            let _external_wss_suspend = ExternalWssSuspendGuard::enter();
+            log::info!(
+                "[{}] realtime session switching runtime mode (external WSS suspended)",
+                TAG
+            );
+            wait_for_external_wss_to_suspend_and_drain(cfg.platform.as_ref());
+            let _voice_exclusive = VoiceExclusiveGuard::enter();
+            log::info!("[{}] realtime session entering voice-exclusive mode", TAG);
+            match run_realtime_session(cfg.platform.as_ref(), &cfg.audio_cfg, TAG) {
+                Ok(session) => {
+                    log::info!(
+                        "[{}] realtime session finished turns={} input_ms={} output_ms={} duration_ms={}",
+                        TAG,
+                        session.turns_completed,
+                        session.input_audio_ms,
+                        session.output_audio_ms,
+                        session.session_ms
+                    );
+                    if session.output_audio_ms > 0 {
+                        crate::metrics::record_voice_output_play_ms(session.output_audio_ms);
+                    }
+                }
+                Err(error) => {
+                    log::warn!("[{}] realtime voice session failed: {}", TAG, error);
+                    crate::metrics::record_voice_tool_failure("voice_session_realtime");
                 }
             }
-            Err(error) => {
-                log::warn!("[{}] realtime voice session failed: {}", TAG, error);
-                crate::metrics::record_voice_tool_failure("voice_session_realtime");
+            log::info!("[{}] realtime session left voice-exclusive mode", TAG);
+        } else {
+            log::info!(
+                "[{}] realtime session running on dedicated worker thread (Linux mode)",
+                TAG
+            );
+            match run_realtime_session(cfg.platform.as_ref(), &cfg.audio_cfg, TAG) {
+                Ok(session) => {
+                    log::info!(
+                        "[{}] realtime session finished turns={} input_ms={} output_ms={} duration_ms={}",
+                        TAG,
+                        session.turns_completed,
+                        session.input_audio_ms,
+                        session.output_audio_ms,
+                        session.session_ms
+                    );
+                    if session.output_audio_ms > 0 {
+                        crate::metrics::record_voice_output_play_ms(session.output_audio_ms);
+                    }
+                }
+                Err(error) => {
+                    log::warn!("[{}] realtime voice session failed: {}", TAG, error);
+                    crate::metrics::record_voice_tool_failure("voice_session_realtime");
+                }
             }
         }
-        log::info!("[{}] realtime session left voice-exclusive mode", TAG);
         return;
     }
 

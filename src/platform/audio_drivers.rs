@@ -598,12 +598,19 @@ impl Drop for AudioRingBuffer {
     }
 }
 
+/// Staging ring buffer capacity in seconds of audio.
+/// 4 seconds @ 16kHz = 64000 samples = ~128KB in PSRAM.
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+const AUDIO_STAGING_CAPACITY_SECS: usize = 4;
+
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 struct SharedAudioBuffers {
     mic: Mutex<AudioRingBuffer>,
     mic_cv: Condvar,
     speaker: Mutex<AudioRingBuffer>,
     speaker_cv: Condvar,
+    staging: Mutex<AudioRingBuffer>,
+    staging_cv: Condvar,
     reference: Mutex<AudioRingBuffer>,
     reference_cv: Condvar,
     speaker_generation: AtomicU32,
@@ -666,6 +673,13 @@ fn pop_speaker_frame_for_output(
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn wait_for_speaker_work_or_stop(shared: &SharedAudioBuffers, timeout: Duration) {
+    // Also check staging: if staging has data, the worker should wake to transfer it.
+    {
+        let sg = shared.staging.lock().unwrap_or_else(|e| e.into_inner());
+        if sg.len() > 0 {
+            return;
+        }
+    }
     let guard = shared.speaker.lock().unwrap_or_else(|e| e.into_inner());
     if guard.len() > 0 || shared.stop.load(Ordering::Relaxed) {
         return;
@@ -802,11 +816,15 @@ impl AudioPipelineState {
 
         let mic_cap = (seg.microphone.sample_rate.max(8_000) as usize).saturating_mul(2);
         let speaker_cap = (seg.speaker.sample_rate.max(8_000) as usize).saturating_mul(2);
+        let staging_cap =
+            (seg.speaker.sample_rate.max(8_000) as usize).saturating_mul(AUDIO_STAGING_CAPACITY_SECS);
         let shared = Arc::new(SharedAudioBuffers {
             mic: Mutex::new(AudioRingBuffer::with_capacity(mic_cap)),
             mic_cv: Condvar::new(),
             speaker: Mutex::new(AudioRingBuffer::with_capacity(speaker_cap)),
             speaker_cv: Condvar::new(),
+            staging: Mutex::new(AudioRingBuffer::with_capacity(staging_cap)),
+            staging_cv: Condvar::new(),
             reference: Mutex::new(AudioRingBuffer::with_capacity(speaker_cap)),
             reference_cv: Condvar::new(),
             speaker_generation: AtomicU32::new(1),
@@ -888,6 +906,33 @@ impl AudioPipelineState {
                     );
 
                     if backend.speaker_ready() {
+                        // --- staging → speaker transfer ---
+                        // Pull data from staging into the speaker ring buffer whenever
+                        // staging has data — including the pre-playback buffering phase.
+                        // This decouples WSS data arrival from I2S consumption.
+                        {
+                            let staging_popped = {
+                                let mut sg = worker_shared
+                                    .staging
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner());
+                                sg.pop_into(&mut speaker_frame)
+                            };
+                            if staging_popped > 0 {
+                                let mut spk = worker_shared
+                                    .speaker
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner());
+                                let pushed = spk.push_slice_blocking(&speaker_frame[..staging_popped]);
+                                if pushed > 0 {
+                                    crate::metrics::record_audio_speaker_queue_depth_last_samples(
+                                        spk.len(),
+                                    );
+                                    worker_shared.speaker_cv.notify_one();
+                                }
+                            }
+                        }
+
                         if let Some((n, generation)) = pop_speaker_frame_for_output(
                             worker_shared.as_ref(),
                             &mut speaker_frame,
@@ -1004,16 +1049,6 @@ impl AudioPipelineState {
     }
 
     #[inline]
-    pub fn mic_ready(&self) -> bool {
-        self.mic_enabled
-    }
-
-    #[inline]
-    pub fn speaker_ready(&self) -> bool {
-        self.speaker_enabled
-    }
-
-    #[inline]
     pub fn reference_ready(&self) -> bool {
         self.mic_enabled && self.speaker_enabled
     }
@@ -1039,6 +1074,16 @@ impl AudioPipelineState {
         if !self.speaker_enabled {
             return Err(Error::config("audio_speaker", "speaker not initialized"));
         }
+        // Clear staging first, then speaker, then reference.
+        let mut staging_guard = self
+            .shared
+            .staging
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        staging_guard.clear();
+        self.shared.staging_cv.notify_all();
+        drop(staging_guard);
+
         let mut guard = self
             .shared
             .speaker
@@ -1170,6 +1215,38 @@ impl AudioPipelineState {
             self.shared.speaker_cv.notify_one();
         }
         Ok(written)
+    }
+
+    /// Push PCM samples into the staging ring buffer.
+    /// Returns the number of samples actually written (may be < buf.len() if staging is full).
+    pub fn push_staging_pcm_i16(&self, buf: &[i16]) -> Result<usize> {
+        if !self.speaker_enabled {
+            return Err(Error::config("audio_speaker", "speaker not initialized"));
+        }
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let mut guard = self
+            .shared
+            .staging
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let written = guard.push_slice_blocking(buf);
+        if written > 0 {
+            // Wake the worker so it can transfer staging → speaker.
+            self.shared.speaker_cv.notify_one();
+        }
+        Ok(written)
+    }
+
+    /// Returns the number of samples currently in the staging ring buffer.
+    pub fn staging_samples(&self) -> usize {
+        let guard = self
+            .shared
+            .staging
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        guard.len()
     }
 }
 

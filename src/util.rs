@@ -749,7 +749,9 @@ pub const STACK_CHANNEL_SENDER: usize = LINUX_RUSTLS_THREAD_STACK;
 /// 与 send retry，不再适合维持 4KB 小栈。
 pub const STACK_DISPATCH: usize = 8192;
 
-/// `voice_session`：语音会话线程，STT + TTS 均需 HTTPS。
+/// `voice_session`：语音会话调度线程。
+/// ESP 上 realtime 会在此线程内直跑；Linux 仅保留调度，TLS 重活放到
+/// `voice_session_worker`，因此 Linux 维持 8KB 即可。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub const STACK_VOICE_CONTROL: usize = 16 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]

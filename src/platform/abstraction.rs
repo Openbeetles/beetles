@@ -759,6 +759,21 @@ pub trait Platform: Send + Sync {
         Ok(())
     }
 
+    /// Push PCM samples into the speaker staging ring buffer.
+    /// The staging buffer decouples WSS data arrival from I2S consumption:
+    /// audio_io_worker transfers staging → speaker autonomously.
+    /// Returns the number of samples actually written.
+    /// Default returns 0 (platform has no staging buffer).
+    fn push_speaker_staging_pcm_i16(&self, _buf: &[i16]) -> Result<usize> {
+        Ok(0)
+    }
+
+    /// Returns the number of samples currently in the speaker staging buffer.
+    /// Default 0 (platform has no staging buffer).
+    fn speaker_staging_samples(&self) -> usize {
+        0
+    }
+
     /// 语音前后处理硬件加速是否可用（如 PDM 专用路径/NPU/向量加速）。
     fn speech_accel_available(&self) -> bool {
         false

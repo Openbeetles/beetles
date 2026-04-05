@@ -41,8 +41,7 @@ const REALTIME_ENDPOINT_THRESHOLD_MAX: f32 = 0.12;
 // Baidu realtime currently streams raw16k PCM over WSS rather than xiaozhi's
 // Opus packet path, so the downlink is more burst-sensitive and needs a thicker
 // software buffer on ESP to avoid audible underruns on normal Wi-Fi jitter.
-const REALTIME_PLAYBACK_TARGET_BUFFER_MS: u32 = 480;
-const REALTIME_PLAYBACK_REFILL_LOW_WATER_MS: u32 = 240;
+const REALTIME_PLAYBACK_TARGET_BUFFER_MS: u32 = 600;
 const REALTIME_INTERRUPT_BASELINE_MS: u64 = 180;
 const REALTIME_INTERRUPT_SPEECH_MIN_MS: u32 = 180;
 const REALTIME_INTERRUPT_THRESHOLD_MIN: f32 = 0.18;
@@ -131,8 +130,6 @@ struct RealtimeLoopState {
     turns_completed: u32,
     input_samples: usize,
     output_samples: usize,
-    pending_output_pcm: Vec<i16>,
-    pending_output_offset: usize,
     session_ready_at: Option<Instant>,
     first_local_speech_at: Option<Instant>,
     last_local_speech_end_at: Option<Instant>,
@@ -165,8 +162,6 @@ impl RealtimeLoopState {
             turns_completed: 0,
             input_samples: 0,
             output_samples: 0,
-            pending_output_pcm: Vec::with_capacity(AUDIO_TTS_WRITE_CHUNK_SAMPLES * 2),
-            pending_output_offset: 0,
             session_ready_at: None,
             first_local_speech_at: None,
             last_local_speech_end_at: None,
@@ -182,47 +177,6 @@ impl RealtimeLoopState {
             server_response_generation: 0,
             last_activity: Instant::now(),
         }
-    }
-
-    fn pending_output_len(&self) -> usize {
-        self.pending_output_pcm
-            .len()
-            .saturating_sub(self.pending_output_offset)
-    }
-
-    fn pending_output_is_empty(&self) -> bool {
-        self.pending_output_len() == 0
-    }
-
-    fn pending_output_chunk(&self, max_samples: usize) -> &[i16] {
-        let start = self.pending_output_offset;
-        let end =
-            (start + max_samples.min(self.pending_output_len())).min(self.pending_output_pcm.len());
-        &self.pending_output_pcm[start..end]
-    }
-
-    fn consume_pending_output(&mut self, samples: usize) {
-        self.pending_output_offset =
-            (self.pending_output_offset + samples).min(self.pending_output_pcm.len());
-        if self.pending_output_offset >= self.pending_output_pcm.len() {
-            self.pending_output_pcm.clear();
-            self.pending_output_offset = 0;
-            return;
-        }
-        if self.pending_output_offset >= AUDIO_TTS_WRITE_CHUNK_SAMPLES * 4
-            && self.pending_output_offset * 2 >= self.pending_output_pcm.len()
-        {
-            let start = self.pending_output_offset;
-            let remaining = self.pending_output_pcm.len() - start;
-            self.pending_output_pcm.copy_within(start.., 0);
-            self.pending_output_pcm.truncate(remaining);
-            self.pending_output_offset = 0;
-        }
-    }
-
-    fn clear_pending_output(&mut self) {
-        self.pending_output_pcm.clear();
-        self.pending_output_offset = 0;
     }
 
     fn mark_session_ready(&mut self, now: Instant) {
@@ -1219,7 +1173,7 @@ fn handle_json_server_message(
             Ok(())
         }
         "response.output_audio.done" | "response.audio.done" => {
-            flush_pending_output(platform, state, true)?;
+            // Data already in staging; worker transfers to speaker autonomously.
             state.last_activity = now;
             Ok(())
         }
@@ -1230,7 +1184,7 @@ fn handle_json_server_message(
                 return Ok(());
             }
             let counted = state.awaiting_response;
-            flush_pending_output(platform, state, true)?;
+            // Data already in staging; worker handles transfer.
             if counted {
                 state.awaiting_response = false;
                 state.turns_completed = state.turns_completed.saturating_add(1);
@@ -1296,7 +1250,7 @@ fn handle_baidu_server_message(
 
 fn handle_baidu_text_message(
     conn: &mut dyn WssConnection,
-    platform: &dyn Platform,
+    _platform: &dyn Platform,
     state: &mut RealtimeLoopState,
     audio_cfg: &AudioSegment,
     text: &str,
@@ -1387,7 +1341,7 @@ fn handle_baidu_text_message(
             return Ok(false);
         }
         let counted = state.awaiting_response || state.audio_playing || state.baidu_response_active;
-        flush_pending_output(platform, state, true)?;
+        // Data already in staging; worker handles transfer.
         state.awaiting_response = false;
         if counted {
             state.turns_completed = state.turns_completed.saturating_add(1);
@@ -1568,11 +1522,6 @@ fn playback_target_buffer_samples(sample_rate_hz: u32) -> usize {
         .max(AUDIO_TTS_WRITE_CHUNK_SAMPLES)
 }
 
-fn playback_refill_low_water_samples(sample_rate_hz: u32) -> usize {
-    ((sample_rate_hz.max(1) as usize) * (REALTIME_PLAYBACK_REFILL_LOW_WATER_MS as usize) / 1000)
-        .max(AUDIO_TTS_WRITE_CHUNK_SAMPLES)
-}
-
 fn queue_output_audio(
     platform: &dyn Platform,
     state: &mut RealtimeLoopState,
@@ -1582,83 +1531,29 @@ fn queue_output_audio(
     if pcm.is_empty() {
         return Ok(());
     }
-    state.pending_output_pcm.extend_from_slice(pcm);
     state.output_samples = state.output_samples.saturating_add(pcm.len());
 
-    let target_buffer_samples = playback_target_buffer_samples(sample_rate_hz);
-    let refill_low_water_samples = playback_refill_low_water_samples(sample_rate_hz);
-    let speaker_depth_samples = platform.speaker_buffered_samples();
-    let combined_buffered_samples =
-        speaker_depth_samples.saturating_add(state.pending_output_len());
-
-    if !state.audio_playing && combined_buffered_samples < target_buffer_samples {
-        return Ok(());
+    // Push into the staging ring buffer; worker transfers staging → speaker.
+    // On Linux, push_speaker_staging_pcm_i16 writes directly to the speaker
+    // channel (no separate staging), so the fallback below is a second attempt
+    // at the same queue — acceptable since Linux lacks WiFi jitter concerns.
+    let written = platform.push_speaker_staging_pcm_i16(pcm)?;
+    if written < pcm.len() {
+        // Staging full — fallback: write remainder directly to speaker ring buffer.
+        let remaining = &pcm[written..];
+        let _ = platform.try_write_speaker_pcm_i16(remaining)?;
     }
-    let mut just_started = false;
-    if !state.audio_playing && !state.pending_output_is_empty() {
-        state.start_audio_playback(Instant::now());
-        just_started = true;
-    }
-    flush_output_audio(
-        platform,
-        state,
-        target_buffer_samples,
-        refill_low_water_samples,
-        false,
-        just_started,
-    )
-}
 
-fn flush_output_audio(
-    platform: &dyn Platform,
-    state: &mut RealtimeLoopState,
-    target_buffer_samples: usize,
-    refill_low_water_samples: usize,
-    force_flush_all: bool,
-    just_started: bool,
-) -> Result<()> {
-    while !state.pending_output_is_empty() {
-        let speaker_depth_samples = platform.speaker_buffered_samples();
-        if !force_flush_all {
-            let refill_needed = just_started || speaker_depth_samples <= refill_low_water_samples;
-            if !refill_needed {
-                break;
-            }
-            if speaker_depth_samples >= target_buffer_samples {
-                break;
-            }
+    // Start playback once enough data is buffered (staging + speaker combined).
+    if !state.audio_playing {
+        let total = platform
+            .speaker_buffered_samples()
+            .saturating_add(platform.speaker_staging_samples());
+        if total >= playback_target_buffer_samples(sample_rate_hz) {
+            state.start_audio_playback(Instant::now());
         }
-
-        let chunk_len = AUDIO_TTS_WRITE_CHUNK_SAMPLES.min(state.pending_output_len());
-        let chunk = state.pending_output_chunk(chunk_len);
-        let written = platform.try_write_speaker_pcm_i16(chunk)?;
-        if written == 0 {
-            break;
-        }
-        state.consume_pending_output(written.min(chunk_len));
     }
     Ok(())
-}
-
-fn flush_pending_output(
-    platform: &dyn Platform,
-    state: &mut RealtimeLoopState,
-    force_flush_all: bool,
-) -> Result<()> {
-    if state.pending_output_is_empty() {
-        return Ok(());
-    }
-    if !state.audio_playing {
-        state.start_audio_playback(Instant::now());
-    }
-    flush_output_audio(
-        platform,
-        state,
-        playback_target_buffer_samples(1),
-        playback_refill_low_water_samples(1),
-        force_flush_all,
-        false,
-    )
 }
 
 fn update_playback_state(
@@ -1667,20 +1562,18 @@ fn update_playback_state(
     sample_rate_hz: u32,
     now: Instant,
 ) -> Result<()> {
-    if !state.pending_output_is_empty() {
-        flush_output_audio(
-            platform,
-            state,
-            playback_target_buffer_samples(sample_rate_hz),
-            playback_refill_low_water_samples(sample_rate_hz),
-            false,
-            false,
-        )?;
+    if !state.audio_playing {
+        // Check if worker has transferred enough staging → speaker to start.
+        let total = platform
+            .speaker_buffered_samples()
+            .saturating_add(platform.speaker_staging_samples());
+        if total >= playback_target_buffer_samples(sample_rate_hz) {
+            state.start_audio_playback(now);
+        }
+        return Ok(());
     }
-    if state.audio_playing
-        && state.pending_output_is_empty()
-        && platform.speaker_buffered_samples() == 0
-    {
+    // Playback finished when both staging and speaker are drained.
+    if platform.speaker_staging_samples() == 0 && platform.speaker_buffered_samples() == 0 {
         state.finish_audio_playback(now);
     }
     Ok(())
@@ -1823,7 +1716,11 @@ fn handle_local_interrupt(
     provider: RealtimeProvider,
     now: Instant,
 ) -> Result<()> {
-    if !state.audio_playing && state.pending_output_is_empty() && !state.awaiting_response {
+    if !state.audio_playing
+        && platform.speaker_staging_samples() == 0
+        && platform.speaker_buffered_samples() == 0
+        && !state.awaiting_response
+    {
         return Ok(());
     }
     crate::metrics::record_voice_interrupt_accepted();
@@ -1851,7 +1748,7 @@ fn handle_local_interrupt(
     state.awaiting_response = false;
     state.current_turn_received_server_activity = false;
     state.playback_finished_at = Some(now);
-    state.clear_pending_output();
+    // Staging is cleared inside clear_speaker_buffer; no separate clear needed.
     platform.clear_speaker_buffer()?;
     state.finish_audio_playback(now);
     state.last_activity = now;

@@ -558,6 +558,28 @@ impl Platform for Esp32Platform {
         state.clear_speaker_buffer()
     }
 
+    fn push_speaker_staging_pcm_i16(&self, buf: &[i16]) -> crate::error::Result<usize> {
+        let state = self
+            .audio_state
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| {
+                crate::error::Error::config("audio_speaker", "audio pipeline not initialized")
+            })?;
+        state.push_staging_pcm_i16(buf)
+    }
+
+    fn speaker_staging_samples(&self) -> usize {
+        self.audio_state
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|s| s.staging_samples())
+            .unwrap_or(0)
+    }
+
     fn display_available(&self) -> bool {
         self.display_state
             .lock()

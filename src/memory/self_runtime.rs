@@ -1462,7 +1462,9 @@ fn idle_self_runtime_scheduler_block_reason() -> Option<&'static str> {
 
 fn idle_memory_hygiene_budget_allows_run() -> bool {
     let snap = crate::orchestrator::snapshot();
-    snap.active_wss_count == 0
+    let wss_budget_available =
+        !cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) || snap.active_wss_count == 0;
+    wss_budget_available
         && snap.active_agent_tasks == 0
         && snap.inbound_depth == 0
         && snap.outbound_depth == 0

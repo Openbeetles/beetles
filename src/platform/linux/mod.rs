@@ -468,6 +468,11 @@ impl Platform for LinuxPlatform {
         state.clear_buffer()
     }
 
+    fn push_speaker_staging_pcm_i16(&self, buf: &[i16]) -> crate::error::Result<usize> {
+        // Linux has no separate staging buffer; write directly to the speaker channel.
+        self.try_write_speaker_pcm_i16(buf)
+    }
+
     fn display_available(&self) -> bool {
         self.display_state
             .lock()
