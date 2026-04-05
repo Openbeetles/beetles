@@ -246,7 +246,13 @@ fn init_speaker_channel(seg: &AudioSegment) -> Result<SpeakerState> {
     use esp_idf_svc::sys::*;
 
     let spk = &seg.speaker;
-    let sd_pin = spk.pins.sd;
+    let pins = spk.pins.as_ref().ok_or_else(|| {
+        Error::config(
+            "i2s_spk_init_std",
+            "speaker.pins required for ESP I2S speaker",
+        )
+    })?;
+    let sd_pin = pins.sd;
 
     // -- 0. Enable SD pin (shutdown control for MAX98357A) -------------------
     if let Some(pin) = sd_pin {
@@ -311,9 +317,9 @@ fn init_speaker_channel(seg: &AudioSegment) -> Result<SpeakerState> {
 
     let gpio_cfg = i2s_std_gpio_config_t {
         mclk: gpio_num_t_GPIO_NUM_NC,
-        bclk: spk.pins.sck as gpio_num_t,
-        ws: spk.pins.ws as gpio_num_t,
-        dout: spk.pins.dout as gpio_num_t,
+        bclk: pins.sck as gpio_num_t,
+        ws: pins.ws as gpio_num_t,
+        dout: pins.dout as gpio_num_t,
         din: gpio_num_t_GPIO_NUM_NC,
         invert_flags: unsafe { core::mem::zeroed() },
     };
@@ -354,10 +360,10 @@ fn init_speaker_channel(seg: &AudioSegment) -> Result<SpeakerState> {
     log::info!(
         "[audio] speaker I2S1 TX ready: {}Hz 32bit-i2s (ws={} sck={} dout={} sd={:?})",
         spk.sample_rate,
-        spk.pins.ws,
-        spk.pins.sck,
-        spk.pins.dout,
-        spk.pins.sd,
+        pins.ws,
+        pins.sck,
+        pins.dout,
+        pins.sd,
     );
     Ok(SpeakerState {
         tx_handle,
@@ -858,6 +864,7 @@ impl AudioPipelineState {
                 crate::platform::task_wdt::register_current_task_to_task_wdt();
                 let mut mic_frame = vec![0i16; 320];
                 let mut speaker_frame = vec![0i16; 1024];
+                let speaker_min_samples = AUDIO_SPEAKER_WRITE_MIN_SAMPLES.min(speaker_frame.len());
                 let mut prev_audio_playing = false;
                 let mut speaker_saw_buffered_audio = false;
                 let mut speaker_underrun_reported = false;
@@ -884,7 +891,7 @@ impl AudioPipelineState {
                         if let Some((n, generation)) = pop_speaker_frame_for_output(
                             worker_shared.as_ref(),
                             &mut speaker_frame,
-                            AUDIO_SPEAKER_WRITE_MIN_SAMPLES.min(speaker_frame.len()),
+                            speaker_min_samples,
                             Duration::from_millis(AUDIO_SPEAKER_COALESCE_WAIT_MS),
                         ) {
                             if generation

@@ -440,7 +440,7 @@ impl Platform for Esp32Platform {
                     .write()
                     .unwrap_or_else(|e| e.into_inner()) = capabilities;
                 log::info!(
-                    "[platform::esp32] audio contract profile={} mic={} speaker={} duplex={} barge_in={} reference={} aec={:?}",
+                    "[platform::esp32] audio contract profile={} mic={} speaker={} duplex={} barge_in={} reference={:?} aec={:?}",
                     capabilities.profile().as_str(),
                     capabilities.microphone_input,
                     capabilities.speaker_output,

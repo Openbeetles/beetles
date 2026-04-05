@@ -197,7 +197,7 @@ fn ensure_session_parent_dir(_path: &Path, _stage: &'static str) -> Result<()> {
     Ok(())
 }
 
-fn ensure_sessions_dir_exists(stage: &'static str) -> Result<()> {
+fn ensure_sessions_dir_exists(_stage: &'static str) -> Result<()> {
     let mut dir = state_mount_path();
     dir.push(REL_PATH_SESSIONS_DIR);
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
