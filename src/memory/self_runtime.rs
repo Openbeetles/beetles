@@ -953,7 +953,7 @@ fn execute_self_runtime_actions(
     let refreshed_self_authored_core = state.self_authored_core.clone();
     let mut refreshed_self_continuity = state.self_continuity.clone();
     let mut refreshed_mental_privacy = state.mental_privacy_state.clone();
-    let mut refreshed_outer_voice = state.outer_voice.clone();
+    let refreshed_outer_voice = state.outer_voice.clone();
     let decision_ref = decision.as_ref();
     let inner_life_result = if decision_ref.is_some_and(|d| d.refresh_inner_life) {
         crate::platform::task_wdt::feed_current_task();
@@ -1347,12 +1347,6 @@ fn execute_self_runtime_actions(
     } else {
         Ok(OuterVoiceRefreshOutcome::Skipped)
     };
-    refreshed_outer_voice = ctx
-        .outer_voice_store
-        .get(&relationship_id)
-        .ok()
-        .flatten()
-        .or(refreshed_outer_voice);
     crate::platform::task_wdt::feed_current_task();
     let decision_ref = decision.as_ref();
     let self_authored_core_result = if decision_ref.is_some_and(|d| d.refresh_self_authored_core) {
@@ -1389,9 +1383,9 @@ fn execute_self_runtime_actions(
             refreshed_self_authored_core.clone(),
             refreshed_self_model.as_ref(),
             refreshed_self_continuity.as_ref(),
-            refreshed_outer_voice.as_ref(),
             refreshed_mental_privacy.as_ref(),
             state.recent_persona_evidence.as_ref(),
+            state.relationship_topology.as_ref(),
             prelude.refreshed_world_sense.as_ref(),
             prelude.refreshed_autonomy_strategy.as_ref(),
             self_state_text.as_deref(),
@@ -2756,7 +2750,7 @@ fn decide_self_runtime(
     private_garden_docs: &[crate::memory::PrivateGardenDocRecord],
     inner_life: Option<&crate::memory::InnerLife>,
     self_continuity: Option<&crate::memory::SelfContinuity>,
-    outer_voice: Option<&crate::memory::OuterVoice>,
+    _outer_voice: Option<&crate::memory::OuterVoice>,
     mental_privacy_state: Option<&crate::memory::MentalPrivacyState>,
     relationship_topology: Option<&RelationshipTopology>,
     current_relationship_scope_id: &str,
@@ -2861,7 +2855,6 @@ fn decide_self_runtime(
             render_self_authored_core_block(
                 self_model,
                 self_continuity,
-                outer_voice,
                 mental_privacy_state,
                 policy.grounding_max_len,
             )

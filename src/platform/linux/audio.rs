@@ -399,6 +399,7 @@ mod imp {
             ))
         }
 
+        #[allow(dead_code)]
         pub fn ready(&self) -> bool {
             false
         }

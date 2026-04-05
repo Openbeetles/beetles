@@ -451,8 +451,7 @@ fn prepare_worker_conversation<'a>(
     let persona_priority_runtime = PersonaPriorityRuntimeState {
         pressure: runtime.pressure,
         system_budget: prompt_memory_system_budget,
-        self_continuity: prompt_memory.self_continuity.as_ref(),
-        outer_voice: prompt_memory.outer_voice.as_ref(),
+        self_authored_core: prompt_memory.self_authored_core.as_ref(),
         disclosure_adjudication: mental_privacy_adjudication.as_ref(),
         recent_persona_evidence: recent_persona_evidence.as_ref(),
     };

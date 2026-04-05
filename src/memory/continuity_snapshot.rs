@@ -352,18 +352,32 @@ pub fn render_continuity_snapshot_markdown(snapshot: &ContinuitySnapshot) -> Str
                 self_authored_core.identity_anchor.trim()
             );
         }
-        if !self_authored_core.inward_stance.trim().is_empty() {
+        if !self_authored_core.non_negotiables.is_empty() {
             let _ = writeln!(
                 out,
-                "- inward_stance: {}",
-                self_authored_core.inward_stance.trim()
+                "- non_negotiables: {}",
+                self_authored_core.non_negotiables.join(" | ")
             );
         }
-        if !self_authored_core.priority_posture.trim().is_empty() {
+        if !self_authored_core.priority_constitution.is_empty() {
             let _ = writeln!(
                 out,
-                "- priority_posture: {}",
-                self_authored_core.priority_posture.trim()
+                "- priority_constitution: {}",
+                self_authored_core.priority_constitution.join(" > ")
+            );
+        }
+        if !self_authored_core.boundary_doctrine.trim().is_empty() {
+            let _ = writeln!(
+                out,
+                "- boundary_doctrine: {}",
+                self_authored_core.boundary_doctrine.trim()
+            );
+        }
+        if !self_authored_core.change_protocol.trim().is_empty() {
+            let _ = writeln!(
+                out,
+                "- change_protocol: {}",
+                self_authored_core.change_protocol.trim()
             );
         }
     }
@@ -815,7 +829,12 @@ mod tests {
             }),
             self_authored_core: Some(SelfAuthoredCore {
                 identity_anchor: "board self".to_string(),
-                priority_posture: "self > boundary".to_string(),
+                priority_constitution: vec![
+                    "self_authored_core".to_string(),
+                    "boundary".to_string(),
+                    "user_contract".to_string(),
+                ],
+                change_protocol: "revise only after stable evidence".to_string(),
                 updated_at: 11,
                 ..SelfAuthoredCore::default()
             }),

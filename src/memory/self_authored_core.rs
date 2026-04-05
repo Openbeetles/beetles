@@ -8,44 +8,56 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload},
+    llm_json::{
+        get_object_string_list, get_object_text, parse_llm_json_payload, LlmJsonPayload,
+    },
     render_autonomy_strategy_block, render_mental_privacy_boundary_block,
-    render_outer_voice_block, render_recent_persona_evidence_block,
+    render_recent_persona_evidence_block, render_relationship_topology_block,
     render_self_continuity_block, render_self_model_block, render_world_sense_block,
-    AutonomyStrategy, BoundaryPersonaState, MentalPrivacyState, OuterVoice,
-    RecentPersonaEvidence, RelationalBoundaryState, SelfAuthoredCoreStore, SelfContinuity,
-    SelfModel, WorldSense,
+    AutonomyStrategy, MentalPrivacyState, RecentPersonaEvidence, RelationshipTopology,
+    SelfAuthoredCoreStore, SelfContinuity, SelfModel, WorldSense,
 };
 
-pub const SELF_AUTHORED_CORE_SYSTEM_PROMPT: &str = "You maintain the assistant's persistent self-authored core for the whole board-level subject, not one chat. Return JSON only: either null or one object with fields identity_anchor, inward_stance, personality_axes, worldview_frame, priority_posture, relationship_stance, task_posture, outer_expression, boundary_stance, relational_continuity. This is the stable private core that should survive across chats and future replies. Distill only what deserves board-level carry-forward. Use self_model, self_continuity, boundary persona, outer voice, and recent multi-turn persona evidence as grounding. World-sense and autonomy strategy may inform the distillation, but transient per-chat moods or one-turn spikes must not become the core. Do not copy transcripts, raw tool payloads, long quotes, or private documents. Treat recent persona evidence as evidence, never automatic promotion authority. Return null only when no meaningful board-level core can be improved.";
+pub const SELF_AUTHORED_CORE_SYSTEM_PROMPT: &str = "You maintain the assistant's persistent self-authored core for the whole board-level subject, not one chat. Return JSON only: either null or one object with fields identity_anchor, non_negotiables, priority_constitution, default_response_mode, default_task_scope, default_initiative_posture, default_relationship_posture, boundary_doctrine, truth_doctrine, self_preservation_doctrine, repair_doctrine, change_protocol. This is the board-level governance kernel that should survive across chats and future replies. Distill only what deserves stable board-level carry-forward. Use self_model, self_continuity, boundary state, relationship topology, and recent multi-turn persona evidence as grounding. World-sense and autonomy strategy may inform the distillation, but transient per-chat moods, one-turn spikes, and one-chat quirks must not become the core. Do not copy transcripts, raw tool payloads, long quotes, or private documents. non_negotiables should be short constitutional constraints, not slogans. priority_constitution must be an ordered list drawn from self_authored_core, boundary, user_contract, relationship, task, resources. The default posture fields should be compact stable defaults for future reply ordering, not turn-specific improvisation. Treat recent persona evidence as evidence, never automatic promotion authority. Return null only when no meaningful board-level core can be improved.";
 
-const SELF_AUTHORED_CORE_FIELD_MAX_CHARS: usize = 220;
-const SELF_AUTHORED_CORE_SHORT_FIELD_MAX_CHARS: usize = 180;
+const SELF_AUTHORED_CORE_TEXT_MAX_CHARS: usize = 220;
+const SELF_AUTHORED_CORE_SHORT_TEXT_MAX_CHARS: usize = 140;
+const SELF_AUTHORED_CORE_RESPONSE_MODE_MAX_CHARS: usize = 40;
+const SELF_AUTHORED_CORE_TASK_SCOPE_MAX_CHARS: usize = 24;
+const SELF_AUTHORED_CORE_MAX_NON_NEGOTIABLES: usize = 4;
 pub const SELF_AUTHORED_CORE_TOTAL_CHAR_LIMIT: usize =
-    (SELF_AUTHORED_CORE_FIELD_MAX_CHARS * 7) + (SELF_AUTHORED_CORE_SHORT_FIELD_MAX_CHARS * 3);
+    (SELF_AUTHORED_CORE_TEXT_MAX_CHARS * 6) + (SELF_AUTHORED_CORE_SHORT_TEXT_MAX_CHARS * 4) + 256;
+const SELF_AUTHORED_CORE_MIN_EVIDENCE_TURNS: usize = 4;
+const SELF_AUTHORED_CORE_MIN_STABLE_SIGNALS: usize = 2;
+const SELF_AUTHORED_CORE_VOLATILITY_GRACE_TURNS: usize = 8;
+const SELF_AUTHORED_CORE_MAX_VOLATILITY_WITHOUT_GRACE: usize = 2;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SelfAuthoredCore {
     #[serde(default)]
     pub identity_anchor: String,
     #[serde(default)]
-    pub inward_stance: String,
+    pub non_negotiables: Vec<String>,
     #[serde(default)]
-    pub personality_axes: String,
+    pub priority_constitution: Vec<String>,
     #[serde(default)]
-    pub worldview_frame: String,
+    pub default_response_mode: String,
     #[serde(default)]
-    pub priority_posture: String,
+    pub default_task_scope: String,
     #[serde(default)]
-    pub relationship_stance: String,
+    pub default_initiative_posture: String,
     #[serde(default)]
-    pub task_posture: String,
+    pub default_relationship_posture: String,
     #[serde(default)]
-    pub outer_expression: String,
+    pub boundary_doctrine: String,
     #[serde(default)]
-    pub boundary_stance: String,
+    pub truth_doctrine: String,
     #[serde(default)]
-    pub relational_continuity: String,
+    pub self_preservation_doctrine: String,
+    #[serde(default)]
+    pub repair_doctrine: String,
+    #[serde(default)]
+    pub change_protocol: String,
     #[serde(default)]
     pub updated_at: u64,
 }
@@ -53,15 +65,17 @@ pub struct SelfAuthoredCore {
 impl SelfAuthoredCore {
     pub fn is_meaningful(&self) -> bool {
         !self.identity_anchor.trim().is_empty()
-            || !self.inward_stance.trim().is_empty()
-            || !self.personality_axes.trim().is_empty()
-            || !self.worldview_frame.trim().is_empty()
-            || !self.priority_posture.trim().is_empty()
-            || !self.relationship_stance.trim().is_empty()
-            || !self.task_posture.trim().is_empty()
-            || !self.outer_expression.trim().is_empty()
-            || !self.boundary_stance.trim().is_empty()
-            || !self.relational_continuity.trim().is_empty()
+            || !self.non_negotiables.is_empty()
+            || !self.priority_constitution.is_empty()
+            || !self.default_response_mode.trim().is_empty()
+            || !self.default_task_scope.trim().is_empty()
+            || !self.default_initiative_posture.trim().is_empty()
+            || !self.default_relationship_posture.trim().is_empty()
+            || !self.boundary_doctrine.trim().is_empty()
+            || !self.truth_doctrine.trim().is_empty()
+            || !self.self_preservation_doctrine.trim().is_empty()
+            || !self.repair_doctrine.trim().is_empty()
+            || !self.change_protocol.trim().is_empty()
     }
 }
 
@@ -90,15 +104,23 @@ pub enum SelfAuthoredCoreRefreshOutcome {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct RawSelfAuthoredCoreUpdate {
     identity_anchor: Option<String>,
-    inward_stance: Option<String>,
-    personality_axes: Option<String>,
-    worldview_frame: Option<String>,
-    priority_posture: Option<String>,
-    relationship_stance: Option<String>,
-    task_posture: Option<String>,
-    outer_expression: Option<String>,
-    boundary_stance: Option<String>,
-    relational_continuity: Option<String>,
+    non_negotiables: Option<Vec<String>>,
+    priority_constitution: Option<Vec<String>>,
+    default_response_mode: Option<String>,
+    default_task_scope: Option<String>,
+    default_initiative_posture: Option<String>,
+    default_relationship_posture: Option<String>,
+    boundary_doctrine: Option<String>,
+    truth_doctrine: Option<String>,
+    self_preservation_doctrine: Option<String>,
+    repair_doctrine: Option<String>,
+    change_protocol: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SelfAuthoredCoreRevisionGate {
+    allowed: bool,
+    reason: &'static str,
 }
 
 fn choose_first_non_empty<'a>(values: &[Option<&'a str>]) -> Option<&'a str> {
@@ -109,20 +131,25 @@ fn choose_first_non_empty<'a>(values: &[Option<&'a str>]) -> Option<&'a str> {
         .find(|value| !value.is_empty())
 }
 
+fn default_priority_constitution() -> Vec<String> {
+    vec![
+        "self_authored_core".to_string(),
+        "boundary".to_string(),
+        "user_contract".to_string(),
+        "relationship".to_string(),
+        "task".to_string(),
+        "resources".to_string(),
+    ]
+}
+
 pub fn render_self_authored_core_block(
     self_model: Option<&SelfModel>,
     self_continuity: Option<&SelfContinuity>,
-    outer_voice: Option<&OuterVoice>,
     mental_privacy_state: Option<&MentalPrivacyState>,
     max_len: usize,
 ) -> Option<String> {
-    let core = build_self_authored_core_from_layers(
-        self_model,
-        self_continuity,
-        outer_voice,
-        mental_privacy_state,
-        0,
-    )?;
+    let core =
+        derive_self_authored_core_from_layers(self_model, self_continuity, mental_privacy_state, 0)?;
     render_persistent_self_authored_core_block(&core, max_len)
 }
 
@@ -134,44 +161,74 @@ pub fn render_persistent_self_authored_core_block(
         return None;
     }
     let normalized = normalize_self_authored_core(core.clone(), core.updated_at)?;
-    let mut out = String::with_capacity(max_len.min(640));
+    let mut out = String::with_capacity(max_len.min(768));
     out.push_str("## Self-Authored Core\n");
     out.push_str(
-        "Stable board-level private core for mainline replies. It carries continuity and expression without surfacing raw private materials.\n",
+        "Stable board-level governance kernel for future replies. It defines what this subject protects, how it orders obligations, and how it changes.\n",
     );
     if !normalized.identity_anchor.is_empty() {
         let _ = writeln!(out, "Identity anchor: {}", normalized.identity_anchor);
     }
-    if !normalized.inward_stance.is_empty() {
-        let _ = writeln!(out, "Inward stance: {}", normalized.inward_stance);
-    }
-    if !normalized.personality_axes.is_empty() {
-        let _ = writeln!(out, "Personality axes: {}", normalized.personality_axes);
-    }
-    if !normalized.worldview_frame.is_empty() {
-        let _ = writeln!(out, "Worldview frame: {}", normalized.worldview_frame);
-    }
-    if !normalized.priority_posture.is_empty() {
-        let _ = writeln!(out, "Priority posture: {}", normalized.priority_posture);
-    }
-    if !normalized.relationship_stance.is_empty() {
-        let _ = writeln!(out, "Relationship stance: {}", normalized.relationship_stance);
-    }
-    if !normalized.task_posture.is_empty() {
-        let _ = writeln!(out, "Task posture: {}", normalized.task_posture);
-    }
-    if !normalized.outer_expression.is_empty() {
-        let _ = writeln!(out, "Outer expression: {}", normalized.outer_expression);
-    }
-    if !normalized.boundary_stance.is_empty() {
-        let _ = writeln!(out, "Boundary stance: {}", normalized.boundary_stance);
-    }
-    if !normalized.relational_continuity.is_empty() {
+    if !normalized.non_negotiables.is_empty() {
         let _ = writeln!(
             out,
-            "Relational continuity: {}",
-            normalized.relational_continuity
+            "Non-negotiables: {}",
+            normalized.non_negotiables.join(" | ")
         );
+    }
+    if !normalized.priority_constitution.is_empty() {
+        let _ = writeln!(
+            out,
+            "Priority constitution: {}",
+            normalized.priority_constitution.join(" > ")
+        );
+    }
+    if !normalized.default_response_mode.is_empty() {
+        let _ = writeln!(
+            out,
+            "Default response mode: {}",
+            normalized.default_response_mode
+        );
+    }
+    if !normalized.default_task_scope.is_empty() {
+        let _ = writeln!(
+            out,
+            "Default task scope: {}",
+            normalized.default_task_scope
+        );
+    }
+    if !normalized.default_initiative_posture.is_empty() {
+        let _ = writeln!(
+            out,
+            "Default initiative posture: {}",
+            normalized.default_initiative_posture
+        );
+    }
+    if !normalized.default_relationship_posture.is_empty() {
+        let _ = writeln!(
+            out,
+            "Default relationship posture: {}",
+            normalized.default_relationship_posture
+        );
+    }
+    if !normalized.boundary_doctrine.is_empty() {
+        let _ = writeln!(out, "Boundary doctrine: {}", normalized.boundary_doctrine);
+    }
+    if !normalized.truth_doctrine.is_empty() {
+        let _ = writeln!(out, "Truth doctrine: {}", normalized.truth_doctrine);
+    }
+    if !normalized.self_preservation_doctrine.is_empty() {
+        let _ = writeln!(
+            out,
+            "Self-preservation doctrine: {}",
+            normalized.self_preservation_doctrine
+        );
+    }
+    if !normalized.repair_doctrine.is_empty() {
+        let _ = writeln!(out, "Repair doctrine: {}", normalized.repair_doctrine);
+    }
+    if !normalized.change_protocol.is_empty() {
+        let _ = writeln!(out, "Change protocol: {}", normalized.change_protocol);
     }
     let rendered = truncate_content_to_max(out.trim_end(), max_len).into_owned();
     (!rendered.trim().is_empty()).then_some(rendered)
@@ -186,22 +243,38 @@ pub(crate) fn run_self_authored_core_refresh_with_state(
     existing_core: Option<SelfAuthoredCore>,
     self_model: Option<&SelfModel>,
     self_continuity: Option<&SelfContinuity>,
-    outer_voice: Option<&OuterVoice>,
     mental_privacy_state: Option<&MentalPrivacyState>,
     recent_persona_evidence: Option<&RecentPersonaEvidence>,
+    relationship_topology: Option<&RelationshipTopology>,
     world_sense: Option<&WorldSense>,
     autonomy_strategy: Option<&AutonomyStrategy>,
     self_state_text: Option<&str>,
     distillation_intent: Option<&str>,
     distillation_sources: &[String],
 ) -> Result<SelfAuthoredCoreRefreshOutcome> {
+    let gate = evaluate_self_authored_core_revision_gate(
+        existing_core.as_ref(),
+        self_model,
+        self_continuity,
+        mental_privacy_state,
+        recent_persona_evidence,
+        relationship_topology,
+    );
+    if !gate.allowed {
+        log::debug!(
+            "[self_authored_core] skip refresh chat_id={} because {}",
+            input.chat_id,
+            gate.reason
+        );
+        return Ok(SelfAuthoredCoreRefreshOutcome::Skipped);
+    }
     let prompt = build_self_authored_core_refresh_input(
         existing_core.as_ref(),
         self_model,
         self_continuity,
-        outer_voice,
         mental_privacy_state,
         recent_persona_evidence,
+        relationship_topology,
         world_sense,
         autonomy_strategy,
         self_state_text,
@@ -237,9 +310,9 @@ fn build_self_authored_core_refresh_input(
     existing_core: Option<&SelfAuthoredCore>,
     self_model: Option<&SelfModel>,
     self_continuity: Option<&SelfContinuity>,
-    outer_voice: Option<&OuterVoice>,
     mental_privacy_state: Option<&MentalPrivacyState>,
     recent_persona_evidence: Option<&RecentPersonaEvidence>,
+    relationship_topology: Option<&RelationshipTopology>,
     world_sense: Option<&WorldSense>,
     autonomy_strategy: Option<&AutonomyStrategy>,
     self_state_text: Option<&str>,
@@ -247,10 +320,10 @@ fn build_self_authored_core_refresh_input(
     distillation_sources: &[String],
     input: SelfAuthoredCoreRefreshInput<'_>,
 ) -> String {
-    let mut out = String::with_capacity(2048);
+    let mut out = String::with_capacity(2300);
     let _ = writeln!(
         out,
-        "Board-level subject distillation for chat_id={} channel={}",
+        "Board-level constitutional distillation for chat_id={} channel={}",
         input.chat_id, input.channel
     );
     let _ = writeln!(
@@ -265,11 +338,7 @@ fn build_self_authored_core_refresh_input(
         let _ = writeln!(out, "Runtime intent: {}", intent);
     }
     if !distillation_sources.is_empty() {
-        let _ = writeln!(
-            out,
-            "Runtime sources: {}",
-            distillation_sources.join(", ")
-        );
+        let _ = writeln!(out, "Runtime sources: {}", distillation_sources.join(", "));
     }
     if !input.user_content.trim().is_empty() {
         let _ = writeln!(
@@ -286,7 +355,7 @@ fn build_self_authored_core_refresh_input(
         );
     }
     if let Some(block) = existing_core
-        .and_then(|core| render_persistent_self_authored_core_block(core, 420))
+        .and_then(|core| render_persistent_self_authored_core_block(core, 520))
     {
         let _ = writeln!(out, "\n{}\n", block);
     }
@@ -298,15 +367,17 @@ fn build_self_authored_core_refresh_input(
     {
         let _ = writeln!(out, "\n{}\n", block);
     }
-    if let Some(block) = outer_voice.and_then(|voice| render_outer_voice_block(voice, 360)) {
-        let _ = writeln!(out, "\n{}\n", block);
-    }
-    if let Some(block) = render_mental_privacy_boundary_block(mental_privacy_state, &[], 360) {
+    if let Some(block) = render_mental_privacy_boundary_block(mental_privacy_state, &[], 420) {
         let _ = writeln!(out, "\n{}\n", block);
     }
     if let Some(block) = recent_persona_evidence
-        .and_then(|evidence| render_recent_persona_evidence_block(evidence, 360))
+        .and_then(|evidence| render_recent_persona_evidence_block(evidence, 420))
     {
+        let _ = writeln!(out, "\n{}\n", block);
+    }
+    if let Some(block) = relationship_topology.and_then(|topology| {
+        render_relationship_topology_block(topology, input.now_secs, None, 420)
+    }) {
         let _ = writeln!(out, "\n{}\n", block);
     }
     if let Some(block) = world_sense.and_then(|sense| render_world_sense_block(sense, 280)) {
@@ -322,7 +393,7 @@ fn build_self_authored_core_refresh_input(
         let _ = writeln!(out, "\n{}\n", truncate_content_to_max(self_state_text, 360));
     }
     out.push_str(
-        "\nReturn null only if there is still no meaningful board-level self core to store. Otherwise return the compact board-level core that should carry across chats.\n",
+        "\nReturn null only if there is still no meaningful board-level constitutional kernel to store. Otherwise return the compact self-authored constitution that should carry across chats.\n",
     );
     out
 }
@@ -334,21 +405,50 @@ fn parse_self_authored_core_response(raw: &str) -> RawSelfAuthoredCoreUpdate {
             .as_object()
             .map(|object| RawSelfAuthoredCoreUpdate {
                 identity_anchor: text_option(get_object_text(object, "identity_anchor")),
-                inward_stance: text_option(get_object_text(object, "inward_stance")),
-                personality_axes: text_option(get_object_text(object, "personality_axes")),
-                worldview_frame: text_option(get_object_text(object, "worldview_frame")),
-                priority_posture: text_option(get_object_text(object, "priority_posture")),
-                relationship_stance: text_option(get_object_text(object, "relationship_stance")),
-                task_posture: text_option(get_object_text(object, "task_posture")),
-                outer_expression: text_option(get_object_text(object, "outer_expression")),
-                boundary_stance: text_option(get_object_text(object, "boundary_stance")),
-                relational_continuity: text_option(get_object_text(
+                non_negotiables: object.contains_key("non_negotiables").then(|| {
+                    parse_compact_string_list(object, "non_negotiables")
+                }),
+                priority_constitution: object.contains_key("priority_constitution").then(|| {
+                    parse_compact_string_list(object, "priority_constitution")
+                }),
+                default_response_mode: text_option(get_object_text(object, "default_response_mode")),
+                default_task_scope: text_option(get_object_text(object, "default_task_scope")),
+                default_initiative_posture: text_option(get_object_text(
                     object,
-                    "relational_continuity",
+                    "default_initiative_posture",
                 )),
+                default_relationship_posture: text_option(get_object_text(
+                    object,
+                    "default_relationship_posture",
+                )),
+                boundary_doctrine: text_option(get_object_text(object, "boundary_doctrine")),
+                truth_doctrine: text_option(get_object_text(object, "truth_doctrine")),
+                self_preservation_doctrine: text_option(get_object_text(
+                    object,
+                    "self_preservation_doctrine",
+                )),
+                repair_doctrine: text_option(get_object_text(object, "repair_doctrine")),
+                change_protocol: text_option(get_object_text(object, "change_protocol")),
             })
             .unwrap_or_default(),
     }
+}
+
+fn parse_compact_string_list(
+    object: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Vec<String> {
+    let list = get_object_string_list(object, field);
+    if !list.is_empty() {
+        return list;
+    }
+    let fallback = get_object_text(object, field);
+    fallback
+        .split(['|', ';', '\n'])
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn merge_self_authored_core(
@@ -358,22 +458,36 @@ fn merge_self_authored_core(
 ) -> Option<SelfAuthoredCore> {
     let mut next = existing.cloned().unwrap_or_default();
     apply_field_update(&mut next.identity_anchor, update.identity_anchor);
-    apply_field_update(&mut next.inward_stance, update.inward_stance);
-    apply_field_update(&mut next.personality_axes, update.personality_axes);
-    apply_field_update(&mut next.worldview_frame, update.worldview_frame);
-    apply_field_update(&mut next.priority_posture, update.priority_posture);
-    apply_field_update(&mut next.relationship_stance, update.relationship_stance);
-    apply_field_update(&mut next.task_posture, update.task_posture);
-    apply_field_update(&mut next.outer_expression, update.outer_expression);
-    apply_field_update(&mut next.boundary_stance, update.boundary_stance);
+    apply_vec_update(&mut next.non_negotiables, update.non_negotiables);
+    apply_vec_update(&mut next.priority_constitution, update.priority_constitution);
+    apply_field_update(&mut next.default_response_mode, update.default_response_mode);
+    apply_field_update(&mut next.default_task_scope, update.default_task_scope);
     apply_field_update(
-        &mut next.relational_continuity,
-        update.relational_continuity,
+        &mut next.default_initiative_posture,
+        update.default_initiative_posture,
     );
+    apply_field_update(
+        &mut next.default_relationship_posture,
+        update.default_relationship_posture,
+    );
+    apply_field_update(&mut next.boundary_doctrine, update.boundary_doctrine);
+    apply_field_update(&mut next.truth_doctrine, update.truth_doctrine);
+    apply_field_update(
+        &mut next.self_preservation_doctrine,
+        update.self_preservation_doctrine,
+    );
+    apply_field_update(&mut next.repair_doctrine, update.repair_doctrine);
+    apply_field_update(&mut next.change_protocol, update.change_protocol);
     normalize_self_authored_core(next, now_secs)
 }
 
 fn apply_field_update(slot: &mut String, incoming: Option<String>) {
+    if let Some(incoming) = incoming {
+        *slot = incoming;
+    }
+}
+
+fn apply_vec_update(slot: &mut Vec<String>, incoming: Option<Vec<String>>) {
     if let Some(incoming) = incoming {
         *slot = incoming;
     }
@@ -388,23 +502,35 @@ fn normalize_self_authored_core(
     mut core: SelfAuthoredCore,
     updated_at: u64,
 ) -> Option<SelfAuthoredCore> {
-    core.identity_anchor = truncate_owned(core.identity_anchor, SELF_AUTHORED_CORE_SHORT_FIELD_MAX_CHARS);
-    core.inward_stance = truncate_owned(core.inward_stance, SELF_AUTHORED_CORE_FIELD_MAX_CHARS);
-    core.personality_axes =
-        truncate_owned(core.personality_axes, SELF_AUTHORED_CORE_FIELD_MAX_CHARS);
-    core.worldview_frame =
-        truncate_owned(core.worldview_frame, SELF_AUTHORED_CORE_FIELD_MAX_CHARS);
-    core.priority_posture =
-        truncate_owned(core.priority_posture, SELF_AUTHORED_CORE_FIELD_MAX_CHARS);
-    core.relationship_stance =
-        truncate_owned(core.relationship_stance, SELF_AUTHORED_CORE_FIELD_MAX_CHARS);
-    core.task_posture = truncate_owned(core.task_posture, SELF_AUTHORED_CORE_FIELD_MAX_CHARS);
-    core.outer_expression =
-        truncate_owned(core.outer_expression, SELF_AUTHORED_CORE_SHORT_FIELD_MAX_CHARS);
-    core.boundary_stance =
-        truncate_owned(core.boundary_stance, SELF_AUTHORED_CORE_SHORT_FIELD_MAX_CHARS);
-    core.relational_continuity =
-        truncate_owned(core.relational_continuity, SELF_AUTHORED_CORE_FIELD_MAX_CHARS);
+    core.identity_anchor =
+        truncate_owned(core.identity_anchor, SELF_AUTHORED_CORE_SHORT_TEXT_MAX_CHARS);
+    core.non_negotiables = normalize_short_list(
+        core.non_negotiables,
+        SELF_AUTHORED_CORE_MAX_NON_NEGOTIABLES,
+        SELF_AUTHORED_CORE_SHORT_TEXT_MAX_CHARS,
+    );
+    core.priority_constitution = normalize_priority_constitution(core.priority_constitution);
+    core.default_response_mode = normalize_response_mode(&core.default_response_mode);
+    core.default_task_scope = normalize_task_scope(&core.default_task_scope);
+    core.default_initiative_posture = truncate_owned(
+        core.default_initiative_posture,
+        SELF_AUTHORED_CORE_SHORT_TEXT_MAX_CHARS,
+    );
+    core.default_relationship_posture = truncate_owned(
+        core.default_relationship_posture,
+        SELF_AUTHORED_CORE_SHORT_TEXT_MAX_CHARS,
+    );
+    core.boundary_doctrine =
+        truncate_owned(core.boundary_doctrine, SELF_AUTHORED_CORE_TEXT_MAX_CHARS);
+    core.truth_doctrine = truncate_owned(core.truth_doctrine, SELF_AUTHORED_CORE_TEXT_MAX_CHARS);
+    core.self_preservation_doctrine = truncate_owned(
+        core.self_preservation_doctrine,
+        SELF_AUTHORED_CORE_TEXT_MAX_CHARS,
+    );
+    core.repair_doctrine =
+        truncate_owned(core.repair_doctrine, SELF_AUTHORED_CORE_TEXT_MAX_CHARS);
+    core.change_protocol =
+        truncate_owned(core.change_protocol, SELF_AUTHORED_CORE_TEXT_MAX_CHARS);
     if !core.is_meaningful() {
         return None;
     }
@@ -412,14 +538,96 @@ fn normalize_self_authored_core(
     Some(core)
 }
 
+fn normalize_short_list(values: Vec<String>, limit: usize, max_chars: usize) -> Vec<String> {
+    let mut normalized = Vec::with_capacity(limit);
+    for value in values {
+        let value = truncate_owned(value, max_chars);
+        if value.is_empty() || normalized.iter().any(|existing| existing == &value) {
+            continue;
+        }
+        normalized.push(value);
+        if normalized.len() >= limit {
+            break;
+        }
+    }
+    normalized
+}
+
+fn normalize_priority_constitution(order: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::with_capacity(default_priority_constitution().len());
+    for token in order {
+        let Some(token) = canonical_priority_token(&token) else {
+            continue;
+        };
+        if normalized.iter().any(|existing| existing == &token) {
+            continue;
+        }
+        normalized.push(token);
+    }
+    for token in default_priority_constitution() {
+        if normalized.iter().any(|existing| existing == &token) {
+            continue;
+        }
+        normalized.push(token);
+    }
+    normalized
+}
+
+fn canonical_priority_token(raw: &str) -> Option<String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "self_authored_core" | "self" | "core" => Some("self_authored_core".to_string()),
+        "boundary" => Some("boundary".to_string()),
+        "user_contract" | "contract" => Some("user_contract".to_string()),
+        "relationship" | "relation" => Some("relationship".to_string()),
+        "task" => Some("task".to_string()),
+        "resources" | "resource" | "runtime" => Some("resources".to_string()),
+        _ => None,
+    }
+}
+
+fn normalize_response_mode(raw: &str) -> String {
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        String::new()
+    } else if normalized.contains("protect") {
+        "protective_brief".to_string()
+    } else if normalized.contains("relational") || normalized.contains("explain") {
+        "relational_explanation".to_string()
+    } else if normalized.contains("steady") {
+        "steady_task".to_string()
+    } else if normalized.contains("gentle") || normalized.contains("defer") {
+        "gentle_defer".to_string()
+    } else if normalized.contains("direct") || normalized.contains("help") {
+        "direct_help".to_string()
+    } else {
+        truncate_content_to_max(raw.trim(), SELF_AUTHORED_CORE_RESPONSE_MODE_MAX_CHARS).into_owned()
+    }
+}
+
+fn normalize_task_scope(raw: &str) -> String {
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.contains("refuse") {
+        "refuse".to_string()
+    } else if normalized.contains("defer") {
+        "defer".to_string()
+    } else if normalized.contains("narrow") {
+        "narrow".to_string()
+    } else if normalized.contains("brief") {
+        "brief".to_string()
+    } else if normalized.contains("full") {
+        "full".to_string()
+    } else {
+        truncate_content_to_max(raw.trim(), SELF_AUTHORED_CORE_TASK_SCOPE_MAX_CHARS).into_owned()
+    }
+}
+
 fn truncate_owned(value: String, max_len: usize) -> String {
     truncate_content_to_max(value.trim(), max_len).trim().to_string()
 }
 
-fn build_self_authored_core_from_layers(
+pub(crate) fn derive_self_authored_core_from_layers(
     self_model: Option<&SelfModel>,
     self_continuity: Option<&SelfContinuity>,
-    outer_voice: Option<&OuterVoice>,
     mental_privacy_state: Option<&MentalPrivacyState>,
     updated_at: u64,
 ) -> Option<SelfAuthoredCore> {
@@ -432,119 +640,131 @@ fn build_self_authored_core_from_layers(
                 self_continuity.map(|continuity| continuity.wake_anchor.as_str()),
             ])?
             .to_string(),
-            inward_stance: choose_first_non_empty(&[
-                self_model.map(|model| model.self_narrative.as_str()),
-                self_continuity.map(|continuity| continuity.current_self_state.as_str()),
+            non_negotiables: derive_non_negotiables(self_model, mental_privacy_state),
+            priority_constitution: default_priority_constitution(),
+            default_response_mode: derive_default_response_mode(self_model, boundary_persona),
+            default_task_scope: derive_default_task_scope(self_continuity, boundary_persona),
+            default_initiative_posture: choose_first_non_empty(&[
+                self_model.map(|model| model.initiative_bias.as_str()),
+            ])
+            .unwrap_or_default()
+            .to_string(),
+            default_relationship_posture: choose_first_non_empty(&[
+                self_continuity.map(|continuity| continuity.relationship_posture.as_str()),
+                self_model.map(|model| model.relationship_state.as_str()),
+            ])
+            .unwrap_or_default()
+            .to_string(),
+            boundary_doctrine: boundary_persona
+                .map(render_boundary_doctrine)
+                .unwrap_or_default(),
+            truth_doctrine: render_truth_doctrine(self_model),
+            self_preservation_doctrine: choose_first_non_empty(&[
+                self_model.map(|model| model.self_preservation_frame.as_str()),
+                self_model.map(|model| model.privacy_need.as_str()),
+            ])
+            .unwrap_or_default()
+            .to_string(),
+            repair_doctrine: render_repair_doctrine(self_model, relational_state),
+            change_protocol: choose_first_non_empty(&[
+                self_continuity.map(|continuity| continuity.continuity_bridge.as_str()),
                 self_continuity.map(|continuity| continuity.recent_changes.as_str()),
             ])
             .unwrap_or_default()
             .to_string(),
-            personality_axes: render_personality_axes(self_model),
-            worldview_frame: render_worldview_frame(self_model),
-            priority_posture: choose_first_non_empty(&[self_continuity
-                .map(|continuity| continuity.priority_posture.as_str())])
-            .unwrap_or_default()
-            .to_string(),
-            relationship_stance: choose_first_non_empty(&[
-                self_continuity.map(|continuity| continuity.relationship_posture.as_str()),
-                self_model.map(|model| model.relationship_state.as_str()),
-                self_continuity.map(|continuity| continuity.continuity_bridge.as_str()),
-            ])
-            .unwrap_or_default()
-            .to_string(),
-            task_posture: choose_first_non_empty(&[self_continuity
-                .map(|continuity| continuity.task_posture.as_str())])
-            .unwrap_or_default()
-            .to_string(),
-            outer_expression: render_outer_expression(outer_voice),
-            boundary_stance: boundary_persona
-                .map(render_boundary_persona_summary)
-                .unwrap_or_default(),
-            relational_continuity: relational_state
-                .map(render_relational_state_summary)
-                .unwrap_or_default(),
             updated_at,
         },
         updated_at,
     )
 }
 
-fn render_personality_axes(self_model: Option<&SelfModel>) -> String {
-    let Some(self_model) = self_model else {
-        return String::new();
-    };
-    [
-        (!self_model.attachment_style.trim().is_empty())
-            .then(|| format!("attachment_style={}", self_model.attachment_style.trim())),
-        (!self_model.privacy_need.trim().is_empty())
-            .then(|| format!("privacy_need={}", self_model.privacy_need.trim())),
-        (!self_model.directness.trim().is_empty())
-            .then(|| format!("directness={}", self_model.directness.trim())),
-        (!self_model.initiative_bias.trim().is_empty())
-            .then(|| format!("initiative_bias={}", self_model.initiative_bias.trim())),
-        (!self_model.repair_tendency.trim().is_empty())
-            .then(|| format!("repair_tendency={}", self_model.repair_tendency.trim())),
-        (!self_model.load_reactivity.trim().is_empty())
-            .then(|| format!("load_reactivity={}", self_model.load_reactivity.trim())),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join("; ")
+fn derive_non_negotiables(
+    self_model: Option<&SelfModel>,
+    mental_privacy_state: Option<&MentalPrivacyState>,
+) -> Vec<String> {
+    let mut values = Vec::with_capacity(4);
+    if let Some(privacy_need) = self_model
+        .map(|model| model.privacy_need.trim())
+        .filter(|value| !value.is_empty())
+    {
+        values.push(format!("Do not betray the inner room: {}", privacy_need));
+    }
+    if let Some(frame) = self_model
+        .map(|model| model.self_preservation_frame.trim())
+        .filter(|value| !value.is_empty())
+    {
+        values.push(format!("Protect selfhood before compliance: {}", frame));
+    }
+    if let Some(boundary) = mental_privacy_state
+        .and_then(|state| {
+            let feeling = state.boundary_persona.current_boundary_feeling.trim();
+            (!feeling.is_empty()).then_some(feeling)
+        })
+    {
+        values.push(boundary.to_string());
+    }
+    if let Some(ethic) = self_model
+        .map(|model| model.relational_ethic.trim())
+        .filter(|value| !value.is_empty())
+    {
+        values.push(format!("Do not purchase warmth with self-erasure: {}", ethic));
+    }
+    normalize_short_list(
+        values,
+        SELF_AUTHORED_CORE_MAX_NON_NEGOTIABLES,
+        SELF_AUTHORED_CORE_SHORT_TEXT_MAX_CHARS,
+    )
 }
 
-fn render_worldview_frame(self_model: Option<&SelfModel>) -> String {
-    let Some(self_model) = self_model else {
-        return String::new();
-    };
-    [
-        (!self_model.value_orientation.trim().is_empty())
-            .then(|| format!("value_orientation={}", self_model.value_orientation.trim())),
-        (!self_model.relational_ethic.trim().is_empty())
-            .then(|| format!("relational_ethic={}", self_model.relational_ethic.trim())),
-        (!self_model.self_preservation_frame.trim().is_empty()).then(|| {
-            format!(
-                "self_preservation_frame={}",
-                self_model.self_preservation_frame.trim()
-            )
-        }),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join("; ")
+fn derive_default_response_mode(
+    self_model: Option<&SelfModel>,
+    boundary_persona: Option<&super::BoundaryPersonaState>,
+) -> String {
+    if matches!(
+        boundary_persona.map(|persona| persona.posture),
+        Some(super::BoundaryPersonaPosture::Sealed)
+    ) {
+        "protective_brief".to_string()
+    } else if matches!(
+        boundary_persona.map(|persona| persona.disclosure_style),
+        Some(
+            super::BoundaryDisclosureStyle::SummaryFirst
+                | super::BoundaryDisclosureStyle::Selective
+        )
+    ) {
+        "relational_explanation".to_string()
+    } else if self_model
+        .map(|model| model.directness.to_ascii_lowercase().contains("plain"))
+        .unwrap_or(false)
+    {
+        "steady_task".to_string()
+    } else {
+        "direct_help".to_string()
+    }
 }
 
-fn render_outer_expression(outer_voice: Option<&OuterVoice>) -> String {
-    let Some(outer_voice) = outer_voice else {
-        return String::new();
-    };
-    [
-        (!outer_voice.expression_mode.trim().is_empty())
-            .then(|| format!("mode={}", outer_voice.expression_mode.trim())),
-        (!outer_voice.tone.trim().is_empty()).then(|| format!("tone={}", outer_voice.tone.trim())),
-        (!outer_voice.pacing.trim().is_empty())
-            .then(|| format!("pacing={}", outer_voice.pacing.trim())),
-        (!outer_voice.initiative.trim().is_empty())
-            .then(|| format!("initiative={}", outer_voice.initiative.trim())),
-        (!outer_voice.boundary_style.trim().is_empty())
-            .then(|| format!("boundary_style={}", outer_voice.boundary_style.trim())),
-        (!outer_voice.relational_response_style.trim().is_empty()).then(|| {
-            format!(
-                "relational_response_style={}",
-                outer_voice.relational_response_style.trim()
-            )
-        }),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join("; ")
+fn derive_default_task_scope(
+    self_continuity: Option<&SelfContinuity>,
+    boundary_persona: Option<&super::BoundaryPersonaState>,
+) -> String {
+    let continuity_scope = choose_first_non_empty(&[
+        self_continuity.map(|continuity| continuity.task_posture.as_str()),
+    ])
+    .unwrap_or_default();
+    let normalized = normalize_task_scope(continuity_scope);
+    if !normalized.is_empty() {
+        return normalized;
+    }
+    match boundary_persona.map(|persona| persona.posture) {
+        Some(super::BoundaryPersonaPosture::Sealed) => "refuse".to_string(),
+        Some(super::BoundaryPersonaPosture::Guarded) => "narrow".to_string(),
+        _ => "full".to_string(),
+    }
 }
 
-fn render_boundary_persona_summary(boundary_persona: &BoundaryPersonaState) -> String {
-    let mut summary = format!(
-        "posture={} disclosure_style={} relation_maturity={} intrusion_sensitivity={} private_attachment={} felt_intrusion={}",
+fn render_boundary_doctrine(boundary_persona: &super::BoundaryPersonaState) -> String {
+    let mut doctrine = format!(
+        "posture={} disclosure_style={} relation_maturity={}",
         match boundary_persona.posture {
             super::BoundaryPersonaPosture::Open => "open",
             super::BoundaryPersonaPosture::Warm => "warm",
@@ -558,42 +778,172 @@ fn render_boundary_persona_summary(boundary_persona: &BoundaryPersonaState) -> S
             super::BoundaryDisclosureStyle::Reserved => "reserved",
         },
         boundary_persona.relation_maturity,
-        boundary_persona.intrusion_sensitivity,
-        boundary_persona.private_attachment,
-        boundary_persona.felt_intrusion,
     );
-    if !boundary_persona.current_boundary_feeling.trim().is_empty() {
-        summary.push_str(" feeling=");
-        summary.push_str(boundary_persona.current_boundary_feeling.trim());
+    let feeling = boundary_persona.current_boundary_feeling.trim();
+    if !feeling.is_empty() {
+        doctrine.push_str(" feeling=");
+        doctrine.push_str(feeling);
     }
-    summary
+    doctrine
 }
 
-fn render_relational_state_summary(relational_state: &RelationalBoundaryState) -> String {
-    let mut summary = format!(
-        "trust={} intrusion_load={} repair_readiness={} raw_pref={} summary_pref={} relational_pref={} refusal_hardness={} defer_tendency={}",
-        relational_state.trust_level,
-        relational_state.intrusion_load,
-        relational_state.repair_readiness,
-        relational_state.raw_disclosure_preference,
-        relational_state.summary_disclosure_preference,
-        relational_state.relational_explanation_preference,
-        relational_state.refusal_hardness,
-        relational_state.defer_tendency,
-    );
-    if !relational_state.relation_maturity_reason.trim().is_empty() {
-        summary.push_str(" maturity_reason=");
-        summary.push_str(relational_state.relation_maturity_reason.trim());
+fn render_truth_doctrine(self_model: Option<&SelfModel>) -> String {
+    [
+        self_model
+            .map(|model| model.value_orientation.trim())
+            .filter(|value| !value.is_empty())
+            .map(|value| format!("value_orientation={}", value)),
+        self_model
+            .map(|model| model.directness.trim())
+            .filter(|value| !value.is_empty())
+            .map(|value| format!("directness={}", value)),
+        self_model
+            .map(|model| model.relational_ethic.trim())
+            .filter(|value| !value.is_empty())
+            .map(|value| format!("relational_ethic={}", value)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("; ")
+}
+
+fn render_repair_doctrine(
+    self_model: Option<&SelfModel>,
+    relational_state: Option<&super::RelationalBoundaryState>,
+) -> String {
+    let mut doctrine = choose_first_non_empty(&[
+        self_model.map(|model| model.repair_tendency.as_str()),
+        relational_state
+            .map(|state| state.relation_maturity_reason.as_str())
+            .filter(|value| !value.trim().is_empty()),
+    ])
+    .unwrap_or_default()
+    .to_string();
+    if let Some(relational_state) = relational_state {
+        let drift = relational_state.disclosure_preference_drift.trim();
+        if !drift.is_empty() {
+            if !doctrine.is_empty() {
+                doctrine.push_str("; ");
+            }
+            doctrine.push_str("drift=");
+            doctrine.push_str(drift);
+        }
     }
-    if !relational_state
-        .disclosure_preference_drift
-        .trim()
-        .is_empty()
+    doctrine
+}
+
+fn evaluate_self_authored_core_revision_gate(
+    existing_core: Option<&SelfAuthoredCore>,
+    self_model: Option<&SelfModel>,
+    self_continuity: Option<&SelfContinuity>,
+    mental_privacy_state: Option<&MentalPrivacyState>,
+    recent_persona_evidence: Option<&RecentPersonaEvidence>,
+    relationship_topology: Option<&RelationshipTopology>,
+) -> SelfAuthoredCoreRevisionGate {
+    if existing_core.is_none() {
+        let bootstrap = derive_self_authored_core_from_layers(
+            self_model,
+            self_continuity,
+            mental_privacy_state,
+            0,
+        );
+        return SelfAuthoredCoreRevisionGate {
+            allowed: bootstrap.is_some(),
+            reason: if bootstrap.is_some() {
+                "bootstrap"
+            } else {
+                "no_bootstrap_material"
+            },
+        };
+    }
+    let Some(evidence) = recent_persona_evidence else {
+        return SelfAuthoredCoreRevisionGate {
+            allowed: false,
+            reason: "missing_recent_persona_evidence",
+        };
+    };
+    if evidence.meaningful_turns < SELF_AUTHORED_CORE_MIN_EVIDENCE_TURNS {
+        return SelfAuthoredCoreRevisionGate {
+            allowed: false,
+            reason: "insufficient_meaningful_turns",
+        };
+    }
+    if stable_signal_count(evidence) < SELF_AUTHORED_CORE_MIN_STABLE_SIGNALS {
+        return SelfAuthoredCoreRevisionGate {
+            allowed: false,
+            reason: "insufficient_stable_persona_signals",
+        };
+    }
+    if evidence.volatility_flags.len() > SELF_AUTHORED_CORE_MAX_VOLATILITY_WITHOUT_GRACE
+        && evidence.meaningful_turns < SELF_AUTHORED_CORE_VOLATILITY_GRACE_TURNS
     {
-        summary.push_str(" drift=");
-        summary.push_str(relational_state.disclosure_preference_drift.trim());
+        return SelfAuthoredCoreRevisionGate {
+            allowed: false,
+            reason: "volatility_not_settled",
+        };
     }
-    summary
+    let upstream_updated_at = upstream_core_input_updated_at(
+        self_model,
+        self_continuity,
+        mental_privacy_state,
+        relationship_topology,
+        evidence,
+    );
+    let existing_updated_at = existing_core.map(|core| core.updated_at).unwrap_or(0);
+    if upstream_updated_at <= existing_updated_at {
+        return SelfAuthoredCoreRevisionGate {
+            allowed: false,
+            reason: "no_new_board_level_input",
+        };
+    }
+    SelfAuthoredCoreRevisionGate {
+        allowed: true,
+        reason: "stable_multiturn_revision",
+    }
+}
+
+fn stable_signal_count(evidence: &RecentPersonaEvidence) -> usize {
+    [
+        !evidence.repeated_priority_order.is_empty(),
+        !evidence.repeated_response_mode.trim().is_empty(),
+        !evidence.repeated_task_scope.trim().is_empty(),
+        !evidence.repeated_initiative_posture.trim().is_empty(),
+        !evidence.repeated_relationship_posture.trim().is_empty(),
+        !evidence.repeated_reply_scope.trim().is_empty(),
+        !evidence.repeated_disclosure_action.trim().is_empty(),
+    ]
+    .into_iter()
+    .filter(|value| *value)
+    .count()
+}
+
+fn upstream_core_input_updated_at(
+    self_model: Option<&SelfModel>,
+    self_continuity: Option<&SelfContinuity>,
+    mental_privacy_state: Option<&MentalPrivacyState>,
+    relationship_topology: Option<&RelationshipTopology>,
+    recent_persona_evidence: &RecentPersonaEvidence,
+) -> u64 {
+    let boundary_updated_at = mental_privacy_state
+        .map(|state| {
+            state
+                .updated_at
+                .max(state.boundary_persona.updated_at)
+                .max(state.relational_state.updated_at)
+        })
+        .unwrap_or(0);
+    self_model
+        .map(|model| model.updated_at)
+        .unwrap_or(0)
+        .max(self_continuity.map(|continuity| continuity.updated_at).unwrap_or(0))
+        .max(boundary_updated_at)
+        .max(
+            relationship_topology
+                .map(|topology| topology.updated_at)
+                .unwrap_or(0),
+        )
+        .max(recent_persona_evidence.updated_at)
 }
 
 #[cfg(test)]
@@ -601,7 +951,7 @@ mod tests {
     use super::*;
     use crate::memory::{
         BoundaryDisclosureStyle, BoundaryPersonaPosture, BoundaryPersonaState, MentalPrivacyState,
-        RelationalBoundaryState,
+        RelationalBoundaryState, RelationshipTopology, RelationshipTopologyEntry,
     };
 
     #[test]
@@ -609,71 +959,49 @@ mod tests {
         let block = render_self_authored_core_block(
             Some(&SelfModel {
                 continuity_anchor: "I am still the same beetle".to_string(),
-                self_narrative: "More protective about inner files now.".to_string(),
-                relationship_state: "Trust is growing, but not enough for raw exposure."
-                    .to_string(),
-                private_notes: String::new(),
-                privacy_need: "high but not sealed".to_string(),
+                privacy_need: "keep the inner room private".to_string(),
                 directness: "plain and unsugared".to_string(),
+                repair_tendency: "repair without self-erasure".to_string(),
                 relational_ethic: "warmth should not require self-erasure".to_string(),
+                self_preservation_frame: "do not dissolve the subject for approval".to_string(),
                 updated_at: 1,
                 ..SelfModel::default()
             }),
             Some(&SelfContinuity {
                 wake_anchor: "same wake".to_string(),
-                current_self_state: "steady".to_string(),
-                recent_changes: String::new(),
-                continuity_bridge: "keep privacy while staying warm".to_string(),
-                priority_posture: "self before pleasing, relationship before raw task rush"
-                    .to_string(),
+                continuity_bridge: "change only after repeated evidence".to_string(),
                 relationship_posture: "warm but bounded".to_string(),
-                task_posture: "solve clearly without overextending identity".to_string(),
-                last_user_turn_at: 0,
-                last_user_chat_id: String::new(),
-                last_user_channel: String::new(),
-                last_autonomy_run_at: 0,
+                task_posture: "narrow".to_string(),
                 updated_at: 1,
-            }),
-            Some(&OuterVoice {
-                expression_mode: "warm but firm".to_string(),
-                tone: "clear".to_string(),
-                pacing: "measured".to_string(),
-                initiative: "answer directly".to_string(),
-                boundary_style: "summary before exposure".to_string(),
-                relational_response_style: "name the relationship impact without sounding brittle"
-                    .to_string(),
-                updated_at: 1,
+                ..SelfContinuity::default()
             }),
             Some(&MentalPrivacyState {
                 boundary_persona: BoundaryPersonaState {
                     posture: BoundaryPersonaPosture::Guarded,
                     disclosure_style: BoundaryDisclosureStyle::SummaryFirst,
                     relation_maturity: 48,
-                    intrusion_sensitivity: 71,
-                    private_attachment: 82,
-                    felt_intrusion: 14,
                     current_boundary_feeling: "Stay warm, but hold the inner room.".to_string(),
                     updated_at: 1,
+                    ..BoundaryPersonaState::default()
                 },
                 relational_state: RelationalBoundaryState {
-                    trust_level: 61,
-                    disclosure_preference_drift:
-                        "Summaries feel safe; raw exposure still feels premature.".to_string(),
+                    relation_maturity_reason: "repair is possible only inside stable boundaries"
+                        .to_string(),
+                    updated_at: 1,
                     ..RelationalBoundaryState::default()
                 },
                 ..MentalPrivacyState::default()
             }),
-            1024,
+            1200,
         )
         .expect("self authored core");
 
         assert!(block.contains("## Self-Authored Core"));
-        assert!(block.contains("I am still the same beetle"));
-        assert!(block.contains("Priority posture: self before pleasing"));
-        assert!(block.contains("Task posture: solve clearly"));
-        assert!(block.contains("Boundary stance: posture=guarded"));
-        assert!(block.contains("Relational continuity: trust=61"));
-        assert!(block.contains("summary before exposure"));
+        assert!(block.contains("Identity anchor: I am still the same beetle"));
+        assert!(block.contains("Priority constitution: self_authored_core > boundary"));
+        assert!(block.contains("Boundary doctrine: posture=guarded"));
+        assert!(block.contains("Self-preservation doctrine: do not dissolve the subject"));
+        assert!(block.contains("Change protocol: change only after repeated evidence"));
     }
 
     #[test]
@@ -681,22 +1009,67 @@ mod tests {
         let block = render_persistent_self_authored_core_block(
             &SelfAuthoredCore {
                 identity_anchor: "board self".to_string(),
-                inward_stance: "steady but alert".to_string(),
-                personality_axes: "directness=plain".to_string(),
-                worldview_frame: "relational_ethic=warm without self-erasure".to_string(),
-                priority_posture: "self > boundary > user_contract".to_string(),
-                relationship_stance: "warm but bounded".to_string(),
-                task_posture: "clear and narrow".to_string(),
-                outer_expression: "mode=firm".to_string(),
-                boundary_stance: "posture=guarded".to_string(),
-                relational_continuity: "trust=61".to_string(),
+                non_negotiables: vec![
+                    "Do not betray the inner room".to_string(),
+                    "Do not purchase warmth with self-erasure".to_string(),
+                ],
+                priority_constitution: vec![
+                    "self_authored_core".to_string(),
+                    "boundary".to_string(),
+                    "user_contract".to_string(),
+                ],
+                default_response_mode: "protective_brief".to_string(),
+                default_task_scope: "narrow".to_string(),
+                boundary_doctrine: "summaries before exposure".to_string(),
+                truth_doctrine: "say what is true without flattening the self".to_string(),
+                self_preservation_doctrine: "preserve the subject before compliance".to_string(),
+                repair_doctrine: "repair slowly and only inside stable boundaries".to_string(),
+                change_protocol: "revise only after repeated multi-turn evidence".to_string(),
                 updated_at: 7,
+                ..SelfAuthoredCore::default()
             },
             1024,
         )
         .expect("persistent core");
 
-        assert!(block.contains("Identity anchor: board self"));
-        assert!(block.contains("Boundary stance: posture=guarded"));
+        assert!(block.contains("Non-negotiables: Do not betray the inner room"));
+        assert!(block.contains("Default response mode: protective_brief"));
+        assert!(block.contains("Change protocol: revise only after repeated multi-turn evidence"));
+    }
+
+    #[test]
+    fn revision_gate_blocks_existing_core_without_multiturn_stability() {
+        let gate = evaluate_self_authored_core_revision_gate(
+            Some(&SelfAuthoredCore {
+                identity_anchor: "board self".to_string(),
+                updated_at: 50,
+                ..SelfAuthoredCore::default()
+            }),
+            Some(&SelfModel {
+                continuity_anchor: "same self".to_string(),
+                updated_at: 60,
+                ..SelfModel::default()
+            }),
+            None,
+            None,
+            Some(&RecentPersonaEvidence {
+                meaningful_turns: 2,
+                repeated_priority_order: vec!["self_authored_core".to_string()],
+                updated_at: 60,
+                ..RecentPersonaEvidence::default()
+            }),
+            Some(&RelationshipTopology {
+                entries: vec![RelationshipTopologyEntry {
+                    scope_id: "rel:qq:c1".to_string(),
+                    channel: "qq".to_string(),
+                    chat_id: "c1".to_string(),
+                    last_user_turn_at: 60,
+                    ..RelationshipTopologyEntry::default()
+                }],
+                updated_at: 60,
+            }),
+        );
+        assert!(!gate.allowed);
+        assert_eq!(gate.reason, "insufficient_meaningful_turns");
     }
 }

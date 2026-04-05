@@ -226,7 +226,9 @@ pub use relationship_topology::{
     RelationshipTopologyStore, RelationshipTopologyUpsertInput,
     REL_PATH_RELATIONSHIP_TOPOLOGIES,
 };
-pub(crate) use self_authored_core::run_self_authored_core_refresh_with_state;
+pub(crate) use self_authored_core::{
+    derive_self_authored_core_from_layers, run_self_authored_core_refresh_with_state,
+};
 pub use self_authored_core::{
     render_persistent_self_authored_core_block, render_self_authored_core_block,
     SelfAuthoredCore, SelfAuthoredCoreRefreshContext, SelfAuthoredCoreRefreshInput,

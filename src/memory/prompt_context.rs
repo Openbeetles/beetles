@@ -6,7 +6,7 @@ use crate::task::TaskStore;
 
 use super::{
     board_subject_scope_id, build_archive_evidence_block, build_self_state, build_world_snapshot,
-    collect_private_targets, memory_capability_profile, memory_policy,
+    collect_private_targets, derive_self_authored_core_from_layers, memory_capability_profile, memory_policy,
     parse_explicit_long_term_slot_query, recall_long_term_memory_block, relationship_scope_id,
     render_autonomy_strategy_block, render_exact_long_term_memory_block,
     render_execution_state_block, render_inner_life_block, render_mental_privacy_boundary_block,
@@ -31,6 +31,7 @@ pub struct PromptMemoryContext {
     pub world_snapshot_text: Option<String>,
     pub world_sense_text: Option<String>,
     pub self_state_text: Option<String>,
+    pub self_authored_core: Option<super::SelfAuthoredCore>,
     pub self_authored_core_text: Option<String>,
     pub persona_priority_text: Option<String>,
     pub self_continuity: Option<super::SelfContinuity>,
@@ -228,14 +229,21 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         &mental_privacy_targets,
         420,
     );
-    let self_authored_core_text = persistent_self_authored_core
+    let self_authored_core = persistent_self_authored_core.or_else(|| {
+        derive_self_authored_core_from_layers(
+            self_model.as_ref(),
+            self_continuity.as_ref(),
+            mental_privacy_state.as_ref(),
+            0,
+        )
+    });
+    let self_authored_core_text = self_authored_core
         .as_ref()
         .and_then(|core| render_persistent_self_authored_core_block(core, 420))
         .or_else(|| {
             render_self_authored_core_block(
                 self_model.as_ref(),
                 self_continuity.as_ref(),
-                outer_voice.as_ref(),
                 mental_privacy_state.as_ref(),
                 420,
             )
@@ -353,6 +361,7 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         world_snapshot_text,
         world_sense_text,
         self_state_text,
+        self_authored_core,
         self_authored_core_text,
         persona_priority_text: None,
         self_continuity,
@@ -1558,7 +1567,7 @@ mod tests {
         let self_authored_core_store = StubSelfAuthoredCoreStore {
             core: Mutex::new(Some(SelfAuthoredCore {
                 identity_anchor: "persistent board self".to_string(),
-                inward_stance: "stable persistent stance".to_string(),
+                self_preservation_doctrine: "stable persistent stance".to_string(),
                 updated_at: 8,
                 ..SelfAuthoredCore::default()
             })),

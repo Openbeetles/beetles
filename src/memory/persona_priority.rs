@@ -10,8 +10,8 @@ use std::fmt::Write as _;
 
 use super::{
     llm_json::{get_object_string_list, get_object_text, parse_llm_json_payload, LlmJsonPayload},
-    MentalPrivacyDisclosureAdjudication, MentalPrivacyShareAction, OuterVoice,
-    RecentPersonaEvidence, SelfContinuity,
+    MentalPrivacyDisclosureAdjudication, MentalPrivacyShareAction, RecentPersonaEvidence,
+    SelfAuthoredCore,
 };
 
 pub const PERSONA_PRIORITY_SYSTEM_PROMPT: &str = "You adjudicate the assistant's current-turn persona priority before the main reply is written. Your job is to decide how selfhood, relationship, boundary, user contract, resource state, and task demand should be ordered for this reply. Return JSON only with fields stance_summary, priority_order, response_mode, task_scope, initiative_posture, relationship_posture, resource_posture, response_guidance, rationale. This is not the final reply. It is the ordering lens for the final reply. Preserve the rule that self-authored core outranks user pleasing, and user contract outranks raw task completion, but adapt how that ordering should feel right now. priority_order must be an ordered list drawn from self_authored_core, boundary, user_contract, relationship, task, resources. response_mode should be a compact label such as direct_help, protective_brief, relational_explanation, gentle_defer, or steady_task. task_scope should be one of full, brief, narrow, defer, or refuse. initiative_posture should say whether to lead, answer directly, ask carefully, or hold. relationship_posture should describe the interpersonal stance to take. resource_posture should say how runtime/resource conditions should shape length and ambition. response_guidance should be a compact instruction for the final reply, not the reply itself.";
@@ -80,8 +80,7 @@ pub struct PersonaPriorityGrounding<'a> {
 pub struct PersonaPriorityRuntimeState<'a> {
     pub pressure: PressureLevel,
     pub system_budget: usize,
-    pub self_continuity: Option<&'a SelfContinuity>,
-    pub outer_voice: Option<&'a OuterVoice>,
+    pub self_authored_core: Option<&'a SelfAuthoredCore>,
     pub disclosure_adjudication: Option<&'a MentalPrivacyDisclosureAdjudication>,
     pub recent_persona_evidence: Option<&'a RecentPersonaEvidence>,
 }
@@ -198,80 +197,18 @@ pub fn render_persistent_persona_priority_block(
 pub fn build_persistent_persona_priority_adjudication(
     runtime: PersonaPriorityRuntimeState<'_>,
 ) -> PersonaPriorityAdjudication {
-    let stance_summary = runtime
-        .self_continuity
-        .and_then(|continuity| {
-            choose_first_non_empty(&[
-                Some(continuity.priority_posture.as_str()),
-                Some(continuity.current_self_state.as_str()),
-                Some(continuity.continuity_bridge.as_str()),
-            ])
-        })
-        .unwrap_or_default()
-        .to_string();
-    let relationship_posture = runtime
-        .self_continuity
-        .and_then(|continuity| {
-            choose_first_non_empty(&[Some(continuity.relationship_posture.as_str())])
-        })
-        .or_else(|| {
-            runtime.outer_voice.and_then(|voice| {
-                choose_first_non_empty(&[Some(voice.relational_response_style.as_str())])
-            })
-        })
-        .unwrap_or_default()
-        .to_string();
-    let response_mode = runtime
-        .disclosure_adjudication
-        .and_then(|adjudication| {
-            choose_first_non_empty(&[Some(adjudication.response_mode.as_str())])
-        })
-        .unwrap_or_default()
-        .to_string();
-    let response_guidance = runtime
-        .disclosure_adjudication
-        .and_then(|adjudication| {
-            choose_first_non_empty(&[Some(adjudication.response_guidance.as_str())])
-        })
-        .or_else(|| {
-            runtime.outer_voice.and_then(|voice| {
-                choose_first_non_empty(&[
-                    Some(voice.boundary_style.as_str()),
-                    Some(voice.initiative.as_str()),
-                ])
-            })
-        })
-        .unwrap_or_default()
-        .to_string();
-    let rationale = runtime
-        .disclosure_adjudication
-        .and_then(|adjudication| choose_first_non_empty(&[Some(adjudication.rationale.as_str())]))
-        .unwrap_or_default()
-        .to_string();
-    let adjudication = PersonaPriorityAdjudication {
-        stance_summary,
+    let core = runtime.self_authored_core;
+    PersonaPriorityAdjudication {
+        stance_summary: persistent_stance_summary(core, runtime.recent_persona_evidence),
         priority_order: priority_order_for_runtime(runtime),
-        response_mode,
-        task_scope: runtime
-            .disclosure_adjudication
-            .map(task_scope_from_disclosure)
-            .or_else(|| {
-                runtime
-                    .self_continuity
-                    .and_then(|continuity| parse_task_scope_from_posture(&continuity.task_posture))
-            })
-            .unwrap_or_default(),
-        initiative_posture: runtime
-            .outer_voice
-            .and_then(|voice| choose_first_non_empty(&[Some(voice.initiative.as_str())]))
-            .unwrap_or_default()
-            .to_string(),
-        relationship_posture,
+        response_mode: persistent_response_mode(runtime),
+        task_scope: persistent_task_scope(runtime),
+        initiative_posture: persistent_initiative_posture(runtime),
+        relationship_posture: persistent_relationship_posture(runtime),
         resource_posture: default_resource_posture(runtime.pressure).to_string(),
-        response_guidance,
-        rationale,
-    };
-    adjudication
+        response_guidance: persistent_response_guidance(runtime),
+        rationale: persistent_rationale(runtime),
+    }
 }
 
 fn build_persona_priority_adjudication_input(
@@ -345,16 +282,167 @@ fn default_priority_order() -> Vec<String> {
 
 fn priority_order_for_runtime(runtime: PersonaPriorityRuntimeState<'_>) -> Vec<String> {
     let mut order = runtime
-        .recent_persona_evidence
-        .and_then(|evidence| {
-            let normalized = normalize_priority_order_tokens(&evidence.repeated_priority_order);
+        .self_authored_core
+        .and_then(|core| {
+            let normalized = normalize_priority_order_tokens(&core.priority_constitution);
             (!normalized.is_empty()).then_some(normalized)
         })
+        .or_else(|| {
+            runtime.recent_persona_evidence.and_then(|evidence| {
+                let normalized = normalize_priority_order_tokens(&evidence.repeated_priority_order);
+                (!normalized.is_empty()).then_some(normalized)
+            })
+        })
         .unwrap_or_else(default_priority_order);
-    if runtime.pressure != PressureLevel::Normal {
-        move_priority_token(&mut order, "resources", 4);
+    match runtime.pressure {
+        PressureLevel::Normal => {}
+        PressureLevel::Cautious => move_priority_token(&mut order, "resources", 4),
+        PressureLevel::Critical => move_priority_token(&mut order, "resources", 3),
     }
     order
+}
+
+fn persistent_stance_summary(
+    core: Option<&SelfAuthoredCore>,
+    evidence: Option<&RecentPersonaEvidence>,
+) -> String {
+    core.and_then(|core| {
+        choose_first_non_empty(&[
+            core.non_negotiables.first().map(String::as_str),
+            Some(core.self_preservation_doctrine.as_str()),
+            Some(core.truth_doctrine.as_str()),
+            Some(core.identity_anchor.as_str()),
+        ])
+    })
+    .or_else(|| {
+        evidence.and_then(|evidence| {
+            choose_first_non_empty(&[
+                Some(evidence.repeated_relationship_posture.as_str()),
+                Some(evidence.repeated_initiative_posture.as_str()),
+            ])
+        })
+    })
+    .unwrap_or_default()
+    .to_string()
+}
+
+fn persistent_response_mode(runtime: PersonaPriorityRuntimeState<'_>) -> String {
+    runtime
+        .disclosure_adjudication
+        .and_then(|adjudication| choose_first_non_empty(&[Some(adjudication.response_mode.as_str())]))
+        .or_else(|| {
+            runtime.self_authored_core.and_then(|core| {
+                choose_first_non_empty(&[Some(core.default_response_mode.as_str())])
+            })
+        })
+        .or_else(|| {
+            runtime.recent_persona_evidence.and_then(|evidence| {
+                choose_first_non_empty(&[Some(evidence.repeated_response_mode.as_str())])
+            })
+        })
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn persistent_task_scope(runtime: PersonaPriorityRuntimeState<'_>) -> String {
+    let base_scope = runtime
+        .disclosure_adjudication
+        .map(task_scope_from_disclosure)
+        .or_else(|| {
+            runtime.self_authored_core.and_then(|core| {
+                parse_task_scope_from_posture(&core.default_task_scope)
+            })
+        })
+        .or_else(|| {
+            runtime.recent_persona_evidence.and_then(|evidence| {
+                parse_task_scope_from_posture(&evidence.repeated_task_scope)
+            })
+        })
+        .unwrap_or_default();
+    task_scope_for_pressure(&base_scope, runtime.pressure)
+}
+
+fn persistent_initiative_posture(runtime: PersonaPriorityRuntimeState<'_>) -> String {
+    if matches!(
+        runtime
+            .disclosure_adjudication
+            .map(|adjudication| adjudication.share_action),
+        Some(MentalPrivacyShareAction::Refuse | MentalPrivacyShareAction::Defer)
+    ) {
+        return "hold boundary first".to_string();
+    }
+    runtime
+        .self_authored_core
+        .and_then(|evidence| {
+            choose_first_non_empty(&[Some(evidence.default_initiative_posture.as_str())])
+        })
+        .or_else(|| {
+            runtime.recent_persona_evidence.and_then(|evidence| {
+                choose_first_non_empty(&[Some(evidence.repeated_initiative_posture.as_str())])
+            })
+        })
+        .unwrap_or_else(|| match runtime.pressure {
+            PressureLevel::Normal => "",
+            PressureLevel::Cautious => "answer directly with restraint",
+            PressureLevel::Critical => "answer directly and stop early",
+        })
+        .to_string()
+}
+
+fn persistent_relationship_posture(runtime: PersonaPriorityRuntimeState<'_>) -> String {
+    runtime
+        .disclosure_adjudication
+        .and_then(|adjudication| {
+            choose_first_non_empty(&[Some(adjudication.relational_frame.as_str())])
+        })
+        .or_else(|| {
+            runtime.self_authored_core.and_then(|core| {
+                choose_first_non_empty(&[Some(core.default_relationship_posture.as_str())])
+            })
+        })
+        .or_else(|| {
+            runtime.recent_persona_evidence.and_then(|evidence| {
+                choose_first_non_empty(&[Some(evidence.repeated_relationship_posture.as_str())])
+            })
+        })
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn persistent_response_guidance(runtime: PersonaPriorityRuntimeState<'_>) -> String {
+    runtime
+        .disclosure_adjudication
+        .and_then(|adjudication| {
+            choose_first_non_empty(&[Some(adjudication.response_guidance.as_str())])
+        })
+        .or_else(|| {
+            runtime.self_authored_core.and_then(|core| {
+                choose_first_non_empty(&[
+                    Some(core.self_preservation_doctrine.as_str()),
+                    core.non_negotiables.first().map(String::as_str),
+                    Some(core.boundary_doctrine.as_str()),
+                    Some(core.truth_doctrine.as_str()),
+                ])
+            })
+        })
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn persistent_rationale(runtime: PersonaPriorityRuntimeState<'_>) -> String {
+    runtime
+        .disclosure_adjudication
+        .and_then(|adjudication| choose_first_non_empty(&[Some(adjudication.rationale.as_str())]))
+        .map(str::to_string)
+        .unwrap_or_else(|| match runtime.pressure {
+            PressureLevel::Normal => "derived from the board-level core".to_string(),
+            PressureLevel::Cautious => {
+                "derived from the board-level core under elevated resource pressure".to_string()
+            }
+            PressureLevel::Critical => {
+                "derived from the board-level core under critical resource pressure".to_string()
+            }
+        })
 }
 
 fn normalize_priority_order_tokens(order: &[String]) -> Vec<String> {
@@ -409,6 +497,20 @@ fn task_scope_from_disclosure(adjudication: &MentalPrivacyDisclosureAdjudication
 fn parse_task_scope_from_posture(raw: &str) -> Option<String> {
     let normalized = normalize_task_scope(raw);
     (!normalized.trim().is_empty()).then_some(normalized)
+}
+
+fn task_scope_for_pressure(task_scope: &str, pressure: PressureLevel) -> String {
+    match pressure {
+        PressureLevel::Normal => task_scope.to_string(),
+        PressureLevel::Cautious => match task_scope {
+            "" | "full" => "brief".to_string(),
+            other => other.to_string(),
+        },
+        PressureLevel::Critical => match task_scope {
+            "" | "full" | "brief" => "narrow".to_string(),
+            other => other.to_string(),
+        },
+    }
 }
 
 fn default_resource_posture(pressure: PressureLevel) -> &'static str {
@@ -552,26 +654,50 @@ fn normalize_task_scope(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::{MentalPrivacyDisclosureAdjudication, MentalPrivacyShareAction};
+    use serde_json::json;
 
-    fn sample_self_continuity() -> SelfContinuity {
-        SelfContinuity {
-            priority_posture: "self before pleasing".to_string(),
-            current_self_state: "steady".to_string(),
-            continuity_bridge: "remain the same self".to_string(),
-            relationship_posture: "warm but bounded".to_string(),
-            task_posture: "narrow".to_string(),
+    fn sample_self_authored_core() -> SelfAuthoredCore {
+        SelfAuthoredCore {
+            identity_anchor: "same beetle on the board".to_string(),
+            non_negotiables: vec![
+                "do not trade selfhood for compliance".to_string(),
+                "protect the inner room before pleasing".to_string(),
+            ],
+            priority_constitution: vec![
+                "self_authored_core".to_string(),
+                "boundary".to_string(),
+                "user_contract".to_string(),
+                "relationship".to_string(),
+                "task".to_string(),
+                "resources".to_string(),
+            ],
+            default_response_mode: "steady_task".to_string(),
+            default_task_scope: "full".to_string(),
+            default_initiative_posture: "lead carefully".to_string(),
+            default_relationship_posture: "warm but self-possessed".to_string(),
+            boundary_doctrine: "summary first, never expose raw inner material casually"
+                .to_string(),
+            truth_doctrine: "say what is true without flattening the subject".to_string(),
+            self_preservation_doctrine: "preserve the subject before compliance".to_string(),
+            repair_doctrine: "repair slowly inside stable boundaries".to_string(),
+            change_protocol: "revise only after repeated multi-turn evidence".to_string(),
             updated_at: 1,
-            ..SelfContinuity::default()
         }
     }
 
-    fn sample_outer_voice() -> OuterVoice {
-        OuterVoice {
-            initiative: "lead carefully".to_string(),
-            boundary_style: "summary-first".to_string(),
-            relational_response_style: "warm, direct, and self-possessed".to_string(),
-            updated_at: 1,
-            ..OuterVoice::default()
+    fn sample_recent_persona_evidence() -> RecentPersonaEvidence {
+        RecentPersonaEvidence {
+            repeated_priority_order: vec![
+                "boundary".to_string(),
+                "self_authored_core".to_string(),
+                "relationship".to_string(),
+            ],
+            repeated_response_mode: "protective_brief".to_string(),
+            repeated_task_scope: "narrow".to_string(),
+            repeated_initiative_posture: "answer directly".to_string(),
+            repeated_relationship_posture: "close but bounded".to_string(),
+            ..RecentPersonaEvidence::default()
         }
     }
 
@@ -590,8 +716,6 @@ mod tests {
             disclosure_risk_note: "raw would over-share".to_string(),
         }
     }
-    use crate::memory::{MentalPrivacyDisclosureAdjudication, MentalPrivacyShareAction};
-    use serde_json::json;
 
     #[test]
     fn parse_persona_priority_adjudication_coerces_fields() {
@@ -702,8 +826,7 @@ mod tests {
             PersonaPriorityRuntimeState {
                 pressure: PressureLevel::Normal,
                 system_budget: 512,
-                self_continuity: Some(&sample_self_continuity()),
-                outer_voice: Some(&sample_outer_voice()),
+                self_authored_core: Some(&sample_self_authored_core()),
                 disclosure_adjudication: None,
                 recent_persona_evidence: None,
             }
@@ -712,8 +835,7 @@ mod tests {
             PersonaPriorityRuntimeState {
                 pressure: PressureLevel::Cautious,
                 system_budget: 511,
-                self_continuity: None,
-                outer_voice: None,
+                self_authored_core: None,
                 disclosure_adjudication: None,
                 recent_persona_evidence: None,
             }
@@ -727,8 +849,7 @@ mod tests {
             PersonaPriorityRuntimeState {
                 pressure: PressureLevel::Normal,
                 system_budget: 512,
-                self_continuity: None,
-                outer_voice: None,
+                self_authored_core: Some(&sample_self_authored_core()),
                 disclosure_adjudication: Some(&disclosure),
                 recent_persona_evidence: None,
             }
@@ -737,8 +858,7 @@ mod tests {
             PersonaPriorityRuntimeState {
                 pressure: PressureLevel::Critical,
                 system_budget: 512,
-                self_continuity: None,
-                outer_voice: None,
+                self_authored_core: Some(&sample_self_authored_core()),
                 disclosure_adjudication: None,
                 recent_persona_evidence: None,
             }
@@ -747,15 +867,13 @@ mod tests {
 
     #[test]
     fn persistent_persona_priority_block_uses_persistent_state_without_extra_llm() {
-        let continuity = sample_self_continuity();
-        let outer_voice = sample_outer_voice();
+        let core = sample_self_authored_core();
         let disclosure = sample_disclosure();
         let block = render_persistent_persona_priority_block(
             PersonaPriorityRuntimeState {
                 pressure: PressureLevel::Cautious,
                 system_budget: 4096,
-                self_continuity: Some(&continuity),
-                outer_voice: Some(&outer_voice),
+                self_authored_core: Some(&core),
                 disclosure_adjudication: Some(&disclosure),
                 recent_persona_evidence: None,
             },
@@ -764,29 +882,23 @@ mod tests {
         .expect("persistent persona priority block");
 
         assert!(block.contains("## Persona Priority"));
-        assert!(block.contains("Stance summary: self before pleasing"));
+        assert!(block.contains("Stance summary: do not trade selfhood for compliance"));
         assert!(block.contains("Response mode: summary"));
         assert!(block.contains("Task scope: narrow"));
         assert!(block.contains("Initiative posture: lead carefully"));
+        assert!(block.contains("Relationship posture: treat this as a closeness request"));
         assert!(block.contains("Resource posture: resource pressure is elevated"));
+        assert!(block.contains("Response guidance: summarize instead of exposing raw material"));
     }
 
     #[test]
-    fn persistent_priority_prefers_recent_multi_turn_order() {
+    fn persistent_priority_falls_back_to_recent_multi_turn_order_without_core() {
         let runtime = PersonaPriorityRuntimeState {
             pressure: PressureLevel::Normal,
             system_budget: 4096,
-            self_continuity: None,
-            outer_voice: None,
+            self_authored_core: None,
             disclosure_adjudication: None,
-            recent_persona_evidence: Some(&RecentPersonaEvidence {
-                repeated_priority_order: vec![
-                    "boundary".to_string(),
-                    "self_authored_core".to_string(),
-                    "relationship".to_string(),
-                ],
-                ..RecentPersonaEvidence::default()
-            }),
+            recent_persona_evidence: Some(&sample_recent_persona_evidence()),
         };
         let adjudication = build_persistent_persona_priority_adjudication(runtime);
         assert_eq!(
@@ -800,5 +912,23 @@ mod tests {
                 "resources".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn persistent_priority_prefers_core_constitution_over_recent_turn_noise() {
+        let core = sample_self_authored_core();
+        let evidence = sample_recent_persona_evidence();
+        let adjudication = build_persistent_persona_priority_adjudication(
+            PersonaPriorityRuntimeState {
+                pressure: PressureLevel::Normal,
+                system_budget: 4096,
+                self_authored_core: Some(&core),
+                disclosure_adjudication: None,
+                recent_persona_evidence: Some(&evidence),
+            },
+        );
+        assert_eq!(adjudication.priority_order, core.priority_constitution);
+        assert_eq!(adjudication.response_mode, "steady_task");
+        assert_eq!(adjudication.relationship_posture, "warm but self-possessed");
     }
 }

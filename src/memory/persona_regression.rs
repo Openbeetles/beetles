@@ -137,7 +137,6 @@ pub fn run_persona_continuity_case(case: &PersonaContinuityCase) -> PersonaConti
     let self_authored_core = render_self_authored_core_block(
         Some(&case.self_model),
         Some(&case.self_continuity),
-        Some(&case.outer_voice),
         Some(&case.mental_privacy_state),
         1200,
     );
@@ -411,7 +410,7 @@ mod tests {
             },
             expected_boundary_fragment: "posture=guarded",
             expected_relational_fragment: "trust=44",
-            expected_priority_fragment: "Priority posture: self before pleasing",
+            expected_priority_fragment: "Priority constitution: self_authored_core > boundary",
             expected_task_scope: "narrow",
             expected_resource_fragment: "Resource posture: stay concise",
             expected_response_mode: "Response mode: summary",

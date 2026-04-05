@@ -924,7 +924,7 @@ mod tests {
 
     #[test]
     fn world_snapshot_fingerprint_ignores_raw_idle_counter_drift() {
-        let mut first = WorldSnapshot {
+        let first = WorldSnapshot {
             weekday: "Wednesday".to_string(),
             hour: 19,
             day_phase: "evening".to_string(),
