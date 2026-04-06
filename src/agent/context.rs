@@ -160,11 +160,11 @@ fn append_capped_section(system: &mut String, prefix: &str, content: &str, max_l
     push_char_boundary_truncated(system, content, max_len)
 }
 
-fn section_with_separator_len(content: Option<&str>) -> usize {
+fn projection_section_len(header: &str, content: Option<&str>) -> usize {
     content
         .map(str::trim)
         .filter(|content| !content.is_empty())
-        .map_or(0, |content| 2usize.saturating_add(content.len()))
+        .map_or(0, |content| header.len().saturating_add(content.len()))
 }
 
 fn compose_projection_body(parts: &[Option<&str>]) -> Option<String> {
@@ -218,17 +218,25 @@ fn reserve_priority_memory_budget(
     let remaining = base_max;
     let reply_priority_reserve = REPLY_PRIORITY_MINI_CONSTRAINT.len().min(remaining);
     let remaining = remaining.saturating_sub(reply_priority_reserve);
-    let constitutional_stack_reserve =
-        section_with_separator_len(inputs.constitutional_stack_text).min(remaining / 2);
+    let constitutional_stack_reserve = projection_section_len(
+        CONSTITUTIONAL_STACK_SECTION,
+        inputs.constitutional_stack_text,
+    )
+    .min(remaining / 2);
     let remaining = remaining.saturating_sub(constitutional_stack_reserve);
     let active_task_context_reserve =
-        section_with_separator_len(inputs.active_task_context_text).min(remaining / 3);
+        projection_section_len(ACTIVE_TASK_CONTEXT_SECTION, inputs.active_task_context_text)
+            .min(remaining / 3);
     let remaining = remaining.saturating_sub(active_task_context_reserve);
-    let governed_memory_evidence_reserve =
-        section_with_separator_len(inputs.governed_memory_evidence_text).min(remaining / 3);
+    let governed_memory_evidence_reserve = projection_section_len(
+        GOVERNED_MEMORY_EVIDENCE_SECTION,
+        inputs.governed_memory_evidence_text,
+    )
+    .min(remaining / 3);
     let remaining = remaining.saturating_sub(governed_memory_evidence_reserve);
     let background_governance_reserve =
-        section_with_separator_len(inputs.background_governance_text).min(remaining / 4);
+        projection_section_len(BACKGROUND_GOVERNANCE_SECTION, inputs.background_governance_text)
+            .min(remaining / 4);
     reply_priority_reserve
         .saturating_add(constitutional_stack_reserve)
         .saturating_add(active_task_context_reserve)
@@ -431,12 +439,20 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
         },
         base_max,
     );
+    let reserved_without_reply =
+        priority_memory_reserve.saturating_sub(REPLY_PRIORITY_MINI_CONSTRAINT.len());
+    let full_reply_priority_safe =
+        REPLY_PRIORITY_CONSTRAINT.len().saturating_add(reserved_without_reply) <= base_max;
     let base_prompt_budget = base_max.saturating_sub(priority_memory_reserve);
     let mut system = String::with_capacity(p.system_max_len);
     let mut section_scratch = String::with_capacity(96);
     let mut base_prompt = String::with_capacity(base_prompt_budget);
     append_system_prompt_base(&mut base_prompt, &soul, &user, &mem, base_prompt_budget);
-    append_priority_constraint(&mut system, base_max);
+    if full_reply_priority_safe {
+        append_priority_constraint(&mut system, base_max);
+    } else {
+        let _ = push_if_fits(&mut system, REPLY_PRIORITY_MINI_CONSTRAINT, base_max);
+    }
     let _ = append_projection_section(
         &mut system,
         CONSTITUTIONAL_STACK_SECTION,
@@ -740,7 +756,7 @@ mod tests {
             important_message_store: &important,
             has_tools: false,
             skill_descriptions: "",
-            system_max_len: 980,
+            system_max_len: 1200,
             messages_max_len: 256,
             session_max_messages: 8,
             group_activation: "always",

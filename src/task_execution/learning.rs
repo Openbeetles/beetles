@@ -577,8 +577,9 @@ pub fn build_task_recall_bundle(
     ));
     for hit in hits {
         let line = format!(
-            "- [{} / {}] {} (why: {}; route={})",
+            "- [{} / {} / {}] {} (why: {}; route={})",
             hit.record.kind.label(),
+            hit.record.topic,
             hit.record.run_id,
             truncate_content_to_max(hit.record.summary.trim(), 120),
             truncate_content_to_max(&hit.reasons.join(", "), 120),

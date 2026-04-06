@@ -597,7 +597,7 @@ mod tests {
 
         upsert_runtime_skill(
             &skill_storage,
-            RuntimeSkillWrite {
+            &RuntimeSkillWrite {
                 name: "runtime_skill__network_setup".to_string(),
                 topic: "network setup".to_string(),
                 title: "Network setup checklist".to_string(),

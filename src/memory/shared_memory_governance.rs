@@ -379,7 +379,7 @@ mod tests {
         assert_eq!(outcome.rejected, 1);
         assert_eq!(
             outcome.reports[0].reason,
-            SharedMemoryWriteReason::RoutedToSkill
+            SharedMemoryWriteReason::StructuredMaterial
         );
     }
 
@@ -413,6 +413,9 @@ mod tests {
         };
         let mut incoming = draft("Owner timezone is UTC+8.");
         incoming.confidence = Some(LongTermMemoryConfidence::Medium);
+        incoming.observed_at = Some(30);
+        incoming.last_confirmed_at = Some(30);
+        incoming.source_revision = Some(6);
         let outcome = write_governed_shared_memory(
             &store,
             &[incoming],

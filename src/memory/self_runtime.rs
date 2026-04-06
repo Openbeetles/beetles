@@ -2743,6 +2743,7 @@ fn default_factual_refresh_intent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::llm::parse_self_runtime_decision;
     use serde_json::json;
 
     fn sample_self_state() -> SelfState {

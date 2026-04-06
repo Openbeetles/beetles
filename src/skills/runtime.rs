@@ -913,7 +913,11 @@ pub(crate) fn score_runtime_skill_record_breakdown(
     let mut lexical_score = 0u32;
     let mut exact_match_score = 0u32;
     let mut reasons = Vec::new();
-    if normalized_query == normalized_topic {
+    if normalized_query == normalized_topic
+        || (!normalized_topic.is_empty()
+            && (normalized_query.contains(&normalized_topic)
+                || normalized_topic.contains(normalized_query)))
+    {
         exact_match_score = exact_match_score.saturating_add(14);
         reasons.push("exact topic overlap".to_string());
     }

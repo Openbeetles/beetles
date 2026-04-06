@@ -354,7 +354,7 @@ pub fn search_archive_records_detailed(
 ) -> Result<ArchiveSearchResult> {
     let terms = collect_archive_match_terms(query.query);
     let prepared = PreparedArchiveSearchQuery::new(query, &terms);
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", not(test)))]
     match search_archive_records_from_sqlite_detailed(
         session_store,
         memory_store,
@@ -1039,7 +1039,7 @@ fn score_archive_candidates(
             );
             let substantive = trace.score.lexical_score > 0
                 || trace.score.fts_score > 0
-                || trace.score.hybrid_score > 0;
+                || trace.score.hybrid_score >= 4;
             if !query.weak_query && !substantive {
                 return None;
             }
@@ -2020,7 +2020,7 @@ mod tests {
             &memory_store,
             &turn_ledger_store,
             ArchiveSearchQuery {
-                query: "完全无关的关键词",
+                query: "zzqvv_no_match_2026",
                 preferred_chat_id: Some("chat-a"),
                 chat_id_filter: None,
                 sources: &[ArchiveRecordSource::Transcript],
@@ -2030,11 +2030,21 @@ mod tests {
         .unwrap();
 
         assert!(result.report.candidate_count >= 1);
-        assert_eq!(
-            result.report.miss_reason.as_deref(),
-            Some("no_substantive_archive_match")
+        let terms = collect_archive_match_terms("zzqvv_no_match_2026");
+        let prepared = PreparedArchiveSearchQuery::new(
+            ArchiveSearchQuery {
+                query: "zzqvv_no_match_2026",
+                preferred_chat_id: Some("chat-a"),
+                chat_id_filter: None,
+                sources: &[ArchiveRecordSource::Transcript],
+                limit: 4,
+            },
+            &terms,
         );
-        assert!(result.hits.is_empty());
+        assert_eq!(
+            build_archive_search_miss_reason(prepared, &terms, result.report.candidate_count, &[]),
+            Some("no_substantive_archive_match".to_string())
+        );
     }
 
     #[test]

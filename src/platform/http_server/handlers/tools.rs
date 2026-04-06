@@ -40,9 +40,10 @@ mod tests {
 
     #[test]
     fn tools_api_uses_registry_order() {
+        let config = AppConfig::load_from_env();
         let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
         let (registry, _) = crate::tools::build_default_registry(
-            &AppConfig::load_from_env(),
+            &config,
             crate::tools::DefaultRegistryDeps {
                 platform: Arc::clone(&platform),
                 remind_at_store: platform.remind_at_store(),
@@ -54,6 +55,8 @@ mod tests {
                 config_store: platform.config_store(),
             },
         );
+        let channel_capability_registry =
+            Arc::new(crate::build_channel_capability_registry(&config, false));
         let ctx = crate::platform::http_server::handlers::HandlerContext {
             config_store: platform.config_store(),
             config_file_store: Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(
@@ -65,15 +68,18 @@ mod tests {
             skill_storage: platform.skill_storage(),
             skill_meta_store: platform.skill_meta_store(),
             tool_registry: Arc::new(registry),
-            channel_capability_registry: Arc::new(crate::build_channel_capability_registry(
-                &AppConfig::load_from_env(),
-                false,
-            )),
+            channel_capability_registry: Arc::clone(&channel_capability_registry),
+            capability_package_runtime_capabilities: Arc::new(
+                crate::build_capability_package_runtime_capabilities(
+                    channel_capability_registry.as_ref(),
+                    false,
+                ),
+            ),
             inbound_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             outbound_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             version: Arc::from("0.0.0"),
             board_id: Arc::from("test"),
-            cached_config: Arc::new(std::sync::RwLock::new(AppConfig::load_from_env())),
+            cached_config: Arc::new(std::sync::RwLock::new(config)),
             llm_stream_enabled: false,
         };
         let payload = serde_json::to_string(&tool_infos(&ctx)).unwrap();
@@ -90,9 +96,10 @@ mod tests {
 
     #[test]
     fn tools_api_uses_compact_translation_keys() {
+        let config = AppConfig::load_from_env();
         let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
         let (registry, _) = crate::tools::build_default_registry(
-            &AppConfig::load_from_env(),
+            &config,
             crate::tools::DefaultRegistryDeps {
                 platform: Arc::clone(&platform),
                 remind_at_store: platform.remind_at_store(),
@@ -104,6 +111,8 @@ mod tests {
                 config_store: platform.config_store(),
             },
         );
+        let channel_capability_registry =
+            Arc::new(crate::build_channel_capability_registry(&config, false));
         let ctx = crate::platform::http_server::handlers::HandlerContext {
             config_store: platform.config_store(),
             config_file_store: Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(
@@ -115,15 +124,18 @@ mod tests {
             skill_storage: platform.skill_storage(),
             skill_meta_store: platform.skill_meta_store(),
             tool_registry: Arc::new(registry),
-            channel_capability_registry: Arc::new(crate::build_channel_capability_registry(
-                &AppConfig::load_from_env(),
-                false,
-            )),
+            channel_capability_registry: Arc::clone(&channel_capability_registry),
+            capability_package_runtime_capabilities: Arc::new(
+                crate::build_capability_package_runtime_capabilities(
+                    channel_capability_registry.as_ref(),
+                    false,
+                ),
+            ),
             inbound_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             outbound_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             version: Arc::from("0.0.0"),
             board_id: Arc::from("test"),
-            cached_config: Arc::new(std::sync::RwLock::new(AppConfig::load_from_env())),
+            cached_config: Arc::new(std::sync::RwLock::new(config)),
             llm_stream_enabled: false,
         };
         let tools = tool_infos(&ctx);

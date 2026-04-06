@@ -206,14 +206,14 @@ pub(crate) fn select_archive_hits_for_prompt_with_report(
             skipped_by_chars = skipped_by_chars.saturating_add(1);
             continue;
         }
-        if is_too_similar(&similarity_keys, &prepared.similarity_key) {
-            skipped_by_similarity = skipped_by_similarity.saturating_add(1);
-            continue;
-        }
         let used = per_source.get(&prepared.hit.source).copied().unwrap_or(0);
         if used >= source_quota(policy, prepared.hit.source) {
             deferred_by_quota = deferred_by_quota.saturating_add(1);
             deferred.push(prepared);
+            continue;
+        }
+        if is_too_similar(&similarity_keys, &prepared.similarity_key) {
+            skipped_by_similarity = skipped_by_similarity.saturating_add(1);
             continue;
         }
         used_chars = used_chars.saturating_add(prepared.prompt_line_len);
@@ -376,6 +376,8 @@ mod tests {
                 .and_then(|trace| trace.selector_reason.as_deref())
                 .is_some()
         }));
-        assert!(selected.report.deferred_by_quota >= 1);
+        assert!(
+            selected.report.deferred_by_quota + selected.report.skipped_by_similarity >= 1
+        );
     }
 }

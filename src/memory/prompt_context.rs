@@ -165,6 +165,8 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
     let subject_id = board_subject_scope_id();
     let relationship_id = relationship_scope_id(params.current_channel, params.chat_id);
     let recall_policy = memory_policy(params.profile).long_term_recall;
+    let governed_memory_enabled =
+        params.load_long_term_memory && params.system_max_len >= recall_policy.block_min_len;
     let recent_message_limit = params
         .recent_messages_limit
         .max(if params.load_long_term_memory {
@@ -407,10 +409,9 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         ),
         memory_policy(params.profile).self_state.render_max_len,
     );
-    let long_term_memory_text =
-        if !params.load_long_term_memory || params.system_max_len < recall_policy.block_min_len {
-            None
-        } else {
+    let long_term_memory_text = if !governed_memory_enabled {
+        None
+    } else {
             let grounding_start = recent_messages
                 .len()
                 .saturating_sub(recall_policy.recent_grounding_message_count);
@@ -447,7 +448,7 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
                 )
             }
         };
-    let archive_evidence_text = if !params.load_long_term_memory {
+    let archive_evidence_text = if !governed_memory_enabled {
         None
     } else {
         build_archive_evidence_block(
@@ -460,7 +461,7 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
             params.profile,
         )
     };
-    let shared_factual_recall_report = if params.load_long_term_memory {
+    let shared_factual_recall_report = if governed_memory_enabled {
         super::inspect_shared_factual_recall(
             params.long_term_memory_store,
             params.chat_id,
@@ -482,12 +483,16 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
             candidate_count: 0,
             selected_count: 0,
             selected_ids: Vec::new(),
-            miss_reason: Some("long_term_recall_disabled".to_string()),
+            miss_reason: Some(if params.load_long_term_memory {
+                "system_budget_below_block_threshold".to_string()
+            } else {
+                "long_term_recall_disabled".to_string()
+            }),
             selection_note: None,
             candidates: Vec::new(),
         }
     };
-    let archive_recall_report = if params.load_long_term_memory {
+    let archive_recall_report = if governed_memory_enabled {
         super::inspect_archive_recall(
             params.session_store,
             params.memory_store,
@@ -510,7 +515,11 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
             candidate_count: 0,
             selected_count: 0,
             selected_ids: Vec::new(),
-            miss_reason: Some("archive_recall_disabled".to_string()),
+            miss_reason: Some(if params.load_long_term_memory {
+                "system_budget_below_block_threshold".to_string()
+            } else {
+                "archive_recall_disabled".to_string()
+            }),
             selection_note: None,
             candidates: Vec::new(),
         }
@@ -540,22 +549,45 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         };
         combined.trim().to_string()
     };
-    let runtime_skill_text = crate::skills::build_runtime_skill_recall_block(
-        params.skill_storage,
-        &runtime_skill_query,
-        Some(params.chat_id),
-        params.now_secs,
-        params.system_max_len.min(420),
-    );
-    let runtime_skill_recall_report = super::inspect_runtime_skill_recall(
-        params.skill_storage,
-        &runtime_skill_query,
-        Some(params.chat_id),
-        summary_text.as_deref(),
-        &recent_messages,
-        params.now_secs,
-        params.system_max_len.min(420),
-    );
+    let runtime_skill_text = governed_memory_enabled.then(|| {
+        crate::skills::build_runtime_skill_recall_block(
+            params.skill_storage,
+            &runtime_skill_query,
+            Some(params.chat_id),
+            params.now_secs,
+            params.system_max_len.min(420),
+        )
+    }).flatten();
+    let runtime_skill_recall_report = if governed_memory_enabled {
+        super::inspect_runtime_skill_recall(
+            params.skill_storage,
+            &runtime_skill_query,
+            Some(params.chat_id),
+            summary_text.as_deref(),
+            &recent_messages,
+            params.now_secs,
+            params.system_max_len.min(420),
+        )
+    } else {
+        super::RecallSelectionReport {
+            plane: super::RecallPlane::RuntimeSkill,
+            query: super::RecallQuery {
+                plane: super::RecallPlane::RuntimeSkill,
+                ..super::RecallQuery::default()
+            },
+            backend: "runtime_skill_hybrid".to_string(),
+            candidate_count: 0,
+            selected_count: 0,
+            selected_ids: Vec::new(),
+            miss_reason: Some(if params.load_long_term_memory {
+                "system_budget_below_block_threshold".to_string()
+            } else {
+                "runtime_skill_recall_disabled".to_string()
+            }),
+            selection_note: None,
+            candidates: Vec::new(),
+        }
+    };
     let message_summary_text = if execution_state_text.is_some() {
         None
     } else {
@@ -1412,7 +1444,14 @@ mod tests {
                 ..SelfModel::default()
             })),
         };
-        let self_authored_core_store = StubSelfAuthoredCoreStore::default();
+        let self_authored_core_store = StubSelfAuthoredCoreStore {
+            core: Mutex::new(Some(SelfAuthoredCore {
+                identity_anchor: "我还是同一个 beetle".to_string(),
+                boundary_doctrine: "先守住内在边界，再决定分享范围".to_string(),
+                updated_at: 7,
+                ..SelfAuthoredCore::default()
+            })),
+        };
         let relationship_constitution_store = StubRelationshipConstitutionStore::default();
         let relationship_portfolio_store = StubRelationshipPortfolioStore {
             value: Mutex::new(Some(crate::memory::RelationshipPortfolio {

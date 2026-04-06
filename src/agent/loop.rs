@@ -3817,6 +3817,10 @@ mod tests {
     }
 
     fn test_agent_loop_config() -> AgentLoopConfig {
+        let mut config = crate::AppConfig::load_from_env();
+        config.enabled_channel = crate::CHANNEL_QQ_CHANNEL.to_string();
+        config.qq_channel_app_id = "qq-app".to_string();
+        config.qq_channel_secret = "qq-secret".to_string();
         AgentLoopConfig {
             memory_store: Arc::new(EmptyMemoryStore),
             long_term_memory_store: Arc::new(StubLongTermMemoryStore),
@@ -3857,7 +3861,7 @@ mod tests {
             task_learning_store: Arc::new(StubTaskLearningStore),
             pending_retry: Arc::new(StubPendingRetryStore),
             channel_capability_registry: Arc::new(crate::build_channel_capability_registry(
-                &crate::AppConfig::load_from_env(),
+                &config,
                 false,
             )),
             strategy: AgentRunStrategy::Embedded,
@@ -4205,6 +4209,7 @@ mod tests {
             },
         };
         let mut http = DummyPlatformHttp;
+        let config = test_agent_loop_config();
         let mut tool_ctx = HttpClientToolContext {
             http: &mut http,
             chat_id: Some(Arc::from("chat-1")),
