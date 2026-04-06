@@ -16,6 +16,7 @@ mod core_revision_ledger;
 mod execution_state;
 mod hygiene;
 mod inner_life;
+#[cfg(test)]
 mod internal_memory_routing;
 mod internal_memory_topology;
 mod llm_json;
@@ -125,7 +126,7 @@ pub use inner_life::{
     InnerLifeRefreshInput, InnerLifeRefreshOutcome, INNER_LIFE_SYSTEM_PROMPT,
     INNER_LIFE_TOTAL_CHAR_LIMIT,
 };
-pub(crate) use internal_memory_routing::run_internal_memory_routing_with_state;
+#[cfg(test)]
 pub use internal_memory_routing::{
     InternalMemoryRoutingDecision, InternalMemoryRoutingInput,
     INTERNAL_MEMORY_ROUTING_SYSTEM_PROMPT,
@@ -220,14 +221,12 @@ pub use personality_closure::{
     PersonalityGovernanceInspectionInput,
 };
 pub(crate) use private_docs::estimate_private_doc_workspace_chars;
+pub(crate) use private_docs::run_private_doc_workspace_refresh_with_state;
 pub use private_docs::{
     render_private_doc_workspace_block, run_private_doc_workspace_refresh, PrivateDocEntry,
     PrivateDocWorkspace, PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
     PrivateDocWorkspaceRefreshOutcome, PRIVATE_DOC_WORKSPACE_SYSTEM_PROMPT,
     PRIVATE_DOC_WORKSPACE_TOTAL_CHAR_LIMIT,
-};
-pub(crate) use private_docs::{
-    run_private_doc_workspace_refresh_with_state, should_refresh_private_doc_workspace,
 };
 pub(crate) use private_garden::build_private_garden_preview;
 pub use private_garden::{
@@ -238,12 +237,10 @@ pub use private_garden::{
     PRIVATE_GARDEN_MAX_DOCS_PER_CHAT, PRIVATE_GARDEN_MAX_DOC_BYTES,
     PRIVATE_GARDEN_TOTAL_BYTE_LIMIT,
 };
+pub(crate) use private_garden_governance::run_private_garden_governance_with_state;
 pub use private_garden_governance::{
     run_private_garden_governance, PrivateGardenGovernanceContext, PrivateGardenGovernanceInput,
     PrivateGardenGovernanceOutcome, PRIVATE_GARDEN_GOVERNANCE_SYSTEM_PROMPT,
-};
-pub(crate) use private_garden_governance::{
-    run_private_garden_governance_with_state, should_refresh_private_garden,
 };
 pub(crate) use profile::{
     memory_capability_profile, memory_policy, shared_long_term_governance_policy,
@@ -298,9 +295,7 @@ pub use relationship_topology::{
     RelationshipTopology, RelationshipTopologyEntry, RelationshipTopologyRefreshOutcome,
     RelationshipTopologyStore, RelationshipTopologyUpsertInput, REL_PATH_RELATIONSHIP_TOPOLOGIES,
 };
-pub(crate) use self_authored_core::{
-    derive_self_authored_core_from_layers, run_self_authored_core_refresh_with_state,
-};
+pub(crate) use self_authored_core::run_self_authored_core_refresh_with_state;
 pub use self_authored_core::{
     render_persistent_self_authored_core_block, render_self_authored_core_block, SelfAuthoredCore,
     SelfAuthoredCoreRefreshContext, SelfAuthoredCoreRefreshInput, SelfAuthoredCoreRefreshOutcome,
@@ -314,12 +309,12 @@ pub use self_continuity::{
     SelfContinuityRefreshOutcome, SELF_CONTINUITY_SYSTEM_PROMPT, SELF_CONTINUITY_TOTAL_CHAR_LIMIT,
 };
 pub(crate) use self_model::estimate_self_model_chars;
+pub(crate) use self_model::run_self_model_refresh_with_state;
 pub use self_model::{
     render_self_model_block, run_self_model_refresh, SelfModel, SelfModelRefreshContext,
     SelfModelRefreshInput, SelfModelRefreshOutcome, SELF_MODEL_SYSTEM_PROMPT,
     SELF_MODEL_TOTAL_CHAR_LIMIT,
 };
-pub(crate) use self_model::{run_self_model_refresh_with_state, should_refresh_self_model};
 pub use self_runtime::{
     enqueue_self_runtime_idle_tick, enqueue_self_runtime_post_reply, run_self_runtime,
     self_runtime_tick, SelfRuntimeContext, SelfRuntimeDecision, SelfRuntimeJobPayload,
