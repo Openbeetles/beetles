@@ -72,9 +72,7 @@ pub use archive_search::{
     ArchiveSearchHit, ArchiveSearchQuery, ArchiveSearchQueryReport, ArchiveSearchResult,
     ArchiveSearchSourceStats, MAX_ARCHIVE_GET_CONTENT_LEN, MAX_ARCHIVE_SEARCH_LIMIT,
 };
-pub(crate) use archive_selector::{
-    select_archive_hits_for_prompt, select_archive_hits_for_prompt_with_report,
-};
+pub(crate) use archive_selector::select_archive_hits_for_prompt_with_report;
 pub use archive_selector::{
     ArchivePromptSelectionReport, ArchivePromptSelectionResult, ArchivePromptSelectionSourceStats,
 };
@@ -140,9 +138,9 @@ pub(crate) use long_term::{
     govern_long_term_memory_entries, inspect_long_term_memory_merge_guard,
     long_term_memory_effective_stale_hint, long_term_memory_entry_from_draft,
     long_term_memory_evidence_state, long_term_memory_matches_query, merge_long_term_memory_entry,
-    recall_long_term_memory_entries, score_long_term_memory_recall,
-    score_long_term_memory_recall_breakdown, select_long_term_recall_entries,
-    touch_long_term_memory_usage, LongTermMemoryMergeGuardDecision, LongTermRecallScoreBreakdown,
+    recall_long_term_memory_entries, score_long_term_memory_recall_breakdown,
+    select_long_term_recall_entries, touch_long_term_memory_usage,
+    LongTermMemoryMergeGuardDecision,
 };
 pub use long_term::{
     long_term_memory_evidence_summary, lookup_long_term_memory_slot,

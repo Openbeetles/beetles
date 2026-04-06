@@ -604,7 +604,8 @@ fn snapshot_content_fingerprint(
     }
     if let Some(execution_state) = snapshot.execution_state.as_ref() {
         execution_state.updated_at.hash(&mut hasher);
-        execution_state.current_task.hash(&mut hasher);
+        execution_state.goal.hash(&mut hasher);
+        execution_state.next_action.hash(&mut hasher);
     }
     format!("snapshot-{:016x}", hasher.finish())
 }

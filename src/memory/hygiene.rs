@@ -279,7 +279,8 @@ fn collect_daily_aggregate_groups(
     store: &dyn MemoryStore,
     now_secs: u64,
 ) -> Result<std::collections::BTreeMap<String, Vec<String>>> {
-    let mut monthly = std::collections::BTreeMap::new();
+    let mut monthly: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
     for name in store.list_daily_note_names(usize::MAX)? {
         if !name.ends_with(".md")
             || name.contains("archive")

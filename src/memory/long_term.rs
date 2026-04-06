@@ -1789,6 +1789,7 @@ fn build_recent_recall_grounding(
     truncate_utf8_bytes(out.trim(), max_chars)
 }
 
+#[cfg(test)]
 pub(crate) fn score_long_term_memory_recall(
     query: &str,
     source_chat_id: Option<&str>,
@@ -1834,15 +1835,15 @@ pub(crate) fn score_long_term_memory_recall_breakdown(
         lexical_score = lexical_score.saturating_add(10);
     }
     for term in &terms {
-        if normalized_topic.contains(&term) {
+        if normalized_topic.contains(term.as_str()) {
             lexical_score = lexical_score.saturating_add(4);
         }
-        if normalized_content.contains(&term) {
+        if normalized_content.contains(term.as_str()) {
             lexical_score = lexical_score.saturating_add(2);
         }
         for keyword in &entry.keywords {
             let normalized_keyword = normalize_for_match(keyword);
-            if normalized_keyword.contains(&term) || term.contains(&normalized_keyword) {
+            if normalized_keyword.contains(term.as_str()) || term.contains(&normalized_keyword) {
                 keyword_score = keyword_score.saturating_add(3);
             }
         }
@@ -2112,7 +2113,7 @@ fn recall_last_used_bonus(now_secs: u64, last_used_at: u64) -> u32 {
 }
 
 fn long_term_governance_recall_score(entry: &LongTermMemoryEntry, now_secs: u64) -> u32 {
-    let scope_bonus = if matches!(entry.source_scope, LongTermMemorySourceScope::User)
+    let scope_bonus: u32 = if matches!(entry.source_scope, LongTermMemorySourceScope::User)
         && matches!(
             entry.kind,
             LongTermMemoryKind::Preference
@@ -2125,9 +2126,9 @@ fn long_term_governance_recall_score(entry: &LongTermMemoryEntry, now_secs: u64)
         0
     };
     let freshness_bonus = match age_state_for_entry(entry, now_secs) {
-        LongTermMemoryAgeState::Current => 4,
-        LongTermMemoryAgeState::Aging => 2,
-        LongTermMemoryAgeState::Stale => 0,
+        LongTermMemoryAgeState::Current => 4u32,
+        LongTermMemoryAgeState::Aging => 2u32,
+        LongTermMemoryAgeState::Stale => 0u32,
     };
     scope_bonus
         .saturating_add(freshness_bonus)

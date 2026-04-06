@@ -628,7 +628,7 @@ fn sanitize_operation(operation: &str) -> String {
 }
 
 fn sanitize_text(value: &str, max_chars: usize) -> String {
-    truncate_content_to_max(scrub_credentials(value).trim(), max_chars)
+    truncate_content_to_max(scrub_credentials(value).trim(), max_chars).to_string()
 }
 
 fn ingress_label(ingress: IngressKind) -> &'static str {

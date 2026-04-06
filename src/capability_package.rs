@@ -1,13 +1,13 @@
 //! Capability package contract and runtime overlays.
 //! 能力包合同与运行时覆盖层。
 
-use crate::StateFs;
 use crate::channel_capability::{
-    CHANNEL_DINGTALK, CHANNEL_FEISHU, CHANNEL_QQ_CHANNEL, CHANNEL_TELEGRAM, CHANNEL_VOICE,
-    CHANNEL_WEBSOCKET, CHANNEL_WECOM, ChannelCapabilityRegistry,
+    ChannelCapabilityRegistry, CHANNEL_DINGTALK, CHANNEL_FEISHU, CHANNEL_QQ_CHANNEL,
+    CHANNEL_TELEGRAM, CHANNEL_VOICE, CHANNEL_WEBSOCKET, CHANNEL_WECOM,
 };
 use crate::error::{Error, Result};
 use crate::tools::ToolPolicyContext;
+use crate::StateFs;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -1113,7 +1113,7 @@ fn validate_overlay_conflicts(
         }
         active_policy_set = merge_policy_documents(
             &bundle.manifest.package_id,
-            &bundle.policy_documents,
+            &parse_policy_documents(&bundle.policies)?,
             Some(&active_policy_set),
         )?;
     }

@@ -1,27 +1,26 @@
 //! Unified operator-facing status contract for HTTP and CLI.
 
-use crate::Platform;
 use crate::capability_package::{
-    CapabilityPackageOperatorSnapshot, CapabilityPackageRuntimeCapabilities,
     build_capability_package_operator_snapshot, render_capability_package_operator_text,
+    CapabilityPackageOperatorSnapshot, CapabilityPackageRuntimeCapabilities,
 };
 use crate::channel_capability::{
-    ChannelCapabilityRegistry, ChannelCapabilitySnapshot,
-    build_channel_capability_snapshots_for_registry,
+    build_channel_capability_snapshots_for_registry, ChannelCapabilityRegistry,
+    ChannelCapabilitySnapshot,
 };
 use crate::memory::MemoryProfile;
 use crate::orchestrator;
 use crate::runtime;
 use crate::task_execution::{
-    TaskExecutionOperatorSnapshot, build_task_execution_operator_snapshot,
-    render_task_execution_operator_text,
+    build_task_execution_operator_snapshot, render_task_execution_operator_text,
+    TaskExecutionOperatorSnapshot,
 };
 use crate::tools::{ToolCatalogEntry, ToolExecutionGovernanceState, ToolRegistry};
+use crate::Platform;
 use serde::Serialize;
 
 const REL_DIR_MANUAL_CONTINUITY_SNAPSHOTS: &str = "memory/continuity_snapshots/manual";
 
-#[derive(Debug)]
 pub struct OperatorStatusInput<'a> {
     pub platform: &'a dyn Platform,
     pub tool_registry: &'a ToolRegistry,
@@ -65,7 +64,7 @@ pub struct OperatorContinuityTooling {
     pub saved_snapshots: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct OperatorStatusSnapshot {
     pub platform_contract: OperatorPlatformContract,
     pub inbound_depth: usize,

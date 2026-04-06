@@ -3,22 +3,22 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    LongTermMemoryConfidence, LongTermMemoryDraft, LongTermMemoryFreshness, LongTermMemoryKind,
-    LongTermMemorySourceScope, LongTermMemorySourceType, LongTermMemoryStore, MemoryStore,
-    SharedMemoryWriteSource, write_governed_shared_memory,
+    write_governed_shared_memory, LongTermMemoryConfidence, LongTermMemoryDraft,
+    LongTermMemoryFreshness, LongTermMemoryKind, LongTermMemorySourceScope,
+    LongTermMemorySourceType, LongTermMemoryStore, MemoryStore, SharedMemoryWriteSource,
 };
-use crate::skills::{RuntimeSkillWrite, runtime_skill_name_for_topic, upsert_runtime_skill};
+use crate::skills::{runtime_skill_name_for_topic, upsert_runtime_skill, RuntimeSkillWrite};
 use crate::util::{epoch_to_ymdhms, truncate_content_to_max};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 
 use super::{
+    current_or_next_step, summarize_task_artifact_content, TaskArtifactRecord, TaskArtifactStore,
+    TaskExecutionLedgerEntry, TaskExecutionLedgerStore, TaskRunRecord, TaskRunStatus, TaskRunStore,
     MAX_TASK_ARTIFACT_CONTENT_CHARS, MAX_TASK_ARTIFACT_ID_CHARS, MAX_TASK_ARTIFACT_SUMMARY_CHARS,
     MAX_TASK_OPERATOR_ARTIFACT_PREVIEW, MAX_TASK_OPERATOR_RECENT_RUNS, MAX_TASK_PROVENANCE_CHARS,
-    MAX_TASK_REASON_CHARS, MAX_TASK_STEP_LIST_ITEMS, MAX_TASK_TITLE_CHARS, TaskArtifactRecord,
-    TaskArtifactStore, TaskExecutionLedgerEntry, TaskExecutionLedgerStore, TaskRunRecord,
-    TaskRunStatus, TaskRunStore, current_or_next_step, summarize_task_artifact_content,
+    MAX_TASK_REASON_CHARS, MAX_TASK_STEP_LIST_ITEMS, MAX_TASK_TITLE_CHARS,
 };
 
 pub const REL_DIR_TASK_LEARNING: &str = "memory/task_learning";
@@ -946,7 +946,7 @@ fn build_task_learning_factual_draft(
         supporting_citations: (!archive_citation.trim().is_empty())
             .then(|| vec![archive_citation.to_string()])
             .unwrap_or_default(),
-        evidence_count: Some(record.source_artifact_ids.len().max(1) as u8),
+        evidence_count: Some(record.source_artifact_ids.len().max(1) as u32),
         observed_at: Some(record.observed_at),
         last_confirmed_at: Some(record.observed_at),
         source_revision: None,
@@ -1762,11 +1762,9 @@ mod tests {
         assert_eq!(stored_drafts[0].topic, "release_root_cause");
 
         let skill_names = skill_storage.list_names().expect("skill names");
-        assert!(
-            skill_names
-                .iter()
-                .any(|name| name == &runtime_skill_name_for_topic("apply_release_patch"))
-        );
+        assert!(skill_names
+            .iter()
+            .any(|name| name == &runtime_skill_name_for_topic("apply_release_patch")));
 
         let note_names = memory_store.list_daily_note_names(8).expect("note names");
         assert_eq!(note_names.len(), 1);

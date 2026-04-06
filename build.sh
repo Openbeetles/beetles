@@ -2002,6 +2002,22 @@ fi
 BOOTLOADER_BIN="$RELEASE_DIR/bootloader.bin"
 PARTITION_TABLE_BIN="$RELEASE_DIR/partition-table.bin"
 PARTITION_CSV="$SCRIPT_ROOT/$PARTITION_TABLE"
+ESP_IDF_BUILD_DIR="$(find "$RELEASE_DIR/build" -path '*/out/build' -type d 2>/dev/null | head -n 1)"
+APP_BIN="$RELEASE_DIR/beetle.bin"
+OTADATA_BIN=""
+FLASHER_ARGS_JSON=""
+APP_FLASH_MODE=""
+APP_FLASH_SIZE=""
+APP_FLASH_FREQ=""
+if [[ -n "$ESP_IDF_BUILD_DIR" ]]; then
+  OTADATA_BIN="$ESP_IDF_BUILD_DIR/ota_data_initial.bin"
+  FLASHER_ARGS_JSON="$ESP_IDF_BUILD_DIR/flasher_args.json"
+  if [[ -f "$FLASHER_ARGS_JSON" ]]; then
+    APP_FLASH_MODE="$(sed -n 's/.*"flash_mode":[[:space:]]*"\([^"]*\)".*/\1/p' "$FLASHER_ARGS_JSON" | head -n1)"
+    APP_FLASH_SIZE="$(sed -n 's/.*"flash_size":[[:space:]]*"\([^"]*\)".*/\1/p' "$FLASHER_ARGS_JSON" | head -n1)"
+    APP_FLASH_FREQ="$(sed -n 's/.*"flash_freq":[[:space:]]*"\([^"]*\)".*/\1/p' "$FLASHER_ARGS_JSON" | head -n1)"
+  fi
+fi
 if [[ -n "$DO_FLASH" ]] && [[ ! "$BUILD_TARGET" =~ -unknown-linux ]] && [[ -z "$FLASH_CHIP" ]]; then
   echo "Error: Cannot derive chip from target for flash: $BUILD_TARGET" >&2
   exit 1
@@ -2113,6 +2129,22 @@ ensure_espflash() {
   RUSTUP_TOOLCHAIN=stable cargo install espflash
   export PATH="${HOME}/.cargo/bin:${PATH}"
   command -v espflash &>/dev/null || { echo "Error: espflash install failed." >&2; exit 1; }
+}
+
+generate_app_bin_from_elf() {
+  [[ -f "$BIN" ]] || return 1
+  local flash_mode="${APP_FLASH_MODE:-dio}"
+  local flash_size="${APP_FLASH_SIZE:-16MB}"
+  local flash_freq="${APP_FLASH_FREQ:-80m}"
+  if ! python3 -m esptool --chip "$FLASH_CHIP" elf2image \
+      --flash-mode "$flash_mode" \
+      --flash-size "$flash_size" \
+      --flash-freq "$flash_freq" \
+      -o "$APP_BIN" \
+      "$BIN" >/dev/null; then
+    echo "Error: failed to generate app bin from ELF: $BIN" >&2
+    return 1
+  fi
 }
 # Interactive port selection when ESPFLASH_PORT not set (same as build.ps1 Get-FlashPort)
 # Only the chosen port is printed to stdout; messages go to stderr.
@@ -2281,7 +2313,9 @@ run_esp_flash_workflow() {
   fi
 
   ensure_espflash
-  CHOSEN_PORT=$(get_flash_port)
+  if ! CHOSEN_PORT="$(get_flash_port)"; then
+    return 1
+  fi
   echo ""
   echo "=========================================="
   echo "  Beetle — Flash to device"
@@ -2297,7 +2331,8 @@ run_esp_flash_workflow() {
   echo -e "  ${BLUE}Serial port:${NC}       $CHOSEN_PORT"
   echo "  Partition table:   $PARTITION_FOR_FLASH"
   echo "  Bootloader:        $BOOTLOADER_BIN"
-  echo "  Firmware binary:   $BIN"
+  echo "  Firmware ELF:      $BIN"
+  echo "  Firmware app bin:  ${APP_BIN:-"(not found)"}"
   echo ""
 
   echo "========== Checking connection =========="
@@ -2340,11 +2375,54 @@ run_esp_flash_workflow() {
   echo ""
   echo "========== Flashing firmware =========="
   echo ""
-  echo "  Binary: $BIN"
-  echo "  Partition table: $PARTITION_FOR_FLASH"
-  if ! espflash flash --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" "${FLASH_EXTRA[@]}" "$BIN"; then
-    print_flash_open_port_hints
+  if [[ ! -f "$APP_BIN" ]]; then
+    echo "Error: app bin not found: ${APP_BIN:-<empty>}" >&2
+    echo "Expected generated app bin from ELF: $BIN" >&2
     return 1
+  fi
+  echo "  ELF: $BIN"
+  echo "  App bin: $APP_BIN"
+  echo "  Partition table: $PARTITION_FOR_FLASH"
+
+  if [[ ! -f "$OTADATA_BIN" ]]; then
+    echo "Error: otadata bin not found: ${OTADATA_BIN:-<empty>}" >&2
+    echo "Expected ESP-IDF output under: ${ESP_IDF_BUILD_DIR:-<not found>}" >&2
+    return 1
+  fi
+
+  if [[ "$ERASE_BEFORE_FLASH" -eq 1 ]]; then
+    if [[ ! -f "$BOOTLOADER_BIN" || ! -f "$PARTITION_FOR_FLASH" || ! -f "$OTADATA_BIN" ]]; then
+      echo "Error: missing bootloader/partition-table/otadata bin required after full erase." >&2
+      echo "  bootloader: $BOOTLOADER_BIN" >&2
+      echo "  partition : $PARTITION_FOR_FLASH" >&2
+      echo "  otadata   : ${OTADATA_BIN:-<empty>}" >&2
+      return 1
+    fi
+    if ! espflash write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" --after no-reset 0x0 "$BOOTLOADER_BIN"; then
+      print_flash_open_port_hints
+      return 1
+    fi
+    if ! espflash write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" --after no-reset 0x8000 "$PARTITION_FOR_FLASH"; then
+      print_flash_open_port_hints
+      return 1
+    fi
+    if ! espflash write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" --after no-reset 0x19000 "$OTADATA_BIN"; then
+      print_flash_open_port_hints
+      return 1
+    fi
+    if ! espflash write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" --elf "$BIN" 0x20000 "$APP_BIN"; then
+      print_flash_open_port_hints
+      return 1
+    fi
+  else
+    if ! espflash write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" --after no-reset 0x19000 "$OTADATA_BIN"; then
+      print_flash_open_port_hints
+      return 1
+    fi
+    if ! espflash write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" --elf "$BIN" 0x20000 "$APP_BIN"; then
+      print_flash_open_port_hints
+      return 1
+    fi
   fi
 
   if ! flash_model_partition_if_present; then
@@ -2705,11 +2783,19 @@ else
   fi
 fi
 
+if [[ ! "$BUILD_TARGET" =~ -unknown-linux ]]; then
+  generate_app_bin_from_elf || exit 1
+fi
+
 # --- After build: deploy prompt or --flash (ESP only) ---
 echo ""
 echo "========== $MSG_BUILD_COMPLETE =========="
 echo "  $MSG_BINARY: $BIN"
 ls -lh "$BIN" 2>/dev/null || true
+if [[ -f "$APP_BIN" ]]; then
+  echo "  Firmware app bin: $APP_BIN"
+  ls -lh "$APP_BIN" 2>/dev/null || true
+fi
 
 if [[ -n "$DO_FLASH" ]]; then
   if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then

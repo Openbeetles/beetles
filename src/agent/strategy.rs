@@ -2,14 +2,6 @@
 //! Internal agent strategy helpers for platform-specific behavior.
 
 use super::tool_outcome::{ToolBlockerKind, ToolBlockerSummary, ToolFailureSummary};
-use crate::bus::{IngressKind, PcMsg};
-use crate::orchestrator::PressureLevel;
-use crate::util::truncate_content_to_max;
-
-const PLAN_HINT_PREFIX: &str = "\n\n## Execution plan\n";
-const PLAN_HINT_SUFFIX: &str =
-    "\nFollow this plan, but adapt immediately when tool results contradict it.";
-const PLAN_MAX_CHARS: usize = 512;
 
 /// 内部运行策略：ESP 保持轻量，Linux 启用额外 planning / reflection 增强。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,67 +14,6 @@ pub enum AgentRunStrategy {
 pub(crate) struct SuccessfulToolRoundSummary {
     pub(crate) total_calls: usize,
     pub(crate) successful_calls: usize,
-}
-
-impl AgentRunStrategy {
-    pub(crate) fn enables_preplanning(self) -> bool {
-        matches!(self, Self::LinuxEnhanced)
-    }
-}
-
-pub(crate) fn should_generate_execution_plan(
-    msg: &PcMsg,
-    has_tools: bool,
-    pressure: PressureLevel,
-) -> bool {
-    if msg.ingress != IngressKind::User
-        || msg.is_group
-        || !has_tools
-        || pressure != PressureLevel::Normal
-    {
-        return false;
-    }
-    let content = msg.content.trim();
-    let char_count = content.chars().count();
-    let separators = ['\n', ',', '，', '.', '。', '?', '？', ';', '；'];
-    let separator_count = content.chars().filter(|ch| separators.contains(ch)).count();
-    let task_markers = [
-        "然后",
-        "并且",
-        "同时",
-        "先",
-        "再",
-        "分别",
-        "步骤",
-        "排查",
-        "分析",
-        "修复",
-        "设计",
-        "implement",
-        "debug",
-        "analyze",
-        "review",
-        "plan",
-    ];
-    let marker_hits = task_markers
-        .iter()
-        .filter(|marker| content.contains(**marker))
-        .count();
-    if char_count < 48 && separator_count < 2 && marker_hits < 2 {
-        return false;
-    }
-    separator_count >= 2 || marker_hits >= 2 || char_count >= 120
-}
-
-pub(crate) fn append_execution_plan(system: &mut String, max_len: usize, plan: &str) {
-    let plan = truncate_content_to_max(plan.trim(), PLAN_MAX_CHARS);
-    if plan.is_empty() {
-        return;
-    }
-    let addition = format!("{}{}{}", PLAN_HINT_PREFIX, plan, PLAN_HINT_SUFFIX);
-    if system.len().saturating_add(addition.len()) <= max_len {
-        system.push_str(&addition);
-    }
 }
 
 pub(crate) fn build_tool_round_guidance(
@@ -501,6 +432,69 @@ fn normalized_prefix_overlap(a: &str, b: &str) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::{IngressKind, PcMsg};
+    use crate::orchestrator::PressureLevel;
+    use crate::util::truncate_content_to_max;
+
+    const PLAN_HINT_PREFIX: &str = "\n\n## Execution plan\n";
+    const PLAN_HINT_SUFFIX: &str =
+        "\nFollow this plan, but adapt immediately when tool results contradict it.";
+    const PLAN_MAX_CHARS: usize = 512;
+
+    fn should_generate_execution_plan(
+        msg: &PcMsg,
+        has_tools: bool,
+        pressure: PressureLevel,
+    ) -> bool {
+        if msg.ingress != IngressKind::User
+            || msg.is_group
+            || !has_tools
+            || pressure != PressureLevel::Normal
+        {
+            return false;
+        }
+        let content = msg.content.trim();
+        let char_count = content.chars().count();
+        let separators = ['\n', ',', '，', '.', '。', '?', '？', ';', '；'];
+        let separator_count = content.chars().filter(|ch| separators.contains(ch)).count();
+        let task_markers = [
+            "然后",
+            "并且",
+            "同时",
+            "先",
+            "再",
+            "分别",
+            "步骤",
+            "排查",
+            "分析",
+            "修复",
+            "设计",
+            "implement",
+            "debug",
+            "analyze",
+            "review",
+            "plan",
+        ];
+        let marker_hits = task_markers
+            .iter()
+            .filter(|marker| content.contains(**marker))
+            .count();
+        if char_count < 48 && separator_count < 2 && marker_hits < 2 {
+            return false;
+        }
+        separator_count >= 2 || marker_hits >= 2 || char_count >= 120
+    }
+
+    fn append_execution_plan(system: &mut String, max_len: usize, plan: &str) {
+        let plan = truncate_content_to_max(plan.trim(), PLAN_MAX_CHARS);
+        if plan.is_empty() {
+            return;
+        }
+        let addition = format!("{}{}{}", PLAN_HINT_PREFIX, plan, PLAN_HINT_SUFFIX);
+        if system.len().saturating_add(addition.len()) <= max_len {
+            system.push_str(&addition);
+        }
+    }
 
     #[test]
     fn complex_requests_trigger_internal_planning() {

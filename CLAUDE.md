@@ -35,7 +35,7 @@
 
 ## 资源与弹性
 
-- 队列、缓冲区、会话条数、单条消息/响应均有明确上界（见 `constants.rs`）；超时与退避常量集中（INBOUND_RECV_TIMEOUT_SECS、AGENT_RETRY_*、PENDING_RETRY_MAX_REPLAY、CHANNEL_FAIL_*）。
+- 队列、缓冲区、会话条数、单条消息/响应均有明确上界（见 `constants.rs`）；超时与退避常量集中（INBOUND*RECV_TIMEOUT_SECS、AGENT_RETRY*_、PENDING*RETRY_MAX_REPLAY、CHANNEL_FAIL*_）。
 - 对外调用（LLM、HTTP、通道）需有超时与可配置重试/退避；失败返回 `Error` 而非 panic。dispatch 层单通道连续失败会熔断冷却，避免单通道拖垮全局。
 - **资源可观测（orchestrator 为唯一权威）**：`GET /api/resource` 与 `orchestrator::snapshot()` / `format_resource_baseline_line()` 对齐；心跳在同周期内输出 orchestrator 单行基线 + `metrics::to_baseline_log_line`。**出站 Cautious**：`should_accept_outbound` 在 Cautious 下短延迟 `OUTBOUND_DEFER_DELAY_MS_CAUTIOUS`（500ms），Critical 仍用 `OUTBOUND_DEFER_DELAY_MS`；`GET /api/health` 嵌套 `metrics` 与 `resource` 快照（JSON 字段名与 serde 结构体一致）。
 
@@ -57,12 +57,6 @@
 
 - 公共 API 必须有 rustdoc（中英均可）；新增模块在 `lib.rs` 或对应 `mod.rs` 中导出稳定接口。
 - 遵循 `rustfmt` 与 `clippy`（`cargo clippy` 无警告）；嵌入式注意栈与堆使用，大 buffer 使用 PSRAM。
-
-### 调试与验证策略（新增）
-
-- **默认禁止编译/构建**：除非用户**明确要求**，禁止主动运行任何会触发编译、链接、构建、测试、刷机或产物生成的命令，包括但不限于 `cargo build`、`cargo check`、`cargo test`、`cargo clippy`、`rustc`、`build.sh`、`build.ps1`、`idf.py`、`espflash`。
-- **只做静态检查**：默认只允许使用不会触发编译的命令检查代码规范或约束是否报错，例如 `rg`、`sed`、`git diff`、`./scripts/check_platform_isolation.sh`、以及其他明确为静态检查的脚本。
-- **分析已有输出，不得重跑构建**：若用户贴出编译/构建/测试日志，可直接基于日志分析；不得因为想验证结论而自行再次编译。
 
 ### 后台线程与资源
 

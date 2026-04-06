@@ -2,12 +2,6 @@
 //! Firmware version is embedded for OTA and ops.
 //! Startup order: NVS → SPIFFS → config → WiFi → memory/session stores → MessageBus → self-check → cron/heartbeat/sinks/dispatch/CLI → agent_loop.
 //! ESP32: no graceful shutdown; process runs until power off.
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-use beetle::Esp32Platform;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-use beetle::LinuxPlatform;
-use beetle::Platform;
-use beetle::PlatformHttpClient;
 use beetle::bus::IngressKind;
 use beetle::channels::connect_wss;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
@@ -18,9 +12,15 @@ use beetle::run_feishu_ws_loop;
 use beetle::runtime::{execute_stream_http_op, spawn_planned, spawn_planned_handle, thread_plan};
 use beetle::util::STACK_VOICE_CONTROL;
 use beetle::util::{STACK_AGENT_LOOP, STACK_CHANNEL_SENDER, STACK_CHANNEL_WS, STACK_DISPATCH};
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use beetle::Esp32Platform;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+use beetle::LinuxPlatform;
+use beetle::Platform;
+use beetle::PlatformHttpClient;
 use beetle::{
-    AppConfig, DEFAULT_CAPACITY, MessageBus, parse_allowed_chat_ids, run_agent_loop, run_dispatch,
-    send_chat_action,
+    parse_allowed_chat_ids, run_agent_loop, run_dispatch, send_chat_action, AppConfig, MessageBus,
+    DEFAULT_CAPACITY,
 };
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
 use beetle::{DisplayChannelStatus, DisplayCommand, DisplayPressureLevel, DisplaySystemState};
@@ -42,6 +42,18 @@ struct VoiceEventChannel {
     speak_capable: bool,
     tx: std::sync::mpsc::SyncSender<beetle::audio::voice_session::VoiceEvent>,
     rx: std::sync::mpsc::Receiver<beetle::audio::voice_session::VoiceEvent>,
+}
+
+struct TelegramTypingNotifier {
+    token: String,
+}
+
+impl beetle::TypingNotifier for TelegramTypingNotifier {
+    fn notify(&mut self, channel: &str, chat_id: &str, http: &mut dyn beetle::PlatformHttpClient) {
+        if channel == beetle::CHANNEL_TELEGRAM {
+            let _ = send_chat_action(http, &self.token, chat_id, "typing");
+        }
+    }
 }
 
 #[cfg(feature = "config_api")]
@@ -1185,8 +1197,6 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             config_store: platform.config_store(),
         },
     );
-    let registry = Arc::new(registry);
-
     // ── Audio init + voice runtime preparation (after MessageBus) ──────────
     beetle::bootstrap::init_audio_if_enabled(&platform, &config);
     let mut voice_event_tx_rx =
@@ -1233,6 +1243,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             }
         }
     }));
+    let registry = Arc::new(registry);
     let registry = Arc::new(registry);
 
     if !startup_self_check(memory_store.as_ref()) {
@@ -1572,17 +1583,14 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         let agent_user_inbound_tx = user_inbound_tx;
         let agent_system_inbound_tx = system_inbound_tx;
         let worker_user_inbound_tx = agent_user_inbound_tx;
-        let typing_notifier: Option<beetle::TypingNotifier> = channel_capability_registry
+        let typing_notifier: Option<Box<dyn beetle::TypingNotifier>> = channel_capability_registry
             .get(config.enabled_channel.as_str())
             .filter(|entry| entry.enabled && entry.contract.supports_typing_or_chat_action)
             .and_then(|entry| match entry.id {
                 beetle::CHANNEL_TELEGRAM if !config.tg_token.trim().is_empty() => {
-                    let tg_token_for_typing = config.tg_token.clone();
-                    Some(Box::new(move |ch, cid, http| {
-                        if ch == beetle::CHANNEL_TELEGRAM {
-                            let _ = send_chat_action(http, &tg_token_for_typing, cid, "typing");
-                        }
-                    }) as beetle::TypingNotifier)
+                    Some(Box::new(TelegramTypingNotifier {
+                        token: config.tg_token.clone(),
+                    }) as Box<dyn beetle::TypingNotifier>)
                 }
                 _ => None,
             });
