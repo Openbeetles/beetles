@@ -277,6 +277,8 @@ fn assemble_persona_regression_system(
         self_state_text: None,
         self_authored_core_text: (!self_authored_core.trim().is_empty())
             .then_some(self_authored_core),
+        relationship_portfolio_text: None,
+        relationship_constitution_text: None,
         persona_priority_text: (!persona_priority_block.trim().is_empty())
             .then_some(persona_priority_block),
         self_model_text: None,

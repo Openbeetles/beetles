@@ -2,15 +2,19 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    ContinuitySnapshot, ContinuitySnapshotExportContext, ContinuitySnapshotImportContext,
-    ContinuitySnapshotImportMode, ContinuitySnapshotMode, ExecutionStateStore, LongTermMemoryStore,
-    SelfAuthoredCoreStore, SelfContinuityStore, SelfModelStore, SessionSummaryStore,
-    export_continuity_snapshot, import_continuity_snapshot, render_continuity_snapshot_markdown,
+    export_continuity_snapshot, import_continuity_snapshot, inspect_personality_governance,
+    load_recent_persona_evidence, render_continuity_snapshot_markdown,
+    render_personality_governance_inspection_markdown, ContinuitySnapshot,
+    ContinuitySnapshotExportContext, ContinuitySnapshotImportContext, ContinuitySnapshotImportMode,
+    ContinuitySnapshotMode, CoreRevisionLedgerStore, ExecutionStateStore, LongTermMemoryStore,
+    PersonalityGovernanceInspectionInput, RelationshipConstitutionStore,
+    RelationshipPortfolioStore, RelationshipTopologyStore, SelfAuthoredCoreStore,
+    SelfContinuityStore, SelfModelStore, SessionSummaryStore, TurnLedgerStore,
 };
 use crate::platform::StateFs;
-use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args};
+use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
 use crate::util::current_unix_secs;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 const REL_DIR_MANUAL_CONTINUITY_SNAPSHOTS: &str = "memory/continuity_snapshots/manual";
@@ -22,7 +26,12 @@ pub struct ContinuitySnapshotTool {
     execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
     self_model_store: Arc<dyn SelfModelStore + Send + Sync>,
     self_authored_core_store: Arc<dyn SelfAuthoredCoreStore + Send + Sync>,
+    core_revision_ledger_store: Arc<dyn CoreRevisionLedgerStore + Send + Sync>,
     self_continuity_store: Arc<dyn SelfContinuityStore + Send + Sync>,
+    turn_ledger_store: Arc<dyn TurnLedgerStore + Send + Sync>,
+    relationship_constitution_store: Arc<dyn RelationshipConstitutionStore + Send + Sync>,
+    relationship_portfolio_store: Arc<dyn RelationshipPortfolioStore + Send + Sync>,
+    relationship_topology_store: Arc<dyn RelationshipTopologyStore + Send + Sync>,
 }
 
 impl ContinuitySnapshotTool {
@@ -33,7 +42,12 @@ impl ContinuitySnapshotTool {
         execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
         self_model_store: Arc<dyn SelfModelStore + Send + Sync>,
         self_authored_core_store: Arc<dyn SelfAuthoredCoreStore + Send + Sync>,
+        core_revision_ledger_store: Arc<dyn CoreRevisionLedgerStore + Send + Sync>,
         self_continuity_store: Arc<dyn SelfContinuityStore + Send + Sync>,
+        turn_ledger_store: Arc<dyn TurnLedgerStore + Send + Sync>,
+        relationship_constitution_store: Arc<dyn RelationshipConstitutionStore + Send + Sync>,
+        relationship_portfolio_store: Arc<dyn RelationshipPortfolioStore + Send + Sync>,
+        relationship_topology_store: Arc<dyn RelationshipTopologyStore + Send + Sync>,
     ) -> Self {
         Self {
             state_fs,
@@ -42,7 +56,12 @@ impl ContinuitySnapshotTool {
             execution_state_store,
             self_model_store,
             self_authored_core_store,
+            core_revision_ledger_store,
             self_continuity_store,
+            turn_ledger_store,
+            relationship_constitution_store,
+            relationship_portfolio_store,
+            relationship_topology_store,
         }
     }
 }
@@ -53,11 +72,11 @@ impl Tool for ContinuitySnapshotTool {
     }
 
     fn description(&self) -> &'static str {
-        "Export, save, list, load, or import the assistant's core continuity state for bootstrap or full restore. This is an operator/admin tool, not a normal conversational tool."
+        "Export, save, list, load, import, or inspect the assistant's continuity and personality-governance state for bootstrap, restore, and operator auditing. This is an operator/admin tool, not a normal conversational tool."
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","enum":["export","import","list_saved"],"description":"Whether to export, import, or list saved continuity snapshots."},"chat_id":{"type":"string","description":"Target chat_id. Defaults to the current chat when available."},"mode":{"type":"string","enum":["bootstrap","full_restore","bootstrap_import"],"description":"Export mode or import mode. export accepts bootstrap|full_restore. import accepts bootstrap_import|full_restore."},"format":{"type":"string","enum":["json","markdown"],"description":"Export rendering format. Default json."},"save_name":{"type":"string","description":"Optional saved snapshot name. On export, saves the snapshot under this name. On import, loads the saved snapshot with this name when snapshot is omitted."},"snapshot":{"description":"Snapshot payload to import. May be a JSON string or embedded object."}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","enum":["export","import","list_saved","inspect_governance"],"description":"Whether to export, import, list saved continuity snapshots, or inspect personality governance."},"chat_id":{"type":"string","description":"Target chat_id. Defaults to the current chat when available."},"channel":{"type":"string","description":"Target channel for governance inspection. Defaults to the current channel when available."},"mode":{"type":"string","enum":["bootstrap","full_restore","bootstrap_import"],"description":"Export mode or import mode. export accepts bootstrap|full_restore. import accepts bootstrap_import|full_restore."},"format":{"type":"string","enum":["json","markdown"],"description":"Rendering format. Default json."},"save_name":{"type":"string","description":"Optional saved snapshot name. On export, saves the snapshot under this name. On import, loads the saved snapshot with this name when snapshot is omitted."},"snapshot":{"description":"Snapshot payload to import. May be a JSON string or embedded object."}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
@@ -73,6 +92,14 @@ impl Tool for ContinuitySnapshotTool {
             .filter(|value| !value.is_empty())
             .map(str::to_string)
             .or_else(|| ctx.current_chat_id().map(str::to_string))
+            .unwrap_or_default();
+        let channel = obj
+            .get("channel")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .or_else(|| ctx.current_channel().map(str::to_string))
             .unwrap_or_default();
 
         match op {
@@ -94,6 +121,66 @@ impl Tool for ContinuitySnapshotTool {
                 })
                 .to_string())
             }
+            "inspect_governance" => {
+                if chat_id.trim().is_empty() {
+                    return Err(Error::config("tool_continuity_snapshot", "missing chat_id"));
+                }
+                if channel.trim().is_empty() {
+                    return Err(Error::config("tool_continuity_snapshot", "missing channel"));
+                }
+                let subject_id = crate::memory::board_subject_scope_id();
+                let relationship_scope_id =
+                    crate::memory::relationship_scope_id(&channel, &chat_id);
+                let self_authored_core = self.self_authored_core_store.get(subject_id)?;
+                let core_revision_ledger = self.core_revision_ledger_store.get(subject_id)?;
+                let relationship_constitution = self
+                    .relationship_constitution_store
+                    .get(&relationship_scope_id)?;
+                let relationship_topology = self.relationship_topology_store.get(subject_id)?;
+                let recent_persona_evidence = load_recent_persona_evidence(
+                    self.turn_ledger_store.as_ref(),
+                    &relationship_scope_id,
+                )?;
+                let inspection =
+                    inspect_personality_governance(PersonalityGovernanceInspectionInput {
+                        channel: &channel,
+                        chat_id: &chat_id,
+                        now_secs: current_unix_secs(),
+                        self_authored_core: self_authored_core.as_ref(),
+                        core_revision_ledger: core_revision_ledger.as_ref(),
+                        relationship_constitution: relationship_constitution.as_ref(),
+                        relationship_topology: relationship_topology.as_ref(),
+                        recent_persona_evidence: recent_persona_evidence.as_ref(),
+                    });
+                let format = obj
+                    .get("format")
+                    .and_then(Value::as_str)
+                    .unwrap_or("json")
+                    .trim()
+                    .to_ascii_lowercase();
+                if format == "markdown" {
+                    Ok(json!({
+                        "ok": true,
+                        "op": "inspect_governance",
+                        "chat_id": chat_id,
+                        "channel": channel,
+                        "format": "markdown",
+                        "markdown": render_personality_governance_inspection_markdown(&inspection),
+                        "inspection": inspection,
+                    })
+                    .to_string())
+                } else {
+                    Ok(json!({
+                        "ok": true,
+                        "op": "inspect_governance",
+                        "chat_id": chat_id,
+                        "channel": channel,
+                        "format": "json",
+                        "inspection": inspection,
+                    })
+                    .to_string())
+                }
+            }
             "export" => {
                 if chat_id.trim().is_empty() {
                     return Err(Error::config("tool_continuity_snapshot", "missing chat_id"));
@@ -106,7 +193,13 @@ impl Tool for ContinuitySnapshotTool {
                         execution_state_store: self.execution_state_store.as_ref(),
                         self_model_store: self.self_model_store.as_ref(),
                         self_authored_core_store: self.self_authored_core_store.as_ref(),
+                        core_revision_ledger_store: self.core_revision_ledger_store.as_ref(),
                         self_continuity_store: self.self_continuity_store.as_ref(),
+                        relationship_constitution_store: self
+                            .relationship_constitution_store
+                            .as_ref(),
+                        relationship_portfolio_store: self.relationship_portfolio_store.as_ref(),
+                        relationship_topology_store: self.relationship_topology_store.as_ref(),
                     },
                     &chat_id,
                     mode,
@@ -175,7 +268,12 @@ impl Tool for ContinuitySnapshotTool {
                         execution_state_store: self.execution_state_store.as_ref(),
                         self_model_store: self.self_model_store.as_ref(),
                         self_authored_core_store: self.self_authored_core_store.as_ref(),
+                        core_revision_ledger_store: self.core_revision_ledger_store.as_ref(),
                         self_continuity_store: self.self_continuity_store.as_ref(),
+                        relationship_constitution_store: self
+                            .relationship_constitution_store
+                            .as_ref(),
+                        relationship_portfolio_store: self.relationship_portfolio_store.as_ref(),
                     },
                     &chat_id,
                     &snapshot,
@@ -192,7 +290,7 @@ impl Tool for ContinuitySnapshotTool {
             }
             _ => Err(Error::config(
                 "tool_continuity_snapshot",
-                "op must be export or import",
+                "op must be export, import, list_saved, or inspect_governance",
             )),
         }
     }

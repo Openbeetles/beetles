@@ -235,9 +235,16 @@ pub fn config_plane_active() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn current_error_expires_without_erasing_last_error_history() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
         let err = Error::config("test_stage", "boom");
         let expected = sanitize_error_for_log(&err);
         set_last_error(&err);
@@ -250,6 +257,7 @@ mod tests {
 
     #[test]
     fn wifi_sta_state_clears_ip_when_disconnected() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
         set_wifi_sta_state(true, Some("192.168.1.2".to_string()));
         assert!(wifi_sta_connected());
         assert_eq!(wifi_sta_ip().as_deref(), Some("192.168.1.2"));
@@ -261,6 +269,7 @@ mod tests {
 
     #[test]
     fn wifi_sta_must_settle_before_outbound_ready() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
         set_wifi_sta_state(true, Some("192.168.1.2".to_string()));
         assert!(!wifi_sta_settled_for_outbound(1));
         clear_wifi_sta_state();
@@ -268,6 +277,7 @@ mod tests {
 
     #[test]
     fn voice_exclusive_flag_round_trips() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
         set_voice_exclusive_active(true);
         assert!(voice_exclusive_active());
         set_voice_exclusive_active(false);
@@ -276,6 +286,7 @@ mod tests {
 
     #[test]
     fn external_wss_mode_round_trips() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
         set_external_wss_managed_present(true);
         request_external_wss_suspend();
         assert!(external_wss_suspend_requested());
@@ -290,6 +301,7 @@ mod tests {
 
     #[test]
     fn background_maintenance_flag_round_trips() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
         set_background_maintenance_active(true);
         assert!(background_maintenance_active());
         set_background_maintenance_active(false);
@@ -298,6 +310,7 @@ mod tests {
 
     #[test]
     fn config_plane_flag_round_trips() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
         set_config_plane_active(true);
         assert!(config_plane_active());
         set_config_plane_active(false);

@@ -205,26 +205,24 @@ mod imp {
             return;
         }
         let mut state = state().lock().unwrap_or_else(|e| e.into_inner());
-        let runtime = match state.runtime.as_mut() {
-            Some(runtime) => runtime,
+        let now_millis = monotonic_millis();
+        let last_trigger_millis = match state.runtime.as_ref() {
+            Some(runtime) => runtime.last_trigger_millis.load(Ordering::Relaxed),
             None => return,
         };
-        let now_millis = monotonic_millis();
-        if within_cooldown(
-            runtime.last_trigger_millis.load(Ordering::Relaxed),
-            now_millis,
-        ) {
+        if within_cooldown(last_trigger_millis, now_millis) {
             crate::metrics::record_wake_word_feed_skip_cooldown();
             return;
         }
 
         state.feed_diag_counter = state.feed_diag_counter.wrapping_add(1);
-        if state.feed_diag_counter % WAKE_FEED_DIAG_INTERVAL == 0 {
+        let feed_diag_counter = state.feed_diag_counter;
+        if feed_diag_counter % WAKE_FEED_DIAG_INTERVAL == 0 {
             let sum_sq: f64 = frame.iter().map(|&s| (s as f64) * (s as f64)).sum();
             let rms = (sum_sq / frame.len().max(1) as f64).sqrt();
             log::info!(
                 "[wake_word] diag feed_count={} rms={:.1} samples={}",
-                state.feed_diag_counter,
+                feed_diag_counter,
                 rms,
                 frame.len()
             );
@@ -238,6 +236,10 @@ mod imp {
 
         if detected {
             crate::metrics::record_wake_word_feed_detect();
+            let runtime = match state.runtime.as_ref() {
+                Some(runtime) => runtime,
+                None => return,
+            };
             if crate::orchestrator::is_audio_playing() && interrupt_listening {
                 log::info!(
                     "[wake_word] interrupt requested keyword={}",

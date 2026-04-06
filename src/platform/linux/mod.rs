@@ -14,33 +14,41 @@ use crate::platform::{
     heartbeat_file::read_heartbeat_file,
     spiffs::{
         CachedSkillStorage, SpiffsAutonomyStrategyStore, SpiffsCalendarProviderCredentialStore,
-        SpiffsCalendarStore, SpiffsExecutionStateStore, SpiffsImportantMessageStore,
+        SpiffsCalendarStore, SpiffsCoreRevisionLedgerStore, SpiffsExecutionStateStore,
+        SpiffsImportantMessageStore,
         SpiffsInnerLifeStore, SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore,
         SpiffsMemoryStore, SpiffsMentalPrivacyStore, SpiffsOuterVoiceStore,
         SpiffsPendingRetryStore, SpiffsPrivateDocStore, SpiffsPrivateGardenStore,
-        SpiffsRelationshipTopologyStore, SpiffsRemindAtStore, SpiffsSelfAuthoredCoreStore,
-        SpiffsSelfContinuityStore, SpiffsSelfModelStore, SpiffsSessionStore,
+        SpiffsRelationshipConstitutionStore, SpiffsRelationshipPortfolioStore,
+        SpiffsRelationshipTopologyStore, SpiffsRemindAtStore,
+        SpiffsSelfAuthoredCoreStore, SpiffsSelfContinuityStore, SpiffsSelfModelStore, SpiffsSessionStore,
         SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage, SpiffsTaskStore,
         SpiffsTurnLedgerStore, SpiffsWorldSenseStore, spiffs_usage,
     },
 };
 use crate::runtime::write_back::{
-    BufferedAutonomyStrategyStore, BufferedExecutionStateStore, BufferedImportantMessageStore,
-    BufferedInnerLifeStore, BufferedLongTermExtractionStateStore, BufferedMentalPrivacyStore,
-    BufferedOuterVoiceStore, BufferedRelationshipTopologyStore, BufferedSelfAuthoredCoreStore,
-    BufferedSelfContinuityStore, BufferedSelfModelStore, BufferedSessionStore,
-    BufferedSessionSummaryStore, BufferedTurnLedgerStore, BufferedWorldSenseStore,
+    BufferedAutonomyStrategyStore, BufferedCoreRevisionLedgerStore,
+    BufferedExecutionStateStore, BufferedImportantMessageStore, BufferedInnerLifeStore,
+    BufferedLongTermExtractionStateStore, BufferedMentalPrivacyStore, BufferedOuterVoiceStore,
+    BufferedRelationshipConstitutionStore, BufferedRelationshipPortfolioStore,
+    BufferedRelationshipTopologyStore, BufferedSelfAuthoredCoreStore,
+    BufferedSelfContinuityStore, BufferedSelfModelStore,
+    BufferedSessionStore, BufferedSessionSummaryStore, BufferedTurnLedgerStore,
+    BufferedWorldSenseStore,
 };
 use crate::{
     calendar::{CalendarProviderCredentialStore, CalendarStore},
     config::{AppConfig, AudioSegment},
     display::{DisplayCommand, DisplayConfig},
     memory::{
-        AutonomyStrategyStore, ExecutionStateStore, ImportantMessageStore, InnerLifeStore,
-        LongTermMemoryExtractionStateStore, LongTermMemoryStore, MemoryStore, MentalPrivacyStore,
-        OuterVoiceStore, PendingRetryStore, PrivateDocStore, PrivateGardenStore,
-        RelationshipTopologyStore, RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore,
-        SelfModelStore, SessionStore, SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
+        AutonomyStrategyStore, CoreRevisionLedgerStore, ExecutionStateStore,
+        ImportantMessageStore, InnerLifeStore, LongTermMemoryExtractionStateStore,
+        LongTermMemoryStore, MemoryStore, MentalPrivacyStore, OuterVoiceStore,
+        PendingRetryStore, PrivateDocStore, PrivateGardenStore,
+        RelationshipConstitutionStore, RelationshipPortfolioStore, RelationshipTopologyStore,
+        RemindAtStore,
+        SelfAuthoredCoreStore, SelfContinuityStore, SelfModelStore, SessionStore,
+        SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
     },
     task::TaskStore,
 };
@@ -64,11 +72,14 @@ pub struct LinuxPlatform {
     execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
     self_model_store: Arc<dyn SelfModelStore + Send + Sync>,
     self_authored_core_store: Arc<dyn SelfAuthoredCoreStore + Send + Sync>,
+    core_revision_ledger_store: Arc<dyn CoreRevisionLedgerStore + Send + Sync>,
+    relationship_constitution_store: Arc<dyn RelationshipConstitutionStore + Send + Sync>,
     world_sense_store: Arc<dyn WorldSenseStore + Send + Sync>,
     autonomy_strategy_store: Arc<dyn AutonomyStrategyStore + Send + Sync>,
     outer_voice_store: Arc<dyn OuterVoiceStore + Send + Sync>,
     inner_life_store: Arc<dyn InnerLifeStore + Send + Sync>,
     self_continuity_store: Arc<dyn SelfContinuityStore + Send + Sync>,
+    relationship_portfolio_store: Arc<dyn RelationshipPortfolioStore + Send + Sync>,
     relationship_topology_store: Arc<dyn RelationshipTopologyStore + Send + Sync>,
     private_doc_store: Arc<SpiffsPrivateDocStore>,
     private_garden_store: Arc<SpiffsPrivateGardenStore>,
@@ -105,6 +116,14 @@ impl LinuxPlatform {
             Arc::new(SpiffsSelfAuthoredCoreStore::new())
                 as Arc<dyn SelfAuthoredCoreStore + Send + Sync>,
         );
+        let core_revision_ledger_store = BufferedCoreRevisionLedgerStore::wrap(
+            Arc::new(SpiffsCoreRevisionLedgerStore::new())
+                as Arc<dyn CoreRevisionLedgerStore + Send + Sync>,
+        );
+        let relationship_constitution_store = BufferedRelationshipConstitutionStore::wrap(
+            Arc::new(SpiffsRelationshipConstitutionStore::new())
+                as Arc<dyn RelationshipConstitutionStore + Send + Sync>,
+        );
         let world_sense_store = BufferedWorldSenseStore::wrap(
             Arc::new(SpiffsWorldSenseStore::new()) as Arc<dyn WorldSenseStore + Send + Sync>,
         );
@@ -120,6 +139,10 @@ impl LinuxPlatform {
         let self_continuity_store =
             BufferedSelfContinuityStore::wrap(Arc::new(SpiffsSelfContinuityStore::new())
                 as Arc<dyn SelfContinuityStore + Send + Sync>);
+        let relationship_portfolio_store = BufferedRelationshipPortfolioStore::wrap(
+            Arc::new(SpiffsRelationshipPortfolioStore::new())
+                as Arc<dyn RelationshipPortfolioStore + Send + Sync>,
+        );
         let relationship_topology_store = BufferedRelationshipTopologyStore::wrap(
             Arc::new(SpiffsRelationshipTopologyStore::new())
                 as Arc<dyn RelationshipTopologyStore + Send + Sync>,
@@ -154,11 +177,14 @@ impl LinuxPlatform {
             execution_state_store,
             self_model_store,
             self_authored_core_store,
+            core_revision_ledger_store,
+            relationship_constitution_store,
             world_sense_store,
             autonomy_strategy_store,
             outer_voice_store,
             inner_life_store,
             self_continuity_store,
+            relationship_portfolio_store,
             relationship_topology_store,
             private_doc_store: Arc::new(SpiffsPrivateDocStore::new()),
             private_garden_store: Arc::new(SpiffsPrivateGardenStore::new()),
@@ -321,6 +347,16 @@ impl Platform for LinuxPlatform {
         Arc::clone(&self.self_authored_core_store)
     }
 
+    fn core_revision_ledger_store(&self) -> Arc<dyn CoreRevisionLedgerStore + Send + Sync> {
+        Arc::clone(&self.core_revision_ledger_store)
+    }
+
+    fn relationship_constitution_store(
+        &self,
+    ) -> Arc<dyn RelationshipConstitutionStore + Send + Sync> {
+        Arc::clone(&self.relationship_constitution_store)
+    }
+
     fn world_sense_store(&self) -> Arc<dyn WorldSenseStore + Send + Sync> {
         Arc::clone(&self.world_sense_store)
     }
@@ -339,6 +375,10 @@ impl Platform for LinuxPlatform {
 
     fn self_continuity_store(&self) -> Arc<dyn SelfContinuityStore + Send + Sync> {
         Arc::clone(&self.self_continuity_store)
+    }
+
+    fn relationship_portfolio_store(&self) -> Arc<dyn RelationshipPortfolioStore + Send + Sync> {
+        Arc::clone(&self.relationship_portfolio_store)
     }
 
     fn relationship_topology_store(&self) -> Arc<dyn RelationshipTopologyStore + Send + Sync> {

@@ -4,13 +4,15 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    AutonomyStrategy, AutonomyStrategyStore, ExecutionState, ExecutionStateStore,
+    AutonomyStrategy, AutonomyStrategyStore, CoreRevisionLedger, CoreRevisionLedgerStore,
+    ExecutionState, ExecutionStateStore,
     ImportantMessageStore, InnerLife, InnerLifeStore, LongTermMemoryExtractionState,
     LongTermMemoryExtractionStateStore, MentalPrivacyState, MentalPrivacyStore, OuterVoice,
-    OuterVoiceStore, RelationshipTopology, RelationshipTopologyStore, SelfAuthoredCore,
-    SelfAuthoredCoreStore, SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore,
-    SessionMessage, SessionStore, SessionSummaryStore, TurnLedger, TurnLedgerStore, WorldSense,
-    WorldSenseStore,
+    OuterVoiceStore, RelationshipConstitution, RelationshipConstitutionStore,
+    RelationshipPortfolio, RelationshipPortfolioStore, RelationshipTopology,
+    RelationshipTopologyStore, SelfAuthoredCore, SelfAuthoredCoreStore, SelfContinuity,
+    SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
+    SessionSummaryStore, TurnLedger, TurnLedgerStore, WorldSense, WorldSenseStore,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -253,6 +255,18 @@ define_buffered_chat_store!(
     "self_authored_core_write_back"
 );
 define_buffered_chat_store!(
+    BufferedCoreRevisionLedgerStore,
+    CoreRevisionLedgerStore,
+    CoreRevisionLedger,
+    "core_revision_ledger_write_back"
+);
+define_buffered_chat_store!(
+    BufferedRelationshipConstitutionStore,
+    RelationshipConstitutionStore,
+    RelationshipConstitution,
+    "relationship_constitution_write_back"
+);
+define_buffered_chat_store!(
     BufferedWorldSenseStore,
     WorldSenseStore,
     WorldSense,
@@ -287,6 +301,12 @@ define_buffered_chat_store!(
     MentalPrivacyStore,
     MentalPrivacyState,
     "mental_privacy_write_back"
+);
+define_buffered_chat_store!(
+    BufferedRelationshipPortfolioStore,
+    RelationshipPortfolioStore,
+    RelationshipPortfolio,
+    "relationship_portfolio_write_back"
 );
 define_buffered_chat_store!(
     BufferedRelationshipTopologyStore,

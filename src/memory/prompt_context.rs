@@ -6,17 +6,20 @@ use crate::task::TaskStore;
 
 use super::{
     board_subject_scope_id, build_archive_evidence_block, build_self_state, build_world_snapshot,
-    collect_private_targets, derive_self_authored_core_from_layers, memory_capability_profile, memory_policy,
-    parse_explicit_long_term_slot_query, recall_long_term_memory_block, relationship_scope_id,
-    render_autonomy_strategy_block, render_exact_long_term_memory_block,
+    collect_private_targets, derive_relationship_constitution,
+    derive_self_authored_core_from_layers, load_recent_persona_evidence, memory_capability_profile,
+    memory_policy, parse_explicit_long_term_slot_query, recall_long_term_memory_block,
+    relationship_scope_id, render_autonomy_strategy_block, render_exact_long_term_memory_block,
     render_execution_state_block, render_inner_life_block, render_mental_privacy_boundary_block,
     render_outer_voice_block, render_persistent_self_authored_core_block,
     render_private_doc_workspace_block, render_private_garden_block,
+    render_relationship_constitution_block, render_relationship_portfolio_block,
     render_self_authored_core_block, render_self_continuity_block, render_self_model_block,
     render_self_state_block, render_world_sense_block, render_world_snapshot_block,
-    AutonomyStrategyStore, ExecutionStateStore, InnerLifeStore, LongTermMemoryStore,
-    MemoryProfile, MemoryStore, MentalPrivacyStore, OuterVoiceStore, PrivateDocStore,
-    PrivateGardenStore, RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore,
+    AutonomyStrategyStore, ExecutionStateStore, InnerLifeStore, LongTermMemoryStore, MemoryProfile,
+    MemoryStore, MentalPrivacyStore, OuterVoiceStore, PrivateDocStore, PrivateGardenStore,
+    RelationshipConstitutionStore, RelationshipConstitutionSyncInput, RelationshipPortfolioStore,
+    RelationshipTopologyStore, RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore,
     SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore, TurnLedgerStore,
     WorldSenseStore, WorldSnapshotContext,
 };
@@ -33,6 +36,9 @@ pub struct PromptMemoryContext {
     pub self_state_text: Option<String>,
     pub self_authored_core: Option<super::SelfAuthoredCore>,
     pub self_authored_core_text: Option<String>,
+    pub relationship_portfolio_text: Option<String>,
+    pub relationship_constitution: Option<super::RelationshipConstitution>,
+    pub relationship_constitution_text: Option<String>,
     pub persona_priority_text: Option<String>,
     pub self_continuity: Option<super::SelfContinuity>,
     pub outer_voice: Option<super::OuterVoice>,
@@ -65,6 +71,9 @@ pub struct PromptMemoryContextParams<'a> {
     pub execution_state_store: &'a dyn ExecutionStateStore,
     pub self_model_store: &'a dyn SelfModelStore,
     pub self_authored_core_store: &'a dyn SelfAuthoredCoreStore,
+    pub relationship_constitution_store: &'a dyn RelationshipConstitutionStore,
+    pub relationship_portfolio_store: &'a dyn RelationshipPortfolioStore,
+    pub relationship_topology_store: &'a dyn RelationshipTopologyStore,
     pub world_sense_store: &'a dyn WorldSenseStore,
     pub autonomy_strategy_store: &'a dyn AutonomyStrategyStore,
     pub outer_voice_store: &'a dyn OuterVoiceStore,
@@ -119,6 +128,16 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
     let self_model = params.self_model_store.get(subject_id).ok().flatten();
     let persistent_self_authored_core = params
         .self_authored_core_store
+        .get(subject_id)
+        .ok()
+        .flatten();
+    let relationship_portfolio = params
+        .relationship_portfolio_store
+        .get(subject_id)
+        .ok()
+        .flatten();
+    let relationship_topology = params
+        .relationship_topology_store
         .get(subject_id)
         .ok()
         .flatten();
@@ -217,6 +236,10 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         .get(&relationship_id)
         .ok()
         .flatten();
+    let recent_persona_evidence =
+        load_recent_persona_evidence(params.turn_ledger_store, &relationship_id)
+            .ok()
+            .flatten();
     let mental_privacy_targets = collect_private_targets(
         self_model.as_ref(),
         self_continuity.as_ref(),
@@ -248,6 +271,32 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
                 420,
             )
         });
+    let relationship_portfolio_text = relationship_portfolio.as_ref().and_then(|portfolio| {
+        render_relationship_portfolio_block(portfolio, params.now_secs, Some(&relationship_id), 420)
+    });
+    let relationship_constitution_existing = params
+        .relationship_constitution_store
+        .get(&relationship_id)
+        .ok()
+        .flatten();
+    let relationship_constitution = derive_relationship_constitution(
+        relationship_constitution_existing.as_ref(),
+        RelationshipConstitutionSyncInput {
+            scope_id: &relationship_id,
+            channel: params.current_channel,
+            chat_id: params.chat_id,
+            now_secs: params.now_secs,
+            self_authored_core: self_authored_core.as_ref(),
+            relationship_portfolio: relationship_portfolio.as_ref(),
+            relationship_topology: relationship_topology.as_ref(),
+            mental_privacy_state: mental_privacy_state.as_ref(),
+            outer_voice: outer_voice.as_ref(),
+            recent_persona_evidence: recent_persona_evidence.as_ref(),
+        },
+    );
+    let relationship_constitution_text = relationship_constitution
+        .as_ref()
+        .and_then(|constitution| render_relationship_constitution_block(constitution, 420));
     let self_state_text = render_self_state_block(
         &build_self_state(
             self_model.as_ref(),
@@ -363,6 +412,9 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         self_state_text,
         self_authored_core,
         self_authored_core_text,
+        relationship_portfolio_text,
+        relationship_constitution,
+        relationship_constitution_text,
         persona_priority_text: None,
         self_continuity,
         outer_voice,
@@ -389,9 +441,11 @@ mod tests {
         LongTermMemorySlot, LongTermMemoryStore, MemoryStore, MentalPrivacyState,
         MentalPrivacyStore, OuterVoice, OuterVoiceStore, PrivateDocEntry, PrivateDocStore,
         PrivateDocWorkspace, PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenStore,
-        SelfAuthoredCore, SelfAuthoredCoreStore, SelfContinuity, SelfContinuityStore, SelfModel,
-        SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore, TurnLedger,
-        TurnLedgerStatus, TurnLedgerStore, WorldSense, WorldSenseStore,
+        RelationshipConstitution, RelationshipConstitutionStore, RelationshipTopology,
+        RelationshipTopologyStore, SelfAuthoredCore, SelfAuthoredCoreStore, SelfContinuity,
+        SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
+        SessionSummaryStore, TurnLedger, TurnLedgerStatus, TurnLedgerStore, WorldSense,
+        WorldSenseStore,
     };
     use crate::platform::SkillStorage;
     use crate::task::{TaskItem, TaskQuery, TaskStore};
@@ -819,6 +873,73 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct StubRelationshipConstitutionStore {
+        value: Mutex<Option<RelationshipConstitution>>,
+    }
+
+    impl RelationshipConstitutionStore for StubRelationshipConstitutionStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<RelationshipConstitution>> {
+            Ok(self.value.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _scope_id: &str, constitution: &RelationshipConstitution) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(constitution.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubRelationshipPortfolioStore {
+        value: Mutex<Option<crate::memory::RelationshipPortfolio>>,
+    }
+
+    impl RelationshipPortfolioStore for StubRelationshipPortfolioStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<crate::memory::RelationshipPortfolio>> {
+            Ok(self.value.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(
+            &self,
+            _scope_id: &str,
+            portfolio: &crate::memory::RelationshipPortfolio,
+        ) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(portfolio.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubRelationshipTopologyStore {
+        value: Mutex<Option<RelationshipTopology>>,
+    }
+
+    impl RelationshipTopologyStore for StubRelationshipTopologyStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<RelationshipTopology>> {
+            Ok(self.value.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _scope_id: &str, topology: &RelationshipTopology) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(topology.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
     struct StubPrivateDocStore {
         workspace: Mutex<Option<PrivateDocWorkspace>>,
     }
@@ -1036,6 +1157,27 @@ mod tests {
             })),
         };
         let self_authored_core_store = StubSelfAuthoredCoreStore::default();
+        let relationship_constitution_store = StubRelationshipConstitutionStore::default();
+        let relationship_portfolio_store = StubRelationshipPortfolioStore {
+            value: Mutex::new(Some(crate::memory::RelationshipPortfolio {
+                entries: vec![crate::memory::RelationshipPortfolioEntry {
+                    scope_id: "rel:qq_channel:chat-1".to_string(),
+                    channel: "qq_channel".to_string(),
+                    chat_id: "chat-1".to_string(),
+                    governance_state: crate::memory::RelationshipGovernanceState::Maintain,
+                    inheritance_mode: crate::memory::RelationshipInheritanceMode::Guarded,
+                    priority_score: 220,
+                    reason: "maintain".to_string(),
+                    source_updated_at: 1,
+                    last_active_at: 1,
+                    needs_runtime_attention: true,
+                    last_selected_at: 0,
+                    next_review_at: 0,
+                }],
+                updated_at: 1,
+            })),
+        };
+        let relationship_topology_store = StubRelationshipTopologyStore::default();
         let world_sense_store = StubWorldSenseStore {
             value: Mutex::new(Some(WorldSense {
                 current_scene: "Quiet evening with a live user thread.".to_string(),
@@ -1155,6 +1297,9 @@ mod tests {
             execution_state_store: &execution_state_store,
             self_model_store: &self_model_store,
             self_authored_core_store: &self_authored_core_store,
+            relationship_constitution_store: &relationship_constitution_store,
+            relationship_portfolio_store: &relationship_portfolio_store,
+            relationship_topology_store: &relationship_topology_store,
             world_sense_store: &world_sense_store,
             autonomy_strategy_store: &autonomy_strategy_store,
             outer_voice_store: &outer_voice_store,
@@ -1223,6 +1368,11 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("## Self-Authored Core"));
+        assert!(context
+            .relationship_portfolio_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Relationship Portfolio"));
         assert!(context
             .self_model_text
             .as_deref()
@@ -1306,6 +1456,9 @@ mod tests {
         let execution_state_store = StubExecutionStateStore::default();
         let self_model_store = StubSelfModelStore::default();
         let self_authored_core_store = StubSelfAuthoredCoreStore::default();
+        let relationship_constitution_store = StubRelationshipConstitutionStore::default();
+        let relationship_portfolio_store = StubRelationshipPortfolioStore::default();
+        let relationship_topology_store = StubRelationshipTopologyStore::default();
         let world_sense_store = StubWorldSenseStore::default();
         let autonomy_strategy_store = StubAutonomyStrategyStore::default();
         let outer_voice_store = StubOuterVoiceStore::default();
@@ -1335,6 +1488,9 @@ mod tests {
             execution_state_store: &execution_state_store,
             self_model_store: &self_model_store,
             self_authored_core_store: &self_authored_core_store,
+            relationship_constitution_store: &relationship_constitution_store,
+            relationship_portfolio_store: &relationship_portfolio_store,
+            relationship_topology_store: &relationship_topology_store,
             world_sense_store: &world_sense_store,
             autonomy_strategy_store: &autonomy_strategy_store,
             outer_voice_store: &outer_voice_store,
@@ -1397,6 +1553,9 @@ mod tests {
             })),
         };
         let self_authored_core_store = StubSelfAuthoredCoreStore::default();
+        let relationship_constitution_store = StubRelationshipConstitutionStore::default();
+        let relationship_portfolio_store = StubRelationshipPortfolioStore::default();
+        let relationship_topology_store = StubRelationshipTopologyStore::default();
         let world_sense_store = StubWorldSenseStore {
             value: Mutex::new(Some(WorldSense {
                 current_scene: "Fast path but still inside an active chat.".to_string(),
@@ -1503,6 +1662,9 @@ mod tests {
             execution_state_store: &execution_state_store,
             self_model_store: &self_model_store,
             self_authored_core_store: &self_authored_core_store,
+            relationship_constitution_store: &relationship_constitution_store,
+            relationship_portfolio_store: &relationship_portfolio_store,
+            relationship_topology_store: &relationship_topology_store,
             world_sense_store: &world_sense_store,
             autonomy_strategy_store: &autonomy_strategy_store,
             outer_voice_store: &outer_voice_store,
@@ -1572,6 +1734,9 @@ mod tests {
                 ..SelfAuthoredCore::default()
             })),
         };
+        let relationship_constitution_store = StubRelationshipConstitutionStore::default();
+        let relationship_portfolio_store = StubRelationshipPortfolioStore::default();
+        let relationship_topology_store = StubRelationshipTopologyStore::default();
         let world_sense_store = StubWorldSenseStore::default();
         let autonomy_strategy_store = StubAutonomyStrategyStore::default();
         let outer_voice_store = StubOuterVoiceStore::default();
@@ -1598,6 +1763,9 @@ mod tests {
             execution_state_store: &execution_state_store,
             self_model_store: &self_model_store,
             self_authored_core_store: &self_authored_core_store,
+            relationship_constitution_store: &relationship_constitution_store,
+            relationship_portfolio_store: &relationship_portfolio_store,
+            relationship_topology_store: &relationship_topology_store,
             world_sense_store: &world_sense_store,
             autonomy_strategy_store: &autonomy_strategy_store,
             outer_voice_store: &outer_voice_store,

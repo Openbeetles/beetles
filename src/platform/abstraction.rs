@@ -8,7 +8,8 @@ use crate::error::{Error, Result};
 use crate::memory::{
     AutonomyStrategyStore, ExecutionStateStore, ImportantMessageStore, InnerLifeStore,
     LongTermMemoryStore, MemoryProfile, MemoryStore, MentalPrivacyStore, OuterVoiceStore,
-    PendingRetryStore, PrivateDocStore, PrivateGardenStore, RelationshipTopologyStore,
+    CoreRevisionLedgerStore, PendingRetryStore, PrivateDocStore, PrivateGardenStore,
+    RelationshipConstitutionStore, RelationshipPortfolioStore, RelationshipTopologyStore,
     RemindAtStore, SelfContinuityStore, SelfAuthoredCoreStore, SelfModelStore, SessionStore,
     SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
 };
@@ -580,11 +581,16 @@ pub trait Platform: Send + Sync {
     fn execution_state_store(&self) -> Arc<dyn ExecutionStateStore + Send + Sync>;
     fn self_model_store(&self) -> Arc<dyn SelfModelStore + Send + Sync>;
     fn self_authored_core_store(&self) -> Arc<dyn SelfAuthoredCoreStore + Send + Sync>;
+    fn core_revision_ledger_store(&self) -> Arc<dyn CoreRevisionLedgerStore + Send + Sync>;
+    fn relationship_constitution_store(
+        &self,
+    ) -> Arc<dyn RelationshipConstitutionStore + Send + Sync>;
     fn world_sense_store(&self) -> Arc<dyn WorldSenseStore + Send + Sync>;
     fn autonomy_strategy_store(&self) -> Arc<dyn AutonomyStrategyStore + Send + Sync>;
     fn outer_voice_store(&self) -> Arc<dyn OuterVoiceStore + Send + Sync>;
     fn inner_life_store(&self) -> Arc<dyn InnerLifeStore + Send + Sync>;
     fn self_continuity_store(&self) -> Arc<dyn SelfContinuityStore + Send + Sync>;
+    fn relationship_portfolio_store(&self) -> Arc<dyn RelationshipPortfolioStore + Send + Sync>;
     fn relationship_topology_store(&self) -> Arc<dyn RelationshipTopologyStore + Send + Sync>;
     fn private_doc_store(&self) -> Arc<dyn PrivateDocStore + Send + Sync>;
     fn private_garden_store(&self) -> Arc<dyn PrivateGardenStore + Send + Sync>;

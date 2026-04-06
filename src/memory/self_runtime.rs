@@ -20,48 +20,51 @@ use std::time::{Duration, Instant};
 
 use super::{
     autonomy_idle_interval_secs, board_subject_scope_id, build_archive_evidence_block,
-    build_self_state, build_world_snapshot,
+    build_self_state, build_world_snapshot, compute_core_revision_governance_digest,
     llm_json::{
         get_object_bool, get_object_string_list, get_object_text, parse_llm_json_payload,
         LlmJsonPayload,
     },
     load_recent_persona_evidence, memory_capability_profile, memory_policy, relationship_scope_id,
-    render_autonomy_strategy_block, render_execution_state_block,
-    render_internal_memory_topology_block, render_mental_privacy_boundary_block,
+    render_autonomy_strategy_block, render_core_revision_governance_block,
+    render_execution_state_block, render_internal_memory_topology_block,
+    render_mental_privacy_boundary_block, render_persistent_self_authored_core_block,
     render_private_memory_boundary_block, render_recent_persona_evidence_block,
-    render_relationship_topology_block,
-    render_persistent_self_authored_core_block, render_self_authored_core_block,
-    render_self_state_block, render_world_sense_block, render_world_snapshot_block,
+    render_relationship_constitution_block, render_relationship_portfolio_block,
+    render_relationship_topology_block, render_self_authored_core_block, render_self_state_block,
+    render_world_sense_block, render_world_snapshot_block,
     run_autonomy_strategy_refresh_with_state, run_boundary_persona_refresh_with_state,
     run_inner_life_refresh_with_state, run_memory_governance_kernel, run_memory_hygiene_jobs,
     run_outer_voice_refresh_with_state, run_private_doc_workspace_refresh_with_state,
     run_private_garden_governance_with_state, run_self_authored_core_refresh_with_state,
     run_self_continuity_refresh_with_state, run_self_model_refresh_with_state,
-    run_world_sense_refresh_with_state, touch_self_continuity_runtime,
-    AutonomyGovernanceTendency, AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput,
-    AutonomyStrategyRefreshOutcome, AutonomyStrategyStore, BoundaryPersonaRefreshContext,
-    BoundaryPersonaRefreshInput, BoundaryPersonaRefreshOutcome, ExecutionStateStore,
+    run_world_sense_refresh_with_state, select_relationship_portfolio_targets,
+    sync_relationship_constitution, sync_relationship_portfolio,
+    touch_relationship_portfolio_selection, touch_self_continuity_runtime,
+    upsert_relationship_topology_entry, AutonomyGovernanceTendency, AutonomyStrategyRefreshContext,
+    AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome, AutonomyStrategyStore,
+    BoundaryPersonaRefreshContext, BoundaryPersonaRefreshInput, BoundaryPersonaRefreshOutcome,
+    CoreRevisionGovernanceDigest, CoreRevisionLedgerStore, ExecutionStateStore,
     InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome, InnerLifeStore,
-    InternalMemoryLayerFocus, LongTermMemoryStore, MemoryGovernanceContext,
-    MemoryGovernanceInput, MemoryHygieneContext, MemoryProfile, MemoryStore,
-    MentalPrivacyStore, OuterVoiceRefreshContext, OuterVoiceRefreshInput,
-    OuterVoiceRefreshOutcome, OuterVoiceStore, PrivateDocStore,
+    InternalMemoryLayerFocus, LongTermMemoryStore, MemoryGovernanceContext, MemoryGovernanceInput,
+    MemoryHygieneContext, MemoryProfile, MemoryStore, MentalPrivacyStore, OuterVoiceRefreshContext,
+    OuterVoiceRefreshInput, OuterVoiceRefreshOutcome, OuterVoiceStore, PrivateDocStore,
     PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
     PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
     PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, PrivateGardenStore,
-    RelationshipSelectorInput, RelationshipTopology, RelationshipTopologyStore,
-    RemindAtStore, SelfAuthoredCoreRefreshContext, SelfAuthoredCoreRefreshInput,
-    select_relationship_topology_targets, upsert_relationship_topology_entry,
-    SelfAuthoredCoreRefreshOutcome, SelfAuthoredCoreStore, SelfContinuityRefreshContext,
-    SelfContinuityRefreshInput, SelfContinuityRefreshOutcome, SelfContinuityStore,
-    SelfMemorySpaceBottleneck, SelfMemorySpacePressure, SelfModelRefreshContext,
-    SelfModelRefreshInput, SelfModelRefreshOutcome, SelfModelStore, SelfState, SessionStore,
-    SessionSummaryStore, SharedFactualPlaneSnapshot, SharedFactualReconcileAction,
-    TurnLedgerStore, WorldSenseRefreshContext, WorldSenseRefreshInput,
-    WorldSenseRefreshOutcome, WorldSenseStore, WorldSnapshotContext,
+    RelationshipConstitution, RelationshipConstitutionStore, RelationshipConstitutionSyncInput,
+    RelationshipPortfolio, RelationshipPortfolioSelectorInput, RelationshipPortfolioStore,
+    RelationshipTopology, RelationshipTopologyStore, RemindAtStore, SelfAuthoredCoreRefreshContext,
+    SelfAuthoredCoreRefreshInput, SelfAuthoredCoreRefreshOutcome, SelfAuthoredCoreStore,
+    SelfContinuityRefreshContext, SelfContinuityRefreshInput, SelfContinuityRefreshOutcome,
+    SelfContinuityStore, SelfMemorySpaceBottleneck, SelfMemorySpacePressure,
+    SelfModelRefreshContext, SelfModelRefreshInput, SelfModelRefreshOutcome, SelfModelStore,
+    SelfState, SessionStore, SessionSummaryStore, SharedFactualPlaneSnapshot,
+    SharedFactualReconcileAction, TurnLedgerStore, WorldSenseRefreshContext,
+    WorldSenseRefreshInput, WorldSenseRefreshOutcome, WorldSenseStore, WorldSnapshotContext,
 };
 
-pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's inward autonomy runtime. Respect the current autonomy strategy unless the latest world state, self-state, or recent multi-turn persona evidence clearly requires a different emphasis. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_private_docs, private_docs_intent, private_docs_action, refresh_private_garden, private_garden_intent, private_garden_action, refresh_self_model, self_model_intent, self_model_sources, refresh_self_continuity, self_continuity_intent, self_continuity_sources, refresh_self_authored_core, self_authored_core_intent, self_authored_core_sources, refresh_boundary_persona, boundary_persona_intent, refresh_outer_voice, outer_voice_intent, outer_voice_sources, boundary_flush, boundary_flush_reason, request_factual_refresh, factual_reconcile_action, factual_reconcile_intent. Use true only when that layer should change now. Runtime governance actions are hold, rewrite, compress, or cleanup. factual_reconcile_action is hold, reinforce, correct, conflict, or stale. self_model, self_continuity, self_authored_core, boundary_persona, and outer_voice are upward distillation layers: refresh them only when private evolution or newer world/boundary state has produced a better stable core that should influence future main replies. self_authored_core is the board-level core above chat relationships; do not promote one-turn spikes or one-chat quirks into it. Source lists should name the layers that actually deserve upward distillation, such as inner_life, private_docs, private_garden, self_model, self_continuity, self_authored_core, boundary_persona, outer_voice, world_sense, autonomy_strategy, recent_persona_evidence, or recent_transcript. Treat recent persona evidence as multi-turn support, never as one-turn automatic promotion authority. Favor autonomy, but do not churn memory without gain.";
+pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's inward autonomy runtime. Respect the current autonomy strategy unless the latest world state, self-state, or recent multi-turn persona evidence clearly requires a different emphasis. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_private_docs, private_docs_intent, private_docs_action, refresh_private_garden, private_garden_intent, private_garden_action, refresh_self_model, self_model_intent, self_model_sources, refresh_self_continuity, self_continuity_intent, self_continuity_sources, refresh_self_authored_core, self_authored_core_intent, self_authored_core_sources, refresh_boundary_persona, boundary_persona_intent, refresh_outer_voice, outer_voice_intent, outer_voice_sources, boundary_flush, boundary_flush_reason, request_factual_refresh, factual_reconcile_action, factual_reconcile_intent. Use true only when that layer should change now. Runtime governance actions are hold, rewrite, compress, or cleanup. factual_reconcile_action is hold, reinforce, correct, conflict, or stale. self_model, self_continuity, self_authored_core, boundary_persona, and outer_voice are upward distillation layers: refresh them only when private evolution or newer world/boundary state has produced a better stable core that should influence future main replies. self_authored_core is the board-level core above chat relationships; do not promote one-turn spikes or one-chat quirks into it. Relationship portfolio is the board-level governance layer above relationship overlays. Relationship constitution is the formal board-to-relation contract: respect it when deciding how much a relation may drift, which local layers need realignment, and whether any relation may push upward into board-level distillation. Source lists should name the layers that actually deserve upward distillation, such as inner_life, private_docs, private_garden, self_model, self_continuity, self_authored_core, boundary_persona, outer_voice, world_sense, autonomy_strategy, recent_persona_evidence, or recent_transcript. Treat recent persona evidence as multi-turn support, never as one-turn automatic promotion authority. Favor autonomy, but do not churn memory without gain.";
 pub const SELF_RUNTIME_CHANNEL: &str = "_self_runtime";
 const SELF_RUNTIME_POST_REPLY_DELAY_MS: u64 = 1_500;
 const SELF_RUNTIME_IDLE_TICK_DELAY_MS: u64 = 5_000;
@@ -155,10 +158,13 @@ pub struct SelfRuntimeContext<'a> {
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
     pub self_model_store: &'a dyn SelfModelStore,
     pub self_authored_core_store: &'a dyn SelfAuthoredCoreStore,
+    pub core_revision_ledger_store: &'a dyn CoreRevisionLedgerStore,
+    pub relationship_constitution_store: &'a dyn RelationshipConstitutionStore,
     pub private_doc_store: &'a dyn PrivateDocStore,
     pub private_garden_store: &'a dyn PrivateGardenStore,
     pub inner_life_store: &'a dyn InnerLifeStore,
     pub self_continuity_store: &'a dyn SelfContinuityStore,
+    pub relationship_portfolio_store: &'a dyn RelationshipPortfolioStore,
     pub relationship_topology_store: &'a dyn RelationshipTopologyStore,
     pub world_sense_store: &'a dyn WorldSenseStore,
     pub autonomy_strategy_store: &'a dyn AutonomyStrategyStore,
@@ -189,11 +195,15 @@ struct LoadedSelfRuntimeState {
     execution_state: Option<crate::memory::ExecutionState>,
     self_model: Option<crate::memory::SelfModel>,
     self_authored_core: Option<crate::memory::SelfAuthoredCore>,
+    core_revision_ledger: Option<crate::memory::CoreRevisionLedger>,
+    core_revision_governance: CoreRevisionGovernanceDigest,
     private_docs: Option<crate::memory::PrivateDocWorkspace>,
     private_garden_docs: Vec<crate::memory::PrivateGardenDocRecord>,
     inner_life: Option<crate::memory::InnerLife>,
     self_continuity: Option<crate::memory::SelfContinuity>,
+    relationship_portfolio: Option<crate::memory::RelationshipPortfolio>,
     relationship_topology: Option<crate::memory::RelationshipTopology>,
+    relationship_constitution: Option<crate::memory::RelationshipConstitution>,
     world_sense: Option<crate::memory::WorldSense>,
     autonomy_strategy: Option<crate::memory::AutonomyStrategy>,
     outer_voice: Option<crate::memory::OuterVoice>,
@@ -358,6 +368,23 @@ fn load_self_runtime_state(
     let execution_state = ctx.execution_state_store.get(chat_id).ok().flatten();
     let self_model = ctx.self_model_store.get(subject_id).ok().flatten();
     let self_authored_core = ctx.self_authored_core_store.get(subject_id).ok().flatten();
+    let core_revision_ledger = ctx
+        .core_revision_ledger_store
+        .get(subject_id)
+        .ok()
+        .flatten();
+    let core_revision_governance = compute_core_revision_governance_digest(
+        core_revision_ledger.as_ref(),
+        self_authored_core
+            .as_ref()
+            .map(|core| core.last_reviewed_at)
+            .unwrap_or(0),
+        self_authored_core
+            .as_ref()
+            .map(|core| core.stability_score)
+            .unwrap_or(0),
+        payload.now_secs,
+    );
     let private_docs = ctx.private_doc_store.get(subject_id).ok().flatten();
     let private_garden_docs = ctx
         .private_garden_store
@@ -365,7 +392,25 @@ fn load_self_runtime_state(
         .unwrap_or_default();
     let inner_life = ctx.inner_life_store.get(subject_id).ok().flatten();
     let self_continuity = ctx.self_continuity_store.get(subject_id).ok().flatten();
-    let relationship_topology = ctx.relationship_topology_store.get(subject_id).ok().flatten();
+    let relationship_topology = ctx
+        .relationship_topology_store
+        .get(subject_id)
+        .ok()
+        .flatten();
+    let relationship_portfolio = sync_relationship_portfolio(
+        ctx.relationship_portfolio_store,
+        relationship_topology.as_ref(),
+        self_authored_core.as_ref(),
+        payload.now_secs,
+    )
+    .ok()
+    .flatten()
+    .or_else(|| {
+        ctx.relationship_portfolio_store
+            .get(subject_id)
+            .ok()
+            .flatten()
+    });
     let prior_user_channel = self_continuity
         .as_ref()
         .map(|continuity| continuity.last_user_channel.trim().to_string())
@@ -375,6 +420,7 @@ fn load_self_runtime_state(
             chat_id,
             payload,
             self_continuity.as_ref(),
+            relationship_portfolio.as_ref(),
             relationship_topology.as_ref(),
         );
     let world_sense = ctx
@@ -397,6 +443,29 @@ fn load_self_runtime_state(
         load_recent_persona_evidence(ctx.turn_ledger_store, &active_relationship_scope_id)
             .ok()
             .flatten();
+    let relationship_constitution = sync_relationship_constitution(
+        ctx.relationship_constitution_store,
+        RelationshipConstitutionSyncInput {
+            scope_id: &active_relationship_scope_id,
+            channel: &active_relationship_channel,
+            chat_id,
+            now_secs: payload.now_secs,
+            self_authored_core: self_authored_core.as_ref(),
+            relationship_portfolio: relationship_portfolio.as_ref(),
+            relationship_topology: relationship_topology.as_ref(),
+            mental_privacy_state: mental_privacy_state.as_ref(),
+            outer_voice: outer_voice.as_ref(),
+            recent_persona_evidence: recent_persona_evidence.as_ref(),
+        },
+    )
+    .ok()
+    .flatten()
+    .or_else(|| {
+        ctx.relationship_constitution_store
+            .get(&active_relationship_scope_id)
+            .ok()
+            .flatten()
+    });
     let self_continuity = if payload.trigger == SelfRuntimeTrigger::PostReply {
         let mut continuity = self_continuity.unwrap_or_default();
         continuity.last_user_turn_at = payload.now_secs;
@@ -442,11 +511,15 @@ fn load_self_runtime_state(
         execution_state,
         self_model,
         self_authored_core,
+        core_revision_ledger,
+        core_revision_governance,
         private_docs,
         private_garden_docs,
         inner_life,
         self_continuity,
+        relationship_portfolio,
         relationship_topology,
+        relationship_constitution,
         world_sense,
         autonomy_strategy,
         outer_voice,
@@ -464,6 +537,7 @@ fn resolve_runtime_relationship_scope(
     chat_id: &str,
     payload: &SelfRuntimeJobPayload,
     self_continuity: Option<&crate::memory::SelfContinuity>,
+    relationship_portfolio: Option<&RelationshipPortfolio>,
     relationship_topology: Option<&RelationshipTopology>,
 ) -> (String, String) {
     let requested_channel = payload.source_channel.trim();
@@ -478,6 +552,13 @@ fn resolve_runtime_relationship_scope(
             relationship_scope_id(requested_channel, chat_id),
             requested_channel.to_string(),
         );
+    }
+    if let Some(entry) = pick_runtime_relationship_portfolio_entry_for_chat(
+        relationship_portfolio,
+        chat_id,
+        requested_channel,
+    ) {
+        return (entry.scope_id.clone(), entry.channel.clone());
     }
     if let Some(entry) =
         pick_runtime_relationship_entry_for_chat(relationship_topology, chat_id, requested_channel)
@@ -497,6 +578,29 @@ fn resolve_runtime_relationship_scope(
     )
 }
 
+fn pick_runtime_relationship_portfolio_entry_for_chat<'a>(
+    relationship_portfolio: Option<&'a RelationshipPortfolio>,
+    chat_id: &str,
+    preferred_channel: &str,
+) -> Option<&'a crate::memory::RelationshipPortfolioEntry> {
+    let portfolio = relationship_portfolio?;
+    let preferred_channel = preferred_channel.trim();
+    portfolio
+        .entries
+        .iter()
+        .filter(|entry| entry.is_meaningful() && entry.chat_id.trim() == chat_id)
+        .max_by(|left, right| {
+            let left_preferred =
+                (!preferred_channel.is_empty() && left.channel.trim() == preferred_channel) as u8;
+            let right_preferred =
+                (!preferred_channel.is_empty() && right.channel.trim() == preferred_channel) as u8;
+            left_preferred
+                .cmp(&right_preferred)
+                .then_with(|| left.priority_score.cmp(&right.priority_score))
+                .then_with(|| left.last_active_at.cmp(&right.last_active_at))
+        })
+}
+
 fn pick_runtime_relationship_entry_for_chat<'a>(
     relationship_topology: Option<&'a RelationshipTopology>,
     chat_id: &str,
@@ -509,10 +613,10 @@ fn pick_runtime_relationship_entry_for_chat<'a>(
         .iter()
         .filter(|entry| entry.is_meaningful() && entry.chat_id.trim() == chat_id)
         .max_by(|left, right| {
-            let left_preferred = (!preferred_channel.is_empty()
-                && left.channel.trim() == preferred_channel) as u8;
-            let right_preferred = (!preferred_channel.is_empty()
-                && right.channel.trim() == preferred_channel) as u8;
+            let left_preferred =
+                (!preferred_channel.is_empty() && left.channel.trim() == preferred_channel) as u8;
+            let right_preferred =
+                (!preferred_channel.is_empty() && right.channel.trim() == preferred_channel) as u8;
             left_preferred
                 .cmp(&right_preferred)
                 .then_with(|| left.latest_overlay_at().cmp(&right.latest_overlay_at()))
@@ -564,6 +668,81 @@ fn sync_self_runtime_relationship_topology(
             chat_id,
             error
         );
+    }
+}
+
+fn sync_self_runtime_relationship_portfolio(
+    ctx: &SelfRuntimeContext<'_>,
+    now_secs: u64,
+) -> Option<RelationshipPortfolio> {
+    let subject_id = board_subject_scope_id();
+    let relationship_topology = ctx
+        .relationship_topology_store
+        .get(subject_id)
+        .ok()
+        .flatten();
+    let self_authored_core = ctx.self_authored_core_store.get(subject_id).ok().flatten();
+    match sync_relationship_portfolio(
+        ctx.relationship_portfolio_store,
+        relationship_topology.as_ref(),
+        self_authored_core.as_ref(),
+        now_secs,
+    ) {
+        Ok(portfolio) => portfolio,
+        Err(error) => {
+            log::warn!(
+                "[self_runtime] relationship portfolio sync failed: {}",
+                error
+            );
+            ctx.relationship_portfolio_store
+                .get(subject_id)
+                .ok()
+                .flatten()
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_self_runtime_relationship_constitution(
+    ctx: &SelfRuntimeContext<'_>,
+    scope_id: &str,
+    channel: &str,
+    chat_id: &str,
+    now_secs: u64,
+    self_authored_core: Option<&crate::memory::SelfAuthoredCore>,
+    relationship_portfolio: Option<&RelationshipPortfolio>,
+    relationship_topology: Option<&RelationshipTopology>,
+    mental_privacy_state: Option<&crate::memory::MentalPrivacyState>,
+    outer_voice: Option<&crate::memory::OuterVoice>,
+    recent_persona_evidence: Option<&crate::memory::RecentPersonaEvidence>,
+) -> Option<RelationshipConstitution> {
+    match sync_relationship_constitution(
+        ctx.relationship_constitution_store,
+        RelationshipConstitutionSyncInput {
+            scope_id,
+            channel,
+            chat_id,
+            now_secs,
+            self_authored_core,
+            relationship_portfolio,
+            relationship_topology,
+            mental_privacy_state,
+            outer_voice,
+            recent_persona_evidence,
+        },
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!(
+                "[self_runtime] relationship constitution sync failed scope_id={}: {}",
+                scope_id,
+                error
+            );
+            ctx.relationship_constitution_store
+                .get(scope_id)
+                .ok()
+                .flatten()
+        }
     }
 }
 
@@ -900,13 +1079,17 @@ fn execute_self_runtime_actions(
         state.execution_state.as_ref(),
         state.self_model.as_ref(),
         state.self_authored_core.as_ref(),
+        state.core_revision_ledger.as_ref(),
+        &state.core_revision_governance,
         state.private_docs.as_ref(),
         &state.private_garden_docs,
         state.inner_life.as_ref(),
         state.self_continuity.as_ref(),
         state.outer_voice.as_ref(),
         state.mental_privacy_state.as_ref(),
+        state.relationship_portfolio.as_ref(),
         state.relationship_topology.as_ref(),
+        state.relationship_constitution.as_ref(),
         state.active_relationship_scope_id.as_str(),
         state.recent_persona_evidence.as_ref(),
         prelude.refreshed_world_sense.as_ref(),
@@ -1254,6 +1437,7 @@ fn execute_self_runtime_actions(
             llm,
             BoundaryPersonaRefreshContext {
                 mental_privacy_store: ctx.mental_privacy_store,
+                relationship_constitution_store: ctx.relationship_constitution_store,
                 outer_voice_store: ctx.outer_voice_store,
             },
             BoundaryPersonaRefreshInput {
@@ -1273,6 +1457,7 @@ fn execute_self_runtime_actions(
             refreshed_mental_privacy.clone(),
             refreshed_self_model.as_ref(),
             refreshed_self_continuity.as_ref(),
+            state.relationship_constitution.as_ref(),
             state.recent_persona_evidence.as_ref(),
             state.recent.as_slice(),
             Some(true),
@@ -1334,6 +1519,7 @@ fn execute_self_runtime_actions(
             refreshed_private_docs.as_ref(),
             &refreshed_private_garden_docs,
             refreshed_mental_privacy.as_ref(),
+            state.relationship_constitution.as_ref(),
             state.recent_persona_evidence.as_ref(),
             decision_ref.and_then(|d| {
                 (!d.outer_voice_intent.trim().is_empty()).then_some(d.outer_voice_intent.as_str())
@@ -1369,6 +1555,7 @@ fn execute_self_runtime_actions(
             llm,
             SelfAuthoredCoreRefreshContext {
                 self_authored_core_store: ctx.self_authored_core_store,
+                core_revision_ledger_store: ctx.core_revision_ledger_store,
             },
             SelfAuthoredCoreRefreshInput {
                 chat_id: subject_id,
@@ -1384,6 +1571,8 @@ fn execute_self_runtime_actions(
             refreshed_self_model.as_ref(),
             refreshed_self_continuity.as_ref(),
             refreshed_mental_privacy.as_ref(),
+            state.relationship_portfolio.as_ref(),
+            state.active_relationship_scope_id.as_str(),
             state.recent_persona_evidence.as_ref(),
             state.relationship_topology.as_ref(),
             prelude.refreshed_world_sense.as_ref(),
@@ -1454,6 +1643,7 @@ fn re_finalize_staged_self_runtime_decision(
     *decision = Some(finalize_self_runtime_decision(
         existing_decision,
         &snapshot,
+        &state.core_revision_governance,
         refreshed_private_docs.is_some(),
         !refreshed_private_garden_docs.is_empty(),
         refreshed_inner_life.is_some(),
@@ -1608,6 +1798,8 @@ pub fn self_runtime_tick(
     session_store: &dyn SessionStore,
     self_continuity_store: &dyn SelfContinuityStore,
     autonomy_strategy_store: &dyn AutonomyStrategyStore,
+    self_authored_core_store: &dyn SelfAuthoredCoreStore,
+    relationship_portfolio_store: &dyn RelationshipPortfolioStore,
     relationship_topology_store: &dyn RelationshipTopologyStore,
     profile: MemoryProfile,
     now_secs: u64,
@@ -1698,17 +1890,40 @@ pub fn self_runtime_tick(
             None
         }
     };
+    let self_authored_core = match self_authored_core_store.get(subject_id) {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!(
+                "[self_runtime] failed to read self-authored core for portfolio sync: {}",
+                error
+            );
+            None
+        }
+    };
+    let portfolio = match sync_relationship_portfolio(
+        relationship_portfolio_store,
+        topology.as_ref(),
+        self_authored_core.as_ref(),
+        now_secs,
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!(
+                "[self_runtime] failed to sync relationship portfolio: {}",
+                error
+            );
+            relationship_portfolio_store.get(subject_id).ok().flatten()
+        }
+    };
     let mut scheduled_chat_ids = HashSet::with_capacity(max_jobs_per_tick);
-    if let Some(topology) = topology.as_ref() {
-        let targets = select_relationship_topology_targets(
-            Some(topology),
-            RelationshipSelectorInput {
+    if let Some(portfolio) = portfolio.as_ref() {
+        let targets = select_relationship_portfolio_targets(
+            Some(portfolio),
+            RelationshipPortfolioSelectorInput {
                 preferred_chat_id,
                 preferred_channel,
                 now_secs,
                 max_targets: max_jobs_per_tick,
-                active_window_secs: policy.active_chat_window_secs,
-                runtime_cooldown_secs: idle_interval_secs,
             },
         );
         for target in targets {
@@ -1718,6 +1933,11 @@ pub fn self_runtime_tick(
             if !scheduled_chat_ids.insert(target.chat_id.clone()) {
                 continue;
             }
+            let _ = touch_relationship_portfolio_selection(
+                relationship_portfolio_store,
+                target.scope_id.as_str(),
+                now_secs,
+            );
             if enqueue_self_runtime_idle_tick_for_relation(
                 system_inbound_tx,
                 &target.chat_id,
@@ -1842,6 +2062,13 @@ pub fn run_self_runtime(
     payload: &SelfRuntimeJobPayload,
     profile: MemoryProfile,
 ) -> Box<SelfRuntimeOutcome> {
+    sync_self_runtime_relationship_topology(
+        &ctx,
+        payload.source_channel.as_str(),
+        chat_id,
+        payload.now_secs,
+    );
+    let _ = sync_self_runtime_relationship_portfolio(&ctx, payload.now_secs);
     let state = load_self_runtime_state(&ctx, chat_id, payload, profile);
     crate::platform::task_wdt::feed_current_task();
     let prelude =
@@ -1874,6 +2101,46 @@ pub fn run_self_runtime(
         state.active_relationship_channel.as_str(),
         chat_id,
         payload.now_secs,
+    );
+    let portfolio_after = sync_self_runtime_relationship_portfolio(&ctx, payload.now_secs);
+    let latest_self_authored_core = ctx
+        .self_authored_core_store
+        .get(board_subject_scope_id())
+        .ok()
+        .flatten()
+        .or(state.self_authored_core.clone());
+    let latest_relationship_topology = ctx
+        .relationship_topology_store
+        .get(board_subject_scope_id())
+        .ok()
+        .flatten()
+        .or(state.relationship_topology.clone());
+    let latest_outer_voice = ctx
+        .outer_voice_store
+        .get(state.active_relationship_scope_id.as_str())
+        .ok()
+        .flatten()
+        .or(state.outer_voice.clone());
+    let latest_mental_privacy = ctx
+        .mental_privacy_store
+        .get(state.active_relationship_scope_id.as_str())
+        .ok()
+        .flatten()
+        .or(state.mental_privacy_state.clone());
+    let _ = sync_self_runtime_relationship_constitution(
+        &ctx,
+        state.active_relationship_scope_id.as_str(),
+        state.active_relationship_channel.as_str(),
+        chat_id,
+        payload.now_secs,
+        latest_self_authored_core.as_ref(),
+        portfolio_after
+            .as_ref()
+            .or(state.relationship_portfolio.as_ref()),
+        latest_relationship_topology.as_ref(),
+        latest_mental_privacy.as_ref(),
+        latest_outer_voice.as_ref(),
+        state.recent_persona_evidence.as_ref(),
     );
     crate::platform::task_wdt::feed_current_task();
     if matches!(payload.trigger, SelfRuntimeTrigger::IdleTick) {
@@ -1921,6 +2188,7 @@ fn normalize_self_runtime_decision(
     autonomy_strategy: Option<&crate::memory::AutonomyStrategy>,
     self_state: &SelfState,
     distillation_snapshot: &PersonaDistillationSnapshot,
+    core_revision_governance: &CoreRevisionGovernanceDigest,
     has_self_model: bool,
     has_self_authored_core: bool,
     has_private_docs: bool,
@@ -1949,6 +2217,7 @@ fn normalize_self_runtime_decision(
     finalize_self_runtime_decision(
         decision,
         distillation_snapshot,
+        core_revision_governance,
         has_private_docs,
         has_private_garden_docs,
         has_inner_life,
@@ -2029,6 +2298,7 @@ fn normalize_initial_self_runtime_decision(
 fn finalize_self_runtime_decision(
     mut decision: SelfRuntimeDecision,
     distillation_snapshot: &PersonaDistillationSnapshot,
+    core_revision_governance: &CoreRevisionGovernanceDigest,
     has_private_docs: bool,
     has_private_garden_docs: bool,
     has_inner_life: bool,
@@ -2041,6 +2311,7 @@ fn finalize_self_runtime_decision(
     normalize_persona_distillation_lag(
         &mut decision,
         distillation_snapshot,
+        core_revision_governance,
         has_private_docs,
         has_private_garden_docs,
         has_inner_life,
@@ -2184,11 +2455,12 @@ fn normalize_boundary_and_factual_decisions(
 fn normalize_persona_distillation_lag(
     decision: &mut SelfRuntimeDecision,
     snapshot: &PersonaDistillationSnapshot,
+    core_revision_governance: &CoreRevisionGovernanceDigest,
     has_private_docs: bool,
     has_private_garden_docs: bool,
     has_inner_life: bool,
     has_self_model: bool,
-    _has_self_authored_core: bool,
+    has_self_authored_core: bool,
     has_self_continuity: bool,
     has_outer_voice: bool,
     has_mental_privacy: bool,
@@ -2232,47 +2504,97 @@ fn normalize_persona_distillation_lag(
         );
     }
 
-    let self_authored_core_upstream_at = snapshot
+    let stable_self_authored_core_upstream_at = snapshot
         .self_model_at
         .max(snapshot.self_continuity_at)
-        .max(snapshot.boundary_state_at)
-        .max(snapshot.outer_voice_at)
+        .max(snapshot.boundary_state_at);
+    let volatile_self_authored_core_upstream_at = snapshot
+        .outer_voice_at
         .max(snapshot.recent_persona_evidence_at);
-    if self_authored_core_upstream_at > snapshot.self_authored_core_at
-        && (has_self_model || has_self_continuity || has_outer_voice || has_mental_privacy)
+    let review_due = core_revision_governance.review_due && has_self_authored_core;
+    let observation_active = core_revision_governance.observation_active && has_self_authored_core;
+    let stable_upstream_advanced =
+        stable_self_authored_core_upstream_at > snapshot.self_authored_core_at;
+    let volatile_upstream_advanced =
+        volatile_self_authored_core_upstream_at > snapshot.self_authored_core_at;
+    let should_refresh_from_volatile_support = volatile_upstream_advanced
+        && !core_revision_governance.conservative_mode
+        && !observation_active;
+    if review_due
+        || stable_upstream_advanced
+        || should_refresh_from_volatile_support
+        || (!has_self_authored_core
+            && (has_self_model || has_self_continuity || has_mental_privacy))
     {
         decision.refresh_self_authored_core = true;
         if decision.self_authored_core_intent.trim().is_empty() {
-            decision.self_authored_core_intent =
-                "Re-distill the stable board-level self core from the latest long-horizon persona layers".to_string();
+            decision.self_authored_core_intent = if review_due {
+                format!(
+                    "Run a board-level constitutional review because {}",
+                    core_revision_governance.pressure_summary()
+                )
+            } else if observation_active {
+                format!(
+                    "Review whether the board-level core still holds while {}",
+                    core_revision_governance.observation_summary()
+                )
+            } else if core_revision_governance.conservative_mode {
+                "Re-distill the board-level self core from the steadier long-horizon layers before recent drift hardens".to_string()
+            } else {
+                "Re-distill the stable board-level self core from the latest long-horizon persona layers".to_string()
+            };
         }
         push_runtime_source_if(
             &mut decision.self_authored_core_sources,
-            has_self_model && snapshot.self_model_at > snapshot.self_authored_core_at,
+            has_self_model
+                && (review_due || snapshot.self_model_at > snapshot.self_authored_core_at),
             "self_model",
         );
         push_runtime_source_if(
             &mut decision.self_authored_core_sources,
             has_self_continuity
-                && snapshot.self_continuity_at > snapshot.self_authored_core_at,
+                && (review_due || snapshot.self_continuity_at > snapshot.self_authored_core_at),
             "self_continuity",
         );
         push_runtime_source_if(
             &mut decision.self_authored_core_sources,
-            has_outer_voice && snapshot.outer_voice_at > snapshot.self_authored_core_at,
+            has_outer_voice
+                && !observation_active
+                && !core_revision_governance.conservative_mode
+                && snapshot.outer_voice_at > snapshot.self_authored_core_at,
             "outer_voice",
         );
         push_runtime_source_if(
             &mut decision.self_authored_core_sources,
-            has_mental_privacy && snapshot.boundary_state_at > snapshot.self_authored_core_at,
+            has_mental_privacy
+                && (review_due || snapshot.boundary_state_at > snapshot.self_authored_core_at),
             "boundary_persona",
         );
         push_runtime_source_if(
             &mut decision.self_authored_core_sources,
             snapshot.has_recent_persona_evidence
+                && !observation_active
+                && !core_revision_governance.conservative_mode
                 && snapshot.recent_persona_evidence_at > snapshot.self_authored_core_at,
             "recent_persona_evidence",
         );
+        if review_due && decision.self_authored_core_sources.is_empty() {
+            push_runtime_source_if(
+                &mut decision.self_authored_core_sources,
+                has_self_model,
+                "self_model",
+            );
+            push_runtime_source_if(
+                &mut decision.self_authored_core_sources,
+                has_self_continuity,
+                "self_continuity",
+            );
+            push_runtime_source_if(
+                &mut decision.self_authored_core_sources,
+                has_mental_privacy,
+                "boundary_persona",
+            );
+        }
     }
 
     let continuity_upstream_at = snapshot
@@ -2388,7 +2710,7 @@ fn normalize_runtime_distillation_decisions(
     has_private_garden_docs: bool,
     has_inner_life: bool,
     has_self_model: bool,
-    has_self_authored_core: bool,
+    _has_self_authored_core: bool,
     has_self_continuity: bool,
     has_outer_voice: bool,
     has_mental_privacy: bool,
@@ -2420,7 +2742,6 @@ fn normalize_runtime_distillation_decisions(
         decision.refresh_self_authored_core,
         &[
             (has_self_model, "self_model"),
-            (has_self_authored_core, "self_authored_core"),
             (has_self_continuity, "self_continuity"),
             (has_mental_privacy, "boundary_persona"),
             (has_outer_voice, "outer_voice"),
@@ -2533,6 +2854,9 @@ fn normalize_runtime_source_id(raw: &str) -> Option<String> {
         "self_model" => Some("self_model".to_string()),
         "self_authored_core" | "board_core" | "board_self_core" => {
             Some("self_authored_core".to_string())
+        }
+        "relationship_constitution" | "relation_constitution" | "relationship_contract" => {
+            Some("relationship_constitution".to_string())
         }
         "self_continuity" => Some("self_continuity".to_string()),
         "boundary_persona" | "mental_privacy" => Some("boundary_persona".to_string()),
@@ -2746,13 +3070,17 @@ fn decide_self_runtime(
     execution_state: Option<&crate::memory::ExecutionState>,
     self_model: Option<&crate::memory::SelfModel>,
     self_authored_core: Option<&crate::memory::SelfAuthoredCore>,
+    core_revision_ledger: Option<&crate::memory::CoreRevisionLedger>,
+    core_revision_governance: &CoreRevisionGovernanceDigest,
     private_docs: Option<&crate::memory::PrivateDocWorkspace>,
     private_garden_docs: &[crate::memory::PrivateGardenDocRecord],
     inner_life: Option<&crate::memory::InnerLife>,
     self_continuity: Option<&crate::memory::SelfContinuity>,
     _outer_voice: Option<&crate::memory::OuterVoice>,
     mental_privacy_state: Option<&crate::memory::MentalPrivacyState>,
+    relationship_portfolio: Option<&RelationshipPortfolio>,
     relationship_topology: Option<&RelationshipTopology>,
+    relationship_constitution: Option<&RelationshipConstitution>,
     current_relationship_scope_id: &str,
     recent_persona_evidence: Option<&crate::memory::RecentPersonaEvidence>,
     world_sense: Option<&crate::memory::WorldSense>,
@@ -2862,6 +3190,28 @@ fn decide_self_runtime(
     {
         let _ = writeln!(input, "\n{}\n", block);
     }
+    if let Some(block) = core_revision_ledger.and_then(|ledger| {
+        render_core_revision_governance_block(
+            ledger,
+            core_revision_governance,
+            payload.now_secs,
+            policy.grounding_max_len,
+        )
+    }) {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if core_revision_governance.review_due || core_revision_governance.conservative_mode {
+        let _ = writeln!(
+            input,
+            "Constitution governance: review_due={} conservative_mode={} pressure={} repeated_rejections={} corrections={} contradictions={}",
+            core_revision_governance.review_due,
+            core_revision_governance.conservative_mode,
+            core_revision_governance.pressure_summary(),
+            core_revision_governance.repeated_rejected_direction_count,
+            core_revision_governance.recent_correction_count,
+            core_revision_governance.contradiction_count
+        );
+    }
     if let Some(block) = render_internal_memory_topology_block(
         self_model,
         private_docs,
@@ -2873,6 +3223,16 @@ fn decide_self_runtime(
     ) {
         let _ = writeln!(input, "\n{}\n", block);
     }
+    if let Some(block) = relationship_portfolio.and_then(|portfolio| {
+        render_relationship_portfolio_block(
+            portfolio,
+            payload.now_secs,
+            Some(current_relationship_scope_id),
+            policy.grounding_max_len,
+        )
+    }) {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
     if let Some(block) = relationship_topology.and_then(|topology| {
         render_relationship_topology_block(
             topology,
@@ -2880,6 +3240,11 @@ fn decide_self_runtime(
             Some(current_relationship_scope_id),
             policy.grounding_max_len,
         )
+    }) {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
+    if let Some(block) = relationship_constitution.and_then(|constitution| {
+        render_relationship_constitution_block(constitution, policy.grounding_max_len)
     }) {
         let _ = writeln!(input, "\n{}\n", block);
     }
@@ -2934,7 +3299,7 @@ fn decide_self_runtime(
             "Latest turn used external content/tools that may have changed what deserves inward organization."
         );
     }
-    input.push_str("Source ids you may reference for upward distillation: inner_life, private_docs, private_garden, self_model, self_authored_core, self_continuity, boundary_persona, outer_voice, world_sense, autonomy_strategy, recent_persona_evidence, recent_transcript.\n");
+    input.push_str("Source ids you may reference for upward distillation: inner_life, private_docs, private_garden, self_model, self_authored_core, self_continuity, boundary_persona, outer_voice, world_sense, autonomy_strategy, recent_persona_evidence, relationship_constitution, recent_transcript.\n");
     input.push_str("Recent transcript:\n");
     for message in recent {
         let preview = truncate_content_to_max(&message.content, policy.transcript_preview_chars);
@@ -3208,6 +3573,7 @@ mod tests {
             Some(&strategy),
             &sample_self_state(),
             &PersonaDistillationSnapshot::default(),
+            &CoreRevisionGovernanceDigest::default(),
             true,
             false,
             true,
@@ -3254,6 +3620,7 @@ mod tests {
             Some(&strategy),
             &sample_self_state(),
             &PersonaDistillationSnapshot::default(),
+            &CoreRevisionGovernanceDigest::default(),
             true,
             false,
             false,
@@ -3285,6 +3652,7 @@ mod tests {
             None,
             &sample_self_state(),
             &PersonaDistillationSnapshot::default(),
+            &CoreRevisionGovernanceDigest::default(),
             true,
             true,
             true,
@@ -3318,6 +3686,7 @@ mod tests {
             None,
             &sample_self_state(),
             &snapshot,
+            &CoreRevisionGovernanceDigest::default(),
             true,
             true,
             true,
@@ -3362,6 +3731,83 @@ mod tests {
         assert!(decision
             .outer_voice_sources
             .contains(&"recent_persona_evidence".to_string()));
+    }
+
+    #[test]
+    fn constitutional_review_due_forces_self_authored_core_refresh() {
+        let decision = normalize_self_runtime_decision(
+            SelfRuntimeDecision::default(),
+            SelfRuntimeTrigger::IdleTick,
+            None,
+            &sample_self_state(),
+            &PersonaDistillationSnapshot {
+                self_authored_core_at: 200,
+                self_model_at: 200,
+                self_continuity_at: 200,
+                boundary_state_at: 200,
+                ..PersonaDistillationSnapshot::default()
+            },
+            &CoreRevisionGovernanceDigest {
+                review_due: true,
+                review_reasons: vec!["constitutional_review_cadence_due".to_string()],
+                ..CoreRevisionGovernanceDigest::default()
+            },
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            &SharedFactualPlaneSnapshot::default(),
+            &SelfRuntimeBoundarySignal::default(),
+        );
+
+        assert!(decision.refresh_self_authored_core);
+        assert!(decision
+            .self_authored_core_intent
+            .contains("constitutional review"));
+        assert!(decision
+            .self_authored_core_sources
+            .contains(&"self_model".to_string()));
+    }
+
+    #[test]
+    fn conservative_constitution_blocks_volatile_only_core_refresh() {
+        let decision = normalize_self_runtime_decision(
+            SelfRuntimeDecision::default(),
+            SelfRuntimeTrigger::IdleTick,
+            None,
+            &sample_self_state(),
+            &PersonaDistillationSnapshot {
+                self_authored_core_at: 100,
+                self_model_at: 100,
+                self_continuity_at: 100,
+                boundary_state_at: 100,
+                outer_voice_at: 140,
+                recent_persona_evidence_at: 150,
+                has_recent_persona_evidence: true,
+                ..PersonaDistillationSnapshot::default()
+            },
+            &CoreRevisionGovernanceDigest {
+                conservative_mode: true,
+                latest_stability_score: 48,
+                ..CoreRevisionGovernanceDigest::default()
+            },
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            &SharedFactualPlaneSnapshot::default(),
+            &SelfRuntimeBoundarySignal::default(),
+        );
+
+        assert!(!decision.refresh_self_authored_core);
     }
 
     #[test]

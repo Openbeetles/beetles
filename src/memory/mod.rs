@@ -12,6 +12,7 @@ mod archive_selector;
 mod autonomy_strategy;
 mod context_window;
 mod continuity_snapshot;
+mod core_revision_ledger;
 mod execution_state;
 mod hygiene;
 mod inner_life;
@@ -24,15 +25,20 @@ mod maintenance;
 mod memory_governance;
 mod mental_privacy;
 mod outer_voice;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+mod persona_governance_benchmark;
 mod persona_priority;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 mod persona_regression;
+mod personality_closure;
 mod private_docs;
 mod private_garden;
 mod private_garden_governance;
 mod profile;
 mod prompt_context;
 mod recent_persona_evidence;
+mod relationship_constitution;
+mod relationship_portfolio;
 mod relationship_topology;
 mod self_authored_core;
 mod self_continuity;
@@ -77,6 +83,16 @@ pub use continuity_snapshot::{
     export_continuity_snapshot, import_continuity_snapshot, render_continuity_snapshot_markdown,
     ContinuitySnapshot, ContinuitySnapshotExportContext, ContinuitySnapshotImportContext,
     ContinuitySnapshotImportMode, ContinuitySnapshotImportOutcome, ContinuitySnapshotMode,
+};
+pub use core_revision_ledger::{
+    append_core_revision_record, build_core_revision_timeline,
+    compute_core_revision_governance_digest, core_revision_observation_due_at, correction_pressure,
+    has_recent_matching_adopted_change, has_recent_matching_rejected_change,
+    recent_adopted_revision, recent_rejected_direction_count,
+    render_core_revision_governance_block, render_core_revision_ledger_block,
+    CoreRevisionActionKind, CoreRevisionConflictClass, CoreRevisionCorrectionKind,
+    CoreRevisionGovernanceDigest, CoreRevisionLedger, CoreRevisionOutcome, CoreRevisionRecord,
+    CoreRevisionRecordChange, CoreRevisionTimelineEntry,
 };
 pub use execution_state::{
     render_execution_state_block, run_execution_state_refresh, ExecutionState,
@@ -165,6 +181,11 @@ pub use outer_voice::{
     render_outer_voice_block, OuterVoice, OuterVoiceRefreshContext, OuterVoiceRefreshInput,
     OuterVoiceRefreshOutcome, OUTER_VOICE_SYSTEM_PROMPT, OUTER_VOICE_TOTAL_CHAR_LIMIT,
 };
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use persona_governance_benchmark::{
+    run_persona_governance_replay_case, run_persona_governance_replay_suite,
+    PersonaGovernanceReplayCase, PersonaGovernanceReplayResult,
+};
 pub use persona_priority::{
     build_persistent_persona_priority_adjudication, render_persistent_persona_priority_block,
     render_persona_priority_block, run_persona_priority_adjudication,
@@ -176,6 +197,11 @@ pub use persona_priority::{
 pub use persona_regression::{
     run_persona_continuity_case, run_persona_continuity_suite, PersonaContinuityCase,
     PersonaContinuityResult,
+};
+pub use personality_closure::{
+    inspect_personality_governance, render_personality_governance_inspection_markdown,
+    PersonalityClosureReport, PersonalityGovernanceEvent, PersonalityGovernanceInspection,
+    PersonalityGovernanceInspectionInput,
 };
 pub(crate) use private_docs::estimate_private_doc_workspace_chars;
 pub use private_docs::{
@@ -219,21 +245,36 @@ pub use recent_persona_evidence::{
     render_recent_persona_evidence_block, RecentPersonaEvidence,
     RECENT_PERSONA_EVIDENCE_HISTORY_LOOKBACK, RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
 };
+pub use relationship_constitution::{
+    audit_relationship_constitution, clamp_boundary_persona_to_constitution,
+    derive_relationship_constitution, enforce_relationship_constitution_share_action,
+    render_relationship_constitution_block, sync_relationship_constitution,
+    RelationshipBoundaryShift, RelationshipConstitution, RelationshipConstitutionAlignment,
+    RelationshipConstitutionAudit, RelationshipConstitutionOverride,
+    RelationshipConstitutionOverrideDomain, RelationshipConstitutionStore,
+    RelationshipConstitutionSyncInput, RelationshipDisclosureAllowance,
+    RelationshipOuterVoiceShift, RelationshipTaskScopeCeiling, REL_PATH_RELATIONSHIP_CONSTITUTIONS,
+};
+pub use relationship_portfolio::{
+    render_relationship_portfolio_block, select_relationship_portfolio_targets,
+    sync_relationship_portfolio, touch_relationship_portfolio_selection,
+    RelationshipGovernanceState, RelationshipInheritanceMode, RelationshipPortfolio,
+    RelationshipPortfolioEntry, RelationshipPortfolioSelectorInput, RelationshipPortfolioStore,
+    RelationshipPortfolioSyncOutcome, REL_PATH_RELATIONSHIP_PORTFOLIOS,
+};
 pub use relationship_topology::{
     render_relationship_topology_block, select_relationship_topology_targets,
     upsert_relationship_topology_entry, RelationshipSelectionTarget, RelationshipSelectorInput,
     RelationshipTopology, RelationshipTopologyEntry, RelationshipTopologyRefreshOutcome,
-    RelationshipTopologyStore, RelationshipTopologyUpsertInput,
-    REL_PATH_RELATIONSHIP_TOPOLOGIES,
+    RelationshipTopologyStore, RelationshipTopologyUpsertInput, REL_PATH_RELATIONSHIP_TOPOLOGIES,
 };
 pub(crate) use self_authored_core::{
     derive_self_authored_core_from_layers, run_self_authored_core_refresh_with_state,
 };
 pub use self_authored_core::{
-    render_persistent_self_authored_core_block, render_self_authored_core_block,
-    SelfAuthoredCore, SelfAuthoredCoreRefreshContext, SelfAuthoredCoreRefreshInput,
-    SelfAuthoredCoreRefreshOutcome, SELF_AUTHORED_CORE_SYSTEM_PROMPT,
-    SELF_AUTHORED_CORE_TOTAL_CHAR_LIMIT,
+    render_persistent_self_authored_core_block, render_self_authored_core_block, SelfAuthoredCore,
+    SelfAuthoredCoreRefreshContext, SelfAuthoredCoreRefreshInput, SelfAuthoredCoreRefreshOutcome,
+    SELF_AUTHORED_CORE_SYSTEM_PROMPT, SELF_AUTHORED_CORE_TOTAL_CHAR_LIMIT,
 };
 pub(crate) use self_continuity::estimate_self_continuity_chars;
 pub(crate) use self_continuity::run_self_continuity_refresh_with_state;
@@ -334,6 +375,8 @@ pub const REL_PATH_INNER_LIFE: &str = "memory/inner_life.json";
 pub const REL_PATH_SELF_CONTINUITIES: &str = "memory/self_continuities.json";
 /// 相对路径：Self-Authored Core（单文件 JSON，scope_id -> persistent board-level self core）。
 pub const REL_PATH_SELF_AUTHORED_CORES: &str = "memory/self_authored_cores.json";
+/// 相对路径：Self-Authored Core 修订账本（单文件 JSON，scope_id -> versioned revision ledger）。
+pub const REL_PATH_CORE_REVISION_LEDGERS: &str = "memory/core_revision_ledgers.json";
 /// 相对路径：私有工作区（单文件 JSON，chat_id -> typed private docs workspace）。
 pub const REL_PATH_PRIVATE_DOC_WORKSPACES: &str = "memory/private_doc_workspaces.json";
 /// 相对路径：私有花园索引（单文件 JSON，chat_id -> free-form garden doc metadata）。
@@ -366,6 +409,13 @@ pub trait SelfModelStore: Send + Sync {
 pub trait SelfAuthoredCoreStore: Send + Sync {
     fn get(&self, scope_id: &str) -> Result<Option<SelfAuthoredCore>>;
     fn set(&self, scope_id: &str, core: &SelfAuthoredCore) -> Result<()>;
+    fn clear(&self, scope_id: &str) -> Result<()>;
+}
+
+/// Self-Authored Core 修订账本存储。保存板级主体的修订候选、裁决结果与版本晋升轨迹。
+pub trait CoreRevisionLedgerStore: Send + Sync {
+    fn get(&self, scope_id: &str) -> Result<Option<CoreRevisionLedger>>;
+    fn set(&self, scope_id: &str, ledger: &CoreRevisionLedger) -> Result<()>;
     fn clear(&self, scope_id: &str) -> Result<()>;
 }
 

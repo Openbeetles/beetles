@@ -5,8 +5,8 @@ use crate::config::AppConfig;
 use crate::error::{Error, Result};
 use crate::llm::ToolSpec as LlmToolSpec;
 use crate::tools::{
-    MAX_TOOL_ARGS_LEN, MAX_TOOL_RESULT_LEN, Tool, ToolExecutionOutcome, ToolMetadata,
-    ToolPolicyContext,
+    Tool, ToolExecutionOutcome, ToolMetadata, ToolPolicyContext, MAX_TOOL_ARGS_LEN,
+    MAX_TOOL_RESULT_LEN,
 };
 use crate::util::truncate_to_byte_len;
 use indexmap::IndexMap;
@@ -254,7 +254,12 @@ fn register_core_tools(
         platform.execution_state_store(),
         platform.self_model_store(),
         platform.self_authored_core_store(),
+        platform.core_revision_ledger_store(),
         platform.self_continuity_store(),
+        Arc::clone(turn_ledger_store),
+        platform.relationship_constitution_store(),
+        platform.relationship_portfolio_store(),
+        platform.relationship_topology_store(),
     )));
     #[cfg(feature = "tools_diagnostics")]
     if !config.hardware_devices.is_empty() {

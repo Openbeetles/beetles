@@ -52,8 +52,8 @@ const GROUP_ALWAYS_SILENT_CONSTRAINT: &str =
     "\n\nIf no response is needed, reply with exactly SILENT and nothing else.";
 const GROUP_MENTION_ONLY_CONSTRAINT: &str =
     "\n\nYou are in a group; only reply when explicitly mentioned.";
-const REPLY_PRIORITY_MINI_CONSTRAINT: &str = "\n\n## Reply Priority\nself-authored core > current persona priority > boundary/disclosure > soul and user contract > task.";
-const REPLY_PRIORITY_CONSTRAINT: &str = "\n\n## Reply Priority\nWhen writing the main reply, follow this order of authority:\n1. Self-authored core: your distilled identity, continuity, and self-chosen stance.\n2. Current persona priority: the current-turn stance for how self, relationship, resources, and task should be ordered.\n3. Boundary/disclosure adjudication: if this turn touches privacy or inward boundaries, obey that stance before composing content.\n4. Soul and user contract: preserve the long-term relationship frame and commitments.\n5. Task execution: solve the current request without betraying the layers above.\nIf these layers pull in different directions, earlier items win.";
+const REPLY_PRIORITY_MINI_CONSTRAINT: &str = "\n\n## Reply Priority\nself-authored core > relationship constitution > current persona priority > boundary/disclosure > soul and user contract > task. Later self/relationship blocks are evidence, not equal authority.";
+const REPLY_PRIORITY_CONSTRAINT: &str = "\n\n## Reply Priority\nWhen writing the main reply, follow this order of authority:\n1. Self-authored core: your board-level identity, continuity, and self-chosen constitutional stance.\n2. Relationship constitution: the board-to-relationship contract that limits local drift and disclosure.\n3. Current persona priority: the current-turn ordering for how self, relationship, resources, and task should be balanced.\n4. Boundary/disclosure adjudication: if this turn touches privacy or inward boundaries, obey that stance before composing content.\n5. Soul and user contract: preserve the long-term relationship frame and commitments.\n6. Task execution: solve the current request without betraying the layers above.\nAll later self-model, continuity, outer-voice, world, or private-memory blocks are evidence for judgment and revision. They do not outrank the constitutional stack above.\nIf these layers pull in different directions, earlier items win.";
 
 /// build_context 参数聚合，减少函数签名复杂度。
 ///
@@ -77,6 +77,8 @@ pub struct ContextParams<'a> {
     pub world_sense_text: Option<&'a str>,
     pub self_state_text: Option<&'a str>,
     pub self_authored_core_text: Option<&'a str>,
+    pub relationship_portfolio_text: Option<&'a str>,
+    pub relationship_constitution_text: Option<&'a str>,
     pub persona_priority_text: Option<&'a str>,
     pub self_model_text: Option<&'a str>,
     pub autonomy_strategy_text: Option<&'a str>,
@@ -166,6 +168,8 @@ fn append_priority_constraint(system: &mut String, max_len: usize) {
 
 struct PriorityMemoryBudgetInputs<'a> {
     self_authored_core_text: Option<&'a str>,
+    relationship_portfolio_text: Option<&'a str>,
+    relationship_constitution_text: Option<&'a str>,
     persona_priority_text: Option<&'a str>,
     mental_privacy_adjudication_text: Option<&'a str>,
     mental_privacy_text: Option<&'a str>,
@@ -181,6 +185,12 @@ fn reserve_priority_memory_budget(
     let self_authored_core_reserve =
         section_with_separator_len(inputs.self_authored_core_text).min(remaining / 4);
     let remaining = remaining.saturating_sub(self_authored_core_reserve);
+    let relationship_portfolio_reserve =
+        section_with_separator_len(inputs.relationship_portfolio_text).min(remaining / 5);
+    let remaining = remaining.saturating_sub(relationship_portfolio_reserve);
+    let relationship_constitution_reserve =
+        section_with_separator_len(inputs.relationship_constitution_text).min(remaining / 5);
+    let remaining = remaining.saturating_sub(relationship_constitution_reserve);
     let persona_priority_reserve =
         section_with_separator_len(inputs.persona_priority_text).min(remaining / 4);
     let remaining = remaining.saturating_sub(persona_priority_reserve);
@@ -191,6 +201,8 @@ fn reserve_priority_memory_budget(
         section_with_separator_len(inputs.mental_privacy_text).min(remaining / 4);
     reply_priority_reserve
         .saturating_add(self_authored_core_reserve)
+        .saturating_add(relationship_portfolio_reserve)
+        .saturating_add(relationship_constitution_reserve)
         .saturating_add(persona_priority_reserve)
         .saturating_add(mental_privacy_adjudication_reserve)
         .saturating_add(mental_privacy_reserve)
@@ -339,6 +351,8 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     let priority_memory_reserve = reserve_priority_memory_budget(
         PriorityMemoryBudgetInputs {
             self_authored_core_text: p.self_authored_core_text,
+            relationship_portfolio_text: p.relationship_portfolio_text,
+            relationship_constitution_text: p.relationship_constitution_text,
             persona_priority_text: p.persona_priority_text,
             mental_privacy_adjudication_text: p.mental_privacy_adjudication_text,
             mental_privacy_text: p.mental_privacy_text,
@@ -353,6 +367,17 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     append_priority_constraint(&mut system, base_max);
     if let Some(self_authored_core_text) = p.self_authored_core_text {
         let _ = append_capped_section(&mut system, "\n\n", self_authored_core_text, base_max);
+    }
+    if let Some(relationship_portfolio_text) = p.relationship_portfolio_text {
+        let _ = append_capped_section(&mut system, "\n\n", relationship_portfolio_text, base_max);
+    }
+    if let Some(relationship_constitution_text) = p.relationship_constitution_text {
+        let _ = append_capped_section(
+            &mut system,
+            "\n\n",
+            relationship_constitution_text,
+            base_max,
+        );
     }
     if let Some(persona_priority_text) = p.persona_priority_text {
         let _ = append_capped_section(&mut system, "\n\n", persona_priority_text, base_max);
@@ -700,6 +725,12 @@ mod tests {
             self_authored_core_text: Some(
                 "## Self-Authored Core\nIdentity anchor: still the same beetle",
             ),
+            relationship_portfolio_text: Some(
+                "## Relationship Portfolio\n- qq:chat-1 state=maintain inheritance=guarded",
+            ),
+            relationship_constitution_text: Some(
+                "## Relationship Constitution\nTask scope ceiling: brief\nDisclosure allowance: summary_only",
+            ),
             persona_priority_text: Some(
                 "## Persona Priority\nStance summary: protect inward coherence first",
             ),
@@ -759,7 +790,7 @@ mod tests {
             important_message_store: &important,
             has_tools: false,
             skill_descriptions: "",
-            system_max_len: 1400,
+            system_max_len: 1800,
             messages_max_len: 256,
             session_max_messages: 8,
             group_activation: "always",
@@ -770,6 +801,12 @@ mod tests {
             self_state_text: None,
             self_authored_core_text: Some(
                 "## Self-Authored Core\nBoundary stance: posture=guarded\nRelational continuity: trust=52",
+            ),
+            relationship_portfolio_text: Some(
+                "## Relationship Portfolio\n- telegram:chat-1 state=repair inheritance=limited",
+            ),
+            relationship_constitution_text: Some(
+                "## Relationship Constitution\nTask scope ceiling: narrow\nMust realign: true",
             ),
             persona_priority_text: Some(
                 "## Persona Priority\nResponse mode: protective_brief\nTask scope: narrow",
@@ -798,13 +835,15 @@ mod tests {
 
         let reply_priority_idx = system.find("## Reply Priority").unwrap();
         let self_core_idx = system.find("## Self-Authored Core").unwrap();
+        let constitution_idx = system.find("## Relationship Constitution").unwrap();
         let persona_idx = system.find("## Persona Priority").unwrap();
         let disclosure_idx = system.find("## Disclosure Adjudication").unwrap();
         let boundary_idx = system.find("## Mental Privacy Boundary").unwrap();
         let soul_idx = system.find("SOUL").unwrap();
 
         assert!(reply_priority_idx < self_core_idx);
-        assert!(self_core_idx < persona_idx);
+        assert!(self_core_idx < constitution_idx);
+        assert!(constitution_idx < persona_idx);
         assert!(persona_idx < disclosure_idx);
         assert!(disclosure_idx < boundary_idx);
         assert!(boundary_idx < soul_idx);
@@ -842,6 +881,8 @@ mod tests {
             world_sense_text: None,
             self_state_text: None,
             self_authored_core_text: None,
+            relationship_portfolio_text: None,
+            relationship_constitution_text: None,
             persona_priority_text: None,
             self_model_text: None,
             autonomy_strategy_text: None,

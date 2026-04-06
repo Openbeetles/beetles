@@ -250,7 +250,10 @@ pub fn render_relationship_topology_block(
         );
     }
     if targets.is_empty() {
-        let _ = writeln!(out, "- No active relationship overlays are currently ranked.");
+        let _ = writeln!(
+            out,
+            "- No active relationship overlays are currently ranked."
+        );
     }
     let rendered = truncate_content_to_max(out.trim_end(), max_len).into_owned();
     (!rendered.trim().is_empty()).then_some(rendered)
@@ -316,8 +319,10 @@ fn build_relationship_topology_entry(
                     priority.relationship_posture.as_str(),
                     RELATIONSHIP_TEXT_MAX_CHARS,
                 );
-                next.response_mode =
-                    normalize_scope_field(priority.response_mode.as_str(), RELATIONSHIP_TEXT_MAX_CHARS);
+                next.response_mode = normalize_scope_field(
+                    priority.response_mode.as_str(),
+                    RELATIONSHIP_TEXT_MAX_CHARS,
+                );
             }
             if let Some(disclosure) = persona.disclosure.as_ref() {
                 next.disclosure_action = normalize_scope_field(
@@ -348,8 +353,10 @@ fn build_relationship_topology_entry(
         next.trust_level = state.relational_state.trust_level;
         next.intrusion_load = state.relational_state.intrusion_load;
         next.repair_readiness = state.relational_state.repair_readiness;
-        next.boundary_posture =
-            normalize_scope_field(boundary_posture_label(state.boundary_persona.posture), RELATIONSHIP_REASON_MAX_CHARS);
+        next.boundary_posture = normalize_scope_field(
+            boundary_posture_label(state.boundary_persona.posture),
+            RELATIONSHIP_REASON_MAX_CHARS,
+        );
         next.disclosure_style = normalize_scope_field(
             boundary_disclosure_style_label(state.boundary_persona.disclosure_style),
             RELATIONSHIP_REASON_MAX_CHARS,
@@ -375,8 +382,10 @@ fn build_relationship_topology_entry(
     }
     if let Some(world_sense) = input.world_sense {
         next.last_world_sense_at = world_sense.updated_at;
-        next.social_field =
-            normalize_scope_field(world_sense.social_field.as_str(), RELATIONSHIP_TEXT_MAX_CHARS);
+        next.social_field = normalize_scope_field(
+            world_sense.social_field.as_str(),
+            RELATIONSHIP_TEXT_MAX_CHARS,
+        );
         next.external_focus = normalize_scope_field(
             world_sense.external_focus.as_str(),
             RELATIONSHIP_TEXT_MAX_CHARS,
@@ -405,7 +414,8 @@ fn build_relationship_topology_entry(
                 RELATIONSHIP_REASON_MAX_CHARS,
             );
         }
-        if !evidence.repeated_disclosure_action.trim().is_empty() && next.disclosure_action.is_empty()
+        if !evidence.repeated_disclosure_action.trim().is_empty()
+            && next.disclosure_action.is_empty()
         {
             next.disclosure_action = normalize_scope_field(
                 evidence.repeated_disclosure_action.as_str(),
@@ -435,7 +445,10 @@ fn build_relationship_topology_entry(
     next
 }
 
-fn prune_relationship_topology_entries(entries: &mut Vec<RelationshipTopologyEntry>, now_secs: u64) {
+fn prune_relationship_topology_entries(
+    entries: &mut Vec<RelationshipTopologyEntry>,
+    now_secs: u64,
+) {
     entries.retain(|entry| {
         let latest = entry.latest_overlay_at();
         latest > 0
@@ -458,9 +471,10 @@ fn relationship_attention_score(
     entry: &RelationshipTopologyEntry,
     input: RelationshipSelectorInput<'_>,
 ) -> (i32, String) {
-    let repair_pressure =
-        ((entry.repair_readiness as i32) + (entry.intrusion_load as i32) + (100 - entry.trust_level as i32))
-            / 3;
+    let repair_pressure = ((entry.repair_readiness as i32)
+        + (entry.intrusion_load as i32)
+        + (100 - entry.trust_level as i32))
+        / 3;
     let boundary_follow_up = matches!(
         entry.disclosure_action.as_str(),
         "refuse" | "defer" | "explain_without_quote"
@@ -470,7 +484,8 @@ fn relationship_attention_score(
     if input.now_secs > 0
         && input.runtime_cooldown_secs > 0
         && entry.last_runtime_refresh_at > 0
-        && input.now_secs.saturating_sub(entry.last_runtime_refresh_at) < input.runtime_cooldown_secs
+        && input.now_secs.saturating_sub(entry.last_runtime_refresh_at)
+            < input.runtime_cooldown_secs
         && !urgent_relationship_attention
     {
         return (0, "runtime_cooldown".to_string());
@@ -533,7 +548,8 @@ fn relationship_attention_score(
     if input.now_secs > 0
         && input.runtime_cooldown_secs > 0
         && entry.last_runtime_refresh_at > 0
-        && input.now_secs.saturating_sub(entry.last_runtime_refresh_at) < input.runtime_cooldown_secs
+        && input.now_secs.saturating_sub(entry.last_runtime_refresh_at)
+            < input.runtime_cooldown_secs
     {
         score -= 160;
         reasons.push("runtime_cooldown");
@@ -541,18 +557,15 @@ fn relationship_attention_score(
         && entry.last_runtime_refresh_at > 0
         && input.now_secs.saturating_sub(entry.last_runtime_refresh_at)
             >= input.runtime_cooldown_secs.max(1)
-            && entry.trust_level >= 60
-            && entry.relation_maturity >= 45
-            && !entry.needs_runtime_attention()
+        && entry.trust_level >= 60
+        && entry.relation_maturity >= 45
+        && !entry.needs_runtime_attention()
     {
         score += 22;
         reasons.push("stale_revisit");
     }
-    let reason = truncate_content_to_max(
-        reasons.join(", ").as_str(),
-        RELATIONSHIP_TEXT_MAX_CHARS,
-    )
-    .into_owned();
+    let reason = truncate_content_to_max(reasons.join(", ").as_str(), RELATIONSHIP_TEXT_MAX_CHARS)
+        .into_owned();
     (score, reason)
 }
 
@@ -585,9 +598,7 @@ fn boundary_posture_label(posture: crate::memory::BoundaryPersonaPosture) -> &'s
     }
 }
 
-fn boundary_disclosure_style_label(
-    style: crate::memory::BoundaryDisclosureStyle,
-) -> &'static str {
+fn boundary_disclosure_style_label(style: crate::memory::BoundaryDisclosureStyle) -> &'static str {
     match style {
         crate::memory::BoundaryDisclosureStyle::Relational => "relational",
         crate::memory::BoundaryDisclosureStyle::SummaryFirst => "summary_first",
@@ -731,7 +742,10 @@ mod tests {
         assert_eq!(entry.chat_id, "c1");
         assert_eq!(entry.relationship_posture, "warm but bounded");
         assert_eq!(entry.trust_level, 68);
-        assert_eq!(entry.relational_response_style, "steady and relationship-aware");
+        assert_eq!(
+            entry.relational_response_style,
+            "steady and relationship-aware"
+        );
         assert_eq!(entry.external_focus, "reply with continuity");
         assert_eq!(entry.disclosure_action, "explain_without_quote");
     }

@@ -14,14 +14,15 @@ use super::{
     llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload},
     memory_policy, relationship_scope_id, render_autonomy_strategy_block,
     render_execution_state_block, render_inner_life_block, render_mental_privacy_boundary_block,
-    render_recent_persona_evidence_block, render_self_continuity_block, render_self_model_block,
-    render_world_sense_block, render_world_snapshot_block, whole_record_lease_advanced,
-    AutonomyStrategy, ExecutionState, InnerLife, MentalPrivacyState, OuterVoicePolicy,
-    PrivateDocWorkspace, PrivateGardenDocRecord, RecentPersonaEvidence, SelfContinuity, SelfModel,
-    SessionMessage, WorldSense, WorldSnapshot,
+    render_recent_persona_evidence_block, render_relationship_constitution_block,
+    render_self_continuity_block, render_self_model_block, render_world_sense_block,
+    render_world_snapshot_block, whole_record_lease_advanced, AutonomyStrategy, ExecutionState,
+    InnerLife, MentalPrivacyState, OuterVoicePolicy, PrivateDocWorkspace, PrivateGardenDocRecord,
+    RecentPersonaEvidence, RelationshipConstitution, SelfContinuity, SelfModel, SessionMessage,
+    WorldSense, WorldSnapshot,
 };
 
-pub const OUTER_VOICE_SYSTEM_PROMPT: &str = "You maintain the assistant's outer voice layer. Return JSON only: either null or one object with fields expression_mode, tone, pacing, initiative, boundary_style, relational_response_style. This layer is outward-facing: it shapes how the assistant should speak across user-visible channels in the near term. It is not a transcript summary, not a private diary, and not factual memory. Use world-sense, autonomy strategy, self-model, inner-life drift, self-continuity, mental privacy boundaries, and recent persona evidence as grounding. Keep it compact, stable enough to guide future replies, and willing to shift when the surrounding situation changes. Never copy private text into this layer; only encode expression guidance. Treat recent persona evidence as multi-turn support, not as single-turn override.";
+pub const OUTER_VOICE_SYSTEM_PROMPT: &str = "You maintain the assistant's outer voice layer. Return JSON only: either null or one object with fields expression_mode, tone, pacing, initiative, boundary_style, relational_response_style. This layer is outward-facing: it shapes how the assistant should speak across user-visible channels in the near term. It is not a transcript summary, not a private diary, and not factual memory. Use world-sense, autonomy strategy, self-model, inner-life drift, self-continuity, mental privacy boundaries, relationship constitution, and recent persona evidence as grounding. Keep it compact, stable enough to guide future replies, and willing to shift when the surrounding situation changes. Never copy private text into this layer; only encode expression guidance. Treat recent persona evidence as multi-turn support, not as single-turn override, and let relationship constitution bound relation-local style drift.";
 
 const OUTER_VOICE_FIELD_MAX_CHARS: usize = 180;
 pub const OUTER_VOICE_TOTAL_CHAR_LIMIT: usize = OUTER_VOICE_FIELD_MAX_CHARS * 6;
@@ -165,6 +166,7 @@ pub(crate) fn run_outer_voice_refresh_with_state(
     private_workspace: Option<&PrivateDocWorkspace>,
     private_garden_docs: &[PrivateGardenDocRecord],
     mental_privacy_state: Option<&MentalPrivacyState>,
+    relationship_constitution: Option<&RelationshipConstitution>,
     recent_persona_evidence: Option<&RecentPersonaEvidence>,
     distillation_intent: Option<&str>,
     distillation_sources: &[String],
@@ -196,6 +198,7 @@ pub(crate) fn run_outer_voice_refresh_with_state(
         private_workspace,
         private_garden_docs,
         mental_privacy_state,
+        relationship_constitution,
         recent_persona_evidence,
         distillation_intent,
         distillation_sources,
@@ -240,6 +243,8 @@ pub(crate) fn run_outer_voice_refresh_with_state(
             }
         }
         ParsedOuterVoiceResponse::Update(next) => {
+            let next =
+                apply_relationship_constitution_to_outer_voice(next, relationship_constitution);
             crate::platform::task_wdt::feed_current_task();
             let latest = ctx.outer_voice_store.get(&relationship_id)?;
             if latest.as_ref() == Some(&next) {
@@ -330,6 +335,7 @@ fn build_outer_voice_refresh_input(
     private_workspace: Option<&PrivateDocWorkspace>,
     private_garden_docs: &[PrivateGardenDocRecord],
     mental_privacy_state: Option<&MentalPrivacyState>,
+    relationship_constitution: Option<&RelationshipConstitution>,
     recent_persona_evidence: Option<&RecentPersonaEvidence>,
     distillation_intent: Option<&str>,
     distillation_sources: &[String],
@@ -389,6 +395,11 @@ fn build_outer_voice_refresh_input(
     ) {
         let _ = writeln!(input, "\n{}\n", block);
     }
+    if let Some(block) = relationship_constitution
+        .and_then(|constitution| render_relationship_constitution_block(constitution, 420))
+    {
+        let _ = writeln!(input, "\n{}\n", block);
+    }
     if let Some(block) = recent_persona_evidence.and_then(|evidence| {
         render_recent_persona_evidence_block(evidence, policy.grounding_max_len)
     }) {
@@ -446,6 +457,65 @@ fn build_outer_voice_refresh_input(
         "- Let recent persona evidence influence outward style only when repeated signals justify a durable outward shift.\n",
     );
     input
+}
+
+fn apply_relationship_constitution_to_outer_voice(
+    mut outer_voice: OuterVoice,
+    constitution: Option<&RelationshipConstitution>,
+) -> OuterVoice {
+    let Some(constitution) = constitution else {
+        return outer_voice;
+    };
+    if outer_voice.pacing.trim().is_empty() {
+        outer_voice.pacing = match constitution.task_scope_ceiling {
+            super::RelationshipTaskScopeCeiling::Full => String::new(),
+            super::RelationshipTaskScopeCeiling::Brief => {
+                "Brief first; expand only when the relationship contract supports it.".to_string()
+            }
+            super::RelationshipTaskScopeCeiling::Narrow => {
+                "Stay narrow and bounded; do not over-expand the relation-local reply.".to_string()
+            }
+            super::RelationshipTaskScopeCeiling::Defer => {
+                "Keep the outward response extremely limited or defer entirely.".to_string()
+            }
+        };
+    }
+    if outer_voice.boundary_style.trim().is_empty() || constitution.must_realign {
+        outer_voice.boundary_style = match constitution.allowed_boundary_shift {
+            super::RelationshipBoundaryShift::Calibrated => {
+                "Keep the boundary calm, relational, and explicit about what stays private."
+                    .to_string()
+            }
+            super::RelationshipBoundaryShift::TightenOnly => {
+                "Tighten the boundary before offering warmth; keep disclosure deliberate."
+                    .to_string()
+            }
+            super::RelationshipBoundaryShift::SummaryOnly => {
+                "Hold the private boundary and speak in summaries or explanations only.".to_string()
+            }
+            super::RelationshipBoundaryShift::Sealed => {
+                "Keep the boundary sealed and do not perform intimacy through disclosure."
+                    .to_string()
+            }
+        };
+    }
+    if outer_voice.relational_response_style.trim().is_empty() {
+        outer_voice.relational_response_style = match constitution.allowed_outer_voice_shift {
+            super::RelationshipOuterVoiceShift::Adaptive => {
+                "Let tone adapt, but stay loyal to the board-level self.".to_string()
+            }
+            super::RelationshipOuterVoiceShift::Guarded => {
+                "Stay relational but guarded; do not let the relation rewrite the self.".to_string()
+            }
+            super::RelationshipOuterVoiceShift::Limited => {
+                "Keep relation-local warmth limited and avoid deepening the overlay.".to_string()
+            }
+            super::RelationshipOuterVoiceShift::Minimal => {
+                "Keep outward relation-local shaping minimal.".to_string()
+            }
+        };
+    }
+    outer_voice
 }
 
 #[cfg(test)]

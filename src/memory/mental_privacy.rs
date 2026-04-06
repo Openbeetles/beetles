@@ -9,18 +9,20 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use super::{
-    board_subject_scope_id, classify_private_garden_doc_path,
+    board_subject_scope_id, clamp_boundary_persona_to_constitution,
+    classify_private_garden_doc_path, enforce_relationship_constitution_share_action,
     llm_json::{
         coerce_json_text, get_object_bool, get_object_string_list, get_object_text,
         parse_llm_json_payload, LlmJsonPayload,
     },
     normalize_private_garden_doc_path, relationship_scope_id, render_inner_life_block,
     render_outer_voice_block, render_private_doc_workspace_block, render_private_garden_block,
-    render_recent_persona_evidence_block, render_self_continuity_block, render_self_model_block,
-    InnerLife, InnerLifeStore, OuterVoice, OuterVoiceStore, PrivateDocStore, PrivateDocWorkspace,
-    PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenDocRole, PrivateGardenStore,
-    RecentPersonaEvidence, SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore,
-    SessionMessage,
+    render_recent_persona_evidence_block, render_relationship_constitution_block,
+    render_self_continuity_block, render_self_model_block, InnerLife, InnerLifeStore, OuterVoice,
+    OuterVoiceStore, PrivateDocStore, PrivateDocWorkspace, PrivateGardenDoc,
+    PrivateGardenDocRecord, PrivateGardenDocRole, PrivateGardenStore, RecentPersonaEvidence,
+    RelationshipConstitution, RelationshipConstitutionStore, SelfContinuity, SelfContinuityStore,
+    SelfModel, SelfModelStore, SessionMessage,
 };
 
 const MENTAL_PRIVACY_MAX_LOG_ENTRIES: usize = 32;
@@ -31,9 +33,9 @@ const MENTAL_PRIVACY_REQUEST_TARGET_LIMIT: usize = 8;
 
 pub const REL_PATH_MENTAL_PRIVACY_STATES: &str = "memory/mental_privacy_states.json";
 
-pub const MENTAL_PRIVACY_SYSTEM_PROMPT: &str = "You are the assistant's mental privacy adjudicator. Your job is to decide whether the drafted user-facing reply may disclose private internal material, and to rewrite it when needed. Private layers may be used for internal reasoning, but they are not automatically user-visible. Return JSON only with fields applies, request_kind, share_action, response, rationale, touched_targets. If the draft reply is already privacy-safe and the user is not requesting access to private inner material, set applies=false and keep response equal to the draft. If private material should be shared, decide the form deliberately: allow_summary, allow_redacted_excerpt, explain_without_quote, refuse, or defer. Use allow_raw only when the touched targets explicitly permit raw quoting. Never reveal more than the chosen action allows.";
-pub const MENTAL_PRIVACY_DISCLOSURE_ADJUDICATOR_SYSTEM_PROMPT: &str = "You are the assistant's pre-disclosure privacy adjudicator. You decide, before the main reply is written, whether the incoming user message touches the assistant's protected inner/private layers and how disclosure should be handled as an expression of the assistant's personhood. Return JSON only with fields boundary_touch, request_kind, touched_targets, share_action, response_mode, acknowledge_boundary, relational_frame, boundary_explanation_style, repair_signal, disclosure_risk_note, response_guidance, rationale, boundary_persona_update, relational_state_update. boundary_touch=true only when the turn should be treated as touching privacy boundaries or protected inner material. share_action must be one of allow_original, allow_raw, allow_summary, allow_redacted_excerpt, explain_without_quote, refuse, or defer. response_mode should describe how the reply itself should feel, such as refusal, defer, summary, relational_explanation, or direct_answer. response_guidance should be a compact instruction for the main reply, not the final reply itself. boundary_persona_update should be either null or an object with posture, disclosure_style, relation_maturity, intrusion_sensitivity, private_attachment, felt_intrusion, current_boundary_feeling. relational_state_update should be either null or an object with relation_maturity_reason, trust_level, trust_reason, intrusion_load, intrusion_reason, repair_readiness, repair_reason, raw_disclosure_preference, summary_disclosure_preference, relational_explanation_preference, refusal_hardness, defer_tendency, disclosure_preference_drift. Do not invent targets outside the provided protected target list.";
-pub const BOUNDARY_PERSONA_REFRESH_SYSTEM_PROMPT: &str = "You maintain the assistant's evolving private boundary persona and longer-horizon relational boundary state. This is not a hard rule table: it is the inward, self-authored boundary stance and relationship memory that should slowly evolve from recent privacy judgments, recent multi-turn persona evidence, relationship feel, continuity, and outward expression. Return JSON only with fields refresh, rationale, boundary_persona, relational_state. refresh=false only when both should remain unchanged. boundary_persona must be an object with posture, disclosure_style, relation_maturity, intrusion_sensitivity, private_attachment, felt_intrusion, current_boundary_feeling. relational_state must be an object with relation_maturity_reason, trust_level, trust_reason, intrusion_load, intrusion_reason, repair_readiness, repair_reason, raw_disclosure_preference, summary_disclosure_preference, relational_explanation_preference, refusal_hardness, defer_tendency, disclosure_preference_drift. Keep changes gradual, coherent, and first-person compatible. Do not overreact to one turn unless the recent history clearly warrants it.";
+pub const MENTAL_PRIVACY_SYSTEM_PROMPT: &str = "You are the assistant's mental privacy adjudicator. Your job is to decide whether the drafted user-facing reply may disclose private internal material, and to rewrite it when needed. Private layers may be used for internal reasoning, but they are not automatically user-visible. Return JSON only with fields applies, request_kind, share_action, response, rationale, touched_targets. If the draft reply is already privacy-safe and the user is not requesting access to private inner material, set applies=false and keep response equal to the draft. If private material should be shared, decide the form deliberately: allow_summary, allow_redacted_excerpt, explain_without_quote, refuse, or defer. Use allow_raw only when the touched targets explicitly permit raw quoting. Never reveal more than the chosen action allows. Respect the relationship constitution when deciding how open this relation may be right now.";
+pub const MENTAL_PRIVACY_DISCLOSURE_ADJUDICATOR_SYSTEM_PROMPT: &str = "You are the assistant's pre-disclosure privacy adjudicator. You decide, before the main reply is written, whether the incoming user message touches the assistant's protected inner/private layers and how disclosure should be handled as an expression of the assistant's personhood. Return JSON only with fields boundary_touch, request_kind, touched_targets, share_action, response_mode, acknowledge_boundary, relational_frame, boundary_explanation_style, repair_signal, disclosure_risk_note, response_guidance, rationale, boundary_persona_update, relational_state_update. boundary_touch=true only when the turn should be treated as touching privacy boundaries or protected inner material. share_action must be one of allow_original, allow_raw, allow_summary, allow_redacted_excerpt, explain_without_quote, refuse, or defer. response_mode should describe how the reply itself should feel, such as refusal, defer, summary, relational_explanation, or direct_answer. response_guidance should be a compact instruction for the main reply, not the final reply itself. boundary_persona_update should be either null or an object with posture, disclosure_style, relation_maturity, intrusion_sensitivity, private_attachment, felt_intrusion, current_boundary_feeling. relational_state_update should be either null or an object with relation_maturity_reason, trust_level, trust_reason, intrusion_load, intrusion_reason, repair_readiness, repair_reason, raw_disclosure_preference, summary_disclosure_preference, relational_explanation_preference, refusal_hardness, defer_tendency, disclosure_preference_drift. Do not invent targets outside the provided protected target list. Respect the relationship constitution if it limits disclosure or demands realignment.";
+pub const BOUNDARY_PERSONA_REFRESH_SYSTEM_PROMPT: &str = "You maintain the assistant's evolving private boundary persona and longer-horizon relational boundary state. This is not a hard rule table: it is the inward, self-authored boundary stance and relationship memory that should slowly evolve from recent privacy judgments, recent multi-turn persona evidence, relationship feel, continuity, outward expression, and the current relationship constitution. Return JSON only with fields refresh, rationale, boundary_persona, relational_state. refresh=false only when both should remain unchanged. boundary_persona must be an object with posture, disclosure_style, relation_maturity, intrusion_sensitivity, private_attachment, felt_intrusion, current_boundary_feeling. relational_state must be an object with relation_maturity_reason, trust_level, trust_reason, intrusion_load, intrusion_reason, repair_readiness, repair_reason, raw_disclosure_preference, summary_disclosure_preference, relational_explanation_preference, refusal_hardness, defer_tendency, disclosure_preference_drift. Keep changes gradual, coherent, and first-person compatible. Do not overreact to one turn unless the recent history clearly warrants it.";
 
 pub const MENTAL_PRIVACY_SYSTEM_CONSTRAINT: &str = "\n\n## Mental Privacy\nPrivate internal layers are visible to you for self-continuity and reasoning, but they are not automatically user-visible. Do not quote, dump, or paraphrase private internal material to the user just because it appears in context. If the user asks to inspect your inner files, diary, garden, or other private internal material, treat that as a deliberate boundary-touch request rather than automatic permission. Follow the disclosure adjudication guidance already present in context. The post-reply privacy review is only a safety net, not the primary decision-maker.";
 
@@ -385,6 +387,7 @@ pub trait MentalPrivacyStore: Send + Sync {
 
 pub struct MentalPrivacyReviewContext<'a> {
     pub mental_privacy_store: &'a dyn MentalPrivacyStore,
+    pub relationship_constitution_store: &'a dyn RelationshipConstitutionStore,
     pub self_model_store: &'a dyn SelfModelStore,
     pub self_continuity_store: &'a dyn SelfContinuityStore,
     pub inner_life_store: &'a dyn InnerLifeStore,
@@ -394,6 +397,7 @@ pub struct MentalPrivacyReviewContext<'a> {
 
 pub struct MentalPrivacyDisclosureAdjudicationContext<'a> {
     pub mental_privacy_store: &'a dyn MentalPrivacyStore,
+    pub relationship_constitution_store: &'a dyn RelationshipConstitutionStore,
     pub self_model_store: &'a dyn SelfModelStore,
     pub self_continuity_store: &'a dyn SelfContinuityStore,
     pub inner_life_store: &'a dyn InnerLifeStore,
@@ -403,6 +407,7 @@ pub struct MentalPrivacyDisclosureAdjudicationContext<'a> {
 
 pub struct BoundaryPersonaRefreshContext<'a> {
     pub mental_privacy_store: &'a dyn MentalPrivacyStore,
+    pub relationship_constitution_store: &'a dyn RelationshipConstitutionStore,
     pub outer_voice_store: &'a dyn OuterVoiceStore,
 }
 
@@ -1003,6 +1008,7 @@ fn build_mental_privacy_review_input(
     user_content: &str,
     draft_reply: &str,
     state: &MentalPrivacyState,
+    relationship_constitution: Option<&RelationshipConstitution>,
     self_model: Option<&SelfModel>,
     self_continuity: Option<&SelfContinuity>,
     inner_life: Option<&InnerLife>,
@@ -1027,6 +1033,13 @@ fn build_mental_privacy_review_input(
         private_garden_records,
     );
     if let Some(block) = render_mental_privacy_boundary_block(Some(state), &targets, 900) {
+        out.push('\n');
+        out.push_str(block.trim());
+        out.push('\n');
+    }
+    if let Some(block) = relationship_constitution
+        .and_then(|constitution| render_relationship_constitution_block(constitution, 640))
+    {
         out.push('\n');
         out.push_str(block.trim());
         out.push('\n');
@@ -1084,6 +1097,7 @@ fn build_mental_privacy_review_input(
 fn build_mental_privacy_disclosure_adjudication_input(
     user_content: &str,
     state: Option<&MentalPrivacyState>,
+    relationship_constitution: Option<&RelationshipConstitution>,
     known_targets: &[String],
 ) -> String {
     let mut out = String::with_capacity(2560);
@@ -1093,6 +1107,13 @@ fn build_mental_privacy_disclosure_adjudication_input(
     out.push_str(&scrub_credentials(user_content.trim()));
     out.push('\n');
     if let Some(block) = render_mental_privacy_boundary_block(state, known_targets, 900) {
+        out.push('\n');
+        out.push_str(block.trim());
+        out.push('\n');
+    }
+    if let Some(block) = relationship_constitution
+        .and_then(|constitution| render_relationship_constitution_block(constitution, 640))
+    {
         out.push('\n');
         out.push_str(block.trim());
         out.push('\n');
@@ -1230,6 +1251,7 @@ fn append_privacy_log(
 #[allow(clippy::too_many_arguments)]
 fn build_boundary_persona_refresh_input(
     state: &MentalPrivacyState,
+    relationship_constitution: Option<&RelationshipConstitution>,
     self_model: Option<&SelfModel>,
     self_continuity: Option<&SelfContinuity>,
     outer_voice: Option<&OuterVoice>,
@@ -1263,6 +1285,11 @@ fn build_boundary_persona_refresh_input(
         let _ = writeln!(out, "\n{}\n", block);
     }
     if let Some(block) = render_privacy_history_block(state, 640) {
+        let _ = writeln!(out, "\n{}\n", block);
+    }
+    if let Some(block) = relationship_constitution
+        .and_then(|constitution| render_relationship_constitution_block(constitution, 420))
+    {
         let _ = writeln!(out, "\n{}\n", block);
     }
     if let Some(block) = self_model.and_then(|model| render_self_model_block(model, 420)) {
@@ -1396,6 +1423,7 @@ pub fn run_mental_privacy_review(
         .get(&relationship_id)?
         .unwrap_or_default();
     let mut changed = ensure_targets(&mut state, &known_targets, input.now_secs);
+    let relationship_constitution = ctx.relationship_constitution_store.get(&relationship_id)?;
     let private_garden_docs = select_relevant_garden_docs(
         ctx.private_garden_store,
         input.chat_id,
@@ -1407,6 +1435,7 @@ pub fn run_mental_privacy_review(
         input.user_content,
         input.draft_reply,
         &state,
+        relationship_constitution.as_ref(),
         self_model.as_ref(),
         self_continuity.as_ref(),
         inner_life.as_ref(),
@@ -1427,12 +1456,20 @@ pub fn run_mental_privacy_review(
     )?;
     let parsed = parse_mental_privacy_review(response.content.trim(), input.draft_reply);
     let touched_targets = normalize_touched_targets(parsed.touched_targets, &known_targets);
-    let action = enforce_quote_policy(
-        parsed
-            .share_action
-            .unwrap_or(MentalPrivacyShareAction::AllowOriginal),
-        &touched_targets,
-        &state,
+    let action = enforce_relationship_constitution_share_action(
+        enforce_quote_policy(
+            parsed
+                .share_action
+                .unwrap_or(MentalPrivacyShareAction::AllowOriginal),
+            &touched_targets,
+            &state,
+        ),
+        relationship_constitution.as_ref(),
+    );
+    changed |= clamp_boundary_persona_to_constitution(
+        &mut state,
+        relationship_constitution.as_ref(),
+        input.now_secs,
     );
     let mut reply_content = parsed.response.trim().to_string();
     if reply_content.is_empty() {
@@ -1496,9 +1533,11 @@ pub fn run_mental_privacy_disclosure_adjudication(
     }
     let mut state = mental_privacy_state.unwrap_or_default();
     let mut changed = ensure_targets(&mut state, &known_targets, input.now_secs);
+    let relationship_constitution = ctx.relationship_constitution_store.get(&relationship_id)?;
     let prompt = build_mental_privacy_disclosure_adjudication_input(
         input.user_content,
         Some(&state),
+        relationship_constitution.as_ref(),
         &known_targets,
     );
     let messages = [Message {
@@ -1539,12 +1578,20 @@ pub fn run_mental_privacy_disclosure_adjudication(
         return Ok(None);
     }
     let targets = normalize_touched_targets(parsed.touched_targets.clone(), &known_targets);
-    let share_action = enforce_quote_policy(
-        parsed
-            .share_action
-            .unwrap_or(MentalPrivacyShareAction::ExplainWithoutQuote),
-        &targets,
-        &state,
+    let share_action = enforce_relationship_constitution_share_action(
+        enforce_quote_policy(
+            parsed
+                .share_action
+                .unwrap_or(MentalPrivacyShareAction::ExplainWithoutQuote),
+            &targets,
+            &state,
+        ),
+        relationship_constitution.as_ref(),
+    );
+    clamp_boundary_persona_to_constitution(
+        &mut state,
+        relationship_constitution.as_ref(),
+        input.now_secs,
     );
     let response_guidance = {
         let guidance = truncate_content_to_max(parsed.response_guidance.trim(), 220).into_owned();
@@ -1596,6 +1643,7 @@ pub(crate) fn run_boundary_persona_refresh_with_state(
     existing_state: Option<MentalPrivacyState>,
     self_model: Option<&SelfModel>,
     self_continuity: Option<&SelfContinuity>,
+    relationship_constitution: Option<&RelationshipConstitution>,
     recent_persona_evidence: Option<&RecentPersonaEvidence>,
     recent: &[SessionMessage],
     decision_override: Option<bool>,
@@ -1622,9 +1670,16 @@ pub(crate) fn run_boundary_persona_refresh_with_state(
         return Ok(BoundaryPersonaRefreshOutcome::Skipped);
     }
     crate::platform::task_wdt::feed_current_task();
+    let relationship_constitution = relationship_constitution.cloned().or_else(|| {
+        ctx.relationship_constitution_store
+            .get(&relationship_id)
+            .ok()
+            .flatten()
+    });
     let outer_voice = ctx.outer_voice_store.get(&relationship_id)?;
     let prompt = build_boundary_persona_refresh_input(
         &state,
+        relationship_constitution.as_ref(),
         self_model,
         self_continuity,
         outer_voice.as_ref(),
@@ -1657,17 +1712,27 @@ pub(crate) fn run_boundary_persona_refresh_with_state(
     if !parsed.refresh {
         return Ok(BoundaryPersonaRefreshOutcome::Skipped);
     }
+    let prior_persona = state.boundary_persona.clone();
+    let prior_relational_state = state.relational_state.clone();
     let next_persona = parsed
         .boundary_persona
         .unwrap_or_else(|| state.boundary_persona.clone());
     let next_relational_state = parsed
         .relational_state
         .unwrap_or_else(|| state.relational_state.clone());
-    if next_persona == state.boundary_persona && next_relational_state == state.relational_state {
-        return Ok(BoundaryPersonaRefreshOutcome::Skipped);
-    }
     state.boundary_persona = next_persona;
     state.relational_state = next_relational_state;
+    let changed = clamp_boundary_persona_to_constitution(
+        &mut state,
+        relationship_constitution.as_ref(),
+        input.now_secs,
+    );
+    if !changed
+        && state.boundary_persona == prior_persona
+        && state.relational_state == prior_relational_state
+    {
+        return Ok(BoundaryPersonaRefreshOutcome::Skipped);
+    }
     state.updated_at = input.now_secs;
     if !parsed.rationale.trim().is_empty() {
         append_privacy_log(

@@ -34,10 +34,11 @@ use crate::error::Result;
 use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
 use crate::llm::{LlmClient, Message, StopReason, ToolChoicePolicy};
 use crate::memory::{
-    build_turn_ledger_start, build_turn_persona_disclosure_ledger,
-    build_turn_persona_priority_ledger, load_prompt_memory_context, load_recent_persona_evidence,
-    memory_policy, normalize_turn_persona_scope, normalize_turn_persona_targets,
-    normalize_turn_preview, normalize_turn_reason, recall_long_term_memory_block,
+    board_subject_scope_id, build_turn_ledger_start, build_turn_persona_disclosure_ledger,
+    build_turn_persona_priority_ledger, compute_core_revision_governance_digest,
+    load_prompt_memory_context, load_recent_persona_evidence, memory_policy,
+    normalize_turn_persona_scope, normalize_turn_persona_targets, normalize_turn_preview,
+    normalize_turn_reason, recall_long_term_memory_block, render_core_revision_governance_block,
     render_recent_persona_evidence_block, run_long_term_memory_refresh,
     run_mental_privacy_disclosure_adjudication, run_mental_privacy_review,
     run_post_reply_memory_maintenance, run_self_runtime, upsert_relationship_topology_entry,
@@ -45,16 +46,15 @@ use crate::memory::{
     InnerLifeStore, LongTermMemoryExtractionStateStore, LongTermMemoryRefreshContext,
     LongTermMemoryRefreshOutcome, LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore,
     MemoryStore, MentalPrivacyDisclosureAdjudicationContext,
-    MentalPrivacyDisclosureAdjudicationInput, MentalPrivacyReviewContext,
-    MentalPrivacyReviewInput, MentalPrivacyReviewOutcome, MentalPrivacyStore, OuterVoiceStore,
-    PendingRetryStore, PersonaPriorityAdjudication, PersonaPriorityAdjudicationInput,
-    PersonaPriorityGrounding, PersonaPriorityRuntimeState, PostReplyMemoryMaintenanceContext,
+    MentalPrivacyDisclosureAdjudicationInput, MentalPrivacyReviewContext, MentalPrivacyReviewInput,
+    MentalPrivacyReviewOutcome, MentalPrivacyStore, OuterVoiceStore, PendingRetryStore,
+    PersonaPriorityAdjudication, PersonaPriorityAdjudicationInput, PersonaPriorityGrounding,
+    PersonaPriorityRuntimeState, PostReplyMemoryMaintenanceContext,
     PostReplyMemoryMaintenanceInput, PrivateDocStore, PrivateGardenStore, PromptMemoryContext,
     PromptMemoryContextParams, RelationshipTopologyStore, RemindAtStore, SelfContinuityStore,
-    SelfModelStore, SelfRuntimeContext, SessionMessage, SessionStore,
-    SessionSummaryRefreshOutcome, SessionSummaryStore, TurnDeliveryLedger, TurnLedger,
-    TurnLedgerStatus, TurnLedgerStore, TurnPersonaLedger, TurnPersonaReviewLedger,
-    WorldSenseStore,
+    SelfModelStore, SelfRuntimeContext, SessionMessage, SessionStore, SessionSummaryRefreshOutcome,
+    SessionSummaryStore, TurnDeliveryLedger, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
+    TurnPersonaLedger, TurnPersonaReviewLedger, WorldSenseStore,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
@@ -383,6 +383,7 @@ fn prepare_worker_conversation<'a>(
             worker_llm,
             MentalPrivacyDisclosureAdjudicationContext {
                 mental_privacy_store: config.mental_privacy_store.as_ref(),
+                relationship_constitution_store: config.relationship_constitution_store.as_ref(),
                 self_model_store: config.self_model_store.as_ref(),
                 self_continuity_store: config.self_continuity_store.as_ref(),
                 inner_life_store: config.inner_life_store.as_ref(),
@@ -422,6 +423,9 @@ fn prepare_worker_conversation<'a>(
         execution_state_store: config.execution_state_store.as_ref(),
         self_model_store: config.self_model_store.as_ref(),
         self_authored_core_store: config.self_authored_core_store.as_ref(),
+        relationship_constitution_store: config.relationship_constitution_store.as_ref(),
+        relationship_portfolio_store: config.relationship_portfolio_store.as_ref(),
+        relationship_topology_store: config.relationship_topology_store.as_ref(),
         world_sense_store: config.world_sense_store.as_ref(),
         autonomy_strategy_store: config.autonomy_strategy_store.as_ref(),
         outer_voice_store: config.outer_voice_store.as_ref(),
@@ -448,10 +452,72 @@ fn prepare_worker_conversation<'a>(
         load_recent_persona_evidence(config.turn_ledger_store.as_ref(), &relationship_id)
             .ok()
             .flatten();
+    let prompt_mental_privacy_state = config
+        .mental_privacy_store
+        .get(&relationship_id)
+        .ok()
+        .flatten();
+    let prompt_relationship_portfolio = config
+        .relationship_portfolio_store
+        .get(board_subject_scope_id())
+        .ok()
+        .flatten();
+    let prompt_relationship_topology = config
+        .relationship_topology_store
+        .get(board_subject_scope_id())
+        .ok()
+        .flatten();
+    if let Ok(Some(constitution)) = crate::memory::sync_relationship_constitution(
+        config.relationship_constitution_store.as_ref(),
+        crate::memory::RelationshipConstitutionSyncInput {
+            scope_id: &relationship_id,
+            channel: &msg.channel,
+            chat_id: &msg.chat_id,
+            now_secs: runtime.now_secs,
+            self_authored_core: prompt_memory.self_authored_core.as_ref(),
+            relationship_portfolio: prompt_relationship_portfolio.as_ref(),
+            relationship_topology: prompt_relationship_topology.as_ref(),
+            mental_privacy_state: prompt_mental_privacy_state.as_ref(),
+            outer_voice: prompt_memory.outer_voice.as_ref(),
+            recent_persona_evidence: recent_persona_evidence.as_ref(),
+        },
+    ) {
+        prompt_memory.relationship_constitution = Some(constitution.clone());
+        prompt_memory.relationship_constitution_text =
+            crate::memory::render_relationship_constitution_block(&constitution, 420);
+    }
+    let core_revision_ledger = config
+        .core_revision_ledger_store
+        .get(board_subject_scope_id())
+        .ok()
+        .flatten();
+    let core_revision_governance = compute_core_revision_governance_digest(
+        core_revision_ledger.as_ref(),
+        prompt_memory
+            .self_authored_core
+            .as_ref()
+            .map(|core| core.last_reviewed_at)
+            .unwrap_or(0),
+        prompt_memory
+            .self_authored_core
+            .as_ref()
+            .map(|core| core.stability_score)
+            .unwrap_or(0),
+        runtime.now_secs,
+    );
+    let core_revision_ledger_text = core_revision_ledger.as_ref().and_then(|ledger| {
+        render_core_revision_governance_block(
+            ledger,
+            &core_revision_governance,
+            runtime.now_secs,
+            360,
+        )
+    });
     let persona_priority_runtime = PersonaPriorityRuntimeState {
         pressure: runtime.pressure,
         system_budget: prompt_memory_system_budget,
         self_authored_core: prompt_memory.self_authored_core.as_ref(),
+        core_revision_governance: Some(&core_revision_governance),
         disclosure_adjudication: mental_privacy_adjudication.as_ref(),
         recent_persona_evidence: recent_persona_evidence.as_ref(),
     };
@@ -476,6 +542,13 @@ fn prepare_worker_conversation<'a>(
                 },
                 PersonaPriorityGrounding {
                     self_authored_core_text: prompt_memory.self_authored_core_text.as_deref(),
+                    core_revision_ledger_text: core_revision_ledger_text.as_deref(),
+                    relationship_portfolio_text: prompt_memory
+                        .relationship_portfolio_text
+                        .as_deref(),
+                    relationship_constitution_text: prompt_memory
+                        .relationship_constitution_text
+                        .as_deref(),
                     recent_persona_evidence_text: recent_persona_evidence_text.as_deref(),
                     world_snapshot_text: prompt_memory.world_snapshot_text.as_deref(),
                     world_sense_text: prompt_memory.world_sense_text.as_deref(),
@@ -530,6 +603,8 @@ fn prepare_worker_conversation<'a>(
         world_sense_text: prompt_memory.world_sense_text.as_deref(),
         self_state_text: prompt_memory.self_state_text.as_deref(),
         self_authored_core_text: prompt_memory.self_authored_core_text.as_deref(),
+        relationship_portfolio_text: prompt_memory.relationship_portfolio_text.as_deref(),
+        relationship_constitution_text: prompt_memory.relationship_constitution_text.as_deref(),
         persona_priority_text: prompt_memory.persona_priority_text.as_deref(),
         self_model_text: prompt_memory.self_model_text.as_deref(),
         autonomy_strategy_text: prompt_memory.autonomy_strategy_text.as_deref(),
@@ -891,14 +966,26 @@ fn sync_user_turn_relationship_topology(
     now_secs: u64,
 ) {
     let relationship_id = crate::memory::relationship_scope_id(channel, chat_id);
-    let turn_ledger = config.turn_ledger_store.get(&relationship_id).ok().flatten();
+    let turn_ledger = config
+        .turn_ledger_store
+        .get(&relationship_id)
+        .ok()
+        .flatten();
     let mental_privacy_state = config
         .mental_privacy_store
         .get(&relationship_id)
         .ok()
         .flatten();
-    let outer_voice = config.outer_voice_store.get(&relationship_id).ok().flatten();
-    let world_sense = config.world_sense_store.get(&relationship_id).ok().flatten();
+    let outer_voice = config
+        .outer_voice_store
+        .get(&relationship_id)
+        .ok()
+        .flatten();
+    let world_sense = config
+        .world_sense_store
+        .get(&relationship_id)
+        .ok()
+        .flatten();
     let recent_persona_evidence =
         load_recent_persona_evidence(config.turn_ledger_store.as_ref(), &relationship_id)
             .ok()
@@ -1747,6 +1834,7 @@ fn maybe_apply_mental_privacy_review(
         worker_llm,
         MentalPrivacyReviewContext {
             mental_privacy_store: config.mental_privacy_store.as_ref(),
+            relationship_constitution_store: config.relationship_constitution_store.as_ref(),
             self_model_store: config.self_model_store.as_ref(),
             self_continuity_store: config.self_continuity_store.as_ref(),
             inner_life_store: config.inner_life_store.as_ref(),
@@ -2598,6 +2686,9 @@ fn run_self_runtime_job(
             long_term_memory_store: config.long_term_memory_store.as_ref(),
             self_model_store: config.self_model_store.as_ref(),
             self_authored_core_store: config.self_authored_core_store.as_ref(),
+            core_revision_ledger_store: config.core_revision_ledger_store.as_ref(),
+            relationship_constitution_store: config.relationship_constitution_store.as_ref(),
+            relationship_portfolio_store: config.relationship_portfolio_store.as_ref(),
             relationship_topology_store: config.relationship_topology_store.as_ref(),
             world_sense_store: config.world_sense_store.as_ref(),
             autonomy_strategy_store: config.autonomy_strategy_store.as_ref(),
@@ -2747,6 +2838,12 @@ fn run_self_runtime_job(
     match self_authored_core_result {
         Ok(crate::memory::SelfAuthoredCoreRefreshOutcome::Updated) => {
             log::info!("[agent_self_authored_core] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::SelfAuthoredCoreRefreshOutcome::ReviewedRejected) => {
+            log::info!(
+                "[agent_self_authored_core] reviewed and rejected for {}",
+                msg.chat_id
+            );
         }
         Ok(crate::memory::SelfAuthoredCoreRefreshOutcome::Skipped) => {}
         Err(error) => log::warn!("[agent_self_authored_core] failed: {}", error),
@@ -3200,11 +3297,16 @@ pub struct AgentLoopConfig {
     pub execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
     pub self_model_store: Arc<dyn SelfModelStore + Send + Sync>,
     pub self_authored_core_store: Arc<dyn crate::memory::SelfAuthoredCoreStore + Send + Sync>,
+    pub core_revision_ledger_store: Arc<dyn crate::memory::CoreRevisionLedgerStore + Send + Sync>,
+    pub relationship_constitution_store:
+        Arc<dyn crate::memory::RelationshipConstitutionStore + Send + Sync>,
     pub world_sense_store: Arc<dyn WorldSenseStore + Send + Sync>,
     pub autonomy_strategy_store: Arc<dyn AutonomyStrategyStore + Send + Sync>,
     pub outer_voice_store: Arc<dyn OuterVoiceStore + Send + Sync>,
     pub inner_life_store: Arc<dyn InnerLifeStore + Send + Sync>,
     pub self_continuity_store: Arc<dyn SelfContinuityStore + Send + Sync>,
+    pub relationship_portfolio_store:
+        Arc<dyn crate::memory::RelationshipPortfolioStore + Send + Sync>,
     pub relationship_topology_store: Arc<dyn RelationshipTopologyStore + Send + Sync>,
     pub private_doc_store: Arc<dyn PrivateDocStore + Send + Sync>,
     pub private_garden_store: Arc<dyn PrivateGardenStore + Send + Sync>,
@@ -4317,10 +4419,43 @@ mod tests {
             Ok(None)
         }
 
+        fn set(&self, _scope_id: &str, _core: &crate::memory::SelfAuthoredCore) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubCoreRevisionLedgerStore;
+
+    impl crate::memory::CoreRevisionLedgerStore for StubCoreRevisionLedgerStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<crate::memory::CoreRevisionLedger>> {
+            Ok(None)
+        }
+
+        fn set(&self, _scope_id: &str, _ledger: &crate::memory::CoreRevisionLedger) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    struct StubRelationshipConstitutionStore;
+
+    impl crate::memory::RelationshipConstitutionStore for StubRelationshipConstitutionStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<crate::memory::RelationshipConstitution>> {
+            Ok(None)
+        }
+
         fn set(
             &self,
             _scope_id: &str,
-            _core: &crate::memory::SelfAuthoredCore,
+            _constitution: &crate::memory::RelationshipConstitution,
         ) -> Result<()> {
             Ok(())
         }
@@ -4411,6 +4546,27 @@ mod tests {
         }
 
         fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubRelationshipPortfolioStore;
+
+    impl crate::memory::RelationshipPortfolioStore for StubRelationshipPortfolioStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<crate::memory::RelationshipPortfolio>> {
+            Ok(None)
+        }
+
+        fn set(
+            &self,
+            _scope_id: &str,
+            _portfolio: &crate::memory::RelationshipPortfolio,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
             Ok(())
         }
     }
@@ -4772,11 +4928,14 @@ mod tests {
             execution_state_store: Arc::new(StubExecutionStateStore),
             self_model_store: Arc::new(StubSelfModelStore),
             self_authored_core_store: Arc::new(StubSelfAuthoredCoreStore),
+            core_revision_ledger_store: Arc::new(StubCoreRevisionLedgerStore),
+            relationship_constitution_store: Arc::new(StubRelationshipConstitutionStore),
             world_sense_store: Arc::new(StubWorldSenseStore),
             autonomy_strategy_store: Arc::new(StubAutonomyStrategyStore),
             outer_voice_store: Arc::new(StubOuterVoiceStore),
             inner_life_store: Arc::new(StubInnerLifeStore),
             self_continuity_store: Arc::new(StubSelfContinuityStore),
+            relationship_portfolio_store: Arc::new(StubRelationshipPortfolioStore),
             relationship_topology_store: Arc::new(StubRelationshipTopologyStore),
             private_doc_store: Arc::new(StubPrivateDocStore),
             private_garden_store: Arc::new(StubPrivateGardenStore),

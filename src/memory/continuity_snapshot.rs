@@ -5,14 +5,17 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
 use super::{
-    board_subject_scope_id, ExecutionState, ExecutionStateStore, LongTermMemoryDraft,
-    LongTermMemoryEntry, LongTermMemoryKind, LongTermMemoryStore, SelfContinuity,
-    RelationshipSelectorInput, RelationshipTopology, RelationshipTopologyStore,
-    SelfAuthoredCore, SelfAuthoredCoreStore, SelfContinuityStore, SelfModel, SelfModelStore,
-    SessionStore, SessionSummaryStore, select_relationship_topology_targets,
+    board_subject_scope_id, select_relationship_portfolio_targets,
+    select_relationship_topology_targets, CoreRevisionLedger, CoreRevisionLedgerStore,
+    ExecutionState, ExecutionStateStore, LongTermMemoryDraft, LongTermMemoryEntry,
+    LongTermMemoryKind, LongTermMemoryStore, RelationshipConstitution,
+    RelationshipConstitutionStore, RelationshipPortfolio, RelationshipPortfolioSelectorInput,
+    RelationshipPortfolioStore, RelationshipSelectorInput, RelationshipTopology,
+    RelationshipTopologyStore, SelfAuthoredCore, SelfAuthoredCoreStore, SelfContinuity,
+    SelfContinuityStore, SelfModel, SelfModelStore, SessionStore, SessionSummaryStore,
 };
 
-const CONTINUITY_SNAPSHOT_VERSION: u32 = 1;
+const CONTINUITY_SNAPSHOT_VERSION: u32 = 3;
 const BOOTSTRAP_MAX_FACTS: usize = 16;
 const FULL_RESTORE_MAX_FACTS: usize = 48;
 
@@ -47,7 +50,13 @@ pub struct ContinuitySnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub self_authored_core: Option<SelfAuthoredCore>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core_revision_ledger: Option<CoreRevisionLedger>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub self_continuity: Option<SelfContinuity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relationship_portfolio: Option<RelationshipPortfolio>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relationship_constitution: Option<RelationshipConstitution>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_state: Option<ExecutionState>,
 }
@@ -58,7 +67,11 @@ pub struct ContinuitySnapshotExportContext<'a> {
     pub execution_state_store: &'a dyn ExecutionStateStore,
     pub self_model_store: &'a dyn SelfModelStore,
     pub self_authored_core_store: &'a dyn SelfAuthoredCoreStore,
+    pub core_revision_ledger_store: &'a dyn CoreRevisionLedgerStore,
     pub self_continuity_store: &'a dyn SelfContinuityStore,
+    pub relationship_constitution_store: &'a dyn RelationshipConstitutionStore,
+    pub relationship_portfolio_store: &'a dyn RelationshipPortfolioStore,
+    pub relationship_topology_store: &'a dyn RelationshipTopologyStore,
 }
 
 pub struct ContinuitySnapshotImportContext<'a> {
@@ -67,7 +80,10 @@ pub struct ContinuitySnapshotImportContext<'a> {
     pub execution_state_store: &'a dyn ExecutionStateStore,
     pub self_model_store: &'a dyn SelfModelStore,
     pub self_authored_core_store: &'a dyn SelfAuthoredCoreStore,
+    pub core_revision_ledger_store: &'a dyn CoreRevisionLedgerStore,
     pub self_continuity_store: &'a dyn SelfContinuityStore,
+    pub relationship_constitution_store: &'a dyn RelationshipConstitutionStore,
+    pub relationship_portfolio_store: &'a dyn RelationshipPortfolioStore,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -76,7 +92,10 @@ pub struct ContinuitySnapshotImportOutcome {
     pub summary_restored: bool,
     pub self_model_restored: bool,
     pub self_authored_core_restored: bool,
+    pub core_revision_ledger_restored: bool,
     pub self_continuity_restored: bool,
+    pub relationship_constitution_restored: bool,
+    pub relationship_portfolio_restored: bool,
     pub execution_state_restored: bool,
 }
 
@@ -94,7 +113,21 @@ pub fn export_continuity_snapshot(
         .filter(|summary| !summary.trim().is_empty());
     let self_model = ctx.self_model_store.get(subject_id)?;
     let self_authored_core = ctx.self_authored_core_store.get(subject_id)?;
+    let core_revision_ledger = ctx.core_revision_ledger_store.get(subject_id)?;
     let self_continuity = ctx.self_continuity_store.get(subject_id)?;
+    let relationship_portfolio = ctx.relationship_portfolio_store.get(subject_id)?;
+    let relationship_topology = ctx.relationship_topology_store.get(subject_id)?;
+    let relationship_scope_id = select_snapshot_relationship_scope_id(
+        chat_id,
+        self_continuity.as_ref(),
+        relationship_portfolio.as_ref(),
+        relationship_topology.as_ref(),
+    );
+    let relationship_constitution = relationship_scope_id
+        .as_deref()
+        .map(|scope_id| ctx.relationship_constitution_store.get(scope_id))
+        .transpose()?
+        .flatten();
     let execution_state = ctx.execution_state_store.get(chat_id)?;
     let long_term_memory = select_snapshot_long_term_memory(
         ctx.long_term_memory_store.list(FULL_RESTORE_MAX_FACTS)?,
@@ -111,7 +144,10 @@ pub fn export_continuity_snapshot(
         long_term_memory,
         self_model,
         self_authored_core,
+        core_revision_ledger,
         self_continuity,
+        relationship_constitution,
+        relationship_portfolio,
         execution_state: matches!(mode, ContinuitySnapshotMode::FullRestore)
             .then_some(execution_state)
             .flatten(),
@@ -177,6 +213,17 @@ pub fn import_continuity_snapshot(
             outcome.self_authored_core_restored = true;
         }
     }
+    if let Some(core_revision_ledger) = snapshot.core_revision_ledger.as_ref() {
+        let should_restore = ctx
+            .core_revision_ledger_store
+            .get(target_subject_id)?
+            .is_none_or(|existing| existing.updated_at <= core_revision_ledger.updated_at);
+        if should_restore {
+            ctx.core_revision_ledger_store
+                .set(target_subject_id, core_revision_ledger)?;
+            outcome.core_revision_ledger_restored = true;
+        }
+    }
     if let Some(self_continuity) = snapshot.self_continuity.as_ref() {
         let should_restore = ctx
             .self_continuity_store
@@ -186,6 +233,30 @@ pub fn import_continuity_snapshot(
             ctx.self_continuity_store
                 .set(target_subject_id, self_continuity)?;
             outcome.self_continuity_restored = true;
+        }
+    }
+    if let Some(relationship_constitution) = snapshot.relationship_constitution.as_ref() {
+        let should_restore = ctx
+            .relationship_constitution_store
+            .get(relationship_constitution.scope_id.as_str())?
+            .is_none_or(|existing| existing.updated_at <= relationship_constitution.updated_at);
+        if should_restore {
+            ctx.relationship_constitution_store.set(
+                relationship_constitution.scope_id.as_str(),
+                relationship_constitution,
+            )?;
+            outcome.relationship_constitution_restored = true;
+        }
+    }
+    if let Some(relationship_portfolio) = snapshot.relationship_portfolio.as_ref() {
+        let should_restore = ctx
+            .relationship_portfolio_store
+            .get(target_subject_id)?
+            .is_none_or(|existing| existing.updated_at <= relationship_portfolio.updated_at);
+        if should_restore {
+            ctx.relationship_portfolio_store
+                .set(target_subject_id, relationship_portfolio)?;
+            outcome.relationship_portfolio_restored = true;
         }
     }
     if matches!(mode, ContinuitySnapshotImportMode::FullRestore) {
@@ -207,6 +278,7 @@ pub fn import_continuity_snapshot(
 pub fn select_active_continuity_snapshot_chat_ids(
     session_store: &dyn SessionStore,
     self_continuity_store: &dyn SelfContinuityStore,
+    relationship_portfolio_store: &dyn RelationshipPortfolioStore,
     relationship_topology_store: &dyn RelationshipTopologyStore,
     preferred_chat_id: Option<&str>,
     now_secs: u64,
@@ -229,12 +301,22 @@ pub fn select_active_continuity_snapshot_chat_ids(
                 .max(continuity.updated_at)
         })
         .unwrap_or(0);
-    let preferred_channel = continuity
-        .as_ref()
-        .and_then(|continuity| {
-            let channel = continuity.last_user_channel.trim();
-            (!channel.is_empty()).then_some(channel)
-        });
+    let preferred_channel = continuity.as_ref().and_then(|continuity| {
+        let channel = continuity.last_user_channel.trim();
+        (!channel.is_empty()).then_some(channel)
+    });
+    let portfolio = relationship_portfolio_store
+        .get(board_subject_scope_id())
+        .ok()
+        .flatten();
+    push_portfolio_chat_ids(
+        &mut selected,
+        portfolio.as_ref(),
+        preferred_chat_id,
+        preferred_channel,
+        now_secs,
+        limit,
+    );
     let topology = relationship_topology_store
         .get(board_subject_scope_id())
         .ok()
@@ -269,6 +351,77 @@ pub fn select_active_continuity_snapshot_chat_ids(
         }
     }
     selected
+}
+
+fn select_snapshot_relationship_scope_id(
+    chat_id: &str,
+    self_continuity: Option<&SelfContinuity>,
+    relationship_portfolio: Option<&RelationshipPortfolio>,
+    relationship_topology: Option<&RelationshipTopology>,
+) -> Option<String> {
+    let preferred_channel = self_continuity.and_then(|continuity| {
+        (continuity.last_user_chat_id.trim() == chat_id)
+            .then_some(continuity.last_user_channel.trim())
+            .filter(|value| !value.is_empty())
+    });
+    if let Some(entry) = relationship_portfolio.and_then(|portfolio| {
+        portfolio
+            .entries
+            .iter()
+            .filter(|entry| entry.chat_id.trim() == chat_id && entry.is_meaningful())
+            .max_by(|left, right| {
+                let left_preferred = (preferred_channel == Some(left.channel.trim())) as u8;
+                let right_preferred = (preferred_channel == Some(right.channel.trim())) as u8;
+                left_preferred
+                    .cmp(&right_preferred)
+                    .then_with(|| left.priority_score.cmp(&right.priority_score))
+                    .then_with(|| left.last_active_at.cmp(&right.last_active_at))
+            })
+    }) {
+        return Some(entry.scope_id.clone());
+    }
+    relationship_topology.and_then(|topology| {
+        topology
+            .entries
+            .iter()
+            .filter(|entry| entry.chat_id.trim() == chat_id && entry.is_meaningful())
+            .max_by(|left, right| {
+                let left_preferred = (preferred_channel == Some(left.channel.trim())) as u8;
+                let right_preferred = (preferred_channel == Some(right.channel.trim())) as u8;
+                left_preferred
+                    .cmp(&right_preferred)
+                    .then_with(|| left.latest_overlay_at().cmp(&right.latest_overlay_at()))
+            })
+            .map(|entry| entry.scope_id.clone())
+    })
+}
+
+fn push_portfolio_chat_ids(
+    selected: &mut Vec<String>,
+    portfolio: Option<&RelationshipPortfolio>,
+    preferred_chat_id: Option<&str>,
+    preferred_channel: Option<&str>,
+    now_secs: u64,
+    limit: usize,
+) {
+    let Some(portfolio) = portfolio else {
+        return;
+    };
+    let targets = select_relationship_portfolio_targets(
+        Some(portfolio),
+        RelationshipPortfolioSelectorInput {
+            preferred_chat_id,
+            preferred_channel,
+            now_secs,
+            max_targets: limit,
+        },
+    );
+    for target in targets {
+        if selected.len() >= limit {
+            break;
+        }
+        push_unique_chat_id(selected, Some(target.chat_id.as_str()), limit);
+    }
 }
 
 fn push_topology_chat_ids(
@@ -345,6 +498,12 @@ pub fn render_continuity_snapshot_markdown(snapshot: &ContinuitySnapshot) -> Str
     }
     if let Some(self_authored_core) = snapshot.self_authored_core.as_ref() {
         let _ = writeln!(out, "\n## Self-Authored Core");
+        let _ = writeln!(out, "- revision: {}", self_authored_core.revision.max(1));
+        let _ = writeln!(
+            out,
+            "- stability_score: {}",
+            self_authored_core.stability_score
+        );
         if !self_authored_core.identity_anchor.trim().is_empty() {
             let _ = writeln!(
                 out,
@@ -381,6 +540,18 @@ pub fn render_continuity_snapshot_markdown(snapshot: &ContinuitySnapshot) -> Str
             );
         }
     }
+    if let Some(core_revision_ledger) = snapshot.core_revision_ledger.as_ref() {
+        let _ = writeln!(out, "\n## Core Revision Ledger");
+        let _ = writeln!(out, "- entries: {}", core_revision_ledger.entries.len());
+        if let Some(record) = core_revision_ledger.entries.last() {
+            let _ = writeln!(out, "- latest_outcome: {}", record.outcome.label());
+            let _ = writeln!(
+                out,
+                "- latest_reason: {}",
+                record.adjudication_reason.trim()
+            );
+        }
+    }
     if let Some(self_continuity) = snapshot.self_continuity.as_ref() {
         let _ = writeln!(out, "\n## Self Continuity");
         if !self_continuity.wake_anchor.trim().is_empty() {
@@ -400,6 +571,44 @@ pub fn render_continuity_snapshot_markdown(snapshot: &ContinuitySnapshot) -> Str
                 self_continuity.continuity_bridge.trim()
             );
         }
+    }
+    if let Some(relationship_portfolio) = snapshot.relationship_portfolio.as_ref() {
+        let _ = writeln!(out, "\n## Relationship Portfolio");
+        for entry in relationship_portfolio.entries.iter().take(4) {
+            let _ = writeln!(
+                out,
+                "- {}:{} state={} inheritance={} reason={}",
+                entry.channel,
+                entry.chat_id,
+                entry.governance_state.label(),
+                entry.inheritance_mode.label(),
+                entry.reason.trim()
+            );
+        }
+    }
+    if let Some(relationship_constitution) = snapshot.relationship_constitution.as_ref() {
+        let _ = writeln!(out, "\n## Relationship Constitution");
+        let _ = writeln!(
+            out,
+            "- scope_id: {}",
+            relationship_constitution.scope_id.trim()
+        );
+        let _ = writeln!(
+            out,
+            "- governance: {} / inheritance={}",
+            relationship_constitution.governance_state.label(),
+            relationship_constitution.inheritance_mode.label()
+        );
+        let _ = writeln!(
+            out,
+            "- alignment: {}",
+            relationship_constitution.alignment.label()
+        );
+        let _ = writeln!(
+            out,
+            "- task_scope_ceiling: {}",
+            relationship_constitution.task_scope_ceiling.label()
+        );
     }
     if !snapshot.long_term_memory.is_empty() {
         let _ = writeln!(out, "\n## Shared Facts");
@@ -529,6 +738,7 @@ fn snapshot_kind_priority(kind: &LongTermMemoryKind) -> u8 {
 mod tests {
     use super::*;
     use crate::memory::{
+        CoreRevisionActionKind, CoreRevisionOutcome, CoreRevisionRecord, CoreRevisionRecordChange,
         ExecutionStatus, LongTermMemoryConfidence, LongTermMemoryFreshness,
         LongTermMemorySourceScope, LongTermMemorySourceType, LongTermMemoryStaleHint,
         SessionMessage,
@@ -693,6 +903,27 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct StubCoreRevisionLedgerStore {
+        state: Mutex<Option<CoreRevisionLedger>>,
+    }
+
+    impl CoreRevisionLedgerStore for StubCoreRevisionLedgerStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<CoreRevisionLedger>> {
+            Ok(self.state.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _scope_id: &str, ledger: &CoreRevisionLedger) -> Result<()> {
+            *self.state.lock().unwrap_or_else(|e| e.into_inner()) = Some(ledger.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            *self.state.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
     struct StubSelfContinuityStore {
         state: Mutex<Option<SelfContinuity>>,
     }
@@ -753,6 +984,46 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct StubRelationshipConstitutionStore {
+        value: Mutex<Option<RelationshipConstitution>>,
+    }
+
+    impl RelationshipConstitutionStore for StubRelationshipConstitutionStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<RelationshipConstitution>> {
+            Ok(self.value.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _scope_id: &str, constitution: &RelationshipConstitution) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(constitution.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubRelationshipPortfolioStore {
+        value: Option<RelationshipPortfolio>,
+    }
+
+    impl RelationshipPortfolioStore for StubRelationshipPortfolioStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<RelationshipPortfolio>> {
+            Ok(self.value.clone())
+        }
+
+        fn set(&self, _scope_id: &str, _portfolio: &RelationshipPortfolio) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
     struct StubRelationshipTopologyStore {
         entries: std::collections::HashMap<String, RelationshipTopology>,
     }
@@ -790,7 +1061,13 @@ mod tests {
                 execution_state_store: &StubExecutionStateStore::default(),
                 self_model_store: &StubSelfModelStore::default(),
                 self_authored_core_store: &StubSelfAuthoredCoreStore::default(),
+                core_revision_ledger_store: &StubCoreRevisionLedgerStore::default(),
                 self_continuity_store: &StubSelfContinuityStore::default(),
+                relationship_constitution_store: &StubRelationshipConstitutionStore::default(),
+                relationship_portfolio_store: &StubRelationshipPortfolioStore::default(),
+                relationship_topology_store: &StubRelationshipTopologyStore {
+                    entries: std::collections::HashMap::new(),
+                },
             },
             "chat-1",
             ContinuitySnapshotMode::Bootstrap,
@@ -810,7 +1087,10 @@ mod tests {
         let execution_state_store = StubExecutionStateStore::default();
         let self_model_store = StubSelfModelStore::default();
         let self_authored_core_store = StubSelfAuthoredCoreStore::default();
+        let core_revision_ledger_store = StubCoreRevisionLedgerStore::default();
         let self_continuity_store = StubSelfContinuityStore::default();
+        let relationship_constitution_store = StubRelationshipConstitutionStore::default();
+        let relationship_portfolio_store = StubRelationshipPortfolioStore::default();
         let snapshot = ContinuitySnapshot {
             version: CONTINUITY_SNAPSHOT_VERSION,
             exported_at: 11,
@@ -828,6 +1108,9 @@ mod tests {
                 ..SelfModel::default()
             }),
             self_authored_core: Some(SelfAuthoredCore {
+                revision: 1,
+                stability_score: 64,
+                last_reviewed_at: 11,
                 identity_anchor: "board self".to_string(),
                 priority_constitution: vec![
                     "self_authored_core".to_string(),
@@ -837,6 +1120,31 @@ mod tests {
                 change_protocol: "revise only after stable evidence".to_string(),
                 updated_at: 11,
                 ..SelfAuthoredCore::default()
+            }),
+            core_revision_ledger: Some(CoreRevisionLedger {
+                entries: vec![CoreRevisionRecord {
+                    based_on_revision: 0,
+                    resulting_revision: 1,
+                    relationship_scope_id: "rel:qq_channel:chat-1".to_string(),
+                    source_layers: vec!["self_model".to_string()],
+                    outcome: CoreRevisionOutcome::Adopted,
+                    evidence_summary: vec!["bootstrap".to_string()],
+                    counterevidence: Vec::new(),
+                    accepted_changes: vec![CoreRevisionRecordChange {
+                        kind: CoreRevisionActionKind::ReviseIdentityAnchor,
+                        summary: "bootstrap".to_string(),
+                    }],
+                    rejected_changes: Vec::new(),
+                    conflict_classes: Vec::new(),
+                    corrects_revision: None,
+                    correction_kind: None,
+                    observation_due_at: 11,
+                    adjudication_reason: "bootstrap".to_string(),
+                    rationale: "seed".to_string(),
+                    stability_score: 64,
+                    reviewed_at: 11,
+                }],
+                updated_at: 11,
             }),
             self_continuity: Some(SelfContinuity {
                 wake_anchor: "same wake".to_string(),
@@ -850,6 +1158,34 @@ mod tests {
                 last_user_chat_id: "chat-1".to_string(),
                 last_user_channel: "qq_channel".to_string(),
                 last_autonomy_run_at: 0,
+                updated_at: 11,
+            }),
+            relationship_constitution: Some(RelationshipConstitution {
+                scope_id: "rel:qq_channel:chat-1".to_string(),
+                channel: "qq_channel".to_string(),
+                chat_id: "chat-1".to_string(),
+                board_revision: 1,
+                governance_state: crate::memory::RelationshipGovernanceState::Maintain,
+                inheritance_mode: crate::memory::RelationshipInheritanceMode::Guarded,
+                task_scope_ceiling: crate::memory::RelationshipTaskScopeCeiling::Brief,
+                updated_at: 11,
+                ..RelationshipConstitution::default()
+            }),
+            relationship_portfolio: Some(RelationshipPortfolio {
+                entries: vec![crate::memory::RelationshipPortfolioEntry {
+                    scope_id: "rel:qq_channel:chat-1".to_string(),
+                    channel: "qq_channel".to_string(),
+                    chat_id: "chat-1".to_string(),
+                    governance_state: crate::memory::RelationshipGovernanceState::Maintain,
+                    inheritance_mode: crate::memory::RelationshipInheritanceMode::Guarded,
+                    priority_score: 220,
+                    reason: "maintain".to_string(),
+                    source_updated_at: 11,
+                    last_active_at: 11,
+                    needs_runtime_attention: true,
+                    last_selected_at: 0,
+                    next_review_at: 0,
+                }],
                 updated_at: 11,
             }),
             execution_state: Some(ExecutionState {
@@ -869,7 +1205,10 @@ mod tests {
                 execution_state_store: &execution_state_store,
                 self_model_store: &self_model_store,
                 self_authored_core_store: &self_authored_core_store,
+                core_revision_ledger_store: &core_revision_ledger_store,
                 self_continuity_store: &self_continuity_store,
+                relationship_constitution_store: &relationship_constitution_store,
+                relationship_portfolio_store: &relationship_portfolio_store,
             },
             "chat-new",
             &snapshot,
@@ -879,7 +1218,10 @@ mod tests {
         assert_eq!(outcome.long_term_imported, 1);
         assert!(outcome.self_model_restored);
         assert!(outcome.self_authored_core_restored);
+        assert!(outcome.core_revision_ledger_restored);
         assert!(outcome.self_continuity_restored);
+        assert!(outcome.relationship_constitution_restored);
+        assert!(outcome.relationship_portfolio_restored);
         assert!(outcome.execution_state_restored);
     }
 
@@ -893,7 +1235,10 @@ mod tests {
                 execution_state_store: &StubExecutionStateStore::default(),
                 self_model_store: &StubSelfModelStore::default(),
                 self_authored_core_store: &StubSelfAuthoredCoreStore::default(),
+                core_revision_ledger_store: &StubCoreRevisionLedgerStore::default(),
                 self_continuity_store: &StubSelfContinuityStore::default(),
+                relationship_constitution_store: &StubRelationshipConstitutionStore::default(),
+                relationship_portfolio_store: &StubRelationshipPortfolioStore::default(),
             },
             "chat-new",
             &ContinuitySnapshot {
@@ -906,7 +1251,10 @@ mod tests {
                 long_term_memory: Vec::new(),
                 self_model: None,
                 self_authored_core: None,
+                core_revision_ledger: None,
                 self_continuity: None,
+                relationship_constitution: None,
+                relationship_portfolio: None,
                 execution_state: None,
             },
             ContinuitySnapshotImportMode::BootstrapImport,
@@ -970,9 +1318,29 @@ mod tests {
             .into_iter()
             .collect(),
         };
+        let portfolio_store = StubRelationshipPortfolioStore {
+            value: Some(RelationshipPortfolio {
+                entries: vec![crate::memory::RelationshipPortfolioEntry {
+                    scope_id: "rel:qq_channel:chat-recent".to_string(),
+                    channel: "qq_channel".to_string(),
+                    chat_id: "chat-recent".to_string(),
+                    governance_state: crate::memory::RelationshipGovernanceState::Maintain,
+                    inheritance_mode: crate::memory::RelationshipInheritanceMode::Guarded,
+                    priority_score: 240,
+                    reason: "maintain".to_string(),
+                    source_updated_at: 995,
+                    last_active_at: 995,
+                    needs_runtime_attention: true,
+                    last_selected_at: 0,
+                    next_review_at: 0,
+                }],
+                updated_at: 995,
+            }),
+        };
         let selected = select_active_continuity_snapshot_chat_ids(
             &session_store,
             &continuity_store,
+            &portfolio_store,
             &topology_store,
             Some("chat-preferred"),
             1_000,

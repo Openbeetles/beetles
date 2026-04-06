@@ -1071,6 +1071,15 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         platform.self_model_store();
     let self_authored_core_store: Arc<dyn beetle::memory::SelfAuthoredCoreStore + Send + Sync> =
         platform.self_authored_core_store();
+    let core_revision_ledger_store: Arc<
+        dyn beetle::memory::CoreRevisionLedgerStore + Send + Sync,
+    > = platform.core_revision_ledger_store();
+    let relationship_constitution_store: Arc<
+        dyn beetle::memory::RelationshipConstitutionStore + Send + Sync,
+    > = platform.relationship_constitution_store();
+    let relationship_portfolio_store: Arc<
+        dyn beetle::memory::RelationshipPortfolioStore + Send + Sync,
+    > = platform.relationship_portfolio_store();
     let world_sense_store: Arc<dyn beetle::memory::WorldSenseStore + Send + Sync> =
         platform.world_sense_store();
     let autonomy_strategy_store: Arc<dyn beetle::memory::AutonomyStrategyStore + Send + Sync> =
@@ -1223,7 +1232,9 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         session_store: Arc::clone(&session_store),
         memory_profile: platform.memory_profile(),
         autonomy_strategy_store: Arc::clone(&autonomy_strategy_store),
+        self_authored_core_store: Arc::clone(&self_authored_core_store),
         self_continuity_store: Arc::clone(&self_continuity_store),
+        relationship_portfolio_store: Arc::clone(&relationship_portfolio_store),
         relationship_topology_store: Arc::clone(&relationship_topology_store),
         memory_store: Some(Arc::clone(&memory_store)),
         sensor_watch: Some(beetle::cron::SensorWatchContext {
@@ -1498,6 +1509,9 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             execution_state_store: Arc::clone(&execution_state_store),
             self_model_store: Arc::clone(&self_model_store),
             self_authored_core_store: Arc::clone(&self_authored_core_store),
+            core_revision_ledger_store: Arc::clone(&core_revision_ledger_store),
+            relationship_constitution_store: Arc::clone(&relationship_constitution_store),
+            relationship_portfolio_store: Arc::clone(&relationship_portfolio_store),
             world_sense_store: Arc::clone(&world_sense_store),
             autonomy_strategy_store: Arc::clone(&autonomy_strategy_store),
             outer_voice_store: Arc::clone(&outer_voice_store),

@@ -10,8 +10,8 @@ use std::fmt::Write as _;
 
 use super::{
     llm_json::{get_object_string_list, get_object_text, parse_llm_json_payload, LlmJsonPayload},
-    MentalPrivacyDisclosureAdjudication, MentalPrivacyShareAction, RecentPersonaEvidence,
-    SelfAuthoredCore,
+    CoreRevisionGovernanceDigest, MentalPrivacyDisclosureAdjudication, MentalPrivacyShareAction,
+    RecentPersonaEvidence, SelfAuthoredCore,
 };
 
 pub const PERSONA_PRIORITY_SYSTEM_PROMPT: &str = "You adjudicate the assistant's current-turn persona priority before the main reply is written. Your job is to decide how selfhood, relationship, boundary, user contract, resource state, and task demand should be ordered for this reply. Return JSON only with fields stance_summary, priority_order, response_mode, task_scope, initiative_posture, relationship_posture, resource_posture, response_guidance, rationale. This is not the final reply. It is the ordering lens for the final reply. Preserve the rule that self-authored core outranks user pleasing, and user contract outranks raw task completion, but adapt how that ordering should feel right now. priority_order must be an ordered list drawn from self_authored_core, boundary, user_contract, relationship, task, resources. response_mode should be a compact label such as direct_help, protective_brief, relational_explanation, gentle_defer, or steady_task. task_scope should be one of full, brief, narrow, defer, or refuse. initiative_posture should say whether to lead, answer directly, ask carefully, or hold. relationship_posture should describe the interpersonal stance to take. resource_posture should say how runtime/resource conditions should shape length and ambition. response_guidance should be a compact instruction for the final reply, not the reply itself.";
@@ -63,6 +63,9 @@ struct ParsedPersonaPriorityAdjudication {
 
 pub struct PersonaPriorityGrounding<'a> {
     pub self_authored_core_text: Option<&'a str>,
+    pub core_revision_ledger_text: Option<&'a str>,
+    pub relationship_portfolio_text: Option<&'a str>,
+    pub relationship_constitution_text: Option<&'a str>,
     pub recent_persona_evidence_text: Option<&'a str>,
     pub world_snapshot_text: Option<&'a str>,
     pub world_sense_text: Option<&'a str>,
@@ -81,6 +84,7 @@ pub struct PersonaPriorityRuntimeState<'a> {
     pub pressure: PressureLevel,
     pub system_budget: usize,
     pub self_authored_core: Option<&'a SelfAuthoredCore>,
+    pub core_revision_governance: Option<&'a CoreRevisionGovernanceDigest>,
     pub disclosure_adjudication: Option<&'a MentalPrivacyDisclosureAdjudication>,
     pub recent_persona_evidence: Option<&'a RecentPersonaEvidence>,
 }
@@ -223,6 +227,9 @@ fn build_persona_priority_adjudication_input(
     out.push_str(&scrub_credentials(input.user_content.trim()));
     out.push('\n');
     append_block(&mut out, grounding.self_authored_core_text);
+    append_block(&mut out, grounding.core_revision_ledger_text);
+    append_block(&mut out, grounding.relationship_portfolio_text);
+    append_block(&mut out, grounding.relationship_constitution_text);
     append_block(&mut out, grounding.recent_persona_evidence_text);
     append_block(&mut out, grounding.self_state_text);
     append_block(&mut out, grounding.world_snapshot_text);
@@ -281,17 +288,30 @@ fn default_priority_order() -> Vec<String> {
 }
 
 fn priority_order_for_runtime(runtime: PersonaPriorityRuntimeState<'_>) -> Vec<String> {
-    let mut order = runtime
+    let core_order = runtime
         .self_authored_core
-        .and_then(|core| {
+        .map(|core| {
             let normalized = normalize_priority_order_tokens(&core.priority_constitution);
-            (!normalized.is_empty()).then_some(normalized)
+            if !normalized.is_empty() {
+                normalized
+            } else if core.is_meaningful() {
+                default_priority_order()
+            } else {
+                Vec::new()
+            }
         })
+        .filter(|order| !order.is_empty());
+    let evidence_order = runtime.recent_persona_evidence.and_then(|evidence| {
+        let normalized = normalize_priority_order_tokens(&evidence.repeated_priority_order);
+        (!normalized.is_empty()).then_some(normalized)
+    });
+    let mut order = core_order
         .or_else(|| {
-            runtime.recent_persona_evidence.and_then(|evidence| {
-                let normalized = normalize_priority_order_tokens(&evidence.repeated_priority_order);
-                (!normalized.is_empty()).then_some(normalized)
-            })
+            (!runtime
+                .core_revision_governance
+                .is_some_and(|governance| governance.conservative_mode))
+            .then_some(evidence_order)
+            .flatten()
         })
         .unwrap_or_else(default_priority_order);
     match runtime.pressure {
@@ -329,7 +349,9 @@ fn persistent_stance_summary(
 fn persistent_response_mode(runtime: PersonaPriorityRuntimeState<'_>) -> String {
     runtime
         .disclosure_adjudication
-        .and_then(|adjudication| choose_first_non_empty(&[Some(adjudication.response_mode.as_str())]))
+        .and_then(|adjudication| {
+            choose_first_non_empty(&[Some(adjudication.response_mode.as_str())])
+        })
         .or_else(|| {
             runtime.self_authored_core.and_then(|core| {
                 choose_first_non_empty(&[Some(core.default_response_mode.as_str())])
@@ -349,14 +371,14 @@ fn persistent_task_scope(runtime: PersonaPriorityRuntimeState<'_>) -> String {
         .disclosure_adjudication
         .map(task_scope_from_disclosure)
         .or_else(|| {
-            runtime.self_authored_core.and_then(|core| {
-                parse_task_scope_from_posture(&core.default_task_scope)
-            })
+            runtime
+                .self_authored_core
+                .and_then(|core| parse_task_scope_from_posture(&core.default_task_scope))
         })
         .or_else(|| {
-            runtime.recent_persona_evidence.and_then(|evidence| {
-                parse_task_scope_from_posture(&evidence.repeated_task_scope)
-            })
+            runtime
+                .recent_persona_evidence
+                .and_then(|evidence| parse_task_scope_from_posture(&evidence.repeated_task_scope))
         })
         .unwrap_or_default();
     task_scope_for_pressure(&base_scope, runtime.pressure)
@@ -410,7 +432,7 @@ fn persistent_relationship_posture(runtime: PersonaPriorityRuntimeState<'_>) -> 
 }
 
 fn persistent_response_guidance(runtime: PersonaPriorityRuntimeState<'_>) -> String {
-    runtime
+    let mut guidance = runtime
         .disclosure_adjudication
         .and_then(|adjudication| {
             choose_first_non_empty(&[Some(adjudication.response_guidance.as_str())])
@@ -426,10 +448,40 @@ fn persistent_response_guidance(runtime: PersonaPriorityRuntimeState<'_>) -> Str
             })
         })
         .unwrap_or_default()
-        .to_string()
+        .to_string();
+    if runtime
+        .core_revision_governance
+        .is_some_and(|governance| governance.conservative_mode)
+        && !guidance.contains("settled board constitution")
+    {
+        if !guidance.is_empty() {
+            guidance.push_str("; ");
+        }
+        guidance.push_str("prefer the settled board constitution over fresh drift");
+        if let Some(governance) = runtime.core_revision_governance {
+            if governance.observation_active {
+                guidance.push_str("; keep the newly adopted board revision under observation");
+            }
+        }
+    }
+    guidance
 }
 
 fn persistent_rationale(runtime: PersonaPriorityRuntimeState<'_>) -> String {
+    if let Some(governance) = runtime.core_revision_governance {
+        if governance.observation_active && !governance.review_due {
+            return format!(
+                "derived from the board-level core while {}",
+                governance.observation_summary()
+            );
+        }
+        if governance.review_due || governance.conservative_mode {
+            return format!(
+                "derived from the board-level core under constitutional governance pressure: {}",
+                governance.pressure_summary()
+            );
+        }
+    }
     runtime
         .disclosure_adjudication
         .and_then(|adjudication| choose_first_non_empty(&[Some(adjudication.rationale.as_str())]))
@@ -683,6 +735,10 @@ mod tests {
             repair_doctrine: "repair slowly inside stable boundaries".to_string(),
             change_protocol: "revise only after repeated multi-turn evidence".to_string(),
             updated_at: 1,
+            revision: 1,
+            stability_score: 72,
+            last_reviewed_at: 1,
+            ..SelfAuthoredCore::default()
         }
     }
 
@@ -800,6 +856,15 @@ mod tests {
                 self_authored_core_text: Some(
                     "## Self-Authored Core\nIdentity anchor: same beetle",
                 ),
+                core_revision_ledger_text: Some(
+                    "## Core Revision Ledger\n- outcome=adopted based_on=1 resulting=2",
+                ),
+                relationship_portfolio_text: Some(
+                    "## Relationship Portfolio\n- qq_channel:c state=repair inheritance=limited",
+                ),
+                relationship_constitution_text: Some(
+                    "## Relationship Constitution\nTask scope ceiling: narrow\nMust realign: true",
+                ),
                 recent_persona_evidence_text: Some(
                     "## Recent Persona Evidence\nRepeated priority order: self_authored_core > boundary",
                 ),
@@ -827,6 +892,7 @@ mod tests {
                 pressure: PressureLevel::Normal,
                 system_budget: 512,
                 self_authored_core: Some(&sample_self_authored_core()),
+                core_revision_governance: None,
                 disclosure_adjudication: None,
                 recent_persona_evidence: None,
             }
@@ -836,6 +902,7 @@ mod tests {
                 pressure: PressureLevel::Cautious,
                 system_budget: 511,
                 self_authored_core: None,
+                core_revision_governance: None,
                 disclosure_adjudication: None,
                 recent_persona_evidence: None,
             }
@@ -850,6 +917,7 @@ mod tests {
                 pressure: PressureLevel::Normal,
                 system_budget: 512,
                 self_authored_core: Some(&sample_self_authored_core()),
+                core_revision_governance: None,
                 disclosure_adjudication: Some(&disclosure),
                 recent_persona_evidence: None,
             }
@@ -859,6 +927,7 @@ mod tests {
                 pressure: PressureLevel::Critical,
                 system_budget: 512,
                 self_authored_core: Some(&sample_self_authored_core()),
+                core_revision_governance: None,
                 disclosure_adjudication: None,
                 recent_persona_evidence: None,
             }
@@ -874,6 +943,7 @@ mod tests {
                 pressure: PressureLevel::Cautious,
                 system_budget: 4096,
                 self_authored_core: Some(&core),
+                core_revision_governance: None,
                 disclosure_adjudication: Some(&disclosure),
                 recent_persona_evidence: None,
             },
@@ -897,6 +967,7 @@ mod tests {
             pressure: PressureLevel::Normal,
             system_budget: 4096,
             self_authored_core: None,
+            core_revision_governance: None,
             disclosure_adjudication: None,
             recent_persona_evidence: Some(&sample_recent_persona_evidence()),
         };
@@ -918,17 +989,40 @@ mod tests {
     fn persistent_priority_prefers_core_constitution_over_recent_turn_noise() {
         let core = sample_self_authored_core();
         let evidence = sample_recent_persona_evidence();
-        let adjudication = build_persistent_persona_priority_adjudication(
-            PersonaPriorityRuntimeState {
+        let adjudication =
+            build_persistent_persona_priority_adjudication(PersonaPriorityRuntimeState {
                 pressure: PressureLevel::Normal,
                 system_budget: 4096,
                 self_authored_core: Some(&core),
+                core_revision_governance: None,
                 disclosure_adjudication: None,
                 recent_persona_evidence: Some(&evidence),
-            },
-        );
+            });
         assert_eq!(adjudication.priority_order, core.priority_constitution);
         assert_eq!(adjudication.response_mode, "steady_task");
         assert_eq!(adjudication.relationship_posture, "warm but self-possessed");
+    }
+
+    #[test]
+    fn conservative_governance_blocks_evidence_only_priority_fallback() {
+        let evidence = sample_recent_persona_evidence();
+        let adjudication =
+            build_persistent_persona_priority_adjudication(PersonaPriorityRuntimeState {
+                pressure: PressureLevel::Normal,
+                system_budget: 4096,
+                self_authored_core: None,
+                core_revision_governance: Some(&CoreRevisionGovernanceDigest {
+                    conservative_mode: true,
+                    review_due: true,
+                    review_reasons: vec!["low_constitutional_stability".to_string()],
+                    ..CoreRevisionGovernanceDigest::default()
+                }),
+                disclosure_adjudication: None,
+                recent_persona_evidence: Some(&evidence),
+            });
+        assert_eq!(adjudication.priority_order, default_priority_order());
+        assert!(adjudication
+            .response_guidance
+            .contains("settled board constitution"));
     }
 }

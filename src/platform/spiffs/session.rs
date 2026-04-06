@@ -200,6 +200,8 @@ fn ensure_session_parent_dir(_path: &Path, _stage: &'static str) -> Result<()> {
 fn ensure_sessions_dir_exists(stage: &'static str) -> Result<()> {
     let mut dir = state_mount_path();
     dir.push(REL_PATH_SESSIONS_DIR);
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    let _ = stage;
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     {
         std::fs::create_dir_all(&dir).map_err(|e| Error::io(stage, e))?;

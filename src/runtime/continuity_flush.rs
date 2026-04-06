@@ -37,15 +37,19 @@ pub fn flush_reboot_continuity_bundle(
 ) -> Result<usize> {
     let session_store = platform.session_store();
     let self_continuity_store = platform.self_continuity_store();
+    let relationship_portfolio_store = platform.relationship_portfolio_store();
     let relationship_topology_store = platform.relationship_topology_store();
+    let relationship_constitution_store = platform.relationship_constitution_store();
     let long_term_memory_store = platform.long_term_memory_store();
     let session_summary_store = platform.session_summary_store();
     let execution_state_store = platform.execution_state_store();
     let self_model_store = platform.self_model_store();
     let self_authored_core_store = platform.self_authored_core_store();
+    let core_revision_ledger_store = platform.core_revision_ledger_store();
     let chat_ids = select_active_continuity_snapshot_chat_ids(
         session_store.as_ref(),
         self_continuity_store.as_ref(),
+        relationship_portfolio_store.as_ref(),
         relationship_topology_store.as_ref(),
         preferred_chat_id,
         now_secs,
@@ -61,7 +65,11 @@ pub fn flush_reboot_continuity_bundle(
         execution_state_store: execution_state_store.as_ref(),
         self_model_store: self_model_store.as_ref(),
         self_authored_core_store: self_authored_core_store.as_ref(),
+        core_revision_ledger_store: core_revision_ledger_store.as_ref(),
         self_continuity_store: self_continuity_store.as_ref(),
+        relationship_constitution_store: relationship_constitution_store.as_ref(),
+        relationship_portfolio_store: relationship_portfolio_store.as_ref(),
+        relationship_topology_store: relationship_topology_store.as_ref(),
     };
     let mut snapshots = Vec::with_capacity(chat_ids.len());
     for chat_id in &chat_ids {
@@ -72,7 +80,11 @@ pub fn flush_reboot_continuity_bundle(
                 execution_state_store: export_ctx.execution_state_store,
                 self_model_store: export_ctx.self_model_store,
                 self_authored_core_store: export_ctx.self_authored_core_store,
+                core_revision_ledger_store: export_ctx.core_revision_ledger_store,
                 self_continuity_store: export_ctx.self_continuity_store,
+                relationship_constitution_store: export_ctx.relationship_constitution_store,
+                relationship_portfolio_store: export_ctx.relationship_portfolio_store,
+                relationship_topology_store: export_ctx.relationship_topology_store,
             },
             chat_id,
             ContinuitySnapshotMode::FullRestore,
