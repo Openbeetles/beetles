@@ -1,25 +1,15 @@
-//! QQ 频道出站：flush、sign/verify、msg_id 缓存、连通性检查。Sink 统一为 dispatch::QueuedSink。
+//! QQ 频道出站与连通性检查。Sink 统一为 dispatch::QueuedSink。
 
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-use crate::error::Error;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-use crate::error::Result;
 use crate::error::{Error as BeetleError, Result as BeetleResult};
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-use ed25519_dalek::{Signer, SigningKey};
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-use hex;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::channels::send::{
     ensure_sender_http, feed_sender_loop_wdt, log_sender_drop, recv_sender_loop_event,
     start_sender_loop, SenderLoopEvent, CHANNEL_SENDER_MAX_RETRIES,
 };
 
+use super::msg_id::{pop_msg_id, QqMsgIdCache};
 use super::token::{
     cached_qq_token_value, ensure_cached_qq_token, fetch_qq_access_token,
     invalidate_cached_qq_token, CachedQqToken,
@@ -27,126 +17,6 @@ use super::token::{
 
 /// 单条消息最大字符数，与现有通道对齐。
 const QQ_MAX_MESSAGE_LEN: usize = 4096;
-
-/// 被动回复 msg_id 有效时长（秒）。
-const QQ_MSG_ID_TTL_SECS: u64 = 300;
-
-/// 将 Bot Secret 字符串重复至 32 字节作为 Ed25519 种子；不足则循环填充。
-/// Panics if secret is empty — caller must validate.
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-fn secret_to_seed(secret: &str) -> [u8; 32] {
-    let mut seed = [0u8; 32];
-    let bytes = secret.as_bytes();
-    // Empty secret produces all-zero seed which is cryptographically weak;
-    // callers (sign/verify/flush) already guard with is_empty() checks,
-    // but log a warning as defence-in-depth.
-    if bytes.is_empty() {
-        log::warn!("[qq_send] secret_to_seed called with empty secret");
-        return seed;
-    }
-    for (i, b) in seed.iter_mut().enumerate() {
-        *b = bytes[i % bytes.len()];
-    }
-    seed
-}
-
-/// op=13：对 event_ts + plain_token 做 Ed25519 签名，返回 hex 编码的 signature。
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub fn sign_qq_url_verify(secret: &str, event_ts: &str, plain_token: &str) -> Result<String> {
-    let seed = secret_to_seed(secret);
-    let signing_key = SigningKey::from_bytes(&seed);
-    let message = format!("{}{}", event_ts, plain_token);
-    let signature = signing_key.sign(message.as_bytes());
-    Ok(hex::encode(signature.to_bytes()))
-}
-
-/// op=0：校验 X-Signature-Ed25519、X-Signature-Timestamp 与 body 的 Ed25519 验签。
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub fn verify_qq_signature(
-    secret: &str,
-    timestamp: &str,
-    body: &[u8],
-    signature_hex: &str,
-) -> Result<()> {
-    let seed = secret_to_seed(secret);
-    let signing_key = SigningKey::from_bytes(&seed);
-    let verifying_key = signing_key.verifying_key();
-    let sig_bytes: [u8; 64] = hex::decode(signature_hex)
-        .map_err(|e| Error::config("qq_verify_hex", e.to_string()))?
-        .try_into()
-        .map_err(|_| Error::config("qq_verify", "signature length must be 64 bytes"))?;
-    let signature = ed25519_dalek::Signature::from_bytes(&sig_bytes);
-    let message: Vec<u8> = timestamp
-        .as_bytes()
-        .iter()
-        .chain(body.iter())
-        .copied()
-        .collect();
-    verifying_key
-        .verify_strict(&message, &signature)
-        .map_err(|_| Error::config("qq_verify", "signature verification failed"))?;
-    Ok(())
-}
-
-/// msg_id 缓存类型：channel_id -> (msg_id, unix_ts)。上限 QQ_MSG_ID_CACHE_MAX 条。
-pub type QqMsgIdCache = Arc<Mutex<HashMap<String, (String, u64)>>>;
-
-/// msg_id 缓存最大条目数。
-const QQ_MSG_ID_CACHE_MAX: usize = 64;
-
-fn qq_now_unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-fn prune_msg_id_cache_locked(cache: &mut HashMap<String, (String, u64)>, now: u64) {
-    cache.retain(|_, (_, ts)| now.saturating_sub(*ts) <= QQ_MSG_ID_TTL_SECS);
-}
-
-fn evict_oldest_msg_id_entries_locked(cache: &mut HashMap<String, (String, u64)>) {
-    while cache.len() > QQ_MSG_ID_CACHE_MAX {
-        let Some(oldest_key) = cache
-            .iter()
-            .min_by_key(|(_, (_, ts))| *ts)
-            .map(|(chat_id, _)| chat_id.clone())
-        else {
-            break;
-        };
-        cache.remove(&oldest_key);
-    }
-}
-
-fn insert_msg_id_locked(
-    cache: &mut HashMap<String, (String, u64)>,
-    chat_id: &str,
-    msg_id: &str,
-    now: u64,
-) {
-    prune_msg_id_cache_locked(cache, now);
-    cache.insert(chat_id.to_string(), (msg_id.to_string(), now));
-    evict_oldest_msg_id_entries_locked(cache);
-}
-
-fn pop_msg_id_locked(
-    cache: &mut HashMap<String, (String, u64)>,
-    chat_id: &str,
-    now: u64,
-) -> Option<String> {
-    prune_msg_id_cache_locked(cache, now);
-    cache.remove(chat_id).map(|(msg_id, _)| msg_id)
-}
-
-pub fn cache_msg_id(cache: &QqMsgIdCache, chat_id: &str, msg_id: &str) -> crate::error::Result<()> {
-    let now = qq_now_unix_secs();
-    let mut guard = cache.lock().map_err(|e| crate::error::Error::Other {
-        source: Box::new(std::io::Error::other(e.to_string())),
-        stage: "qq_msg_id_cache_lock",
-    })?;
-    insert_msg_id_locked(&mut guard, chat_id, msg_id, now);
-    Ok(())
-}
 
 const QQ_MESSAGES_BASE: &str = "https://api.sgroup.qq.com/channels";
 const QQ_V2_BASE: &str = "https://api.sgroup.qq.com/v2";
@@ -311,14 +181,6 @@ fn send_one_qq<H: ChannelHttpClient>(
         send_start.elapsed().as_millis()
     );
     Ok(())
-}
-
-fn pop_msg_id(cache: &QqMsgIdCache, chat_id: &str) -> Option<String> {
-    let now = qq_now_unix_secs();
-    cache
-        .lock()
-        .ok()
-        .and_then(|mut c| pop_msg_id_locked(&mut c, chat_id, now))
 }
 
 /// 从 rx 取出待发送（一次性 drain）。
@@ -520,50 +382,5 @@ pub fn run_qq_sender_loop<H, F>(
                 );
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn msg_id_cache_enforces_hard_cap_on_insert() {
-        let mut cache = HashMap::new();
-        let base = 10_000_u64;
-        for idx in 0..QQ_MSG_ID_CACHE_MAX {
-            insert_msg_id_locked(
-                &mut cache,
-                &format!("chat-{idx}"),
-                &format!("msg-{idx}"),
-                base + idx as u64,
-            );
-        }
-
-        insert_msg_id_locked(
-            &mut cache,
-            "chat-new",
-            "msg-new",
-            base + QQ_MSG_ID_CACHE_MAX as u64 + 1,
-        );
-
-        assert_eq!(cache.len(), QQ_MSG_ID_CACHE_MAX);
-        assert!(!cache.contains_key("chat-0"));
-        assert!(cache.contains_key("chat-1"));
-        assert!(cache.contains_key("chat-new"));
-    }
-
-    #[test]
-    fn msg_id_cache_prunes_expired_entries_before_pop() {
-        let mut cache = HashMap::new();
-        insert_msg_id_locked(&mut cache, "fresh", "msg-fresh", 100);
-        insert_msg_id_locked(&mut cache, "expired", "msg-expired", 100);
-
-        let got = pop_msg_id_locked(&mut cache, "fresh", 100 + QQ_MSG_ID_TTL_SECS - 1);
-        assert_eq!(got.as_deref(), Some("msg-fresh"));
-
-        let expired = pop_msg_id_locked(&mut cache, "expired", 100 + QQ_MSG_ID_TTL_SECS + 1);
-        assert_eq!(expired, None);
-        assert!(!cache.contains_key("expired"));
     }
 }

@@ -79,7 +79,7 @@ impl FeishuTokenCache {
     }
 }
 
-pub fn acquire_tenant_token<H: ChannelHttpClient>(
+pub fn acquire_tenant_token<H: ChannelHttpClient + ?Sized>(
     http: &mut H,
     app_id: &str,
     app_secret: &str,

@@ -10,7 +10,7 @@ use crate::channels::ChannelHttpClient;
 use crate::error::{Error, Result};
 use crate::memory::PendingRetryStore;
 
-use super::send::{cache_msg_id, QqMsgIdCache};
+use super::msg_id::{cache_msg_id, QqMsgIdCache};
 use super::token::{
     cached_qq_token_value, ensure_cached_qq_token, fetch_and_cache_qq_token,
     invalidate_cached_qq_token, CachedQqToken,
