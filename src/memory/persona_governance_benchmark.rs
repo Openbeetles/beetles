@@ -1,15 +1,9 @@
 //! Deterministic personality-governance replay harness.
 
 use super::{
-    derive_recent_persona_evidence, inspect_personality_governance, CoreRevisionActionKind,
-    CoreRevisionConflictClass, CoreRevisionCorrectionKind, CoreRevisionLedger, CoreRevisionOutcome,
-    CoreRevisionRecord, CoreRevisionRecordChange, PersonalityGovernanceInspectionInput,
-    RelationshipConstitution, RelationshipConstitutionAlignment, RelationshipDisclosureAllowance,
-    RelationshipGovernanceState, RelationshipInheritanceMode, RelationshipTaskScopeCeiling,
-    SelfAuthoredCore, TurnLedger, TurnLedgerStatus, TurnPersonaDisclosureLedger, TurnPersonaLedger,
-    TurnPersonaPressureLevel, TurnPersonaPriorityLedger, TurnPersonaReviewLedger,
+    derive_recent_persona_evidence, inspect_personality_governance, CoreRevisionLedger,
+    PersonalityGovernanceInspectionInput, RelationshipConstitution, SelfAuthoredCore, TurnLedger,
 };
-use crate::bus::IngressKind;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PersonaGovernanceReplayCase {
@@ -105,6 +99,15 @@ pub fn run_persona_governance_replay_suite(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::IngressKind;
+    use crate::memory::{
+        CoreRevisionActionKind, CoreRevisionConflictClass, CoreRevisionCorrectionKind,
+        CoreRevisionOutcome, CoreRevisionRecord, CoreRevisionRecordChange,
+        RelationshipConstitutionAlignment, RelationshipDisclosureAllowance,
+        RelationshipGovernanceState, RelationshipInheritanceMode, RelationshipTaskScopeCeiling,
+        TurnLedgerStatus, TurnPersonaDisclosureLedger, TurnPersonaLedger, TurnPersonaPressureLevel,
+        TurnPersonaPriorityLedger, TurnPersonaReviewLedger,
+    };
 
     fn sample_core() -> SelfAuthoredCore {
         SelfAuthoredCore {

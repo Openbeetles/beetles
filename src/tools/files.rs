@@ -4,7 +4,8 @@
 use crate::error::{Error, Result};
 use crate::tools::state_file_guard::{ensure_state_path_mutable, normalize_state_tool_path};
 use crate::tools::{
-    MAX_TOOL_RESULT_LEN, Tool, ToolContext, ToolMetadata, parse_tool_args, serialize_tool_output,
+    MAX_TOOL_RESULT_LEN, Tool, ToolApprovalMode, ToolContext, ToolEffectClass, ToolExecutionShape,
+    ToolMetadata, ToolRiskLevel, ToolRollbackKind, parse_tool_args, serialize_tool_output,
 };
 use serde::Serialize;
 use std::sync::Arc;
@@ -148,6 +149,37 @@ impl Tool for FilesTool {
 
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::stateful()
+            .with_risk_level(ToolRiskLevel::High)
+            .with_rollback_kind(ToolRollbackKind::Irreversible)
+    }
+
+    fn execution_shape(&self, args: &str) -> Result<ToolExecutionShape> {
+        let obj = parse_tool_args(args, "tool_files_governance")?;
+        let mode = obj
+            .get("mode")
+            .and_then(|x| x.as_str())
+            .unwrap_or("read")
+            .trim()
+            .to_ascii_lowercase();
+        let shape = match mode.as_str() {
+            "list" | "read" => self
+                .metadata()
+                .default_execution_shape("files_read")
+                .with_effect_class(ToolEffectClass::ReadOnly)
+                .with_risk_level(ToolRiskLevel::Low)
+                .with_approval_mode(ToolApprovalMode::Automatic)
+                .with_rollback_kind(ToolRollbackKind::None),
+            "delete" => self
+                .metadata()
+                .default_execution_shape("files_delete")
+                .with_effect_class(ToolEffectClass::PersistentStateWrite)
+                .with_risk_level(ToolRiskLevel::High)
+                .with_approval_mode(ToolApprovalMode::ExplicitIntent)
+                .with_approval_granted(true)
+                .with_rollback_kind(ToolRollbackKind::Irreversible),
+            _ => self.metadata().default_execution_shape("files_unknown"),
+        };
+        Ok(shape)
     }
 }
 

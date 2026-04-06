@@ -4,8 +4,9 @@ use crate::error::Result;
 
 use super::archive_search::ArchiveSearchBackendKind;
 use super::{
-    search_archive_records, select_archive_hits_for_prompt, ArchiveRecordSource,
-    ArchiveSearchQuery, MemoryProfile, MemoryStore, SessionStore, TurnLedgerStore,
+    search_archive_records_detailed, select_archive_hits_for_prompt_with_report,
+    ArchiveRecordSource, ArchiveSearchQuery, MemoryProfile, MemoryStore, SessionStore,
+    TurnLedgerStore,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,6 +31,7 @@ pub struct ArchiveBenchmarkCase {
 pub struct ArchiveBenchmarkResult {
     pub case_name: &'static str,
     pub total_hits: usize,
+    pub candidate_count: usize,
     pub selector_hits: usize,
     pub top_citation: Option<String>,
     pub top_source: Option<ArchiveRecordSource>,
@@ -40,6 +42,8 @@ pub struct ArchiveBenchmarkResult {
     pub source_reason_present: bool,
     pub recency_reason_present: bool,
     pub selector_reason_present: bool,
+    pub query_miss_reason: Option<String>,
+    pub selector_note: Option<String>,
     pub passed: bool,
 }
 
@@ -50,7 +54,7 @@ pub fn run_archive_benchmark_case(
     profile: MemoryProfile,
     case: &ArchiveBenchmarkCase,
 ) -> Result<ArchiveBenchmarkResult> {
-    let hits = search_archive_records(
+    let result = search_archive_records_detailed(
         session_store,
         memory_store,
         turn_ledger_store,
@@ -62,8 +66,12 @@ pub fn run_archive_benchmark_case(
             limit: case.limit,
         },
     )?;
-    let selected = select_archive_hits_for_prompt(hits.clone(), profile, case.selector_max_chars);
-    let top_hit = hits.first();
+    let selected = select_archive_hits_for_prompt_with_report(
+        result.hits.clone(),
+        profile,
+        case.selector_max_chars,
+    );
+    let top_hit = result.hits.first();
     let top_trace = top_hit.and_then(|hit| hit.retrieval_trace.as_ref());
     let ranking_reason_present = top_hit
         .and_then(|hit| hit.retrieval_trace.as_ref())
@@ -75,7 +83,7 @@ pub fn run_archive_benchmark_case(
     let recency_reason_present = top_trace
         .and_then(|trace| trace.recency_reason.as_deref())
         .is_some();
-    let selector_reason_present = selected.iter().all(|hit| {
+    let selector_reason_present = selected.hits.iter().all(|hit| {
         hit.retrieval_trace
             .as_ref()
             .and_then(|trace| trace.selector_reason.as_deref())
@@ -85,7 +93,7 @@ pub fn run_archive_benchmark_case(
         let trace = hit.retrieval_trace.as_ref();
         hit.citation.contains(case.expected_top_citation_fragment)
             && hit.source == case.expected_top_source
-            && selected.len() >= case.min_selector_items
+            && selected.hits.len() >= case.min_selector_items
             && trace
                 .map(|trace| trace.matched_terms.len() >= case.min_matched_terms)
                 .unwrap_or(case.min_matched_terms == 0)
@@ -100,7 +108,7 @@ pub fn run_archive_benchmark_case(
             && case
                 .expected_selector_reason_fragment
                 .is_none_or(|fragment| {
-                    selected.iter().any(|selected_hit| {
+                    selected.hits.iter().any(|selected_hit| {
                         selected_hit
                             .retrieval_trace
                             .as_ref()
@@ -115,8 +123,9 @@ pub fn run_archive_benchmark_case(
     });
     Ok(ArchiveBenchmarkResult {
         case_name: case.name,
-        total_hits: hits.len(),
-        selector_hits: selected.len(),
+        total_hits: result.hits.len(),
+        candidate_count: result.report.candidate_count,
+        selector_hits: selected.hits.len(),
         top_citation: top_hit.map(|hit| hit.citation.clone()),
         top_source: top_hit.map(|hit| hit.source),
         top_score: top_hit.map(|hit| hit.score),
@@ -128,6 +137,8 @@ pub fn run_archive_benchmark_case(
         source_reason_present,
         recency_reason_present,
         selector_reason_present,
+        query_miss_reason: result.report.miss_reason,
+        selector_note: selected.report.selection_note,
         passed,
     })
 }

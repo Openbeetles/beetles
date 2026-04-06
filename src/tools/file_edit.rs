@@ -4,7 +4,10 @@
 use crate::constants::FILE_WRITE_MAX_CONTENT_LEN;
 use crate::error::{Error, Result};
 use crate::tools::state_file_guard::{ensure_state_path_mutable, normalize_state_tool_path};
-use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args, serialize_tool_output};
+use crate::tools::{
+    Tool, ToolContext, ToolMetadata, ToolRiskLevel, ToolRollbackKind, parse_tool_args,
+    serialize_tool_output,
+};
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -119,6 +122,8 @@ impl Tool for FileEditTool {
 
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::stateful()
+            .with_risk_level(ToolRiskLevel::High)
+            .with_rollback_kind(ToolRollbackKind::CompensatingWrite)
     }
 }
 

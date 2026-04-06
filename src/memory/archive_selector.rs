@@ -22,6 +22,48 @@ struct PreparedArchivePromptHit {
     prompt_line_len: usize,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ArchivePromptSelectionSourceStats {
+    pub source: ArchiveRecordSource,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub selected_count: usize,
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ArchivePromptSelectionReport {
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub input_hits: usize,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub selected_hits: usize,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub max_items: usize,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub max_chars: usize,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub skipped_by_chars: usize,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub skipped_by_similarity: usize,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub deferred_by_quota: usize,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub relaxed_quota_selected: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_stats: Vec<ArchivePromptSelectionSourceStats>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_note: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ArchivePromptSelectionResult {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hits: Vec<ArchiveSearchHit>,
+    pub report: ArchivePromptSelectionReport,
+}
+
+fn is_zero_usize(value: &usize) -> bool {
+    *value == 0
+}
+
 fn selector_policy(profile: MemoryProfile, max_chars: usize) -> ArchiveSelectorPolicy {
     let capability = memory_capability_profile(profile);
     match profile {
@@ -115,9 +157,31 @@ pub(crate) fn select_archive_hits_for_prompt(
     profile: MemoryProfile,
     max_chars: usize,
 ) -> Vec<ArchiveSearchHit> {
+    select_archive_hits_for_prompt_with_report(hits, profile, max_chars).hits
+}
+
+pub(crate) fn select_archive_hits_for_prompt_with_report(
+    hits: Vec<ArchiveSearchHit>,
+    profile: MemoryProfile,
+    max_chars: usize,
+) -> ArchivePromptSelectionResult {
     let policy = selector_policy(profile, max_chars);
     if hits.is_empty() || policy.max_items == 0 || policy.max_chars == 0 {
-        return Vec::new();
+        return ArchivePromptSelectionResult {
+            hits: Vec::new(),
+            report: ArchivePromptSelectionReport {
+                input_hits: hits.len(),
+                selected_hits: 0,
+                max_items: policy.max_items,
+                max_chars: policy.max_chars,
+                selection_note: Some(if hits.is_empty() {
+                    "no_archive_hits_available".to_string()
+                } else {
+                    "archive_prompt_budget_zero".to_string()
+                }),
+                ..ArchivePromptSelectionReport::default()
+            },
+        };
     }
 
     let mut prepared_hits = prepare_archive_prompt_hits(hits);
@@ -125,21 +189,29 @@ pub(crate) fn select_archive_hits_for_prompt(
     let mut selected = Vec::with_capacity(policy.max_items);
     let mut deferred = Vec::new();
     let mut used_chars = 0usize;
+    let mut skipped_by_chars = 0usize;
+    let mut skipped_by_similarity = 0usize;
+    let mut deferred_by_quota = 0usize;
+    let mut relaxed_quota_selected = 0usize;
     let mut per_source = HashMap::<ArchiveRecordSource, usize>::new();
     let mut similarity_keys = Vec::with_capacity(policy.max_items);
+    let input_hits = prepared_hits.len();
 
     for prepared in prepared_hits.drain(..) {
         if selected.len() >= policy.max_items {
             break;
         }
         if used_chars.saturating_add(prepared.prompt_line_len) > policy.max_chars {
+            skipped_by_chars = skipped_by_chars.saturating_add(1);
             continue;
         }
         if is_too_similar(&similarity_keys, &prepared.similarity_key) {
+            skipped_by_similarity = skipped_by_similarity.saturating_add(1);
             continue;
         }
         let used = per_source.get(&prepared.hit.source).copied().unwrap_or(0);
         if used >= source_quota(policy, prepared.hit.source) {
+            deferred_by_quota = deferred_by_quota.saturating_add(1);
             deferred.push(prepared);
             continue;
         }
@@ -159,19 +231,54 @@ pub(crate) fn select_archive_hits_for_prompt(
             if selected.len() >= policy.max_items {
                 break;
             }
-            if used_chars.saturating_add(prepared.prompt_line_len) > policy.max_chars
-                || is_too_similar(&similarity_keys, &prepared.similarity_key)
-            {
+            if used_chars.saturating_add(prepared.prompt_line_len) > policy.max_chars {
+                skipped_by_chars = skipped_by_chars.saturating_add(1);
+                continue;
+            }
+            if is_too_similar(&similarity_keys, &prepared.similarity_key) {
+                skipped_by_similarity = skipped_by_similarity.saturating_add(1);
                 continue;
             }
             used_chars = used_chars.saturating_add(prepared.prompt_line_len);
             similarity_keys.push(prepared.similarity_key);
             let reason = relaxed_selector_reason(&prepared.hit);
+            relaxed_quota_selected = relaxed_quota_selected.saturating_add(1);
             selected.push(annotate_selector_reason(prepared.hit, reason));
         }
     }
 
-    selected
+    let mut source_stats = per_source
+        .into_iter()
+        .map(
+            |(source, selected_count)| ArchivePromptSelectionSourceStats {
+                source,
+                selected_count,
+            },
+        )
+        .collect::<Vec<_>>();
+    source_stats.sort_by_key(|item| item.source.label());
+    let selection_note = if selected.is_empty() {
+        Some("selector_kept_no_archive_hits".to_string())
+    } else if relaxed_quota_selected > 0 {
+        Some("selector_used_quota_relax_pass".to_string())
+    } else {
+        None
+    };
+    ArchivePromptSelectionResult {
+        report: ArchivePromptSelectionReport {
+            input_hits,
+            selected_hits: selected.len(),
+            max_items: policy.max_items,
+            max_chars: policy.max_chars,
+            skipped_by_chars,
+            skipped_by_similarity,
+            deferred_by_quota,
+            relaxed_quota_selected,
+            source_stats,
+            selection_note,
+        },
+        hits: selected,
+    }
 }
 
 fn prepare_archive_prompt_hits(mut hits: Vec<ArchiveSearchHit>) -> Vec<PreparedArchivePromptHit> {
@@ -251,20 +358,23 @@ mod tests {
             ),
         ];
 
-        let selected = select_archive_hits_for_prompt(hits, MemoryProfile::Standard, 900);
-        assert_eq!(selected.len(), 3);
+        let selected =
+            select_archive_hits_for_prompt_with_report(hits, MemoryProfile::Standard, 900);
+        assert_eq!(selected.hits.len(), 3);
         assert_eq!(
             selected
+                .hits
                 .iter()
                 .filter(|hit| hit.source == ArchiveRecordSource::Transcript)
                 .count(),
             1
         );
-        assert!(selected.iter().all(|hit| {
+        assert!(selected.hits.iter().all(|hit| {
             hit.retrieval_trace
                 .as_ref()
                 .and_then(|trace| trace.selector_reason.as_deref())
                 .is_some()
         }));
+        assert!(selected.report.deferred_by_quota >= 1);
     }
 }

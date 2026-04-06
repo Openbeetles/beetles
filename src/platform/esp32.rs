@@ -11,25 +11,23 @@ use crate::platform::{
     spiffs::{
         CachedSkillStorage, SpiffsAutonomyStrategyStore, SpiffsCalendarProviderCredentialStore,
         SpiffsCalendarStore, SpiffsCoreRevisionLedgerStore, SpiffsExecutionStateStore,
-        SpiffsImportantMessageStore,
-        SpiffsInnerLifeStore, SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore,
-        SpiffsMemoryStore, SpiffsMentalPrivacyStore, SpiffsOuterVoiceStore,
-        SpiffsPendingRetryStore, SpiffsPrivateDocStore, SpiffsPrivateGardenStore,
-        SpiffsRelationshipConstitutionStore, SpiffsRelationshipPortfolioStore,
-        SpiffsRelationshipTopologyStore, SpiffsRemindAtStore,
-        SpiffsSelfAuthoredCoreStore, SpiffsSelfContinuityStore, SpiffsSelfModelStore, SpiffsSessionStore,
-        SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage, SpiffsTaskStore,
-        SpiffsTurnLedgerStore, SpiffsWorldSenseStore, spiffs_usage,
+        SpiffsImportantMessageStore, SpiffsInnerLifeStore,
+        SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
+        SpiffsMentalPrivacyStore, SpiffsOuterVoiceStore, SpiffsPendingRetryStore,
+        SpiffsPrivateDocStore, SpiffsPrivateGardenStore, SpiffsRelationshipConstitutionStore,
+        SpiffsRelationshipPortfolioStore, SpiffsRelationshipTopologyStore, SpiffsRemindAtStore,
+        SpiffsSelfAuthoredCoreStore, SpiffsSelfContinuityStore, SpiffsSelfModelStore,
+        SpiffsSessionStore, SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
+        SpiffsTaskStore, SpiffsTurnLedgerStore, SpiffsWorldSenseStore, spiffs_usage,
     },
 };
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::runtime::write_back::{
-    BufferedAutonomyStrategyStore, BufferedCoreRevisionLedgerStore,
-    BufferedExecutionStateStore, BufferedImportantMessageStore, BufferedInnerLifeStore,
-    BufferedLongTermExtractionStateStore, BufferedMentalPrivacyStore, BufferedOuterVoiceStore,
-    BufferedRelationshipConstitutionStore, BufferedRelationshipPortfolioStore,
-    BufferedRelationshipTopologyStore, BufferedSelfAuthoredCoreStore,
-    BufferedSelfContinuityStore, BufferedSelfModelStore,
+    BufferedAutonomyStrategyStore, BufferedCoreRevisionLedgerStore, BufferedExecutionStateStore,
+    BufferedImportantMessageStore, BufferedInnerLifeStore, BufferedLongTermExtractionStateStore,
+    BufferedMentalPrivacyStore, BufferedOuterVoiceStore, BufferedRelationshipConstitutionStore,
+    BufferedRelationshipPortfolioStore, BufferedRelationshipTopologyStore,
+    BufferedSelfAuthoredCoreStore, BufferedSelfContinuityStore, BufferedSelfModelStore,
     BufferedSessionStore, BufferedSessionSummaryStore, BufferedTurnLedgerStore,
     BufferedWorldSenseStore,
 };
@@ -39,14 +37,12 @@ use crate::{
     config::{AppConfig, AudioSegment},
     display::{DisplayCommand, DisplayConfig},
     memory::{
-        AutonomyStrategyStore, CoreRevisionLedgerStore, ExecutionStateStore,
-        ImportantMessageStore, InnerLifeStore, LongTermMemoryExtractionStateStore,
-        LongTermMemoryStore, MemoryStore, MentalPrivacyStore, OuterVoiceStore,
-        PendingRetryStore, PrivateDocStore, PrivateGardenStore,
-        RelationshipConstitutionStore, RelationshipPortfolioStore, RelationshipTopologyStore,
-        RemindAtStore,
-        SelfAuthoredCoreStore, SelfContinuityStore, SelfModelStore, SessionStore,
-        SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
+        AutonomyStrategyStore, CoreRevisionLedgerStore, ExecutionStateStore, ImportantMessageStore,
+        InnerLifeStore, LongTermMemoryExtractionStateStore, LongTermMemoryStore, MemoryStore,
+        MentalPrivacyStore, OuterVoiceStore, PendingRetryStore, PrivateDocStore,
+        PrivateGardenStore, RelationshipConstitutionStore, RelationshipPortfolioStore,
+        RelationshipTopologyStore, RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore,
+        SelfModelStore, SessionStore, SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
     },
     task::TaskStore,
 };
@@ -113,14 +109,12 @@ impl Esp32Platform {
         let self_model_store = BufferedSelfModelStore::wrap(
             Arc::new(SpiffsSelfModelStore::new()) as Arc<dyn SelfModelStore + Send + Sync>
         );
-        let self_authored_core_store = BufferedSelfAuthoredCoreStore::wrap(
-            Arc::new(SpiffsSelfAuthoredCoreStore::new())
-                as Arc<dyn SelfAuthoredCoreStore + Send + Sync>,
-        );
-        let core_revision_ledger_store = BufferedCoreRevisionLedgerStore::wrap(
-            Arc::new(SpiffsCoreRevisionLedgerStore::new())
-                as Arc<dyn CoreRevisionLedgerStore + Send + Sync>,
-        );
+        let self_authored_core_store =
+            BufferedSelfAuthoredCoreStore::wrap(Arc::new(SpiffsSelfAuthoredCoreStore::new())
+                as Arc<dyn SelfAuthoredCoreStore + Send + Sync>);
+        let core_revision_ledger_store =
+            BufferedCoreRevisionLedgerStore::wrap(Arc::new(SpiffsCoreRevisionLedgerStore::new())
+                as Arc<dyn CoreRevisionLedgerStore + Send + Sync>);
         let relationship_constitution_store = BufferedRelationshipConstitutionStore::wrap(
             Arc::new(SpiffsRelationshipConstitutionStore::new())
                 as Arc<dyn RelationshipConstitutionStore + Send + Sync>,
@@ -140,14 +134,14 @@ impl Esp32Platform {
         let self_continuity_store =
             BufferedSelfContinuityStore::wrap(Arc::new(SpiffsSelfContinuityStore::new())
                 as Arc<dyn SelfContinuityStore + Send + Sync>);
-        let relationship_portfolio_store = BufferedRelationshipPortfolioStore::wrap(
-            Arc::new(SpiffsRelationshipPortfolioStore::new())
-                as Arc<dyn RelationshipPortfolioStore + Send + Sync>,
-        );
-        let relationship_topology_store = BufferedRelationshipTopologyStore::wrap(
-            Arc::new(SpiffsRelationshipTopologyStore::new())
-                as Arc<dyn RelationshipTopologyStore + Send + Sync>,
-        );
+        let relationship_portfolio_store = BufferedRelationshipPortfolioStore::wrap(Arc::new(
+            SpiffsRelationshipPortfolioStore::new(),
+        )
+            as Arc<dyn RelationshipPortfolioStore + Send + Sync>);
+        let relationship_topology_store = BufferedRelationshipTopologyStore::wrap(Arc::new(
+            SpiffsRelationshipTopologyStore::new(),
+        )
+            as Arc<dyn RelationshipTopologyStore + Send + Sync>);
         let mental_privacy_store =
             BufferedMentalPrivacyStore::wrap(Arc::new(SpiffsMentalPrivacyStore::new())
                 as Arc<dyn MentalPrivacyStore + Send + Sync>);

@@ -6,11 +6,11 @@ use crate::config::{AppConfig, AudioSegment, PinConfig};
 use crate::display::{DisplayCommand, DisplayConfig};
 use crate::error::{Error, Result};
 use crate::memory::{
-    AutonomyStrategyStore, ExecutionStateStore, ImportantMessageStore, InnerLifeStore,
-    LongTermMemoryStore, MemoryProfile, MemoryStore, MentalPrivacyStore, OuterVoiceStore,
-    CoreRevisionLedgerStore, PendingRetryStore, PrivateDocStore, PrivateGardenStore,
+    AutonomyStrategyStore, CoreRevisionLedgerStore, ExecutionStateStore, ImportantMessageStore,
+    InnerLifeStore, LongTermMemoryStore, MemoryProfile, MemoryStore, MentalPrivacyStore,
+    OuterVoiceStore, PendingRetryStore, PrivateDocStore, PrivateGardenStore,
     RelationshipConstitutionStore, RelationshipPortfolioStore, RelationshipTopologyStore,
-    RemindAtStore, SelfContinuityStore, SelfAuthoredCoreStore, SelfModelStore, SessionStore,
+    RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore, SelfModelStore, SessionStore,
     SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
 };
 use crate::platform::ResponseBody;

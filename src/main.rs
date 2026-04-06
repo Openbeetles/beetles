@@ -2,6 +2,12 @@
 //! Firmware version is embedded for OTA and ops.
 //! Startup order: NVS → SPIFFS → config → WiFi → memory/session stores → MessageBus → self-check → cron/heartbeat/sinks/dispatch/CLI → agent_loop.
 //! ESP32: no graceful shutdown; process runs until power off.
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use beetle::Esp32Platform;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+use beetle::LinuxPlatform;
+use beetle::Platform;
+use beetle::PlatformHttpClient;
 use beetle::bus::IngressKind;
 use beetle::channels::connect_wss;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
@@ -12,15 +18,9 @@ use beetle::run_feishu_ws_loop;
 use beetle::runtime::{execute_stream_http_op, spawn_planned, spawn_planned_handle, thread_plan};
 use beetle::util::STACK_VOICE_CONTROL;
 use beetle::util::{STACK_AGENT_LOOP, STACK_CHANNEL_SENDER, STACK_CHANNEL_WS, STACK_DISPATCH};
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-use beetle::Esp32Platform;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-use beetle::LinuxPlatform;
-use beetle::Platform;
-use beetle::PlatformHttpClient;
 use beetle::{
-    parse_allowed_chat_ids, run_agent_loop, run_dispatch, send_chat_action, AppConfig, MessageBus,
-    DEFAULT_CAPACITY,
+    AppConfig, DEFAULT_CAPACITY, MessageBus, parse_allowed_chat_ids, run_agent_loop, run_dispatch,
+    send_chat_action,
 };
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
 use beetle::{DisplayChannelStatus, DisplayCommand, DisplayPressureLevel, DisplaySystemState};
@@ -949,13 +949,42 @@ fn handle_restart_command(platform: &Arc<dyn Platform>) {
         }
     }
 
-    log::warn!("[{}] systemd service not found; falling back to process restart", TAG);
+    log::warn!(
+        "[{}] systemd service not found; falling back to process restart",
+        TAG
+    );
     beetle::runtime::request_restart_with_continuity_flush(
         Arc::clone(platform),
         None,
         "cli_restart",
     );
     println!("restart requested.");
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn handle_stop_command(_platform: &Arc<dyn Platform>) {
+    if std::path::Path::new("/etc/systemd/system/beetle.service").exists() {
+        match std::process::Command::new("systemctl")
+            .args(["stop", "beetle"])
+            .status()
+        {
+            Ok(status) if status.success() => {
+                println!("beetle service stop requested.");
+                return;
+            }
+            Ok(status) => {
+                eprintln!("systemctl stop beetle failed with exit status: {}", status);
+                std::process::exit(status.code().unwrap_or(1));
+            }
+            Err(e) => {
+                eprintln!("failed to run systemctl stop beetle: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    eprintln!("stop is only supported for a systemd-managed beetle service.");
+    std::process::exit(1);
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -998,6 +1027,9 @@ fn main() {
         }
         Commands::Restart => {
             handle_restart_command(&platform);
+        }
+        Commands::Stop => {
+            handle_stop_command(&platform);
         }
         Commands::Doctor => {
             handle_doctor_command(&platform);
@@ -1071,9 +1103,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         platform.self_model_store();
     let self_authored_core_store: Arc<dyn beetle::memory::SelfAuthoredCoreStore + Send + Sync> =
         platform.self_authored_core_store();
-    let core_revision_ledger_store: Arc<
-        dyn beetle::memory::CoreRevisionLedgerStore + Send + Sync,
-    > = platform.core_revision_ledger_store();
+    let core_revision_ledger_store: Arc<dyn beetle::memory::CoreRevisionLedgerStore + Send + Sync> =
+        platform.core_revision_ledger_store();
     let relationship_constitution_store: Arc<
         dyn beetle::memory::RelationshipConstitutionStore + Send + Sync,
     > = platform.relationship_constitution_store();
@@ -1547,6 +1578,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                 Arc::clone(&memory_store),
                 Arc::clone(&session_store),
                 Arc::clone(&platform),
+                Arc::clone(&registry),
                 Some(Arc::clone(&user_inbound_depth)),
                 Some(Arc::clone(&outbound_depth)),
             );

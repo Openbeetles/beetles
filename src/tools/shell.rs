@@ -1,7 +1,7 @@
 //! Shell 工具：仅 Linux，白名单命令。
 
 use crate::error::{Error, Result};
-use crate::tools::{Tool, ToolContext, ToolMetadata};
+use crate::tools::{Tool, ToolContext, ToolEffectClass, ToolMetadata, ToolRiskLevel};
 use std::process::Command;
 
 /// 允许执行的命令白名单
@@ -73,5 +73,7 @@ impl Tool for ShellTool {
 
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::debug()
+            .with_effect_class(ToolEffectClass::HostExecution)
+            .with_risk_level(ToolRiskLevel::Critical)
     }
 }

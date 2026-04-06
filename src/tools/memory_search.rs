@@ -2,8 +2,8 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    ArchiveRecordSource, ArchiveSearchQuery, MAX_ARCHIVE_SEARCH_LIMIT, MemoryStore, SessionStore,
-    TurnLedgerStore, search_archive_records,
+    ArchiveRecordSource, ArchiveSearchQuery, ArchiveSearchQueryReport, MAX_ARCHIVE_SEARCH_LIMIT,
+    MemoryStore, SessionStore, TurnLedgerStore, search_archive_records_detailed,
 };
 use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args, serialize_tool_output};
 use serde::Serialize;
@@ -23,6 +23,7 @@ struct MemorySearchResponse<'a> {
     query: &'a str,
     count: usize,
     hits: Vec<crate::memory::ArchiveSearchHit>,
+    query_report: ArchiveSearchQueryReport,
     plane: &'static str,
     canonical: bool,
     traceability: &'static str,
@@ -75,7 +76,7 @@ impl Tool for MemorySearchTool {
             .map(str::trim)
             .filter(|value| !value.is_empty());
         let sources = parse_sources(obj.get("sources"))?;
-        let hits = search_archive_records(
+        let result = search_archive_records_detailed(
             self.session_store.as_ref(),
             self.memory_store.as_ref(),
             self.turn_ledger_store.as_ref(),
@@ -93,8 +94,9 @@ impl Tool for MemorySearchTool {
                 ok: true,
                 op: "search",
                 query,
-                count: hits.len(),
-                hits,
+                count: result.hits.len(),
+                hits: result.hits,
+                query_report: result.report,
                 plane: "archive_evidence",
                 canonical: false,
                 traceability: "Each hit includes retrieval_trace with backend, matched_terms, score breakdown, and ranking/source/recency/selector reasons when available.",

@@ -5,11 +5,14 @@ use crate::config::AppConfig;
 use crate::error::{Error, Result};
 use crate::llm::ToolSpec as LlmToolSpec;
 use crate::tools::{
-    Tool, ToolExecutionOutcome, ToolMetadata, ToolPolicyContext, MAX_TOOL_ARGS_LEN,
-    MAX_TOOL_RESULT_LEN,
+    MAX_TOOL_ARGS_LEN, MAX_TOOL_RESULT_LEN, Tool, ToolExecutionGateDecision,
+    ToolExecutionGovernance, ToolExecutionGovernanceState, ToolExecutionOutcome,
+    ToolExecutionPermit, ToolExecutionRecord, ToolExecutionRequest, ToolMetadata,
+    ToolPolicyContext,
 };
 use crate::util::truncate_to_byte_len;
 use indexmap::IndexMap;
+use serde::Serialize;
 use std::sync::Arc;
 
 pub const DEFAULT_LLM_TOOL_SPECS_MAX_TOTAL_LEN: usize = 32 * 1024;
@@ -21,9 +24,29 @@ struct RegisteredTool {
     requires_network: bool,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ToolCatalogEntry {
+    pub name: String,
+    pub exposure: String,
+    pub effect_class: String,
+    pub risk_level: String,
+    pub approval_mode: String,
+    pub rollback_kind: String,
+    pub requires_network: bool,
+    pub llm_visible_user: bool,
+    pub llm_visible_system: bool,
+    pub llm_visible_internal_system: bool,
+    pub governance_breaker_tripped: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub governance_last_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub governance_last_reason: Option<String>,
+}
+
 /// 按 name 注册与派发工具；可生成带总长度上界的 tool specs。IndexMap 保证工具顺序稳定。
 pub struct ToolRegistry {
     tools: IndexMap<&'static str, RegisteredTool>,
+    execution_governance: Option<Arc<ToolExecutionGovernance>>,
 }
 
 impl Default for ToolRegistry {
@@ -36,7 +59,16 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: IndexMap::new(),
+            execution_governance: None,
         }
+    }
+
+    pub fn with_execution_governance(
+        mut self,
+        execution_governance: Arc<ToolExecutionGovernance>,
+    ) -> Self {
+        self.execution_governance = Some(execution_governance);
+        self
     }
 
     pub fn register(&mut self, tool: Box<dyn Tool>) {
@@ -145,6 +177,154 @@ impl ToolRegistry {
         outcome.content = truncate_to_byte_len(&outcome.content, MAX_TOOL_RESULT_LEN);
         Ok(outcome)
     }
+
+    pub fn assess_llm_execution(
+        &self,
+        name: &str,
+        args: &str,
+        policy: &ToolPolicyContext<'_>,
+    ) -> Result<ToolExecutionGateDecision> {
+        if args.len() > MAX_TOOL_ARGS_LEN {
+            return Err(Error::config(
+                "tool_execute",
+                format!("args length exceeds {}", MAX_TOOL_ARGS_LEN),
+            ));
+        }
+        let Some(entry) = self.tools.get(name) else {
+            return Err(Error::Other {
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("tool not found: {name}"),
+                )),
+                stage: "tool_execute",
+            });
+        };
+        let shape = entry.tool.execution_shape(args)?;
+        let Some(governance) = self.execution_governance.as_ref() else {
+            return Ok(ToolExecutionGateDecision::Allow(ToolExecutionPermit {
+                tool_name: name.to_string(),
+                ingress: policy.ingress,
+                channel: policy.channel.to_string(),
+                metadata: entry.metadata,
+                shape,
+                requires_network: entry.requires_network,
+            }));
+        };
+        governance.assess(ToolExecutionRequest {
+            tool_name: name.to_string(),
+            ingress: policy.ingress,
+            channel: policy.channel.to_string(),
+            metadata: entry.metadata,
+            shape,
+            requires_network: entry.requires_network,
+        })
+    }
+
+    pub fn record_resource_denial(&self, permit: &ToolExecutionPermit, reason: &str) -> Result<()> {
+        if let Some(governance) = self.execution_governance.as_ref() {
+            governance.record_resource_denial(permit, reason)?;
+        }
+        Ok(())
+    }
+
+    pub fn execute_permitted(
+        &self,
+        permit: &ToolExecutionPermit,
+        args: &str,
+        ctx: &mut dyn crate::tools::ToolContext,
+    ) -> Result<ToolExecutionOutcome> {
+        let tool = self.get(permit.tool_name()).ok_or_else(|| Error::Other {
+            source: Box::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("tool not found: {}", permit.tool_name()),
+            )),
+            stage: "tool_execute",
+        })?;
+        let mut outcome = tool.execute_outcome(args, ctx)?;
+        outcome.content = truncate_to_byte_len(&outcome.content, MAX_TOOL_RESULT_LEN);
+        if let Some(governance) = self.execution_governance.as_ref() {
+            if let Err(error) = governance.record_success(permit, &outcome) {
+                log::warn!(
+                    "[tool_registry] failed to persist success audit for {}: {}",
+                    permit.tool_name(),
+                    error
+                );
+            }
+        }
+        Ok(outcome)
+    }
+
+    pub fn record_execution_failure(
+        &self,
+        permit: &ToolExecutionPermit,
+        error: &Error,
+    ) -> Result<()> {
+        if let Some(governance) = self.execution_governance.as_ref() {
+            governance.record_failure(permit, error)?;
+        }
+        Ok(())
+    }
+
+    pub fn inspect_execution_governance(&self) -> Result<Option<ToolExecutionGovernanceState>> {
+        match self.execution_governance.as_ref() {
+            Some(governance) => governance.inspect().map(Some),
+            None => Ok(None),
+        }
+    }
+
+    pub fn tool_catalog(&self) -> Result<Vec<ToolCatalogEntry>> {
+        let governance = self.inspect_execution_governance()?;
+        let user_policy = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
+        let system_policy = ToolPolicyContext::new(crate::bus::IngressKind::System, "telegram");
+        let internal_policy = ToolPolicyContext::new(crate::bus::IngressKind::System, "cron");
+        let mut out = Vec::with_capacity(self.tools.len());
+        for (name, entry) in &self.tools {
+            let metadata = entry.metadata;
+            let shape = metadata.default_execution_shape(name);
+            let breaker_tripped = governance
+                .as_ref()
+                .and_then(|state| {
+                    state
+                        .breakers
+                        .iter()
+                        .find(|breaker| breaker.tool_name == *name)
+                })
+                .is_some_and(|breaker| breaker.tripped_until > crate::util::current_unix_secs());
+            let last_record = governance
+                .as_ref()
+                .and_then(|state| last_record_for_tool(state, name));
+            out.push(ToolCatalogEntry {
+                name: (*name).to_string(),
+                exposure: metadata.exposure.label().to_string(),
+                effect_class: shape.effect_class.label().to_string(),
+                risk_level: shape.risk_level.label().to_string(),
+                approval_mode: shape.approval_mode.label().to_string(),
+                rollback_kind: shape.rollback_kind.label().to_string(),
+                requires_network: entry.requires_network,
+                llm_visible_user: metadata.is_exposed_to_llm(&user_policy),
+                llm_visible_system: metadata.is_exposed_to_llm(&system_policy),
+                llm_visible_internal_system: metadata.is_exposed_to_llm(&internal_policy),
+                governance_breaker_tripped: breaker_tripped,
+                governance_last_status: last_record.map(|record| record.status.label().to_string()),
+                governance_last_reason: last_record
+                    .map(|record| record.reason.trim())
+                    .filter(|reason| !reason.is_empty())
+                    .map(str::to_string),
+            });
+        }
+        Ok(out)
+    }
+}
+
+fn last_record_for_tool<'a>(
+    state: &'a ToolExecutionGovernanceState,
+    tool_name: &str,
+) -> Option<&'a ToolExecutionRecord> {
+    state
+        .recent_records
+        .iter()
+        .rev()
+        .find(|record| record.tool_name == tool_name)
 }
 
 /// 构建包含所有内置工具的注册表。`platform` 用于 `board_info` 等依赖平台能力的工具。
@@ -166,6 +346,7 @@ fn register_core_tools(
     registry: &mut ToolRegistry,
     config: &AppConfig,
     platform: &Arc<dyn crate::Platform>,
+    tool_execution_governance: &Arc<ToolExecutionGovernance>,
     remind_at_store: &Arc<dyn crate::memory::RemindAtStore + Send + Sync>,
     session_store: &Arc<dyn crate::memory::SessionStore + Send + Sync>,
     memory_store: &Arc<dyn crate::memory::MemoryStore + Send + Sync>,
@@ -249,6 +430,8 @@ fn register_core_tools(
     )));
     registry.register(Box::new(super::ContinuitySnapshotTool::new(
         platform.state_fs(),
+        Arc::clone(session_store),
+        Arc::clone(memory_store),
         platform.long_term_memory_store(),
         platform.session_summary_store(),
         platform.execution_state_store(),
@@ -260,6 +443,8 @@ fn register_core_tools(
         platform.relationship_constitution_store(),
         platform.relationship_portfolio_store(),
         platform.relationship_topology_store(),
+        platform.skill_storage(),
+        Arc::clone(tool_execution_governance),
     )));
     #[cfg(feature = "tools_diagnostics")]
     if !config.hardware_devices.is_empty() {
@@ -276,6 +461,7 @@ fn register_extended_runtime_tools(
     registry: &mut ToolRegistry,
     config: &AppConfig,
     platform: &Arc<dyn crate::Platform>,
+    tool_execution_governance: &Arc<ToolExecutionGovernance>,
     memory_store: &Arc<dyn crate::memory::MemoryStore + Send + Sync>,
     long_term_memory_store: &Arc<dyn crate::memory::LongTermMemoryStore + Send + Sync>,
     session_store: &Arc<dyn crate::memory::SessionStore + Send + Sync>,
@@ -298,9 +484,10 @@ fn register_extended_runtime_tools(
     ))));
     registry.register(Box::new(super::FileWriteTool::new(platform.state_fs())));
     #[cfg(feature = "tools_diagnostics")]
-    registry.register(Box::new(super::SystemControlTool::new(Arc::clone(
-        platform,
-    ))));
+    registry.register(Box::new(super::SystemControlTool::new(
+        Arc::clone(platform),
+        Arc::clone(tool_execution_governance),
+    )));
     #[cfg(feature = "tools_diagnostics")]
     registry.register(Box::new(super::CronManageTool::new(Arc::clone(
         memory_store,
@@ -407,11 +594,14 @@ pub fn build_default_registry(
         private_garden_store,
         config_store,
     } = deps;
-    let mut registry = ToolRegistry::new();
+    let tool_execution_governance = Arc::new(ToolExecutionGovernance::new(platform.state_fs()));
+    let mut registry =
+        ToolRegistry::new().with_execution_governance(Arc::clone(&tool_execution_governance));
     register_core_tools(
         &mut registry,
         config,
         &platform,
+        &tool_execution_governance,
         &remind_at_store,
         &session_store,
         &memory_store,
@@ -423,6 +613,7 @@ pub fn build_default_registry(
         &mut registry,
         config,
         &platform,
+        &tool_execution_governance,
         &memory_store,
         &long_term_memory_store,
         &session_store,
@@ -515,6 +706,7 @@ mod tests {
                 exposure: ToolExposure::Task,
                 allow_in_system_ingress: false,
                 allow_in_system_channel: true,
+                ..ToolMetadata::task()
             }
         }
     }

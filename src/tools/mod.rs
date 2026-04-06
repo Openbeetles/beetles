@@ -1,6 +1,7 @@
 //! 工具抽象与注册。核心域不依赖 platform；HTTP 等由 main 注入 ToolContext。
 //! Tool trait and registry; no platform dependency.
 
+mod execution_governance;
 mod policy;
 mod registry;
 mod state_file_guard;
@@ -114,6 +115,11 @@ pub use document_read::DocumentReadTool;
 ))]
 pub use document_search::DocumentSearchTool;
 pub use env::EnvTool;
+pub use execution_governance::{
+    ToolEmergencyStopState, ToolExecutionGateDecision, ToolExecutionGovernance,
+    ToolExecutionGovernanceState, ToolExecutionPermit, ToolExecutionRecord,
+    ToolExecutionRecordStatus, ToolExecutionRequest, render_tool_execution_governance_markdown,
+};
 pub use factual_memory::FactualMemoryTool;
 pub use file_edit::FileEditTool;
 pub use file_write::FileWriteTool;
@@ -147,13 +153,16 @@ pub use network_scan::NetworkScanTool;
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 pub use pdf_read::PdfReadTool;
+pub use policy::{
+    ToolApprovalMode, ToolEffectClass, ToolExecutionShape, ToolRiskLevel, ToolRollbackKind,
+};
 pub use policy::{ToolExposure, ToolMetadata, ToolPolicyContext};
 pub use private_garden::PrivateGardenTool;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use process::ProcessTool;
 #[cfg(feature = "tools_network_extra")]
 pub use proxy_config::ProxyConfigTool;
-pub use registry::{DefaultRegistryDeps, ToolRegistry, build_default_registry};
+pub use registry::{DefaultRegistryDeps, ToolCatalogEntry, ToolRegistry, build_default_registry};
 pub use remind_at::{RemindAtTool, RemindListTool};
 pub use sensor_watch::SensorWatchTool;
 #[cfg(feature = "tools_diagnostics")]
@@ -363,6 +372,10 @@ pub trait Tool: Send + Sync {
     /// Tool metadata only declares capability/risk shape; runtime exposure is resolved centrally.
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::default()
+    }
+    /// 单次执行的治理形状。默认沿用静态元数据；危险工具可按 args 动态提升风险、要求显式确认等。
+    fn execution_shape(&self, _args: &str) -> Result<ToolExecutionShape> {
+        Ok(self.metadata().default_execution_shape(self.name()))
     }
     /// 该工具是否需要网络（HTTP/TLS）；orchestrator 在高压力时拒绝网络工具。
     /// Whether this tool requires network (HTTP/TLS); orchestrator denies network tools under high pressure.

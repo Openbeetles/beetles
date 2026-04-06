@@ -2,8 +2,8 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    TurnLedger, TurnLedgerStore, REL_PATH_TURN_LEDGERS, REL_PATH_TURN_LEDGERS_LEGACY,
-    REL_PATH_TURN_LEDGER_HISTORY, TURN_LEDGER_HISTORY_MAX_ITEMS,
+    REL_PATH_TURN_LEDGER_HISTORY, REL_PATH_TURN_LEDGERS, REL_PATH_TURN_LEDGERS_LEGACY,
+    TURN_LEDGER_HISTORY_MAX_ITEMS, TurnLedger, TurnLedgerStore,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -301,7 +301,7 @@ impl SpiffsTurnLedgerStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{history_rel_path, ledger_rel_path, LEDGER_FILE_EXT};
+    use super::{LEDGER_FILE_EXT, history_rel_path, ledger_rel_path};
 
     #[test]
     fn esp_spiffs_turn_ledger_path_stays_within_flat_namespace_limit() {

@@ -764,15 +764,32 @@ fn execute_tool_call(
         return unavailable_tool_execution_result(&tc.name);
     }
 
-    let needs_net = registry.is_network_tool(&tc.name);
+    let permit = match registry.assess_llm_execution(&tc.name, &tc.input, request_plan.policy()) {
+        Ok(crate::tools::ToolExecutionGateDecision::Allow(permit)) => permit,
+        Ok(crate::tools::ToolExecutionGateDecision::Deny { reason }) => {
+            log::info!("[agent_tool] {} denied by governance: {}", tc.name, reason);
+            return denied_tool_execution_result(reason);
+        }
+        Err(error) => {
+            return execute_error_tool_execution_result(&tc.name, &tc.input, &error);
+        }
+    };
+    let needs_net = permit.requires_network();
     match crate::orchestrator::can_execute_tool_pub(&tc.name, needs_net) {
         ToolDecision::Deny { reason } => {
             log::info!("[agent_tool] {} denied: {}", tc.name, reason);
+            if let Err(error) = registry.record_resource_denial(&permit, &reason) {
+                log::warn!(
+                    "[agent_tool] {} failed to persist resource denial audit: {}",
+                    tc.name,
+                    error
+                );
+            }
             denied_tool_execution_result(reason)
         }
         ToolDecision::Allow => {
             let tool_exec_start = Instant::now();
-            match registry.execute(&tc.name, &tc.input, tool_ctx) {
+            match registry.execute_permitted(&permit, &tc.input, tool_ctx) {
                 Ok(outcome) => {
                     latency.tool_exec_ms = latency
                         .tool_exec_ms
@@ -820,6 +837,13 @@ fn execute_tool_call(
                     latency.tool_exec_ms = latency
                         .tool_exec_ms
                         .saturating_add(tool_exec_start.elapsed().as_millis());
+                    if let Err(audit_error) = registry.record_execution_failure(&permit, &error) {
+                        log::warn!(
+                            "[agent_tool] {} failed to persist failure audit: {}",
+                            tc.name,
+                            audit_error
+                        );
+                    }
                     execute_error_tool_execution_result(&tc.name, &tc.input, &error)
                 }
             }

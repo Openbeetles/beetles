@@ -1,7 +1,9 @@
 //! Structured host network inspection and probing.
 
 use crate::error::{Error, Result};
-use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args};
+use crate::tools::{
+    Tool, ToolContext, ToolEffectClass, ToolMetadata, ToolRiskLevel, parse_tool_args,
+};
 use serde_json::{Value, json};
 #[cfg(any(target_os = "linux", test))]
 use std::net::Ipv4Addr;
@@ -106,7 +108,10 @@ impl Tool for NetworkTool {
     }
 
     fn metadata(&self) -> ToolMetadata {
-        ToolMetadata::task().with_system_ingress(false)
+        ToolMetadata::task()
+            .with_system_ingress(false)
+            .with_effect_class(ToolEffectClass::HostInspection)
+            .with_risk_level(ToolRiskLevel::Medium)
     }
 }
 

@@ -38,6 +38,9 @@ pub enum Commands {
     /// Restart the Beetle service or process
     Restart,
 
+    /// Stop the Beetle service
+    Stop,
+
     /// Run diagnostic checks
     Doctor,
 

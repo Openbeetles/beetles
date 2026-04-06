@@ -3,7 +3,10 @@
 
 use crate::error::{Error, Result};
 use crate::platform::ConfigStore;
-use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args};
+use crate::tools::{
+    Tool, ToolApprovalMode, ToolContext, ToolEffectClass, ToolExecutionShape, ToolMetadata,
+    ToolRiskLevel, ToolRollbackKind, parse_tool_args,
+};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -37,10 +40,10 @@ impl Tool for ProxyConfigTool {
         "proxy_config"
     }
     fn description(&self) -> &'static str {
-        "Manage HTTP proxy configuration. Op: get (show current proxy, redacted), set (set proxy URL), clear (remove proxy). Changes take effect after restart."
+        "Manage HTTP proxy configuration. Op: get (show current proxy, redacted), set (set proxy URL, confirm=true), clear (remove proxy, confirm=true). Changes take effect after restart."
     }
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: get|set|clear"},"url":{"type":"string","description":"Proxy URL for set operation (e.g. http://proxy:8080)"}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: get|set|clear"},"url":{"type":"string","description":"Proxy URL for set operation (e.g. http://proxy:8080)"},"confirm":{"type":"boolean","description":"Required for set or clear"}},"required":["op"]}"#
     }
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
         let obj = parse_tool_args(args, "tool_proxy_config")?;
@@ -69,6 +72,16 @@ impl Tool for ProxyConfigTool {
                 }
             }
             "set" => {
+                let confirm = obj
+                    .get("confirm")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(false);
+                if !confirm {
+                    return Err(Error::config(
+                        "tool_proxy_config",
+                        "set requires confirm=true",
+                    ));
+                }
                 let url = obj
                     .get("url")
                     .and_then(|x| x.as_str())
@@ -94,6 +107,16 @@ impl Tool for ProxyConfigTool {
                 .to_string())
             }
             "clear" => {
+                let confirm = obj
+                    .get("confirm")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(false);
+                if !confirm {
+                    return Err(Error::config(
+                        "tool_proxy_config",
+                        "clear requires confirm=true",
+                    ));
+                }
                 self.config_store.erase_keys(&[NVS_KEY_PROXY_URL])?;
                 Ok(json!({
                     "op": "clear",
@@ -111,5 +134,31 @@ impl Tool for ProxyConfigTool {
 
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::admin()
+            .with_effect_class(ToolEffectClass::ConfigWrite)
+            .with_risk_level(ToolRiskLevel::High)
+            .with_rollback_kind(ToolRollbackKind::ConfigRestore)
+    }
+
+    fn execution_shape(&self, args: &str) -> Result<ToolExecutionShape> {
+        let obj = parse_tool_args(args, "tool_proxy_config_governance")?;
+        let op = obj.get("op").and_then(|x| x.as_str()).unwrap_or("get");
+        let confirm = obj
+            .get("confirm")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
+        Ok(match op {
+            "set" | "clear" => self
+                .metadata()
+                .default_execution_shape(op)
+                .with_approval_mode(ToolApprovalMode::ExplicitIntent)
+                .with_approval_granted(confirm),
+            _ => self
+                .metadata()
+                .default_execution_shape("get")
+                .with_effect_class(ToolEffectClass::ReadOnly)
+                .with_risk_level(ToolRiskLevel::Low)
+                .with_approval_mode(ToolApprovalMode::Automatic)
+                .with_rollback_kind(ToolRollbackKind::None),
+        })
     }
 }

@@ -2,17 +2,27 @@
 
 use crate::Platform;
 use crate::error::{Error, Result};
-use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args};
+use crate::tools::{
+    Tool, ToolApprovalMode, ToolContext, ToolEffectClass, ToolExecutionGovernance,
+    ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind, parse_tool_args,
+};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub struct SystemControlTool {
     platform: Arc<dyn Platform>,
+    tool_execution_governance: Arc<ToolExecutionGovernance>,
 }
 
 impl SystemControlTool {
-    pub fn new(platform: Arc<dyn Platform>) -> Self {
-        Self { platform }
+    pub fn new(
+        platform: Arc<dyn Platform>,
+        tool_execution_governance: Arc<ToolExecutionGovernance>,
+    ) -> Self {
+        Self {
+            platform,
+            tool_execution_governance,
+        }
     }
 }
 
@@ -22,11 +32,11 @@ impl Tool for SystemControlTool {
     }
 
     fn description(&self) -> &'static str {
-        "System admin operations. Op: storage_usage (state storage usage), status (full board/system status), restart (requires confirm=true)."
+        "System admin operations. Op: storage_usage, status, restart (confirm=true), tool_emergency_stop (confirm=true), or tool_emergency_resume (confirm=true)."
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","enum":["storage_usage","status","restart"],"description":"Operation: storage_usage | status | restart"},"confirm":{"type":"boolean","description":"Must be true for restart"}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","enum":["storage_usage","status","restart","tool_emergency_stop","tool_emergency_resume"],"description":"Operation: storage_usage | status | restart | tool_emergency_stop | tool_emergency_resume"},"confirm":{"type":"boolean","description":"Must be true for restart and tool emergency-stop changes"},"reason":{"type":"string","description":"Optional operator reason for tool_emergency_stop"}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
@@ -104,6 +114,47 @@ impl Tool for SystemControlTool {
                 })
                 .to_string())
             }
+            "tool_emergency_stop" => {
+                let confirm = obj.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+                if !confirm {
+                    return Ok(json!({
+                        "op": "tool_emergency_stop",
+                        "ok": false,
+                        "error": "tool_emergency_stop requires confirm=true"
+                    })
+                    .to_string());
+                }
+                let reason = obj.get("reason").and_then(Value::as_str).unwrap_or("");
+                let state = self
+                    .tool_execution_governance
+                    .set_emergency_stop(true, reason)?;
+                Ok(json!({
+                    "op": "tool_emergency_stop",
+                    "ok": true,
+                    "state": state,
+                })
+                .to_string())
+            }
+            "tool_emergency_resume" => {
+                let confirm = obj.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+                if !confirm {
+                    return Ok(json!({
+                        "op": "tool_emergency_resume",
+                        "ok": false,
+                        "error": "tool_emergency_resume requires confirm=true"
+                    })
+                    .to_string());
+                }
+                let state = self
+                    .tool_execution_governance
+                    .set_emergency_stop(false, "")?;
+                Ok(json!({
+                    "op": "tool_emergency_resume",
+                    "ok": true,
+                    "state": state,
+                })
+                .to_string())
+            }
             _ => Err(Error::config(
                 "tool_system_control",
                 format!("unknown op: {}", op),
@@ -113,5 +164,37 @@ impl Tool for SystemControlTool {
 
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::admin()
+            .with_effect_class(ToolEffectClass::SystemControl)
+            .with_risk_level(ToolRiskLevel::Critical)
+            .with_rollback_kind(ToolRollbackKind::Irreversible)
+    }
+
+    fn execution_shape(&self, args: &str) -> Result<ToolExecutionShape> {
+        let obj = parse_tool_args(args, "tool_system_control_governance")?;
+        let op = obj.get("op").and_then(Value::as_str).unwrap_or("status");
+        let confirm = obj.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+        Ok(match op {
+            "storage_usage" | "status" => self
+                .metadata()
+                .default_execution_shape(op)
+                .with_effect_class(ToolEffectClass::ReadOnly)
+                .with_risk_level(ToolRiskLevel::Low)
+                .with_approval_mode(ToolApprovalMode::Automatic)
+                .with_rollback_kind(ToolRollbackKind::None),
+            "tool_emergency_stop" | "tool_emergency_resume" => self
+                .metadata()
+                .default_execution_shape(op)
+                .with_effect_class(ToolEffectClass::SystemControl)
+                .with_risk_level(ToolRiskLevel::High)
+                .with_approval_mode(ToolApprovalMode::ExplicitIntent)
+                .with_approval_granted(confirm),
+            _ => self
+                .metadata()
+                .default_execution_shape(op)
+                .with_effect_class(ToolEffectClass::SystemControl)
+                .with_risk_level(ToolRiskLevel::Critical)
+                .with_approval_mode(ToolApprovalMode::ExplicitIntent)
+                .with_approval_granted(confirm),
+        })
     }
 }

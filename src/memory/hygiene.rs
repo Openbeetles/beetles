@@ -4,11 +4,13 @@ use crate::error::Result;
 use crate::platform::SkillStorage;
 use crate::skills::{govern_runtime_skills, RuntimeSkillGovernanceOutcome};
 use crate::util::{current_unix_secs, truncate_content_to_max};
+use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 
 use super::{
-    build_archive_reconcile_drafts, maintain_archive_search_backend, LongTermMemoryDraft,
-    LongTermMemoryStore, MemoryProfile, MemoryStore, SessionStore, SessionSummaryStore,
-    TurnLedgerStore,
+    build_archive_reconcile_drafts, maintain_archive_search_backend, memory_capability_profile,
+    write_governed_shared_memory, LongTermMemoryDraft, LongTermMemoryStore, MemoryProfile,
+    MemoryStore, SessionStore, SessionSummaryStore, SharedMemoryWriteSource, TurnLedgerStore,
 };
 
 const DAILY_AGGREGATE_MARKER: &str = "<!-- beetle:hygiene:daily-aggregate -->";
@@ -36,6 +38,34 @@ pub struct MemoryHygieneOutcome {
     pub factual_evidence_compacted: usize,
     pub archive_index_maintained: bool,
     pub runtime_skill_governance: RuntimeSkillGovernanceOutcome,
+    pub daily_aggregate_targets: Vec<String>,
+    pub transcript_rollup_chat_ids: Vec<String>,
+    pub factual_reconcile_topics: Vec<String>,
+    pub factual_compaction_topics: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryHygieneInspection {
+    pub profile: String,
+    pub cadence: String,
+    pub current_chat_id: String,
+    pub daily_aggregate_candidates: Vec<String>,
+    pub transcript_rollup_candidates: Vec<String>,
+    pub factual_reconcile_candidates: Vec<String>,
+    pub factual_compaction_candidates: Vec<String>,
+    pub runtime_skill_records: usize,
+    pub summary: String,
+}
+
+#[derive(Default)]
+struct DailyAggregateReport {
+    aggregate_targets: Vec<String>,
+    archived_note_names: Vec<String>,
+}
+
+#[derive(Default)]
+struct TranscriptRollupReport {
+    chat_ids: Vec<String>,
 }
 
 pub fn run_memory_hygiene_jobs(
@@ -49,15 +79,20 @@ pub fn run_memory_hygiene_jobs(
     } else {
         current_unix_secs()
     };
+    let daily_report =
+        aggregate_old_daily_notes(ctx.memory_store, effective_now_secs).unwrap_or_default();
+    let transcript_report = rollup_aging_transcripts(
+        ctx.session_store,
+        ctx.session_summary_store,
+        ctx.memory_store,
+    )
+    .unwrap_or_default();
     let mut outcome = MemoryHygieneOutcome {
-        daily_notes_aggregated: aggregate_old_daily_notes(ctx.memory_store, now_secs).unwrap_or(0),
-        transcripts_rolled_up: rollup_aging_transcripts(
-            ctx.session_store,
-            ctx.session_summary_store,
-            ctx.memory_store,
-        )
-        .unwrap_or(0),
+        daily_notes_aggregated: daily_report.archived_note_names.len(),
+        transcripts_rolled_up: transcript_report.chat_ids.len(),
         sessions_gc: ctx.session_store.gc_stale(SESSION_GC_AGE_SECS).unwrap_or(0),
+        daily_aggregate_targets: daily_report.aggregate_targets,
+        transcript_rollup_chat_ids: transcript_report.chat_ids,
         ..MemoryHygieneOutcome::default()
     };
     let factual_drafts = build_archive_reconcile_drafts(
@@ -70,17 +105,28 @@ pub fn run_memory_hygiene_jobs(
         6,
     );
     if !factual_drafts.is_empty() {
-        outcome.factual_metadata_updates = ctx
-            .long_term_memory_store
-            .upsert_many(&factual_drafts, effective_now_secs)
-            .unwrap_or(0);
+        let factual_topics = factual_drafts
+            .iter()
+            .map(|draft| draft.topic.clone())
+            .collect::<Vec<_>>();
+        let write_outcome = write_governed_shared_memory(
+            ctx.long_term_memory_store,
+            &factual_drafts,
+            effective_now_secs,
+            SharedMemoryWriteSource::HygieneReconcile,
+        )
+        .unwrap_or_default();
+        outcome.factual_metadata_updates = write_outcome.changed;
+        outcome.factual_reconcile_topics = factual_topics;
     }
-    outcome.factual_evidence_compacted = compact_factual_evidence_metadata(
+    let (compacted_count, compacted_topics) = compact_factual_evidence_metadata(
         ctx.long_term_memory_store,
         &factual_drafts,
         effective_now_secs,
     )
-    .unwrap_or(0);
+    .unwrap_or_default();
+    outcome.factual_evidence_compacted = compacted_count;
+    outcome.factual_compaction_topics = compacted_topics;
     outcome.archive_index_maintained =
         maintain_archive_search_backend(ctx.session_store, ctx.memory_store, ctx.turn_ledger_store)
             .unwrap_or(false);
@@ -89,11 +135,268 @@ pub fn run_memory_hygiene_jobs(
     outcome
 }
 
+pub fn inspect_memory_hygiene(
+    ctx: MemoryHygieneContext<'_>,
+    current_chat_id: &str,
+    profile: MemoryProfile,
+    now_secs: u64,
+) -> MemoryHygieneInspection {
+    let effective_now_secs = if now_secs > 0 {
+        now_secs
+    } else {
+        current_unix_secs()
+    };
+    let daily_aggregate_candidates =
+        collect_daily_aggregate_groups(ctx.memory_store, effective_now_secs)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(month_key, _)| format!("{month_key}-archive.md"))
+            .collect::<Vec<_>>();
+    let transcript_rollup_candidates =
+        collect_transcript_rollup_candidates(ctx.session_store, ctx.session_summary_store)
+            .unwrap_or_default();
+    let reconcile_drafts = build_archive_reconcile_drafts(
+        ctx.session_store,
+        ctx.long_term_memory_store,
+        ctx.memory_store,
+        ctx.turn_ledger_store,
+        current_chat_id,
+        profile,
+        6,
+    );
+    let factual_reconcile_candidates = reconcile_drafts
+        .iter()
+        .cloned()
+        .map(|draft| draft.topic)
+        .collect::<Vec<_>>();
+    let factual_compaction_candidates =
+        collect_factual_compaction_candidates(ctx.long_term_memory_store, &reconcile_drafts)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|draft| draft.topic)
+            .collect::<Vec<_>>();
+    let runtime_skill_records = ctx
+        .skill_storage
+        .list_names()
+        .map(|names| {
+            names
+                .into_iter()
+                .filter(|name| crate::skills::is_runtime_skill_name(name))
+                .count()
+        })
+        .unwrap_or(0);
+    let cadence = match memory_capability_profile(profile).background_hygiene_level {
+        super::MemoryHygieneLevel::Minimal => "minimal",
+        super::MemoryHygieneLevel::Standard => "standard",
+    };
+    let profile_label = match profile {
+        MemoryProfile::Embedded => "embedded",
+        MemoryProfile::Standard => "standard",
+    };
+    let mut summary = String::new();
+    let _ = write!(
+        summary,
+        "cadence={} | daily={} | transcript={} | factual_reconcile={} | factual_compaction={} | runtime_skills={}",
+        cadence,
+        daily_aggregate_candidates.len(),
+        transcript_rollup_candidates.len(),
+        factual_reconcile_candidates.len(),
+        factual_compaction_candidates.len(),
+        runtime_skill_records
+    );
+    MemoryHygieneInspection {
+        profile: profile_label.to_string(),
+        cadence: cadence.to_string(),
+        current_chat_id: current_chat_id.to_string(),
+        daily_aggregate_candidates,
+        transcript_rollup_candidates,
+        factual_reconcile_candidates,
+        factual_compaction_candidates,
+        runtime_skill_records,
+        summary,
+    }
+}
+
+pub fn render_memory_hygiene_inspection_markdown(inspection: &MemoryHygieneInspection) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "# Memory Hygiene Inspection");
+    let _ = writeln!(out, "- current_chat_id: {}", inspection.current_chat_id);
+    let _ = writeln!(out, "- profile: {}", inspection.profile);
+    let _ = writeln!(out, "- cadence: {}", inspection.cadence);
+    let _ = writeln!(out, "- summary: {}", inspection.summary);
+    render_hygiene_list(
+        &mut out,
+        "Daily aggregate candidates",
+        &inspection.daily_aggregate_candidates,
+    );
+    render_hygiene_list(
+        &mut out,
+        "Transcript rollup candidates",
+        &inspection.transcript_rollup_candidates,
+    );
+    render_hygiene_list(
+        &mut out,
+        "Factual reconcile candidates",
+        &inspection.factual_reconcile_candidates,
+    );
+    render_hygiene_list(
+        &mut out,
+        "Factual compaction candidates",
+        &inspection.factual_compaction_candidates,
+    );
+    let _ = writeln!(
+        out,
+        "\n## Runtime Skills\n- records: {}",
+        inspection.runtime_skill_records
+    );
+    out.trim_end().to_string()
+}
+
 fn compact_factual_evidence_metadata(
     store: &dyn LongTermMemoryStore,
     reconcile_drafts: &[LongTermMemoryDraft],
     now_secs: u64,
-) -> Result<usize> {
+) -> Result<(usize, Vec<String>)> {
+    let compacted = collect_factual_compaction_candidates(store, reconcile_drafts)?;
+    if compacted.is_empty() {
+        return Ok((0, Vec::new()));
+    }
+    let topics = compacted
+        .iter()
+        .map(|draft| draft.topic.clone())
+        .collect::<Vec<_>>();
+    let changed = write_governed_shared_memory(
+        store,
+        &compacted,
+        now_secs,
+        SharedMemoryWriteSource::HygieneCompaction,
+    )?
+    .changed;
+    Ok((changed, topics))
+}
+
+fn collect_daily_aggregate_groups(
+    store: &dyn MemoryStore,
+    now_secs: u64,
+) -> Result<std::collections::BTreeMap<String, Vec<String>>> {
+    let mut monthly = std::collections::BTreeMap::new();
+    for name in store.list_daily_note_names(usize::MAX)? {
+        if !name.ends_with(".md")
+            || name.contains("archive")
+            || name.starts_with(TRANSCRIPT_AGING_PREFIX)
+            || super::parse_daily_note_observed_at(&name).is_none()
+        {
+            continue;
+        }
+        let observed_at = super::parse_daily_note_observed_at(&name).unwrap_or(0);
+        if now_secs > 0
+            && now_secs.saturating_sub(observed_at) < DAILY_AGGREGATE_MIN_AGE_DAYS * 86_400
+        {
+            continue;
+        }
+        let content = store.get_daily_note(&name)?;
+        if content.contains(DAILY_PLACEHOLDER_MARKER) {
+            continue;
+        }
+        let month_key = name.chars().take(7).collect::<String>();
+        monthly.entry(month_key).or_default().push(name);
+    }
+    Ok(monthly)
+}
+
+fn aggregate_old_daily_notes(
+    store: &dyn MemoryStore,
+    now_secs: u64,
+) -> Result<DailyAggregateReport> {
+    let mut report = DailyAggregateReport::default();
+    for (month_key, mut names) in collect_daily_aggregate_groups(store, now_secs)? {
+        if names.len() < 2 {
+            continue;
+        }
+        names.sort();
+        let aggregate_name = format!("{month_key}-archive.md");
+        let mut body = String::new();
+        body.push_str(DAILY_AGGREGATE_MARKER);
+        body.push_str("\n# Daily Aggregate ");
+        body.push_str(&month_key);
+        body.push_str("\n\n");
+        for name in &names {
+            let content = store.get_daily_note(name)?;
+            let preview = truncate_content_to_max(content.trim(), 220);
+            body.push_str("- ");
+            body.push_str(name);
+            body.push_str(": ");
+            body.push_str(preview.as_ref());
+            body.push('\n');
+        }
+        store.write_daily_note(&aggregate_name, body.trim_end())?;
+        report.aggregate_targets.push(aggregate_name.clone());
+        for name in names {
+            let content = store.get_daily_note(&name)?;
+            let preview = truncate_content_to_max(content.trim(), 160);
+            let placeholder = format!(
+                "{DAILY_PLACEHOLDER_MARKER}\nArchived into {aggregate_name}.\nSummary: {}",
+                preview
+            );
+            store.write_daily_note(&name, &placeholder)?;
+            report.archived_note_names.push(name);
+        }
+    }
+    Ok(report)
+}
+
+fn rollup_aging_transcripts(
+    session_store: &dyn SessionStore,
+    session_summary_store: &dyn SessionSummaryStore,
+    memory_store: &dyn MemoryStore,
+) -> Result<TranscriptRollupReport> {
+    let mut report = TranscriptRollupReport::default();
+    for chat_id in session_store
+        .list_chat_ids()?
+        .into_iter()
+        .take(TRANSCRIPT_AGING_MAX_CHATS)
+    {
+        let Some((summary, count)) = session_summary_store.get_with_count(&chat_id)? else {
+            continue;
+        };
+        if summary.trim().is_empty() {
+            continue;
+        }
+        let note_name = format!("{TRANSCRIPT_AGING_PREFIX}{}.md", short_chat_slug(&chat_id));
+        let content = format!(
+            "<!-- beetle:hygiene:transcript-rollup -->\nChat: {chat_id}\nMessages summarized: {count}\n\n{summary}"
+        );
+        memory_store.write_daily_note(&note_name, &content)?;
+        report.chat_ids.push(chat_id);
+    }
+    Ok(report)
+}
+
+fn collect_transcript_rollup_candidates(
+    session_store: &dyn SessionStore,
+    session_summary_store: &dyn SessionSummaryStore,
+) -> Result<Vec<String>> {
+    let mut chat_ids = Vec::new();
+    for chat_id in session_store
+        .list_chat_ids()?
+        .into_iter()
+        .take(TRANSCRIPT_AGING_MAX_CHATS)
+    {
+        let Some((summary, _)) = session_summary_store.get_with_count(&chat_id)? else {
+            continue;
+        };
+        if summary.trim().is_empty() {
+            continue;
+        }
+        chat_ids.push(chat_id);
+    }
+    Ok(chat_ids)
+}
+
+fn collect_factual_compaction_candidates(
+    store: &dyn LongTermMemoryStore,
+    reconcile_drafts: &[LongTermMemoryDraft],
+) -> Result<Vec<LongTermMemoryDraft>> {
     let mut compacted = Vec::new();
     let list_limit = store.count().unwrap_or(24).max(24);
     for entry in store.list(list_limit)? {
@@ -151,99 +454,18 @@ fn compact_factual_evidence_metadata(
             compacted.push(draft);
         }
     }
-    if compacted.is_empty() {
-        Ok(0)
-    } else {
-        store.upsert_many(&compacted, now_secs)
-    }
+    Ok(compacted)
 }
 
-fn aggregate_old_daily_notes(store: &dyn MemoryStore, now_secs: u64) -> Result<usize> {
-    let mut aggregated = 0usize;
-    let mut monthly: std::collections::BTreeMap<String, Vec<String>> =
-        std::collections::BTreeMap::new();
-    for name in store.list_daily_note_names(usize::MAX)? {
-        if !name.ends_with(".md")
-            || name.contains("archive")
-            || name.starts_with(TRANSCRIPT_AGING_PREFIX)
-            || super::parse_daily_note_observed_at(&name).is_none()
-        {
-            continue;
-        }
-        let observed_at = super::parse_daily_note_observed_at(&name).unwrap_or(0);
-        if now_secs > 0
-            && now_secs.saturating_sub(observed_at) < DAILY_AGGREGATE_MIN_AGE_DAYS * 86_400
-        {
-            continue;
-        }
-        let content = store.get_daily_note(&name)?;
-        if content.contains(DAILY_PLACEHOLDER_MARKER) {
-            continue;
-        }
-        let month_key = name.chars().take(7).collect::<String>();
-        monthly.entry(month_key).or_default().push(name);
+fn render_hygiene_list(out: &mut String, title: &str, values: &[String]) {
+    let _ = writeln!(out, "\n## {}", title);
+    if values.is_empty() {
+        let _ = writeln!(out, "- none");
+        return;
     }
-
-    for (month_key, mut names) in monthly {
-        if names.len() < 2 {
-            continue;
-        }
-        names.sort();
-        let aggregate_name = format!("{month_key}-archive.md");
-        let mut body = String::new();
-        body.push_str(DAILY_AGGREGATE_MARKER);
-        body.push_str("\n# Daily Aggregate ");
-        body.push_str(&month_key);
-        body.push_str("\n\n");
-        for name in &names {
-            let content = store.get_daily_note(name)?;
-            let preview = truncate_content_to_max(content.trim(), 220);
-            body.push_str("- ");
-            body.push_str(name);
-            body.push_str(": ");
-            body.push_str(preview.as_ref());
-            body.push('\n');
-        }
-        store.write_daily_note(&aggregate_name, body.trim_end())?;
-        for name in names {
-            let content = store.get_daily_note(&name)?;
-            let preview = truncate_content_to_max(content.trim(), 160);
-            let placeholder = format!(
-                "{DAILY_PLACEHOLDER_MARKER}\nArchived into {aggregate_name}.\nSummary: {}",
-                preview
-            );
-            store.write_daily_note(&name, &placeholder)?;
-            aggregated = aggregated.saturating_add(1);
-        }
+    for value in values {
+        let _ = writeln!(out, "- {}", value);
     }
-    Ok(aggregated)
-}
-
-fn rollup_aging_transcripts(
-    session_store: &dyn SessionStore,
-    session_summary_store: &dyn SessionSummaryStore,
-    memory_store: &dyn MemoryStore,
-) -> Result<usize> {
-    let mut rolled = 0usize;
-    for chat_id in session_store
-        .list_chat_ids()?
-        .into_iter()
-        .take(TRANSCRIPT_AGING_MAX_CHATS)
-    {
-        let Some((summary, count)) = session_summary_store.get_with_count(&chat_id)? else {
-            continue;
-        };
-        if summary.trim().is_empty() {
-            continue;
-        }
-        let note_name = format!("{TRANSCRIPT_AGING_PREFIX}{}.md", short_chat_slug(&chat_id));
-        let content = format!(
-            "<!-- beetle:hygiene:transcript-rollup -->\nChat: {chat_id}\nMessages summarized: {count}\n\n{summary}"
-        );
-        memory_store.write_daily_note(&note_name, &content)?;
-        rolled = rolled.saturating_add(1);
-    }
-    Ok(rolled)
 }
 
 fn short_chat_slug(chat_id: &str) -> String {
@@ -476,8 +698,9 @@ mod tests {
         let store = StubMemoryStore::default();
         store.write_daily_note("2026-03-01.md", "第一天").unwrap();
         store.write_daily_note("2026-03-02.md", "第二天").unwrap();
-        let changed = aggregate_old_daily_notes(&store, 1_775_000_000).unwrap();
-        assert_eq!(changed, 2);
+        let report = aggregate_old_daily_notes(&store, 1_775_000_000).unwrap();
+        assert_eq!(report.archived_note_names.len(), 2);
+        assert_eq!(report.aggregate_targets, vec!["2026-03-archive.md"]);
         let aggregate = store.get_daily_note("2026-03-archive.md").unwrap();
         assert!(aggregate.contains("2026-03-01.md"));
         assert!(store
@@ -491,9 +714,9 @@ mod tests {
         let session_store = StubSessionStore;
         let summary_store = StubSummaryStore;
         let memory_store = StubMemoryStore::default();
-        let rolled =
+        let report =
             rollup_aging_transcripts(&session_store, &summary_store, &memory_store).unwrap();
-        assert_eq!(rolled, 1);
+        assert_eq!(report.chat_ids, vec!["chat-1".to_string()]);
         assert!(memory_store
             .get_daily_note("transcript-aging-chat-1.md")
             .unwrap()
@@ -531,8 +754,9 @@ mod tests {
             upserts: Mutex::new(Vec::new()),
         };
 
-        let changed = compact_factual_evidence_metadata(&store, &[], 100).unwrap();
+        let (changed, topics) = compact_factual_evidence_metadata(&store, &[], 100).unwrap();
         assert_eq!(changed, 1);
+        assert_eq!(topics, vec!["router_position".to_string()]);
         let upserts = store.upserts.lock().unwrap_or_else(|e| e.into_inner());
         let draft = &upserts[0][0];
         assert_eq!(draft.observed_at, Some(7));

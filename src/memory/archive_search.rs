@@ -214,6 +214,52 @@ pub struct ArchiveSearchHit {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArchiveSearchSourceStats {
+    pub source: ArchiveRecordSource,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub candidate_count: usize,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub hit_count: usize,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArchiveSearchQueryReport {
+    pub query: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub normalized_terms: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_chat_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_id_filter: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requested_sources: Vec<ArchiveRecordSource>,
+    pub limit: usize,
+    #[serde(default)]
+    pub weak_query: bool,
+    #[serde(default)]
+    pub backend: ArchiveSearchBackendKind,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub candidate_count: usize,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub returned_hit_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top_citations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top_match_terms: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_stats: Vec<ArchiveSearchSourceStats>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub miss_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArchiveSearchResult {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hits: Vec<ArchiveSearchHit>,
+    pub report: ArchiveSearchQueryReport,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ArchiveRecord {
     pub record_id: String,
     pub citation: String,
@@ -283,6 +329,10 @@ struct PreparedArchiveSearchQuery<'a> {
     weak_query: bool,
 }
 
+fn is_zero_usize(value: &usize) -> bool {
+    *value == 0
+}
+
 impl<'a> PreparedArchiveSearchQuery<'a> {
     fn new(raw: ArchiveSearchQuery<'a>, terms: &'a [String]) -> Self {
         Self {
@@ -293,23 +343,23 @@ impl<'a> PreparedArchiveSearchQuery<'a> {
     }
 }
 
-pub fn search_archive_records(
+pub fn search_archive_records_detailed(
     session_store: &dyn SessionStore,
     memory_store: &dyn MemoryStore,
     turn_ledger_store: &dyn TurnLedgerStore,
     query: ArchiveSearchQuery<'_>,
-) -> Result<Vec<ArchiveSearchHit>> {
+) -> Result<ArchiveSearchResult> {
     let terms = collect_archive_match_terms(query.query);
     let prepared = PreparedArchiveSearchQuery::new(query, &terms);
     #[cfg(target_os = "linux")]
-    match search_archive_records_from_sqlite(
+    match search_archive_records_from_sqlite_detailed(
         session_store,
         memory_store,
         turn_ledger_store,
         prepared,
         &terms,
     ) {
-        Ok(Some(hits)) => return Ok(hits),
+        Ok(Some(result)) => return Ok(result),
         Ok(None) => {}
         Err(error) => log::warn!(
             "[archive_search] sqlite backend failed, falling back: {}",
@@ -318,9 +368,10 @@ pub fn search_archive_records(
     }
     let candidates =
         collect_live_archive_candidates(session_store, memory_store, turn_ledger_store, query);
-    if candidates.is_empty() {
-        return Ok(Vec::new());
-    }
+    let candidate_sources = candidates
+        .iter()
+        .map(|candidate| candidate.source)
+        .collect::<Vec<_>>();
     let stats = build_archive_corpus_stats(&candidates, &terms);
     let newest_observed_at = candidates
         .iter()
@@ -342,7 +393,28 @@ pub fn search_archive_records(
             .then_with(|| a.citation.cmp(&b.citation))
     });
     hits.truncate(prepared.limit);
-    Ok(hits)
+    Ok(ArchiveSearchResult {
+        report: build_archive_search_query_report(
+            prepared,
+            &terms,
+            archive_search_backend_kind_fallback(),
+            &candidate_sources,
+            &hits,
+        ),
+        hits,
+    })
+}
+
+pub fn search_archive_records(
+    session_store: &dyn SessionStore,
+    memory_store: &dyn MemoryStore,
+    turn_ledger_store: &dyn TurnLedgerStore,
+    query: ArchiveSearchQuery<'_>,
+) -> Result<Vec<ArchiveSearchHit>> {
+    Ok(
+        search_archive_records_detailed(session_store, memory_store, turn_ledger_store, query)?
+            .hits,
+    )
 }
 
 pub(crate) fn maintain_archive_search_backend(
@@ -515,13 +587,13 @@ fn collect_live_archive_candidates(
 }
 
 #[cfg(target_os = "linux")]
-fn search_archive_records_from_sqlite(
+fn search_archive_records_from_sqlite_detailed(
     session_store: &dyn SessionStore,
     memory_store: &dyn MemoryStore,
     turn_ledger_store: &dyn TurnLedgerStore,
     query: PreparedArchiveSearchQuery<'_>,
     terms: &[String],
-) -> Result<Option<Vec<ArchiveSearchHit>>> {
+) -> Result<Option<ArchiveSearchResult>> {
     let signature = match build_archive_source_signature() {
         Ok(signature) => signature,
         Err(error) => {
@@ -554,9 +626,10 @@ fn search_archive_records_from_sqlite(
         archive_sqlite_rebuild(&mut conn, &live, &signature)?;
     }
     let candidates = query_archive_candidates_sqlite(&conn, query, terms)?;
-    if candidates.is_empty() {
-        return Ok(Some(Vec::new()));
-    }
+    let candidate_sources = candidates
+        .iter()
+        .map(|candidate| candidate.source)
+        .collect::<Vec<_>>();
     let stats = build_archive_corpus_stats(&candidates, terms);
     let newest_observed_at = candidates
         .iter()
@@ -578,7 +651,16 @@ fn search_archive_records_from_sqlite(
             .then_with(|| a.citation.cmp(&b.citation))
     });
     hits.truncate(query.limit);
-    Ok(Some(hits))
+    Ok(Some(ArchiveSearchResult {
+        report: build_archive_search_query_report(
+            query,
+            terms,
+            ArchiveSearchBackendKind::SqliteFtsHybrid,
+            &candidate_sources,
+            &hits,
+        ),
+        hits,
+    }))
 }
 
 #[cfg(target_os = "linux")]
@@ -1335,6 +1417,133 @@ fn build_archive_hit_cues(base_cues: &[String], trace: &ArchiveRetrievalTrace) -
     cues
 }
 
+fn build_archive_search_query_report(
+    query: PreparedArchiveSearchQuery<'_>,
+    terms: &[String],
+    backend: ArchiveSearchBackendKind,
+    candidate_sources: &[ArchiveRecordSource],
+    hits: &[ArchiveSearchHit],
+) -> ArchiveSearchQueryReport {
+    let candidate_count = candidate_sources.len();
+    ArchiveSearchQueryReport {
+        query: query.raw.query.trim().to_string(),
+        normalized_terms: terms.to_vec(),
+        preferred_chat_id: query.raw.preferred_chat_id.map(str::to_string),
+        chat_id_filter: query.raw.chat_id_filter.map(str::to_string),
+        requested_sources: query.raw.sources.to_vec(),
+        limit: query.limit,
+        weak_query: query.weak_query,
+        backend,
+        candidate_count,
+        returned_hit_count: hits.len(),
+        top_citations: collect_archive_top_citations(hits, 3),
+        top_match_terms: collect_archive_top_match_terms(hits, 4),
+        source_stats: build_archive_source_stats(candidate_sources, hits, query.raw.sources),
+        miss_reason: build_archive_search_miss_reason(query, terms, candidate_count, hits),
+    }
+}
+
+fn collect_archive_top_citations(hits: &[ArchiveSearchHit], max_items: usize) -> Vec<String> {
+    let mut citations = Vec::with_capacity(hits.len().min(max_items));
+    for hit in hits {
+        if citations.iter().any(|existing| existing == &hit.citation) {
+            continue;
+        }
+        citations.push(hit.citation.clone());
+        if citations.len() >= max_items {
+            break;
+        }
+    }
+    citations
+}
+
+fn collect_archive_top_match_terms(hits: &[ArchiveSearchHit], max_items: usize) -> Vec<String> {
+    let mut terms = Vec::with_capacity(max_items);
+    for hit in hits {
+        let Some(trace) = hit.retrieval_trace.as_ref() else {
+            continue;
+        };
+        for term in &trace.matched_terms {
+            if terms.iter().any(|existing| existing == term) {
+                continue;
+            }
+            terms.push(term.clone());
+            if terms.len() >= max_items {
+                return terms;
+            }
+        }
+    }
+    terms
+}
+
+fn build_archive_source_stats(
+    candidate_sources: &[ArchiveRecordSource],
+    hits: &[ArchiveSearchHit],
+    requested_sources: &[ArchiveRecordSource],
+) -> Vec<ArchiveSearchSourceStats> {
+    let mut candidate_by_source = HashMap::<ArchiveRecordSource, usize>::new();
+    let mut hit_by_source = HashMap::<ArchiveRecordSource, usize>::new();
+    for source in candidate_sources {
+        *candidate_by_source.entry(*source).or_insert(0) += 1;
+    }
+    for hit in hits {
+        *hit_by_source.entry(hit.source).or_insert(0) += 1;
+    }
+    let mut sources = if requested_sources.is_empty() {
+        vec![
+            ArchiveRecordSource::Transcript,
+            ArchiveRecordSource::DailyNote,
+            ArchiveRecordSource::TurnLog,
+        ]
+    } else {
+        requested_sources.to_vec()
+    };
+    sources.retain(|source| {
+        *candidate_by_source.get(source).unwrap_or(&0) > 0
+            || *hit_by_source.get(source).unwrap_or(&0) > 0
+    });
+    if sources.is_empty() && !candidate_sources.is_empty() {
+        sources = candidate_by_source.keys().copied().collect();
+        sources.sort_by_key(|source| source.label());
+    }
+    sources
+        .into_iter()
+        .map(|source| ArchiveSearchSourceStats {
+            source,
+            candidate_count: *candidate_by_source.get(&source).unwrap_or(&0),
+            hit_count: *hit_by_source.get(&source).unwrap_or(&0),
+        })
+        .collect()
+}
+
+fn build_archive_search_miss_reason(
+    query: PreparedArchiveSearchQuery<'_>,
+    terms: &[String],
+    candidate_count: usize,
+    hits: &[ArchiveSearchHit],
+) -> Option<String> {
+    if !hits.is_empty() {
+        return None;
+    }
+    if query.raw.query.trim().is_empty() {
+        return Some("empty_query".to_string());
+    }
+    if terms.is_empty() || query.weak_query {
+        return Some("query_terms_insufficient".to_string());
+    }
+    if candidate_count == 0 {
+        if query.raw.chat_id_filter.is_some() {
+            Some("no_archive_candidates_after_chat_filter".to_string())
+        } else if !query.raw.sources.is_empty() {
+            Some("no_archive_candidates_for_requested_sources".to_string())
+        } else {
+            Some("archive_corpus_empty".to_string())
+        }
+    } else {
+        Some("no_substantive_archive_match".to_string())
+    }
+}
+
 fn build_archive_selector_reason(
     candidate: &ArchiveSearchCandidate,
     matched_terms: &[String],
@@ -1878,6 +2087,45 @@ mod tests {
             ArchiveRecordLocator::parse_record_id(&hits[0].record_id),
             Some(hits[0].locator.clone())
         );
+    }
+
+    #[test]
+    fn detailed_search_reports_candidates_and_miss_reason() {
+        let session_store = StubSessionStore::default();
+        session_store
+            .chats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                "chat-a".to_string(),
+                vec![SessionMessage {
+                    role: "user".to_string(),
+                    content: "家庭网络重构计划".to_string(),
+                }],
+            );
+        let memory_store = StubMemoryStore::default();
+        let turn_ledger_store = StubTurnLedgerStore::default();
+
+        let result = search_archive_records_detailed(
+            &session_store,
+            &memory_store,
+            &turn_ledger_store,
+            ArchiveSearchQuery {
+                query: "完全无关的关键词",
+                preferred_chat_id: Some("chat-a"),
+                chat_id_filter: None,
+                sources: &[ArchiveRecordSource::Transcript],
+                limit: 4,
+            },
+        )
+        .unwrap();
+
+        assert!(result.report.candidate_count >= 1);
+        assert_eq!(
+            result.report.miss_reason.as_deref(),
+            Some("no_substantive_archive_match")
+        );
+        assert!(result.hits.is_empty());
     }
 
     #[test]

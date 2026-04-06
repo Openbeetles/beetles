@@ -816,8 +816,8 @@ impl AudioPipelineState {
 
         let mic_cap = (seg.microphone.sample_rate.max(8_000) as usize).saturating_mul(2);
         let speaker_cap = (seg.speaker.sample_rate.max(8_000) as usize).saturating_mul(2);
-        let staging_cap =
-            (seg.speaker.sample_rate.max(8_000) as usize).saturating_mul(AUDIO_STAGING_CAPACITY_SECS);
+        let staging_cap = (seg.speaker.sample_rate.max(8_000) as usize)
+            .saturating_mul(AUDIO_STAGING_CAPACITY_SECS);
         let shared = Arc::new(SharedAudioBuffers {
             mic: Mutex::new(AudioRingBuffer::with_capacity(mic_cap)),
             mic_cv: Condvar::new(),
@@ -923,7 +923,8 @@ impl AudioPipelineState {
                                     .speaker
                                     .lock()
                                     .unwrap_or_else(|e| e.into_inner());
-                                let pushed = spk.push_slice_blocking(&speaker_frame[..staging_popped]);
+                                let pushed =
+                                    spk.push_slice_blocking(&speaker_frame[..staging_popped]);
                                 if pushed > 0 {
                                     crate::metrics::record_audio_speaker_queue_depth_last_samples(
                                         spk.len(),

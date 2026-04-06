@@ -1,9 +1,7 @@
 //! SPIFFS implementation of Core Revision Ledger store. Single-file JSON map.
 
 use crate::error::Result;
-use crate::memory::{
-    CoreRevisionLedger, CoreRevisionLedgerStore, REL_PATH_CORE_REVISION_LEDGERS,
-};
+use crate::memory::{CoreRevisionLedger, CoreRevisionLedgerStore, REL_PATH_CORE_REVISION_LEDGERS};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

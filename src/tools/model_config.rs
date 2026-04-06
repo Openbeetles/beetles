@@ -3,7 +3,10 @@
 
 use crate::Platform;
 use crate::error::{Error, Result};
-use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args};
+use crate::tools::{
+    Tool, ToolApprovalMode, ToolContext, ToolEffectClass, ToolExecutionShape, ToolMetadata,
+    ToolRiskLevel, ToolRollbackKind, parse_tool_args,
+};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -24,10 +27,10 @@ impl Tool for ModelConfigTool {
         "model_config"
     }
     fn description(&self) -> &'static str {
-        "View or update LLM model configuration. Op: get (show current config, api_key excluded), set (update provider/model/api_url/max_tokens). Changes take effect after restart."
+        "View or update LLM model configuration. Op: get (show current config, api_key excluded), set (update provider/model/api_url/max_tokens, confirm=true). Changes take effect after restart."
     }
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: get|set"},"provider":{"type":"string","description":"LLM provider name (for set)"},"model":{"type":"string","description":"Model name (for set)"},"api_url":{"type":"string","description":"API base URL (for set)"},"max_tokens":{"type":"integer","description":"Max tokens (for set)"}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: get|set"},"provider":{"type":"string","description":"LLM provider name (for set)"},"model":{"type":"string","description":"Model name (for set)"},"api_url":{"type":"string","description":"API base URL (for set)"},"max_tokens":{"type":"integer","description":"Max tokens (for set)"},"confirm":{"type":"boolean","description":"Required for set"}},"required":["op"]}"#
     }
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
         let obj = parse_tool_args(args, "tool_model_config")?;
@@ -54,6 +57,16 @@ impl Tool for ModelConfigTool {
                 }
             }
             "set" => {
+                let confirm = obj
+                    .get("confirm")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(false);
+                if !confirm {
+                    return Err(Error::config(
+                        "tool_model_config",
+                        "set requires confirm=true",
+                    ));
+                }
                 // Read existing config
                 let existing = self
                     .platform
@@ -116,6 +129,32 @@ impl Tool for ModelConfigTool {
 
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::admin()
+            .with_effect_class(ToolEffectClass::ConfigWrite)
+            .with_risk_level(ToolRiskLevel::High)
+            .with_rollback_kind(ToolRollbackKind::ConfigRestore)
+    }
+
+    fn execution_shape(&self, args: &str) -> Result<ToolExecutionShape> {
+        let obj = parse_tool_args(args, "tool_model_config_governance")?;
+        let op = obj.get("op").and_then(|x| x.as_str()).unwrap_or("get");
+        let confirm = obj
+            .get("confirm")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
+        Ok(match op {
+            "set" => self
+                .metadata()
+                .default_execution_shape("set")
+                .with_approval_mode(ToolApprovalMode::ExplicitIntent)
+                .with_approval_granted(confirm),
+            _ => self
+                .metadata()
+                .default_execution_shape("get")
+                .with_effect_class(ToolEffectClass::ReadOnly)
+                .with_risk_level(ToolRiskLevel::Low)
+                .with_approval_mode(ToolApprovalMode::Automatic)
+                .with_rollback_kind(ToolRollbackKind::None),
+        })
     }
 }
 

@@ -13,7 +13,7 @@ Type=simple
 # User=beetle
 # Group=beetle
 WorkingDirectory=/opt/beetle/current
-ExecStart=/opt/beetle/current/beetle
+ExecStart=/opt/beetle/current/beetle run
 # Recover from crashes; cap bursts so a broken binary does not spin forever.
 Restart=on-failure
 RestartSec=5

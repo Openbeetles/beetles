@@ -2,25 +2,33 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    export_continuity_snapshot, import_continuity_snapshot, inspect_personality_governance,
-    load_recent_persona_evidence, render_continuity_snapshot_markdown,
-    render_personality_governance_inspection_markdown, ContinuitySnapshot,
-    ContinuitySnapshotExportContext, ContinuitySnapshotImportContext, ContinuitySnapshotImportMode,
-    ContinuitySnapshotMode, CoreRevisionLedgerStore, ExecutionStateStore, LongTermMemoryStore,
+    ContinuitySnapshot, ContinuitySnapshotExportContext, ContinuitySnapshotImportContext,
+    ContinuitySnapshotImportMode, ContinuitySnapshotMode, CoreRevisionLedgerStore,
+    ExecutionStateStore, LongTermMemoryStore, MemoryHygieneContext, MemoryProfile, MemoryStore,
     PersonalityGovernanceInspectionInput, RelationshipConstitutionStore,
     RelationshipPortfolioStore, RelationshipTopologyStore, SelfAuthoredCoreStore,
-    SelfContinuityStore, SelfModelStore, SessionSummaryStore, TurnLedgerStore,
+    SelfContinuityStore, SelfModelStore, SessionStore, SessionSummaryStore, TurnLedgerStore,
+    WorkingRecallInspectionInput, export_continuity_snapshot, import_continuity_snapshot,
+    inspect_memory_hygiene, inspect_personality_governance, inspect_working_recall,
+    load_recent_persona_evidence, render_continuity_snapshot_markdown,
+    render_memory_hygiene_inspection_markdown, render_personality_governance_inspection_markdown,
+    render_working_recall_inspection_markdown,
 };
-use crate::platform::StateFs;
-use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
+use crate::platform::{SkillStorage, StateFs};
+use crate::tools::{
+    Tool, ToolContext, ToolExecutionGovernance, ToolMetadata, parse_tool_args,
+    render_tool_execution_governance_markdown,
+};
 use crate::util::current_unix_secs;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 const REL_DIR_MANUAL_CONTINUITY_SNAPSHOTS: &str = "memory/continuity_snapshots/manual";
 
 pub struct ContinuitySnapshotTool {
     state_fs: Arc<dyn StateFs + Send + Sync>,
+    session_store: Arc<dyn SessionStore + Send + Sync>,
+    memory_store: Arc<dyn MemoryStore + Send + Sync>,
     long_term_memory_store: Arc<dyn LongTermMemoryStore + Send + Sync>,
     session_summary_store: Arc<dyn SessionSummaryStore + Send + Sync>,
     execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
@@ -32,11 +40,15 @@ pub struct ContinuitySnapshotTool {
     relationship_constitution_store: Arc<dyn RelationshipConstitutionStore + Send + Sync>,
     relationship_portfolio_store: Arc<dyn RelationshipPortfolioStore + Send + Sync>,
     relationship_topology_store: Arc<dyn RelationshipTopologyStore + Send + Sync>,
+    skill_storage: Arc<dyn SkillStorage + Send + Sync>,
+    tool_execution_governance: Arc<ToolExecutionGovernance>,
 }
 
 impl ContinuitySnapshotTool {
     pub fn new(
         state_fs: Arc<dyn StateFs + Send + Sync>,
+        session_store: Arc<dyn SessionStore + Send + Sync>,
+        memory_store: Arc<dyn MemoryStore + Send + Sync>,
         long_term_memory_store: Arc<dyn LongTermMemoryStore + Send + Sync>,
         session_summary_store: Arc<dyn SessionSummaryStore + Send + Sync>,
         execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
@@ -48,9 +60,13 @@ impl ContinuitySnapshotTool {
         relationship_constitution_store: Arc<dyn RelationshipConstitutionStore + Send + Sync>,
         relationship_portfolio_store: Arc<dyn RelationshipPortfolioStore + Send + Sync>,
         relationship_topology_store: Arc<dyn RelationshipTopologyStore + Send + Sync>,
+        skill_storage: Arc<dyn SkillStorage + Send + Sync>,
+        tool_execution_governance: Arc<ToolExecutionGovernance>,
     ) -> Self {
         Self {
             state_fs,
+            session_store,
+            memory_store,
             long_term_memory_store,
             session_summary_store,
             execution_state_store,
@@ -62,6 +78,8 @@ impl ContinuitySnapshotTool {
             relationship_constitution_store,
             relationship_portfolio_store,
             relationship_topology_store,
+            skill_storage,
+            tool_execution_governance,
         }
     }
 }
@@ -76,7 +94,7 @@ impl Tool for ContinuitySnapshotTool {
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","enum":["export","import","list_saved","inspect_governance"],"description":"Whether to export, import, list saved continuity snapshots, or inspect personality governance."},"chat_id":{"type":"string","description":"Target chat_id. Defaults to the current chat when available."},"channel":{"type":"string","description":"Target channel for governance inspection. Defaults to the current channel when available."},"mode":{"type":"string","enum":["bootstrap","full_restore","bootstrap_import"],"description":"Export mode or import mode. export accepts bootstrap|full_restore. import accepts bootstrap_import|full_restore."},"format":{"type":"string","enum":["json","markdown"],"description":"Rendering format. Default json."},"save_name":{"type":"string","description":"Optional saved snapshot name. On export, saves the snapshot under this name. On import, loads the saved snapshot with this name when snapshot is omitted."},"snapshot":{"description":"Snapshot payload to import. May be a JSON string or embedded object."}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","enum":["export","import","list_saved","inspect_governance","inspect_recall","inspect_hygiene","inspect_tool_governance"],"description":"Whether to export, import, list saved continuity snapshots, inspect personality governance, inspect working recall, inspect hygiene governance, or inspect tool-execution governance."},"chat_id":{"type":"string","description":"Target chat_id. Defaults to the current chat when available."},"channel":{"type":"string","description":"Target channel for governance inspection. Defaults to the current channel when available."},"query":{"type":"string","description":"Recall inspection query. Leave empty to inspect the current recall state without a search hint."},"profile":{"type":"string","enum":["standard","embedded"],"description":"Memory profile used for recall or hygiene inspection. Default standard."},"mode":{"type":"string","enum":["bootstrap","full_restore","bootstrap_import"],"description":"Export mode or import mode. export accepts bootstrap|full_restore. import accepts bootstrap_import|full_restore."},"format":{"type":"string","enum":["json","markdown"],"description":"Rendering format. Default json."},"save_name":{"type":"string","description":"Optional saved snapshot name. On export, saves the snapshot under this name. On import, loads the saved snapshot with this name when snapshot is omitted."},"snapshot":{"description":"Snapshot payload to import. May be a JSON string or embedded object."}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
@@ -175,6 +193,142 @@ impl Tool for ContinuitySnapshotTool {
                         "op": "inspect_governance",
                         "chat_id": chat_id,
                         "channel": channel,
+                        "format": "json",
+                        "inspection": inspection,
+                    })
+                    .to_string())
+                }
+            }
+            "inspect_recall" => {
+                if chat_id.trim().is_empty() {
+                    return Err(Error::config("tool_continuity_snapshot", "missing chat_id"));
+                }
+                let query = obj
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("");
+                let profile = parse_memory_profile(obj.get("profile"))?;
+                let recall_policy = crate::memory::memory_policy(profile).long_term_recall;
+                let recent = self.session_store.load_recent(
+                    chat_id.as_str(),
+                    recall_policy.recent_grounding_message_count,
+                )?;
+                let summary_text = self
+                    .session_summary_store
+                    .get_with_count(chat_id.as_str())?
+                    .map(|(summary, _)| summary)
+                    .filter(|summary| !summary.trim().is_empty());
+                let inspection = inspect_working_recall(WorkingRecallInspectionInput {
+                    chat_id: chat_id.as_str(),
+                    query,
+                    summary_text: summary_text.as_deref(),
+                    recent: &recent,
+                    system_max_len: 1200,
+                    profile,
+                    session_store: self.session_store.as_ref(),
+                    memory_store: self.memory_store.as_ref(),
+                    long_term_memory_store: self.long_term_memory_store.as_ref(),
+                    turn_ledger_store: self.turn_ledger_store.as_ref(),
+                });
+                let format = obj
+                    .get("format")
+                    .and_then(Value::as_str)
+                    .unwrap_or("json")
+                    .trim()
+                    .to_ascii_lowercase();
+                if format == "markdown" {
+                    Ok(json!({
+                        "ok": true,
+                        "op": "inspect_recall",
+                        "chat_id": chat_id,
+                        "query": query,
+                        "profile": inspection.profile,
+                        "format": "markdown",
+                        "markdown": render_working_recall_inspection_markdown(&inspection),
+                        "inspection": inspection,
+                    })
+                    .to_string())
+                } else {
+                    Ok(json!({
+                        "ok": true,
+                        "op": "inspect_recall",
+                        "chat_id": chat_id,
+                        "query": query,
+                        "profile": inspection.profile,
+                        "format": "json",
+                        "inspection": inspection,
+                    })
+                    .to_string())
+                }
+            }
+            "inspect_hygiene" => {
+                if chat_id.trim().is_empty() {
+                    return Err(Error::config("tool_continuity_snapshot", "missing chat_id"));
+                }
+                let profile = parse_memory_profile(obj.get("profile"))?;
+                let inspection = inspect_memory_hygiene(
+                    MemoryHygieneContext {
+                        session_store: self.session_store.as_ref(),
+                        session_summary_store: self.session_summary_store.as_ref(),
+                        memory_store: self.memory_store.as_ref(),
+                        turn_ledger_store: self.turn_ledger_store.as_ref(),
+                        long_term_memory_store: self.long_term_memory_store.as_ref(),
+                        skill_storage: self.skill_storage.as_ref(),
+                    },
+                    chat_id.as_str(),
+                    profile,
+                    current_unix_secs(),
+                );
+                let format = obj
+                    .get("format")
+                    .and_then(Value::as_str)
+                    .unwrap_or("json")
+                    .trim()
+                    .to_ascii_lowercase();
+                if format == "markdown" {
+                    Ok(json!({
+                        "ok": true,
+                        "op": "inspect_hygiene",
+                        "chat_id": chat_id,
+                        "format": "markdown",
+                        "markdown": render_memory_hygiene_inspection_markdown(&inspection),
+                        "inspection": inspection,
+                    })
+                    .to_string())
+                } else {
+                    Ok(json!({
+                        "ok": true,
+                        "op": "inspect_hygiene",
+                        "chat_id": chat_id,
+                        "format": "json",
+                        "inspection": inspection,
+                    })
+                    .to_string())
+                }
+            }
+            "inspect_tool_governance" => {
+                let inspection = self.tool_execution_governance.inspect()?;
+                let format = obj
+                    .get("format")
+                    .and_then(Value::as_str)
+                    .unwrap_or("json")
+                    .trim()
+                    .to_ascii_lowercase();
+                if format == "markdown" {
+                    Ok(json!({
+                        "ok": true,
+                        "op": "inspect_tool_governance",
+                        "format": "markdown",
+                        "markdown": render_tool_execution_governance_markdown(&inspection),
+                        "inspection": inspection,
+                    })
+                    .to_string())
+                } else {
+                    Ok(json!({
+                        "ok": true,
+                        "op": "inspect_tool_governance",
                         "format": "json",
                         "inspection": inspection,
                     })
@@ -290,7 +444,7 @@ impl Tool for ContinuitySnapshotTool {
             }
             _ => Err(Error::config(
                 "tool_continuity_snapshot",
-                "op must be export, import, list_saved, or inspect_governance",
+                "op must be export, import, list_saved, inspect_governance, inspect_recall, inspect_hygiene, or inspect_tool_governance",
             )),
         }
     }
@@ -318,6 +472,17 @@ fn parse_import_mode(value: Option<&Value>) -> Result<ContinuitySnapshotImportMo
         other => Err(Error::config(
             "tool_continuity_snapshot",
             format!("unsupported import mode: {}", other),
+        )),
+    }
+}
+
+fn parse_memory_profile(value: Option<&Value>) -> Result<MemoryProfile> {
+    match value.and_then(Value::as_str).map(str::trim) {
+        None | Some("") | Some("standard") => Ok(MemoryProfile::Standard),
+        Some("embedded") => Ok(MemoryProfile::Embedded),
+        Some(other) => Err(Error::config(
+            "tool_continuity_snapshot",
+            format!("unsupported memory profile: {}", other),
         )),
     }
 }

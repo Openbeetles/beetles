@@ -6,7 +6,8 @@ use crate::memory::{
     LongTermMemoryConfidence, LongTermMemoryDraft, LongTermMemoryFreshness, LongTermMemoryKind,
     LongTermMemorySlot, LongTermMemorySourceScope, LongTermMemorySourceType,
     LongTermMemoryStaleHint, LongTermMemoryStore, MAX_MEMORY_CONTENT_LEN, MAX_SOUL_USER_LEN,
-    MemoryPlane, MemoryStore, route_long_term_draft,
+    MemoryPlane, MemoryStore, SharedMemoryWriteAction, SharedMemoryWriteSource,
+    route_long_term_draft, write_governed_shared_memory,
 };
 use crate::platform::SkillStorage;
 use crate::skills::upsert_runtime_skill;
@@ -283,7 +284,8 @@ impl Tool for MemoryManageTool {
                 let routed = route_long_term_draft(&draft);
                 match routed.plane {
                     MemoryPlane::Factual => {
-                        let changed_count = self.long_term_store.upsert_many(
+                        let write_outcome = write_governed_shared_memory(
+                            self.long_term_store.as_ref(),
                             &[routed.factual_draft.ok_or_else(|| {
                                 Error::config(
                                     "tool_memory_manage",
@@ -291,12 +293,29 @@ impl Tool for MemoryManageTool {
                                 )
                             })?],
                             crate::util::current_unix_secs(),
+                            SharedMemoryWriteSource::ManualTool,
                         )?;
+                        if write_outcome.accepted == 0 && write_outcome.rejected > 0 {
+                            let reason = write_outcome
+                                .reports
+                                .iter()
+                                .find(|report| {
+                                    matches!(report.action, SharedMemoryWriteAction::Rejected)
+                                })
+                                .map(|report| {
+                                    format!("{}: {}", report.reason.label(), report.detail)
+                                })
+                                .unwrap_or_else(|| {
+                                    "shared memory governance rejected the write".to_string()
+                                });
+                            return Err(Error::config("tool_memory_manage", reason));
+                        }
                         Ok(json!({
                             "op": "upsert_long_term",
                             "ok": true,
                             "plane": "factual",
-                            "changed_count": changed_count
+                            "changed_count": write_outcome.changed,
+                            "governance": write_outcome
                         })
                         .to_string())
                     }

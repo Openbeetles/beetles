@@ -2,7 +2,7 @@
 
 use crate::error::Result;
 use crate::memory::{
-    RelationshipTopology, RelationshipTopologyStore, REL_PATH_RELATIONSHIP_TOPOLOGIES,
+    REL_PATH_RELATIONSHIP_TOPOLOGIES, RelationshipTopology, RelationshipTopologyStore,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

@@ -22,6 +22,7 @@ pub mod linux;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod memory_linux;
 pub mod nvs;
+pub mod operator_status;
 #[cfg(all(feature = "ota", any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod ota;
 pub mod pairing;

@@ -9,7 +9,7 @@ PIDFILE="/var/run/beetle.pid"
 case "$1" in
   start)
     echo "Starting beetle..."
-    start-stop-daemon -S -b -m -p "$PIDFILE" -x "$DAEMON" || exit 1
+    start-stop-daemon -S -b -m -p "$PIDFILE" -x "$DAEMON" -- run || exit 1
     ;;
   stop)
     echo "Stopping beetle..."

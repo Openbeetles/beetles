@@ -36,6 +36,7 @@ mod private_garden;
 mod private_garden_governance;
 mod profile;
 mod prompt_context;
+mod recall_inspection;
 mod recent_persona_evidence;
 mod relationship_constitution;
 mod relationship_portfolio;
@@ -48,6 +49,7 @@ mod self_scope;
 mod self_state;
 mod session_summary_refresh;
 mod shared_factual_plane;
+mod shared_memory_governance;
 mod skill_routing;
 mod turn_ledger;
 mod world_sense;
@@ -62,11 +64,17 @@ pub use archive_plane::build_archive_evidence_block;
 pub(crate) use archive_search::maintain_archive_search_backend;
 pub(crate) use archive_search::parse_daily_note_observed_at;
 pub use archive_search::{
-    archive_get_default_content_len, get_archive_record, search_archive_records, ArchiveRecord,
-    ArchiveRecordLocator, ArchiveRecordSource, ArchiveSearchHit, ArchiveSearchQuery,
-    MAX_ARCHIVE_GET_CONTENT_LEN, MAX_ARCHIVE_SEARCH_LIMIT,
+    archive_get_default_content_len, get_archive_record, search_archive_records,
+    search_archive_records_detailed, ArchiveRecord, ArchiveRecordLocator, ArchiveRecordSource,
+    ArchiveSearchHit, ArchiveSearchQuery, ArchiveSearchQueryReport, ArchiveSearchResult,
+    ArchiveSearchSourceStats, MAX_ARCHIVE_GET_CONTENT_LEN, MAX_ARCHIVE_SEARCH_LIMIT,
 };
-pub(crate) use archive_selector::select_archive_hits_for_prompt;
+pub(crate) use archive_selector::{
+    select_archive_hits_for_prompt, select_archive_hits_for_prompt_with_report,
+};
+pub use archive_selector::{
+    ArchivePromptSelectionReport, ArchivePromptSelectionResult, ArchivePromptSelectionSourceStats,
+};
 pub(crate) use autonomy_strategy::estimate_autonomy_strategy_chars;
 pub(crate) use autonomy_strategy::{
     autonomy_idle_interval_secs, run_autonomy_strategy_refresh_with_state,
@@ -82,7 +90,9 @@ pub(crate) use continuity_snapshot::select_active_continuity_snapshot_chat_ids;
 pub use continuity_snapshot::{
     export_continuity_snapshot, import_continuity_snapshot, render_continuity_snapshot_markdown,
     ContinuitySnapshot, ContinuitySnapshotExportContext, ContinuitySnapshotImportContext,
-    ContinuitySnapshotImportMode, ContinuitySnapshotImportOutcome, ContinuitySnapshotMode,
+    ContinuitySnapshotImportDecision, ContinuitySnapshotImportMode,
+    ContinuitySnapshotImportOutcome, ContinuitySnapshotKindCount, ContinuitySnapshotManifest,
+    ContinuitySnapshotMode,
 };
 pub use core_revision_ledger::{
     append_core_revision_record, build_core_revision_timeline,
@@ -103,7 +113,10 @@ pub(crate) use execution_state::{
     run_execution_state_refresh_with_state, should_refresh_execution_state,
 };
 pub(crate) use hygiene::run_memory_hygiene_jobs;
-pub use hygiene::{MemoryHygieneContext, MemoryHygieneOutcome};
+pub use hygiene::{
+    inspect_memory_hygiene, render_memory_hygiene_inspection_markdown, MemoryHygieneContext,
+    MemoryHygieneInspection, MemoryHygieneOutcome,
+};
 pub(crate) use inner_life::estimate_inner_life_chars;
 pub(crate) use inner_life::run_inner_life_refresh_with_state;
 pub use inner_life::{
@@ -121,10 +134,11 @@ pub(crate) use internal_memory_topology::{
 };
 pub(crate) use long_term::{
     canonicalize_long_term_memory_entry, compare_long_term_memory_query_results,
-    govern_long_term_memory_entries, long_term_memory_effective_stale_hint,
-    long_term_memory_entry_from_draft, long_term_memory_evidence_state,
-    long_term_memory_matches_query, merge_long_term_memory_entry, recall_long_term_memory_entries,
-    score_long_term_memory_recall, touch_long_term_memory_usage,
+    govern_long_term_memory_entries, inspect_long_term_memory_merge_guard,
+    long_term_memory_effective_stale_hint, long_term_memory_entry_from_draft,
+    long_term_memory_evidence_state, long_term_memory_matches_query, merge_long_term_memory_entry,
+    recall_long_term_memory_entries, score_long_term_memory_recall, touch_long_term_memory_usage,
+    LongTermMemoryMergeGuardDecision,
 };
 pub use long_term::{
     long_term_memory_evidence_summary, lookup_long_term_memory_slot,
@@ -240,6 +254,10 @@ pub use profile::{MemoryCapabilityClass, MemoryHygieneLevel, MemoryProfile};
 pub use prompt_context::{
     load_prompt_memory_context, PromptMemoryContext, PromptMemoryContextParams,
 };
+pub use recall_inspection::{
+    inspect_working_recall, render_working_recall_inspection_markdown, WorkingRecallInspection,
+    WorkingRecallInspectionInput,
+};
 pub use recent_persona_evidence::{
     derive_recent_persona_evidence, load_recent_persona_evidence,
     render_recent_persona_evidence_block, RecentPersonaEvidence,
@@ -312,6 +330,10 @@ pub(crate) use shared_factual_plane::{
     build_archive_reconcile_drafts, build_shared_factual_plane_snapshot,
     render_private_memory_boundary_block, render_shared_factual_plane_block,
     SharedFactualPlaneSnapshot, SharedFactualReconcileAction,
+};
+pub use shared_memory_governance::{
+    write_governed_shared_memory, SharedMemoryWriteAction, SharedMemoryWriteItemReport,
+    SharedMemoryWriteOutcome, SharedMemoryWriteReason, SharedMemoryWriteSource,
 };
 pub(crate) use skill_routing::{route_long_term_draft, MemoryPlane};
 pub use turn_ledger::{

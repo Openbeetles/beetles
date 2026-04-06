@@ -16,13 +16,13 @@ use std::fmt::Write as _;
 
 use super::{
     build_archive_evidence_block, memory_policy, render_long_term_memory_block,
-    run_memory_governance_kernel, search_archive_records, ArchiveRecordSource, ArchiveSearchHit,
-    ArchiveSearchQuery, LongTermExtractionPolicy, LongTermMemoryConfidence, LongTermMemoryDraft,
-    LongTermMemoryEntry, LongTermMemoryFreshness, LongTermMemoryKind, LongTermMemorySlot,
-    LongTermMemorySourceScope, LongTermMemorySourceType, LongTermMemoryStaleHint,
-    LongTermMemoryStore, MemoryGovernanceContext, MemoryGovernanceInput, MemoryProfile,
-    MemoryStore, SessionMessage, SessionStore, SessionSummaryStore, TurnLedgerStore,
-    MAX_LONG_TERM_MEMORY_ITEMS,
+    run_memory_governance_kernel, search_archive_records, write_governed_shared_memory,
+    ArchiveRecordSource, ArchiveSearchHit, ArchiveSearchQuery, LongTermExtractionPolicy,
+    LongTermMemoryConfidence, LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryFreshness,
+    LongTermMemoryKind, LongTermMemorySlot, LongTermMemorySourceScope, LongTermMemorySourceType,
+    LongTermMemoryStaleHint, LongTermMemoryStore, MemoryGovernanceContext, MemoryGovernanceInput,
+    MemoryProfile, MemoryStore, SessionMessage, SessionStore, SessionSummaryStore,
+    SharedMemoryWriteSource, TurnLedgerStore, MAX_LONG_TERM_MEMORY_ITEMS,
 };
 
 /// 长期记忆提取状态存储路径（相对状态根）。
@@ -740,7 +740,13 @@ pub fn apply_long_term_memory_extraction(
         }
     }
     if !extraction.upserts.is_empty() {
-        changed += store.upsert_many(&extraction.upserts, now_secs)?;
+        changed += write_governed_shared_memory(
+            store,
+            &extraction.upserts,
+            now_secs,
+            SharedMemoryWriteSource::Extraction,
+        )?
+        .changed;
     }
     for write in &extraction.skill_writes {
         changed += usize::from(upsert_runtime_skill(skill_storage, write)?);

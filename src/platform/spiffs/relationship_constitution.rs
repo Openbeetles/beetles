@@ -2,7 +2,7 @@
 
 use crate::error::Result;
 use crate::memory::{
-    RelationshipConstitution, RelationshipConstitutionStore, REL_PATH_RELATIONSHIP_CONSTITUTIONS,
+    REL_PATH_RELATIONSHIP_CONSTITUTIONS, RelationshipConstitution, RelationshipConstitutionStore,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

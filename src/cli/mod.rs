@@ -25,6 +25,7 @@ pub struct CliContext {
     pub memory: Arc<dyn MemoryStore + Send + Sync>,
     pub session: Arc<dyn SessionStore + Send + Sync>,
     pub platform: Arc<dyn crate::Platform>,
+    pub tool_registry: Arc<crate::tools::ToolRegistry>,
     /// 入站/出站队列深度（实时读取）；None 表示 bus 未暴露深度。
     pub inbound_depth: Option<Arc<std::sync::atomic::AtomicUsize>>,
     pub outbound_depth: Option<Arc<std::sync::atomic::AtomicUsize>>,
@@ -38,6 +39,7 @@ impl CliContext {
         memory: Arc<dyn MemoryStore + Send + Sync>,
         session: Arc<dyn SessionStore + Send + Sync>,
         platform: Arc<dyn crate::Platform>,
+        tool_registry: Arc<crate::tools::ToolRegistry>,
         inbound_depth: Option<Arc<std::sync::atomic::AtomicUsize>>,
         outbound_depth: Option<Arc<std::sync::atomic::AtomicUsize>>,
     ) -> Self {
@@ -47,6 +49,7 @@ impl CliContext {
             memory,
             session,
             platform,
+            tool_registry,
             inbound_depth,
             outbound_depth,
         }
@@ -81,6 +84,7 @@ pub fn run_command(ctx: &CliContext, line: &str) -> String {
         "heap_info" => cmd_heap_info(ctx),
         "restart" => cmd_restart(ctx),
         "health" => cmd_health(ctx),
+        "ops_status" => cmd_ops_status(ctx),
         "baseline" => cmd_baseline(ctx),
         "spiffs_stress" => cmd_spiffs_stress(ctx, args),
         "config_show" => cmd_config_show(ctx),
@@ -261,6 +265,35 @@ fn cmd_baseline(_ctx: &CliContext) -> String {
     )
 }
 
+fn cmd_ops_status(ctx: &CliContext) -> String {
+    let inbound_depth = ctx
+        .inbound_depth
+        .as_ref()
+        .map(|a| a.load(Ordering::Relaxed))
+        .unwrap_or(0);
+    let outbound_depth = ctx
+        .outbound_depth
+        .as_ref()
+        .map(|a| a.load(Ordering::Relaxed))
+        .unwrap_or(0);
+    match crate::platform::operator_status::build_operator_status(
+        crate::platform::operator_status::OperatorStatusInput {
+            platform: ctx.platform.as_ref(),
+            tool_registry: ctx.tool_registry.as_ref(),
+            inbound_depth,
+            outbound_depth,
+            version: env!("CARGO_PKG_VERSION"),
+            board_id: crate::platform::runtime_board::resolved_board_id(),
+        },
+    ) {
+        Ok(snapshot) => crate::platform::operator_status::render_operator_status_text(&snapshot),
+        Err(error) => format!(
+            "ops_status error: {}\n",
+            state::sanitize_error_for_log(&error)
+        ),
+    }
+}
+
 fn cmd_spiffs_stress(ctx: &CliContext, args: Vec<&str>) -> String {
     const DEFAULT_WORKERS: usize = 4;
     const DEFAULT_ROUNDS: usize = 64;
@@ -356,7 +389,7 @@ fn cmd_help() -> String {
         ""
     };
     format!(
-        "Commands:\n  wifi_status      - WiFi connection status\n  memory_read     - Read MEMORY.md\n  memory_write <content> - Write MEMORY.md (audit)\n  session_list    - List all sessions\n  session_clear <chat_id> - Clear session (audit)\n  heap_info       - Heap usage\n  restart         - Restart device\n  health          - WiFi, queue depth, last error\n  baseline        - Resource, metrics, thread baseline\n  spiffs_stress [workers] [rounds] [payload_bytes] - Stress SPIFFS lock and report deltas\n  config_show     - Show full config\n  config_reset yes - Reset config to env defaults (audit)\n{}  help|?          - This help\n",
+        "Commands:\n  wifi_status      - WiFi connection status\n  memory_read      - Read MEMORY.md\n  memory_write <content> - Write MEMORY.md (audit)\n  session_list     - List all sessions\n  session_clear <chat_id> - Clear session (audit)\n  heap_info        - Heap usage\n  restart          - Restart device\n  health           - WiFi, queue depth, last error\n  ops_status       - Unified operator/platform/tool status\n  baseline         - Resource, metrics, thread baseline\n  spiffs_stress [workers] [rounds] [payload_bytes] - Stress SPIFFS lock and report deltas\n  config_show      - Show full config\n  config_reset yes - Reset config to env defaults (audit)\n{}  help|?         - This help\n",
         ota_line
     )
 }

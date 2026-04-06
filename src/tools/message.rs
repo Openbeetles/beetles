@@ -1,7 +1,8 @@
 use crate::error::{Error, Result};
 use crate::tools::{
-    Tool, ToolContext, ToolExecutionOutcome, ToolMetadata, ToolOutboundDeliveryKind,
-    ToolOutboundIntent, ToolOutboundTarget, parse_tool_args, serialize_tool_output,
+    Tool, ToolApprovalMode, ToolContext, ToolEffectClass, ToolExecutionOutcome, ToolExecutionShape,
+    ToolMetadata, ToolOutboundDeliveryKind, ToolOutboundIntent, ToolOutboundTarget, ToolRiskLevel,
+    ToolRollbackKind, parse_tool_args, serialize_tool_output,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -164,6 +165,41 @@ impl Tool for MessageTool {
 
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::stateful()
+            .with_effect_class(ToolEffectClass::VisibleOutbound)
+            .with_risk_level(ToolRiskLevel::High)
+            .with_approval_mode(ToolApprovalMode::ExplicitIntent)
+            .with_rollback_kind(ToolRollbackKind::Irreversible)
+    }
+
+    fn execution_shape(&self, args: &str) -> Result<ToolExecutionShape> {
+        let obj = parse_tool_args(args, "tool_message_governance")?;
+        let target = obj
+            .get("target")
+            .and_then(Value::as_str)
+            .unwrap_or("current");
+        let delivery_kind = obj
+            .get("delivery_kind")
+            .and_then(Value::as_str)
+            .unwrap_or("supplemental");
+        let explicit_or_primary = target == "explicit" || delivery_kind == "primary";
+        Ok(self
+            .metadata()
+            .default_execution_shape(if explicit_or_primary {
+                "message_visible_delivery"
+            } else {
+                "message_current_chat"
+            })
+            .with_risk_level(if explicit_or_primary {
+                ToolRiskLevel::High
+            } else {
+                ToolRiskLevel::Medium
+            })
+            .with_approval_mode(if explicit_or_primary {
+                ToolApprovalMode::ExplicitIntent
+            } else {
+                ToolApprovalMode::Automatic
+            })
+            .with_approval_granted(true))
     }
 }
 

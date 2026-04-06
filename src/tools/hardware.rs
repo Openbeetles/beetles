@@ -3,7 +3,10 @@
 
 use crate::config::DeviceEntry;
 use crate::error::{Error, Result};
-use crate::tools::{Tool, ToolContext, ToolMetadata};
+use crate::tools::{
+    Tool, ToolApprovalMode, ToolContext, ToolEffectClass, ToolExecutionShape, ToolMetadata,
+    ToolRiskLevel, ToolRollbackKind,
+};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -277,6 +280,51 @@ impl Tool for DeviceControlTool {
     }
 
     fn metadata(&self) -> ToolMetadata {
-        ToolMetadata::task().with_system_ingress(false)
+        ToolMetadata::task()
+            .with_system_ingress(false)
+            .with_effect_class(ToolEffectClass::HardwareActuation)
+            .with_risk_level(ToolRiskLevel::Critical)
+            .with_approval_mode(ToolApprovalMode::ExplicitIntent)
+            .with_rollback_kind(ToolRollbackKind::Irreversible)
+    }
+
+    fn execution_shape(&self, args: &str) -> Result<ToolExecutionShape> {
+        let obj = crate::tools::parse_tool_args(args, "device_control_governance")?;
+        let device_id = obj
+            .get("device_id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| Error::config("device_control_governance", "missing device_id"))?;
+        let idx = *self.device_map.get(device_id).ok_or_else(|| {
+            Error::config(
+                "device_control_governance",
+                format!("unknown device_id '{}'", device_id),
+            )
+        })?;
+        let device_type = self.devices[idx].device_type.as_str();
+        let output_device = !is_input_type(device_type);
+        Ok(self
+            .metadata()
+            .default_execution_shape(device_type)
+            .with_effect_class(if output_device {
+                ToolEffectClass::HardwareActuation
+            } else {
+                ToolEffectClass::HardwareRead
+            })
+            .with_risk_level(if output_device {
+                ToolRiskLevel::Critical
+            } else {
+                ToolRiskLevel::Medium
+            })
+            .with_approval_mode(if output_device {
+                ToolApprovalMode::ExplicitIntent
+            } else {
+                ToolApprovalMode::Automatic
+            })
+            .with_approval_granted(true)
+            .with_rollback_kind(if output_device {
+                ToolRollbackKind::Irreversible
+            } else {
+                ToolRollbackKind::None
+            }))
     }
 }

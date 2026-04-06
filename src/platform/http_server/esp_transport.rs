@@ -398,6 +398,8 @@ const PAIRING_AND_CONFIG_ROUTES: &[EspRouteSpec] = &[
 const OBSERVABILITY_ROUTES: &[EspRouteSpec] = &[
     EspRouteSpec::new("/api/health", Method::Get, EspBodyMode::None),
     EspRouteSpec::new("/api/health", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/api/operator/status", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new("/api/operator/status", Method::Options, EspBodyMode::None),
     EspRouteSpec::new("/api/metrics", Method::Get, EspBodyMode::None),
     EspRouteSpec::new("/api/metrics", Method::Options, EspBodyMode::None),
     EspRouteSpec::new("/api/resource", Method::Get, EspBodyMode::None),

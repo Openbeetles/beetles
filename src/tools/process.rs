@@ -1,7 +1,9 @@
 //! Process inspection tool for host Linux.
 
 use crate::error::{Error, Result};
-use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args};
+use crate::tools::{
+    Tool, ToolContext, ToolEffectClass, ToolMetadata, ToolRiskLevel, parse_tool_args,
+};
 use serde_json::{Value, json};
 
 const DEFAULT_PROCESS_LIST_LIMIT: usize = 16;
@@ -79,7 +81,10 @@ impl Tool for ProcessTool {
     }
 
     fn metadata(&self) -> ToolMetadata {
-        ToolMetadata::task().with_system_ingress(false)
+        ToolMetadata::task()
+            .with_system_ingress(false)
+            .with_effect_class(ToolEffectClass::HostInspection)
+            .with_risk_level(ToolRiskLevel::Medium)
     }
 }
 

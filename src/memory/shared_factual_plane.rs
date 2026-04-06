@@ -66,7 +66,7 @@ impl SharedFactualReconcileAction {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SharedFactualPlaneObservation {
     pub entry_id: String,
     pub topic: String,
@@ -79,7 +79,7 @@ pub struct SharedFactualPlaneObservation {
     pub summary: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SharedFactualPlaneSnapshot {
     pub block: Option<String>,
     pub observations: Vec<SharedFactualPlaneObservation>,

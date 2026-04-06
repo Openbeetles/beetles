@@ -61,6 +61,7 @@ pub mod hardware_discovery;
 pub mod health;
 pub mod memory;
 pub mod metrics;
+pub mod operator_status;
 pub mod pairing;
 pub mod resource;
 pub mod restart;

@@ -442,6 +442,19 @@ pub fn dispatch(
                 }
             }
         }
+        ("GET", "/api/operator/status") => {
+            if let Some(r) = auth::require_activated(store) {
+                return Ok(api_to_out(r));
+            }
+            let body = handlers::operator_status::body(ctx)
+                .map_err(|e| err_other("http_router_dispatch", e))?;
+            Ok(OutgoingResponse::json(
+                200,
+                "OK",
+                CORS_HEADERS,
+                body.into_bytes(),
+            ))
+        }
         ("GET", "/api/metrics") => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));

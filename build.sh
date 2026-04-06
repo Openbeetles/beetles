@@ -1287,6 +1287,19 @@ fi
 echo ""
 
 if command -v systemctl >/dev/null 2>&1 && [ -f "$DEPLOY_SERVICE_PATH" ]; then
+    exec_start_line=$(grep -E '^ExecStart=' "$DEPLOY_SERVICE_PATH" 2>/dev/null || true)
+    if [ -n "$exec_start_line" ]; then
+        echo "  ExecStart -> ${exec_start_line#ExecStart=}"
+        case "$exec_start_line" in
+            *"/beetle run"|*" beetle run")
+                ;;
+            *)
+                echo "  WARNING: service unit does not pass the required 'run' subcommand."
+                echo "  WARNING: refresh the unit file with a full deploy, or edit ExecStart to append ' run'."
+                ;;
+        esac
+        echo ""
+    fi
     if systemctl is-active --quiet beetle; then
         echo "Service: active"
     elif systemctl is-enabled --quiet beetle 2>/dev/null; then
@@ -1327,9 +1340,9 @@ linux_deploy_show_next_steps() {
     echo "     - Service config: $DEPLOY_SERVICE_PATH"
     echo ""
     echo "  2. Start beetle manually if needed:"
-    echo "     - Direct run: beetle"
-    echo "     - Or full path: $DEPLOY_CURRENT_LINK/beetle"
-    echo "     - Or: nohup beetle >> /var/log/beetle.log 2>&1 &"
+    echo "     - Direct run: beetle run"
+    echo "     - Or full path: $DEPLOY_CURRENT_LINK/beetle run"
+    echo "     - Or: nohup beetle run >> /var/log/beetle.log 2>&1 &"
     echo ""
     if [ "${REMOTE_HAS_SYSTEMD:-0}" = "1" ] && [ "${REMOTE_HAS_SERVICE:-0}" = "1" ]; then
         if [ "${REMOTE_SERVICE_ACTIVE:-0}" = "1" ]; then

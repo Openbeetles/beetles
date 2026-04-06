@@ -1327,6 +1327,39 @@ pub fn merge_long_term_memory_entry(
     changed
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LongTermMemoryMergeGuardDecision {
+    Allow,
+    RejectOlderObservation,
+    RejectLowerConfidenceContent,
+}
+
+pub(crate) fn inspect_long_term_memory_merge_guard(
+    existing: &LongTermMemoryEntry,
+    draft: &LongTermMemoryDraft,
+    now_secs: u64,
+) -> LongTermMemoryMergeGuardDecision {
+    let Some(normalized) = draft.normalized() else {
+        return LongTermMemoryMergeGuardDecision::Allow;
+    };
+    let meta = resolve_long_term_memory_meta(&normalized);
+    let incoming_observed_at = normalized.observed_at.unwrap_or(now_secs);
+    let incoming_source_revision = normalized.source_revision.unwrap_or(0);
+    let incoming_is_older =
+        draft_is_older_than_existing(existing, incoming_observed_at, incoming_source_revision);
+    let content_changed = existing.content != normalized.content;
+    if !content_changed {
+        return LongTermMemoryMergeGuardDecision::Allow;
+    }
+    if incoming_is_older {
+        return LongTermMemoryMergeGuardDecision::RejectOlderObservation;
+    }
+    if confidence_rank(meta.confidence) < confidence_rank(existing.confidence) {
+        return LongTermMemoryMergeGuardDecision::RejectLowerConfidenceContent;
+    }
+    LongTermMemoryMergeGuardDecision::Allow
+}
+
 pub(crate) fn govern_long_term_memory_entries(
     entries: &mut Vec<LongTermMemoryEntry>,
     now_secs: u64,

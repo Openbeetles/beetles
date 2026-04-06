@@ -6,7 +6,9 @@
 use crate::StateFs;
 use crate::constants::{KV_STORE_MAX_ENTRIES, KV_STORE_MAX_KEY_LEN, KV_STORE_MAX_VALUE_LEN};
 use crate::error::{Error, Result};
-use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args};
+use crate::tools::{
+    Tool, ToolContext, ToolMetadata, ToolRiskLevel, ToolRollbackKind, parse_tool_args,
+};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -158,5 +160,7 @@ impl Tool for KvStoreTool {
 
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::stateful()
+            .with_risk_level(ToolRiskLevel::Medium)
+            .with_rollback_kind(ToolRollbackKind::CompensatingWrite)
     }
 }
