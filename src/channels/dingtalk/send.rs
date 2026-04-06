@@ -19,56 +19,33 @@ pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
     http: &mut H,
     loc: crate::i18n::Locale,
 ) -> super::super::connectivity::ChannelConnectivityItem {
-    use super::super::connectivity;
-    use crate::i18n::{tr, Message};
     let configured = !config.dingtalk_webhook_url.trim().is_empty();
-    if !configured {
-        return connectivity::item(
-            "dingtalk",
-            false,
-            false,
-            Some(tr(Message::ConnectivityNotConfigured, loc)),
-        );
-    }
-    let body = serde_json::json!({
-        "msgtype": "text",
-        "text": { "content": CONNECTIVITY_MESSAGE }
-    });
-    let body_bytes = match serde_json::to_vec(&body) {
-        Ok(b) => b,
-        Err(e) => {
-            log::warn!("[dingtalk_connectivity] json: {}", e);
-            return connectivity::item(
-                "dingtalk",
-                configured,
-                false,
-                Some(tr(Message::ConnectivityCheckFailed, loc)),
-            );
+    crate::channels::connectivity::probe_item("dingtalk", configured, loc, || {
+        let body = serde_json::json!({
+            "msgtype": "text",
+            "text": { "content": CONNECTIVITY_MESSAGE }
+        });
+        let body_bytes = match serde_json::to_vec(&body) {
+            Ok(b) => b,
+            Err(e) => {
+                log::warn!("[dingtalk_connectivity] json: {}", e);
+                return crate::channels::connectivity::ProbeStatus::CheckFailed;
+            }
+        };
+        let (status, _) = match http.http_post(config.dingtalk_webhook_url.trim(), &body_bytes) {
+            Ok(r) => r,
+            Err(e) => {
+                log::warn!("[dingtalk_connectivity] post: {}", e);
+                return crate::channels::connectivity::ProbeStatus::CheckFailed;
+            }
+        };
+        if (200..300).contains(&status) {
+            crate::channels::connectivity::ProbeStatus::Ok
+        } else {
+            log::warn!("[dingtalk_connectivity] webhook status {}", status);
+            crate::channels::connectivity::ProbeStatus::CheckFailed
         }
-    };
-    let (status, _) = match http.http_post(config.dingtalk_webhook_url.trim(), &body_bytes) {
-        Ok(r) => r,
-        Err(e) => {
-            log::warn!("[dingtalk_connectivity] post: {}", e);
-            return connectivity::item(
-                "dingtalk",
-                configured,
-                false,
-                Some(tr(Message::ConnectivityCheckFailed, loc)),
-            );
-        }
-    };
-    if (200..300).contains(&status) {
-        connectivity::item("dingtalk", configured, true, None)
-    } else {
-        log::warn!("[dingtalk_connectivity] webhook status {}", status);
-        connectivity::item(
-            "dingtalk",
-            configured,
-            false,
-            Some(tr(Message::ConnectivityCheckFailed, loc)),
-        )
-    }
+    })
 }
 
 fn send_one_dingtalk<H: ChannelHttpClient>(

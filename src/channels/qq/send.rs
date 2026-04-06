@@ -28,36 +28,31 @@ pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
     loc: crate::i18n::Locale,
 ) -> super::super::connectivity::ChannelConnectivityItem {
     use super::super::connectivity;
-    use crate::i18n::{tr, Message};
     let configured =
         !config.qq_channel_app_id.trim().is_empty() && !config.qq_channel_secret.trim().is_empty();
-    if !configured {
-        return connectivity::item(
-            "qq_channel",
-            false,
-            false,
-            Some(tr(Message::ConnectivityNotConfigured, loc)),
-        );
-    }
-    match fetch_qq_access_token(
-        http,
-        config.qq_channel_app_id.trim(),
-        config.qq_channel_secret.trim(),
-        "qq_connectivity",
-    ) {
-        Ok(_) => connectivity::item("qq_channel", configured, true, None),
-        Err(e) => {
-            log::warn!("[qq_connectivity] {}", e);
-            let message = match e {
-                BeetleError::Http { status_code, .. } if status_code >= 400 => {
-                    tr(Message::ConnectivityTokenInvalid, loc)
+    connectivity::probe_item(
+        "qq_channel",
+        configured,
+        loc,
+        || match fetch_qq_access_token(
+            http,
+            config.qq_channel_app_id.trim(),
+            config.qq_channel_secret.trim(),
+            "qq_connectivity",
+        ) {
+            Ok(_) => connectivity::ProbeStatus::Ok,
+            Err(e) => {
+                log::warn!("[qq_connectivity] {}", e);
+                match e {
+                    BeetleError::Http { status_code, .. } if status_code >= 400 => {
+                        connectivity::ProbeStatus::InvalidToken
+                    }
+                    BeetleError::Config { .. } => connectivity::ProbeStatus::InvalidToken,
+                    _ => connectivity::ProbeStatus::CheckFailed,
                 }
-                BeetleError::Config { .. } => tr(Message::ConnectivityTokenInvalid, loc),
-                _ => tr(Message::ConnectivityCheckFailed, loc),
-            };
-            connectivity::item("qq_channel", configured, false, Some(message))
-        }
-    }
+            }
+        },
+    )
 }
 
 fn acquire_qq_token<H: ChannelHttpClient>(

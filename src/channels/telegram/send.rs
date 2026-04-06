@@ -18,34 +18,17 @@ pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
     http: &mut H,
     loc: crate::i18n::Locale,
 ) -> super::super::connectivity::ChannelConnectivityItem {
-    use crate::i18n::{tr, Message};
     let configured = !config.tg_token.trim().is_empty();
-    if !configured {
-        return connectivity::item(
-            "telegram",
-            false,
-            false,
-            Some(tr(Message::ConnectivityNotConfigured, loc)),
-        );
-    }
-    match get_bot_username(http, config.tg_token.trim()) {
-        Ok(Some(_)) => connectivity::item("telegram", true, true, None),
-        Ok(None) => connectivity::item(
-            "telegram",
-            true,
-            false,
-            Some(tr(Message::ConnectivityTokenInvalid, loc)),
-        ),
-        Err(e) => {
-            log::warn!("[telegram_connectivity] getMe: {}", e);
-            connectivity::item(
-                "telegram",
-                true,
-                false,
-                Some(tr(Message::ConnectivityCheckFailed, loc)),
-            )
+    connectivity::probe_item("telegram", configured, loc, || {
+        match get_bot_username(http, config.tg_token.trim()) {
+            Ok(Some(_)) => connectivity::ProbeStatus::Ok,
+            Ok(None) => connectivity::ProbeStatus::InvalidToken,
+            Err(e) => {
+                log::warn!("[telegram_connectivity] getMe: {}", e);
+                connectivity::ProbeStatus::CheckFailed
+            }
         }
-    }
+    })
 }
 
 fn send_one_telegram<H: ChannelHttpClient>(

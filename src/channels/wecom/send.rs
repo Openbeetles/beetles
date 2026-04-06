@@ -42,164 +42,103 @@ pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
     loc: crate::i18n::Locale,
 ) -> super::super::connectivity::ChannelConnectivityItem {
     use super::super::connectivity;
-    use crate::i18n::{tr, Message};
+    let agent_id_u32 = config.wecom_agent_id.trim().parse::<u32>().ok();
     let configured = !config.wecom_corp_id.trim().is_empty()
         && !config.wecom_corp_secret.trim().is_empty()
-        && config.wecom_agent_id.trim().parse::<u32>().is_ok();
-    if !configured {
-        return connectivity::item(
-            "wecom",
-            false,
-            false,
-            Some(tr(Message::ConnectivityNotConfigured, loc)),
+        && agent_id_u32.is_some();
+    connectivity::probe_item("wecom", configured, loc, || {
+        let url = format!(
+            "{}?corpid={}&corpsecret={}",
+            WECOM_GETTOKEN_BASE,
+            config.wecom_corp_id.trim(),
+            config.wecom_corp_secret.trim()
         );
-    }
-    let url = format!(
-        "{}?corpid={}&corpsecret={}",
-        WECOM_GETTOKEN_BASE,
-        config.wecom_corp_id.trim(),
-        config.wecom_corp_secret.trim()
-    );
-    let (status, resp_body) = match http.http_get(&url) {
-        Ok(r) => r,
-        Err(e) => {
-            log::warn!("[wecom_connectivity] gettoken http: {}", e);
-            return connectivity::item(
-                "wecom",
-                configured,
-                false,
-                Some(tr(Message::ConnectivityCheckFailed, loc)),
-            );
+        let (status, resp_body) = match http.http_get(&url) {
+            Ok(r) => r,
+            Err(e) => {
+                log::warn!("[wecom_connectivity] gettoken http: {}", e);
+                return connectivity::ProbeStatus::CheckFailed;
+            }
+        };
+        if status >= 400 {
+            log::warn!("[wecom_connectivity] gettoken status {}", status);
+            return connectivity::ProbeStatus::InvalidToken;
         }
-    };
-    if status >= 400 {
-        log::warn!("[wecom_connectivity] gettoken status {}", status);
-        return connectivity::item(
-            "wecom",
-            configured,
-            false,
-            Some(tr(Message::ConnectivityTokenInvalid, loc)),
-        );
-    }
-    let r: WecomTokenResponse = match serde_json::from_slice(resp_body.as_ref()) {
-        Ok(x) => x,
-        Err(e) => {
-            log::warn!("[wecom_connectivity] gettoken parse: {}", e);
-            return connectivity::item(
-                "wecom",
-                configured,
-                false,
-                Some(tr(Message::ConnectivityCheckFailed, loc)),
+        let r: WecomTokenResponse = match serde_json::from_slice(resp_body.as_ref()) {
+            Ok(x) => x,
+            Err(e) => {
+                log::warn!("[wecom_connectivity] gettoken parse: {}", e);
+                return connectivity::ProbeStatus::CheckFailed;
+            }
+        };
+        if r.errcode != 0 {
+            log::warn!(
+                "[wecom_connectivity] gettoken errcode {} {}",
+                r.errcode,
+                r.errmsg
             );
+            return connectivity::ProbeStatus::InvalidToken;
         }
-    };
-    if r.errcode != 0 {
-        log::warn!(
-            "[wecom_connectivity] gettoken errcode {} {}",
-            r.errcode,
-            r.errmsg
-        );
-        return connectivity::item(
-            "wecom",
-            configured,
-            false,
-            Some(tr(Message::ConnectivityTokenInvalid, loc)),
-        );
-    }
-    let token = match r.access_token {
-        Some(t) if !t.is_empty() => t,
-        _ => {
-            log::warn!("[wecom_connectivity] no access_token in response");
-            return connectivity::item(
-                "wecom",
-                configured,
-                false,
-                Some(tr(Message::ConnectivityTokenInvalid, loc)),
+        let token = match r.access_token {
+            Some(t) if !t.is_empty() => t,
+            _ => {
+                log::warn!("[wecom_connectivity] no access_token in response");
+                return connectivity::ProbeStatus::InvalidToken;
+            }
+        };
+        let touser = config.wecom_default_touser.trim();
+        if touser.is_empty() {
+            return connectivity::ProbeStatus::Ok;
+        }
+        let agent_id_u32 = match agent_id_u32 {
+            Some(agent_id_u32) => agent_id_u32,
+            None => {
+                log::warn!("[wecom_connectivity] invalid agent_id parse");
+                return connectivity::ProbeStatus::InvalidToken;
+            }
+        };
+        let body = serde_json::json!({
+            "touser": touser,
+            "msgtype": "text",
+            "agentid": agent_id_u32,
+            "text": { "content": CONNECTIVITY_MESSAGE }
+        });
+        let body_bytes = match serde_json::to_vec(&body) {
+            Ok(b) => b,
+            Err(e) => {
+                log::warn!("[wecom_connectivity] send json: {}", e);
+                return connectivity::ProbeStatus::CheckFailed;
+            }
+        };
+        let send_url = format!("{}?access_token={}", WECOM_SEND_BASE, token);
+        let (status, resp_body) = match http.http_post(&send_url, &body_bytes) {
+            Ok(r) => r,
+            Err(e) => {
+                log::warn!("[wecom_connectivity] send http: {}", e);
+                return connectivity::ProbeStatus::CheckFailed;
+            }
+        };
+        if status >= 400 {
+            log::warn!("[wecom_connectivity] send status {}", status);
+            return connectivity::ProbeStatus::CheckFailed;
+        }
+        let send_r: WecomSendResponse = match serde_json::from_slice(resp_body.as_ref()) {
+            Ok(x) => x,
+            Err(e) => {
+                log::warn!("[wecom_connectivity] send parse: {}", e);
+                return connectivity::ProbeStatus::CheckFailed;
+            }
+        };
+        if send_r.errcode != 0 {
+            log::warn!(
+                "[wecom_connectivity] send errcode {} {}",
+                send_r.errcode,
+                send_r.errmsg
             );
+            return connectivity::ProbeStatus::CheckFailed;
         }
-    };
-    let touser = config.wecom_default_touser.trim();
-    if touser.is_empty() {
-        return connectivity::item("wecom", configured, true, None);
-    }
-    let agent_id_u32: u32 = match config.wecom_agent_id.trim().parse() {
-        Ok(n) => n,
-        Err(_) => {
-            log::warn!("[wecom_connectivity] invalid agent_id parse");
-            return connectivity::item(
-                "wecom",
-                configured,
-                false,
-                Some(tr(Message::ConnectivityTokenInvalid, loc)),
-            );
-        }
-    };
-    let body = serde_json::json!({
-        "touser": touser,
-        "msgtype": "text",
-        "agentid": agent_id_u32,
-        "text": { "content": CONNECTIVITY_MESSAGE }
-    });
-    let body_bytes = match serde_json::to_vec(&body) {
-        Ok(b) => b,
-        Err(e) => {
-            log::warn!("[wecom_connectivity] send json: {}", e);
-            return connectivity::item(
-                "wecom",
-                configured,
-                false,
-                Some(tr(Message::ConnectivityCheckFailed, loc)),
-            );
-        }
-    };
-    let send_url = format!("{}?access_token={}", WECOM_SEND_BASE, token);
-    let (status, resp_body) = match http.http_post(&send_url, &body_bytes) {
-        Ok(r) => r,
-        Err(e) => {
-            log::warn!("[wecom_connectivity] send http: {}", e);
-            return connectivity::item(
-                "wecom",
-                configured,
-                false,
-                Some(tr(Message::ConnectivityCheckFailed, loc)),
-            );
-        }
-    };
-    if status >= 400 {
-        log::warn!("[wecom_connectivity] send status {}", status);
-        return connectivity::item(
-            "wecom",
-            configured,
-            false,
-            Some(tr(Message::ConnectivityCheckFailed, loc)),
-        );
-    }
-    let send_r: WecomSendResponse = match serde_json::from_slice(resp_body.as_ref()) {
-        Ok(x) => x,
-        Err(e) => {
-            log::warn!("[wecom_connectivity] send parse: {}", e);
-            return connectivity::item(
-                "wecom",
-                configured,
-                false,
-                Some(tr(Message::ConnectivityCheckFailed, loc)),
-            );
-        }
-    };
-    if send_r.errcode != 0 {
-        log::warn!(
-            "[wecom_connectivity] send errcode {} {}",
-            send_r.errcode,
-            send_r.errmsg
-        );
-        return connectivity::item(
-            "wecom",
-            configured,
-            false,
-            Some(tr(Message::ConnectivityCheckFailed, loc)),
-        );
-    }
-    connectivity::item("wecom", configured, true, None)
+        connectivity::ProbeStatus::Ok
+    })
 }
 
 /// Returns `(access_token, expires_in_secs)` for sender-loop caching.

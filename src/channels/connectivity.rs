@@ -40,6 +40,50 @@ pub(crate) fn item(
     }
 }
 
+/// Canonical probe outcome for channel connectivity checks.
+/// 通道连通性探测的统一结果口径。
+pub(crate) enum ProbeStatus {
+    Ok,
+    InvalidToken,
+    CheckFailed,
+}
+
+/// Builds a connectivity item from a common "configured -> probe -> normalized message" flow.
+/// 统一处理“已配置 -> 探测 -> 归一化消息”的通道连通性骨架。
+pub(crate) fn probe_item<F>(
+    id: &'static str,
+    configured: bool,
+    loc: Locale,
+    probe: F,
+) -> ChannelConnectivityItem
+where
+    F: FnOnce() -> ProbeStatus,
+{
+    if !configured {
+        return item(
+            id,
+            false,
+            false,
+            Some(tr(Message::ConnectivityNotConfigured, loc)),
+        );
+    }
+    match probe() {
+        ProbeStatus::Ok => item(id, true, true, None),
+        ProbeStatus::InvalidToken => item(
+            id,
+            true,
+            false,
+            Some(tr(Message::ConnectivityTokenInvalid, loc)),
+        ),
+        ProbeStatus::CheckFailed => item(
+            id,
+            true,
+            false,
+            Some(tr(Message::ConnectivityCheckFailed, loc)),
+        ),
+    }
+}
+
 fn webhook_configured(c: &AppConfig) -> bool {
     c.webhook_enabled && !c.webhook_token.trim().is_empty()
 }

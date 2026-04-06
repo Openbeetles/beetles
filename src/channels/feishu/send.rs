@@ -378,78 +378,46 @@ pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
     loc: crate::i18n::Locale,
 ) -> super::super::connectivity::ChannelConnectivityItem {
     use super::super::connectivity;
-    use crate::i18n::{tr, Message};
     let configured =
         !config.feishu_app_id.trim().is_empty() && !config.feishu_app_secret.trim().is_empty();
-    if !configured {
-        return connectivity::item(
-            "feishu",
-            false,
-            false,
-            Some(tr(Message::ConnectivityNotConfigured, loc)),
-        );
-    }
-    let body = FeishuTokenRequest {
-        app_id: config.feishu_app_id.trim().to_string(),
-        app_secret: config.feishu_app_secret.trim().to_string(),
-    };
-    let body_bytes = match serde_json::to_vec(&body) {
-        Ok(b) => b,
-        Err(e) => {
-            log::warn!("[feishu_connectivity] json: {}", e);
-            return connectivity::item(
-                "feishu",
-                configured,
-                false,
-                Some(tr(Message::ConnectivityCheckFailed, loc)),
-            );
+    connectivity::probe_item("feishu", configured, loc, || {
+        let body = FeishuTokenRequest {
+            app_id: config.feishu_app_id.trim().to_string(),
+            app_secret: config.feishu_app_secret.trim().to_string(),
+        };
+        let body_bytes = match serde_json::to_vec(&body) {
+            Ok(b) => b,
+            Err(e) => {
+                log::warn!("[feishu_connectivity] json: {}", e);
+                return connectivity::ProbeStatus::CheckFailed;
+            }
+        };
+        let (status, resp_body) = match http.http_post(FEISHU_TOKEN_URL, &body_bytes) {
+            Ok(r) => r,
+            Err(e) => {
+                log::warn!("[feishu_connectivity] post: {}", e);
+                return connectivity::ProbeStatus::CheckFailed;
+            }
+        };
+        if status >= 400 {
+            log::warn!("[feishu_connectivity] token api status {}", status);
+            return connectivity::ProbeStatus::InvalidToken;
         }
-    };
-    let (status, resp_body) = match http.http_post(FEISHU_TOKEN_URL, &body_bytes) {
-        Ok(r) => r,
-        Err(e) => {
-            log::warn!("[feishu_connectivity] post: {}", e);
-            return connectivity::item(
-                "feishu",
-                configured,
-                false,
-                Some(tr(Message::ConnectivityCheckFailed, loc)),
-            );
+        let r: FeishuTokenResponse = match serde_json::from_slice(resp_body.as_ref()) {
+            Ok(x) => x,
+            Err(e) => {
+                log::warn!("[feishu_connectivity] parse: {}", e);
+                return connectivity::ProbeStatus::CheckFailed;
+            }
+        };
+        match r.tenant_access_token {
+            Some(t) if !t.is_empty() => connectivity::ProbeStatus::Ok,
+            _ => {
+                log::warn!("[feishu_connectivity] no token code={}", r.code);
+                connectivity::ProbeStatus::InvalidToken
+            }
         }
-    };
-    if status >= 400 {
-        log::warn!("[feishu_connectivity] token api status {}", status);
-        return connectivity::item(
-            "feishu",
-            configured,
-            false,
-            Some(tr(Message::ConnectivityTokenInvalid, loc)),
-        );
-    }
-    let r: FeishuTokenResponse = match serde_json::from_slice(resp_body.as_ref()) {
-        Ok(x) => x,
-        Err(e) => {
-            log::warn!("[feishu_connectivity] parse: {}", e);
-            return connectivity::item(
-                "feishu",
-                configured,
-                false,
-                Some(tr(Message::ConnectivityCheckFailed, loc)),
-            );
-        }
-    };
-    match r.tenant_access_token {
-        Some(t) if !t.is_empty() => connectivity::item("feishu", configured, true, None),
-        _ => {
-            log::warn!("[feishu_connectivity] no token code={}", r.code);
-            connectivity::item(
-                "feishu",
-                configured,
-                false,
-                Some(tr(Message::ConnectivityTokenInvalid, loc)),
-            )
-        }
-    }
+    })
 }
 
 /// 从飞书事件 body（schema 2.0，含 header.event_type、event）解析出 im.message.receive_v1 文本消息，
