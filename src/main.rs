@@ -187,43 +187,11 @@ impl beetle::StreamEditor for TelegramStreamEditor {
     }
 }
 
-/// 飞书流式编辑器：复用 HTTP + tenant_access_token（与 sender 线程相同 TTL 策略）。
-struct FeishuStreamState {
-    token: Option<(String, Instant)>,
-}
-
-/// 飞书 tenant_access_token 缓存 TTL（与 `feishu/send` sender 一致：2h − 300s）。
-const FEISHU_STREAM_TOKEN_TTL: Duration = Duration::from_secs(7200 - 300);
-
 struct FeishuStreamEditor {
     app_id: String,
     app_secret: String,
     create_http: Arc<HttpFactory>,
-    state: Mutex<FeishuStreamState>,
-}
-
-impl FeishuStreamEditor {
-    fn ensure_token(
-        &self,
-        state: &mut FeishuStreamState,
-        http: &mut Box<dyn PlatformHttpClient>,
-    ) -> beetle::Result<String> {
-        let need_refresh = match &state.token {
-            Some((_, acquired)) => acquired.elapsed() >= FEISHU_STREAM_TOKEN_TTL,
-            None => true,
-        };
-        if need_refresh {
-            let t = beetle::feishu_acquire_token(http, &self.app_id, &self.app_secret).ok_or_else(
-                || beetle::Error::config("feishu_stream", "failed to acquire tenant_token"),
-            )?;
-            state.token = Some((t.clone(), Instant::now()));
-            Ok(t)
-        } else {
-            state.token.as_ref().map(|(t, _)| t.clone()).ok_or_else(|| {
-                beetle::Error::config("feishu_stream", "token missing after refresh")
-            })
-        }
-    }
+    state: Mutex<beetle::FeishuTokenCache>,
 }
 
 impl beetle::StreamEditor for FeishuStreamEditor {
@@ -233,10 +201,11 @@ impl beetle::StreamEditor for FeishuStreamEditor {
             self.create_http.as_ref(),
             "feishu_stream_send_initial",
             |http| {
-                let token = self.ensure_token(&mut state, http)?;
+                let token =
+                    state.ensure_token(http, &self.app_id, &self.app_secret, "feishu_stream")?;
                 let r = beetle::feishu_send_and_get_id(http, &token, chat_id, content);
                 if r.is_err() {
-                    state.token = None;
+                    state.invalidate();
                 }
                 r
             },
@@ -246,10 +215,11 @@ impl beetle::StreamEditor for FeishuStreamEditor {
     fn edit(&self, _chat_id: &str, message_id: &str, content: &str) -> beetle::Result<()> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         execute_stream_http_op(self.create_http.as_ref(), "feishu_stream_edit", |http| {
-            let token = self.ensure_token(&mut state, http)?;
+            let token =
+                state.ensure_token(http, &self.app_id, &self.app_secret, "feishu_stream")?;
             let r = beetle::feishu_edit_message(http, &token, message_id, content);
             if r.is_err() {
-                state.token = None;
+                state.invalidate();
             }
             r
         })
@@ -1621,7 +1591,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                         app_id: config.feishu_app_id.clone(),
                         app_secret: config.feishu_app_secret.clone(),
                         create_http: Arc::clone(&make_http),
-                        state: Mutex::new(FeishuStreamState { token: None }),
+                        state: Mutex::new(beetle::FeishuTokenCache::new()),
                     })
                         as Arc<dyn beetle::StreamEditor + Send + Sync>)
                 }

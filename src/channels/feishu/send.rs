@@ -29,6 +29,56 @@ pub struct FeishuTokenResponse {
     pub code: i32,
 }
 
+/// Shared Feishu tenant token cache for sender and stream editor.
+/// 飞书 tenant_access_token 共享缓存，统一 sender 与 stream editor 的 TTL / 失效语义。
+#[derive(Default)]
+pub struct FeishuTokenCache {
+    token: Option<(String, std::time::Instant)>,
+}
+
+impl FeishuTokenCache {
+    const TTL: std::time::Duration =
+        std::time::Duration::from_secs(7200 - TOKEN_REFRESH_MARGIN_SECS);
+
+    /// Creates an empty token cache.
+    /// 创建空的飞书 token 缓存。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns a usable tenant token, refreshing it when TTL is reached.
+    /// 返回可用 tenant token；若达到 TTL 则自动刷新。
+    pub fn ensure_token<H: ChannelHttpClient + ?Sized>(
+        &mut self,
+        http: &mut H,
+        app_id: &str,
+        app_secret: &str,
+        stage: &'static str,
+    ) -> crate::error::Result<String> {
+        let need_refresh = match &self.token {
+            Some((_, acquired_at)) => acquired_at.elapsed() >= Self::TTL,
+            None => true,
+        };
+        if need_refresh {
+            let token = acquire_tenant_token(http, app_id, app_secret).ok_or_else(|| {
+                crate::error::Error::config(stage, "failed to acquire tenant_token")
+            })?;
+            self.token = Some((token.clone(), std::time::Instant::now()));
+            return Ok(token);
+        }
+        self.token
+            .as_ref()
+            .map(|(token, _)| token.clone())
+            .ok_or_else(|| crate::error::Error::config(stage, "token missing after refresh"))
+    }
+
+    /// Drops the cached token so next use performs a refresh.
+    /// 清空缓存 token，使下次使用时强制刷新。
+    pub fn invalidate(&mut self) {
+        self.token = None;
+    }
+}
+
 pub fn acquire_tenant_token<H: ChannelHttpClient>(
     http: &mut H,
     app_id: &str,
@@ -173,9 +223,7 @@ pub fn run_feishu_sender_loop<H, F>(
     start_sender_loop(TAG);
 
     let mut http: Option<H> = None;
-    // 飞书 tenant_access_token 有效期 2h，缓存避免每批消息都请求。
-    let token_ttl = std::time::Duration::from_secs(7200 - TOKEN_REFRESH_MARGIN_SECS);
-    let mut cached_token: Option<(String, std::time::Instant)> = None;
+    let mut token_cache = FeishuTokenCache::new();
     loop {
         let (chat_id, content, req_id) = match recv_sender_loop_event(&rx, TAG) {
             SenderLoopEvent::Message(item) => item,
@@ -195,25 +243,18 @@ pub fn run_feishu_sender_loop<H, F>(
             let Some(h) = http.as_mut() else {
                 continue;
             };
-            let need_refresh = match &cached_token {
-                None => true,
-                Some((_, acquired_at)) => acquired_at.elapsed() >= token_ttl,
-            };
-            if need_refresh {
-                cached_token = None;
-                match acquire_tenant_token(h, app_id, app_secret) {
-                    Some(t) => {
-                        cached_token = Some((t, std::time::Instant::now()));
-                    }
-                    None => {
-                        http = None;
-                        continue;
-                    }
+            let token = match token_cache.ensure_token(h, app_id, app_secret, TAG) {
+                Ok(token) => token,
+                Err(error) => {
+                    log::warn!(
+                        "[{}] acquire token failed (attempt {}): {}",
+                        TAG,
+                        retry + 1,
+                        error
+                    );
+                    http = None;
+                    continue;
                 }
-            }
-            let Some((token, _)) = cached_token.as_ref() else {
-                log::warn!("[{}] missing tenant token after refresh", TAG);
-                continue;
             };
             match send_feishu_message(h, token.as_str(), &chat_id, &content) {
                 Ok(()) => crate::metrics::record_channel_http_result(true),
@@ -226,13 +267,13 @@ pub fn run_feishu_sender_loop<H, F>(
                         chat_id,
                         error
                     );
-                    cached_token = None;
+                    token_cache.invalidate();
                     http = None;
                     continue;
                 }
             }
             while let Ok((cid, cnt, _)) = rx.try_recv() {
-                if let Err(error) = send_feishu_message(h, token, &cid, &cnt) {
+                if let Err(error) = send_feishu_message(h, token.as_str(), &cid, &cnt) {
                     crate::metrics::record_channel_http_result(false);
                     log::warn!("[{}] drain send failed for chat_id={}: {}", TAG, cid, error);
                     break;
@@ -249,7 +290,7 @@ pub fn run_feishu_sender_loop<H, F>(
                 Some(chat_id.as_str()),
                 CHANNEL_SENDER_MAX_RETRIES,
             );
-            cached_token = None; // 连续失败后清除缓存，下次强制刷新
+            token_cache.invalidate(); // 连续失败后清除缓存，下次强制刷新
         }
     }
 }

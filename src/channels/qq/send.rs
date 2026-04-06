@@ -20,7 +20,10 @@ use crate::channels::send::{
     start_sender_loop, SenderLoopEvent, CHANNEL_SENDER_MAX_RETRIES,
 };
 
-use super::token::{fetch_qq_access_token, fetch_qq_access_token_with_expiry};
+use super::token::{
+    cached_qq_token_value, ensure_cached_qq_token, fetch_qq_access_token,
+    invalidate_cached_qq_token, CachedQqToken,
+};
 
 /// 单条消息最大字符数，与现有通道对齐。
 const QQ_MAX_MESSAGE_LEN: usize = 4096;
@@ -185,14 +188,6 @@ pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
             connectivity::item("qq_channel", configured, false, Some(message))
         }
     }
-}
-
-fn acquire_qq_token_with_expiry<H: ChannelHttpClient>(
-    http: &mut H,
-    app_id: &str,
-    secret: &str,
-) -> BeetleResult<(String, u64)> {
-    fetch_qq_access_token_with_expiry(http, app_id, secret, "qq_send_token")
 }
 
 fn acquire_qq_token<H: ChannelHttpClient>(
@@ -362,7 +357,6 @@ pub fn flush_qq_channel_sends<H: ChannelHttpClient>(
 
 /// QQ access_token 缓存提前刷新余量（秒），避免用即将过期的 token。
 const QQ_TOKEN_CACHE_MARGIN_SECS: u64 = 120;
-const QQ_SEND_MAX_RETRIES: u8 = CHANNEL_SENDER_MAX_RETRIES;
 
 type QueuedQqMessage = (String, String, Option<String>);
 
@@ -372,7 +366,7 @@ fn send_queued_qq_message<H, F>(
     secret: &str,
     cache: &QqMsgIdCache,
     http: &mut Option<H>,
-    token_cache: &mut Option<(String, std::time::Instant)>,
+    token_cache: &mut Option<CachedQqToken>,
     create_http: &mut F,
 ) -> bool
 where
@@ -384,7 +378,7 @@ where
     let msg_start = std::time::Instant::now();
     let mut token_wait_ms: u128 = 0;
 
-    for retry in 0..QQ_SEND_MAX_RETRIES {
+    for retry in 0..CHANNEL_SENDER_MAX_RETRIES {
         if retry > 0 {
             let delay_ms = if retry == 1 {
                 crate::constants::QQ_SEND_RETRY_DELAY_MS_STEP1
@@ -395,51 +389,41 @@ where
             feed_sender_loop_wdt();
         }
 
-        let now = std::time::Instant::now();
-        let mut token_opt: Option<String> = token_cache
-            .as_ref()
-            .filter(|(_, exp)| now < *exp)
-            .map(|(t, _)| t.clone());
-        if token_opt.is_none() {
-            *token_cache = None;
-            if !ensure_sender_http(http, create_http, TAG, retry + 1) {
-                continue;
-            }
-            let Some(h) = http.as_mut() else {
-                continue;
-            };
-            let token_start = std::time::Instant::now();
-            match acquire_qq_token_with_expiry(h, app_id, secret) {
-                Ok((t, exp_secs)) => {
-                    let keep = exp_secs.saturating_sub(QQ_TOKEN_CACHE_MARGIN_SECS).max(30);
-                    *token_cache = Some((t.clone(), now + std::time::Duration::from_secs(keep)));
-                    token_opt = Some(t);
-                    token_wait_ms = token_wait_ms.saturating_add(token_start.elapsed().as_millis());
-                }
-                Err(e) => {
-                    token_wait_ms = token_wait_ms.saturating_add(token_start.elapsed().as_millis());
-                    log::warn!(
-                        "[{}] acquire token failed (attempt {}): {}",
-                        TAG,
-                        retry + 1,
-                        e
-                    );
-                    *http = None;
-                    continue;
-                }
-            }
-        }
-
-        let token = match token_opt {
-            Some(t) => t,
-            None => continue,
-        };
-
         if !ensure_sender_http(http, create_http, TAG, retry + 1) {
             continue;
         }
         let Some(h) = http.as_mut() else {
             continue;
+        };
+        let had_cached_token = cached_qq_token_value(token_cache).is_some();
+        let token_start = std::time::Instant::now();
+        let token = match ensure_cached_qq_token(
+            h,
+            token_cache,
+            app_id,
+            secret,
+            "qq_send_token",
+            QQ_TOKEN_CACHE_MARGIN_SECS,
+        ) {
+            Ok(token) => {
+                if !had_cached_token {
+                    token_wait_ms = token_wait_ms.saturating_add(token_start.elapsed().as_millis());
+                }
+                token
+            }
+            Err(e) => {
+                if !had_cached_token {
+                    token_wait_ms = token_wait_ms.saturating_add(token_start.elapsed().as_millis());
+                }
+                log::warn!(
+                    "[{}] acquire token failed (attempt {}): {}",
+                    TAG,
+                    retry + 1,
+                    e
+                );
+                *http = None;
+                continue;
+            }
         };
 
         let msg_id = pop_msg_id(cache, chat_id);
@@ -474,7 +458,7 @@ where
                     msg_start.elapsed().as_millis()
                 );
                 *http = None;
-                *token_cache = None;
+                invalidate_cached_qq_token(token_cache);
             }
         }
     }
@@ -502,7 +486,7 @@ pub fn run_qq_sender_loop<H, F>(
     start_sender_loop(TAG);
 
     let mut http: Option<H> = None;
-    let mut token_cache: Option<(String, std::time::Instant)> = None;
+    let mut token_cache: Option<CachedQqToken> = None;
 
     loop {
         let first = match recv_sender_loop_event(&rx, TAG) {

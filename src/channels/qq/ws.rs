@@ -11,7 +11,10 @@ use crate::error::{Error, Result};
 use crate::memory::PendingRetryStore;
 
 use super::send::{cache_msg_id, QqMsgIdCache};
-use super::token::fetch_qq_access_token_with_expiry;
+use super::token::{
+    cached_qq_token_value, ensure_cached_qq_token, fetch_and_cache_qq_token,
+    invalidate_cached_qq_token, CachedQqToken,
+};
 
 const TAG: &str = "qq_ws";
 const QQ_GATEWAY_URL: &str = "https://api.sgroup.qq.com/gateway";
@@ -122,11 +125,6 @@ fn get_gateway_url<H: ChannelHttpClient + ?Sized>(http: &mut H, token: &str) -> 
 }
 
 /// QQ WSS 协议驱动：取 token + GET gateway、Hello(op=10)、Identify(op=2)、心跳(op=1)、Dispatch 解析。
-struct CachedQqToken {
-    value: String,
-    refresh_after_unix_secs: u64,
-}
-
 struct QqWssDriver {
     app_id: String,
     client_secret: String,
@@ -152,55 +150,32 @@ impl QqWssDriver {
             log::warn!("[{}] cache_msg_id failed: {}", TAG, e);
         }
     }
-
-    fn cached_token_value(&self) -> Option<&str> {
-        let now = crate::util::current_unix_secs();
-        self.cached_token
-            .as_ref()
-            .filter(|token| now < token.refresh_after_unix_secs)
-            .map(|token| token.value.as_str())
-    }
-
-    fn invalidate_cached_token(&mut self) {
-        self.cached_token = None;
-    }
-
-    fn fetch_and_cache_token(&mut self, http: &mut dyn ChannelHttpClient) -> Result<String> {
-        let (token, expires_in_secs) = fetch_qq_access_token_with_expiry(
-            http,
-            &self.app_id,
-            &self.client_secret,
-            "qq_ws_token",
-        )?;
-        let now = crate::util::current_unix_secs();
-        let usable_for_secs = expires_in_secs
-            .saturating_sub(QQ_TOKEN_REFRESH_SKEW_SECS)
-            .max(1);
-        self.cached_token = Some(CachedQqToken {
-            value: token.clone(),
-            refresh_after_unix_secs: now.saturating_add(usable_for_secs),
-        });
-        Ok(token)
-    }
-
-    fn ensure_token(&mut self, http: &mut dyn ChannelHttpClient) -> Result<String> {
-        if let Some(token) = self.cached_token_value() {
-            return Ok(token.to_string());
-        }
-        self.fetch_and_cache_token(http)
-    }
 }
 
 impl WssGatewayDriver for QqWssDriver {
     fn get_url(&mut self, http: &mut dyn ChannelHttpClient) -> Result<String> {
-        let token = self.ensure_token(http)?;
+        let token = ensure_cached_qq_token(
+            http,
+            &mut self.cached_token,
+            &self.app_id,
+            &self.client_secret,
+            "qq_ws_token",
+            QQ_TOKEN_REFRESH_SKEW_SECS,
+        )?;
         log::debug!("[{}] token obtained", TAG);
         let url = match get_gateway_url(http, &token) {
             Ok(url) => url,
             Err(e) if e.http_status_code() == Some(401) => {
                 log::warn!("[{}] gateway rejected cached token, refreshing once", TAG);
-                self.invalidate_cached_token();
-                let refreshed = self.fetch_and_cache_token(http)?;
+                invalidate_cached_qq_token(&mut self.cached_token);
+                let refreshed = fetch_and_cache_qq_token(
+                    http,
+                    &mut self.cached_token,
+                    &self.app_id,
+                    &self.client_secret,
+                    "qq_ws_token",
+                    QQ_TOKEN_REFRESH_SKEW_SECS,
+                )?;
                 get_gateway_url(http, &refreshed)?
             }
             Err(e) => return Err(e),
@@ -230,8 +205,7 @@ impl WssGatewayDriver for QqWssDriver {
             .as_ref()
             .and_then(|d| d.heartbeat_interval)
             .unwrap_or(45_000);
-        let identify_payload = self
-            .cached_token_value()
+        let identify_payload = cached_qq_token_value(&self.cached_token)
             .map(build_identify_payload)
             .filter(|v| !v.is_empty());
         log::info!("[{}] hello ok, heartbeat_interval_ms={}", TAG, interval);
@@ -324,7 +298,7 @@ impl WssGatewayDriver for QqWssDriver {
             }
             QQ_OP_INVALID_SESSION => {
                 log::warn!("[{}] invalid session", TAG);
-                self.invalidate_cached_token();
+                invalidate_cached_qq_token(&mut self.cached_token);
                 Ok(WssRecvAction::Disconnect)
             }
             _ => Ok(WssRecvAction::Ignore),

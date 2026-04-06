@@ -21,6 +21,11 @@ pub struct QqTokenResponse {
     pub expires_in: u64,
 }
 
+pub(crate) struct CachedQqToken {
+    value: String,
+    refresh_after_unix_secs: u64,
+}
+
 /// QQ API 的 expires_in 可能返回数字或字符串，兼容两种格式。
 fn deserialize_u64_or_string<'de, D>(deserializer: D) -> std::result::Result<u64, D::Error>
 where
@@ -97,4 +102,56 @@ pub(crate) fn fetch_qq_access_token<H: ChannelHttpClient + ?Sized>(
     stage: &'static str,
 ) -> Result<String> {
     fetch_qq_access_token_with_expiry(http, app_id, client_secret, stage).map(|(token, _)| token)
+}
+
+pub(crate) fn cached_qq_token_value(cached_token: &Option<CachedQqToken>) -> Option<&str> {
+    let now = crate::util::current_unix_secs();
+    cached_token
+        .as_ref()
+        .filter(|token| now < token.refresh_after_unix_secs)
+        .map(|token| token.value.as_str())
+}
+
+pub(crate) fn invalidate_cached_qq_token(cached_token: &mut Option<CachedQqToken>) {
+    *cached_token = None;
+}
+
+pub(crate) fn fetch_and_cache_qq_token<H: ChannelHttpClient + ?Sized>(
+    http: &mut H,
+    cached_token: &mut Option<CachedQqToken>,
+    app_id: &str,
+    client_secret: &str,
+    stage: &'static str,
+    refresh_skew_secs: u64,
+) -> Result<String> {
+    let (token, expires_in_secs) =
+        fetch_qq_access_token_with_expiry(http, app_id, client_secret, stage)?;
+    let now = crate::util::current_unix_secs();
+    let usable_for_secs = expires_in_secs.saturating_sub(refresh_skew_secs).max(1);
+    *cached_token = Some(CachedQqToken {
+        value: token.clone(),
+        refresh_after_unix_secs: now.saturating_add(usable_for_secs),
+    });
+    Ok(token)
+}
+
+pub(crate) fn ensure_cached_qq_token<H: ChannelHttpClient + ?Sized>(
+    http: &mut H,
+    cached_token: &mut Option<CachedQqToken>,
+    app_id: &str,
+    client_secret: &str,
+    stage: &'static str,
+    refresh_skew_secs: u64,
+) -> Result<String> {
+    if let Some(token) = cached_qq_token_value(cached_token) {
+        return Ok(token.to_string());
+    }
+    fetch_and_cache_qq_token(
+        http,
+        cached_token,
+        app_id,
+        client_secret,
+        stage,
+        refresh_skew_secs,
+    )
 }

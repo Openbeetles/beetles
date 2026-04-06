@@ -76,8 +76,8 @@ pub use channels::{
     get_bot_username, poll_telegram_once, run_dingtalk_sender_loop, run_dispatch,
     run_feishu_sender_loop, run_qq_sender_loop, run_telegram_poll_loop, run_telegram_sender_loop,
     run_wecom_sender_loop, send_chat_action, tg_edit_message_text, tg_send_and_get_id,
-    ChannelHttpClient, ChannelSinks, LogSink, MessageSink, QueuedSink, WebSocketSink,
-    WssConnectProfile,
+    ChannelHttpClient, ChannelSinks, FeishuTokenCache, LogSink, MessageSink, QueuedSink,
+    WebSocketSink, WssConnectProfile,
 };
 pub use config::{
     parse_allowed_chat_ids, save_hardware_segment, AppConfig, DeviceEntry, HardwareSegment,
