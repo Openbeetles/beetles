@@ -3,25 +3,29 @@
 
 use crate::platform::SkillStorage;
 use crate::task::TaskStore;
+use crate::task_execution::{
+    TaskArtifactStore, TaskLearningStore, TaskRunStore, active_task_run_for_chat,
+    build_task_recall_bundle, render_task_workspace_block,
+};
 
 use super::{
-    board_subject_scope_id, build_archive_evidence_block, build_self_state, build_world_snapshot,
-    collect_private_targets, derive_relationship_constitution,
-    derive_self_authored_core_from_layers, load_recent_persona_evidence, memory_capability_profile,
-    memory_policy, parse_explicit_long_term_slot_query, recall_long_term_memory_block,
-    relationship_scope_id, render_autonomy_strategy_block, render_exact_long_term_memory_block,
+    AutonomyStrategyStore, ExecutionStateStore, InnerLifeStore, LongTermMemoryStore, MemoryProfile,
+    MemoryStore, MentalPrivacyStore, OuterVoiceStore, PrivateDocStore, PrivateGardenStore,
+    RelationshipConstitutionStore, RelationshipConstitutionSyncInput, RelationshipPortfolioStore,
+    RelationshipTopologyStore, RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore,
+    SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore, TurnLedgerStore,
+    WorldSenseStore, WorldSnapshotContext, board_subject_scope_id, build_archive_evidence_block,
+    build_self_state, build_world_snapshot, collect_private_targets,
+    derive_relationship_constitution, derive_self_authored_core_from_layers,
+    load_recent_persona_evidence, memory_capability_profile, memory_policy,
+    parse_explicit_long_term_slot_query, recall_long_term_memory_block, relationship_scope_id,
+    render_autonomy_strategy_block, render_exact_long_term_memory_block,
     render_execution_state_block, render_inner_life_block, render_mental_privacy_boundary_block,
     render_outer_voice_block, render_persistent_self_authored_core_block,
     render_private_doc_workspace_block, render_private_garden_block,
     render_relationship_constitution_block, render_relationship_portfolio_block,
     render_self_authored_core_block, render_self_continuity_block, render_self_model_block,
     render_self_state_block, render_world_sense_block, render_world_snapshot_block,
-    AutonomyStrategyStore, ExecutionStateStore, InnerLifeStore, LongTermMemoryStore, MemoryProfile,
-    MemoryStore, MentalPrivacyStore, OuterVoiceStore, PrivateDocStore, PrivateGardenStore,
-    RelationshipConstitutionStore, RelationshipConstitutionSyncInput, RelationshipPortfolioStore,
-    RelationshipTopologyStore, RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore,
-    SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore, TurnLedgerStore,
-    WorldSenseStore, WorldSnapshotContext,
 };
 
 pub struct PromptMemoryContext {
@@ -31,6 +35,8 @@ pub struct PromptMemoryContext {
     pub archive_evidence_text: Option<String>,
     pub runtime_skill_text: Option<String>,
     pub execution_state_text: Option<String>,
+    pub task_workspace_text: Option<String>,
+    pub task_recall_text: Option<String>,
     pub world_snapshot_text: Option<String>,
     pub world_sense_text: Option<String>,
     pub self_state_text: Option<String>,
@@ -69,6 +75,9 @@ pub struct PromptMemoryContextParams<'a> {
     pub session_summary_store: &'a dyn SessionSummaryStore,
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
+    pub task_run_store: &'a dyn TaskRunStore,
+    pub task_artifact_store: &'a dyn TaskArtifactStore,
+    pub task_learning_store: &'a dyn TaskLearningStore,
     pub self_model_store: &'a dyn SelfModelStore,
     pub self_authored_core_store: &'a dyn SelfAuthoredCoreStore,
     pub relationship_constitution_store: &'a dyn RelationshipConstitutionStore,
@@ -125,6 +134,30 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
                 memory_policy(params.profile).execution_state.render_max_len,
             )
         });
+    let active_task_run = active_task_run_for_chat(
+        params.task_run_store,
+        params.current_channel,
+        params.chat_id,
+    )
+    .ok()
+    .flatten();
+    let task_workspace_text = active_task_run.as_ref().and_then(|record| {
+        let artifacts = params
+            .task_artifact_store
+            .list_for_run(&record.run.run_id, 4)
+            .unwrap_or_default();
+        render_task_workspace_block(&record, &artifacts, 600)
+    });
+    let task_recall_text = active_task_run.as_ref().and_then(|record| {
+        build_task_recall_bundle(
+            record,
+            params.task_learning_store,
+            params.current_channel,
+            params.chat_id,
+            params.user_query,
+            params.system_max_len.min(520),
+        )
+    });
     let self_model = params.self_model_store.get(subject_id).ok().flatten();
     let persistent_self_authored_core = params
         .self_authored_core_store
@@ -407,6 +440,8 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         archive_evidence_text,
         runtime_skill_text,
         execution_state_text,
+        task_workspace_text,
+        task_recall_text,
         world_snapshot_text,
         world_sense_text,
         self_state_text,
@@ -827,6 +862,89 @@ mod tests {
 
         fn clear(&self, _chat_id: &str) -> Result<()> {
             Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubTaskRunStore;
+
+    impl crate::task_execution::TaskRunStore for StubTaskRunStore {
+        fn get(&self, _run_id: &str) -> Result<Option<crate::task_execution::TaskRunRecord>> {
+            Ok(None)
+        }
+
+        fn upsert(&self, _record: &crate::task_execution::TaskRunRecord) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_recent(&self, _limit: usize) -> Result<Vec<crate::task_execution::TaskRunRecord>> {
+            Ok(Vec::new())
+        }
+
+        fn list_active_for_chat(
+            &self,
+            _channel: &str,
+            _chat_id: &str,
+            _limit: usize,
+        ) -> Result<Vec<crate::task_execution::TaskRunRecord>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubTaskArtifactStore;
+
+    impl crate::task_execution::TaskArtifactStore for StubTaskArtifactStore {
+        fn put(&self, _record: &crate::task_execution::TaskArtifactRecord) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_for_run(
+            &self,
+            _run_id: &str,
+            _limit: usize,
+        ) -> Result<Vec<crate::task_execution::TaskArtifactRecord>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubTaskLearningStore;
+
+    impl crate::task_execution::TaskLearningStore for StubTaskLearningStore {
+        fn get(
+            &self,
+            _learning_id: &str,
+        ) -> Result<Option<crate::task_execution::TaskLearningRecord>> {
+            Ok(None)
+        }
+
+        fn upsert(&self, _record: &crate::task_execution::TaskLearningRecord) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_recent(
+            &self,
+            _limit: usize,
+        ) -> Result<Vec<crate::task_execution::TaskLearningRecord>> {
+            Ok(Vec::new())
+        }
+
+        fn list_for_chat(
+            &self,
+            _channel: &str,
+            _chat_id: &str,
+            _limit: usize,
+        ) -> Result<Vec<crate::task_execution::TaskLearningRecord>> {
+            Ok(Vec::new())
+        }
+
+        fn list_for_run(
+            &self,
+            _run_id: &str,
+            _limit: usize,
+        ) -> Result<Vec<crate::task_execution::TaskLearningRecord>> {
+            Ok(Vec::new())
         }
     }
 
@@ -1265,6 +1383,8 @@ mod tests {
         let mental_privacy_store = StubMentalPrivacyStore::default();
         let remind_store = StubRemindAtStore;
         let task_store = StubTaskStore;
+        let task_run_store = StubTaskRunStore;
+        let task_artifact_store = StubTaskArtifactStore;
         let skill_storage = StubSkillStorage::default();
         crate::skills::upsert_runtime_skill(
             &skill_storage,
@@ -1295,6 +1415,9 @@ mod tests {
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
+            task_run_store: &task_run_store,
+            task_artifact_store: &task_artifact_store,
+            task_learning_store: &StubTaskLearningStore,
             self_model_store: &self_model_store,
             self_authored_core_store: &self_authored_core_store,
             relationship_constitution_store: &relationship_constitution_store,
@@ -1319,101 +1442,137 @@ mod tests {
             Some("user prefers cold brew")
         );
         assert!(context.message_summary_text.is_none());
-        assert!(context
-            .long_term_memory_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("Likes cold brew"));
-        assert!(context
-            .archive_evidence_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("Archive evidence"));
-        assert!(memory_store
-            .last_query
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_deref()
-            .unwrap_or_default()
-            .contains("user prefers cold brew"));
-        assert!(memory_store
-            .last_query
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_deref()
-            .unwrap_or_default()
-            .contains("重点是咖啡偏好和昵称"));
-        assert!(context
-            .execution_state_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("Goal: 收口 prompt memory"));
-        assert!(context
-            .world_snapshot_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("## World Snapshot"));
-        assert!(context
-            .world_sense_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("## World Sense"));
-        assert!(context
-            .self_state_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("## Self State"));
-        assert!(context
-            .self_authored_core_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("## Self-Authored Core"));
-        assert!(context
-            .relationship_portfolio_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("## Relationship Portfolio"));
-        assert!(context
-            .self_model_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("## Self Continuity"));
-        assert!(context
-            .autonomy_strategy_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("## Autonomy Strategy"));
-        assert!(context
-            .outer_voice_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("## Outer Voice"));
-        assert!(context
-            .inner_life_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("## Inner Life"));
-        assert!(context
-            .self_continuity_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("## Self Continuity Extended"));
-        assert!(context
-            .private_workspace_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("## Inner Workspace"));
-        assert!(context
-            .private_garden_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("## Private Garden"));
+        assert!(
+            context
+                .long_term_memory_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Likes cold brew")
+        );
+        assert!(
+            context
+                .archive_evidence_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Archive evidence")
+        );
+        assert!(
+            memory_store
+                .last_query
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_deref()
+                .unwrap_or_default()
+                .contains("user prefers cold brew")
+        );
+        assert!(
+            memory_store
+                .last_query
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_deref()
+                .unwrap_or_default()
+                .contains("重点是咖啡偏好和昵称")
+        );
+        assert!(
+            context
+                .execution_state_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Goal: 收口 prompt memory")
+        );
+        assert!(
+            context
+                .world_snapshot_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("## World Snapshot")
+        );
+        assert!(
+            context
+                .world_sense_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("## World Sense")
+        );
+        assert!(
+            context
+                .self_state_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("## Self State")
+        );
+        assert!(
+            context
+                .self_authored_core_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("## Self-Authored Core")
+        );
+        assert!(
+            context
+                .relationship_portfolio_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("## Relationship Portfolio")
+        );
+        assert!(
+            context
+                .self_model_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("## Self Continuity")
+        );
+        assert!(
+            context
+                .autonomy_strategy_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("## Autonomy Strategy")
+        );
+        assert!(
+            context
+                .outer_voice_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("## Outer Voice")
+        );
+        assert!(
+            context
+                .inner_life_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("## Inner Life")
+        );
+        assert!(
+            context
+                .self_continuity_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("## Self Continuity Extended")
+        );
+        assert!(
+            context
+                .private_workspace_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("## Inner Workspace")
+        );
+        assert!(
+            context
+                .private_garden_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("## Private Garden")
+        );
         assert!(context.mental_privacy_adjudication_text.is_none());
-        assert!(context
-            .runtime_skill_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("Runtime skills"));
+        assert!(
+            context
+                .runtime_skill_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Runtime skills")
+        );
     }
 
     #[test]
@@ -1469,6 +1628,8 @@ mod tests {
         let mental_privacy_store = StubMentalPrivacyStore::default();
         let remind_store = StubRemindAtStore;
         let task_store = StubTaskStore;
+        let task_run_store = StubTaskRunStore;
+        let task_artifact_store = StubTaskArtifactStore;
         let skill_storage = StubSkillStorage::default();
 
         let context = load_prompt_memory_context(PromptMemoryContextParams {
@@ -1486,6 +1647,9 @@ mod tests {
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
+            task_run_store: &task_run_store,
+            task_artifact_store: &task_artifact_store,
+            task_learning_store: &StubTaskLearningStore,
             self_model_store: &self_model_store,
             self_authored_core_store: &self_authored_core_store,
             relationship_constitution_store: &relationship_constitution_store,
@@ -1514,11 +1678,13 @@ mod tests {
             Some("user prefers cold brew")
         );
         assert!(context.long_term_memory_text.is_none());
-        assert!(memory_store
-            .last_query
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_none());
+        assert!(
+            memory_store
+                .last_query
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_none()
+        );
     }
 
     #[test]
@@ -1643,6 +1809,8 @@ mod tests {
         let mental_privacy_store = StubMentalPrivacyStore::default();
         let remind_store = StubRemindAtStore;
         let task_store = StubTaskStore;
+        let task_run_store = StubTaskRunStore;
+        let task_artifact_store = StubTaskArtifactStore;
         let skill_storage = StubSkillStorage::default();
 
         let context = load_prompt_memory_context(PromptMemoryContextParams {
@@ -1660,6 +1828,9 @@ mod tests {
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
+            task_run_store: &task_run_store,
+            task_artifact_store: &task_artifact_store,
+            task_learning_store: &StubTaskLearningStore,
             self_model_store: &self_model_store,
             self_authored_core_store: &self_authored_core_store,
             relationship_constitution_store: &relationship_constitution_store,
@@ -1681,33 +1852,43 @@ mod tests {
 
         assert_eq!(context.summary_text.as_deref(), Some("summary"));
         assert!(context.long_term_memory_text.is_none());
-        assert!(context
-            .self_state_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("## Self State"));
-        assert!(context
-            .self_model_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("我保持着连续性"));
-        assert!(context
-            .private_workspace_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("内在工作区"));
-        assert!(context
-            .outer_voice_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("## Outer Voice"));
+        assert!(
+            context
+                .self_state_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("## Self State")
+        );
+        assert!(
+            context
+                .self_model_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("我保持着连续性")
+        );
+        assert!(
+            context
+                .private_workspace_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("内在工作区")
+        );
+        assert!(
+            context
+                .outer_voice_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("## Outer Voice")
+        );
         assert!(context.private_garden_text.is_none());
         assert_eq!(context.recent_messages.len(), 2);
-        assert!(memory_store
-            .last_query
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_none());
+        assert!(
+            memory_store
+                .last_query
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_none()
+        );
     }
 
     #[test]
@@ -1745,6 +1926,8 @@ mod tests {
         let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
         let mental_privacy_store = StubMentalPrivacyStore::default();
+        let task_run_store = StubTaskRunStore;
+        let task_artifact_store = StubTaskArtifactStore;
         let skill_storage = StubSkillStorage::default();
         let context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
@@ -1761,6 +1944,9 @@ mod tests {
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
+            task_run_store: &task_run_store,
+            task_artifact_store: &task_artifact_store,
+            task_learning_store: &StubTaskLearningStore,
             self_model_store: &self_model_store,
             self_authored_core_store: &self_authored_core_store,
             relationship_constitution_store: &relationship_constitution_store,

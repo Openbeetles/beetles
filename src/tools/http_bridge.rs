@@ -28,6 +28,8 @@ pub(crate) struct HttpClientToolContext<'a> {
     pub(crate) chat_id: Option<Arc<str>>,
     /// 当前入站消息的通道名称（如 `"telegram"`）；系统内部路径为 `None`。
     pub(crate) channel: Option<Arc<str>>,
+    /// 当前运行时的通道能力合同表。
+    pub(crate) channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
     /// 当前运行时是否允许工具向当前聊天提交用户可见消息意图。
     pub(crate) supports_current_chat_outbound_message: bool,
     /// 当前运行时是否允许工具声明“当前聊天主答复已由工具交付”。
@@ -137,6 +139,13 @@ impl ToolContext for HttpClientToolContext<'_> {
 
     fn current_channel(&self) -> Option<&str> {
         self.channel.as_deref()
+    }
+
+    fn channel_capability(
+        &self,
+        channel: &str,
+    ) -> Option<crate::channel_capability::ChannelCapabilityEntry> {
+        self.channel_capability_registry.get(channel)
     }
 
     fn supports_current_chat_outbound_message(&self) -> bool {

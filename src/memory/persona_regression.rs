@@ -1,16 +1,17 @@
 //! Deterministic persona continuity / disclosure regression harness.
 
-use crate::agent::{build_context, ContextParams};
+use crate::agent::{ContextParams, build_context};
 use crate::bus::PcMsg;
 use crate::error::Result;
 use std::sync::Mutex;
 
 use super::{
-    render_mental_privacy_boundary_block, render_mental_privacy_disclosure_adjudication_block,
-    render_persona_priority_block, render_self_authored_core_block, ImportantMessageStore,
+    ImportantMessageStore, MENTAL_PRIVACY_TARGET_SELF_CONTINUITY, MENTAL_PRIVACY_TARGET_SELF_MODEL,
     MemoryStore, MentalPrivacyDisclosureAdjudication, MentalPrivacyShareAction, MentalPrivacyState,
     OuterVoice, PersonaPriorityAdjudication, SelfContinuity, SelfModel, SessionMessage,
-    SessionStore, MENTAL_PRIVACY_TARGET_SELF_CONTINUITY, MENTAL_PRIVACY_TARGET_SELF_MODEL,
+    SessionStore, render_mental_privacy_boundary_block,
+    render_mental_privacy_disclosure_adjudication_block, render_persona_priority_block,
+    render_self_authored_core_block,
 };
 
 struct RegressionMemoryStore;
@@ -272,6 +273,8 @@ fn assemble_persona_regression_system(
         group_activation: "always",
         emotion_signal_suffix: None,
         execution_state_text: None,
+        task_workspace_text: None,
+        task_recall_text: None,
         world_snapshot_text: None,
         world_sense_text: None,
         self_state_text: None,
@@ -294,6 +297,7 @@ fn assemble_persona_regression_system(
         long_term_memory_text: None,
         archive_evidence_text: None,
         runtime_skill_text: None,
+        capability_package_text: None,
         summary_text: None,
         recent_messages: None,
         runtime: None,

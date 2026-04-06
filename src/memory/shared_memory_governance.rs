@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use super::{
-    inspect_long_term_memory_merge_guard, route_long_term_draft, LongTermMemoryDraft,
-    LongTermMemoryKind, LongTermMemoryStore, MemoryPlane, MAX_LONG_TERM_MEMORY_ITEMS,
+    LongTermMemoryDraft, LongTermMemoryKind, LongTermMemoryStore, MAX_LONG_TERM_MEMORY_ITEMS,
+    MemoryPlane, inspect_long_term_memory_merge_guard, route_long_term_draft,
 };
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -15,6 +15,7 @@ pub enum SharedMemoryWriteSource {
     #[default]
     ManualTool,
     Extraction,
+    TaskLearning,
     SnapshotImport,
     HygieneReconcile,
     HygieneCompaction,
@@ -25,6 +26,7 @@ impl SharedMemoryWriteSource {
         match self {
             Self::ManualTool => "manual_tool",
             Self::Extraction => "extraction",
+            Self::TaskLearning => "task_learning",
             Self::SnapshotImport => "snapshot_import",
             Self::HygieneReconcile => "hygiene_reconcile",
             Self::HygieneCompaction => "hygiene_compaction",

@@ -1206,11 +1206,11 @@ fn boundary_disclosure_label(style: BoundaryDisclosureStyle) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        audit_relationship_constitution, clamp_boundary_persona_to_constitution,
-        derive_relationship_constitution, enforce_relationship_constitution_share_action,
-        render_relationship_constitution_block, RelationshipConstitution,
-        RelationshipConstitutionAlignment, RelationshipConstitutionSyncInput,
-        RelationshipDisclosureAllowance, RelationshipTaskScopeCeiling,
+        RelationshipConstitution, RelationshipConstitutionAlignment,
+        RelationshipConstitutionSyncInput, RelationshipDisclosureAllowance,
+        RelationshipTaskScopeCeiling, audit_relationship_constitution,
+        clamp_boundary_persona_to_constitution, derive_relationship_constitution,
+        enforce_relationship_constitution_share_action, render_relationship_constitution_block,
     };
     use crate::memory::{
         BoundaryDisclosureStyle, BoundaryPersonaPosture, MentalPrivacyShareAction,
@@ -1418,10 +1418,12 @@ mod tests {
         assert!(audit.reply_scope_drift);
         assert!(audit.disclosure_drift);
         assert!(audit.drift_score >= 40);
-        assert!(audit
-            .drift_flags
-            .iter()
-            .any(|flag| flag == "reply_scope_drift"));
+        assert!(
+            audit
+                .drift_flags
+                .iter()
+                .any(|flag| flag == "reply_scope_drift")
+        );
         assert!(audit.has_material_drift());
     }
 }

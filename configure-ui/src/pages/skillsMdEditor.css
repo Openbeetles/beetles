@@ -1,0 +1,289 @@
+/**
+ * MDXEditor 与 Beetle 主题对齐；外框由父级「表单井」提供。
+ * 深浅色由父级 `.light-theme` / `.dark-theme`（与 @mdxeditor/editor 的 style.css 一致）驱动。
+ */
+
+/**
+ * 技能编辑弹窗内【唯一】纵向滚动层（SkillsPage 内 .skill-edit-scroll）。
+ * 须带明确 max-height，滚轮在此层消费；子级 .mdxeditor 仅纵向撑开，不自成滚动，
+ * 避免 Lexical ContentEditable 抢滚轮导致「滑不动」。
+ */
+.skill-edit-scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+
+.skill-edit-scroll .mdxeditor {
+  overflow: visible !important;
+  min-height: min-content;
+  max-width: 100%;
+}
+
+/**
+ * 沉浸式写作：全宽背景，内容居中，无边框
+ */
+.skill-edit-scroll--immersive .skills-rich-md-wrap {
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.skill-edit-scroll--immersive .skills-rich-md-wrap.light-theme,
+.skill-edit-scroll--immersive .skills-rich-md-wrap.dark-theme {
+  background: transparent;
+  border-radius: 0;
+}
+
+.skill-edit-scroll--immersive .skills-rich-md-wrap [class*='toolbarRoot'] {
+  background-color: color-mix(in srgb, var(--surface) 85%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding-block: 0.5rem;
+  padding-inline: 1.5rem;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  justify-content: flex-start;
+}
+
+/* 工具栏内容靠左，不限制最大宽度 */
+.skill-edit-scroll--immersive .skills-rich-md-wrap [class*='toolbarRoot'] > div {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  justify-content: flex-start;
+}
+
+.skill-edit-scroll--immersive .mdxeditor {
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  padding-bottom: 4rem;
+}
+
+.skill-edit-scroll--immersive .skill-mdx-editable {
+  width: 100%;
+  max-width: 72ch;
+  margin-inline: auto;
+  padding-top: 1.5rem;
+  padding-block: 1rem;
+  padding-inline: 1.5rem;
+  font-size: 1.0625rem; /* 稍微放大一点字号，增强阅读感 */
+  line-height: 1.8; /* 增加行高，提升长文阅读体验 */
+  color: color-mix(in srgb, var(--foreground) 90%, transparent); /* 稍微柔和一点的正文颜色 */
+  font-weight: 400;
+}
+
+/* 沉浸式排版细节优化：字体大小层级、行高、垂直节律 (Vertical Rhythm) */
+.skill-edit-scroll--immersive .skill-mdx-editable p {
+  margin-top: 0;
+  margin-bottom: 1.25em; /* 统一的段落间距 */
+}
+
+.skill-edit-scroll--immersive .skill-mdx-editable h1,
+.skill-edit-scroll--immersive .skill-mdx-editable h2,
+.skill-edit-scroll--immersive .skill-mdx-editable h3,
+.skill-edit-scroll--immersive .skill-mdx-editable h4,
+.skill-edit-scroll--immersive .skill-mdx-editable h5,
+.skill-edit-scroll--immersive .skill-mdx-editable h6 {
+  color: var(--foreground);
+  font-weight: 700;
+  line-height: 1.25; /* 标题行高更紧凑 */
+  letter-spacing: -0.02em; /* 大标题稍微收紧字间距 */
+}
+
+.skill-edit-scroll--immersive .skill-mdx-editable h1 {
+  font-size: 2.25em;
+  margin-top: 2.5em; /* 顶部留白更多，与上一段隔开 */
+  margin-bottom: 1em; /* 底部留白较少，与下一段亲密 */
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.skill-edit-scroll--immersive .skill-mdx-editable h2 {
+  font-size: 1.5em;
+  margin-top: 2em;
+  margin-bottom: 0.75em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.skill-edit-scroll--immersive .skill-mdx-editable h3 {
+  font-size: 1.25em;
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+}
+
+.skill-edit-scroll--immersive .skill-mdx-editable h4 {
+  font-size: 1em;
+  margin-top: 1.25em;
+  margin-bottom: 0.5em;
+}
+
+.skill-edit-scroll--immersive .skill-mdx-editable h5 {
+  font-size: 0.875em;
+  margin-top: 1.25em;
+  margin-bottom: 0.5em;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.skill-edit-scroll--immersive .skill-mdx-editable h6 {
+  font-size: 0.875em;
+  margin-top: 1.25em;
+  margin-bottom: 0.5em;
+  color: var(--muted);
+}
+
+.skill-edit-scroll--immersive .skill-mdx-editable ul,
+.skill-edit-scroll--immersive .skill-mdx-editable ol {
+  margin-top: 0;
+  margin-bottom: 1.25em;
+  padding-left: 1.5em;
+}
+
+.skill-edit-scroll--immersive .skill-mdx-editable li {
+  margin-bottom: 0.5em; /* 列表项之间的间距稍微拉开一点，避免太挤 */
+  line-height: 1.6; /* 列表行高稍微比正文紧凑一点点 */
+}
+
+.skill-edit-scroll--immersive .skill-mdx-editable li > ul,
+.skill-edit-scroll--immersive .skill-mdx-editable li > ol {
+  margin-top: 0.5em;
+  margin-bottom: 0;
+}
+
+.skill-edit-scroll--immersive .skill-mdx-editable a {
+  color: var(--primary);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.2s ease;
+}
+
+.skill-edit-scroll--immersive .skill-mdx-editable a:hover {
+  border-bottom-color: var(--primary);
+}
+
+.skill-edit-scroll--immersive .skill-mdx-editable hr {
+  height: 1px;
+  background-color: var(--border-subtle);
+  border: none;
+  margin-block: 2em;
+}
+
+.skill-edit-scroll--immersive .skill-mdx-editable table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 1.5em;
+}
+
+.skill-edit-scroll--immersive .skill-mdx-editable th,
+.skill-edit-scroll--immersive .skill-mdx-editable td {
+  border: 1px solid var(--border-subtle);
+  padding: 0.6em 1em;
+  text-align: left;
+}
+
+.skill-edit-scroll--immersive .skill-mdx-editable th {
+  background-color: color-mix(in srgb, var(--foreground) 2%, transparent);
+  font-weight: 600;
+}
+
+.skill-edit-scroll--immersive .skill-mdx-editable img {
+  max-width: 100%;
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 12px -2px color-mix(in srgb, var(--foreground) 10%, transparent);
+  margin-block: 1em;
+}
+
+.skill-edit-scroll--immersive .skill-mdx-editable blockquote {
+  border-left: 3px solid var(--primary);
+  margin-left: 0;
+  padding-left: 1.25rem;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--primary) 4%, transparent);
+  padding-block: 0.75rem;
+  padding-right: 1rem;
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+}
+
+.skill-edit-scroll--immersive .skill-mdx-editable code {
+  font-family: var(--font-mono);
+  background: color-mix(in srgb, var(--foreground) 6%, transparent);
+  padding: 0.2em 0.4em;
+  border-radius: var(--radius-sm);
+  font-size: 0.85em;
+}
+
+.skill-edit-scroll--immersive .skill-mdx-editable pre {
+  background: color-mix(in srgb, var(--foreground) 3%, transparent);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 1.25rem;
+  overflow-x: auto;
+}
+
+.skill-edit-scroll--immersive .skill-mdx-editable pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 0.85em;
+}
+
+/* 优雅的隐藏式滚动条 */
+.skill-edit-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.skill-edit-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.skill-edit-scroll::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--foreground) 15%, transparent);
+  border-radius: 4px;
+}
+.skill-edit-scroll::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--foreground) 25%, transparent);
+}
+
+/* 隐藏 MDXEditor 默认的可能存在的边框 */
+.skill-edit-scroll--immersive .mdxeditor-root {
+  border: none !important;
+}
+
+.skills-rich-md-wrap.light-theme,
+.skills-rich-md-wrap.dark-theme {
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--foreground) 2.5%, var(--card));
+}
+
+.skills-rich-md-wrap .mdxeditor {
+  background: transparent;
+}
+
+.skills-rich-md-wrap .skill-mdx-editable {
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-relaxed);
+  /* 略收紧 MDX 默认 padding，与弹层去留白一致 */
+  padding-block: 0.5rem;
+  padding-inline: 0.625rem;
+}
+
+/* 工具栏与正文区过渡更自然（覆盖 MDX 默认 --baseBg） */
+.skills-rich-md-wrap [class*='toolbarRoot'] {
+  padding-block: 0.375rem;
+  padding-inline: 0.5rem;
+  background-color: color-mix(
+    in srgb,
+    var(--foreground) 5%,
+    var(--card)
+  );
+}

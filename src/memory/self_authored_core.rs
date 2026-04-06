@@ -8,19 +8,18 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    append_core_revision_record, compute_core_revision_governance_digest,
-    core_revision_observation_due_at, correction_pressure, has_recent_matching_adopted_change,
-    has_recent_matching_rejected_change,
-    llm_json::{get_object_string_list, get_object_text, parse_llm_json_payload, LlmJsonPayload},
-    recent_adopted_revision, render_autonomy_strategy_block, render_core_revision_governance_block,
-    render_mental_privacy_boundary_block, render_recent_persona_evidence_block,
-    render_relationship_portfolio_block, render_relationship_topology_block,
-    render_self_continuity_block, render_self_model_block, render_world_sense_block,
     AutonomyStrategy, CoreRevisionActionKind, CoreRevisionConflictClass,
     CoreRevisionCorrectionKind, CoreRevisionGovernanceDigest, CoreRevisionLedger,
     CoreRevisionLedgerStore, CoreRevisionOutcome, CoreRevisionRecord, CoreRevisionRecordChange,
     MentalPrivacyState, RecentPersonaEvidence, RelationshipPortfolio, RelationshipTopology,
-    SelfAuthoredCoreStore, SelfContinuity, SelfModel, WorldSense,
+    SelfAuthoredCoreStore, SelfContinuity, SelfModel, WorldSense, append_core_revision_record,
+    compute_core_revision_governance_digest, core_revision_observation_due_at, correction_pressure,
+    has_recent_matching_adopted_change, has_recent_matching_rejected_change,
+    llm_json::{LlmJsonPayload, get_object_string_list, get_object_text, parse_llm_json_payload},
+    recent_adopted_revision, render_autonomy_strategy_block, render_core_revision_governance_block,
+    render_mental_privacy_boundary_block, render_recent_persona_evidence_block,
+    render_relationship_portfolio_block, render_relationship_topology_block,
+    render_self_continuity_block, render_self_model_block, render_world_sense_block,
 };
 
 pub const SELF_AUTHORED_CORE_SYSTEM_PROMPT: &str = "You maintain the assistant's persistent self-authored core for the whole board-level subject, not one chat. Return JSON only with fields board_scope_decision, rationale, evidence_summary, counterevidence, proposed_actions. board_scope_decision must be revise_board, relation_local, or no_change. proposed_actions must be an array of compact action objects. Allowed action kinds are revise_identity_anchor, add_non_negotiables, remove_non_negotiables, revise_priority_constitution, revise_default_response_mode, revise_default_task_scope, revise_default_initiative_posture, revise_default_relationship_posture, revise_boundary_doctrine, revise_truth_doctrine, revise_self_preservation_doctrine, revise_repair_doctrine, revise_change_protocol. This is a constitutional revision pass, not a free rewrite. Propose only stable board-level changes that deserve cross-chat carry-forward. Use self_model, self_continuity, boundary state, relationship portfolio, relationship topology, and recent multi-turn persona evidence as grounding. Treat recent persona evidence as evidence, never automatic promotion authority. A quarantined, cooled-down, or otherwise isolated relation must not directly rewrite the board-level core. If the latest material should stay relation-local, set board_scope_decision=relation_local. If no constitutional change is warranted, set board_scope_decision=no_change. Do not copy transcripts, raw tool payloads, long quotes, or private documents.";
@@ -856,7 +855,7 @@ fn build_self_authored_core_revision_input(
 fn parse_self_authored_core_revision_response(raw: &str) -> ParsedSelfAuthoredCoreRevision {
     let payload = match parse_llm_json_payload(raw) {
         LlmJsonPayload::Absent | LlmJsonPayload::Null => {
-            return ParsedSelfAuthoredCoreRevision::default()
+            return ParsedSelfAuthoredCoreRevision::default();
         }
         LlmJsonPayload::Value(value) => value,
     };
@@ -2403,9 +2402,11 @@ mod tests {
             Some(CoreRevisionCorrectionKind::Rollback)
         );
         assert_eq!(latest.corrects_revision, Some(3));
-        assert!(latest
-            .conflict_classes
-            .contains(&CoreRevisionConflictClass::ContradictedAdoption));
+        assert!(
+            latest
+                .conflict_classes
+                .contains(&CoreRevisionConflictClass::ContradictedAdoption)
+        );
     }
 
     #[test]

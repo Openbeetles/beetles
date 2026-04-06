@@ -48,12 +48,14 @@ struct VoiceEventChannel {
 struct HttpServerSpawnContext {
     platform: Arc<dyn Platform>,
     tool_registry: Arc<beetle::tools::ToolRegistry>,
+    channel_capability_registry: Arc<beetle::ChannelCapabilityRegistry>,
     inbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     outbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     memory_store: Arc<dyn beetle::memory::MemoryStore + Send + Sync>,
     session_store: Arc<dyn beetle::memory::SessionStore + Send + Sync>,
     inbound_tx: beetle::bus::InboundTx,
     shared_config: Arc<RwLock<AppConfig>>,
+    llm_stream_enabled: bool,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     msg_id_cache: beetle::channels::QqMsgIdCache,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -274,6 +276,7 @@ fn spawn_http_config_server(
         if let Err(e) = beetle::platform::http_server::run(
             ctx.platform,
             ctx.tool_registry,
+            ctx.channel_capability_registry,
             ctx.inbound_depth,
             ctx.outbound_depth,
             ctx.memory_store,
@@ -288,6 +291,7 @@ fn spawn_http_config_server(
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             ctx.qq_secret,
             ctx.shared_config,
+            ctx.llm_stream_enabled,
         ) {
             log::warn!("[{}] HTTP config API server error: {}", TAG, e);
         }
@@ -1097,6 +1101,15 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     let pending_retry_store: Arc<dyn beetle::memory::PendingRetryStore + Send + Sync> =
         platform.pending_retry_store();
     let task_store: Arc<dyn beetle::task::TaskStore + Send + Sync> = platform.task_store();
+    let task_run_store: Arc<dyn beetle::task_execution::TaskRunStore + Send + Sync> =
+        platform.task_run_store();
+    let task_artifact_store: Arc<dyn beetle::task_execution::TaskArtifactStore + Send + Sync> =
+        platform.task_artifact_store();
+    let task_execution_ledger_store: Arc<
+        dyn beetle::task_execution::TaskExecutionLedgerStore + Send + Sync,
+    > = platform.task_execution_ledger_store();
+    let task_learning_store: Arc<dyn beetle::task_execution::TaskLearningStore + Send + Sync> =
+        platform.task_learning_store();
     let execution_state_store: Arc<dyn beetle::memory::ExecutionStateStore + Send + Sync> =
         platform.execution_state_store();
     let self_model_store: Arc<dyn beetle::memory::SelfModelStore + Send + Sync> =
@@ -1159,7 +1172,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     );
     let qq_msg_id_cache: beetle::channels::QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
     #[allow(unused_variables)]
-    let (registry, baidu_token_cache) = beetle::build_default_registry(
+    let (mut registry, baidu_token_cache) = beetle::build_default_registry(
         &config,
         beetle::DefaultRegistryDeps {
             platform: Arc::clone(&platform),
@@ -1178,6 +1191,49 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     beetle::bootstrap::init_audio_if_enabled(&platform, &config);
     let mut voice_event_tx_rx =
         build_voice_event_channel(&platform, &config, baidu_token_cache.as_ref());
+    let voice_channel_enabled = matches!(
+        voice_event_tx_rx.as_ref(),
+        Some(VoiceEventChannel {
+            speak_capable: true,
+            ..
+        })
+    );
+    let channel_capability_registry = Arc::new(beetle::build_channel_capability_registry(
+        config.as_ref(),
+        voice_channel_enabled,
+    ));
+    let capability_package_runtime_capabilities =
+        Arc::new(beetle::build_capability_package_runtime_capabilities(
+            channel_capability_registry.as_ref(),
+            config.llm_stream,
+        ));
+    registry.set_llm_visibility_overlay_provider(Arc::new({
+        let state_fs = platform.state_fs();
+        let runtime_capabilities = Arc::clone(&capability_package_runtime_capabilities);
+        move |ingress, channel| {
+            let policy = beetle::ToolPolicyContext::new(ingress, channel);
+            match beetle::build_capability_package_tool_policy_set(
+                state_fs.as_ref(),
+                runtime_capabilities.as_ref(),
+                policy.channel,
+            ) {
+                Ok(set) => set,
+                Err(error) => {
+                    log::warn!(
+                        "[capability_package] failed to load tool policy overlays for {}:{}: {}",
+                        match policy.ingress {
+                            IngressKind::User => "user",
+                            IngressKind::System => "system",
+                        },
+                        policy.channel,
+                        error
+                    );
+                    beetle::CapabilityPackageToolPolicySet::default()
+                }
+            }
+        }
+    }));
+    let registry = Arc::new(registry);
 
     if !startup_self_check(memory_store.as_ref()) {
         log::error!(
@@ -1208,12 +1264,14 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         match spawn_http_config_server(HttpServerSpawnContext {
             platform: Arc::clone(&platform),
             tool_registry: Arc::clone(&registry),
+            channel_capability_registry: Arc::clone(&channel_capability_registry),
             inbound_depth: Arc::clone(&user_inbound_depth),
             outbound_depth: Arc::clone(&outbound_depth),
             memory_store: Arc::clone(&memory_store),
             session_store: Arc::clone(&session_store),
             inbound_tx: user_inbound_tx.clone(),
             shared_config: Arc::clone(&shared_runtime_config),
+            llm_stream_enabled: config.llm_stream,
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             msg_id_cache: Arc::clone(&qq_msg_id_cache),
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -1483,47 +1541,90 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             *guard = (Some(rendered.clone()), Instant::now());
             rendered
         });
+        let get_capability_package_text: Arc<dyn Fn(&str, usize) -> Option<String> + Send + Sync> =
+            Arc::new({
+                let state_fs = platform.state_fs();
+                let runtime_capabilities = Arc::clone(&capability_package_runtime_capabilities);
+                move |channel, max_chars| {
+                    if max_chars == 0 {
+                        return None;
+                    }
+                    match beetle::build_capability_package_runtime_prompt_bundle(
+                        state_fs.as_ref(),
+                        runtime_capabilities.as_ref(),
+                        channel,
+                        max_chars,
+                    ) {
+                        Ok(bundle) if !bundle.text.trim().is_empty() => Some(bundle.text),
+                        Ok(_) => None,
+                        Err(error) => {
+                            log::warn!(
+                                "[capability_package] failed to load runtime prompt bundle for {}: {}",
+                                channel,
+                                error
+                            );
+                            None
+                        }
+                    }
+                }
+            });
         let session_max = config.session_max_messages.clamp(1, 128) as usize;
         let agent_user_inbound_tx = user_inbound_tx;
         let agent_system_inbound_tx = system_inbound_tx;
         let worker_user_inbound_tx = agent_user_inbound_tx;
-        let tg_token_for_typing = config.tg_token.clone();
-        let typing_notifier: beetle::TypingNotifier = Box::new(move |ch, cid, http| {
-            if ch == "telegram" {
-                let _ = send_chat_action(http, &tg_token_for_typing, cid, "typing");
-            }
-        });
+        let typing_notifier: Option<beetle::TypingNotifier> = channel_capability_registry
+            .get(config.enabled_channel.as_str())
+            .filter(|entry| entry.enabled && entry.contract.supports_typing_or_chat_action)
+            .and_then(|entry| match entry.id {
+                beetle::CHANNEL_TELEGRAM if !config.tg_token.trim().is_empty() => {
+                    let tg_token_for_typing = config.tg_token.clone();
+                    Some(Box::new(move |ch, cid, http| {
+                        if ch == beetle::CHANNEL_TELEGRAM {
+                            let _ = send_chat_action(http, &tg_token_for_typing, cid, "typing");
+                        }
+                    }) as beetle::TypingNotifier)
+                }
+                _ => None,
+            });
 
         // 流式编辑器：根据 enabled_channel 选择对应通道的 StreamEditor 实现。
-        let stream_editor: Option<Arc<dyn beetle::StreamEditor + Send + Sync>> =
-            if config.llm_stream {
-                let pf = Arc::clone(&platform);
-                let cfg = Arc::clone(&config);
-                let make_http: Arc<
-                    dyn Fn() -> beetle::Result<Box<dyn beetle::PlatformHttpClient>> + Send + Sync,
-                > = Arc::new(move || pf.create_interactive_http_client(cfg.as_ref()));
-                match config.enabled_channel.as_str() {
-                    "telegram" if !config.tg_token.trim().is_empty() => {
-                        Some(Arc::new(TelegramStreamEditor {
-                            token: config.tg_token.clone(),
-                            create_http: Arc::clone(&make_http),
-                        })
-                            as Arc<dyn beetle::StreamEditor + Send + Sync>)
-                    }
-                    "feishu" if !config.feishu_app_id.trim().is_empty() => {
-                        Some(Arc::new(FeishuStreamEditor {
-                            app_id: config.feishu_app_id.clone(),
-                            app_secret: config.feishu_app_secret.clone(),
-                            create_http: Arc::clone(&make_http),
-                            state: Mutex::new(FeishuStreamState { token: None }),
-                        })
-                            as Arc<dyn beetle::StreamEditor + Send + Sync>)
-                    }
-                    _ => None,
+        let stream_editor: Option<Arc<dyn beetle::StreamEditor + Send + Sync>> = if config
+            .llm_stream
+            && channel_capability_registry
+                .get(config.enabled_channel.as_str())
+                .map(|entry| entry.enabled && entry.contract.supports_stream_edit)
+                .unwrap_or(false)
+        {
+            let pf = Arc::clone(&platform);
+            let cfg = Arc::clone(&config);
+            let make_http: Arc<
+                dyn Fn() -> beetle::Result<Box<dyn beetle::PlatformHttpClient>> + Send + Sync,
+            > = Arc::new(move || pf.create_interactive_http_client(cfg.as_ref()));
+            match config.enabled_channel.as_str() {
+                beetle::CHANNEL_TELEGRAM if !config.tg_token.trim().is_empty() => {
+                    Some(Arc::new(TelegramStreamEditor {
+                        token: config.tg_token.clone(),
+                        create_http: Arc::clone(&make_http),
+                    })
+                        as Arc<dyn beetle::StreamEditor + Send + Sync>)
                 }
-            } else {
-                None
-            };
+                beetle::CHANNEL_FEISHU if !config.feishu_app_id.trim().is_empty() => {
+                    Some(Arc::new(FeishuStreamEditor {
+                        app_id: config.feishu_app_id.clone(),
+                        app_secret: config.feishu_app_secret.clone(),
+                        create_http: Arc::clone(&make_http),
+                        state: Mutex::new(FeishuStreamState { token: None }),
+                    })
+                        as Arc<dyn beetle::StreamEditor + Send + Sync>)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let stream_editor_channel = stream_editor
+            .as_ref()
+            .map(|_| Arc::<str>::from(config.enabled_channel.as_str()));
         let agent_strategy = if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
             beetle::agent::AgentRunStrategy::Embedded
         } else {
@@ -1556,6 +1657,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             skill_storage: Arc::clone(&skill_storage),
             memory_profile: platform.memory_profile(),
             get_skill_descriptions,
+            get_capability_package_text,
             session_max_messages: session_max,
             tg_group_activation: Arc::<str>::from(config.tg_group_activation.as_str()),
             important_message_store: Arc::clone(&important_message_store),
@@ -1563,11 +1665,16 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                 as Arc<dyn beetle::memory::EmotionSignalStore + Send + Sync>,
             remind_store: Arc::clone(&remind_at_store),
             task_store: Arc::clone(&task_store),
+            task_run_store: Arc::clone(&task_run_store),
+            task_artifact_store: Arc::clone(&task_artifact_store),
+            task_execution_ledger_store: Arc::clone(&task_execution_ledger_store),
+            task_learning_store: Arc::clone(&task_learning_store),
             pending_retry: Arc::clone(&pending_retry_store),
+            channel_capability_registry: Arc::clone(&channel_capability_registry),
             strategy: agent_strategy,
             llm_stream: config.llm_stream,
             stream_editor,
-            stream_editor_channel: Some(Arc::<str>::from(config.enabled_channel.as_str())),
+            stream_editor_channel,
             resolve_locale: std::sync::Arc::clone(&resolve_locale_ui),
         });
         #[cfg(feature = "cli")]
@@ -1579,6 +1686,9 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                 Arc::clone(&session_store),
                 Arc::clone(&platform),
                 Arc::clone(&registry),
+                Arc::clone(&channel_capability_registry),
+                Arc::clone(&capability_package_runtime_capabilities),
+                config.llm_stream,
                 Some(Arc::clone(&user_inbound_depth)),
                 Some(Arc::clone(&outbound_depth)),
             );
@@ -1646,7 +1756,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                     worker_system_inbound_tx,
                     system_inbound_rx,
                     worker_outbound_tx,
-                    Some(typing_notifier),
+                    typing_notifier,
                 ) {
                     log::warn!("[{}] agent_loop error: {}", tag, e);
                     beetle::state::set_last_error(&e);

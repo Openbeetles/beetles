@@ -26,6 +26,9 @@ pub struct CliContext {
     pub session: Arc<dyn SessionStore + Send + Sync>,
     pub platform: Arc<dyn crate::Platform>,
     pub tool_registry: Arc<crate::tools::ToolRegistry>,
+    pub channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
+    pub capability_package_runtime_capabilities: Arc<crate::CapabilityPackageRuntimeCapabilities>,
+    pub llm_stream_enabled: bool,
     /// 入站/出站队列深度（实时读取）；None 表示 bus 未暴露深度。
     pub inbound_depth: Option<Arc<std::sync::atomic::AtomicUsize>>,
     pub outbound_depth: Option<Arc<std::sync::atomic::AtomicUsize>>,
@@ -40,6 +43,9 @@ impl CliContext {
         session: Arc<dyn SessionStore + Send + Sync>,
         platform: Arc<dyn crate::Platform>,
         tool_registry: Arc<crate::tools::ToolRegistry>,
+        channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
+        capability_package_runtime_capabilities: Arc<crate::CapabilityPackageRuntimeCapabilities>,
+        llm_stream_enabled: bool,
         inbound_depth: Option<Arc<std::sync::atomic::AtomicUsize>>,
         outbound_depth: Option<Arc<std::sync::atomic::AtomicUsize>>,
     ) -> Self {
@@ -50,6 +56,9 @@ impl CliContext {
             session,
             platform,
             tool_registry,
+            channel_capability_registry,
+            capability_package_runtime_capabilities,
+            llm_stream_enabled,
             inbound_depth,
             outbound_depth,
         }
@@ -85,6 +94,12 @@ pub fn run_command(ctx: &CliContext, line: &str) -> String {
         "restart" => cmd_restart(ctx),
         "health" => cmd_health(ctx),
         "ops_status" => cmd_ops_status(ctx),
+        "package_status" => cmd_package_status(ctx),
+        "package_install" => cmd_package_install(ctx, args),
+        "package_enable" => cmd_package_enable(ctx, args),
+        "package_disable" => cmd_package_disable(ctx, args),
+        "package_uninstall" => cmd_package_uninstall(ctx, args),
+        "package_rollback" => cmd_package_rollback(ctx, args),
         "baseline" => cmd_baseline(ctx),
         "spiffs_stress" => cmd_spiffs_stress(ctx, args),
         "config_show" => cmd_config_show(ctx),
@@ -280,15 +295,166 @@ fn cmd_ops_status(ctx: &CliContext) -> String {
         crate::platform::operator_status::OperatorStatusInput {
             platform: ctx.platform.as_ref(),
             tool_registry: ctx.tool_registry.as_ref(),
+            channel_capability_registry: ctx.channel_capability_registry.as_ref(),
+            capability_package_runtime_capabilities: ctx
+                .capability_package_runtime_capabilities
+                .as_ref(),
+            current_channel: ctx.config.enabled_channel.as_str(),
             inbound_depth,
             outbound_depth,
             version: env!("CARGO_PKG_VERSION"),
             board_id: crate::platform::runtime_board::resolved_board_id(),
+            llm_stream_enabled: ctx.llm_stream_enabled,
         },
     ) {
         Ok(snapshot) => crate::platform::operator_status::render_operator_status_text(&snapshot),
         Err(error) => format!(
             "ops_status error: {}\n",
+            state::sanitize_error_for_log(&error)
+        ),
+    }
+}
+
+fn cmd_package_status(ctx: &CliContext) -> String {
+    match crate::build_capability_package_operator_snapshot(
+        ctx.platform.state_fs().as_ref(),
+        ctx.capability_package_runtime_capabilities.as_ref(),
+        ctx.config.enabled_channel.as_str(),
+    ) {
+        Ok(snapshot) => {
+            crate::capability_package::render_capability_package_operator_text(&snapshot)
+        }
+        Err(error) => format!(
+            "package_status error: {}\n",
+            state::sanitize_error_for_log(&error)
+        ),
+    }
+}
+
+fn cmd_package_install(ctx: &CliContext, args: Vec<&str>) -> String {
+    let path = args.join(" ").trim().to_string();
+    if path.is_empty() {
+        return "Usage: package_install <json_file>\n".into();
+    }
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(error) => return format!("package_install read error: {}\n", error),
+    };
+    let payload = match serde_json::from_str::<crate::CapabilityPackageInstallPayload>(&content) {
+        Ok(payload) => payload,
+        Err(error) => return format!("package_install parse error: {}\n", error),
+    };
+    audit_log("package_install", Some(&format!("path={}", path)), None);
+    match crate::install_capability_package(
+        ctx.platform.state_fs().as_ref(),
+        ctx.capability_package_runtime_capabilities.as_ref(),
+        &payload,
+        crate::util::current_unix_secs(),
+    ) {
+        Ok(outcome) => format!(
+            "package_install ok: id={} version={} enabled={}\n",
+            outcome.package_id, outcome.version, outcome.enabled
+        ),
+        Err(error) => format!(
+            "package_install error: {}\n",
+            state::sanitize_error_for_log(&error)
+        ),
+    }
+}
+
+fn cmd_package_enable(ctx: &CliContext, args: Vec<&str>) -> String {
+    cmd_package_toggle(ctx, args, true)
+}
+
+fn cmd_package_disable(ctx: &CliContext, args: Vec<&str>) -> String {
+    cmd_package_toggle(ctx, args, false)
+}
+
+fn cmd_package_toggle(ctx: &CliContext, args: Vec<&str>, enabled: bool) -> String {
+    let Some(package_id) = args.first().copied() else {
+        return if enabled {
+            "Usage: package_enable <package_id>\n".into()
+        } else {
+            "Usage: package_disable <package_id>\n".into()
+        };
+    };
+    audit_log(
+        if enabled {
+            "package_enable"
+        } else {
+            "package_disable"
+        },
+        None,
+        Some(package_id),
+    );
+    match crate::set_capability_package_enabled(
+        ctx.platform.state_fs().as_ref(),
+        ctx.capability_package_runtime_capabilities.as_ref(),
+        package_id,
+        enabled,
+        crate::util::current_unix_secs(),
+    ) {
+        Ok(outcome) => format!(
+            "{} ok: id={} version={} enabled={}\n",
+            if enabled {
+                "package_enable"
+            } else {
+                "package_disable"
+            },
+            outcome.package_id,
+            outcome.version,
+            outcome.enabled
+        ),
+        Err(error) => format!(
+            "{} error: {}\n",
+            if enabled {
+                "package_enable"
+            } else {
+                "package_disable"
+            },
+            state::sanitize_error_for_log(&error)
+        ),
+    }
+}
+
+fn cmd_package_uninstall(ctx: &CliContext, args: Vec<&str>) -> String {
+    let Some(package_id) = args.first().copied() else {
+        return "Usage: package_uninstall <package_id>\n".into();
+    };
+    audit_log("package_uninstall", None, Some(package_id));
+    match crate::uninstall_capability_package(
+        ctx.platform.state_fs().as_ref(),
+        package_id,
+        crate::util::current_unix_secs(),
+    ) {
+        Ok(outcome) => format!(
+            "package_uninstall ok: id={} version={}\n",
+            outcome.package_id, outcome.version
+        ),
+        Err(error) => format!(
+            "package_uninstall error: {}\n",
+            state::sanitize_error_for_log(&error)
+        ),
+    }
+}
+
+fn cmd_package_rollback(ctx: &CliContext, args: Vec<&str>) -> String {
+    let Some(package_id) = args.first().copied() else {
+        return "Usage: package_rollback <package_id>\n".into();
+    };
+    audit_log("package_rollback", None, Some(package_id));
+    match crate::rollback_capability_package(
+        ctx.platform.state_fs().as_ref(),
+        ctx.capability_package_runtime_capabilities.as_ref(),
+        package_id,
+        crate::util::current_unix_secs(),
+    ) {
+        Ok(outcome) => format!(
+            "package_rollback ok: id={} version={} enabled={}\n",
+            outcome.package_id, outcome.version, outcome.enabled
+        ),
+        Err(error) => format!(
+            "package_rollback error: {}\n",
             state::sanitize_error_for_log(&error)
         ),
     }
@@ -389,7 +555,7 @@ fn cmd_help() -> String {
         ""
     };
     format!(
-        "Commands:\n  wifi_status      - WiFi connection status\n  memory_read      - Read MEMORY.md\n  memory_write <content> - Write MEMORY.md (audit)\n  session_list     - List all sessions\n  session_clear <chat_id> - Clear session (audit)\n  heap_info        - Heap usage\n  restart          - Restart device\n  health           - WiFi, queue depth, last error\n  ops_status       - Unified operator/platform/tool status\n  baseline         - Resource, metrics, thread baseline\n  spiffs_stress [workers] [rounds] [payload_bytes] - Stress SPIFFS lock and report deltas\n  config_show      - Show full config\n  config_reset yes - Reset config to env defaults (audit)\n{}  help|?         - This help\n",
+        "Commands:\n  wifi_status      - WiFi connection status\n  memory_read      - Read MEMORY.md\n  memory_write <content> - Write MEMORY.md (audit)\n  session_list     - List all sessions\n  session_clear <chat_id> - Clear session (audit)\n  heap_info        - Heap usage\n  restart          - Restart device\n  health           - WiFi, queue depth, last error\n  ops_status       - Unified operator/platform/tool status\n  package_status   - Capability package snapshot\n  package_install <json_file> - Install capability package from JSON file\n  package_enable <package_id> - Enable capability package\n  package_disable <package_id> - Disable capability package\n  package_uninstall <package_id> - Uninstall capability package\n  package_rollback <package_id> - Roll back capability package\n  baseline         - Resource, metrics, thread baseline\n  spiffs_stress [workers] [rounds] [payload_bytes] - Stress SPIFFS lock and report deltas\n  config_show      - Show full config\n  config_reset yes - Reset config to env defaults (audit)\n{}  help|?         - This help\n",
         ota_line
     )
 }

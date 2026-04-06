@@ -67,8 +67,9 @@ pub use spiffs::{
     SpiffsCalendarProviderCredentialStore, SpiffsCalendarStore,
     SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
     SpiffsMentalPrivacyStore, SpiffsSessionStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
-    SpiffsTaskStore, SpiffsTurnLedgerStore, default_skill_storage_arc, init_spiffs,
-    spiffs_base_string, spiffs_usage,
+    SpiffsTaskArtifactStore, SpiffsTaskExecutionLedgerStore, SpiffsTaskLearningStore,
+    SpiffsTaskRunStore, SpiffsTaskStore, SpiffsTurnLedgerStore, default_skill_storage_arc,
+    init_spiffs, spiffs_base_string, spiffs_usage,
 };
 pub use state_root::state_mount_path;
 pub use wifi::{

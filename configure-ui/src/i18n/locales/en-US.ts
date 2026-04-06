@@ -664,6 +664,7 @@ export const enUS = {
       importFromUrl: 'Import from URL',
       emptyList: 'No skills yet. Import from URL or add here.',
       editSkill: 'Edit skill: {{name}}',
+      editSkillDialogTitle: 'Edit skill content',
       editCharCount: '{{current}}/{{max}} chars',
       importUrlLabel: 'URL',
       importUrlPlaceholder: 'https://...',

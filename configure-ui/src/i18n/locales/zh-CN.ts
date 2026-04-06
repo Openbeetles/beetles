@@ -661,6 +661,7 @@ export const zhCN = {
       importFromUrl: '从 URL 导入',
       emptyList: '暂无技能，可从 URL 导入或在此添加。',
       editSkill: '编辑技能：{{name}}',
+      editSkillDialogTitle: '编辑技能内容',
       editCharCount: '{{current}}/{{max}} 字',
       importUrlLabel: 'URL',
       importUrlPlaceholder: 'https://...',

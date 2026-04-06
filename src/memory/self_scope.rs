@@ -27,11 +27,7 @@ fn encode_scope_component(raw: &str) -> String {
             push_hex_escape(&mut out, byte);
         }
     }
-    if out.is_empty() {
-        "_".to_string()
-    } else {
-        out
-    }
+    if out.is_empty() { "_".to_string() } else { out }
 }
 
 fn push_hex_escape(out: &mut String, byte: u8) {

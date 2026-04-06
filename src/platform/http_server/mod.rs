@@ -45,12 +45,14 @@ fn esp_config_plane_desired() -> bool {
 pub fn run(
     platform: std::sync::Arc<dyn crate::platform::Platform>,
     tool_registry: Arc<crate::tools::ToolRegistry>,
+    channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
     inbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     outbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
     session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
     inbound_tx: crate::bus::InboundTx,
     shared_config: Arc<std::sync::RwLock<crate::config::AppConfig>>,
+    llm_stream_enabled: bool,
 ) -> Result<()> {
     let config_store = platform.config_store();
     let config_file_store: std::sync::Arc<dyn crate::config::ConfigFileStore + Send + Sync> =
@@ -59,6 +61,11 @@ pub fn run(
         ));
     let skill_storage = platform.skill_storage();
     let skill_meta_store = platform.skill_meta_store();
+    let capability_package_runtime_capabilities =
+        Arc::new(crate::build_capability_package_runtime_capabilities(
+            channel_capability_registry.as_ref(),
+            llm_stream_enabled,
+        ));
     use crate::platform::http_server::common::MAX_OPEN_SOCKETS;
     use esp_idf_svc::http::server::{Configuration, EspHttpServer};
     loop {
@@ -89,11 +96,16 @@ pub fn run(
             skill_storage: Arc::clone(&skill_storage),
             skill_meta_store: Arc::clone(&skill_meta_store),
             tool_registry: Arc::clone(&tool_registry),
+            channel_capability_registry: Arc::clone(&channel_capability_registry),
+            capability_package_runtime_capabilities: Arc::clone(
+                &capability_package_runtime_capabilities,
+            ),
             inbound_depth: Arc::clone(&inbound_depth),
             outbound_depth: Arc::clone(&outbound_depth),
             version: Arc::from(env!("CARGO_PKG_VERSION")),
             board_id: Arc::from(crate::platform::runtime_board::resolved_board_id()),
             cached_config: Arc::clone(&shared_config),
+            llm_stream_enabled,
         });
 
         let router_env = router::RouterEnv::new(inbound_tx.clone());
@@ -115,6 +127,9 @@ fn linux_max_body_bytes(path: &str, method: &str) -> usize {
     }
     match path {
         "/api/soul" | "/api/user" => crate::memory::MAX_SOUL_USER_LEN,
+        "/api/capability_packages" => {
+            crate::capability_package::MAX_CAPABILITY_PACKAGE_HTTP_BODY_LEN
+        }
         "/api/feishu/event" => 64 * 1024,
         "/api/webhook/qq" => crate::channels::QQ_WEBHOOK_BODY_MAX,
         _ => common::POST_BODY_MAX_LEN,
@@ -212,6 +227,7 @@ fn handle_linux_request(
 pub fn run(
     platform: std::sync::Arc<dyn crate::platform::Platform>,
     tool_registry: Arc<crate::tools::ToolRegistry>,
+    channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
     inbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     outbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
@@ -222,6 +238,7 @@ pub fn run(
     qq_app_id: String,
     qq_secret: String,
     shared_config: Arc<std::sync::RwLock<crate::config::AppConfig>>,
+    llm_stream_enabled: bool,
 ) -> Result<()> {
     use std::time::Duration;
 
@@ -232,6 +249,11 @@ pub fn run(
         ));
     let skill_storage = platform.skill_storage();
     let skill_meta_store = platform.skill_meta_store();
+    let capability_package_runtime_capabilities =
+        Arc::new(crate::build_capability_package_runtime_capabilities(
+            channel_capability_registry.as_ref(),
+            llm_stream_enabled,
+        ));
     let ctx = Arc::new(handlers::HandlerContext {
         config_store: Arc::clone(&config_store),
         config_file_store: Arc::clone(&config_file_store),
@@ -241,11 +263,14 @@ pub fn run(
         skill_storage: Arc::clone(&skill_storage),
         skill_meta_store: Arc::clone(&skill_meta_store),
         tool_registry,
+        channel_capability_registry,
+        capability_package_runtime_capabilities,
         inbound_depth: Arc::clone(&inbound_depth),
         outbound_depth: Arc::clone(&outbound_depth),
         version: Arc::from(env!("CARGO_PKG_VERSION")),
         board_id: Arc::from(crate::platform::runtime_board::resolved_board_id()),
         cached_config: shared_config,
+        llm_stream_enabled,
     });
     let router_env = router::RouterEnv::new(
         inbound_tx.clone(),

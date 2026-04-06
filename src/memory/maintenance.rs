@@ -6,9 +6,22 @@ use crate::error::Result;
 use crate::llm::{LlmClient, LlmHttpClient};
 use crate::orchestrator::PressureLevel;
 use crate::platform::SkillStorage;
+use crate::task_execution::{
+    TaskArtifactStore, TaskLearningMaintenanceContext, TaskLearningMaintenanceInput,
+    TaskLearningMaintenanceOutcome, TaskLearningStore, TaskRunStore, run_task_learning_maintenance,
+};
 
 use super::{
-    board_subject_scope_id, evaluate_long_term_memory_extraction_turn,
+    ExecutionStateRefreshContext, ExecutionStateRefreshInput, ExecutionStateRefreshOutcome,
+    ExecutionStateStore, InternalMemoryRoutingDecision, InternalMemoryRoutingInput,
+    LongTermMemoryExtractionStateStore, LongTermMemoryExtractionTurnInput, LongTermMemoryStore,
+    MemoryGovernanceContext, MemoryGovernanceInput, MemoryHygieneContext, MemoryProfile,
+    MemoryStore, PrivateDocStore, PrivateDocWorkspaceRefreshContext,
+    PrivateDocWorkspaceRefreshInput, PrivateDocWorkspaceRefreshOutcome,
+    PrivateGardenGovernanceContext, PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome,
+    PrivateGardenStore, SelfModelRefreshContext, SelfModelRefreshInput, SelfModelRefreshOutcome,
+    SelfModelStore, SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore,
+    TurnLedgerStore, board_subject_scope_id, evaluate_long_term_memory_extraction_turn,
     load_session_summary_snapshot, mark_long_term_memory_extraction_requested,
     memory_capability_profile, memory_policy, normalize_private_garden_doc_path,
     persist_long_term_memory_extraction_state, relationship_scope_id,
@@ -17,16 +30,7 @@ use super::{
     run_private_doc_workspace_refresh_with_state, run_private_garden_governance_with_state,
     run_self_model_refresh_with_state, run_session_summary_refresh_with_snapshot,
     should_refresh_execution_state, should_refresh_private_doc_workspace,
-    should_refresh_private_garden, should_refresh_self_model, ExecutionStateRefreshContext,
-    ExecutionStateRefreshInput, ExecutionStateRefreshOutcome, ExecutionStateStore,
-    InternalMemoryRoutingDecision, InternalMemoryRoutingInput, LongTermMemoryExtractionStateStore,
-    LongTermMemoryExtractionTurnInput, LongTermMemoryStore, MemoryGovernanceContext,
-    MemoryGovernanceInput, MemoryHygieneContext, MemoryProfile, MemoryStore, PrivateDocStore,
-    PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
-    PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
-    PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, PrivateGardenStore,
-    SelfModelRefreshContext, SelfModelRefreshInput, SelfModelRefreshOutcome, SelfModelStore,
-    SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore, TurnLedgerStore,
+    should_refresh_private_garden, should_refresh_self_model,
 };
 
 pub struct PostReplyMemoryMaintenanceContext<'a> {
@@ -41,6 +45,9 @@ pub struct PostReplyMemoryMaintenanceContext<'a> {
     pub extraction_state_store: &'a dyn LongTermMemoryExtractionStateStore,
     pub turn_ledger_store: &'a dyn TurnLedgerStore,
     pub skill_storage: &'a dyn SkillStorage,
+    pub task_run_store: &'a dyn TaskRunStore,
+    pub task_artifact_store: &'a dyn TaskArtifactStore,
+    pub task_learning_store: &'a dyn TaskLearningStore,
 }
 
 pub struct PostReplyMemoryMaintenanceInput<'a> {
@@ -76,6 +83,7 @@ pub struct PostReplyMemoryMaintenanceOutcome {
     pub factual_refresh_suggested: bool,
     pub extraction_request_outcome: LongTermMemoryRefreshRequestOutcome,
     pub hygiene_outcome: super::MemoryHygieneOutcome,
+    pub task_learning_outcome: Result<TaskLearningMaintenanceOutcome>,
 }
 
 struct MaintenanceBaseline {
@@ -117,6 +125,7 @@ struct PostReplyFollowupPasses {
     governance: super::MemoryGovernanceOutcome,
     extraction_request_outcome: LongTermMemoryRefreshRequestOutcome,
     hygiene_outcome: super::MemoryHygieneOutcome,
+    task_learning_outcome: Result<TaskLearningMaintenanceOutcome>,
 }
 
 fn collect_maintenance_baseline(
@@ -661,10 +670,27 @@ fn run_post_reply_followup_passes(
         input.now_secs,
     );
     crate::platform::task_wdt::feed_current_task();
+    let task_learning_outcome = run_task_learning_maintenance(
+        TaskLearningMaintenanceContext {
+            task_run_store: ctx.task_run_store,
+            task_artifact_store: ctx.task_artifact_store,
+            task_learning_store: ctx.task_learning_store,
+            long_term_memory_store: ctx.long_term_memory_store,
+            skill_storage: ctx.skill_storage,
+            memory_store: ctx.memory_store,
+        },
+        TaskLearningMaintenanceInput {
+            channel: input.channel,
+            chat_id: input.chat_id,
+            now_secs: input.now_secs,
+        },
+    );
+    crate::platform::task_wdt::feed_current_task();
     PostReplyFollowupPasses {
         governance,
         extraction_request_outcome,
         hygiene_outcome,
+        task_learning_outcome,
     }
 }
 
@@ -785,6 +811,7 @@ pub fn run_post_reply_memory_maintenance(
         factual_refresh_suggested: followup.governance.factual_refresh_suggested,
         extraction_request_outcome: followup.extraction_request_outcome,
         hygiene_outcome: followup.hygiene_outcome,
+        task_learning_outcome: followup.task_learning_outcome,
     }
 }
 
@@ -1203,6 +1230,89 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct StubTaskRunStore;
+
+    impl crate::task_execution::TaskRunStore for StubTaskRunStore {
+        fn get(&self, _run_id: &str) -> Result<Option<crate::task_execution::TaskRunRecord>> {
+            Ok(None)
+        }
+
+        fn upsert(&self, _record: &crate::task_execution::TaskRunRecord) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_recent(&self, _limit: usize) -> Result<Vec<crate::task_execution::TaskRunRecord>> {
+            Ok(Vec::new())
+        }
+
+        fn list_active_for_chat(
+            &self,
+            _channel: &str,
+            _chat_id: &str,
+            _limit: usize,
+        ) -> Result<Vec<crate::task_execution::TaskRunRecord>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubTaskArtifactStore;
+
+    impl crate::task_execution::TaskArtifactStore for StubTaskArtifactStore {
+        fn put(&self, _record: &crate::task_execution::TaskArtifactRecord) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_for_run(
+            &self,
+            _run_id: &str,
+            _limit: usize,
+        ) -> Result<Vec<crate::task_execution::TaskArtifactRecord>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubTaskLearningStore;
+
+    impl crate::task_execution::TaskLearningStore for StubTaskLearningStore {
+        fn get(
+            &self,
+            _learning_id: &str,
+        ) -> Result<Option<crate::task_execution::TaskLearningRecord>> {
+            Ok(None)
+        }
+
+        fn upsert(&self, _record: &crate::task_execution::TaskLearningRecord) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_recent(
+            &self,
+            _limit: usize,
+        ) -> Result<Vec<crate::task_execution::TaskLearningRecord>> {
+            Ok(Vec::new())
+        }
+
+        fn list_for_chat(
+            &self,
+            _channel: &str,
+            _chat_id: &str,
+            _limit: usize,
+        ) -> Result<Vec<crate::task_execution::TaskLearningRecord>> {
+            Ok(Vec::new())
+        }
+
+        fn list_for_run(
+            &self,
+            _run_id: &str,
+            _limit: usize,
+        ) -> Result<Vec<crate::task_execution::TaskLearningRecord>> {
+            Ok(Vec::new())
+        }
+    }
+
     struct FixedLlmClient;
 
     struct RouterSuppressingLlmClient;
@@ -1337,6 +1447,9 @@ mod tests {
                 extraction_state_store: &extraction_state_store,
                 turn_ledger_store: &turn_ledger_store,
                 skill_storage: &skill_storage,
+                task_run_store: &StubTaskRunStore,
+                task_artifact_store: &StubTaskArtifactStore,
+                task_learning_store: &StubTaskLearningStore,
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",
@@ -1435,6 +1548,9 @@ mod tests {
                 extraction_state_store: &extraction_state_store,
                 turn_ledger_store: &turn_ledger_store,
                 skill_storage: &skill_storage,
+                task_run_store: &StubTaskRunStore,
+                task_artifact_store: &StubTaskArtifactStore,
+                task_learning_store: &StubTaskLearningStore,
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",
@@ -1476,11 +1592,13 @@ mod tests {
             outcome.extraction_request_outcome,
             LongTermMemoryRefreshRequestOutcome::NotRequested
         );
-        assert!(extraction_state_store
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_none());
+        assert!(
+            extraction_state_store
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_none()
+        );
     }
 
     #[test]
@@ -1534,6 +1652,9 @@ mod tests {
                 extraction_state_store: &extraction_state_store,
                 turn_ledger_store: &turn_ledger_store,
                 skill_storage: &skill_storage,
+                task_run_store: &StubTaskRunStore,
+                task_artifact_store: &StubTaskArtifactStore,
+                task_learning_store: &StubTaskLearningStore,
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",
@@ -1623,6 +1744,9 @@ mod tests {
                 extraction_state_store: &extraction_state_store,
                 turn_ledger_store: &turn_ledger_store,
                 skill_storage: &skill_storage,
+                task_run_store: &StubTaskRunStore,
+                task_artifact_store: &StubTaskArtifactStore,
+                task_learning_store: &StubTaskLearningStore,
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",
@@ -1708,6 +1832,9 @@ mod tests {
                 extraction_state_store: &extraction_state_store,
                 turn_ledger_store: &turn_ledger_store,
                 skill_storage: &skill_storage,
+                task_run_store: &StubTaskRunStore,
+                task_artifact_store: &StubTaskArtifactStore,
+                task_learning_store: &StubTaskLearningStore,
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",
@@ -1725,14 +1852,18 @@ mod tests {
         );
 
         assert_eq!(outcome.private_garden_upstream_cleanup_result.unwrap(), 1);
-        assert!(private_garden_store
-            .read("chat-1", "journal/promoted.md")
-            .unwrap()
-            .is_none());
-        assert!(private_garden_store
-            .read("chat-1", "scratch/stale.md")
-            .unwrap()
-            .is_none());
+        assert!(
+            private_garden_store
+                .read("chat-1", "journal/promoted.md")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            private_garden_store
+                .read("chat-1", "scratch/stale.md")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -1787,6 +1918,9 @@ mod tests {
                 extraction_state_store: &extraction_state_store,
                 turn_ledger_store: &turn_ledger_store,
                 skill_storage: &skill_storage,
+                task_run_store: &StubTaskRunStore,
+                task_artifact_store: &StubTaskArtifactStore,
+                task_learning_store: &StubTaskLearningStore,
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",

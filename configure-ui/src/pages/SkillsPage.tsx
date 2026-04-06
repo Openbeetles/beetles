@@ -1,6 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useState,
+  type SyntheticEvent,
+} from "react";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
+import CircularProgress from "@mui/material/CircularProgress";
 import Button from "@mui/material/Button";
 import Dialog from "@mui/material/Dialog";
 import type { DialogProps } from "@mui/material/Dialog";
@@ -27,17 +33,22 @@ import {
 } from "../components/form";
 import { SettingsSection } from "../components/SettingsSection";
 import { useDeviceApi, type SkillItem } from "../hooks/useDeviceApi";
+import { useAppPreferences } from "../hooks/useAppPreferences";
 import { useToast } from "../hooks/useToast";
 import { createAsyncState } from "../types/asyncState";
 import {
   SETTINGS_SECTION_LIST_EMPTY_SX,
   SETTINGS_SECTION_LIST_ROW_SX,
 } from "../theme/listItemStyles";
+import { CONTENT_MAX_WIDTH } from "../config/layout";
+import { SkillRichEditor } from "./skillRichEditor";
+import "./skillsMdEditor.css";
 
 const MAX_CONTENT = 32 * 1024;
 
 export function SkillsPage() {
   const { t } = useTranslation();
+  const { themeMode } = useAppPreferences();
   const { showToast } = useToast();
   const { api, ready, hasPairing } = useDeviceApi();
   const [listState, setListState] = useState(
@@ -59,13 +70,7 @@ export function SkillsPage() {
   const [deleteTargetName, setDeleteTargetName] = useState<string | null>(null);
   const [deleteSaving, setDeleteSaving] = useState(false);
   const [discardEditOpen, setDiscardEditOpen] = useState(false);
-  const editContentInputRef = useRef<HTMLTextAreaElement | null>(null);
-
-  useEffect(() => {
-    if (!editName) return;
-    const id = setTimeout(() => editContentInputRef.current?.focus(), 120);
-    return () => clearTimeout(id);
-  }, [editName]);
+  const [editBodyLoading, setEditBodyLoading] = useState(false);
 
   const loadList = useCallback(async () => {
     if (!ready) return;
@@ -112,13 +117,26 @@ export function SkillsPage() {
     setEditName(name);
     setEditContent("");
     setEditContentInitial("");
+    setEditBodyLoading(true);
     const res = await api.skills.getContent(name);
+    setEditBodyLoading(false);
     if (res.ok) {
       const content = res.data ?? "";
       setEditContent(content);
       setEditContentInitial(content);
     }
   };
+
+  /** MDX 挂载后会做一次规范化 onChange；同步 initial，避免未编辑点取消仍提示放弃。 */
+  const handleEditContentChange = useCallback(
+    (markdown: string, initialMarkdownNormalize: boolean) => {
+      setEditContent(markdown);
+      if (initialMarkdownNormalize) {
+        setEditContentInitial(markdown);
+      }
+    },
+    [],
+  );
 
   const handleSaveEdit = async () => {
     if (!editName || editContent.length > MAX_CONTENT) return;
@@ -150,10 +168,8 @@ export function SkillsPage() {
   };
 
   const closeEditDialog = () => {
-    if (
-      editContent !== editContentInitial &&
-      editContentInitial !== undefined
-    ) {
+    if (editBodyLoading) return;
+    if (editContent !== editContentInitial) {
       setDiscardEditOpen(true);
       return;
     }
@@ -182,7 +198,7 @@ export function SkillsPage() {
   }, [importSaving, importUrl, importName, closeImportDialogFully]);
 
   const handleImportDialogClose: DialogProps["onClose"] = useCallback(
-    (_e, reason) => {
+    (_e: SyntheticEvent, reason: string) => {
       if (importSaving) return;
       if (reason === "backdropClick" || reason === "escapeKeyDown") {
         requestCloseImport();
@@ -377,64 +393,225 @@ export function SkillsPage() {
       />
       <Dialog
         open={!!editName}
-        onClose={() => !editSaving && closeEditDialog()}
-        maxWidth="sm"
+        onClose={() =>
+          !editSaving && !editBodyLoading && closeEditDialog()
+        }
+        maxWidth={false}
         fullWidth
+        scroll="paper"
         slotProps={{
+          backdrop: {
+            sx: {
+              backgroundColor: "var(--backdrop-overlay)",
+              backdropFilter: "blur(var(--glass-blur))",
+              WebkitBackdropFilter: "blur(var(--glass-blur))",
+            },
+          },
           paper: {
             sx: {
+              width: "100%",
+              maxWidth: `min(${CONTENT_MAX_WIDTH}px, calc(100vw - 24px))`,
               borderRadius: "var(--radius-card)",
               border: "none",
               backgroundColor: "var(--surface)",
               boxShadow: "none",
+              display: "flex",
+              flexDirection: "column",
+              maxHeight: "calc(100vh - 16px)",
             },
+          },
+        }}
+        sx={{
+          "& .MuiDialog-container": {
+            alignItems: "center",
           },
         }}
       >
         <DialogTitle
-          sx={{ fontSize: "var(--font-size-body-sm)", fontWeight: 700 }}
+          component="div"
+          sx={{
+            flexShrink: 0,
+            px: { xs: 2, sm: 3 },
+            pt: 4,
+            pb: 1.5,
+            backgroundColor: "var(--surface)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            textAlign: "center",
+          }}
         >
-          {editName ? t("skills.editSkill", { name: editName }) : ""}
+          {editName ? (
+            <Typography
+              component="h1"
+              sx={{
+                fontFamily: "var(--font-mono)",
+                fontSize: { xs: "var(--font-size-h2)", sm: "var(--font-size-h1)" },
+                fontWeight: 800,
+                color: "var(--foreground)",
+                lineHeight: "var(--line-height-tight)",
+                letterSpacing: "var(--letter-spacing-tight)",
+                wordBreak: "break-all",
+                textAlign: "center",
+              }}
+            >
+              {editName}
+            </Typography>
+          ) : (
+            <Typography
+              component="h1"
+              sx={{
+                fontSize: { xs: "var(--font-size-h2)", sm: "var(--font-size-h1)" },
+                fontWeight: 800,
+                color: "var(--foreground)",
+                textAlign: "center",
+                letterSpacing: "var(--letter-spacing-tight)",
+              }}
+            >
+              {t("skills.editSkillDialogTitle")}
+            </Typography>
+          )}
         </DialogTitle>
-        <DialogContent>
-          <TextField
-            inputRef={editContentInputRef}
-            multiline
-            minRows={8}
-            maxRows={20}
-            fullWidth
-            value={editContent}
-            onChange={(e) => setEditContent(e.target.value)}
-            size="small"
-            helperText={t("skills.editCharCount", {
+        <DialogContent
+          sx={{
+            flex: "1 1 auto",
+            minHeight: 0,
+            overflow: "hidden",
+            display: "flex",
+            flexDirection: "column",
+            p: 0,
+          }}
+        >
+          <Box
+            sx={{
+              flex: 1,
+              minHeight: 0,
+              display: "flex",
+              flexDirection: "column",
+              bgcolor: "var(--surface)",
+              p: 0,
+              overflow: "hidden",
+            }}
+          >
+            {/**
+             * 唯一滚动层：固定 max-height + overflow:auto，滚轮作用在本层；
+             * Lexical 编辑区不再作为滚动容器，避免吞掉滚轮。
+             */}
+            <Box
+              className="skill-edit-scroll skill-edit-scroll--immersive"
+              sx={{
+                flex: 1,
+                minHeight: 0,
+                px: 0,
+                maxHeight: {
+                  xs: "min(82vh, calc(100vh - 140px))",
+                  sm: "min(80vh, calc(100vh - 150px))",
+                },
+              }}
+            >
+              {editBodyLoading ? (
+                <Box
+                  sx={{
+                    minHeight: { xs: 200, sm: 240 },
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    py: 2,
+                  }}
+                >
+                  <CircularProgress
+                    size={32}
+                    sx={{ color: "var(--primary)" }}
+                  />
+                </Box>
+              ) : (
+                <SkillRichEditor
+                  key={editName ?? "skill-edit"}
+                  markdown={editContent}
+                  onChange={handleEditContentChange}
+                  themeMode={themeMode}
+                />
+              )}
+            </Box>
+          </Box>
+        </DialogContent>
+        <DialogActions
+          sx={{
+            flexShrink: 0,
+            px: { xs: 2, sm: 4 },
+            py: 2,
+            gap: 1.5,
+            flexWrap: "wrap",
+            justifyContent: "space-between",
+            alignItems: "center",
+            backgroundColor: "color-mix(in srgb, var(--surface) 85%, transparent)",
+            backdropFilter: "blur(12px)",
+            WebkitBackdropFilter: "blur(12px)",
+            borderTop: "1px solid var(--border-subtle)",
+          }}
+        >
+          <Typography
+            variant="caption"
+            component="span"
+            sx={{
+              color:
+                editContent.length > MAX_CONTENT
+                  ? "var(--semantic-danger)"
+                  : "var(--muted)",
+              fontWeight: editContent.length > MAX_CONTENT ? 600 : 500,
+              fontVariantNumeric: "tabular-nums",
+              letterSpacing: "var(--letter-spacing-label)",
+            }}
+          >
+            {t("skills.editCharCount", {
               current: editContent.length,
               max: MAX_CONTENT,
             })}
+          </Typography>
+          <Box
             sx={{
-              mt: 1,
-              "& textarea": {
-                fontFamily: "var(--font-mono)",
-                fontSize: "var(--font-size-body)",
-              },
+              display: "flex",
+              gap: 1,
+              flexWrap: "wrap",
+              ml: { xs: 0, sm: "auto" },
             }}
-          />
-        </DialogContent>
-        <DialogActions sx={{ px: 2.5, pb: 2 }}>
-          <Button
-            onClick={closeEditDialog}
-            disabled={editSaving}
-            sx={{ borderRadius: "var(--radius-control)" }}
           >
-            {t("common.cancel")}
-          </Button>
-          <Button
-            variant="contained"
-            onClick={handleSaveEdit}
-            disabled={editSaving}
-            sx={{ borderRadius: "var(--radius-control)" }}
-          >
-            {editSaving ? t("common.saving") : t("common.save")}
-          </Button>
+            <Button
+              variant="text"
+              onClick={closeEditDialog}
+              disabled={editSaving || editBodyLoading}
+              sx={{
+                borderRadius: "var(--radius-control)",
+                textTransform: "none",
+                fontWeight: 600,
+                color: "var(--muted)",
+                "&:hover": {
+                  bgcolor: "color-mix(in srgb, var(--foreground) 6%, transparent)",
+                },
+              }}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              variant="contained"
+              onClick={handleSaveEdit}
+              disableElevation
+              disabled={
+                editSaving ||
+                editBodyLoading ||
+                editContent.length > MAX_CONTENT
+              }
+              sx={{
+                borderRadius: "var(--radius-control)",
+                textTransform: "none",
+                fontWeight: 600,
+                boxShadow: "none",
+                "&:hover": { boxShadow: "none" },
+              }}
+            >
+              {editSaving ? t("common.saving") : t("common.save")}
+            </Button>
+          </Box>
         </DialogActions>
       </Dialog>
 

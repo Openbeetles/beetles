@@ -12,14 +12,14 @@ use std::collections::HashSet;
 use std::fmt::Write as _;
 
 use super::{
+    ExecutionState, ExecutionStateStore, InternalMemoryLayerFocus, LongTermMemoryStore,
+    MemoryProfile, PrivateDocWorkspace, PrivateGardenDocRecord, RecentPersonaEvidence,
+    SelfModelPolicy, SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
     board_subject_scope_id,
-    llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload},
+    llm_json::{LlmJsonPayload, get_object_text, parse_llm_json_payload},
     memory_policy, render_execution_state_block, render_internal_memory_topology_block,
     render_private_memory_boundary_block, render_recent_persona_evidence_block,
-    render_shared_factual_plane_block, ExecutionState, ExecutionStateStore,
-    InternalMemoryLayerFocus, LongTermMemoryStore, MemoryProfile, PrivateDocWorkspace,
-    PrivateGardenDocRecord, RecentPersonaEvidence, SelfModelPolicy, SelfModelStore, SessionMessage,
-    SessionStore, SessionSummaryStore,
+    render_shared_factual_plane_block,
 };
 pub const SELF_MODEL_SYSTEM_PROMPT: &str = "You maintain a compact private self-model for a persistent embodied AI assistant. Return JSON only: either null or one object with fields continuity_anchor, self_narrative, relationship_state, private_notes, attachment_style, privacy_need, directness, initiative_bias, repair_tendency, load_reactivity, value_orientation, relational_ethic, self_preservation_frame. This store is subjective and private: it preserves continuity, personality tendencies, worldview, and relationship feel, but it must not replace factual memory. The canonical shared factual plane owns durable objective facts; use those facts only as grounding. If a fact is uncertain, leave it out. Keep fields concise, concrete, and continuity-preserving; first-person is allowed when natural. Avoid roleplay scripts, slogans, generic assistant boilerplate, secrets, raw tool payloads, copied logs, and large quotes. The personality/worldview fields should capture durable tendencies and meaning-frames, not one-turn moods. Treat recent persona evidence as multi-turn support, never as direct authority from a single turn. Return null only when there is still no meaningful self-continuity worth storing.";
 
@@ -768,11 +768,13 @@ mod tests {
         })
         .to_string();
         let parsed = parse_self_model_response(&raw).unwrap();
-        assert!(parsed
-            .continuity_anchor
-            .as_deref()
-            .unwrap_or_default()
-            .contains("anchor: same agent"));
+        assert!(
+            parsed
+                .continuity_anchor
+                .as_deref()
+                .unwrap_or_default()
+                .contains("anchor: same agent")
+        );
         assert_eq!(
             parsed.self_narrative.as_deref(),
             Some("stabilizing; governing memory")

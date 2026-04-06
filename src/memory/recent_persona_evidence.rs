@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use super::{turn_ledger_observed_at_ms, TurnLedger, TurnLedgerStore, TurnPersonaPressureLevel};
+use super::{TurnLedger, TurnLedgerStore, TurnPersonaPressureLevel, turn_ledger_observed_at_ms};
 
 pub const RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS: usize = 12;
 pub const RECENT_PERSONA_EVIDENCE_HISTORY_LOOKBACK: usize = 32;
@@ -497,9 +497,11 @@ mod tests {
         );
         assert_eq!(evidence.repeated_task_scope, "brief");
         assert_eq!(evidence.repeated_relationship_posture, "guarded_warm");
-        assert!(evidence
-            .volatility_flags
-            .contains(&"reply_scope_mixed".to_string()));
+        assert!(
+            evidence
+                .volatility_flags
+                .contains(&"reply_scope_mixed".to_string())
+        );
     }
 
     #[test]

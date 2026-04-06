@@ -1,9 +1,21 @@
 //! Unified operator-facing status contract for HTTP and CLI.
 
 use crate::Platform;
+use crate::capability_package::{
+    CapabilityPackageOperatorSnapshot, CapabilityPackageRuntimeCapabilities,
+    build_capability_package_operator_snapshot, render_capability_package_operator_text,
+};
+use crate::channel_capability::{
+    ChannelCapabilityRegistry, ChannelCapabilitySnapshot,
+    build_channel_capability_snapshots_for_registry,
+};
 use crate::memory::MemoryProfile;
 use crate::orchestrator;
 use crate::runtime;
+use crate::task_execution::{
+    TaskExecutionOperatorSnapshot, build_task_execution_operator_snapshot,
+    render_task_execution_operator_text,
+};
 use crate::tools::{ToolCatalogEntry, ToolExecutionGovernanceState, ToolRegistry};
 use serde::Serialize;
 
@@ -13,10 +25,14 @@ const REL_DIR_MANUAL_CONTINUITY_SNAPSHOTS: &str = "memory/continuity_snapshots/m
 pub struct OperatorStatusInput<'a> {
     pub platform: &'a dyn Platform,
     pub tool_registry: &'a ToolRegistry,
+    pub channel_capability_registry: &'a ChannelCapabilityRegistry,
+    pub capability_package_runtime_capabilities: &'a CapabilityPackageRuntimeCapabilities,
+    pub current_channel: &'a str,
     pub inbound_depth: usize,
     pub outbound_depth: usize,
     pub version: &'a str,
     pub board_id: &'a str,
+    pub llm_stream_enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -60,6 +76,10 @@ pub struct OperatorStatusSnapshot {
     pub threads: runtime::ThreadRegistrySnapshot,
     pub runtime_mode: runtime::thread_registry::RuntimeModeSnapshot,
     pub continuity_tooling: OperatorContinuityTooling,
+    pub task_execution: TaskExecutionOperatorSnapshot,
+    pub capability_packages: CapabilityPackageOperatorSnapshot,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<ChannelCapabilitySnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolCatalogEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -89,6 +109,20 @@ pub fn build_operator_status(
         })
         .collect::<Vec<_>>();
     let audio_caps = input.platform.audio_duplex_capabilities();
+    let task_execution = build_task_execution_operator_snapshot(
+        input.platform.task_run_store().as_ref(),
+        input.platform.task_artifact_store().as_ref(),
+        input.platform.task_learning_store().as_ref(),
+    )?;
+    let capability_packages = build_capability_package_operator_snapshot(
+        input.platform.state_fs().as_ref(),
+        input.capability_package_runtime_capabilities,
+        input.current_channel,
+    )?;
+    let channels = build_channel_capability_snapshots_for_registry(
+        input.channel_capability_registry,
+        input.llm_stream_enabled,
+    );
     Ok(OperatorStatusSnapshot {
         platform_contract: OperatorPlatformContract {
             board_id: input.board_id.to_string(),
@@ -122,6 +156,9 @@ pub fn build_operator_status(
             saved_snapshot_count: saved_snapshots.len(),
             saved_snapshots,
         },
+        task_execution,
+        capability_packages,
+        channels,
         tools: input.tool_registry.tool_catalog()?,
         tool_governance,
     })
@@ -160,6 +197,33 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
             governance.emergency_stop.active,
             governance.breakers.len(),
             governance.recent_records.len(),
+        ));
+    }
+    out.push_str(&render_task_execution_operator_text(
+        &snapshot.task_execution,
+    ));
+    out.push_str(&render_capability_package_operator_text(
+        &snapshot.capability_packages,
+    ));
+    out.push_str("  channels:\n");
+    for channel in &snapshot.channels {
+        out.push_str(&format!(
+            "    - {} | configured={} enabled={} primary={} supplemental={} edit={} stream_edit={} explicit_target={} typing={} stream_edit_active={} degraded={}\n",
+            channel.id,
+            channel.configured,
+            channel.enabled,
+            channel.supports_primary_reply,
+            channel.supports_supplemental_reply,
+            channel.supports_edit,
+            channel.supports_stream_edit,
+            channel.supports_explicit_target,
+            channel.supports_typing_or_chat_action,
+            channel.stream_edit_active,
+            if channel.degraded_reasons.is_empty() {
+                "none".to_string()
+            } else {
+                channel.degraded_reasons.join(",")
+            }
         ));
     }
     out.push_str("  tools:\n");

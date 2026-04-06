@@ -108,6 +108,36 @@ impl Tool for MessageTool {
                 ));
             }
         };
+        let capability = ctx.channel_capability(&channel).ok_or_else(|| {
+            Error::config(
+                "tool_message",
+                "target channel capability is unavailable in this runtime context",
+            )
+        })?;
+        if !capability.enabled {
+            return Err(Error::config(
+                "tool_message",
+                "target channel is not enabled in this runtime context",
+            ));
+        }
+        if primary && !capability.contract.supports_primary_reply {
+            return Err(Error::config(
+                "tool_message",
+                "target channel does not support primary reply delivery",
+            ));
+        }
+        if !primary && !capability.contract.supports_supplemental_reply {
+            return Err(Error::config(
+                "tool_message",
+                "target channel does not support supplemental reply delivery",
+            ));
+        }
+        if !current_target && !capability.contract.supports_explicit_target {
+            return Err(Error::config(
+                "tool_message",
+                "target channel does not support explicit outbound targets",
+            ));
+        }
         if current_target && !ctx.supports_current_chat_outbound_message() {
             return Err(Error::config(
                 "tool_message",
@@ -206,12 +236,17 @@ impl Tool for MessageTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channel_capability::{
+        ChannelCapabilityContract, ChannelCapabilityEntry, ChannelDeliveryOrderingModel,
+    };
     use crate::platform::ResponseBody;
     use crate::tools::ToolContext;
+    use std::collections::HashMap;
 
     struct StubToolContext {
         current_channel: Option<String>,
         current_chat_id: Option<String>,
+        channel_capabilities: HashMap<String, ChannelCapabilityEntry>,
         supports_current_chat_outbound_message: bool,
         supports_current_chat_primary_reply: bool,
         supports_explicit_outbound_message: bool,
@@ -244,6 +279,13 @@ mod tests {
 
         fn current_channel(&self) -> Option<&str> {
             self.current_channel.as_deref()
+        }
+
+        fn channel_capability(
+            &self,
+            channel: &str,
+        ) -> Option<crate::channel_capability::ChannelCapabilityEntry> {
+            self.channel_capabilities.get(channel).copied()
         }
 
         fn supports_current_chat_outbound_message(&self) -> bool {
@@ -293,11 +335,53 @@ mod tests {
         }
     }
 
+    fn capability_entry(
+        id: &'static str,
+        enabled: bool,
+        supports_primary_reply: bool,
+        supports_supplemental_reply: bool,
+        supports_explicit_target: bool,
+    ) -> ChannelCapabilityEntry {
+        ChannelCapabilityEntry {
+            id,
+            configured: enabled,
+            enabled,
+            contract: ChannelCapabilityContract {
+                supports_primary_reply,
+                supports_supplemental_reply,
+                supports_edit: false,
+                supports_stream_edit: false,
+                supports_explicit_target,
+                supports_attachment: false,
+                supports_typing_or_chat_action: false,
+                max_text_bytes: 4096,
+                delivery_ordering_model: ChannelDeliveryOrderingModel::AppendOnly,
+            },
+        }
+    }
+
+    fn capability_map(
+        entries: &[ChannelCapabilityEntry],
+    ) -> HashMap<String, ChannelCapabilityEntry> {
+        entries
+            .iter()
+            .copied()
+            .map(|entry| (entry.id.to_string(), entry))
+            .collect()
+    }
+
     #[test]
     fn primary_current_message_marks_current_chat_reply() {
         let mut ctx = StubToolContext {
             current_channel: Some("qq_channel".to_string()),
             current_chat_id: Some("chat-1".to_string()),
+            channel_capabilities: capability_map(&[capability_entry(
+                "qq_channel",
+                true,
+                true,
+                true,
+                true,
+            )]),
             supports_current_chat_outbound_message: true,
             supports_current_chat_primary_reply: true,
             supports_explicit_outbound_message: false,
@@ -325,6 +409,10 @@ mod tests {
         let mut ctx = StubToolContext {
             current_channel: Some("qq_channel".to_string()),
             current_chat_id: Some("chat-1".to_string()),
+            channel_capabilities: capability_map(&[
+                capability_entry("qq_channel", true, true, true, true),
+                capability_entry("telegram", true, true, true, true),
+            ]),
             supports_current_chat_outbound_message: true,
             supports_current_chat_primary_reply: false,
             supports_explicit_outbound_message: true,
@@ -358,6 +446,13 @@ mod tests {
         let mut ctx = StubToolContext {
             current_channel: Some("qq_channel".to_string()),
             current_chat_id: Some("chat-1".to_string()),
+            channel_capabilities: capability_map(&[capability_entry(
+                "qq_channel",
+                true,
+                true,
+                true,
+                true,
+            )]),
             supports_current_chat_outbound_message: true,
             supports_current_chat_primary_reply: false,
             supports_explicit_outbound_message: false,
@@ -377,6 +472,10 @@ mod tests {
         let mut ctx = StubToolContext {
             current_channel: Some("qq_channel".to_string()),
             current_chat_id: Some("chat-1".to_string()),
+            channel_capabilities: capability_map(&[
+                capability_entry("qq_channel", true, true, true, true),
+                capability_entry("telegram", true, true, true, true),
+            ]),
             supports_current_chat_outbound_message: false,
             supports_current_chat_primary_reply: false,
             supports_explicit_outbound_message: false,
@@ -399,6 +498,10 @@ mod tests {
         let mut ctx = StubToolContext {
             current_channel: Some("qq_channel".to_string()),
             current_chat_id: Some("chat-1".to_string()),
+            channel_capabilities: capability_map(&[
+                capability_entry("qq_channel", true, true, true, true),
+                capability_entry("telegram", true, true, true, true),
+            ]),
             supports_current_chat_outbound_message: true,
             supports_current_chat_primary_reply: true,
             supports_explicit_outbound_message: true,
@@ -425,6 +528,13 @@ mod tests {
         let mut ctx = StubToolContext {
             current_channel: Some("qq_channel".to_string()),
             current_chat_id: Some("chat-1".to_string()),
+            channel_capabilities: capability_map(&[capability_entry(
+                "qq_channel",
+                true,
+                true,
+                true,
+                true,
+            )]),
             supports_current_chat_outbound_message: false,
             supports_current_chat_primary_reply: false,
             supports_explicit_outbound_message: false,
@@ -439,6 +549,33 @@ mod tests {
                 &mut ctx,
             )
             .expect_err("current message should fail");
+
+        assert_eq!(err.stage(), "tool_message");
+    }
+
+    #[test]
+    fn explicit_message_rejects_channel_without_explicit_target_contract() {
+        let mut ctx = StubToolContext {
+            current_channel: Some("qq_channel".to_string()),
+            current_chat_id: Some("chat-1".to_string()),
+            channel_capabilities: capability_map(&[
+                capability_entry("qq_channel", true, true, true, true),
+                capability_entry("dingtalk", true, true, true, false),
+            ]),
+            supports_current_chat_outbound_message: true,
+            supports_current_chat_primary_reply: true,
+            supports_explicit_outbound_message: true,
+            outbound_message_budget: 2,
+            outbound_message_count: 0,
+            current_primary_message_delivered: false,
+        };
+        let tool = MessageTool;
+        let err = tool
+            .execute_outcome(
+                r#"{"content":"ping","target":"explicit","channel":"dingtalk","chat_id":"chat-2"}"#,
+                &mut ctx,
+            )
+            .expect_err("explicit contract denial should fail");
 
         assert_eq!(err.stage(), "tool_message");
     }

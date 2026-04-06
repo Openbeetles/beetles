@@ -1,5 +1,6 @@
 //! 按接口域拆分的 handler 逻辑；mod.rs 只做路由注册与配对检查，具体响应体由各子模块生成。
 
+use crate::CapabilityPackageRuntimeCapabilities;
 use crate::config::{AppConfig, ConfigFileStore};
 use crate::platform::fetch_url::fetch_url_with_client;
 use crate::platform::{ConfigStore, Platform, SkillMetaStore, SkillStorage};
@@ -18,11 +19,14 @@ pub struct HandlerContext {
     pub skill_storage: Arc<dyn SkillStorage + Send + Sync>,
     pub skill_meta_store: Arc<dyn SkillMetaStore + Send + Sync>,
     pub tool_registry: Arc<crate::tools::ToolRegistry>,
+    pub channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
+    pub capability_package_runtime_capabilities: Arc<CapabilityPackageRuntimeCapabilities>,
     pub inbound_depth: Arc<AtomicUsize>,
     pub outbound_depth: Arc<AtomicUsize>,
     pub version: Arc<str>,
     pub board_id: Arc<str>,
     pub cached_config: Arc<RwLock<AppConfig>>,
+    pub llm_stream_enabled: bool,
 }
 
 impl HandlerContext {
@@ -51,6 +55,7 @@ impl HandlerContext {
     }
 }
 
+pub mod capability_packages;
 pub mod channel_connectivity;
 pub mod config;
 pub mod config_page;

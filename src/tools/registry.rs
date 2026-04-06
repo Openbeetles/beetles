@@ -17,6 +17,15 @@ use std::sync::Arc;
 
 pub const DEFAULT_LLM_TOOL_SPECS_MAX_TOTAL_LEN: usize = 32 * 1024;
 
+type LlmVisibilityOverlayProvider = Arc<
+    dyn Fn(
+            crate::bus::IngressKind,
+            &str,
+        ) -> crate::capability_package::CapabilityPackageToolPolicySet
+        + Send
+        + Sync,
+>;
+
 struct RegisteredTool {
     tool: Box<dyn Tool>,
     llm_spec: LlmToolSpec,
@@ -47,6 +56,7 @@ pub struct ToolCatalogEntry {
 pub struct ToolRegistry {
     tools: IndexMap<&'static str, RegisteredTool>,
     execution_governance: Option<Arc<ToolExecutionGovernance>>,
+    llm_visibility_overlay_provider: Option<LlmVisibilityOverlayProvider>,
 }
 
 impl Default for ToolRegistry {
@@ -60,6 +70,7 @@ impl ToolRegistry {
         Self {
             tools: IndexMap::new(),
             execution_governance: None,
+            llm_visibility_overlay_provider: None,
         }
     }
 
@@ -69,6 +80,20 @@ impl ToolRegistry {
     ) -> Self {
         self.execution_governance = Some(execution_governance);
         self
+    }
+
+    pub fn set_llm_visibility_overlay_provider(
+        &mut self,
+        provider: Arc<
+            dyn Fn(
+                    crate::bus::IngressKind,
+                    &str,
+                ) -> crate::capability_package::CapabilityPackageToolPolicySet
+                + Send
+                + Sync,
+        >,
+    ) {
+        self.llm_visibility_overlay_provider = Some(provider);
     }
 
     pub fn register(&mut self, tool: Box<dyn Tool>) {
@@ -110,9 +135,11 @@ impl ToolRegistry {
 
     /// 该工具在本次 LLM 请求上下文中是否可见。
     pub fn is_llm_tool_visible(&self, name: &str, policy: &ToolPolicyContext<'_>) -> bool {
-        self.tools
-            .get(name)
-            .is_some_and(|entry| entry.metadata.is_exposed_to_llm(policy))
+        let Some(entry) = self.tools.get(name) else {
+            return false;
+        };
+        let overlay_set = self.llm_visibility_overlay_set(policy);
+        self.is_entry_llm_visible(entry, name, policy, overlay_set.as_ref())
     }
 
     /// 生成供 LLM 默认调用的 tool specs。
@@ -129,8 +156,9 @@ impl ToolRegistry {
     ) -> Vec<LlmToolSpec> {
         let mut out = Vec::with_capacity(self.tools.len());
         let mut len = 0usize;
-        for entry in self.tools.values() {
-            if !entry.metadata.is_exposed_to_llm(policy) {
+        let overlay_set = self.llm_visibility_overlay_set(policy);
+        for (name, entry) in &self.tools {
+            if !self.is_entry_llm_visible(entry, name, policy, overlay_set.as_ref()) {
                 continue;
             }
             let add_len = entry.llm_spec.name.len()
@@ -148,9 +176,10 @@ impl ToolRegistry {
 
     /// 当前上下文下是否存在至少一个可暴露给 LLM 的工具。
     pub fn has_llm_visible_tools(&self, policy: &ToolPolicyContext<'_>) -> bool {
-        self.tools
-            .values()
-            .any(|entry| entry.metadata.is_exposed_to_llm(policy))
+        let overlay_set = self.llm_visibility_overlay_set(policy);
+        self.tools.iter().any(|(name, entry)| {
+            self.is_entry_llm_visible(entry, name, policy, overlay_set.as_ref())
+        })
     }
 
     /// 按 name 执行工具；args 超限返回 Error::Config；返回值在 Registry 内截断至 MAX_TOOL_RESULT_LEN。
@@ -277,6 +306,9 @@ impl ToolRegistry {
         let user_policy = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
         let system_policy = ToolPolicyContext::new(crate::bus::IngressKind::System, "telegram");
         let internal_policy = ToolPolicyContext::new(crate::bus::IngressKind::System, "cron");
+        let user_overlay_set = self.llm_visibility_overlay_set(&user_policy);
+        let system_overlay_set = self.llm_visibility_overlay_set(&system_policy);
+        let internal_overlay_set = self.llm_visibility_overlay_set(&internal_policy);
         let mut out = Vec::with_capacity(self.tools.len());
         for (name, entry) in &self.tools {
             let metadata = entry.metadata;
@@ -301,9 +333,24 @@ impl ToolRegistry {
                 approval_mode: shape.approval_mode.label().to_string(),
                 rollback_kind: shape.rollback_kind.label().to_string(),
                 requires_network: entry.requires_network,
-                llm_visible_user: metadata.is_exposed_to_llm(&user_policy),
-                llm_visible_system: metadata.is_exposed_to_llm(&system_policy),
-                llm_visible_internal_system: metadata.is_exposed_to_llm(&internal_policy),
+                llm_visible_user: self.is_entry_llm_visible(
+                    entry,
+                    name,
+                    &user_policy,
+                    user_overlay_set.as_ref(),
+                ),
+                llm_visible_system: self.is_entry_llm_visible(
+                    entry,
+                    name,
+                    &system_policy,
+                    system_overlay_set.as_ref(),
+                ),
+                llm_visible_internal_system: self.is_entry_llm_visible(
+                    entry,
+                    name,
+                    &internal_policy,
+                    internal_overlay_set.as_ref(),
+                ),
                 governance_breaker_tripped: breaker_tripped,
                 governance_last_status: last_record.map(|record| record.status.label().to_string()),
                 governance_last_reason: last_record
@@ -313,6 +360,28 @@ impl ToolRegistry {
             });
         }
         Ok(out)
+    }
+
+    fn llm_visibility_overlay_set(
+        &self,
+        policy: &ToolPolicyContext<'_>,
+    ) -> Option<crate::capability_package::CapabilityPackageToolPolicySet> {
+        self.llm_visibility_overlay_provider
+            .as_ref()
+            .map(|provider| provider(policy.ingress, policy.channel))
+    }
+
+    fn is_entry_llm_visible(
+        &self,
+        entry: &RegisteredTool,
+        tool_name: &str,
+        policy: &ToolPolicyContext<'_>,
+        overlay_set: Option<&crate::capability_package::CapabilityPackageToolPolicySet>,
+    ) -> bool {
+        let base_visible = entry.metadata.is_exposed_to_llm(policy);
+        overlay_set.map_or(base_visible, |overlays| {
+            overlays.llm_visibility_for(tool_name, policy, base_visible)
+        })
     }
 }
 
@@ -443,6 +512,10 @@ fn register_core_tools(
         platform.relationship_constitution_store(),
         platform.relationship_portfolio_store(),
         platform.relationship_topology_store(),
+        platform.task_run_store(),
+        platform.task_artifact_store(),
+        platform.task_execution_ledger_store(),
+        platform.task_learning_store(),
         platform.skill_storage(),
         Arc::clone(tool_execution_governance),
     )));

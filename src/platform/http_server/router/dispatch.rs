@@ -626,6 +626,27 @@ pub fn dispatch(
                 body.into_bytes(),
             ))
         }
+        ("GET", "/api/capability_packages") => {
+            if let Some(r) = auth::require_activated(store) {
+                return Ok(api_to_out(r));
+            }
+            let body = handlers::capability_packages::get(ctx)
+                .map_err(|e| err_other("http_router_dispatch", e))?;
+            Ok(OutgoingResponse::json(
+                200,
+                "OK",
+                CORS_HEADERS,
+                body.into_bytes(),
+            ))
+        }
+        ("POST", "/api/capability_packages") => {
+            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
+                return Ok(o);
+            }
+            let body_str = utf8_body(&incoming.body)?;
+            let r = handlers::capability_packages::post(ctx, body_str);
+            Ok(api_to_out(r))
+        }
         ("GET", "/api/skills") => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));

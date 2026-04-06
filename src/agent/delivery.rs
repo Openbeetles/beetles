@@ -42,6 +42,7 @@ pub(crate) struct DeliverySession<'a> {
     mode: DeliveryMode<'a>,
     outbound_tx: &'a OutboundTx,
     req_id: &'a str,
+    policy: DeliveryPolicy,
 }
 
 enum DeliveryMode<'a> {
@@ -109,17 +110,35 @@ struct WaitingNoticeJob {
     shared: Weak<QueuedDeliveryShared>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DeliveryPolicy {
+    supports_current_primary: bool,
+    supports_current_supplemental: bool,
+}
+
 impl<'a> DeliverySession<'a> {
     pub(crate) fn new(
         msg: &'a PcMsg,
         req_id: &'a str,
         outbound_tx: &'a OutboundTx,
         editor: Option<&'a (dyn StreamEditor + Send + Sync)>,
+        channel_capability: Option<crate::ChannelCapabilityEntry>,
         loc: UiLocale,
     ) -> Self {
-        let mode = if msg.ingress != IngressKind::User || msg.channel.as_ref() == "voice" {
+        let policy = channel_capability
+            .filter(|entry| entry.enabled && msg.ingress == IngressKind::User)
+            .map(|entry| DeliveryPolicy {
+                supports_current_primary: entry.contract.supports_primary_reply,
+                supports_current_supplemental: entry.contract.supports_supplemental_reply,
+            })
+            .unwrap_or_default();
+        let mode = if !policy.supports_current_primary && !policy.supports_current_supplemental {
             DeliveryMode::Silent
-        } else if let Some(editor) = editor {
+        } else if let Some(editor) = editor.filter(|_| {
+            channel_capability
+                .map(|entry| entry.enabled && entry.contract.supports_stream_edit)
+                .unwrap_or(false)
+        }) {
             DeliveryMode::Edit(EditDelivery {
                 chat_id: msg.chat_id.as_ref(),
                 editor,
@@ -140,19 +159,28 @@ impl<'a> DeliverySession<'a> {
                 lifecycle: DeliveryLifecycle::Open,
                 last_visible_text: String::new(),
                 report: DeliveryReport::default(),
-                shared: spawn_waiting_notice(
-                    outbound_tx.clone(),
-                    Arc::clone(&msg.channel),
-                    Arc::clone(&msg.chat_id),
-                    req_id,
-                    tr(UiMessage::AgentStillWorking, loc),
-                ),
+                shared: if policy.supports_current_supplemental {
+                    spawn_waiting_notice(
+                        outbound_tx.clone(),
+                        Arc::clone(&msg.channel),
+                        Arc::clone(&msg.chat_id),
+                        req_id,
+                        tr(UiMessage::AgentStillWorking, loc),
+                    )
+                } else {
+                    Arc::new(QueuedDeliveryShared {
+                        visible_updates_sent: AtomicU8::new(0),
+                        waiting_notice_canceled: AtomicBool::new(true),
+                        waiting_notice_sent: AtomicBool::new(false),
+                    })
+                },
             })
         };
         Self {
             mode,
             outbound_tx,
             req_id,
+            policy,
         }
     }
 
@@ -172,6 +200,9 @@ impl<'a> DeliverySession<'a> {
     }
 
     pub(crate) fn emit_progress(&mut self, content: &str) {
+        if !self.policy.supports_current_supplemental {
+            return;
+        }
         let text = normalize_visible_update(content, MAX_QUEUED_PROGRESS_CHARS);
         if text.is_empty() {
             return;
@@ -186,6 +217,9 @@ impl<'a> DeliverySession<'a> {
     }
 
     pub(crate) fn emit_partial(&mut self, content: &str) {
+        if !self.policy.supports_current_supplemental {
+            return;
+        }
         let text = normalize_visible_update(content, MAX_QUEUED_PARTIAL_CHARS);
         if text.chars().count() < MIN_PARTIAL_VISIBLE_CHARS {
             return;
@@ -204,6 +238,13 @@ impl<'a> DeliverySession<'a> {
 
     /// 返回 true 表示最终答复已经直接交付到通道，外层应跳过 outbound_tx。
     pub(crate) fn finalize(&mut self, _final_content: &str) -> bool {
+        if !self.policy.supports_current_primary {
+            if let DeliveryMode::Queued(ref mut delivery) = self.mode {
+                delivery.cancel_waiting_notice();
+                delivery.finalize();
+            }
+            return false;
+        }
         match self.mode {
             DeliveryMode::Edit(ref mut delivery) => delivery.finalize(_final_content),
             DeliveryMode::Queued(ref mut delivery) => {
@@ -216,6 +257,9 @@ impl<'a> DeliverySession<'a> {
 
     /// 直接向当前聊天交付主答复，并进入“本轮已交付”状态，后续 progress/finalize 不再重复发。
     pub(crate) fn deliver_current_primary(&mut self, content: &str) -> Result<bool> {
+        if !self.policy.supports_current_primary {
+            return Ok(false);
+        }
         let text = normalize_visible_update(content, crate::bus::MAX_CONTENT_LEN);
         if text.is_empty() {
             return Ok(false);
@@ -240,6 +284,10 @@ impl<'a> DeliverySession<'a> {
         match &intent.target {
             ToolOutboundTarget::CurrentChat => match intent.delivery_kind {
                 ToolOutboundDeliveryKind::Primary => {
+                    if !self.policy.supports_current_primary {
+                        self.bump_tool_intent_suppressed();
+                        return Ok(ToolIntentDelivery::Suppressed);
+                    }
                     if self.deliver_current_primary(&text)? {
                         self.bump_tool_visible_update(false);
                         Ok(ToolIntentDelivery::CurrentPrimary)
@@ -248,30 +296,36 @@ impl<'a> DeliverySession<'a> {
                         Ok(ToolIntentDelivery::Suppressed)
                     }
                 }
-                ToolOutboundDeliveryKind::Supplemental => match self.mode {
-                    DeliveryMode::Edit(ref mut delivery) => {
-                        if delivery.deliver_current_supplemental(&text)? {
-                            self.bump_tool_visible_update(false);
-                            Ok(ToolIntentDelivery::VisibleUpdate)
-                        } else {
-                            self.bump_tool_intent_suppressed();
-                            Ok(ToolIntentDelivery::Suppressed)
-                        }
-                    }
-                    DeliveryMode::Queued(ref mut delivery) => {
-                        if delivery.deliver_current_supplemental(&text) {
-                            self.bump_tool_visible_update(false);
-                            Ok(ToolIntentDelivery::VisibleUpdate)
-                        } else {
-                            self.bump_tool_intent_suppressed();
-                            Ok(ToolIntentDelivery::Suppressed)
-                        }
-                    }
-                    DeliveryMode::Silent => {
+                ToolOutboundDeliveryKind::Supplemental => {
+                    if !self.policy.supports_current_supplemental {
                         self.bump_tool_intent_suppressed();
-                        Ok(ToolIntentDelivery::Suppressed)
+                        return Ok(ToolIntentDelivery::Suppressed);
                     }
-                },
+                    match self.mode {
+                        DeliveryMode::Edit(ref mut delivery) => {
+                            if delivery.deliver_current_supplemental(&text)? {
+                                self.bump_tool_visible_update(false);
+                                Ok(ToolIntentDelivery::VisibleUpdate)
+                            } else {
+                                self.bump_tool_intent_suppressed();
+                                Ok(ToolIntentDelivery::Suppressed)
+                            }
+                        }
+                        DeliveryMode::Queued(ref mut delivery) => {
+                            if delivery.deliver_current_supplemental(&text) {
+                                self.bump_tool_visible_update(false);
+                                Ok(ToolIntentDelivery::VisibleUpdate)
+                            } else {
+                                self.bump_tool_intent_suppressed();
+                                Ok(ToolIntentDelivery::Suppressed)
+                            }
+                        }
+                        DeliveryMode::Silent => {
+                            self.bump_tool_intent_suppressed();
+                            Ok(ToolIntentDelivery::Suppressed)
+                        }
+                    }
+                }
             },
             ToolOutboundTarget::Explicit { channel, chat_id } => {
                 if self.is_closed() {
@@ -850,6 +904,9 @@ fn current_unix_ms() -> u64 {
 mod tests {
     use super::*;
     use crate::bus::new_inbound_channel;
+    use crate::channel_capability::{
+        ChannelCapabilityContract, ChannelCapabilityEntry, ChannelDeliveryOrderingModel,
+    };
     use crate::tools::{ToolOutboundDeliveryKind, ToolOutboundIntent, ToolOutboundTarget};
     use std::sync::Mutex;
 
@@ -881,6 +938,34 @@ mod tests {
         PcMsg::new_inbound(channel, "chat-1", "hello", false).expect("pcmsg")
     }
 
+    fn capability_entry(
+        id: &'static str,
+        supports_primary_reply: bool,
+        supports_supplemental_reply: bool,
+        supports_stream_edit: bool,
+    ) -> ChannelCapabilityEntry {
+        ChannelCapabilityEntry {
+            id,
+            configured: true,
+            enabled: true,
+            contract: ChannelCapabilityContract {
+                supports_primary_reply,
+                supports_supplemental_reply,
+                supports_edit: supports_stream_edit,
+                supports_stream_edit,
+                supports_explicit_target: true,
+                supports_attachment: false,
+                supports_typing_or_chat_action: false,
+                max_text_bytes: 4096,
+                delivery_ordering_model: if supports_stream_edit {
+                    ChannelDeliveryOrderingModel::EditableSingleMessage
+                } else {
+                    ChannelDeliveryOrderingModel::AppendOnly
+                },
+            },
+        }
+    }
+
     fn reset_delayed_tasks() {
         crate::runtime::delayed_task::reset_delayed_tasks_for_tests();
     }
@@ -895,7 +980,14 @@ mod tests {
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
-        let mut delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            UiLocale::Zh,
+        );
 
         delivery.emit_progress("第一步");
         delivery.emit_progress("第一步");
@@ -917,11 +1009,41 @@ mod tests {
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
-        let mut delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            UiLocale::Zh,
+        );
 
         delivery.emit_partial("## 第2步：检查文件系统结构");
 
         assert!(outbound_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn queued_delivery_without_supplemental_contract_suppresses_progress_and_waiting_notice() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg("qq_channel");
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, false, false)),
+            UiLocale::Zh,
+        );
+
+        delivery.emit_progress("处理中");
+        std::thread::sleep(waiting_notice_delay() + std::time::Duration::from_millis(20));
+        crate::runtime::service_delayed_tasks();
+
+        assert!(outbound_rx.try_recv().is_err());
+        assert!(!delivery.report().waiting_notice_sent);
     }
 
     #[test]
@@ -931,8 +1053,14 @@ mod tests {
         let (outbound_tx, _outbound_rx, _) = new_inbound_channel(4);
         let msg = build_msg("telegram");
         let editor = StubEditor::default();
-        let mut delivery =
-            DeliverySession::new(&msg, "req-1", &outbound_tx, Some(&editor), UiLocale::Zh);
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            Some(&editor),
+            Some(capability_entry("telegram", true, true, true)),
+            UiLocale::Zh,
+        );
 
         delivery.emit_progress("正在执行 tools");
         let streamed = delivery.finalize("最终答案");
@@ -971,7 +1099,14 @@ mod tests {
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
-        let mut delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            UiLocale::Zh,
+        );
 
         let delivered = delivery
             .deliver_current_primary("主答复")
@@ -997,7 +1132,14 @@ mod tests {
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
-        let mut delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            UiLocale::Zh,
+        );
 
         let outcome = delivery
             .deliver_tool_outbound_intent(&ToolOutboundIntent {
@@ -1021,7 +1163,14 @@ mod tests {
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
-        let mut delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            UiLocale::Zh,
+        );
 
         let first = delivery
             .deliver_tool_outbound_intent(&ToolOutboundIntent {
@@ -1057,7 +1206,14 @@ mod tests {
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
-        let mut delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            UiLocale::Zh,
+        );
 
         let outcome = delivery
             .deliver_tool_outbound_intent(&ToolOutboundIntent {
@@ -1087,8 +1243,14 @@ mod tests {
         let (outbound_tx, _outbound_rx, _) = new_inbound_channel(4);
         let msg = build_msg("telegram");
         let editor = StubEditor::default();
-        let mut delivery =
-            DeliverySession::new(&msg, "req-1", &outbound_tx, Some(&editor), UiLocale::Zh);
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            Some(&editor),
+            Some(capability_entry("telegram", true, true, true)),
+            UiLocale::Zh,
+        );
 
         delivery.emit_progress("处理中");
         let delivered = delivery
@@ -1121,7 +1283,14 @@ mod tests {
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
-        let delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
+        let delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            UiLocale::Zh,
+        );
 
         std::thread::sleep(waiting_notice_delay() + std::time::Duration::from_millis(20));
         crate::runtime::service_delayed_tasks();
@@ -1137,7 +1306,14 @@ mod tests {
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
-        let mut delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            UiLocale::Zh,
+        );
 
         let streamed = delivery.finalize("最终答案");
         assert!(!streamed);
@@ -1154,7 +1330,14 @@ mod tests {
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
         let msg = build_msg("qq_channel");
         {
-            let _delivery = DeliverySession::new(&msg, "req-1", &outbound_tx, None, UiLocale::Zh);
+            let _delivery = DeliverySession::new(
+                &msg,
+                "req-1",
+                &outbound_tx,
+                None,
+                Some(capability_entry("qq_channel", true, true, false)),
+                UiLocale::Zh,
+            );
         }
 
         std::thread::sleep(waiting_notice_delay() + std::time::Duration::from_millis(20));

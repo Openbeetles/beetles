@@ -321,6 +321,7 @@ pub mod session;
 pub mod session_summary;
 pub mod skill_meta;
 pub mod skill_storage;
+pub mod task_execution;
 pub mod task_store;
 pub mod turn_ledger;
 pub mod world_sense;
@@ -352,5 +353,9 @@ pub use session::SpiffsSessionStore;
 pub use session_summary::SpiffsSessionSummaryStore;
 pub use skill_meta::SpiffsSkillMetaStore;
 pub use skill_storage::{CachedSkillStorage, SpiffsSkillStorage, default_skill_storage_arc};
+pub use task_execution::{
+    SpiffsTaskArtifactStore, SpiffsTaskExecutionLedgerStore, SpiffsTaskLearningStore,
+    SpiffsTaskRunStore,
+};
 pub use task_store::SpiffsTaskStore;
 pub use world_sense::SpiffsWorldSenseStore;

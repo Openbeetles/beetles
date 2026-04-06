@@ -426,6 +426,17 @@ const MEMORY_AND_SKILL_ROUTES: &[EspRouteSpec] = &[
     EspRouteSpec::new("/api/sessions", Method::Options, EspBodyMode::None),
     EspRouteSpec::new("/api/memory/status", Method::Get, EspBodyMode::None),
     EspRouteSpec::new("/api/memory/status", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/api/capability_packages", Method::Get, EspBodyMode::None),
+    EspRouteSpec::new(
+        "/api/capability_packages",
+        Method::Post,
+        EspBodyMode::Utf8(crate::capability_package::MAX_CAPABILITY_PACKAGE_HTTP_BODY_LEN),
+    ),
+    EspRouteSpec::new(
+        "/api/capability_packages",
+        Method::Options,
+        EspBodyMode::None,
+    ),
     EspRouteSpec::new("/api/skills", Method::Get, EspBodyMode::None),
     EspRouteSpec::new(
         "/api/skills",

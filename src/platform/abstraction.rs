@@ -15,6 +15,9 @@ use crate::memory::{
 };
 use crate::platform::ResponseBody;
 use crate::task::TaskStore;
+use crate::task_execution::{
+    TaskArtifactStore, TaskExecutionLedgerStore, TaskLearningStore, TaskRunStore,
+};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -578,6 +581,10 @@ pub trait Platform: Send + Sync {
         &self,
     ) -> Arc<dyn CalendarProviderCredentialStore + Send + Sync>;
     fn task_store(&self) -> Arc<dyn TaskStore + Send + Sync>;
+    fn task_run_store(&self) -> Arc<dyn TaskRunStore + Send + Sync>;
+    fn task_artifact_store(&self) -> Arc<dyn TaskArtifactStore + Send + Sync>;
+    fn task_execution_ledger_store(&self) -> Arc<dyn TaskExecutionLedgerStore + Send + Sync>;
+    fn task_learning_store(&self) -> Arc<dyn TaskLearningStore + Send + Sync>;
     fn execution_state_store(&self) -> Arc<dyn ExecutionStateStore + Send + Sync>;
     fn self_model_store(&self) -> Arc<dyn SelfModelStore + Send + Sync>;
     fn self_authored_core_store(&self) -> Arc<dyn SelfAuthoredCoreStore + Send + Sync>;

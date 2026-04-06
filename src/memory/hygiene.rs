@@ -2,15 +2,15 @@
 
 use crate::error::Result;
 use crate::platform::SkillStorage;
-use crate::skills::{govern_runtime_skills, RuntimeSkillGovernanceOutcome};
+use crate::skills::{RuntimeSkillGovernanceOutcome, govern_runtime_skills};
 use crate::util::{current_unix_secs, truncate_content_to_max};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
 use super::{
-    build_archive_reconcile_drafts, maintain_archive_search_backend, memory_capability_profile,
-    write_governed_shared_memory, LongTermMemoryDraft, LongTermMemoryStore, MemoryProfile,
-    MemoryStore, SessionStore, SessionSummaryStore, SharedMemoryWriteSource, TurnLedgerStore,
+    LongTermMemoryDraft, LongTermMemoryStore, MemoryProfile, MemoryStore, SessionStore,
+    SessionSummaryStore, SharedMemoryWriteSource, TurnLedgerStore, build_archive_reconcile_drafts,
+    maintain_archive_search_backend, memory_capability_profile, write_governed_shared_memory,
 };
 
 const DAILY_AGGREGATE_MARKER: &str = "<!-- beetle:hygiene:daily-aggregate -->";
@@ -703,10 +703,12 @@ mod tests {
         assert_eq!(report.aggregate_targets, vec!["2026-03-archive.md"]);
         let aggregate = store.get_daily_note("2026-03-archive.md").unwrap();
         assert!(aggregate.contains("2026-03-01.md"));
-        assert!(store
-            .get_daily_note("2026-03-01.md")
-            .unwrap()
-            .contains("Archived into"));
+        assert!(
+            store
+                .get_daily_note("2026-03-01.md")
+                .unwrap()
+                .contains("Archived into")
+        );
     }
 
     #[test]
@@ -717,10 +719,12 @@ mod tests {
         let report =
             rollup_aging_transcripts(&session_store, &summary_store, &memory_store).unwrap();
         assert_eq!(report.chat_ids, vec!["chat-1".to_string()]);
-        assert!(memory_store
-            .get_daily_note("transcript-aging-chat-1.md")
-            .unwrap()
-            .contains("summary"));
+        assert!(
+            memory_store
+                .get_daily_note("transcript-aging-chat-1.md")
+                .unwrap()
+                .contains("summary")
+        );
     }
 
     #[test]
@@ -810,10 +814,12 @@ probe"#,
         );
 
         assert_eq!(outcome.runtime_skill_governance.pruned, 1);
-        assert!(skill_storage
-            .files
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_empty());
+        assert!(
+            skill_storage
+                .files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty()
+        );
     }
 }

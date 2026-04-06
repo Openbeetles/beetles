@@ -4,14 +4,14 @@
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 
 use super::{
-    memory_policy, shared_long_term_governance_policy, LongTermRecallPolicy, MemoryProfile,
-    SessionMessage,
+    LongTermRecallPolicy, MemoryProfile, SessionMessage, memory_policy,
+    shared_long_term_governance_policy,
 };
 
 /// 结构化长期记忆存储路径（相对状态根）。

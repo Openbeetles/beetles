@@ -15,6 +15,11 @@ use crate::memory::{
     render_working_recall_inspection_markdown,
 };
 use crate::platform::{SkillStorage, StateFs};
+use crate::task_execution::{
+    TaskArtifactStore, TaskExecutionLedgerStore, TaskLearningStore, TaskRunStore,
+    inspect_task_learning, inspect_task_workspace, render_task_learning_inspection_markdown,
+    render_task_workspace_inspection_markdown,
+};
 use crate::tools::{
     Tool, ToolContext, ToolExecutionGovernance, ToolMetadata, parse_tool_args,
     render_tool_execution_governance_markdown,
@@ -40,6 +45,10 @@ pub struct ContinuitySnapshotTool {
     relationship_constitution_store: Arc<dyn RelationshipConstitutionStore + Send + Sync>,
     relationship_portfolio_store: Arc<dyn RelationshipPortfolioStore + Send + Sync>,
     relationship_topology_store: Arc<dyn RelationshipTopologyStore + Send + Sync>,
+    task_run_store: Arc<dyn TaskRunStore + Send + Sync>,
+    task_artifact_store: Arc<dyn TaskArtifactStore + Send + Sync>,
+    task_execution_ledger_store: Arc<dyn TaskExecutionLedgerStore + Send + Sync>,
+    task_learning_store: Arc<dyn TaskLearningStore + Send + Sync>,
     skill_storage: Arc<dyn SkillStorage + Send + Sync>,
     tool_execution_governance: Arc<ToolExecutionGovernance>,
 }
@@ -60,6 +69,10 @@ impl ContinuitySnapshotTool {
         relationship_constitution_store: Arc<dyn RelationshipConstitutionStore + Send + Sync>,
         relationship_portfolio_store: Arc<dyn RelationshipPortfolioStore + Send + Sync>,
         relationship_topology_store: Arc<dyn RelationshipTopologyStore + Send + Sync>,
+        task_run_store: Arc<dyn TaskRunStore + Send + Sync>,
+        task_artifact_store: Arc<dyn TaskArtifactStore + Send + Sync>,
+        task_execution_ledger_store: Arc<dyn TaskExecutionLedgerStore + Send + Sync>,
+        task_learning_store: Arc<dyn TaskLearningStore + Send + Sync>,
         skill_storage: Arc<dyn SkillStorage + Send + Sync>,
         tool_execution_governance: Arc<ToolExecutionGovernance>,
     ) -> Self {
@@ -78,6 +91,10 @@ impl ContinuitySnapshotTool {
             relationship_constitution_store,
             relationship_portfolio_store,
             relationship_topology_store,
+            task_run_store,
+            task_artifact_store,
+            task_execution_ledger_store,
+            task_learning_store,
             skill_storage,
             tool_execution_governance,
         }
@@ -94,7 +111,7 @@ impl Tool for ContinuitySnapshotTool {
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","enum":["export","import","list_saved","inspect_governance","inspect_recall","inspect_hygiene","inspect_tool_governance"],"description":"Whether to export, import, list saved continuity snapshots, inspect personality governance, inspect working recall, inspect hygiene governance, or inspect tool-execution governance."},"chat_id":{"type":"string","description":"Target chat_id. Defaults to the current chat when available."},"channel":{"type":"string","description":"Target channel for governance inspection. Defaults to the current channel when available."},"query":{"type":"string","description":"Recall inspection query. Leave empty to inspect the current recall state without a search hint."},"profile":{"type":"string","enum":["standard","embedded"],"description":"Memory profile used for recall or hygiene inspection. Default standard."},"mode":{"type":"string","enum":["bootstrap","full_restore","bootstrap_import"],"description":"Export mode or import mode. export accepts bootstrap|full_restore. import accepts bootstrap_import|full_restore."},"format":{"type":"string","enum":["json","markdown"],"description":"Rendering format. Default json."},"save_name":{"type":"string","description":"Optional saved snapshot name. On export, saves the snapshot under this name. On import, loads the saved snapshot with this name when snapshot is omitted."},"snapshot":{"description":"Snapshot payload to import. May be a JSON string or embedded object."}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","enum":["export","import","list_saved","inspect_governance","inspect_recall","inspect_hygiene","inspect_tool_governance","inspect_task_learning","inspect_task_workspace"],"description":"Whether to export, import, list saved continuity snapshots, inspect personality governance, inspect working recall, inspect hygiene governance, inspect tool-execution governance, inspect task-learning routing, or inspect a task workspace."},"chat_id":{"type":"string","description":"Target chat_id. Defaults to the current chat when available."},"channel":{"type":"string","description":"Target channel for governance inspection. Defaults to the current channel when available."},"query":{"type":"string","description":"Recall or task-learning inspection query. Leave empty to inspect the current state without a search hint."},"run_id":{"type":"string","description":"Optional explicit task run id for workspace inspection."},"profile":{"type":"string","enum":["standard","embedded"],"description":"Memory profile used for recall or hygiene inspection. Default standard."},"mode":{"type":"string","enum":["bootstrap","full_restore","bootstrap_import"],"description":"Export mode or import mode. export accepts bootstrap|full_restore. import accepts bootstrap_import|full_restore."},"format":{"type":"string","enum":["json","markdown"],"description":"Rendering format. Default json."},"save_name":{"type":"string","description":"Optional saved snapshot name. On export, saves the snapshot under this name. On import, loads the saved snapshot with this name when snapshot is omitted."},"snapshot":{"description":"Snapshot payload to import. May be a JSON string or embedded object."}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
@@ -308,6 +325,107 @@ impl Tool for ContinuitySnapshotTool {
                     .to_string())
                 }
             }
+            "inspect_task_learning" => {
+                if chat_id.trim().is_empty() {
+                    return Err(Error::config("tool_continuity_snapshot", "missing chat_id"));
+                }
+                if channel.trim().is_empty() {
+                    return Err(Error::config("tool_continuity_snapshot", "missing channel"));
+                }
+                let query = obj
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or("");
+                let inspection = inspect_task_learning(
+                    self.task_learning_store.as_ref(),
+                    &channel,
+                    &chat_id,
+                    query,
+                );
+                let format = obj
+                    .get("format")
+                    .and_then(Value::as_str)
+                    .unwrap_or("json")
+                    .trim()
+                    .to_ascii_lowercase();
+                if format == "markdown" {
+                    Ok(json!({
+                        "ok": true,
+                        "op": "inspect_task_learning",
+                        "chat_id": chat_id,
+                        "channel": channel,
+                        "query": query,
+                        "format": "markdown",
+                        "markdown": render_task_learning_inspection_markdown(&inspection),
+                        "inspection": inspection,
+                    })
+                    .to_string())
+                } else {
+                    Ok(json!({
+                        "ok": true,
+                        "op": "inspect_task_learning",
+                        "chat_id": chat_id,
+                        "channel": channel,
+                        "query": query,
+                        "format": "json",
+                        "inspection": inspection,
+                    })
+                    .to_string())
+                }
+            }
+            "inspect_task_workspace" => {
+                if chat_id.trim().is_empty() {
+                    return Err(Error::config("tool_continuity_snapshot", "missing chat_id"));
+                }
+                if channel.trim().is_empty() {
+                    return Err(Error::config("tool_continuity_snapshot", "missing channel"));
+                }
+                let run_id = obj
+                    .get("run_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let inspection = inspect_task_workspace(
+                    self.task_run_store.as_ref(),
+                    self.task_artifact_store.as_ref(),
+                    self.task_execution_ledger_store.as_ref(),
+                    self.task_learning_store.as_ref(),
+                    &channel,
+                    &chat_id,
+                    run_id,
+                );
+                let format = obj
+                    .get("format")
+                    .and_then(Value::as_str)
+                    .unwrap_or("json")
+                    .trim()
+                    .to_ascii_lowercase();
+                if format == "markdown" {
+                    Ok(json!({
+                        "ok": true,
+                        "op": "inspect_task_workspace",
+                        "chat_id": chat_id,
+                        "channel": channel,
+                        "run_id": inspection.run_id,
+                        "format": "markdown",
+                        "markdown": render_task_workspace_inspection_markdown(&inspection),
+                        "inspection": inspection,
+                    })
+                    .to_string())
+                } else {
+                    Ok(json!({
+                        "ok": true,
+                        "op": "inspect_task_workspace",
+                        "chat_id": chat_id,
+                        "channel": channel,
+                        "run_id": inspection.run_id,
+                        "format": "json",
+                        "inspection": inspection,
+                    })
+                    .to_string())
+                }
+            }
             "inspect_tool_governance" => {
                 let inspection = self.tool_execution_governance.inspect()?;
                 let format = obj
@@ -444,7 +562,7 @@ impl Tool for ContinuitySnapshotTool {
             }
             _ => Err(Error::config(
                 "tool_continuity_snapshot",
-                "op must be export, import, list_saved, inspect_governance, inspect_recall, inspect_hygiene, or inspect_tool_governance",
+                "op must be export, import, list_saved, inspect_governance, inspect_recall, inspect_hygiene, inspect_tool_governance, inspect_task_learning, or inspect_task_workspace",
             )),
         }
     }

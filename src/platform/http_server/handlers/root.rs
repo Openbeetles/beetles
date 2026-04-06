@@ -30,6 +30,8 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         "POST /api/user",
         "GET /api/sessions",
         "GET /api/memory/status",
+        "GET /api/capability_packages",
+        "POST /api/capability_packages",
         "GET /api/skills",
         "POST /api/skills",
         "DELETE /api/skills",

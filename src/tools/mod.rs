@@ -329,6 +329,13 @@ pub trait ToolContext {
     fn current_channel(&self) -> Option<&str> {
         None
     }
+    /// 查询某个通道在当前运行时的能力合同；默认不可用。
+    fn channel_capability(
+        &self,
+        _channel: &str,
+    ) -> Option<crate::channel_capability::ChannelCapabilityEntry> {
+        None
+    }
     /// 当前运行时是否允许工具声明“当前聊天主答复已由工具交付”。
     /// 目前仅在不会与编辑型交付通道冲突的运行时开启。
     fn supports_current_chat_outbound_message(&self) -> bool {

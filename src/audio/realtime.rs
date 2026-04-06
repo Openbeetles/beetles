@@ -358,7 +358,9 @@ fn next_turn_generation(current: u32) -> u32 {
 }
 
 fn realtime_endpoint_threshold(cfg_threshold: f32) -> f32 {
-    cfg_threshold.clamp(0.0, 1.0).min(REALTIME_ENDPOINT_THRESHOLD_MAX)
+    cfg_threshold
+        .clamp(0.0, 1.0)
+        .min(REALTIME_ENDPOINT_THRESHOLD_MAX)
 }
 
 struct RealtimeUploadEncoder {

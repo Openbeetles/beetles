@@ -2,11 +2,29 @@
 //! beetle - stable public API.
 
 mod build_info;
+pub mod capability_package;
+pub mod channel_capability;
 pub mod constants;
 pub mod metrics;
 pub mod util;
 
 pub use build_info::ota_manifest_url;
+pub use capability_package::{
+    CapabilityPackageInstallPayload, CapabilityPackageOperationKind,
+    CapabilityPackageOperationOutcome, CapabilityPackageOperatorSnapshot,
+    CapabilityPackageRuntimeCapabilities, CapabilityPackageRuntimePromptBundle,
+    CapabilityPackageToolPolicySet, MAX_CAPABILITY_PACKAGE_HTTP_BODY_LEN,
+    build_capability_package_operator_snapshot, build_capability_package_runtime_capabilities,
+    build_capability_package_runtime_prompt_bundle, build_capability_package_tool_policy_set,
+    install_capability_package, rollback_capability_package, set_capability_package_enabled,
+    uninstall_capability_package,
+};
+pub use channel_capability::{
+    CHANNEL_DINGTALK, CHANNEL_FEISHU, CHANNEL_QQ_CHANNEL, CHANNEL_TELEGRAM, CHANNEL_VOICE,
+    CHANNEL_WEBSOCKET, CHANNEL_WECOM, ChannelCapabilityContract, ChannelCapabilityEntry,
+    ChannelCapabilityRegistry, ChannelCapabilitySnapshot, ChannelDeliveryOrderingModel,
+    build_channel_capability_registry, build_channel_capability_snapshots,
+};
 /// Re-export PlatformHttpClient at crate root so core modules (agent, tools) can depend on
 /// `crate::PlatformHttpClient` without importing `crate::platform` directly.
 pub use platform::PlatformHttpClient;
@@ -26,6 +44,7 @@ pub mod memory;
 pub mod platform;
 pub mod state;
 pub mod task;
+pub mod task_execution;
 pub mod tools;
 
 #[cfg(feature = "cli")]

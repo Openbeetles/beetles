@@ -73,6 +73,8 @@ pub struct ContextParams<'a> {
     pub group_activation: &'a str,
     pub emotion_signal_suffix: Option<&'a str>,
     pub execution_state_text: Option<&'a str>,
+    pub task_workspace_text: Option<&'a str>,
+    pub task_recall_text: Option<&'a str>,
     pub world_snapshot_text: Option<&'a str>,
     pub world_sense_text: Option<&'a str>,
     pub self_state_text: Option<&'a str>,
@@ -92,6 +94,7 @@ pub struct ContextParams<'a> {
     pub long_term_memory_text: Option<&'a str>,
     pub archive_evidence_text: Option<&'a str>,
     pub runtime_skill_text: Option<&'a str>,
+    pub capability_package_text: Option<&'a str>,
     pub summary_text: Option<&'a str>,
     pub recent_messages: Option<&'a [SessionMessage]>,
     pub runtime: Option<RuntimeContext>,
@@ -397,6 +400,12 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     if let Some(execution_state_text) = p.execution_state_text {
         let _ = append_capped_section(&mut system, "\n\n", execution_state_text, base_max);
     }
+    if let Some(task_workspace_text) = p.task_workspace_text {
+        let _ = append_capped_section(&mut system, "\n\n", task_workspace_text, base_max);
+    }
+    if let Some(task_recall_text) = p.task_recall_text {
+        let _ = append_capped_section(&mut system, "\n\n", task_recall_text, base_max);
+    }
     if let Some(world_snapshot_text) = p.world_snapshot_text {
         let _ = append_capped_section(&mut system, "\n\n", world_snapshot_text, base_max);
     }
@@ -414,6 +423,9 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     }
     if let Some(runtime_skill_text) = p.runtime_skill_text {
         let _ = append_capped_section(&mut system, "\n\n", runtime_skill_text, base_max);
+    }
+    if let Some(capability_package_text) = p.capability_package_text {
+        let _ = append_capped_section(&mut system, "\n\n", capability_package_text, base_max);
     }
     if let Some(self_model_text) = p.self_model_text {
         let _ = append_capped_section(&mut system, "\n\n", self_model_text, base_max);
@@ -717,6 +729,8 @@ mod tests {
             group_activation: "always",
             emotion_signal_suffix: None,
             execution_state_text: Some("## Execution State\nGoal: close current task"),
+            task_workspace_text: Some("## Task Workspace\nRun: tr001 | status=running"),
+            task_recall_text: Some("## Task Recall Bundle\n- [runtime_skill] prior fix path"),
             world_snapshot_text: Some(
                 "## World Snapshot\nOuter scene now: Wednesday 18:00-18:59, evening.",
             ),
@@ -752,6 +766,7 @@ mod tests {
             long_term_memory_text: None,
             archive_evidence_text: None,
             runtime_skill_text: None,
+            capability_package_text: None,
             summary_text: None,
             recent_messages: None,
             runtime: None,
@@ -796,6 +811,8 @@ mod tests {
             group_activation: "always",
             emotion_signal_suffix: None,
             execution_state_text: None,
+            task_workspace_text: None,
+            task_recall_text: None,
             world_snapshot_text: None,
             world_sense_text: None,
             self_state_text: None,
@@ -825,6 +842,7 @@ mod tests {
             long_term_memory_text: None,
             archive_evidence_text: None,
             runtime_skill_text: None,
+            capability_package_text: None,
             summary_text: None,
             recent_messages: None,
             runtime: None,
@@ -877,6 +895,8 @@ mod tests {
             group_activation: "always",
             emotion_signal_suffix: None,
             execution_state_text: None,
+            task_workspace_text: None,
+            task_recall_text: None,
             world_snapshot_text: None,
             world_sense_text: None,
             self_state_text: None,
@@ -896,6 +916,7 @@ mod tests {
             long_term_memory_text: None,
             archive_evidence_text: None,
             runtime_skill_text: None,
+            capability_package_text: None,
             summary_text: None,
             recent_messages: None,
             runtime: None,

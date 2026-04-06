@@ -9,20 +9,20 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use super::{
-    board_subject_scope_id, clamp_boundary_persona_to_constitution,
-    classify_private_garden_doc_path, enforce_relationship_constitution_share_action,
+    InnerLife, InnerLifeStore, OuterVoice, OuterVoiceStore, PrivateDocStore, PrivateDocWorkspace,
+    PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenDocRole, PrivateGardenStore,
+    RecentPersonaEvidence, RelationshipConstitution, RelationshipConstitutionStore, SelfContinuity,
+    SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage, board_subject_scope_id,
+    clamp_boundary_persona_to_constitution, classify_private_garden_doc_path,
+    enforce_relationship_constitution_share_action,
     llm_json::{
-        coerce_json_text, get_object_bool, get_object_string_list, get_object_text,
-        parse_llm_json_payload, LlmJsonPayload,
+        LlmJsonPayload, coerce_json_text, get_object_bool, get_object_string_list, get_object_text,
+        parse_llm_json_payload,
     },
     normalize_private_garden_doc_path, relationship_scope_id, render_inner_life_block,
     render_outer_voice_block, render_private_doc_workspace_block, render_private_garden_block,
     render_recent_persona_evidence_block, render_relationship_constitution_block,
-    render_self_continuity_block, render_self_model_block, InnerLife, InnerLifeStore, OuterVoice,
-    OuterVoiceStore, PrivateDocStore, PrivateDocWorkspace, PrivateGardenDoc,
-    PrivateGardenDocRecord, PrivateGardenDocRole, PrivateGardenStore, RecentPersonaEvidence,
-    RelationshipConstitution, RelationshipConstitutionStore, SelfContinuity, SelfContinuityStore,
-    SelfModel, SelfModelStore, SessionMessage,
+    render_self_continuity_block, render_self_model_block,
 };
 
 const MENTAL_PRIVACY_MAX_LOG_ENTRIES: usize = 32;
@@ -2229,9 +2229,11 @@ mod tests {
             parsed.share_action,
             Some(MentalPrivacyShareAction::AllowSummary)
         );
-        assert!(parsed
-            .response
-            .contains("text: I can summarize that boundary."));
+        assert!(
+            parsed
+                .response
+                .contains("text: I can summarize that boundary.")
+        );
         assert_eq!(parsed.touched_targets.len(), 2);
     }
 

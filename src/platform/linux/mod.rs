@@ -22,7 +22,9 @@ use crate::platform::{
         SpiffsRelationshipPortfolioStore, SpiffsRelationshipTopologyStore, SpiffsRemindAtStore,
         SpiffsSelfAuthoredCoreStore, SpiffsSelfContinuityStore, SpiffsSelfModelStore,
         SpiffsSessionStore, SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
-        SpiffsTaskStore, SpiffsTurnLedgerStore, SpiffsWorldSenseStore, spiffs_usage,
+        SpiffsTaskArtifactStore, SpiffsTaskExecutionLedgerStore, SpiffsTaskLearningStore,
+        SpiffsTaskRunStore, SpiffsTaskStore, SpiffsTurnLedgerStore, SpiffsWorldSenseStore,
+        spiffs_usage,
     },
 };
 use crate::runtime::write_back::{
@@ -47,6 +49,9 @@ use crate::{
         SelfModelStore, SessionStore, SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
     },
     task::TaskStore,
+    task_execution::{
+        TaskArtifactStore, TaskExecutionLedgerStore, TaskLearningStore, TaskRunStore,
+    },
 };
 use std::sync::{Arc, Mutex};
 
@@ -65,6 +70,10 @@ pub struct LinuxPlatform {
     calendar_store: Arc<SpiffsCalendarStore>,
     calendar_provider_credential_store: Arc<SpiffsCalendarProviderCredentialStore>,
     task_store: Arc<SpiffsTaskStore>,
+    task_run_store: Arc<SpiffsTaskRunStore>,
+    task_artifact_store: Arc<SpiffsTaskArtifactStore>,
+    task_execution_ledger_store: Arc<SpiffsTaskExecutionLedgerStore>,
+    task_learning_store: Arc<SpiffsTaskLearningStore>,
     execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
     self_model_store: Arc<dyn SelfModelStore + Send + Sync>,
     self_authored_core_store: Arc<dyn SelfAuthoredCoreStore + Send + Sync>,
@@ -168,6 +177,10 @@ impl LinuxPlatform {
                 SpiffsCalendarProviderCredentialStore::new(),
             ),
             task_store: Arc::new(SpiffsTaskStore::new()),
+            task_run_store: Arc::new(SpiffsTaskRunStore::new()),
+            task_artifact_store: Arc::new(SpiffsTaskArtifactStore::new()),
+            task_execution_ledger_store: Arc::new(SpiffsTaskExecutionLedgerStore::new()),
+            task_learning_store: Arc::new(SpiffsTaskLearningStore::new()),
             execution_state_store,
             self_model_store,
             self_authored_core_store,
@@ -327,6 +340,23 @@ impl Platform for LinuxPlatform {
 
     fn task_store(&self) -> Arc<dyn TaskStore + Send + Sync> {
         Arc::clone(&self.task_store) as Arc<dyn TaskStore + Send + Sync>
+    }
+
+    fn task_run_store(&self) -> Arc<dyn TaskRunStore + Send + Sync> {
+        Arc::clone(&self.task_run_store) as Arc<dyn TaskRunStore + Send + Sync>
+    }
+
+    fn task_artifact_store(&self) -> Arc<dyn TaskArtifactStore + Send + Sync> {
+        Arc::clone(&self.task_artifact_store) as Arc<dyn TaskArtifactStore + Send + Sync>
+    }
+
+    fn task_execution_ledger_store(&self) -> Arc<dyn TaskExecutionLedgerStore + Send + Sync> {
+        Arc::clone(&self.task_execution_ledger_store)
+            as Arc<dyn TaskExecutionLedgerStore + Send + Sync>
+    }
+
+    fn task_learning_store(&self) -> Arc<dyn TaskLearningStore + Send + Sync> {
+        Arc::clone(&self.task_learning_store) as Arc<dyn TaskLearningStore + Send + Sync>
     }
 
     fn execution_state_store(&self) -> Arc<dyn ExecutionStateStore + Send + Sync> {

@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
 use super::{
-    board_subject_scope_id, relationship_scope_id, turn_ledger_observed_at_ms, MentalPrivacyState,
-    OuterVoice, RecentPersonaEvidence, TurnLedger, WorldSense,
+    MentalPrivacyState, OuterVoice, RecentPersonaEvidence, TurnLedger, WorldSense,
+    board_subject_scope_id, relationship_scope_id, turn_ledger_observed_at_ms,
 };
 
 const RELATIONSHIP_TEXT_MAX_CHARS: usize = 120;
@@ -616,17 +616,17 @@ pub trait RelationshipTopologyStore: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::{
-        render_relationship_topology_block, select_relationship_topology_targets,
-        upsert_relationship_topology_entry, RelationshipSelectorInput, RelationshipTopology,
-        RelationshipTopologyEntry, RelationshipTopologyRefreshOutcome, RelationshipTopologyStore,
-        RelationshipTopologyUpsertInput,
+        RelationshipSelectorInput, RelationshipTopology, RelationshipTopologyEntry,
+        RelationshipTopologyRefreshOutcome, RelationshipTopologyStore,
+        RelationshipTopologyUpsertInput, render_relationship_topology_block,
+        select_relationship_topology_targets, upsert_relationship_topology_entry,
     };
     use crate::error::Result;
     use crate::memory::{
-        board_subject_scope_id, BoundaryDisclosureStyle, BoundaryPersonaPosture,
-        BoundaryPersonaState, MentalPrivacyState, OuterVoice, RecentPersonaEvidence,
-        RelationalBoundaryState, TurnLedger, TurnLedgerStatus, TurnPersonaDisclosureLedger,
-        TurnPersonaLedger, TurnPersonaPriorityLedger, WorldSense,
+        BoundaryDisclosureStyle, BoundaryPersonaPosture, BoundaryPersonaState, MentalPrivacyState,
+        OuterVoice, RecentPersonaEvidence, RelationalBoundaryState, TurnLedger, TurnLedgerStatus,
+        TurnPersonaDisclosureLedger, TurnPersonaLedger, TurnPersonaPriorityLedger, WorldSense,
+        board_subject_scope_id,
     };
     use std::collections::HashMap;
     use std::sync::Mutex;

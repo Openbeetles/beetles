@@ -1,29 +1,30 @@
 //! Agent ReAct 循环：入站一条 → context → chat（含 tool_use 多轮）→ 会话持久化 → 出站一条。
 //! 仅依赖 trait；HTTP/Tool 由 main 注入同一实现（如 EspHttpClient）。
+use super::StreamEditor;
 use super::delivery::{DeliveryReport, DeliverySession, ToolIntentDelivery};
 use super::final_reply::finalize_user_visible_reply;
 use super::request_plan::AgentRequestPlan;
 use super::strategy::{
-    append_execution_plan, blocker_end_turn_followup, build_success_tool_round_guidance,
-    build_tool_round_guidance, detect_ping_pong_tool_rounds, empty_final_answer_followup,
-    final_answer_followup, repeated_answer_followup, should_generate_execution_plan,
-    stalled_end_turn_followup, AgentRunStrategy, SuccessfulToolRoundSummary,
+    AgentRunStrategy, SuccessfulToolRoundSummary, blocker_end_turn_followup,
+    build_success_tool_round_guidance, build_tool_round_guidance, detect_ping_pong_tool_rounds,
+    empty_final_answer_followup, final_answer_followup, repeated_answer_followup,
+    stalled_end_turn_followup,
 };
 use super::tool_guidance::{
-    build_success_tool_execution_guidance, record_successful_tool_result,
-    round_used_external_content, SuccessfulToolRoundObservations,
+    SuccessfulToolRoundObservations, build_success_tool_execution_guidance,
+    record_successful_tool_result, round_used_external_content,
 };
 use super::tool_outcome::{
-    classify_tool_error, denied_tool_assessment, summarize_tool_blocker,
-    unavailable_tool_assessment, ToolBlockerSummary, ToolFailureSummary,
+    ToolBlockerSummary, ToolFailureSummary, classify_tool_error, denied_tool_assessment,
+    summarize_tool_blocker, unavailable_tool_assessment,
 };
-use super::StreamEditor;
+use crate::PlatformHttpClient;
 use crate::agent::context::{
-    build_context, estimate_post_memory_system_tail_len, PostMemoryTailParams, RuntimeContext,
+    PostMemoryTailParams, RuntimeContext, build_context, estimate_post_memory_system_tail_len,
 };
 use crate::bus::{
-    InboundRx, IngressKind, OutboundTx, PcMsg, SystemInboundTx, UserInboundRx, UserInboundTx,
-    MAX_CONTENT_LEN,
+    InboundRx, IngressKind, MAX_CONTENT_LEN, OutboundTx, PcMsg, SystemInboundTx, UserInboundRx,
+    UserInboundTx,
 };
 use crate::constants::{
     AGENT_MARKER_MARK_IMPORTANT, AGENT_MARKER_SIGNAL_COMFORT, AGENT_MARKER_STOP,
@@ -31,17 +32,9 @@ use crate::constants::{
     MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
 };
 use crate::error::Result;
-use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
+use crate::i18n::{Locale as UiLocale, Message as UiMessage, tr};
 use crate::llm::{LlmClient, Message, StopReason, ToolChoicePolicy};
 use crate::memory::{
-    board_subject_scope_id, build_turn_ledger_start, build_turn_persona_disclosure_ledger,
-    build_turn_persona_priority_ledger, compute_core_revision_governance_digest,
-    load_prompt_memory_context, load_recent_persona_evidence, memory_policy,
-    normalize_turn_persona_scope, normalize_turn_persona_targets, normalize_turn_preview,
-    normalize_turn_reason, recall_long_term_memory_block, render_core_revision_governance_block,
-    render_recent_persona_evidence_block, run_long_term_memory_refresh,
-    run_mental_privacy_disclosure_adjudication, run_mental_privacy_review,
-    run_post_reply_memory_maintenance, run_self_runtime, upsert_relationship_topology_entry,
     AutonomyStrategyStore, EmotionSignalStore, ExecutionStateStore, ImportantMessageStore,
     InnerLifeStore, LongTermMemoryExtractionStateStore, LongTermMemoryRefreshContext,
     LongTermMemoryRefreshOutcome, LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore,
@@ -54,31 +47,49 @@ use crate::memory::{
     PromptMemoryContextParams, RelationshipTopologyStore, RemindAtStore, SelfContinuityStore,
     SelfModelStore, SelfRuntimeContext, SessionMessage, SessionStore, SessionSummaryRefreshOutcome,
     SessionSummaryStore, TurnDeliveryLedger, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
-    TurnPersonaLedger, TurnPersonaReviewLedger, WorldSenseStore,
+    TurnPersonaLedger, TurnPersonaReviewLedger, WorldSenseStore, board_subject_scope_id,
+    build_turn_ledger_start, build_turn_persona_disclosure_ledger,
+    build_turn_persona_priority_ledger, compute_core_revision_governance_digest,
+    load_prompt_memory_context, load_recent_persona_evidence, memory_policy,
+    normalize_turn_persona_scope, normalize_turn_persona_targets, normalize_turn_preview,
+    normalize_turn_reason, recall_long_term_memory_block, render_core_revision_governance_block,
+    render_recent_persona_evidence_block, run_long_term_memory_refresh,
+    run_mental_privacy_disclosure_adjudication, run_mental_privacy_review,
+    run_post_reply_memory_maintenance, run_self_runtime, upsert_relationship_topology_entry,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
 use crate::runtime::system_work::{
-    classify_system_work, CHANNEL_CRON, CHANNEL_LONG_TERM_MEMORY_REFRESH,
-    CHANNEL_POST_REPLY_MAINTENANCE, CHANNEL_SELF_RUNTIME,
+    CHANNEL_CRON, CHANNEL_LONG_TERM_MEMORY_REFRESH, CHANNEL_POST_REPLY_MAINTENANCE,
+    CHANNEL_SELF_RUNTIME, classify_system_work,
 };
 use crate::state;
+use crate::task_execution::{
+    TaskArtifact, TaskArtifactKind, TaskArtifactRecord, TaskExecutionLedgerEntry,
+    TaskExecutionRoute, TaskLedgerKind, TaskPlannerDecision, TaskReviewDecision, TaskReviewOutcome,
+    TaskRunRecord, TaskRunStatus, TaskStep, TaskStepStatus, active_task_run_for_chat,
+    apply_revised_remaining_steps, build_task_learning_records, build_task_run_record,
+    next_ledger_sequence, normalize_task_planner_decision, normalize_task_review_outcome,
+    summarize_task_artifact_content,
+};
+use crate::task_execution::{
+    TaskArtifactStore, TaskExecutionLedgerStore, TaskLearningStore, TaskRunStore,
+};
 use crate::tools::http_bridge::HttpClientToolContext;
 use crate::tools::{ToolOutboundDeliveryKind, ToolOutboundIntent, ToolOutboundTarget};
 use crate::util::{
     push_json_string_escaped, remove_substrings_all_trim, strip_agent_stop_confirmation,
     truncate_content_to_max, usize_to_decimal_buf,
 };
-use crate::PlatformHttpClient;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 /// 最大 ReAct 轮数（含首轮 chat），防止无限 tool 循环。
 const MAX_REACT_ROUNDS: usize = 10;
@@ -103,8 +114,14 @@ const ASSISTANT_COMPACT_TAIL_CHARS: usize = 48;
 const POST_REPLY_MAINTENANCE_USER_PREVIEW_CHARS: usize = 512;
 const POST_REPLY_MAINTENANCE_REPLY_PREVIEW_CHARS: usize = 768;
 const POST_REPLY_MAINTENANCE_DELAY_MS: u64 = 1_500;
-const PLAN_SYSTEM_SUFFIX: &str = "\n\n## Internal planning\nBefore solving the latest user request, create a short internal execution plan. Return 3-6 concise numbered steps only. Do not answer the user. Do not call tools in this planning step.";
 const FINAL_RECOVERY_SYSTEM_SUFFIX: &str = "\n\n## Final delivery\nThe tool-execution budget for this turn is exhausted. Do not call any tool. Using only the completed tool results and current conclusions already present in this conversation, produce the final user-facing answer now. Do not output execution transcripts, numbered step logs, or future-step sections.";
+const TASK_EXECUTION_PLANNER_SYSTEM_SUFFIX: &str = "\n\n## Task Execution Planner\nDecide whether the latest user request should stay on the normal reply path or enter the formal task-execution path. Return JSON only with fields: route, reason, title, goal, completion_definition, risk_notes, steps. route must be one of direct_reply, start_run, resume_run. When route is direct_reply, leave goal/completion_definition/steps empty. When route starts or resumes a run, steps must be an ordered array of 1-6 objects with title, instruction, tool_budget, retry_budget, expected_artifacts, review_criteria. Do not answer the user. Do not call tools in this planner step.";
+const TASK_EXECUTION_REVIEW_SYSTEM_SUFFIX: &str = "\n\n## Task Step Reviewer\nReview the just-finished task step and decide whether the run should pass the step, retry the same step, revise the remaining plan, abort the run, or finish partially. Return JSON only with fields: decision, summary, artifact_summary, revised_steps, durable_facts, reusable_procedures, evidence_only, transient_artifact_ids. decision must be one of pass, retry_step, revise_plan, abort_run, partial_complete. Only provide revised_steps when decision is revise_plan. durable_facts / reusable_procedures / evidence_only are arrays of objects with topic, summary, content, and optional memory_kind for durable_facts. durable_facts are only for canonical long-term facts that deserve governed shared memory. reusable_procedures are only for methods that might become runtime skills after repeated success. evidence_only is for supporting evidence that should enter archive but not canonical memory. transient_artifact_ids lists workspace artifact ids that should be pruned after review because they are low-value scratch output. Do not call tools in this review step.";
+const TASK_EXECUTION_FINISHER_SYSTEM_SUFFIX: &str = "\n\n## Task Run Finisher\nUsing only the governed task workspace, completed step outputs, and current conclusions, write the final user-facing reply for this task run. Do not call tools. Do not output execution transcripts, internal step ids, or future-plan boilerplate. If the run is partial or blocked, say exactly what was completed and what remains blocked.";
+const TASK_EXECUTION_MIN_CHARS: usize = 96;
+const TASK_EXECUTION_MIN_LINES: usize = 3;
+const TASK_EXECUTION_MIN_SEPARATORS: usize = 2;
+const TASK_EXECUTION_ARTIFACT_PREVIEW_LIMIT: usize = 4;
 
 /// 程序性会话摘要：单次轻量 LLM 调用的 system 提示。
 /// 同一 chat_id 的 "low memory, defer" 日志最少间隔，避免刷屏。
@@ -319,6 +336,339 @@ fn build_json_error_object(message: &str) -> String {
     out
 }
 
+fn should_consider_task_execution(
+    msg: &crate::bus::PcMsg,
+    has_tools: bool,
+    pressure: crate::orchestrator::PressureLevel,
+    has_active_run: bool,
+) -> bool {
+    if msg.ingress != IngressKind::User || msg.is_group {
+        return false;
+    }
+    if matches!(pressure, crate::orchestrator::PressureLevel::Critical) {
+        return false;
+    }
+    if has_active_run {
+        return true;
+    }
+    let content = msg.content.trim();
+    if content.is_empty() {
+        return false;
+    }
+    let char_count = content.chars().count();
+    let line_count = content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    let separator_count = content
+        .chars()
+        .filter(|ch| matches!(ch, '\n' | ',' | '，' | '.' | '。' | ';' | '；'))
+        .count();
+    if has_tools {
+        char_count >= TASK_EXECUTION_MIN_CHARS
+            || line_count >= TASK_EXECUTION_MIN_LINES
+            || separator_count >= TASK_EXECUTION_MIN_SEPARATORS
+    } else {
+        char_count >= TASK_EXECUTION_MIN_CHARS.saturating_mul(2)
+            || line_count >= TASK_EXECUTION_MIN_LINES
+    }
+}
+
+fn parse_task_execution_json<T>(raw: &str, stage: &'static str) -> Result<T>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(crate::error::Error::config(stage, "empty llm response"));
+    }
+    serde_json::from_str(trimmed)
+        .or_else(|_| {
+            let body = trimmed
+                .split_once("```")
+                .and_then(|(_, rest)| rest.split_once('\n'))
+                .and_then(|(_, rest)| rest.split_once("```"))
+                .map(|(json, _)| json.trim())
+                .ok_or_else(|| serde_json::Error::io(std::io::Error::other("no fence body")))?;
+            serde_json::from_str(body)
+        })
+        .or_else(|_| {
+            let start = trimmed.find('{').ok_or_else(|| {
+                serde_json::Error::io(std::io::Error::other("no json object start"))
+            })?;
+            let end = trimmed.rfind('}').ok_or_else(|| {
+                serde_json::Error::io(std::io::Error::other("no json object end"))
+            })?;
+            serde_json::from_str(&trimmed[start..=end])
+        })
+        .map_err(|error| crate::error::Error::config(stage, error.to_string()))
+}
+
+fn persist_task_run_record(store: &dyn TaskRunStore, record: &TaskRunRecord, stage: &str) {
+    if let Err(error) = store.upsert(record) {
+        log::warn!(
+            "[task_execution] failed to persist run stage={} run_id={}: {}",
+            stage,
+            record.run.run_id,
+            error
+        );
+    }
+}
+
+fn persist_task_artifact_record(
+    store: &dyn TaskArtifactStore,
+    record: &TaskArtifactRecord,
+    stage: &str,
+) {
+    if let Err(error) = store.put(record) {
+        log::warn!(
+            "[task_execution] failed to persist artifact stage={} run_id={} artifact_id={}: {}",
+            stage,
+            record.artifact.run_id,
+            record.artifact.artifact_id,
+            error
+        );
+    }
+}
+
+fn append_task_execution_ledger_entry(
+    store: &dyn TaskExecutionLedgerStore,
+    entry: &TaskExecutionLedgerEntry,
+    stage: &str,
+) {
+    if let Err(error) = store.append(&entry.run_id, entry) {
+        log::warn!(
+            "[task_execution] failed to append ledger stage={} run_id={} seq={}: {}",
+            stage,
+            entry.run_id,
+            entry.sequence,
+            error
+        );
+    }
+}
+
+fn generate_task_run_id(msg: &PcMsg) -> String {
+    let ts = now_unix_ms() & 0x00ff_ffff_ffff;
+    let mut hasher = DefaultHasher::new();
+    msg.channel.hash(&mut hasher);
+    msg.chat_id.hash(&mut hasher);
+    msg.content.hash(&mut hasher);
+    let short = hasher.finish() & 0xffff;
+    format!("tr{ts:010x}{short:04x}")
+}
+
+fn build_task_step_request(
+    record: &TaskRunRecord,
+    step: &TaskStep,
+    artifacts: &[TaskArtifactRecord],
+) -> String {
+    let mut out = String::new();
+    out.push_str("Internal task execution step.\n");
+    out.push_str("Do not answer the user directly. Complete only the current step.\n");
+    out.push_str(&format!("Run id: {}\n", record.run.run_id));
+    out.push_str(&format!("Task title: {}\n", record.run.title));
+    out.push_str(&format!("Goal: {}\n", record.plan.goal));
+    out.push_str(&format!(
+        "Completion definition: {}\n",
+        record.plan.completion_definition
+    ));
+    out.push_str(&format!(
+        "Current step: {} [{}]\nInstruction: {}\n",
+        step.title, step.step_id, step.instruction
+    ));
+    out.push_str(&format!(
+        "Tool budget: {} | Retry budget: {} | Attempt: {}\n",
+        step.tool_budget, step.retry_budget, step.attempt_count
+    ));
+    if !step.expected_artifacts.is_empty() {
+        out.push_str("Expected artifacts:\n");
+        for item in &step.expected_artifacts {
+            out.push_str("- ");
+            out.push_str(item);
+            out.push('\n');
+        }
+    }
+    if !step.review_criteria.is_empty() {
+        out.push_str("Review criteria:\n");
+        for item in &step.review_criteria {
+            out.push_str("- ");
+            out.push_str(item);
+            out.push('\n');
+        }
+    }
+    if !artifacts.is_empty() {
+        out.push_str("Recent task artifacts:\n");
+        for artifact in artifacts.iter().take(TASK_EXECUTION_ARTIFACT_PREVIEW_LIMIT) {
+            out.push_str(&format!(
+                "- {:?} {}: {}\n",
+                artifact.artifact.kind, artifact.artifact.artifact_id, artifact.artifact.summary
+            ));
+        }
+    }
+    out.push_str(
+        "Return only the step result, blocker, or concrete evidence gathered in this step.",
+    );
+    out
+}
+
+fn build_task_review_request(
+    record: &TaskRunRecord,
+    step: &TaskStep,
+    step_result_artifact: &TaskArtifactRecord,
+    existing_artifacts: &[TaskArtifactRecord],
+) -> String {
+    let mut out = String::new();
+    out.push_str("Review the latest task step.\n");
+    out.push_str(&format!("Run id: {}\n", record.run.run_id));
+    out.push_str(&format!("Task title: {}\n", record.run.title));
+    out.push_str(&format!("Goal: {}\n", record.plan.goal));
+    out.push_str(&format!(
+        "Completion definition: {}\n",
+        record.plan.completion_definition
+    ));
+    out.push_str(&format!(
+        "Current step: {} [{}]\nInstruction: {}\n",
+        step.title, step.step_id, step.instruction
+    ));
+    if !step.review_criteria.is_empty() {
+        out.push_str("Review criteria:\n");
+        for criterion in &step.review_criteria {
+            out.push_str("- ");
+            out.push_str(criterion);
+            out.push('\n');
+        }
+    }
+    out.push_str("Current step result artifact:\n");
+    out.push_str(&format!(
+        "- {} | {}\n",
+        step_result_artifact.artifact.artifact_id, step_result_artifact.artifact.summary
+    ));
+    out.push_str(step_result_artifact.content.trim());
+    out.push('\n');
+    if !existing_artifacts.is_empty() {
+        out.push_str("Existing task workspace artifacts you may reference by artifact id:\n");
+        for artifact in existing_artifacts
+            .iter()
+            .take(TASK_EXECUTION_ARTIFACT_PREVIEW_LIMIT)
+        {
+            out.push_str(&format!(
+                "- {} | {:?} | {}\n",
+                artifact.artifact.artifact_id, artifact.artifact.kind, artifact.artifact.summary
+            ));
+        }
+    }
+    out.push_str(
+        "Decide whether the step passed, needs retry, requires plan revision, should abort, or should finish partially. Also classify durable facts, reusable procedures, evidence-only material, and transient artifact ids for routing.",
+    );
+    out
+}
+
+fn build_task_finisher_request(record: &TaskRunRecord, artifacts: &[TaskArtifactRecord]) -> String {
+    let mut out = String::new();
+    out.push_str("Finalize the task run for the user.\n");
+    out.push_str(&format!("Run id: {}\n", record.run.run_id));
+    out.push_str(&format!("Status: {:?}\n", record.run.status));
+    out.push_str(&format!("Task title: {}\n", record.run.title));
+    out.push_str(&format!("Goal: {}\n", record.plan.goal));
+    out.push_str(&format!(
+        "Completion definition: {}\n",
+        record.plan.completion_definition
+    ));
+    if !record.run.final_summary.is_empty() {
+        out.push_str(&format!(
+            "Execution summary: {}\n",
+            record.run.final_summary
+        ));
+    }
+    if !record.run.failure_reason.is_empty() {
+        out.push_str(&format!(
+            "Failure or blocker: {}\n",
+            record.run.failure_reason
+        ));
+    }
+    out.push_str("Step status:\n");
+    for step in &record.plan.ordered_steps {
+        out.push_str(&format!(
+            "- [{}] {:?}: {}",
+            step.step_id, step.status, step.title
+        ));
+        if !step.last_review_summary.is_empty() {
+            out.push_str(" | ");
+            out.push_str(step.last_review_summary.trim());
+        }
+        out.push('\n');
+    }
+    if !artifacts.is_empty() {
+        out.push_str("Task artifacts:\n");
+        for artifact in artifacts.iter().take(TASK_EXECUTION_ARTIFACT_PREVIEW_LIMIT) {
+            out.push_str(&format!(
+                "- {:?}: {}\n",
+                artifact.artifact.kind, artifact.content
+            ));
+        }
+    }
+    out.push_str("Write the final user-facing reply now.");
+    out
+}
+
+fn build_task_artifact_record(
+    run_id: &str,
+    step_id: &str,
+    kind: TaskArtifactKind,
+    content: &str,
+    provenance: &str,
+    sequence: usize,
+    now_secs: u64,
+) -> TaskArtifactRecord {
+    let artifact_id = format!("a{sequence:02}");
+    let content_ref = if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
+        format!("x/a/{}_{}.j", run_id, artifact_id)
+    } else {
+        format!("memory/task_artifacts/{run_id}/{artifact_id}.json")
+    };
+    TaskArtifactRecord {
+        artifact: TaskArtifact {
+            artifact_id,
+            run_id: run_id.to_string(),
+            step_id: step_id.to_string(),
+            kind,
+            summary: summarize_task_artifact_content(content),
+            content_ref,
+            provenance: truncate_content_to_max(provenance, 240).into_owned(),
+            created_at: now_secs,
+        },
+        content: truncate_content_to_max(content.trim(), 4 * 1024).into_owned(),
+    }
+}
+
+fn build_task_ledger_entry(
+    run_id: &str,
+    step_id: &str,
+    kind: TaskLedgerKind,
+    run_status: TaskRunStatus,
+    message: &str,
+    sequence: u32,
+    now_secs: u64,
+) -> TaskExecutionLedgerEntry {
+    TaskExecutionLedgerEntry {
+        sequence,
+        run_id: run_id.to_string(),
+        step_id: step_id.to_string(),
+        kind,
+        run_status,
+        message: truncate_content_to_max(message.trim(), 320).into_owned(),
+        recorded_at: now_secs,
+    }
+}
+
+fn extract_worker_outcome_text(outcome: WorkerOutcome) -> String {
+    match outcome {
+        WorkerOutcome::Interrupt(text)
+        | WorkerOutcome::Content(text)
+        | WorkerOutcome::Delivered(text) => text,
+    }
+}
+
 #[inline(never)]
 fn prepare_worker_conversation<'a>(
     worker_llm: &(dyn LlmClient + Send + Sync),
@@ -376,6 +726,8 @@ fn prepare_worker_conversation<'a>(
     let prompt_memory_system_budget = budget
         .system_prompt_max
         .saturating_sub(post_memory_tail_len);
+    let capability_package_text =
+        (config.get_capability_package_text)(&msg.channel, prompt_memory_system_budget.min(1800));
     let relationship_id = crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id);
     let mental_privacy_adjudication = if msg.ingress == IngressKind::User {
         match run_mental_privacy_disclosure_adjudication(
@@ -421,6 +773,9 @@ fn prepare_worker_conversation<'a>(
         session_summary_store: config.session_summary_store.as_ref(),
         long_term_memory_store: config.long_term_memory_store.as_ref(),
         execution_state_store: config.execution_state_store.as_ref(),
+        task_run_store: config.task_run_store.as_ref(),
+        task_artifact_store: config.task_artifact_store.as_ref(),
+        task_learning_store: config.task_learning_store.as_ref(),
         self_model_store: config.self_model_store.as_ref(),
         self_authored_core_store: config.self_authored_core_store.as_ref(),
         relationship_constitution_store: config.relationship_constitution_store.as_ref(),
@@ -599,6 +954,8 @@ fn prepare_worker_conversation<'a>(
         group_activation: config.tg_group_activation.as_ref(),
         emotion_signal_suffix,
         execution_state_text: prompt_memory.execution_state_text.as_deref(),
+        task_workspace_text: prompt_memory.task_workspace_text.as_deref(),
+        task_recall_text: prompt_memory.task_recall_text.as_deref(),
         world_snapshot_text: prompt_memory.world_snapshot_text.as_deref(),
         world_sense_text: prompt_memory.world_sense_text.as_deref(),
         self_state_text: prompt_memory.self_state_text.as_deref(),
@@ -618,6 +975,7 @@ fn prepare_worker_conversation<'a>(
         long_term_memory_text: prompt_memory.long_term_memory_text.as_deref(),
         archive_evidence_text: prompt_memory.archive_evidence_text.as_deref(),
         runtime_skill_text: prompt_memory.runtime_skill_text.as_deref(),
+        capability_package_text: capability_package_text.as_deref(),
         summary_text: prompt_memory.message_summary_text.as_deref(),
         recent_messages: (!prompt_memory.recent_messages.is_empty())
             .then_some(prompt_memory.recent_messages.as_slice()),
@@ -628,26 +986,11 @@ fn prepare_worker_conversation<'a>(
     .map_err(|e| e.with_stage("agent_context"))?;
     latency.context_ms = context_start.elapsed().as_millis();
     request_plan.apply_system_prompt(&mut system, budget.system_prompt_max);
-    let mut system_scratch =
-        String::with_capacity(system.len().saturating_add(PLAN_SYSTEM_SUFFIX.len()));
-    if config.strategy.enables_preplanning()
-        && should_generate_execution_plan(msg, has_tools, snapshot.pressure)
-    {
-        let planning_system =
-            prepare_system_with_suffix(&system, PLAN_SYSTEM_SUFFIX, &mut system_scratch);
-        match worker_llm.chat(
-            tool_ctx,
-            planning_system,
-            &messages,
-            None,
-            ToolChoicePolicy::Auto,
-        ) {
-            Ok(resp) => append_execution_plan(&mut system, budget.system_prompt_max, &resp.content),
-            Err(e) => {
-                log::debug!("[agent_plan] skipped after planning error: {}", e);
-            }
-        }
-    }
+    let mut system_scratch = String::with_capacity(
+        system
+            .len()
+            .saturating_add(TASK_EXECUTION_FINISHER_SYSTEM_SUFFIX.len()),
+    );
 
     Ok(PreparedWorkerConversation {
         prompt_memory,
@@ -660,6 +1003,630 @@ fn prepare_worker_conversation<'a>(
         mental_privacy_adjudication,
         persona_priority_adjudication,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_run_task_execution(
+    http: &mut dyn PlatformHttpClient,
+    worker_llm: &(dyn LlmClient + Send + Sync),
+    msg: &crate::bus::PcMsg,
+    outbound_tx: &OutboundTx,
+    req_id: &str,
+    registry: &crate::tools::ToolRegistry,
+    config: &AgentLoopConfig,
+    request_plan: &AgentRequestPlan<'_>,
+    tool_ctx: &mut HttpClientToolContext<'_>,
+    loc: UiLocale,
+    latency: &mut WorkerLatency,
+    system: &str,
+    messages: &[Message],
+    system_scratch: &mut String,
+    pressure: crate::orchestrator::PressureLevel,
+    mental_privacy_adjudication: Option<crate::memory::MentalPrivacyDisclosureAdjudication>,
+    persona_priority_adjudication: Option<PersonaPriorityAdjudication>,
+) -> Result<Option<(WorkerOutcome, WorkerRunTelemetry)>> {
+    let active_run =
+        active_task_run_for_chat(config.task_run_store.as_ref(), &msg.channel, &msg.chat_id)
+            .ok()
+            .flatten();
+    if !should_consider_task_execution(
+        msg,
+        request_plan.has_tools(),
+        pressure,
+        active_run.is_some(),
+    ) {
+        return Ok(None);
+    }
+
+    let planner_system =
+        prepare_system_with_suffix(system, TASK_EXECUTION_PLANNER_SYSTEM_SUFFIX, system_scratch);
+    let planner_t0 = metrics::record_llm_call_start();
+    let planner_started = Instant::now();
+    let planner_response = match worker_llm.chat(
+        tool_ctx,
+        planner_system,
+        messages,
+        None,
+        ToolChoicePolicy::Auto,
+    ) {
+        Ok(response) => {
+            metrics::record_llm_call_end(planner_t0);
+            latency.llm_round_total_ms = latency
+                .llm_round_total_ms
+                .saturating_add(planner_started.elapsed().as_millis());
+            response
+        }
+        Err(error) => {
+            metrics::record_llm_call_end(planner_t0);
+            log::debug!(
+                "[task_execution] planner skipped after llm error: {}",
+                error
+            );
+            return Ok(None);
+        }
+    };
+    let mut planner_decision = match parse_task_execution_json::<TaskPlannerDecision>(
+        &planner_response.content,
+        "task_execution_planner",
+    )
+    .and_then(normalize_task_planner_decision)
+    {
+        Ok(decision) => decision,
+        Err(error) => {
+            log::debug!(
+                "[task_execution] planner skipped after parse error chat_id={}: {}",
+                msg.chat_id,
+                error
+            );
+            return Ok(None);
+        }
+    };
+    if planner_decision.route == TaskExecutionRoute::DirectReply {
+        return Ok(None);
+    }
+    if planner_decision.route == TaskExecutionRoute::ResumeRun && active_run.is_none() {
+        planner_decision.route = TaskExecutionRoute::StartRun;
+    }
+
+    let now_secs = crate::util::current_unix_secs();
+    let mut record = match planner_decision.route {
+        TaskExecutionRoute::ResumeRun => {
+            let mut record = active_run.clone().unwrap_or_else(|| unreachable!());
+            record.run.status = TaskRunStatus::Planning;
+            record.run.updated_at = now_secs;
+            if !planner_decision.title.is_empty() {
+                record.run.title = planner_decision.title.clone();
+            }
+            if !planner_decision.reason.is_empty() {
+                record.run.planner_reason = planner_decision.reason.clone();
+            }
+            if !planner_decision.goal.is_empty() {
+                record.plan.goal = planner_decision.goal.clone();
+            }
+            if !planner_decision.completion_definition.is_empty() {
+                record.plan.completion_definition = planner_decision.completion_definition.clone();
+            }
+            if !planner_decision.risk_notes.is_empty() {
+                record.plan.risk_notes = planner_decision.risk_notes.clone();
+            }
+            if !planner_decision.steps.is_empty() {
+                apply_revised_remaining_steps(&mut record, &planner_decision.steps)?;
+            }
+            record
+        }
+        TaskExecutionRoute::StartRun | TaskExecutionRoute::DirectReply => build_task_run_record(
+            &generate_task_run_id(msg),
+            &msg.channel,
+            &msg.chat_id,
+            &msg.content,
+            &planner_decision,
+            now_secs,
+        )?,
+    };
+
+    if planner_decision.route == TaskExecutionRoute::StartRun {
+        if let Some(mut previous_run) = active_run {
+            if previous_run.run.run_id != record.run.run_id {
+                previous_run.run.status = TaskRunStatus::Blocked;
+                previous_run.run.failure_reason =
+                    "superseded by a newer task run in the same relationship".to_string();
+                previous_run.run.updated_at = now_secs;
+                previous_run.run.finished_at = now_secs;
+                persist_task_run_record(
+                    config.task_run_store.as_ref(),
+                    &previous_run,
+                    "supersede_previous_run",
+                );
+            }
+        }
+    }
+
+    persist_task_run_record(config.task_run_store.as_ref(), &record, "task_plan_start");
+    let existing_ledger = config
+        .task_execution_ledger_store
+        .list(&record.run.run_id, usize::MAX)
+        .unwrap_or_default();
+    let mut ledger_sequence = next_ledger_sequence(&existing_ledger);
+    append_task_execution_ledger_entry(
+        config.task_execution_ledger_store.as_ref(),
+        &build_task_ledger_entry(
+            &record.run.run_id,
+            "",
+            TaskLedgerKind::RunCreated,
+            record.run.status,
+            &record.run.planner_reason,
+            ledger_sequence,
+            now_secs,
+        ),
+        "task_run_created",
+    );
+    ledger_sequence = ledger_sequence.saturating_add(1);
+    append_task_execution_ledger_entry(
+        config.task_execution_ledger_store.as_ref(),
+        &build_task_ledger_entry(
+            &record.run.run_id,
+            "",
+            if planner_decision.route == TaskExecutionRoute::ResumeRun {
+                TaskLedgerKind::PlanRevised
+            } else {
+                TaskLedgerKind::PlanAccepted
+            },
+            record.run.status,
+            &record.plan.goal,
+            ledger_sequence,
+            now_secs,
+        ),
+        "task_plan_accepted",
+    );
+    ledger_sequence = ledger_sequence.saturating_add(1);
+
+    let mut any_tool_used = false;
+    let mut external_content_used = false;
+    let mut max_react_rounds = 0u32;
+    loop {
+        let step_index = record
+            .plan
+            .ordered_steps
+            .iter()
+            .position(|step| step.step_id == record.run.current_step_id)
+            .or_else(|| {
+                record
+                    .plan
+                    .ordered_steps
+                    .iter()
+                    .position(|step| !step.status.is_terminal())
+            });
+        let Some(step_index) = step_index else {
+            record.run.status = TaskRunStatus::Completed;
+            record.run.finished_at = now_secs;
+            break;
+        };
+
+        record.run.status = TaskRunStatus::Running;
+        record.run.current_step_id = record.plan.ordered_steps[step_index].step_id.clone();
+        {
+            let step = &mut record.plan.ordered_steps[step_index];
+            step.status = TaskStepStatus::Running;
+            step.attempt_count = step.attempt_count.saturating_add(1);
+            if step.started_at == 0 {
+                step.started_at = now_secs;
+            }
+        }
+        record.run.updated_at = crate::util::current_unix_secs();
+        persist_task_run_record(config.task_run_store.as_ref(), &record, "step_started");
+        let current_step = record.plan.ordered_steps[step_index].clone();
+        append_task_execution_ledger_entry(
+            config.task_execution_ledger_store.as_ref(),
+            &build_task_ledger_entry(
+                &record.run.run_id,
+                &current_step.step_id,
+                TaskLedgerKind::StepStarted,
+                record.run.status,
+                &current_step.title,
+                ledger_sequence,
+                crate::util::current_unix_secs(),
+            ),
+            "task_step_started",
+        );
+        ledger_sequence = ledger_sequence.saturating_add(1);
+
+        let current_artifacts = config
+            .task_artifact_store
+            .list_for_run(&record.run.run_id, TASK_EXECUTION_ARTIFACT_PREVIEW_LIMIT)
+            .unwrap_or_default();
+        let step_request = build_task_step_request(&record, &current_step, &current_artifacts);
+        let step_req_id = format!("{}-{}", record.run.run_id, current_step.step_id);
+        let step_msg = PcMsg {
+            channel: msg.channel.clone(),
+            chat_id: msg.chat_id.clone(),
+            content: step_request,
+            req_id: Some(step_req_id.clone()),
+            ingress: IngressKind::System,
+            enqueue_ts_ms: now_unix_ms(),
+            is_group: false,
+        };
+        let mut step_repeat = HashMap::new();
+        let (step_outcome, step_telemetry) = run_worker_path(
+            http,
+            worker_llm,
+            &step_msg,
+            outbound_tx,
+            &step_req_id,
+            registry,
+            config,
+            &mut step_repeat,
+            loc,
+        )?;
+        latency.context_ms = latency
+            .context_ms
+            .saturating_add(step_telemetry.latency.context_ms);
+        latency.llm_round_total_ms = latency
+            .llm_round_total_ms
+            .saturating_add(step_telemetry.latency.llm_round_total_ms);
+        latency.tool_exec_ms = latency
+            .tool_exec_ms
+            .saturating_add(step_telemetry.latency.tool_exec_ms);
+        latency.tool_calls = latency
+            .tool_calls
+            .saturating_add(step_telemetry.latency.tool_calls);
+        max_react_rounds = max_react_rounds.max(step_telemetry.latency.react_rounds);
+        any_tool_used |= step_telemetry.any_tool_used;
+        external_content_used |= step_telemetry.external_content_used;
+        let step_result = extract_worker_outcome_text(step_outcome);
+        let artifact_sequence = config
+            .task_artifact_store
+            .list_for_run(&record.run.run_id, usize::MAX)
+            .map(|items| items.len() + 1)
+            .unwrap_or(1);
+        let step_artifact = build_task_artifact_record(
+            &record.run.run_id,
+            &current_step.step_id,
+            TaskArtifactKind::StepResult,
+            &step_result,
+            "executor",
+            artifact_sequence,
+            crate::util::current_unix_secs(),
+        );
+        persist_task_artifact_record(
+            config.task_artifact_store.as_ref(),
+            &step_artifact,
+            "task_step_result",
+        );
+        append_task_execution_ledger_entry(
+            config.task_execution_ledger_store.as_ref(),
+            &build_task_ledger_entry(
+                &record.run.run_id,
+                &current_step.step_id,
+                TaskLedgerKind::StepResultRecorded,
+                record.run.status,
+                &step_artifact.artifact.summary,
+                ledger_sequence,
+                crate::util::current_unix_secs(),
+            ),
+            "task_step_result",
+        );
+        ledger_sequence = ledger_sequence.saturating_add(1);
+
+        let review_request =
+            build_task_review_request(&record, &current_step, &step_artifact, &current_artifacts);
+        let review_system =
+            prepare_system_with_suffix(system, TASK_EXECUTION_REVIEW_SYSTEM_SUFFIX, system_scratch);
+        let review_started = Instant::now();
+        let review_t0 = metrics::record_llm_call_start();
+        let review_outcome = match worker_llm.chat(
+            tool_ctx,
+            review_system,
+            &[Message {
+                role: Cow::Borrowed("user"),
+                content: review_request,
+            }],
+            None,
+            ToolChoicePolicy::Auto,
+        ) {
+            Ok(response) => {
+                metrics::record_llm_call_end(review_t0);
+                latency.llm_round_total_ms = latency
+                    .llm_round_total_ms
+                    .saturating_add(review_started.elapsed().as_millis());
+                parse_task_execution_json::<TaskReviewOutcome>(
+                    &response.content,
+                    "task_execution_review",
+                )
+                .and_then(normalize_task_review_outcome)
+                .unwrap_or(TaskReviewOutcome {
+                    decision: TaskReviewDecision::PartialComplete,
+                    summary: "task review unavailable; stopped without claiming completion"
+                        .to_string(),
+                    artifact_summary: summarize_task_artifact_content(&step_result),
+                    revised_steps: Vec::new(),
+                    durable_facts: Vec::new(),
+                    reusable_procedures: Vec::new(),
+                    evidence_only: Vec::new(),
+                    transient_artifact_ids: Vec::new(),
+                })
+            }
+            Err(error) => {
+                metrics::record_llm_call_end(review_t0);
+                latency.llm_round_total_ms = latency
+                    .llm_round_total_ms
+                    .saturating_add(review_started.elapsed().as_millis());
+                log::warn!(
+                    "[task_execution] review failed run_id={}: {}",
+                    record.run.run_id,
+                    error
+                );
+                TaskReviewOutcome {
+                    decision: TaskReviewDecision::PartialComplete,
+                    summary: "task review failed; stopped without claiming completion".to_string(),
+                    artifact_summary: summarize_task_artifact_content(&step_result),
+                    revised_steps: Vec::new(),
+                    durable_facts: Vec::new(),
+                    reusable_procedures: Vec::new(),
+                    evidence_only: Vec::new(),
+                    transient_artifact_ids: Vec::new(),
+                }
+            }
+        };
+        let review_artifact = build_task_artifact_record(
+            &record.run.run_id,
+            &current_step.step_id,
+            TaskArtifactKind::Review,
+            &review_outcome.summary,
+            "reviewer",
+            artifact_sequence + 1,
+            crate::util::current_unix_secs(),
+        );
+        persist_task_artifact_record(
+            config.task_artifact_store.as_ref(),
+            &review_artifact,
+            "task_review_result",
+        );
+        for learning_record in build_task_learning_records(
+            &record,
+            &current_step.step_id,
+            &step_artifact,
+            &review_artifact,
+            &review_outcome.durable_facts,
+            &review_outcome.reusable_procedures,
+            &review_outcome.evidence_only,
+            &review_outcome.transient_artifact_ids,
+            &review_outcome.summary,
+            crate::util::current_unix_secs(),
+        ) {
+            if let Err(error) = config.task_learning_store.upsert(&learning_record) {
+                log::warn!(
+                    "[task_execution] task learning persist failed run_id={} learning_id={}: {}",
+                    record.run.run_id,
+                    learning_record.learning_id,
+                    error
+                );
+            }
+        }
+        append_task_execution_ledger_entry(
+            config.task_execution_ledger_store.as_ref(),
+            &build_task_ledger_entry(
+                &record.run.run_id,
+                &current_step.step_id,
+                TaskLedgerKind::StepReviewRecorded,
+                record.run.status,
+                &review_outcome.summary,
+                ledger_sequence,
+                crate::util::current_unix_secs(),
+            ),
+            "task_step_review",
+        );
+        ledger_sequence = ledger_sequence.saturating_add(1);
+
+        {
+            let step = &mut record.plan.ordered_steps[step_index];
+            step.last_result_summary = step_artifact.artifact.summary.clone();
+            step.last_review_summary = review_outcome.summary.clone();
+        }
+        match review_outcome.decision {
+            TaskReviewDecision::Pass => {
+                let step = &mut record.plan.ordered_steps[step_index];
+                step.status = TaskStepStatus::Passed;
+                step.finished_at = crate::util::current_unix_secs();
+            }
+            TaskReviewDecision::RevisePlan => {
+                let step = &mut record.plan.ordered_steps[step_index];
+                step.status = TaskStepStatus::Passed;
+                step.finished_at = crate::util::current_unix_secs();
+                apply_revised_remaining_steps(&mut record, &review_outcome.revised_steps)?;
+                append_task_execution_ledger_entry(
+                    config.task_execution_ledger_store.as_ref(),
+                    &build_task_ledger_entry(
+                        &record.run.run_id,
+                        &current_step.step_id,
+                        TaskLedgerKind::PlanRevised,
+                        record.run.status,
+                        &review_outcome.summary,
+                        ledger_sequence,
+                        crate::util::current_unix_secs(),
+                    ),
+                    "task_plan_revised",
+                );
+                ledger_sequence = ledger_sequence.saturating_add(1);
+            }
+            TaskReviewDecision::RetryStep => {
+                let step = &mut record.plan.ordered_steps[step_index];
+                if step.attempt_count <= step.retry_budget {
+                    step.status = TaskStepStatus::Retrying;
+                    record.run.updated_at = crate::util::current_unix_secs();
+                    persist_task_run_record(config.task_run_store.as_ref(), &record, "step_retry");
+                    continue;
+                }
+                step.status = TaskStepStatus::Blocked;
+                step.finished_at = crate::util::current_unix_secs();
+                record.run.status = TaskRunStatus::Blocked;
+                record.run.failure_reason = if review_outcome.summary.is_empty() {
+                    format!("retry budget exhausted at {}", step.title)
+                } else {
+                    review_outcome.summary.clone()
+                };
+                record.run.final_summary = record.run.failure_reason.clone();
+                record.run.finished_at = crate::util::current_unix_secs();
+                break;
+            }
+            TaskReviewDecision::AbortRun => {
+                let step = &mut record.plan.ordered_steps[step_index];
+                step.status = TaskStepStatus::Failed;
+                step.finished_at = crate::util::current_unix_secs();
+                record.run.status = TaskRunStatus::Aborted;
+                record.run.failure_reason = review_outcome.summary.clone();
+                record.run.final_summary = review_outcome.summary.clone();
+                record.run.finished_at = crate::util::current_unix_secs();
+                break;
+            }
+            TaskReviewDecision::PartialComplete => {
+                let step = &mut record.plan.ordered_steps[step_index];
+                step.status = TaskStepStatus::Blocked;
+                step.finished_at = crate::util::current_unix_secs();
+                record.run.status = TaskRunStatus::PartialComplete;
+                record.run.failure_reason = review_outcome.summary.clone();
+                record.run.final_summary = review_outcome.summary.clone();
+                record.run.finished_at = crate::util::current_unix_secs();
+                break;
+            }
+        }
+
+        let next_step_id = record
+            .plan
+            .ordered_steps
+            .iter()
+            .find(|step| !step.status.is_terminal())
+            .map(|step| step.step_id.clone())
+            .unwrap_or_default();
+        record.run.current_step_id = next_step_id;
+        record.run.updated_at = crate::util::current_unix_secs();
+        if record.run.current_step_id.is_empty() {
+            record.run.status = TaskRunStatus::Completed;
+            record.run.final_summary = review_outcome.summary.clone();
+            record.run.finished_at = crate::util::current_unix_secs();
+            break;
+        }
+        persist_task_run_record(config.task_run_store.as_ref(), &record, "step_passed");
+    }
+
+    record.run.updated_at = crate::util::current_unix_secs();
+    if record.run.status == TaskRunStatus::Planning {
+        record.run.status = TaskRunStatus::Completed;
+    }
+    if record.run.status.is_terminal() && record.run.finished_at == 0 {
+        record.run.finished_at = record.run.updated_at;
+    }
+    let final_artifact_count = config
+        .task_artifact_store
+        .list_for_run(&record.run.run_id, usize::MAX)
+        .map(|items| items.len())
+        .unwrap_or(0);
+    let final_artifacts = config
+        .task_artifact_store
+        .list_for_run(&record.run.run_id, TASK_EXECUTION_ARTIFACT_PREVIEW_LIMIT)
+        .unwrap_or_default();
+    let finisher_request = build_task_finisher_request(&record, &final_artifacts);
+    let finisher_system = prepare_system_with_suffix(
+        system,
+        TASK_EXECUTION_FINISHER_SYSTEM_SUFFIX,
+        system_scratch,
+    );
+    let finisher_started = Instant::now();
+    let finisher_t0 = metrics::record_llm_call_start();
+    let final_reply = match worker_llm.chat(
+        tool_ctx,
+        finisher_system,
+        &[Message {
+            role: Cow::Borrowed("user"),
+            content: finisher_request,
+        }],
+        None,
+        ToolChoicePolicy::Auto,
+    ) {
+        Ok(response) => {
+            metrics::record_llm_call_end(finisher_t0);
+            latency.llm_round_total_ms = latency
+                .llm_round_total_ms
+                .saturating_add(finisher_started.elapsed().as_millis());
+            if latency.ttft_ms.is_none() && !response.content.trim().is_empty() {
+                latency.ttft_ms = Some(finisher_started.elapsed().as_millis());
+            }
+            response.content.trim().to_string()
+        }
+        Err(error) => {
+            metrics::record_llm_call_end(finisher_t0);
+            latency.llm_round_total_ms = latency
+                .llm_round_total_ms
+                .saturating_add(finisher_started.elapsed().as_millis());
+            log::warn!(
+                "[task_execution] finisher failed run_id={}: {}",
+                record.run.run_id,
+                error
+            );
+            if record.run.final_summary.is_empty() {
+                "This task run stopped before a clean final summary could be produced.".to_string()
+            } else {
+                record.run.final_summary.clone()
+            }
+        }
+    };
+    let final_artifact = build_task_artifact_record(
+        &record.run.run_id,
+        "",
+        TaskArtifactKind::FinalReply,
+        &final_reply,
+        "finisher",
+        final_artifact_count + 1,
+        crate::util::current_unix_secs(),
+    );
+    persist_task_artifact_record(
+        config.task_artifact_store.as_ref(),
+        &final_artifact,
+        "task_final_reply",
+    );
+    append_task_execution_ledger_entry(
+        config.task_execution_ledger_store.as_ref(),
+        &build_task_ledger_entry(
+            &record.run.run_id,
+            "",
+            TaskLedgerKind::RunFinished,
+            record.run.status,
+            &final_reply,
+            ledger_sequence,
+            crate::util::current_unix_secs(),
+        ),
+        "task_run_finished",
+    );
+    record.run.updated_at = crate::util::current_unix_secs();
+    if record.run.final_summary.is_empty() {
+        record.run.final_summary = summarize_task_artifact_content(&final_reply);
+    }
+    if record.run.status.is_terminal() && record.run.finished_at == 0 {
+        record.run.finished_at = record.run.updated_at;
+    }
+    persist_task_run_record(config.task_run_store.as_ref(), &record, "task_run_finished");
+    latency.react_rounds = latency.react_rounds.max(max_react_rounds.max(1));
+    Ok(Some((
+        WorkerOutcome::Content(final_reply),
+        WorkerRunTelemetry {
+            streamed: false,
+            latency: WorkerLatency {
+                context_ms: latency.context_ms,
+                llm_round_total_ms: latency.llm_round_total_ms,
+                tool_exec_ms: latency.tool_exec_ms,
+                session_write_ms: latency.session_write_ms,
+                ttft_ms: latency.ttft_ms,
+                react_rounds: latency.react_rounds,
+                tool_calls: latency.tool_calls,
+            },
+            delivery: DeliveryReport::default(),
+            any_tool_used,
+            external_content_used,
+            used_final_answer_recovery: false,
+            pressure,
+            mental_privacy_adjudication,
+            persona_priority_adjudication,
+        },
+    )))
 }
 
 #[cold]
@@ -1146,11 +2113,7 @@ fn hash_tool_round(call_keys: &[u64]) -> u64 {
 }
 
 fn tool_result_status_attr(call_failed: bool) -> &'static str {
-    if call_failed {
-        "error"
-    } else {
-        "ok"
-    }
+    if call_failed { "error" } else { "ok" }
 }
 
 fn failure_kind_attr(
@@ -1682,6 +2645,7 @@ fn run_long_term_memory_refresh_job(
         http,
         chat_id: Some(Arc::from(msg.chat_id.as_ref())),
         channel: Some(Arc::from("system")),
+        channel_capability_registry: Arc::clone(&config.channel_capability_registry),
         supports_current_chat_outbound_message: false,
         supports_current_chat_primary_reply: false,
         supports_explicit_outbound_message: false,
@@ -1845,6 +2809,7 @@ fn maybe_apply_mental_privacy_review(
         http,
         chat_id: Some(msg.chat_id.clone()),
         channel: Some(msg.channel.clone()),
+        channel_capability_registry: Arc::clone(&config.channel_capability_registry),
         supports_current_chat_outbound_message: false,
         supports_current_chat_primary_reply: false,
         supports_explicit_outbound_message: false,
@@ -2511,6 +3476,7 @@ fn run_post_reply_maintenance_job(
         http,
         chat_id: Some(Arc::from(msg.chat_id.as_ref())),
         channel: Some(Arc::from("system")),
+        channel_capability_registry: Arc::clone(&config.channel_capability_registry),
         supports_current_chat_outbound_message: false,
         supports_current_chat_primary_reply: false,
         supports_explicit_outbound_message: false,
@@ -2691,6 +3657,7 @@ fn run_self_runtime_job(
         http,
         chat_id: Some(Arc::from(msg.chat_id.as_ref())),
         channel: Some(Arc::from("system")),
+        channel_capability_registry: Arc::clone(&config.channel_capability_registry),
         supports_current_chat_outbound_message: false,
         supports_current_chat_primary_reply: false,
         supports_explicit_outbound_message: false,
@@ -3339,13 +4306,19 @@ pub struct AgentLoopConfig {
     pub skill_storage: Arc<dyn crate::platform::SkillStorage + Send + Sync>,
     pub memory_profile: crate::memory::MemoryProfile,
     pub get_skill_descriptions: Arc<dyn Fn() -> String + Send + Sync>,
+    pub get_capability_package_text: Arc<dyn Fn(&str, usize) -> Option<String> + Send + Sync>,
     pub session_max_messages: usize,
     pub tg_group_activation: Arc<str>,
     pub important_message_store: Arc<dyn ImportantMessageStore + Send + Sync>,
     pub emotion_signal_store: Arc<dyn EmotionSignalStore + Send + Sync>,
     pub remind_store: Arc<dyn RemindAtStore + Send + Sync>,
     pub task_store: Arc<dyn crate::task::TaskStore + Send + Sync>,
+    pub task_run_store: Arc<dyn TaskRunStore + Send + Sync>,
+    pub task_artifact_store: Arc<dyn TaskArtifactStore + Send + Sync>,
+    pub task_execution_ledger_store: Arc<dyn TaskExecutionLedgerStore + Send + Sync>,
+    pub task_learning_store: Arc<dyn TaskLearningStore + Send + Sync>,
     pub pending_retry: Arc<dyn PendingRetryStore + Send + Sync>,
+    pub channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
     pub strategy: AgentRunStrategy,
     /// 全局 LLM 流式模式；true 时 agent 使用 chat_with_progress 回调。
     pub llm_stream: bool,
@@ -3760,6 +4733,7 @@ fn run_worker_path(
         http,
         chat_id: Some(msg.chat_id.clone()),
         channel: Some(msg.channel.clone()),
+        channel_capability_registry: Arc::clone(&config.channel_capability_registry),
         supports_current_chat_outbound_message: false,
         supports_current_chat_primary_reply: false,
         supports_explicit_outbound_message: false,
@@ -3768,17 +4742,37 @@ fn run_worker_path(
         current_primary_message_delivered: false,
         locale: loc,
     };
+    let channel_capability = config.channel_capability_registry.get(msg.channel.as_ref());
     let editor = if config.llm_stream
         && config.stream_editor_channel.as_deref() == Some(msg.channel.as_ref())
+        && channel_capability
+            .map(|entry| entry.enabled && entry.contract.supports_stream_edit)
+            .unwrap_or(false)
     {
         config.stream_editor.as_deref()
     } else {
         None
     };
-    tool_ctx.supports_current_chat_outbound_message =
-        msg.ingress == IngressKind::User && msg.channel.as_ref() != "voice";
-    tool_ctx.supports_current_chat_primary_reply = tool_ctx.supports_current_chat_outbound_message;
-    let mut delivery = DeliverySession::new(msg, req_id, outbound_tx, editor, loc);
+    let current_channel_enabled = channel_capability
+        .map(|entry| entry.enabled)
+        .unwrap_or(false);
+    let current_user_visible = msg.ingress == IngressKind::User
+        && current_channel_enabled
+        && msg.channel.as_ref() != crate::CHANNEL_VOICE;
+    tool_ctx.supports_current_chat_outbound_message = current_user_visible
+        && channel_capability
+            .map(|entry| {
+                entry.contract.supports_primary_reply || entry.contract.supports_supplemental_reply
+            })
+            .unwrap_or(false);
+    tool_ctx.supports_current_chat_primary_reply = current_user_visible
+        && channel_capability
+            .map(|entry| entry.contract.supports_primary_reply)
+            .unwrap_or(false);
+    tool_ctx.supports_explicit_outbound_message =
+        msg.ingress == IngressKind::User && msg.channel.as_ref() != crate::CHANNEL_VOICE;
+    let mut delivery =
+        DeliverySession::new(msg, req_id, outbound_tx, editor, channel_capability, loc);
     let PreparedWorkerConversation {
         mut prompt_memory,
         system,
@@ -3797,6 +4791,27 @@ fn run_worker_path(
         &mut tool_ctx,
         &mut latency,
     )?;
+    if let Some(task_execution_outcome) = try_run_task_execution(
+        http,
+        worker_llm,
+        msg,
+        outbound_tx,
+        req_id,
+        registry,
+        config,
+        &request_plan,
+        &mut tool_ctx,
+        loc,
+        &mut latency,
+        &system,
+        &messages,
+        &mut system_scratch,
+        pressure,
+        mental_privacy_adjudication.clone(),
+        persona_priority_adjudication.clone(),
+    )? {
+        return Ok(task_execution_outcome);
+    }
 
     // ReAct 追加消息起始下标；用于滑动窗口压缩早期轮次。
     let initial_msg_count = messages.len();
@@ -4760,6 +5775,110 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct StubTaskRunStore;
+
+    impl crate::task_execution::TaskRunStore for StubTaskRunStore {
+        fn get(&self, _run_id: &str) -> Result<Option<crate::task_execution::TaskRunRecord>> {
+            Ok(None)
+        }
+
+        fn upsert(&self, _record: &crate::task_execution::TaskRunRecord) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_recent(&self, _limit: usize) -> Result<Vec<crate::task_execution::TaskRunRecord>> {
+            Ok(Vec::new())
+        }
+
+        fn list_active_for_chat(
+            &self,
+            _channel: &str,
+            _chat_id: &str,
+            _limit: usize,
+        ) -> Result<Vec<crate::task_execution::TaskRunRecord>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubTaskArtifactStore;
+
+    impl crate::task_execution::TaskArtifactStore for StubTaskArtifactStore {
+        fn put(&self, _record: &crate::task_execution::TaskArtifactRecord) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_for_run(
+            &self,
+            _run_id: &str,
+            _limit: usize,
+        ) -> Result<Vec<crate::task_execution::TaskArtifactRecord>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubTaskExecutionLedgerStore;
+
+    impl crate::task_execution::TaskExecutionLedgerStore for StubTaskExecutionLedgerStore {
+        fn append(
+            &self,
+            _run_id: &str,
+            _entry: &crate::task_execution::TaskExecutionLedgerEntry,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn list(
+            &self,
+            _run_id: &str,
+            _limit: usize,
+        ) -> Result<Vec<crate::task_execution::TaskExecutionLedgerEntry>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubTaskLearningStore;
+
+    impl crate::task_execution::TaskLearningStore for StubTaskLearningStore {
+        fn get(
+            &self,
+            _learning_id: &str,
+        ) -> Result<Option<crate::task_execution::TaskLearningRecord>> {
+            Ok(None)
+        }
+
+        fn upsert(&self, _record: &crate::task_execution::TaskLearningRecord) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_recent(
+            &self,
+            _limit: usize,
+        ) -> Result<Vec<crate::task_execution::TaskLearningRecord>> {
+            Ok(Vec::new())
+        }
+
+        fn list_for_chat(
+            &self,
+            _channel: &str,
+            _chat_id: &str,
+            _limit: usize,
+        ) -> Result<Vec<crate::task_execution::TaskLearningRecord>> {
+            Ok(Vec::new())
+        }
+
+        fn list_for_run(
+            &self,
+            _run_id: &str,
+            _limit: usize,
+        ) -> Result<Vec<crate::task_execution::TaskLearningRecord>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Default)]
     struct StubLongTermMemoryStore;
 
     impl LongTermMemoryStore for StubLongTermMemoryStore {
@@ -4968,13 +6087,22 @@ mod tests {
             skill_storage: Arc::new(crate::platform::SpiffsSkillStorage),
             memory_profile: crate::memory::MemoryProfile::Embedded,
             get_skill_descriptions: Arc::new(String::new),
+            get_capability_package_text: Arc::new(|_, _| None),
             session_max_messages: 16,
             tg_group_activation: Arc::from(""),
             important_message_store: Arc::new(StubImportantMessageStore),
             emotion_signal_store: Arc::new(StubEmotionSignalStore),
             remind_store: Arc::new(StubRemindAtStore),
             task_store: Arc::new(StubTaskStore),
+            task_run_store: Arc::new(StubTaskRunStore),
+            task_artifact_store: Arc::new(StubTaskArtifactStore),
+            task_execution_ledger_store: Arc::new(StubTaskExecutionLedgerStore),
+            task_learning_store: Arc::new(StubTaskLearningStore),
             pending_retry: Arc::new(StubPendingRetryStore),
+            channel_capability_registry: Arc::new(crate::build_channel_capability_registry(
+                &crate::AppConfig::load_from_env(),
+                false,
+            )),
             strategy: AgentRunStrategy::Embedded,
             llm_stream: false,
             stream_editor: None,
@@ -5268,9 +6396,11 @@ mod tests {
         ];
         compact_early_tool_rounds(&mut messages, 1);
         assert!(messages[1].content.contains("head analysis"));
-        assert!(messages[1]
-            .content
-            .contains("final decision: use file /tmp/result.json"));
+        assert!(
+            messages[1]
+                .content
+                .contains("final decision: use file /tmp/result.json")
+        );
         assert!(messages[1].content.contains("[compressed]"));
         assert!(messages[1].content.contains(" ... "));
     }
@@ -5324,6 +6454,7 @@ mod tests {
             http: &mut http,
             chat_id: Some(Arc::from("chat-1")),
             channel: Some(Arc::from("qq_channel")),
+            channel_capability_registry: Arc::clone(&config.channel_capability_registry),
             supports_current_chat_outbound_message: false,
             supports_current_chat_primary_reply: false,
             supports_explicit_outbound_message: false,

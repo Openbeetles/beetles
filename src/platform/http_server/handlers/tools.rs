@@ -65,11 +65,16 @@ mod tests {
             skill_storage: platform.skill_storage(),
             skill_meta_store: platform.skill_meta_store(),
             tool_registry: Arc::new(registry),
+            channel_capability_registry: Arc::new(crate::build_channel_capability_registry(
+                &AppConfig::load_from_env(),
+                false,
+            )),
             inbound_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             outbound_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             version: Arc::from("0.0.0"),
             board_id: Arc::from("test"),
             cached_config: Arc::new(std::sync::RwLock::new(AppConfig::load_from_env())),
+            llm_stream_enabled: false,
         };
         let payload = serde_json::to_string(&tool_infos(&ctx)).unwrap();
         let parsed: Value = serde_json::from_str(&payload).unwrap();
@@ -110,11 +115,16 @@ mod tests {
             skill_storage: platform.skill_storage(),
             skill_meta_store: platform.skill_meta_store(),
             tool_registry: Arc::new(registry),
+            channel_capability_registry: Arc::new(crate::build_channel_capability_registry(
+                &AppConfig::load_from_env(),
+                false,
+            )),
             inbound_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             outbound_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             version: Arc::from("0.0.0"),
             board_id: Arc::from("test"),
             cached_config: Arc::new(std::sync::RwLock::new(AppConfig::load_from_env())),
+            llm_stream_enabled: false,
         };
         let tools = tool_infos(&ctx);
         let board_info = tools.iter().find(|tool| tool.name == "board_info").unwrap();

@@ -11,7 +11,9 @@ use std::time::Instant;
 const CAPTURE_ENDPOINT_THRESHOLD_MAX: f32 = 0.12;
 
 fn capture_endpoint_threshold(cfg_threshold: f32) -> f32 {
-    cfg_threshold.clamp(0.0, 1.0).min(CAPTURE_ENDPOINT_THRESHOLD_MAX)
+    cfg_threshold
+        .clamp(0.0, 1.0)
+        .min(CAPTURE_ENDPOINT_THRESHOLD_MAX)
 }
 
 /// RAII guard：创建时设 orchestrator 录音标志，Drop 时清除。

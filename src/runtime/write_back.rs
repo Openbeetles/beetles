@@ -5,13 +5,12 @@
 use crate::error::{Error, Result};
 use crate::memory::{
     AutonomyStrategy, AutonomyStrategyStore, CoreRevisionLedger, CoreRevisionLedgerStore,
-    ExecutionState, ExecutionStateStore,
-    ImportantMessageStore, InnerLife, InnerLifeStore, LongTermMemoryExtractionState,
-    LongTermMemoryExtractionStateStore, MentalPrivacyState, MentalPrivacyStore, OuterVoice,
-    OuterVoiceStore, RelationshipConstitution, RelationshipConstitutionStore,
-    RelationshipPortfolio, RelationshipPortfolioStore, RelationshipTopology,
-    RelationshipTopologyStore, SelfAuthoredCore, SelfAuthoredCoreStore, SelfContinuity,
-    SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
+    ExecutionState, ExecutionStateStore, ImportantMessageStore, InnerLife, InnerLifeStore,
+    LongTermMemoryExtractionState, LongTermMemoryExtractionStateStore, MentalPrivacyState,
+    MentalPrivacyStore, OuterVoice, OuterVoiceStore, RelationshipConstitution,
+    RelationshipConstitutionStore, RelationshipPortfolio, RelationshipPortfolioStore,
+    RelationshipTopology, RelationshipTopologyStore, SelfAuthoredCore, SelfAuthoredCoreStore,
+    SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
     SessionSummaryStore, TurnLedger, TurnLedgerStore, WorldSense, WorldSenseStore,
 };
 use std::collections::{HashMap, HashSet};
