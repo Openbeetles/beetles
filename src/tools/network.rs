@@ -2,9 +2,9 @@
 
 use crate::error::{Error, Result};
 use crate::tools::{
-    Tool, ToolContext, ToolEffectClass, ToolMetadata, ToolRiskLevel, parse_tool_args,
+    parse_tool_args, Tool, ToolContext, ToolEffectClass, ToolMetadata, ToolRiskLevel,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 #[cfg(any(target_os = "linux", test))]
 use std::net::Ipv4Addr;
 use std::net::ToSocketAddrs;
@@ -397,7 +397,7 @@ fn extract_numbers(raw: &str) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        NetworkTool, http_probe, parse_default_route, parse_ping_summary, parse_resolv_conf,
+        http_probe, parse_default_route, parse_ping_summary, parse_resolv_conf, NetworkTool,
     };
     use crate::error::Result;
     use crate::i18n::Locale;

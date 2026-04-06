@@ -5,7 +5,7 @@
 
 use crate::config::LlmSource;
 use crate::error::{Error, Result};
-use crate::tools::{Tool, ToolContext, parse_tool_args};
+use crate::tools::{parse_tool_args, Tool, ToolContext};
 use serde_json::json;
 
 const TAG: &str = "tools::analyze_image";

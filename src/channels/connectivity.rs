@@ -5,7 +5,7 @@
 //! 做真实探测；其余通道返回“当前未启用”的占位结果，避免无意义的串行外网请求。
 
 use crate::config::AppConfig;
-use crate::i18n::{Locale, Message, tr};
+use crate::i18n::{tr, Locale, Message};
 use serde::Serialize;
 
 /// 单通道连通性结果；与前端约定字段名。
@@ -236,14 +236,12 @@ mod tests {
         assert!(!snapshot.stale);
         assert_eq!(snapshot.channels[0].id, "telegram");
         assert!(snapshot.channels[0].configured);
-        assert!(
-            snapshot
-                .channels
-                .iter()
-                .skip(1)
-                .take(4)
-                .all(|item| !item.configured)
-        );
+        assert!(snapshot
+            .channels
+            .iter()
+            .skip(1)
+            .take(4)
+            .all(|item| !item.configured));
     }
 
     #[test]
@@ -252,13 +250,11 @@ mod tests {
         config.enabled_channel.clear();
         let mut http = StubHttp;
         let snapshot = build_snapshot(&config, &mut http, Locale::Zh);
-        assert!(
-            snapshot
-                .channels
-                .iter()
-                .take(5)
-                .all(|item| !item.configured)
-        );
+        assert!(snapshot
+            .channels
+            .iter()
+            .take(5)
+            .all(|item| !item.configured));
         assert!(snapshot.channels.iter().take(5).all(|item| !item.ok));
     }
 }

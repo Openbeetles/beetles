@@ -8,8 +8,8 @@ use crate::constants::{
     TLS_ADMISSION_NO_PSRAM_MIN_BYTES,
 };
 use crate::error::{Error, Result};
-use std::sync::Mutex;
 use std::sync::atomic::Ordering;
+use std::sync::Mutex;
 use std::time::Duration;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::time::Instant;

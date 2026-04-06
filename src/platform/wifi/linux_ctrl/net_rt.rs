@@ -4,10 +4,10 @@
 use crate::error::{Error, Result};
 use futures::stream::TryStreamExt;
 use rtnetlink::packet_route::{
-    AddressFamily,
     address::{AddressAttribute, AddressMessage},
+    AddressFamily,
 };
-use rtnetlink::{Handle, LinkUnspec, new_connection};
+use rtnetlink::{new_connection, Handle, LinkUnspec};
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::OnceLock;

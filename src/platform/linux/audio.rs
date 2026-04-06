@@ -9,12 +9,12 @@ const STAGE: &str = "audio_init";
 #[cfg(target_os = "linux")]
 mod imp {
     use super::{AudioSegment, Error, Result, STAGE};
-    use crate::util::{HttpThreadRole, SpawnCore, TaskHandle, spawn_guarded_with_profile_handle};
-    use alsa::pcm::{Access, Format, HwParams, PCM, State};
+    use crate::util::{spawn_guarded_with_profile_handle, HttpThreadRole, SpawnCore, TaskHandle};
+    use alsa::pcm::{Access, Format, HwParams, State, PCM};
     use alsa::{Direction, ValueOr};
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc::{self, Receiver, SyncSender};
+    use std::sync::Arc;
 
     use super::super::hardware_discovery::resolve_usb_audio_output_device;
 

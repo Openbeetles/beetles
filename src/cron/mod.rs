@@ -7,8 +7,8 @@ use crate::config::{DeviceEntry, I2cSensorEntry};
 use crate::i18n::Locale;
 use crate::memory::MemoryStore;
 use crate::tools::cron_manage::CronTask;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// 持久化 cron 任务需在下次匹配前从 SPIFFS 重载；`cron_manage` 写入后置位。启动时为 `true` 保证首轮加载。
 pub static CRON_PERSISTED_TASKS_DIRTY: AtomicBool = AtomicBool::new(true);

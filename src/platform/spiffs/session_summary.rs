@@ -3,7 +3,7 @@
 
 use crate::constants::SESSION_SUMMARY_MAX_LEN;
 use crate::error::Result;
-use crate::memory::{REL_PATH_SESSION_SUMMARIES, SessionSummaryStore};
+use crate::memory::{SessionSummaryStore, REL_PATH_SESSION_SUMMARIES};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

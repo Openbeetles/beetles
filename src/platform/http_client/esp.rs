@@ -1,13 +1,13 @@
 //! HTTP(S) 客户端：GET/POST、超时、响应体大小上限；可选 proxy（CONNECT 未实现时返回错误）。
 //! HTTP(S) client: GET/POST, timeout, response size limit; optional proxy.
 
-use crate::config::{AppConfig, parse_proxy_url_to_host_port};
+use crate::config::{parse_proxy_url_to_host_port, AppConfig};
 use crate::error::{Error, Result};
 use crate::orchestrator::Priority;
-use crate::platform::ResponseBody;
 use crate::platform::heap::alloc_spiram_buffer;
-use embedded_svc::http::Method;
+use crate::platform::ResponseBody;
 use embedded_svc::http::client::Client as HttpClient;
+use embedded_svc::http::Method;
 use embedded_svc::io::{Read, Write};
 use esp_idf_svc::http::client::{Configuration as HttpConfig, EspHttpConnection};
 use esp_idf_svc::io::EspIOError;

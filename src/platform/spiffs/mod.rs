@@ -352,7 +352,7 @@ pub use self_model::SpiffsSelfModelStore;
 pub use session::SpiffsSessionStore;
 pub use session_summary::SpiffsSessionSummaryStore;
 pub use skill_meta::SpiffsSkillMetaStore;
-pub use skill_storage::{CachedSkillStorage, SpiffsSkillStorage, default_skill_storage_arc};
+pub use skill_storage::{default_skill_storage_arc, CachedSkillStorage, SpiffsSkillStorage};
 pub use task_execution::{
     SpiffsTaskArtifactStore, SpiffsTaskExecutionLedgerStore, SpiffsTaskLearningStore,
     SpiffsTaskRunStore,

@@ -412,6 +412,6 @@ mod imp {
     }
 }
 
-pub use imp::LinuxHardwareDiscovery;
 #[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 pub(crate) use imp::resolve_usb_audio_output_device;
+pub use imp::LinuxHardwareDiscovery;

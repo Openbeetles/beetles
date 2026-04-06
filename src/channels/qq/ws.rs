@@ -3,14 +3,14 @@
 //! 与 HTTP webhook 可并存，由 main 按配置决定是否 spawn。
 
 use crate::bus::PcMsg;
-use crate::channels::ChannelHttpClient;
 use crate::channels::wss_gateway::{
-    WssConnection, WssGatewayDriver, WssRecvAction, WssSessionState, run_wss_gateway_loop,
+    run_wss_gateway_loop, WssConnection, WssGatewayDriver, WssRecvAction, WssSessionState,
 };
+use crate::channels::ChannelHttpClient;
 use crate::error::{Error, Result};
 use crate::memory::PendingRetryStore;
 
-use super::send::{QqMsgIdCache, cache_msg_id};
+use super::send::{cache_msg_id, QqMsgIdCache};
 use super::token::fetch_qq_access_token_with_expiry;
 
 const TAG: &str = "qq_ws";

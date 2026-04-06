@@ -1,7 +1,7 @@
 //! POST /api/feishu/event：读 body 后调通道入口，写响应。
 
 use crate::bus::InboundTx;
-use crate::channels::{FeishuEventResponse, handle_http_event};
+use crate::channels::{handle_http_event, FeishuEventResponse};
 use crate::platform::http_server::common::ApiResponse;
 
 use super::HandlerContext;

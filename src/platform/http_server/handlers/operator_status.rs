@@ -1,7 +1,7 @@
 //! GET /api/operator/status: unified operator-facing status contract.
 
 use super::HandlerContext;
-use crate::platform::operator_status::{OperatorStatusInput, build_operator_status};
+use crate::platform::operator_status::{build_operator_status, OperatorStatusInput};
 use std::sync::atomic::Ordering;
 
 pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {

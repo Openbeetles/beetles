@@ -3,10 +3,10 @@
 //! 委托 wss_gateway 统一循环，本模块实现 FeishuWssDriver。
 
 use crate::bus::InboundTx;
-use crate::channels::ChannelHttpClient;
 use crate::channels::wss_gateway::{
-    WssConnection, WssGatewayDriver, WssRecvAction, WssSessionState, run_wss_gateway_loop,
+    run_wss_gateway_loop, WssConnection, WssGatewayDriver, WssRecvAction, WssSessionState,
 };
+use crate::channels::ChannelHttpClient;
 use crate::error::{Error, Result};
 use crate::memory::PendingRetryStore;
 

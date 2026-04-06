@@ -9,15 +9,15 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 
 pub use learning::{
-    REL_DIR_TASK_LEARNING, TaskLearningDraft, TaskLearningHit, TaskLearningInspection,
-    TaskLearningKind, TaskLearningMaintenanceContext, TaskLearningMaintenanceInput,
-    TaskLearningMaintenanceOutcome, TaskLearningOperatorRecord, TaskLearningOperatorSnapshot,
-    TaskLearningRecord, TaskLearningRoute, TaskLearningStore, TaskWorkspaceInspection,
     build_task_learning_operator_snapshot, build_task_learning_records, build_task_recall_bundle,
     inspect_task_learning, inspect_task_workspace, normalize_task_learning_artifact_ids,
     normalize_task_learning_drafts, render_task_learning_inspection_markdown,
     render_task_learning_operator_text, render_task_workspace_inspection_markdown,
-    retrieve_task_learning_hits, run_task_learning_maintenance,
+    retrieve_task_learning_hits, run_task_learning_maintenance, TaskLearningDraft, TaskLearningHit,
+    TaskLearningInspection, TaskLearningKind, TaskLearningMaintenanceContext,
+    TaskLearningMaintenanceInput, TaskLearningMaintenanceOutcome, TaskLearningOperatorRecord,
+    TaskLearningOperatorSnapshot, TaskLearningRecord, TaskLearningRoute, TaskLearningStore,
+    TaskWorkspaceInspection, REL_DIR_TASK_LEARNING,
 };
 
 pub const REL_DIR_TASK_RUNS: &str = "memory/task_runs";

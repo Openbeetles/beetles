@@ -2,7 +2,7 @@
 
 use crate::error::Result;
 use crate::memory::{
-    REL_PATH_RELATIONSHIP_PORTFOLIOS, RelationshipPortfolio, RelationshipPortfolioStore,
+    RelationshipPortfolio, RelationshipPortfolioStore, REL_PATH_RELATIONSHIP_PORTFOLIOS,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

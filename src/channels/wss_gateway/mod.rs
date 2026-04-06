@@ -20,15 +20,15 @@ pub use r#loop::run_wss_gateway_loop;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 #[allow(unused_imports)]
 pub use esp_conn::{
-    EspWssConnection, connect_esp_wss, connect_esp_wss_with_headers_and_profile,
-    connect_esp_wss_with_profile,
+    connect_esp_wss, connect_esp_wss_with_headers_and_profile, connect_esp_wss_with_profile,
+    EspWssConnection,
 };
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 #[allow(unused_imports)]
 pub use linux_conn::{
-    LinuxWssConnection, connect_linux_wss, connect_linux_wss_with_headers,
-    connect_linux_wss_with_headers_and_profile, connect_linux_wss_with_profile,
+    connect_linux_wss, connect_linux_wss_with_headers, connect_linux_wss_with_headers_and_profile,
+    connect_linux_wss_with_profile, LinuxWssConnection,
 };
 
 /// 平台 WSS 建连：ESP 用 `esp-idf` websocket；Linux 用 `tungstenite`+rustls。供 `run_*_ws_loop` 注入。

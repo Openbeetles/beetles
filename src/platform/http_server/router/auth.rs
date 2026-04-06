@@ -1,11 +1,11 @@
 //! 配对 / CSRF 检查，替代仅 ESP 宏可用的逻辑。
 //! Pairing and CSRF checks (replaces macros that need Esp request types).
 
-use crate::i18n::{Message, locale_from_store, tr};
-use crate::platform::ConfigStore;
+use crate::i18n::{locale_from_store, tr, Message};
 use crate::platform::csrf;
 use crate::platform::http_server::common::{self, ApiResponse};
 use crate::platform::pairing;
+use crate::platform::ConfigStore;
 
 /// 未激活则返回 401 JSON（与 `require_activated!` 一致）。
 pub fn require_activated(store: &dyn ConfigStore) -> Option<ApiResponse> {

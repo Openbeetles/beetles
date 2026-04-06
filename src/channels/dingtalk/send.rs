@@ -1,6 +1,10 @@
 //! 钉钉通道：出站经 MessageSink 队列，由 main 用 HTTP 向 Webhook 发送；入站无。
 //! 仅支持自定义机器人 Webhook（不加签）；单条按 4096 字符分片。Sink 统一为 dispatch::QueuedSink。
 
+use crate::channels::send::{
+    ensure_sender_http, feed_sender_loop_wdt, log_sender_drop, recv_sender_loop_event,
+    sleep_sender_retry_delay, start_sender_loop, SenderLoopEvent, CHANNEL_SENDER_MAX_RETRIES,
+};
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
 
@@ -16,7 +20,7 @@ pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
     loc: crate::i18n::Locale,
 ) -> super::super::connectivity::ChannelConnectivityItem {
     use super::super::connectivity;
-    use crate::i18n::{Message, tr};
+    use crate::i18n::{tr, Message};
     let configured = !config.dingtalk_webhook_url.trim().is_empty();
     if !configured {
         return connectivity::item(
@@ -125,44 +129,23 @@ pub fn run_dingtalk_sender_loop<H, F>(
     if webhook_url.is_empty() {
         return;
     }
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    crate::platform::task_wdt::register_current_task_to_task_wdt();
-    log::info!("[{}] sender loop started", TAG);
+    start_sender_loop(TAG);
 
     let mut http: Option<H> = None;
-    let recv_timeout = std::time::Duration::from_secs(30);
     loop {
-        let (_chat_id, content, req_id) = match rx.recv_timeout(recv_timeout) {
-            Ok(item) => item,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                crate::platform::task_wdt::feed_current_task();
-                continue;
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                log::info!("[{}] rx disconnected, exiting", TAG);
-                break;
-            }
+        let (_chat_id, content, req_id) = match recv_sender_loop_event(&rx, TAG) {
+            SenderLoopEvent::Message(item) => item,
+            SenderLoopEvent::Timeout => continue,
+            SenderLoopEvent::Disconnected => break,
         };
-        crate::platform::task_wdt::feed_current_task();
+        feed_sender_loop_wdt();
         let mut sent = false;
-        for retry in 0..3u8 {
+        for retry in 0..CHANNEL_SENDER_MAX_RETRIES {
             if retry > 0 {
-                std::thread::sleep(std::time::Duration::from_secs(2));
-                crate::platform::task_wdt::feed_current_task();
+                sleep_sender_retry_delay();
             }
-            if http.is_none() {
-                match create_http() {
-                    Ok(h) => http = Some(h),
-                    Err(e) => {
-                        log::warn!(
-                            "[{}] create http failed (attempt {}): {}",
-                            TAG,
-                            retry + 1,
-                            e
-                        );
-                        continue;
-                    }
-                }
+            if !ensure_sender_http(&mut http, &mut create_http, TAG, retry + 1) {
+                continue;
             }
             let Some(h) = http.as_mut() else {
                 continue;
@@ -188,11 +171,7 @@ pub fn run_dingtalk_sender_loop<H, F>(
             break;
         }
         if !sent {
-            log::error!(
-                "[{}] req_id={} message dropped after 3 retries",
-                TAG,
-                req_id.as_deref().unwrap_or("-")
-            );
+            log_sender_drop(TAG, req_id.as_deref(), None, CHANNEL_SENDER_MAX_RETRIES);
         }
     }
 }

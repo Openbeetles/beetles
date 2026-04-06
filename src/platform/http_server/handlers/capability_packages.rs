@@ -2,11 +2,11 @@
 
 use super::HandlerContext;
 use crate::capability_package::{
-    CapabilityPackageInstallPayload, CapabilityPackageOperationKind,
     build_capability_package_operator_snapshot, install_capability_package,
     rollback_capability_package, set_capability_package_enabled, uninstall_capability_package,
+    CapabilityPackageInstallPayload, CapabilityPackageOperationKind,
 };
-use crate::i18n::{Message, locale_from_store, tr, tr_error};
+use crate::i18n::{locale_from_store, tr, tr_error, Message};
 use crate::platform::http_server::common::ApiResponse;
 use serde::Deserialize;
 

@@ -11,7 +11,7 @@ use crate::constants::{
     LLM_RETRY_LATER_DELAY_MS, LOW_MEM_DEFER_SLEEP_MS, OUTBOUND_DEFER_DELAY_MS,
     PRESSURE_QUEUE_CONGESTION_THRESHOLD,
 };
-use crate::runtime::system_work::{SystemWorkClass, classify_system_work};
+use crate::runtime::system_work::{classify_system_work, SystemWorkClass};
 use std::sync::atomic::Ordering;
 
 use super::pressure::PressureLevel;

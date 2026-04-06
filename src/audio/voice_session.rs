@@ -12,12 +12,11 @@
 //!   voice-exclusive runtime-mode switch
 //! - Non-realtime STT/TTS fallback still uses `voice_session_worker`
 
-use crate::Platform;
 use crate::audio::baidu_token::BaiduTokenCache;
 use crate::audio::pipeline::{capture_and_transcribe, speak_text};
 use crate::audio::realtime::run_realtime_session;
 use crate::bus::{PcMsg, TrackedSender};
-use crate::config::{AudioSegment, audio_realtime_enabled};
+use crate::config::{audio_realtime_enabled, AudioSegment};
 use crate::constants::{AUDIO_CAPTURE_MAX_MS, VOICE_CHANNEL_NAME, VOICE_DEVICE_CHAT_ID};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::constants::{
@@ -26,10 +25,11 @@ use crate::constants::{
 };
 use crate::platform::PlatformHttpClient;
 use crate::util::{
-    HttpThreadRole, STACK_VOICE_SESSION, SpawnCore, TaskHandle, spawn_guarded_with_profile_handle,
+    spawn_guarded_with_profile_handle, HttpThreadRole, SpawnCore, TaskHandle, STACK_VOICE_SESSION,
 };
-use std::sync::Arc;
+use crate::Platform;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::Arc;
 use std::time::Duration;
 
 const TAG: &str = "voice_session";
@@ -217,11 +217,9 @@ fn run_voice_task(cfg: &VoiceSessionConfig, task: VoiceWorkerTask) {
     let mut http: Option<Box<dyn PlatformHttpClient>> = None;
 
     let ensure_http = |h: &mut Option<Box<dyn PlatformHttpClient>>,
-                       make: &(
-                            dyn Fn() -> crate::error::Result<Box<dyn PlatformHttpClient>>
-                                + Send
-                                + Sync
-                        )| {
+                       make: &(dyn Fn() -> crate::error::Result<Box<dyn PlatformHttpClient>>
+                             + Send
+                             + Sync)| {
         if h.is_none() {
             match make() {
                 Ok(client) => *h = Some(client),

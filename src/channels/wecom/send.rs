@@ -1,6 +1,10 @@
 //! 企业微信通道：出站经 MessageSink 队列，由 main 用 HTTP 鉴权后发送应用消息；入站无。
 //! 鉴权 GET gettoken，发送 POST message/send；text 按 2048 字节分片（官方限制）。Sink 统一为 dispatch::QueuedSink。
 
+use crate::channels::send::{
+    ensure_sender_http, feed_sender_loop_wdt, log_sender_drop, recv_sender_loop_event,
+    sleep_sender_retry_delay, start_sender_loop, SenderLoopEvent, CHANNEL_SENDER_MAX_RETRIES,
+};
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
 
@@ -38,7 +42,7 @@ pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
     loc: crate::i18n::Locale,
 ) -> super::super::connectivity::ChannelConnectivityItem {
     use super::super::connectivity;
-    use crate::i18n::{Message, tr};
+    use crate::i18n::{tr, Message};
     let configured = !config.wecom_corp_id.trim().is_empty()
         && !config.wecom_corp_secret.trim().is_empty()
         && config.wecom_agent_id.trim().parse::<u32>().is_ok();
@@ -383,31 +387,21 @@ pub fn run_wecom_sender_loop<H, F>(
             return;
         }
     };
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    crate::platform::task_wdt::register_current_task_to_task_wdt();
-    log::info!("[{}] sender loop started", TAG);
+    start_sender_loop(TAG);
 
     let mut http: Option<H> = None;
     let mut token_cache: Option<(String, std::time::Instant)> = None;
-    let recv_timeout = std::time::Duration::from_secs(30);
     loop {
-        let (chat_id, content, req_id) = match rx.recv_timeout(recv_timeout) {
-            Ok(item) => item,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                crate::platform::task_wdt::feed_current_task();
-                continue;
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                log::info!("[{}] rx disconnected, exiting", TAG);
-                break;
-            }
+        let (chat_id, content, req_id) = match recv_sender_loop_event(&rx, TAG) {
+            SenderLoopEvent::Message(item) => item,
+            SenderLoopEvent::Timeout => continue,
+            SenderLoopEvent::Disconnected => break,
         };
-        crate::platform::task_wdt::feed_current_task();
+        feed_sender_loop_wdt();
         let mut sent = false;
-        for retry in 0..3u8 {
+        for retry in 0..CHANNEL_SENDER_MAX_RETRIES {
             if retry > 0 {
-                std::thread::sleep(std::time::Duration::from_secs(2));
-                crate::platform::task_wdt::feed_current_task();
+                sleep_sender_retry_delay();
             }
 
             let now = std::time::Instant::now();
@@ -417,19 +411,8 @@ pub fn run_wecom_sender_loop<H, F>(
                 .map(|(t, _)| t.clone());
             if token_opt.is_none() {
                 token_cache = None;
-                if http.is_none() {
-                    match create_http() {
-                        Ok(h) => http = Some(h),
-                        Err(e) => {
-                            log::warn!(
-                                "[{}] create http failed (attempt {}): {}",
-                                TAG,
-                                retry + 1,
-                                e
-                            );
-                            continue;
-                        }
-                    }
+                if !ensure_sender_http(&mut http, &mut create_http, TAG, retry + 1) {
+                    continue;
                 }
                 let Some(h) = http.as_mut() else {
                     continue;
@@ -454,19 +437,8 @@ pub fn run_wecom_sender_loop<H, F>(
                 None => continue,
             };
 
-            if http.is_none() {
-                match create_http() {
-                    Ok(h) => http = Some(h),
-                    Err(e) => {
-                        log::warn!(
-                            "[{}] create http failed (attempt {}): {}",
-                            TAG,
-                            retry + 1,
-                            e
-                        );
-                        continue;
-                    }
-                }
+            if !ensure_sender_http(&mut http, &mut create_http, TAG, retry + 1) {
+                continue;
             }
             let Some(h) = http.as_mut() else {
                 continue;
@@ -501,15 +473,11 @@ pub fn run_wecom_sender_loop<H, F>(
             break;
         }
         if !sent {
-            log::error!(
-                "[{}] message dropped after 3 retries, chat_id={}",
+            log_sender_drop(
                 TAG,
-                chat_id
-            );
-            log::error!(
-                "[{}] req_id={} message dropped after retries",
-                TAG,
-                req_id.as_deref().unwrap_or("-")
+                req_id.as_deref(),
+                Some(chat_id.as_str()),
+                CHANNEL_SENDER_MAX_RETRIES,
             );
         }
     }

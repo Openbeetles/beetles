@@ -1,14 +1,14 @@
 //! i2c_sensor 工具：配置的 I2C 温湿度传感器单次读取（SHT3x / AHT20 / raw）。
 //! i2c_sensor tool: one-shot read for configured I2C env sensors.
 
-use crate::Platform;
 use crate::config::I2cSensorEntry;
 use crate::constants::I2C_SENSOR_RATE_LIMIT_MS;
 use crate::error::{Error, Result};
-use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args};
+use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
+use crate::Platform;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 struct DeviceState {

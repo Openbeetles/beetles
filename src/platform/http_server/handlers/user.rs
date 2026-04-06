@@ -1,6 +1,6 @@
 //! GET/POST /api/user：配对后读/写 USER 配置（config/USER.md）。
 
-use crate::i18n::{Message, locale_from_store, tr, tr_error};
+use crate::i18n::{locale_from_store, tr, tr_error, Message};
 use crate::memory::MAX_SOUL_USER_LEN;
 use crate::platform::http_server::common::ApiResponse;
 use crate::state;

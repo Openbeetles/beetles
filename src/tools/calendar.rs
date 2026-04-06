@@ -2,19 +2,19 @@
 
 use super::http_bridge::ToolContextHttpClient;
 use crate::calendar::{
-    CALENDAR_PROVIDER_LOCAL, CalendarEvent, CalendarEventStatus, CalendarProviderCredentialStatus,
+    normalize_calendar_event, CalendarEvent, CalendarEventStatus, CalendarProviderCredentialStatus,
     CalendarProviderCredentialStore, CalendarProviderRegistry, CalendarQuery, CalendarService,
-    CalendarStore, normalize_calendar_event,
+    CalendarStore, CALENDAR_PROVIDER_LOCAL,
 };
 
 use crate::error::{Error, Result};
-use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args, serialize_tool_output};
+use crate::tools::{parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata};
 use crate::util::{current_unix_secs, parse_iso8601};
 use serde::Serialize;
 use serde_json::Value;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 static EVENT_SEQ: AtomicU32 = AtomicU32::new(1);
 

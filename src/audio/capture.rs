@@ -1,11 +1,11 @@
 //! 麦克风采集 + VAD 端点检测，提供 `capture_speech` 供 `VoiceInputTool` 与 `voice_session` 共用。
 //! Mic capture with VAD endpointing, shared by `VoiceInputTool` and `voice_session`.
 
-use crate::Platform;
 use crate::audio::energy::{EndpointConfig, EndpointEvent, EndpointState};
 use crate::config::AudioSegment;
 use crate::constants::{AUDIO_CAPTURE_FRAME_SAMPLES, AUDIO_STT_MAX_PCM_BYTES};
 use crate::error::{Error, Result};
+use crate::Platform;
 use std::time::Instant;
 
 const CAPTURE_ENDPOINT_THRESHOLD_MAX: f32 = 0.12;

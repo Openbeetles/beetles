@@ -15,6 +15,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::channels::send::{
+    ensure_sender_http, feed_sender_loop_wdt, log_sender_drop, recv_sender_loop_event,
+    start_sender_loop, SenderLoopEvent, CHANNEL_SENDER_MAX_RETRIES,
+};
+
 use super::token::{fetch_qq_access_token, fetch_qq_access_token_with_expiry};
 
 /// 单条消息最大字符数，与现有通道对齐。
@@ -150,7 +155,7 @@ pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
     loc: crate::i18n::Locale,
 ) -> super::super::connectivity::ChannelConnectivityItem {
     use super::super::connectivity;
-    use crate::i18n::{Message, tr};
+    use crate::i18n::{tr, Message};
     let configured =
         !config.qq_channel_app_id.trim().is_empty() && !config.qq_channel_secret.trim().is_empty();
     if !configured {
@@ -357,7 +362,7 @@ pub fn flush_qq_channel_sends<H: ChannelHttpClient>(
 
 /// QQ access_token 缓存提前刷新余量（秒），避免用即将过期的 token。
 const QQ_TOKEN_CACHE_MARGIN_SECS: u64 = 120;
-const QQ_SEND_MAX_RETRIES: u8 = 3;
+const QQ_SEND_MAX_RETRIES: u8 = CHANNEL_SENDER_MAX_RETRIES;
 
 type QueuedQqMessage = (String, String, Option<String>);
 
@@ -387,7 +392,7 @@ where
                 crate::constants::QQ_SEND_RETRY_DELAY_MS_STEP2
             };
             std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-            crate::platform::task_wdt::feed_current_task();
+            feed_sender_loop_wdt();
         }
 
         let now = std::time::Instant::now();
@@ -397,19 +402,8 @@ where
             .map(|(t, _)| t.clone());
         if token_opt.is_none() {
             *token_cache = None;
-            if http.is_none() {
-                match create_http() {
-                    Ok(h) => *http = Some(h),
-                    Err(e) => {
-                        log::warn!(
-                            "[{}] create http failed (attempt {}): {}",
-                            TAG,
-                            retry + 1,
-                            e
-                        );
-                        continue;
-                    }
-                }
+            if !ensure_sender_http(http, create_http, TAG, retry + 1) {
+                continue;
             }
             let Some(h) = http.as_mut() else {
                 continue;
@@ -441,19 +435,8 @@ where
             None => continue,
         };
 
-        if http.is_none() {
-            match create_http() {
-                Ok(h) => *http = Some(h),
-                Err(e) => {
-                    log::warn!(
-                        "[{}] create http failed (attempt {}): {}",
-                        TAG,
-                        retry + 1,
-                        e
-                    );
-                    continue;
-                }
-            }
+        if !ensure_sender_http(http, create_http, TAG, retry + 1) {
+            continue;
         }
         let Some(h) = http.as_mut() else {
             continue;
@@ -496,17 +479,6 @@ where
         }
     }
 
-    log::error!(
-        "[{}] message dropped after {} retries, chat_id={}",
-        TAG,
-        QQ_SEND_MAX_RETRIES,
-        chat_id
-    );
-    log::error!(
-        "[{}] req_id={} message dropped after retries",
-        TAG,
-        req_id.as_deref().unwrap_or("-")
-    );
     crate::orchestrator::record_channel_result_pub("qq_channel", false);
     false
 }
@@ -527,35 +499,26 @@ pub fn run_qq_sender_loop<H, F>(
     if app_id.is_empty() || secret.is_empty() {
         return;
     }
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    crate::platform::task_wdt::register_current_task_to_task_wdt();
-    log::info!("[{}] sender loop started", TAG);
+    start_sender_loop(TAG);
 
     let mut http: Option<H> = None;
     let mut token_cache: Option<(String, std::time::Instant)> = None;
 
-    let recv_timeout = std::time::Duration::from_secs(30);
     loop {
-        let first = match rx.recv_timeout(recv_timeout) {
-            Ok(item) => item,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                crate::platform::task_wdt::feed_current_task();
-                continue;
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                log::info!("[{}] rx disconnected, exiting", TAG);
-                break;
-            }
+        let first = match recv_sender_loop_event(&rx, TAG) {
+            SenderLoopEvent::Message(item) => item,
+            SenderLoopEvent::Timeout => continue,
+            SenderLoopEvent::Disconnected => break,
         };
-        crate::platform::task_wdt::feed_current_task();
+        feed_sender_loop_wdt();
         let mut batch = vec![first];
         while let Ok(item) = rx.try_recv() {
             batch.push(item);
         }
 
         for message in batch {
-            crate::platform::task_wdt::feed_current_task();
-            let _ = send_queued_qq_message(
+            feed_sender_loop_wdt();
+            let sent = send_queued_qq_message(
                 &message,
                 app_id,
                 secret,
@@ -564,6 +527,14 @@ pub fn run_qq_sender_loop<H, F>(
                 &mut token_cache,
                 &mut create_http,
             );
+            if !sent {
+                log_sender_drop(
+                    TAG,
+                    message.2.as_deref(),
+                    Some(message.0.as_str()),
+                    CHANNEL_SENDER_MAX_RETRIES,
+                );
+            }
         }
     }
 }

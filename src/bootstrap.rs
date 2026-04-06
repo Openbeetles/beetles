@@ -1,12 +1,12 @@
 //! Bootstrap utilities for beetle application.
 //! 应用启动引导工具。
 
-use crate::Platform;
 use crate::config::{self, AppConfig};
+use crate::Platform;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
 use crate::{
-    DisplayChannelStatus, DisplayCommand, DisplayPressureLevel, DisplaySystemState,
-    constants::SOFTAP_DEFAULT_IPV4,
+    constants::SOFTAP_DEFAULT_IPV4, DisplayChannelStatus, DisplayCommand, DisplayPressureLevel,
+    DisplaySystemState,
 };
 use std::sync::Arc;
 

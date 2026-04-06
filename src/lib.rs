@@ -10,25 +10,24 @@ pub mod util;
 
 pub use build_info::ota_manifest_url;
 pub use capability_package::{
-    CapabilityPackageInstallPayload, CapabilityPackageOperationKind,
-    CapabilityPackageOperationOutcome, CapabilityPackageOperatorSnapshot,
-    CapabilityPackageRuntimeCapabilities, CapabilityPackageRuntimePromptBundle,
-    CapabilityPackageToolPolicySet, MAX_CAPABILITY_PACKAGE_HTTP_BODY_LEN,
     build_capability_package_operator_snapshot, build_capability_package_runtime_capabilities,
     build_capability_package_runtime_prompt_bundle, build_capability_package_tool_policy_set,
     install_capability_package, rollback_capability_package, set_capability_package_enabled,
-    uninstall_capability_package,
+    uninstall_capability_package, CapabilityPackageInstallPayload, CapabilityPackageOperationKind,
+    CapabilityPackageOperationOutcome, CapabilityPackageOperatorSnapshot,
+    CapabilityPackageRuntimeCapabilities, CapabilityPackageRuntimePromptBundle,
+    CapabilityPackageToolPolicySet, MAX_CAPABILITY_PACKAGE_HTTP_BODY_LEN,
 };
 pub use channel_capability::{
-    CHANNEL_DINGTALK, CHANNEL_FEISHU, CHANNEL_QQ_CHANNEL, CHANNEL_TELEGRAM, CHANNEL_VOICE,
-    CHANNEL_WEBSOCKET, CHANNEL_WECOM, ChannelCapabilityContract, ChannelCapabilityEntry,
-    ChannelCapabilityRegistry, ChannelCapabilitySnapshot, ChannelDeliveryOrderingModel,
     build_channel_capability_registry, build_channel_capability_snapshots,
+    ChannelCapabilityContract, ChannelCapabilityEntry, ChannelCapabilityRegistry,
+    ChannelCapabilitySnapshot, ChannelDeliveryOrderingModel, CHANNEL_DINGTALK, CHANNEL_FEISHU,
+    CHANNEL_QQ_CHANNEL, CHANNEL_TELEGRAM, CHANNEL_VOICE, CHANNEL_WEBSOCKET, CHANNEL_WECOM,
 };
+pub use platform::runtime_board::resolved_board_id;
 /// Re-export PlatformHttpClient at crate root so core modules (agent, tools) can depend on
 /// `crate::PlatformHttpClient` without importing `crate::platform` directly.
 pub use platform::PlatformHttpClient;
-pub use platform::runtime_board::resolved_board_id;
 pub mod agent;
 pub mod audio;
 pub mod bg_timer;
@@ -62,58 +61,58 @@ pub mod runtime;
 pub mod skills;
 
 pub use agent::{
-    AgentLoopConfig, ContextParams, DEFAULT_MESSAGES_MAX_LEN, DEFAULT_SYSTEM_MAX_LEN,
-    SESSION_RECENT_N, StreamEditor, TypingNotifier, build_context, run_agent_loop,
+    build_context, run_agent_loop, AgentLoopConfig, ContextParams, StreamEditor, TypingNotifier,
+    DEFAULT_MESSAGES_MAX_LEN, DEFAULT_SYSTEM_MAX_LEN, SESSION_RECENT_N,
 };
-pub use bus::{DEFAULT_CAPACITY, MAX_CONTENT_LEN, MessageBus, PcMsg};
+pub use bus::{MessageBus, PcMsg, DEFAULT_CAPACITY, MAX_CONTENT_LEN};
 pub use channels::connect_wss;
 #[cfg(feature = "feishu")]
 pub use channels::run_feishu_ws_loop;
 pub use channels::run_qq_ws_loop;
-pub use channels::{
-    ChannelHttpClient, ChannelSinks, LogSink, MessageSink, QueuedSink, WebSocketSink,
-    WssConnectProfile, feishu_acquire_token, feishu_edit_message, feishu_send_and_get_id,
-    flush_dingtalk_sends, flush_feishu_sends, flush_qq_channel_sends, flush_telegram_sends,
-    flush_wecom_sends, get_bot_username, poll_telegram_once, run_dingtalk_sender_loop,
-    run_dispatch, run_feishu_sender_loop, run_qq_sender_loop, run_telegram_poll_loop,
-    run_telegram_sender_loop, run_wecom_sender_loop, send_chat_action, tg_edit_message_text,
-    tg_send_and_get_id,
-};
 pub use channels::{connect_wss_with_headers, connect_wss_with_headers_and_profile};
+pub use channels::{
+    feishu_acquire_token, feishu_edit_message, feishu_send_and_get_id, flush_dingtalk_sends,
+    flush_feishu_sends, flush_qq_channel_sends, flush_telegram_sends, flush_wecom_sends,
+    get_bot_username, poll_telegram_once, run_dingtalk_sender_loop, run_dispatch,
+    run_feishu_sender_loop, run_qq_sender_loop, run_telegram_poll_loop, run_telegram_sender_loop,
+    run_wecom_sender_loop, send_chat_action, tg_edit_message_text, tg_send_and_get_id,
+    ChannelHttpClient, ChannelSinks, LogSink, MessageSink, QueuedSink, WebSocketSink,
+    WssConnectProfile,
+};
 pub use config::{
-    AppConfig, DeviceEntry, HardwareSegment, I2cBusConfig, I2cDeviceEntry, I2cSensorEntry,
-    LlmSource, PinConfig, parse_allowed_chat_ids, save_hardware_segment,
+    parse_allowed_chat_ids, save_hardware_segment, AppConfig, DeviceEntry, HardwareSegment,
+    I2cBusConfig, I2cDeviceEntry, I2cSensorEntry, LlmSource, PinConfig,
 };
 pub use display::{
-    DisplayBus, DisplayChannelStatus, DisplayColorOrder, DisplayCommand, DisplayConfig,
-    DisplayDriver, DisplayPressureLevel, DisplaySystemState, default_disabled_display_config,
-    validate_display_config_core,
+    default_disabled_display_config, validate_display_config_core, DisplayBus,
+    DisplayChannelStatus, DisplayColorOrder, DisplayCommand, DisplayConfig, DisplayDriver,
+    DisplayPressureLevel, DisplaySystemState,
 };
 pub use error::{Error, Result};
 pub use llm::{
-    AnthropicClient, FallbackLlmClient, LlmClient, LlmHttpClient, LlmResponse, Message,
-    OpenAiCompatibleClient, build_llm_clients,
+    build_llm_clients, AnthropicClient, FallbackLlmClient, LlmClient, LlmHttpClient, LlmResponse,
+    Message, OpenAiCompatibleClient,
+};
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub use platform::{
+    connect_wifi, init_nvs, init_spiffs, spiffs_base_string, spiffs_usage, state_mount_path,
+    Esp32Platform, EspHttpClient, SpiffsLongTermMemoryStore, SpiffsMemoryStore, SpiffsSessionStore,
+};
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use platform::{
+    connect_wifi, init_nvs, init_spiffs, spiffs_base_string, spiffs_usage, state_mount_path,
+    EspHttpClient, LinuxPlatform, SpiffsLongTermMemoryStore, SpiffsMemoryStore, SpiffsSessionStore,
 };
 pub use platform::{
     AudioDuplexCapabilities, AudioDuplexProfile, AudioEchoCancellationCapability,
     AudioReferenceCapability, ConfigStore, MemorySnapshot, Platform, SkillStorage, StateFs,
     StorageMediaInfo, StorageMediaKind,
 };
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub use platform::{
-    Esp32Platform, EspHttpClient, SpiffsLongTermMemoryStore, SpiffsMemoryStore, SpiffsSessionStore,
-    connect_wifi, init_nvs, init_spiffs, spiffs_base_string, spiffs_usage, state_mount_path,
-};
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub use platform::{
-    EspHttpClient, LinuxPlatform, SpiffsLongTermMemoryStore, SpiffsMemoryStore, SpiffsSessionStore,
-    connect_wifi, init_nvs, init_spiffs, spiffs_base_string, spiffs_usage, state_mount_path,
-};
 pub use tools::{
-    CalendarTool, DefaultRegistryDeps, FileEditTool, FileWriteTool, FilesTool, GetTimeTool,
-    KvStoreTool, PrivateGardenTool, RemindAtTool, TaskTool, Tool, ToolContext, ToolExposure,
-    ToolMetadata, ToolPolicyContext, ToolRegistry, VoiceInputTool, VoiceOutputTool,
-    build_default_registry,
+    build_default_registry, CalendarTool, DefaultRegistryDeps, FileEditTool, FileWriteTool,
+    FilesTool, GetTimeTool, KvStoreTool, PrivateGardenTool, RemindAtTool, TaskTool, Tool,
+    ToolContext, ToolExposure, ToolMetadata, ToolPolicyContext, ToolRegistry, VoiceInputTool,
+    VoiceOutputTool,
 };
 #[cfg(feature = "tools_diagnostics")]
 pub use tools::{

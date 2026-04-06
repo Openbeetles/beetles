@@ -5,8 +5,8 @@ use crate::error::Result;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use super::HOSTAPD_CTRL_INTERFACE_DIR;
 use super::ctrl_iface;
+use super::HOSTAPD_CTRL_INTERFACE_DIR;
 
 pub fn request(iface: &str, cmd: &str, timeout: Duration, stage: &'static str) -> Result<String> {
     let path = PathBuf::from(HOSTAPD_CTRL_INTERFACE_DIR).join(iface);

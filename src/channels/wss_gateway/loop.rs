@@ -2,9 +2,9 @@
 //! WiFi 断连时先等 WiFi 恢复再尝试重连 WSS，避免无网络时反复做 TLS 握手。
 
 use crate::bus::InboundTx;
-use crate::channels::ChannelHttpClient;
 use crate::channels::wss_gateway::connection::{WssConnection, WssEvent};
 use crate::channels::wss_gateway::driver::{WssGatewayDriver, WssRecvAction, WssSessionState};
+use crate::channels::ChannelHttpClient;
 use crate::error::Result;
 use crate::memory::PendingRetryStore;
 use std::time::{Duration, Instant};

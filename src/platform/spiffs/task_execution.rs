@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use super::cached_json::{CachedJsonFileStore, StoreOp, load_json_or_default};
+use super::cached_json::{load_json_or_default, CachedJsonFileStore, StoreOp};
 use super::{list_dir, read_file, state_path_join, write_file};
 
 const RUN_INDEX_STAGE_LOCK: &str = "task_run_index_lock";

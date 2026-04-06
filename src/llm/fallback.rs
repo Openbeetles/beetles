@@ -3,9 +3,9 @@
 
 use crate::error::Result;
 use crate::llm::{
+    tool_fallback::{append_tool_fallback_instructions, recover_text_tool_calls},
     LlmClient, LlmHttpClient, LlmModelCompat, LlmResponse, Message, ToolCallSupport,
     ToolChoicePolicy, ToolSpec,
-    tool_fallback::{append_tool_fallback_instructions, recover_text_tool_calls},
 };
 use std::borrow::Cow;
 use std::sync::Mutex;
@@ -211,8 +211,8 @@ fn finalize_response_for_client(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Result;
     use crate::llm::StopReason;
+    use crate::Result;
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone, Debug)]

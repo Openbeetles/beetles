@@ -1,6 +1,6 @@
 use crate::calendar::{
-    CALENDAR_PROVIDER_LOCAL, CalendarEvent, CalendarHttpClient, CalendarOperation,
-    CalendarProviderCredentialStore, CalendarProviderRegistry, CalendarQuery, CalendarStore,
+    CalendarEvent, CalendarHttpClient, CalendarOperation, CalendarProviderCredentialStore,
+    CalendarProviderRegistry, CalendarQuery, CalendarStore, CALENDAR_PROVIDER_LOCAL,
 };
 use crate::error::{Error, Result};
 use std::sync::Arc;

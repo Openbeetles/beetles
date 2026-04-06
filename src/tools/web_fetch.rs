@@ -3,8 +3,8 @@
 
 use crate::error::{Error, Result};
 use crate::tools::http_request::is_private_url;
-use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args};
-use serde_json::{Value, json};
+use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
+use serde_json::{json, Value};
 
 const TAG: &str = "tools::web_fetch";
 const USER_AGENT: &str = "Beetle/0.1 web_fetch";
@@ -401,7 +401,7 @@ pub(crate) fn normalize_text(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{WebFetchTool, html_to_text, normalize_text};
+    use super::{html_to_text, normalize_text, WebFetchTool};
     use crate::error::Result;
     use crate::i18n::Locale;
     use crate::platform::ResponseBody;

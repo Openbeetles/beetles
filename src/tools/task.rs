@@ -1,18 +1,18 @@
 //! task tool: durable personal task management with optional local calendar sync.
 
 use crate::calendar::{
-    CALENDAR_PROVIDER_LOCAL, CalendarEvent, CalendarEventStatus, CalendarProviderCredentialStore,
-    CalendarProviderRegistry, CalendarService, CalendarStore,
+    CalendarEvent, CalendarEventStatus, CalendarProviderCredentialStore, CalendarProviderRegistry,
+    CalendarService, CalendarStore, CALENDAR_PROVIDER_LOCAL,
 };
 use crate::error::{Error, Result};
-use crate::task::{TaskItem, TaskPriority, TaskQuery, TaskStatus, TaskStore, normalize_task_item};
-use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args, serialize_tool_output};
+use crate::task::{normalize_task_item, TaskItem, TaskPriority, TaskQuery, TaskStatus, TaskStore};
+use crate::tools::{parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata};
 use crate::util::{current_unix_secs, parse_iso8601};
 use serde::Serialize;
 use serde_json::Value;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 static TASK_SEQ: AtomicU32 = AtomicU32::new(1);
 

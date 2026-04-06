@@ -5,7 +5,7 @@
 
 use super::HandlerContext;
 use crate::config;
-use crate::i18n::{Message, locale_from_store, tr};
+use crate::i18n::{locale_from_store, tr, Message};
 use crate::platform::http_server::common::to_io;
 use crate::state;
 use std::sync::atomic::Ordering;

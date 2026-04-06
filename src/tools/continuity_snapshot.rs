@@ -2,30 +2,30 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
+    export_continuity_snapshot, import_continuity_snapshot, inspect_memory_hygiene,
+    inspect_personality_governance, inspect_working_recall, load_recent_persona_evidence,
+    render_continuity_snapshot_markdown, render_memory_hygiene_inspection_markdown,
+    render_personality_governance_inspection_markdown, render_working_recall_inspection_markdown,
     ContinuitySnapshot, ContinuitySnapshotExportContext, ContinuitySnapshotImportContext,
     ContinuitySnapshotImportMode, ContinuitySnapshotMode, CoreRevisionLedgerStore,
     ExecutionStateStore, LongTermMemoryStore, MemoryHygieneContext, MemoryProfile, MemoryStore,
     PersonalityGovernanceInspectionInput, RelationshipConstitutionStore,
     RelationshipPortfolioStore, RelationshipTopologyStore, SelfAuthoredCoreStore,
     SelfContinuityStore, SelfModelStore, SessionStore, SessionSummaryStore, TurnLedgerStore,
-    WorkingRecallInspectionInput, export_continuity_snapshot, import_continuity_snapshot,
-    inspect_memory_hygiene, inspect_personality_governance, inspect_working_recall,
-    load_recent_persona_evidence, render_continuity_snapshot_markdown,
-    render_memory_hygiene_inspection_markdown, render_personality_governance_inspection_markdown,
-    render_working_recall_inspection_markdown,
+    WorkingRecallInspectionInput,
 };
 use crate::platform::{SkillStorage, StateFs};
 use crate::task_execution::{
-    TaskArtifactStore, TaskExecutionLedgerStore, TaskLearningStore, TaskRunStore,
     inspect_task_learning, inspect_task_workspace, render_task_learning_inspection_markdown,
-    render_task_workspace_inspection_markdown,
+    render_task_workspace_inspection_markdown, TaskArtifactStore, TaskExecutionLedgerStore,
+    TaskLearningStore, TaskRunStore,
 };
 use crate::tools::{
-    Tool, ToolContext, ToolExecutionGovernance, ToolMetadata, parse_tool_args,
-    render_tool_execution_governance_markdown,
+    parse_tool_args, render_tool_execution_governance_markdown, Tool, ToolContext,
+    ToolExecutionGovernance, ToolMetadata,
 };
 use crate::util::current_unix_secs;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 const REL_DIR_MANUAL_CONTINUITY_SNAPSHOTS: &str = "memory/continuity_snapshots/manual";

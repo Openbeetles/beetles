@@ -9,8 +9,8 @@ use crate::tools::{
 };
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 /// 输出类设备最小操作间隔（ms）。

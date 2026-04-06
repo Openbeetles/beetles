@@ -116,9 +116,9 @@ pub use document_read::DocumentReadTool;
 pub use document_search::DocumentSearchTool;
 pub use env::EnvTool;
 pub use execution_governance::{
-    ToolEmergencyStopState, ToolExecutionGateDecision, ToolExecutionGovernance,
-    ToolExecutionGovernanceState, ToolExecutionPermit, ToolExecutionRecord,
-    ToolExecutionRecordStatus, ToolExecutionRequest, render_tool_execution_governance_markdown,
+    render_tool_execution_governance_markdown, ToolEmergencyStopState, ToolExecutionGateDecision,
+    ToolExecutionGovernance, ToolExecutionGovernanceState, ToolExecutionPermit,
+    ToolExecutionRecord, ToolExecutionRecordStatus, ToolExecutionRequest,
 };
 pub use factual_memory::FactualMemoryTool;
 pub use file_edit::FileEditTool;
@@ -162,7 +162,7 @@ pub use private_garden::PrivateGardenTool;
 pub use process::ProcessTool;
 #[cfg(feature = "tools_network_extra")]
 pub use proxy_config::ProxyConfigTool;
-pub use registry::{DefaultRegistryDeps, ToolCatalogEntry, ToolRegistry, build_default_registry};
+pub use registry::{build_default_registry, DefaultRegistryDeps, ToolCatalogEntry, ToolRegistry};
 pub use remind_at::{RemindAtTool, RemindListTool};
 pub use sensor_watch::SensorWatchTool;
 #[cfg(feature = "tools_diagnostics")]

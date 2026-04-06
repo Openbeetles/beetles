@@ -2,10 +2,10 @@
 //! document_extract tool: extract targeted lines, sections, or JSON fields from a document source.
 
 use crate::error::{Error, Result};
-use crate::tools::document_read::{DEFAULT_DOCUMENT_MAX_CHARS, read_document_source};
+use crate::tools::document_read::{read_document_source, DEFAULT_DOCUMENT_MAX_CHARS};
 use crate::tools::web_fetch::parse_max_chars;
-use crate::tools::{Tool, ToolContext, parse_tool_args};
-use serde_json::{Value, json};
+use crate::tools::{parse_tool_args, Tool, ToolContext};
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 const DEFAULT_ITEM_LIMIT: usize = 4;
@@ -484,12 +484,10 @@ mod tests {
         let items = parsed["items"].as_array().unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["heading"], "Setup");
-        assert!(
-            items[0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("install beetle")
-        );
+        assert!(items[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("install beetle"));
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! 配置 API：GET /api/config、POST /api/config/wifi、POST /api/config/llm、/channels、/system、/hardware。
 
 use crate::config;
-use crate::i18n::{Message, locale_from_store, tr, tr_error};
-use crate::platform::http_server::common::{ApiResponse, WifiConfigPayload, to_io};
+use crate::i18n::{locale_from_store, tr, tr_error, Message};
+use crate::platform::http_server::common::{to_io, ApiResponse, WifiConfigPayload};
 use serde_json::Value;
 
 use super::HandlerContext;

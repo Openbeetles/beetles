@@ -303,9 +303,9 @@ mod imp {
     }
 }
 
-pub use imp::TaskHandle;
 pub use imp::planned_spawn_surface;
 pub use imp::spawn_named_with_affinity;
+pub use imp::TaskHandle;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub fn current_task_handle_key() -> usize {

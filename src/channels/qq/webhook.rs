@@ -1,6 +1,6 @@
 //! QQ 入站 HTTP 回调：op=13 验址、op=0 Ed25519 验签，支持 AT_MESSAGE_CREATE / GROUP_AT_MESSAGE_CREATE / C2C_MESSAGE_CREATE 入队。
 
-use super::send::{QqMsgIdCache, cache_msg_id, sign_qq_url_verify, verify_qq_signature};
+use super::send::{cache_msg_id, sign_qq_url_verify, verify_qq_signature, QqMsgIdCache};
 use crate::bus::{InboundTx, PcMsg};
 use crate::error::{Error, Result};
 

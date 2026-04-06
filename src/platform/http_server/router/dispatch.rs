@@ -4,7 +4,7 @@
 use super::auth;
 use super::types::{IncomingRequest, OutgoingResponse, RestartAction, RouterEnv};
 use crate::error::{Error, Result};
-use crate::i18n::{Message, locale_from_store, tr};
+use crate::i18n::{locale_from_store, tr, Message};
 use crate::platform::http_server::common::{
     self, ApiResponse, CORS_AND_TEXT_PLAIN, CORS_HEADERS, CORS_OPTIONS_HEADERS, CSS_HEADERS,
     HTML_HEADERS, JS_HEADERS, REDIRECT_PAIRING_HEADERS,

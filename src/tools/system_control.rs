@@ -1,12 +1,12 @@
 //! system_control tool: constrained system admin actions.
 
-use crate::Platform;
 use crate::error::{Error, Result};
 use crate::tools::{
-    Tool, ToolApprovalMode, ToolContext, ToolEffectClass, ToolExecutionGovernance,
-    ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind, parse_tool_args,
+    parse_tool_args, Tool, ToolApprovalMode, ToolContext, ToolEffectClass, ToolExecutionGovernance,
+    ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
 };
-use serde_json::{Value, json};
+use crate::Platform;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 pub struct SystemControlTool {

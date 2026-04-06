@@ -4,8 +4,8 @@
 use crate::error::{Error, Result};
 use crate::tools::http_request::is_private_url;
 use crate::tools::web_fetch::{parse_max_chars, truncate_chars};
-use crate::tools::{Tool, ToolContext, ToolMetadata, parse_tool_args};
-use serde_json::{Value, json};
+use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
+use serde_json::{json, Value};
 
 const TAG: &str = "tools::pdf_read";
 const USER_AGENT: &str = "Beetle/0.1 pdf_read";
@@ -179,7 +179,7 @@ pub(crate) fn test_pdf_fixture_bytes() -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PdfReadTool, normalize_pdf_text};
+    use super::{normalize_pdf_text, PdfReadTool};
     use crate::error::Result;
     use crate::i18n::Locale;
     use crate::platform::ResponseBody;

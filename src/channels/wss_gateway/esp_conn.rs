@@ -7,7 +7,7 @@ use crate::channels::wss_gateway::connection::{
     WssBinary, WssCloseInfo, WssConnectProfile, WssConnection, WssEvent,
 };
 use crate::error::{Error, Result};
-use std::ffi::{CString, c_char};
+use std::ffi::{c_char, CString};
 use std::time::Duration;
 
 const WSS_TLS_ADMISSION_TIMEOUT_SECS: u64 = 30;

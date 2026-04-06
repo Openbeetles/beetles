@@ -526,7 +526,11 @@ impl AudioRingBuffer {
     #[inline]
     fn tail(&self) -> usize {
         let t = self.head + self.len;
-        if t >= self.cap { t - self.cap } else { t }
+        if t >= self.cap {
+            t - self.cap
+        } else {
+            t
+        }
     }
 
     fn push_slice_drop_oldest(&mut self, input: &[i16]) {

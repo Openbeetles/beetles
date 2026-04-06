@@ -1,7 +1,7 @@
 //! SPIFFS implementation of Self-Authored Core store. Single-file JSON map.
 
 use crate::error::Result;
-use crate::memory::{REL_PATH_SELF_AUTHORED_CORES, SelfAuthoredCore, SelfAuthoredCoreStore};
+use crate::memory::{SelfAuthoredCore, SelfAuthoredCoreStore, REL_PATH_SELF_AUTHORED_CORES};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
