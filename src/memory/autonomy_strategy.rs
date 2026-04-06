@@ -228,6 +228,15 @@ pub(crate) fn autonomy_idle_interval_secs(
     )
 }
 
+fn autonomy_strategy_private_garden_doc_limit(profile: MemoryProfile) -> usize {
+    let policy = memory_policy(profile);
+    policy
+        .private_garden
+        .recent_doc_count
+        .max(policy.private_garden_governance.existing_doc_count)
+        .max(1)
+}
+
 pub fn run_autonomy_strategy_refresh(
     http: &mut dyn LlmHttpClient,
     llm: &(dyn LlmClient + Send + Sync),
@@ -247,7 +256,10 @@ pub fn run_autonomy_strategy_refresh(
     let inner_life = ctx.inner_life_store.get(subject_id)?;
     let self_continuity = ctx.self_continuity_store.get(subject_id)?;
     let private_docs = ctx.private_doc_store.get(subject_id)?;
-    let private_garden_docs = ctx.private_garden_store.list(input.chat_id, usize::MAX)?;
+    let private_garden_docs = ctx.private_garden_store.list(
+        input.chat_id,
+        autonomy_strategy_private_garden_doc_limit(profile),
+    )?;
     let world_sense = ctx.world_sense_store.get(&relationship_id)?;
     run_autonomy_strategy_refresh_with_state(
         http,

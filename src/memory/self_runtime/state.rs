@@ -36,7 +36,7 @@ pub(super) fn load_self_runtime_state(
     let private_docs = ctx.private_doc_store.get(subject_id).ok().flatten();
     let private_garden_docs = ctx
         .private_garden_store
-        .list(chat_id, usize::MAX)
+        .list(chat_id, self_runtime_private_garden_doc_limit(profile))
         .unwrap_or_default();
     let inner_life = ctx.inner_life_store.get(subject_id).ok().flatten();
     let self_continuity = ctx.self_continuity_store.get(subject_id).ok().flatten();

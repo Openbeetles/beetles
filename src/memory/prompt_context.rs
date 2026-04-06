@@ -10,15 +10,14 @@ use crate::task_execution::{
 
 use super::{
     board_subject_scope_id, build_archive_evidence_block, build_self_state, build_world_snapshot,
-    collect_private_targets, derive_relationship_constitution,
-    derive_self_authored_core_from_layers, load_recent_persona_evidence, memory_capability_profile,
-    memory_policy, parse_explicit_long_term_slot_query, recall_long_term_memory_block,
-    relationship_scope_id, render_autonomy_strategy_block, render_exact_long_term_memory_block,
-    render_execution_state_block, render_inner_life_block, render_mental_privacy_boundary_block,
-    render_outer_voice_block, render_persistent_self_authored_core_block,
-    render_private_doc_workspace_block, render_private_garden_block,
-    render_relationship_constitution_block, render_relationship_portfolio_block,
-    render_self_authored_core_block, render_self_continuity_block, render_self_model_block,
+    collect_private_targets, derive_relationship_constitution, load_recent_persona_evidence,
+    memory_capability_profile, memory_policy, parse_explicit_long_term_slot_query,
+    recall_long_term_memory_block, relationship_scope_id, render_autonomy_strategy_block,
+    render_exact_long_term_memory_block, render_execution_state_block, render_inner_life_block,
+    render_mental_privacy_boundary_block, render_outer_voice_block,
+    render_persistent_self_authored_core_block, render_private_doc_workspace_block,
+    render_private_garden_block, render_relationship_constitution_block,
+    render_relationship_portfolio_block, render_self_continuity_block, render_self_model_block,
     render_self_state_block, render_world_sense_block, render_world_snapshot_block,
     AutonomyStrategyStore, ExecutionStateStore, InnerLifeStore, LongTermMemoryStore, MemoryProfile,
     MemoryStore, MentalPrivacyStore, OuterVoiceStore, PrivateDocStore, PrivateGardenStore,
@@ -116,6 +115,13 @@ fn compose_prompt_projection_body(parts: &[Option<&str>]) -> Option<String> {
         out.push_str(trimmed);
     }
     (!out.is_empty()).then_some(out)
+}
+
+fn prompt_private_garden_doc_limit(profile: MemoryProfile) -> usize {
+    memory_policy(profile)
+        .private_garden
+        .recent_doc_count
+        .max(1)
 }
 
 pub struct PromptMemoryContextParams<'a> {
@@ -318,15 +324,18 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
             memory_policy(params.profile).private_docs.render_max_len,
         )
     });
-    let all_private_garden_docs = params
+    let recent_private_garden_docs = params
         .private_garden_store
-        .list(params.chat_id, usize::MAX)
+        .list(
+            params.chat_id,
+            prompt_private_garden_doc_limit(params.profile),
+        )
         .unwrap_or_default();
     let private_garden_text = params
         .include_private_garden_projection
         .then(|| {
             render_private_garden_block(
-                &all_private_garden_docs,
+                &recent_private_garden_docs,
                 memory_policy(params.profile)
                     .private_garden
                     .recent_doc_count,
@@ -348,32 +357,17 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         self_continuity.as_ref(),
         inner_life.as_ref(),
         private_workspace.as_ref(),
-        &all_private_garden_docs,
+        &recent_private_garden_docs,
     );
     let mental_privacy_text = render_mental_privacy_boundary_block(
         mental_privacy_state.as_ref(),
         &mental_privacy_targets,
         420,
     );
-    let self_authored_core = persistent_self_authored_core.or_else(|| {
-        derive_self_authored_core_from_layers(
-            self_model.as_ref(),
-            self_continuity.as_ref(),
-            mental_privacy_state.as_ref(),
-            0,
-        )
-    });
+    let self_authored_core = persistent_self_authored_core;
     let self_authored_core_text = self_authored_core
         .as_ref()
-        .and_then(|core| render_persistent_self_authored_core_block(core, 420))
-        .or_else(|| {
-            render_self_authored_core_block(
-                self_model.as_ref(),
-                self_continuity.as_ref(),
-                mental_privacy_state.as_ref(),
-                420,
-            )
-        });
+        .and_then(|core| render_persistent_self_authored_core_block(core, 420));
     let relationship_portfolio_text = relationship_portfolio.as_ref().and_then(|portfolio| {
         render_relationship_portfolio_block(portfolio, params.now_secs, Some(&relationship_id), 420)
     });
@@ -407,7 +401,7 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
             autonomy_strategy.as_ref(),
             inner_life.as_ref(),
             self_continuity.as_ref(),
-            &all_private_garden_docs,
+            &recent_private_garden_docs,
             params.now_secs,
             params.profile,
         ),
@@ -2091,5 +2085,83 @@ mod tests {
         let rendered = context.self_authored_core_text.unwrap_or_default();
         assert!(rendered.contains("persistent board self"));
         assert!(!rendered.contains("fallback anchor"));
+    }
+
+    #[test]
+    fn missing_self_authored_core_does_not_render_programmatic_fallback() {
+        let session_store = StubSessionStore::default();
+        let archive_memory_store = StubMemoryStore::default();
+        let summary_store = StubSessionSummaryStore::default();
+        let memory_store = StubLongTermMemoryStore::default();
+        let turn_ledger_store = StubTurnLedgerStore::default();
+        let execution_state_store = StubExecutionStateStore::default();
+        let self_model_store = StubSelfModelStore {
+            model: Mutex::new(Some(SelfModel {
+                continuity_anchor: "fallback anchor".to_string(),
+                self_narrative: "fallback narrative".to_string(),
+                updated_at: 1,
+                ..SelfModel::default()
+            })),
+        };
+        let self_authored_core_store = StubSelfAuthoredCoreStore::default();
+        let relationship_constitution_store = StubRelationshipConstitutionStore::default();
+        let relationship_portfolio_store = StubRelationshipPortfolioStore::default();
+        let relationship_topology_store = StubRelationshipTopologyStore::default();
+        let world_sense_store = StubWorldSenseStore::default();
+        let autonomy_strategy_store = StubAutonomyStrategyStore::default();
+        let outer_voice_store = StubOuterVoiceStore::default();
+        let inner_life_store = StubInnerLifeStore::default();
+        let self_continuity_store = StubSelfContinuityStore::default();
+        let private_doc_store = StubPrivateDocStore::default();
+        let private_garden_store = StubPrivateGardenStore::default();
+        let mental_privacy_store = StubMentalPrivacyStore::default();
+        let task_run_store = StubTaskRunStore;
+        let task_artifact_store = StubTaskArtifactStore;
+        let skill_storage = StubSkillStorage::default();
+
+        let context = load_prompt_memory_context(PromptMemoryContextParams {
+            chat_id: "chat-1",
+            current_channel: "qq_channel",
+            user_query: "继续",
+            system_max_len: 1024,
+            now_secs: 100,
+            profile: MemoryProfile::Standard,
+            recent_messages_limit: 8,
+            load_long_term_memory: true,
+            include_private_garden_projection: false,
+            session_store: &session_store,
+            memory_store: &archive_memory_store,
+            session_summary_store: &summary_store,
+            long_term_memory_store: &memory_store,
+            execution_state_store: &execution_state_store,
+            task_run_store: &task_run_store,
+            task_artifact_store: &task_artifact_store,
+            task_learning_store: &StubTaskLearningStore,
+            self_model_store: &self_model_store,
+            self_authored_core_store: &self_authored_core_store,
+            relationship_constitution_store: &relationship_constitution_store,
+            relationship_portfolio_store: &relationship_portfolio_store,
+            relationship_topology_store: &relationship_topology_store,
+            world_sense_store: &world_sense_store,
+            autonomy_strategy_store: &autonomy_strategy_store,
+            outer_voice_store: &outer_voice_store,
+            inner_life_store: &inner_life_store,
+            self_continuity_store: &self_continuity_store,
+            private_doc_store: &private_doc_store,
+            private_garden_store: &private_garden_store,
+            mental_privacy_store: &mental_privacy_store,
+            remind_store: &StubRemindAtStore,
+            task_store: &StubTaskStore,
+            turn_ledger_store: &turn_ledger_store,
+            skill_storage: &skill_storage,
+        });
+
+        assert!(context.self_authored_core.is_none());
+        assert!(context.self_authored_core_text.is_none());
+        assert!(!context
+            .constitutional_stack_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("fallback anchor"));
     }
 }

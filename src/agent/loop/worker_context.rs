@@ -97,7 +97,7 @@ pub(super) fn prepare_worker_conversation<'a>(
         now_secs: runtime.now_secs,
         profile: config.memory_profile,
         recent_messages_limit: config.session_max_messages,
-        load_long_term_memory: !interactive_fast_path,
+        load_long_term_memory: true,
         include_private_garden_projection: msg.ingress != IngressKind::User,
         session_store: config.session_store.as_ref(),
         memory_store: config.memory_store.as_ref(),

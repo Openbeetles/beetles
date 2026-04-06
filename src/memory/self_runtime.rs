@@ -77,6 +77,15 @@ pub const SELF_RUNTIME_CHANNEL: &str = "_self_runtime";
 const SELF_RUNTIME_POST_REPLY_DELAY_MS: u64 = 1_500;
 const SELF_RUNTIME_IDLE_TICK_DELAY_MS: u64 = 5_000;
 
+pub(super) fn self_runtime_private_garden_doc_limit(profile: MemoryProfile) -> usize {
+    let policy = memory_policy(profile);
+    policy
+        .private_garden
+        .recent_doc_count
+        .max(policy.private_garden_governance.existing_doc_count)
+        .max(1)
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SelfRuntimeTrigger {
@@ -889,7 +898,7 @@ fn execute_self_runtime_actions(
     };
     refreshed_private_garden_docs = ctx
         .private_garden_store
-        .list(chat_id, usize::MAX)
+        .list(chat_id, self_runtime_private_garden_doc_limit(profile))
         .unwrap_or(refreshed_private_garden_docs);
     crate::platform::task_wdt::feed_current_task();
     re_finalize_staged_self_runtime_decision(
@@ -1271,6 +1280,10 @@ fn re_finalize_staged_self_runtime_decision(
 
 pub fn enqueue_self_runtime_post_reply(
     system_inbound_tx: &SystemInboundTx,
+    self_continuity_store: &dyn SelfContinuityStore,
+    autonomy_strategy_store: &dyn AutonomyStrategyStore,
+    self_authored_core_store: &dyn SelfAuthoredCoreStore,
+    profile: MemoryProfile,
     chat_id: &str,
     source_channel: &str,
     user_content: &str,
@@ -1278,6 +1291,27 @@ pub fn enqueue_self_runtime_post_reply(
     tool_calls: u32,
     external_content_used: bool,
 ) -> bool {
+    let now_secs = current_unix_secs();
+    let subject_id = board_subject_scope_id();
+    let continuity = self_continuity_store.get(subject_id).ok().flatten();
+    let strategy = autonomy_strategy_store.get(subject_id).ok().flatten();
+    let has_self_authored_core = self_authored_core_store
+        .get(subject_id)
+        .ok()
+        .flatten()
+        .is_some();
+    if !should_enqueue_self_runtime_post_reply_with_state(
+        continuity.as_ref(),
+        strategy.as_ref(),
+        has_self_authored_core,
+        source_channel,
+        tool_calls,
+        external_content_used,
+        now_secs,
+        profile,
+    ) {
+        return false;
+    }
     schedule_self_runtime_job(
         system_inbound_tx,
         chat_id,
@@ -1288,10 +1322,45 @@ pub fn enqueue_self_runtime_post_reply(
             reply_content: truncate_content_to_max(reply_content, 768).into_owned(),
             tool_calls,
             external_content_used,
-            now_secs: current_unix_secs(),
+            now_secs,
         },
         SELF_RUNTIME_POST_REPLY_DELAY_MS,
     )
+}
+
+fn should_enqueue_self_runtime_post_reply_with_state(
+    continuity: Option<&crate::memory::SelfContinuity>,
+    strategy: Option<&crate::memory::AutonomyStrategy>,
+    has_self_authored_core: bool,
+    source_channel: &str,
+    tool_calls: u32,
+    external_content_used: bool,
+    now_secs: u64,
+    profile: MemoryProfile,
+) -> bool {
+    if tool_calls > 0 || external_content_used {
+        return true;
+    }
+    if !has_self_authored_core || strategy.is_none() {
+        return true;
+    }
+    let current_channel = source_channel.trim();
+    let previous_channel = continuity
+        .map(|state| state.last_user_channel.trim())
+        .unwrap_or_default();
+    if !current_channel.is_empty()
+        && !previous_channel.is_empty()
+        && current_channel != previous_channel
+    {
+        return true;
+    }
+    let Some(idle_interval_secs) = autonomy_idle_interval_secs(strategy, profile) else {
+        return false;
+    };
+    let last_autonomy_run_at = continuity
+        .map(|state| state.last_autonomy_run_at)
+        .unwrap_or(0);
+    last_autonomy_run_at == 0 || now_secs.saturating_sub(last_autonomy_run_at) >= idle_interval_secs
 }
 
 pub fn enqueue_self_runtime_idle_tick(system_inbound_tx: &SystemInboundTx, chat_id: &str) -> bool {
@@ -3090,5 +3159,75 @@ mod tests {
         assert!(!idle_self_runtime_due(1_000, 300, 400, 0, 900));
         assert!(idle_self_runtime_due(1_000, 900, 0, 0, 900));
         assert!(idle_self_runtime_due(1_000, 900, 50, 100, 900));
+    }
+
+    #[test]
+    fn post_reply_enqueue_runs_for_missing_core_or_runtime_signal() {
+        let continuity = crate::memory::SelfContinuity {
+            last_user_channel: "qq_channel".to_string(),
+            last_autonomy_run_at: 900,
+            ..crate::memory::SelfContinuity::default()
+        };
+        let strategy = crate::memory::AutonomyStrategy {
+            idle_enabled: true,
+            idle_interval_secs: 300,
+            ..crate::memory::AutonomyStrategy::default()
+        };
+
+        assert!(should_enqueue_self_runtime_post_reply_with_state(
+            Some(&continuity),
+            Some(&strategy),
+            false,
+            "qq_channel",
+            0,
+            false,
+            1_000,
+            MemoryProfile::Standard,
+        ));
+        assert!(should_enqueue_self_runtime_post_reply_with_state(
+            Some(&continuity),
+            Some(&strategy),
+            true,
+            "qq_channel",
+            1,
+            false,
+            1_000,
+            MemoryProfile::Standard,
+        ));
+        assert!(should_enqueue_self_runtime_post_reply_with_state(
+            Some(&continuity),
+            Some(&strategy),
+            true,
+            "feishu_channel",
+            0,
+            false,
+            1_000,
+            MemoryProfile::Standard,
+        ));
+    }
+
+    #[test]
+    fn post_reply_enqueue_skips_when_runtime_is_fresh_and_untriggered() {
+        let continuity = crate::memory::SelfContinuity {
+            last_user_channel: "qq_channel".to_string(),
+            last_autonomy_run_at: 950,
+            ..crate::memory::SelfContinuity::default()
+        };
+        let strategy = crate::memory::AutonomyStrategy {
+            idle_enabled: true,
+            idle_interval_secs: 300,
+            ..crate::memory::AutonomyStrategy::default()
+        };
+
+        assert!(!should_enqueue_self_runtime_post_reply_with_state(
+            Some(&continuity),
+            Some(&strategy),
+            true,
+            "qq_channel",
+            0,
+            false,
+            1_000,
+            MemoryProfile::Standard,
+        ));
     }
 }

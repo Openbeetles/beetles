@@ -1682,9 +1682,6 @@ fn run_post_reply_maintenance_job(
             session_summary_store: config.session_summary_store.as_ref(),
             execution_state_store: config.execution_state_store.as_ref(),
             long_term_memory_store: config.long_term_memory_store.as_ref(),
-            self_model_store: config.self_model_store.as_ref(),
-            private_doc_store: config.private_doc_store.as_ref(),
-            private_garden_store: config.private_garden_store.as_ref(),
             extraction_state_store: config.long_term_memory_extraction_state_store.as_ref(),
             turn_ledger_store: config.turn_ledger_store.as_ref(),
             skill_storage: config.skill_storage.as_ref(),
@@ -1745,67 +1742,6 @@ fn run_post_reply_maintenance_job(
         }
         Ok(crate::memory::ExecutionStateRefreshOutcome::Skipped) => {}
         Err(error) => log::warn!("[agent_execution_state] failed: {}", error),
-    }
-    match maintenance_outcome.internal_memory_routing_result {
-        Ok(Some(decision)) => {
-            log::info!(
-                "[agent_internal_memory_routing] {} self_model={} private_docs={} private_garden={} self_model_intent={:?} self_model_sources={:?} private_docs_intent={:?} private_docs_sources={:?} private_garden_intent={:?} private_garden_cleanup_paths={:?}",
-                msg.chat_id,
-                decision.refresh_self_model,
-                decision.refresh_private_docs,
-                decision.refresh_private_garden,
-                decision.self_model_intent.as_deref(),
-                decision.self_model_sources.as_slice(),
-                decision.private_docs_intent.as_deref(),
-                decision.private_docs_sources.as_slice(),
-                decision.private_garden_intent.as_deref(),
-                decision.private_garden_cleanup_paths.as_slice()
-            );
-        }
-        Ok(None) => {}
-        Err(error) => log::warn!("[agent_internal_memory_routing] failed: {}", error),
-    }
-    match maintenance_outcome.self_model_result {
-        Ok(crate::memory::SelfModelRefreshOutcome::Updated) => {
-            log::info!("[agent_self_model] updated for {}", msg.chat_id);
-        }
-        Ok(crate::memory::SelfModelRefreshOutcome::Skipped) => {}
-        Err(error) => log::warn!("[agent_self_model] failed: {}", error),
-    }
-    match maintenance_outcome.private_doc_result {
-        Ok(crate::memory::PrivateDocWorkspaceRefreshOutcome::Updated) => {
-            log::info!("[agent_private_docs] updated for {}", msg.chat_id);
-        }
-        Ok(crate::memory::PrivateDocWorkspaceRefreshOutcome::Skipped) => {}
-        Err(error) => log::warn!("[agent_private_docs] failed: {}", error),
-    }
-    match maintenance_outcome.private_garden_upstream_cleanup_result {
-        Ok(0) => {}
-        Ok(deleted) => {
-            log::info!(
-                "[agent_private_garden_cleanup] removed {} promoted docs for {}",
-                deleted,
-                msg.chat_id
-            );
-        }
-        Err(error) => log::warn!("[agent_private_garden_cleanup] failed: {}", error),
-    }
-    match maintenance_outcome.private_garden_result {
-        Ok(crate::memory::PrivateGardenGovernanceOutcome::Updated {
-            writes,
-            moves,
-            deletes,
-        }) => {
-            log::info!(
-                "[agent_private_garden] updated for {} (writes={}, moves={}, deletes={})",
-                msg.chat_id,
-                writes,
-                moves,
-                deletes
-            );
-        }
-        Ok(crate::memory::PrivateGardenGovernanceOutcome::Skipped) => {}
-        Err(error) => log::warn!("[agent_private_garden] failed: {}", error),
     }
     if let Some(summary) = maintenance_outcome.factual_coordination_summary.as_deref() {
         log::info!(

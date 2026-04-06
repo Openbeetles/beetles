@@ -301,6 +301,10 @@ pub(super) fn finalize_lane_turn(
     if delivered
         && !crate::memory::enqueue_self_runtime_post_reply(
             system_inbound_tx,
+            config.self_continuity_store.as_ref(),
+            config.autonomy_strategy_store.as_ref(),
+            config.self_authored_core_store.as_ref(),
+            config.memory_profile,
             msg.chat_id.as_ref(),
             msg.channel.as_ref(),
             &msg.content,

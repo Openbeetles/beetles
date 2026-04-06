@@ -12,25 +12,16 @@ use crate::task_execution::{
 };
 
 use super::{
-    board_subject_scope_id, evaluate_long_term_memory_extraction_turn,
-    load_session_summary_snapshot, mark_long_term_memory_extraction_requested,
-    memory_capability_profile, memory_policy, normalize_private_garden_doc_path,
-    persist_long_term_memory_extraction_state, relationship_scope_id,
-    run_execution_state_refresh_with_state, run_internal_memory_routing_with_state,
+    evaluate_long_term_memory_extraction_turn, load_session_summary_snapshot,
+    mark_long_term_memory_extraction_requested, memory_capability_profile, memory_policy,
+    persist_long_term_memory_extraction_state, run_execution_state_refresh_with_state,
     run_memory_governance_kernel, run_memory_hygiene_jobs,
-    run_private_doc_workspace_refresh_with_state, run_private_garden_governance_with_state,
-    run_self_model_refresh_with_state, run_session_summary_refresh_with_snapshot,
-    should_refresh_execution_state, should_refresh_private_doc_workspace,
-    should_refresh_private_garden, should_refresh_self_model, ExecutionStateRefreshContext,
-    ExecutionStateRefreshInput, ExecutionStateRefreshOutcome, ExecutionStateStore,
-    InternalMemoryRoutingDecision, InternalMemoryRoutingInput, LongTermMemoryExtractionStateStore,
-    LongTermMemoryExtractionTurnInput, LongTermMemoryStore, MemoryGovernanceContext,
-    MemoryGovernanceInput, MemoryHygieneContext, MemoryProfile, MemoryStore, PrivateDocStore,
-    PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
-    PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
-    PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, PrivateGardenStore,
-    SelfModelRefreshContext, SelfModelRefreshInput, SelfModelRefreshOutcome, SelfModelStore,
-    SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore, TurnLedgerStore,
+    run_session_summary_refresh_with_snapshot, should_refresh_execution_state,
+    ExecutionStateRefreshContext, ExecutionStateRefreshInput, ExecutionStateRefreshOutcome,
+    ExecutionStateStore, LongTermMemoryExtractionStateStore, LongTermMemoryExtractionTurnInput,
+    LongTermMemoryStore, MemoryGovernanceContext, MemoryGovernanceInput, MemoryHygieneContext,
+    MemoryProfile, MemoryStore, SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore,
+    TurnLedgerStore,
 };
 
 pub struct PostReplyMemoryMaintenanceContext<'a> {
@@ -39,9 +30,6 @@ pub struct PostReplyMemoryMaintenanceContext<'a> {
     pub session_summary_store: &'a dyn SessionSummaryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
-    pub self_model_store: &'a dyn SelfModelStore,
-    pub private_doc_store: &'a dyn PrivateDocStore,
-    pub private_garden_store: &'a dyn PrivateGardenStore,
     pub extraction_state_store: &'a dyn LongTermMemoryExtractionStateStore,
     pub turn_ledger_store: &'a dyn TurnLedgerStore,
     pub skill_storage: &'a dyn SkillStorage,
@@ -74,11 +62,6 @@ pub struct PostReplyMemoryMaintenanceOutcome {
     pub after_count: usize,
     pub summary_result: Result<SessionSummaryRefreshOutcome>,
     pub execution_state_result: Result<ExecutionStateRefreshOutcome>,
-    pub internal_memory_routing_result: Result<Option<InternalMemoryRoutingDecision>>,
-    pub self_model_result: Result<SelfModelRefreshOutcome>,
-    pub private_doc_result: Result<PrivateDocWorkspaceRefreshOutcome>,
-    pub private_garden_upstream_cleanup_result: Result<usize>,
-    pub private_garden_result: Result<PrivateGardenGovernanceOutcome>,
     pub factual_coordination_summary: Option<String>,
     pub factual_refresh_suggested: bool,
     pub extraction_request_outcome: LongTermMemoryRefreshRequestOutcome,
@@ -90,35 +73,18 @@ struct MaintenanceBaseline {
     after_count: usize,
     initial_summary_snapshot: super::session_summary_refresh::SessionSummarySnapshot,
     execution_state: Result<Option<crate::memory::ExecutionState>>,
-    self_model: Result<Option<crate::memory::SelfModel>>,
-    private_docs: Result<Option<crate::memory::PrivateDocWorkspace>>,
-    private_garden_docs: Result<Vec<crate::memory::PrivateGardenDocRecord>>,
     summary_should_refresh: bool,
     execution_should_refresh: bool,
-    self_model_should_refresh: bool,
-    private_doc_should_refresh: bool,
-    private_garden_should_refresh: bool,
 }
 
 struct MaintenanceRecentWindows {
     shared_recent: Option<Vec<crate::memory::SessionMessage>>,
-    routing_recent: Option<Vec<crate::memory::SessionMessage>>,
 }
 
 struct SharedMaintenancePasses {
     summary_result: Result<SessionSummaryRefreshOutcome>,
     summary_snapshot: super::session_summary_refresh::SessionSummarySnapshot,
     execution_state_result: Result<ExecutionStateRefreshOutcome>,
-    latest_execution_state: Option<crate::memory::ExecutionState>,
-    internal_memory_routing_result: Result<Option<InternalMemoryRoutingDecision>>,
-    internal_memory_decision: InternalMemoryRoutingDecision,
-}
-
-struct PrivateMaintenancePasses {
-    self_model_result: Result<SelfModelRefreshOutcome>,
-    private_doc_result: Result<PrivateDocWorkspaceRefreshOutcome>,
-    private_garden_upstream_cleanup_result: Result<usize>,
-    private_garden_result: Result<PrivateGardenGovernanceOutcome>,
 }
 
 struct PostReplyFollowupPasses {
@@ -132,13 +98,10 @@ fn collect_maintenance_baseline(
     ctx: &PostReplyMemoryMaintenanceContext<'_>,
     input: &PostReplyMemoryMaintenanceInput<'_>,
 ) -> MaintenanceBaseline {
-    let subject_id = board_subject_scope_id();
     let after_count = ctx.session_store.message_count(input.chat_id).unwrap_or(0);
     let initial_summary_snapshot =
         load_session_summary_snapshot(ctx.session_summary_store, input.chat_id);
     let execution_state = ctx.execution_state_store.get(input.chat_id);
-    let self_model = ctx.self_model_store.get(subject_id);
-    let private_docs = ctx.private_doc_store.get(subject_id);
     let summary_should_refresh = super::should_refresh_session_summary(
         after_count,
         initial_summary_snapshot.last_summary_count,
@@ -163,76 +126,12 @@ fn collect_maintenance_baseline(
             )
         })
         .unwrap_or(false);
-    let self_model_should_refresh = self_model
-        .as_ref()
-        .map(|model| {
-            should_refresh_self_model(
-                SelfModelRefreshInput {
-                    chat_id: input.chat_id,
-                    ingress: input.ingress,
-                    channel: input.channel,
-                    user_content: input.user_content,
-                    reply_content: input.reply_content,
-                    pressure: input.pressure,
-                    tool_calls: input.tool_calls,
-                    now_secs: input.now_secs,
-                },
-                model.is_some(),
-                input.memory_profile,
-            )
-        })
-        .unwrap_or(false);
-    let private_doc_should_refresh = private_docs
-        .as_ref()
-        .map(|workspace| {
-            should_refresh_private_doc_workspace(
-                PrivateDocWorkspaceRefreshInput {
-                    chat_id: input.chat_id,
-                    ingress: input.ingress,
-                    channel: input.channel,
-                    user_content: input.user_content,
-                    reply_content: input.reply_content,
-                    pressure: input.pressure,
-                    tool_calls: input.tool_calls,
-                    now_secs: input.now_secs,
-                },
-                workspace.is_some(),
-                input.memory_profile,
-            )
-        })
-        .unwrap_or(false);
-    let private_garden_docs = ctx.private_garden_store.list(input.chat_id, usize::MAX);
-    let private_garden_should_refresh = private_garden_docs
-        .as_ref()
-        .map(|docs| {
-            should_refresh_private_garden(
-                PrivateGardenGovernanceInput {
-                    chat_id: input.chat_id,
-                    ingress: input.ingress,
-                    channel: input.channel,
-                    user_content: input.user_content,
-                    reply_content: input.reply_content,
-                    pressure: input.pressure,
-                    tool_calls: input.tool_calls,
-                    now_secs: input.now_secs,
-                },
-                !docs.is_empty(),
-                input.memory_profile,
-            )
-        })
-        .unwrap_or(false);
     MaintenanceBaseline {
         after_count,
         initial_summary_snapshot,
         execution_state,
-        self_model,
-        private_docs,
-        private_garden_docs,
         summary_should_refresh,
         execution_should_refresh,
-        self_model_should_refresh,
-        private_doc_should_refresh,
-        private_garden_should_refresh,
     }
 }
 
@@ -250,9 +149,6 @@ fn load_maintenance_recent_windows(
     let shared_recent = if [
         baseline.summary_should_refresh,
         baseline.execution_should_refresh,
-        baseline.self_model_should_refresh,
-        baseline.private_doc_should_refresh,
-        baseline.private_garden_should_refresh,
     ]
     .into_iter()
     .filter(|enabled| *enabled)
@@ -261,35 +157,19 @@ fn load_maintenance_recent_windows(
     {
         let summary_policy = policy.session_summary;
         let execution_policy = policy.execution_state;
-        let self_model_policy = policy.self_model;
-        let private_docs_policy = policy.private_docs;
         ctx.session_store
             .load_recent(
                 input.chat_id,
                 summary_policy
                     .recent_message_count
                     .max(execution_policy.recent_message_count)
-                    .max(self_model_policy.recent_message_count)
-                    .max(private_docs_policy.recent_message_count)
-                    .max(policy.private_garden_governance.recent_message_count)
-                    .max(policy.internal_memory_routing.recent_message_count),
+                    .max(policy.long_term_recall.recent_grounding_message_count),
             )
             .ok()
     } else {
         None
     };
-    let routing_recent = shared_recent.clone().or_else(|| {
-        ctx.session_store
-            .load_recent(
-                input.chat_id,
-                policy.internal_memory_routing.recent_message_count,
-            )
-            .ok()
-    });
-    MaintenanceRecentWindows {
-        shared_recent,
-        routing_recent,
-    }
+    MaintenanceRecentWindows { shared_recent }
 }
 
 fn run_shared_maintenance_passes(
@@ -348,292 +228,10 @@ fn run_shared_maintenance_passes(
         )),
     };
     crate::platform::task_wdt::feed_current_task();
-    let latest_execution_state = match ctx.execution_state_store.get(input.chat_id) {
-        Ok(state) => state,
-        Err(error) => {
-            log::warn!(
-                "[agent_self_model] failed to reload execution state for chat_id={}: {}",
-                input.chat_id,
-                error
-            );
-            None
-        }
-    };
-    crate::platform::task_wdt::feed_current_task();
-    let internal_memory_routing_result = match &baseline.private_garden_docs {
-        Ok(existing_garden_docs) => run_internal_memory_routing_with_state(
-            http,
-            llm,
-            ctx.long_term_memory_store,
-            InternalMemoryRoutingInput {
-                chat_id: input.chat_id,
-                ingress: input.ingress,
-                channel: input.channel,
-                user_content: input.user_content,
-                reply_content: input.reply_content,
-                pressure: input.pressure,
-                tool_calls: input.tool_calls,
-                now_secs: input.now_secs,
-            },
-            input.memory_profile,
-            summary_snapshot.summary_text.as_deref(),
-            latest_execution_state.as_ref(),
-            baseline
-                .self_model
-                .as_ref()
-                .ok()
-                .and_then(|model| model.as_ref()),
-            baseline
-                .private_docs
-                .as_ref()
-                .ok()
-                .and_then(|workspace| workspace.as_ref()),
-            existing_garden_docs,
-            recent.routing_recent.as_deref().unwrap_or(&[]),
-        ),
-        Err(error) => Err(crate::error::Error::config(
-            "agent_internal_memory_routing",
-            error.to_string(),
-        )),
-    };
-    crate::platform::task_wdt::feed_current_task();
-    let fallback_internal_memory_decision = InternalMemoryRoutingDecision {
-        refresh_self_model: baseline.self_model_should_refresh,
-        self_model_intent: None,
-        self_model_sources: Vec::new(),
-        refresh_private_docs: baseline.private_doc_should_refresh,
-        private_docs_intent: None,
-        private_docs_sources: Vec::new(),
-        refresh_private_garden: baseline.private_garden_should_refresh,
-        private_garden_intent: None,
-        private_garden_cleanup_paths: Vec::new(),
-    };
-    let internal_memory_decision = match &internal_memory_routing_result {
-        Ok(Some(decision)) => decision.clone(),
-        Ok(None) => InternalMemoryRoutingDecision::default(),
-        Err(_) => fallback_internal_memory_decision,
-    };
     SharedMaintenancePasses {
         summary_result,
         summary_snapshot,
         execution_state_result,
-        latest_execution_state,
-        internal_memory_routing_result,
-        internal_memory_decision,
-    }
-}
-
-fn run_private_memory_maintenance_passes(
-    http: &mut dyn LlmHttpClient,
-    llm: &(dyn LlmClient + Send + Sync),
-    ctx: &PostReplyMemoryMaintenanceContext<'_>,
-    input: &PostReplyMemoryMaintenanceInput<'_>,
-    baseline: &MaintenanceBaseline,
-    recent: &MaintenanceRecentWindows,
-    shared: &SharedMaintenancePasses,
-) -> PrivateMaintenancePasses {
-    let subject_id = board_subject_scope_id();
-    let relationship_id = relationship_scope_id(input.channel, input.chat_id);
-    crate::platform::task_wdt::feed_current_task();
-    let recent_persona_evidence =
-        super::load_recent_persona_evidence(ctx.turn_ledger_store, &relationship_id)
-            .ok()
-            .flatten();
-    let self_model_result = match &baseline.self_model {
-        Ok(existing_model) => run_self_model_refresh_with_state(
-            http,
-            llm,
-            SelfModelRefreshContext {
-                session_store: ctx.session_store,
-                session_summary_store: ctx.session_summary_store,
-                execution_state_store: ctx.execution_state_store,
-                long_term_memory_store: ctx.long_term_memory_store,
-                self_model_store: ctx.self_model_store,
-            },
-            SelfModelRefreshInput {
-                chat_id: input.chat_id,
-                ingress: input.ingress,
-                channel: input.channel,
-                user_content: input.user_content,
-                reply_content: input.reply_content,
-                pressure: input.pressure,
-                tool_calls: input.tool_calls,
-                now_secs: input.now_secs,
-            },
-            input.memory_profile,
-            existing_model.clone(),
-            shared.summary_snapshot.summary_text.as_deref(),
-            shared.latest_execution_state.as_ref(),
-            baseline
-                .private_docs
-                .as_ref()
-                .ok()
-                .and_then(|workspace| workspace.as_ref()),
-            baseline.private_garden_docs.as_deref().unwrap_or(&[]),
-            recent_persona_evidence.as_ref(),
-            shared.internal_memory_decision.self_model_intent.as_deref(),
-            shared
-                .internal_memory_decision
-                .self_model_sources
-                .as_slice(),
-            Some(shared.internal_memory_decision.refresh_self_model),
-            recent.shared_recent.as_deref(),
-        ),
-        Err(error) => Err(crate::error::Error::config(
-            error.stage(),
-            error.to_string(),
-        )),
-    };
-    crate::platform::task_wdt::feed_current_task();
-    let latest_self_model = match ctx.self_model_store.get(subject_id) {
-        Ok(model) => model,
-        Err(error) => {
-            log::warn!(
-                "[agent_private_docs] failed to reload self model for chat_id={}: {}",
-                input.chat_id,
-                error
-            );
-            None
-        }
-    };
-    crate::platform::task_wdt::feed_current_task();
-    let private_doc_result = match &baseline.private_docs {
-        Ok(existing_workspace) => run_private_doc_workspace_refresh_with_state(
-            http,
-            llm,
-            PrivateDocWorkspaceRefreshContext {
-                session_store: ctx.session_store,
-                session_summary_store: ctx.session_summary_store,
-                execution_state_store: ctx.execution_state_store,
-                long_term_memory_store: ctx.long_term_memory_store,
-                self_model_store: ctx.self_model_store,
-                private_doc_store: ctx.private_doc_store,
-            },
-            PrivateDocWorkspaceRefreshInput {
-                chat_id: input.chat_id,
-                ingress: input.ingress,
-                channel: input.channel,
-                user_content: input.user_content,
-                reply_content: input.reply_content,
-                pressure: input.pressure,
-                tool_calls: input.tool_calls,
-                now_secs: input.now_secs,
-            },
-            input.memory_profile,
-            existing_workspace.clone(),
-            shared.summary_snapshot.summary_text.as_deref(),
-            shared.latest_execution_state.as_ref(),
-            latest_self_model.as_ref(),
-            baseline.private_garden_docs.as_deref().unwrap_or(&[]),
-            shared
-                .internal_memory_decision
-                .private_docs_intent
-                .as_deref(),
-            shared
-                .internal_memory_decision
-                .private_docs_sources
-                .as_slice(),
-            None,
-            None,
-            None,
-            None,
-            Some(shared.internal_memory_decision.refresh_private_docs),
-            recent.shared_recent.as_deref(),
-        ),
-        Err(error) => Err(crate::error::Error::config(
-            error.stage(),
-            error.to_string(),
-        )),
-    };
-    crate::platform::task_wdt::feed_current_task();
-    let private_garden_upstream_cleanup_result =
-        if matches!(self_model_result, Ok(SelfModelRefreshOutcome::Updated))
-            || matches!(
-                private_doc_result,
-                Ok(PrivateDocWorkspaceRefreshOutcome::Updated)
-            )
-        {
-            cleanup_promoted_private_garden_docs(
-                ctx.private_garden_store,
-                input.chat_id,
-                shared
-                    .internal_memory_decision
-                    .private_garden_cleanup_paths
-                    .as_slice(),
-            )
-        } else {
-            Ok(0)
-        };
-    crate::platform::task_wdt::feed_current_task();
-    let latest_private_workspace = match ctx.private_doc_store.get(subject_id) {
-        Ok(workspace) => workspace,
-        Err(error) => {
-            log::warn!(
-                "[agent_private_garden] failed to reload private docs for chat_id={}: {}",
-                input.chat_id,
-                error
-            );
-            None
-        }
-    };
-    crate::platform::task_wdt::feed_current_task();
-    let private_garden_result = match &baseline.private_garden_docs {
-        Ok(_existing_docs) => run_private_garden_governance_with_state(
-            http,
-            llm,
-            PrivateGardenGovernanceContext {
-                session_store: ctx.session_store,
-                session_summary_store: ctx.session_summary_store,
-                execution_state_store: ctx.execution_state_store,
-                self_model_store: ctx.self_model_store,
-                private_doc_store: ctx.private_doc_store,
-                private_garden_store: ctx.private_garden_store,
-            },
-            PrivateGardenGovernanceInput {
-                chat_id: input.chat_id,
-                ingress: input.ingress,
-                channel: input.channel,
-                user_content: input.user_content,
-                reply_content: input.reply_content,
-                pressure: input.pressure,
-                tool_calls: input.tool_calls,
-                now_secs: input.now_secs,
-            },
-            input.memory_profile,
-            shared.summary_snapshot.summary_text.as_deref(),
-            shared.latest_execution_state.as_ref(),
-            latest_self_model.as_ref(),
-            latest_private_workspace.as_ref(),
-            None,
-            shared
-                .internal_memory_decision
-                .private_garden_intent
-                .as_deref(),
-            if private_garden_upstream_cleanup_result
-                .as_ref()
-                .is_ok_and(|deleted| *deleted > 0)
-            {
-                shared
-                    .internal_memory_decision
-                    .private_garden_cleanup_paths
-                    .as_slice()
-            } else {
-                &[]
-            },
-            Some(shared.internal_memory_decision.refresh_private_garden),
-            recent.shared_recent.as_deref(),
-        ),
-        Err(error) => Err(crate::error::Error::config(
-            "agent_private_garden",
-            error.to_string(),
-        )),
-    };
-    crate::platform::task_wdt::feed_current_task();
-    PrivateMaintenancePasses {
-        self_model_result,
-        private_doc_result,
-        private_garden_upstream_cleanup_result,
-        private_garden_result,
     }
 }
 
@@ -716,10 +314,7 @@ fn run_post_reply_memory_governance(
             chat_id: input.chat_id,
             query_hint: factual_query,
             summary_text: shared.summary_snapshot.summary_text.as_deref(),
-            recent: recent
-                .shared_recent
-                .as_deref()
-                .unwrap_or_else(|| recent.routing_recent.as_deref().unwrap_or(&[])),
+            recent: recent.shared_recent.as_deref().unwrap_or(&[]),
             max_len: memory_policy(input.memory_profile)
                 .long_term_recall
                 .block_max_len_cap,
@@ -785,9 +380,6 @@ pub fn run_post_reply_memory_maintenance(
     crate::platform::task_wdt::feed_current_task();
     let shared = run_shared_maintenance_passes(http, llm, &ctx, &input, &baseline, &recent);
     crate::platform::task_wdt::feed_current_task();
-    let private =
-        run_private_memory_maintenance_passes(http, llm, &ctx, &input, &baseline, &recent, &shared);
-    crate::platform::task_wdt::feed_current_task();
     let followup = run_post_reply_followup_passes(
         &ctx,
         &input,
@@ -802,32 +394,12 @@ pub fn run_post_reply_memory_maintenance(
         after_count: baseline.after_count,
         summary_result: shared.summary_result,
         execution_state_result: shared.execution_state_result,
-        internal_memory_routing_result: shared.internal_memory_routing_result,
-        self_model_result: private.self_model_result,
-        private_doc_result: private.private_doc_result,
-        private_garden_upstream_cleanup_result: private.private_garden_upstream_cleanup_result,
-        private_garden_result: private.private_garden_result,
         factual_coordination_summary: followup.governance.factual_coordination_summary,
         factual_refresh_suggested: followup.governance.factual_refresh_suggested,
         extraction_request_outcome: followup.extraction_request_outcome,
         hygiene_outcome: followup.hygiene_outcome,
         task_learning_outcome: followup.task_learning_outcome,
     }
-}
-
-fn cleanup_promoted_private_garden_docs(
-    store: &dyn PrivateGardenStore,
-    chat_id: &str,
-    paths: &[String],
-) -> Result<usize> {
-    let mut deleted = 0usize;
-    for path in paths {
-        let normalized = normalize_private_garden_doc_path(path)?;
-        if store.delete(chat_id, &normalized)? {
-            deleted = deleted.saturating_add(1);
-        }
-    }
-    Ok(deleted)
 }
 
 #[cfg(test)]
@@ -1315,8 +887,6 @@ mod tests {
 
     struct FixedLlmClient;
 
-    struct RouterSuppressingLlmClient;
-
     impl LlmClient for FixedLlmClient {
         fn model_compat(&self) -> LlmModelCompat {
             LlmModelCompat::default()
@@ -1342,34 +912,6 @@ mod tests {
                 r#"{"writes":[{"path":"journal/current.md","content":"把当前内部工作收束成一份持续维护的私有笔记。"}],"deletes":["scratch/stale.md"]}"#
             } else {
                 "summary"
-            };
-            Ok(LlmResponse {
-                content: content.to_string(),
-                stop_reason: StopReason::EndTurn,
-                tool_calls: None,
-            })
-        }
-    }
-
-    impl LlmClient for RouterSuppressingLlmClient {
-        fn model_compat(&self) -> LlmModelCompat {
-            LlmModelCompat::default()
-        }
-
-        fn chat(
-            &self,
-            _http: &mut dyn LlmHttpClient,
-            system: &str,
-            _messages: &[Message],
-            _tools: Option<&[crate::llm::ToolSpec]>,
-            _tool_choice: ToolChoicePolicy,
-        ) -> Result<LlmResponse> {
-            let content = if system == crate::memory::EXECUTION_STATE_SYSTEM_PROMPT {
-                r#"{"status":"active","goal":"继续推进","progress":"maintenance router","next_action":"只更新 execution state"}"#
-            } else if system == crate::memory::INTERNAL_MEMORY_ROUTING_SYSTEM_PROMPT {
-                "null"
-            } else {
-                r#"{"continuity_anchor":"should not run"}"#
             };
             Ok(LlmResponse {
                 content: content.to_string(),
@@ -1426,9 +968,6 @@ mod tests {
         let execution_state_store = StubExecutionStateStore::default();
         let memory_store = StubMemoryStore;
         let long_term_memory_store = StubLongTermMemoryStore;
-        let self_model_store = StubSelfModelStore::default();
-        let private_doc_store = StubPrivateDocStore::default();
-        let private_garden_store = StubPrivateGardenStore::default();
         let turn_ledger_store = StubTurnLedgerStore;
         let skill_storage = StubSkillStorage;
         let mut http = DummyHttpClient;
@@ -1441,9 +980,6 @@ mod tests {
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
                 long_term_memory_store: &long_term_memory_store,
-                self_model_store: &self_model_store,
-                private_doc_store: &private_doc_store,
-                private_garden_store: &private_garden_store,
                 extraction_state_store: &extraction_state_store,
                 turn_ledger_store: &turn_ledger_store,
                 skill_storage: &skill_storage,
@@ -1474,33 +1010,6 @@ mod tests {
             outcome.execution_state_result,
             Ok(ExecutionStateRefreshOutcome::Updated)
         ));
-        assert!(matches!(
-            outcome.internal_memory_routing_result,
-            Ok(Some(InternalMemoryRoutingDecision {
-                refresh_self_model: true,
-                self_model_intent: Some(_),
-                self_model_sources: _,
-                refresh_private_docs: true,
-                private_docs_intent: Some(_),
-                private_docs_sources: _,
-                refresh_private_garden: true,
-                private_garden_intent: Some(_),
-                private_garden_cleanup_paths: _,
-            }))
-        ));
-        assert!(matches!(
-            outcome.self_model_result,
-            Ok(SelfModelRefreshOutcome::Updated)
-        ));
-        assert!(matches!(
-            outcome.private_doc_result,
-            Ok(PrivateDocWorkspaceRefreshOutcome::Updated)
-        ));
-        assert_eq!(outcome.private_garden_upstream_cleanup_result.unwrap(), 0);
-        assert!(matches!(
-            outcome.private_garden_result,
-            Ok(PrivateGardenGovernanceOutcome::Updated { .. })
-        ));
         assert_eq!(
             outcome.extraction_request_outcome,
             LongTermMemoryRefreshRequestOutcome::Requested
@@ -1527,9 +1036,6 @@ mod tests {
         let execution_state_store = StubExecutionStateStore::default();
         let memory_store = StubMemoryStore;
         let long_term_memory_store = StubLongTermMemoryStore;
-        let self_model_store = StubSelfModelStore::default();
-        let private_doc_store = StubPrivateDocStore::default();
-        let private_garden_store = StubPrivateGardenStore::default();
         let turn_ledger_store = StubTurnLedgerStore;
         let skill_storage = StubSkillStorage;
         let mut http = DummyHttpClient;
@@ -1542,9 +1048,6 @@ mod tests {
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
                 long_term_memory_store: &long_term_memory_store,
-                self_model_store: &self_model_store,
-                private_doc_store: &private_doc_store,
-                private_garden_store: &private_garden_store,
                 extraction_state_store: &extraction_state_store,
                 turn_ledger_store: &turn_ledger_store,
                 skill_storage: &skill_storage,
@@ -1574,19 +1077,6 @@ mod tests {
         assert!(matches!(
             outcome.execution_state_result,
             Ok(ExecutionStateRefreshOutcome::Skipped)
-        ));
-        assert!(matches!(
-            outcome.self_model_result,
-            Ok(SelfModelRefreshOutcome::Skipped)
-        ));
-        assert!(matches!(
-            outcome.private_doc_result,
-            Ok(PrivateDocWorkspaceRefreshOutcome::Skipped)
-        ));
-        assert_eq!(outcome.private_garden_upstream_cleanup_result.unwrap(), 0);
-        assert!(matches!(
-            outcome.private_garden_result,
-            Ok(PrivateGardenGovernanceOutcome::Skipped)
         ));
         assert_eq!(
             outcome.extraction_request_outcome,
@@ -1628,9 +1118,6 @@ mod tests {
         let execution_state_store = StubExecutionStateStore::default();
         let memory_store = StubMemoryStore;
         let long_term_memory_store = StubLongTermMemoryStore;
-        let self_model_store = StubSelfModelStore::default();
-        let private_doc_store = StubPrivateDocStore::default();
-        let private_garden_store = StubPrivateGardenStore::default();
         let turn_ledger_store = StubTurnLedgerStore;
         let skill_storage = StubSkillStorage;
         let mut http = DummyHttpClient;
@@ -1644,9 +1131,6 @@ mod tests {
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
                 long_term_memory_store: &long_term_memory_store,
-                self_model_store: &self_model_store,
-                private_doc_store: &private_doc_store,
-                private_garden_store: &private_garden_store,
                 extraction_state_store: &extraction_state_store,
                 turn_ledger_store: &turn_ledger_store,
                 skill_storage: &skill_storage,
@@ -1677,19 +1161,6 @@ mod tests {
             outcome.execution_state_result,
             Ok(ExecutionStateRefreshOutcome::Updated)
         ));
-        assert!(matches!(
-            outcome.self_model_result,
-            Ok(SelfModelRefreshOutcome::Updated)
-        ));
-        assert!(matches!(
-            outcome.private_doc_result,
-            Ok(PrivateDocWorkspaceRefreshOutcome::Updated)
-        ));
-        assert_eq!(outcome.private_garden_upstream_cleanup_result.unwrap(), 0);
-        assert!(matches!(
-            outcome.private_garden_result,
-            Ok(PrivateGardenGovernanceOutcome::Updated { .. })
-        ));
         assert_eq!(
             *session_store
                 .load_recent_calls
@@ -1700,89 +1171,7 @@ mod tests {
     }
 
     #[test]
-    fn maintenance_router_can_suppress_private_memory_writes() {
-        let session_store = StubSessionStore {
-            recent: vec![
-                SessionMessage {
-                    role: "user".to_string(),
-                    content: "继续把自我空间治理收紧".to_string(),
-                },
-                SessionMessage {
-                    role: "assistant".to_string(),
-                    content: "这轮会先把治理入口抽象出来".to_string(),
-                },
-            ],
-            count: 18,
-            ..Default::default()
-        };
-        let summary_store = StubSessionSummaryStore::default();
-        let extraction_state_store = StubExtractionStateStore::default();
-        let execution_state_store = StubExecutionStateStore::default();
-        let memory_store = StubMemoryStore;
-        let long_term_memory_store = StubLongTermMemoryStore;
-        let self_model_store = StubSelfModelStore::default();
-        let private_doc_store = StubPrivateDocStore::default();
-        let private_garden_store = StubPrivateGardenStore::default();
-        let turn_ledger_store = StubTurnLedgerStore;
-        let skill_storage = StubSkillStorage;
-        let mut http = DummyHttpClient;
-
-        let outcome = run_post_reply_memory_maintenance(
-            &mut http,
-            &RouterSuppressingLlmClient,
-            PostReplyMemoryMaintenanceContext {
-                session_store: &session_store,
-                memory_store: &memory_store,
-                session_summary_store: &summary_store,
-                execution_state_store: &execution_state_store,
-                long_term_memory_store: &long_term_memory_store,
-                self_model_store: &self_model_store,
-                private_doc_store: &private_doc_store,
-                private_garden_store: &private_garden_store,
-                extraction_state_store: &extraction_state_store,
-                turn_ledger_store: &turn_ledger_store,
-                skill_storage: &skill_storage,
-                task_run_store: &StubTaskRunStore,
-                task_artifact_store: &StubTaskArtifactStore,
-                task_learning_store: &StubTaskLearningStore,
-            },
-            PostReplyMemoryMaintenanceInput {
-                chat_id: "chat-1",
-                ingress: IngressKind::User,
-                channel: "qq_channel",
-                user_content: "继续把自我空间治理收紧",
-                reply_content: "这轮会先把治理入口抽象出来",
-                pressure: PressureLevel::Normal,
-                memory_profile: MemoryProfile::Embedded,
-                tool_calls: 1,
-                external_content_used: false,
-                now_secs: 88,
-            },
-            || false,
-        );
-
-        assert!(matches!(outcome.internal_memory_routing_result, Ok(None)));
-        assert!(matches!(
-            outcome.execution_state_result,
-            Ok(ExecutionStateRefreshOutcome::Updated)
-        ));
-        assert!(matches!(
-            outcome.self_model_result,
-            Ok(SelfModelRefreshOutcome::Skipped)
-        ));
-        assert!(matches!(
-            outcome.private_doc_result,
-            Ok(PrivateDocWorkspaceRefreshOutcome::Skipped)
-        ));
-        assert_eq!(outcome.private_garden_upstream_cleanup_result.unwrap(), 0);
-        assert!(matches!(
-            outcome.private_garden_result,
-            Ok(PrivateGardenGovernanceOutcome::Skipped)
-        ));
-    }
-
-    #[test]
-    fn maintenance_cleans_promoted_private_garden_docs_before_governance() {
+    fn maintenance_does_not_touch_private_garden_docs() {
         let session_store = StubSessionStore {
             recent: vec![
                 SessionMessage {
@@ -1802,8 +1191,6 @@ mod tests {
         let execution_state_store = StubExecutionStateStore::default();
         let memory_store = StubMemoryStore;
         let long_term_memory_store = StubLongTermMemoryStore;
-        let self_model_store = StubSelfModelStore::default();
-        let private_doc_store = StubPrivateDocStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
         let turn_ledger_store = StubTurnLedgerStore;
         let skill_storage = StubSkillStorage;
@@ -1824,9 +1211,6 @@ mod tests {
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
                 long_term_memory_store: &long_term_memory_store,
-                self_model_store: &self_model_store,
-                private_doc_store: &private_doc_store,
-                private_garden_store: &private_garden_store,
                 extraction_state_store: &extraction_state_store,
                 turn_ledger_store: &turn_ledger_store,
                 skill_storage: &skill_storage,
@@ -1849,15 +1233,18 @@ mod tests {
             || false,
         );
 
-        assert_eq!(outcome.private_garden_upstream_cleanup_result.unwrap(), 1);
+        assert!(matches!(
+            outcome.execution_state_result,
+            Ok(ExecutionStateRefreshOutcome::Updated)
+        ));
         assert!(private_garden_store
             .read("chat-1", "journal/promoted.md")
             .unwrap()
-            .is_none());
+            .is_some());
         assert!(private_garden_store
             .read("chat-1", "scratch/stale.md")
             .unwrap()
-            .is_none());
+            .is_some());
     }
 
     #[test]
@@ -1890,9 +1277,6 @@ mod tests {
         let execution_state_store = StubExecutionStateStore::default();
         let memory_store = StubMemoryStore;
         let long_term_memory_store = StubLongTermMemoryStore;
-        let self_model_store = StubSelfModelStore::default();
-        let private_doc_store = StubPrivateDocStore::default();
-        let private_garden_store = StubPrivateGardenStore::default();
         let turn_ledger_store = StubTurnLedgerStore;
         let skill_storage = StubSkillStorage;
         let mut http = DummyHttpClient;
@@ -1906,9 +1290,6 @@ mod tests {
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
                 long_term_memory_store: &long_term_memory_store,
-                self_model_store: &self_model_store,
-                private_doc_store: &private_doc_store,
-                private_garden_store: &private_garden_store,
                 extraction_state_store: &extraction_state_store,
                 turn_ledger_store: &turn_ledger_store,
                 skill_storage: &skill_storage,

@@ -944,6 +944,12 @@ fn simple_match_score(haystack: &str, needle: &str) -> usize {
         .count()
 }
 
+fn mental_privacy_garden_doc_limit() -> usize {
+    MENTAL_PRIVACY_REQUEST_TARGET_LIMIT
+        .max(MENTAL_PRIVACY_GARDEN_RENDER_LIMIT)
+        .max(1)
+}
+
 fn select_relevant_garden_docs(
     store: &dyn PrivateGardenStore,
     chat_id: &str,
@@ -1401,7 +1407,9 @@ pub fn run_mental_privacy_review(
     let self_continuity = ctx.self_continuity_store.get(subject_id)?;
     let inner_life = ctx.inner_life_store.get(subject_id)?;
     let private_workspace = ctx.private_doc_store.get(subject_id)?;
-    let private_garden_records = ctx.private_garden_store.list(input.chat_id, usize::MAX)?;
+    let private_garden_records = ctx
+        .private_garden_store
+        .list(input.chat_id, mental_privacy_garden_doc_limit())?;
     let known_targets = collect_private_targets(
         self_model.as_ref(),
         self_continuity.as_ref(),
@@ -1519,7 +1527,9 @@ pub fn run_mental_privacy_disclosure_adjudication(
     let self_continuity = ctx.self_continuity_store.get(subject_id)?;
     let inner_life = ctx.inner_life_store.get(subject_id)?;
     let private_workspace = ctx.private_doc_store.get(subject_id)?;
-    let private_garden_records = ctx.private_garden_store.list(input.chat_id, usize::MAX)?;
+    let private_garden_records = ctx
+        .private_garden_store
+        .list(input.chat_id, mental_privacy_garden_doc_limit())?;
     let mental_privacy_state = ctx.mental_privacy_store.get(&relationship_id)?;
     let known_targets = collect_private_targets(
         self_model.as_ref(),
