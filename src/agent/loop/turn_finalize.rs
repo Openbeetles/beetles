@@ -285,13 +285,13 @@ pub(super) fn finalize_lane_turn(
         .saturating_add(worker_latency.session_write_ms);
 
     if delivered
-        && super::enqueue_post_reply_maintenance_job(
+        && !super::enqueue_post_reply_maintenance_job(
             system_inbound_tx,
             &msg,
             &reply_content,
             worker_latency.tool_calls,
             external_content_used,
-        ) == false
+        )
     {
         log::debug!(
             "[agent_memory] post-reply maintenance job skipped chat_id={}",

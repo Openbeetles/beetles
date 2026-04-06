@@ -944,9 +944,11 @@ fn build_task_learning_factual_draft(
         confidence: Some(LongTermMemoryConfidence::High),
         freshness: Some(LongTermMemoryFreshness::Dynamic),
         stale_hint: None,
-        supporting_citations: (!archive_citation.trim().is_empty())
-            .then(|| vec![archive_citation.to_string()])
-            .unwrap_or_default(),
+        supporting_citations: if archive_citation.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![archive_citation.to_string()]
+        },
         evidence_count: Some(record.source_artifact_ids.len().max(1) as u32),
         observed_at: Some(record.observed_at),
         last_confirmed_at: Some(record.observed_at),
@@ -964,9 +966,11 @@ fn build_runtime_skill_write(
         title: record.topic.replace('_', " "),
         summary: record.summary.clone(),
         content: record.content.clone(),
-        citations: (!archive_citation.trim().is_empty())
-            .then(|| vec![archive_citation.to_string()])
-            .unwrap_or_default(),
+        citations: if archive_citation.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![archive_citation.to_string()]
+        },
         source_chat_id: Some(record.source_chat_id.clone()),
         observed_at: record.observed_at,
     }

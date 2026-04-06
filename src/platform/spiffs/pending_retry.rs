@@ -121,7 +121,7 @@ impl PendingRetryStore for SpiffsPendingRetryStore {
             return Ok(None);
         };
         if replay_count >= PENDING_RETRY_MAX_REPLAY {
-            let _ = write_file(&full_path(), b"{}");
+            let _ = write_file(full_path(), b"{}");
             cache.entry = None;
             log::info!(
                 "[spiffs_pending_retry] replay_count {} >= {}, cleared",

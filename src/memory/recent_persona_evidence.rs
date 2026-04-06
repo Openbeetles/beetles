@@ -147,7 +147,7 @@ pub fn derive_recent_persona_evidence(
             .as_ref()?
             .disclosure
             .as_ref()
-            .map(|disclosure| disclosure.share_action.as_label())
+            .map(|disclosure| disclosure.share_action.label())
     }));
     let pressure_pattern = summarize_pressure_pattern(&relevant);
     let tool_usage_pattern = summarize_tool_usage_pattern(&relevant);
@@ -259,11 +259,11 @@ pub fn render_recent_persona_evidence_block(
 }
 
 trait ShareActionLabel {
-    fn as_label(self) -> &'static str;
+    fn label(self) -> &'static str;
 }
 
 impl ShareActionLabel for super::MentalPrivacyShareAction {
-    fn as_label(self) -> &'static str {
+    fn label(self) -> &'static str {
         match self {
             super::MentalPrivacyShareAction::AllowOriginal => "allow_original",
             super::MentalPrivacyShareAction::AllowRaw => "allow_raw",
@@ -355,7 +355,7 @@ fn collect_volatility_flags(ledgers: &[&TurnLedger]) -> Vec<String> {
         ledgers
             .iter()
             .filter_map(|ledger| ledger.persona.as_ref()?.disclosure.as_ref())
-            .map(|disclosure| disclosure.share_action.as_label().to_string()),
+            .map(|disclosure| disclosure.share_action.label().to_string()),
     ) > 1
     {
         flags.push("boundary_action_mixed".to_string());

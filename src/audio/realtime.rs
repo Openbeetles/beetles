@@ -379,7 +379,7 @@ struct RealtimeUploadEncoder {
 impl RealtimeUploadEncoder {
     fn new() -> Self {
         let pcm_capacity = AUDIO_CAPTURE_FRAME_SAMPLES * 2;
-        let b64_capacity = ((pcm_capacity + 2) / 3) * 4;
+        let b64_capacity = pcm_capacity.div_ceil(3) * 4;
         Self {
             pcm_bytes: Vec::with_capacity(pcm_capacity),
             qwen_pcm16: Vec::with_capacity(AUDIO_CAPTURE_FRAME_SAMPLES),
@@ -1510,7 +1510,7 @@ fn decode_pcm16_delta(delta_b64: &str) -> Result<Vec<i16>> {
 }
 
 fn decode_pcm16_bytes(bytes: &[u8]) -> Result<Vec<i16>> {
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         return Err(Error::config(
             "realtime_voice_parse",
             "pcm16 payload length must be even",
@@ -1655,8 +1655,7 @@ fn should_trigger_playback_interrupt(
 
     let threshold = (audio_cfg.vad.threshold * REALTIME_INTERRUPT_THRESHOLD_MULTIPLIER)
         .max(state.interrupt_baseline_peak + REALTIME_INTERRUPT_THRESHOLD_MARGIN)
-        .max(REALTIME_INTERRUPT_THRESHOLD_MIN)
-        .min(0.95);
+        .clamp(REALTIME_INTERRUPT_THRESHOLD_MIN, 0.95);
     if !reference_pcm.is_empty() && raw_mic_rms >= threshold && rms < threshold {
         crate::metrics::record_voice_interrupt_reference_suppressed();
     }

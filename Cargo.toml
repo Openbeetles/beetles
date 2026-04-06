@@ -37,6 +37,13 @@ unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(esp_idf_version_at_least_6_0_0)',
 ] }
 
+[lints.clippy]
+# The codebase intentionally favors explicit dependency/context passing in orchestration layers.
+# Treat these as policy-backed style decisions rather than CI blockers.
+too_many_arguments = "allow"
+type_complexity = "allow"
+question_mark = "allow"
+
 [build-dependencies]
 # `espidf` feature exposes `embuild::espidf` used when building for ESP targets.
 embuild = { version = "0.33.1", features = ["espidf"] }

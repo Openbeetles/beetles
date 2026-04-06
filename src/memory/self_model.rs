@@ -1000,7 +1000,6 @@ mod tests {
                 relational_ethic: "warmth without self-erasure".to_string(),
                 self_preservation_frame: "protect the inner room to stay coherent".to_string(),
                 updated_at: 1,
-                ..SelfModel::default()
             },
             512,
         )

@@ -153,6 +153,7 @@ fn relaxed_selector_reason(hit: &ArchiveSearchHit) -> String {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub(crate) fn select_archive_hits_for_prompt(
     hits: Vec<ArchiveSearchHit>,
     profile: MemoryProfile,
@@ -376,8 +377,6 @@ mod tests {
                 .and_then(|trace| trace.selector_reason.as_deref())
                 .is_some()
         }));
-        assert!(
-            selected.report.deferred_by_quota + selected.report.skipped_by_similarity >= 1
-        );
+        assert!(selected.report.deferred_by_quota + selected.report.skipped_by_similarity >= 1);
     }
 }

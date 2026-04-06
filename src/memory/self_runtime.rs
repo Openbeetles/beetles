@@ -443,7 +443,7 @@ fn refresh_world_and_autonomy(
     crate::platform::task_wdt::feed_current_task();
     let refreshed_world_sense = ctx
         .world_sense_store
-        .get(&relationship_id)
+        .get(relationship_id)
         .ok()
         .flatten()
         .or(state.world_sense.clone());
@@ -1090,7 +1090,7 @@ fn execute_self_runtime_actions(
     };
     refreshed_mental_privacy = ctx
         .mental_privacy_store
-        .get(&relationship_id)
+        .get(relationship_id)
         .ok()
         .flatten()
         .or(refreshed_mental_privacy);
@@ -2742,8 +2742,8 @@ fn default_factual_refresh_intent(
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::llm::parse_self_runtime_decision;
+    use super::*;
     use serde_json::json;
 
     fn sample_self_state() -> SelfState {

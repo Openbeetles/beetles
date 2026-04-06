@@ -149,8 +149,8 @@ pub fn inspect_memory_hygiene(
     let daily_aggregate_candidates =
         collect_daily_aggregate_groups(ctx.memory_store, effective_now_secs)
             .unwrap_or_default()
-            .into_iter()
-            .map(|(month_key, _)| format!("{month_key}-archive.md"))
+            .into_keys()
+            .map(|month_key| format!("{month_key}-archive.md"))
             .collect::<Vec<_>>();
     let transcript_rollup_candidates =
         collect_transcript_rollup_candidates(ctx.session_store, ctx.session_summary_store)

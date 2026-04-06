@@ -281,6 +281,7 @@ fn cmd_baseline(_ctx: &CliContext) -> String {
 }
 
 fn cmd_ops_status(ctx: &CliContext) -> String {
+    let board_id = crate::platform::runtime_board::resolved_board_id();
     let inbound_depth = ctx
         .inbound_depth
         .as_ref()
@@ -303,7 +304,7 @@ fn cmd_ops_status(ctx: &CliContext) -> String {
             inbound_depth,
             outbound_depth,
             version: env!("CARGO_PKG_VERSION"),
-            board_id: crate::platform::runtime_board::resolved_board_id(),
+            board_id: &board_id,
             llm_stream_enabled: ctx.llm_stream_enabled,
         },
     ) {

@@ -3861,8 +3861,7 @@ mod tests {
             task_learning_store: Arc::new(StubTaskLearningStore),
             pending_retry: Arc::new(StubPendingRetryStore),
             channel_capability_registry: Arc::new(crate::build_channel_capability_registry(
-                &config,
-                false,
+                &config, false,
             )),
             strategy: AgentRunStrategy::Embedded,
             llm_stream: false,

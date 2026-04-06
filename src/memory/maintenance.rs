@@ -595,6 +595,7 @@ mod tests {
     }
 
     #[derive(Default)]
+    #[allow(dead_code)]
     struct StubSelfModelStore {
         state: Mutex<Option<SelfModel>>,
     }
@@ -616,6 +617,7 @@ mod tests {
     }
 
     #[derive(Default)]
+    #[allow(dead_code)]
     struct StubPrivateDocStore {
         state: Mutex<Option<PrivateDocWorkspace>>,
     }

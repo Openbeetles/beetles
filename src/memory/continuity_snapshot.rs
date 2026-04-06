@@ -216,12 +216,11 @@ pub fn import_continuity_snapshot(
     mode: ContinuitySnapshotImportMode,
 ) -> Result<ContinuitySnapshotImportOutcome> {
     let manifest = snapshot_manifest(snapshot);
-    let target_subject_id = snapshot
-        .subject_id
-        .trim()
-        .is_empty()
-        .then_some(board_subject_scope_id())
-        .unwrap_or(snapshot.subject_id.trim());
+    let target_subject_id = if snapshot.subject_id.trim().is_empty() {
+        board_subject_scope_id()
+    } else {
+        snapshot.subject_id.trim()
+    };
     let selected = select_import_long_term_memory(snapshot, target_chat_id, mode);
     let drafts = selected
         .iter()

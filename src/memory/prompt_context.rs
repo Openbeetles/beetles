@@ -212,7 +212,7 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
             .task_artifact_store
             .list_for_run(&record.run.run_id, 4)
             .unwrap_or_default();
-        render_task_workspace_block(&record, &artifacts, 600)
+        render_task_workspace_block(record, &artifacts, 600)
     });
     let task_recall_text = active_task_run.as_ref().and_then(|record| {
         build_task_recall_bundle(
@@ -412,42 +412,42 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
     let long_term_memory_text = if !governed_memory_enabled {
         None
     } else {
-            let grounding_start = recent_messages
-                .len()
-                .saturating_sub(recall_policy.recent_grounding_message_count);
-            let capability = memory_capability_profile(params.profile);
-            if capability.prompt_exact_lookup_enabled {
-                parse_explicit_long_term_slot_query(params.user_query)
-                    .and_then(|slot| {
-                        render_exact_long_term_memory_block(
-                            params.long_term_memory_store,
-                            &slot,
-                            params.system_max_len,
-                        )
-                    })
-                    .or_else(|| {
-                        recall_long_term_memory_block(
-                            params.long_term_memory_store,
-                            params.chat_id,
-                            params.user_query,
-                            summary_text.as_deref(),
-                            &recent_messages[grounding_start..],
-                            params.system_max_len,
-                            params.profile,
-                        )
-                    })
-            } else {
-                recall_long_term_memory_block(
-                    params.long_term_memory_store,
-                    params.chat_id,
-                    params.user_query,
-                    summary_text.as_deref(),
-                    &recent_messages[grounding_start..],
-                    params.system_max_len,
-                    params.profile,
-                )
-            }
-        };
+        let grounding_start = recent_messages
+            .len()
+            .saturating_sub(recall_policy.recent_grounding_message_count);
+        let capability = memory_capability_profile(params.profile);
+        if capability.prompt_exact_lookup_enabled {
+            parse_explicit_long_term_slot_query(params.user_query)
+                .and_then(|slot| {
+                    render_exact_long_term_memory_block(
+                        params.long_term_memory_store,
+                        &slot,
+                        params.system_max_len,
+                    )
+                })
+                .or_else(|| {
+                    recall_long_term_memory_block(
+                        params.long_term_memory_store,
+                        params.chat_id,
+                        params.user_query,
+                        summary_text.as_deref(),
+                        &recent_messages[grounding_start..],
+                        params.system_max_len,
+                        params.profile,
+                    )
+                })
+        } else {
+            recall_long_term_memory_block(
+                params.long_term_memory_store,
+                params.chat_id,
+                params.user_query,
+                summary_text.as_deref(),
+                &recent_messages[grounding_start..],
+                params.system_max_len,
+                params.profile,
+            )
+        }
+    };
     let archive_evidence_text = if !governed_memory_enabled {
         None
     } else {
@@ -549,15 +549,17 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         };
         combined.trim().to_string()
     };
-    let runtime_skill_text = governed_memory_enabled.then(|| {
-        crate::skills::build_runtime_skill_recall_block(
-            params.skill_storage,
-            &runtime_skill_query,
-            Some(params.chat_id),
-            params.now_secs,
-            params.system_max_len.min(420),
-        )
-    }).flatten();
+    let runtime_skill_text = governed_memory_enabled
+        .then(|| {
+            crate::skills::build_runtime_skill_recall_block(
+                params.skill_storage,
+                &runtime_skill_query,
+                Some(params.chat_id),
+                params.now_secs,
+                params.system_max_len.min(420),
+            )
+        })
+        .flatten();
     let runtime_skill_recall_report = if governed_memory_enabled {
         super::inspect_runtime_skill_recall(
             params.skill_storage,

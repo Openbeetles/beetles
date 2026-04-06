@@ -53,6 +53,124 @@ const MAX_BUZZER_DURATION_MS: u64 = 3000;
 /// buzzer 短鸣默认时长（ms）。
 const BUZZER_BEEP_MS: u64 = 100;
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+struct BuzzerOffCommand {
+    pin: i32,
+    deadline: Instant,
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+static BUZZER_OFF_WORKER_TX: Mutex<Option<mpsc::Sender<BuzzerOffCommand>>> = Mutex::new(None);
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn spawn_buzzer_off_worker() -> Result<mpsc::Sender<BuzzerOffCommand>> {
+    let (tx, rx) = mpsc::channel::<BuzzerOffCommand>();
+    crate::util::spawn_guarded_with_profile_handle(
+        "buzzer_worker",
+        3072,
+        Some(crate::util::SpawnCore::Core1),
+        crate::util::HttpThreadRole::Background,
+        move || run_buzzer_off_worker(rx),
+    )
+    .map_err(|e| Error::Other {
+        source: Box::new(e),
+        stage: "buzzer",
+    })?;
+    Ok(tx)
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn ensure_buzzer_off_worker() -> Result<mpsc::Sender<BuzzerOffCommand>> {
+    let mut guard = BUZZER_OFF_WORKER_TX
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(tx) = guard.as_ref() {
+        return Ok(tx.clone());
+    }
+    let tx = spawn_buzzer_off_worker()?;
+    *guard = Some(tx.clone());
+    Ok(tx)
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn send_buzzer_off_command(pin: i32, duration_ms: u64) -> Result<()> {
+    let deadline = Instant::now() + std::time::Duration::from_millis(duration_ms);
+    let cmd = BuzzerOffCommand { pin, deadline };
+    let tx = ensure_buzzer_off_worker()?;
+    match tx.send(cmd) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            let mut guard = BUZZER_OFF_WORKER_TX
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            *guard = None;
+            drop(guard);
+            let retry_tx = ensure_buzzer_off_worker()?;
+            retry_tx
+                .send(BuzzerOffCommand { pin, deadline })
+                .map_err(|e| Error::Other {
+                    source: Box::new(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        format!("buzzer worker channel closed: {}", e),
+                    )),
+                    stage: "buzzer",
+                })
+        }
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn run_buzzer_off_worker(rx: mpsc::Receiver<BuzzerOffCommand>) {
+    let mut deadlines = HashMap::<i32, Instant>::new();
+    let mut receiver_open = true;
+
+    loop {
+        if deadlines.is_empty() {
+            if !receiver_open {
+                break;
+            }
+            match rx.recv() {
+                Ok(cmd) => {
+                    deadlines.insert(cmd.pin, cmd.deadline);
+                }
+                Err(_) => break,
+            }
+            continue;
+        }
+
+        let now = Instant::now();
+        let next_deadline = deadlines.values().min().copied().unwrap_or(now);
+        if next_deadline > now {
+            let wait = next_deadline.saturating_duration_since(now);
+            if receiver_open {
+                match rx.recv_timeout(wait) {
+                    Ok(cmd) => {
+                        deadlines.insert(cmd.pin, cmd.deadline);
+                        continue;
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        receiver_open = false;
+                    }
+                }
+            } else {
+                std::thread::sleep(wait);
+            }
+        }
+
+        let now = Instant::now();
+        deadlines.retain(|pin, deadline| {
+            if *deadline > now {
+                return true;
+            }
+            unsafe {
+                esp_idf_svc::sys::gpio_set_level(*pin, 0);
+            }
+            false
+        });
+    }
+}
+
 // ── ESP32 target: real drivers ──
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -404,24 +522,7 @@ pub fn drive_buzzer(pins: &PinConfig, params: &Value) -> Result<String> {
         gpio_set_level(pin, 1);
     }
 
-    // Non-blocking: spawn a thread to turn off after duration
-    let dur = std::time::Duration::from_millis(duration_ms);
-    crate::util::spawn_guarded_with_profile_handle(
-        "buzzer_off",
-        2048,
-        Some(crate::util::SpawnCore::Core1),
-        crate::util::HttpThreadRole::Background,
-        move || {
-            std::thread::sleep(dur);
-            unsafe {
-                esp_idf_svc::sys::gpio_set_level(pin, 0);
-            }
-        },
-    )
-    .map_err(|e| Error::Other {
-        source: Box::new(e),
-        stage: "buzzer",
-    })?;
+    send_buzzer_off_command(pin, duration_ms)?;
 
     if clamped {
         Ok(format!(

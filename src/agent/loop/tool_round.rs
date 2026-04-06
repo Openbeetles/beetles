@@ -116,7 +116,7 @@ fn execute_tool_call(
     match crate::orchestrator::can_execute_tool_pub(&tc.name, needs_net) {
         ToolDecision::Deny { reason } => {
             log::info!("[agent_tool] {} denied: {}", tc.name, reason);
-            if let Err(error) = registry.record_resource_denial(&permit, &reason) {
+            if let Err(error) = registry.record_resource_denial(&permit, reason) {
                 log::warn!(
                     "[agent_tool] {} failed to persist resource denial audit: {}",
                     tc.name,

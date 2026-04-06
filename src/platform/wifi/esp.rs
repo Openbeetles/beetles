@@ -38,6 +38,10 @@ const STA_SOFTAP_DISABLE_GRACE_MS: u64 = 2_500;
 const STA_LINK_MISS_THRESHOLD: u8 = 2;
 /// 当前启动是否期望 STA 出站网络；纯 SoftAP 配网模式下为 false，避免全局等待卡死。
 static WIFI_STA_EXPECTED: AtomicBool = AtomicBool::new(false);
+/// SoftAP 已完成启动并配置好本地 IP；用于区分“主线程没等到 ready 信号”和“WiFi 根本没起来”。
+static WIFI_SOFTAP_READY: AtomicBool = AtomicBool::new(false);
+/// connect() 已经把启动期等待窗口耗尽；避免 main 启动链在同一轮里再额外等待一次。
+static WIFI_STARTUP_WAIT_EXHAUSTED: AtomicBool = AtomicBool::new(false);
 /// STA 刚拿到 IP 后额外等待一小段时间，再允许外联 DNS/TLS，减少启动瞬间假失败。
 const STA_OUTBOUND_READY_GRACE_SECS: u64 = 3;
 
@@ -68,6 +72,9 @@ pub fn wifi_sta_ip() -> Option<String> {
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub fn wait_for_network_ready() {
     if !WIFI_STA_EXPECTED.load(Ordering::Relaxed) {
+        return;
+    }
+    if WIFI_STARTUP_WAIT_EXHAUSTED.swap(false, Ordering::Relaxed) {
         return;
     }
     crate::platform::task_wdt::register_current_task_to_task_wdt();
@@ -152,6 +159,8 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
     let pass = config.wifi_pass.clone();
     let has_sta = !ssid.trim().is_empty();
     WIFI_STA_EXPECTED.store(has_sta, Ordering::Relaxed);
+    WIFI_SOFTAP_READY.store(false, Ordering::Relaxed);
+    WIFI_STARTUP_WAIT_EXHAUSTED.store(false, Ordering::Relaxed);
     if !has_sta {
         clear_sta_ip_cache();
     }
@@ -189,18 +198,31 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
         }
         Ok(Err(e)) => Err(e),
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            log::warn!(
-                "[{}] WiFi main thread wait exhausted ({}s) before first ready signal; AP may still be up in worker",
-                TAG,
-                WIFI_ESP_CONNECT_MAIN_WAIT_SECS
-            );
-            Err(Error::config(
-                "wifi_connect",
-                format!(
-                    "main thread wait {}s for WiFi ready signal",
+            if WIFI_SOFTAP_READY.load(Ordering::Relaxed) {
+                WIFI_STARTUP_WAIT_EXHAUSTED.store(true, Ordering::Relaxed);
+                log::warn!(
+                    "[{}] WiFi ready signal missed startup deadline ({}s), but SoftAP is already up; continuing with provisioning path",
+                    TAG,
                     WIFI_ESP_CONNECT_MAIN_WAIT_SECS
-                ),
-            ))
+                );
+                Ok(Some(WifiScanHandle {
+                    req_tx: scan_req_tx,
+                    resp_rx: Arc::new(Mutex::new(scan_resp_rx)),
+                }))
+            } else {
+                log::warn!(
+                    "[{}] WiFi main thread wait exhausted ({}s) before first ready signal and SoftAP is not ready",
+                    TAG,
+                    WIFI_ESP_CONNECT_MAIN_WAIT_SECS
+                );
+                Err(Error::config(
+                    "wifi_connect",
+                    format!(
+                        "main thread wait {}s for WiFi ready signal",
+                        WIFI_ESP_CONNECT_MAIN_WAIT_SECS
+                    ),
+                ))
+            }
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => Err(Error::Other {
             source: Box::new(std::io::Error::new(
@@ -554,6 +576,7 @@ fn do_connect(
         if let Err(e) = crate::platform::softap_ip::set_softap_ip() {
             log::warn!("[{}] SoftAP IP set failed: {}", TAG, e);
         }
+        WIFI_SOFTAP_READY.store(true, Ordering::Relaxed);
         log::info!("[{}] SoftAP started (SSID: {})", TAG, SOFTAP_SSID);
         let _ = result_tx.send(Ok(()));
         run_scan_loop(&mut wifi, &scan_req_rx, &scan_resp_tx, false, false, None);
@@ -628,6 +651,7 @@ fn do_connect(
     if let Err(e) = crate::platform::softap_ip::set_softap_ip() {
         log::warn!("[{}] SoftAP IP set failed: {}", TAG, e);
     }
+    WIFI_SOFTAP_READY.store(true, Ordering::Relaxed);
     log::info!(
         "[{}] SoftAP started (SSID: {}), connecting STA...",
         TAG,

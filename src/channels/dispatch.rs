@@ -268,17 +268,13 @@ pub fn run_dispatch(outbound_rx: OutboundRx, sinks: Arc<ChannelSinks>) {
         }
 
         // Replay buffered messages whose channel is out of cooldown
-        replay_cooldown_buffer_with(
-            &mut cooldown_buffer,
-            |channel| is_channel_in_cooldown(channel),
-            |buffered| {
-                if outbound_blocked(buffered) {
-                    return false;
-                }
-                let buffered_content = truncate_content_to_max(&buffered.content, MAX_CONTENT_LEN);
-                dispatch_via_sink(TAG, sinks.as_ref(), buffered, &buffered_content)
-            },
-        );
+        replay_cooldown_buffer_with(&mut cooldown_buffer, is_channel_in_cooldown, |buffered| {
+            if outbound_blocked(buffered) {
+                return false;
+            }
+            let buffered_content = truncate_content_to_max(&buffered.content, MAX_CONTENT_LEN);
+            dispatch_via_sink(TAG, sinks.as_ref(), buffered, &buffered_content)
+        });
 
         if outbound_blocked(&msg) {
             log::info!(

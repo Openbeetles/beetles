@@ -52,6 +52,7 @@ pub struct InternalMemoryRoutingDecision {
     pub private_garden_cleanup_paths: Vec<String>,
 }
 
+#[allow(dead_code)]
 pub(crate) fn should_route_internal_memory_turn(
     input: InternalMemoryRoutingInput<'_>,
     profile: MemoryProfile,
@@ -81,6 +82,7 @@ pub(crate) fn should_route_internal_memory_turn(
         || reply.contains('\n')
 }
 
+#[allow(dead_code)]
 pub(crate) fn run_internal_memory_routing_with_state(
     http: &mut dyn LlmHttpClient,
     llm: &(dyn LlmClient + Send + Sync),
@@ -135,6 +137,7 @@ pub(crate) fn run_internal_memory_routing_with_state(
     ))
 }
 
+#[allow(dead_code)]
 fn internal_memory_recent_window(recent: &[SessionMessage], limit: usize) -> &[SessionMessage] {
     let start = recent.len().saturating_sub(limit);
     &recent[start..]

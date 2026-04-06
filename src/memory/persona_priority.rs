@@ -403,7 +403,7 @@ fn persistent_initiative_posture(runtime: PersonaPriorityRuntimeState<'_>) -> St
                 choose_first_non_empty(&[Some(evidence.repeated_initiative_posture.as_str())])
             })
         })
-        .unwrap_or_else(|| match runtime.pressure {
+        .unwrap_or(match runtime.pressure {
             PressureLevel::Normal => "",
             PressureLevel::Cautious => "answer directly with restraint",
             PressureLevel::Critical => "answer directly and stop early",

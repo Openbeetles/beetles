@@ -602,10 +602,11 @@ pub fn inspect_task_recall(
     report.miss_reason = hits
         .is_empty()
         .then(|| "no_task_learning_candidates".to_string());
-    report.selection_note = hits
-        .is_empty()
-        .then(|| None)
-        .unwrap_or_else(|| Some("active_task_recall_bundle".to_string()));
+    report.selection_note = if hits.is_empty() {
+        None
+    } else {
+        Some("active_task_recall_bundle".to_string())
+    };
     report.candidates = hits
         .into_iter()
         .map(|hit| {

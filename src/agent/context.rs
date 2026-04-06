@@ -234,9 +234,11 @@ fn reserve_priority_memory_budget(
     )
     .min(remaining / 3);
     let remaining = remaining.saturating_sub(governed_memory_evidence_reserve);
-    let background_governance_reserve =
-        projection_section_len(BACKGROUND_GOVERNANCE_SECTION, inputs.background_governance_text)
-            .min(remaining / 4);
+    let background_governance_reserve = projection_section_len(
+        BACKGROUND_GOVERNANCE_SECTION,
+        inputs.background_governance_text,
+    )
+    .min(remaining / 4);
     reply_priority_reserve
         .saturating_add(constitutional_stack_reserve)
         .saturating_add(active_task_context_reserve)
@@ -441,8 +443,10 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     );
     let reserved_without_reply =
         priority_memory_reserve.saturating_sub(REPLY_PRIORITY_MINI_CONSTRAINT.len());
-    let full_reply_priority_safe =
-        REPLY_PRIORITY_CONSTRAINT.len().saturating_add(reserved_without_reply) <= base_max;
+    let full_reply_priority_safe = REPLY_PRIORITY_CONSTRAINT
+        .len()
+        .saturating_add(reserved_without_reply)
+        <= base_max;
     let base_prompt_budget = base_max.saturating_sub(priority_memory_reserve);
     let mut system = String::with_capacity(p.system_max_len);
     let mut section_scratch = String::with_capacity(96);

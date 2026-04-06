@@ -116,7 +116,7 @@ impl WssConnection for LinuxWssConnection {
 
     fn send_text(&mut self, text: &str) -> Result<()> {
         self.ws
-            .send(Message::Text(text.to_string().into()))
+            .send(Message::Text(text.to_string()))
             .map_err(|e| map_tungstenite("wss_linux_send", e))?;
         Ok(())
     }

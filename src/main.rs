@@ -2,6 +2,8 @@
 //! Firmware version is embedded for OTA and ops.
 //! Startup order: NVS → SPIFFS → config → WiFi → memory/session stores → MessageBus → self-check → cron/heartbeat/sinks/dispatch/CLI → agent_loop.
 //! ESP32: no graceful shutdown; process runs until power off.
+#![allow(clippy::items_after_test_module)]
+
 use beetle::bus::IngressKind;
 use beetle::channels::connect_wss;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
@@ -327,7 +329,6 @@ fn spawn_voice_session_if_ready(
         let error = beetle::Error::io("voice_session_spawn", error);
         log::error!("[{}] voice_session spawn failed: {}", TAG, error);
         beetle::state::set_last_error(&error);
-        return;
     }
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     if let Some(model_name) = wake_model_name.as_deref() {
@@ -1318,7 +1319,9 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     // bg_timer: merged cron + heartbeat + remind into one thread (saves ~20KB SRAM).
 
     // 出站前等待 STA + 编排器初始化：须在 `create_http_client` 成功判定之前，以便 Linux 在 HTTP 桩返回 Err 时仍能 init orchestrator。
-    beetle::platform::wait_for_network_ready();
+    if wifi_init_ok {
+        beetle::platform::wait_for_network_ready();
+    }
     beetle::orchestrator::init();
 
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
