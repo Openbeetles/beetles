@@ -5,9 +5,9 @@ use crate::util::truncate_content_to_max;
 use std::fmt::Write as _;
 
 use super::{
-    MemoryProfile, PrivateDocWorkspace, PrivateGardenDocRecord, SelfModel,
     build_private_garden_usage, build_self_state, memory_policy,
-    summarize_private_garden_directories,
+    summarize_private_garden_directories, MemoryProfile, PrivateDocWorkspace,
+    PrivateGardenDocRecord, SelfModel,
 };
 
 const TOPOLOGY_FIELD_PREVIEW_CHARS: usize = 96;

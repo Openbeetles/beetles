@@ -852,16 +852,12 @@ mod tests {
         assert!(digest.observation_active);
         assert_eq!(digest.recent_correction_count, 1);
         assert_eq!(digest.contradiction_count, 1);
-        assert!(
-            digest
-                .review_reasons
-                .contains(&"correction_pressure".to_string())
-        );
-        assert!(
-            digest
-                .review_reasons
-                .contains(&"low_constitutional_stability".to_string())
-        );
+        assert!(digest
+            .review_reasons
+            .contains(&"correction_pressure".to_string()));
+        assert!(digest
+            .review_reasons
+            .contains(&"low_constitutional_stability".to_string()));
     }
 
     #[test]

@@ -209,6 +209,154 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
+/// 检测常见 CJK 统一表意文字范围，供多语言 retrieval 归一化与窗口切词复用。
+#[inline]
+pub fn is_cjk(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x4E00..=0x9FFF
+            | 0x3400..=0x4DBF
+            | 0x20000..=0x2A6DF
+            | 0x2A700..=0x2B73F
+            | 0x2B740..=0x2B81F
+            | 0x2B820..=0x2CEAF
+            | 0xF900..=0xFAFF
+            | 0x2F800..=0x2FA1F
+    )
+}
+
+/// 统一 retrieval 文本归一化：保留字母数字与 CJK，其他字符折叠为空格，再压缩空白。
+pub fn normalize_retrieval_text(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut prev_space = false;
+    for ch in input.chars() {
+        if ch.is_alphanumeric() || is_cjk(ch) {
+            for lower in ch.to_lowercase() {
+                out.push(lower);
+            }
+            prev_space = false;
+        } else if !prev_space {
+            out.push(' ');
+            prev_space = true;
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn push_unique_retrieval_term(
+    out: &mut Vec<String>,
+    term: &str,
+    min_term_chars: usize,
+    max_terms: usize,
+) {
+    if out.len() >= max_terms {
+        return;
+    }
+    let trimmed = term.trim();
+    if trimmed.is_empty()
+        || trimmed.chars().count() < min_term_chars
+        || out.iter().any(|existing| existing == trimmed)
+    {
+        return;
+    }
+    out.push(trimmed.to_string());
+}
+
+/// 统一 retrieval query 切词：支持 ASCII term 去重与 CJK 2/3-gram 窗口。
+pub fn collect_retrieval_terms(
+    query: &str,
+    min_term_chars: usize,
+    max_terms: usize,
+    cjk_windows: &[usize],
+) -> Vec<String> {
+    let normalized = normalize_retrieval_text(query);
+    if normalized.is_empty() || max_terms == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut current_has_cjk = false;
+    let flush_run = |out: &mut Vec<String>, run: &mut String, has_cjk: &mut bool| {
+        if run.is_empty() {
+            return;
+        }
+        let term = run.clone();
+        if *has_cjk {
+            push_unique_retrieval_term(out, &term, min_term_chars, max_terms);
+            let chars: Vec<char> = term.chars().collect();
+            for window in cjk_windows {
+                if chars.len() < *window || out.len() >= max_terms {
+                    continue;
+                }
+                for slice in chars.windows(*window) {
+                    let candidate: String = slice.iter().collect();
+                    push_unique_retrieval_term(out, &candidate, min_term_chars, max_terms);
+                    if out.len() >= max_terms {
+                        break;
+                    }
+                }
+            }
+        } else if term.chars().count() >= min_term_chars {
+            push_unique_retrieval_term(out, &term, min_term_chars, max_terms);
+        }
+        run.clear();
+        *has_cjk = false;
+    };
+
+    for ch in normalized.chars() {
+        if ch.is_ascii_alphanumeric() {
+            current.push(ch);
+        } else if is_cjk(ch) {
+            current.push(ch);
+            current_has_cjk = true;
+        } else {
+            flush_run(&mut out, &mut current, &mut current_has_cjk);
+            if out.len() >= max_terms {
+                break;
+            }
+        }
+    }
+    flush_run(&mut out, &mut current, &mut current_has_cjk);
+    if out.is_empty() {
+        push_unique_retrieval_term(&mut out, &normalized, min_term_chars, max_terms);
+    }
+    out
+}
+
+fn retrieval_trigrams(value: &str) -> Vec<String> {
+    let compact: Vec<char> = value.chars().filter(|ch| !ch.is_whitespace()).collect();
+    if compact.is_empty() {
+        return Vec::new();
+    }
+    if compact.len() < 3 {
+        return vec![compact.iter().collect()];
+    }
+    let mut grams = Vec::new();
+    for slice in compact.windows(3) {
+        let gram: String = slice.iter().collect();
+        if !grams.iter().any(|existing| existing == &gram) {
+            grams.push(gram);
+        }
+    }
+    grams
+}
+
+/// 统一 semantic-lite 重叠分：基于 char trigram overlap，适合 Linux/ESP 共享合同。
+pub fn trigram_overlap_score(left: &str, right: &str, max_score: u32) -> u32 {
+    let left = retrieval_trigrams(left);
+    let right = retrieval_trigrams(right);
+    if left.is_empty() || right.is_empty() || max_score == 0 {
+        return 0;
+    }
+    let overlap = left
+        .iter()
+        .filter(|gram| right.iter().any(|candidate| candidate == *gram))
+        .count();
+    ((overlap as f32 / left.len().max(right.len()) as f32) * max_score as f32)
+        .round()
+        .max(0.0) as u32
+}
+
 // ---------- 时间/日期（与 cron、remind_at、get_time 共用） ----------
 
 /// 闰年判定。
@@ -284,10 +432,18 @@ pub fn parse_iso8601(s: &str) -> Option<u64> {
     let s = s.trim_end_matches('Z');
     let s = if let Some(pos) = s.rfind('+') {
         // Ensure it's a timezone offset (after the T), not part of the date
-        if pos > 10 { &s[..pos] } else { s }
+        if pos > 10 {
+            &s[..pos]
+        } else {
+            s
+        }
     } else if let Some(pos) = s.rfind('-') {
         // Only treat as tz offset if after time part (pos > 16 means after HH:MM:SS)
-        if pos > 16 { &s[..pos] } else { s }
+        if pos > 16 {
+            &s[..pos]
+        } else {
+            s
+        }
     } else {
         s
     };
@@ -521,7 +677,11 @@ fn secret_prefix(s: &str) -> &str {
     for (idx, ch) in s.char_indices().take(4) {
         end = idx + ch.len_utf8();
     }
-    if end == 0 { s } else { &s[..end] }
+    if end == 0 {
+        s
+    } else {
+        &s[..end]
+    }
 }
 
 /// 常量时间比较，避免 token 时序侧信道。

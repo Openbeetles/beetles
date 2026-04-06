@@ -1,17 +1,20 @@
 //! Searchable archive sidecar over retained transcripts, daily notes, and turn logs.
 
 use crate::error::Result;
-use crate::util::truncate_content_to_max;
+use crate::util::{
+    collect_retrieval_terms, normalize_retrieval_text, trigram_overlap_score,
+    truncate_content_to_max,
+};
 #[cfg(target_os = "linux")]
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 #[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
 
 use super::{
-    MAX_SESSION_ENTRIES, MemoryStore, SessionStore, TurnLedger, TurnLedgerStore,
-    render_turn_persona_ledger_block,
+    render_turn_persona_ledger_block, MemoryStore, SessionStore, TurnLedger, TurnLedgerStore,
+    MAX_SESSION_ENTRIES,
 };
 
 pub const MAX_ARCHIVE_SEARCH_LIMIT: usize = 8;
@@ -792,10 +795,8 @@ fn archive_sqlite_rebuild(
     tx.execute(
         "INSERT INTO archive_meta(key, value) VALUES('signature', ?1)
          ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        params![
-            serde_json::to_string(signature)
-                .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?
-        ],
+        params![serde_json::to_string(signature)
+            .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?],
     )
     .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))?;
     tx.commit()
@@ -1222,20 +1223,11 @@ fn archive_fts_score(
 }
 
 fn archive_hybrid_score(candidate: &ArchiveSearchCandidate, query_text: &str) -> u32 {
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    {
-        let _ = candidate;
-        let _ = query_text;
-        0
+    let query = normalize_archive_match_text(query_text);
+    if query.is_empty() {
+        return 0;
     }
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    {
-        let query = normalize_archive_match_text(query_text);
-        if query.is_empty() {
-            return 0;
-        }
-        trigram_overlap_score(&query, &candidate.normalized_document)
-    }
+    trigram_overlap_score(&query, &candidate.normalized_document, 24)
 }
 
 struct ArchiveSearchCandidateInput {
@@ -1291,40 +1283,6 @@ fn archive_document_len(normalized_document: &str) -> usize {
         .split_whitespace()
         .count()
         .max(normalized_document.chars().count() / 4)
-}
-
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-fn trigram_overlap_score(left: &str, right: &str) -> u32 {
-    let left = archive_trigrams(left);
-    let right = archive_trigrams(right);
-    if left.is_empty() || right.is_empty() {
-        return 0;
-    }
-    let overlap = left
-        .iter()
-        .filter(|gram| right.iter().any(|candidate| candidate == *gram))
-        .count();
-    let ratio = overlap as f32 / left.len().max(right.len()) as f32;
-    (ratio * 24.0).round().max(0.0) as u32
-}
-
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-fn archive_trigrams(value: &str) -> Vec<String> {
-    let compact: Vec<char> = value.chars().filter(|ch| !ch.is_whitespace()).collect();
-    if compact.is_empty() {
-        return Vec::new();
-    }
-    if compact.len() < 3 {
-        return vec![compact.iter().collect()];
-    }
-    let mut grams = Vec::new();
-    for slice in compact.windows(3) {
-        let gram: String = slice.iter().collect();
-        if !grams.iter().any(|existing| existing == &gram) {
-            grams.push(gram);
-        }
-    }
-    grams
 }
 
 fn archive_source_preference_bonus(
@@ -1585,14 +1543,7 @@ fn archive_term_frequency(text: &str, term: &str) -> usize {
 }
 
 fn archive_search_backend_kind_fallback() -> ArchiveSearchBackendKind {
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    {
-        ArchiveSearchBackendKind::Lexical
-    }
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    {
-        ArchiveSearchBackendKind::IndexedHybrid
-    }
+    ArchiveSearchBackendKind::IndexedHybrid
 }
 
 fn is_zero_u32(value: &u32) -> bool {
@@ -1690,25 +1641,8 @@ pub(crate) fn collect_archive_match_terms(query: &str) -> Vec<String> {
     if normalized.is_empty() {
         return Vec::new();
     }
-    let mut terms = Vec::new();
-    for part in normalized.split_whitespace() {
-        push_archive_term(&mut terms, part);
-        if part.chars().all(is_cjk) {
-            let chars: Vec<char> = part.chars().collect();
-            for width in [2usize, 3usize] {
-                if chars.len() < width {
-                    continue;
-                }
-                for window in chars.windows(width) {
-                    let candidate: String = window.iter().collect();
-                    push_archive_term(&mut terms, &candidate);
-                }
-            }
-        }
-    }
-    if terms.is_empty() {
-        terms.push(normalized);
-    } else if normalized.split_whitespace().count() > 1 {
+    let mut terms = collect_retrieval_terms(&normalized, 2, 24, &[2, 3]);
+    if normalized.split_whitespace().count() > 1 {
         push_archive_term(&mut terms, &normalized);
     }
     terms
@@ -1723,20 +1657,7 @@ fn push_archive_term(terms: &mut Vec<String>, term: &str) {
 }
 
 pub(crate) fn normalize_archive_match_text(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut prev_space = false;
-    for ch in input.chars() {
-        if ch.is_alphanumeric() || is_cjk(ch) {
-            for lower in ch.to_lowercase() {
-                out.push(lower);
-            }
-            prev_space = false;
-        } else if !prev_space {
-            out.push(' ');
-            prev_space = true;
-        }
-    }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    normalize_retrieval_text(input)
 }
 
 pub(crate) fn pick_archive_excerpt(content: &str, terms: &[String], max_chars: usize) -> String {
@@ -1889,20 +1810,6 @@ fn ymd_to_unix_secs(year: i32, month: u32, day: u32) -> Option<u64> {
 
 fn is_leap_year(year: i32) -> bool {
     (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
-}
-
-fn is_cjk(ch: char) -> bool {
-    matches!(
-        ch as u32,
-        0x4E00..=0x9FFF
-            | 0x3400..=0x4DBF
-            | 0x20000..=0x2A6DF
-            | 0x2A700..=0x2B73F
-            | 0x2B740..=0x2B81F
-            | 0x2B820..=0x2CEAF
-            | 0xF900..=0xFAFF
-            | 0x2F800..=0x2FA1F
-    )
 }
 
 pub fn archive_get_default_content_len() -> usize {

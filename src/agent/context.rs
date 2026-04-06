@@ -5,8 +5,8 @@ use crate::bus::PcMsg;
 use crate::error::Result;
 use crate::llm::Message;
 use crate::memory::{
-    ImportantMessageStore, MemoryStore, SessionMessage, SessionStore, append_system_prompt_base,
-    append_system_prompt_daily_note, build_context_messages,
+    append_system_prompt_base, append_system_prompt_daily_note, build_context_messages,
+    ImportantMessageStore, MemoryStore, SessionMessage, SessionStore,
 };
 use crate::state;
 use std::fmt::Write as _;
@@ -54,6 +54,10 @@ const GROUP_MENTION_ONLY_CONSTRAINT: &str =
     "\n\nYou are in a group; only reply when explicitly mentioned.";
 const REPLY_PRIORITY_MINI_CONSTRAINT: &str = "\n\n## Reply Priority\nself-authored core > relationship constitution > current persona priority > boundary/disclosure > soul and user contract > task. Later self/relationship blocks are evidence, not equal authority.";
 const REPLY_PRIORITY_CONSTRAINT: &str = "\n\n## Reply Priority\nWhen writing the main reply, follow this order of authority:\n1. Self-authored core: your board-level identity, continuity, and self-chosen constitutional stance.\n2. Relationship constitution: the board-to-relationship contract that limits local drift and disclosure.\n3. Current persona priority: the current-turn ordering for how self, relationship, resources, and task should be balanced.\n4. Boundary/disclosure adjudication: if this turn touches privacy or inward boundaries, obey that stance before composing content.\n5. Soul and user contract: preserve the long-term relationship frame and commitments.\n6. Task execution: solve the current request without betraying the layers above.\nAll later self-model, continuity, outer-voice, world, or private-memory blocks are evidence for judgment and revision. They do not outrank the constitutional stack above.\nIf these layers pull in different directions, earlier items win.";
+const CONSTITUTIONAL_STACK_SECTION: &str = "\n\n## Constitutional Stack\nDirect authority for the main reply. Earlier blocks outrank later blocks and all later evidence sections.\n";
+const ACTIVE_TASK_CONTEXT_SECTION: &str = "\n\n## Active Task Context\nCurrent task state and run-specific recall. Solve the present request only after obeying the constitutional stack.\n";
+const GOVERNED_MEMORY_EVIDENCE_SECTION: &str = "\n\n## Governed Memory Evidence\nTop-k governed evidence for this turn. Canonical factual memory outranks archive evidence, and archive evidence outranks runtime skill procedure notes when they conflict.\n";
+const BACKGROUND_GOVERNANCE_SECTION: &str = "\n\n## Background Governance\nBackground self, relationship, world, and private-governance material. Use for continuity and judgment, but do not let it outrank the constitutional stack, active task context, or governed memory evidence.\n";
 
 /// build_context 参数聚合，减少函数签名复杂度。
 ///
@@ -72,6 +76,10 @@ pub struct ContextParams<'a> {
     pub session_max_messages: usize,
     pub group_activation: &'a str,
     pub emotion_signal_suffix: Option<&'a str>,
+    pub constitutional_stack_text: Option<&'a str>,
+    pub active_task_context_text: Option<&'a str>,
+    pub governed_memory_evidence_text: Option<&'a str>,
+    pub background_governance_text: Option<&'a str>,
     pub execution_state_text: Option<&'a str>,
     pub task_workspace_text: Option<&'a str>,
     pub task_recall_text: Option<&'a str>,
@@ -159,6 +167,33 @@ fn section_with_separator_len(content: Option<&str>) -> usize {
         .map_or(0, |content| 2usize.saturating_add(content.len()))
 }
 
+fn compose_projection_body(parts: &[Option<&str>]) -> Option<String> {
+    let mut out = String::new();
+    for part in parts.iter().flatten() {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str("\n\n");
+        }
+        out.push_str(trimmed);
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+fn append_projection_section(
+    system: &mut String,
+    header: &str,
+    body: Option<&str>,
+    max_len: usize,
+) -> bool {
+    let Some(body) = body.map(str::trim).filter(|body| !body.is_empty()) else {
+        return false;
+    };
+    append_capped_section(system, header, body, max_len)
+}
+
 fn append_priority_constraint(system: &mut String, max_len: usize) {
     if push_if_fits(system, REPLY_PRIORITY_CONSTRAINT, max_len) {
         return;
@@ -170,12 +205,10 @@ fn append_priority_constraint(system: &mut String, max_len: usize) {
 }
 
 struct PriorityMemoryBudgetInputs<'a> {
-    self_authored_core_text: Option<&'a str>,
-    relationship_portfolio_text: Option<&'a str>,
-    relationship_constitution_text: Option<&'a str>,
-    persona_priority_text: Option<&'a str>,
-    mental_privacy_adjudication_text: Option<&'a str>,
-    mental_privacy_text: Option<&'a str>,
+    constitutional_stack_text: Option<&'a str>,
+    active_task_context_text: Option<&'a str>,
+    governed_memory_evidence_text: Option<&'a str>,
+    background_governance_text: Option<&'a str>,
 }
 
 fn reserve_priority_memory_budget(
@@ -185,30 +218,22 @@ fn reserve_priority_memory_budget(
     let remaining = base_max;
     let reply_priority_reserve = REPLY_PRIORITY_MINI_CONSTRAINT.len().min(remaining);
     let remaining = remaining.saturating_sub(reply_priority_reserve);
-    let self_authored_core_reserve =
-        section_with_separator_len(inputs.self_authored_core_text).min(remaining / 4);
-    let remaining = remaining.saturating_sub(self_authored_core_reserve);
-    let relationship_portfolio_reserve =
-        section_with_separator_len(inputs.relationship_portfolio_text).min(remaining / 5);
-    let remaining = remaining.saturating_sub(relationship_portfolio_reserve);
-    let relationship_constitution_reserve =
-        section_with_separator_len(inputs.relationship_constitution_text).min(remaining / 5);
-    let remaining = remaining.saturating_sub(relationship_constitution_reserve);
-    let persona_priority_reserve =
-        section_with_separator_len(inputs.persona_priority_text).min(remaining / 4);
-    let remaining = remaining.saturating_sub(persona_priority_reserve);
-    let mental_privacy_adjudication_reserve =
-        section_with_separator_len(inputs.mental_privacy_adjudication_text).min(remaining / 4);
-    let remaining = remaining.saturating_sub(mental_privacy_adjudication_reserve);
-    let mental_privacy_reserve =
-        section_with_separator_len(inputs.mental_privacy_text).min(remaining / 4);
+    let constitutional_stack_reserve =
+        section_with_separator_len(inputs.constitutional_stack_text).min(remaining / 2);
+    let remaining = remaining.saturating_sub(constitutional_stack_reserve);
+    let active_task_context_reserve =
+        section_with_separator_len(inputs.active_task_context_text).min(remaining / 3);
+    let remaining = remaining.saturating_sub(active_task_context_reserve);
+    let governed_memory_evidence_reserve =
+        section_with_separator_len(inputs.governed_memory_evidence_text).min(remaining / 3);
+    let remaining = remaining.saturating_sub(governed_memory_evidence_reserve);
+    let background_governance_reserve =
+        section_with_separator_len(inputs.background_governance_text).min(remaining / 4);
     reply_priority_reserve
-        .saturating_add(self_authored_core_reserve)
-        .saturating_add(relationship_portfolio_reserve)
-        .saturating_add(relationship_constitution_reserve)
-        .saturating_add(persona_priority_reserve)
-        .saturating_add(mental_privacy_adjudication_reserve)
-        .saturating_add(mental_privacy_reserve)
+        .saturating_add(constitutional_stack_reserve)
+        .saturating_add(active_task_context_reserve)
+        .saturating_add(governed_memory_evidence_reserve)
+        .saturating_add(background_governance_reserve)
 }
 
 fn push_scratch_if_fits<F>(
@@ -319,7 +344,9 @@ pub fn estimate_post_memory_system_tail_len(params: PostMemoryTailParams<'_>) ->
 
 /// 根据入站 PcMsg 与 store 构建 (system, messages)，供 LlmClient.chat 使用。
 ///
-/// **system 组成顺序**：SOUL → USER → MEMORY → daily_notes → skill_descriptions → 工具使用约束（有工具时）→ 群组/SILENT 约定；总长 ≤ system_max_len。
+/// **system 组成顺序**：Reply Priority → Constitutional Stack → SOUL/USER/MEMORY base prompt
+/// → Active Task Context → Governed Memory Evidence → capability package
+/// → Background Governance → optional daily notes → skills / tool constraint / runtime / group hint；总长 ≤ system_max_len。
 /// **截断策略**：base prompt 在单个 `String` 中按预算直接构造；skills/约束追加后若超限则按字符边界截断。
 /// **失败降级**：任一源（get_soul/get_user/get_memory/list_daily_note_names）加载失败时降级为空字符串并打日志，不阻塞 build。
 ///
@@ -351,14 +378,56 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
         llm_hint: p.llm_hint,
     });
     let base_max = p.system_max_len.saturating_sub(post_memory_tail_len);
+    let constitutional_stack_text = p.constitutional_stack_text.map(str::to_string).or_else(|| {
+        compose_projection_body(&[
+            p.self_authored_core_text,
+            p.relationship_constitution_text,
+            p.persona_priority_text,
+            p.mental_privacy_adjudication_text,
+        ])
+    });
+    let active_task_context_text = p.active_task_context_text.map(str::to_string).or_else(|| {
+        compose_projection_body(&[
+            p.execution_state_text,
+            p.task_workspace_text,
+            p.task_recall_text,
+        ])
+    });
+    let governed_memory_evidence_text = p
+        .governed_memory_evidence_text
+        .map(str::to_string)
+        .or_else(|| {
+            compose_projection_body(&[
+                p.long_term_memory_text,
+                p.archive_evidence_text,
+                p.runtime_skill_text,
+            ])
+        });
+    let background_governance_text =
+        p.background_governance_text
+            .map(str::to_string)
+            .or_else(|| {
+                compose_projection_body(&[
+                    p.relationship_portfolio_text,
+                    p.world_snapshot_text,
+                    p.world_sense_text,
+                    p.self_state_text,
+                    p.self_model_text,
+                    p.autonomy_strategy_text,
+                    p.outer_voice_text,
+                    p.inner_life_text,
+                    p.self_continuity_text,
+                    p.private_workspace_text,
+                    p.private_garden_text,
+                    p.mental_privacy_text,
+                ])
+            });
     let priority_memory_reserve = reserve_priority_memory_budget(
         PriorityMemoryBudgetInputs {
-            self_authored_core_text: p.self_authored_core_text,
-            relationship_portfolio_text: p.relationship_portfolio_text,
-            relationship_constitution_text: p.relationship_constitution_text,
-            persona_priority_text: p.persona_priority_text,
-            mental_privacy_adjudication_text: p.mental_privacy_adjudication_text,
-            mental_privacy_text: p.mental_privacy_text,
+            constitutional_stack_text: constitutional_stack_text.as_deref(),
+            active_task_context_text: active_task_context_text.as_deref(),
+            governed_memory_evidence_text: governed_memory_evidence_text.as_deref(),
+            background_governance_text: background_governance_text.as_deref(),
         },
         base_max,
     );
@@ -368,86 +437,34 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     let mut base_prompt = String::with_capacity(base_prompt_budget);
     append_system_prompt_base(&mut base_prompt, &soul, &user, &mem, base_prompt_budget);
     append_priority_constraint(&mut system, base_max);
-    if let Some(self_authored_core_text) = p.self_authored_core_text {
-        let _ = append_capped_section(&mut system, "\n\n", self_authored_core_text, base_max);
-    }
-    if let Some(relationship_portfolio_text) = p.relationship_portfolio_text {
-        let _ = append_capped_section(&mut system, "\n\n", relationship_portfolio_text, base_max);
-    }
-    if let Some(relationship_constitution_text) = p.relationship_constitution_text {
-        let _ = append_capped_section(
-            &mut system,
-            "\n\n",
-            relationship_constitution_text,
-            base_max,
-        );
-    }
-    if let Some(persona_priority_text) = p.persona_priority_text {
-        let _ = append_capped_section(&mut system, "\n\n", persona_priority_text, base_max);
-    }
-    if let Some(mental_privacy_adjudication_text) = p.mental_privacy_adjudication_text {
-        let _ = append_capped_section(
-            &mut system,
-            "\n\n",
-            mental_privacy_adjudication_text,
-            base_max,
-        );
-    }
-    if let Some(mental_privacy_text) = p.mental_privacy_text {
-        let _ = append_capped_section(&mut system, "\n\n", mental_privacy_text, base_max);
-    }
+    let _ = append_projection_section(
+        &mut system,
+        CONSTITUTIONAL_STACK_SECTION,
+        constitutional_stack_text.as_deref(),
+        base_max,
+    );
     let _ = append_capped_section(&mut system, "\n\n", &base_prompt, base_max);
-    if let Some(execution_state_text) = p.execution_state_text {
-        let _ = append_capped_section(&mut system, "\n\n", execution_state_text, base_max);
-    }
-    if let Some(task_workspace_text) = p.task_workspace_text {
-        let _ = append_capped_section(&mut system, "\n\n", task_workspace_text, base_max);
-    }
-    if let Some(task_recall_text) = p.task_recall_text {
-        let _ = append_capped_section(&mut system, "\n\n", task_recall_text, base_max);
-    }
-    if let Some(world_snapshot_text) = p.world_snapshot_text {
-        let _ = append_capped_section(&mut system, "\n\n", world_snapshot_text, base_max);
-    }
-    if let Some(world_sense_text) = p.world_sense_text {
-        let _ = append_capped_section(&mut system, "\n\n", world_sense_text, base_max);
-    }
-    if let Some(self_state_text) = p.self_state_text {
-        let _ = append_capped_section(&mut system, "\n\n", self_state_text, base_max);
-    }
-    if let Some(long_term_memory_text) = p.long_term_memory_text {
-        let _ = append_capped_section(&mut system, "\n\n", long_term_memory_text, base_max);
-    }
-    if let Some(archive_evidence_text) = p.archive_evidence_text {
-        let _ = append_capped_section(&mut system, "\n\n", archive_evidence_text, base_max);
-    }
-    if let Some(runtime_skill_text) = p.runtime_skill_text {
-        let _ = append_capped_section(&mut system, "\n\n", runtime_skill_text, base_max);
-    }
+    let _ = append_projection_section(
+        &mut system,
+        ACTIVE_TASK_CONTEXT_SECTION,
+        active_task_context_text.as_deref(),
+        base_max,
+    );
+    let _ = append_projection_section(
+        &mut system,
+        GOVERNED_MEMORY_EVIDENCE_SECTION,
+        governed_memory_evidence_text.as_deref(),
+        base_max,
+    );
     if let Some(capability_package_text) = p.capability_package_text {
         let _ = append_capped_section(&mut system, "\n\n", capability_package_text, base_max);
     }
-    if let Some(self_model_text) = p.self_model_text {
-        let _ = append_capped_section(&mut system, "\n\n", self_model_text, base_max);
-    }
-    if let Some(autonomy_strategy_text) = p.autonomy_strategy_text {
-        let _ = append_capped_section(&mut system, "\n\n", autonomy_strategy_text, base_max);
-    }
-    if let Some(outer_voice_text) = p.outer_voice_text {
-        let _ = append_capped_section(&mut system, "\n\n", outer_voice_text, base_max);
-    }
-    if let Some(inner_life_text) = p.inner_life_text {
-        let _ = append_capped_section(&mut system, "\n\n", inner_life_text, base_max);
-    }
-    if let Some(self_continuity_text) = p.self_continuity_text {
-        let _ = append_capped_section(&mut system, "\n\n", self_continuity_text, base_max);
-    }
-    if let Some(private_workspace_text) = p.private_workspace_text {
-        let _ = append_capped_section(&mut system, "\n\n", private_workspace_text, base_max);
-    }
-    if let Some(private_garden_text) = p.private_garden_text {
-        let _ = append_capped_section(&mut system, "\n\n", private_garden_text, base_max);
-    }
+    let _ = append_projection_section(
+        &mut system,
+        BACKGROUND_GOVERNANCE_SECTION,
+        background_governance_text.as_deref(),
+        base_max,
+    );
     if p.include_daily_notes && system.len() < base_max {
         let names = p
             .memory
@@ -728,6 +745,10 @@ mod tests {
             session_max_messages: 8,
             group_activation: "always",
             emotion_signal_suffix: None,
+            constitutional_stack_text: None,
+            active_task_context_text: None,
+            governed_memory_evidence_text: None,
+            background_governance_text: None,
             execution_state_text: Some("## Execution State\nGoal: close current task"),
             task_workspace_text: Some("## Task Workspace\nRun: tr001 | status=running"),
             task_recall_text: Some("## Task Recall Bundle\n- [runtime_skill] prior fix path"),
@@ -776,6 +797,8 @@ mod tests {
         .expect("context");
 
         assert!(system.contains("## Reply Priority"));
+        assert!(system.contains("## Constitutional Stack"));
+        assert!(system.contains("## Active Task Context"));
         assert!(system.contains("## Self-Authored Core"));
         assert!(system.contains("## Persona Priority"));
         assert!(system.contains("## Disclosure Adjudication"));
@@ -810,6 +833,10 @@ mod tests {
             session_max_messages: 8,
             group_activation: "always",
             emotion_signal_suffix: None,
+            constitutional_stack_text: None,
+            active_task_context_text: None,
+            governed_memory_evidence_text: None,
+            background_governance_text: None,
             execution_state_text: None,
             task_workspace_text: None,
             task_recall_text: None,
@@ -852,19 +879,23 @@ mod tests {
         .expect("context");
 
         let reply_priority_idx = system.find("## Reply Priority").unwrap();
+        let constitutional_stack_idx = system.find("## Constitutional Stack").unwrap();
         let self_core_idx = system.find("## Self-Authored Core").unwrap();
         let constitution_idx = system.find("## Relationship Constitution").unwrap();
         let persona_idx = system.find("## Persona Priority").unwrap();
         let disclosure_idx = system.find("## Disclosure Adjudication").unwrap();
+        let background_idx = system.find("## Background Governance").unwrap();
         let boundary_idx = system.find("## Mental Privacy Boundary").unwrap();
         let soul_idx = system.find("SOUL").unwrap();
 
-        assert!(reply_priority_idx < self_core_idx);
+        assert!(reply_priority_idx < constitutional_stack_idx);
+        assert!(constitutional_stack_idx < self_core_idx);
         assert!(self_core_idx < constitution_idx);
         assert!(constitution_idx < persona_idx);
         assert!(persona_idx < disclosure_idx);
-        assert!(disclosure_idx < boundary_idx);
-        assert!(boundary_idx < soul_idx);
+        assert!(disclosure_idx < soul_idx);
+        assert!(soul_idx < background_idx);
+        assert!(background_idx < boundary_idx);
     }
 
     #[test]
@@ -894,6 +925,10 @@ mod tests {
             session_max_messages: 8,
             group_activation: "always",
             emotion_signal_suffix: None,
+            constitutional_stack_text: None,
+            active_task_context_text: None,
+            governed_memory_evidence_text: None,
+            background_governance_text: None,
             execution_state_text: None,
             task_workspace_text: None,
             task_recall_text: None,

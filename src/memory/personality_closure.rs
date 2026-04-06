@@ -6,10 +6,10 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
 use super::{
-    CoreRevisionGovernanceDigest, CoreRevisionLedger, CoreRevisionTimelineEntry,
-    RecentPersonaEvidence, RelationshipConstitution, RelationshipConstitutionAudit,
-    RelationshipTopology, SelfAuthoredCore, audit_relationship_constitution,
-    build_core_revision_timeline, compute_core_revision_governance_digest, relationship_scope_id,
+    audit_relationship_constitution, build_core_revision_timeline,
+    compute_core_revision_governance_digest, relationship_scope_id, CoreRevisionGovernanceDigest,
+    CoreRevisionLedger, CoreRevisionTimelineEntry, RecentPersonaEvidence, RelationshipConstitution,
+    RelationshipConstitutionAudit, RelationshipTopology, SelfAuthoredCore,
 };
 
 const PERSONALITY_CLOSURE_TEXT_MAX_CHARS: usize = 160;

@@ -2,16 +2,19 @@
 //! Structured long-term memory abstractions and lightweight recall helpers.
 
 use crate::error::Result;
+use crate::util::{
+    collect_retrieval_terms, is_cjk, normalize_retrieval_text, trigram_overlap_score,
+};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 
 use super::{
-    LongTermRecallPolicy, MemoryProfile, SessionMessage, memory_policy,
-    shared_long_term_governance_policy,
+    memory_policy, shared_long_term_governance_policy, LongTermRecallPolicy, MemoryProfile,
+    SessionMessage,
 };
 
 /// 结构化长期记忆存储路径（相对状态根）。
@@ -203,6 +206,30 @@ impl LongTermRecallPolicy {
         }) || matches!(entry.freshness, LongTermMemoryFreshness::Volatile)
             && age_secs > LONG_TERM_MEMORY_PROJECT_TTL_SECS
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LongTermRecallSelection {
+    pub recall_query: String,
+    pub candidates: Vec<LongTermMemoryEntry>,
+    pub selected: Vec<LongTermMemoryEntry>,
+    pub desired: usize,
+    pub used_fallback: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LongTermRecallScoreBreakdown {
+    pub lexical_score: u32,
+    pub semantic_score: u32,
+    pub exact_match_score: u32,
+    pub keyword_score: u32,
+    pub recency_score: u32,
+    pub last_used_score: u32,
+    pub confidence_score: u32,
+    pub scope_affinity_score: u32,
+    pub governance_score: u32,
+    pub total_score: u32,
+    pub reason_fragments: Vec<String>,
 }
 
 /// 长期记忆类别。只保留当前 beetle 真实会用到的 durable 类型。
@@ -1408,14 +1435,14 @@ pub(crate) fn govern_long_term_memory_entries(
     changed
 }
 
-pub(crate) fn recall_long_term_memory_entries(
+pub(crate) fn select_long_term_recall_entries(
     store: &dyn LongTermMemoryStore,
     chat_id: &str,
     user_query: &str,
     summary_text: Option<&str>,
     recent_messages: &[SessionMessage],
     profile: MemoryProfile,
-) -> Vec<LongTermMemoryEntry> {
+) -> LongTermRecallSelection {
     let policy = memory_policy(profile).long_term_recall;
     let desired = policy.desired_entry_count(policy.block_max_len_cap);
     let recall_query = policy.build_recall_query(user_query, summary_text, recent_messages);
@@ -1426,6 +1453,8 @@ pub(crate) fn recall_long_term_memory_entries(
             policy.direct_recall_limit(desired),
         )
         .unwrap_or_default();
+    let direct_count = candidates.len();
+    let mut used_fallback = false;
     if candidates.len() < desired {
         let mut fallback = store
             .list(policy.fallback_list_limit(desired))
@@ -1436,10 +1465,37 @@ pub(crate) fn recall_long_term_memory_entries(
                 continue;
             }
             candidates.push(entry);
+            used_fallback = true;
         }
     }
     reorder_recall_candidates_for_chat(chat_id, &mut candidates);
-    policy.select_entries(candidates, desired)
+    let selected = policy.select_entries(candidates.clone(), desired);
+    LongTermRecallSelection {
+        recall_query,
+        candidates,
+        selected,
+        desired,
+        used_fallback: used_fallback || direct_count < desired,
+    }
+}
+
+pub(crate) fn recall_long_term_memory_entries(
+    store: &dyn LongTermMemoryStore,
+    chat_id: &str,
+    user_query: &str,
+    summary_text: Option<&str>,
+    recent_messages: &[SessionMessage],
+    profile: MemoryProfile,
+) -> Vec<LongTermMemoryEntry> {
+    select_long_term_recall_entries(
+        store,
+        chat_id,
+        user_query,
+        summary_text,
+        recent_messages,
+        profile,
+    )
+    .selected
 }
 
 pub fn recall_long_term_memory_block(
@@ -1739,62 +1795,104 @@ pub(crate) fn score_long_term_memory_recall(
     now_secs: u64,
     entry: &LongTermMemoryEntry,
 ) -> u32 {
+    score_long_term_memory_recall_breakdown(query, source_chat_id, now_secs, entry).total_score
+}
+
+pub(crate) fn score_long_term_memory_recall_breakdown(
+    query: &str,
+    source_chat_id: Option<&str>,
+    now_secs: u64,
+    entry: &LongTermMemoryEntry,
+) -> LongTermRecallScoreBreakdown {
     let normalized_query = normalize_for_match(query);
-    if normalized_query.len() < 2 {
-        return 0;
+    if normalized_query.chars().count() < 2 {
+        return LongTermRecallScoreBreakdown::default();
     }
 
-    let mut score = 0u32;
     let normalized_content = normalize_for_match(&entry.content);
     let normalized_topic = normalize_for_match(&entry.topic);
+    let normalized_document = match (normalized_topic.is_empty(), normalized_content.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => normalized_topic.clone(),
+        (true, false) => normalized_content.clone(),
+        (false, false) => format!("{} {}", normalized_topic, normalized_content),
+    };
+    let terms = collect_match_terms(query);
+    let mut exact_match_score = 0u32;
+    let mut lexical_score = 0u32;
+    let mut keyword_score = 0u32;
+    let mut reasons = Vec::new();
+
+    if normalized_topic == normalized_query {
+        exact_match_score = exact_match_score.saturating_add(14);
+        reasons.push("exact topic match".to_string());
+    }
     if normalized_content.contains(&normalized_query) {
-        score = score.saturating_add(8);
+        exact_match_score = exact_match_score.saturating_add(8);
     }
     if normalized_topic.contains(&normalized_query) {
-        score = score.saturating_add(10);
+        lexical_score = lexical_score.saturating_add(10);
     }
-
-    let terms = collect_match_terms(query);
-    for term in terms {
+    for term in &terms {
         if normalized_topic.contains(&term) {
-            score = score.saturating_add(4);
+            lexical_score = lexical_score.saturating_add(4);
         }
         if normalized_content.contains(&term) {
-            score = score.saturating_add(2);
+            lexical_score = lexical_score.saturating_add(2);
         }
         for keyword in &entry.keywords {
             let normalized_keyword = normalize_for_match(keyword);
             if normalized_keyword.contains(&term) || term.contains(&normalized_keyword) {
-                score = score.saturating_add(3);
+                keyword_score = keyword_score.saturating_add(3);
             }
         }
     }
-
-    if score == 0 {
-        return 0;
+    if lexical_score > 0 && !reasons.iter().any(|reason| reason == "term overlap") {
+        reasons.push("term overlap".to_string());
+    }
+    if keyword_score > 0 {
+        reasons.push("keyword overlap".to_string());
+    }
+    let semantic_score = trigram_overlap_score(&normalized_query, &normalized_document, 18);
+    if semantic_score > 0 {
+        reasons.push("semantic overlap".to_string());
+    }
+    if lexical_score == 0 && exact_match_score == 0 && keyword_score == 0 && semantic_score == 0 {
+        return LongTermRecallScoreBreakdown::default();
     }
 
-    if source_chat_id.is_some_and(|chat_id| entry.source_chat_id.as_deref() == Some(chat_id)) {
-        score = score.saturating_add(recall_chat_affinity_bonus(&entry.kind));
+    let scope_affinity_score = source_chat_id
+        .filter(|chat_id| entry.source_chat_id.as_deref() == Some(*chat_id))
+        .map(|_| recall_chat_affinity_bonus(&entry.kind))
+        .unwrap_or(0);
+    if scope_affinity_score > 0 {
+        reasons.push("same-chat affinity".to_string());
     }
-    score = score.saturating_add(entry.confidence.recall_bonus());
-    score = score.saturating_add(recall_recency_bonus(now_secs, entry_observed_at(entry)));
-    score = score.saturating_add(recall_last_used_bonus(now_secs, entry.last_used_at));
-    if matches!(entry.source_scope, LongTermMemorySourceScope::User)
-        && matches!(
-            entry.kind,
-            LongTermMemoryKind::Preference
-                | LongTermMemoryKind::Profile
-                | LongTermMemoryKind::Relationship
-                | LongTermMemoryKind::Constraint
-        )
-    {
-        score = score.saturating_add(2);
-    }
-    match age_state_for_entry(entry, now_secs) {
-        LongTermMemoryAgeState::Current => score,
-        LongTermMemoryAgeState::Aging => score.saturating_sub(2),
-        LongTermMemoryAgeState::Stale => score.saturating_sub(5),
+    let confidence_score = entry.confidence.recall_bonus();
+    let recency_score = recall_recency_bonus(now_secs, entry_observed_at(entry));
+    let last_used_score = recall_last_used_bonus(now_secs, entry.last_used_at);
+    let governance_score = long_term_governance_recall_score(entry, now_secs);
+    let total_score = lexical_score
+        .saturating_add(semantic_score)
+        .saturating_add(exact_match_score)
+        .saturating_add(keyword_score)
+        .saturating_add(recency_score)
+        .saturating_add(last_used_score)
+        .saturating_add(confidence_score)
+        .saturating_add(scope_affinity_score)
+        .saturating_add(governance_score);
+    LongTermRecallScoreBreakdown {
+        lexical_score,
+        semantic_score,
+        exact_match_score,
+        keyword_score,
+        recency_score,
+        last_used_score,
+        confidence_score,
+        scope_affinity_score,
+        governance_score,
+        total_score,
+        reason_fragments: reasons,
     }
 }
 
@@ -1833,20 +1931,7 @@ fn normalize_topic(input: &str) -> String {
 }
 
 fn normalize_for_match(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut prev_space = false;
-    for ch in input.chars() {
-        if ch.is_alphanumeric() || is_cjk(ch) {
-            for lower in ch.to_lowercase() {
-                out.push(lower);
-            }
-            prev_space = false;
-        } else if !prev_space {
-            out.push(' ');
-            prev_space = true;
-        }
-    }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    normalize_retrieval_text(input)
 }
 
 pub fn parse_explicit_long_term_slot_query(query: &str) -> Option<LongTermMemorySlot> {
@@ -1990,60 +2075,7 @@ fn nearby_slot_candidate_score(
 }
 
 fn collect_match_terms(query: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut current = String::new();
-    let mut current_has_cjk = false;
-
-    let flush_run = |out: &mut Vec<String>, run: &mut String, has_cjk: &mut bool| -> () {
-        if run.is_empty() {
-            return;
-        }
-        let term = run.clone();
-        if *has_cjk {
-            push_unique_term(out, &term);
-            let chars: Vec<char> = term.chars().collect();
-            for window in [2usize, 3usize] {
-                if chars.len() < window {
-                    continue;
-                }
-                for slice in chars.windows(window) {
-                    let candidate: String = slice.iter().collect();
-                    push_unique_term(out, &candidate);
-                    if out.len() >= 24 {
-                        break;
-                    }
-                }
-            }
-        } else {
-            push_unique_term(out, &term);
-        }
-        run.clear();
-        *has_cjk = false;
-    };
-
-    for ch in normalize_for_match(query).chars() {
-        if ch.is_ascii_alphanumeric() {
-            current.push(ch);
-        } else if is_cjk(ch) {
-            current.push(ch);
-            current_has_cjk = true;
-        } else {
-            flush_run(&mut out, &mut current, &mut current_has_cjk);
-            if out.len() >= 24 {
-                break;
-            }
-        }
-    }
-    flush_run(&mut out, &mut current, &mut current_has_cjk);
-    out
-}
-
-fn push_unique_term(out: &mut Vec<String>, term: &str) {
-    let term = term.trim();
-    if term.len() < 2 || out.iter().any(|item| item == term) {
-        return;
-    }
-    out.push(term.to_string());
+    collect_retrieval_terms(query, 2, 24, &[2, 3])
 }
 
 fn recall_chat_affinity_bonus(kind: &LongTermMemoryKind) -> u32 {
@@ -2079,18 +2111,27 @@ fn recall_last_used_bonus(now_secs: u64, last_used_at: u64) -> u32 {
     }
 }
 
-fn is_cjk(ch: char) -> bool {
-    matches!(
-        ch as u32,
-        0x4E00..=0x9FFF
-            | 0x3400..=0x4DBF
-            | 0x20000..=0x2A6DF
-            | 0x2A700..=0x2B73F
-            | 0x2B740..=0x2B81F
-            | 0x2B820..=0x2CEAF
-            | 0xF900..=0xFAFF
-            | 0x2F800..=0x2FA1F
-    )
+fn long_term_governance_recall_score(entry: &LongTermMemoryEntry, now_secs: u64) -> u32 {
+    let scope_bonus = if matches!(entry.source_scope, LongTermMemorySourceScope::User)
+        && matches!(
+            entry.kind,
+            LongTermMemoryKind::Preference
+                | LongTermMemoryKind::Profile
+                | LongTermMemoryKind::Relationship
+                | LongTermMemoryKind::Constraint
+        ) {
+        2
+    } else {
+        0
+    };
+    let freshness_bonus = match age_state_for_entry(entry, now_secs) {
+        LongTermMemoryAgeState::Current => 4,
+        LongTermMemoryAgeState::Aging => 2,
+        LongTermMemoryAgeState::Stale => 0,
+    };
+    scope_bonus
+        .saturating_add(freshness_bonus)
+        .saturating_add(entry.evidence_count.min(4))
 }
 
 #[cfg(test)]

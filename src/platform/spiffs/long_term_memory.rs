@@ -3,12 +3,12 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryQuery, LongTermMemorySlot,
-    LongTermMemoryStore, MAX_LONG_TERM_MEMORY_ITEMS, REL_PATH_LONG_TERM_MEMORIES,
     canonicalize_long_term_memory_entry, compare_long_term_memory_query_results,
     govern_long_term_memory_entries, long_term_memory_entry_from_draft,
-    long_term_memory_matches_query, merge_long_term_memory_entry, score_long_term_memory_recall,
-    touch_long_term_memory_usage,
+    long_term_memory_matches_query, merge_long_term_memory_entry,
+    score_long_term_memory_recall_breakdown, touch_long_term_memory_usage, LongTermMemoryDraft,
+    LongTermMemoryEntry, LongTermMemoryQuery, LongTermMemorySlot, LongTermMemoryStore,
+    MAX_LONG_TERM_MEMORY_ITEMS, REL_PATH_LONG_TERM_MEMORIES,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -128,32 +128,44 @@ impl LongTermMemoryStore for SpiffsLongTermMemoryStore {
         let limit = limit.clamp(1, MAX_LONG_TERM_MEMORY_ITEMS);
         let now_secs = crate::util::current_unix_secs();
         self.with_entries_mut(|entries| {
-            let mut scored: Vec<(u32, String)> = entries
+            let mut scored: Vec<(u32, u32, String)> = entries
                 .iter()
                 .filter_map(|entry| {
-                    let score =
-                        score_long_term_memory_recall(query, source_chat_id, now_secs, entry);
-                    (score > 0).then(|| (score, entry.id.clone()))
+                    let breakdown = score_long_term_memory_recall_breakdown(
+                        query,
+                        source_chat_id,
+                        now_secs,
+                        entry,
+                    );
+                    (breakdown.total_score > 0).then(|| {
+                        (
+                            breakdown.total_score,
+                            breakdown.semantic_score,
+                            entry.id.clone(),
+                        )
+                    })
                 })
                 .collect();
             scored.sort_by(|a, b| {
                 b.0.cmp(&a.0).then_with(|| {
-                    let left = entries
-                        .iter()
-                        .find(|entry| entry.id == a.1)
-                        .map(|entry| entry.updated_at)
-                        .unwrap_or(0);
-                    let right = entries
-                        .iter()
-                        .find(|entry| entry.id == b.1)
-                        .map(|entry| entry.updated_at)
-                        .unwrap_or(0);
-                    right.cmp(&left)
+                    b.1.cmp(&a.1).then_with(|| {
+                        let left = entries
+                            .iter()
+                            .find(|entry| entry.id == a.2)
+                            .map(|entry| entry.updated_at)
+                            .unwrap_or(0);
+                        let right = entries
+                            .iter()
+                            .find(|entry| entry.id == b.2)
+                            .map(|entry| entry.updated_at)
+                            .unwrap_or(0);
+                        right.cmp(&left)
+                    })
                 })
             });
             scored.truncate(limit);
             let mut touched = false;
-            let selected_ids: Vec<String> = scored.into_iter().map(|(_, id)| id).collect();
+            let selected_ids: Vec<String> = scored.into_iter().map(|(_, _, id)| id).collect();
             let mut out = Vec::with_capacity(selected_ids.len());
             for selected_id in selected_ids {
                 if let Some(entry) = entries.iter_mut().find(|entry| entry.id == selected_id) {

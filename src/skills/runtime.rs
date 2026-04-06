@@ -1,9 +1,12 @@
 use crate::platform::SkillStorage;
 use crate::skills::{
-    MAX_SKILL_CONTENT_LEN, RuntimeSkillWrite, get_skill_content, runtime_skill_name_for_topic,
-    write_skill,
+    get_skill_content, runtime_skill_name_for_topic, write_skill, RuntimeSkillWrite,
+    MAX_SKILL_CONTENT_LEN,
 };
-use crate::util::truncate_content_to_max;
+use crate::util::{
+    collect_retrieval_terms, normalize_retrieval_text, trigram_overlap_score,
+    truncate_content_to_max,
+};
 
 const RUNTIME_SKILL_MARKER: &str = "<!-- beetle:runtime-skill -->";
 const MAX_RUNTIME_SKILL_HITS: usize = 4;
@@ -65,11 +68,27 @@ pub struct RuntimeSkillRecord {
     pub component_topics: Vec<String>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RuntimeSkillRecallScoreBreakdown {
+    pub lexical_score: u32,
+    pub semantic_score: u32,
+    pub exact_match_score: u32,
+    pub recency_score: u32,
+    pub confidence_score: u32,
+    pub importance_score: u32,
+    pub scope_affinity_score: u32,
+    pub governance_score: u32,
+    pub source_score: u32,
+    pub total_score: u32,
+    pub reason_fragments: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeSkillHit {
     pub record: RuntimeSkillRecord,
     pub score: u32,
     pub reasons: Vec<String>,
+    pub score_breakdown: RuntimeSkillRecallScoreBreakdown,
 }
 
 #[derive(Clone, Debug)]
@@ -97,7 +116,7 @@ pub fn retrieve_runtime_skill_hits(
     limit: usize,
 ) -> Vec<RuntimeSkillHit> {
     let normalized_query = normalize_runtime_skill_text(query);
-    if normalized_query.is_empty() {
+    if normalized_query.is_empty() || normalized_query.chars().count() < 2 {
         return Vec::new();
     }
     let terms = collect_runtime_skill_terms(&normalized_query);
@@ -116,6 +135,11 @@ pub fn retrieve_runtime_skill_hits(
     hits.sort_by(|a, b| {
         b.score
             .cmp(&a.score)
+            .then_with(|| {
+                b.score_breakdown
+                    .semantic_score
+                    .cmp(&a.score_breakdown.semantic_score)
+            })
             .then_with(|| b.record.quality_score.cmp(&a.record.quality_score))
             .then_with(|| b.record.last_used_at.cmp(&a.record.last_used_at))
             .then_with(|| b.record.updated_at.cmp(&a.record.updated_at))
@@ -329,32 +353,59 @@ fn fallback_runtime_skill_hits(
             if should_prune_runtime_skill(&record, now_secs) {
                 return None;
             }
-            let mut score = (record.quality_score / 8) as u32;
             let mut reasons = vec!["fallback procedural memory".to_string()];
-            if let Some(chat_id) = preferred_chat_id {
-                if record.source_chat_id.as_deref() == Some(chat_id) {
-                    score = score.saturating_add(4);
-                    reasons.push("same-chat provenance".to_string());
-                }
+            let scope_affinity_score = preferred_chat_id
+                .filter(|chat_id| record.source_chat_id.as_deref() == Some(*chat_id))
+                .map(|_| 4)
+                .unwrap_or(0);
+            if scope_affinity_score > 0 {
+                reasons.push("same-chat provenance".to_string());
             }
-            if let Some(last_used_at) = record.last_used_at {
-                if now_secs.saturating_sub(last_used_at) <= 30 * 86_400 {
-                    score = score.saturating_add(4);
-                    reasons.push("recently reused".to_string());
-                }
+            let recency_score = record
+                .last_used_at
+                .filter(|last_used_at| now_secs.saturating_sub(*last_used_at) <= 30 * 86_400)
+                .map(|_| 4)
+                .unwrap_or(0);
+            if recency_score > 0 {
+                reasons.push("recently reused".to_string());
             }
             if runtime_skill_is_stale(&record, now_secs) {
-                score = score.saturating_sub(4);
                 reasons.push("stale".to_string());
             }
             if matches!(record.status, RuntimeSkillStatus::LowValue) {
-                score = score.saturating_sub(8);
                 reasons.push("low-value".to_string());
             }
+            let confidence_score = (record.quality_score / 8) as u32;
+            let importance_score = record.use_count.min(6).saturating_mul(2);
+            let governance_score = match record.status {
+                RuntimeSkillStatus::Active => 4,
+                RuntimeSkillStatus::Stale => 1,
+                RuntimeSkillStatus::LowValue => 0,
+            };
+            let source_score = record.citations.len().min(3) as u32 * 2;
+            let breakdown = RuntimeSkillRecallScoreBreakdown {
+                lexical_score: 0,
+                semantic_score: 0,
+                exact_match_score: 0,
+                recency_score,
+                confidence_score,
+                importance_score,
+                scope_affinity_score,
+                governance_score,
+                source_score,
+                total_score: recency_score
+                    .saturating_add(confidence_score)
+                    .saturating_add(importance_score)
+                    .saturating_add(scope_affinity_score)
+                    .saturating_add(governance_score)
+                    .saturating_add(source_score),
+                reason_fragments: reasons.clone(),
+            };
             Some(RuntimeSkillHit {
                 record,
-                score,
+                score: breakdown.total_score,
                 reasons,
+                score_breakdown: breakdown,
             })
         })
         .collect::<Vec<_>>();
@@ -821,8 +872,30 @@ fn score_runtime_skill_record(
     preferred_chat_id: Option<&str>,
     now_secs: u64,
 ) -> Option<RuntimeSkillHit> {
+    let breakdown = score_runtime_skill_record_breakdown(
+        &record,
+        normalized_query,
+        terms,
+        preferred_chat_id,
+        now_secs,
+    )?;
+    Some(RuntimeSkillHit {
+        record,
+        score: breakdown.total_score,
+        reasons: breakdown.reason_fragments.clone(),
+        score_breakdown: breakdown,
+    })
+}
+
+pub(crate) fn score_runtime_skill_record_breakdown(
+    record: &RuntimeSkillRecord,
+    normalized_query: &str,
+    terms: &[String],
+    preferred_chat_id: Option<&str>,
+    now_secs: u64,
+) -> Option<RuntimeSkillRecallScoreBreakdown> {
     if matches!(record.status, RuntimeSkillStatus::LowValue)
-        && runtime_skill_is_stale(&record, now_secs)
+        && runtime_skill_is_stale(record, now_secs)
         && record.use_count == 0
     {
         return None;
@@ -836,62 +909,104 @@ fn score_runtime_skill_record(
     }
     let normalized_title = normalize_runtime_skill_text(&record.title);
     let normalized_topic = normalize_runtime_skill_text(&record.topic);
-    let mut score = 0u32;
+    let normalized_summary = normalize_runtime_skill_text(&record.summary);
+    let mut lexical_score = 0u32;
+    let mut exact_match_score = 0u32;
     let mut reasons = Vec::new();
-    for term in terms {
-        if normalized_topic.contains(term) {
-            score = score.saturating_add(10);
-        }
-        if normalized_title.contains(term) {
-            score = score.saturating_add(8);
-        }
-        if haystack.contains(term) {
-            score = score.saturating_add(4);
-        }
-    }
-    let trigram = trigram_overlap_score(normalized_query, &haystack);
-    if trigram > 0 {
-        score = score.saturating_add(trigram.min(18));
-        reasons.push("semantic overlap".to_string());
-    }
-    if !normalized_topic.is_empty() && normalized_query.contains(&normalized_topic) {
-        score = score.saturating_add(12);
+    if normalized_query == normalized_topic {
+        exact_match_score = exact_match_score.saturating_add(14);
         reasons.push("exact topic overlap".to_string());
     }
-    if let Some(chat_id) = preferred_chat_id {
-        if record.source_chat_id.as_deref() == Some(chat_id) {
-            score = score.saturating_add(6);
-            reasons.push("same-chat provenance".to_string());
+    if normalized_query == normalized_title {
+        exact_match_score = exact_match_score.saturating_add(10);
+        reasons.push("exact title overlap".to_string());
+    }
+    for term in terms {
+        if normalized_topic.contains(term) {
+            lexical_score = lexical_score.saturating_add(10);
+        }
+        if normalized_title.contains(term) {
+            lexical_score = lexical_score.saturating_add(8);
+        }
+        if normalized_summary.contains(term) {
+            lexical_score = lexical_score.saturating_add(5);
+        }
+        if haystack.contains(term) {
+            lexical_score = lexical_score.saturating_add(3);
         }
     }
-    if let Some(last_used_at) = record.last_used_at {
-        let age = now_secs.saturating_sub(last_used_at);
-        if age <= 7 * 86_400 {
-            score = score.saturating_add(6);
-            reasons.push("recently reused".to_string());
-        } else if age <= 30 * 86_400 {
-            score = score.saturating_add(3);
-        }
+    if lexical_score > 0 {
+        reasons.push("term overlap".to_string());
     }
-    score = score
-        .saturating_add(record.use_count.min(6).saturating_mul(2))
-        .saturating_add((record.quality_score / 8) as u32);
-    if !record.citations.is_empty() {
-        score = score.saturating_add(record.citations.len().min(3) as u32 * 2);
+    let semantic_score = trigram_overlap_score(normalized_query, &haystack, 18);
+    if semantic_score > 0 {
+        reasons.push("semantic overlap".to_string());
+    }
+    let scope_affinity_score = preferred_chat_id
+        .filter(|chat_id| record.source_chat_id.as_deref() == Some(*chat_id))
+        .map(|_| 6)
+        .unwrap_or(0);
+    if scope_affinity_score > 0 {
+        reasons.push("same-chat provenance".to_string());
+    }
+    let recency_score = record
+        .last_used_at
+        .map(|last_used_at| {
+            let age = now_secs.saturating_sub(last_used_at);
+            if age <= 7 * 86_400 {
+                6
+            } else if age <= 30 * 86_400 {
+                3
+            } else {
+                0
+            }
+        })
+        .unwrap_or(0);
+    if recency_score > 0 {
+        reasons.push("recently reused".to_string());
+    }
+    let confidence_score = (record.quality_score / 8) as u32;
+    let importance_score = record.use_count.min(6).saturating_mul(2);
+    let source_score = if record.citations.is_empty() {
+        0
+    } else {
+        record.citations.len().min(3) as u32 * 2
+    };
+    if source_score > 0 {
         reasons.push(format!("{} provenance refs", record.citations.len()));
     }
-    if runtime_skill_is_stale(&record, now_secs) {
-        score = score.saturating_sub(8);
+    let governance_score = match record.status {
+        RuntimeSkillStatus::Active => 6,
+        RuntimeSkillStatus::Stale => 1,
+        RuntimeSkillStatus::LowValue => 0,
+    };
+    if runtime_skill_is_stale(record, now_secs) {
         reasons.push("stale".to_string());
     }
     if matches!(record.status, RuntimeSkillStatus::LowValue) {
-        score = score.saturating_sub(12);
         reasons.push("low-value".to_string());
     }
-    (score > 0).then_some(RuntimeSkillHit {
-        record,
-        score,
-        reasons,
+    let total_score = lexical_score
+        .saturating_add(semantic_score)
+        .saturating_add(exact_match_score)
+        .saturating_add(recency_score)
+        .saturating_add(confidence_score)
+        .saturating_add(importance_score)
+        .saturating_add(scope_affinity_score)
+        .saturating_add(governance_score)
+        .saturating_add(source_score);
+    (total_score > 0).then_some(RuntimeSkillRecallScoreBreakdown {
+        lexical_score,
+        semantic_score,
+        exact_match_score,
+        recency_score,
+        confidence_score,
+        importance_score,
+        scope_affinity_score,
+        governance_score,
+        source_score,
+        total_score,
+        reason_fragments: reasons,
     })
 }
 
@@ -972,7 +1087,7 @@ fn runtime_skill_similarity(left: &RuntimeSkillRecord, right: &RuntimeSkillRecor
     if left_id == right_id {
         return 32;
     }
-    trigram_overlap_score(&left_id, &right_id)
+    trigram_overlap_score(&left_id, &right_id, 24)
         .saturating_add(u32::from(left_id.contains(&right_id) || right_id.contains(&left_id)) * 12)
 }
 
@@ -1129,67 +1244,11 @@ fn build_runtime_skill_composition_line(
 }
 
 fn normalize_runtime_skill_text(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut prev_space = false;
-    for ch in input.chars() {
-        if ch.is_alphanumeric() || is_cjk(ch) {
-            for lower in ch.to_lowercase() {
-                out.push(lower);
-            }
-            prev_space = false;
-        } else if !prev_space {
-            out.push(' ');
-            prev_space = true;
-        }
-    }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    normalize_retrieval_text(input)
 }
 
 fn collect_runtime_skill_terms(normalized_query: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for part in normalized_query.split_whitespace() {
-        if part.chars().count() >= 2 && !out.iter().any(|existing| existing == part) {
-            out.push(part.to_string());
-        }
-    }
-    if out.is_empty() {
-        out.push(normalized_query.to_string());
-    }
-    out
-}
-
-fn trigram_overlap_score(left: &str, right: &str) -> u32 {
-    let left = skill_trigrams(left);
-    let right = skill_trigrams(right);
-    if left.is_empty() || right.is_empty() {
-        return 0;
-    }
-    let overlap = left
-        .iter()
-        .filter(|gram| right.iter().any(|candidate| candidate == *gram))
-        .count();
-    ((overlap as f32 / left.len().max(right.len()) as f32) * 24.0)
-        .round()
-        .max(0.0) as u32
-}
-
-fn skill_trigrams(value: &str) -> Vec<String> {
-    let compact: Vec<char> = value.chars().filter(|ch| !ch.is_whitespace()).collect();
-    if compact.len() < 3 {
-        return if compact.is_empty() {
-            Vec::new()
-        } else {
-            vec![compact.iter().collect()]
-        };
-    }
-    let mut grams = Vec::new();
-    for slice in compact.windows(3) {
-        let gram: String = slice.iter().collect();
-        if !grams.iter().any(|existing| existing == &gram) {
-            grams.push(gram);
-        }
-    }
-    grams
+    collect_retrieval_terms(normalized_query, 2, 24, &[2, 3])
 }
 
 fn write_runtime_skill_record(
@@ -1197,20 +1256,6 @@ fn write_runtime_skill_record(
     record: &RuntimeSkillRecord,
 ) -> crate::error::Result<()> {
     write_skill(storage, &record.name, &render_runtime_skill_record(record))
-}
-
-fn is_cjk(ch: char) -> bool {
-    matches!(
-        ch as u32,
-        0x4E00..=0x9FFF
-            | 0x3400..=0x4DBF
-            | 0x20000..=0x2A6DF
-            | 0x2A700..=0x2B73F
-            | 0x2B740..=0x2B81F
-            | 0x2B820..=0x2CEAF
-            | 0xF900..=0xFAFF
-            | 0x2F800..=0x2FA1F
-    )
 }
 
 #[cfg(test)]
@@ -1312,12 +1357,10 @@ mod tests {
             retrieve_runtime_skill_hits(&storage, "继续 network setup", Some("chat-1"), 200, 3);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].record.topic, "network_setup");
-        assert!(
-            hits[0]
-                .reasons
-                .iter()
-                .any(|reason| reason.contains("exact topic"))
-        );
+        assert!(hits[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("exact topic")));
     }
 
     #[test]
@@ -1390,24 +1433,18 @@ mod tests {
             &get_skill_content(&storage, "runtime_skill__wifi_setup").unwrap(),
         )
         .unwrap();
-        assert!(
-            merged
-                .supersedes
-                .iter()
-                .any(|name| name == "runtime_skill__wifi_verification")
-        );
-        assert!(
-            merged
-                .component_topics
-                .iter()
-                .any(|topic| topic == "wifi_setup")
-        );
-        assert!(
-            merged
-                .component_topics
-                .iter()
-                .any(|topic| topic == "wifi setup")
-        );
+        assert!(merged
+            .supersedes
+            .iter()
+            .any(|name| name == "runtime_skill__wifi_verification"));
+        assert!(merged
+            .component_topics
+            .iter()
+            .any(|topic| topic == "wifi_setup"));
+        assert!(merged
+            .component_topics
+            .iter()
+            .any(|topic| topic == "wifi setup"));
         assert_eq!(merged.citations.len(), 2);
     }
 

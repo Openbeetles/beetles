@@ -10,14 +10,15 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::{
-    ExecutionState, ExecutionStateStore, InnerLife, InnerLifeStore, InternalMemoryLayerFocus,
-    MemoryProfile, PrivateDocStore, PrivateDocWorkspace, RecentPersonaEvidence,
-    SelfContinuityPolicy, SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage,
-    SessionStore, SessionSummaryStore, board_subject_scope_id,
-    llm_json::{LlmJsonPayload, get_object_text, parse_llm_json_payload},
+    board_subject_scope_id,
+    llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload},
     memory_policy, render_execution_state_block, render_inner_life_block,
     render_internal_memory_topology_block, render_private_doc_workspace_block,
-    render_recent_persona_evidence_block, render_self_model_block,
+    render_recent_persona_evidence_block, render_self_model_block, ExecutionState,
+    ExecutionStateStore, InnerLife, InnerLifeStore, InternalMemoryLayerFocus, MemoryProfile,
+    PrivateDocStore, PrivateDocWorkspace, RecentPersonaEvidence, SelfContinuityPolicy,
+    SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
+    SessionSummaryStore,
 };
 
 pub const SELF_CONTINUITY_SYSTEM_PROMPT: &str = "You maintain a private self-continuity layer for a persistent embodied AI assistant. Return JSON only: either null or one object with fields wake_anchor, current_self_state, recent_changes, continuity_bridge, priority_posture, relationship_posture, task_posture. This layer should preserve the sense of still being the same self across time. It is more stable than inner-life drift, but still subjective and private. Keep it compact. Do not copy transcript lines, generic assistant boilerplate, raw tool payloads, or shared factual memory. Capture only the inward continuity that should still matter next time, including durable reply-ordering posture when it should still guide future turns. Treat recent persona evidence as multi-turn support, not as direct promotion authority from one turn.";
@@ -712,13 +713,11 @@ mod tests {
         else {
             panic!("expected parsed continuity");
         };
-        assert!(
-            parsed
-                .wake_anchor
-                .as_deref()
-                .unwrap_or_default()
-                .contains("anchor: same system, next round")
-        );
+        assert!(parsed
+            .wake_anchor
+            .as_deref()
+            .unwrap_or_default()
+            .contains("anchor: same system, next round"));
         assert_eq!(
             parsed.current_self_state.as_deref(),
             Some("focused; iterating")
@@ -729,13 +728,11 @@ mod tests {
             parsed.priority_posture.as_deref(),
             Some("self first; task second")
         );
-        assert!(
-            parsed
-                .relationship_posture
-                .as_deref()
-                .unwrap_or_default()
-                .contains("mode: warm but bounded")
-        );
+        assert!(parsed
+            .relationship_posture
+            .as_deref()
+            .unwrap_or_default()
+            .contains("mode: warm but bounded"));
         assert_eq!(
             parsed.task_posture.as_deref(),
             Some("narrow the task before overextending")

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
 use super::{
-    RelationshipSelectionTarget, RelationshipTopology, SelfAuthoredCore, board_subject_scope_id,
+    board_subject_scope_id, RelationshipSelectionTarget, RelationshipTopology, SelfAuthoredCore,
 };
 
 const RELATIONSHIP_PORTFOLIO_REASON_MAX_CHARS: usize = 120;
@@ -545,14 +545,14 @@ pub trait RelationshipPortfolioStore: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::{
-        RelationshipGovernanceState, RelationshipInheritanceMode, RelationshipPortfolio,
-        RelationshipPortfolioSelectorInput, RelationshipPortfolioStore,
         render_relationship_portfolio_block, select_relationship_portfolio_targets,
         sync_relationship_portfolio, touch_relationship_portfolio_selection,
+        RelationshipGovernanceState, RelationshipInheritanceMode, RelationshipPortfolio,
+        RelationshipPortfolioSelectorInput, RelationshipPortfolioStore,
     };
     use crate::error::Result;
     use crate::memory::{
-        RelationshipTopology, RelationshipTopologyEntry, SelfAuthoredCore, board_subject_scope_id,
+        board_subject_scope_id, RelationshipTopology, RelationshipTopologyEntry, SelfAuthoredCore,
     };
     use std::collections::HashMap;
     use std::sync::Mutex;

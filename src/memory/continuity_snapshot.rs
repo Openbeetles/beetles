@@ -7,15 +7,15 @@ use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 
 use super::{
-    CoreRevisionLedger, CoreRevisionLedgerStore, ExecutionState, ExecutionStateStore,
-    LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryKind, LongTermMemoryStore,
-    RelationshipConstitution, RelationshipConstitutionStore, RelationshipPortfolio,
-    RelationshipPortfolioSelectorInput, RelationshipPortfolioStore, RelationshipSelectorInput,
-    RelationshipTopology, RelationshipTopologyStore, SelfAuthoredCore, SelfAuthoredCoreStore,
-    SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore, SessionStore,
-    SessionSummaryStore, SharedMemoryWriteOutcome, SharedMemoryWriteSource, board_subject_scope_id,
-    select_relationship_portfolio_targets, select_relationship_topology_targets,
-    write_governed_shared_memory,
+    board_subject_scope_id, select_relationship_portfolio_targets,
+    select_relationship_topology_targets, write_governed_shared_memory, CoreRevisionLedger,
+    CoreRevisionLedgerStore, ExecutionState, ExecutionStateStore, LongTermMemoryDraft,
+    LongTermMemoryEntry, LongTermMemoryKind, LongTermMemoryStore, RelationshipConstitution,
+    RelationshipConstitutionStore, RelationshipPortfolio, RelationshipPortfolioSelectorInput,
+    RelationshipPortfolioStore, RelationshipSelectorInput, RelationshipTopology,
+    RelationshipTopologyStore, SelfAuthoredCore, SelfAuthoredCoreStore, SelfContinuity,
+    SelfContinuityStore, SelfModel, SelfModelStore, SessionStore, SessionSummaryStore,
+    SharedMemoryWriteOutcome, SharedMemoryWriteSource,
 };
 
 const CONTINUITY_SNAPSHOT_VERSION: u32 = 4;
@@ -1424,12 +1424,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(snapshot.long_term_memory.len(), 2);
-        assert!(
-            snapshot
-                .long_term_memory
-                .iter()
-                .all(|entry| entry.kind != LongTermMemoryKind::Task)
-        );
+        assert!(snapshot
+            .long_term_memory
+            .iter()
+            .all(|entry| entry.kind != LongTermMemoryKind::Task));
     }
 
     #[test]

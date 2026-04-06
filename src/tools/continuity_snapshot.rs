@@ -244,10 +244,14 @@ impl Tool for ContinuitySnapshotTool {
                     recent: &recent,
                     system_max_len: 1200,
                     profile,
+                    current_channel: (!channel.trim().is_empty()).then_some(channel.as_str()),
                     session_store: self.session_store.as_ref(),
                     memory_store: self.memory_store.as_ref(),
                     long_term_memory_store: self.long_term_memory_store.as_ref(),
                     turn_ledger_store: self.turn_ledger_store.as_ref(),
+                    skill_storage: Some(self.skill_storage.as_ref()),
+                    task_run_store: Some(self.task_run_store.as_ref()),
+                    task_learning_store: Some(self.task_learning_store.as_ref()),
                 });
                 let format = obj
                     .get("format")

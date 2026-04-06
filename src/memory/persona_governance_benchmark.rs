@@ -1,8 +1,8 @@
 //! Deterministic personality-governance replay harness.
 
 use super::{
-    CoreRevisionLedger, PersonalityGovernanceInspectionInput, RelationshipConstitution,
-    SelfAuthoredCore, TurnLedger, derive_recent_persona_evidence, inspect_personality_governance,
+    derive_recent_persona_evidence, inspect_personality_governance, CoreRevisionLedger,
+    PersonalityGovernanceInspectionInput, RelationshipConstitution, SelfAuthoredCore, TurnLedger,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
