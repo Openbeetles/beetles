@@ -1477,7 +1477,9 @@ const HARDWARE_WHAT_MAX_LEN: usize = 128;
 const HARDWARE_HOW_MAX_LEN: usize = 256;
 const HARDWARE_PIN_MIN: i32 = 1;
 const HARDWARE_PIN_MAX: i32 = 48;
-const HARDWARE_FORBIDDEN_PINS: [i32; 4] = [0, 3, 45, 46]; // ESP32-S3 strapping
+// ESP32-S3 strap：0/3/46 禁止作通用 GPIO。45 在数据手册中为 strap，部分板卡将外设接至 IO45，校验放行（仍须与原理图一致）。
+// ESP32-S3 strapping: forbid 0/3/46 as general GPIO. IO45 is strap per datasheet but allowed when the board wires it.
+const HARDWARE_FORBIDDEN_PINS: [i32; 3] = [0, 3, 46];
 const HARDWARE_ADC1_PINS: std::ops::RangeInclusive<i32> = 1..=10;
 const HARDWARE_PWM_FREQ_MIN: u32 = 1;
 const HARDWARE_PWM_FREQ_MAX: u32 = 40_000;

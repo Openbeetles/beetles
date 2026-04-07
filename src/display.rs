@@ -14,6 +14,7 @@ pub const DISPLAY_SPI_FREQ_MAX: u32 = 80_000_000;
 /// 参考布局坐标基准（240x240 设计网格）。
 /// Layout reference grid baseline (240x240 design space).
 pub const DISPLAY_LAYOUT_REF_PX: u32 = 240;
+const DISPLAY_SECTION_DIVIDER_GAP_PX: u16 = 6;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -230,19 +231,31 @@ pub fn compute_layout(width: u16, height: u16) -> DisplayLayout {
     let aspect = layout_aspect_class(w, h);
     let (header_n, title_n, subtitle_n, middle_n, footer_n) = layout_vertical_markers(aspect);
 
+    let header_top = (h * header_n / DISPLAY_LAYOUT_REF_PX) as u16;
+    let title_top = (h * title_n / DISPLAY_LAYOUT_REF_PX) as u16;
+    let subtitle_top = (h * subtitle_n / DISPLAY_LAYOUT_REF_PX) as u16;
+    let mut middle_top = (h * middle_n / DISPLAY_LAYOUT_REF_PX) as u16;
+    let footer_top = (h * footer_n / DISPLAY_LAYOUT_REF_PX) as u16;
+
     let icon_left = (w * 12 / DISPLAY_LAYOUT_REF_PX) as u16;
     let icon_size = (dim_min * 64 / DISPLAY_LAYOUT_REF_PX).max(16) as u16;
+    // Keep the beetle size stable; widen the first region when the aspect bucket baseline
+    // would otherwise cut through the icon on landscape/wide panels.
+    let min_middle_top = header_top
+        .saturating_add(icon_size)
+        .saturating_add(DISPLAY_SECTION_DIVIDER_GAP_PX);
+    middle_top = middle_top.max(min_middle_top);
     let gap = icon_left;
 
     DisplayLayout {
-        header_top: (h * header_n / DISPLAY_LAYOUT_REF_PX) as u16,
+        header_top,
         icon_left,
         icon_size,
         title_left: icon_left.saturating_add(icon_size).saturating_add(gap),
-        title_top: (h * title_n / DISPLAY_LAYOUT_REF_PX) as u16,
-        subtitle_top: (h * subtitle_n / DISPLAY_LAYOUT_REF_PX) as u16,
-        middle_top: (h * middle_n / DISPLAY_LAYOUT_REF_PX) as u16,
-        footer_top: (h * footer_n / DISPLAY_LAYOUT_REF_PX) as u16,
+        title_top,
+        subtitle_top,
+        middle_top,
+        footer_top,
         margin_x: ((w * 8 / DISPLAY_LAYOUT_REF_PX).max(2)) as u16,
     }
 }
@@ -424,6 +437,14 @@ mod tests {
         assert!(landscape.middle_top < landscape.footer_top);
         assert_ne!(landscape.middle_top, square.middle_top);
         assert_ne!(landscape.footer_top, square.footer_top);
+    }
+
+    #[test]
+    fn compute_layout_wide_header_expands_to_fit_icon() {
+        let layout = compute_layout(320, 240);
+        let header_bottom = layout.middle_top.saturating_sub(6);
+        assert_eq!(layout.icon_size, 64);
+        assert!(layout.header_top + layout.icon_size <= header_bottom);
     }
 
     #[test]

@@ -188,7 +188,7 @@
   - `id` 非空且 ≤ 32 字节，不得重复
   - `device_type` 须为 `gpio_out` / `gpio_in` / `pwm_out` / `adc_in` / `buzzer` 之一
   - `what` ≤ 128 字节，`how` ≤ 256 字节
-  - `pins` 须含 `"pin"` 键；引脚值 1–48，不得为 strapping 引脚（0, 3, 45, 46），不得跨设备冲突
+  - `pins` 须含 `"pin"` 键；引脚值 1–48，不得为 strapping 引脚（0, 3, 46），不得跨设备冲突
   - `adc_in` 引脚须在 ADC1 范围（GPIO 1–10）
   - `pwm_out` 设备总数 ≤ 4；`options.frequency_hz` 若存在须在 1–40000
 - **响应**：成功 200 `{"ok": true}`；校验失败 400。

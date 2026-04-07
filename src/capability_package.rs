@@ -27,7 +27,7 @@ const MAX_CAPABILITY_PACKAGE_TEXT_FILE_LEN: usize = 32 * 1024;
 const MAX_CAPABILITY_PACKAGE_ASSET_BYTES: usize = 64 * 1024;
 const MAX_CAPABILITY_PACKAGE_FILES_PER_SECTION: usize = 16;
 const MAX_CAPABILITY_PACKAGE_RUNTIME_ITEMS: usize = 8;
-const MAX_CAPABILITY_PACKAGE_LEGACY_REL_PATH_LEN_ESP: usize = 48;
+const MAX_CAPABILITY_PACKAGE_REL_PATH_LEN_ESP: usize = 31;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -324,7 +324,22 @@ fn fnv1a64_hash(s: &str) -> u64 {
     h
 }
 
-fn package_file_alias(path: &str) -> String {
+fn fnv1a64_hash_pair(left: &str, right: &str) -> u64 {
+    let mut h: u64 = 14695981039346656037;
+    for b in left.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(1099511628211);
+    }
+    h ^= u64::from(0xff_u8);
+    h = h.wrapping_mul(1099511628211);
+    for b in right.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(1099511628211);
+    }
+    h
+}
+
+fn package_file_alias(package_id: &str, path: &str) -> String {
     let ext = Path::new(path)
         .extension()
         .and_then(|value| value.to_str())
@@ -338,13 +353,13 @@ fn package_file_alias(path: &str) -> String {
         })
         .filter(|value| !value.is_empty());
     match ext {
-        Some(ext) => format!("{:016x}.{}", fnv1a64_hash(path), ext),
-        None => format!("{:016x}.dat", fnv1a64_hash(path)),
+        Some(ext) => format!("{:016x}.{}", fnv1a64_hash_pair(package_id, path), ext),
+        None => format!("{:016x}.dat", fnv1a64_hash_pair(package_id, path)),
     }
 }
 
-fn is_safe_legacy_rel_path_on_esp(rel_path: &str) -> bool {
-    rel_path.len() <= MAX_CAPABILITY_PACKAGE_LEGACY_REL_PATH_LEN_ESP
+fn is_safe_rel_path_on_esp(rel_path: &str) -> bool {
+    rel_path.len() <= MAX_CAPABILITY_PACKAGE_REL_PATH_LEN_ESP
 }
 
 impl CapabilityPackageRuntimeCapabilities {
@@ -1237,7 +1252,7 @@ fn merge_visibility_override(
 }
 
 fn read_capability_package_registry(fs: &dyn StateFs) -> Result<CapabilityPackageRegistry> {
-    let Some(bytes) = fs.read(REL_PATH_CAPABILITY_PACKAGE_REGISTRY)? else {
+    let Some(bytes) = fs.read(&capability_package_registry_path())? else {
         return Ok(CapabilityPackageRegistry::default());
     };
     serde_json::from_slice(&bytes)
@@ -1256,7 +1271,7 @@ fn write_capability_package_registry(
     }
     let bytes = serde_json::to_vec(registry)
         .map_err(|error| Error::config("capability_package", error.to_string()))?;
-    fs.write(REL_PATH_CAPABILITY_PACKAGE_REGISTRY, &bytes)
+    fs.write(&capability_package_registry_path(), &bytes)
 }
 
 fn write_capability_package_rollback(
@@ -1395,21 +1410,79 @@ fn write_capability_package_bundle(
 }
 
 fn clear_capability_package_dir(fs: &dyn StateFs, package_id: &str) -> Result<()> {
-    let mut removed_any = false;
-    if fs.read(&manifest_path(package_id))?.is_some() {
-        remove_dir_recursive(fs, &package_dir(package_id))?;
-        removed_any = true;
-    }
-    if let Some(legacy_manifest) = legacy_manifest_path(package_id) {
-        if fs.read(&legacy_manifest)?.is_some() {
-            remove_dir_recursive(fs, &legacy_package_dir(package_id))?;
-            removed_any = true;
-        }
-    }
-    if !removed_any {
-        return Ok(());
+    let layout = current_storage_layout();
+    clear_bundle_files_for_layout(fs, package_id, layout)?;
+    if layout != CapabilityPackageStorageLayout::Standard {
+        clear_bundle_files_for_layout(fs, package_id, CapabilityPackageStorageLayout::Standard)?;
     }
     Ok(())
+}
+
+fn clear_bundle_files_for_layout(
+    fs: &dyn StateFs,
+    package_id: &str,
+    layout: CapabilityPackageStorageLayout,
+) -> Result<bool> {
+    let manifest_rel_path = match layout {
+        CapabilityPackageStorageLayout::Standard => {
+            let Some(path) = legacy_manifest_path(package_id) else {
+                return Ok(false);
+            };
+            path
+        }
+        CapabilityPackageStorageLayout::EspCompact => manifest_path_for_layout(layout, package_id),
+    };
+    let Some(manifest_bytes) = fs.read(&manifest_rel_path)? else {
+        return Ok(false);
+    };
+    if let Ok(manifest) = serde_json::from_slice::<CapabilityPackageManifest>(&manifest_bytes) {
+        for rel_path in bundle_file_rel_paths_for_layout(layout, package_id, &manifest) {
+            fs.remove(&rel_path)?;
+        }
+    }
+    fs.remove(&manifest_rel_path)?;
+    if layout == CapabilityPackageStorageLayout::Standard {
+        remove_dir_recursive(fs, &legacy_package_dir(package_id))?;
+    }
+    Ok(true)
+}
+
+fn bundle_file_rel_paths_for_layout(
+    layout: CapabilityPackageStorageLayout,
+    package_id: &str,
+    manifest: &CapabilityPackageManifest,
+) -> Vec<String> {
+    let mut rel_paths = Vec::with_capacity(
+        manifest.skill_fragments.len()
+            + manifest.workflows.len()
+            + manifest.policies.len()
+            + manifest.assets.len(),
+    );
+    rel_paths.extend(
+        manifest
+            .skill_fragments
+            .iter()
+            .map(|fragment| package_rel_path_for_layout(layout, package_id, &fragment.path)),
+    );
+    rel_paths.extend(
+        manifest
+            .workflows
+            .iter()
+            .map(|workflow| package_rel_path_for_layout(layout, package_id, &workflow.path)),
+    );
+    rel_paths.extend(
+        manifest
+            .policies
+            .iter()
+            .map(|policy| package_rel_path_for_layout(layout, package_id, &policy.path)),
+    );
+    rel_paths.extend(
+        manifest
+            .assets
+            .iter()
+            .map(|asset| package_rel_path_for_layout(layout, package_id, &asset.path)),
+    );
+    rel_paths
 }
 
 fn remove_dir_recursive(fs: &dyn StateFs, rel_dir: &str) -> Result<()> {
@@ -1528,10 +1601,6 @@ fn channels_overlap(left: &[String], right: &[String]) -> bool {
         .any(|channel| right.iter().any(|candidate| candidate == channel))
 }
 
-fn package_dir(package_id: &str) -> String {
-    package_dir_for_layout(current_storage_layout(), package_id)
-}
-
 fn manifest_path(package_id: &str) -> String {
     manifest_path_for_layout(current_storage_layout(), package_id)
 }
@@ -1544,39 +1613,32 @@ fn package_rel_path(package_id: &str, path: &str) -> String {
     package_rel_path_for_layout(current_storage_layout(), package_id, path)
 }
 
-fn package_dir_for_layout(layout: CapabilityPackageStorageLayout, package_id: &str) -> String {
-    match layout {
-        CapabilityPackageStorageLayout::Standard => legacy_package_dir(package_id),
-        CapabilityPackageStorageLayout::EspCompact => {
-            format!("cp/{:016x}", fnv1a64_hash(package_id))
-        }
+fn capability_package_registry_path() -> String {
+    if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
+        "cfg/cpkg.j".to_string()
+    } else {
+        REL_PATH_CAPABILITY_PACKAGE_REGISTRY.to_string()
     }
 }
 
-fn manifest_path_for_layout(
-    layout: CapabilityPackageStorageLayout,
-    package_id: &str,
-) -> String {
+fn manifest_path_for_layout(layout: CapabilityPackageStorageLayout, package_id: &str) -> String {
     match layout {
         CapabilityPackageStorageLayout::Standard => {
             format!("{}/manifest.json", legacy_package_dir(package_id))
         }
         CapabilityPackageStorageLayout::EspCompact => {
-            format!("{}/m.j", package_dir_for_layout(layout, package_id))
+            format!("cpm/{:016x}.j", fnv1a64_hash(package_id))
         }
     }
 }
 
-fn rollback_path_for_layout(
-    layout: CapabilityPackageStorageLayout,
-    package_id: &str,
-) -> String {
+fn rollback_path_for_layout(layout: CapabilityPackageStorageLayout, package_id: &str) -> String {
     match layout {
         CapabilityPackageStorageLayout::Standard => {
             format!("{REL_DIR_CAPABILITY_PACKAGE_ROLLBACK}/{package_id}.json")
         }
         CapabilityPackageStorageLayout::EspCompact => {
-            format!("cr/{:016x}.j", fnv1a64_hash(package_id))
+            format!("cpr/{:016x}.j", fnv1a64_hash(package_id))
         }
     }
 }
@@ -1591,11 +1653,7 @@ fn package_rel_path_for_layout(
             format!("{}/{}", legacy_package_dir(package_id), path)
         }
         CapabilityPackageStorageLayout::EspCompact => {
-            format!(
-                "{}/{}",
-                package_dir_for_layout(layout, package_id),
-                package_file_alias(path)
-            )
+            format!("cpf/{}", package_file_alias(package_id, path))
         }
     }
 }
@@ -1606,7 +1664,8 @@ fn legacy_package_dir(package_id: &str) -> String {
 
 fn legacy_manifest_path(package_id: &str) -> Option<String> {
     let path = manifest_path_for_layout(CapabilityPackageStorageLayout::Standard, package_id);
-    if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) && !is_safe_legacy_rel_path_on_esp(&path) {
+    if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) && !is_safe_rel_path_on_esp(&path)
+    {
         None
     } else {
         Some(path)
@@ -1615,7 +1674,8 @@ fn legacy_manifest_path(package_id: &str) -> Option<String> {
 
 fn legacy_rollback_path(package_id: &str) -> Option<String> {
     let path = rollback_path_for_layout(CapabilityPackageStorageLayout::Standard, package_id);
-    if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) && !is_safe_legacy_rel_path_on_esp(&path) {
+    if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) && !is_safe_rel_path_on_esp(&path)
+    {
         None
     } else {
         Some(path)
@@ -1653,49 +1713,14 @@ fn ensure_legacy_bundle_paths_safe_on_esp(
         CapabilityPackageStorageLayout::Standard,
         package_id,
     ));
-    all_paths.extend(
-        manifest
-            .skill_fragments
-            .iter()
-            .map(|fragment| package_rel_path_for_layout(
-                CapabilityPackageStorageLayout::Standard,
-                package_id,
-                &fragment.path,
-            )),
-    );
-    all_paths.extend(
-        manifest
-            .workflows
-            .iter()
-            .map(|workflow| package_rel_path_for_layout(
-                CapabilityPackageStorageLayout::Standard,
-                package_id,
-                &workflow.path,
-            )),
-    );
-    all_paths.extend(
-        manifest
-            .policies
-            .iter()
-            .map(|policy| package_rel_path_for_layout(
-                CapabilityPackageStorageLayout::Standard,
-                package_id,
-                &policy.path,
-            )),
-    );
-    all_paths.extend(
-        manifest
-            .assets
-            .iter()
-            .map(|asset| package_rel_path_for_layout(
-                CapabilityPackageStorageLayout::Standard,
-                package_id,
-                &asset.path,
-            )),
-    );
+    all_paths.extend(bundle_file_rel_paths_for_layout(
+        CapabilityPackageStorageLayout::Standard,
+        package_id,
+        manifest,
+    ));
     if let Some(path) = all_paths
         .into_iter()
-        .find(|path| !is_safe_legacy_rel_path_on_esp(path))
+        .find(|path| !is_safe_rel_path_on_esp(path))
     {
         return Err(Error::config(
             "capability_package",
@@ -1992,6 +2017,7 @@ mod tests {
     #[test]
     fn esp_compact_paths_keep_long_package_entries_short() {
         let package_id = "qq_capability_overlay_package_with_a_really_long_identifier";
+        let registry = capability_package_registry_path();
         let manifest =
             manifest_path_for_layout(CapabilityPackageStorageLayout::EspCompact, package_id);
         let rollback =
@@ -2002,9 +2028,14 @@ mod tests {
             "policies/tool_policy_for_qq_c2c_runtime_overlay_with_deep_nested_name.json",
         );
 
-        assert!(manifest.len() <= MAX_CAPABILITY_PACKAGE_LEGACY_REL_PATH_LEN_ESP);
-        assert!(rollback.len() <= MAX_CAPABILITY_PACKAGE_LEGACY_REL_PATH_LEN_ESP);
-        assert!(policy.len() <= MAX_CAPABILITY_PACKAGE_LEGACY_REL_PATH_LEN_ESP);
+        assert!(registry.len() <= MAX_CAPABILITY_PACKAGE_REL_PATH_LEN_ESP);
+        assert!(manifest.len() <= MAX_CAPABILITY_PACKAGE_REL_PATH_LEN_ESP);
+        assert!(rollback.len() <= MAX_CAPABILITY_PACKAGE_REL_PATH_LEN_ESP);
+        assert!(policy.len() <= MAX_CAPABILITY_PACKAGE_REL_PATH_LEN_ESP);
+        assert!(registry.starts_with("cfg/"));
+        assert!(manifest.starts_with("cpm/"));
+        assert!(rollback.starts_with("cpr/"));
+        assert!(policy.starts_with("cpf/"));
     }
 
     #[test]
@@ -2037,12 +2068,104 @@ mod tests {
             "policies/tool_policy_for_qq_c2c_runtime_overlay_with_deep_nested_name.json"
                 .to_string();
 
-        let err = ensure_legacy_bundle_paths_safe_on_esp(
-            &payload.manifest.package_id,
-            &payload.manifest,
-        )
-        .expect_err("legacy ESP path should be rejected");
+        let err =
+            ensure_legacy_bundle_paths_safe_on_esp(&payload.manifest.package_id, &payload.manifest)
+                .expect_err("legacy ESP path should be rejected");
         assert_eq!(err.stage(), "capability_package");
+    }
+
+    #[test]
+    fn esp_compact_file_alias_is_package_scoped() {
+        let left = package_rel_path_for_layout(
+            CapabilityPackageStorageLayout::EspCompact,
+            "desk_flow",
+            "policies/tool_policy.json",
+        );
+        let right = package_rel_path_for_layout(
+            CapabilityPackageStorageLayout::EspCompact,
+            "desk_flow_alt",
+            "policies/tool_policy.json",
+        );
+
+        assert_ne!(left, right);
+        assert!(left.len() <= MAX_CAPABILITY_PACKAGE_REL_PATH_LEN_ESP);
+        assert!(right.len() <= MAX_CAPABILITY_PACKAGE_REL_PATH_LEN_ESP);
+    }
+
+    #[test]
+    fn clear_bundle_files_for_esp_compact_layout_removes_manifest_and_payload_files() {
+        let fs = MemoryStateFs::default();
+        let payload = sample_payload();
+        let package_id = payload.manifest.package_id.clone();
+        let manifest_path =
+            manifest_path_for_layout(CapabilityPackageStorageLayout::EspCompact, &package_id);
+        fs.write(
+            &manifest_path,
+            &serde_json::to_vec(&payload.manifest).expect("serialize manifest"),
+        )
+        .expect("write compact manifest");
+        for file in &payload.skills {
+            fs.write(
+                &package_rel_path_for_layout(
+                    CapabilityPackageStorageLayout::EspCompact,
+                    &package_id,
+                    &file.path,
+                ),
+                file.content.as_bytes(),
+            )
+            .expect("write skill");
+        }
+        for file in &payload.workflows {
+            fs.write(
+                &package_rel_path_for_layout(
+                    CapabilityPackageStorageLayout::EspCompact,
+                    &package_id,
+                    &file.path,
+                ),
+                file.content.as_bytes(),
+            )
+            .expect("write workflow");
+        }
+        for file in &payload.policies {
+            fs.write(
+                &package_rel_path_for_layout(
+                    CapabilityPackageStorageLayout::EspCompact,
+                    &package_id,
+                    &file.path,
+                ),
+                file.content.as_bytes(),
+            )
+            .expect("write policy");
+        }
+        for file in &payload.assets {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(file.content_base64.trim())
+                .expect("decode asset");
+            fs.write(
+                &package_rel_path_for_layout(
+                    CapabilityPackageStorageLayout::EspCompact,
+                    &package_id,
+                    &file.path,
+                ),
+                &bytes,
+            )
+            .expect("write asset");
+        }
+
+        assert!(clear_bundle_files_for_layout(
+            &fs,
+            &package_id,
+            CapabilityPackageStorageLayout::EspCompact,
+        )
+        .expect("clear compact layout"));
+        assert!(fs.read(&manifest_path).expect("read manifest").is_none());
+        for rel_path in bundle_file_rel_paths_for_layout(
+            CapabilityPackageStorageLayout::EspCompact,
+            &package_id,
+            &payload.manifest,
+        ) {
+            assert!(fs.read(&rel_path).expect("read payload").is_none());
+        }
     }
 
     #[test]

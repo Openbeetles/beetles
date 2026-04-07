@@ -9,6 +9,19 @@ pub(super) fn prepare_worker_conversation<'a>(
     tool_ctx: &mut HttpClientToolContext<'_>,
     latency: &mut WorkerLatency,
 ) -> Result<PreparedWorkerConversation> {
+    let prepare_trace_enabled = cfg!(any(target_arch = "xtensa", target_arch = "riscv32"))
+        && msg.ingress == IngressKind::User;
+    let log_prepare_stage = |stage: &str| {
+        if prepare_trace_enabled {
+            log::info!(
+                "[agent_prepare] stage={} channel={} chat_id={}",
+                stage,
+                msg.channel,
+                msg.chat_id
+            );
+        }
+    };
+    log_prepare_stage("start");
     let emotion_signal_suffix = config
         .emotion_signal_store
         .get_then_clear(&msg.chat_id)
@@ -60,6 +73,16 @@ pub(super) fn prepare_worker_conversation<'a>(
         .saturating_sub(post_memory_tail_len);
     let capability_package_text =
         (config.get_capability_package_text)(&msg.channel, prompt_memory_system_budget.min(1800));
+    if prepare_trace_enabled {
+        log::info!(
+            "[agent_prepare] stage=capability_package_ready channel={} chat_id={} has_text={}",
+            msg.channel,
+            msg.chat_id,
+            capability_package_text
+                .as_ref()
+                .is_some_and(|text| !text.trim().is_empty())
+        );
+    }
     let relationship_id = crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id);
     let (mental_privacy_adjudication, mental_privacy_adjudication_failed) = if msg.ingress
         == IngressKind::User
@@ -92,6 +115,16 @@ pub(super) fn prepare_worker_conversation<'a>(
     } else {
         (None, false)
     };
+    if prepare_trace_enabled {
+        log::info!(
+            "[agent_prepare] stage=mental_privacy_ready channel={} chat_id={} adjudication={} failed={}",
+            msg.channel,
+            msg.chat_id,
+            mental_privacy_adjudication.is_some(),
+            mental_privacy_adjudication_failed
+        );
+    }
+    log_prepare_stage("prompt_memory_load_start");
     let mut prompt_memory = load_prompt_memory_context(PromptMemoryContextParams {
         chat_id: &msg.chat_id,
         current_channel: &msg.channel,
@@ -129,6 +162,16 @@ pub(super) fn prepare_worker_conversation<'a>(
         skill_storage: config.skill_storage.as_ref(),
         continuity_capsule_store: config.continuity_capsule_store.as_ref(),
     });
+    if prepare_trace_enabled {
+        log::info!(
+            "[agent_prepare] stage=prompt_memory_ready channel={} chat_id={} session_messages={} has_summary={} has_self_model={}",
+            msg.channel,
+            msg.chat_id,
+            prompt_memory.session_messages.len(),
+            prompt_memory.session_summary.as_ref().is_some(),
+            prompt_memory.self_model.as_ref().is_some()
+        );
+    }
     let recent_persona_evidence =
         load_recent_persona_evidence(config.turn_ledger_store.as_ref(), &relationship_id)
             .ok()
@@ -167,6 +210,14 @@ pub(super) fn prepare_worker_conversation<'a>(
         prompt_memory.relationship_constitution_text =
             crate::memory::render_relationship_constitution_block(&constitution, 420);
     }
+    if prepare_trace_enabled {
+        log::info!(
+            "[agent_prepare] stage=relationship_constitution_ready channel={} chat_id={} has_constitution={}",
+            msg.channel,
+            msg.chat_id,
+            prompt_memory.relationship_constitution.is_some()
+        );
+    }
     let core_revision_ledger = config
         .core_revision_ledger_store
         .get(board_subject_scope_id())
@@ -204,6 +255,14 @@ pub(super) fn prepare_worker_conversation<'a>(
                 })
                 .flatten()
         });
+    if prepare_trace_enabled {
+        log::info!(
+            "[agent_prepare] stage=governance_ready channel={} chat_id={} conservative_reply={}",
+            msg.channel,
+            msg.chat_id,
+            personality_governance_gate.conservative_reply
+        );
+    }
     let core_revision_governance = compute_core_revision_governance_digest(
         core_revision_ledger.as_ref(),
         prompt_memory

@@ -186,7 +186,7 @@ Includes: `POST /api/config/wifi`, `/api/config/llm`, `/api/config/channels`, `/
   - `id` non-empty, ≤ 32 bytes, must be unique
   - `device_type` must be one of `gpio_out` / `gpio_in` / `pwm_out` / `adc_in` / `buzzer`
   - `what` ≤ 128 bytes, `how` ≤ 256 bytes
-  - `pins` must have a `"pin"` key; pin value 1–48, must not be strapping pins (0, 3, 45, 46), must not conflict across devices
+  - `pins` must have a `"pin"` key; pin value 1–48, must not be strapping pins (0, 3, 46), must not conflict across devices
   - `adc_in` pin must be in ADC1 range (GPIO 1–10)
   - `pwm_out` device count ≤ 4; `options.frequency_hz` if present must be 1–40000
 - **Response**: Success 200 `{"ok": true}`; validation failure 400.
