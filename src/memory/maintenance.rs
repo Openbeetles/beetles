@@ -554,12 +554,11 @@ fn build_task_continuity_capsule_drafts(
     let mut decisions = Vec::new();
     for record in learning_records {
         match record.route {
-            TaskLearningRoute::RuntimeSkill
-            | TaskLearningRoute::CanonicalFactual
-            | TaskLearningRoute::ArchivedEvidence => {
+            TaskLearningRoute::RuntimeSkill | TaskLearningRoute::CanonicalFactual => {
                 push_compact(&mut decisions, record.summary.as_str());
             }
-            TaskLearningRoute::Pending
+            TaskLearningRoute::ArchivedEvidence
+            | TaskLearningRoute::Pending
             | TaskLearningRoute::WorkspacePruned
             | TaskLearningRoute::Rejected => {}
         }
@@ -1716,6 +1715,115 @@ mod tests {
             .artifact_refs
             .iter()
             .any(|artifact| artifact == "artifact:a01"));
+    }
+
+    #[test]
+    fn task_continuity_capsule_excludes_archive_only_learning_from_decisions() {
+        let run = crate::task_execution::TaskRunRecord {
+            run: crate::task_execution::TaskRun {
+                run_id: "run-2".to_string(),
+                source_channel: "qq_channel".to_string(),
+                source_chat_id: "chat-1".to_string(),
+                user_request: "继续收口写入治理".to_string(),
+                title: "Memory write governance".to_string(),
+                status: crate::task_execution::TaskRunStatus::Running,
+                current_step_id: "s01".to_string(),
+                planner_reason: String::new(),
+                final_summary: String::new(),
+                failure_reason: String::new(),
+                plan_revision: 1,
+                created_at: 10,
+                updated_at: 20,
+                finished_at: 0,
+            },
+            plan: crate::task_execution::TaskPlan {
+                goal: "Close write governance gaps".to_string(),
+                completion_definition: "task learning and extraction share one governed skill path"
+                    .to_string(),
+                risk_notes: Vec::new(),
+                ordered_steps: vec![crate::task_execution::TaskStep {
+                    step_id: "s01".to_string(),
+                    title: "Wire governance".to_string(),
+                    instruction:
+                        "Route task learning and extraction through governed runtime skill writes"
+                            .to_string(),
+                    status: crate::task_execution::TaskStepStatus::Running,
+                    tool_budget: 3,
+                    retry_budget: 1,
+                    expected_artifacts: Vec::new(),
+                    review_criteria: Vec::new(),
+                    attempt_count: 0,
+                    last_result_summary: "governed runtime skill path drafted".to_string(),
+                    last_review_summary: String::new(),
+                    started_at: 15,
+                    finished_at: 0,
+                }],
+            },
+        };
+        let drafts = build_task_continuity_capsule_drafts(
+            &run,
+            None,
+            &PostReplyMemoryMaintenanceInput {
+                chat_id: "chat-1",
+                ingress: IngressKind::User,
+                channel: "qq_channel",
+                user_content: "继续收口写入治理",
+                reply_content: "我会统一 factual 和 runtime skill 的写入门",
+                pressure: PressureLevel::Normal,
+                memory_profile: MemoryProfile::Embedded,
+                tool_calls: 1,
+                external_content_used: false,
+                now_secs: 30,
+            },
+            &[],
+            &[
+                crate::task_execution::TaskLearningRecord {
+                    learning_id: "tl-runtime".to_string(),
+                    source_channel: "qq_channel".to_string(),
+                    source_chat_id: "chat-1".to_string(),
+                    run_id: "run-2".to_string(),
+                    step_id: "s01".to_string(),
+                    kind: crate::task_execution::TaskLearningKind::ReusableProcedure,
+                    route: crate::task_execution::TaskLearningRoute::RuntimeSkill,
+                    run_status: crate::task_execution::TaskRunStatus::Running,
+                    topic: "memory write governance".to_string(),
+                    summary: "reuse one governed runtime-skill path".to_string(),
+                    content: "1. validate skill write\n2. promote only structured procedures"
+                        .to_string(),
+                    memory_kind: None,
+                    review_summary: String::new(),
+                    source_artifact_ids: Vec::new(),
+                    provenance: String::new(),
+                    archive_note_name: String::new(),
+                    route_detail: String::new(),
+                    observed_at: 20,
+                },
+                crate::task_execution::TaskLearningRecord {
+                    learning_id: "tl-archive".to_string(),
+                    source_channel: "qq_channel".to_string(),
+                    source_chat_id: "chat-1".to_string(),
+                    run_id: "run-2".to_string(),
+                    step_id: "s01".to_string(),
+                    kind: crate::task_execution::TaskLearningKind::EvidenceOnly,
+                    route: crate::task_execution::TaskLearningRoute::ArchivedEvidence,
+                    run_status: crate::task_execution::TaskRunStatus::Running,
+                    topic: "supporting evidence".to_string(),
+                    summary: "archive-only evidence should not be treated as a decision"
+                        .to_string(),
+                    content: "Operator logs showed duplicate promotions.".to_string(),
+                    memory_kind: None,
+                    review_summary: String::new(),
+                    source_artifact_ids: Vec::new(),
+                    provenance: String::new(),
+                    archive_note_name: String::new(),
+                    route_detail: String::new(),
+                    observed_at: 20,
+                },
+            ],
+        );
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(drafts[0].decisions.len(), 1);
+        assert!(drafts[0].decisions[0].contains("governed runtime-skill path"));
     }
 
     #[test]

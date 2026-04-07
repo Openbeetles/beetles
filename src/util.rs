@@ -357,6 +357,68 @@ pub fn trigram_overlap_score(left: &str, right: &str, max_score: u32) -> u32 {
         .max(0.0) as u32
 }
 
+/// 粗判是否像原始日志 / payload / 结构化转储，而不是可治理记忆文本。
+pub fn looks_like_raw_payload_text(content: &str) -> bool {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let line_count = trimmed.lines().count();
+    let bracket_like = trimmed
+        .chars()
+        .filter(|ch| matches!(ch, '{' | '}' | '[' | ']' | ':' | '=' | '|'))
+        .count();
+    let punctuation_ratio = bracket_like as f32 / trimmed.chars().count().max(1) as f32;
+    let has_log_shape = trimmed
+        .lines()
+        .filter(|line| line.contains('[') && line.contains(']'))
+        .count();
+    (line_count >= 3 && punctuation_ratio > 0.18 && has_log_shape >= 2)
+        || (trimmed.starts_with('{') && trimmed.ends_with('}') && punctuation_ratio > 0.12)
+}
+
+/// 程序性文本形态信号。返回值越高，越像可复用 procedure / playbook。
+pub fn procedural_text_signal_count(content: &str) -> u32 {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return 0;
+    }
+    let line_count = trimmed.lines().count();
+    let bullet_lines = trimmed
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            trimmed.starts_with("- ")
+                || trimmed.starts_with("* ")
+                || trimmed.starts_with("1.")
+                || trimmed.starts_with("2.")
+                || trimmed.starts_with("3.")
+        })
+        .count();
+    let short_line_count = trimmed
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty() && trimmed.chars().count() <= 72
+        })
+        .count();
+    let shellish_tokens = trimmed
+        .split_whitespace()
+        .filter(|token| {
+            token.starts_with("--")
+                || token.starts_with('/')
+                || token.starts_with("./")
+                || token.contains("://")
+                || token.contains("::")
+        })
+        .count();
+    let arrow_like = trimmed.matches("->").count() + trimmed.matches("=>").count();
+    let newline_density = u32::from(line_count >= 3 && short_line_count >= 2);
+    let bullet_density = u32::from(bullet_lines >= 2);
+    let tool_shape = u32::from(shellish_tokens >= 2 || arrow_like >= 1 || trimmed.contains("```"));
+    newline_density + bullet_density + tool_shape
+}
+
 // ---------- 时间/日期（与 cron、remind_at、get_time 共用） ----------
 
 /// 闰年判定。

@@ -9,15 +9,17 @@ use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    build_archive_evidence_block, build_shared_factual_plane_snapshot, inspect_archive_recall,
+    build_archive_evidence_block, build_cross_plane_rerank_result,
+    build_shared_factual_plane_snapshot, decide_prompt_recall_route, inspect_archive_recall,
     inspect_continuity_capsule_recall, inspect_runtime_skill_recall, inspect_shared_factual_recall,
     inspect_task_recall, memory_policy, parse_explicit_long_term_slot_query,
     recall_long_term_memory_block, render_continuity_capsule_block,
     render_exact_long_term_memory_block, search_archive_records_detailed,
     select_archive_hits_for_prompt_with_report, ArchivePromptSelectionReport, ArchiveSearchHit,
     ArchiveSearchQuery, ArchiveSearchQueryReport, ContinuityCapsule, ContinuityCapsuleScopeKind,
-    ContinuityCapsuleStore, LongTermMemoryStore, MemoryProfile, MemoryStore, RecallPlane,
-    RecallQuery, RecallSelectionReport, SessionMessage, SessionStore, SharedFactualPlaneSnapshot,
+    ContinuityCapsuleStore, CrossPlaneRerankInput, CrossPlaneRerankResult, LongTermMemoryStore,
+    MemoryProfile, MemoryStore, PromptRecallIntent, RecallPlane, RecallQuery,
+    RecallSelectionReport, SessionMessage, SessionStore, SharedFactualPlaneSnapshot,
     TurnLedgerStore,
 };
 
@@ -51,6 +53,10 @@ pub struct WorkingRecallInspection {
     pub task_recall_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_recall_report: Option<RecallSelectionReport>,
+    #[serde(default)]
+    pub prompt_recall_intent: PromptRecallIntent,
+    #[serde(default)]
+    pub cross_plane_rerank: CrossPlaneRerankResult,
     pub archive_query_report: ArchiveSearchQueryReport,
     pub archive_selector_report: ArchivePromptSelectionReport,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -248,6 +254,26 @@ pub fn inspect_working_recall(input: WorkingRecallInspectionInput<'_>) -> Workin
         )),
         _ => None,
     };
+    let prompt_recall_intent =
+        decide_prompt_recall_route(super::recall_router::PromptRecallRouterInput {
+            user_query: input.query,
+            has_execution_state: false,
+            has_active_task: active_task_run.is_some(),
+            shared_factual_report: &shared_factual_report,
+            continuity_capsule_report: &continuity_capsule_report,
+            archive_report: &archive_recall_report,
+            runtime_skill_report: &runtime_skill_report,
+            task_recall_report: task_recall_report.as_ref(),
+        })
+        .intent;
+    let cross_plane_rerank = build_cross_plane_rerank_result(CrossPlaneRerankInput {
+        intent: prompt_recall_intent,
+        shared_factual_report: &shared_factual_report,
+        continuity_capsule_report: &continuity_capsule_report,
+        archive_report: &archive_recall_report,
+        runtime_skill_report: &runtime_skill_report,
+        task_recall_report: task_recall_report.as_ref(),
+    });
     WorkingRecallInspection {
         chat_id: input.chat_id.to_string(),
         query: input.query.trim().to_string(),
@@ -272,6 +298,8 @@ pub fn inspect_working_recall(input: WorkingRecallInspectionInput<'_>) -> Workin
         runtime_skill_report,
         task_recall_text,
         task_recall_report,
+        prompt_recall_intent,
+        cross_plane_rerank,
         archive_query_report: archive_result.report,
         archive_selector_report: selection.report,
         archive_hits: archive_result.hits,
@@ -297,6 +325,10 @@ pub fn render_working_recall_inspection_markdown(inspection: &WorkingRecallInspe
             truncate_content_to_max(summary, 220)
         ));
     }
+    out.push_str(&format!(
+        "- prompt_intent: {}\n",
+        inspection.prompt_recall_intent.label()
+    ));
 
     out.push_str("\n## Canonical Recall\n");
     if let Some(text) = inspection.long_term_memory_text.as_deref() {
@@ -398,6 +430,45 @@ pub fn render_working_recall_inspection_markdown(inspection: &WorkingRecallInspe
         out.push('\n');
     }
 
+    out.push_str("\n## Cross-Plane Rerank\n");
+    if inspection.cross_plane_rerank.plane_signals.is_empty() {
+        out.push_str("- No cross-plane rerank signals.\n");
+    } else {
+        out.push_str(&format!(
+            "- intent: {}\n",
+            inspection.cross_plane_rerank.intent.label()
+        ));
+        for signal in &inspection.cross_plane_rerank.plane_signals {
+            out.push_str(&format!(
+                "- plane={} signal={} top={} candidates={} selected={}\n",
+                signal.plane.label(),
+                signal.signal_score,
+                signal.top_rerank_score,
+                signal.candidate_count,
+                signal.selected_count
+            ));
+            if let Some(reason) = signal.top_reason.as_deref() {
+                out.push_str(&format!(
+                    "  why: {}\n",
+                    truncate_content_to_max(reason, 140)
+                ));
+            }
+        }
+        if !inspection.cross_plane_rerank.top_candidates.is_empty() {
+            out.push_str("- top_candidates:\n");
+            for candidate in &inspection.cross_plane_rerank.top_candidates {
+                out.push_str(&format!(
+                    "  - {} {} score={} selected={} source={}\n",
+                    candidate.plane.label(),
+                    truncate_content_to_max(&candidate.title, 72),
+                    candidate.rerank_score,
+                    candidate.selected,
+                    candidate.source
+                ));
+            }
+        }
+    }
+
     out.push_str("\n## Runtime Skill Recall\n");
     out.push_str(&format!(
         "- backend: {}\n- candidates: {}\n- selected: {}\n",
@@ -435,4 +506,95 @@ pub fn render_working_recall_inspection_markdown(inspection: &WorkingRecallInspe
     }
 
     out.trim_end().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::{
+        CrossPlanePlaneSignal, CrossPlaneRerankCandidate, SharedFactualPlaneSnapshot,
+    };
+
+    #[test]
+    fn inspection_markdown_includes_cross_plane_rerank_section() {
+        let markdown = render_working_recall_inspection_markdown(&WorkingRecallInspection {
+            chat_id: "chat-1".to_string(),
+            query: "继续 release patch".to_string(),
+            profile: "standard".to_string(),
+            summary_text: Some("summary".to_string()),
+            long_term_memory_text: None,
+            shared_factual_plane: SharedFactualPlaneSnapshot {
+                block: None,
+                observations: Vec::new(),
+            },
+            archive_evidence_text: None,
+            shared_factual_report: RecallSelectionReport::default(),
+            continuity_capsule_text: None,
+            continuity_capsule_report: RecallSelectionReport::default(),
+            continuity_capsules: Vec::new(),
+            archive_recall_report: RecallSelectionReport::default(),
+            runtime_skill_text: None,
+            runtime_skill_report: RecallSelectionReport::default(),
+            task_recall_text: None,
+            task_recall_report: None,
+            prompt_recall_intent: PromptRecallIntent::Procedural,
+            cross_plane_rerank: CrossPlaneRerankResult {
+                intent: PromptRecallIntent::Procedural,
+                plane_signals: vec![CrossPlanePlaneSignal {
+                    plane: RecallPlane::RuntimeSkill,
+                    candidate_count: 2,
+                    selected_count: 1,
+                    top_rerank_score: 48,
+                    signal_score: 60,
+                    top_candidate_id: Some("runtime-1".to_string()),
+                    top_reason: Some("intent=procedural".to_string()),
+                }],
+                top_candidates: vec![CrossPlaneRerankCandidate {
+                    plane: RecallPlane::RuntimeSkill,
+                    candidate_id: "runtime-1".to_string(),
+                    title: "Release patch flow".to_string(),
+                    source: "runtime_skill".to_string(),
+                    selected: true,
+                    original_total_score: 32,
+                    rerank_score: 48,
+                    reasons: vec!["intent=procedural".to_string()],
+                }],
+            },
+            archive_query_report: ArchiveSearchQueryReport {
+                query: "继续 release patch".to_string(),
+                normalized_terms: Vec::new(),
+                preferred_chat_id: Some("chat-1".to_string()),
+                chat_id_filter: None,
+                requested_sources: Vec::new(),
+                limit: 4,
+                weak_query: false,
+                backend: Default::default(),
+                candidate_count: 0,
+                returned_hit_count: 0,
+                top_citations: Vec::new(),
+                top_match_terms: Vec::new(),
+                source_stats: Vec::new(),
+                miss_reason: None,
+            },
+            archive_selector_report: ArchivePromptSelectionReport {
+                input_hits: 0,
+                selected_hits: 0,
+                max_items: 0,
+                max_chars: 0,
+                skipped_by_chars: 0,
+                skipped_by_similarity: 0,
+                deferred_by_quota: 0,
+                relaxed_quota_selected: 0,
+                source_stats: Vec::new(),
+                selection_note: None,
+            },
+            archive_hits: Vec::new(),
+            selected_archive_hits: Vec::new(),
+        });
+
+        assert!(markdown.contains("## Cross-Plane Rerank"));
+        assert!(markdown.contains("intent: procedural"));
+        assert!(markdown.contains("plane=runtime_skill"));
+        assert!(markdown.contains("Release patch flow"));
+    }
 }

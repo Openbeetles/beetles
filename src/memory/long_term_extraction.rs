@@ -8,7 +8,7 @@ use crate::error::Result;
 use crate::llm::{LlmClient, LlmHttpClient, Message, ToolChoicePolicy};
 use crate::orchestrator::PressureLevel;
 use crate::platform::SkillStorage;
-use crate::skills::{upsert_runtime_skill, RuntimeSkillWrite};
+use crate::skills::{write_governed_runtime_skills, RuntimeSkillWrite, RuntimeSkillWriteSource};
 use crate::util::{scrub_credentials, truncate_content_to_max};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -749,8 +749,13 @@ pub fn apply_long_term_memory_extraction(
         )?
         .changed;
     }
-    for write in &extraction.skill_writes {
-        changed += usize::from(upsert_runtime_skill(skill_storage, write)?);
+    if !extraction.skill_writes.is_empty() {
+        changed += write_governed_runtime_skills(
+            skill_storage,
+            &extraction.skill_writes,
+            RuntimeSkillWriteSource::Extraction,
+        )?
+        .changed;
     }
     Ok(changed)
 }
@@ -2172,6 +2177,32 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn apply_extraction_rejects_weak_skill_write_before_upsert() {
+        let store = StubLongTermMemoryStore::default();
+        let skill_storage = StubSkillStorage::default();
+        let extraction = ParsedLongTermMemoryExtraction {
+            upserts: vec![],
+            deletes: vec![],
+            skill_writes: vec![RuntimeSkillWrite {
+                name: String::new(),
+                topic: "owner_timezone".to_string(),
+                title: "Owner timezone".to_string(),
+                summary: "Timezone note".to_string(),
+                content: "Owner timezone is Asia/Shanghai.".to_string(),
+                citations: Vec::new(),
+                source_chat_id: Some("chat-1".to_string()),
+                observed_at: 100,
+            }],
+        };
+
+        let changed =
+            apply_long_term_memory_extraction(&store, &skill_storage, &extraction, 100).unwrap();
+
+        assert_eq!(changed, 0);
+        assert!(skill_storage.list_names().unwrap().is_empty());
     }
 
     #[test]

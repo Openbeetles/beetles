@@ -8,7 +8,10 @@ use crate::memory::{
     LongTermMemoryFreshness, LongTermMemoryKind, LongTermMemorySourceScope,
     LongTermMemorySourceType, LongTermMemoryStore, MemoryStore, SharedMemoryWriteSource,
 };
-use crate::skills::{runtime_skill_name_for_topic, upsert_runtime_skill, RuntimeSkillWrite};
+use crate::skills::{
+    runtime_skill_name_for_topic, write_governed_runtime_skills, RuntimeSkillWrite,
+    RuntimeSkillWriteSource,
+};
 use crate::util::{epoch_to_ymdhms, truncate_content_to_max};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
@@ -419,17 +422,40 @@ pub fn run_task_learning_maintenance(
                     let distinct_runs = count_distinct_procedure_runs(&all_chat_records, &record);
                     if distinct_runs >= PROCEDURE_PROMOTION_MIN_DISTINCT_RUNS {
                         let write = build_runtime_skill_write(&record, &archive_citation);
-                        if upsert_runtime_skill(ctx.skill_storage, &write)? {
-                            outcome.runtime_skill_promotions =
-                                outcome.runtime_skill_promotions.saturating_add(1);
+                        let write_outcome = write_governed_runtime_skills(
+                            ctx.skill_storage,
+                            std::slice::from_ref(&write),
+                            RuntimeSkillWriteSource::TaskLearning,
+                        )?;
+                        if write_outcome.accepted > 0 {
+                            outcome.runtime_skill_promotions = outcome
+                                .runtime_skill_promotions
+                                .saturating_add(write_outcome.changed.max(1));
+                            record.route = TaskLearningRoute::RuntimeSkill;
+                            record.route_detail = format!(
+                                "promoted after {} distinct successful task runs",
+                                distinct_runs
+                            );
+                            promoted_topics.insert(normalize_learning_match_key(
+                                &record.topic,
+                                &record.summary,
+                            ));
+                        } else {
+                            record.route = TaskLearningRoute::ArchivedEvidence;
+                            record.route_detail = write_outcome
+                                .reports
+                                .first()
+                                .map(|report| {
+                                    format!(
+                                        "archived as procedural evidence after runtime-skill governance rejected promotion ({})",
+                                        report.reason.label()
+                                    )
+                                })
+                                .unwrap_or_else(|| {
+                                    "archived as procedural evidence after runtime-skill governance rejected promotion".to_string()
+                                });
+                            outcome.archived_records = outcome.archived_records.saturating_add(1);
                         }
-                        record.route = TaskLearningRoute::RuntimeSkill;
-                        record.route_detail = format!(
-                            "promoted after {} distinct successful task runs",
-                            distinct_runs
-                        );
-                        promoted_topics
-                            .insert(normalize_learning_match_key(&record.topic, &record.summary));
                     } else {
                         record.route = TaskLearningRoute::ArchivedEvidence;
                         record.route_detail = format!(
@@ -1780,5 +1806,74 @@ mod tests {
         assert!(note_body.contains("Task learning archive for tr001"));
         assert!(note_body.contains("release_root_cause"));
         assert!(note_body.contains("apply_release_patch"));
+    }
+
+    #[test]
+    fn task_learning_maintenance_archives_weak_procedure_when_skill_governance_rejects_it() {
+        let now_secs = crate::util::ymdhms_to_epoch(2026, 4, 6, 10, 0, 0);
+        let run = make_run_record("tr101", TaskRunStatus::Completed, now_secs);
+        let prior_procedure = make_learning_record(
+            "tl_old_proc_weak",
+            "tr100",
+            TaskLearningKind::ReusableProcedure,
+            TaskLearningRoute::ArchivedEvidence,
+            "owner_timezone",
+            "Timezone note",
+            "Owner timezone is Asia/Shanghai.",
+            now_secs.saturating_sub(60),
+        );
+        let pending_procedure = make_learning_record(
+            "tl_proc_weak",
+            "tr101",
+            TaskLearningKind::ReusableProcedure,
+            TaskLearningRoute::Pending,
+            "owner_timezone",
+            "Timezone note",
+            "Owner timezone is Asia/Shanghai.",
+            now_secs,
+        );
+        let learning_store =
+            StubTaskLearningStore::with_records(vec![prior_procedure, pending_procedure]);
+        let task_run_store = StubTaskRunStore::new(vec![
+            make_run_record(
+                "tr100",
+                TaskRunStatus::Completed,
+                now_secs.saturating_sub(60),
+            ),
+            run,
+        ]);
+        let task_artifact_store = StubTaskArtifactStore::default();
+        let long_term_memory_store = StubLongTermMemoryStore::default();
+        let skill_storage = StubSkillStorage::default();
+        let memory_store = StubMemoryStore::default();
+
+        let outcome = run_task_learning_maintenance(
+            TaskLearningMaintenanceContext {
+                task_run_store: &task_run_store,
+                task_artifact_store: &task_artifact_store,
+                task_learning_store: &learning_store,
+                long_term_memory_store: &long_term_memory_store,
+                skill_storage: &skill_storage,
+                memory_store: &memory_store,
+            },
+            TaskLearningMaintenanceInput {
+                channel: "telegram",
+                chat_id: "chat-1",
+                now_secs,
+            },
+        )
+        .expect("task learning maintenance should succeed");
+
+        assert_eq!(outcome.runtime_skill_promotions, 0);
+        assert_eq!(outcome.archived_records, 1);
+        let procedure = learning_store
+            .get("tl_proc_weak")
+            .expect("proc read")
+            .expect("proc exists");
+        assert_eq!(procedure.route, TaskLearningRoute::ArchivedEvidence);
+        assert!(procedure
+            .route_detail
+            .contains("runtime-skill governance rejected"));
+        assert!(skill_storage.list_names().unwrap().is_empty());
     }
 }

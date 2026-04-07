@@ -6,11 +6,14 @@ use crate::platform::{SkillMetaStore, SkillStorage};
 
 mod runtime;
 
+pub(crate) use runtime::retrieve_runtime_skill_hits_with_backend;
 pub use runtime::{
     build_runtime_skill_recall_block, govern_runtime_skills, is_runtime_skill_name,
     retrieve_runtime_skill_hits, touch_runtime_skill_hits, upsert_runtime_skill,
-    RuntimeSkillGovernanceOutcome, RuntimeSkillHit, RuntimeSkillRecallScoreBreakdown,
-    RuntimeSkillRecord, RuntimeSkillStatus,
+    write_governed_runtime_skills, RuntimeSkillGovernanceOutcome, RuntimeSkillHit,
+    RuntimeSkillRecallScoreBreakdown, RuntimeSkillRecord, RuntimeSkillStatus,
+    RuntimeSkillWriteAction, RuntimeSkillWriteItemReport, RuntimeSkillWriteOutcome,
+    RuntimeSkillWriteReason, RuntimeSkillWriteSource,
 };
 
 fn is_skill_name_valid(name: &str) -> bool {

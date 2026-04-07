@@ -1,6 +1,7 @@
 //! Route durable writes between canonical factual memory and procedural runtime skills.
 
 use crate::skills::{runtime_skill_name_for_topic, RuntimeSkillWrite};
+use crate::util::{looks_like_raw_payload_text, procedural_text_signal_count};
 
 use super::{LongTermMemoryDraft, LongTermMemoryKind, LongTermMemorySourceType};
 
@@ -28,7 +29,7 @@ pub fn route_long_term_draft(draft: &LongTermMemoryDraft) -> RoutedMemoryDraft {
             reason: "empty_or_invalid",
         };
     };
-    if looks_like_raw_payload(&normalized.content) {
+    if looks_like_raw_payload_text(&normalized.content) {
         return RoutedMemoryDraft {
             plane: MemoryPlane::Reject,
             factual_draft: None,
@@ -63,64 +64,12 @@ pub fn route_long_term_draft(draft: &LongTermMemoryDraft) -> RoutedMemoryDraft {
     }
 }
 
-fn looks_like_raw_payload(content: &str) -> bool {
-    let trimmed = content.trim();
-    if trimmed.is_empty() {
-        return true;
-    }
-    let line_count = trimmed.lines().count();
-    let bracket_like = trimmed
-        .chars()
-        .filter(|ch| matches!(ch, '{' | '}' | '[' | ']' | ':' | '=' | '|'))
-        .count();
-    let punctuation_ratio = bracket_like as f32 / trimmed.chars().count().max(1) as f32;
-    let has_log_shape = trimmed
-        .lines()
-        .filter(|line| line.contains('[') && line.contains(']'))
-        .count();
-    (line_count >= 3 && punctuation_ratio > 0.18 && has_log_shape >= 2)
-        || (trimmed.starts_with('{') && trimmed.ends_with('}') && punctuation_ratio > 0.12)
-}
-
 fn is_procedural_experience(draft: &LongTermMemoryDraft) -> bool {
     let content = draft.content.trim();
     if content.is_empty() {
         return false;
     }
-    let line_count = content.lines().count();
-    let bullet_lines = content
-        .lines()
-        .filter(|line| {
-            let trimmed = line.trim_start();
-            trimmed.starts_with("- ")
-                || trimmed.starts_with("* ")
-                || trimmed.starts_with("1.")
-                || trimmed.starts_with("2.")
-                || trimmed.starts_with("3.")
-        })
-        .count();
-    let short_line_count = content
-        .lines()
-        .filter(|line| {
-            let trimmed = line.trim();
-            !trimmed.is_empty() && trimmed.chars().count() <= 72
-        })
-        .count();
-    let shellish_tokens = content
-        .split_whitespace()
-        .filter(|token| {
-            token.starts_with("--")
-                || token.starts_with('/')
-                || token.starts_with("./")
-                || token.contains("://")
-                || token.contains("::")
-        })
-        .count();
-    let arrow_like = content.matches("->").count() + content.matches("=>").count();
-    let newline_density = usize::from(line_count >= 3 && short_line_count >= 2);
-    let bullet_density = usize::from(bullet_lines >= 2);
-    let tool_shape =
-        usize::from(shellish_tokens >= 2 || arrow_like >= 1 || content.contains("```"));
+    let content_signal = procedural_text_signal_count(content) as usize;
     let source_bias = usize::from(matches!(
         draft
             .source_type
@@ -131,7 +80,7 @@ fn is_procedural_experience(draft: &LongTermMemoryDraft) -> bool {
         draft.kind,
         LongTermMemoryKind::Project | LongTermMemoryKind::Task | LongTermMemoryKind::Fact
     ));
-    let score = newline_density + bullet_density + tool_shape + source_bias + kind_bias;
+    let score = content_signal + source_bias + kind_bias;
     score >= 4
 }
 

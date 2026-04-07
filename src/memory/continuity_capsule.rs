@@ -3,11 +3,15 @@
 
 use crate::error::Result;
 use crate::util::truncate_content_to_max;
+#[cfg(target_os = "linux")]
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
 
 use super::{
     RecallCandidate, RecallPlane, RecallQuery, RecallScoreBreakdown, RecallSelectionReport,
@@ -28,6 +32,26 @@ const MAX_CONTINUITY_CAPSULE_LIST_ITEMS: usize = 4;
 const MAX_CONTINUITY_CAPSULE_RECALL_CANDIDATES: usize = 12;
 const MAX_CONTINUITY_CAPSULE_RECALL_SELECTED: usize = 3;
 const CONTINUITY_CAPSULE_STALE_AFTER_SECS: u64 = 14 * 24 * 60 * 60;
+#[cfg(target_os = "linux")]
+const CONTINUITY_CAPSULE_INDEX_VERSION: u32 = 1;
+#[cfg(target_os = "linux")]
+const REL_PATH_CONTINUITY_CAPSULE_INDEX: &str = "memory/continuity_capsule_index.sqlite3";
+#[cfg(target_os = "linux")]
+const CONTINUITY_CAPSULE_INDEX_CANDIDATE_LIMIT: usize = 24;
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct ContinuityCapsuleIndexSignature {
+    capsule_count: usize,
+    latest_updated_at: u64,
+    digest: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ContinuityCapsuleIndexHint {
+    semantic_bonus: u32,
+    reasons: Vec<String>,
+}
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -360,19 +384,30 @@ pub fn inspect_continuity_capsule_recall(
     let normalized_scope_id = normalize_inline(scope_id, MAX_CONTINUITY_CAPSULE_TOPIC_CHARS);
     let normalized_query = normalize_match_text(query);
     let terms = collect_terms(&normalized_query);
-    let mut all = store.list(MAX_CONTINUITY_CAPSULES).unwrap_or_default();
-    all.retain(|capsule| {
+    let all_capsules = store.list(MAX_CONTINUITY_CAPSULES).unwrap_or_default();
+    let (index_hints, backend) = continuity_capsule_index_hints(
+        &all_capsules,
+        scope_kind,
+        &normalized_scope_id,
+        &normalized_query,
+        &terms,
+        preferred_chat_id,
+    );
+    let mut scoped = all_capsules;
+    scoped.retain(|capsule| {
         capsule.scope_kind == scope_kind && capsule.scope_id == normalized_scope_id
     });
 
-    let mut scored = all
+    let mut scored = scoped
         .into_iter()
         .filter_map(|capsule| {
+            let index_hint = index_hints.get(capsule.capsule_id.as_str());
             score_continuity_capsule(
                 &capsule,
                 preferred_chat_id,
                 &normalized_query,
                 &terms,
+                index_hint,
                 now_secs,
             )
             .map(|(score, reasons)| (score, reasons, capsule))
@@ -437,7 +472,7 @@ pub fn inspect_continuity_capsule_recall(
     let report = RecallSelectionReport {
         plane: RecallPlane::ContinuityCapsule,
         query,
-        backend: "continuity_capsule_heuristic".to_string(),
+        backend: backend.to_string(),
         candidate_count: scored.len(),
         selected_count: selected.len(),
         selected_ids,
@@ -458,6 +493,384 @@ pub fn inspect_continuity_capsule_recall(
             .collect(),
     };
     (report, selected)
+}
+
+fn continuity_capsule_index_hints(
+    capsules: &[ContinuityCapsule],
+    scope_kind: ContinuityCapsuleScopeKind,
+    scope_id: &str,
+    normalized_query: &str,
+    terms: &[String],
+    preferred_chat_id: Option<&str>,
+) -> (HashMap<String, ContinuityCapsuleIndexHint>, &'static str) {
+    #[cfg(target_os = "linux")]
+    {
+        if capsules.is_empty()
+            || scope_id.is_empty()
+            || normalized_query.is_empty()
+            || terms.is_empty()
+        {
+            return (HashMap::new(), "continuity_capsule_heuristic");
+        }
+        match continuity_capsule_index_hints_sqlite(
+            capsules,
+            scope_kind,
+            scope_id,
+            normalized_query,
+            terms,
+            preferred_chat_id,
+        ) {
+            Ok(hints) => (hints, "continuity_capsule_sqlite_fts_hybrid"),
+            Err(error) => {
+                log::debug!("[continuity_capsule] sqlite recall fallback: {}", error);
+                (HashMap::new(), "continuity_capsule_heuristic")
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (
+            capsules,
+            scope_kind,
+            scope_id,
+            normalized_query,
+            terms,
+            preferred_chat_id,
+        );
+        (HashMap::new(), "continuity_capsule_heuristic")
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn continuity_capsule_index_hints_sqlite(
+    capsules: &[ContinuityCapsule],
+    scope_kind: ContinuityCapsuleScopeKind,
+    scope_id: &str,
+    normalized_query: &str,
+    terms: &[String],
+    preferred_chat_id: Option<&str>,
+) -> Result<HashMap<String, ContinuityCapsuleIndexHint>> {
+    let signature = build_continuity_capsule_index_signature(capsules);
+    let path = continuity_capsule_index_path(&signature);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| crate::error::Error::io("continuity_capsule_index", e))?;
+    }
+    let mut conn = Connection::open(path)
+        .map_err(|e| crate::error::Error::config("continuity_capsule_index", e.to_string()))?;
+    ensure_continuity_capsule_sqlite_schema(&conn)?;
+    if continuity_capsule_sqlite_needs_rebuild(&conn, &signature)? {
+        continuity_capsule_sqlite_rebuild(&mut conn, capsules, &signature)?;
+    }
+    query_continuity_capsule_hints_sqlite(
+        &conn,
+        scope_kind,
+        scope_id,
+        normalized_query,
+        terms,
+        preferred_chat_id,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn build_continuity_capsule_index_signature(
+    capsules: &[ContinuityCapsule],
+) -> ContinuityCapsuleIndexSignature {
+    let mut hasher = DefaultHasher::new();
+    let mut latest_updated_at = 0u64;
+    for capsule in capsules {
+        capsule.capsule_id.hash(&mut hasher);
+        capsule.kind.hash(&mut hasher);
+        capsule.scope_kind.hash(&mut hasher);
+        capsule.scope_id.hash(&mut hasher);
+        capsule.source_chat_id.hash(&mut hasher);
+        capsule.source_channel.hash(&mut hasher);
+        capsule.run_id.hash(&mut hasher);
+        capsule.topic.hash(&mut hasher);
+        capsule.summary.hash(&mut hasher);
+        capsule.outcome.hash(&mut hasher);
+        capsule.decisions.hash(&mut hasher);
+        capsule.next_step.hash(&mut hasher);
+        capsule.unresolved.hash(&mut hasher);
+        capsule.artifact_refs.hash(&mut hasher);
+        capsule.provenance_refs.hash(&mut hasher);
+        capsule.source.hash(&mut hasher);
+        capsule.status.hash(&mut hasher);
+        capsule.supersedes.hash(&mut hasher);
+        capsule.observed_at.hash(&mut hasher);
+        capsule.updated_at.hash(&mut hasher);
+        latest_updated_at = latest_updated_at.max(capsule.updated_at.max(capsule.observed_at));
+    }
+    ContinuityCapsuleIndexSignature {
+        capsule_count: capsules.len(),
+        latest_updated_at,
+        digest: hasher.finish(),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn continuity_capsule_index_path(_signature: &ContinuityCapsuleIndexSignature) -> PathBuf {
+    crate::platform::state_mount_path().join(REL_PATH_CONTINUITY_CAPSULE_INDEX)
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_continuity_capsule_sqlite_schema(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS continuity_capsule_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS continuity_capsule_documents (
+            capsule_id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            scope_kind TEXT NOT NULL,
+            scope_id TEXT NOT NULL,
+            source_chat_id TEXT,
+            run_id TEXT,
+            topic TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            next_step TEXT NOT NULL,
+            decisions TEXT NOT NULL,
+            unresolved TEXT NOT NULL,
+            provenance_refs TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_continuity_capsule_documents_scope
+            ON continuity_capsule_documents(scope_kind, scope_id);
+        CREATE INDEX IF NOT EXISTS idx_continuity_capsule_documents_updated
+            ON continuity_capsule_documents(updated_at);
+        CREATE VIRTUAL TABLE IF NOT EXISTS continuity_capsule_documents_fts USING fts5(
+            capsule_id UNINDEXED,
+            topic,
+            summary,
+            outcome,
+            next_step,
+            decisions,
+            unresolved,
+            provenance_refs,
+            tokenize='unicode61 remove_diacritics 2'
+        );",
+    )
+    .map_err(|e| crate::error::Error::config("continuity_capsule_index", e.to_string()))
+}
+
+#[cfg(target_os = "linux")]
+fn continuity_capsule_sqlite_needs_rebuild(
+    conn: &Connection,
+    signature: &ContinuityCapsuleIndexSignature,
+) -> Result<bool> {
+    let version = conn
+        .query_row(
+            "SELECT value FROM continuity_capsule_meta WHERE key = 'version'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| crate::error::Error::config("continuity_capsule_index", e.to_string()))?;
+    if version.as_deref() != Some(&CONTINUITY_CAPSULE_INDEX_VERSION.to_string()) {
+        return Ok(true);
+    }
+    let stored_signature = conn
+        .query_row(
+            "SELECT value FROM continuity_capsule_meta WHERE key = 'signature'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| crate::error::Error::config("continuity_capsule_index", e.to_string()))?;
+    let Some(stored_signature) = stored_signature else {
+        return Ok(true);
+    };
+    let parsed = serde_json::from_str::<ContinuityCapsuleIndexSignature>(&stored_signature)
+        .map_err(|e| crate::error::Error::config("continuity_capsule_index", e.to_string()))?;
+    Ok(parsed != *signature)
+}
+
+#[cfg(target_os = "linux")]
+fn continuity_capsule_sqlite_rebuild(
+    conn: &mut Connection,
+    capsules: &[ContinuityCapsule],
+    signature: &ContinuityCapsuleIndexSignature,
+) -> Result<()> {
+    let tx = conn
+        .transaction()
+        .map_err(|e| crate::error::Error::config("continuity_capsule_index", e.to_string()))?;
+    tx.execute("DELETE FROM continuity_capsule_documents_fts", [])
+        .map_err(|e| crate::error::Error::config("continuity_capsule_index", e.to_string()))?;
+    tx.execute("DELETE FROM continuity_capsule_documents", [])
+        .map_err(|e| crate::error::Error::config("continuity_capsule_index", e.to_string()))?;
+    for capsule in capsules {
+        tx.execute(
+            "INSERT INTO continuity_capsule_documents (
+                capsule_id, kind, status, scope_kind, scope_id, source_chat_id, run_id,
+                topic, summary, outcome, next_step, decisions, unresolved,
+                provenance_refs, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![
+                capsule.capsule_id,
+                capsule.kind.label(),
+                capsule.status.label(),
+                capsule.scope_kind.label(),
+                capsule.scope_id,
+                if capsule.source_chat_id.is_empty() {
+                    None::<String>
+                } else {
+                    Some(capsule.source_chat_id.clone())
+                },
+                if capsule.run_id.is_empty() {
+                    None::<String>
+                } else {
+                    Some(capsule.run_id.clone())
+                },
+                capsule.topic,
+                capsule.summary,
+                capsule.outcome,
+                capsule.next_step,
+                capsule.decisions.join("\n"),
+                capsule.unresolved.join("\n"),
+                capsule.provenance_refs.join("\n"),
+                capsule.updated_at as i64,
+            ],
+        )
+        .map_err(|e| crate::error::Error::config("continuity_capsule_index", e.to_string()))?;
+        let rowid = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO continuity_capsule_documents_fts(
+                rowid, capsule_id, topic, summary, outcome, next_step, decisions,
+                unresolved, provenance_refs
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                rowid,
+                capsule.capsule_id,
+                capsule.topic,
+                capsule.summary,
+                capsule.outcome,
+                capsule.next_step,
+                capsule.decisions.join(" "),
+                capsule.unresolved.join(" "),
+                capsule.provenance_refs.join(" "),
+            ],
+        )
+        .map_err(|e| crate::error::Error::config("continuity_capsule_index", e.to_string()))?;
+    }
+    tx.execute(
+        "INSERT INTO continuity_capsule_meta(key, value) VALUES('version', ?1)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![CONTINUITY_CAPSULE_INDEX_VERSION.to_string()],
+    )
+    .map_err(|e| crate::error::Error::config("continuity_capsule_index", e.to_string()))?;
+    tx.execute(
+        "INSERT INTO continuity_capsule_meta(key, value) VALUES('signature', ?1)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![serde_json::to_string(signature).map_err(|e| {
+            crate::error::Error::config("continuity_capsule_index", e.to_string())
+        })?],
+    )
+    .map_err(|e| crate::error::Error::config("continuity_capsule_index", e.to_string()))?;
+    tx.commit()
+        .map_err(|e| crate::error::Error::config("continuity_capsule_index", e.to_string()))
+}
+
+#[cfg(target_os = "linux")]
+fn query_continuity_capsule_hints_sqlite(
+    conn: &Connection,
+    scope_kind: ContinuityCapsuleScopeKind,
+    scope_id: &str,
+    normalized_query: &str,
+    terms: &[String],
+    preferred_chat_id: Option<&str>,
+) -> Result<HashMap<String, ContinuityCapsuleIndexHint>> {
+    let Some(match_expr) = continuity_capsule_match_expression(normalized_query, terms) else {
+        return Ok(HashMap::new());
+    };
+    let mut stmt = conn
+        .prepare(
+            "SELECT d.capsule_id, d.source_chat_id, bm25(
+                    continuity_capsule_documents_fts, 5.0, 2.0, 1.8, 1.5, 1.3, 1.3, 1.0
+             ) AS rank
+             FROM continuity_capsule_documents_fts
+             JOIN continuity_capsule_documents d ON d.rowid = continuity_capsule_documents_fts.rowid
+             WHERE continuity_capsule_documents_fts MATCH ?1
+               AND d.scope_kind = ?2
+               AND d.scope_id = ?3
+             ORDER BY CASE
+                    WHEN ?4 IS NOT NULL AND d.source_chat_id = ?4 THEN 0
+                    ELSE 1
+                 END ASC,
+                 rank ASC,
+                 d.updated_at DESC
+             LIMIT ?5",
+        )
+        .map_err(|e| crate::error::Error::config("continuity_capsule_index", e.to_string()))?;
+    let rows = stmt
+        .query_map(
+            params![
+                match_expr,
+                scope_kind.label(),
+                scope_id,
+                preferred_chat_id
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty()),
+                CONTINUITY_CAPSULE_INDEX_CANDIDATE_LIMIT as i64,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, f64>(2)?,
+                ))
+            },
+        )
+        .map_err(|e| crate::error::Error::config("continuity_capsule_index", e.to_string()))?;
+    let mut hints = HashMap::new();
+    for (idx, row) in rows.enumerate() {
+        let (capsule_id, source_chat_id, _rank) = row
+            .map_err(|e| crate::error::Error::config("continuity_capsule_index", e.to_string()))?;
+        let semantic_bonus = match idx {
+            0 => 14,
+            1 => 11,
+            2 => 9,
+            3 => 7,
+            4..=7 => 5,
+            _ => 3,
+        };
+        let same_chat = preferred_chat_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            == source_chat_id.as_deref();
+        let mut reasons = vec!["indexed continuity hit".to_string()];
+        if same_chat {
+            reasons.push("indexed same-chat prior".to_string());
+        }
+        hints.insert(
+            capsule_id,
+            ContinuityCapsuleIndexHint {
+                semantic_bonus: semantic_bonus + u32::from(same_chat) * 2,
+                reasons,
+            },
+        );
+    }
+    Ok(hints)
+}
+
+#[cfg(target_os = "linux")]
+fn continuity_capsule_match_expression(normalized_query: &str, terms: &[String]) -> Option<String> {
+    let mut parts = Vec::new();
+    if normalized_query.contains(' ') {
+        parts.push(format!("\"{}\"", normalized_query.replace('"', "\"\"")));
+    }
+    for term in terms {
+        let escaped = term.replace('"', "\"\"");
+        if escaped.trim().is_empty() {
+            continue;
+        }
+        parts.push(format!("\"{}\"", escaped));
+    }
+    parts.sort();
+    parts.dedup();
+    (!parts.is_empty()).then(|| parts.join(" OR "))
 }
 
 pub(crate) fn continuity_capsule_from_draft(
@@ -729,6 +1142,11 @@ fn build_continuity_capsule_candidate(
         .and_then(|value| value.parse::<u32>().ok())
         .map(|overlap| overlap.saturating_mul(4))
         .unwrap_or(0);
+    let semantic_score = reason_fragments
+        .iter()
+        .find_map(|reason| reason.strip_prefix("semantic_overlap="))
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
     let recency_score =
         continuity_capsule_recency_score(capsule.updated_at, crate::util::current_unix_secs());
     let scope_affinity_score = u32::from(
@@ -753,7 +1171,7 @@ fn build_continuity_capsule_candidate(
         selected,
         score: RecallScoreBreakdown {
             lexical_score,
-            semantic_score: 0,
+            semantic_score,
             exact_match_score,
             recency_score,
             confidence_score: 0,
@@ -773,6 +1191,7 @@ fn score_continuity_capsule(
     preferred_chat_id: Option<&str>,
     normalized_query: &str,
     terms: &[String],
+    index_hint: Option<&ContinuityCapsuleIndexHint>,
     now_secs: u64,
 ) -> Option<(u32, Vec<String>)> {
     let corpus = normalize_match_text(&format!(
@@ -832,6 +1251,13 @@ fn score_continuity_capsule(
     if overlap > 0 {
         score = score.saturating_add(overlap.saturating_mul(4));
         reasons.push(format!("term_overlap={overlap}"));
+    }
+    if let Some(hint) = index_hint {
+        if hint.semantic_bonus > 0 {
+            score = score.saturating_add(hint.semantic_bonus);
+            reasons.push(format!("semantic_overlap={}", hint.semantic_bonus));
+        }
+        reasons.extend(hint.reasons.iter().cloned());
     }
     Some((score, normalize_reason_fragments(reasons)))
 }

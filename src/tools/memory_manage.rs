@@ -10,7 +10,7 @@ use crate::memory::{
     SharedMemoryWriteSource, MAX_MEMORY_CONTENT_LEN, MAX_SOUL_USER_LEN,
 };
 use crate::platform::SkillStorage;
-use crate::skills::upsert_runtime_skill;
+use crate::skills::{write_governed_runtime_skills, RuntimeSkillWriteSource};
 use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
 use serde_json::json;
 use std::sync::Arc;
@@ -323,14 +323,31 @@ impl Tool for MemoryManageTool {
                         let write = routed.skill_write.ok_or_else(|| {
                             Error::config("tool_memory_manage", "missing routed skill write")
                         })?;
-                        let changed = upsert_runtime_skill(self.skill_storage.as_ref(), &write)?;
+                        let write_outcome = write_governed_runtime_skills(
+                            self.skill_storage.as_ref(),
+                            &[write.clone()],
+                            RuntimeSkillWriteSource::Manual,
+                        )?;
+                        if write_outcome.accepted == 0 && write_outcome.rejected > 0 {
+                            let reason = write_outcome
+                                .reports
+                                .first()
+                                .map(|report| {
+                                    format!("{}: {}", report.reason.label(), report.detail)
+                                })
+                                .unwrap_or_else(|| {
+                                    "runtime skill governance rejected the write".to_string()
+                                });
+                            return Err(Error::config("tool_memory_manage", reason));
+                        }
                         Ok(json!({
                             "op": "upsert_long_term",
                             "ok": true,
                             "plane": "skill",
                             "redirected": true,
                             "skill_name": write.name,
-                            "changed_count": usize::from(changed)
+                            "changed_count": write_outcome.changed,
+                            "governance": write_outcome
                         })
                         .to_string())
                     }

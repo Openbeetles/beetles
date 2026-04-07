@@ -1,15 +1,33 @@
 //! Prompt-time recall router across governed memory planes.
 //! Prompt 阶段的 recall 路由：根据结构信号与各 plane 命中质量决定主提示词投影顺序。
 
-use super::RecallSelectionReport;
+use super::{
+    build_cross_plane_rerank_result, plane_signal_score, CrossPlaneRerankInput, RecallPlane,
+    RecallSelectionReport,
+};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PromptRecallIntent {
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptRecallIntent {
+    #[default]
     Factual,
     Procedural,
     Continuity,
     Evidence,
     Mixed,
+}
+
+impl PromptRecallIntent {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Factual => "factual",
+            Self::Procedural => "procedural",
+            Self::Continuity => "continuity",
+            Self::Evidence => "evidence",
+            Self::Mixed => "mixed",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -104,22 +122,52 @@ pub(crate) fn decide_prompt_recall_route(
     }
 
     let query_is_weak = structurally_weak_query(input.user_query);
-    let factual_signal = top_selected_score(input.shared_factual_report)
+    let factual_rerank = build_cross_plane_rerank_result(CrossPlaneRerankInput {
+        intent: PromptRecallIntent::Factual,
+        shared_factual_report: input.shared_factual_report,
+        continuity_capsule_report: input.continuity_capsule_report,
+        archive_report: input.archive_report,
+        runtime_skill_report: input.runtime_skill_report,
+        task_recall_report: input.task_recall_report,
+    });
+    let procedural_rerank = build_cross_plane_rerank_result(CrossPlaneRerankInput {
+        intent: PromptRecallIntent::Procedural,
+        shared_factual_report: input.shared_factual_report,
+        continuity_capsule_report: input.continuity_capsule_report,
+        archive_report: input.archive_report,
+        runtime_skill_report: input.runtime_skill_report,
+        task_recall_report: input.task_recall_report,
+    });
+    let continuity_rerank = build_cross_plane_rerank_result(CrossPlaneRerankInput {
+        intent: PromptRecallIntent::Continuity,
+        shared_factual_report: input.shared_factual_report,
+        continuity_capsule_report: input.continuity_capsule_report,
+        archive_report: input.archive_report,
+        runtime_skill_report: input.runtime_skill_report,
+        task_recall_report: input.task_recall_report,
+    });
+    let evidence_rerank = build_cross_plane_rerank_result(CrossPlaneRerankInput {
+        intent: PromptRecallIntent::Evidence,
+        shared_factual_report: input.shared_factual_report,
+        continuity_capsule_report: input.continuity_capsule_report,
+        archive_report: input.archive_report,
+        runtime_skill_report: input.runtime_skill_report,
+        task_recall_report: input.task_recall_report,
+    });
+    let evidence_archive_signal = plane_signal_score(&evidence_rerank, RecallPlane::Archive);
+    let procedural_runtime_signal =
+        plane_signal_score(&procedural_rerank, RecallPlane::RuntimeSkill)
+            .saturating_add(plane_signal_score(&procedural_rerank, RecallPlane::TaskRecall) / 2);
+
+    let factual_signal = factual_support_signal(&factual_rerank)
         .saturating_add(u32::from(input.shared_factual_report.query.exact_lookup.is_some()) * 48);
-    let continuity_signal = top_selected_score(input.continuity_capsule_report)
+    let continuity_signal = continuity_support_signal(&continuity_rerank)
         .saturating_add(u32::from(input.has_active_task) * 8)
         .saturating_add(u32::from(input.has_execution_state) * 4)
         .saturating_add(u32::from(query_is_weak) * 8);
-    let procedural_signal = top_selected_score(input.runtime_skill_report)
-        .saturating_add(
-            input
-                .task_recall_report
-                .map(top_selected_score)
-                .unwrap_or(0)
-                / 2,
-        )
+    let procedural_signal = procedural_support_signal(&procedural_rerank)
         .saturating_add(u32::from(input.has_active_task) * 4);
-    let evidence_signal = top_selected_score(input.archive_report);
+    let evidence_signal = evidence_support_signal(&evidence_rerank);
 
     if input.has_active_task
         && query_is_weak
@@ -144,7 +192,9 @@ pub(crate) fn decide_prompt_recall_route(
     if evidence_signal > 0
         && evidence_signal >= continuity_signal
         && evidence_signal >= procedural_signal
-        && evidence_signal >= factual_signal.saturating_add(6)
+        && evidence_archive_signal
+            >= plane_signal_score(&evidence_rerank, RecallPlane::SharedFactual)
+        && evidence_archive_signal >= procedural_runtime_signal
     {
         return PromptRecallRouterDecision {
             intent: PromptRecallIntent::Evidence,
@@ -186,14 +236,31 @@ pub(crate) fn decide_prompt_recall_route(
     }
 }
 
-fn top_selected_score(report: &RecallSelectionReport) -> u32 {
-    report
-        .candidates
-        .iter()
-        .filter(|candidate| candidate.selected)
-        .map(|candidate| candidate.score.total_score)
-        .max()
-        .unwrap_or(0)
+fn factual_support_signal(result: &super::CrossPlaneRerankResult) -> u32 {
+    plane_signal_score(result, RecallPlane::SharedFactual)
+        .saturating_add(plane_signal_score(result, RecallPlane::ContinuityCapsule) / 3)
+        .saturating_add(plane_signal_score(result, RecallPlane::Archive) / 5)
+}
+
+fn procedural_support_signal(result: &super::CrossPlaneRerankResult) -> u32 {
+    let runtime = plane_signal_score(result, RecallPlane::RuntimeSkill);
+    runtime
+        .saturating_add(runtime / 2)
+        .saturating_add(plane_signal_score(result, RecallPlane::TaskRecall) / 2)
+        .saturating_add(plane_signal_score(result, RecallPlane::ContinuityCapsule) / 3)
+}
+
+fn continuity_support_signal(result: &super::CrossPlaneRerankResult) -> u32 {
+    plane_signal_score(result, RecallPlane::ContinuityCapsule)
+        .saturating_add(plane_signal_score(result, RecallPlane::TaskRecall) / 2)
+        .saturating_add(plane_signal_score(result, RecallPlane::Archive) / 4)
+        .saturating_add(plane_signal_score(result, RecallPlane::SharedFactual) / 5)
+}
+
+fn evidence_support_signal(result: &super::CrossPlaneRerankResult) -> u32 {
+    plane_signal_score(result, RecallPlane::Archive)
+        .saturating_add(plane_signal_score(result, RecallPlane::ContinuityCapsule) / 4)
+        .saturating_add(plane_signal_score(result, RecallPlane::SharedFactual) / 5)
 }
 
 fn structurally_weak_query(query: &str) -> bool {

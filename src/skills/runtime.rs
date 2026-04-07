@@ -4,9 +4,17 @@ use crate::skills::{
     MAX_SKILL_CONTENT_LEN,
 };
 use crate::util::{
-    collect_retrieval_terms, normalize_retrieval_text, trigram_overlap_score,
-    truncate_content_to_max,
+    collect_retrieval_terms, looks_like_raw_payload_text, normalize_retrieval_text,
+    procedural_text_signal_count, trigram_overlap_score, truncate_content_to_max,
 };
+#[cfg(target_os = "linux")]
+use rusqlite::{params, Connection, OptionalExtension};
+#[cfg(target_os = "linux")]
+use std::collections::hash_map::DefaultHasher;
+#[cfg(target_os = "linux")]
+use std::hash::{Hash, Hasher};
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
 
 const RUNTIME_SKILL_MARKER: &str = "<!-- beetle:runtime-skill -->";
 const MAX_RUNTIME_SKILL_HITS: usize = 4;
@@ -15,6 +23,50 @@ const MIN_RUNTIME_SKILL_BLOCK_LEN: usize = 180;
 const RUNTIME_SKILL_TOUCH_INTERVAL_SECS: u64 = 6 * 60 * 60;
 const RUNTIME_SKILL_STALE_AFTER_SECS: u64 = 90 * 86_400;
 const RUNTIME_SKILL_DUPLICATE_SIMILARITY: u32 = 16;
+#[cfg(target_os = "linux")]
+const RUNTIME_SKILL_INDEX_VERSION: u32 = 1;
+#[cfg(target_os = "linux")]
+const RUNTIME_SKILL_INDEX_CANDIDATE_LIMIT: usize = 24;
+#[cfg(target_os = "linux")]
+const REL_PATH_RUNTIME_SKILL_INDEX: &str = "memory/runtime_skill_index.sqlite3";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum RuntimeSkillRecallBackend {
+    #[default]
+    Heuristic,
+    #[cfg(target_os = "linux")]
+    SqliteFtsHybrid,
+}
+
+impl RuntimeSkillRecallBackend {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Heuristic => "runtime_skill_hybrid",
+            #[cfg(target_os = "linux")]
+            Self::SqliteFtsHybrid => "runtime_skill_sqlite_fts_hybrid",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RuntimeSkillRecallResult {
+    pub hits: Vec<RuntimeSkillHit>,
+    pub backend: RuntimeSkillRecallBackend,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+struct RuntimeSkillIndexSignature {
+    record_count: usize,
+    latest_updated_at: u64,
+    digest: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct RuntimeSkillIndexHint {
+    semantic_bonus: u32,
+    reasons: Vec<String>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeSkillStatus {
@@ -47,6 +99,73 @@ pub struct RuntimeSkillGovernanceOutcome {
     pub pruned: usize,
     pub stale_marked: usize,
     pub low_value_marked: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSkillWriteSource {
+    #[default]
+    Manual,
+    Extraction,
+    TaskLearning,
+}
+
+impl RuntimeSkillWriteSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Extraction => "extraction",
+            Self::TaskLearning => "task_learning",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSkillWriteAction {
+    #[default]
+    Accepted,
+    Rejected,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSkillWriteReason {
+    ProceduralMemory,
+    EmptyOrInvalid,
+    RawPayloadOrLog,
+    WeakProcedure,
+}
+
+impl RuntimeSkillWriteReason {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ProceduralMemory => "procedural_memory",
+            Self::EmptyOrInvalid => "empty_or_invalid",
+            Self::RawPayloadOrLog => "raw_payload_or_log",
+            Self::WeakProcedure => "weak_procedure",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeSkillWriteItemReport {
+    pub source: RuntimeSkillWriteSource,
+    pub action: RuntimeSkillWriteAction,
+    pub reason: RuntimeSkillWriteReason,
+    pub topic: String,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeSkillWriteOutcome {
+    pub source: RuntimeSkillWriteSource,
+    pub submitted: usize,
+    pub accepted: usize,
+    pub rejected: usize,
+    pub changed: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reports: Vec<RuntimeSkillWriteItemReport>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -115,18 +234,34 @@ pub fn retrieve_runtime_skill_hits(
     now_secs: u64,
     limit: usize,
 ) -> Vec<RuntimeSkillHit> {
+    retrieve_runtime_skill_hits_with_backend(storage, query, preferred_chat_id, now_secs, limit)
+        .hits
+}
+
+pub(crate) fn retrieve_runtime_skill_hits_with_backend(
+    storage: &dyn SkillStorage,
+    query: &str,
+    preferred_chat_id: Option<&str>,
+    now_secs: u64,
+    limit: usize,
+) -> RuntimeSkillRecallResult {
     let normalized_query = normalize_runtime_skill_text(query);
     if normalized_query.is_empty() || normalized_query.chars().count() < 2 {
-        return Vec::new();
+        return RuntimeSkillRecallResult::default();
     }
     let terms = collect_runtime_skill_terms(&normalized_query);
-    let mut hits = list_runtime_skill_records(storage)
+    let records = list_runtime_skill_records(storage);
+    let (index_hints, backend) =
+        runtime_skill_index_hints(&records, &normalized_query, &terms, preferred_chat_id);
+    let mut hits = records
         .into_iter()
         .filter_map(|record| {
+            let index_hint = index_hints.get(record.name.as_str());
             score_runtime_skill_record(
                 record,
                 &normalized_query,
                 &terms,
+                index_hint,
                 preferred_chat_id,
                 now_secs,
             )
@@ -165,7 +300,10 @@ pub fn retrieve_runtime_skill_hits(
         }
         selected.push(hit);
     }
-    selected
+    RuntimeSkillRecallResult {
+        hits: selected,
+        backend,
+    }
 }
 
 pub fn touch_runtime_skill_hits(
@@ -279,6 +417,46 @@ pub fn build_runtime_skill_recall_block(
         let _ = touch_runtime_skill_hits(storage, &hits[..appended], now_secs);
         Some(out.trim_end().to_string())
     }
+}
+
+pub fn write_governed_runtime_skills(
+    storage: &dyn SkillStorage,
+    writes: &[RuntimeSkillWrite],
+    source: RuntimeSkillWriteSource,
+) -> crate::error::Result<RuntimeSkillWriteOutcome> {
+    let mut outcome = RuntimeSkillWriteOutcome {
+        source,
+        submitted: writes.len(),
+        ..RuntimeSkillWriteOutcome::default()
+    };
+    for write in writes {
+        let topic = write.topic.trim().to_string();
+        let (reason, detail) = match inspect_runtime_skill_write_shape(write) {
+            Ok(()) => {
+                let changed = upsert_runtime_skill(storage, write)?;
+                outcome.accepted = outcome.accepted.saturating_add(1);
+                outcome.changed = outcome.changed.saturating_add(usize::from(changed));
+                outcome.reports.push(RuntimeSkillWriteItemReport {
+                    source,
+                    action: RuntimeSkillWriteAction::Accepted,
+                    reason: RuntimeSkillWriteReason::ProceduralMemory,
+                    topic,
+                    detail: format!("accepted as runtime skill via {}", source.label()),
+                });
+                continue;
+            }
+            Err(report) => (report.reason, report.detail),
+        };
+        outcome.rejected = outcome.rejected.saturating_add(1);
+        outcome.reports.push(RuntimeSkillWriteItemReport {
+            source,
+            action: RuntimeSkillWriteAction::Rejected,
+            reason,
+            topic,
+            detail,
+        });
+    }
+    Ok(outcome)
 }
 
 pub fn govern_runtime_skills(
@@ -502,6 +680,345 @@ fn list_runtime_skill_records(storage: &dyn SkillStorage) -> Vec<RuntimeSkillRec
         out.push(record);
     }
     out
+}
+
+fn runtime_skill_index_hints(
+    records: &[RuntimeSkillRecord],
+    normalized_query: &str,
+    terms: &[String],
+    preferred_chat_id: Option<&str>,
+) -> (
+    std::collections::HashMap<String, RuntimeSkillIndexHint>,
+    RuntimeSkillRecallBackend,
+) {
+    #[cfg(target_os = "linux")]
+    {
+        if records.is_empty() || normalized_query.is_empty() || terms.is_empty() {
+            return (
+                std::collections::HashMap::new(),
+                RuntimeSkillRecallBackend::Heuristic,
+            );
+        }
+        match runtime_skill_index_hints_sqlite(records, normalized_query, terms, preferred_chat_id)
+        {
+            Ok(hints) => (hints, RuntimeSkillRecallBackend::SqliteFtsHybrid),
+            Err(error) => {
+                log::debug!("[runtime_skill] sqlite recall fallback: {}", error);
+                (
+                    std::collections::HashMap::new(),
+                    RuntimeSkillRecallBackend::Heuristic,
+                )
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (records, normalized_query, terms, preferred_chat_id);
+        (
+            std::collections::HashMap::new(),
+            RuntimeSkillRecallBackend::Heuristic,
+        )
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn runtime_skill_index_hints_sqlite(
+    records: &[RuntimeSkillRecord],
+    normalized_query: &str,
+    terms: &[String],
+    preferred_chat_id: Option<&str>,
+) -> crate::error::Result<std::collections::HashMap<String, RuntimeSkillIndexHint>> {
+    let signature = build_runtime_skill_index_signature(records);
+    let path = runtime_skill_index_path(&signature);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| crate::error::Error::io("runtime_skill_index", e))?;
+    }
+    let mut conn = Connection::open(path)
+        .map_err(|e| crate::error::Error::config("runtime_skill_index", e.to_string()))?;
+    ensure_runtime_skill_sqlite_schema(&conn)?;
+    if runtime_skill_sqlite_needs_rebuild(&conn, &signature)? {
+        runtime_skill_sqlite_rebuild(&mut conn, records, &signature)?;
+    }
+    query_runtime_skill_hints_sqlite(&conn, normalized_query, terms, preferred_chat_id)
+}
+
+#[cfg(target_os = "linux")]
+fn build_runtime_skill_index_signature(
+    records: &[RuntimeSkillRecord],
+) -> RuntimeSkillIndexSignature {
+    let mut hasher = DefaultHasher::new();
+    let mut latest_updated_at = 0u64;
+    for record in records {
+        record.name.hash(&mut hasher);
+        record.title.hash(&mut hasher);
+        record.topic.hash(&mut hasher);
+        record.summary.hash(&mut hasher);
+        record.procedure.hash(&mut hasher);
+        record.citations.hash(&mut hasher);
+        record.source_chat_id.hash(&mut hasher);
+        record.observed_at.hash(&mut hasher);
+        record.updated_at.hash(&mut hasher);
+        record.last_used_at.hash(&mut hasher);
+        record.use_count.hash(&mut hasher);
+        record.quality_score.hash(&mut hasher);
+        record.status.label().hash(&mut hasher);
+        record.supersedes.hash(&mut hasher);
+        record.component_topics.hash(&mut hasher);
+        latest_updated_at = latest_updated_at.max(record.updated_at.max(record.observed_at));
+    }
+    RuntimeSkillIndexSignature {
+        record_count: records.len(),
+        latest_updated_at,
+        digest: hasher.finish(),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn runtime_skill_index_path(_signature: &RuntimeSkillIndexSignature) -> PathBuf {
+    crate::platform::state_mount_path().join(REL_PATH_RUNTIME_SKILL_INDEX)
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_runtime_skill_sqlite_schema(conn: &Connection) -> crate::error::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS runtime_skill_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS runtime_skill_documents (
+            name TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            topic TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            procedure TEXT NOT NULL,
+            citations TEXT NOT NULL,
+            component_topics TEXT NOT NULL,
+            source_chat_id TEXT,
+            observed_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            last_used_at INTEGER,
+            use_count INTEGER NOT NULL,
+            quality_score INTEGER NOT NULL,
+            status TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_runtime_skill_documents_chat
+            ON runtime_skill_documents(source_chat_id);
+        CREATE INDEX IF NOT EXISTS idx_runtime_skill_documents_updated
+            ON runtime_skill_documents(updated_at);
+        CREATE VIRTUAL TABLE IF NOT EXISTS runtime_skill_documents_fts USING fts5(
+            name UNINDEXED,
+            title,
+            topic,
+            summary,
+            procedure,
+            citations,
+            component_topics,
+            tokenize='unicode61 remove_diacritics 2'
+        );",
+    )
+    .map_err(|e| crate::error::Error::config("runtime_skill_index", e.to_string()))
+}
+
+#[cfg(target_os = "linux")]
+fn runtime_skill_sqlite_needs_rebuild(
+    conn: &Connection,
+    signature: &RuntimeSkillIndexSignature,
+) -> crate::error::Result<bool> {
+    let version = conn
+        .query_row(
+            "SELECT value FROM runtime_skill_meta WHERE key = 'version'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| crate::error::Error::config("runtime_skill_index", e.to_string()))?;
+    if version.as_deref() != Some(&RUNTIME_SKILL_INDEX_VERSION.to_string()) {
+        return Ok(true);
+    }
+    let stored_signature = conn
+        .query_row(
+            "SELECT value FROM runtime_skill_meta WHERE key = 'signature'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| crate::error::Error::config("runtime_skill_index", e.to_string()))?;
+    let Some(stored_signature) = stored_signature else {
+        return Ok(true);
+    };
+    let parsed = serde_json::from_str::<RuntimeSkillIndexSignature>(&stored_signature)
+        .map_err(|e| crate::error::Error::config("runtime_skill_index", e.to_string()))?;
+    Ok(parsed != *signature)
+}
+
+#[cfg(target_os = "linux")]
+fn runtime_skill_sqlite_rebuild(
+    conn: &mut Connection,
+    records: &[RuntimeSkillRecord],
+    signature: &RuntimeSkillIndexSignature,
+) -> crate::error::Result<()> {
+    let tx = conn
+        .transaction()
+        .map_err(|e| crate::error::Error::config("runtime_skill_index", e.to_string()))?;
+    tx.execute("DELETE FROM runtime_skill_documents_fts", [])
+        .map_err(|e| crate::error::Error::config("runtime_skill_index", e.to_string()))?;
+    tx.execute("DELETE FROM runtime_skill_documents", [])
+        .map_err(|e| crate::error::Error::config("runtime_skill_index", e.to_string()))?;
+    for record in records {
+        let citations = record.citations.join("\n");
+        let component_topics = record.component_topics.join("\n");
+        tx.execute(
+            "INSERT INTO runtime_skill_documents (
+                name, title, topic, summary, procedure, citations, component_topics,
+                source_chat_id, observed_at, updated_at, last_used_at, use_count,
+                quality_score, status
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                record.name,
+                record.title,
+                record.topic,
+                record.summary,
+                record.procedure,
+                citations,
+                component_topics,
+                record.source_chat_id,
+                record.observed_at as i64,
+                record.updated_at as i64,
+                record.last_used_at.map(|value| value as i64),
+                record.use_count as i64,
+                record.quality_score as i64,
+                record.status.label(),
+            ],
+        )
+        .map_err(|e| crate::error::Error::config("runtime_skill_index", e.to_string()))?;
+        let rowid = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO runtime_skill_documents_fts(
+                rowid, name, title, topic, summary, procedure, citations, component_topics
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                rowid,
+                record.name,
+                record.title,
+                record.topic,
+                record.summary,
+                record.procedure,
+                record.citations.join(" "),
+                record.component_topics.join(" "),
+            ],
+        )
+        .map_err(|e| crate::error::Error::config("runtime_skill_index", e.to_string()))?;
+    }
+    tx.execute(
+        "INSERT INTO runtime_skill_meta(key, value) VALUES('version', ?1)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![RUNTIME_SKILL_INDEX_VERSION.to_string()],
+    )
+    .map_err(|e| crate::error::Error::config("runtime_skill_index", e.to_string()))?;
+    tx.execute(
+        "INSERT INTO runtime_skill_meta(key, value) VALUES('signature', ?1)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![serde_json::to_string(signature)
+            .map_err(|e| crate::error::Error::config("runtime_skill_index", e.to_string()))?],
+    )
+    .map_err(|e| crate::error::Error::config("runtime_skill_index", e.to_string()))?;
+    tx.commit()
+        .map_err(|e| crate::error::Error::config("runtime_skill_index", e.to_string()))
+}
+
+#[cfg(target_os = "linux")]
+fn query_runtime_skill_hints_sqlite(
+    conn: &Connection,
+    normalized_query: &str,
+    terms: &[String],
+    preferred_chat_id: Option<&str>,
+) -> crate::error::Result<std::collections::HashMap<String, RuntimeSkillIndexHint>> {
+    let Some(match_expr) = runtime_skill_match_expression(normalized_query, terms) else {
+        return Ok(std::collections::HashMap::new());
+    };
+    let mut stmt = conn
+        .prepare(
+            "SELECT d.name, d.source_chat_id, bm25(
+                    runtime_skill_documents_fts, 5.0, 6.0, 2.5, 1.2, 1.0, 2.0
+             ) AS rank
+             FROM runtime_skill_documents_fts
+             JOIN runtime_skill_documents d ON d.rowid = runtime_skill_documents_fts.rowid
+             WHERE runtime_skill_documents_fts MATCH ?1
+             ORDER BY CASE
+                    WHEN ?2 IS NOT NULL AND d.source_chat_id = ?2 THEN 0
+                    ELSE 1
+                 END ASC,
+                 rank ASC,
+                 d.updated_at DESC
+             LIMIT ?3",
+        )
+        .map_err(|e| crate::error::Error::config("runtime_skill_index", e.to_string()))?;
+    let rows = stmt
+        .query_map(
+            params![
+                match_expr,
+                preferred_chat_id
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty()),
+                RUNTIME_SKILL_INDEX_CANDIDATE_LIMIT as i64,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, f64>(2)?,
+                ))
+            },
+        )
+        .map_err(|e| crate::error::Error::config("runtime_skill_index", e.to_string()))?;
+    let mut hints = std::collections::HashMap::new();
+    for (idx, row) in rows.enumerate() {
+        let (name, source_chat_id, _rank) =
+            row.map_err(|e| crate::error::Error::config("runtime_skill_index", e.to_string()))?;
+        let semantic_bonus = match idx {
+            0 => 18,
+            1 => 14,
+            2 => 11,
+            3 => 9,
+            4..=7 => 7,
+            _ => 5,
+        };
+        let same_chat = preferred_chat_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            == source_chat_id.as_deref();
+        let mut reasons = vec!["indexed recall hit".to_string()];
+        if same_chat {
+            reasons.push("indexed same-chat prior".to_string());
+        }
+        hints.insert(
+            name,
+            RuntimeSkillIndexHint {
+                semantic_bonus: semantic_bonus + u32::from(same_chat) * 2,
+                reasons,
+            },
+        );
+    }
+    Ok(hints)
+}
+
+#[cfg(target_os = "linux")]
+fn runtime_skill_match_expression(normalized_query: &str, terms: &[String]) -> Option<String> {
+    let mut parts = Vec::new();
+    if normalized_query.contains(' ') {
+        parts.push(format!("\"{}\"", normalized_query.replace('"', "\"\"")));
+    }
+    for term in terms {
+        let escaped = term.replace('"', "\"\"");
+        if escaped.trim().is_empty() {
+            continue;
+        }
+        parts.push(format!("\"{}\"", escaped));
+    }
+    parts.sort();
+    parts.dedup();
+    (!parts.is_empty()).then(|| parts.join(" OR "))
 }
 
 fn parse_runtime_skill_record(name: &str, content: &str) -> Option<RuntimeSkillRecord> {
@@ -869,6 +1386,7 @@ fn score_runtime_skill_record(
     record: RuntimeSkillRecord,
     normalized_query: &str,
     terms: &[String],
+    index_hint: Option<&RuntimeSkillIndexHint>,
     preferred_chat_id: Option<&str>,
     now_secs: u64,
 ) -> Option<RuntimeSkillHit> {
@@ -876,6 +1394,7 @@ fn score_runtime_skill_record(
         &record,
         normalized_query,
         terms,
+        index_hint,
         preferred_chat_id,
         now_secs,
     )?;
@@ -887,10 +1406,11 @@ fn score_runtime_skill_record(
     })
 }
 
-pub(crate) fn score_runtime_skill_record_breakdown(
+fn score_runtime_skill_record_breakdown(
     record: &RuntimeSkillRecord,
     normalized_query: &str,
     terms: &[String],
+    index_hint: Option<&RuntimeSkillIndexHint>,
     preferred_chat_id: Option<&str>,
     now_secs: u64,
 ) -> Option<RuntimeSkillRecallScoreBreakdown> {
@@ -943,8 +1463,13 @@ pub(crate) fn score_runtime_skill_record_breakdown(
         reasons.push("term overlap".to_string());
     }
     let semantic_score = trigram_overlap_score(normalized_query, &haystack, 18);
+    let indexed_semantic_bonus = index_hint.map(|hint| hint.semantic_bonus).unwrap_or(0);
+    let semantic_score = semantic_score.saturating_add(indexed_semantic_bonus);
     if semantic_score > 0 {
         reasons.push("semantic overlap".to_string());
+    }
+    if let Some(hint) = index_hint {
+        reasons.extend(hint.reasons.iter().cloned());
     }
     let scope_affinity_score = preferred_chat_id
         .filter(|chat_id| record.source_chat_id.as_deref() == Some(*chat_id))
@@ -1214,6 +1739,48 @@ fn should_prune_runtime_skill(record: &RuntimeSkillRecord, now_secs: u64) -> boo
         && record.citations.len() <= 1
 }
 
+fn inspect_runtime_skill_write_shape(
+    write: &RuntimeSkillWrite,
+) -> std::result::Result<(), RuntimeSkillWriteItemReport> {
+    let topic = write.topic.trim().to_string();
+    let content = write.content.trim();
+    if topic.is_empty() || content.is_empty() {
+        return Err(RuntimeSkillWriteItemReport {
+            source: RuntimeSkillWriteSource::Manual,
+            action: RuntimeSkillWriteAction::Rejected,
+            reason: RuntimeSkillWriteReason::EmptyOrInvalid,
+            topic,
+            detail: "runtime skill write requires non-empty topic and procedure content"
+                .to_string(),
+        });
+    }
+    if looks_like_raw_payload_text(content) {
+        return Err(RuntimeSkillWriteItemReport {
+            source: RuntimeSkillWriteSource::Manual,
+            action: RuntimeSkillWriteAction::Rejected,
+            reason: RuntimeSkillWriteReason::RawPayloadOrLog,
+            topic,
+            detail: "runtime skill write rejected raw payload / log shaped content".to_string(),
+        });
+    }
+    let signal = procedural_text_signal_count(content);
+    let non_empty_lines = content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    let has_summary = !write.summary.trim().is_empty();
+    if signal < 2 && !(signal >= 1 && non_empty_lines >= 2 && has_summary) {
+        return Err(RuntimeSkillWriteItemReport {
+            source: RuntimeSkillWriteSource::Manual,
+            action: RuntimeSkillWriteAction::Rejected,
+            reason: RuntimeSkillWriteReason::WeakProcedure,
+            topic,
+            detail: "runtime skill write requires reusable procedure structure, not a bare factual sentence".to_string(),
+        });
+    }
+    Ok(())
+}
+
 fn build_runtime_skill_composition_line(
     hits: &[RuntimeSkillHit],
     query: &str,
@@ -1365,6 +1932,61 @@ mod tests {
             .reasons
             .iter()
             .any(|reason| reason.contains("exact topic")));
+    }
+
+    #[test]
+    fn governed_runtime_skill_write_rejects_weak_procedure() {
+        let storage = StubSkillStorage::default();
+        let outcome = write_governed_runtime_skills(
+            &storage,
+            &[RuntimeSkillWrite {
+                name: String::new(),
+                topic: "owner_timezone".to_string(),
+                title: "Owner timezone".to_string(),
+                summary: "Timezone note".to_string(),
+                content: "Owner timezone is Asia/Shanghai.".to_string(),
+                citations: Vec::new(),
+                source_chat_id: Some("chat-1".to_string()),
+                observed_at: 100,
+            }],
+            RuntimeSkillWriteSource::Extraction,
+        )
+        .unwrap();
+        assert_eq!(outcome.accepted, 0);
+        assert_eq!(outcome.rejected, 1);
+        assert_eq!(
+            outcome.reports[0].reason,
+            RuntimeSkillWriteReason::WeakProcedure
+        );
+        assert!(storage.list_names().unwrap().is_empty());
+    }
+
+    #[test]
+    fn governed_runtime_skill_write_accepts_structured_procedure() {
+        let storage = StubSkillStorage::default();
+        let outcome = write_governed_runtime_skills(
+            &storage,
+            &[RuntimeSkillWrite {
+                name: String::new(),
+                topic: "release_patch_flow".to_string(),
+                title: "Release patch flow".to_string(),
+                summary: "Patch the release and verify the result".to_string(),
+                content: "1. inspect release diff\n2. patch rollback guards\n3. verify logs"
+                    .to_string(),
+                citations: Vec::new(),
+                source_chat_id: Some("chat-1".to_string()),
+                observed_at: 100,
+            }],
+            RuntimeSkillWriteSource::TaskLearning,
+        )
+        .unwrap();
+        assert_eq!(outcome.accepted, 1);
+        assert_eq!(outcome.changed, 1);
+        assert!(storage
+            .list_names()
+            .unwrap()
+            .iter()
+            .any(|name| name == "runtime_skill__release_patch_flow"));
     }
 
     #[test]

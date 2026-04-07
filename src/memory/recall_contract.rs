@@ -3,7 +3,7 @@
 #![allow(clippy::too_many_arguments)]
 
 use crate::platform::SkillStorage;
-use crate::skills::retrieve_runtime_skill_hits;
+use crate::skills::retrieve_runtime_skill_hits_with_backend;
 use crate::task_execution::{retrieve_task_learning_hits, TaskLearningStore, TaskRunRecord};
 use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
@@ -485,7 +485,9 @@ pub fn inspect_runtime_skill_recall(
     now_secs: u64,
     max_chars: usize,
 ) -> RecallSelectionReport {
-    let hits = retrieve_runtime_skill_hits(storage, query, preferred_chat_id, now_secs, 4);
+    let recall =
+        retrieve_runtime_skill_hits_with_backend(storage, query, preferred_chat_id, now_secs, 4);
+    let hits = recall.hits;
     let selected_ids = hits
         .iter()
         .map(|hit| hit.record.name.clone())
@@ -505,7 +507,7 @@ pub fn inspect_runtime_skill_recall(
             4,
             max_chars,
         ),
-        backend: "runtime_skill_hybrid".to_string(),
+        backend: recall.backend.label().to_string(),
         candidate_count: hits.len(),
         selected_count: hits.len(),
         selected_ids,
