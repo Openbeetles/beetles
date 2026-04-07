@@ -13,9 +13,15 @@ use crate::skills::{
     RuntimeSkillWriteSource,
 };
 use crate::util::{epoch_to_ymdhms, truncate_content_to_max};
+#[cfg(target_os = "linux")]
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
+#[cfg(target_os = "linux")]
+use std::hash::{DefaultHasher, Hash, Hasher};
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
 
 use super::{
     current_or_next_step, summarize_task_artifact_content, TaskArtifactRecord, TaskArtifactStore,
@@ -28,9 +34,15 @@ use super::{
 pub const REL_DIR_TASK_LEARNING: &str = "memory/task_learning";
 
 const MAX_TASK_LEARNING_RECORDS_PER_CHAT: usize = 64;
-const MAX_TASK_LEARNING_HITS: usize = 4;
+const MAX_TASK_LEARNING_HITS: usize = 6;
 const MIN_TASK_RECALL_BLOCK_LEN: usize = 180;
 const PROCEDURE_PROMOTION_MIN_DISTINCT_RUNS: usize = 2;
+#[cfg(target_os = "linux")]
+const REL_PATH_TASK_LEARNING_INDEX: &str = "memory/task_learning_index.sqlite3";
+#[cfg(target_os = "linux")]
+const TASK_LEARNING_INDEX_VERSION: u32 = 1;
+#[cfg(target_os = "linux")]
+const TASK_LEARNING_INDEX_CANDIDATE_LIMIT: usize = 16;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -122,6 +134,86 @@ pub struct TaskLearningHit {
     pub record: TaskLearningRecord,
     pub score: u32,
     pub reasons: Vec<String>,
+    pub score_breakdown: TaskLearningScoreBreakdown,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskLearningRecallBackend {
+    Heuristic,
+    SqliteFtsHybrid,
+}
+
+impl TaskLearningRecallBackend {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Heuristic => "task_learning_heuristic",
+            Self::SqliteFtsHybrid => "task_learning_sqlite_fts_hybrid",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskLearningScoreBreakdown {
+    #[serde(default)]
+    pub lexical_score: u32,
+    #[serde(default)]
+    pub semantic_score: u32,
+    #[serde(default)]
+    pub exact_match_score: u32,
+    #[serde(default)]
+    pub recency_score: u32,
+    #[serde(default)]
+    pub scope_affinity_score: u32,
+    #[serde(default)]
+    pub governance_score: u32,
+    #[serde(default)]
+    pub source_score: u32,
+    #[serde(default)]
+    pub total_score: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reason_fragments: Vec<String>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct TaskLearningIndexSignature {
+    record_count: usize,
+    latest_observed_at: u64,
+    digest: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskLearningRouteCounts {
+    #[serde(default)]
+    pub pending: usize,
+    #[serde(default)]
+    pub canonical_factual: usize,
+    #[serde(default)]
+    pub runtime_skill: usize,
+    #[serde(default)]
+    pub archived_evidence: usize,
+    #[serde(default)]
+    pub workspace_pruned: usize,
+    #[serde(default)]
+    pub rejected: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskLearningInspectionHit {
+    pub learning_id: String,
+    pub run_id: String,
+    pub kind: TaskLearningKind,
+    pub route: TaskLearningRoute,
+    pub topic: String,
+    pub summary: String,
+    pub score: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<String>,
+    pub observed_at: u64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub route_detail: String,
+    pub score_breakdown: TaskLearningScoreBreakdown,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -167,6 +259,10 @@ pub struct TaskLearningInspection {
     pub channel: String,
     pub chat_id: String,
     pub query: String,
+    pub backend: String,
+    pub route_counts: TaskLearningRouteCounts,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scored_hits: Vec<TaskLearningInspectionHit>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub related_hits: Vec<TaskLearningRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -544,15 +640,37 @@ pub fn retrieve_task_learning_hits(
     query: &str,
     limit: usize,
 ) -> Vec<TaskLearningHit> {
+    retrieve_task_learning_hits_with_backend(store, channel, chat_id, active_run_id, query, limit).0
+}
+
+pub(crate) fn retrieve_task_learning_hits_with_backend(
+    store: &dyn TaskLearningStore,
+    channel: &str,
+    chat_id: &str,
+    active_run_id: Option<&str>,
+    query: &str,
+    limit: usize,
+) -> (Vec<TaskLearningHit>, TaskLearningRecallBackend) {
     let normalized_query = normalize_match_text(query);
     let terms = collect_terms(&normalized_query);
-    let mut hits = store
+    let records = store
         .list_for_chat(channel, chat_id, MAX_TASK_LEARNING_RECORDS_PER_CHAT)
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let (index_hints, backend) =
+        task_learning_index_hints(&records, &normalized_query, &terms, active_run_id);
+    let mut hits = records
         .into_iter()
         .filter(|record| record.route != TaskLearningRoute::Rejected)
         .filter_map(|record| {
-            score_task_learning_record(record, active_run_id, &normalized_query, &terms)
+            let index_hint = index_hints.get(record.learning_id.as_str());
+            score_task_learning_record(
+                record,
+                active_run_id,
+                &normalized_query,
+                &terms,
+                index_hint,
+                crate::util::current_unix_secs(),
+            )
         })
         .collect::<Vec<_>>();
     hits.sort_by(|a, b| {
@@ -562,7 +680,349 @@ pub fn retrieve_task_learning_hits(
             .then_with(|| a.record.learning_id.cmp(&b.record.learning_id))
     });
     hits.truncate(limit.min(MAX_TASK_LEARNING_HITS));
-    hits
+    (hits, backend)
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct TaskLearningIndexHint {
+    semantic_bonus: u32,
+    reasons: Vec<String>,
+}
+
+fn task_learning_index_hints(
+    records: &[TaskLearningRecord],
+    normalized_query: &str,
+    terms: &[String],
+    active_run_id: Option<&str>,
+) -> (
+    HashMap<String, TaskLearningIndexHint>,
+    TaskLearningRecallBackend,
+) {
+    #[cfg(target_os = "linux")]
+    {
+        if records.is_empty() || normalized_query.is_empty() || terms.is_empty() {
+            return (HashMap::new(), TaskLearningRecallBackend::Heuristic);
+        }
+        match task_learning_index_hints_sqlite(records, normalized_query, terms, active_run_id) {
+            Ok(hints) => (hints, TaskLearningRecallBackend::SqliteFtsHybrid),
+            Err(error) => {
+                log::debug!("[task_learning] sqlite recall fallback: {}", error);
+                (HashMap::new(), TaskLearningRecallBackend::Heuristic)
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (records, normalized_query, terms, active_run_id);
+        (HashMap::new(), TaskLearningRecallBackend::Heuristic)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn task_learning_index_hints_sqlite(
+    records: &[TaskLearningRecord],
+    normalized_query: &str,
+    terms: &[String],
+    active_run_id: Option<&str>,
+) -> Result<HashMap<String, TaskLearningIndexHint>> {
+    let signature = build_task_learning_index_signature(records);
+    let path = task_learning_index_path(&signature);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| Error::io("task_learning_index", e))?;
+    }
+    let mut conn =
+        Connection::open(path).map_err(|e| Error::config("task_learning_index", e.to_string()))?;
+    ensure_task_learning_sqlite_schema(&conn)?;
+    if task_learning_sqlite_needs_rebuild(&conn, &signature)? {
+        task_learning_sqlite_rebuild(&mut conn, records, &signature)?;
+    }
+    query_task_learning_hints_sqlite(&conn, normalized_query, terms, active_run_id)
+}
+
+#[cfg(target_os = "linux")]
+fn build_task_learning_index_signature(
+    records: &[TaskLearningRecord],
+) -> TaskLearningIndexSignature {
+    let mut hasher = DefaultHasher::new();
+    let mut latest_observed_at = 0u64;
+    for record in records {
+        record.learning_id.hash(&mut hasher);
+        record.source_channel.hash(&mut hasher);
+        record.source_chat_id.hash(&mut hasher);
+        record.run_id.hash(&mut hasher);
+        record.step_id.hash(&mut hasher);
+        record.kind.label().hash(&mut hasher);
+        record.route.label().hash(&mut hasher);
+        record.topic.hash(&mut hasher);
+        record.summary.hash(&mut hasher);
+        record.content.hash(&mut hasher);
+        record
+            .memory_kind
+            .as_ref()
+            .map(|kind| format!("{kind:?}"))
+            .hash(&mut hasher);
+        record.review_summary.hash(&mut hasher);
+        record.source_artifact_ids.hash(&mut hasher);
+        record.provenance.hash(&mut hasher);
+        record.archive_note_name.hash(&mut hasher);
+        record.route_detail.hash(&mut hasher);
+        record.observed_at.hash(&mut hasher);
+        latest_observed_at = latest_observed_at.max(record.observed_at);
+    }
+    TaskLearningIndexSignature {
+        record_count: records.len(),
+        latest_observed_at,
+        digest: hasher.finish(),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn task_learning_index_path(_signature: &TaskLearningIndexSignature) -> PathBuf {
+    crate::platform::state_mount_path().join(REL_PATH_TASK_LEARNING_INDEX)
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_task_learning_sqlite_schema(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS task_learning_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS task_learning_documents (
+            learning_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            route TEXT NOT NULL,
+            topic TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            content TEXT NOT NULL,
+            review_summary TEXT NOT NULL,
+            provenance TEXT NOT NULL,
+            route_detail TEXT NOT NULL,
+            archive_note_name TEXT NOT NULL,
+            observed_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_task_learning_documents_run
+            ON task_learning_documents(run_id);
+        CREATE INDEX IF NOT EXISTS idx_task_learning_documents_observed
+            ON task_learning_documents(observed_at);
+        CREATE VIRTUAL TABLE IF NOT EXISTS task_learning_documents_fts USING fts5(
+            learning_id UNINDEXED,
+            topic,
+            summary,
+            content,
+            review_summary,
+            provenance,
+            route_detail,
+            archive_note_name,
+            tokenize='unicode61 remove_diacritics 2'
+        );",
+    )
+    .map_err(|e| Error::config("task_learning_index", e.to_string()))
+}
+
+#[cfg(target_os = "linux")]
+fn task_learning_sqlite_needs_rebuild(
+    conn: &Connection,
+    signature: &TaskLearningIndexSignature,
+) -> Result<bool> {
+    let version = conn
+        .query_row(
+            "SELECT value FROM task_learning_meta WHERE key = 'version'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| Error::config("task_learning_index", e.to_string()))?;
+    if version.as_deref() != Some(&TASK_LEARNING_INDEX_VERSION.to_string()) {
+        return Ok(true);
+    }
+    let stored_signature = conn
+        .query_row(
+            "SELECT value FROM task_learning_meta WHERE key = 'signature'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| Error::config("task_learning_index", e.to_string()))?;
+    let Some(stored_signature) = stored_signature else {
+        return Ok(true);
+    };
+    let parsed = serde_json::from_str::<TaskLearningIndexSignature>(&stored_signature)
+        .map_err(|e| Error::config("task_learning_index", e.to_string()))?;
+    Ok(parsed != *signature)
+}
+
+#[cfg(target_os = "linux")]
+fn task_learning_sqlite_rebuild(
+    conn: &mut Connection,
+    records: &[TaskLearningRecord],
+    signature: &TaskLearningIndexSignature,
+) -> Result<()> {
+    let tx = conn
+        .transaction()
+        .map_err(|e| Error::config("task_learning_index", e.to_string()))?;
+    tx.execute("DELETE FROM task_learning_documents_fts", [])
+        .map_err(|e| Error::config("task_learning_index", e.to_string()))?;
+    tx.execute("DELETE FROM task_learning_documents", [])
+        .map_err(|e| Error::config("task_learning_index", e.to_string()))?;
+    for record in records {
+        tx.execute(
+            "INSERT INTO task_learning_documents (
+                learning_id, run_id, kind, route, topic, summary, content, review_summary,
+                provenance, route_detail, archive_note_name, observed_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                record.learning_id,
+                record.run_id,
+                record.kind.label(),
+                record.route.label(),
+                record.topic,
+                record.summary,
+                record.content,
+                record.review_summary,
+                record.provenance,
+                record.route_detail,
+                record.archive_note_name,
+                record.observed_at as i64,
+            ],
+        )
+        .map_err(|e| Error::config("task_learning_index", e.to_string()))?;
+        let rowid = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO task_learning_documents_fts(
+                rowid, learning_id, topic, summary, content, review_summary, provenance,
+                route_detail, archive_note_name
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                rowid,
+                record.learning_id,
+                record.topic,
+                record.summary,
+                record.content,
+                record.review_summary,
+                record.provenance,
+                record.route_detail,
+                record.archive_note_name,
+            ],
+        )
+        .map_err(|e| Error::config("task_learning_index", e.to_string()))?;
+    }
+    tx.execute(
+        "INSERT INTO task_learning_meta(key, value) VALUES('version', ?1)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![TASK_LEARNING_INDEX_VERSION.to_string()],
+    )
+    .map_err(|e| Error::config("task_learning_index", e.to_string()))?;
+    tx.execute(
+        "INSERT INTO task_learning_meta(key, value) VALUES('signature', ?1)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![serde_json::to_string(signature)
+            .map_err(|e| Error::config("task_learning_index", e.to_string()))?],
+    )
+    .map_err(|e| Error::config("task_learning_index", e.to_string()))?;
+    tx.commit()
+        .map_err(|e| Error::config("task_learning_index", e.to_string()))
+}
+
+#[cfg(target_os = "linux")]
+fn query_task_learning_hints_sqlite(
+    conn: &Connection,
+    normalized_query: &str,
+    terms: &[String],
+    active_run_id: Option<&str>,
+) -> Result<HashMap<String, TaskLearningIndexHint>> {
+    let Some(match_expr) = task_learning_match_expression(normalized_query, terms) else {
+        return Ok(HashMap::new());
+    };
+    let mut stmt = conn
+        .prepare(
+            "SELECT d.learning_id, d.run_id, d.route, bm25(
+                    task_learning_documents_fts, 6.0, 3.0, 2.5, 1.8, 1.5, 1.2, 1.0
+             ) AS rank
+             FROM task_learning_documents_fts
+             JOIN task_learning_documents d ON d.rowid = task_learning_documents_fts.rowid
+             WHERE task_learning_documents_fts MATCH ?1
+             ORDER BY CASE
+                    WHEN ?2 IS NOT NULL AND d.run_id = ?2 THEN 0
+                    ELSE 1
+                 END ASC,
+                 CASE
+                    WHEN d.route = 'runtime_skill' THEN 0
+                    WHEN d.route = 'canonical_factual' THEN 1
+                    ELSE 2
+                 END ASC,
+                 rank ASC,
+                 d.observed_at DESC
+             LIMIT ?3",
+        )
+        .map_err(|e| Error::config("task_learning_index", e.to_string()))?;
+    let rows = stmt
+        .query_map(
+            params![
+                match_expr,
+                active_run_id
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty()),
+                TASK_LEARNING_INDEX_CANDIDATE_LIMIT as i64,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, f64>(3)?,
+                ))
+            },
+        )
+        .map_err(|e| Error::config("task_learning_index", e.to_string()))?;
+    let mut hints = HashMap::new();
+    for (idx, row) in rows.enumerate() {
+        let (learning_id, run_id, _route, _rank) =
+            row.map_err(|e| Error::config("task_learning_index", e.to_string()))?;
+        let semantic_bonus = match idx {
+            0 => 18,
+            1 => 15,
+            2 => 12,
+            3 => 9,
+            4..=7 => 6,
+            _ => 3,
+        };
+        let same_run = active_run_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some_and(|value| value == run_id);
+        let mut reasons = vec!["indexed task-learning hit".to_string()];
+        if same_run {
+            reasons.push("indexed same-run prior".to_string());
+        }
+        hints.insert(
+            learning_id,
+            TaskLearningIndexHint {
+                semantic_bonus: semantic_bonus + u32::from(same_run) * 3,
+                reasons,
+            },
+        );
+    }
+    Ok(hints)
+}
+
+#[cfg(target_os = "linux")]
+fn task_learning_match_expression(normalized_query: &str, terms: &[String]) -> Option<String> {
+    let mut parts = Vec::new();
+    if normalized_query.contains(' ') {
+        parts.push(format!("\"{}\"", normalized_query.replace('"', "\"\"")));
+    }
+    for term in terms {
+        let escaped = term.replace('"', "\"\"");
+        if escaped.trim().is_empty() {
+            continue;
+        }
+        parts.push(format!("\"{}\"", escaped));
+    }
+    parts.sort();
+    parts.dedup();
+    (!parts.is_empty()).then(|| parts.join(" OR "))
 }
 
 pub fn build_task_recall_bundle(
@@ -584,7 +1044,7 @@ pub fn build_task_recall_bundle(
         .filter(|value| !value.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
-    let hits = retrieve_task_learning_hits(
+    let (hits, backend) = retrieve_task_learning_hits_with_backend(
         store,
         channel,
         chat_id,
@@ -596,20 +1056,28 @@ pub fn build_task_recall_bundle(
         return None;
     }
     let mut out = String::from(
-        "## Task Recall Bundle\nUse prior governed task-learning results only when they fit the current run. Prefer promoted procedures and canonical facts; treat archived evidence as support, not as a direct conclusion.\n",
+        "## Task Recall Bundle\nUse governed task-learning only when it fits this run.\n",
     );
     out.push_str(&format!(
-        "Active run: {} | goal: {}\n",
-        active_run.run.run_id, active_run.plan.goal
+        "Run: {} | backend: {}\n",
+        active_run.run.run_id,
+        backend.label()
     ));
     for hit in hits {
+        let reason_preview = hit
+            .reasons
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
         let line = format!(
             "- [{} / {} / {}] {} (why: {}; route={})",
             hit.record.kind.label(),
             hit.record.topic,
             hit.record.run_id,
-            truncate_content_to_max(hit.record.summary.trim(), 120),
-            truncate_content_to_max(&hit.reasons.join(", "), 120),
+            truncate_content_to_max(hit.record.summary.trim(), 88),
+            truncate_content_to_max(&reason_preview, 96),
             hit.record.route.label(),
         );
         let remaining = max_len.saturating_sub(out.len()).saturating_sub(1);
@@ -705,14 +1173,21 @@ pub fn inspect_task_learning(
     let recent_records = store
         .list_for_chat(channel, chat_id, MAX_TASK_LEARNING_RECORDS_PER_CHAT)
         .unwrap_or_default();
-    let related_hits = retrieve_task_learning_hits(store, channel, chat_id, None, query, 6)
-        .into_iter()
-        .map(|hit| hit.record)
+    let route_counts = build_task_learning_route_counts(&recent_records);
+    let (hits, backend) =
+        retrieve_task_learning_hits_with_backend(store, channel, chat_id, None, query, 6);
+    let scored_hits = hits
+        .iter()
+        .map(task_learning_inspection_hit)
         .collect::<Vec<_>>();
+    let related_hits = hits.into_iter().map(|hit| hit.record).collect::<Vec<_>>();
     TaskLearningInspection {
         channel: channel.to_string(),
         chat_id: chat_id.to_string(),
         query: query.trim().to_string(),
+        backend: backend.label().to_string(),
+        route_counts,
+        scored_hits,
         related_hits,
         recent_records,
     }
@@ -721,28 +1196,45 @@ pub fn inspect_task_learning(
 pub fn render_task_learning_inspection_markdown(inspection: &TaskLearningInspection) -> String {
     let mut out = String::from("# Task Learning Inspection\n\n");
     out.push_str(&format!(
-        "- channel: {}\n- chat_id: {}\n- query: {}\n",
+        "- channel: {}\n- chat_id: {}\n- query: {}\n- backend: {}\n",
         inspection.channel,
         inspection.chat_id,
         if inspection.query.is_empty() {
             "<empty>"
         } else {
             inspection.query.as_str()
-        }
+        },
+        inspection.backend
+    ));
+    out.push_str(&format!(
+        "- routes: pending={} canonical_factual={} runtime_skill={} archived_evidence={} workspace_pruned={} rejected={}\n",
+        inspection.route_counts.pending,
+        inspection.route_counts.canonical_factual,
+        inspection.route_counts.runtime_skill,
+        inspection.route_counts.archived_evidence,
+        inspection.route_counts.workspace_pruned,
+        inspection.route_counts.rejected,
     ));
     out.push_str("\n## Related Hits\n");
-    if inspection.related_hits.is_empty() {
+    if inspection.scored_hits.is_empty() {
         out.push_str("- No related task-learning hits.\n");
     } else {
-        for record in &inspection.related_hits {
+        for hit in &inspection.scored_hits {
             out.push_str(&format!(
-                "- [{} / {}] {} | route={} | run={}\n",
-                record.kind.label(),
-                record.topic,
-                truncate_content_to_max(record.summary.trim(), 140),
-                record.route.label(),
-                record.run_id
+                "- [{} / {}] {} | route={} | run={} | score={}\n",
+                hit.kind.label(),
+                hit.topic,
+                truncate_content_to_max(hit.summary.trim(), 140),
+                hit.route.label(),
+                hit.run_id,
+                hit.score,
             ));
+            if !hit.reasons.is_empty() {
+                out.push_str(&format!("  why: {}\n", hit.reasons.join(", ")));
+            }
+            if !hit.route_detail.is_empty() {
+                out.push_str(&format!("  route_detail: {}\n", hit.route_detail));
+            }
         }
     }
     out.push_str("\n## Recent Records\n");
@@ -768,6 +1260,45 @@ pub fn render_task_learning_inspection_markdown(inspection: &TaskLearningInspect
         }
     }
     out.trim_end().to_string()
+}
+
+fn build_task_learning_route_counts(records: &[TaskLearningRecord]) -> TaskLearningRouteCounts {
+    let mut counts = TaskLearningRouteCounts::default();
+    for record in records {
+        match record.route {
+            TaskLearningRoute::Pending => counts.pending = counts.pending.saturating_add(1),
+            TaskLearningRoute::CanonicalFactual => {
+                counts.canonical_factual = counts.canonical_factual.saturating_add(1);
+            }
+            TaskLearningRoute::RuntimeSkill => {
+                counts.runtime_skill = counts.runtime_skill.saturating_add(1);
+            }
+            TaskLearningRoute::ArchivedEvidence => {
+                counts.archived_evidence = counts.archived_evidence.saturating_add(1);
+            }
+            TaskLearningRoute::WorkspacePruned => {
+                counts.workspace_pruned = counts.workspace_pruned.saturating_add(1);
+            }
+            TaskLearningRoute::Rejected => counts.rejected = counts.rejected.saturating_add(1),
+        }
+    }
+    counts
+}
+
+fn task_learning_inspection_hit(hit: &TaskLearningHit) -> TaskLearningInspectionHit {
+    TaskLearningInspectionHit {
+        learning_id: hit.record.learning_id.clone(),
+        run_id: hit.record.run_id.clone(),
+        kind: hit.record.kind,
+        route: hit.record.route,
+        topic: hit.record.topic.clone(),
+        summary: hit.record.summary.clone(),
+        score: hit.score,
+        reasons: hit.reasons.clone(),
+        observed_at: hit.record.observed_at,
+        route_detail: hit.record.route_detail.clone(),
+        score_breakdown: hit.score_breakdown.clone(),
+    }
 }
 
 pub fn inspect_task_workspace(
@@ -1089,58 +1620,151 @@ fn score_task_learning_record(
     active_run_id: Option<&str>,
     normalized_query: &str,
     terms: &[String],
+    index_hint: Option<&TaskLearningIndexHint>,
+    now_secs: u64,
 ) -> Option<TaskLearningHit> {
     if record.summary.trim().is_empty() && record.content.trim().is_empty() {
         return None;
     }
     let corpus = normalize_match_text(&format!(
-        "{} {} {}",
-        record.topic, record.summary, record.content
+        "{} {} {} {} {}",
+        record.topic, record.summary, record.content, record.review_summary, record.provenance
     ));
-    let mut score = 0u32;
+    let normalized_topic = normalize_match_text(&record.topic);
+    let normalized_summary = normalize_match_text(&record.summary);
+    let normalized_provenance = normalize_match_text(&record.provenance);
+    let mut lexical_score = 0u32;
+    let mut exact_match_score = 0u32;
+    let semantic_score = index_hint.map(|hint| hint.semantic_bonus).unwrap_or(0);
+    let mut scope_affinity_score = 0u32;
+    let governance_score = match record.route {
+        TaskLearningRoute::RuntimeSkill => 6,
+        TaskLearningRoute::CanonicalFactual => 5,
+        TaskLearningRoute::ArchivedEvidence => 2,
+        TaskLearningRoute::Pending
+        | TaskLearningRoute::WorkspacePruned
+        | TaskLearningRoute::Rejected => 0,
+    };
+    let mut source_score = 0u32;
     let mut reasons = Vec::new();
     if let Some(run_id) = active_run_id {
         if run_id == record.run_id {
-            score = score.saturating_add(8);
+            scope_affinity_score = scope_affinity_score.saturating_add(8);
             reasons.push("same active run".to_string());
         }
     }
     if !normalized_query.is_empty() {
-        let overlap = terms
-            .iter()
-            .filter(|term| corpus.contains(term.as_str()))
-            .count() as u32;
-        if overlap == 0 {
+        if normalized_topic == normalized_query
+            || (!normalized_topic.is_empty()
+                && (normalized_query.contains(&normalized_topic)
+                    || normalized_topic.contains(normalized_query)))
+        {
+            exact_match_score = exact_match_score.saturating_add(12);
+            reasons.push("exact topic overlap".to_string());
+        }
+        if normalized_summary == normalized_query {
+            exact_match_score = exact_match_score.saturating_add(6);
+            reasons.push("exact summary overlap".to_string());
+        }
+        let mut overlap = 0u32;
+        for term in terms {
+            if normalized_topic.contains(term) {
+                lexical_score = lexical_score.saturating_add(8);
+                overlap = overlap.saturating_add(1);
+            }
+            if normalized_summary.contains(term) {
+                lexical_score = lexical_score.saturating_add(6);
+                overlap = overlap.saturating_add(1);
+            }
+            if normalized_provenance.contains(term) {
+                lexical_score = lexical_score.saturating_add(3);
+                overlap = overlap.saturating_add(1);
+            }
+            if corpus.contains(term.as_str()) {
+                lexical_score = lexical_score.saturating_add(2);
+            }
+        }
+        if overlap == 0 && exact_match_score == 0 && semantic_score == 0 {
             return None;
         }
-        score = score.saturating_add(overlap.saturating_mul(4));
-        reasons.push(format!("term_overlap={overlap}"));
+        if overlap > 0 {
+            reasons.push(format!("term_overlap={overlap}"));
+        }
     } else {
-        score = score.saturating_add(1);
+        lexical_score = lexical_score.saturating_add(1);
         reasons.push("recent task learning".to_string());
     }
+    if let Some(hint) = index_hint {
+        reasons.extend(hint.reasons.iter().cloned());
+    }
+    let recency_score = task_learning_recency_score(record.observed_at, now_secs);
+    if recency_score > 0 {
+        reasons.push("recent learning".to_string());
+    }
+    if !record.source_artifact_ids.is_empty() {
+        source_score = source_score.saturating_add(record.source_artifact_ids.len().min(3) as u32);
+        reasons.push("artifact provenance".to_string());
+    }
+    if !record.archive_note_name.trim().is_empty() {
+        source_score = source_score.saturating_add(2);
+        reasons.push("archived note citation".to_string());
+    }
     match record.route {
-        TaskLearningRoute::RuntimeSkill => {
-            score = score.saturating_add(6);
-            reasons.push("promoted procedure".to_string());
-        }
-        TaskLearningRoute::CanonicalFactual => {
-            score = score.saturating_add(5);
-            reasons.push("canonical factual write".to_string());
-        }
-        TaskLearningRoute::ArchivedEvidence => {
-            score = score.saturating_add(2);
-            reasons.push("archived evidence".to_string());
-        }
+        TaskLearningRoute::RuntimeSkill => reasons.push("promoted procedure".to_string()),
+        TaskLearningRoute::CanonicalFactual => reasons.push("canonical factual write".to_string()),
+        TaskLearningRoute::ArchivedEvidence => reasons.push("archived evidence".to_string()),
         TaskLearningRoute::Pending
         | TaskLearningRoute::WorkspacePruned
         | TaskLearningRoute::Rejected => {}
     }
+    let total_score = lexical_score
+        .saturating_add(semantic_score)
+        .saturating_add(exact_match_score)
+        .saturating_add(recency_score)
+        .saturating_add(scope_affinity_score)
+        .saturating_add(governance_score)
+        .saturating_add(source_score);
     Some(TaskLearningHit {
         record,
-        score,
-        reasons,
+        score: total_score,
+        reasons: normalize_task_learning_reasons(reasons.clone()),
+        score_breakdown: TaskLearningScoreBreakdown {
+            lexical_score,
+            semantic_score,
+            exact_match_score,
+            recency_score,
+            scope_affinity_score,
+            governance_score,
+            source_score,
+            total_score,
+            reason_fragments: normalize_task_learning_reasons(reasons),
+        },
     })
+}
+
+fn task_learning_recency_score(observed_at: u64, now_secs: u64) -> u32 {
+    let age = now_secs.saturating_sub(observed_at);
+    if age <= 86_400 {
+        5
+    } else if age <= 7 * 86_400 {
+        3
+    } else if age <= 30 * 86_400 {
+        1
+    } else {
+        0
+    }
+}
+
+fn normalize_task_learning_reasons(reasons: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for reason in reasons {
+        let trimmed = reason.trim();
+        if trimmed.is_empty() || normalized.iter().any(|existing| existing == trimmed) {
+            continue;
+        }
+        normalized.push(trimmed.to_string());
+    }
+    normalized
 }
 
 fn normalize_learning_match_key(topic: &str, summary: &str) -> String {
@@ -1645,6 +2269,109 @@ mod tests {
         assert!(bundle.contains("apply_release_patch"));
         assert!(bundle.contains("runtime_skill"));
         assert!(bundle.contains("release_blocker"));
+    }
+
+    #[test]
+    fn task_learning_inspection_surfaces_route_counts_and_scored_hits() {
+        let store = StubTaskLearningStore::with_records(vec![
+            make_learning_record(
+                "tl1",
+                "tr_old_1",
+                TaskLearningKind::ReusableProcedure,
+                TaskLearningRoute::RuntimeSkill,
+                "apply_release_patch",
+                "Previous successful release fix path",
+                "1. inspect release diff\n2. patch rollback guards\n3. verify logs",
+                1_800_000_010,
+            ),
+            make_learning_record(
+                "tl2",
+                "tr_old_2",
+                TaskLearningKind::DurableFact,
+                TaskLearningRoute::CanonicalFactual,
+                "release_root_cause",
+                "The blocker came from a missing artifact guard",
+                "Root cause: artifact guard was missing in the release pipeline.",
+                1_800_000_000,
+            ),
+            make_learning_record(
+                "tl3",
+                "tr_old_3",
+                TaskLearningKind::EvidenceOnly,
+                TaskLearningRoute::ArchivedEvidence,
+                "release_blocker",
+                "Previous blocker evidence",
+                "Observed warning logs and artifact mismatches during the failed rollout.",
+                1_799_999_990,
+            ),
+        ]);
+
+        let inspection =
+            inspect_task_learning(&store, "telegram", "chat-1", "Need the release fix path");
+
+        assert_eq!(inspection.backend, "task_learning_heuristic");
+        assert_eq!(inspection.route_counts.runtime_skill, 1);
+        assert_eq!(inspection.route_counts.canonical_factual, 1);
+        assert_eq!(inspection.route_counts.archived_evidence, 1);
+        assert_eq!(inspection.related_hits.len(), inspection.scored_hits.len());
+        assert!(inspection
+            .scored_hits
+            .iter()
+            .any(|hit| hit.topic == "apply_release_patch"
+                && hit
+                    .reasons
+                    .iter()
+                    .any(|reason| reason.contains("promoted procedure"))));
+        assert!(inspection
+            .scored_hits
+            .iter()
+            .any(|hit| hit.topic == "release_root_cause"
+                && hit.score_breakdown.governance_score >= 5));
+    }
+
+    #[test]
+    fn retrieve_task_learning_hits_prefers_same_run_and_exact_topic() {
+        let store = StubTaskLearningStore::with_records(vec![
+            make_learning_record(
+                "tl_same_run",
+                "tr_active",
+                TaskLearningKind::ReusableProcedure,
+                TaskLearningRoute::RuntimeSkill,
+                "apply_release_patch",
+                "Best matching release patch path",
+                "1. inspect release diff\n2. patch rollback guards\n3. verify logs",
+                1_800_000_020,
+            ),
+            make_learning_record(
+                "tl_other_run",
+                "tr_old",
+                TaskLearningKind::ReusableProcedure,
+                TaskLearningRoute::RuntimeSkill,
+                "release_followup",
+                "Another release task pattern",
+                "Verify follow-up artifacts and logs.",
+                1_800_000_030,
+            ),
+        ]);
+
+        let hits = retrieve_task_learning_hits(
+            &store,
+            "telegram",
+            "chat-1",
+            Some("tr_active"),
+            "apply_release_patch",
+            4,
+        );
+
+        assert_eq!(hits[0].record.learning_id, "tl_same_run");
+        assert!(hits[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("same active run")));
+        assert!(hits[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("exact topic overlap")));
     }
 
     #[test]

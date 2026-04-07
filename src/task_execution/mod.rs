@@ -8,16 +8,18 @@ use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 
+pub(crate) use learning::retrieve_task_learning_hits_with_backend;
 pub use learning::{
     build_task_learning_operator_snapshot, build_task_learning_records, build_task_recall_bundle,
     inspect_task_learning, inspect_task_workspace, normalize_task_learning_artifact_ids,
     normalize_task_learning_drafts, render_task_learning_inspection_markdown,
     render_task_learning_operator_text, render_task_workspace_inspection_markdown,
     retrieve_task_learning_hits, run_task_learning_maintenance, TaskLearningDraft, TaskLearningHit,
-    TaskLearningInspection, TaskLearningKind, TaskLearningMaintenanceContext,
-    TaskLearningMaintenanceInput, TaskLearningMaintenanceOutcome, TaskLearningOperatorRecord,
-    TaskLearningOperatorSnapshot, TaskLearningRecord, TaskLearningRoute, TaskLearningStore,
-    TaskWorkspaceInspection, REL_DIR_TASK_LEARNING,
+    TaskLearningInspection, TaskLearningInspectionHit, TaskLearningKind,
+    TaskLearningMaintenanceContext, TaskLearningMaintenanceInput, TaskLearningMaintenanceOutcome,
+    TaskLearningOperatorRecord, TaskLearningOperatorSnapshot, TaskLearningRecallBackend,
+    TaskLearningRecord, TaskLearningRoute, TaskLearningRouteCounts, TaskLearningScoreBreakdown,
+    TaskLearningStore, TaskWorkspaceInspection, REL_DIR_TASK_LEARNING,
 };
 
 pub const REL_DIR_TASK_RUNS: &str = "memory/task_runs";

@@ -659,6 +659,24 @@ mod tests {
         assert_eq!(inspection["recall"]["chat_id"], chat_id);
         assert_eq!(inspection["hygiene"]["current_chat_id"], chat_id);
         assert_eq!(inspection["task_workspace"]["run_id"], run_id);
+        assert_eq!(
+            inspection["task_learning"]["backend"],
+            "task_learning_heuristic"
+        );
+        assert_eq!(
+            inspection["task_learning"]["route_counts"]["runtime_skill"],
+            1
+        );
+        assert!(inspection["task_learning"]["scored_hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["topic"] == topic
+                && item["reasons"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|reason| reason == "promoted procedure")));
         assert!(inspection["task_learning"]["related_hits"]
             .as_array()
             .unwrap()

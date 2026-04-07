@@ -4,7 +4,7 @@
 
 use crate::platform::SkillStorage;
 use crate::skills::retrieve_runtime_skill_hits_with_backend;
-use crate::task_execution::{retrieve_task_learning_hits, TaskLearningStore, TaskRunRecord};
+use crate::task_execution::{TaskLearningStore, TaskRunRecord};
 use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
 
@@ -590,7 +590,7 @@ pub fn inspect_task_recall(
         .collect::<Vec<_>>()
         .join(" ");
     report.query.normalized_query = normalize_recall_text(&composed_query, 240);
-    let hits = retrieve_task_learning_hits(
+    let (hits, backend) = crate::task_execution::retrieve_task_learning_hits_with_backend(
         store,
         channel,
         chat_id,
@@ -598,6 +598,7 @@ pub fn inspect_task_recall(
         &composed_query,
         3,
     );
+    report.backend = backend.label().to_string();
     report.candidate_count = hits.len();
     report.selected_count = hits.len();
     report.selected_ids = hits
@@ -614,49 +615,29 @@ pub fn inspect_task_recall(
     };
     report.candidates = hits
         .into_iter()
-        .map(|hit| {
-            let lexical_score = hit
-                .reasons
-                .iter()
-                .find_map(|reason| reason.strip_prefix("term_overlap="))
-                .and_then(|value| value.parse::<u32>().ok())
-                .map(|overlap| overlap.saturating_mul(4))
-                .unwrap_or(0);
-            let scope_affinity_score =
-                u32::from(hit.reasons.iter().any(|reason| reason == "same active run"))
-                    .saturating_mul(8);
-            let governance_score = match hit.record.route {
-                crate::task_execution::TaskLearningRoute::RuntimeSkill => 6,
-                crate::task_execution::TaskLearningRoute::CanonicalFactual => 5,
-                crate::task_execution::TaskLearningRoute::ArchivedEvidence => 2,
-                crate::task_execution::TaskLearningRoute::Pending
-                | crate::task_execution::TaskLearningRoute::WorkspacePruned
-                | crate::task_execution::TaskLearningRoute::Rejected => 0,
-            };
-            RecallCandidate {
-                plane: RecallPlane::TaskRecall,
-                candidate_id: hit.record.learning_id.clone(),
-                title: hit.record.topic.clone(),
-                excerpt: normalize_recall_text(&hit.record.summary, 180),
-                citation: (!hit.record.archive_note_name.trim().is_empty())
-                    .then(|| hit.record.archive_note_name.clone()),
-                source: hit.record.route.label().to_string(),
-                observed_at: Some(hit.record.observed_at),
-                selected: true,
-                score: RecallScoreBreakdown {
-                    lexical_score,
-                    semantic_score: 0,
-                    exact_match_score: 0,
-                    recency_score: 0,
-                    confidence_score: 0,
-                    importance_score: 0,
-                    scope_affinity_score,
-                    governance_score,
-                    source_score: 0,
-                    total_score: hit.score,
-                    reason_fragments: normalize_reason_fragments(hit.reasons),
-                },
-            }
+        .map(|hit| RecallCandidate {
+            plane: RecallPlane::TaskRecall,
+            candidate_id: hit.record.learning_id.clone(),
+            title: hit.record.topic.clone(),
+            excerpt: normalize_recall_text(&hit.record.summary, 180),
+            citation: (!hit.record.archive_note_name.trim().is_empty())
+                .then(|| hit.record.archive_note_name.clone()),
+            source: hit.record.route.label().to_string(),
+            observed_at: Some(hit.record.observed_at),
+            selected: true,
+            score: RecallScoreBreakdown {
+                lexical_score: hit.score_breakdown.lexical_score,
+                semantic_score: hit.score_breakdown.semantic_score,
+                exact_match_score: hit.score_breakdown.exact_match_score,
+                recency_score: hit.score_breakdown.recency_score,
+                confidence_score: 0,
+                importance_score: 0,
+                scope_affinity_score: hit.score_breakdown.scope_affinity_score,
+                governance_score: hit.score_breakdown.governance_score,
+                source_score: hit.score_breakdown.source_score,
+                total_score: hit.score,
+                reason_fragments: normalize_reason_fragments(hit.reasons),
+            },
         })
         .collect();
     report
