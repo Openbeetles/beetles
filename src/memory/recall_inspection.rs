@@ -10,13 +10,15 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     build_archive_evidence_block, build_shared_factual_plane_snapshot, inspect_archive_recall,
-    inspect_runtime_skill_recall, inspect_shared_factual_recall, inspect_task_recall,
-    memory_policy, parse_explicit_long_term_slot_query, recall_long_term_memory_block,
+    inspect_continuity_capsule_recall, inspect_runtime_skill_recall, inspect_shared_factual_recall,
+    inspect_task_recall, memory_policy, parse_explicit_long_term_slot_query,
+    recall_long_term_memory_block, render_continuity_capsule_block,
     render_exact_long_term_memory_block, search_archive_records_detailed,
     select_archive_hits_for_prompt_with_report, ArchivePromptSelectionReport, ArchiveSearchHit,
-    ArchiveSearchQuery, ArchiveSearchQueryReport, LongTermMemoryStore, MemoryProfile, MemoryStore,
-    RecallPlane, RecallQuery, RecallSelectionReport, SessionMessage, SessionStore,
-    SharedFactualPlaneSnapshot, TurnLedgerStore,
+    ArchiveSearchQuery, ArchiveSearchQueryReport, ContinuityCapsule, ContinuityCapsuleScopeKind,
+    ContinuityCapsuleStore, LongTermMemoryStore, MemoryProfile, MemoryStore, RecallPlane,
+    RecallQuery, RecallSelectionReport, SessionMessage, SessionStore, SharedFactualPlaneSnapshot,
+    TurnLedgerStore,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -33,6 +35,12 @@ pub struct WorkingRecallInspection {
     pub archive_evidence_text: Option<String>,
     #[serde(default)]
     pub shared_factual_report: RecallSelectionReport,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuity_capsule_text: Option<String>,
+    #[serde(default)]
+    pub continuity_capsule_report: RecallSelectionReport,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub continuity_capsules: Vec<ContinuityCapsule>,
     #[serde(default)]
     pub archive_recall_report: RecallSelectionReport,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -62,6 +70,7 @@ pub struct WorkingRecallInspectionInput<'a> {
     pub session_store: &'a dyn SessionStore,
     pub memory_store: &'a dyn MemoryStore,
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
+    pub continuity_capsule_store: &'a dyn ContinuityCapsuleStore,
     pub turn_ledger_store: &'a dyn TurnLedgerStore,
     pub skill_storage: Option<&'a dyn SkillStorage>,
     pub task_run_store: Option<&'a dyn TaskRunStore>,
@@ -136,6 +145,19 @@ pub fn inspect_working_recall(input: WorkingRecallInspectionInput<'_>) -> Workin
         input.system_max_len.min(768),
         input.profile,
     );
+    let (continuity_capsule_report, continuity_capsules) = inspect_continuity_capsule_recall(
+        input.continuity_capsule_store,
+        ContinuityCapsuleScopeKind::Chat,
+        input.chat_id,
+        Some(input.chat_id),
+        input.query,
+        input.summary_text,
+        input.recent,
+        input.system_max_len.min(480),
+        crate::util::current_unix_secs(),
+    );
+    let continuity_capsule_text =
+        render_continuity_capsule_block(&continuity_capsules, input.system_max_len.min(480));
     let selection = select_archive_hits_for_prompt_with_report(
         archive_result.hits.clone(),
         input.profile,
@@ -242,6 +264,9 @@ pub fn inspect_working_recall(input: WorkingRecallInspectionInput<'_>) -> Workin
         shared_factual_plane,
         archive_evidence_text,
         shared_factual_report,
+        continuity_capsule_text,
+        continuity_capsule_report,
+        continuity_capsules,
         archive_recall_report,
         runtime_skill_text,
         runtime_skill_report,
@@ -296,6 +321,23 @@ pub fn render_working_recall_inspection_markdown(inspection: &WorkingRecallInspe
     ));
     if let Some(reason) = inspection.shared_factual_report.miss_reason.as_deref() {
         out.push_str(&format!("- shared_factual_miss_reason: {}\n", reason));
+    }
+
+    out.push_str("\n## Continuity Capsules\n");
+    if let Some(block) = inspection.continuity_capsule_text.as_deref() {
+        out.push_str(block.trim());
+        out.push('\n');
+    } else {
+        out.push_str("- No continuity capsule block.\n");
+    }
+    out.push_str(&format!(
+        "- continuity_capsule_report: backend={}; candidates={}; selected={}\n",
+        inspection.continuity_capsule_report.backend,
+        inspection.continuity_capsule_report.candidate_count,
+        inspection.continuity_capsule_report.selected_count,
+    ));
+    if let Some(reason) = inspection.continuity_capsule_report.miss_reason.as_deref() {
+        out.push_str(&format!("- continuity_capsule_miss_reason: {}\n", reason));
     }
 
     out.push_str("\n## Archive Query Report\n");

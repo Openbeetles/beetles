@@ -46,6 +46,7 @@ fn esp_rel_path_alias(rel: &Path) -> PathBuf {
     let rel_str = rel.to_string_lossy();
     match rel_str.as_ref() {
         crate::memory::REL_PATH_AUTONOMY_STRATEGIES => PathBuf::from("m/as.json"),
+        crate::memory::REL_PATH_CONTINUITY_CAPSULES => PathBuf::from("m/cc.json"),
         crate::memory::REL_PATH_LONG_TERM_EXTRACTION_STATES => PathBuf::from("m/lte.json"),
         crate::memory::REL_PATH_MENTAL_PRIVACY_STATES => PathBuf::from("m/mps.json"),
         crate::memory::REL_PATH_PRIVATE_DOC_WORKSPACES => PathBuf::from("m/pdw.json"),
@@ -298,6 +299,7 @@ pub mod autonomy_strategy;
 pub(crate) mod cached_json;
 pub mod calendar_credentials;
 pub mod calendar_store;
+pub mod continuity_capsule;
 pub mod core_revision_ledger;
 pub mod execution_state;
 pub mod important_message;
@@ -330,6 +332,7 @@ pub use turn_ledger::SpiffsTurnLedgerStore;
 pub use autonomy_strategy::SpiffsAutonomyStrategyStore;
 pub use calendar_credentials::SpiffsCalendarProviderCredentialStore;
 pub use calendar_store::SpiffsCalendarStore;
+pub use continuity_capsule::SpiffsContinuityCapsuleStore;
 pub use core_revision_ledger::SpiffsCoreRevisionLedgerStore;
 pub use execution_state::SpiffsExecutionStateStore;
 pub use important_message::SpiffsImportantMessageStore;

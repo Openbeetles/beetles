@@ -11,6 +11,7 @@ mod archive_search;
 mod archive_selector;
 mod autonomy_strategy;
 mod context_window;
+mod continuity_capsule;
 mod continuity_snapshot;
 mod core_revision_ledger;
 mod execution_state;
@@ -86,6 +87,16 @@ pub use autonomy_strategy::{
     AUTONOMY_STRATEGY_TOTAL_CHAR_LIMIT,
 };
 pub use context_window::build_context_messages;
+pub(crate) use continuity_capsule::{
+    apply_continuity_capsule_drafts, canonicalize_continuity_capsule,
+};
+pub use continuity_capsule::{
+    inspect_continuity_capsule_recall, render_continuity_capsule_block, ContinuityCapsule,
+    ContinuityCapsuleDraft, ContinuityCapsuleKind, ContinuityCapsuleScopeKind,
+    ContinuityCapsuleSource, ContinuityCapsuleStatus, ContinuityCapsuleStore,
+    ContinuityCapsuleWriteOutcome, MAX_CONTINUITY_CAPSULES, MAX_CONTINUITY_CAPSULES_PER_SCOPE,
+    REL_PATH_CONTINUITY_CAPSULES,
+};
 pub(crate) use continuity_snapshot::select_active_continuity_snapshot_chat_ids;
 pub use continuity_snapshot::{
     export_continuity_snapshot, import_continuity_snapshot, render_continuity_snapshot_markdown,
@@ -160,9 +171,9 @@ pub use long_term_extraction::{
     REL_PATH_LONG_TERM_EXTRACTION_STATES,
 };
 pub use maintenance::{
-    run_post_reply_memory_maintenance, LongTermMemoryRefreshRequestOutcome,
-    PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput,
-    PostReplyMemoryMaintenanceOutcome,
+    run_post_reply_memory_maintenance, ContinuityCapsuleMaintenanceOutcome,
+    LongTermMemoryRefreshRequestOutcome, PostReplyMemoryMaintenanceContext,
+    PostReplyMemoryMaintenanceInput, PostReplyMemoryMaintenanceOutcome,
 };
 pub(crate) use memory_governance::run_memory_governance_kernel;
 pub use memory_governance::{

@@ -7,8 +7,10 @@ use crate::llm::{LlmClient, LlmHttpClient};
 use crate::orchestrator::PressureLevel;
 use crate::platform::SkillStorage;
 use crate::task_execution::{
-    run_task_learning_maintenance, TaskArtifactStore, TaskLearningMaintenanceContext,
-    TaskLearningMaintenanceInput, TaskLearningMaintenanceOutcome, TaskLearningStore, TaskRunStore,
+    active_task_run_for_chat, current_or_next_step, run_task_learning_maintenance,
+    TaskArtifactRecord, TaskArtifactStore, TaskLearningMaintenanceContext,
+    TaskLearningMaintenanceInput, TaskLearningMaintenanceOutcome, TaskLearningRecord,
+    TaskLearningRoute, TaskLearningStore, TaskRunRecord, TaskRunStore,
 };
 
 use super::{
@@ -17,6 +19,8 @@ use super::{
     persist_long_term_memory_extraction_state, run_execution_state_refresh_with_state,
     run_memory_governance_kernel, run_memory_hygiene_jobs,
     run_session_summary_refresh_with_snapshot, should_refresh_execution_state,
+    ContinuityCapsuleDraft, ContinuityCapsuleKind, ContinuityCapsuleScopeKind,
+    ContinuityCapsuleSource, ContinuityCapsuleStatus, ContinuityCapsuleStore,
     ExecutionStateRefreshContext, ExecutionStateRefreshInput, ExecutionStateRefreshOutcome,
     ExecutionStateStore, LongTermMemoryExtractionStateStore, LongTermMemoryExtractionTurnInput,
     LongTermMemoryStore, MemoryGovernanceContext, MemoryGovernanceInput, MemoryHygieneContext,
@@ -24,12 +28,15 @@ use super::{
     TurnLedgerStore,
 };
 
+const CONTINUITY_CAPSULE_RECENT_RUN_WINDOW_SECS: u64 = 6 * 60 * 60;
+
 pub struct PostReplyMemoryMaintenanceContext<'a> {
     pub session_store: &'a dyn SessionStore,
     pub memory_store: &'a dyn MemoryStore,
     pub session_summary_store: &'a dyn SessionSummaryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
+    pub continuity_capsule_store: &'a dyn ContinuityCapsuleStore,
     pub extraction_state_store: &'a dyn LongTermMemoryExtractionStateStore,
     pub turn_ledger_store: &'a dyn TurnLedgerStore,
     pub skill_storage: &'a dyn SkillStorage,
@@ -67,6 +74,15 @@ pub struct PostReplyMemoryMaintenanceOutcome {
     pub extraction_request_outcome: LongTermMemoryRefreshRequestOutcome,
     pub hygiene_outcome: super::MemoryHygieneOutcome,
     pub task_learning_outcome: Result<TaskLearningMaintenanceOutcome>,
+    pub continuity_capsule_outcome: Result<ContinuityCapsuleMaintenanceOutcome>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ContinuityCapsuleMaintenanceOutcome {
+    pub drafted: usize,
+    pub upserted: usize,
+    pub superseded: usize,
+    pub total: usize,
 }
 
 struct MaintenanceBaseline {
@@ -92,6 +108,7 @@ struct PostReplyFollowupPasses {
     extraction_request_outcome: LongTermMemoryRefreshRequestOutcome,
     hygiene_outcome: super::MemoryHygieneOutcome,
     task_learning_outcome: Result<TaskLearningMaintenanceOutcome>,
+    continuity_capsule_outcome: Result<ContinuityCapsuleMaintenanceOutcome>,
 }
 
 fn collect_maintenance_baseline(
@@ -284,11 +301,18 @@ fn run_post_reply_followup_passes(
         },
     );
     crate::platform::task_wdt::feed_current_task();
+    let continuity_capsule_outcome = run_continuity_capsule_maintenance(
+        ctx,
+        input,
+        shared.summary_snapshot.summary_text.as_deref(),
+    );
+    crate::platform::task_wdt::feed_current_task();
     PostReplyFollowupPasses {
         governance,
         extraction_request_outcome,
         hygiene_outcome,
         task_learning_outcome,
+        continuity_capsule_outcome,
     }
 }
 
@@ -399,7 +423,283 @@ pub fn run_post_reply_memory_maintenance(
         extraction_request_outcome: followup.extraction_request_outcome,
         hygiene_outcome: followup.hygiene_outcome,
         task_learning_outcome: followup.task_learning_outcome,
+        continuity_capsule_outcome: followup.continuity_capsule_outcome,
     }
+}
+
+fn run_continuity_capsule_maintenance(
+    ctx: &PostReplyMemoryMaintenanceContext<'_>,
+    input: &PostReplyMemoryMaintenanceInput<'_>,
+    summary_text: Option<&str>,
+) -> Result<ContinuityCapsuleMaintenanceOutcome> {
+    let execution_state = ctx.execution_state_store.get(input.chat_id)?;
+    let active_run = active_task_run_for_chat(ctx.task_run_store, input.channel, input.chat_id)?;
+    let recent_run = if active_run.is_some() {
+        None
+    } else {
+        ctx.task_run_store
+            .list_recent(6)?
+            .into_iter()
+            .find(|record| {
+                record.run.source_channel == input.channel
+                    && record.run.source_chat_id == input.chat_id
+                    && input.now_secs.saturating_sub(record.run.updated_at)
+                        <= CONTINUITY_CAPSULE_RECENT_RUN_WINDOW_SECS
+            })
+    };
+    let selected_run = active_run.or(recent_run);
+    let drafts = if let Some(run) = selected_run.as_ref() {
+        let artifacts = ctx
+            .task_artifact_store
+            .list_for_run(&run.run.run_id, 6)
+            .unwrap_or_default();
+        let learning_records = ctx
+            .task_learning_store
+            .list_for_run(&run.run.run_id, 6)
+            .unwrap_or_default();
+        build_task_continuity_capsule_drafts(
+            run,
+            execution_state.as_ref(),
+            input,
+            &artifacts,
+            &learning_records,
+        )
+    } else {
+        execution_state
+            .as_ref()
+            .and_then(|state| build_execution_continuity_capsule_draft(state, input, summary_text))
+            .into_iter()
+            .collect()
+    };
+    if drafts.is_empty() {
+        return Ok(ContinuityCapsuleMaintenanceOutcome::default());
+    }
+    let write = ctx
+        .continuity_capsule_store
+        .upsert_many(&drafts, input.now_secs)?;
+    Ok(ContinuityCapsuleMaintenanceOutcome {
+        drafted: drafts.len(),
+        upserted: write.upserted,
+        superseded: write.superseded,
+        total: write.total,
+    })
+}
+
+fn build_task_continuity_capsule_drafts(
+    run: &TaskRunRecord,
+    execution_state: Option<&crate::memory::ExecutionState>,
+    input: &PostReplyMemoryMaintenanceInput<'_>,
+    artifacts: &[TaskArtifactRecord],
+    learning_records: &[TaskLearningRecord],
+) -> Vec<ContinuityCapsuleDraft> {
+    let topic = first_non_empty(&[
+        run.run.title.as_str(),
+        run.plan.goal.as_str(),
+        execution_state
+            .map(|state| state.goal.as_str())
+            .unwrap_or(""),
+    ]);
+    if topic.is_empty() {
+        return Vec::new();
+    }
+    let step = current_or_next_step(run);
+    let summary = first_non_empty(&[
+        execution_state
+            .map(|state| state.progress.as_str())
+            .unwrap_or(""),
+        step.map(|value| value.last_result_summary.as_str())
+            .unwrap_or(""),
+        run.plan.goal.as_str(),
+    ]);
+    let is_terminal = run.run.status.is_terminal();
+    let outcome = if is_terminal {
+        first_non_empty(&[
+            run.run.final_summary.as_str(),
+            execution_state
+                .map(|state| state.last_output.as_str())
+                .unwrap_or(""),
+            step.map(|value| value.last_result_summary.as_str())
+                .unwrap_or(""),
+        ])
+    } else {
+        String::new()
+    };
+    let next_step = if is_terminal {
+        String::new()
+    } else {
+        first_non_empty(&[
+            execution_state
+                .map(|state| state.next_action.as_str())
+                .unwrap_or(""),
+            step.map(|value| value.instruction.as_str()).unwrap_or(""),
+        ])
+    };
+    let mut unresolved = Vec::new();
+    push_compact(
+        &mut unresolved,
+        execution_state
+            .map(|state| state.blocker.as_str())
+            .unwrap_or(""),
+    );
+    push_compact(&mut unresolved, run.run.failure_reason.as_str());
+    if let Some(step) = step {
+        if matches!(
+            step.status,
+            crate::task_execution::TaskStepStatus::Blocked
+                | crate::task_execution::TaskStepStatus::Failed
+        ) {
+            push_compact(&mut unresolved, step.last_review_summary.as_str());
+        }
+    }
+    let mut decisions = Vec::new();
+    for record in learning_records {
+        match record.route {
+            TaskLearningRoute::RuntimeSkill
+            | TaskLearningRoute::CanonicalFactual
+            | TaskLearningRoute::ArchivedEvidence => {
+                push_compact(&mut decisions, record.summary.as_str());
+            }
+            TaskLearningRoute::Pending
+            | TaskLearningRoute::WorkspacePruned
+            | TaskLearningRoute::Rejected => {}
+        }
+    }
+    let mut artifact_refs = Vec::new();
+    for artifact in artifacts {
+        push_compact(
+            &mut artifact_refs,
+            format!("artifact:{}", artifact.artifact.artifact_id).as_str(),
+        );
+    }
+    let mut provenance_refs = vec![
+        "source=post_reply_maintenance".to_string(),
+        format!("run={}", run.run.run_id),
+        format!("run_status={:?}", run.run.status).to_ascii_lowercase(),
+    ];
+    if !input.channel.trim().is_empty() {
+        provenance_refs.push(format!("channel={}", input.channel.trim()));
+    }
+    if !learning_records.is_empty() {
+        provenance_refs.push(format!("learning_records={}", learning_records.len()));
+    }
+    vec![ContinuityCapsuleDraft {
+        kind: if is_terminal {
+            ContinuityCapsuleKind::TaskResolution
+        } else {
+            ContinuityCapsuleKind::WorkSession
+        },
+        scope_kind: ContinuityCapsuleScopeKind::Chat,
+        scope_id: input.chat_id.to_string(),
+        source_chat_id: input.chat_id.to_string(),
+        source_channel: input.channel.to_string(),
+        run_id: run.run.run_id.clone(),
+        topic,
+        summary,
+        outcome,
+        decisions,
+        next_step,
+        unresolved,
+        artifact_refs,
+        provenance_refs,
+        source: if is_terminal {
+            ContinuityCapsuleSource::TaskCompletion
+        } else {
+            ContinuityCapsuleSource::PostReplyMaintenance
+        },
+        status: if is_terminal {
+            ContinuityCapsuleStatus::Done
+        } else {
+            ContinuityCapsuleStatus::Active
+        },
+        observed_at: run.run.updated_at.max(input.now_secs),
+    }]
+}
+
+fn build_execution_continuity_capsule_draft(
+    state: &crate::memory::ExecutionState,
+    input: &PostReplyMemoryMaintenanceInput<'_>,
+    summary_text: Option<&str>,
+) -> Option<ContinuityCapsuleDraft> {
+    let topic = first_non_empty(&[state.goal.as_str()]);
+    if topic.is_empty() {
+        return None;
+    }
+    let is_done = state.status == crate::memory::ExecutionStatus::Done;
+    let mut provenance_refs = vec![
+        "source=post_reply_maintenance".to_string(),
+        "execution_state".to_string(),
+    ];
+    if summary_text.is_some() {
+        provenance_refs.push("summary_snapshot".to_string());
+    }
+    Some(ContinuityCapsuleDraft {
+        kind: if is_done {
+            ContinuityCapsuleKind::TaskResolution
+        } else {
+            ContinuityCapsuleKind::HandoffState
+        },
+        scope_kind: ContinuityCapsuleScopeKind::Chat,
+        scope_id: input.chat_id.to_string(),
+        source_chat_id: input.chat_id.to_string(),
+        source_channel: input.channel.to_string(),
+        run_id: String::new(),
+        topic,
+        summary: first_non_empty(&[state.progress.as_str(), summary_text.unwrap_or_default()]),
+        outcome: if is_done {
+            first_non_empty(&[state.last_output.as_str()])
+        } else {
+            String::new()
+        },
+        decisions: Vec::new(),
+        next_step: if is_done {
+            String::new()
+        } else {
+            first_non_empty(&[state.next_action.as_str()])
+        },
+        unresolved: non_empty_list(&[state.blocker.as_str()]),
+        artifact_refs: Vec::new(),
+        provenance_refs,
+        source: ContinuityCapsuleSource::PostReplyMaintenance,
+        status: if is_done {
+            ContinuityCapsuleStatus::Done
+        } else {
+            ContinuityCapsuleStatus::Active
+        },
+        observed_at: input.now_secs,
+    })
+}
+
+fn push_compact(out: &mut Vec<String>, value: &str) {
+    let normalized = crate::util::truncate_content_to_max(value.trim(), 120)
+        .trim()
+        .to_string();
+    if normalized.is_empty() || out.iter().any(|existing| existing == &normalized) {
+        return;
+    }
+    if out.len() < 4 {
+        out.push(normalized);
+    }
+}
+
+fn non_empty_list(values: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    for value in values {
+        push_compact(&mut out, value);
+    }
+    out
+}
+
+fn first_non_empty(values: &[&str]) -> String {
+    values
+        .iter()
+        .find_map(|value| {
+            let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+            let trimmed = crate::util::truncate_content_to_max(normalized.trim(), 180)
+                .trim()
+                .to_string();
+            (!trimmed.is_empty()).then_some(trimmed)
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -784,6 +1084,49 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct StubContinuityCapsuleStore {
+        entries: Mutex<Vec<crate::memory::ContinuityCapsule>>,
+    }
+
+    impl crate::memory::ContinuityCapsuleStore for StubContinuityCapsuleStore {
+        fn upsert_many(
+            &self,
+            drafts: &[crate::memory::ContinuityCapsuleDraft],
+            now_secs: u64,
+        ) -> Result<crate::memory::ContinuityCapsuleWriteOutcome> {
+            let mut guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            Ok(crate::memory::apply_continuity_capsule_drafts(
+                &mut guard, drafts, now_secs,
+            ))
+        }
+
+        fn get(&self, capsule_id: &str) -> Result<Option<crate::memory::ContinuityCapsule>> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .find(|entry| entry.capsule_id == capsule_id)
+                .cloned())
+        }
+
+        fn list(&self, limit: usize) -> Result<Vec<crate::memory::ContinuityCapsule>> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .take(limit)
+                .cloned()
+                .collect())
+        }
+
+        fn count(&self) -> Result<usize> {
+            Ok(self.entries.lock().unwrap_or_else(|e| e.into_inner()).len())
+        }
+    }
+
+    #[derive(Default)]
     struct StubSkillStorage;
 
     impl SkillStorage for StubSkillStorage {
@@ -805,33 +1148,51 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct StubTaskRunStore;
+    struct StubTaskRunStore {
+        active: Vec<crate::task_execution::TaskRunRecord>,
+        recent: Vec<crate::task_execution::TaskRunRecord>,
+    }
 
     impl crate::task_execution::TaskRunStore for StubTaskRunStore {
         fn get(&self, _run_id: &str) -> Result<Option<crate::task_execution::TaskRunRecord>> {
-            Ok(None)
+            Ok(self
+                .active
+                .iter()
+                .chain(self.recent.iter())
+                .find(|record| record.run.run_id == _run_id)
+                .cloned())
         }
 
         fn upsert(&self, _record: &crate::task_execution::TaskRunRecord) -> Result<()> {
             Ok(())
         }
 
-        fn list_recent(&self, _limit: usize) -> Result<Vec<crate::task_execution::TaskRunRecord>> {
-            Ok(Vec::new())
+        fn list_recent(&self, limit: usize) -> Result<Vec<crate::task_execution::TaskRunRecord>> {
+            Ok(self.recent.iter().take(limit).cloned().collect())
         }
 
         fn list_active_for_chat(
             &self,
-            _channel: &str,
-            _chat_id: &str,
-            _limit: usize,
+            channel: &str,
+            chat_id: &str,
+            limit: usize,
         ) -> Result<Vec<crate::task_execution::TaskRunRecord>> {
-            Ok(Vec::new())
+            Ok(self
+                .active
+                .iter()
+                .filter(|record| {
+                    record.run.source_channel == channel && record.run.source_chat_id == chat_id
+                })
+                .take(limit)
+                .cloned()
+                .collect())
         }
     }
 
     #[derive(Default)]
-    struct StubTaskArtifactStore;
+    struct StubTaskArtifactStore {
+        records: Vec<crate::task_execution::TaskArtifactRecord>,
+    }
 
     impl crate::task_execution::TaskArtifactStore for StubTaskArtifactStore {
         fn put(&self, _record: &crate::task_execution::TaskArtifactRecord) -> Result<()> {
@@ -840,15 +1201,23 @@ mod tests {
 
         fn list_for_run(
             &self,
-            _run_id: &str,
-            _limit: usize,
+            run_id: &str,
+            limit: usize,
         ) -> Result<Vec<crate::task_execution::TaskArtifactRecord>> {
-            Ok(Vec::new())
+            Ok(self
+                .records
+                .iter()
+                .filter(|record| record.artifact.run_id == run_id)
+                .take(limit)
+                .cloned()
+                .collect())
         }
     }
 
     #[derive(Default)]
-    struct StubTaskLearningStore;
+    struct StubTaskLearningStore {
+        records: Vec<crate::task_execution::TaskLearningRecord>,
+    }
 
     impl crate::task_execution::TaskLearningStore for StubTaskLearningStore {
         fn get(
@@ -864,26 +1233,40 @@ mod tests {
 
         fn list_recent(
             &self,
-            _limit: usize,
+            limit: usize,
         ) -> Result<Vec<crate::task_execution::TaskLearningRecord>> {
-            Ok(Vec::new())
+            Ok(self.records.iter().take(limit).cloned().collect())
         }
 
         fn list_for_chat(
             &self,
-            _channel: &str,
-            _chat_id: &str,
-            _limit: usize,
+            channel: &str,
+            chat_id: &str,
+            limit: usize,
         ) -> Result<Vec<crate::task_execution::TaskLearningRecord>> {
-            Ok(Vec::new())
+            Ok(self
+                .records
+                .iter()
+                .filter(|record| {
+                    record.source_channel == channel && record.source_chat_id == chat_id
+                })
+                .take(limit)
+                .cloned()
+                .collect())
         }
 
         fn list_for_run(
             &self,
-            _run_id: &str,
-            _limit: usize,
+            run_id: &str,
+            limit: usize,
         ) -> Result<Vec<crate::task_execution::TaskLearningRecord>> {
-            Ok(Vec::new())
+            Ok(self
+                .records
+                .iter()
+                .filter(|record| record.run_id == run_id)
+                .take(limit)
+                .cloned()
+                .collect())
         }
     }
 
@@ -904,8 +1287,6 @@ mod tests {
         ) -> Result<LlmResponse> {
             let content = if system == crate::memory::EXECUTION_STATE_SYSTEM_PROMPT {
                 r#"{"status":"active","goal":"长期记忆链路收口","progress":"继续拆 coordinator","next_action":"接 execution state"}"#
-            } else if system == crate::memory::INTERNAL_MEMORY_ROUTING_SYSTEM_PROMPT {
-                r#"{"refresh_self_model":true,"self_model_intent":"Stabilize the newly formed self continuity","self_model_sources":["private_docs.inner_journal"],"refresh_private_docs":true,"private_docs_intent":"Move still-valid inward plans into governed docs","private_docs_sources":["private_garden:journal/promoted.md"],"refresh_private_garden":true,"private_garden_intent":"Reorganize drafts and document structure that are still exploratory","private_garden_cleanup_paths":["journal/promoted.md"]}"#
             } else if system == crate::memory::SELF_MODEL_SYSTEM_PROMPT {
                 r#"{"continuity_anchor":"我还在沿着同一条收口线前进","self_narrative":"现在我把共享事实层和私有层分开维护","relationship_state":"和这个用户维持着共同推进架构的关系感","private_notes":"下一轮继续收紧 self-model 的写入边界"}"#
             } else if system == crate::memory::PRIVATE_DOC_WORKSPACE_SYSTEM_PROMPT {
@@ -970,6 +1351,7 @@ mod tests {
         let execution_state_store = StubExecutionStateStore::default();
         let memory_store = StubMemoryStore;
         let long_term_memory_store = StubLongTermMemoryStore;
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
         let turn_ledger_store = StubTurnLedgerStore;
         let skill_storage = StubSkillStorage;
         let mut http = DummyHttpClient;
@@ -982,12 +1364,13 @@ mod tests {
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
                 long_term_memory_store: &long_term_memory_store,
+                continuity_capsule_store: &continuity_capsule_store,
                 extraction_state_store: &extraction_state_store,
                 turn_ledger_store: &turn_ledger_store,
                 skill_storage: &skill_storage,
-                task_run_store: &StubTaskRunStore,
-                task_artifact_store: &StubTaskArtifactStore,
-                task_learning_store: &StubTaskLearningStore,
+                task_run_store: &StubTaskRunStore::default(),
+                task_artifact_store: &StubTaskArtifactStore::default(),
+                task_learning_store: &StubTaskLearningStore::default(),
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",
@@ -1038,6 +1421,7 @@ mod tests {
         let execution_state_store = StubExecutionStateStore::default();
         let memory_store = StubMemoryStore;
         let long_term_memory_store = StubLongTermMemoryStore;
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
         let turn_ledger_store = StubTurnLedgerStore;
         let skill_storage = StubSkillStorage;
         let mut http = DummyHttpClient;
@@ -1050,12 +1434,13 @@ mod tests {
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
                 long_term_memory_store: &long_term_memory_store,
+                continuity_capsule_store: &continuity_capsule_store,
                 extraction_state_store: &extraction_state_store,
                 turn_ledger_store: &turn_ledger_store,
                 skill_storage: &skill_storage,
-                task_run_store: &StubTaskRunStore,
-                task_artifact_store: &StubTaskArtifactStore,
-                task_learning_store: &StubTaskLearningStore,
+                task_run_store: &StubTaskRunStore::default(),
+                task_artifact_store: &StubTaskArtifactStore::default(),
+                task_learning_store: &StubTaskLearningStore::default(),
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",
@@ -1120,6 +1505,7 @@ mod tests {
         let execution_state_store = StubExecutionStateStore::default();
         let memory_store = StubMemoryStore;
         let long_term_memory_store = StubLongTermMemoryStore;
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
         let turn_ledger_store = StubTurnLedgerStore;
         let skill_storage = StubSkillStorage;
         let mut http = DummyHttpClient;
@@ -1133,12 +1519,13 @@ mod tests {
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
                 long_term_memory_store: &long_term_memory_store,
+                continuity_capsule_store: &continuity_capsule_store,
                 extraction_state_store: &extraction_state_store,
                 turn_ledger_store: &turn_ledger_store,
                 skill_storage: &skill_storage,
-                task_run_store: &StubTaskRunStore,
-                task_artifact_store: &StubTaskArtifactStore,
-                task_learning_store: &StubTaskLearningStore,
+                task_run_store: &StubTaskRunStore::default(),
+                task_artifact_store: &StubTaskArtifactStore::default(),
+                task_learning_store: &StubTaskLearningStore::default(),
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",
@@ -1173,6 +1560,165 @@ mod tests {
     }
 
     #[test]
+    fn maintenance_writes_task_continuity_capsule_for_active_run() {
+        let session_store = StubSessionStore {
+            recent: vec![
+                SessionMessage {
+                    role: "user".to_string(),
+                    content: "继续把 continuity capsule 接到维护链".to_string(),
+                },
+                SessionMessage {
+                    role: "assistant".to_string(),
+                    content: "我会把 task run、execution state、inspection 串起来".to_string(),
+                },
+            ],
+            count: 18,
+            ..Default::default()
+        };
+        let summary_store = StubSessionSummaryStore::default();
+        let extraction_state_store = StubExtractionStateStore::default();
+        let execution_state_store = StubExecutionStateStore::default();
+        let memory_store = StubMemoryStore;
+        let long_term_memory_store = StubLongTermMemoryStore;
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
+        let turn_ledger_store = StubTurnLedgerStore;
+        let skill_storage = StubSkillStorage;
+        let task_run_store = StubTaskRunStore {
+            active: vec![crate::task_execution::TaskRunRecord {
+                run: crate::task_execution::TaskRun {
+                    run_id: "run-1".to_string(),
+                    source_channel: "qq_channel".to_string(),
+                    source_chat_id: "chat-1".to_string(),
+                    user_request: "继续把 continuity capsule 接到维护链".to_string(),
+                    title: "Continuity capsule maintenance".to_string(),
+                    status: crate::task_execution::TaskRunStatus::Running,
+                    current_step_id: "s01".to_string(),
+                    planner_reason: "complex task".to_string(),
+                    final_summary: String::new(),
+                    failure_reason: String::new(),
+                    plan_revision: 1,
+                    created_at: 10,
+                    updated_at: 20,
+                    finished_at: 0,
+                },
+                plan: crate::task_execution::TaskPlan {
+                    goal: "Close P4-B1 continuity capsule maintenance".to_string(),
+                    completion_definition: "store + maintenance + inspection landed".to_string(),
+                    risk_notes: Vec::new(),
+                    ordered_steps: vec![crate::task_execution::TaskStep {
+                        step_id: "s01".to_string(),
+                        title: "Wire maintenance".to_string(),
+                        instruction: "Connect post-reply maintenance to continuity capsule store"
+                            .to_string(),
+                        status: crate::task_execution::TaskStepStatus::Running,
+                        tool_budget: 3,
+                        retry_budget: 1,
+                        expected_artifacts: Vec::new(),
+                        review_criteria: Vec::new(),
+                        attempt_count: 0,
+                        last_result_summary: "store trait and platform wiring are in place"
+                            .to_string(),
+                        last_review_summary: String::new(),
+                        started_at: 15,
+                        finished_at: 0,
+                    }],
+                },
+            }],
+            recent: Vec::new(),
+        };
+        let task_artifact_store = StubTaskArtifactStore {
+            records: vec![crate::task_execution::TaskArtifactRecord {
+                artifact: crate::task_execution::TaskArtifact {
+                    artifact_id: "a01".to_string(),
+                    run_id: "run-1".to_string(),
+                    step_id: "s01".to_string(),
+                    kind: crate::task_execution::TaskArtifactKind::StepResult,
+                    summary: "maintenance chain updated".to_string(),
+                    content_ref: "inline".to_string(),
+                    provenance: "test".to_string(),
+                    created_at: 20,
+                },
+                content: "maintenance chain updated".to_string(),
+            }],
+        };
+        let task_learning_store = StubTaskLearningStore {
+            records: vec![crate::task_execution::TaskLearningRecord {
+                learning_id: "run-1_s01_l01".to_string(),
+                source_channel: "qq_channel".to_string(),
+                source_chat_id: "chat-1".to_string(),
+                run_id: "run-1".to_string(),
+                step_id: "s01".to_string(),
+                kind: crate::task_execution::TaskLearningKind::ReusableProcedure,
+                route: crate::task_execution::TaskLearningRoute::RuntimeSkill,
+                run_status: crate::task_execution::TaskRunStatus::Running,
+                topic: "continuity capsule maintenance".to_string(),
+                summary: "reuse the post-reply maintenance chain instead of adding a new LLM path"
+                    .to_string(),
+                content: "reuse existing maintenance signals".to_string(),
+                memory_kind: None,
+                review_summary: String::new(),
+                source_artifact_ids: vec!["a01".to_string()],
+                provenance: "test".to_string(),
+                archive_note_name: String::new(),
+                route_detail: String::new(),
+                observed_at: 20,
+            }],
+        };
+        let mut http = DummyHttpClient;
+
+        let outcome = run_post_reply_memory_maintenance(
+            &mut http,
+            &FixedLlmClient,
+            PostReplyMemoryMaintenanceContext {
+                session_store: &session_store,
+                memory_store: &memory_store,
+                session_summary_store: &summary_store,
+                execution_state_store: &execution_state_store,
+                long_term_memory_store: &long_term_memory_store,
+                continuity_capsule_store: &continuity_capsule_store,
+                extraction_state_store: &extraction_state_store,
+                turn_ledger_store: &turn_ledger_store,
+                skill_storage: &skill_storage,
+                task_run_store: &task_run_store,
+                task_artifact_store: &task_artifact_store,
+                task_learning_store: &task_learning_store,
+            },
+            PostReplyMemoryMaintenanceInput {
+                chat_id: "chat-1",
+                ingress: IngressKind::User,
+                channel: "qq_channel",
+                user_content: "继续把 continuity capsule 接到维护链",
+                reply_content: "我会把 task run、execution state、inspection 串起来",
+                pressure: PressureLevel::Normal,
+                memory_profile: MemoryProfile::Embedded,
+                tool_calls: 1,
+                external_content_used: false,
+                now_secs: 30,
+            },
+            || false,
+        );
+
+        let capsule_outcome = outcome.continuity_capsule_outcome.unwrap();
+        assert_eq!(capsule_outcome.drafted, 1);
+        assert_eq!(capsule_outcome.upserted, 1);
+        let stored = continuity_capsule_store.list(8).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(
+            stored[0].kind,
+            crate::memory::ContinuityCapsuleKind::WorkSession
+        );
+        assert_eq!(stored[0].run_id, "run-1");
+        assert!(stored[0]
+            .decisions
+            .iter()
+            .any(|decision| decision.contains("reuse the post-reply maintenance chain")));
+        assert!(stored[0]
+            .artifact_refs
+            .iter()
+            .any(|artifact| artifact == "artifact:a01"));
+    }
+
+    #[test]
     fn maintenance_does_not_touch_private_garden_docs() {
         let session_store = StubSessionStore {
             recent: vec![
@@ -1193,6 +1739,7 @@ mod tests {
         let execution_state_store = StubExecutionStateStore::default();
         let memory_store = StubMemoryStore;
         let long_term_memory_store = StubLongTermMemoryStore;
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
         let private_garden_store = StubPrivateGardenStore::default();
         let turn_ledger_store = StubTurnLedgerStore;
         let skill_storage = StubSkillStorage;
@@ -1213,12 +1760,13 @@ mod tests {
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
                 long_term_memory_store: &long_term_memory_store,
+                continuity_capsule_store: &continuity_capsule_store,
                 extraction_state_store: &extraction_state_store,
                 turn_ledger_store: &turn_ledger_store,
                 skill_storage: &skill_storage,
-                task_run_store: &StubTaskRunStore,
-                task_artifact_store: &StubTaskArtifactStore,
-                task_learning_store: &StubTaskLearningStore,
+                task_run_store: &StubTaskRunStore::default(),
+                task_artifact_store: &StubTaskArtifactStore::default(),
+                task_learning_store: &StubTaskLearningStore::default(),
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",
@@ -1279,6 +1827,7 @@ mod tests {
         let execution_state_store = StubExecutionStateStore::default();
         let memory_store = StubMemoryStore;
         let long_term_memory_store = StubLongTermMemoryStore;
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
         let turn_ledger_store = StubTurnLedgerStore;
         let skill_storage = StubSkillStorage;
         let mut http = DummyHttpClient;
@@ -1292,12 +1841,13 @@ mod tests {
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
                 long_term_memory_store: &long_term_memory_store,
+                continuity_capsule_store: &continuity_capsule_store,
                 extraction_state_store: &extraction_state_store,
                 turn_ledger_store: &turn_ledger_store,
                 skill_storage: &skill_storage,
-                task_run_store: &StubTaskRunStore,
-                task_artifact_store: &StubTaskArtifactStore,
-                task_learning_store: &StubTaskLearningStore,
+                task_run_store: &StubTaskRunStore::default(),
+                task_artifact_store: &StubTaskArtifactStore::default(),
+                task_learning_store: &StubTaskLearningStore::default(),
             },
             PostReplyMemoryMaintenanceInput {
                 chat_id: "chat-1",

@@ -1,5 +1,6 @@
 //! Unified recall contract and inspection reports for working memory planes.
 //! 统一 recall 合同：为 shared factual / archive / runtime skill / task recall 提供同构查询与报告。
+#![allow(clippy::too_many_arguments)]
 
 use crate::platform::SkillStorage;
 use crate::skills::retrieve_runtime_skill_hits;
@@ -23,6 +24,7 @@ const RECALL_REPORT_CANDIDATE_LIMIT: usize = 12;
 pub enum RecallPlane {
     #[default]
     SharedFactual,
+    ContinuityCapsule,
     Archive,
     RuntimeSkill,
     TaskRecall,
@@ -32,6 +34,7 @@ impl RecallPlane {
     pub fn label(self) -> &'static str {
         match self {
             Self::SharedFactual => "shared_factual",
+            Self::ContinuityCapsule => "continuity_capsule",
             Self::Archive => "archive",
             Self::RuntimeSkill => "runtime_skill",
             Self::TaskRecall => "task_recall",

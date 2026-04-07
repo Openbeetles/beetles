@@ -1,5 +1,6 @@
 //! ToolRegistry：按 name 注册与查找，生成 API 用 tool specs。
 //! ToolRegistry: register, get by name, tool_specs for API.
+#![allow(clippy::too_many_arguments)]
 
 use crate::config::AppConfig;
 use crate::error::{Error, Result};
@@ -81,17 +82,7 @@ impl ToolRegistry {
         self
     }
 
-    pub fn set_llm_visibility_overlay_provider(
-        &mut self,
-        provider: Arc<
-            dyn Fn(
-                    crate::bus::IngressKind,
-                    &str,
-                ) -> crate::capability_package::CapabilityPackageToolPolicySet
-                + Send
-                + Sync,
-        >,
-    ) {
+    pub fn set_llm_visibility_overlay_provider(&mut self, provider: LlmVisibilityOverlayProvider) {
         self.llm_visibility_overlay_provider = Some(provider);
     }
 
@@ -501,6 +492,7 @@ fn register_core_tools(
         Arc::clone(session_store),
         Arc::clone(memory_store),
         platform.long_term_memory_store(),
+        platform.continuity_capsule_store(),
         platform.session_summary_store(),
         platform.execution_state_store(),
         platform.self_model_store(),
@@ -603,9 +595,7 @@ fn register_audio_tools(
     config: &AppConfig,
     platform: &Arc<dyn crate::Platform>,
 ) -> Option<Arc<crate::audio::baidu_token::BaiduTokenCache>> {
-    let Some(audio_cfg) = config.audio.clone() else {
-        return None;
-    };
+    let audio_cfg = config.audio.clone()?;
     let baidu_speech_credentials_ok = !audio_cfg.speech.api_key.trim().is_empty()
         && !audio_cfg.speech.api_secret.trim().is_empty();
     let speech_input_ok = audio_cfg.service_provider == "baidu"

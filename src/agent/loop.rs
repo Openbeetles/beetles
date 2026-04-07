@@ -1,5 +1,7 @@
 //! Agent ReAct 循环：入站一条 → context → chat（含 tool_use 多轮）→ 会话持久化 → 出站一条。
 //! 仅依赖 trait；HTTP/Tool 由 main 注入同一实现（如 EspHttpClient）。
+#![allow(clippy::too_many_arguments)]
+
 mod background_jobs;
 mod driver;
 mod task_execution;
@@ -111,6 +113,9 @@ use self::task_execution::try_run_task_execution;
 use self::tool_round::execute_tool_use_round;
 use self::turn_finalize::{finalize_lane_turn, persist_turn_ledger};
 use self::worker_context::prepare_worker_conversation;
+
+type CapabilityPackageTextProvider = Arc<dyn Fn(&str, usize) -> Option<String> + Send + Sync>;
+
 /// 最大 ReAct 轮数（含首轮 chat），防止无限 tool 循环。
 const MAX_REACT_ROUNDS: usize = 10;
 
@@ -1682,6 +1687,7 @@ fn run_post_reply_maintenance_job(
             session_summary_store: config.session_summary_store.as_ref(),
             execution_state_store: config.execution_state_store.as_ref(),
             long_term_memory_store: config.long_term_memory_store.as_ref(),
+            continuity_capsule_store: config.continuity_capsule_store.as_ref(),
             extraction_state_store: config.long_term_memory_extraction_state_store.as_ref(),
             turn_ledger_store: config.turn_ledger_store.as_ref(),
             skill_storage: config.skill_storage.as_ref(),
@@ -1758,6 +1764,19 @@ fn run_post_reply_maintenance_job(
             "[agent_memory] refresh request was eligible but not enqueued chat_id={}",
             msg.chat_id
         );
+    }
+    match maintenance_outcome.continuity_capsule_outcome {
+        Ok(ref outcome) if outcome.upserted > 0 => {
+            log::info!(
+                "[agent_continuity_capsule] updated chat_id={} drafted={} upserted={} superseded={}",
+                msg.chat_id,
+                outcome.drafted,
+                outcome.upserted,
+                outcome.superseded
+            );
+        }
+        Ok(_) => {}
+        Err(ref error) => log::warn!("[agent_continuity_capsule] failed: {}", error),
     }
 }
 
@@ -2096,6 +2115,7 @@ struct EndTurnFollowupContext<'a> {
 pub struct AgentLoopConfig {
     pub memory_store: Arc<dyn MemoryStore + Send + Sync>,
     pub long_term_memory_store: Arc<dyn LongTermMemoryStore + Send + Sync>,
+    pub continuity_capsule_store: Arc<dyn crate::memory::ContinuityCapsuleStore + Send + Sync>,
     pub long_term_memory_extraction_state_store:
         Arc<dyn LongTermMemoryExtractionStateStore + Send + Sync>,
     pub session_store: Arc<dyn SessionStore + Send + Sync>,
@@ -2121,7 +2141,7 @@ pub struct AgentLoopConfig {
     pub skill_storage: Arc<dyn crate::platform::SkillStorage + Send + Sync>,
     pub memory_profile: crate::memory::MemoryProfile,
     pub get_skill_descriptions: Arc<dyn Fn() -> String + Send + Sync>,
-    pub get_capability_package_text: Arc<dyn Fn(&str, usize) -> Option<String> + Send + Sync>,
+    pub get_capability_package_text: CapabilityPackageTextProvider,
     pub session_max_messages: usize,
     pub tg_group_activation: Arc<str>,
     pub important_message_store: Arc<dyn ImportantMessageStore + Send + Sync>,
@@ -3668,6 +3688,31 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct StubContinuityCapsuleStore;
+
+    impl crate::memory::ContinuityCapsuleStore for StubContinuityCapsuleStore {
+        fn upsert_many(
+            &self,
+            _drafts: &[crate::memory::ContinuityCapsuleDraft],
+            _now_secs: u64,
+        ) -> Result<crate::memory::ContinuityCapsuleWriteOutcome> {
+            Ok(crate::memory::ContinuityCapsuleWriteOutcome::default())
+        }
+
+        fn get(&self, _capsule_id: &str) -> Result<Option<crate::memory::ContinuityCapsule>> {
+            Ok(None)
+        }
+
+        fn list(&self, _limit: usize) -> Result<Vec<crate::memory::ContinuityCapsule>> {
+            Ok(Vec::new())
+        }
+
+        fn count(&self) -> Result<usize> {
+            Ok(0)
+        }
+    }
+
+    #[derive(Default)]
     struct StubLongTermMemoryExtractionStateStore;
 
     impl LongTermMemoryExtractionStateStore for StubLongTermMemoryExtractionStateStore {
@@ -3824,6 +3869,7 @@ mod tests {
         AgentLoopConfig {
             memory_store: Arc::new(EmptyMemoryStore),
             long_term_memory_store: Arc::new(StubLongTermMemoryStore),
+            continuity_capsule_store: Arc::new(StubContinuityCapsuleStore),
             long_term_memory_extraction_state_store: Arc::new(
                 StubLongTermMemoryExtractionStateStore,
             ),
@@ -4259,11 +4305,6 @@ mod tests {
         let llm = SequenceStubLlm {
             responses: Mutex::new(vec![
                 LlmResponse {
-                    content: r#"{"stance_summary":"reply directly","priority_order":["self_authored_core","boundary","user_contract","relationship","task","resources"],"response_mode":"steady_task","task_scope":"full","initiative_posture":"answer directly","relationship_posture":"steady","resource_posture":"normal","response_guidance":"reply directly","rationale":"test"}"#.to_string(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                },
-                LlmResponse {
                     content: "[tool_use]".to_string(),
                     stop_reason: StopReason::ToolUse,
                     tool_calls: Some(vec![crate::llm::ToolCall {
@@ -4320,19 +4361,12 @@ mod tests {
                 msg: PcMsg::new_inbound("qq_channel", "chat-1", "直接回答", false)
                     .expect("message"),
                 registry_mode: BenchmarkRegistryMode::Empty,
-                responses: vec![
-                    LlmResponse {
-                        content: r#"{"stance_summary":"reply directly","priority_order":["self_authored_core","boundary","user_contract","relationship","task","resources"],"response_mode":"steady_task","task_scope":"full","initiative_posture":"answer directly","relationship_posture":"steady","resource_posture":"normal","response_guidance":"reply directly","rationale":"test"}"#.to_string(),
-                        stop_reason: StopReason::EndTurn,
-                        tool_calls: None,
-                    },
-                    LlmResponse {
-                        content: "直接答复".to_string(),
-                        stop_reason: StopReason::EndTurn,
-                        tool_calls: None,
-                    },
-                ],
-                expected_llm_calls: 2,
+                responses: vec![LlmResponse {
+                    content: "直接答复".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                }],
+                expected_llm_calls: 1,
                 expected_react_rounds: 1,
                 expected_tool_calls: 0,
                 expected_streamed: false,
@@ -4346,11 +4380,6 @@ mod tests {
                     .expect("message"),
                 registry_mode: BenchmarkRegistryMode::MessagePrimary,
                 responses: vec![
-                    LlmResponse {
-                        content: r#"{"stance_summary":"reply directly","priority_order":["self_authored_core","boundary","user_contract","relationship","task","resources"],"response_mode":"steady_task","task_scope":"full","initiative_posture":"answer directly","relationship_posture":"steady","resource_posture":"normal","response_guidance":"reply directly","rationale":"test"}"#.to_string(),
-                        stop_reason: StopReason::EndTurn,
-                        tool_calls: None,
-                    },
                     LlmResponse {
                         content: "[tool_use]".to_string(),
                         stop_reason: StopReason::ToolUse,
@@ -4367,7 +4396,7 @@ mod tests {
                         tool_calls: None,
                     },
                 ],
-                expected_llm_calls: 3,
+                expected_llm_calls: 2,
                 expected_react_rounds: 2,
                 expected_tool_calls: 1,
                 expected_streamed: true,
@@ -4381,11 +4410,6 @@ mod tests {
                     .expect("message"),
                 registry_mode: BenchmarkRegistryMode::MessagePrimary,
                 responses: vec![
-                    LlmResponse {
-                        content: r#"{"stance_summary":"reply directly","priority_order":["self_authored_core","boundary","user_contract","relationship","task","resources"],"response_mode":"steady_task","task_scope":"full","initiative_posture":"answer directly","relationship_posture":"steady","resource_posture":"normal","response_guidance":"reply directly","rationale":"test"}"#.to_string(),
-                        stop_reason: StopReason::EndTurn,
-                        tool_calls: None,
-                    },
                     LlmResponse {
                         content: "[tool_use]".to_string(),
                         stop_reason: StopReason::ToolUse,
@@ -4407,7 +4431,7 @@ mod tests {
                         tool_calls: None,
                     },
                 ],
-                expected_llm_calls: 4,
+                expected_llm_calls: 3,
                 expected_react_rounds: 3,
                 expected_tool_calls: 1,
                 expected_streamed: false,

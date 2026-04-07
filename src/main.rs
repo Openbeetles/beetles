@@ -38,6 +38,8 @@ use std::time::{Duration, Instant};
 const TAG: &str = "beetle";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+type CapabilityPackageTextProvider = Arc<dyn Fn(&str, usize) -> Option<String> + Send + Sync>;
+
 type HttpFactory = beetle::runtime::stream_http::HttpFactory;
 struct VoiceEventChannel {
     wake_model_name: Option<String>,
@@ -313,7 +315,7 @@ fn spawn_voice_session_if_ready(
     > = Arc::new(move || vs_pf.create_http_client(vs_cfg.as_ref()));
     let vs_inbound_tx = user_inbound_tx.clone();
     let vs_prompt = audio_cfg.wake_word.wake_prompt.clone();
-    if let Err(error) = spawn_planned_handle("voice_session", STACK_VOICE_CONTROL, move || {
+    let spawned = match spawn_planned_handle("voice_session", STACK_VOICE_CONTROL, move || {
         beetle::audio::voice_session::run_voice_session(
             beetle::audio::voice_session::VoiceSessionConfig {
                 platform: vs_platform,
@@ -326,13 +328,21 @@ fn spawn_voice_session_if_ready(
             voice_rx,
         );
     }) {
-        let error = beetle::Error::io("voice_session_spawn", error);
-        log::error!("[{}] voice_session spawn failed: {}", TAG, error);
-        beetle::state::set_last_error(&error);
-    }
+        Ok(_) => true,
+        Err(error) => {
+            let error = beetle::Error::io("voice_session_spawn", error);
+            log::error!("[{}] voice_session spawn failed: {}", TAG, error);
+            beetle::state::set_last_error(&error);
+            false
+        }
+    };
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    let _ = spawned;
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    if let Some(model_name) = wake_model_name.as_deref() {
-        platform.configure_wake_word(model_name, audio_cfg.microphone.sample_rate, voice_tx);
+    if spawned {
+        if let Some(model_name) = wake_model_name.as_deref() {
+            platform.configure_wake_word(model_name, audio_cfg.microphone.sample_rate, voice_tx);
+        }
     }
 }
 
@@ -1060,6 +1070,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     let memory_store: Arc<dyn MemoryStore + Send + Sync> = platform.memory_store();
     let long_term_memory_store: Arc<dyn beetle::memory::LongTermMemoryStore + Send + Sync> =
         platform.long_term_memory_store();
+    let continuity_capsule_store: Arc<dyn beetle::memory::ContinuityCapsuleStore + Send + Sync> =
+        platform.continuity_capsule_store();
     let long_term_memory_extraction_state_store: Arc<
         dyn beetle::memory::LongTermMemoryExtractionStateStore + Send + Sync,
     > = platform.long_term_memory_extraction_state_store();
@@ -1214,7 +1226,6 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             }
         }
     }));
-    let registry = Arc::new(registry);
     let registry = Arc::new(registry);
 
     if !startup_self_check(memory_store.as_ref()) {
@@ -1525,33 +1536,32 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             *guard = (Some(rendered.clone()), Instant::now());
             rendered
         });
-        let get_capability_package_text: Arc<dyn Fn(&str, usize) -> Option<String> + Send + Sync> =
-            Arc::new({
-                let state_fs = platform.state_fs();
-                let runtime_capabilities = Arc::clone(&capability_package_runtime_capabilities);
-                move |channel, max_chars| {
-                    if max_chars == 0 {
-                        return None;
-                    }
-                    match beetle::build_capability_package_runtime_prompt_bundle(
-                        state_fs.as_ref(),
-                        runtime_capabilities.as_ref(),
-                        channel,
-                        max_chars,
-                    ) {
-                        Ok(bundle) if !bundle.text.trim().is_empty() => Some(bundle.text),
-                        Ok(_) => None,
-                        Err(error) => {
-                            log::warn!(
-                                "[capability_package] failed to load runtime prompt bundle for {}: {}",
-                                channel,
-                                error
-                            );
-                            None
-                        }
+        let get_capability_package_text: CapabilityPackageTextProvider = Arc::new({
+            let state_fs = platform.state_fs();
+            let runtime_capabilities = Arc::clone(&capability_package_runtime_capabilities);
+            move |channel, max_chars| {
+                if max_chars == 0 {
+                    return None;
+                }
+                match beetle::build_capability_package_runtime_prompt_bundle(
+                    state_fs.as_ref(),
+                    runtime_capabilities.as_ref(),
+                    channel,
+                    max_chars,
+                ) {
+                    Ok(bundle) if !bundle.text.trim().is_empty() => Some(bundle.text),
+                    Ok(_) => None,
+                    Err(error) => {
+                        log::warn!(
+                            "[capability_package] failed to load runtime prompt bundle for {}: {}",
+                            channel,
+                            error
+                        );
+                        None
                     }
                 }
-            });
+            }
+        });
         let session_max = config.session_max_messages.clamp(1, 128) as usize;
         let agent_user_inbound_tx = user_inbound_tx;
         let agent_system_inbound_tx = system_inbound_tx;
@@ -1614,6 +1624,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         let agent_config = Arc::new(beetle::AgentLoopConfig {
             memory_store: Arc::clone(&memory_store),
             long_term_memory_store: Arc::clone(&long_term_memory_store),
+            continuity_capsule_store: Arc::clone(&continuity_capsule_store),
             long_term_memory_extraction_state_store: Arc::clone(
                 &long_term_memory_extraction_state_store,
             ),

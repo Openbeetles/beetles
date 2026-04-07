@@ -13,14 +13,15 @@ use crate::platform::{
     heartbeat_file::read_heartbeat_file,
     spiffs::{
         spiffs_usage, CachedSkillStorage, SpiffsAutonomyStrategyStore,
-        SpiffsCalendarProviderCredentialStore, SpiffsCalendarStore, SpiffsCoreRevisionLedgerStore,
-        SpiffsExecutionStateStore, SpiffsImportantMessageStore, SpiffsInnerLifeStore,
-        SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
-        SpiffsMentalPrivacyStore, SpiffsOuterVoiceStore, SpiffsPendingRetryStore,
-        SpiffsPrivateDocStore, SpiffsPrivateGardenStore, SpiffsRelationshipConstitutionStore,
-        SpiffsRelationshipPortfolioStore, SpiffsRelationshipTopologyStore, SpiffsRemindAtStore,
-        SpiffsSelfAuthoredCoreStore, SpiffsSelfContinuityStore, SpiffsSelfModelStore,
-        SpiffsSessionStore, SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
+        SpiffsCalendarProviderCredentialStore, SpiffsCalendarStore, SpiffsContinuityCapsuleStore,
+        SpiffsCoreRevisionLedgerStore, SpiffsExecutionStateStore, SpiffsImportantMessageStore,
+        SpiffsInnerLifeStore, SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore,
+        SpiffsMemoryStore, SpiffsMentalPrivacyStore, SpiffsOuterVoiceStore,
+        SpiffsPendingRetryStore, SpiffsPrivateDocStore, SpiffsPrivateGardenStore,
+        SpiffsRelationshipConstitutionStore, SpiffsRelationshipPortfolioStore,
+        SpiffsRelationshipTopologyStore, SpiffsRemindAtStore, SpiffsSelfAuthoredCoreStore,
+        SpiffsSelfContinuityStore, SpiffsSelfModelStore, SpiffsSessionStore,
+        SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
         SpiffsTaskArtifactStore, SpiffsTaskExecutionLedgerStore, SpiffsTaskLearningStore,
         SpiffsTaskRunStore, SpiffsTaskStore, SpiffsTurnLedgerStore, SpiffsWorldSenseStore,
     },
@@ -40,12 +41,13 @@ use crate::{
     config::{AppConfig, AudioSegment},
     display::{DisplayCommand, DisplayConfig},
     memory::{
-        AutonomyStrategyStore, CoreRevisionLedgerStore, ExecutionStateStore, ImportantMessageStore,
-        InnerLifeStore, LongTermMemoryExtractionStateStore, LongTermMemoryStore, MemoryStore,
-        MentalPrivacyStore, OuterVoiceStore, PendingRetryStore, PrivateDocStore,
-        PrivateGardenStore, RelationshipConstitutionStore, RelationshipPortfolioStore,
-        RelationshipTopologyStore, RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore,
-        SelfModelStore, SessionStore, SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
+        AutonomyStrategyStore, ContinuityCapsuleStore, CoreRevisionLedgerStore,
+        ExecutionStateStore, ImportantMessageStore, InnerLifeStore,
+        LongTermMemoryExtractionStateStore, LongTermMemoryStore, MemoryStore, MentalPrivacyStore,
+        OuterVoiceStore, PendingRetryStore, PrivateDocStore, PrivateGardenStore,
+        RelationshipConstitutionStore, RelationshipPortfolioStore, RelationshipTopologyStore,
+        RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore, SelfModelStore, SessionStore,
+        SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
     },
     task::TaskStore,
     task_execution::{
@@ -62,6 +64,7 @@ pub struct LinuxPlatform {
     skill_meta_store: Arc<SpiffsSkillMetaStore>,
     memory_store: Arc<SpiffsMemoryStore>,
     long_term_memory_store: Arc<SpiffsLongTermMemoryStore>,
+    continuity_capsule_store: Arc<dyn ContinuityCapsuleStore + Send + Sync>,
     long_term_memory_extraction_state_store:
         Arc<dyn LongTermMemoryExtractionStateStore + Send + Sync>,
     session_store: Arc<dyn SessionStore + Send + Sync>,
@@ -168,6 +171,7 @@ impl LinuxPlatform {
             skill_meta_store: Arc::new(SpiffsSkillMetaStore),
             memory_store: Arc::new(SpiffsMemoryStore::new()),
             long_term_memory_store: Arc::new(SpiffsLongTermMemoryStore::new()),
+            continuity_capsule_store: Arc::new(SpiffsContinuityCapsuleStore::new()),
             long_term_memory_extraction_state_store,
             session_store,
             pending_retry_store: Arc::new(SpiffsPendingRetryStore::new()),
@@ -310,6 +314,10 @@ impl Platform for LinuxPlatform {
 
     fn long_term_memory_store(&self) -> Arc<dyn LongTermMemoryStore + Send + Sync> {
         Arc::clone(&self.long_term_memory_store) as Arc<dyn LongTermMemoryStore + Send + Sync>
+    }
+
+    fn continuity_capsule_store(&self) -> Arc<dyn ContinuityCapsuleStore + Send + Sync> {
+        Arc::clone(&self.continuity_capsule_store)
     }
 
     fn long_term_memory_extraction_state_store(
