@@ -50,19 +50,22 @@ impl PromptRecallRouterDecision {
     pub fn active_task_parts<'a>(
         self,
         execution_state_text: Option<&'a str>,
+        recent_turn_observation_text: Option<&'a str>,
         task_workspace_text: Option<&'a str>,
         task_recall_text: Option<&'a str>,
         continuity_capsule_text: Option<&'a str>,
-    ) -> [Option<&'a str>; 4] {
+    ) -> [Option<&'a str>; 5] {
         match self.intent {
             PromptRecallIntent::Continuity => [
                 execution_state_text,
+                recent_turn_observation_text,
                 continuity_capsule_text,
                 task_workspace_text,
                 task_recall_text,
             ],
             _ => [
                 execution_state_text,
+                recent_turn_observation_text,
                 task_workspace_text,
                 task_recall_text,
                 None,

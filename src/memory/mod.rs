@@ -17,6 +17,7 @@ mod core_revision_ledger;
 mod execution_state;
 mod hygiene;
 mod inner_life;
+mod intelligence_replay;
 mod internal_memory_topology;
 mod llm_json;
 mod long_term;
@@ -136,6 +137,10 @@ pub use inner_life::{
     render_inner_life_block, run_inner_life_refresh, InnerLife, InnerLifeRefreshContext,
     InnerLifeRefreshInput, InnerLifeRefreshOutcome, INNER_LIFE_SYSTEM_PROMPT,
     INNER_LIFE_TOTAL_CHAR_LIMIT,
+};
+pub use intelligence_replay::{
+    inspect_intelligence_replay, IntelligenceReplayAlert, IntelligenceReplayAlertCode,
+    IntelligenceReplayInspection, IntelligenceReplayTurnDigest,
 };
 pub(crate) use internal_memory_topology::{
     render_internal_memory_topology_block, InternalMemoryLayerFocus,
@@ -364,13 +369,16 @@ pub use shared_memory_governance::{
 pub(crate) use skill_routing::{route_long_term_draft, MemoryPlane};
 pub use turn_ledger::{
     build_turn_ledger_start, build_turn_persona_disclosure_ledger,
-    build_turn_persona_priority_ledger, normalize_turn_persona_scope,
-    normalize_turn_persona_targets, normalize_turn_preview, normalize_turn_reason,
-    render_turn_persona_ledger_block, turn_ledger_observed_at_ms, TurnDeliveryLedger, TurnLedger,
-    TurnLedgerStatus, TurnLedgerStore, TurnPersonaDisclosureLedger, TurnPersonaLedger,
+    build_turn_persona_priority_ledger, normalize_turn_observation_text,
+    normalize_turn_persona_scope, normalize_turn_persona_targets, normalize_turn_preview,
+    normalize_turn_reason, normalize_turn_subject_state_summary, normalize_turn_subject_state_text,
+    render_turn_observation_ledger_block, render_turn_persona_ledger_block,
+    turn_ledger_observed_at_ms, TurnBlockerLedger, TurnDeliberationClass, TurnDeliveryLedger,
+    TurnExecutionClass, TurnLedger, TurnLedgerStatus, TurnLedgerStore, TurnModeSnapshotLedger,
+    TurnObservationLedger, TurnPersonaDisclosureLedger, TurnPersonaLedger,
     TurnPersonaPressureLevel, TurnPersonaPriorityLedger, TurnPersonaReviewLedger,
-    REL_PATH_TURN_LEDGERS, REL_PATH_TURN_LEDGERS_LEGACY, REL_PATH_TURN_LEDGER_HISTORY,
-    TURN_LEDGER_HISTORY_MAX_ITEMS,
+    TurnSubjectStateLedger, TurnToolPathLedger, REL_PATH_TURN_LEDGERS,
+    REL_PATH_TURN_LEDGERS_LEGACY, REL_PATH_TURN_LEDGER_HISTORY, TURN_LEDGER_HISTORY_MAX_ITEMS,
 };
 pub(crate) use world_sense::run_world_sense_refresh_with_state;
 pub use world_sense::{

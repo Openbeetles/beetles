@@ -19,6 +19,49 @@ const TURN_LEDGER_PREVIEW_MAX_CHARS: usize = 240;
 const TURN_LEDGER_REASON_MAX_CHARS: usize = 96;
 const TURN_PERSONA_TEXT_MAX_CHARS: usize = 160;
 const TURN_PERSONA_SCOPE_MAX_CHARS: usize = 24;
+const TURN_SUBJECT_STATE_TEXT_MAX_CHARS: usize = 72;
+const TURN_SUBJECT_STATE_SUMMARY_MAX_CHARS: usize = 160;
+const TURN_OBSERVATION_TEXT_MAX_CHARS: usize = 96;
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnExecutionClass {
+    #[default]
+    DirectReply,
+    ToolAssisted,
+    TaskExecution,
+    Interrupted,
+}
+
+impl TurnExecutionClass {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::DirectReply => "direct_reply",
+            Self::ToolAssisted => "tool_assisted",
+            Self::TaskExecution => "task_execution",
+            Self::Interrupted => "interrupted",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnDeliberationClass {
+    FastInteractive,
+    #[default]
+    Standard,
+    HardReasoning,
+}
+
+impl TurnDeliberationClass {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::FastInteractive => "fast_interactive",
+            Self::Standard => "standard",
+            Self::HardReasoning => "hard_reasoning",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -105,6 +148,113 @@ pub struct TurnPersonaReviewLedger {
     pub applied: bool,
     #[serde(default)]
     pub rewrite_applied: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnToolPathLedger {
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub tool_calls: u32,
+    #[serde(default)]
+    pub react_rounds: u32,
+    #[serde(default)]
+    pub current_primary_delivered: bool,
+    #[serde(default)]
+    pub final_answer_recovered: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnBlockerLedger {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub failed_calls: u32,
+    #[serde(default)]
+    pub total_calls: u32,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnModeSnapshotLedger {
+    #[serde(default)]
+    pub current_mode: String,
+    #[serde(default)]
+    pub allow_non_voice_outbound: bool,
+    #[serde(default)]
+    pub allow_idle_self_runtime: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnObservationLedger {
+    #[serde(default)]
+    pub execution_class: TurnExecutionClass,
+    #[serde(default)]
+    pub deliberation_class: TurnDeliberationClass,
+    #[serde(default)]
+    pub final_outcome: String,
+    #[serde(default)]
+    pub pressure: TurnPersonaPressureLevel,
+    #[serde(default)]
+    pub mode: TurnModeSnapshotLedger,
+    #[serde(default)]
+    pub tool_path: TurnToolPathLedger,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocker: Option<TurnBlockerLedger>,
+}
+
+impl TurnObservationLedger {
+    pub fn is_meaningful(&self) -> bool {
+        self.execution_class != TurnExecutionClass::DirectReply
+            || self.deliberation_class != TurnDeliberationClass::Standard
+            || !self.final_outcome.trim().is_empty()
+            || self.pressure != TurnPersonaPressureLevel::Normal
+            || !self.mode.current_mode.trim().is_empty()
+            || !self.tool_path.path.trim().is_empty()
+            || self.tool_path.tool_calls > 0
+            || self.tool_path.react_rounds > 0
+            || self.tool_path.current_primary_delivered
+            || self.tool_path.final_answer_recovered
+            || self.blocker.is_some()
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnSubjectStateLedger {
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub identity_anchor: String,
+    #[serde(default)]
+    pub governance_mode: String,
+    #[serde(default)]
+    pub relationship_state: String,
+    #[serde(default)]
+    pub response_mode: String,
+    #[serde(default)]
+    pub task_scope: String,
+    #[serde(default)]
+    pub initiative_posture: String,
+    #[serde(default)]
+    pub relationship_posture: String,
+    #[serde(default)]
+    pub resource_posture: String,
+    #[serde(default)]
+    pub boundary_mode: String,
+}
+
+impl TurnSubjectStateLedger {
+    pub fn is_meaningful(&self) -> bool {
+        !self.summary.trim().is_empty()
+            || !self.identity_anchor.trim().is_empty()
+            || !self.governance_mode.trim().is_empty()
+            || !self.relationship_state.trim().is_empty()
+            || !self.response_mode.trim().is_empty()
+            || !self.task_scope.trim().is_empty()
+            || !self.initiative_posture.trim().is_empty()
+            || !self.relationship_posture.trim().is_empty()
+            || !self.resource_posture.trim().is_empty()
+            || !self.boundary_mode.trim().is_empty()
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -233,6 +383,10 @@ pub struct TurnLedger {
     #[serde(default)]
     pub delivery: TurnDeliveryLedger,
     #[serde(default)]
+    pub subject_state: Option<TurnSubjectStateLedger>,
+    #[serde(default)]
+    pub observation: Option<TurnObservationLedger>,
+    #[serde(default)]
     pub persona: Option<TurnPersonaLedger>,
 }
 
@@ -281,6 +435,24 @@ pub fn normalize_turn_reason(reason: &str) -> String {
 
 pub fn normalize_turn_persona_scope(scope: &str) -> String {
     truncate_content_to_max(scope.trim(), TURN_PERSONA_SCOPE_MAX_CHARS)
+        .trim()
+        .to_string()
+}
+
+pub fn normalize_turn_subject_state_text(content: &str) -> String {
+    truncate_content_to_max(content.trim(), TURN_SUBJECT_STATE_TEXT_MAX_CHARS)
+        .trim()
+        .to_string()
+}
+
+pub fn normalize_turn_subject_state_summary(content: &str) -> String {
+    truncate_content_to_max(content.trim(), TURN_SUBJECT_STATE_SUMMARY_MAX_CHARS)
+        .trim()
+        .to_string()
+}
+
+pub fn normalize_turn_observation_text(content: &str) -> String {
+    truncate_content_to_max(content.trim(), TURN_OBSERVATION_TEXT_MAX_CHARS)
         .trim()
         .to_string()
 }
@@ -391,6 +563,63 @@ pub fn render_turn_persona_ledger_block(
     (!rendered.trim().is_empty()).then_some(rendered)
 }
 
+pub fn render_turn_observation_ledger_block(
+    observation: &TurnObservationLedger,
+    max_len: usize,
+) -> Option<String> {
+    if max_len < 96 || !observation.is_meaningful() {
+        return None;
+    }
+    let mut out = String::with_capacity(max_len.min(512));
+    out.push_str("## Latest Turn Observation\n");
+    let _ = writeln!(
+        out,
+        "Execution class: {}",
+        observation.execution_class.label()
+    );
+    let _ = writeln!(
+        out,
+        "Deliberation: {}",
+        observation.deliberation_class.label()
+    );
+    if !observation.final_outcome.trim().is_empty() {
+        let _ = writeln!(out, "Final outcome: {}", observation.final_outcome.trim());
+    }
+    let _ = writeln!(out, "Pressure: {}", observation.pressure.as_str());
+    if !observation.mode.current_mode.trim().is_empty() {
+        let _ = writeln!(out, "Mode: {}", observation.mode.current_mode.trim());
+        let _ = writeln!(
+            out,
+            "Mode budget: non_voice_outbound={} idle_self_runtime={}",
+            observation.mode.allow_non_voice_outbound, observation.mode.allow_idle_self_runtime
+        );
+    }
+    if !observation.tool_path.path.trim().is_empty() {
+        let _ = writeln!(out, "Tool path: {}", observation.tool_path.path.trim());
+    }
+    if observation.tool_path.tool_calls > 0 || observation.tool_path.react_rounds > 0 {
+        let _ = writeln!(
+            out,
+            "Tool stats: calls={} rounds={} current_primary_delivered={} final_answer_recovered={}",
+            observation.tool_path.tool_calls,
+            observation.tool_path.react_rounds,
+            observation.tool_path.current_primary_delivered,
+            observation.tool_path.final_answer_recovered
+        );
+    }
+    if let Some(blocker) = observation.blocker.as_ref() {
+        let _ = writeln!(
+            out,
+            "Blocker: {} {}/{}",
+            blocker.kind.trim(),
+            blocker.failed_calls,
+            blocker.total_calls
+        );
+    }
+    let rendered = truncate_content_to_max(out.trim_end(), max_len).into_owned();
+    (!rendered.trim().is_empty()).then_some(rendered)
+}
+
 pub fn turn_ledger_observed_at_ms(ledger: &TurnLedger) -> u64 {
     if ledger.finished_at_ms > 0 {
         ledger.finished_at_ms
@@ -480,5 +709,54 @@ mod tests {
         let normalized = normalize_turn_reason(&reason);
         assert_eq!(normalized.len(), TURN_LEDGER_REASON_MAX_CHARS);
         assert!(normalized.chars().all(|ch| ch == 'x'));
+    }
+
+    #[test]
+    fn turn_subject_state_ledger_is_meaningful_when_summary_exists() {
+        let ledger = TurnSubjectStateLedger {
+            summary: "adaptive | protective_brief | narrow".to_string(),
+            ..TurnSubjectStateLedger::default()
+        };
+        assert!(ledger.is_meaningful());
+    }
+
+    #[test]
+    fn render_turn_observation_ledger_block_includes_mode_tool_path_and_blocker() {
+        let rendered = render_turn_observation_ledger_block(
+            &TurnObservationLedger {
+                execution_class: TurnExecutionClass::ToolAssisted,
+                deliberation_class: TurnDeliberationClass::HardReasoning,
+                final_outcome: "final_recovery".to_string(),
+                pressure: TurnPersonaPressureLevel::Cautious,
+                mode: TurnModeSnapshotLedger {
+                    current_mode: "normal".to_string(),
+                    allow_non_voice_outbound: true,
+                    allow_idle_self_runtime: true,
+                },
+                tool_path: TurnToolPathLedger {
+                    path: "tool_recovery".to_string(),
+                    tool_calls: 3,
+                    react_rounds: 2,
+                    current_primary_delivered: false,
+                    final_answer_recovered: true,
+                },
+                blocker: Some(TurnBlockerLedger {
+                    kind: "retryable".to_string(),
+                    failed_calls: 2,
+                    total_calls: 2,
+                }),
+            },
+            420,
+        )
+        .expect("observation block");
+
+        assert!(rendered.contains("## Latest Turn Observation"));
+        assert!(rendered.contains("Execution class: tool_assisted"));
+        assert!(rendered.contains("Deliberation: hard_reasoning"));
+        assert!(rendered.contains("Mode: normal"));
+        assert!(rendered.contains("Pressure: cautious"));
+        assert!(rendered.contains("Tool path: tool_recovery"));
+        assert!(rendered.contains("Final outcome: final_recovery"));
+        assert!(rendered.contains("Blocker: retryable 2/2"));
     }
 }

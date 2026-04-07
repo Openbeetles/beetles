@@ -19,14 +19,14 @@ use super::{
     render_persistent_self_authored_core_block, render_private_doc_workspace_block,
     render_private_garden_block, render_relationship_constitution_block,
     render_relationship_portfolio_block, render_self_continuity_block, render_self_model_block,
-    render_self_state_block, render_world_sense_block, render_world_snapshot_block,
-    AutonomyStrategyStore, ContinuityCapsuleScopeKind, ContinuityCapsuleStore, ExecutionStateStore,
-    InnerLifeStore, LongTermMemoryStore, MemoryProfile, MemoryStore, MentalPrivacyStore,
-    OuterVoiceStore, PrivateDocStore, PrivateGardenStore, PromptRecallRouterDecision,
-    RelationshipConstitutionStore, RelationshipConstitutionSyncInput, RelationshipPortfolioStore,
-    RelationshipTopologyStore, RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore,
-    SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore, TurnLedgerStore,
-    WorldSenseStore, WorldSnapshotContext,
+    render_self_state_block, render_turn_observation_ledger_block, render_world_sense_block,
+    render_world_snapshot_block, AutonomyStrategyStore, ContinuityCapsuleScopeKind,
+    ContinuityCapsuleStore, ExecutionStateStore, InnerLifeStore, LongTermMemoryStore,
+    MemoryProfile, MemoryStore, MentalPrivacyStore, OuterVoiceStore, PrivateDocStore,
+    PrivateGardenStore, PromptRecallRouterDecision, RelationshipConstitutionStore,
+    RelationshipConstitutionSyncInput, RelationshipPortfolioStore, RelationshipTopologyStore,
+    RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore, SelfModelStore, SessionMessage,
+    SessionStore, SessionSummaryStore, TurnLedgerStore, WorldSenseStore, WorldSnapshotContext,
 };
 
 pub struct PromptMemoryContext {
@@ -41,6 +41,7 @@ pub struct PromptMemoryContext {
     pub continuity_capsule_text: Option<String>,
     pub archive_evidence_text: Option<String>,
     pub runtime_skill_text: Option<String>,
+    pub recent_turn_observation_text: Option<String>,
     pub execution_state_text: Option<String>,
     pub task_workspace_text: Option<String>,
     pub task_recall_text: Option<String>,
@@ -84,6 +85,7 @@ impl PromptMemoryContext {
         ]);
         let active_task_parts = self.recall_router.active_task_parts(
             self.execution_state_text.as_deref(),
+            self.recent_turn_observation_text.as_deref(),
             self.task_workspace_text.as_deref(),
             self.task_recall_text.as_deref(),
             self.continuity_capsule_text.as_deref(),
@@ -362,10 +364,24 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         .get(&relationship_id)
         .ok()
         .flatten();
+    let recent_turn_ledger = params
+        .turn_ledger_store
+        .get(&relationship_id)
+        .ok()
+        .flatten();
     let recent_persona_evidence =
         load_recent_persona_evidence(params.turn_ledger_store, &relationship_id)
             .ok()
             .flatten();
+    let recent_turn_observation_text = recent_turn_ledger
+        .as_ref()
+        .and_then(|ledger| ledger.observation.as_ref())
+        .and_then(|observation| {
+            render_turn_observation_ledger_block(
+                observation,
+                params.system_max_len.min(320).max(160),
+            )
+        });
     let mental_privacy_targets = collect_private_targets(
         self_model.as_ref(),
         self_continuity.as_ref(),
@@ -700,6 +716,7 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         continuity_capsule_text,
         archive_evidence_text,
         runtime_skill_text,
+        recent_turn_observation_text,
         execution_state_text,
         task_workspace_text,
         task_recall_text,
@@ -748,8 +765,10 @@ mod tests {
         PromptRecallIntent, RelationshipConstitution, RelationshipConstitutionStore,
         RelationshipTopology, RelationshipTopologyStore, SelfAuthoredCore, SelfAuthoredCoreStore,
         SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage,
-        SessionStore, SessionSummaryStore, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
-        WorldSense, WorldSenseStore,
+        SessionStore, SessionSummaryStore, TurnBlockerLedger, TurnDeliberationClass,
+        TurnExecutionClass, TurnLedger, TurnLedgerStatus, TurnLedgerStore, TurnModeSnapshotLedger,
+        TurnObservationLedger, TurnPersonaPressureLevel, TurnToolPathLedger, WorldSense,
+        WorldSenseStore,
     };
     use crate::platform::SkillStorage;
     use crate::task::{TaskItem, TaskQuery, TaskStore};
@@ -1679,6 +1698,7 @@ mod tests {
                 next_action: "接 execution state".to_string(),
                 last_output: String::new(),
                 updated_at: 1,
+                ..ExecutionState::default()
             })),
         };
         let self_model_store = StubSelfModelStore {
@@ -2519,6 +2539,7 @@ mod tests {
                 next_action: "wire it into prompt assembly".to_string(),
                 last_output: String::new(),
                 updated_at: 5,
+                ..ExecutionState::default()
             })),
         };
         let task_run_store = StubActiveTaskRunStore {
@@ -2596,6 +2617,147 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("## Continuity Capsules"));
+    }
+
+    #[test]
+    fn active_task_context_includes_recent_turn_observation_between_execution_state_and_capsule() {
+        let session_store = StubSessionStore {
+            recent: Mutex::new(vec![SessionMessage {
+                role: "user".to_string(),
+                content: "继续".to_string(),
+            }]),
+        };
+        let summary_store = StubSessionSummaryStore {
+            summary: Mutex::new(Some(("continue the replay substrate work".to_string(), 2))),
+        };
+        let memory_store = StubLongTermMemoryStore::default();
+        let archive_memory_store = StubMemoryStore::default();
+        let execution_state_store = StubExecutionStateStore {
+            state: Mutex::new(Some(ExecutionState {
+                status: ExecutionStatus::Active,
+                goal: "Close replay substrate loop".to_string(),
+                progress: "turn observation 已写入 ledger".to_string(),
+                blocker: String::new(),
+                next_action: "接入 active task prompt".to_string(),
+                last_output: String::new(),
+                updated_at: 5,
+                ..ExecutionState::default()
+            })),
+        };
+        let task_run_store = StubActiveTaskRunStore {
+            active: Mutex::new(vec![make_active_task_run(
+                "run-observation",
+                "Close replay substrate loop",
+                "Route latest turn observation into active task context",
+            )]),
+        };
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
+        continuity_capsule_store
+            .upsert_many(
+                &[crate::memory::ContinuityCapsuleDraft {
+                    scope_kind: crate::memory::ContinuityCapsuleScopeKind::Chat,
+                    scope_id: "chat-1".to_string(),
+                    source_chat_id: "chat-1".to_string(),
+                    run_id: "run-observation".to_string(),
+                    topic: "replay substrate".to_string(),
+                    summary: "Keep the latest observation in the next turn working set."
+                        .to_string(),
+                    next_step: "Place observation grounding before capsule and task workspace."
+                        .to_string(),
+                    ..Default::default()
+                }],
+                100,
+            )
+            .unwrap();
+        let turn_ledger_store = StubTurnLedgerStore::default();
+        turn_ledger_store
+            .set(
+                &super::relationship_scope_id("qq_channel", "chat-1"),
+                &TurnLedger {
+                    req_id: "run-observation".to_string(),
+                    status: TurnLedgerStatus::Answered,
+                    observation: Some(TurnObservationLedger {
+                        execution_class: TurnExecutionClass::ToolAssisted,
+                        deliberation_class: TurnDeliberationClass::HardReasoning,
+                        final_outcome: "final_recovery".to_string(),
+                        pressure: TurnPersonaPressureLevel::Cautious,
+                        mode: TurnModeSnapshotLedger {
+                            current_mode: "normal".to_string(),
+                            allow_non_voice_outbound: true,
+                            allow_idle_self_runtime: true,
+                        },
+                        tool_path: TurnToolPathLedger {
+                            path: "tool_recovery".to_string(),
+                            tool_calls: 2,
+                            react_rounds: 2,
+                            current_primary_delivered: false,
+                            final_answer_recovered: true,
+                        },
+                        blocker: Some(TurnBlockerLedger {
+                            kind: "retryable".to_string(),
+                            failed_calls: 1,
+                            total_calls: 1,
+                        }),
+                    }),
+                    ..TurnLedger::default()
+                },
+            )
+            .unwrap();
+
+        let context = load_prompt_memory_context(PromptMemoryContextParams {
+            chat_id: "chat-1",
+            current_channel: "qq_channel",
+            user_query: "继续",
+            system_max_len: 1024,
+            now_secs: 100,
+            profile: MemoryProfile::Standard,
+            recent_messages_limit: 8,
+            load_long_term_memory: true,
+            include_private_garden_projection: false,
+            session_store: &session_store,
+            memory_store: &archive_memory_store,
+            session_summary_store: &summary_store,
+            long_term_memory_store: &memory_store,
+            execution_state_store: &execution_state_store,
+            task_run_store: &task_run_store,
+            task_artifact_store: &StubTaskArtifactStore,
+            task_learning_store: &StubTaskLearningStore,
+            self_model_store: &StubSelfModelStore::default(),
+            self_authored_core_store: &StubSelfAuthoredCoreStore::default(),
+            relationship_constitution_store: &StubRelationshipConstitutionStore::default(),
+            relationship_portfolio_store: &StubRelationshipPortfolioStore::default(),
+            relationship_topology_store: &StubRelationshipTopologyStore::default(),
+            world_sense_store: &StubWorldSenseStore::default(),
+            autonomy_strategy_store: &StubAutonomyStrategyStore::default(),
+            outer_voice_store: &StubOuterVoiceStore::default(),
+            inner_life_store: &StubInnerLifeStore::default(),
+            self_continuity_store: &StubSelfContinuityStore::default(),
+            private_doc_store: &StubPrivateDocStore::default(),
+            private_garden_store: &StubPrivateGardenStore::default(),
+            mental_privacy_store: &StubMentalPrivacyStore::default(),
+            remind_store: &StubRemindAtStore,
+            task_store: &StubTaskStore,
+            turn_ledger_store: &turn_ledger_store,
+            skill_storage: &StubSkillStorage::default(),
+            continuity_capsule_store: &continuity_capsule_store,
+        });
+
+        let active = context.active_task_context_text.unwrap_or_default();
+        let execution_state_pos = active.find("## Execution State").unwrap();
+        let observation_pos = active.find("## Latest Turn Observation").unwrap();
+        let capsule_pos = active.find("## Continuity Capsules").unwrap();
+        let workspace_pos = active.find("## Task Workspace").unwrap();
+
+        assert!(execution_state_pos < observation_pos);
+        assert!(observation_pos < capsule_pos);
+        assert!(capsule_pos < workspace_pos);
+        assert!(active.contains("Final outcome: final_recovery"));
+        assert!(active.contains("Tool path: tool_recovery"));
+        assert!(!context
+            .governed_memory_evidence_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Latest Turn Observation"));
     }
 
     #[test]
@@ -2967,6 +3129,7 @@ mod tests {
                 next_action: "wire it into prompt assembly".to_string(),
                 last_output: String::new(),
                 updated_at: 5,
+                ..ExecutionState::default()
             })),
         };
         let task_run_store = StubActiveTaskRunStore {

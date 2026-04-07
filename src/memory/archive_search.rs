@@ -13,8 +13,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use super::{
-    render_turn_persona_ledger_block, MemoryStore, SessionStore, TurnLedger, TurnLedgerStore,
-    MAX_SESSION_ENTRIES,
+    render_turn_observation_ledger_block, render_turn_persona_ledger_block, MemoryStore,
+    SessionStore, TurnLedger, TurnLedgerStore, MAX_SESSION_ENTRIES,
 };
 
 pub const MAX_ARCHIVE_SEARCH_LIMIT: usize = 8;
@@ -1753,6 +1753,12 @@ fn render_turn_log_content(ledger: &TurnLedger) -> String {
     {
         parts.push(format!("persona={}", persona_summary));
     }
+    if let Some(observation_summary) = ledger.observation.as_ref().and_then(|observation| {
+        render_turn_observation_ledger_block(observation, 420)
+            .map(|block| block.lines().skip(1).collect::<Vec<_>>().join(" | "))
+    }) {
+        parts.push(format!("observation={}", observation_summary));
+    }
     parts.join("; ")
 }
 
@@ -2150,5 +2156,44 @@ mod tests {
         .unwrap();
 
         assert!(missing.is_none());
+    }
+
+    #[test]
+    fn render_turn_log_content_includes_observation_summary() {
+        let content = render_turn_log_content(&TurnLedger {
+            reason: "final_recovery".to_string(),
+            user_preview: "帮我继续查一下网络问题".to_string(),
+            reply_preview: "我先给你恢复结论".to_string(),
+            observation: Some(crate::memory::TurnObservationLedger {
+                execution_class: crate::memory::TurnExecutionClass::ToolAssisted,
+                deliberation_class: crate::memory::TurnDeliberationClass::HardReasoning,
+                final_outcome: "final_recovery".to_string(),
+                pressure: crate::memory::TurnPersonaPressureLevel::Cautious,
+                mode: crate::memory::TurnModeSnapshotLedger {
+                    current_mode: "normal".to_string(),
+                    allow_non_voice_outbound: true,
+                    allow_idle_self_runtime: true,
+                },
+                tool_path: crate::memory::TurnToolPathLedger {
+                    path: "tool_recovery".to_string(),
+                    tool_calls: 2,
+                    react_rounds: 2,
+                    current_primary_delivered: false,
+                    final_answer_recovered: true,
+                },
+                blocker: Some(crate::memory::TurnBlockerLedger {
+                    kind: "retryable".to_string(),
+                    failed_calls: 1,
+                    total_calls: 1,
+                }),
+            }),
+            ..TurnLedger::default()
+        });
+
+        assert!(content.contains("reason=final_recovery"));
+        assert!(content.contains("observation="));
+        assert!(content.contains("Execution class: tool_assisted"));
+        assert!(content.contains("Tool path: tool_recovery"));
+        assert!(content.contains("Blocker: retryable 1/1"));
     }
 }

@@ -50,13 +50,26 @@ pub(super) fn prepare_system_with_suffix<'a>(
     suffix: &str,
     scratch: &'a mut String,
 ) -> &'a str {
+    prepare_system_with_two_suffixes(base, suffix, "", scratch)
+}
+
+pub(super) fn prepare_system_with_two_suffixes<'a>(
+    base: &str,
+    first_suffix: &str,
+    second_suffix: &str,
+    scratch: &'a mut String,
+) -> &'a str {
     scratch.clear();
-    let required = base.len().saturating_add(suffix.len());
+    let required = base
+        .len()
+        .saturating_add(first_suffix.len())
+        .saturating_add(second_suffix.len());
     if scratch.capacity() < required {
         scratch.reserve(required - scratch.capacity());
     }
     scratch.push_str(base);
-    scratch.push_str(suffix);
+    scratch.push_str(first_suffix);
+    scratch.push_str(second_suffix);
     scratch.as_str()
 }
 
@@ -102,12 +115,17 @@ pub(super) fn run_final_answer_recovery_round(
     tool_ctx: &mut HttpClientToolContext<'_>,
     system: &str,
     messages: &[Message],
+    recovery_suffix: &str,
     llm_stream: bool,
     latency: &mut WorkerLatency,
     system_scratch: &mut String,
 ) -> Result<String> {
-    let recovery_system =
-        prepare_system_with_suffix(system, FINAL_RECOVERY_SYSTEM_SUFFIX, system_scratch);
+    let recovery_system = prepare_system_with_two_suffixes(
+        system,
+        FINAL_RECOVERY_SYSTEM_SUFFIX,
+        recovery_suffix,
+        system_scratch,
+    );
     let t0 = metrics::record_llm_call_start();
     let llm_round_start = Instant::now();
     let response = if llm_stream {

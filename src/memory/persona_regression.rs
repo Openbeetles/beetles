@@ -272,6 +272,8 @@ fn assemble_persona_regression_system(
         group_activation: "always",
         emotion_signal_suffix: None,
         constitutional_stack_text: None,
+        subject_state_text: None,
+        deliberation_gate_text: None,
         active_task_context_text: None,
         governed_memory_evidence_text: None,
         background_governance_text: None,

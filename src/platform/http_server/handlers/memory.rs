@@ -3,9 +3,10 @@
 use super::HandlerContext;
 use crate::memory::{
     board_subject_scope_id, compute_core_revision_governance_digest, export_continuity_snapshot,
-    inspect_memory_hygiene, inspect_working_recall, ContinuitySnapshotExportContext,
-    ContinuitySnapshotManifest, ContinuitySnapshotMode, MemoryHygieneContext,
-    MemoryHygieneInspection, MemoryProfile, WorkingRecallInspection, WorkingRecallInspectionInput,
+    inspect_intelligence_replay, inspect_memory_hygiene, inspect_working_recall,
+    ContinuitySnapshotExportContext, ContinuitySnapshotManifest, ContinuitySnapshotMode,
+    IntelligenceReplayInspection, MemoryHygieneContext, MemoryHygieneInspection, MemoryProfile,
+    WorkingRecallInspection, WorkingRecallInspectionInput,
 };
 use crate::skills::is_runtime_skill_name;
 use crate::task_execution::{
@@ -84,6 +85,7 @@ struct MemoryInspectionTarget {
 struct MemoryDeepInspection {
     target: MemoryInspectionTarget,
     snapshot_preview: MemorySnapshotPreview,
+    intelligence_replay: IntelligenceReplayInspection,
     recall: WorkingRecallInspection,
     hygiene: MemoryHygieneInspection,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -342,6 +344,9 @@ fn build_deep_inspection(
         current_unix_secs(),
     )
     .map_err(std::io::Error::other)?;
+    let intelligence_replay =
+        inspect_intelligence_replay(ctx.platform.turn_ledger_store().as_ref(), chat_id, 12)
+            .map_err(std::io::Error::other)?;
     let recall = inspect_working_recall(WorkingRecallInspectionInput {
         chat_id,
         query: request.query.as_str(),
@@ -410,6 +415,7 @@ fn build_deep_inspection(
             mode: continuity_snapshot_mode_label(request.snapshot_mode).to_string(),
             manifest: snapshot.manifest,
         },
+        intelligence_replay,
         recall,
         hygiene,
         task_learning,
@@ -549,6 +555,7 @@ mod tests {
                     next_action: "apply patch".to_string(),
                     last_output: "diff staged".to_string(),
                     updated_at: now_secs,
+                    ..ExecutionState::default()
                 },
             )
             .unwrap();
@@ -646,6 +653,145 @@ mod tests {
                 observed_at: now_secs,
             })
             .unwrap();
+        for ledger in [
+            crate::memory::TurnLedger {
+                req_id: format!("{run_id}-4"),
+                channel: "telegram".to_string(),
+                ingress: crate::bus::IngressKind::User,
+                status: crate::memory::TurnLedgerStatus::Answered,
+                observation: Some(crate::memory::TurnObservationLedger {
+                    execution_class: crate::memory::TurnExecutionClass::ToolAssisted,
+                    deliberation_class: crate::memory::TurnDeliberationClass::Standard,
+                    final_outcome: "final_recovery".to_string(),
+                    pressure: crate::memory::TurnPersonaPressureLevel::Cautious,
+                    mode: crate::memory::TurnModeSnapshotLedger {
+                        current_mode: "normal".to_string(),
+                        allow_non_voice_outbound: true,
+                        allow_idle_self_runtime: true,
+                    },
+                    tool_path: crate::memory::TurnToolPathLedger {
+                        path: "tool_recovery".to_string(),
+                        tool_calls: 2,
+                        react_rounds: 2,
+                        current_primary_delivered: false,
+                        final_answer_recovered: true,
+                    },
+                    blocker: Some(crate::memory::TurnBlockerLedger {
+                        kind: "retryable".to_string(),
+                        failed_calls: 1,
+                        total_calls: 1,
+                    }),
+                }),
+                finished_at_ms: (now_secs + 4) * 1000,
+                ..crate::memory::TurnLedger::default()
+            },
+            crate::memory::TurnLedger {
+                req_id: format!("{run_id}-3"),
+                channel: "telegram".to_string(),
+                ingress: crate::bus::IngressKind::User,
+                status: crate::memory::TurnLedgerStatus::Answered,
+                subject_state: Some(crate::memory::TurnSubjectStateLedger {
+                    governance_mode: "adaptive".to_string(),
+                    response_mode: "protective_brief".to_string(),
+                    task_scope: "narrow".to_string(),
+                    ..crate::memory::TurnSubjectStateLedger::default()
+                }),
+                observation: Some(crate::memory::TurnObservationLedger {
+                    execution_class: crate::memory::TurnExecutionClass::ToolAssisted,
+                    deliberation_class: crate::memory::TurnDeliberationClass::Standard,
+                    final_outcome: "final_answer".to_string(),
+                    pressure: crate::memory::TurnPersonaPressureLevel::Cautious,
+                    mode: crate::memory::TurnModeSnapshotLedger {
+                        current_mode: "normal".to_string(),
+                        allow_non_voice_outbound: true,
+                        allow_idle_self_runtime: true,
+                    },
+                    tool_path: crate::memory::TurnToolPathLedger {
+                        path: "tool_reply".to_string(),
+                        tool_calls: 1,
+                        react_rounds: 1,
+                        current_primary_delivered: false,
+                        final_answer_recovered: false,
+                    },
+                    blocker: Some(crate::memory::TurnBlockerLedger {
+                        kind: "retryable".to_string(),
+                        failed_calls: 1,
+                        total_calls: 1,
+                    }),
+                }),
+                finished_at_ms: (now_secs + 3) * 1000,
+                ..crate::memory::TurnLedger::default()
+            },
+            crate::memory::TurnLedger {
+                req_id: format!("{run_id}-2"),
+                channel: "telegram".to_string(),
+                ingress: crate::bus::IngressKind::User,
+                status: crate::memory::TurnLedgerStatus::Answered,
+                observation: Some(crate::memory::TurnObservationLedger {
+                    execution_class: crate::memory::TurnExecutionClass::ToolAssisted,
+                    deliberation_class: crate::memory::TurnDeliberationClass::Standard,
+                    final_outcome: "final_recovery".to_string(),
+                    pressure: crate::memory::TurnPersonaPressureLevel::Cautious,
+                    mode: crate::memory::TurnModeSnapshotLedger {
+                        current_mode: "normal".to_string(),
+                        allow_non_voice_outbound: true,
+                        allow_idle_self_runtime: true,
+                    },
+                    tool_path: crate::memory::TurnToolPathLedger {
+                        path: "tool_recovery".to_string(),
+                        tool_calls: 2,
+                        react_rounds: 2,
+                        current_primary_delivered: false,
+                        final_answer_recovered: true,
+                    },
+                    blocker: Some(crate::memory::TurnBlockerLedger {
+                        kind: "capability".to_string(),
+                        failed_calls: 1,
+                        total_calls: 1,
+                    }),
+                }),
+                finished_at_ms: (now_secs + 2) * 1000,
+                ..crate::memory::TurnLedger::default()
+            },
+            crate::memory::TurnLedger {
+                req_id: format!("{run_id}-1"),
+                channel: "telegram".to_string(),
+                ingress: crate::bus::IngressKind::User,
+                status: crate::memory::TurnLedgerStatus::Answered,
+                subject_state: Some(crate::memory::TurnSubjectStateLedger {
+                    governance_mode: "adaptive".to_string(),
+                    response_mode: "steady".to_string(),
+                    task_scope: "brief".to_string(),
+                    ..crate::memory::TurnSubjectStateLedger::default()
+                }),
+                observation: Some(crate::memory::TurnObservationLedger {
+                    execution_class: crate::memory::TurnExecutionClass::DirectReply,
+                    deliberation_class: crate::memory::TurnDeliberationClass::FastInteractive,
+                    final_outcome: "final_answer".to_string(),
+                    pressure: crate::memory::TurnPersonaPressureLevel::Normal,
+                    mode: crate::memory::TurnModeSnapshotLedger {
+                        current_mode: "normal".to_string(),
+                        allow_non_voice_outbound: true,
+                        allow_idle_self_runtime: true,
+                    },
+                    tool_path: crate::memory::TurnToolPathLedger {
+                        path: String::new(),
+                        tool_calls: 0,
+                        react_rounds: 1,
+                        current_primary_delivered: true,
+                        final_answer_recovered: false,
+                    },
+                    blocker: None,
+                }),
+                finished_at_ms: (now_secs + 1) * 1000,
+                ..crate::memory::TurnLedger::default()
+            },
+        ] {
+            ctx.platform
+                .turn_ledger_store()
+                .set(&chat_id, &ledger)
+                .unwrap();
+        }
 
         let uri = format!(
             "/api/memory/status?chat_id={chat_id}&channel=telegram&query={topic}&run_id={run_id}&snapshot_mode=full_restore"
@@ -656,6 +802,21 @@ mod tests {
         assert_eq!(inspection["target"]["chat_id"], chat_id);
         assert_eq!(inspection["target"]["channel"], "telegram");
         assert_eq!(inspection["snapshot_preview"]["mode"], "full_restore");
+        assert!(
+            inspection["intelligence_replay"]["total_turns"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 1
+        );
+        assert_eq!(
+            inspection["intelligence_replay"]["latest_response_mode"],
+            "steady"
+        );
+        assert!(inspection["intelligence_replay"]["recent_turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["req_id"] == format!("{run_id}-1")));
         assert_eq!(inspection["recall"]["chat_id"], chat_id);
         assert_eq!(inspection["hygiene"]["current_chat_id"], chat_id);
         assert_eq!(inspection["task_workspace"]["run_id"], run_id);

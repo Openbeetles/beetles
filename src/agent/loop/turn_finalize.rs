@@ -96,6 +96,20 @@ pub(super) fn finalize_lane_turn(
     outcome: WorkerOutcome,
     telemetry: WorkerRunTelemetry,
 ) {
+    let final_outcome = if matches!(outcome, WorkerOutcome::Interrupt(_)) {
+        "interrupt"
+    } else if telemetry.delivery.current_primary_delivered {
+        "current_primary"
+    } else if telemetry.used_final_answer_recovery {
+        "final_recovery"
+    } else {
+        "final_answer"
+    };
+    let turn_observation = build_turn_observation_ledger(
+        final_outcome,
+        matches!(outcome, WorkerOutcome::Interrupt(_)),
+        &telemetry,
+    );
     let LaneTurnFinalizeContext {
         worker_lane_tag,
         config,
@@ -118,7 +132,12 @@ pub(super) fn finalize_lane_turn(
         any_tool_used,
         external_content_used,
         used_final_answer_recovery,
+        task_execution_used: _task_execution_used,
         pressure,
+        runtime_mode: _runtime_mode,
+        deliberation_class: _deliberation_class,
+        tool_blocker: _tool_blocker,
+        subject_state,
         mental_privacy_adjudication,
         persona_priority_adjudication,
     } = telemetry;
@@ -347,6 +366,20 @@ pub(super) fn finalize_lane_turn(
     turn_ledger.total_ms = total_ms.min(u64::MAX as u128) as u64;
     turn_ledger.ttft_ms = worker_latency.ttft_ms.unwrap_or(0).min(u64::MAX as u128) as u64;
     turn_ledger.delivery = build_turn_delivery_ledger(delivery);
+    turn_ledger.observation = turn_observation;
+    turn_ledger.subject_state = if msg.ingress == IngressKind::User {
+        subject_state
+            .as_ref()
+            .and_then(build_turn_subject_state_ledger)
+    } else {
+        let relationship_id = crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id);
+        config
+            .turn_ledger_store
+            .get(&relationship_id)
+            .ok()
+            .flatten()
+            .and_then(|ledger| ledger.subject_state)
+    };
     turn_ledger.persona = if msg.ingress == IngressKind::User {
         super::build_turn_persona_ledger(
             pressure,

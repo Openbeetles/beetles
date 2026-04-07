@@ -2,11 +2,13 @@
 //! Agent: context build and ReAct loop; trait-only, no platform.
 
 mod context;
+mod deliberation;
 mod delivery;
 mod final_reply;
 mod r#loop;
 mod request_plan;
 mod strategy;
+mod subject_state;
 mod tool_guidance;
 mod tool_outcome;
 

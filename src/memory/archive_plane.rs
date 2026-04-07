@@ -4,9 +4,10 @@ use crate::memory::{MemoryStore, SessionStore, TurnLedgerStore};
 use crate::util::truncate_content_to_max;
 
 use super::{
-    memory_capability_profile, search_archive_records_detailed,
-    select_archive_hits_for_prompt_with_report, ArchivePromptSelectionReport, ArchiveSearchQuery,
-    ArchiveSearchQueryReport, MemoryProfile, MAX_ARCHIVE_SEARCH_LIMIT,
+    memory_capability_profile, render_turn_observation_ledger_block,
+    search_archive_records_detailed, select_archive_hits_for_prompt_with_report,
+    ArchivePromptSelectionReport, ArchiveSearchQuery, ArchiveSearchQueryReport, MemoryProfile,
+    MAX_ARCHIVE_SEARCH_LIMIT,
 };
 
 const MAX_ARCHIVE_EVIDENCE_BLOCK_LEN: usize = 768;
@@ -233,7 +234,7 @@ fn build_archive_fallback_block(
     }
     if appended == 0 {
         if let Ok(Some(ledger)) = turn_ledger_store.get(chat_id) {
-            let preview = [
+            let mut preview = [
                 (!ledger.reason.trim().is_empty())
                     .then(|| format!("reason={}", ledger.reason.trim())),
                 (!ledger.user_preview.trim().is_empty())
@@ -243,8 +244,14 @@ fn build_archive_fallback_block(
             ]
             .into_iter()
             .flatten()
-            .collect::<Vec<_>>()
-            .join("; ");
+            .collect::<Vec<_>>();
+            if let Some(observation_summary) = ledger.observation.as_ref().and_then(|observation| {
+                render_turn_observation_ledger_block(observation, 220)
+                    .map(|block| block.lines().skip(1).collect::<Vec<_>>().join(" | "))
+            }) {
+                preview.push(format!("observation={observation_summary}"));
+            }
+            let preview = preview.join("; ");
             if !preview.is_empty() {
                 let line = format!(
                     "- [turn log] {} (fallback execution log)",

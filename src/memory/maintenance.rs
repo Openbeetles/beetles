@@ -223,6 +223,7 @@ fn run_shared_maintenance_passes(
                 session_store: ctx.session_store,
                 session_summary_store: ctx.session_summary_store,
                 execution_state_store: ctx.execution_state_store,
+                turn_ledger_store: ctx.turn_ledger_store,
             },
             ExecutionStateRefreshInput {
                 chat_id: input.chat_id,

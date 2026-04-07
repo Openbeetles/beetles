@@ -1642,6 +1642,7 @@ mod tests {
                 next_action: "boot on new device".to_string(),
                 last_output: String::new(),
                 updated_at: 11,
+                ..ExecutionState::default()
             }),
         };
         let outcome = import_continuity_snapshot(

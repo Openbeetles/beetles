@@ -14,27 +14,40 @@ use std::fmt::Write as _;
 
 use super::{
     llm_json::{coerce_json_text, parse_llm_json_payload, LlmJsonPayload},
-    memory_policy, ExecutionStatePolicy, MemoryProfile, SessionMessage, SessionStore,
-    SessionSummaryStore,
+    memory_policy, relationship_scope_id, render_turn_observation_ledger_block,
+    ExecutionStatePolicy, MemoryProfile, SessionMessage, SessionStore, SessionSummaryStore,
+    TurnLedgerStore, TurnObservationLedger,
 };
 
 pub const REL_PATH_EXECUTION_STATES: &str = "memory/execution_states.json";
-pub const EXECUTION_STATE_SYSTEM_PROMPT: &str = "You maintain a compact live execution state for a personal AI assistant. Return JSON only: either null or one object with fields status, goal, progress, blocker, next_action, last_output. status must be active, blocked, or done. Capture only the current task/project execution context that should guide the next turn: the current goal, latest concrete progress, blocker, next action, and latest meaningful output. Replace old state when the focus changes instead of keeping parallel tasks. Prefer concrete task names, changed progress, and actionable next steps. Do not return vague placeholders such as continue, keep going, processing, current task, or done unless paired with concrete task detail. Do not store greetings, chit-chat, durable user profile facts, stable preferences, or general long-term memory. Return null when there is no active execution context worth carrying to the next turn. Keep fields short and concrete.";
+pub const EXECUTION_STATE_SYSTEM_PROMPT: &str = "You maintain a compact live execution state for a personal AI assistant. Return JSON only: either null or one object with fields status, goal, progress, blocker, next_action, last_output, active_constraints, open_questions, latest_observations, next_best_actions. status must be active, blocked, or done. Capture only the current task/project execution context that should guide the next turn: the current goal, latest concrete progress, blocker, next action, latest meaningful output, and the compact working set that will improve the next decision. Replace old state when the focus changes instead of keeping parallel tasks. Prefer concrete task names, changed progress, real constraints, unanswered questions, grounded observations, and actionable next steps. Use short arrays for working-set fields when useful; omit noise instead of filling placeholders. Do not return vague placeholders such as continue, keep going, processing, current task, or done unless paired with concrete task detail. Do not store greetings, chit-chat, durable user profile facts, stable preferences, or general long-term memory. Return null when there is no active execution context worth carrying to the next turn. Keep fields short and concrete.";
 const EXECUTION_STATE_REFRESH_RULES: &str = concat!(
     "## Extraction Rules\n",
     "- Goal must name the concrete task/project, not a vague placeholder.\n",
     "- Progress must describe a real change, not just say it is ongoing.\n",
     "- Next action must be an actionable next step when one exists.\n",
+    "- active_constraints should list the real constraints currently shaping execution.\n",
+    "- open_questions should list unresolved questions that affect the next step.\n",
+    "- latest_observations should capture grounded new observations from this turn.\n",
+    "- next_best_actions should list the best concrete next moves when there are multiple plausible steps.\n",
     "- Return null if this turn contains no durable execution context worth carrying.\n\n",
 );
 
 const EXECUTION_STATE_GOAL_MAX_CHARS: usize = 120;
 const EXECUTION_STATE_FIELD_MAX_CHARS: usize = 180;
+const EXECUTION_STATE_LIST_ITEM_MAX_CHARS: usize = 120;
+const EXECUTION_STATE_LIST_MAX_ITEMS: usize = 4;
 const MIN_FOCUS_MATCH_CHARS: usize = 4;
 const MIN_FIELD_SPECIFICITY_SCORE: u32 = 2;
 const MIN_LAST_OUTPUT_SPECIFICITY_SCORE: u32 = 4;
 const MIN_STRONG_STATE_FIELD_SCORE: u32 = 3;
 const STRONG_SINGLE_FIELD_SCORE: u32 = 5;
+
+#[derive(Default)]
+struct RecentObservationWorkingSet {
+    latest_observations: Vec<String>,
+    next_best_actions: Vec<String>,
+}
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -60,6 +73,14 @@ pub struct ExecutionState {
     #[serde(default)]
     pub last_output: String,
     #[serde(default)]
+    pub active_constraints: Vec<String>,
+    #[serde(default)]
+    pub open_questions: Vec<String>,
+    #[serde(default)]
+    pub latest_observations: Vec<String>,
+    #[serde(default)]
+    pub next_best_actions: Vec<String>,
+    #[serde(default)]
     pub updated_at: u64,
 }
 
@@ -70,6 +91,10 @@ impl ExecutionState {
             || !self.blocker.trim().is_empty()
             || !self.next_action.trim().is_empty()
             || !self.last_output.trim().is_empty()
+            || !self.active_constraints.is_empty()
+            || !self.open_questions.is_empty()
+            || !self.latest_observations.is_empty()
+            || !self.next_best_actions.is_empty()
     }
 }
 
@@ -95,6 +120,7 @@ pub struct ExecutionStateRefreshContext<'a> {
     pub session_store: &'a dyn SessionStore,
     pub session_summary_store: &'a dyn SessionSummaryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
+    pub turn_ledger_store: &'a dyn TurnLedgerStore,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -172,6 +198,34 @@ pub fn render_execution_state_block(state: &ExecutionState, max_len: usize) -> O
     if !normalized.last_output.is_empty() {
         let _ = writeln!(out, "Latest output: {}", normalized.last_output);
     }
+    if !normalized.active_constraints.is_empty() {
+        let _ = writeln!(
+            out,
+            "Constraints: {}",
+            normalized.active_constraints.join(" | ")
+        );
+    }
+    if !normalized.open_questions.is_empty() {
+        let _ = writeln!(
+            out,
+            "Open questions: {}",
+            normalized.open_questions.join(" | ")
+        );
+    }
+    if !normalized.latest_observations.is_empty() {
+        let _ = writeln!(
+            out,
+            "Observations: {}",
+            normalized.latest_observations.join(" | ")
+        );
+    }
+    if !normalized.next_best_actions.is_empty() {
+        let _ = writeln!(
+            out,
+            "Next best actions: {}",
+            normalized.next_best_actions.join(" | ")
+        );
+    }
     let trimmed = out.trim_end();
     if trimmed.is_empty() {
         return None;
@@ -235,6 +289,10 @@ pub(crate) fn run_execution_state_refresh_with_state(
             .load_recent(input.chat_id, policy.recent_message_count)?;
         owned_recent.as_slice()
     };
+    let recent_observation = ctx
+        .turn_ledger_store
+        .get(&relationship_scope_id(input.channel, input.chat_id))?
+        .and_then(|ledger| ledger.observation);
     let refresh_input = build_execution_state_refresh_input(
         existing_state.as_ref(),
         if existing_state.is_some() {
@@ -243,6 +301,7 @@ pub(crate) fn run_execution_state_refresh_with_state(
             summary_text
         },
         recent,
+        recent_observation.as_ref(),
         policy,
     );
     let messages = [Message {
@@ -258,6 +317,10 @@ pub(crate) fn run_execution_state_refresh_with_state(
     )?;
     match parse_execution_state_response(response.content.trim(), input.now_secs) {
         Some(mut state) => {
+            tighten_execution_state_with_recent_observation(
+                &mut state,
+                recent_observation.as_ref(),
+            );
             if state.last_output.is_empty() && should_capture_last_output(input.reply_content) {
                 state.last_output =
                     normalize_field(input.reply_content, EXECUTION_STATE_FIELD_MAX_CHARS);
@@ -301,6 +364,7 @@ fn build_execution_state_refresh_input(
     existing_state: Option<&ExecutionState>,
     summary_text: Option<&str>,
     recent: &[SessionMessage],
+    recent_observation: Option<&TurnObservationLedger>,
     policy: ExecutionStatePolicy,
 ) -> String {
     let mut input = String::with_capacity(2048);
@@ -316,6 +380,15 @@ fn build_execution_state_refresh_input(
     {
         input.push_str("## Session Summary\n");
         input.push_str(summary);
+        input.push_str("\n\n");
+    }
+    if let Some(observation) = recent_observation.and_then(|observation| {
+        render_turn_observation_ledger_block(
+            observation,
+            policy.existing_state_max_len.min(320).max(160),
+        )
+    }) {
+        input.push_str(&observation);
         input.push_str("\n\n");
     }
     input.push_str(EXECUTION_STATE_REFRESH_RULES);
@@ -339,6 +412,98 @@ fn build_execution_state_transcript(
         );
     }
     transcript
+}
+
+fn tighten_execution_state_with_recent_observation(
+    state: &mut ExecutionState,
+    recent_observation: Option<&TurnObservationLedger>,
+) {
+    let Some(observation) = recent_observation else {
+        return;
+    };
+    let grounding = build_recent_observation_working_set(observation);
+    if !grounding.latest_observations.is_empty() {
+        state.latest_observations = merge_execution_state_list_prefix(
+            grounding.latest_observations,
+            std::mem::take(&mut state.latest_observations),
+        );
+    }
+    if !grounding.next_best_actions.is_empty() {
+        state.next_best_actions = merge_execution_state_list_prefix(
+            grounding.next_best_actions,
+            std::mem::take(&mut state.next_best_actions),
+        );
+    }
+}
+
+fn build_recent_observation_working_set(
+    observation: &TurnObservationLedger,
+) -> RecentObservationWorkingSet {
+    let mut grounding = RecentObservationWorkingSet::default();
+    if !observation.tool_path.path.trim().is_empty() || !observation.final_outcome.trim().is_empty()
+    {
+        let path = if observation.tool_path.path.trim().is_empty() {
+            "direct_reply"
+        } else {
+            observation.tool_path.path.trim()
+        };
+        let outcome = if observation.final_outcome.trim().is_empty() {
+            "unknown"
+        } else {
+            observation.final_outcome.trim()
+        };
+        grounding
+            .latest_observations
+            .push(format!("last_turn path={path} outcome={outcome}"));
+    }
+    if let Some(blocker) = observation.blocker.as_ref() {
+        grounding.latest_observations.push(format!(
+            "last_turn blocker={} {}/{}",
+            blocker.kind.trim(),
+            blocker.failed_calls,
+            blocker.total_calls
+        ));
+    }
+    if observation.deliberation_class.label() != "standard"
+        || observation.pressure.as_str() != "normal"
+    {
+        grounding.latest_observations.push(format!(
+            "last_turn deliberation={} pressure={}",
+            observation.deliberation_class.label(),
+            observation.pressure.as_str()
+        ));
+    }
+    if observation.tool_path.tool_calls > 0 && !observation.tool_path.current_primary_delivered {
+        grounding
+            .next_best_actions
+            .push("deliver current primary answer before more tool work".to_string());
+    }
+    if observation.tool_path.final_answer_recovered {
+        grounding
+            .next_best_actions
+            .push("treat the recovered answer as the current stable conclusion".to_string());
+    }
+    if let Some(blocker) = observation.blocker.as_ref() {
+        let hint = match blocker.kind.trim() {
+            "retryable" => "decide whether to retry or route around the retryable blocker",
+            "capability" => {
+                "state the capability blocker clearly and switch to an alternative path"
+            }
+            "permanent" => "state the permanent blocker clearly and switch to an alternative path",
+            "mixed" => "separate retryable and hard blockers before continuing",
+            _ => "state the blocker clearly before continuing",
+        };
+        grounding.next_best_actions.push(hint.to_string());
+    }
+    grounding.latest_observations = normalize_execution_state_list(grounding.latest_observations);
+    grounding.next_best_actions = normalize_execution_state_list(grounding.next_best_actions);
+    grounding
+}
+
+fn merge_execution_state_list_prefix(prefix: Vec<String>, existing: Vec<String>) -> Vec<String> {
+    let mut combined = prefix;
+    combined.extend(existing);
+    normalize_execution_state_list(combined)
 }
 
 fn parse_execution_state_response(raw: &str, now_secs: u64) -> Option<ExecutionState> {
@@ -369,6 +534,10 @@ fn parse_execution_state_response(raw: &str, now_secs: u64) -> Option<ExecutionS
                 .get("last_output")
                 .map(coerce_json_text)
                 .unwrap_or_default(),
+            active_constraints: parse_execution_state_list(parsed.get("active_constraints")),
+            open_questions: parse_execution_state_list(parsed.get("open_questions")),
+            latest_observations: parse_execution_state_list(parsed.get("latest_observations")),
+            next_best_actions: parse_execution_state_list(parsed.get("next_best_actions")),
             updated_at: now_secs,
         },
         now_secs,
@@ -412,6 +581,27 @@ fn normalize_execution_state(mut state: ExecutionState, now_secs: u64) -> Option
         &state.last_output,
         EXECUTION_STATE_FIELD_MAX_CHARS,
     ));
+    state.active_constraints = normalize_execution_state_list(state.active_constraints);
+    state.open_questions = normalize_execution_state_list(state.open_questions);
+    state.latest_observations = normalize_execution_state_list(state.latest_observations);
+    state.next_best_actions = normalize_execution_state_list(state.next_best_actions);
+    if state.progress.is_empty() {
+        state.progress = state
+            .latest_observations
+            .first()
+            .cloned()
+            .unwrap_or_default();
+    }
+    if state.next_action.is_empty() {
+        state.next_action = state.next_best_actions.first().cloned().unwrap_or_default();
+    }
+    if state.blocker.is_empty() && state.status == ExecutionStatus::Blocked {
+        state.blocker = state
+            .active_constraints
+            .first()
+            .cloned()
+            .unwrap_or_default();
+    }
     dedupe_execution_state_fields(&mut state);
     if !state.is_meaningful() {
         return None;
@@ -488,6 +678,18 @@ fn merge_execution_state(
         if next.last_output.is_empty() {
             next.last_output = existing.last_output.clone();
         }
+        if next.active_constraints.is_empty() {
+            next.active_constraints = existing.active_constraints.clone();
+        }
+        if next.open_questions.is_empty() {
+            next.open_questions = existing.open_questions.clone();
+        }
+        if next.latest_observations.is_empty() {
+            next.latest_observations = existing.latest_observations.clone();
+        }
+        if next.next_best_actions.is_empty() && next.status != ExecutionStatus::Done {
+            next.next_best_actions = existing.next_best_actions.clone();
+        }
         return normalize_execution_state(next, now_secs);
     }
 
@@ -511,6 +713,26 @@ fn merge_execution_state(
     } else {
         next.last_output
     };
+    next.active_constraints = if next.active_constraints.is_empty() {
+        Vec::new()
+    } else {
+        next.active_constraints
+    };
+    next.open_questions = if next.open_questions.is_empty() {
+        Vec::new()
+    } else {
+        next.open_questions
+    };
+    next.latest_observations = if next.latest_observations.is_empty() {
+        Vec::new()
+    } else {
+        next.latest_observations
+    };
+    next.next_best_actions = if next.next_best_actions.is_empty() {
+        Vec::new()
+    } else {
+        next.next_best_actions
+    };
     normalize_execution_state(next, now_secs)
 }
 
@@ -524,6 +746,10 @@ fn should_persist_execution_state(state: &ExecutionState) -> bool {
         field_specificity_score(&state.blocker),
         field_specificity_score(&state.next_action),
         field_specificity_score(&state.last_output),
+        execution_state_list_specificity(&state.active_constraints),
+        execution_state_list_specificity(&state.open_questions),
+        execution_state_list_specificity(&state.latest_observations),
+        execution_state_list_specificity(&state.next_best_actions),
     ];
     let non_empty_fields = [
         &state.goal,
@@ -664,6 +890,15 @@ fn dedupe_execution_state_fields(state: &mut ExecutionState) {
     if !state.progress.is_empty() && state.blocker == state.progress {
         state.blocker.clear();
     }
+    state
+        .active_constraints
+        .retain(|item| item != &state.blocker && item != &state.goal && item != &state.progress);
+    state
+        .latest_observations
+        .retain(|item| item != &state.progress && item != &state.last_output);
+    state
+        .next_best_actions
+        .retain(|item| item != &state.next_action && item != &state.goal);
 }
 
 fn sanitize_goal_field(value: &str) -> String {
@@ -769,6 +1004,58 @@ fn normalize_field(value: &str, max_chars: usize) -> String {
         .to_string()
 }
 
+fn parse_execution_state_list(value: Option<&serde_json::Value>) -> Vec<String> {
+    let Some(value) = value else {
+        return Vec::new();
+    };
+    let mut items = Vec::new();
+    match value {
+        serde_json::Value::Array(values) => {
+            for item in values {
+                extend_execution_state_list_text(&mut items, &coerce_json_text(item));
+            }
+        }
+        _ => extend_execution_state_list_text(&mut items, &coerce_json_text(value)),
+    }
+    normalize_execution_state_list(items)
+}
+
+fn extend_execution_state_list_text(items: &mut Vec<String>, text: &str) {
+    for segment in text.split(['\n', ';', '；']) {
+        let trimmed = segment
+            .trim()
+            .trim_start_matches(['-', '*', '•', ' ', '\t'])
+            .trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        items.push(trimmed.to_string());
+    }
+}
+
+fn normalize_execution_state_list(items: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::with_capacity(items.len().min(EXECUTION_STATE_LIST_MAX_ITEMS));
+    for item in items {
+        let item = normalize_field(&item, EXECUTION_STATE_LIST_ITEM_MAX_CHARS);
+        if item.is_empty() || normalized.iter().any(|existing| existing == &item) {
+            continue;
+        }
+        normalized.push(item);
+        if normalized.len() >= EXECUTION_STATE_LIST_MAX_ITEMS {
+            break;
+        }
+    }
+    normalized
+}
+
+fn execution_state_list_specificity(items: &[String]) -> u32 {
+    items
+        .iter()
+        .map(|item| field_specificity_score(item))
+        .max()
+        .unwrap_or(0)
+}
+
 fn execution_status_label(status: ExecutionStatus) -> &'static str {
     match status {
         ExecutionStatus::Active => "active",
@@ -782,6 +1069,11 @@ mod tests {
     use super::*;
     use crate::error::Result;
     use crate::llm::{LlmModelCompat, LlmResponse, StopReason};
+    use crate::memory::{
+        relationship_scope_id, TurnBlockerLedger, TurnDeliberationClass, TurnExecutionClass,
+        TurnLedger, TurnModeSnapshotLedger, TurnObservationLedger, TurnPersonaPressureLevel,
+        TurnToolPathLedger,
+    };
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -804,6 +1096,54 @@ mod tests {
         assert_eq!(parsed.blocker, "false");
         assert!(parsed.next_action.contains("step: run size diff"));
         assert!(parsed.last_output.contains("note: tests green"));
+    }
+
+    #[test]
+    fn parse_execution_state_response_collects_working_set_fields() {
+        let raw = json!({
+            "status": "active",
+            "goal": "收口 execution state",
+            "active_constraints": [
+                "必须保持 Linux / ESP 同物种语义",
+                "不能新开 store"
+            ],
+            "open_questions": "是否需要把 working set 头项直接映射给 next_action",
+            "latest_observations": [
+                "turn ledger observation 已接入 archive replay",
+                "CLI status 也能看到 observation"
+            ],
+            "next_best_actions": [
+                "补 execution state working set 回归测试",
+                "更新 render block"
+            ]
+        })
+        .to_string();
+
+        let parsed = parse_execution_state_response(&raw, 12).unwrap();
+
+        assert_eq!(parsed.goal, "收口 execution state");
+        assert_eq!(parsed.active_constraints.len(), 2);
+        assert!(parsed
+            .active_constraints
+            .iter()
+            .any(|item| item.contains("Linux / ESP")));
+        assert_eq!(parsed.open_questions.len(), 1);
+        assert_eq!(
+            parsed.progress,
+            "turn ledger observation 已接入 archive replay"
+        );
+        assert_eq!(
+            parsed.latest_observations,
+            vec!["CLI status 也能看到 observation".to_string()]
+        );
+        assert_eq!(
+            parsed.next_best_actions,
+            vec!["更新 render block".to_string()]
+        );
+        assert_eq!(
+            parsed.next_action,
+            "补 execution state working set 回归测试"
+        );
     }
 
     #[derive(Default)]
@@ -863,6 +1203,11 @@ mod tests {
         clears: Mutex<u32>,
     }
 
+    #[derive(Default)]
+    struct StubTurnLedgerStore {
+        entries: Mutex<HashMap<String, TurnLedger>>,
+    }
+
     impl ExecutionStateStore for StubExecutionStateStore {
         fn get(&self, chat_id: &str) -> Result<Option<ExecutionState>> {
             Ok(self
@@ -887,6 +1232,33 @@ mod tests {
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(chat_id);
             *self.clears.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+            Ok(())
+        }
+    }
+
+    impl TurnLedgerStore for StubTurnLedgerStore {
+        fn get(&self, chat_id: &str) -> Result<Option<TurnLedger>> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(chat_id)
+                .cloned())
+        }
+
+        fn set(&self, chat_id: &str, ledger: &TurnLedger) -> Result<()> {
+            self.entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(chat_id.to_string(), ledger.clone());
+            Ok(())
+        }
+
+        fn clear(&self, chat_id: &str) -> Result<()> {
+            self.entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(chat_id);
             Ok(())
         }
     }
@@ -952,6 +1324,10 @@ mod tests {
                 blocker: String::new(),
                 next_action: "接入 prompt".to_string(),
                 last_output: String::new(),
+                active_constraints: vec!["不能新开 store".to_string()],
+                open_questions: vec!["是否需要保留 next_action 头项".to_string()],
+                latest_observations: vec!["turn ledger 已有 replay substrate".to_string()],
+                next_best_actions: vec!["接入 prompt".to_string(), "补回归测试".to_string()],
                 updated_at: 1,
             },
             512,
@@ -960,6 +1336,10 @@ mod tests {
         assert!(block.contains("## Execution State"));
         assert!(block.contains("Goal: 推进 execution state"));
         assert!(block.contains("Next: 接入 prompt"));
+        assert!(block.contains("Constraints: 不能新开 store"));
+        assert!(block.contains("Open questions: 是否需要保留 next_action 头项"));
+        assert!(block.contains("Observations: turn ledger 已有 replay substrate"));
+        assert!(block.contains("Next best actions: 补回归测试"));
     }
 
     #[test]
@@ -972,6 +1352,10 @@ mod tests {
                 blocker: "还没接 prompt".to_string(),
                 next_action: "接 prompt".to_string(),
                 last_output: "store ok".to_string(),
+                active_constraints: vec!["不能新开 store".to_string()],
+                open_questions: vec!["现在是否该扩 ExecutionState".to_string()],
+                latest_observations: vec!["subject state 已落账".to_string()],
+                next_best_actions: vec!["接 prompt".to_string(), "补测试".to_string()],
                 updated_at: 1,
             }),
             ExecutionState {
@@ -981,6 +1365,10 @@ mod tests {
                 blocker: String::new(),
                 next_action: String::new(),
                 last_output: String::new(),
+                active_constraints: Vec::new(),
+                open_questions: vec!["还要不要扩 render block".to_string()],
+                latest_observations: vec!["prompt block 已经接上".to_string()],
+                next_best_actions: vec!["补回归测试".to_string()],
                 updated_at: 2,
             },
             3,
@@ -991,6 +1379,19 @@ mod tests {
         assert_eq!(merged.progress, "prompt 已接入");
         assert_eq!(merged.next_action, "接 prompt");
         assert_eq!(merged.last_output, "store ok");
+        assert_eq!(
+            merged.active_constraints,
+            vec!["不能新开 store".to_string()]
+        );
+        assert_eq!(
+            merged.open_questions,
+            vec!["还要不要扩 render block".to_string()]
+        );
+        assert_eq!(
+            merged.latest_observations,
+            vec!["prompt block 已经接上".to_string()]
+        );
+        assert_eq!(merged.next_best_actions, vec!["补回归测试".to_string()]);
     }
 
     #[test]
@@ -1004,6 +1405,7 @@ mod tests {
                 next_action: "补测试".to_string(),
                 last_output: String::new(),
                 updated_at: 1,
+                ..ExecutionState::default()
             }),
             ExecutionState {
                 status: ExecutionStatus::Active,
@@ -1013,6 +1415,7 @@ mod tests {
                 next_action: String::new(),
                 last_output: String::new(),
                 updated_at: 2,
+                ..ExecutionState::default()
             },
             3,
         )
@@ -1033,6 +1436,7 @@ mod tests {
                 next_action: "接 prompt".to_string(),
                 last_output: "store ok".to_string(),
                 updated_at: 1,
+                ..ExecutionState::default()
             }),
             ExecutionState {
                 status: ExecutionStatus::Active,
@@ -1042,6 +1446,7 @@ mod tests {
                 next_action: "补测试".to_string(),
                 last_output: String::new(),
                 updated_at: 2,
+                ..ExecutionState::default()
             },
             3,
         )
@@ -1065,6 +1470,7 @@ mod tests {
                 next_action: String::new(),
                 last_output: "done".to_string(),
                 updated_at: 1,
+                ..ExecutionState::default()
             },
             2,
         )
@@ -1083,6 +1489,7 @@ mod tests {
                 next_action: "继续".to_string(),
                 last_output: "好的".to_string(),
                 updated_at: 1,
+                ..ExecutionState::default()
             },
             2,
         );
@@ -1100,6 +1507,7 @@ mod tests {
                 next_action: "补 execution state 回归测试".to_string(),
                 last_output: String::new(),
                 updated_at: 1,
+                ..ExecutionState::default()
             },
             2,
         )
@@ -1119,6 +1527,7 @@ mod tests {
                 next_action: "补剩余测试".to_string(),
                 last_output: String::new(),
                 updated_at: 1,
+                ..ExecutionState::default()
             },
             2,
         )
@@ -1138,6 +1547,7 @@ mod tests {
                 next_action: String::new(),
                 last_output: "done".to_string(),
                 updated_at: 1,
+                ..ExecutionState::default()
             },
             512,
         );
@@ -1160,6 +1570,7 @@ mod tests {
         };
         let summary_store = StubSessionSummaryStore::default();
         let execution_store = StubExecutionStateStore::default();
+        let turn_ledger_store = StubTurnLedgerStore::default();
         let mut http = DummyHttpClient;
         let llm = FixedLlmClient {
             content: r#"{"status":"active","goal":"收口 execution state","progress":"store 已接好","next_action":"接 prompt"}"#,
@@ -1172,6 +1583,7 @@ mod tests {
                 session_store: &session_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_store,
+                turn_ledger_store: &turn_ledger_store,
             },
             ExecutionStateRefreshInput {
                 chat_id: "chat-1",
@@ -1211,6 +1623,7 @@ mod tests {
         };
         let summary_store = StubSessionSummaryStore::default();
         let execution_store = StubExecutionStateStore::default();
+        let turn_ledger_store = StubTurnLedgerStore::default();
         let mut http = DummyHttpClient;
         let llm = FixedLlmClient {
             content: r#"{"status":"active","goal":"收口 execution state","progress":"删除 dead continuation path","next_action":"补回归测试"}"#,
@@ -1223,6 +1636,7 @@ mod tests {
                 session_store: &session_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_store,
+                turn_ledger_store: &turn_ledger_store,
             },
             ExecutionStateRefreshInput {
                 chat_id: "chat-1",
@@ -1266,10 +1680,12 @@ mod tests {
                     next_action: String::new(),
                     last_output: String::new(),
                     updated_at: 1,
+                    ..ExecutionState::default()
                 },
             )])),
             clears: Mutex::new(0),
         };
+        let turn_ledger_store = StubTurnLedgerStore::default();
         let mut http = DummyHttpClient;
         let llm = FixedLlmClient { content: "null" };
 
@@ -1280,6 +1696,7 @@ mod tests {
                 session_store: &session_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_store,
+                turn_ledger_store: &turn_ledger_store,
             },
             ExecutionStateRefreshInput {
                 chat_id: "chat-1",
@@ -1319,10 +1736,12 @@ mod tests {
                     next_action: "接 prompt".to_string(),
                     last_output: String::new(),
                     updated_at: 1,
+                    ..ExecutionState::default()
                 },
             )])),
             clears: Mutex::new(0),
         };
+        let turn_ledger_store = StubTurnLedgerStore::default();
         let mut http = DummyHttpClient;
         let llm = FixedLlmClient {
             content: r#"{"status":"active","goal":"should not be used"}"#,
@@ -1335,6 +1754,7 @@ mod tests {
                 session_store: &session_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_store,
+                turn_ledger_store: &turn_ledger_store,
             },
             ExecutionStateRefreshInput {
                 chat_id: "chat-1",
@@ -1366,12 +1786,14 @@ mod tests {
                 next_action: "整理上下文预算".to_string(),
                 last_output: String::new(),
                 updated_at: 1,
+                ..ExecutionState::default()
             }),
             None,
             &[SessionMessage {
                 role: "user".to_string(),
                 content: "继续处理 execution state".to_string(),
             }],
+            None,
             memory_policy(MemoryProfile::Embedded).execution_state,
         );
         assert!(input.contains("## Execution State"));
@@ -1380,10 +1802,147 @@ mod tests {
     }
 
     #[test]
+    fn refresh_input_includes_recent_turn_observation_block() {
+        let input = build_execution_state_refresh_input(
+            None,
+            Some("continue closing the execution state loop"),
+            &[SessionMessage {
+                role: "user".to_string(),
+                content: "继续".to_string(),
+            }],
+            Some(&TurnObservationLedger {
+                execution_class: TurnExecutionClass::ToolAssisted,
+                deliberation_class: TurnDeliberationClass::HardReasoning,
+                final_outcome: "final_recovery".to_string(),
+                pressure: TurnPersonaPressureLevel::Cautious,
+                mode: TurnModeSnapshotLedger {
+                    current_mode: "normal".to_string(),
+                    allow_non_voice_outbound: true,
+                    allow_idle_self_runtime: true,
+                },
+                tool_path: TurnToolPathLedger {
+                    path: "tool_recovery".to_string(),
+                    tool_calls: 2,
+                    react_rounds: 2,
+                    current_primary_delivered: false,
+                    final_answer_recovered: true,
+                },
+                blocker: Some(TurnBlockerLedger {
+                    kind: "retryable".to_string(),
+                    failed_calls: 1,
+                    total_calls: 1,
+                }),
+            }),
+            memory_policy(MemoryProfile::Embedded).execution_state,
+        );
+
+        assert!(input.contains("## Latest Turn Observation"));
+        assert!(input.contains("Tool path: tool_recovery"));
+        assert!(input.contains("## Recent Conversation"));
+    }
+
+    #[test]
     fn generic_reply_is_not_captured_as_last_output() {
         assert!(!should_capture_last_output("好的，这轮继续处理。"));
         assert!(should_capture_last_output(
             "我已经把 execution state 的 merge 规则改成按具体目标优先了。"
         ));
+    }
+
+    #[test]
+    fn refresh_enriches_working_set_with_recent_turn_observation() {
+        let session_store = StubSessionStore {
+            recent: vec![
+                SessionMessage {
+                    role: "user".to_string(),
+                    content: "继续收口当前这一轮".to_string(),
+                },
+                SessionMessage {
+                    role: "assistant".to_string(),
+                    content: "我先基于上轮执行结果继续收敛。".to_string(),
+                },
+            ],
+        };
+        let summary_store = StubSessionSummaryStore::default();
+        let execution_store = StubExecutionStateStore::default();
+        let turn_ledger_store = StubTurnLedgerStore::default();
+        turn_ledger_store
+            .set(
+                &relationship_scope_id("qq_channel", "chat-1"),
+                &TurnLedger {
+                    req_id: "run-execution".to_string(),
+                    observation: Some(TurnObservationLedger {
+                        execution_class: TurnExecutionClass::ToolAssisted,
+                        deliberation_class: TurnDeliberationClass::HardReasoning,
+                        final_outcome: "final_recovery".to_string(),
+                        pressure: TurnPersonaPressureLevel::Cautious,
+                        mode: TurnModeSnapshotLedger {
+                            current_mode: "normal".to_string(),
+                            allow_non_voice_outbound: true,
+                            allow_idle_self_runtime: true,
+                        },
+                        tool_path: TurnToolPathLedger {
+                            path: "tool_recovery".to_string(),
+                            tool_calls: 2,
+                            react_rounds: 2,
+                            current_primary_delivered: false,
+                            final_answer_recovered: true,
+                        },
+                        blocker: Some(TurnBlockerLedger {
+                            kind: "retryable".to_string(),
+                            failed_calls: 1,
+                            total_calls: 1,
+                        }),
+                    }),
+                    ..TurnLedger::default()
+                },
+            )
+            .unwrap();
+        let mut http = DummyHttpClient;
+        let llm = FixedLlmClient {
+            content: r#"{"status":"active","goal":"收口 execution state","progress":"把 replay substrate 继续收紧","next_action":"补 execution state 回归测试"}"#,
+        };
+
+        let outcome = run_execution_state_refresh(
+            &mut http,
+            &llm,
+            ExecutionStateRefreshContext {
+                session_store: &session_store,
+                session_summary_store: &summary_store,
+                execution_state_store: &execution_store,
+                turn_ledger_store: &turn_ledger_store,
+            },
+            ExecutionStateRefreshInput {
+                chat_id: "chat-1",
+                ingress: IngressKind::User,
+                channel: "qq_channel",
+                user_content: "继续收口当前这一轮",
+                reply_content: "我先基于上轮执行结果继续收敛。",
+                pressure: PressureLevel::Normal,
+                tool_calls: 1,
+                now_secs: 79,
+            },
+            MemoryProfile::Standard,
+        )
+        .unwrap();
+
+        assert_eq!(outcome, ExecutionStateRefreshOutcome::Updated);
+        let stored = execution_store.get("chat-1").unwrap().unwrap();
+        assert!(stored
+            .latest_observations
+            .iter()
+            .any(|item| item.contains("tool_recovery")));
+        assert!(stored
+            .latest_observations
+            .iter()
+            .any(|item| item.contains("retryable")));
+        assert!(stored
+            .next_best_actions
+            .iter()
+            .any(|item| item.contains("primary answer")));
+        assert!(stored
+            .next_best_actions
+            .iter()
+            .any(|item| item.contains("retryable blocker")));
     }
 }

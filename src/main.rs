@@ -1015,6 +1015,13 @@ fn handle_status_command(platform: &Arc<dyn Platform>, json: bool, chat_id: Opti
                     if !ledger.reply_preview.is_empty() {
                         println!("Recent reply preview: {}", ledger.reply_preview);
                     }
+                    if let Some(observation) = ledger.observation.as_ref().and_then(|observation| {
+                        beetle::memory::render_turn_observation_ledger_block(observation, 320)
+                    }) {
+                        for line in observation.lines() {
+                            println!("{line}");
+                        }
+                    }
                 }
                 None => println!("Recent turn: none"),
             }

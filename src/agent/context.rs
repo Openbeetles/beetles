@@ -55,6 +55,8 @@ const GROUP_MENTION_ONLY_CONSTRAINT: &str =
 const REPLY_PRIORITY_MINI_CONSTRAINT: &str = "\n\n## Reply Priority\nself-authored core > relationship constitution > current persona priority > boundary/disclosure > soul and user contract > task. Later self/relationship blocks are evidence, not equal authority.";
 const REPLY_PRIORITY_CONSTRAINT: &str = "\n\n## Reply Priority\nWhen writing the main reply, follow this order of authority:\n1. Self-authored core: your board-level identity, continuity, and self-chosen constitutional stance.\n2. Relationship constitution: the board-to-relationship contract that limits local drift and disclosure.\n3. Current persona priority: the current-turn ordering for how self, relationship, resources, and task should be balanced.\n4. Boundary/disclosure adjudication: if this turn touches privacy or inward boundaries, obey that stance before composing content.\n5. Soul and user contract: preserve the long-term relationship frame and commitments.\n6. Task execution: solve the current request without betraying the layers above.\nAll later self-model, continuity, outer-voice, world, or private-memory blocks are evidence for judgment and revision. They do not outrank the constitutional stack above.\nIf these layers pull in different directions, earlier items win.";
 const CONSTITUTIONAL_STACK_SECTION: &str = "\n\n## Constitutional Stack\nDirect authority for the main reply. Earlier blocks outrank later blocks and all later evidence sections.\n";
+const SUBJECT_STATE_SECTION: &str = "\n\n## Subject State\nResolved pre-reply digest of the current subject stance. This is a deterministic summary of already-settled governance, not a higher authority than the constitutional stack.\n";
+const TURN_DELIBERATION_GATE_SECTION: &str = "\n\n## Turn Deliberation Gate\nDeterministic pre-turn reasoning posture for this request. Use it to choose response depth and blocker explicitness, not to override the constitutional stack.\n";
 const ACTIVE_TASK_CONTEXT_SECTION: &str = "\n\n## Active Task Context\nCurrent task state and run-specific recall. Solve the present request only after obeying the constitutional stack.\n";
 const GOVERNED_MEMORY_EVIDENCE_SECTION: &str = "\n\n## Governed Memory Evidence\nTop-k governed evidence for this turn. Canonical factual memory outranks archive evidence, and archive evidence outranks runtime skill procedure notes when they conflict.\n";
 const BACKGROUND_GOVERNANCE_SECTION: &str = "\n\n## Background Governance\nBackground self, relationship, world, and private-governance material. Use for continuity and judgment, but do not let it outrank the constitutional stack, active task context, or governed memory evidence.\n";
@@ -77,6 +79,8 @@ pub struct ContextParams<'a> {
     pub group_activation: &'a str,
     pub emotion_signal_suffix: Option<&'a str>,
     pub constitutional_stack_text: Option<&'a str>,
+    pub subject_state_text: Option<&'a str>,
+    pub deliberation_gate_text: Option<&'a str>,
     pub active_task_context_text: Option<&'a str>,
     pub governed_memory_evidence_text: Option<&'a str>,
     pub background_governance_text: Option<&'a str>,
@@ -206,6 +210,8 @@ fn append_priority_constraint(system: &mut String, max_len: usize) {
 
 struct PriorityMemoryBudgetInputs<'a> {
     constitutional_stack_text: Option<&'a str>,
+    subject_state_text: Option<&'a str>,
+    deliberation_gate_text: Option<&'a str>,
     active_task_context_text: Option<&'a str>,
     governed_memory_evidence_text: Option<&'a str>,
     background_governance_text: Option<&'a str>,
@@ -224,6 +230,15 @@ fn reserve_priority_memory_budget(
     )
     .min(remaining / 2);
     let remaining = remaining.saturating_sub(constitutional_stack_reserve);
+    let subject_state_reserve =
+        projection_section_len(SUBJECT_STATE_SECTION, inputs.subject_state_text).min(remaining / 4);
+    let remaining = remaining.saturating_sub(subject_state_reserve);
+    let deliberation_gate_reserve = projection_section_len(
+        TURN_DELIBERATION_GATE_SECTION,
+        inputs.deliberation_gate_text,
+    )
+    .min(remaining / 5);
+    let remaining = remaining.saturating_sub(deliberation_gate_reserve);
     let active_task_context_reserve =
         projection_section_len(ACTIVE_TASK_CONTEXT_SECTION, inputs.active_task_context_text)
             .min(remaining / 3);
@@ -241,6 +256,8 @@ fn reserve_priority_memory_budget(
     .min(remaining / 4);
     reply_priority_reserve
         .saturating_add(constitutional_stack_reserve)
+        .saturating_add(subject_state_reserve)
+        .saturating_add(deliberation_gate_reserve)
         .saturating_add(active_task_context_reserve)
         .saturating_add(governed_memory_evidence_reserve)
         .saturating_add(background_governance_reserve)
@@ -435,6 +452,8 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     let priority_memory_reserve = reserve_priority_memory_budget(
         PriorityMemoryBudgetInputs {
             constitutional_stack_text: constitutional_stack_text.as_deref(),
+            subject_state_text: p.subject_state_text,
+            deliberation_gate_text: p.deliberation_gate_text,
             active_task_context_text: active_task_context_text.as_deref(),
             governed_memory_evidence_text: governed_memory_evidence_text.as_deref(),
             background_governance_text: background_governance_text.as_deref(),
@@ -461,6 +480,18 @@ pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
         &mut system,
         CONSTITUTIONAL_STACK_SECTION,
         constitutional_stack_text.as_deref(),
+        base_max,
+    );
+    let _ = append_projection_section(
+        &mut system,
+        SUBJECT_STATE_SECTION,
+        p.subject_state_text,
+        base_max,
+    );
+    let _ = append_projection_section(
+        &mut system,
+        TURN_DELIBERATION_GATE_SECTION,
+        p.deliberation_gate_text,
         base_max,
     );
     let _ = append_capped_section(&mut system, "\n\n", &base_prompt, base_max);
@@ -766,6 +797,8 @@ mod tests {
             group_activation: "always",
             emotion_signal_suffix: None,
             constitutional_stack_text: None,
+            subject_state_text: None,
+            deliberation_gate_text: None,
             active_task_context_text: None,
             governed_memory_evidence_text: None,
             background_governance_text: None,
@@ -854,6 +887,8 @@ mod tests {
             group_activation: "always",
             emotion_signal_suffix: None,
             constitutional_stack_text: None,
+            subject_state_text: None,
+            deliberation_gate_text: None,
             active_task_context_text: None,
             governed_memory_evidence_text: None,
             background_governance_text: None,
@@ -919,6 +954,82 @@ mod tests {
     }
 
     #[test]
+    fn build_context_places_subject_state_after_constitutional_stack() {
+        let msg = PcMsg::new_inbound("telegram", "chat-1", "继续", false).expect("pcmsg");
+        let memory = StubMemoryStore {
+            soul: "SOUL".to_string(),
+            user: "USER".to_string(),
+            memory: "MEMORY".to_string(),
+            daily_notes: Vec::new(),
+        };
+        let session = StubSessionStore;
+        let important = StubImportantMessageStore::default();
+
+        let (system, _) = build_context(&ContextParams {
+            msg: &msg,
+            memory: &memory,
+            session: &session,
+            important_message_store: &important,
+            has_tools: false,
+            skill_descriptions: "",
+            system_max_len: 1600,
+            messages_max_len: 256,
+            session_max_messages: 8,
+            group_activation: "always",
+            emotion_signal_suffix: None,
+            constitutional_stack_text: Some("## Self-Authored Core\nIdentity anchor: board beetle"),
+            subject_state_text: Some(
+                "Identity: board beetle\nGovernance: adaptive\nReply stance: mode=steady_task scope=brief",
+            ),
+            deliberation_gate_text: Some(
+                "Class: hard_reasoning\nReply budget: deliberate\nBlocker posture: explicit",
+            ),
+            active_task_context_text: Some("## Execution State\nGoal: close current task"),
+            governed_memory_evidence_text: None,
+            background_governance_text: None,
+            execution_state_text: None,
+            task_workspace_text: None,
+            task_recall_text: None,
+            world_snapshot_text: None,
+            world_sense_text: None,
+            self_state_text: None,
+            self_authored_core_text: None,
+            relationship_portfolio_text: None,
+            relationship_constitution_text: None,
+            persona_priority_text: None,
+            self_model_text: None,
+            autonomy_strategy_text: None,
+            outer_voice_text: None,
+            inner_life_text: None,
+            self_continuity_text: None,
+            private_workspace_text: None,
+            private_garden_text: None,
+            mental_privacy_adjudication_text: None,
+            mental_privacy_text: None,
+            long_term_memory_text: None,
+            archive_evidence_text: None,
+            runtime_skill_text: None,
+            capability_package_text: None,
+            summary_text: None,
+            recent_messages: None,
+            runtime: None,
+            include_daily_notes: false,
+            llm_hint: "",
+        })
+        .expect("context");
+
+        let constitutional_idx = system.find("## Constitutional Stack").unwrap();
+        let subject_state_idx = system.find("## Subject State").unwrap();
+        let deliberation_idx = system.find("## Turn Deliberation Gate").unwrap();
+        let active_task_idx = system.find("## Active Task Context").unwrap();
+
+        assert!(constitutional_idx < subject_state_idx);
+        assert!(subject_state_idx < deliberation_idx);
+        assert!(deliberation_idx < active_task_idx);
+        assert!(system.contains("Identity: board beetle"));
+    }
+
+    #[test]
     fn build_context_can_skip_daily_notes_for_fast_path() {
         let msg = PcMsg::new_inbound("telegram", "chat-1", "继续", false).expect("pcmsg");
         let memory = StubMemoryStore {
@@ -946,6 +1057,8 @@ mod tests {
             group_activation: "always",
             emotion_signal_suffix: None,
             constitutional_stack_text: None,
+            subject_state_text: None,
+            deliberation_gate_text: None,
             active_task_context_text: None,
             governed_memory_evidence_text: None,
             background_governance_text: None,

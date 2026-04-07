@@ -1156,6 +1156,7 @@ mod tests {
                     next_action: "接 maintenance 和 prompt".to_string(),
                     last_output: String::new(),
                     updated_at: 1,
+                    ..ExecutionState::default()
                 },
             )
             .unwrap();

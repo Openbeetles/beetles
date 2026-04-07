@@ -1198,6 +1198,7 @@ mod tests {
                     next_action: "做私有文档治理".to_string(),
                     last_output: String::new(),
                     updated_at: 1,
+                    ..ExecutionState::default()
                 },
             )
             .unwrap();

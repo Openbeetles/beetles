@@ -18,6 +18,10 @@ use super::strategy::{
     repeated_answer_followup, stalled_end_turn_followup, AgentRunStrategy,
     SuccessfulToolRoundSummary,
 };
+use super::subject_state::{
+    build_turn_subject_state_ledger, compile_subject_state, render_subject_state_block,
+    SubjectState, SubjectStateCompileInput,
+};
 use super::tool_guidance::{
     build_success_tool_execution_guidance, record_successful_tool_result,
     round_used_external_content, SuccessfulToolRoundObservations,
@@ -46,24 +50,26 @@ use crate::memory::{
     board_subject_scope_id, build_turn_ledger_start, build_turn_persona_disclosure_ledger,
     build_turn_persona_priority_ledger, compute_core_revision_governance_digest,
     load_prompt_memory_context, load_recent_persona_evidence, memory_policy,
-    normalize_turn_persona_scope, normalize_turn_persona_targets, normalize_turn_preview,
-    normalize_turn_reason, recall_long_term_memory_block, render_core_revision_governance_block,
-    render_recent_persona_evidence_block, run_long_term_memory_refresh,
-    run_mental_privacy_disclosure_adjudication, run_mental_privacy_review,
-    run_post_reply_memory_maintenance, run_self_runtime, upsert_relationship_topology_entry,
-    AutonomyStrategyStore, EmotionSignalStore, ExecutionStateStore, ImportantMessageStore,
-    InnerLifeStore, LongTermMemoryExtractionStateStore, LongTermMemoryRefreshContext,
-    LongTermMemoryRefreshOutcome, LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore,
-    MemoryStore, MentalPrivacyDisclosureAdjudicationContext,
-    MentalPrivacyDisclosureAdjudicationInput, MentalPrivacyReviewContext, MentalPrivacyReviewInput,
-    MentalPrivacyReviewOutcome, MentalPrivacyStore, OuterVoiceStore, PendingRetryStore,
-    PersonaPriorityAdjudication, PersonaPriorityAdjudicationInput, PersonaPriorityGrounding,
-    PersonaPriorityRuntimeState, PostReplyMemoryMaintenanceContext,
-    PostReplyMemoryMaintenanceInput, PrivateDocStore, PrivateGardenStore, PromptMemoryContext,
-    PromptMemoryContextParams, RelationshipTopologyStore, RemindAtStore, SelfContinuityStore,
-    SelfModelStore, SelfRuntimeContext, SessionMessage, SessionStore, SessionSummaryRefreshOutcome,
-    SessionSummaryStore, TurnDeliveryLedger, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
-    TurnPersonaLedger, TurnPersonaReviewLedger, WorldSenseStore,
+    normalize_turn_observation_text, normalize_turn_persona_scope, normalize_turn_persona_targets,
+    normalize_turn_preview, normalize_turn_reason, recall_long_term_memory_block,
+    render_core_revision_governance_block, render_recent_persona_evidence_block,
+    run_long_term_memory_refresh, run_mental_privacy_disclosure_adjudication,
+    run_mental_privacy_review, run_post_reply_memory_maintenance, run_self_runtime,
+    upsert_relationship_topology_entry, AutonomyStrategyStore, EmotionSignalStore,
+    ExecutionStateStore, ImportantMessageStore, InnerLifeStore, LongTermMemoryExtractionStateStore,
+    LongTermMemoryRefreshContext, LongTermMemoryRefreshOutcome,
+    LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore, MemoryStore,
+    MentalPrivacyDisclosureAdjudicationContext, MentalPrivacyDisclosureAdjudicationInput,
+    MentalPrivacyReviewContext, MentalPrivacyReviewInput, MentalPrivacyReviewOutcome,
+    MentalPrivacyStore, OuterVoiceStore, PendingRetryStore, PersonaPriorityAdjudication,
+    PersonaPriorityAdjudicationInput, PersonaPriorityGrounding, PersonaPriorityRuntimeState,
+    PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput, PrivateDocStore,
+    PrivateGardenStore, PromptMemoryContext, PromptMemoryContextParams, RelationshipTopologyStore,
+    RemindAtStore, SelfContinuityStore, SelfModelStore, SelfRuntimeContext, SessionMessage,
+    SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore, TurnBlockerLedger,
+    TurnDeliveryLedger, TurnExecutionClass, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
+    TurnModeSnapshotLedger, TurnObservationLedger, TurnPersonaLedger, TurnPersonaReviewLedger,
+    TurnToolPathLedger, WorldSenseStore,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
@@ -113,6 +119,10 @@ use self::task_execution::try_run_task_execution;
 use self::tool_round::execute_tool_use_round;
 use self::turn_finalize::{finalize_lane_turn, persist_turn_ledger};
 use self::worker_context::prepare_worker_conversation;
+use super::deliberation::{
+    compile_turn_deliberation_gate, recovery_suffix_for_gate, render_turn_deliberation_gate_block,
+    TurnDeliberationGate, TurnDeliberationInput,
+};
 
 type CapabilityPackageTextProvider = Arc<dyn Fn(&str, usize) -> Option<String> + Send + Sync>;
 
@@ -317,16 +327,88 @@ struct WorkerRunTelemetry {
     any_tool_used: bool,
     external_content_used: bool,
     used_final_answer_recovery: bool,
+    task_execution_used: bool,
     pressure: crate::orchestrator::PressureLevel,
+    runtime_mode: crate::runtime::RuntimeModeSnapshot,
+    deliberation_class: crate::memory::TurnDeliberationClass,
+    tool_blocker: Option<ToolBlockerSummary>,
+    subject_state: Option<SubjectState>,
     mental_privacy_adjudication: Option<crate::memory::MentalPrivacyDisclosureAdjudication>,
     persona_priority_adjudication: Option<PersonaPriorityAdjudication>,
 }
 
+fn build_turn_observation_ledger(
+    final_outcome: &str,
+    is_interrupt: bool,
+    telemetry: &WorkerRunTelemetry,
+) -> Option<TurnObservationLedger> {
+    let execution_class = if is_interrupt {
+        TurnExecutionClass::Interrupted
+    } else if telemetry.task_execution_used {
+        TurnExecutionClass::TaskExecution
+    } else if telemetry.any_tool_used || telemetry.tool_blocker.is_some() {
+        TurnExecutionClass::ToolAssisted
+    } else {
+        TurnExecutionClass::DirectReply
+    };
+    let tool_path = if telemetry.task_execution_used {
+        "task_execution"
+    } else if telemetry.any_tool_used {
+        if telemetry.used_final_answer_recovery {
+            "tool_recovery"
+        } else if telemetry.delivery.current_primary_delivered {
+            "tool_primary_delivery"
+        } else {
+            "tool_reply"
+        }
+    } else if is_interrupt {
+        "interrupt"
+    } else {
+        ""
+    };
+    let blocker = telemetry.tool_blocker.map(|blocker| TurnBlockerLedger {
+        kind: match blocker.kind {
+            crate::agent::tool_outcome::ToolBlockerKind::Retryable => "retryable",
+            crate::agent::tool_outcome::ToolBlockerKind::Permanent => "permanent",
+            crate::agent::tool_outcome::ToolBlockerKind::Capability => "capability",
+            crate::agent::tool_outcome::ToolBlockerKind::Mixed => "mixed",
+        }
+        .to_string(),
+        failed_calls: blocker.failed_calls.min(u32::MAX as usize) as u32,
+        total_calls: blocker.total_calls.min(u32::MAX as usize) as u32,
+    });
+    let observation = TurnObservationLedger {
+        execution_class,
+        deliberation_class: telemetry.deliberation_class,
+        final_outcome: normalize_turn_observation_text(final_outcome),
+        pressure: telemetry.pressure.into(),
+        mode: TurnModeSnapshotLedger {
+            current_mode: telemetry.runtime_mode.current_mode.as_str().to_string(),
+            allow_non_voice_outbound: telemetry
+                .runtime_mode
+                .action_budget
+                .allow_non_voice_outbound,
+            allow_idle_self_runtime: telemetry.runtime_mode.action_budget.allow_idle_self_runtime,
+        },
+        tool_path: TurnToolPathLedger {
+            path: tool_path.to_string(),
+            tool_calls: telemetry.latency.tool_calls,
+            react_rounds: telemetry.latency.react_rounds,
+            current_primary_delivered: telemetry.delivery.current_primary_delivered,
+            final_answer_recovered: telemetry.used_final_answer_recovery,
+        },
+        blocker,
+    };
+    observation.is_meaningful().then_some(observation)
+}
+
 struct PreparedWorkerConversation {
     prompt_memory: PromptMemoryContext,
+    subject_state: Option<SubjectState>,
     system: String,
     messages: Vec<Message>,
     system_scratch: String,
+    deliberation_gate: TurnDeliberationGate,
     interactive_fast_path: bool,
     prompt_memory_system_budget: usize,
     pressure: crate::orchestrator::PressureLevel,
@@ -2455,7 +2537,12 @@ fn run_agent_loop_main(
             any_tool_used,
             external_content_used,
             used_final_answer_recovery,
+            task_execution_used,
             pressure,
+            runtime_mode,
+            deliberation_class,
+            tool_blocker,
+            subject_state,
             mental_privacy_adjudication,
             persona_priority_adjudication,
         } = telemetry;
@@ -2487,7 +2574,12 @@ fn run_agent_loop_main(
                 any_tool_used,
                 external_content_used,
                 used_final_answer_recovery,
+                task_execution_used,
                 pressure,
+                runtime_mode,
+                deliberation_class,
+                tool_blocker,
+                subject_state,
                 mental_privacy_adjudication,
                 persona_priority_adjudication,
             },
@@ -2559,9 +2651,11 @@ fn run_worker_path(
         DeliverySession::new(msg, req_id, outbound_tx, editor, channel_capability, loc);
     let PreparedWorkerConversation {
         mut prompt_memory,
+        subject_state,
         system,
         mut messages,
         mut system_scratch,
+        deliberation_gate,
         interactive_fast_path,
         prompt_memory_system_budget,
         pressure,
@@ -2589,6 +2683,8 @@ fn run_worker_path(
         &messages,
         &mut system_scratch,
         pressure,
+        deliberation_gate.class,
+        subject_state.clone(),
         mental_privacy_adjudication.clone(),
         persona_priority_adjudication.clone(),
     )? {
@@ -2745,7 +2841,12 @@ fn run_worker_path(
                     any_tool_used,
                     external_content_used,
                     used_final_answer_recovery,
+                    task_execution_used: false,
                     pressure,
+                    runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
+                    deliberation_class: deliberation_gate.class,
+                    tool_blocker: recent_tool_round.blocker,
+                    subject_state: subject_state.clone(),
                     mental_privacy_adjudication: mental_privacy_adjudication.clone(),
                     persona_priority_adjudication: persona_priority_adjudication.clone(),
                 };
@@ -2980,7 +3081,12 @@ fn run_worker_path(
                 any_tool_used,
                 external_content_used,
                 used_final_answer_recovery,
+                task_execution_used: false,
                 pressure,
+                runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
+                deliberation_class: deliberation_gate.class,
+                tool_blocker: recent_tool_round.blocker,
+                subject_state: subject_state.clone(),
                 mental_privacy_adjudication: mental_privacy_adjudication.clone(),
                 persona_priority_adjudication: persona_priority_adjudication.clone(),
             };
@@ -2996,6 +3102,7 @@ fn run_worker_path(
             &mut tool_ctx,
             &system,
             &messages,
+            recovery_suffix_for_gate(&deliberation_gate),
             config.llm_stream,
             &mut latency,
             &mut system_scratch,
@@ -3016,7 +3123,12 @@ fn run_worker_path(
             any_tool_used,
             external_content_used,
             used_final_answer_recovery,
+            task_execution_used: false,
             pressure,
+            runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
+            deliberation_class: deliberation_gate.class,
+            tool_blocker: recent_tool_round.blocker,
+            subject_state,
             mental_privacy_adjudication,
             persona_priority_adjudication,
         },
@@ -4285,12 +4397,19 @@ mod tests {
         }];
         let mut latency = WorkerLatency::default();
         let mut system_scratch = String::new();
+        let recovery_suffix = recovery_suffix_for_gate(&TurnDeliberationGate {
+            class: crate::memory::TurnDeliberationClass::HardReasoning,
+            compact_reply: false,
+            prefer_explicit_blocker: true,
+            rationale: vec!["test".to_string()],
+        });
 
         let content = run_final_answer_recovery_round(
             &llm,
             &mut tool_ctx,
             "base system",
             &messages,
+            recovery_suffix,
             false,
             &mut latency,
             &mut system_scratch,
@@ -4303,6 +4422,7 @@ mod tests {
         assert_eq!(observed.len(), 1);
         assert_eq!(observed[0].tool_count, 0);
         assert!(observed[0].system.contains(FINAL_RECOVERY_SYSTEM_SUFFIX));
+        assert!(observed[0].system.contains("## Deliberation recovery"));
     }
 
     #[test]
@@ -4356,6 +4476,105 @@ mod tests {
         assert!(contents.contains(&"正在执行 message…"));
         assert!(contents.contains(&"工具主答复"));
         assert!(outbound_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn build_turn_observation_ledger_captures_tool_path_mode_and_blocker() {
+        let telemetry = WorkerRunTelemetry {
+            streamed: false,
+            latency: WorkerLatency {
+                react_rounds: 3,
+                tool_calls: 2,
+                ..WorkerLatency::default()
+            },
+            delivery: DeliveryReport {
+                current_primary_delivered: true,
+                ..DeliveryReport::default()
+            },
+            any_tool_used: true,
+            external_content_used: false,
+            used_final_answer_recovery: true,
+            task_execution_used: false,
+            pressure: crate::orchestrator::PressureLevel::Cautious,
+            runtime_mode: crate::runtime::RuntimeModeSnapshot {
+                current_mode: crate::runtime::RuntimeMode::Normal,
+                wifi_sta_connected: true,
+                boot_phase_active: false,
+                pairing_required: false,
+                pairing_state_known: false,
+                voice_exclusive_active: false,
+                background_maintenance_active: false,
+                config_plane_alive: false,
+                channel_plane_alive: true,
+                voice_plane_alive: false,
+                agent_plane_alive: true,
+                user_agent_lane_alive: true,
+                system_agent_lane_alive: false,
+                dual_agent_lanes_alive: false,
+                external_wss_managed_present: false,
+                external_wss_suspend_requested: false,
+                external_wss_suspended: false,
+                supervisor_present: false,
+                supervisor_alive: false,
+                supervisor_agent_alive: false,
+                recovery_safe_mode_active: false,
+                action_budget: crate::runtime::RuntimeModeActionBudget {
+                    allow_periodic_maintenance: true,
+                    allow_due_user_timers: true,
+                    allow_heartbeat_injection: true,
+                    allow_best_effort_delayed_tasks: true,
+                    allow_idle_self_runtime: true,
+                    allow_non_voice_outbound: true,
+                    allow_external_wss_connect: true,
+                    require_external_wss_suspended: false,
+                },
+            },
+            deliberation_class: crate::memory::TurnDeliberationClass::HardReasoning,
+            tool_blocker: summarize_tool_blocker(
+                2,
+                ToolFailureSummary {
+                    failed_calls: 2,
+                    retryable_failures: 2,
+                    ..ToolFailureSummary::default()
+                },
+            ),
+            subject_state: None,
+            mental_privacy_adjudication: None,
+            persona_priority_adjudication: None,
+        };
+
+        let observation = build_turn_observation_ledger("final_recovery", false, &telemetry)
+            .expect("observation");
+
+        assert_eq!(
+            observation.execution_class,
+            TurnExecutionClass::ToolAssisted
+        );
+        assert_eq!(
+            observation.deliberation_class,
+            crate::memory::TurnDeliberationClass::HardReasoning
+        );
+        assert_eq!(observation.final_outcome, "final_recovery");
+        assert_eq!(
+            observation.pressure,
+            crate::memory::TurnPersonaPressureLevel::Cautious
+        );
+        assert_eq!(observation.mode.current_mode, "normal");
+        assert!(observation.mode.allow_non_voice_outbound);
+        assert!(observation.mode.allow_idle_self_runtime);
+        assert_eq!(observation.tool_path.path, "tool_recovery");
+        assert_eq!(observation.tool_path.tool_calls, 2);
+        assert_eq!(observation.tool_path.react_rounds, 3);
+        assert!(observation.tool_path.current_primary_delivered);
+        assert!(observation.tool_path.final_answer_recovered);
+        assert_eq!(
+            observation.blocker,
+            Some(TurnBlockerLedger {
+                kind: "retryable".to_string(),
+                failed_calls: 2,
+                total_calls: 2,
+            })
+        );
     }
 
     #[test]

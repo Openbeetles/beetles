@@ -986,6 +986,7 @@ mod tests {
             next_action: "next".to_string(),
             last_output: String::new(),
             updated_at: 0,
+            ..ExecutionState::default()
         };
 
         store.set("chat", &state).unwrap();

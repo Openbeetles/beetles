@@ -23,6 +23,7 @@ pub(super) fn prepare_worker_conversation<'a>(
         });
     let budget = crate::orchestrator::current_budget();
     let snapshot = crate::orchestrator::snapshot();
+    let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
     let interactive_fast_path = msg.ingress == IngressKind::User && msg.channel.as_ref() != "voice";
     let runtime = RuntimeContext {
         now_secs: crate::util::current_unix_secs(),
@@ -303,6 +304,42 @@ pub(super) fn prepare_worker_conversation<'a>(
         .as_ref()
         .and_then(|adjudication| crate::memory::render_persona_priority_block(adjudication, 420))
         .or(persistent_persona_priority_text);
+    let subject_state = compile_subject_state(SubjectStateCompileInput {
+        self_authored_core: prompt_memory.self_authored_core.as_ref(),
+        relationship_constitution: prompt_memory.relationship_constitution.as_ref(),
+        persona_priority: persona_priority_adjudication
+            .as_ref()
+            .or(Some(&persistent_persona_priority)),
+        disclosure_adjudication: mental_privacy_adjudication.as_ref(),
+        personality_governance_gate: Some(&personality_governance_gate),
+        pressure: runtime.pressure,
+    });
+    let subject_state_text = subject_state
+        .as_ref()
+        .and_then(|state| render_subject_state_block(state, 360));
+    let recent_observation = config
+        .turn_ledger_store
+        .get(&relationship_id)
+        .ok()
+        .flatten()
+        .and_then(|ledger| ledger.observation);
+    let deliberation_gate = compile_turn_deliberation_gate(TurnDeliberationInput {
+        strategy: config.strategy,
+        ingress: msg.ingress,
+        is_group: msg.is_group,
+        user_content: &msg.content,
+        has_tools,
+        pressure: runtime.pressure,
+        runtime_mode,
+        recent_observation: recent_observation.as_ref(),
+        execution_state_text: prompt_memory.execution_state_text.as_deref(),
+        shared_factual_report: &prompt_memory.shared_factual_recall_report,
+        continuity_capsule_report: &prompt_memory.continuity_capsule_report,
+        archive_report: &prompt_memory.archive_recall_report,
+        runtime_skill_report: &prompt_memory.runtime_skill_recall_report,
+        task_recall_report: prompt_memory.task_recall_report.as_ref(),
+    });
+    let deliberation_gate_text = render_turn_deliberation_gate_block(&deliberation_gate, 360);
     prompt_memory.refresh_reply_projection_groups();
     let (mut system, messages) = build_context(&crate::agent::ContextParams {
         msg,
@@ -317,6 +354,8 @@ pub(super) fn prepare_worker_conversation<'a>(
         group_activation: config.tg_group_activation.as_ref(),
         emotion_signal_suffix,
         constitutional_stack_text: prompt_memory.constitutional_stack_text.as_deref(),
+        subject_state_text: subject_state_text.as_deref(),
+        deliberation_gate_text: deliberation_gate_text.as_deref(),
         active_task_context_text: prompt_memory.active_task_context_text.as_deref(),
         governed_memory_evidence_text: prompt_memory.governed_memory_evidence_text.as_deref(),
         background_governance_text: prompt_memory.background_governance_text.as_deref(),
@@ -361,9 +400,11 @@ pub(super) fn prepare_worker_conversation<'a>(
 
     Ok(PreparedWorkerConversation {
         prompt_memory,
+        subject_state,
         system,
         messages,
         system_scratch,
+        deliberation_gate,
         interactive_fast_path,
         prompt_memory_system_budget,
         pressure: runtime.pressure,
