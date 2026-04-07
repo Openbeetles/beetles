@@ -1,4 +1,5 @@
 //! continuity_snapshot tool: export/import core continuity state.
+#![allow(clippy::too_many_arguments)]
 
 use crate::error::{Error, Result};
 use crate::memory::{
@@ -200,6 +201,7 @@ impl Tool for ContinuitySnapshotTool {
                         "chat_id": chat_id,
                         "channel": channel,
                         "format": "markdown",
+                        "repair_plan": inspection.repair_plan.clone(),
                         "markdown": render_personality_governance_inspection_markdown(&inspection),
                         "inspection": inspection,
                     })
@@ -211,6 +213,7 @@ impl Tool for ContinuitySnapshotTool {
                         "chat_id": chat_id,
                         "channel": channel,
                         "format": "json",
+                        "repair_plan": inspection.repair_plan.clone(),
                         "inspection": inspection,
                     })
                     .to_string())

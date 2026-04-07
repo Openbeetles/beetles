@@ -16,8 +16,6 @@ mod core_revision_ledger;
 mod execution_state;
 mod hygiene;
 mod inner_life;
-#[cfg(test)]
-mod internal_memory_routing;
 mod internal_memory_topology;
 mod llm_json;
 mod long_term;
@@ -126,11 +124,6 @@ pub use inner_life::{
     InnerLifeRefreshInput, InnerLifeRefreshOutcome, INNER_LIFE_SYSTEM_PROMPT,
     INNER_LIFE_TOTAL_CHAR_LIMIT,
 };
-#[cfg(test)]
-pub use internal_memory_routing::{
-    InternalMemoryRoutingDecision, InternalMemoryRoutingInput,
-    INTERNAL_MEMORY_ROUTING_SYSTEM_PROMPT,
-};
 pub(crate) use internal_memory_topology::{
     render_internal_memory_topology_block, InternalMemoryLayerFocus,
 };
@@ -177,7 +170,8 @@ pub use memory_governance::{
 };
 pub(crate) use mental_privacy::{
     collect_private_targets, render_mental_privacy_boundary_block,
-    render_mental_privacy_disclosure_adjudication_block, run_boundary_persona_refresh_with_state,
+    render_mental_privacy_disclosure_adjudication_block,
+    render_mental_privacy_governance_fallback_block, run_boundary_persona_refresh_with_state,
     run_mental_privacy_review,
 };
 pub use mental_privacy::{
@@ -216,9 +210,13 @@ pub use persona_regression::{
     PersonaContinuityResult,
 };
 pub use personality_closure::{
-    inspect_personality_governance, render_personality_governance_inspection_markdown,
-    PersonalityClosureReport, PersonalityGovernanceEvent, PersonalityGovernanceInspection,
-    PersonalityGovernanceInspectionInput,
+    derive_personality_governance_repair_plan, derive_personality_runtime_governance_gate,
+    derive_personality_runtime_governance_gate_from_inspection, inspect_personality_governance,
+    render_personality_governance_inspection_markdown,
+    render_personality_runtime_governance_gate_block, PersonalityClosureReport,
+    PersonalityGovernanceEvent, PersonalityGovernanceInspection,
+    PersonalityGovernanceInspectionInput, PersonalityGovernanceRepairAction,
+    PersonalityGovernanceRepairPlan, PersonalityRuntimeGovernanceGate,
 };
 pub(crate) use private_docs::estimate_private_doc_workspace_chars;
 pub(crate) use private_docs::run_private_doc_workspace_refresh_with_state;
@@ -242,8 +240,6 @@ pub use private_garden_governance::{
     run_private_garden_governance, PrivateGardenGovernanceContext, PrivateGardenGovernanceInput,
     PrivateGardenGovernanceOutcome, PRIVATE_GARDEN_GOVERNANCE_SYSTEM_PROMPT,
 };
-#[cfg(test)]
-pub(crate) use profile::InternalMemoryRoutingPolicy;
 pub(crate) use profile::{
     memory_capability_profile, memory_policy, shared_long_term_governance_policy,
     AutonomyStrategyPolicy, ExecutionStatePolicy, InnerLifePolicy, LongTermExtractionPolicy,

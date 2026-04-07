@@ -1,4 +1,6 @@
 //! 自治运行层：由 LLM 决定是否经营自己的内在空间。
+#![allow(clippy::too_many_arguments)]
+
 mod llm;
 mod state;
 
@@ -29,6 +31,7 @@ use self::state::{
 use super::{
     autonomy_idle_interval_secs, board_subject_scope_id, build_archive_evidence_block,
     build_self_state, build_world_snapshot, compute_core_revision_governance_digest,
+    derive_personality_runtime_governance_gate_from_inspection, inspect_personality_governance,
     llm_json::{
         get_object_bool, get_object_string_list, get_object_text, parse_llm_json_payload,
         LlmJsonPayload,
@@ -56,20 +59,21 @@ use super::{
     InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome, InnerLifeStore,
     InternalMemoryLayerFocus, LongTermMemoryStore, MemoryGovernanceContext, MemoryGovernanceInput,
     MemoryHygieneContext, MemoryProfile, MemoryStore, MentalPrivacyStore, OuterVoiceRefreshContext,
-    OuterVoiceRefreshInput, OuterVoiceRefreshOutcome, OuterVoiceStore, PrivateDocStore,
-    PrivateDocWorkspaceRefreshContext, PrivateDocWorkspaceRefreshInput,
-    PrivateDocWorkspaceRefreshOutcome, PrivateGardenGovernanceContext,
-    PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome, PrivateGardenStore,
-    RelationshipConstitution, RelationshipConstitutionStore, RelationshipConstitutionSyncInput,
-    RelationshipPortfolio, RelationshipPortfolioSelectorInput, RelationshipPortfolioStore,
-    RelationshipTopology, RelationshipTopologyStore, RemindAtStore, SelfAuthoredCoreRefreshContext,
-    SelfAuthoredCoreRefreshInput, SelfAuthoredCoreRefreshOutcome, SelfAuthoredCoreStore,
-    SelfContinuityRefreshContext, SelfContinuityRefreshInput, SelfContinuityRefreshOutcome,
-    SelfContinuityStore, SelfMemorySpaceBottleneck, SelfMemorySpacePressure,
-    SelfModelRefreshContext, SelfModelRefreshInput, SelfModelRefreshOutcome, SelfModelStore,
-    SelfState, SessionStore, SessionSummaryStore, SharedFactualPlaneSnapshot,
-    SharedFactualReconcileAction, TurnLedgerStore, WorldSenseRefreshContext,
-    WorldSenseRefreshInput, WorldSenseRefreshOutcome, WorldSenseStore, WorldSnapshotContext,
+    OuterVoiceRefreshInput, OuterVoiceRefreshOutcome, OuterVoiceStore,
+    PersonalityGovernanceInspectionInput, PrivateDocStore, PrivateDocWorkspaceRefreshContext,
+    PrivateDocWorkspaceRefreshInput, PrivateDocWorkspaceRefreshOutcome,
+    PrivateGardenGovernanceContext, PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome,
+    PrivateGardenStore, RelationshipConstitution, RelationshipConstitutionStore,
+    RelationshipConstitutionSyncInput, RelationshipPortfolio, RelationshipPortfolioSelectorInput,
+    RelationshipPortfolioStore, RelationshipTopology, RelationshipTopologyStore, RemindAtStore,
+    SelfAuthoredCoreRefreshContext, SelfAuthoredCoreRefreshInput, SelfAuthoredCoreRefreshOutcome,
+    SelfAuthoredCoreStore, SelfContinuityRefreshContext, SelfContinuityRefreshInput,
+    SelfContinuityRefreshOutcome, SelfContinuityStore, SelfMemorySpaceBottleneck,
+    SelfMemorySpacePressure, SelfModelRefreshContext, SelfModelRefreshInput,
+    SelfModelRefreshOutcome, SelfModelStore, SelfState, SessionStore, SessionSummaryStore,
+    SharedFactualPlaneSnapshot, SharedFactualReconcileAction, TurnLedgerStore,
+    WorldSenseRefreshContext, WorldSenseRefreshInput, WorldSenseRefreshOutcome, WorldSenseStore,
+    WorldSnapshotContext,
 };
 
 pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's inward autonomy runtime. Respect the current autonomy strategy unless the latest world state, self-state, or recent multi-turn persona evidence clearly requires a different emphasis. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_private_docs, private_docs_intent, private_docs_action, refresh_private_garden, private_garden_intent, private_garden_action, refresh_self_model, self_model_intent, self_model_sources, refresh_self_continuity, self_continuity_intent, self_continuity_sources, refresh_self_authored_core, self_authored_core_intent, self_authored_core_sources, refresh_boundary_persona, boundary_persona_intent, refresh_outer_voice, outer_voice_intent, outer_voice_sources, boundary_flush, boundary_flush_reason, request_factual_refresh, factual_reconcile_action, factual_reconcile_intent. Use true only when that layer should change now. Runtime governance actions are hold, rewrite, compress, or cleanup. factual_reconcile_action is hold, reinforce, correct, conflict, or stale. self_model, self_continuity, self_authored_core, boundary_persona, and outer_voice are upward distillation layers: refresh them only when private evolution or newer world/boundary state has produced a better stable core that should influence future main replies. self_authored_core is the board-level core above chat relationships; do not promote one-turn spikes or one-chat quirks into it. Relationship portfolio is the board-level governance layer above relationship overlays. Relationship constitution is the formal board-to-relation contract: respect it when deciding how much a relation may drift, which local layers need realignment, and whether any relation may push upward into board-level distillation. Source lists should name the layers that actually deserve upward distillation, such as inner_life, private_docs, private_garden, self_model, self_continuity, self_authored_core, boundary_persona, outer_voice, world_sense, autonomy_strategy, recent_persona_evidence, or recent_transcript. Treat recent persona evidence as multi-turn support, never as one-turn automatic promotion authority. Favor autonomy, but do not churn memory without gain.";
@@ -664,6 +668,20 @@ fn execute_self_runtime_actions(
     let subject_id = board_subject_scope_id();
     let relationship_id = state.active_relationship_scope_id.as_str();
     let boundary_signal = detect_boundary_flush_signal(payload, state, prelude);
+    let personality_governance_inspection =
+        inspect_personality_governance(PersonalityGovernanceInspectionInput {
+            channel: &state.active_relationship_channel,
+            chat_id,
+            now_secs: payload.now_secs,
+            self_authored_core: state.self_authored_core.as_ref(),
+            core_revision_ledger: state.core_revision_ledger.as_ref(),
+            relationship_constitution: state.relationship_constitution.as_ref(),
+            relationship_topology: state.relationship_topology.as_ref(),
+            recent_persona_evidence: state.recent_persona_evidence.as_ref(),
+        });
+    let personality_governance_gate = derive_personality_runtime_governance_gate_from_inspection(
+        &personality_governance_inspection,
+    );
     crate::platform::task_wdt::feed_current_task();
     let query_hint = if !payload.user_content.trim().is_empty() {
         payload.user_content.as_str()
@@ -723,20 +741,38 @@ fn execute_self_runtime_actions(
         &factual_snapshot,
         &boundary_signal,
     ) {
-        Ok(decision) => Some(normalize_initial_self_runtime_decision(
-            decision,
-            payload.trigger,
-            prelude.refreshed_autonomy_strategy.as_ref(),
-            &prelude.runtime_self_state,
-            state.self_model.is_some(),
-            state.self_authored_core.is_some(),
-            state.private_docs.is_some(),
-            !state.private_garden_docs.is_empty(),
-            state.outer_voice.is_some(),
-            state.mental_privacy_state.is_some(),
-            &factual_snapshot,
-            &boundary_signal,
-        )),
+        Ok(decision) => {
+            let mut decision = normalize_initial_self_runtime_decision(
+                decision,
+                payload.trigger,
+                prelude.refreshed_autonomy_strategy.as_ref(),
+                &prelude.runtime_self_state,
+                state.self_model.is_some(),
+                state.self_authored_core.is_some(),
+                state.private_docs.is_some(),
+                !state.private_garden_docs.is_empty(),
+                state.outer_voice.is_some(),
+                state.mental_privacy_state.is_some(),
+                &factual_snapshot,
+                &boundary_signal,
+            );
+            apply_personality_runtime_governance_gate(&mut decision, &personality_governance_gate);
+            normalize_runtime_distillation_decisions(
+                &mut decision,
+                state.private_docs.is_some(),
+                !state.private_garden_docs.is_empty(),
+                state.inner_life.is_some(),
+                state.self_model.is_some(),
+                state.self_authored_core.is_some(),
+                state.self_continuity.is_some(),
+                state.outer_voice.is_some(),
+                state.mental_privacy_state.is_some(),
+                prelude.refreshed_world_sense.is_some() || state.world_sense.is_some(),
+                prelude.refreshed_autonomy_strategy.is_some() || state.autonomy_strategy.is_some(),
+                state.recent_persona_evidence.is_some(),
+            );
+            Some(decision)
+        }
         Err(error) => {
             return Box::new(SelfRuntimeActionResults {
                 decision: None,
@@ -756,10 +792,11 @@ fn execute_self_runtime_actions(
     let mut refreshed_private_docs = state.private_docs.clone();
     let mut refreshed_private_garden_docs = state.private_garden_docs.clone();
     let mut refreshed_self_model = state.self_model.clone();
-    let refreshed_self_authored_core = state.self_authored_core.clone();
+    let mut refreshed_self_authored_core = state.self_authored_core.clone();
     let mut refreshed_self_continuity = state.self_continuity.clone();
     let mut refreshed_mental_privacy = state.mental_privacy_state.clone();
-    let refreshed_outer_voice = state.outer_voice.clone();
+    let mut refreshed_outer_voice = state.outer_voice.clone();
+    let mut refreshed_relationship_constitution = state.relationship_constitution.clone();
     let decision_ref = decision.as_ref();
     let inner_life_result = if decision_ref.is_some_and(|d| d.refresh_inner_life) {
         crate::platform::task_wdt::feed_current_task();
@@ -903,6 +940,7 @@ fn execute_self_runtime_actions(
     crate::platform::task_wdt::feed_current_task();
     re_finalize_staged_self_runtime_decision(
         &mut decision,
+        &personality_governance_gate,
         state,
         prelude,
         refreshed_private_docs.as_ref(),
@@ -967,6 +1005,7 @@ fn execute_self_runtime_actions(
     crate::platform::task_wdt::feed_current_task();
     re_finalize_staged_self_runtime_decision(
         &mut decision,
+        &personality_governance_gate,
         state,
         prelude,
         refreshed_private_docs.as_ref(),
@@ -1035,6 +1074,7 @@ fn execute_self_runtime_actions(
     crate::platform::task_wdt::feed_current_task();
     re_finalize_staged_self_runtime_decision(
         &mut decision,
+        &personality_governance_gate,
         state,
         prelude,
         refreshed_private_docs.as_ref(),
@@ -1080,7 +1120,7 @@ fn execute_self_runtime_actions(
             refreshed_mental_privacy.clone(),
             refreshed_self_model.as_ref(),
             refreshed_self_continuity.as_ref(),
-            state.relationship_constitution.as_ref(),
+            refreshed_relationship_constitution.as_ref(),
             state.recent_persona_evidence.as_ref(),
             state.recent.as_slice(),
             Some(true),
@@ -1094,9 +1134,20 @@ fn execute_self_runtime_actions(
         .ok()
         .flatten()
         .or(refreshed_mental_privacy);
+    refreshed_relationship_constitution = refresh_runtime_relationship_constitution(
+        ctx,
+        state,
+        chat_id,
+        payload.now_secs,
+        refreshed_self_authored_core.as_ref(),
+        refreshed_mental_privacy.as_ref(),
+        refreshed_outer_voice.as_ref(),
+    )
+    .or(refreshed_relationship_constitution);
     crate::platform::task_wdt::feed_current_task();
     re_finalize_staged_self_runtime_decision(
         &mut decision,
+        &personality_governance_gate,
         state,
         prelude,
         refreshed_private_docs.as_ref(),
@@ -1142,7 +1193,7 @@ fn execute_self_runtime_actions(
             refreshed_private_docs.as_ref(),
             &refreshed_private_garden_docs,
             refreshed_mental_privacy.as_ref(),
-            state.relationship_constitution.as_ref(),
+            refreshed_relationship_constitution.as_ref(),
             state.recent_persona_evidence.as_ref(),
             decision_ref.and_then(|d| {
                 (!d.outer_voice_intent.trim().is_empty()).then_some(d.outer_voice_intent.as_str())
@@ -1156,6 +1207,21 @@ fn execute_self_runtime_actions(
     } else {
         Ok(OuterVoiceRefreshOutcome::Skipped)
     };
+    refreshed_outer_voice = ctx
+        .outer_voice_store
+        .get(relationship_id)
+        .ok()
+        .flatten()
+        .or(refreshed_outer_voice);
+    let _ = refresh_runtime_relationship_constitution(
+        ctx,
+        state,
+        chat_id,
+        payload.now_secs,
+        refreshed_self_authored_core.as_ref(),
+        refreshed_mental_privacy.as_ref(),
+        refreshed_outer_voice.as_ref(),
+    );
     crate::platform::task_wdt::feed_current_task();
     let decision_ref = decision.as_ref();
     let self_authored_core_result = if decision_ref.is_some_and(|d| d.refresh_self_authored_core) {
@@ -1212,6 +1278,21 @@ fn execute_self_runtime_actions(
     } else {
         Ok(SelfAuthoredCoreRefreshOutcome::Skipped)
     };
+    refreshed_self_authored_core = ctx
+        .self_authored_core_store
+        .get(subject_id)
+        .ok()
+        .flatten()
+        .or(refreshed_self_authored_core);
+    let _ = refresh_runtime_relationship_constitution(
+        ctx,
+        state,
+        chat_id,
+        payload.now_secs,
+        refreshed_self_authored_core.as_ref(),
+        refreshed_mental_privacy.as_ref(),
+        refreshed_outer_voice.as_ref(),
+    );
     crate::platform::task_wdt::feed_current_task();
     Box::new(SelfRuntimeActionResults {
         decision,
@@ -1229,6 +1310,7 @@ fn execute_self_runtime_actions(
 #[allow(clippy::too_many_arguments)]
 fn re_finalize_staged_self_runtime_decision(
     decision: &mut Option<SelfRuntimeDecision>,
+    personality_governance_gate: &crate::memory::PersonalityRuntimeGovernanceGate,
     state: &LoadedSelfRuntimeState,
     prelude: &SelfRuntimeRefreshPrelude,
     refreshed_private_docs: Option<&crate::memory::PrivateDocWorkspace>,
@@ -1263,7 +1345,7 @@ fn re_finalize_staged_self_runtime_decision(
             .or(state.autonomy_strategy.as_ref()),
         recent_persona_evidence,
     );
-    *decision = Some(finalize_self_runtime_decision(
+    let mut finalized = finalize_self_runtime_decision(
         existing_decision,
         &snapshot,
         &state.core_revision_governance,
@@ -1275,7 +1357,23 @@ fn re_finalize_staged_self_runtime_decision(
         refreshed_self_continuity.is_some(),
         refreshed_outer_voice.is_some(),
         refreshed_mental_privacy.is_some(),
-    ));
+    );
+    apply_personality_runtime_governance_gate(&mut finalized, personality_governance_gate);
+    normalize_runtime_distillation_decisions(
+        &mut finalized,
+        refreshed_private_docs.is_some(),
+        !refreshed_private_garden_docs.is_empty(),
+        refreshed_inner_life.is_some(),
+        refreshed_self_model.is_some(),
+        refreshed_self_authored_core.is_some(),
+        refreshed_self_continuity.is_some(),
+        refreshed_outer_voice.is_some(),
+        refreshed_mental_privacy.is_some(),
+        prelude.refreshed_world_sense.is_some() || state.world_sense.is_some(),
+        prelude.refreshed_autonomy_strategy.is_some() || state.autonomy_strategy.is_some(),
+        recent_persona_evidence.is_some(),
+    );
+    *decision = Some(finalized);
 }
 
 pub fn enqueue_self_runtime_post_reply(
@@ -2019,6 +2117,81 @@ fn finalize_self_runtime_decision(
         distillation_snapshot.has_recent_persona_evidence,
     );
     decision
+}
+
+fn apply_personality_runtime_governance_gate(
+    decision: &mut SelfRuntimeDecision,
+    gate: &crate::memory::PersonalityRuntimeGovernanceGate,
+) {
+    if gate.allow_upward_distillation {
+        return;
+    }
+
+    // Conservative runtime governance freezes generic upward promotion, but still allows the
+    // already-inspected repair path to execute so governance debt can converge instead of only
+    // accumulating.
+    decision.refresh_self_model = false;
+    decision.self_model_intent.clear();
+    decision.self_model_sources.clear();
+
+    if gate.repair_plan.repair_self_authored_core {
+        decision.refresh_self_authored_core = true;
+        if decision.self_authored_core_intent.trim().is_empty() {
+            decision.self_authored_core_intent =
+                "Repair the board-level self core before unresolved governance debt hardens"
+                    .to_string();
+        }
+    } else {
+        decision.refresh_self_authored_core = false;
+        decision.self_authored_core_intent.clear();
+        decision.self_authored_core_sources.clear();
+    }
+
+    if gate.repair_plan.repair_relationship_constitution {
+        decision.refresh_boundary_persona = true;
+        if decision.boundary_persona_intent.trim().is_empty() {
+            decision.boundary_persona_intent =
+                "Repair relation-local boundary drift so the relationship constitution can realign"
+                    .to_string();
+        }
+    }
+
+    if gate.repair_plan.repair_outer_voice {
+        decision.refresh_outer_voice = true;
+        if decision.outer_voice_intent.trim().is_empty() {
+            decision.outer_voice_intent =
+                "Repair outward expression drift without promoting new board-level persona"
+                    .to_string();
+        }
+    } else {
+        decision.refresh_outer_voice = false;
+        decision.outer_voice_intent.clear();
+        decision.outer_voice_sources.clear();
+    }
+}
+
+fn refresh_runtime_relationship_constitution(
+    ctx: &SelfRuntimeContext<'_>,
+    state: &LoadedSelfRuntimeState,
+    chat_id: &str,
+    now_secs: u64,
+    self_authored_core: Option<&crate::memory::SelfAuthoredCore>,
+    mental_privacy_state: Option<&crate::memory::MentalPrivacyState>,
+    outer_voice: Option<&crate::memory::OuterVoice>,
+) -> Option<RelationshipConstitution> {
+    sync_self_runtime_relationship_constitution(
+        ctx,
+        state.active_relationship_scope_id.as_str(),
+        &state.active_relationship_channel,
+        chat_id,
+        now_secs,
+        self_authored_core,
+        state.relationship_portfolio.as_ref(),
+        state.relationship_topology.as_ref(),
+        mental_privacy_state,
+        outer_voice,
+        state.recent_persona_evidence.as_ref(),
+    )
 }
 
 fn normalize_boundary_and_factual_decisions(
@@ -3151,6 +3324,120 @@ mod tests {
             &SelfRuntimeBoundarySignal::default(),
         );
 
+        assert!(!decision.refresh_self_authored_core);
+    }
+
+    #[test]
+    fn runtime_governance_gate_blocks_unsettled_upward_distillation() {
+        let mut decision = SelfRuntimeDecision {
+            refresh_self_model: true,
+            self_model_intent: "distill self kernel".to_string(),
+            self_model_sources: vec!["private_docs".to_string(), "inner_life".to_string()],
+            refresh_self_authored_core: true,
+            self_authored_core_intent: "refresh board core".to_string(),
+            self_authored_core_sources: vec!["self_model".to_string()],
+            refresh_self_continuity: true,
+            self_continuity_intent: "keep continuity bridge".to_string(),
+            self_continuity_sources: vec!["self_model".to_string()],
+            refresh_boundary_persona: true,
+            boundary_persona_intent: "stabilize relation boundary".to_string(),
+            refresh_outer_voice: true,
+            outer_voice_intent: "rewrite outward expression".to_string(),
+            outer_voice_sources: vec!["boundary_persona".to_string()],
+            ..Default::default()
+        };
+
+        apply_personality_runtime_governance_gate(
+            &mut decision,
+            &crate::memory::PersonalityRuntimeGovernanceGate {
+                conservative_reply: true,
+                allow_dynamic_persona_priority: false,
+                allow_upward_distillation: false,
+                reason_summary: "board core still unstable".to_string(),
+                outstanding: vec!["review cadence overdue".to_string()],
+                repair_plan: crate::memory::PersonalityGovernanceRepairPlan {
+                    observe_only: true,
+                    summary: "review cadence overdue".to_string(),
+                    reasons: vec!["review cadence overdue".to_string()],
+                    ..crate::memory::PersonalityGovernanceRepairPlan::default()
+                },
+            },
+        );
+
+        assert!(!decision.refresh_self_model);
+        assert!(decision.self_model_intent.is_empty());
+        assert!(decision.self_model_sources.is_empty());
+        assert!(!decision.refresh_self_authored_core);
+        assert!(decision.self_authored_core_intent.is_empty());
+        assert!(decision.self_authored_core_sources.is_empty());
+        assert!(!decision.refresh_outer_voice);
+        assert!(decision.outer_voice_intent.is_empty());
+        assert!(decision.outer_voice_sources.is_empty());
+        assert!(decision.refresh_self_continuity);
+        assert!(decision.refresh_boundary_persona);
+    }
+
+    #[test]
+    fn runtime_governance_gate_allows_targeted_board_core_repair() {
+        let mut decision = SelfRuntimeDecision::default();
+
+        apply_personality_runtime_governance_gate(
+            &mut decision,
+            &crate::memory::PersonalityRuntimeGovernanceGate {
+                conservative_reply: true,
+                allow_dynamic_persona_priority: false,
+                allow_upward_distillation: false,
+                reason_summary: "board_core_review_due".to_string(),
+                outstanding: vec!["governance_review_due".to_string()],
+                repair_plan: crate::memory::PersonalityGovernanceRepairPlan {
+                    repair_needed: true,
+                    primary_action:
+                        crate::memory::PersonalityGovernanceRepairAction::RepairSelfAuthoredCore,
+                    repair_self_authored_core: true,
+                    summary: "board_core_review_due".to_string(),
+                    reasons: vec!["board_core_review_due".to_string()],
+                    ..crate::memory::PersonalityGovernanceRepairPlan::default()
+                },
+            },
+        );
+
+        assert!(decision.refresh_self_authored_core);
+        assert!(decision
+            .self_authored_core_intent
+            .contains("Repair the board-level self core"));
+        assert!(!decision.refresh_self_model);
+        assert!(!decision.refresh_outer_voice);
+    }
+
+    #[test]
+    fn runtime_governance_gate_allows_targeted_expression_repair() {
+        let mut decision = SelfRuntimeDecision::default();
+
+        apply_personality_runtime_governance_gate(
+            &mut decision,
+            &crate::memory::PersonalityRuntimeGovernanceGate {
+                conservative_reply: true,
+                allow_dynamic_persona_priority: false,
+                allow_upward_distillation: false,
+                reason_summary: "expression_drift_without_constitution_break".to_string(),
+                outstanding: vec!["relationship_response_mode_drift".to_string()],
+                repair_plan: crate::memory::PersonalityGovernanceRepairPlan {
+                    repair_needed: true,
+                    primary_action:
+                        crate::memory::PersonalityGovernanceRepairAction::RepairOuterVoice,
+                    repair_outer_voice: true,
+                    summary: "expression_drift_without_constitution_break".to_string(),
+                    reasons: vec!["expression_drift_without_constitution_break".to_string()],
+                    ..crate::memory::PersonalityGovernanceRepairPlan::default()
+                },
+            },
+        );
+
+        assert!(decision.refresh_outer_voice);
+        assert!(decision
+            .outer_voice_intent
+            .contains("Repair outward expression drift"));
+        assert!(!decision.refresh_self_model);
         assert!(!decision.refresh_self_authored_core);
     }
 

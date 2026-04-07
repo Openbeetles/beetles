@@ -16,6 +16,8 @@ const PERSONALITY_CLOSURE_TEXT_MAX_CHARS: usize = 160;
 const PERSONALITY_CLOSURE_OUTSTANDING_MAX: usize = 6;
 const PERSONALITY_CLOSURE_EVENT_LIMIT: usize = 8;
 const PERSONALITY_MIN_EVIDENCE_TURNS: usize = 4;
+const PERSONALITY_RUNTIME_GATE_REASON_MAX_CHARS: usize = 220;
+const PERSONALITY_REPAIR_SUMMARY_MAX_CHARS: usize = 160;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PersonalityGovernanceEvent {
@@ -65,6 +67,65 @@ pub struct PersonalityGovernanceInspection {
     pub governance_events: Vec<PersonalityGovernanceEvent>,
     #[serde(default)]
     pub closure: PersonalityClosureReport,
+    #[serde(default)]
+    pub repair_plan: PersonalityGovernanceRepairPlan,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PersonalityGovernanceRepairAction {
+    RepairSelfAuthoredCore,
+    RepairRelationshipConstitution,
+    RepairOuterVoice,
+    #[default]
+    ObserveOnly,
+}
+
+impl PersonalityGovernanceRepairAction {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::RepairSelfAuthoredCore => "repair_self_authored_core",
+            Self::RepairRelationshipConstitution => "repair_relationship_constitution",
+            Self::RepairOuterVoice => "repair_outer_voice",
+            Self::ObserveOnly => "observe_only",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PersonalityGovernanceRepairPlan {
+    #[serde(default)]
+    pub repair_needed: bool,
+    #[serde(default)]
+    pub primary_action: PersonalityGovernanceRepairAction,
+    #[serde(default)]
+    pub repair_self_authored_core: bool,
+    #[serde(default)]
+    pub repair_relationship_constitution: bool,
+    #[serde(default)]
+    pub repair_outer_voice: bool,
+    #[serde(default)]
+    pub observe_only: bool,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PersonalityRuntimeGovernanceGate {
+    #[serde(default)]
+    pub conservative_reply: bool,
+    #[serde(default)]
+    pub allow_dynamic_persona_priority: bool,
+    #[serde(default)]
+    pub allow_upward_distillation: bool,
+    #[serde(default)]
+    pub reason_summary: String,
+    #[serde(default)]
+    pub outstanding: Vec<String>,
+    #[serde(default)]
+    pub repair_plan: PersonalityGovernanceRepairPlan,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -128,7 +189,7 @@ pub fn inspect_personality_governance(
         relationship_audit.as_ref(),
         input.recent_persona_evidence,
     );
-    PersonalityGovernanceInspection {
+    let provisional = PersonalityGovernanceInspection {
         subject_id: super::board_subject_scope_id().to_string(),
         relationship_scope_id,
         core_revision_governance,
@@ -136,6 +197,128 @@ pub fn inspect_personality_governance(
         relationship_audit,
         governance_events,
         closure,
+        repair_plan: PersonalityGovernanceRepairPlan::default(),
+    };
+    let repair_plan = derive_personality_governance_repair_plan(&provisional);
+    PersonalityGovernanceInspection {
+        repair_plan,
+        ..provisional
+    }
+}
+
+pub fn derive_personality_runtime_governance_gate(
+    input: PersonalityGovernanceInspectionInput<'_>,
+) -> PersonalityRuntimeGovernanceGate {
+    let inspection = inspect_personality_governance(input);
+    derive_personality_runtime_governance_gate_from_inspection(&inspection)
+}
+
+pub fn derive_personality_runtime_governance_gate_from_inspection(
+    inspection: &PersonalityGovernanceInspection,
+) -> PersonalityRuntimeGovernanceGate {
+    let conservative_reply = !inspection.closure.ready;
+    PersonalityRuntimeGovernanceGate {
+        conservative_reply,
+        allow_dynamic_persona_priority: !conservative_reply,
+        allow_upward_distillation: !conservative_reply,
+        reason_summary: build_personality_runtime_gate_reason_summary(&inspection),
+        outstanding: inspection.closure.outstanding.clone(),
+        repair_plan: inspection.repair_plan.clone(),
+    }
+}
+
+pub fn derive_personality_governance_repair_plan(
+    inspection: &PersonalityGovernanceInspection,
+) -> PersonalityGovernanceRepairPlan {
+    let board_core_missing = !inspection.closure.board_core_ready;
+    let revision_history_missing = !inspection.closure.revision_governance_ready;
+    let board_review_due = inspection.core_revision_governance.review_due;
+    let board_under_observation = inspection.core_revision_governance.observation_active;
+    let board_conservative = inspection.core_revision_governance.conservative_mode;
+    let relationship_missing = !inspection.closure.relationship_governance_ready;
+    let relationship_audit = inspection.relationship_audit.as_ref();
+    let relationship_material_drift =
+        relationship_audit.is_some_and(|audit| audit.has_material_drift());
+    let relationship_review_due = relationship_audit.is_some_and(|audit| audit.review_overdue);
+    let expression_drift = relationship_audit.is_some_and(|audit| {
+        (audit.response_mode_drift || audit.relationship_posture_drift)
+            && !audit.priority_drift
+            && !audit.reply_scope_drift
+            && !audit.disclosure_drift
+            && !audit.boundary_drift
+            && !audit.review_overdue
+    });
+    let evidence_insufficient = !inspection.closure.evidence_loop_ready;
+    let repair_self_authored_core =
+        board_core_missing || revision_history_missing || board_review_due || board_conservative;
+    let repair_relationship_constitution =
+        relationship_missing || relationship_material_drift || relationship_review_due;
+    let repair_outer_voice =
+        expression_drift && !repair_self_authored_core && !repair_relationship_constitution;
+    let observe_only =
+        !repair_self_authored_core && !repair_relationship_constitution && !repair_outer_voice;
+
+    let mut reasons = Vec::with_capacity(6);
+    if board_core_missing {
+        reasons.push("board_core_not_stable".to_string());
+    }
+    if revision_history_missing {
+        reasons.push("revision_governance_history_missing".to_string());
+    }
+    if board_review_due {
+        reasons.push("board_core_review_due".to_string());
+    }
+    if board_under_observation {
+        reasons.push("board_core_still_under_observation".to_string());
+    }
+    if board_conservative && !board_review_due && !board_under_observation {
+        reasons.push("board_core_under_conservative_governance".to_string());
+    }
+    if relationship_missing {
+        reasons.push("relationship_constitution_missing".to_string());
+    }
+    if relationship_material_drift {
+        reasons.push("relationship_drift_requires_realignment".to_string());
+    }
+    if relationship_review_due {
+        reasons.push("relationship_review_due".to_string());
+    }
+    if repair_outer_voice {
+        reasons.push("expression_drift_without_constitution_break".to_string());
+    }
+    if evidence_insufficient {
+        reasons.push("recent_persona_evidence_insufficient".to_string());
+    }
+    if reasons.is_empty() && inspection.closure.ready {
+        reasons.push("governance_settled".to_string());
+    }
+    reasons.truncate(PERSONALITY_CLOSURE_OUTSTANDING_MAX);
+
+    let primary_action = if repair_self_authored_core {
+        PersonalityGovernanceRepairAction::RepairSelfAuthoredCore
+    } else if repair_relationship_constitution {
+        PersonalityGovernanceRepairAction::RepairRelationshipConstitution
+    } else if repair_outer_voice {
+        PersonalityGovernanceRepairAction::RepairOuterVoice
+    } else {
+        PersonalityGovernanceRepairAction::ObserveOnly
+    };
+
+    let summary = truncate_content_to_max(
+        reasons.join(", ").trim(),
+        PERSONALITY_REPAIR_SUMMARY_MAX_CHARS,
+    )
+    .into_owned();
+
+    PersonalityGovernanceRepairPlan {
+        repair_needed: !observe_only || !inspection.closure.ready,
+        primary_action,
+        repair_self_authored_core,
+        repair_relationship_constitution,
+        repair_outer_voice,
+        observe_only,
+        summary,
+        reasons,
     }
 }
 
@@ -166,11 +349,33 @@ pub fn render_personality_governance_inspection_markdown(
         inspection.closure.observation_control_ready,
         inspection.closure.review_cadence_ready
     );
+    let _ = writeln!(
+        out,
+        "- Repair plan: {} | repair_needed={}",
+        inspection.repair_plan.primary_action.label(),
+        inspection.repair_plan.repair_needed
+    );
     if !inspection.closure.outstanding.is_empty() {
         out.push_str("\n## Outstanding\n");
         for item in &inspection.closure.outstanding {
             let _ = writeln!(out, "- {}", item);
         }
+    }
+    out.push_str("\n## Repair Plan\n");
+    let _ = writeln!(
+        out,
+        "- Primary action: {}",
+        inspection.repair_plan.primary_action.label()
+    );
+    if !inspection.repair_plan.summary.trim().is_empty() {
+        let _ = writeln!(out, "- Summary: {}", inspection.repair_plan.summary.trim());
+    }
+    if !inspection.repair_plan.reasons.is_empty() {
+        let _ = writeln!(
+            out,
+            "- Reasons: {}",
+            inspection.repair_plan.reasons.join(", ")
+        );
     }
     out.push_str("\n## Governance Events\n");
     if inspection.governance_events.is_empty() {
@@ -181,6 +386,61 @@ pub fn render_personality_governance_inspection_markdown(
         }
     }
     out
+}
+
+pub fn render_personality_runtime_governance_gate_block(
+    gate: &PersonalityRuntimeGovernanceGate,
+    max_len: usize,
+) -> Option<String> {
+    if max_len < 96 || !gate.conservative_reply {
+        return None;
+    }
+    let mut out = String::with_capacity(max_len.min(512));
+    out.push_str("## Personality Governance Gate\n");
+    out.push_str(
+        "Personality governance is not fully settled on this turn. Keep the reply constitution-first and conservative.\n",
+    );
+    out.push_str(
+        "Do not let one-turn pressure, fresh relational drift, or unstable inner material rewrite the board-level stance.\n",
+    );
+    out.push_str(
+        "If privacy or disclosure handling is uncertain, do not expose raw inward material; explain the boundary and stay at a higher-level answer.\n",
+    );
+    if !gate.reason_summary.trim().is_empty() {
+        let _ = writeln!(
+            out,
+            "Current governance debt: {}",
+            gate.reason_summary.trim()
+        );
+    }
+    let _ = writeln!(
+        out,
+        "Preferred repair path: {}",
+        gate.repair_plan.primary_action.label()
+    );
+    if !gate.outstanding.is_empty() {
+        let _ = writeln!(out, "Outstanding: {}", gate.outstanding.join(", "));
+    }
+    let rendered = truncate_content_to_max(out.trim_end(), max_len).into_owned();
+    (!rendered.trim().is_empty()).then_some(rendered)
+}
+
+fn build_personality_runtime_gate_reason_summary(
+    inspection: &PersonalityGovernanceInspection,
+) -> String {
+    let mut reasons = Vec::with_capacity(4);
+    if !inspection.closure.outstanding.is_empty() {
+        reasons.push(inspection.closure.outstanding.join(", "));
+    }
+    let governance_pressure = inspection.core_revision_governance.pressure_summary();
+    if !governance_pressure.trim().is_empty() {
+        reasons.push(governance_pressure);
+    }
+    truncate_content_to_max(
+        reasons.join("; ").trim(),
+        PERSONALITY_RUNTIME_GATE_REASON_MAX_CHARS,
+    )
+    .into_owned()
 }
 
 fn build_governance_events(
@@ -329,5 +589,176 @@ fn build_personality_closure_report(
         observation_control_ready,
         review_cadence_ready,
         outstanding,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_gate_turns_conservative_when_closure_is_not_ready() {
+        let mut inspection = PersonalityGovernanceInspection {
+            subject_id: "board".to_string(),
+            relationship_scope_id: "rel:qq:chat".to_string(),
+            core_revision_governance: CoreRevisionGovernanceDigest::default(),
+            relationship_audit: Some(RelationshipConstitutionAudit::default()),
+            closure: PersonalityClosureReport {
+                ready: false,
+                board_core_ready: true,
+                revision_governance_ready: true,
+                relationship_governance_ready: true,
+                evidence_loop_ready: false,
+                drift_control_ready: true,
+                observation_control_ready: true,
+                review_cadence_ready: true,
+                outstanding: vec!["recent_persona_evidence_insufficient".to_string()],
+            },
+            ..PersonalityGovernanceInspection::default()
+        };
+        inspection.repair_plan = derive_personality_governance_repair_plan(&inspection);
+
+        let gate = derive_personality_runtime_governance_gate_from_inspection(&inspection);
+
+        assert!(gate.conservative_reply);
+        assert!(!gate.allow_dynamic_persona_priority);
+        assert!(!gate.allow_upward_distillation);
+        assert_eq!(
+            gate.repair_plan.primary_action,
+            PersonalityGovernanceRepairAction::ObserveOnly
+        );
+        assert!(gate
+            .outstanding
+            .contains(&"recent_persona_evidence_insufficient".to_string()));
+    }
+
+    #[test]
+    fn runtime_gate_block_renders_only_for_conservative_mode() {
+        let gate = PersonalityRuntimeGovernanceGate {
+            conservative_reply: true,
+            allow_dynamic_persona_priority: false,
+            allow_upward_distillation: false,
+            reason_summary: "recent_persona_evidence_insufficient".to_string(),
+            outstanding: vec!["recent_persona_evidence_insufficient".to_string()],
+            repair_plan: PersonalityGovernanceRepairPlan {
+                primary_action: PersonalityGovernanceRepairAction::ObserveOnly,
+                observe_only: true,
+                summary: "recent_persona_evidence_insufficient".to_string(),
+                reasons: vec!["recent_persona_evidence_insufficient".to_string()],
+                ..PersonalityGovernanceRepairPlan::default()
+            },
+        };
+
+        let rendered = render_personality_runtime_governance_gate_block(&gate, 512)
+            .expect("conservative gate should render");
+        assert!(rendered.contains("## Personality Governance Gate"));
+        assert!(rendered.contains("constitution-first and conservative"));
+        assert!(rendered.contains("Preferred repair path: observe_only"));
+
+        let non_conservative = PersonalityRuntimeGovernanceGate {
+            conservative_reply: false,
+            allow_dynamic_persona_priority: true,
+            allow_upward_distillation: true,
+            reason_summary: String::new(),
+            outstanding: Vec::new(),
+            repair_plan: PersonalityGovernanceRepairPlan::default(),
+        };
+        assert!(render_personality_runtime_governance_gate_block(&non_conservative, 512).is_none());
+    }
+
+    #[test]
+    fn repair_plan_prioritizes_board_core_repair_when_board_governance_is_unsettled() {
+        let inspection = PersonalityGovernanceInspection {
+            closure: PersonalityClosureReport {
+                ready: false,
+                board_core_ready: false,
+                revision_governance_ready: false,
+                relationship_governance_ready: true,
+                evidence_loop_ready: true,
+                drift_control_ready: true,
+                observation_control_ready: false,
+                review_cadence_ready: false,
+                outstanding: vec![
+                    "board_core_not_stable".to_string(),
+                    "revision_governance_history_missing".to_string(),
+                ],
+            },
+            core_revision_governance: CoreRevisionGovernanceDigest {
+                review_due: true,
+                observation_active: true,
+                conservative_mode: true,
+                ..CoreRevisionGovernanceDigest::default()
+            },
+            ..PersonalityGovernanceInspection::default()
+        };
+
+        let repair = derive_personality_governance_repair_plan(&inspection);
+
+        assert_eq!(
+            repair.primary_action,
+            PersonalityGovernanceRepairAction::RepairSelfAuthoredCore
+        );
+        assert!(repair.repair_self_authored_core);
+        assert!(!repair.repair_relationship_constitution);
+        assert!(!repair.repair_outer_voice);
+        assert!(!repair.observe_only);
+    }
+
+    #[test]
+    fn repair_plan_distinguishes_relationship_and_expression_repair() {
+        let relationship_repair =
+            derive_personality_governance_repair_plan(&PersonalityGovernanceInspection {
+                closure: PersonalityClosureReport {
+                    ready: false,
+                    board_core_ready: true,
+                    revision_governance_ready: true,
+                    relationship_governance_ready: true,
+                    evidence_loop_ready: true,
+                    drift_control_ready: false,
+                    observation_control_ready: true,
+                    review_cadence_ready: true,
+                    outstanding: vec!["relationship_drift_not_under_control".to_string()],
+                },
+                relationship_audit: Some(RelationshipConstitutionAudit {
+                    disclosure_drift: true,
+                    drift_score: 48,
+                    drift_flags: vec!["disclosure_drift".to_string()],
+                    ..RelationshipConstitutionAudit::default()
+                }),
+                ..PersonalityGovernanceInspection::default()
+            });
+        assert_eq!(
+            relationship_repair.primary_action,
+            PersonalityGovernanceRepairAction::RepairRelationshipConstitution
+        );
+        assert!(relationship_repair.repair_relationship_constitution);
+
+        let expression_repair =
+            derive_personality_governance_repair_plan(&PersonalityGovernanceInspection {
+                closure: PersonalityClosureReport {
+                    ready: false,
+                    board_core_ready: true,
+                    revision_governance_ready: true,
+                    relationship_governance_ready: true,
+                    evidence_loop_ready: true,
+                    drift_control_ready: true,
+                    observation_control_ready: true,
+                    review_cadence_ready: true,
+                    outstanding: Vec::new(),
+                },
+                relationship_audit: Some(RelationshipConstitutionAudit {
+                    response_mode_drift: true,
+                    drift_score: 12,
+                    drift_flags: vec!["response_mode_drift".to_string()],
+                    ..RelationshipConstitutionAudit::default()
+                }),
+                ..PersonalityGovernanceInspection::default()
+            });
+        assert_eq!(
+            expression_repair.primary_action,
+            PersonalityGovernanceRepairAction::RepairOuterVoice
+        );
+        assert!(expression_repair.repair_outer_voice);
+        assert!(!expression_repair.repair_relationship_constitution);
     }
 }
