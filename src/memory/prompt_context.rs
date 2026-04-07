@@ -745,11 +745,11 @@ mod tests {
         LongTermMemorySlot, LongTermMemoryStore, MemoryStore, MentalPrivacyState,
         MentalPrivacyStore, OuterVoice, OuterVoiceStore, PrivateDocEntry, PrivateDocStore,
         PrivateDocWorkspace, PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenStore,
-        RelationshipConstitution, RelationshipConstitutionStore, RelationshipTopology,
-        RelationshipTopologyStore, SelfAuthoredCore, SelfAuthoredCoreStore, SelfContinuity,
-        SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
-        SessionSummaryStore, TurnLedger, TurnLedgerStatus, TurnLedgerStore, WorldSense,
-        WorldSenseStore,
+        PromptRecallIntent, RelationshipConstitution, RelationshipConstitutionStore,
+        RelationshipTopology, RelationshipTopologyStore, SelfAuthoredCore, SelfAuthoredCoreStore,
+        SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage,
+        SessionStore, SessionSummaryStore, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
+        WorldSense, WorldSenseStore,
     };
     use crate::platform::SkillStorage;
     use crate::task::{TaskItem, TaskQuery, TaskStore};
@@ -1099,7 +1099,12 @@ mod tests {
         }
 
         fn get(&self, _id: &str) -> Result<Option<LongTermMemoryEntry>> {
-            unreachable!()
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .first()
+                .cloned())
         }
 
         fn delete(&self, _id: &str) -> Result<bool> {
@@ -1111,7 +1116,7 @@ mod tests {
         }
 
         fn count(&self) -> Result<usize> {
-            unreachable!()
+            Ok(self.entries.lock().unwrap_or_else(|e| e.into_inner()).len())
         }
     }
 
@@ -2806,5 +2811,514 @@ mod tests {
         let canonical_pos = governed.find("Stable outage summary").unwrap();
         assert!(archive_pos < capsule_pos);
         assert!(capsule_pos < canonical_pos);
+    }
+
+    #[derive(Debug)]
+    struct PromptProjectionRegressionObservation {
+        case_name: &'static str,
+        intent: PromptRecallIntent,
+        active_order_ok: bool,
+        governed_order_ok: bool,
+        passed: bool,
+    }
+
+    #[test]
+    fn prompt_projection_regression_suite_covers_router_contract() {
+        let observations = vec![
+            observe_prompt_projection_case(
+                "continuity",
+                continuity_router_context_for_regression(),
+                PromptRecallIntent::Continuity,
+                &["## Continuity Capsules", "## Task Workspace"],
+                &[],
+            ),
+            observe_prompt_projection_case(
+                "procedural",
+                procedural_router_context_for_regression(),
+                PromptRecallIntent::Procedural,
+                &[],
+                &[
+                    "Runtime skills",
+                    "## Continuity Capsules",
+                    "Archive evidence",
+                ],
+            ),
+            observe_prompt_projection_case(
+                "evidence",
+                evidence_router_context_for_regression(),
+                PromptRecallIntent::Evidence,
+                &[],
+                &[
+                    "Archive evidence",
+                    "## Continuity Capsules",
+                    "Stable outage summary",
+                ],
+            ),
+            observe_prompt_projection_case(
+                "factual",
+                factual_router_context_for_regression(),
+                PromptRecallIntent::Factual,
+                &[],
+                &[
+                    "## Long-term memory",
+                    "## Continuity Capsules",
+                    "Archive evidence",
+                ],
+            ),
+        ];
+
+        for observation in &observations {
+            assert!(
+                observation.passed,
+                "prompt projection regression failed: case={} intent={:?} active_ok={} governed_ok={}",
+                observation.case_name,
+                observation.intent,
+                observation.active_order_ok,
+                observation.governed_order_ok
+            );
+        }
+    }
+
+    fn observe_prompt_projection_case(
+        case_name: &'static str,
+        context: PromptMemoryContext,
+        expected_intent: PromptRecallIntent,
+        active_order: &[&str],
+        governed_order: &[&str],
+    ) -> PromptProjectionRegressionObservation {
+        let active = context.active_task_context_text.unwrap_or_default();
+        let governed = context.governed_memory_evidence_text.unwrap_or_default();
+        let intent = context.recall_router.intent;
+        let active_order_ok =
+            active_order.is_empty() || fragments_follow_order(&active, active_order);
+        let governed_order_ok =
+            governed_order.is_empty() || fragments_follow_order(&governed, governed_order);
+        let passed = intent == expected_intent && active_order_ok && governed_order_ok;
+        PromptProjectionRegressionObservation {
+            case_name,
+            intent,
+            active_order_ok,
+            governed_order_ok,
+            passed,
+        }
+    }
+
+    fn fragments_follow_order(text: &str, fragments: &[&str]) -> bool {
+        let mut last_pos = 0usize;
+        for (index, fragment) in fragments.iter().enumerate() {
+            let Some(pos) = text.find(fragment) else {
+                return false;
+            };
+            if index > 0 && pos < last_pos {
+                return false;
+            }
+            last_pos = pos;
+        }
+        true
+    }
+
+    fn continuity_router_context_for_regression() -> PromptMemoryContext {
+        let session_store = StubSessionStore {
+            recent: Mutex::new(vec![SessionMessage {
+                role: "user".to_string(),
+                content: "继续".to_string(),
+            }]),
+        };
+        let summary_store = StubSessionSummaryStore {
+            summary: Mutex::new(Some(("continue the memory router work".to_string(), 2))),
+        };
+        let memory_store = StubLongTermMemoryStore {
+            entries: Mutex::new(vec![LongTermMemoryEntry {
+                id: "memory-router".to_string(),
+                kind: LongTermMemoryKind::Project,
+                topic: "memory router".to_string(),
+                content: "Canonical summary for the memory router project.".to_string(),
+                keywords: vec!["memory".to_string(), "router".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                source_type: crate::memory::LongTermMemorySourceType::Conversation,
+                source_scope: crate::memory::LongTermMemorySourceScope::User,
+                confidence: crate::memory::LongTermMemoryConfidence::High,
+                freshness: crate::memory::LongTermMemoryFreshness::Dynamic,
+                stale_hint: crate::memory::LongTermMemoryStaleHint::None,
+                supporting_citations: Vec::new(),
+                evidence_count: 2,
+                created_at: 1,
+                updated_at: 1,
+                observed_at: 1,
+                last_confirmed_at: 1,
+                source_revision: 1,
+                last_used_at: 0,
+            }]),
+            last_query: Mutex::new(None),
+        };
+        let archive_memory_store = StubMemoryStore {
+            daily_notes: Mutex::new(vec![(
+                "2026-04-06.md".to_string(),
+                "Archive note: memory router handoff still needs the recall order fixed."
+                    .to_string(),
+            )]),
+        };
+        let execution_state_store = StubExecutionStateStore {
+            state: Mutex::new(Some(ExecutionState {
+                status: ExecutionStatus::Active,
+                goal: "Close recall router".to_string(),
+                progress: "capsule exists".to_string(),
+                blocker: String::new(),
+                next_action: "wire it into prompt assembly".to_string(),
+                last_output: String::new(),
+                updated_at: 5,
+            })),
+        };
+        let task_run_store = StubActiveTaskRunStore {
+            active: Mutex::new(vec![make_active_task_run(
+                "run-router",
+                "Close recall router",
+                "Route continuity capsule into the prompt",
+            )]),
+        };
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
+        continuity_capsule_store
+            .upsert_many(
+                &[crate::memory::ContinuityCapsuleDraft {
+                    scope_kind: crate::memory::ContinuityCapsuleScopeKind::Chat,
+                    scope_id: "chat-1".to_string(),
+                    source_chat_id: "chat-1".to_string(),
+                    run_id: "run-router".to_string(),
+                    topic: "memory router".to_string(),
+                    summary: "Continue the recall-router work without reopening prior analysis."
+                        .to_string(),
+                    next_step: "Move capsule recall into Active Task Context.".to_string(),
+                    ..Default::default()
+                }],
+                100,
+            )
+            .unwrap();
+
+        load_prompt_memory_context(PromptMemoryContextParams {
+            chat_id: "chat-1",
+            current_channel: "qq_channel",
+            user_query: "继续",
+            system_max_len: 1024,
+            now_secs: 100,
+            profile: MemoryProfile::Standard,
+            recent_messages_limit: 8,
+            load_long_term_memory: true,
+            include_private_garden_projection: false,
+            session_store: &session_store,
+            memory_store: &archive_memory_store,
+            session_summary_store: &summary_store,
+            long_term_memory_store: &memory_store,
+            execution_state_store: &execution_state_store,
+            task_run_store: &task_run_store,
+            task_artifact_store: &StubTaskArtifactStore,
+            task_learning_store: &StubTaskLearningStore,
+            self_model_store: &StubSelfModelStore::default(),
+            self_authored_core_store: &StubSelfAuthoredCoreStore::default(),
+            relationship_constitution_store: &StubRelationshipConstitutionStore::default(),
+            relationship_portfolio_store: &StubRelationshipPortfolioStore::default(),
+            relationship_topology_store: &StubRelationshipTopologyStore::default(),
+            world_sense_store: &StubWorldSenseStore::default(),
+            autonomy_strategy_store: &StubAutonomyStrategyStore::default(),
+            outer_voice_store: &StubOuterVoiceStore::default(),
+            inner_life_store: &StubInnerLifeStore::default(),
+            self_continuity_store: &StubSelfContinuityStore::default(),
+            private_doc_store: &StubPrivateDocStore::default(),
+            private_garden_store: &StubPrivateGardenStore::default(),
+            mental_privacy_store: &StubMentalPrivacyStore::default(),
+            remind_store: &StubRemindAtStore,
+            task_store: &StubTaskStore,
+            turn_ledger_store: &StubTurnLedgerStore::default(),
+            skill_storage: &StubSkillStorage::default(),
+            continuity_capsule_store: &continuity_capsule_store,
+        })
+    }
+
+    fn procedural_router_context_for_regression() -> PromptMemoryContext {
+        let session_store = StubSessionStore::default();
+        let summary_store = StubSessionSummaryStore {
+            summary: Mutex::new(Some(("reuse the proven release patch flow".to_string(), 3))),
+        };
+        let memory_store = StubLongTermMemoryStore {
+            entries: Mutex::new(vec![LongTermMemoryEntry {
+                id: "project-release".to_string(),
+                kind: LongTermMemoryKind::Project,
+                topic: "release".to_string(),
+                content: "Project release state is stable.".to_string(),
+                keywords: vec!["release".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                source_type: crate::memory::LongTermMemorySourceType::Conversation,
+                source_scope: crate::memory::LongTermMemorySourceScope::User,
+                confidence: crate::memory::LongTermMemoryConfidence::Medium,
+                freshness: crate::memory::LongTermMemoryFreshness::Dynamic,
+                stale_hint: crate::memory::LongTermMemoryStaleHint::None,
+                supporting_citations: Vec::new(),
+                evidence_count: 1,
+                created_at: 1,
+                updated_at: 1,
+                observed_at: 1,
+                last_confirmed_at: 1,
+                source_revision: 1,
+                last_used_at: 0,
+            }]),
+            last_query: Mutex::new(None),
+        };
+        let archive_memory_store = StubMemoryStore {
+            daily_notes: Mutex::new(vec![(
+                "2026-04-05.md".to_string(),
+                "Archive evidence: the release patch flow previously succeeded after checklist verification."
+                    .to_string(),
+            )]),
+        };
+        let skill_storage = StubSkillStorage::default();
+        crate::skills::upsert_runtime_skill(
+            &skill_storage,
+            &crate::skills::RuntimeSkillWrite {
+                name: String::new(),
+                topic: "release patch".to_string(),
+                title: "Release patch flow".to_string(),
+                summary: "Use the proved release patch sequence.".to_string(),
+                content: "- validate diff\n- run targeted tests\n- ship release patch".to_string(),
+                citations: vec!["task_learning:release_patch".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                observed_at: 10,
+            },
+        )
+        .unwrap();
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
+        continuity_capsule_store
+            .upsert_many(
+                &[crate::memory::ContinuityCapsuleDraft {
+                    scope_kind: crate::memory::ContinuityCapsuleScopeKind::Chat,
+                    scope_id: "chat-1".to_string(),
+                    source_chat_id: "chat-1".to_string(),
+                    topic: "release patch".to_string(),
+                    summary: "The last run proved the patch flow and left a reusable handoff."
+                        .to_string(),
+                    next_step: "Reuse the proven flow before improvising.".to_string(),
+                    ..Default::default()
+                }],
+                100,
+            )
+            .unwrap();
+
+        load_prompt_memory_context(PromptMemoryContextParams {
+            chat_id: "chat-1",
+            current_channel: "qq_channel",
+            user_query: "按之前的 release patch 流程继续",
+            system_max_len: 1024,
+            now_secs: 100,
+            profile: MemoryProfile::Standard,
+            recent_messages_limit: 8,
+            load_long_term_memory: true,
+            include_private_garden_projection: false,
+            session_store: &session_store,
+            memory_store: &archive_memory_store,
+            session_summary_store: &summary_store,
+            long_term_memory_store: &memory_store,
+            execution_state_store: &StubExecutionStateStore::default(),
+            task_run_store: &StubTaskRunStore,
+            task_artifact_store: &StubTaskArtifactStore,
+            task_learning_store: &StubTaskLearningStore,
+            self_model_store: &StubSelfModelStore::default(),
+            self_authored_core_store: &StubSelfAuthoredCoreStore::default(),
+            relationship_constitution_store: &StubRelationshipConstitutionStore::default(),
+            relationship_portfolio_store: &StubRelationshipPortfolioStore::default(),
+            relationship_topology_store: &StubRelationshipTopologyStore::default(),
+            world_sense_store: &StubWorldSenseStore::default(),
+            autonomy_strategy_store: &StubAutonomyStrategyStore::default(),
+            outer_voice_store: &StubOuterVoiceStore::default(),
+            inner_life_store: &StubInnerLifeStore::default(),
+            self_continuity_store: &StubSelfContinuityStore::default(),
+            private_doc_store: &StubPrivateDocStore::default(),
+            private_garden_store: &StubPrivateGardenStore::default(),
+            mental_privacy_store: &StubMentalPrivacyStore::default(),
+            remind_store: &StubRemindAtStore,
+            task_store: &StubTaskStore,
+            turn_ledger_store: &StubTurnLedgerStore::default(),
+            skill_storage: &skill_storage,
+            continuity_capsule_store: &continuity_capsule_store,
+        })
+    }
+
+    fn evidence_router_context_for_regression() -> PromptMemoryContext {
+        let session_store = StubSessionStore::default();
+        let summary_store = StubSessionSummaryStore::default();
+        let memory_store = StubLongTermMemoryStore {
+            entries: Mutex::new(vec![LongTermMemoryEntry {
+                id: "network-outage-summary".to_string(),
+                kind: LongTermMemoryKind::Fact,
+                topic: "network outage".to_string(),
+                content: "Stable outage summary for the April incident.".to_string(),
+                keywords: vec!["network".to_string(), "outage".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                source_type: crate::memory::LongTermMemorySourceType::Conversation,
+                source_scope: crate::memory::LongTermMemorySourceScope::User,
+                confidence: crate::memory::LongTermMemoryConfidence::Medium,
+                freshness: crate::memory::LongTermMemoryFreshness::Stable,
+                stale_hint: crate::memory::LongTermMemoryStaleHint::None,
+                supporting_citations: Vec::new(),
+                evidence_count: 1,
+                created_at: 1,
+                updated_at: 1,
+                observed_at: 1,
+                last_confirmed_at: 1,
+                source_revision: 1,
+                last_used_at: 0,
+            }]),
+            last_query: Mutex::new(None),
+        };
+        let archive_memory_store = StubMemoryStore {
+            daily_notes: Mutex::new(vec![(
+                "2026-04-04.md".to_string(),
+                "Raw incident archive: network outage log excerpt with packet loss timeline and operator notes."
+                    .to_string(),
+            )]),
+        };
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
+        continuity_capsule_store
+            .upsert_many(
+                &[crate::memory::ContinuityCapsuleDraft {
+                    scope_kind: crate::memory::ContinuityCapsuleScopeKind::Chat,
+                    scope_id: "chat-1".to_string(),
+                    source_chat_id: "chat-1".to_string(),
+                    topic: "incident handoff".to_string(),
+                    summary: "Recent investigation stayed open around the network outage timeline."
+                        .to_string(),
+                    next_step: "Use archive evidence before asserting a cleaned canonical summary."
+                        .to_string(),
+                    ..Default::default()
+                }],
+                100,
+            )
+            .unwrap();
+
+        load_prompt_memory_context(PromptMemoryContextParams {
+            chat_id: "chat-1",
+            current_channel: "qq_channel",
+            user_query: "把那次 network outage 的原始记录翻出来",
+            system_max_len: 1024,
+            now_secs: 100,
+            profile: MemoryProfile::Standard,
+            recent_messages_limit: 8,
+            load_long_term_memory: true,
+            include_private_garden_projection: false,
+            session_store: &session_store,
+            memory_store: &archive_memory_store,
+            session_summary_store: &summary_store,
+            long_term_memory_store: &memory_store,
+            execution_state_store: &StubExecutionStateStore::default(),
+            task_run_store: &StubTaskRunStore,
+            task_artifact_store: &StubTaskArtifactStore,
+            task_learning_store: &StubTaskLearningStore,
+            self_model_store: &StubSelfModelStore::default(),
+            self_authored_core_store: &StubSelfAuthoredCoreStore::default(),
+            relationship_constitution_store: &StubRelationshipConstitutionStore::default(),
+            relationship_portfolio_store: &StubRelationshipPortfolioStore::default(),
+            relationship_topology_store: &StubRelationshipTopologyStore::default(),
+            world_sense_store: &StubWorldSenseStore::default(),
+            autonomy_strategy_store: &StubAutonomyStrategyStore::default(),
+            outer_voice_store: &StubOuterVoiceStore::default(),
+            inner_life_store: &StubInnerLifeStore::default(),
+            self_continuity_store: &StubSelfContinuityStore::default(),
+            private_doc_store: &StubPrivateDocStore::default(),
+            private_garden_store: &StubPrivateGardenStore::default(),
+            mental_privacy_store: &StubMentalPrivacyStore::default(),
+            remind_store: &StubRemindAtStore,
+            task_store: &StubTaskStore,
+            turn_ledger_store: &StubTurnLedgerStore::default(),
+            skill_storage: &StubSkillStorage::default(),
+            continuity_capsule_store: &continuity_capsule_store,
+        })
+    }
+
+    fn factual_router_context_for_regression() -> PromptMemoryContext {
+        let session_store = StubSessionStore::default();
+        let summary_store = StubSessionSummaryStore::default();
+        let memory_store = StubLongTermMemoryStore {
+            entries: Mutex::new(vec![LongTermMemoryEntry {
+                id: "profile-owner-timezone".to_string(),
+                kind: LongTermMemoryKind::Profile,
+                topic: "owner_timezone".to_string(),
+                content: "Owner timezone is Asia/Shanghai.".to_string(),
+                keywords: vec!["owner".to_string(), "timezone".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                source_type: crate::memory::LongTermMemorySourceType::Conversation,
+                source_scope: crate::memory::LongTermMemorySourceScope::User,
+                confidence: crate::memory::LongTermMemoryConfidence::High,
+                freshness: crate::memory::LongTermMemoryFreshness::Stable,
+                stale_hint: crate::memory::LongTermMemoryStaleHint::None,
+                supporting_citations: Vec::new(),
+                evidence_count: 1,
+                created_at: 1,
+                updated_at: 1,
+                observed_at: 1,
+                last_confirmed_at: 1,
+                source_revision: 1,
+                last_used_at: 0,
+            }]),
+            last_query: Mutex::new(None),
+        };
+        let archive_memory_store = StubMemoryStore {
+            daily_notes: Mutex::new(vec![(
+                "2026-04-03.md".to_string(),
+                "Archive evidence: timezone handoff note captured during a travel setup conversation."
+                    .to_string(),
+            )]),
+        };
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
+        continuity_capsule_store
+            .upsert_many(
+                &[crate::memory::ContinuityCapsuleDraft {
+                    scope_kind: crate::memory::ContinuityCapsuleScopeKind::Chat,
+                    scope_id: "chat-1".to_string(),
+                    source_chat_id: "chat-1".to_string(),
+                    topic: "owner timezone".to_string(),
+                    summary: "Recent travel prep mentioned keeping timezone assumptions aligned."
+                        .to_string(),
+                    next_step: "Use the canonical fact first when answering timezone questions."
+                        .to_string(),
+                    ..Default::default()
+                }],
+                100,
+            )
+            .unwrap();
+
+        load_prompt_memory_context(PromptMemoryContextParams {
+            chat_id: "chat-1",
+            current_channel: "qq_channel",
+            user_query: "[profile.owner timezone]",
+            system_max_len: 1024,
+            now_secs: 100,
+            profile: MemoryProfile::Standard,
+            recent_messages_limit: 8,
+            load_long_term_memory: true,
+            include_private_garden_projection: false,
+            session_store: &session_store,
+            memory_store: &archive_memory_store,
+            session_summary_store: &summary_store,
+            long_term_memory_store: &memory_store,
+            execution_state_store: &StubExecutionStateStore::default(),
+            task_run_store: &StubTaskRunStore,
+            task_artifact_store: &StubTaskArtifactStore,
+            task_learning_store: &StubTaskLearningStore,
+            self_model_store: &StubSelfModelStore::default(),
+            self_authored_core_store: &StubSelfAuthoredCoreStore::default(),
+            relationship_constitution_store: &StubRelationshipConstitutionStore::default(),
+            relationship_portfolio_store: &StubRelationshipPortfolioStore::default(),
+            relationship_topology_store: &StubRelationshipTopologyStore::default(),
+            world_sense_store: &StubWorldSenseStore::default(),
+            autonomy_strategy_store: &StubAutonomyStrategyStore::default(),
+            outer_voice_store: &StubOuterVoiceStore::default(),
+            inner_life_store: &StubInnerLifeStore::default(),
+            self_continuity_store: &StubSelfContinuityStore::default(),
+            private_doc_store: &StubPrivateDocStore::default(),
+            private_garden_store: &StubPrivateGardenStore::default(),
+            mental_privacy_store: &StubMentalPrivacyStore::default(),
+            remind_store: &StubRemindAtStore,
+            task_store: &StubTaskStore,
+            turn_ledger_store: &StubTurnLedgerStore::default(),
+            skill_storage: &StubSkillStorage::default(),
+            continuity_capsule_store: &continuity_capsule_store,
+        })
     }
 }

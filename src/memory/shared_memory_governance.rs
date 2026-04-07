@@ -431,4 +431,116 @@ mod tests {
         );
         assert!(store.upserts.lock().unwrap().is_empty());
     }
+
+    #[test]
+    fn shared_memory_governance_regression_suite_covers_accept_reject_matrix() {
+        let accepted_store = MemoryStoreStub::default();
+        let accepted = write_governed_shared_memory(
+            &accepted_store,
+            &[draft("Owner timezone is Asia/Shanghai.")],
+            30,
+            SharedMemoryWriteSource::ManualTool,
+        )
+        .unwrap();
+        assert_eq!(accepted.accepted, 1);
+        assert_eq!(accepted.rejected, 0);
+        assert_eq!(
+            accepted.reports[0].reason,
+            SharedMemoryWriteReason::DurableFact
+        );
+        assert_eq!(accepted_store.upserts.lock().unwrap().len(), 1);
+
+        let skill_store = MemoryStoreStub::default();
+        let mut procedure =
+            draft("1. inspect release diff\n2. patch rollback guard\n3. verify logs");
+        procedure.kind = LongTermMemoryKind::Task;
+        procedure.topic = "apply_release_patch".to_string();
+        let routed_to_skill = write_governed_shared_memory(
+            &skill_store,
+            &[procedure],
+            30,
+            SharedMemoryWriteSource::TaskLearning,
+        )
+        .unwrap();
+        assert_eq!(routed_to_skill.accepted, 0);
+        assert_eq!(
+            routed_to_skill.reports[0].reason,
+            SharedMemoryWriteReason::RoutedToSkill
+        );
+
+        let raw_store = MemoryStoreStub::default();
+        let raw_payload = write_governed_shared_memory(
+            &raw_store,
+            &[draft(
+                "[2026-04-03] level=info key=value\n[2026-04-03] payload={\"a\":1,\"b\":2}\n[2026-04-03] more={\"c\":3}",
+            )],
+            30,
+            SharedMemoryWriteSource::Extraction,
+        )
+        .unwrap();
+        assert_eq!(raw_payload.accepted, 0);
+        assert_eq!(
+            raw_payload.reports[0].reason,
+            SharedMemoryWriteReason::RawPayloadOrLog
+        );
+
+        let structured_store = MemoryStoreStub::default();
+        let structured = write_governed_shared_memory(
+            &structured_store,
+            &[draft("- step one\n- step two\n- step three")],
+            30,
+            SharedMemoryWriteSource::ManualTool,
+        )
+        .unwrap();
+        assert_eq!(structured.accepted, 0);
+        assert_eq!(
+            structured.reports[0].reason,
+            SharedMemoryWriteReason::StructuredMaterial
+        );
+
+        let existing_store = MemoryStoreStub {
+            entries: Mutex::new(vec![LongTermMemoryEntry {
+                id: draft("Owner timezone is Asia/Shanghai.")
+                    .stable_id()
+                    .unwrap(),
+                kind: LongTermMemoryKind::Profile,
+                topic: "owner_timezone".to_string(),
+                content: "Owner timezone is Asia/Shanghai.".to_string(),
+                keywords: vec!["timezone".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                source_type: LongTermMemorySourceType::Conversation,
+                source_scope: LongTermMemorySourceScope::User,
+                confidence: LongTermMemoryConfidence::High,
+                freshness: LongTermMemoryFreshness::Stable,
+                stale_hint: LongTermMemoryStaleHint::None,
+                supporting_citations: Vec::new(),
+                evidence_count: 1,
+                created_at: 10,
+                updated_at: 20,
+                observed_at: 20,
+                last_confirmed_at: 20,
+                source_revision: 5,
+                last_used_at: 0,
+            }]),
+            upserts: Mutex::new(Vec::new()),
+        };
+        let mut incoming = draft("Owner timezone is UTC+8.");
+        incoming.confidence = Some(LongTermMemoryConfidence::Medium);
+        incoming.observed_at = Some(30);
+        incoming.last_confirmed_at = Some(30);
+        incoming.source_revision = Some(6);
+        let lower_confidence = write_governed_shared_memory(
+            &existing_store,
+            &[incoming],
+            30,
+            SharedMemoryWriteSource::SnapshotImport,
+        )
+        .unwrap();
+        assert_eq!(lower_confidence.accepted, 0);
+        assert_eq!(
+            lower_confidence.reports[0].reason,
+            SharedMemoryWriteReason::LowerConfidenceThanExisting
+        );
+        assert!(existing_store.upserts.lock().unwrap().is_empty());
+    }
 }

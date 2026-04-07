@@ -1990,6 +1990,83 @@ mod tests {
     }
 
     #[test]
+    fn governed_runtime_skill_write_regression_suite_covers_reason_matrix() {
+        let weak_storage = StubSkillStorage::default();
+        let weak = write_governed_runtime_skills(
+            &weak_storage,
+            &[RuntimeSkillWrite {
+                name: String::new(),
+                topic: "owner_timezone".to_string(),
+                title: "Owner timezone".to_string(),
+                summary: "Timezone note".to_string(),
+                content: "Owner timezone is Asia/Shanghai.".to_string(),
+                citations: Vec::new(),
+                source_chat_id: Some("chat-1".to_string()),
+                observed_at: 100,
+            }],
+            RuntimeSkillWriteSource::Extraction,
+        )
+        .unwrap();
+        assert_eq!(weak.accepted, 0);
+        assert_eq!(
+            weak.reports[0].reason,
+            RuntimeSkillWriteReason::WeakProcedure
+        );
+
+        let raw_storage = StubSkillStorage::default();
+        let raw = write_governed_runtime_skills(
+            &raw_storage,
+            &[RuntimeSkillWrite {
+                name: String::new(),
+                topic: "panic_log".to_string(),
+                title: "panic log".to_string(),
+                summary: "raw failure output".to_string(),
+                content:
+                    "[2026-04-03] level=info key=value\n[2026-04-03] payload={\"a\":1,\"b\":2}\n[2026-04-03] more={\"c\":3}"
+                        .to_string(),
+                citations: Vec::new(),
+                source_chat_id: Some("chat-1".to_string()),
+                observed_at: 100,
+            }],
+            RuntimeSkillWriteSource::Manual,
+        )
+        .unwrap();
+        assert_eq!(raw.accepted, 0);
+        assert_eq!(
+            raw.reports[0].reason,
+            RuntimeSkillWriteReason::RawPayloadOrLog
+        );
+
+        let accepted_storage = StubSkillStorage::default();
+        let accepted = write_governed_runtime_skills(
+            &accepted_storage,
+            &[RuntimeSkillWrite {
+                name: String::new(),
+                topic: "release_patch_flow".to_string(),
+                title: "Release patch flow".to_string(),
+                summary: "Patch the release and verify the result".to_string(),
+                content: "1. inspect release diff\n2. patch rollback guards\n3. verify logs"
+                    .to_string(),
+                citations: Vec::new(),
+                source_chat_id: Some("chat-1".to_string()),
+                observed_at: 100,
+            }],
+            RuntimeSkillWriteSource::TaskLearning,
+        )
+        .unwrap();
+        assert_eq!(accepted.accepted, 1);
+        assert_eq!(
+            accepted.reports[0].reason,
+            RuntimeSkillWriteReason::ProceduralMemory
+        );
+        assert!(accepted_storage
+            .list_names()
+            .unwrap()
+            .iter()
+            .any(|name| name == "runtime_skill__release_patch_flow"));
+    }
+
+    #[test]
     fn build_runtime_skill_block_touches_usage() {
         let storage = StubSkillStorage::default();
         upsert_runtime_skill(

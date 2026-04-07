@@ -666,6 +666,40 @@ mod tests {
             .any(|item| item["topic"] == topic));
     }
 
+    #[test]
+    fn memory_status_api_regression_keeps_optional_inspection_boundary() {
+        let ctx = build_test_context();
+        let unique = unique_suffix();
+        let chat_id = format!("memory-status-boundary-{unique}");
+
+        ctx.session_store
+            .append(&chat_id, "user", "Show me the memory diagnosis.")
+            .unwrap();
+        ctx.session_store
+            .append(&chat_id, "assistant", "Memory diagnosis is ready.")
+            .unwrap();
+        ctx.platform
+            .session_summary_store()
+            .set_with_count(&chat_id, "Memory diagnosis chat.", 2)
+            .unwrap();
+
+        let default_payload = body(&ctx, "/api/memory/status").unwrap();
+        let default_parsed: Value = serde_json::from_str(&default_payload).unwrap();
+        assert!(default_parsed.get("inspection").is_none());
+
+        let targeted_payload = body(
+            &ctx,
+            &format!("/api/memory/status?chat_id={chat_id}&channel=telegram&query=memory"),
+        )
+        .unwrap();
+        let targeted_parsed: Value = serde_json::from_str(&targeted_payload).unwrap();
+        assert_eq!(targeted_parsed["inspection"]["target"]["chat_id"], chat_id);
+        assert_eq!(
+            targeted_parsed["inspection"]["target"]["summary_present"],
+            Value::Bool(true)
+        );
+    }
+
     fn build_test_context() -> crate::platform::http_server::handlers::HandlerContext {
         let config = AppConfig::load_from_env();
         let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
