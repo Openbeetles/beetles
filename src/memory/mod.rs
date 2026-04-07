@@ -89,10 +89,10 @@ pub use context_window::build_context_messages;
 pub(crate) use continuity_snapshot::select_active_continuity_snapshot_chat_ids;
 pub use continuity_snapshot::{
     export_continuity_snapshot, import_continuity_snapshot, render_continuity_snapshot_markdown,
-    ContinuitySnapshot, ContinuitySnapshotExportContext, ContinuitySnapshotImportContext,
-    ContinuitySnapshotImportDecision, ContinuitySnapshotImportMode,
-    ContinuitySnapshotImportOutcome, ContinuitySnapshotKindCount, ContinuitySnapshotManifest,
-    ContinuitySnapshotMode,
+    select_personality_governance_targets, ContinuitySnapshot, ContinuitySnapshotExportContext,
+    ContinuitySnapshotImportContext, ContinuitySnapshotImportDecision,
+    ContinuitySnapshotImportMode, ContinuitySnapshotImportOutcome, ContinuitySnapshotKindCount,
+    ContinuitySnapshotManifest, ContinuitySnapshotMode,
 };
 pub use core_revision_ledger::{
     append_core_revision_record, build_core_revision_timeline,

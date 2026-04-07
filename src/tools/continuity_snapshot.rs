@@ -7,13 +7,13 @@ use crate::memory::{
     inspect_personality_governance, inspect_working_recall, load_recent_persona_evidence,
     render_continuity_snapshot_markdown, render_memory_hygiene_inspection_markdown,
     render_personality_governance_inspection_markdown, render_working_recall_inspection_markdown,
-    ContinuitySnapshot, ContinuitySnapshotExportContext, ContinuitySnapshotImportContext,
-    ContinuitySnapshotImportMode, ContinuitySnapshotMode, CoreRevisionLedgerStore,
-    ExecutionStateStore, LongTermMemoryStore, MemoryHygieneContext, MemoryProfile, MemoryStore,
-    PersonalityGovernanceInspectionInput, RelationshipConstitutionStore,
-    RelationshipPortfolioStore, RelationshipTopologyStore, SelfAuthoredCoreStore,
-    SelfContinuityStore, SelfModelStore, SessionStore, SessionSummaryStore, TurnLedgerStore,
-    WorkingRecallInspectionInput,
+    select_personality_governance_targets, ContinuitySnapshot, ContinuitySnapshotExportContext,
+    ContinuitySnapshotImportContext, ContinuitySnapshotImportMode, ContinuitySnapshotMode,
+    CoreRevisionLedgerStore, ExecutionStateStore, LongTermMemoryStore, MemoryHygieneContext,
+    MemoryProfile, MemoryStore, PersonalityGovernanceInspectionInput,
+    RelationshipConstitutionStore, RelationshipPortfolioStore, RelationshipSelectionTarget,
+    RelationshipTopologyStore, SelfAuthoredCoreStore, SelfContinuityStore, SelfModelStore,
+    SessionStore, SessionSummaryStore, TurnLedgerStore, WorkingRecallInspectionInput,
 };
 use crate::platform::{SkillStorage, StateFs};
 use crate::task_execution::{
@@ -112,7 +112,7 @@ impl Tool for ContinuitySnapshotTool {
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","enum":["export","import","list_saved","inspect_governance","inspect_recall","inspect_hygiene","inspect_tool_governance","inspect_task_learning","inspect_task_workspace"],"description":"Whether to export, import, list saved continuity snapshots, inspect personality governance, inspect working recall, inspect hygiene governance, inspect tool-execution governance, inspect task-learning routing, or inspect a task workspace."},"chat_id":{"type":"string","description":"Target chat_id. Defaults to the current chat when available."},"channel":{"type":"string","description":"Target channel for governance inspection. Defaults to the current channel when available."},"query":{"type":"string","description":"Recall or task-learning inspection query. Leave empty to inspect the current state without a search hint."},"run_id":{"type":"string","description":"Optional explicit task run id for workspace inspection."},"profile":{"type":"string","enum":["standard","embedded"],"description":"Memory profile used for recall or hygiene inspection. Default standard."},"mode":{"type":"string","enum":["bootstrap","full_restore","bootstrap_import"],"description":"Export mode or import mode. export accepts bootstrap|full_restore. import accepts bootstrap_import|full_restore."},"format":{"type":"string","enum":["json","markdown"],"description":"Rendering format. Default json."},"save_name":{"type":"string","description":"Optional saved snapshot name. On export, saves the snapshot under this name. On import, loads the saved snapshot with this name when snapshot is omitted."},"snapshot":{"description":"Snapshot payload to import. May be a JSON string or embedded object."}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","enum":["export","import","list_saved","inspect_governance","inspect_recall","inspect_hygiene","inspect_tool_governance","inspect_task_learning","inspect_task_workspace"],"description":"Whether to export, import, list saved continuity snapshots, inspect personality governance, inspect working recall, inspect hygiene governance, inspect tool-execution governance, inspect task-learning routing, or inspect a task workspace."},"chat_id":{"type":"string","description":"Target chat_id. Defaults to the current chat when available. For inspect_governance, if chat_id and channel are both omitted, the tool can fall back to the current active governance relation."},"channel":{"type":"string","description":"Target channel for governance inspection. Defaults to the current channel when available. For inspect_governance, omit together with chat_id to auto-resolve the active governance relation."},"query":{"type":"string","description":"Recall or task-learning inspection query. Leave empty to inspect the current state without a search hint."},"run_id":{"type":"string","description":"Optional explicit task run id for workspace inspection."},"profile":{"type":"string","enum":["standard","embedded"],"description":"Memory profile used for recall or hygiene inspection. Default standard."},"mode":{"type":"string","enum":["bootstrap","full_restore","bootstrap_import"],"description":"Export mode or import mode. export accepts bootstrap|full_restore. import accepts bootstrap_import|full_restore."},"format":{"type":"string","enum":["json","markdown"],"description":"Rendering format. Default json."},"save_name":{"type":"string","description":"Optional saved snapshot name. On export, saves the snapshot under this name. On import, loads the saved snapshot with this name when snapshot is omitted."},"snapshot":{"description":"Snapshot payload to import. May be a JSON string or embedded object."}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
@@ -158,21 +158,48 @@ impl Tool for ContinuitySnapshotTool {
                 .to_string())
             }
             "inspect_governance" => {
-                if chat_id.trim().is_empty() {
-                    return Err(Error::config("tool_continuity_snapshot", "missing chat_id"));
-                }
-                if channel.trim().is_empty() {
-                    return Err(Error::config("tool_continuity_snapshot", "missing channel"));
-                }
                 let subject_id = crate::memory::board_subject_scope_id();
-                let relationship_scope_id =
-                    crate::memory::relationship_scope_id(&channel, &chat_id);
+                let now_secs = current_unix_secs();
+                let self_continuity = self.self_continuity_store.get(subject_id)?;
+                let relationship_portfolio = self.relationship_portfolio_store.get(subject_id)?;
+                let relationship_topology = self.relationship_topology_store.get(subject_id)?;
+                let resolved_target = resolve_governance_inspection_target(
+                    chat_id.as_str(),
+                    channel.as_str(),
+                    self_continuity.as_ref(),
+                    relationship_portfolio.as_ref(),
+                    relationship_topology.as_ref(),
+                    now_secs,
+                )?;
+                let (chat_id, channel, relationship_scope_id, selection_reason) =
+                    if let Some(target) = resolved_target.as_ref() {
+                        (
+                            target.chat_id.clone(),
+                            target.channel.clone(),
+                            target.scope_id.clone(),
+                            Some(target.reason.clone()),
+                        )
+                    } else {
+                        if chat_id.trim().is_empty() {
+                            return Err(Error::config("tool_continuity_snapshot", "missing chat_id"));
+                        }
+                        if channel.trim().is_empty() {
+                            return Err(Error::config("tool_continuity_snapshot", "missing channel"));
+                        }
+                        let relationship_scope_id =
+                            crate::memory::relationship_scope_id(&channel, &chat_id);
+                        (
+                            chat_id,
+                            channel,
+                            relationship_scope_id,
+                            None,
+                        )
+                    };
                 let self_authored_core = self.self_authored_core_store.get(subject_id)?;
                 let core_revision_ledger = self.core_revision_ledger_store.get(subject_id)?;
                 let relationship_constitution = self
                     .relationship_constitution_store
                     .get(&relationship_scope_id)?;
-                let relationship_topology = self.relationship_topology_store.get(subject_id)?;
                 let recent_persona_evidence = load_recent_persona_evidence(
                     self.turn_ledger_store.as_ref(),
                     &relationship_scope_id,
@@ -181,7 +208,7 @@ impl Tool for ContinuitySnapshotTool {
                     inspect_personality_governance(PersonalityGovernanceInspectionInput {
                         channel: &channel,
                         chat_id: &chat_id,
-                        now_secs: current_unix_secs(),
+                        now_secs,
                         self_authored_core: self_authored_core.as_ref(),
                         core_revision_ledger: core_revision_ledger.as_ref(),
                         relationship_constitution: relationship_constitution.as_ref(),
@@ -200,6 +227,8 @@ impl Tool for ContinuitySnapshotTool {
                         "op": "inspect_governance",
                         "chat_id": chat_id,
                         "channel": channel,
+                        "relationship_scope_id": relationship_scope_id,
+                        "selection_reason": selection_reason,
                         "format": "markdown",
                         "repair_plan": inspection.repair_plan.clone(),
                         "markdown": render_personality_governance_inspection_markdown(&inspection),
@@ -212,6 +241,8 @@ impl Tool for ContinuitySnapshotTool {
                         "op": "inspect_governance",
                         "chat_id": chat_id,
                         "channel": channel,
+                        "relationship_scope_id": relationship_scope_id,
+                        "selection_reason": selection_reason,
                         "format": "json",
                         "repair_plan": inspection.repair_plan.clone(),
                         "inspection": inspection,
@@ -612,6 +643,34 @@ fn parse_memory_profile(value: Option<&Value>) -> Result<MemoryProfile> {
     }
 }
 
+fn resolve_governance_inspection_target(
+    chat_id: &str,
+    channel: &str,
+    self_continuity: Option<&crate::memory::SelfContinuity>,
+    relationship_portfolio: Option<&crate::memory::RelationshipPortfolio>,
+    relationship_topology: Option<&crate::memory::RelationshipTopology>,
+    now_secs: u64,
+) -> Result<Option<RelationshipSelectionTarget>> {
+    let chat_id = chat_id.trim();
+    let channel = channel.trim();
+    if !chat_id.is_empty() || !channel.is_empty() {
+        return Ok(None);
+    }
+    let mut targets = select_personality_governance_targets(
+        self_continuity,
+        relationship_portfolio,
+        relationship_topology,
+        now_secs,
+        1,
+    );
+    targets.pop().map(Some).ok_or_else(|| {
+        Error::config(
+            "tool_continuity_snapshot",
+            "missing chat_id and no active governance relation available",
+        )
+    })
+}
+
 fn parse_snapshot(
     value: Option<&Value>,
     save_name: Option<&str>,
@@ -665,4 +724,75 @@ fn snapshot_rel_path_for_name(name: &str) -> Result<String> {
         REL_DIR_MANUAL_CONTINUITY_SNAPSHOTS,
         normalized.trim_matches('_')
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::{
+        RelationshipGovernanceState, RelationshipInheritanceMode, RelationshipPortfolio,
+        RelationshipPortfolioEntry, RelationshipTopology, RelationshipTopologyEntry,
+        SelfContinuity,
+    };
+
+    #[test]
+    fn resolve_governance_inspection_target_uses_active_relation_when_unscoped() {
+        let continuity = SelfContinuity {
+            last_user_chat_id: "chat-a".to_string(),
+            last_user_channel: "qq".to_string(),
+            updated_at: 1_000,
+            ..SelfContinuity::default()
+        };
+        let portfolio = RelationshipPortfolio {
+            entries: vec![RelationshipPortfolioEntry {
+                scope_id: "rel:qq:chat-a".to_string(),
+                channel: "qq".to_string(),
+                chat_id: "chat-a".to_string(),
+                governance_state: RelationshipGovernanceState::Repair,
+                inheritance_mode: RelationshipInheritanceMode::Guarded,
+                priority_score: 240,
+                reason: "repair_due".to_string(),
+                source_updated_at: 990,
+                last_active_at: 990,
+                needs_runtime_attention: true,
+                last_selected_at: 0,
+                next_review_at: 0,
+            }],
+            updated_at: 990,
+        };
+        let topology = RelationshipTopology {
+            entries: vec![RelationshipTopologyEntry {
+                scope_id: "rel:qq:chat-a".to_string(),
+                channel: "qq".to_string(),
+                chat_id: "chat-a".to_string(),
+                last_active_at: 990,
+                last_user_turn_at: 990,
+                last_runtime_refresh_at: 900,
+                ..RelationshipTopologyEntry::default()
+            }],
+            updated_at: 990,
+        };
+
+        let resolved = resolve_governance_inspection_target(
+            "",
+            "",
+            Some(&continuity),
+            Some(&portfolio),
+            Some(&topology),
+            1_000,
+        )
+        .unwrap()
+        .expect("resolved governance target");
+
+        assert_eq!(resolved.scope_id, "rel:qq:chat-a");
+        assert_eq!(resolved.channel, "qq");
+        assert_eq!(resolved.chat_id, "chat-a");
+    }
+
+    #[test]
+    fn resolve_governance_inspection_target_errors_when_unscoped_and_no_active_relation() {
+        let error = resolve_governance_inspection_target("", "", None, None, None, 1_000)
+            .expect_err("missing target should error");
+        assert!(error.to_string().contains("no active governance relation"));
+    }
 }

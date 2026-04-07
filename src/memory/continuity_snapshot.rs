@@ -1,8 +1,9 @@
 //! Export/import of core continuity state for migration and bootstrap.
+#![allow(clippy::too_many_arguments)]
 
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashSet};
 use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 
@@ -12,15 +13,16 @@ use super::{
     CoreRevisionLedgerStore, ExecutionState, ExecutionStateStore, LongTermMemoryDraft,
     LongTermMemoryEntry, LongTermMemoryKind, LongTermMemoryStore, RelationshipConstitution,
     RelationshipConstitutionStore, RelationshipPortfolio, RelationshipPortfolioSelectorInput,
-    RelationshipPortfolioStore, RelationshipSelectorInput, RelationshipTopology,
-    RelationshipTopologyStore, SelfAuthoredCore, SelfAuthoredCoreStore, SelfContinuity,
-    SelfContinuityStore, SelfModel, SelfModelStore, SessionStore, SessionSummaryStore,
-    SharedMemoryWriteOutcome, SharedMemoryWriteSource,
+    RelationshipPortfolioStore, RelationshipSelectionTarget, RelationshipSelectorInput,
+    RelationshipTopology, RelationshipTopologyStore, SelfAuthoredCore, SelfAuthoredCoreStore,
+    SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore, SessionStore,
+    SessionSummaryStore, SharedMemoryWriteOutcome, SharedMemoryWriteSource,
 };
 
 const CONTINUITY_SNAPSHOT_VERSION: u32 = 4;
 const BOOTSTRAP_MAX_FACTS: usize = 16;
 const FULL_RESTORE_MAX_FACTS: usize = 48;
+const PERSONALITY_GOVERNANCE_ACTIVE_WINDOW_SECS: u64 = 7 * 86_400;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -687,6 +689,61 @@ pub fn select_active_continuity_snapshot_chat_ids(
     selected
 }
 
+pub fn select_personality_governance_targets(
+    self_continuity: Option<&SelfContinuity>,
+    relationship_portfolio: Option<&RelationshipPortfolio>,
+    relationship_topology: Option<&RelationshipTopology>,
+    now_secs: u64,
+    max_targets: usize,
+) -> Vec<RelationshipSelectionTarget> {
+    let max_targets = max_targets.max(1);
+    let preferred_chat_id = self_continuity
+        .map(|continuity| continuity.last_user_chat_id.trim())
+        .filter(|value| !value.is_empty());
+    let preferred_channel = self_continuity
+        .map(|continuity| continuity.last_user_channel.trim())
+        .filter(|value| !value.is_empty());
+    let mut selected = Vec::with_capacity(max_targets);
+    let mut seen = HashSet::with_capacity(max_targets);
+    for target in select_relationship_portfolio_targets(
+        relationship_portfolio,
+        RelationshipPortfolioSelectorInput {
+            preferred_chat_id,
+            preferred_channel,
+            now_secs,
+            max_targets,
+        },
+    ) {
+        push_unique_relationship_target(&mut selected, &mut seen, target, max_targets);
+    }
+    for target in select_relationship_topology_targets(
+        relationship_topology,
+        RelationshipSelectorInput {
+            preferred_chat_id,
+            preferred_channel,
+            now_secs,
+            max_targets,
+            active_window_secs: PERSONALITY_GOVERNANCE_ACTIVE_WINDOW_SECS,
+            runtime_cooldown_secs: 0,
+        },
+    ) {
+        push_unique_relationship_target(&mut selected, &mut seen, target, max_targets);
+    }
+    if selected.is_empty() {
+        if let Some(target) = preferred_chat_id.and_then(|chat_id| {
+            select_chat_anchor_relationship_target(
+                chat_id,
+                preferred_channel,
+                relationship_portfolio,
+                relationship_topology,
+            )
+        }) {
+            push_unique_relationship_target(&mut selected, &mut seen, target, max_targets);
+        }
+    }
+    selected
+}
+
 fn select_snapshot_relationship_scope_id(
     chat_id: &str,
     self_continuity: Option<&SelfContinuity>,
@@ -698,6 +755,21 @@ fn select_snapshot_relationship_scope_id(
             .then_some(continuity.last_user_channel.trim())
             .filter(|value| !value.is_empty())
     });
+    select_chat_anchor_relationship_target(
+        chat_id,
+        preferred_channel,
+        relationship_portfolio,
+        relationship_topology,
+    )
+    .map(|target| target.scope_id)
+}
+
+fn select_chat_anchor_relationship_target(
+    chat_id: &str,
+    preferred_channel: Option<&str>,
+    relationship_portfolio: Option<&RelationshipPortfolio>,
+    relationship_topology: Option<&RelationshipTopology>,
+) -> Option<RelationshipSelectionTarget> {
     if let Some(entry) = relationship_portfolio.and_then(|portfolio| {
         portfolio
             .entries
@@ -712,7 +784,13 @@ fn select_snapshot_relationship_scope_id(
                     .then_with(|| left.last_active_at.cmp(&right.last_active_at))
             })
     }) {
-        return Some(entry.scope_id.clone());
+        return Some(RelationshipSelectionTarget {
+            scope_id: entry.scope_id.clone(),
+            channel: entry.channel.clone(),
+            chat_id: entry.chat_id.clone(),
+            score: entry.priority_score.max(1),
+            reason: "continuity_anchor".to_string(),
+        });
     }
     relationship_topology.and_then(|topology| {
         topology
@@ -726,8 +804,26 @@ fn select_snapshot_relationship_scope_id(
                     .cmp(&right_preferred)
                     .then_with(|| left.latest_overlay_at().cmp(&right.latest_overlay_at()))
             })
-            .map(|entry| entry.scope_id.clone())
+            .map(|entry| RelationshipSelectionTarget {
+                scope_id: entry.scope_id.clone(),
+                channel: entry.channel.clone(),
+                chat_id: entry.chat_id.clone(),
+                score: 1,
+                reason: "continuity_anchor".to_string(),
+            })
     })
+}
+
+fn push_unique_relationship_target(
+    selected: &mut Vec<RelationshipSelectionTarget>,
+    seen: &mut HashSet<String>,
+    target: RelationshipSelectionTarget,
+    limit: usize,
+) {
+    if selected.len() >= limit || !seen.insert(target.scope_id.clone()) {
+        return;
+    }
+    selected.push(target);
 }
 
 fn push_portfolio_chat_ids(
@@ -1706,5 +1802,134 @@ mod tests {
             selected,
             vec!["chat-preferred".to_string(), "chat-recent".to_string()]
         );
+    }
+
+    #[test]
+    fn select_personality_governance_targets_falls_back_to_anchor_when_rankers_skip_relation() {
+        let continuity = SelfContinuity {
+            last_user_chat_id: "chat-a".to_string(),
+            last_user_channel: "qq".to_string(),
+            updated_at: 950,
+            ..SelfContinuity::default()
+        };
+        let portfolio = RelationshipPortfolio {
+            entries: vec![crate::memory::RelationshipPortfolioEntry {
+                scope_id: "rel:tg:chat-a".to_string(),
+                channel: "tg".to_string(),
+                chat_id: "chat-a".to_string(),
+                governance_state: crate::memory::RelationshipGovernanceState::Maintain,
+                inheritance_mode: crate::memory::RelationshipInheritanceMode::Guarded,
+                priority_score: 180,
+                reason: "stable_anchor".to_string(),
+                source_updated_at: 900,
+                last_active_at: 900,
+                needs_runtime_attention: false,
+                last_selected_at: 900,
+                next_review_at: 10_000,
+            }],
+            updated_at: 900,
+        };
+
+        let selected = select_personality_governance_targets(
+            Some(&continuity),
+            Some(&portfolio),
+            None,
+            1_000,
+            1,
+        );
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].scope_id, "rel:tg:chat-a");
+        assert_eq!(selected[0].reason, "continuity_anchor");
+    }
+
+    #[test]
+    fn select_personality_governance_targets_prefers_ranked_exact_relation_before_anchor() {
+        let continuity = SelfContinuity {
+            last_user_chat_id: "chat-a".to_string(),
+            last_user_channel: "qq".to_string(),
+            updated_at: 950,
+            ..SelfContinuity::default()
+        };
+        let portfolio = RelationshipPortfolio {
+            entries: vec![crate::memory::RelationshipPortfolioEntry {
+                scope_id: "rel:qq:chat-a".to_string(),
+                channel: "qq".to_string(),
+                chat_id: "chat-a".to_string(),
+                governance_state: crate::memory::RelationshipGovernanceState::Repair,
+                inheritance_mode: crate::memory::RelationshipInheritanceMode::Guarded,
+                priority_score: 240,
+                reason: "repair_due".to_string(),
+                source_updated_at: 980,
+                last_active_at: 980,
+                needs_runtime_attention: true,
+                last_selected_at: 0,
+                next_review_at: 0,
+            }],
+            updated_at: 980,
+        };
+
+        let selected = select_personality_governance_targets(
+            Some(&continuity),
+            Some(&portfolio),
+            None,
+            1_000,
+            1,
+        );
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].scope_id, "rel:qq:chat-a");
+        assert!(selected[0].reason.contains("preferred_relation"));
+    }
+
+    #[test]
+    fn select_personality_governance_targets_deduplicates_portfolio_and_topology_hits() {
+        let continuity = SelfContinuity {
+            last_user_chat_id: "chat-a".to_string(),
+            last_user_channel: "qq".to_string(),
+            updated_at: 980,
+            ..SelfContinuity::default()
+        };
+        let portfolio = RelationshipPortfolio {
+            entries: vec![crate::memory::RelationshipPortfolioEntry {
+                scope_id: "rel:qq:chat-a".to_string(),
+                channel: "qq".to_string(),
+                chat_id: "chat-a".to_string(),
+                governance_state: crate::memory::RelationshipGovernanceState::Repair,
+                inheritance_mode: crate::memory::RelationshipInheritanceMode::Guarded,
+                priority_score: 220,
+                reason: "repair".to_string(),
+                source_updated_at: 980,
+                last_active_at: 980,
+                needs_runtime_attention: true,
+                last_selected_at: 0,
+                next_review_at: 0,
+            }],
+            updated_at: 980,
+        };
+        let topology = RelationshipTopology {
+            entries: vec![crate::memory::RelationshipTopologyEntry {
+                scope_id: "rel:qq:chat-a".to_string(),
+                channel: "qq".to_string(),
+                chat_id: "chat-a".to_string(),
+                last_active_at: 980,
+                last_user_turn_at: 980,
+                last_runtime_refresh_at: 900,
+                ..crate::memory::RelationshipTopologyEntry::default()
+            }],
+            updated_at: 980,
+        };
+
+        let selected = select_personality_governance_targets(
+            Some(&continuity),
+            Some(&portfolio),
+            Some(&topology),
+            1_000,
+            3,
+        );
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].scope_id, "rel:qq:chat-a");
+        assert!(selected[0].reason.contains("repair"));
     }
 }
