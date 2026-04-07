@@ -618,7 +618,8 @@ pub fn dispatch(
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
-            let body = handlers::memory::body(ctx);
+            let body = handlers::memory::body(ctx, uri)
+                .map_err(|error| err_other("http_router_dispatch", error))?;
             Ok(OutgoingResponse::json(
                 200,
                 "OK",
