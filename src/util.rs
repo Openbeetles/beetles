@@ -926,9 +926,9 @@ pub fn is_private_url(url: &str) -> bool {
 // | display                               | (inline 6144)          | 6 KB  | 6 KB  | ← no TLS, render chain ~3.5KB peak
 // | audio_io_worker                       | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS, I2S + WakeNet NN
 // | http_server                           | (inline 6144)          | 6 KB  | 6 KB  | ← wrapper thread only; IDF httpd has its own task
-// | http_route_exec                       | STACK_HTTP_ROUTE_WORKER| 16 KB | 16 KB | ← ESP config/router work offloaded from IDF callback
+// | http_route_exec                       | STACK_HTTP_ROUTE_WORKER| 32 KB | 32 KB | ← operator/memory surface + continuity inspection now run here
 // | dispatch                              | STACK_DISPATCH         | 8 KB  | 8 KB  | ← delayed-task service + admission + retry/cooldown replay
-// | bg_timer                              | (inline 6144)          | 6 KB  | 6 KB  | ← no TLS, MetricsSnapshot 352B peak
+// | bg_timer                              | STACK_BG_TIMER         | 16 KB | 16 KB | ← heartbeat + thread/runtime snapshots + cron/self-runtime
 // | heartbeat, cli_repl                  | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS
 // | voice_session                         | STACK_VOICE_CONTROL    | 16 KB | 8 KB  | ← realtime voice now runs inline here on ESP
 // | voice_session_worker                  | STACK_VOICE_SESSION    | 16 KB | 64 KB | ← STT + TTS HTTPS
@@ -986,8 +986,14 @@ pub const STACK_VOICE_SESSION: usize = 16 * 1024;
 pub const STACK_VOICE_SESSION: usize = LINUX_RUSTLS_THREAD_STACK;
 
 /// `http_route_exec`：ESP HTTP 配置/状态路由执行线程。
-/// 该线程承接 SPIFFS/NVS/serde 等重活，避免压在 IDF HTTPD 回调线程上。
-pub const STACK_HTTP_ROUTE_WORKER: usize = 16 * 1024;
+/// 该线程承接 SPIFFS/NVS/serde、operator surface 与 continuity inspection 等重活，
+/// 避免压在 IDF HTTPD 回调线程上。
+pub const STACK_HTTP_ROUTE_WORKER: usize = 32 * 1024;
+
+/// `bg_timer`：heartbeat + cron + remind/task + self-runtime 聚合线程。
+/// 该线程不走 TLS，但当前 steady-state 已包含 thread/runtime snapshot 与 cron 自治链，
+/// 不能继续沿用早期 6-8KB 预算。
+pub const STACK_BG_TIMER: usize = 16 * 1024;
 
 /// `restart_defer`：HTTP/CLI 触发的延迟重启线程。
 /// 该线程会做 continuity snapshot 导出、serde、SPIFFS 写回与最终 restart，
@@ -1232,5 +1238,26 @@ mod marker_string_tests {
             &[AGENT_MARKER_MARK_IMPORTANT, AGENT_MARKER_SIGNAL_COMFORT],
         );
         assert_eq!(s, "a  b  c");
+    }
+}
+
+#[cfg(test)]
+mod stack_budget_tests {
+    use super::*;
+
+    #[test]
+    fn http_route_exec_stack_budget_covers_operator_surface() {
+        assert!(
+            STACK_HTTP_ROUTE_WORKER >= 32 * 1024,
+            "http_route_exec stack budget must cover config/operator/memory surface assembly"
+        );
+    }
+
+    #[test]
+    fn bg_timer_stack_budget_covers_runtime_observability() {
+        assert!(
+            STACK_BG_TIMER >= 16 * 1024,
+            "bg_timer stack budget must cover heartbeat, runtime snapshots, and cron/self-runtime"
+        );
     }
 }
