@@ -118,7 +118,9 @@ fn record_channel_ok(channel: &str) {
 }
 
 fn outbound_blocked(msg: &crate::bus::PcMsg) -> bool {
-    crate::state::voice_exclusive_active() && msg.channel.as_ref() != VOICE_CHANNEL_NAME
+    let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+    !runtime_mode.action_budget.allow_non_voice_outbound
+        && msg.channel.as_ref() != VOICE_CHANNEL_NAME
 }
 
 fn push_buffered_msg(

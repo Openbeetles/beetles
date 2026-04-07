@@ -1,7 +1,7 @@
 #!/bin/sh
 # SysV init example for Buildroot / busybox inittab. Adjust paths and user.
 # chkconfig: 2345 90 10
-# description: Beetle agent
+# description: Beetle supervisor
 
 DAEMON="/opt/beetle/current/beetle"
 PIDFILE="/var/run/beetle.pid"
@@ -9,7 +9,7 @@ PIDFILE="/var/run/beetle.pid"
 case "$1" in
   start)
     echo "Starting beetle..."
-    start-stop-daemon -S -b -m -p "$PIDFILE" -x "$DAEMON" -- run || exit 1
+    start-stop-daemon -S -b -m -p "$PIDFILE" -x "$DAEMON" -- supervise || exit 1
     ;;
   stop)
     echo "Stopping beetle..."

@@ -32,6 +32,10 @@ use clap::Parser;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+#[cfg(all(
+    feature = "config_api",
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
@@ -60,7 +64,10 @@ impl beetle::TypingNotifier for TelegramTypingNotifier {
     }
 }
 
-#[cfg(feature = "config_api")]
+#[cfg(all(
+    feature = "config_api",
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
 struct HttpServerSpawnContext {
     platform: Arc<dyn Platform>,
     tool_registry: Arc<beetle::tools::ToolRegistry>,
@@ -254,7 +261,10 @@ fn compute_refresh_secs(
     }
 }
 
-#[cfg(feature = "config_api")]
+#[cfg(all(
+    feature = "config_api",
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
 fn spawn_http_config_server(
     ctx: HttpServerSpawnContext,
 ) -> std::io::Result<beetle::util::TaskHandle> {
@@ -490,6 +500,7 @@ fn build_voice_event_channel(
 #[derive(Clone)]
 struct DisplayLoopState {
     last_state: Option<DisplaySystemState>,
+    last_presence_subtitle: Option<String>,
     last_ip: String,
     last_channels: [(bool, bool, u32); 5],
     last_pressure: Option<DisplayPressureLevel>,
@@ -510,6 +521,7 @@ impl Default for DisplayLoopState {
     fn default() -> Self {
         Self {
             last_state: None,
+            last_presence_subtitle: None,
             last_ip: String::new(),
             last_channels: [(false, false, 0); 5],
             last_pressure: None,
@@ -613,6 +625,7 @@ fn update_display_backlight(
         let _ = platform.fade_display_backlight(0, 100, 500);
         loop_state.backlight_off = false;
         loop_state.last_state = None;
+        loop_state.last_presence_subtitle = None;
         loop_state.last_heap = 255;
         log::info!("[{}] display backlight woke up", TAG);
         return true;
@@ -644,32 +657,21 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
     loop {
         std::thread::sleep(Duration::from_secs(loop_state.refresh_secs));
         let snapshot = beetle::orchestrator::snapshot();
+        let presence = beetle::runtime::inspect_platform_presence(
+            platform.as_ref(),
+            beetle::util::current_unix_secs(),
+        );
         let pressure = match snapshot.pressure {
             beetle::orchestrator::PressureLevel::Normal => DisplayPressureLevel::Normal,
             beetle::orchestrator::PressureLevel::Cautious => DisplayPressureLevel::Cautious,
             beetle::orchestrator::PressureLevel::Critical => DisplayPressureLevel::Critical,
         };
         let sta_connected = beetle::platform::is_wifi_sta_connected();
-        let busy = snapshot.active_agent_tasks > 0
-            || snapshot.active_http_count > 0
-            || snapshot.inbound_depth > 0
-            || snapshot.outbound_depth > 0;
-        let state = if snapshot.pressure == beetle::orchestrator::PressureLevel::Critical {
-            DisplaySystemState::Fault
-        } else if !sta_connected {
-            DisplaySystemState::NoWifi
-        } else if snapshot.audio_recording {
-            DisplaySystemState::Recording
-        } else if snapshot.audio_playing {
-            DisplaySystemState::Playing
-        } else if busy {
-            DisplaySystemState::Busy
-        } else {
-            DisplaySystemState::Idle
-        };
         let ip = platform
             .wifi_sta_ip()
             .unwrap_or_else(|| SOFTAP_DEFAULT_IPV4.to_string());
+        let display_projection = presence.display_projection(Some(ip.as_str()));
+        let state = display_projection.state;
         let channels = build_display_channels(enabled, &snapshot);
         let heap_percent = heap_used_percent(&snapshot);
 
@@ -687,6 +689,8 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
 
         let show_flash = update_display_error_flash(&mut loop_state, &metrics);
         let state_changed = loop_state.last_state != Some(state);
+        let subtitle_changed =
+            loop_state.last_presence_subtitle != display_projection.subtitle_override;
         let ip_changed = loop_state.last_ip.as_str() != ip.as_str();
         let channels_changed = channels.iter().enumerate().any(|(i, ch)| {
             loop_state.last_channels[i] != (ch.enabled, ch.healthy, ch.consecutive_failures)
@@ -702,6 +706,7 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
             || heap_changed
             || msg_changed
             || llm_changed
+            || subtitle_changed
             || show_flash;
 
         if any_change {
@@ -726,6 +731,7 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
         if state_changed {
             let cmd = DisplayCommand::RefreshDashboard {
                 state,
+                presence_subtitle: display_projection.subtitle_override.clone(),
                 wifi_connected: sta_connected,
                 ip_address: Some(ip.clone()),
                 channels: channels.clone(),
@@ -743,6 +749,7 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
                 log::warn!("[{}] display refresh failed: {}", TAG, e);
             }
             loop_state.last_state = Some(state);
+            loop_state.last_presence_subtitle = display_projection.subtitle_override.clone();
             loop_state.last_ip.clear();
             loop_state.last_ip.push_str(&ip);
             for (i, ch) in channels.iter().enumerate() {
@@ -761,11 +768,13 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
             continue;
         }
 
-        if ip_changed {
+        if ip_changed || subtitle_changed {
             let _ = platform.display_command(DisplayCommand::UpdateIp {
                 ip: ip.clone(),
+                presence_subtitle: display_projection.subtitle_override.clone(),
                 uptime_secs,
             });
+            loop_state.last_presence_subtitle = display_projection.subtitle_override.clone();
             loop_state.last_ip.clear();
             loop_state.last_ip.push_str(&ip);
         }
@@ -834,7 +843,7 @@ fn handle_config_command(platform: &Arc<dyn Platform>, action: beetle::commands:
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn handle_status_command(platform: &Arc<dyn Platform>, json: bool, chat_id: Option<&str>) {
-    let (config, _) = beetle::bootstrap::bootstrap_config_and_wifi(platform);
+    let config = beetle::bootstrap::load_config(platform);
     let recent_turn = chat_id.and_then(|id| {
         platform
             .turn_ledger_store()
@@ -846,6 +855,19 @@ fn handle_status_command(platform: &Arc<dyn Platform>, json: bool, chat_id: Opti
             .ok()
             .flatten()
     });
+    let presence = beetle::runtime::inspect_platform_presence(
+        platform.as_ref(),
+        beetle::util::current_unix_secs(),
+    );
+    let initiative = beetle::runtime::inspect_platform_initiative(
+        platform.as_ref(),
+        beetle::util::current_unix_secs(),
+    );
+    let os_closure = beetle::runtime::inspect_beetle_os_closure(&presence, &initiative);
+    let runtime_mode = presence.runtime_mode;
+    let soul_kernel = presence.soul_kernel.clone();
+    let supervisor = presence.supervisor.clone();
+    let release = presence.release.clone();
 
     if json {
         let payload = serde_json::json!({
@@ -853,6 +875,13 @@ fn handle_status_command(platform: &Arc<dyn Platform>, json: bool, chat_id: Opti
             "enabled_channel": config.enabled_channel,
             "chat_id": chat_id,
             "recent_turn": recent_turn,
+            "initiative": initiative,
+            "os_closure": os_closure,
+            "presence": presence,
+            "runtime_mode": runtime_mode,
+            "soul_kernel": soul_kernel,
+            "supervisor": supervisor,
+            "release": release,
         });
         println!(
             "{}",
@@ -861,6 +890,103 @@ fn handle_status_command(platform: &Arc<dyn Platform>, json: bool, chat_id: Opti
     } else {
         println!("beetle v{}", VERSION);
         println!("Enabled channel: {}", config.enabled_channel);
+        println!(
+            "Presence: {} ({})",
+            presence.state.as_str(),
+            presence.rationale
+        );
+        println!(
+            "Initiative: action={} ready={} rationale={}",
+            initiative.action.as_str(),
+            initiative.ready,
+            initiative.rationale
+        );
+        println!(
+            "OS closure: ready={} planes={}/{} summary={}",
+            os_closure.ready, os_closure.ready_planes, os_closure.plane_count, os_closure.summary
+        );
+        if !os_closure.outstanding.is_empty() {
+            println!(
+                "OS closure outstanding: {}",
+                os_closure.outstanding.join(", ")
+            );
+        }
+        if let Some(reason) = initiative.suppression_reason {
+            println!("Initiative suppressed by: {}", reason.as_str());
+        }
+        println!("Runtime mode: {}", runtime_mode.current_mode.as_str());
+        println!(
+            "Soul kernel: ready={} safe_mode_readable={} degraded={} key_memory={}",
+            soul_kernel.minimum_viable,
+            soul_kernel.safe_mode_minimum_readable,
+            soul_kernel.degraded,
+            soul_kernel.key_memory_count
+        );
+        if let Some(release) = release.as_ref() {
+            println!(
+                "Release: managed={} rollout_state={} rollback_available={} current={} rollback={}",
+                release.managed,
+                release.rollout_state_label(),
+                release.rollback_available,
+                release
+                    .current
+                    .as_ref()
+                    .map(|pointer| pointer.name.as_str())
+                    .unwrap_or("none"),
+                release
+                    .rollback
+                    .as_ref()
+                    .map(|pointer| pointer.name.as_str())
+                    .unwrap_or("none")
+            );
+        } else {
+            println!("Release: none");
+        }
+        if !soul_kernel.degradation_reasons.is_empty() {
+            println!(
+                "Soul kernel degradation: {}",
+                soul_kernel.degradation_reasons.join(", ")
+            );
+        }
+        if let Some(snapshot) = supervisor {
+            println!(
+                "Supervisor: pid={} alive={} state={} restarts={}",
+                snapshot.state.supervisor_pid,
+                snapshot.supervisor_alive,
+                snapshot.state.current_state,
+                snapshot.state.restart_count
+            );
+            println!(
+                "Agent: pid={} alive={} state={}",
+                snapshot
+                    .state
+                    .agent
+                    .pid
+                    .map(|pid| pid.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                snapshot.agent_alive,
+                snapshot.state.agent.state
+            );
+            if let Some(reason) = snapshot.state.safe_mode_reason.as_deref() {
+                println!("Safe mode: true ({})", reason);
+            } else {
+                println!("Safe mode: false");
+            }
+            if let Some(code) = snapshot.state.agent.last_exit_code {
+                println!("Agent last exit code: {}", code);
+            }
+            if let Some(signal) = snapshot.state.agent.last_exit_signal {
+                println!("Agent last exit signal: {}", signal);
+            }
+            if !snapshot.state.agent.last_exit_reason.trim().is_empty() {
+                println!(
+                    "Agent last exit reason: {}",
+                    snapshot.state.agent.last_exit_reason
+                );
+            }
+        } else {
+            println!("Supervisor: none");
+        }
         if let Some(id) = chat_id {
             println!("Chat ID: {}", id);
             match recent_turn {
@@ -902,14 +1028,82 @@ fn handle_doctor_command(platform: &Arc<dyn Platform>) {
 
     println!("✓ Platform initialized");
 
-    let (config, wifi_ok) = beetle::bootstrap::bootstrap_config_and_wifi(platform);
-    if wifi_ok {
-        println!("✓ WiFi configuration loaded");
+    let config = beetle::bootstrap::load_config(platform);
+    if config.wifi_ssid.trim().is_empty() {
+        println!("⚠ WiFi configuration not set");
     } else {
-        println!("⚠ WiFi configuration not available");
+        println!("✓ WiFi configuration present");
     }
 
     println!("✓ Config loaded (channel: {})", config.enabled_channel);
+
+    let presence = beetle::runtime::inspect_platform_presence(
+        platform.as_ref(),
+        beetle::util::current_unix_secs(),
+    );
+    let initiative = beetle::runtime::inspect_platform_initiative(
+        platform.as_ref(),
+        beetle::util::current_unix_secs(),
+    );
+    let os_closure = beetle::runtime::inspect_beetle_os_closure(&presence, &initiative);
+    match presence.supervisor.as_ref() {
+        Some(snapshot) => {
+            println!(
+                "✓ Supervisor status readable (pid={} alive={} agent_alive={})",
+                snapshot.state.supervisor_pid, snapshot.supervisor_alive, snapshot.agent_alive
+            );
+        }
+        None => println!("⚠ Supervisor status not found"),
+    }
+    println!(
+        "✓ Presence resolved (state={} runtime_mode={})",
+        presence.state.as_str(),
+        presence.runtime_mode.current_mode.as_str()
+    );
+    println!(
+        "✓ Initiative contract action={} ready={} rationale={}",
+        initiative.action.as_str(),
+        initiative.ready,
+        initiative.rationale
+    );
+    println!(
+        "{} Beetle OS closure ready={} planes={}/{} summary={}",
+        if os_closure.ready { "✓" } else { "⚠" },
+        os_closure.ready,
+        os_closure.ready_planes,
+        os_closure.plane_count,
+        os_closure.summary
+    );
+    if !os_closure.outstanding.is_empty() {
+        println!(
+            "⚠ Beetle OS outstanding gates: {}",
+            os_closure.outstanding.join(", ")
+        );
+    }
+    if let Some(reason) = initiative.suppression_reason {
+        println!("⚠ Initiative suppressed by: {}", reason.as_str());
+    }
+    println!(
+        "✓ Soul kernel ready={} safe_mode_readable={} degraded={} key_memory={}",
+        presence.soul_kernel.minimum_viable,
+        presence.soul_kernel.safe_mode_minimum_readable,
+        presence.soul_kernel.degraded,
+        presence.soul_kernel.key_memory_count
+    );
+    if let Some(release) = presence.release.as_ref() {
+        println!(
+            "✓ Linux release managed={} rollout_state={} rollback_available={}",
+            release.managed,
+            release.rollout_state_label(),
+            release.rollback_available
+        );
+    }
+    if !presence.soul_kernel.degradation_reasons.is_empty() {
+        println!(
+            "⚠ Soul kernel degradation: {}",
+            presence.soul_kernel.degradation_reasons.join(", ")
+        );
+    }
 
     let memory_store = platform.memory_store();
     if memory_store.get_memory().is_ok() || memory_store.get_soul().is_ok() {
@@ -922,7 +1116,7 @@ fn handle_doctor_command(platform: &Arc<dyn Platform>) {
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-fn handle_restart_command(platform: &Arc<dyn Platform>) {
+fn handle_restart_command(_platform: &Arc<dyn Platform>) {
     if std::path::Path::new("/etc/systemd/system/beetle.service").exists() {
         match std::process::Command::new("systemctl")
             .args(["restart", "beetle"])
@@ -946,16 +1140,21 @@ fn handle_restart_command(platform: &Arc<dyn Platform>) {
         }
     }
 
-    log::warn!(
-        "[{}] systemd service not found; falling back to process restart",
-        TAG
-    );
-    beetle::runtime::request_restart_with_continuity_flush(
-        Arc::clone(platform),
-        None,
-        "cli_restart",
-    );
-    println!("restart requested.");
+    match beetle::runtime::linux_supervisor::request_restart() {
+        Ok(true) => {
+            println!("beetle supervisor restart requested.");
+        }
+        Ok(false) => {
+            eprintln!(
+                "restart requires a running beetle supervisor or a systemd-managed beetle service."
+            );
+            std::process::exit(1);
+        }
+        Err(error) => {
+            eprintln!("failed to request beetle supervisor restart: {}", error);
+            std::process::exit(1);
+        }
+    }
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -980,13 +1179,140 @@ fn handle_stop_command(_platform: &Arc<dyn Platform>) {
         }
     }
 
-    eprintln!("stop is only supported for a systemd-managed beetle service.");
-    std::process::exit(1);
+    match beetle::runtime::linux_supervisor::request_stop() {
+        Ok(true) => {
+            println!("beetle supervisor stop requested.");
+        }
+        Ok(false) => {
+            eprintln!(
+                "stop requires a running beetle supervisor or a systemd-managed beetle service."
+            );
+            std::process::exit(1);
+        }
+        Err(error) => {
+            eprintln!("failed to request beetle supervisor stop: {}", error);
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn handle_release_status_command(platform: &Arc<dyn Platform>, json: bool) {
+    let release = beetle::runtime::inspect_platform_linux_release(
+        platform.as_ref(),
+        beetle::util::current_unix_secs(),
+    );
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&release).unwrap_or_else(|_| "{}".to_string())
+        );
+        return;
+    }
+
+    println!("Linux release status");
+    println!("Managed: {}", release.managed);
+    println!("Current executable: {}", release.current_exe);
+    println!("Rollout state: {}", release.rollout_state_label());
+    println!("Rollback available: {}", release.rollback_available);
+    println!(
+        "Current release: {}",
+        release
+            .current
+            .as_ref()
+            .map(|pointer| format!("{} ({})", pointer.name, pointer.path))
+            .unwrap_or_else(|| "none".to_string())
+    );
+    println!(
+        "Rollback release: {}",
+        release
+            .rollback
+            .as_ref()
+            .map(|pointer| format!("{} ({})", pointer.name, pointer.path))
+            .unwrap_or_else(|| "none".to_string())
+    );
+    println!(
+        "State schema: version={} current={}",
+        release.state_schema_version, release.state_schema_current
+    );
+    if let Some(consistent) = release.systemd_unit_consistent {
+        println!("systemd template consistent: {}", consistent);
+    }
+    if let Some(consistent) = release.init_script_consistent {
+        println!("init script consistent: {}", consistent);
+    }
+    if !release.last_action.trim().is_empty() {
+        println!("Last release action: {}", release.last_action);
+    }
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn handle_release_rollback_command(platform: &Arc<dyn Platform>) {
+    let release = beetle::runtime::inspect_platform_linux_release(
+        platform.as_ref(),
+        beetle::util::current_unix_secs(),
+    );
+    if !release.managed {
+        eprintln!(
+            "current Linux runtime is not running from a managed /opt/beetle release layout."
+        );
+        std::process::exit(1);
+    }
+    if !release.rollback_available {
+        eprintln!("rollback pointer is not available for the current Linux release.");
+        std::process::exit(1);
+    }
+
+    match beetle::runtime::linux_supervisor::request_rollback() {
+        Ok(true) => {
+            println!("beetle supervisor rollback requested.");
+            return;
+        }
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("failed to request beetle supervisor rollback: {}", error);
+            std::process::exit(1);
+        }
+    }
+
+    match beetle::runtime::rollback_current_release(
+        platform.as_ref(),
+        "manual_release_rollback",
+        beetle::util::current_unix_secs(),
+    ) {
+        Ok(true) => {
+            println!("rollback symlink applied. Restart beetle to boot the rolled-back release.");
+        }
+        Ok(false) => {
+            eprintln!("rollback pointer became unavailable before rollback was applied.");
+            std::process::exit(1);
+        }
+        Err(error) => {
+            eprintln!("failed to apply Linux release rollback: {}", error);
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn log_start_banner(config_path: Option<&str>) {
+    log::info!("========================================");
+    log::info!("  甲壳虫 beetle v{}", VERSION);
+    log::info!("========================================");
+    if let Some(path) = config_path {
+        log::info!("[{}] using config file: {}", TAG, path);
+    }
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn run_linux_agent_entry(platform: Arc<dyn Platform>) {
+    let (config, wifi_init_ok) = beetle::bootstrap::bootstrap_config_and_wifi(&platform);
+    run_app(platform, config, wifi_init_ok);
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn main() {
-    use beetle::commands::{Cli, Commands};
+    use beetle::commands::{Cli, Commands, ReleaseAction};
 
     let cli = Cli::parse();
 
@@ -1004,17 +1330,39 @@ fn main() {
     }
 
     match cli.command {
+        Commands::Supervise {
+            config: config_path,
+        } => {
+            log_start_banner(config_path.as_deref());
+            if let Err(error) = beetle::runtime::linux_supervisor::run_supervisor(
+                Arc::clone(&platform),
+                config_path,
+            ) {
+                eprintln!("[{}] supervisor failed: {}", TAG, error);
+                std::process::exit(1);
+            }
+        }
+        Commands::Agent {
+            config: config_path,
+        } => {
+            log_start_banner(config_path.as_deref());
+            run_linux_agent_entry(platform);
+        }
         Commands::Run {
             config: config_path,
         } => {
-            log::info!("========================================");
-            log::info!("  甲壳虫 beetle v{}", VERSION);
-            log::info!("========================================");
-            if let Some(path) = config_path {
-                log::info!("[{}] using config file: {}", TAG, path);
+            log::warn!(
+                "[{}] `beetle run` is deprecated; use `beetle supervise` instead",
+                TAG
+            );
+            log_start_banner(config_path.as_deref());
+            if let Err(error) = beetle::runtime::linux_supervisor::run_supervisor(
+                Arc::clone(&platform),
+                config_path,
+            ) {
+                eprintln!("[{}] supervisor failed: {}", TAG, error);
+                std::process::exit(1);
             }
-            let (config, wifi_init_ok) = beetle::bootstrap::bootstrap_config_and_wifi(&platform);
-            run_app(platform, config, wifi_init_ok);
         }
         Commands::Config { action } => {
             handle_config_command(&platform, action);
@@ -1031,6 +1379,10 @@ fn main() {
         Commands::Doctor => {
             handle_doctor_command(&platform);
         }
+        Commands::Release { action } => match action {
+            ReleaseAction::Status { json } => handle_release_status_command(&platform, json),
+            ReleaseAction::Rollback => handle_release_rollback_command(&platform),
+        },
         Commands::Version => {
             println!("beetle v{}", VERSION);
         }
@@ -1056,6 +1408,7 @@ fn main() {
 
 /// 启动编排：存储与总线 → 自检 → 后台任务与通道 → agent 循环与 flush。与 main 解耦便于单文件内可读性。
 fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_init_ok: bool) {
+    beetle::state::set_boot_phase_active(true);
     beetle::orchestrator::register_memory_snapshot_provider(Arc::new({
         let p = Arc::clone(&platform);
         move || p.memory_snapshot()
@@ -1147,6 +1500,28 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     let turn_ledger_store: Arc<dyn beetle::memory::TurnLedgerStore + Send + Sync> =
         platform.turn_ledger_store();
     let emotion_signal_store = Arc::new(beetle::memory::MemoryEmotionSignalStore::new());
+    let soul_kernel_report = beetle::runtime::ensure_platform_soul_kernel_recovery(
+        platform.as_ref(),
+        beetle::util::current_unix_secs(),
+    );
+    if soul_kernel_report.restore_attempted {
+        log::info!(
+            "[{}] soul_kernel recovery action={:?} restored_snapshots={} restored_layers={} degraded_after={}",
+            TAG,
+            soul_kernel_report.action,
+            soul_kernel_report.restored_snapshots,
+            soul_kernel_report.restored_layers.len(),
+            soul_kernel_report.status_after.degraded,
+        );
+    } else {
+        log::info!(
+            "[{}] soul_kernel ready={} safe_mode_readable={} degraded={}",
+            TAG,
+            soul_kernel_report.status_after.minimum_viable,
+            soul_kernel_report.status_after.safe_mode_minimum_readable,
+            soul_kernel_report.status_after.degraded,
+        );
+    }
 
     let (bus, user_inbound_rx, outbound_rx) = MessageBus::new(DEFAULT_CAPACITY);
     let (system_inbound_tx, system_inbound_rx, system_inbound_depth) =
@@ -1251,9 +1626,10 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_baseline();
 
-    let shared_runtime_config = Arc::new(RwLock::new((*config).clone()));
     #[cfg(feature = "config_api")]
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     {
+        let shared_runtime_config = Arc::new(RwLock::new((*config).clone()));
         match spawn_http_config_server(HttpServerSpawnContext {
             platform: Arc::clone(&platform),
             tool_registry: Arc::clone(&registry),
@@ -1782,6 +2158,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
 
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::platform::task_wdt::register_current_task_to_task_wdt();
+    beetle::state::set_boot_phase_active(false);
 
     loop {
         beetle::platform::task_wdt::feed_current_task();

@@ -38,18 +38,43 @@
 - `/opt/beetle/beetle` 作为当前二进制的兼容快捷路径
 - `/var/lib/beetle` 作为默认状态目录
 
-### 服务入口与一个容易踩的坑
+### 服务入口与发布契约
 
 当前 Linux CLI 的服务主入口是：
 
-- `beetle run`
+- `beetle supervise`
+
+执行面入口是：
+
+- `beetle agent`
 
 也就是说：
 
-- 手工前台启动：`beetle run`
-- `systemd` unit 的 `ExecStart` 也必须最终指向 `.../beetle run`
+- 手工前台启动 supervisor：`beetle supervise`
+- `systemd` unit 的 `ExecStart` 必须指向 `.../beetle supervise`
+- `/opt/beetle/current/beetle` 永远代表当前发布版本
 
-这点非常重要，因为设备上若残留旧版 unit（例如 `ExecStart=/opt/beetle/current/beetle`），服务会直接打印 CLI 帮助并退出，看起来像“二进制坏了”，本质上其实是 **service 模板与 CLI 契约漂移**。
+如果机器上残留旧 unit，或者入口没有带 `supervise`，那不是“二进制坏了”，而是 **service 模板与 CLI 契约漂移**。
+
+### `current / rollback / pending_validation`
+
+当前 `./build.sh --deploy-linux` 在目标机上维护：
+
+- `/opt/beetle/current`：当前运行版本
+- `/opt/beetle/rollback`：上一个可回滚版本
+- `/var/lib/beetle/runtime/linux_release/state.json`：当前 Linux 发布状态
+- `/var/lib/beetle/runtime/state_schema.json`：状态目录 schema 版本
+
+新版本部署后先进入：
+
+- `pending_validation`
+
+含义是：
+
+- 新版本已经切成 `current`
+- supervisor 会观察 quick-failure 窗口
+- 若新版本稳定存活，会标记为 `steady`
+- 若在验证窗口内连续快速失败，supervisor 会优先切回 `rollback`，然后退出，让外层服务从新的 `current` 重新启动
 
 ### 关于 `smart update`
 
@@ -75,6 +100,7 @@
 - 二进制
 - service/unit 模板
 - 状态目录契约
-- 当前软链接指向
+- `current / rollback` 软链接指向
+- rollout state
 
 只有把这些一起看待，Linux 版 Beetle 才算是“一等服务进程”的回滚，而不是“板子上换了个程序文件”。

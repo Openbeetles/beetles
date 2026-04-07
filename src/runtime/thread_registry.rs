@@ -120,13 +120,10 @@ pub struct ThreadRegistrySnapshot {
     pub details: Vec<ThreadRuntimeSnapshot>,
 }
 
-#[derive(Clone, serde::Serialize)]
-/// 当前运行模式快照，用来判断多 plane / 双 lane 是否同时常驻。
-pub struct RuntimeModeSnapshot {
-    pub wifi_sta_connected: bool,
-    pub voice_exclusive_active: bool,
-    pub background_maintenance_active: bool,
-    pub config_plane_alive: bool,
+pub type RuntimeModeSnapshot = crate::runtime::mode::RuntimeModeSnapshot;
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct RuntimePlaneFlags {
     pub channel_plane_alive: bool,
     pub voice_plane_alive: bool,
     pub agent_plane_alive: bool,
@@ -191,9 +188,42 @@ pub fn snapshot() -> ThreadRegistrySnapshot {
 
 /// 返回当前运行模式快照；用于识别 config/channel/voice/agent 平面是否常驻。
 pub fn runtime_mode_snapshot() -> RuntimeModeSnapshot {
+    crate::runtime::mode::snapshot_from_source(runtime_mode_source())
+}
+
+/// 返回未做额外平台补充的运行模式源信号。
+///
+/// 该函数只聚合线程注册表与全局运行态布尔值。
+/// 若调用方需要把 pairing / supervisor safe mode 等平台语义纳入同一 mode contract，
+/// 应在此基础上补齐对应 source 字段，再交给 `snapshot_from_source(...)` 收口。
+pub fn runtime_mode_source() -> crate::runtime::mode::RuntimeModeSource {
+    let plane = runtime_plane_flags();
+    crate::runtime::mode::RuntimeModeSource {
+        wifi_sta_connected: crate::state::wifi_sta_connected(),
+        boot_phase_active: crate::state::boot_phase_active(),
+        pairing_required: false,
+        pairing_state_known: false,
+        voice_exclusive_active: crate::state::voice_exclusive_active(),
+        background_maintenance_active: crate::state::background_maintenance_active(),
+        config_plane_alive: crate::state::config_plane_active(),
+        channel_plane_alive: plane.channel_plane_alive,
+        voice_plane_alive: plane.voice_plane_alive,
+        agent_plane_alive: plane.agent_plane_alive,
+        user_agent_lane_alive: plane.user_agent_lane_alive,
+        system_agent_lane_alive: plane.system_agent_lane_alive,
+        dual_agent_lanes_alive: plane.dual_agent_lanes_alive,
+        external_wss_managed_present: crate::state::external_wss_managed_present(),
+        external_wss_suspend_requested: crate::state::external_wss_suspend_requested(),
+        external_wss_suspended: crate::state::external_wss_suspended(),
+        supervisor_present: false,
+        supervisor_alive: false,
+        supervisor_agent_alive: false,
+        recovery_safe_mode_active: false,
+    }
+}
+
+fn runtime_plane_flags() -> RuntimePlaneFlags {
     let guard = registry().lock().unwrap_or_else(|e| e.into_inner());
-    let background_maintenance_active = crate::state::background_maintenance_active();
-    let config_plane_alive = crate::state::config_plane_active();
     let channel_plane_alive = guard.iter().any(|entry| {
         entry.alive
             && thread_profile(entry.name.as_str()).execution_class == ThreadExecutionClass::Channel
@@ -208,12 +238,9 @@ pub fn runtime_mode_snapshot() -> RuntimeModeSnapshot {
     let user_agent_lane_alive = guard
         .iter()
         .any(|entry| entry.alive && entry.name == "agent_loop");
-    let system_agent_lane_alive = agent_plane_alive && background_maintenance_active;
-    RuntimeModeSnapshot {
-        wifi_sta_connected: crate::state::wifi_sta_connected(),
-        voice_exclusive_active: crate::state::voice_exclusive_active(),
-        background_maintenance_active,
-        config_plane_alive,
+    let system_agent_lane_alive =
+        agent_plane_alive && crate::state::background_maintenance_active();
+    RuntimePlaneFlags {
         channel_plane_alive,
         voice_plane_alive,
         agent_plane_alive,
@@ -281,10 +308,15 @@ pub fn format_stack_risk_log_line() -> String {
 pub fn format_runtime_mode_log_line() -> String {
     let mode = runtime_mode_snapshot();
     format!(
-        "runtime_mode wifi_sta={} voice_exclusive={} bg_maintenance={} config_plane={} channel_plane={} voice_plane={} agent_plane={} user_agent={} system_agent={} dual_agent={}",
+        "runtime_mode current_mode={} wifi_sta={} booting={} pairing_known={} pairing_required={} voice_exclusive={} bg_maintenance={} recovery_safe_mode={} config_plane={} channel_plane={} voice_plane={} agent_plane={} user_agent={} system_agent={} dual_agent={} timers={} periodic_maintenance={} non_voice_outbound={} ext_wss_connect={} ext_wss_suspend={}",
+        mode.current_mode.as_str(),
         mode.wifi_sta_connected,
+        mode.boot_phase_active,
+        mode.pairing_state_known,
+        mode.pairing_required,
         mode.voice_exclusive_active,
         mode.background_maintenance_active,
+        mode.recovery_safe_mode_active,
         mode.config_plane_alive,
         mode.channel_plane_alive,
         mode.voice_plane_alive,
@@ -292,6 +324,11 @@ pub fn format_runtime_mode_log_line() -> String {
         mode.user_agent_lane_alive,
         mode.system_agent_lane_alive,
         mode.dual_agent_lanes_alive,
+        mode.action_budget.allow_due_user_timers,
+        mode.action_budget.allow_periodic_maintenance,
+        mode.action_budget.allow_non_voice_outbound,
+        mode.action_budget.allow_external_wss_connect,
+        mode.action_budget.require_external_wss_suspended,
     )
 }
 

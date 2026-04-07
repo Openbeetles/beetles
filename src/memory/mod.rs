@@ -278,9 +278,11 @@ pub use recall_inspection::{
     WorkingRecallInspectionInput,
 };
 pub(crate) use recall_rerank::{
-    build_cross_plane_rerank_result, plane_signal_score, CrossPlanePlaneSignal,
-    CrossPlaneRerankCandidate, CrossPlaneRerankInput, CrossPlaneRerankResult,
+    build_cross_plane_rerank_result, plane_signal_score, CrossPlaneRerankInput,
+    CrossPlaneRerankResult,
 };
+#[cfg(test)]
+pub(crate) use recall_rerank::{CrossPlanePlaneSignal, CrossPlaneRerankCandidate};
 pub(crate) use recall_router::{
     decide_prompt_recall_route, PromptRecallIntent, PromptRecallRouterDecision,
 };

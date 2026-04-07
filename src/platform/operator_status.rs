@@ -113,7 +113,11 @@ pub struct OperatorStatusSnapshot {
     pub metrics: crate::metrics::MetricsSnapshot,
     pub resource: orchestrator::ResourceSnapshot,
     pub threads: runtime::ThreadRegistrySnapshot,
-    pub runtime_mode: runtime::thread_registry::RuntimeModeSnapshot,
+    pub os_closure: runtime::BeetleOsClosureReport,
+    pub initiative: runtime::InitiativeSnapshot,
+    pub presence: runtime::PresenceSnapshot,
+    pub runtime_mode: runtime::RuntimeModeSnapshot,
+    pub soul_kernel: runtime::SoulKernelStatus,
     pub continuity_tooling: OperatorContinuityTooling,
     pub task_execution: TaskExecutionOperatorSnapshot,
     pub capability_packages: CapabilityPackageOperatorSnapshot,
@@ -125,6 +129,12 @@ pub struct OperatorStatusSnapshot {
     pub tool_governance: Option<ToolExecutionGovernanceState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub personality_governance: Option<OperatorPersonalityGovernanceSnapshot>,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supervisor: Option<crate::runtime::linux_supervisor::LinuxSupervisorStatusSnapshot>,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release: Option<crate::runtime::LinuxReleaseStatus>,
 }
 
 pub fn build_operator_status(
@@ -175,6 +185,15 @@ pub fn build_operator_status(
         input.platform.memory_profile(),
         current_unix_secs(),
     )?;
+    let presence = runtime::inspect_platform_presence(input.platform, current_unix_secs());
+    let initiative = runtime::inspect_platform_initiative(input.platform, current_unix_secs());
+    let os_closure = runtime::inspect_beetle_os_closure(&presence, &initiative);
+    let runtime_mode = presence.runtime_mode;
+    let soul_kernel = presence.soul_kernel.clone();
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    let supervisor = presence.supervisor.clone();
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    let release = presence.release.clone();
     Ok(OperatorStatusSnapshot {
         platform_contract: OperatorPlatformContract {
             board_id: input.board_id.to_string(),
@@ -196,7 +215,11 @@ pub fn build_operator_status(
         metrics: crate::metrics::snapshot(),
         resource: orchestrator::snapshot(),
         threads: runtime::thread_registry::snapshot(),
-        runtime_mode: runtime::thread_registry::runtime_mode_snapshot(),
+        os_closure,
+        initiative,
+        runtime_mode,
+        soul_kernel,
+        presence,
         continuity_tooling: OperatorContinuityTooling {
             export_supported: continuity_tool_available,
             import_supported: continuity_tool_available,
@@ -214,6 +237,10 @@ pub fn build_operator_status(
         tools: input.tool_registry.tool_catalog()?,
         tool_governance,
         personality_governance,
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        supervisor,
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        release,
     })
 }
 
@@ -237,13 +264,77 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
         out.push_str(&format!("  storage_media_error: {}\n", error));
     }
     out.push_str(&format!(
-        "  inbound_depth: {}\n  outbound_depth: {}\n  last_error: {}\n  pressure: {:?}\n  continuity_saved_snapshots: {}\n",
+        "  inbound_depth: {}\n  outbound_depth: {}\n  last_error: {}\n  presence_state: {}\n  presence_headline: {}\n  presence_rationale: {}\n  initiative_action: {}\n  initiative_ready: {}\n  initiative_rationale: {}\n  runtime_mode: {}\n  soul_kernel_ready: {}\n  soul_kernel_safe_mode_readable: {}\n  soul_kernel_degraded: {}\n  soul_kernel_key_memory: {}\n  pressure: {:?}\n  continuity_saved_snapshots: {}\n",
         snapshot.inbound_depth,
         snapshot.outbound_depth,
         snapshot.last_error,
+        snapshot.presence.state.as_str(),
+        snapshot.presence.headline,
+        snapshot.presence.rationale,
+        snapshot.initiative.action.as_str(),
+        snapshot.initiative.ready,
+        snapshot.initiative.rationale,
+        snapshot.runtime_mode.current_mode.as_str(),
+        snapshot.soul_kernel.minimum_viable,
+        snapshot.soul_kernel.safe_mode_minimum_readable,
+        snapshot.soul_kernel.degraded,
+        snapshot.soul_kernel.key_memory_count,
         snapshot.resource.pressure,
         snapshot.continuity_tooling.saved_snapshot_count,
     ));
+    out.push_str(&format!(
+        "  os_closure_ready: {}\n  os_closure_summary: {}\n  os_closure_planes: {}/{}\n",
+        snapshot.os_closure.ready,
+        snapshot.os_closure.summary,
+        snapshot.os_closure.ready_planes,
+        snapshot.os_closure.plane_count,
+    ));
+    if !snapshot.os_closure.outstanding.is_empty() {
+        out.push_str(&format!(
+            "  os_closure_outstanding: {}\n",
+            snapshot.os_closure.outstanding.join(", ")
+        ));
+    }
+    if let Some(reason) = snapshot.initiative.suppression_reason {
+        out.push_str(&format!(
+            "  initiative_suppressed_by: {}\n",
+            reason.as_str()
+        ));
+    }
+    if let Some(target) = snapshot.initiative.target.as_ref() {
+        out.push_str(&format!(
+            "  initiative_target: {}:{} ({})\n",
+            target.channel, target.chat_id, target.selection_reason
+        ));
+    }
+    if !snapshot.soul_kernel.degradation_reasons.is_empty() {
+        out.push_str(&format!(
+            "  soul_kernel_degradation: {}\n",
+            snapshot.soul_kernel.degradation_reasons.join(", ")
+        ));
+    }
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    if let Some(supervisor) = snapshot.supervisor.as_ref() {
+        out.push_str(&format!(
+            "  supervisor_alive: {}\n  supervisor_state: {}\n  agent_alive: {}\n  agent_state: {}\n",
+            supervisor.supervisor_alive,
+            supervisor.state.current_state,
+            supervisor.agent_alive,
+            supervisor.state.agent.state,
+        ));
+        if let Some(reason) = supervisor.state.safe_mode_reason.as_deref() {
+            out.push_str(&format!("  safe_mode_reason: {}\n", reason));
+        }
+    }
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    if let Some(release) = snapshot.release.as_ref() {
+        out.push_str(&format!(
+            "  release_managed: {}\n  release_rollout_state: {}\n  release_rollback_available: {}\n",
+            release.managed,
+            release.rollout_state_label(),
+            release.rollback_available,
+        ));
+    }
     if let Some(governance) = snapshot.tool_governance.as_ref() {
         out.push_str(&format!(
             "  tool_emergency_stop: {}\n  tool_breakers: {}\n  tool_records: {}\n",

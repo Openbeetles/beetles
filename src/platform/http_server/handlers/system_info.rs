@@ -93,6 +93,14 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let out = ctx.outbound_depth.load(Ordering::Relaxed);
     let sta_up = crate::state::wifi_sta_connected();
     let loc = locale_from_store(ctx.config_store.as_ref());
+    let presence = crate::runtime::inspect_platform_presence(
+        ctx.platform.as_ref(),
+        crate::util::current_unix_secs(),
+    );
+    let initiative = crate::runtime::inspect_platform_initiative(
+        ctx.platform.as_ref(),
+        crate::util::current_unix_secs(),
+    );
     let system_status = if sta_up && storage_ok && last_error.is_none() && inc <= 6 && out <= 6 {
         tr(Message::SystemStatusOk, loc)
     } else if !sta_up {
@@ -111,10 +119,21 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let locale = config::get_locale(ctx.config_store.as_ref());
     let lan_ip = ctx.platform.lan_ipv4().unwrap_or_else(|| "—".to_string());
     let audio_caps = ctx.platform.audio_duplex_capabilities();
+    let runtime_mode = presence.runtime_mode;
+    let soul_kernel = presence.soul_kernel.clone();
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    let release = presence.release.clone();
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    let supervisor = presence.supervisor.clone();
     #[allow(unused_mut)]
     let mut json = serde_json::json!({
         "product_name": product_name,
         "system_status": system_status,
+        "initiative": initiative,
+        "presence": presence,
+        "runtime_mode": runtime_mode.current_mode,
+        "runtime_mode_snapshot": runtime_mode,
+        "soul_kernel": soul_kernel,
         "current_time": current_time,
         "firmware_version": firmware_version,
         "board_id": ctx.board_id.as_ref(),
@@ -124,6 +143,11 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         "audio_duplex_profile": audio_caps.profile(),
         "audio_duplex_capabilities": audio_caps,
     });
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    if let Some(obj) = json.as_object_mut() {
+        obj.insert("release".to_string(), serde_json::json!(release));
+        obj.insert("supervisor".to_string(), serde_json::json!(supervisor));
+    }
 
     if let Some(obj) = json.as_object_mut() {
         match ctx.platform.storage_media() {

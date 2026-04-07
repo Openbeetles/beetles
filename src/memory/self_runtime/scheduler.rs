@@ -189,8 +189,13 @@ fn enqueue_self_runtime_job_now(
 }
 
 fn self_runtime_enqueue_block_reason(trigger: SelfRuntimeTrigger) -> Option<&'static str> {
-    if crate::state::voice_exclusive_active() {
-        return Some("voice_exclusive_active");
+    let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+    if !runtime_mode.action_budget.allow_idle_self_runtime {
+        return Some(
+            runtime_mode
+                .mode_block_reason()
+                .unwrap_or("runtime_mode_blocked"),
+        );
     }
     if let Some(reason) = idle_self_runtime_scheduler_block_reason() {
         return Some(reason);
@@ -433,8 +438,13 @@ pub(super) fn idle_memory_hygiene_budget_allows_run() -> bool {
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn idle_self_runtime_block_reason() -> Option<&'static str> {
-    if crate::state::voice_exclusive_active() {
-        return Some("voice_exclusive_active");
+    let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+    if !runtime_mode.action_budget.allow_idle_self_runtime {
+        return Some(
+            runtime_mode
+                .mode_block_reason()
+                .unwrap_or("runtime_mode_blocked"),
+        );
     }
     if let Some(reason) = idle_self_runtime_scheduler_block_reason() {
         return Some(reason);
@@ -462,5 +472,13 @@ fn idle_self_runtime_block_reason() -> Option<&'static str> {
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn idle_self_runtime_block_reason() -> Option<&'static str> {
+    let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+    if !runtime_mode.action_budget.allow_idle_self_runtime {
+        return Some(
+            runtime_mode
+                .mode_block_reason()
+                .unwrap_or("runtime_mode_blocked"),
+        );
+    }
     idle_self_runtime_scheduler_block_reason()
 }

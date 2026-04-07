@@ -34,6 +34,8 @@ static EXTERNAL_WSS_SUSPENDED: AtomicBool = AtomicBool::new(false);
 static BACKGROUND_MAINTENANCE_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// 当前 config plane 是否真正处于 active serving 状态。
 static CONFIG_PLANE_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// 当前进程是否仍处于启动引导阶段；steady-state 建立后显式清除。
+static BOOT_PHASE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone)]
 struct TimedError {
@@ -232,6 +234,16 @@ pub fn config_plane_active() -> bool {
     CONFIG_PLANE_ACTIVE.load(Ordering::Relaxed)
 }
 
+/// 设置当前进程是否仍在启动引导阶段。
+pub fn set_boot_phase_active(active: bool) {
+    BOOT_PHASE_ACTIVE.store(active, Ordering::Relaxed);
+}
+
+/// 当前进程是否仍在启动引导阶段。
+pub fn boot_phase_active() -> bool {
+    BOOT_PHASE_ACTIVE.load(Ordering::Relaxed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,5 +327,14 @@ mod tests {
         assert!(config_plane_active());
         set_config_plane_active(false);
         assert!(!config_plane_active());
+    }
+
+    #[test]
+    fn boot_phase_flag_round_trips() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        set_boot_phase_active(true);
+        assert!(boot_phase_active());
+        set_boot_phase_active(false);
+        assert!(!boot_phase_active());
     }
 }

@@ -116,6 +116,15 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
     }
     let mut backoff_secs = crate::orchestrator::current_budget().reconnect_backoff_secs;
     loop {
+        let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+        if !runtime_mode.action_budget.allow_external_wss_connect {
+            if runtime_mode.action_budget.require_external_wss_suspended {
+                wait_for_external_wss_resume(tag);
+            } else {
+                sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
+            }
+            continue;
+        }
         wait_for_external_wss_resume(tag);
         wait_for_wifi(tag);
 
@@ -227,7 +236,10 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
         while !session_ended {
             crate::platform::task_wdt::feed_current_task();
             #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-            if crate::state::external_wss_suspend_requested() {
+            if !crate::runtime::thread_registry::runtime_mode_snapshot()
+                .action_budget
+                .allow_external_wss_connect
+            {
                 log::info!(
                     "[{}] disconnecting external WSS for realtime voice mode switch",
                     tag

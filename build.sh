@@ -532,6 +532,7 @@ DEPLOY_DEFAULTS_FILE="$DEPLOY_DEFAULTS_DIR/deploy-linux.defaults"
 DEPLOY_ROOT="/opt/beetle"
 DEPLOY_RELEASES_DIR="$DEPLOY_ROOT/releases"
 DEPLOY_CURRENT_LINK="$DEPLOY_ROOT/current"
+DEPLOY_ROLLBACK_LINK="$DEPLOY_ROOT/rollback"
 DEPLOY_GLOBAL_BIN="/usr/local/bin/beetle"
 DEPLOY_STATE_DIR="/var/lib/beetle"
 DEPLOY_SERVICE_PATH="/etc/systemd/system/beetle.service"
@@ -1134,12 +1135,17 @@ linux_deploy_install_payloads() {
     echo ""
 
     ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
-        "DEPLOY_ROOT='$DEPLOY_ROOT' DEPLOY_RELEASES_DIR='$DEPLOY_RELEASES_DIR' DEPLOY_CURRENT_LINK='$DEPLOY_CURRENT_LINK' DEPLOY_GLOBAL_BIN='$DEPLOY_GLOBAL_BIN' DEPLOY_STATE_DIR='$DEPLOY_STATE_DIR' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' DEPLOY_INIT_PATH='$DEPLOY_INIT_PATH' DEPLOY_ENV_PATH='$DEPLOY_ENV_PATH' DEPLOY_RELEASE_NAME='$DEPLOY_RELEASE_NAME' REMOTE_TMP_BIN='$REMOTE_TMP_BIN' REMOTE_TMP_SERVICE='$REMOTE_TMP_SERVICE' REMOTE_TMP_INIT='$REMOTE_TMP_INIT' REMOTE_TMP_ENV='$REMOTE_TMP_ENV' REMOTE_TMP_README='$REMOTE_TMP_README' REMOTE_TMP_HWJSON='$REMOTE_TMP_HWJSON' sh -s" << 'REMOTE_EOF'
+        "DEPLOY_ROOT='$DEPLOY_ROOT' DEPLOY_RELEASES_DIR='$DEPLOY_RELEASES_DIR' DEPLOY_CURRENT_LINK='$DEPLOY_CURRENT_LINK' DEPLOY_ROLLBACK_LINK='$DEPLOY_ROLLBACK_LINK' DEPLOY_GLOBAL_BIN='$DEPLOY_GLOBAL_BIN' DEPLOY_STATE_DIR='$DEPLOY_STATE_DIR' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' DEPLOY_INIT_PATH='$DEPLOY_INIT_PATH' DEPLOY_ENV_PATH='$DEPLOY_ENV_PATH' DEPLOY_RELEASE_NAME='$DEPLOY_RELEASE_NAME' REMOTE_TMP_BIN='$REMOTE_TMP_BIN' REMOTE_TMP_SERVICE='$REMOTE_TMP_SERVICE' REMOTE_TMP_INIT='$REMOTE_TMP_INIT' REMOTE_TMP_ENV='$REMOTE_TMP_ENV' REMOTE_TMP_README='$REMOTE_TMP_README' REMOTE_TMP_HWJSON='$REMOTE_TMP_HWJSON' sh -s" << 'REMOTE_EOF'
 set -eu
 
 release_dir="$DEPLOY_RELEASES_DIR/$DEPLOY_RELEASE_NAME"
 mkdir -p "$DEPLOY_RELEASES_DIR" "$DEPLOY_ROOT/bin" "$DEPLOY_STATE_DIR" "$DEPLOY_STATE_DIR/config" "$(dirname "$DEPLOY_GLOBAL_BIN")"
 chmod 700 "$DEPLOY_STATE_DIR" "$DEPLOY_STATE_DIR/config" 2>/dev/null || true
+
+previous_release=""
+if [ -e "$DEPLOY_CURRENT_LINK" ]; then
+    previous_release="$(readlink -f "$DEPLOY_CURRENT_LINK" 2>/dev/null || true)"
+fi
 
 if [ -e "$release_dir" ]; then
     rm -rf "$release_dir"
@@ -1172,11 +1178,56 @@ if [ -e "$DEPLOY_CURRENT_LINK" ] && [ ! -L "$DEPLOY_CURRENT_LINK" ]; then
     rm -rf "$DEPLOY_CURRENT_LINK"
 fi
 ln -sfn "$release_dir" "$DEPLOY_CURRENT_LINK"
+rollback_release=""
+if [ -n "$previous_release" ] && [ "$previous_release" != "$release_dir" ] && [ -d "$previous_release" ]; then
+    ln -sfn "$previous_release" "$DEPLOY_ROLLBACK_LINK"
+    rollback_release="$(readlink -f "$DEPLOY_ROLLBACK_LINK" 2>/dev/null || true)"
+else
+    rm -f "$DEPLOY_ROLLBACK_LINK"
+fi
 ln -sfn "$DEPLOY_CURRENT_LINK/beetle" "$DEPLOY_GLOBAL_BIN"
 if [ -f "$release_dir/README.txt" ]; then
     ln -sfn "$DEPLOY_CURRENT_LINK/README.txt" "$DEPLOY_ROOT/README.txt"
 fi
 rm -f "$DEPLOY_ROOT/beetle"
+
+release_state_dir="$DEPLOY_STATE_DIR/runtime/linux_release"
+release_state_path="$release_state_dir/state.json"
+state_schema_path="$DEPLOY_STATE_DIR/runtime/state_schema.json"
+mkdir -p "$release_state_dir" "$(dirname "$state_schema_path")"
+updated_at="$(date -u +%s)"
+current_name="$(basename "$release_dir")"
+rollback_name=""
+if [ -n "$rollback_release" ]; then
+    rollback_name="$(basename "$rollback_release")"
+fi
+{
+    printf '{\n'
+    printf '  "version": 1,\n'
+    printf '  "deploy_root": "%s",\n' "$DEPLOY_ROOT"
+    printf '  "current": {\n'
+    printf '    "name": "%s",\n' "$current_name"
+    printf '    "path": "%s"\n' "$release_dir"
+    printf '  },\n'
+    if [ -n "$rollback_release" ]; then
+        printf '  "rollback": {\n'
+        printf '    "name": "%s",\n' "$rollback_name"
+        printf '    "path": "%s"\n' "$rollback_release"
+        printf '  },\n'
+    else
+        printf '  "rollback": null,\n'
+    fi
+    printf '  "rollout_state": "pending_validation",\n'
+    printf '  "last_updated_at": %s,\n' "$updated_at"
+    printf '  "last_action": "deploy_release"\n'
+    printf '}\n'
+} > "$release_state_path"
+{
+    printf '{\n'
+    printf '  "version": 1,\n'
+    printf '  "updated_at": %s\n' "$updated_at"
+    printf '}\n'
+} > "$state_schema_path"
 
 if [ -f "$REMOTE_TMP_SERVICE" ]; then
     mv "$REMOTE_TMP_SERVICE" "$DEPLOY_SERVICE_PATH"
@@ -1199,6 +1250,11 @@ rm -f "$REMOTE_TMP_SERVICE" "$REMOTE_TMP_INIT" "$REMOTE_TMP_ENV" "$REMOTE_TMP_RE
 
 echo "✓ Installed release: $release_dir"
 echo "✓ Current symlink: $DEPLOY_CURRENT_LINK -> $release_dir"
+if [ -n "$rollback_release" ]; then
+    echo "✓ Rollback symlink: $DEPLOY_ROLLBACK_LINK -> $rollback_release"
+else
+    echo "✓ Rollback symlink: none"
+fi
 echo "✓ Global command: $DEPLOY_GLOBAL_BIN -> $DEPLOY_CURRENT_LINK/beetle"
 REMOTE_EOF
 

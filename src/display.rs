@@ -113,6 +113,8 @@ pub struct DisplayChannelStatus {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DisplaySystemState {
     Booting,
+    Pairing,
+    Recovery,
     NoWifi,
     Idle,
     Busy,
@@ -142,6 +144,8 @@ pub struct DisplayLayout {
 pub enum DisplayCommand {
     RefreshDashboard {
         state: DisplaySystemState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        presence_subtitle: Option<String>,
         wifi_connected: bool,
         ip_address: Option<String>,
         channels: [DisplayChannelStatus; 5],
@@ -162,6 +166,8 @@ pub enum DisplayCommand {
     /// 仅副标题 IP 行局部刷新；`uptime_secs` 与宽屏双行 `Up:` 对齐。
     UpdateIp {
         ip: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        presence_subtitle: Option<String>,
         uptime_secs: u64,
     },
     UpdatePressure {

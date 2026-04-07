@@ -38,18 +38,43 @@ Today, `./build.sh --deploy-linux` maintains this layout on the target:
 - `/opt/beetle/beetle` as a compatibility shortcut to the active binary
 - `/var/lib/beetle` as the default state directory
 
-### Service entrypoint and one common failure mode
+### Service entrypoint and release contract
 
-The current Linux service entrypoint is:
+The Linux service entrypoint is:
 
-- `beetle run`
+- `beetle supervise`
+
+The execution-plane entrypoint is:
+
+- `beetle agent`
 
 That means:
 
-- manual foreground start should use `beetle run`
-- the final `systemd` `ExecStart` should also point to `.../beetle run`
+- manual foreground supervisor start should use `beetle supervise`
+- the final `systemd` `ExecStart` should point to `.../beetle supervise`
+- `/opt/beetle/current/beetle` is always the active release binary
 
-This matters because a device with an older unit file such as `ExecStart=/opt/beetle/current/beetle` will print CLI help and exit. That can look like a broken binary, but the real issue is **drift between the service template and the CLI contract**.
+If a device still has an old unit file or an entrypoint without `supervise`, that is not a broken binary. It is **drift between the service template and the CLI contract**.
+
+### `current`, `rollback`, and `pending_validation`
+
+`./build.sh --deploy-linux` now maintains:
+
+- `/opt/beetle/current`: the active release
+- `/opt/beetle/rollback`: the previous rollback candidate
+- `/var/lib/beetle/runtime/linux_release/state.json`: Linux rollout state
+- `/var/lib/beetle/runtime/state_schema.json`: state-root schema version
+
+Each newly deployed release first enters:
+
+- `pending_validation`
+
+That means:
+
+- the new release has become `current`
+- the supervisor watches it through the quick-failure window
+- if it survives, the release is marked `steady`
+- if it fails repeatedly during validation, the supervisor flips `current` back to `rollback`, then exits so the outer service manager restarts Beetle from the rolled-back symlink
 
 ### About `smart update`
 
@@ -75,6 +100,7 @@ On Linux, what really needs rollback is not just one ELF file, but one runtime u
 - the binary
 - the service/unit template
 - the state-directory contract
-- the active symlink target
+- the `current` / `rollback` symlink targets
+- the rollout state
 
 Only when those move together does Beetle behave like a first-class Linux service instead of "a board program copied onto Linux".

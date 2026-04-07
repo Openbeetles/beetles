@@ -205,8 +205,13 @@ fn is_lane_background_job(msg: &PcMsg) -> bool {
 }
 
 fn background_enqueue_block_reason() -> Option<&'static str> {
-    if crate::state::voice_exclusive_active() {
-        return Some("voice_exclusive_active");
+    let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+    if !runtime_mode.action_budget.allow_periodic_maintenance {
+        return Some(
+            runtime_mode
+                .mode_block_reason()
+                .unwrap_or("runtime_mode_blocked"),
+        );
     }
     let snap = crate::orchestrator::snapshot();
     if snap.active_agent_tasks > 0 || snap.inbound_depth > 0 || snap.outbound_depth > 0 {

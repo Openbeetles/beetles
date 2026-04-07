@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 const TAG: &str = "bootstrap";
 
-/// 共享：加载配置、校验、WiFi 连接；ESP 侧含启动进度条与 display 初始化（与 Linux 同路径，无重复 main 逻辑）。
-pub fn bootstrap_config_and_wifi(platform: &Arc<dyn Platform>) -> (Arc<AppConfig>, bool) {
+/// 共享：只加载配置，不触发 WiFi、显示、音频等启动副作用。
+pub fn load_config(platform: &Arc<dyn Platform>) -> Arc<AppConfig> {
     let config_store = platform.config_store();
     let config_file_store = config::PlatformConfigFileStore(Arc::clone(platform));
     let config = Arc::new(AppConfig::load(
@@ -32,6 +32,12 @@ pub fn bootstrap_config_and_wifi(platform: &Arc<dyn Platform>) -> (Arc<AppConfig
         !config.wifi_ssid.is_empty(),
         !config.proxy_url.is_empty()
     );
+    config
+}
+
+/// 共享：加载配置、校验、WiFi 连接；ESP 侧含启动进度条与 display 初始化（与 Linux 同路径，无重复 main 逻辑）。
+pub fn bootstrap_config_and_wifi(platform: &Arc<dyn Platform>) -> (Arc<AppConfig>, bool) {
+    let config = load_config(platform);
 
     if !config.wifi_ssid.is_empty() {
         if let Err(e) = config.validate_for_wifi() {
@@ -90,6 +96,7 @@ fn post_wifi_display_bootstrap(
                 let _ = platform.display_command(DisplayCommand::UpdateBootProgress { stage: 0 });
                 let _ = platform.display_command(DisplayCommand::RefreshDashboard {
                     state: DisplaySystemState::Booting,
+                    presence_subtitle: Some("restoring runtime shell".to_string()),
                     wifi_connected: false,
                     ip_address: None,
                     channels: [
@@ -142,7 +149,11 @@ fn post_wifi_display_bootstrap(
             .wifi_sta_ip()
             .unwrap_or_else(|| SOFTAP_DEFAULT_IPV4.to_string());
         let uptime_secs = crate::platform::time::uptime_secs();
-        let _ = platform.display_command(DisplayCommand::UpdateIp { ip, uptime_secs });
+        let _ = platform.display_command(DisplayCommand::UpdateIp {
+            ip,
+            presence_subtitle: None,
+            uptime_secs,
+        });
     }
 }
 

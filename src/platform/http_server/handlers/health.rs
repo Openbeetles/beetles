@@ -30,7 +30,17 @@ struct HealthBody {
     metrics: metrics::MetricsSnapshot,
     resource: orchestrator::ResourceSnapshot,
     threads: runtime::ThreadRegistrySnapshot,
-    runtime_mode: runtime::thread_registry::RuntimeModeSnapshot,
+    os_closure: runtime::BeetleOsClosureReport,
+    initiative: runtime::InitiativeSnapshot,
+    presence: runtime::PresenceSnapshot,
+    runtime_mode: runtime::RuntimeModeSnapshot,
+    soul_kernel: runtime::SoulKernelStatus,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    supervisor: Option<crate::runtime::linux_supervisor::LinuxSupervisorStatusSnapshot>,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    release: Option<crate::runtime::LinuxReleaseStatus>,
 }
 
 /// 生成 health JSON body（含 metrics 与 resource 快照，无敏感信息）。
@@ -42,6 +52,19 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     };
     let last_err = state::get_current_error().unwrap_or_else(|| "none".to_string());
     let audio_caps = ctx.platform.audio_duplex_capabilities();
+    let presence =
+        runtime::inspect_platform_presence(ctx.platform.as_ref(), crate::util::current_unix_secs());
+    let runtime_mode = presence.runtime_mode;
+    let soul_kernel = presence.soul_kernel.clone();
+    let initiative = runtime::inspect_platform_initiative(
+        ctx.platform.as_ref(),
+        crate::util::current_unix_secs(),
+    );
+    let os_closure = runtime::inspect_beetle_os_closure(&presence, &initiative);
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    let supervisor = presence.supervisor.clone();
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    let release = presence.release.clone();
     let payload = HealthBody {
         wifi,
         inbound_depth: ctx.inbound_depth.load(Ordering::Relaxed),
@@ -57,7 +80,15 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         metrics: metrics::snapshot(),
         resource: orchestrator::snapshot(),
         threads: runtime::thread_registry::snapshot(),
-        runtime_mode: runtime::thread_registry::runtime_mode_snapshot(),
+        os_closure,
+        initiative,
+        runtime_mode,
+        soul_kernel,
+        presence,
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        supervisor,
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        release,
     };
     serde_json::to_string(&payload).map_err(std::io::Error::other)
 }

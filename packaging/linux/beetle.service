@@ -1,5 +1,5 @@
 [Unit]
-Description=Beetle agent (甲壳虫)
+Description=Beetle supervisor (甲壳虫)
 # Self-managed WiFi/AP: do not order after network-online (NM wait-online can deadlock).
 After=local-fs.target
 Wants=network-pre.target
@@ -13,7 +13,7 @@ Type=simple
 # User=beetle
 # Group=beetle
 WorkingDirectory=/opt/beetle/current
-ExecStart=/opt/beetle/current/beetle run
+ExecStart=/opt/beetle/current/beetle supervise
 # Recover from crashes; cap bursts so a broken binary does not spin forever.
 Restart=on-failure
 RestartSec=5

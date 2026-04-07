@@ -553,6 +553,7 @@ where
     match cmd {
         DisplayCommand::RefreshDashboard {
             state,
+            presence_subtitle,
             wifi_connected: _,
             ip_address,
             channels,
@@ -571,6 +572,7 @@ where
                 &DashboardParams {
                     layout,
                     state: *state,
+                    presence_subtitle: presence_subtitle.as_deref(),
                     ip_address: ip_address.as_deref(),
                     channels,
                     pressure,
@@ -588,8 +590,19 @@ where
             );
             backend.flush(config.offset_x, config.offset_y)?;
         }
-        DisplayCommand::UpdateIp { ip, uptime_secs } => {
-            render_ip_partial(backend, ip.as_str(), *uptime_secs, config.width, layout);
+        DisplayCommand::UpdateIp {
+            ip,
+            presence_subtitle,
+            uptime_secs,
+        } => {
+            render_ip_partial(
+                backend,
+                ip.as_str(),
+                presence_subtitle.as_deref(),
+                *uptime_secs,
+                config.width,
+                layout,
+            );
             let flush_h = subtitle_ip_flush_rows(config.width, *uptime_secs);
             backend.flush_rows(
                 config.offset_x,
@@ -1410,6 +1423,7 @@ fn draw_dashed_top_arc<D: DrawTarget<Color = Rgb565>>(
 struct DashboardParams<'a> {
     layout: &'a DisplayLayout,
     state: DisplaySystemState,
+    presence_subtitle: Option<&'a str>,
     ip_address: Option<&'a str>,
     channels: &'a [DisplayChannelStatus; 5],
     pressure: &'a DisplayPressureLevel,
@@ -1528,6 +1542,10 @@ fn render_dashboard<D: DrawTarget<Color = Rgb565>>(target: &mut D, p: &Dashboard
             wings: true,
             ..Default::default()
         },
+        DisplaySystemState::Recovery => BeetleOpts {
+            x_eyes: true,
+            ..Default::default()
+        },
         DisplaySystemState::Fault => BeetleOpts {
             flipped: true,
             x_eyes: true,
@@ -1605,6 +1623,40 @@ fn render_dashboard<D: DrawTarget<Color = Rgb565>>(target: &mut D, p: &Dashboard
                 Point::new(cx + m, body_cy - m / 2),
             )
             .into_styled(check_style)
+            .draw(target);
+        }
+        DisplaySystemState::Pairing => {
+            let pair_style = PrimitiveStyle::with_stroke(beetle_color, 2);
+            let dot_style = PrimitiveStyle::with_fill(Rgb565::WHITE);
+            let spacing = body_r * 32 / 100;
+            let _ = Line::new(
+                Point::new(cx - spacing, body_cy),
+                Point::new(cx + spacing, body_cy),
+            )
+            .into_styled(pair_style)
+            .draw(target);
+            for idx in [-1, 0, 1] {
+                let dx = idx * spacing;
+                let _ = Circle::new(Point::new(cx + dx - 2, body_cy - 2), 4)
+                    .into_styled(dot_style)
+                    .draw(target);
+            }
+        }
+        DisplaySystemState::Recovery => {
+            let recover_style = PrimitiveStyle::with_stroke(Rgb565::WHITE, 2);
+            let arc_y = body_cy - body_r / 4;
+            draw_top_arc(target, cx, arc_y, body_r / 2, &recover_style);
+            let _ = Line::new(
+                Point::new(cx + body_r / 3, arc_y - 1),
+                Point::new(cx + body_r / 2, arc_y - 5),
+            )
+            .into_styled(recover_style)
+            .draw(target);
+            let _ = Line::new(
+                Point::new(cx + body_r / 3, arc_y - 1),
+                Point::new(cx + body_r / 2 - 1, arc_y + 7),
+            )
+            .into_styled(recover_style)
             .draw(target);
         }
         DisplaySystemState::Fault => {
@@ -1751,6 +1803,8 @@ fn render_dashboard<D: DrawTarget<Color = Rgb565>>(target: &mut D, p: &Dashboard
     let title_style = MonoTextStyle::new(&FONT_9X18_BOLD, beetle_color);
     let state_name = match p.state {
         DisplaySystemState::Booting => "BOOTING",
+        DisplaySystemState::Pairing => "PAIRING",
+        DisplaySystemState::Recovery => "RECOVERY",
         DisplaySystemState::NoWifi => "NO WIFI",
         DisplaySystemState::Idle => "IDLE",
         DisplaySystemState::Busy => "BUSY",
@@ -1774,7 +1828,14 @@ fn render_dashboard<D: DrawTarget<Color = Rgb565>>(target: &mut D, p: &Dashboard
 
     // --- Subtitle: IP address (+ uptime for Idle/Busy) or version ---
     let subtitle_style = MonoTextStyle::new(&FONT_6X13, TEXT_SECONDARY);
-    if p.state == DisplaySystemState::Booting {
+    if let Some(subtitle) = p.presence_subtitle {
+        let _ = Text::new(
+            subtitle,
+            Point::new(layout.title_left as i32, layout.subtitle_top as i32 + 11),
+            subtitle_style,
+        )
+        .draw(target);
+    } else if p.state == DisplaySystemState::Booting {
         let ip_text = p
             .ip_address
             .unwrap_or(concat!("beetle v", env!("CARGO_PKG_VERSION")));
@@ -1886,6 +1947,8 @@ fn subtitle_ip_flush_rows(width: u16, uptime_secs: u64) -> u16 {
 fn state_accent_color(state: DisplaySystemState) -> Rgb565 {
     match state {
         DisplaySystemState::Booting => STATUS_WARNING,
+        DisplaySystemState::Pairing => rgb565(245, 158, 11), // #F59E0B
+        DisplaySystemState::Recovery => rgb565(249, 115, 22), // #F97316
         DisplaySystemState::NoWifi => rgb565(100, 116, 139), // #64748B
         DisplaySystemState::Idle => STATUS_SUCCESS,
         DisplaySystemState::Busy => STATUS_INFO,
@@ -2192,6 +2255,7 @@ fn render_channels_inner<D: DrawTarget<Color = Rgb565>>(
 fn render_ip_partial<D: DrawTarget<Color = Rgb565>>(
     target: &mut D,
     ip: &str,
+    presence_subtitle: Option<&str>,
     uptime_secs: u64,
     width: u16,
     layout: &DisplayLayout,
@@ -2206,7 +2270,9 @@ fn render_ip_partial<D: DrawTarget<Color = Rgb565>>(
 
     let subtitle_style = MonoTextStyle::new(&FONT_6X13, TEXT_SECONDARY);
     let y0 = y + 11;
-    if width >= DISPLAY_WIDE_LAYOUT_MIN_PX {
+    if let Some(subtitle) = presence_subtitle {
+        let _ = Text::new(subtitle, Point::new(x, y0), subtitle_style).draw(target);
+    } else if width >= DISPLAY_WIDE_LAYOUT_MIN_PX {
         let mut ip_line = [0u8; 40];
         let max_px = (width as usize).saturating_sub(layout.title_left as usize);
         let max_chars = (max_px / 6).clamp(1, 40);

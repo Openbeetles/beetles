@@ -5,6 +5,8 @@ use crate::config::PinConfig;
 use crate::error::{Error, Result};
 use serde_json::Value;
 use std::collections::HashMap;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use std::sync::mpsc;
 use std::sync::Mutex;
 use std::time::Instant;
 

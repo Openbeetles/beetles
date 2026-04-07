@@ -98,7 +98,9 @@ fn schedule_delayed_task_with_priority(
     let mut dropped_best_effort = false;
     let mut notify_deadline_changed = false;
     let mut task = Some(task);
-    let allow_best_effort = !crate::state::voice_exclusive_active();
+    let allow_best_effort = crate::runtime::thread_registry::runtime_mode_snapshot()
+        .action_budget
+        .allow_best_effort_delayed_tasks;
     let due_now = {
         let mut pending = state().pending.lock().unwrap_or_else(|e| e.into_inner());
         let due_now =
@@ -164,7 +166,9 @@ pub fn schedule_critical_delayed_task(
 }
 
 pub fn service_delayed_tasks() {
-    let allow_best_effort = !crate::state::voice_exclusive_active();
+    let allow_best_effort = crate::runtime::thread_registry::runtime_mode_snapshot()
+        .action_budget
+        .allow_best_effort_delayed_tasks;
     let due = {
         let mut pending = state().pending.lock().unwrap_or_else(|e| e.into_inner());
         take_due_jobs_locked_with_policy(&mut pending, Instant::now(), allow_best_effort)
@@ -175,7 +179,9 @@ pub fn service_delayed_tasks() {
 pub fn next_delayed_task_wait(max_wait: Duration) -> Duration {
     let pending = state().pending.lock().unwrap_or_else(|e| e.into_inner());
     let now = Instant::now();
-    let allow_best_effort = !crate::state::voice_exclusive_active();
+    let allow_best_effort = crate::runtime::thread_registry::runtime_mode_snapshot()
+        .action_budget
+        .allow_best_effort_delayed_tasks;
     pending
         .iter()
         .filter(|job| allow_best_effort || job.priority == DelayedTaskPriority::Critical)

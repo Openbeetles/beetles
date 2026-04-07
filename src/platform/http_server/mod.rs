@@ -1,7 +1,7 @@
 //! HTTP 配置 API 服务器：ESP 用 `esp-idf-svc` HTTPD；Linux/host 用 `tiny_http`，路由与 handler 与 ESP 共用。
 //! Config HTTP API: ESP uses IDF HTTPD; Linux/host uses `tiny_http` with shared router/handlers.
 
-mod router;
+pub(crate) mod router;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 mod esp_transport;
@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub(crate) mod common;
-mod handlers;
+pub(crate) mod handlers;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const CONFIG_PLANE_POLL_MS: u64 = 500;

@@ -91,10 +91,10 @@ pub(crate) fn heartbeat_tick(
     state: &mut HeartbeatTickState,
 ) {
     state.round = state.round.wrapping_add(1);
-    let voice_exclusive = crate::state::voice_exclusive_active();
+    let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
 
     // Session GC: run every SESSION_GC_INTERVAL_ROUNDS rounds.
-    if !voice_exclusive
+    if runtime_mode.action_budget.allow_periodic_maintenance
         && state
             .round
             .is_multiple_of(crate::constants::SESSION_GC_INTERVAL_ROUNDS)
@@ -109,7 +109,7 @@ pub(crate) fn heartbeat_tick(
     }
 
     // Session/storage metrics: collect every SESSION_METRICS_INTERVAL_ROUNDS rounds.
-    if !voice_exclusive
+    if runtime_mode.action_budget.allow_periodic_maintenance
         && state
             .round
             .is_multiple_of(crate::constants::SESSION_METRICS_INTERVAL_ROUNDS)
@@ -155,7 +155,7 @@ pub(crate) fn heartbeat_tick(
         crate::runtime::thread_registry::format_runtime_mode_log_line()
     );
 
-    if voice_exclusive {
+    if !runtime_mode.action_budget.allow_heartbeat_injection {
         return;
     }
 

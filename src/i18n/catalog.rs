@@ -76,6 +76,13 @@ pub enum Message {
     TaskDue {
         title: String,
     },
+    InitiativeUpcomingReminder {
+        minutes: u64,
+    },
+    InitiativeResumeTaskCheckIn {
+        idle_minutes: u64,
+        high_priority: bool,
+    },
     ToolProgress {
         name: String,
         index: usize,
@@ -191,6 +198,26 @@ pub fn tr(msg: Message, loc: Locale) -> String {
             Message::AgentNoFinalReply => zh("这轮执行已完成，但没有生成最终答复，请重试。"),
             Message::RemindPrefix => zh("提醒："),
             Message::TaskDue { ref title } => format!("任务到期：{}", title),
+            Message::InitiativeUpcomingReminder { minutes } => format!(
+                "有一个提醒将在约 {} 分钟后到点。不要打断当前方向；简短提示时间压力，并确认是否要先收尾或调整优先级。",
+                minutes
+            ),
+            Message::InitiativeResumeTaskCheckIn {
+                idle_minutes,
+                high_priority,
+            } => {
+                if high_priority {
+                    format!(
+                        "当前有高优先级的进行中事项已停下约 {} 分钟。简短询问用户是否要继续推进；不要强推，也不要制造压力。",
+                        idle_minutes
+                    )
+                } else {
+                    format!(
+                        "当前有进行中的事项已停下约 {} 分钟。简短询问用户是否要继续推进；不要强推，也不要制造压力。",
+                        idle_minutes
+                    )
+                }
+            }
             Message::ToolProgress {
                 ref name,
                 index,
@@ -322,6 +349,26 @@ pub fn tr(msg: Message, loc: Locale) -> String {
             }
             Message::RemindPrefix => en("Reminder: "),
             Message::TaskDue { ref title } => format!("Task due: {}", title),
+            Message::InitiativeUpcomingReminder { minutes } => format!(
+                "A reminder is due in about {} minutes. Do not derail the current task; briefly flag the time pressure and ask whether to wrap up or adjust priority.",
+                minutes
+            ),
+            Message::InitiativeResumeTaskCheckIn {
+                idle_minutes,
+                high_priority,
+            } => {
+                if high_priority {
+                    format!(
+                        "A high-priority in-progress task has been idle for about {} minutes. Briefly ask whether to continue, without pushing or creating pressure.",
+                        idle_minutes
+                    )
+                } else {
+                    format!(
+                        "An in-progress task has been idle for about {} minutes. Briefly ask whether to continue, without pushing or creating pressure.",
+                        idle_minutes
+                    )
+                }
+            }
             Message::ToolProgress {
                 ref name,
                 index,

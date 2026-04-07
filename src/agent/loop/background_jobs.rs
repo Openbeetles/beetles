@@ -163,7 +163,8 @@ pub(super) fn run_background_job_with_accounting(
     loc: UiLocale,
     msg: PcMsg,
 ) {
-    if crate::state::voice_exclusive_active() {
+    let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+    if !runtime_mode.action_budget.allow_periodic_maintenance {
         super::requeue_background_job_with_delay(msg, system_inbound_tx, 500);
         return;
     }

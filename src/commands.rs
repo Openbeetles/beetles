@@ -12,7 +12,22 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Start the agent service in the foreground
+    /// Start the Linux supervisor in the foreground
+    Supervise {
+        /// Optional config file path
+        #[arg(short, long)]
+        config: Option<String>,
+    },
+
+    /// Run the agent execution plane directly
+    Agent {
+        /// Optional config file path
+        #[arg(short, long)]
+        config: Option<String>,
+    },
+
+    /// Backward-compatible alias for `supervise`
+    #[command(hide = true)]
     Run {
         /// Optional config file path
         #[arg(short, long)]
@@ -44,8 +59,27 @@ pub enum Commands {
     /// Run diagnostic checks
     Doctor,
 
+    /// Inspect or control Linux release lifecycle
+    Release {
+        #[command(subcommand)]
+        action: ReleaseAction,
+    },
+
     /// Print version information
     Version,
+}
+
+#[derive(Subcommand)]
+pub enum ReleaseAction {
+    /// Show Linux release / rollback status
+    Status {
+        /// Output JSON instead of plain text
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Roll back to the rollback release pointer
+    Rollback,
 }
 
 #[derive(Subcommand)]
