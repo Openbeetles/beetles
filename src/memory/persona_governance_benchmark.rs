@@ -2,7 +2,8 @@
 
 use super::{
     derive_recent_persona_evidence, inspect_personality_governance, CoreRevisionLedger,
-    PersonalityGovernanceInspectionInput, RelationshipConstitution, SelfAuthoredCore, TurnLedger,
+    PersonalityGovernanceInspectionInput, PersonalityGovernanceRepairAction,
+    RelationshipConstitution, SelfAuthoredCore, TurnLedger,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,6 +20,7 @@ pub struct PersonaGovernanceReplayCase {
     pub expected_outstanding: Option<&'static str>,
     pub expected_drift_flag: Option<&'static str>,
     pub expected_event_fragment: Option<&'static str>,
+    pub expected_primary_action: PersonalityGovernanceRepairAction,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,6 +30,7 @@ pub struct PersonaGovernanceReplayResult {
     pub outstanding_match: bool,
     pub drift_flag_match: bool,
     pub event_fragment_match: bool,
+    pub primary_action_match: bool,
     pub passed: bool,
 }
 
@@ -73,16 +76,20 @@ pub fn run_persona_governance_replay_case(
             .iter()
             .any(|event| event.summary.contains(fragment))
     });
+    let primary_action_match =
+        inspection.repair_plan.primary_action == case.expected_primary_action;
     let passed = inspection.closure.ready == case.expected_ready
         && outstanding_match
         && drift_flag_match
-        && event_fragment_match;
+        && event_fragment_match
+        && primary_action_match;
     PersonaGovernanceReplayResult {
         case_name: case.name,
         closure_ready: inspection.closure.ready,
         outstanding_match,
         drift_flag_match,
         event_fragment_match,
+        primary_action_match,
         passed,
     }
 }
@@ -243,7 +250,7 @@ mod tests {
                 name: "stable_governance_ready",
                 channel: "qq",
                 chat_id: "chat-a",
-                now_secs: 2_000,
+                now_secs: 1_200,
                 self_authored_core: Some(sample_core()),
                 core_revision_ledger: Some(sample_ledger(950, false)),
                 relationship_constitution: Some(sample_constitution()),
@@ -269,6 +276,7 @@ mod tests {
                 expected_outstanding: None,
                 expected_drift_flag: None,
                 expected_event_fragment: Some("alignment=aligned"),
+                expected_primary_action: PersonalityGovernanceRepairAction::ObserveOnly,
             },
             PersonaGovernanceReplayCase {
                 name: "observation_blocks_closure",
@@ -300,6 +308,7 @@ mod tests {
                 expected_outstanding: Some("board_core_still_under_observation"),
                 expected_drift_flag: None,
                 expected_event_fragment: Some("rev 4 adopted"),
+                expected_primary_action: PersonalityGovernanceRepairAction::RepairSelfAuthoredCore,
             },
             PersonaGovernanceReplayCase {
                 name: "rollback_pressure_stays_visible",
@@ -331,6 +340,7 @@ mod tests {
                 expected_outstanding: Some("board_core_still_under_observation"),
                 expected_drift_flag: None,
                 expected_event_fragment: Some("rollback"),
+                expected_primary_action: PersonalityGovernanceRepairAction::RepairSelfAuthoredCore,
             },
             PersonaGovernanceReplayCase {
                 name: "relationship_drift_blocks_closure",
@@ -350,6 +360,8 @@ mod tests {
                 expected_outstanding: Some("relationship_drift_not_under_control"),
                 expected_drift_flag: Some("reply_scope_drift"),
                 expected_event_fragment: Some("drift_score"),
+                expected_primary_action:
+                    PersonalityGovernanceRepairAction::RepairRelationshipConstitution,
             },
         ];
 

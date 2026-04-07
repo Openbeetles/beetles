@@ -1,5 +1,6 @@
 //! Self-state: extensible inward attributes projected into prompt.
 //! 当前承载“自我空间 + 内在层 + 自治状态”。
+#![allow(clippy::too_many_arguments)]
 
 use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};

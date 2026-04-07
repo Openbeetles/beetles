@@ -198,16 +198,6 @@ pub(crate) struct PrivateGardenGovernancePolicy {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct InternalMemoryRoutingPolicy {
-    pub recent_message_count: usize,
-    pub transcript_preview_chars: usize,
-    pub grounding_max_len: usize,
-    pub substantive_user_chars: usize,
-    pub substantive_reply_chars: usize,
-    pub substantive_combined_chars: usize,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SelfRuntimePolicy {
     pub recent_message_count: usize,
     pub transcript_preview_chars: usize,
@@ -240,7 +230,6 @@ pub(crate) struct MemoryPolicy {
     pub private_docs: PrivateDocsPolicy,
     pub private_garden: PrivateGardenPolicy,
     pub private_garden_governance: PrivateGardenGovernancePolicy,
-    pub internal_memory_routing: InternalMemoryRoutingPolicy,
     pub self_runtime: SelfRuntimePolicy,
     pub self_state: SelfStatePolicy,
 }
@@ -384,14 +373,6 @@ const EMBEDDED_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
         max_writes: 2,
         max_moves: 2,
         max_deletes: 2,
-    },
-    internal_memory_routing: InternalMemoryRoutingPolicy {
-        recent_message_count: 6,
-        transcript_preview_chars: 140,
-        grounding_max_len: 240,
-        substantive_user_chars: 8,
-        substantive_reply_chars: 20,
-        substantive_combined_chars: 48,
     },
     self_runtime: SelfRuntimePolicy {
         recent_message_count: 6,
@@ -549,14 +530,6 @@ const STANDARD_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
         max_moves: 3,
         max_deletes: 3,
     },
-    internal_memory_routing: InternalMemoryRoutingPolicy {
-        recent_message_count: 10,
-        transcript_preview_chars: 220,
-        grounding_max_len: 320,
-        substantive_user_chars: 6,
-        substantive_reply_chars: 18,
-        substantive_combined_chars: 40,
-    },
     self_runtime: SelfRuntimePolicy {
         recent_message_count: 10,
         transcript_preview_chars: 220,
@@ -654,10 +627,6 @@ mod tests {
         assert!(
             standard.private_garden_governance.existing_docs_max_chars
                 > embedded.private_garden_governance.existing_docs_max_chars
-        );
-        assert!(
-            standard.internal_memory_routing.recent_message_count
-                > embedded.internal_memory_routing.recent_message_count
         );
         assert!(standard.self_runtime.max_jobs_per_tick > embedded.self_runtime.max_jobs_per_tick);
         assert!(standard.self_state.render_max_len > embedded.self_state.render_max_len);

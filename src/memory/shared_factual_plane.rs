@@ -1,4 +1,5 @@
 //! Shared factual plane helpers for personality and private-memory layers.
+#![allow(clippy::too_many_arguments)]
 
 use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};

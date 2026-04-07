@@ -1,5 +1,6 @@
 //! 长期记忆提取调度与轻量状态。
 //! Long-term memory extraction scheduling and lightweight state.
+#![allow(clippy::too_many_arguments)]
 
 use crate::bus::IngressKind;
 use crate::error::Error;

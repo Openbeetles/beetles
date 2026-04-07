@@ -60,7 +60,9 @@ pub(super) fn prepare_worker_conversation<'a>(
     let capability_package_text =
         (config.get_capability_package_text)(&msg.channel, prompt_memory_system_budget.min(1800));
     let relationship_id = crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id);
-    let mental_privacy_adjudication = if msg.ingress == IngressKind::User {
+    let (mental_privacy_adjudication, mental_privacy_adjudication_failed) = if msg.ingress
+        == IngressKind::User
+    {
         match run_mental_privacy_disclosure_adjudication(
             tool_ctx,
             worker_llm,
@@ -80,14 +82,14 @@ pub(super) fn prepare_worker_conversation<'a>(
                 now_secs: runtime.now_secs,
             },
         ) {
-            Ok(result) => result,
+            Ok(result) => (result, false),
             Err(error) => {
                 log::warn!("[agent_mental_privacy_adjudication] failed: {}", error);
-                None
+                (None, true)
             }
         }
     } else {
-        None
+        (None, false)
     };
     let mut prompt_memory = load_prompt_memory_context(PromptMemoryContextParams {
         chat_id: &msg.chat_id,
@@ -124,16 +126,8 @@ pub(super) fn prepare_worker_conversation<'a>(
         task_store: config.task_store.as_ref(),
         turn_ledger_store: config.turn_ledger_store.as_ref(),
         skill_storage: config.skill_storage.as_ref(),
+        continuity_capsule_store: config.continuity_capsule_store.as_ref(),
     });
-    prompt_memory.mental_privacy_adjudication_text =
-        mental_privacy_adjudication
-            .as_ref()
-            .and_then(|adjudication| {
-                crate::memory::render_mental_privacy_disclosure_adjudication_block(
-                    adjudication,
-                    420,
-                )
-            });
     let recent_persona_evidence =
         load_recent_persona_evidence(config.turn_ledger_store.as_ref(), &relationship_id)
             .ok()
@@ -177,6 +171,38 @@ pub(super) fn prepare_worker_conversation<'a>(
         .get(board_subject_scope_id())
         .ok()
         .flatten();
+    let personality_governance_gate = crate::memory::derive_personality_runtime_governance_gate(
+        crate::memory::PersonalityGovernanceInspectionInput {
+            channel: &msg.channel,
+            chat_id: &msg.chat_id,
+            now_secs: runtime.now_secs,
+            self_authored_core: prompt_memory.self_authored_core.as_ref(),
+            core_revision_ledger: core_revision_ledger.as_ref(),
+            relationship_constitution: prompt_memory.relationship_constitution.as_ref(),
+            relationship_topology: prompt_relationship_topology.as_ref(),
+            recent_persona_evidence: recent_persona_evidence.as_ref(),
+        },
+    );
+    prompt_memory.personality_governance_gate_text =
+        crate::memory::render_personality_runtime_governance_gate_block(
+            &personality_governance_gate,
+            420,
+        );
+    prompt_memory.mental_privacy_adjudication_text = mental_privacy_adjudication
+        .as_ref()
+        .and_then(|adjudication| {
+            crate::memory::render_mental_privacy_disclosure_adjudication_block(adjudication, 420)
+        })
+        .or_else(|| {
+            (mental_privacy_adjudication_failed && personality_governance_gate.conservative_reply)
+                .then(|| {
+                    crate::memory::render_mental_privacy_governance_fallback_block(
+                        &personality_governance_gate.reason_summary,
+                        420,
+                    )
+                })
+                .flatten()
+        });
     let core_revision_governance = compute_core_revision_governance_digest(
         core_revision_ledger.as_ref(),
         prompt_memory
@@ -215,7 +241,12 @@ pub(super) fn prepare_worker_conversation<'a>(
     let persistent_persona_priority_text =
         crate::memory::render_persona_priority_block(&persistent_persona_priority, 420);
     let persona_priority_adjudication = if msg.ingress == IngressKind::User {
-        if crate::memory::should_run_persona_priority_adjudication(persona_priority_runtime) {
+        if !personality_governance_gate.allow_dynamic_persona_priority {
+            persistent_persona_priority_text
+                .as_ref()
+                .map(|_| persistent_persona_priority.clone())
+        } else if crate::memory::should_run_persona_priority_adjudication(persona_priority_runtime)
+        {
             match crate::memory::run_persona_priority_adjudication(
                 tool_ctx,
                 worker_llm,

@@ -10,17 +10,19 @@ use crate::task_execution::{
 
 use super::{
     board_subject_scope_id, build_archive_evidence_block, build_self_state, build_world_snapshot,
-    collect_private_targets, derive_relationship_constitution, load_recent_persona_evidence,
-    memory_capability_profile, memory_policy, parse_explicit_long_term_slot_query,
-    recall_long_term_memory_block, relationship_scope_id, render_autonomy_strategy_block,
+    collect_private_targets, decide_prompt_recall_route, derive_relationship_constitution,
+    inspect_continuity_capsule_recall, load_recent_persona_evidence, memory_capability_profile,
+    memory_policy, parse_explicit_long_term_slot_query, recall_long_term_memory_block,
+    relationship_scope_id, render_autonomy_strategy_block, render_continuity_capsule_block,
     render_exact_long_term_memory_block, render_execution_state_block, render_inner_life_block,
     render_mental_privacy_boundary_block, render_outer_voice_block,
     render_persistent_self_authored_core_block, render_private_doc_workspace_block,
     render_private_garden_block, render_relationship_constitution_block,
     render_relationship_portfolio_block, render_self_continuity_block, render_self_model_block,
     render_self_state_block, render_world_sense_block, render_world_snapshot_block,
-    AutonomyStrategyStore, ExecutionStateStore, InnerLifeStore, LongTermMemoryStore, MemoryProfile,
-    MemoryStore, MentalPrivacyStore, OuterVoiceStore, PrivateDocStore, PrivateGardenStore,
+    AutonomyStrategyStore, ContinuityCapsuleScopeKind, ContinuityCapsuleStore, ExecutionStateStore,
+    InnerLifeStore, LongTermMemoryStore, MemoryProfile, MemoryStore, MentalPrivacyStore,
+    OuterVoiceStore, PrivateDocStore, PrivateGardenStore, PromptRecallRouterDecision,
     RelationshipConstitutionStore, RelationshipConstitutionSyncInput, RelationshipPortfolioStore,
     RelationshipTopologyStore, RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore,
     SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore, TurnLedgerStore,
@@ -32,15 +34,18 @@ pub struct PromptMemoryContext {
     pub active_task_context_text: Option<String>,
     pub governed_memory_evidence_text: Option<String>,
     pub background_governance_text: Option<String>,
+    pub personality_governance_gate_text: Option<String>,
     pub summary_text: Option<String>,
     pub message_summary_text: Option<String>,
     pub long_term_memory_text: Option<String>,
+    pub continuity_capsule_text: Option<String>,
     pub archive_evidence_text: Option<String>,
     pub runtime_skill_text: Option<String>,
     pub execution_state_text: Option<String>,
     pub task_workspace_text: Option<String>,
     pub task_recall_text: Option<String>,
     pub shared_factual_recall_report: super::RecallSelectionReport,
+    pub continuity_capsule_report: super::RecallSelectionReport,
     pub archive_recall_report: super::RecallSelectionReport,
     pub runtime_skill_recall_report: super::RecallSelectionReport,
     pub task_recall_report: Option<super::RecallSelectionReport>,
@@ -65,26 +70,32 @@ pub struct PromptMemoryContext {
     pub mental_privacy_adjudication_text: Option<String>,
     pub mental_privacy_text: Option<String>,
     pub recent_messages: Vec<SessionMessage>,
+    recall_router: PromptRecallRouterDecision,
 }
 
 impl PromptMemoryContext {
     pub fn refresh_reply_projection_groups(&mut self) {
         self.constitutional_stack_text = compose_prompt_projection_body(&[
+            self.personality_governance_gate_text.as_deref(),
             self.self_authored_core_text.as_deref(),
             self.relationship_constitution_text.as_deref(),
             self.persona_priority_text.as_deref(),
             self.mental_privacy_adjudication_text.as_deref(),
         ]);
-        self.active_task_context_text = compose_prompt_projection_body(&[
+        let active_task_parts = self.recall_router.active_task_parts(
             self.execution_state_text.as_deref(),
             self.task_workspace_text.as_deref(),
             self.task_recall_text.as_deref(),
-        ]);
-        self.governed_memory_evidence_text = compose_prompt_projection_body(&[
+            self.continuity_capsule_text.as_deref(),
+        );
+        self.active_task_context_text = compose_prompt_projection_body(&active_task_parts);
+        let governed_memory_parts = self.recall_router.governed_memory_parts(
             self.long_term_memory_text.as_deref(),
+            self.continuity_capsule_text.as_deref(),
             self.archive_evidence_text.as_deref(),
             self.runtime_skill_text.as_deref(),
-        ]);
+        );
+        self.governed_memory_evidence_text = compose_prompt_projection_body(&governed_memory_parts);
         self.background_governance_text = compose_prompt_projection_body(&[
             self.relationship_portfolio_text.as_deref(),
             self.world_snapshot_text.as_deref(),
@@ -159,6 +170,7 @@ pub struct PromptMemoryContextParams<'a> {
     pub task_store: &'a dyn TaskStore,
     pub turn_ledger_store: &'a dyn TurnLedgerStore,
     pub skill_storage: &'a dyn SkillStorage,
+    pub continuity_capsule_store: &'a dyn ContinuityCapsuleStore,
 }
 
 pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> PromptMemoryContext {
@@ -189,17 +201,17 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         .flatten()
         .map(|(summary, _)| summary.trim().to_string())
         .filter(|summary| !summary.is_empty());
-    let execution_state_text = params
+    let execution_state = params
         .execution_state_store
         .get(params.chat_id)
         .ok()
-        .flatten()
-        .and_then(|state| {
-            render_execution_state_block(
-                &state,
-                memory_policy(params.profile).execution_state.render_max_len,
-            )
-        });
+        .flatten();
+    let execution_state_text = execution_state.as_ref().and_then(|state| {
+        render_execution_state_block(
+            state,
+            memory_policy(params.profile).execution_state.render_max_len,
+        )
+    });
     let active_task_run = active_task_run_for_chat(
         params.task_run_store,
         params.current_channel,
@@ -448,6 +460,77 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
             )
         }
     };
+    let continuity_recall_query = {
+        let trimmed = params.user_query.trim();
+        let weak_query = super::archive_search::collect_archive_match_terms(trimmed).len() <= 2
+            && trimmed.chars().count() <= 12;
+        if weak_query {
+            [
+                Some(trimmed.to_string()).filter(|value| !value.is_empty()),
+                active_task_run
+                    .as_ref()
+                    .map(|record| record.plan.goal.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+                execution_state
+                    .as_ref()
+                    .map(|state| state.goal.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+                summary_text.clone(),
+                recent_messages
+                    .iter()
+                    .rev()
+                    .take(2)
+                    .map(|message| message.content.trim().to_string())
+                    .find(|value| !value.is_empty()),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" ")
+        } else {
+            trimmed.to_string()
+        }
+    };
+    let (continuity_capsule_report, continuity_capsules) = if governed_memory_enabled {
+        inspect_continuity_capsule_recall(
+            params.continuity_capsule_store,
+            ContinuityCapsuleScopeKind::Chat,
+            params.chat_id,
+            Some(params.chat_id),
+            &continuity_recall_query,
+            summary_text.as_deref(),
+            &recent_messages,
+            params.system_max_len.min(480),
+            params.now_secs,
+        )
+    } else {
+        (
+            super::RecallSelectionReport {
+                plane: super::RecallPlane::ContinuityCapsule,
+                query: super::RecallQuery {
+                    plane: super::RecallPlane::ContinuityCapsule,
+                    ..super::RecallQuery::default()
+                },
+                backend: "continuity_capsule_heuristic".to_string(),
+                candidate_count: 0,
+                selected_count: 0,
+                selected_ids: Vec::new(),
+                miss_reason: Some(if params.load_long_term_memory {
+                    "system_budget_below_block_threshold".to_string()
+                } else {
+                    "continuity_capsule_recall_disabled".to_string()
+                }),
+                selection_note: None,
+                candidates: Vec::new(),
+            },
+            Vec::new(),
+        )
+    };
+    let continuity_capsule_text = governed_memory_enabled
+        .then(|| {
+            render_continuity_capsule_block(&continuity_capsules, params.system_max_len.min(480))
+        })
+        .flatten();
     let archive_evidence_text = if !governed_memory_enabled {
         None
     } else {
@@ -590,6 +673,16 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
             candidates: Vec::new(),
         }
     };
+    let recall_router = decide_prompt_recall_route(super::recall_router::PromptRecallRouterInput {
+        user_query: params.user_query,
+        has_execution_state: execution_state_text.is_some(),
+        has_active_task: active_task_run.is_some(),
+        shared_factual_report: &shared_factual_recall_report,
+        continuity_capsule_report: &continuity_capsule_report,
+        archive_report: &archive_recall_report,
+        runtime_skill_report: &runtime_skill_recall_report,
+        task_recall_report: task_recall_report.as_ref(),
+    });
     let message_summary_text = if execution_state_text.is_some() {
         None
     } else {
@@ -600,15 +693,18 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         active_task_context_text: None,
         governed_memory_evidence_text: None,
         background_governance_text: None,
+        personality_governance_gate_text: None,
         summary_text,
         message_summary_text,
         long_term_memory_text,
+        continuity_capsule_text,
         archive_evidence_text,
         runtime_skill_text,
         execution_state_text,
         task_workspace_text,
         task_recall_text,
         shared_factual_recall_report,
+        continuity_capsule_report,
         archive_recall_report,
         runtime_skill_recall_report,
         task_recall_report,
@@ -633,6 +729,7 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         mental_privacy_adjudication_text: None,
         mental_privacy_text,
         recent_messages,
+        recall_router,
     };
     context.refresh_reply_projection_groups();
     context
@@ -1064,6 +1161,59 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct StubActiveTaskRunStore {
+        active: Mutex<Vec<crate::task_execution::TaskRunRecord>>,
+    }
+
+    impl crate::task_execution::TaskRunStore for StubActiveTaskRunStore {
+        fn get(&self, run_id: &str) -> Result<Option<crate::task_execution::TaskRunRecord>> {
+            Ok(self
+                .active
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .find(|record| record.run.run_id == run_id)
+                .cloned())
+        }
+
+        fn upsert(&self, _record: &crate::task_execution::TaskRunRecord) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_recent(&self, limit: usize) -> Result<Vec<crate::task_execution::TaskRunRecord>> {
+            Ok(self
+                .active
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .take(limit)
+                .cloned()
+                .collect())
+        }
+
+        fn list_active_for_chat(
+            &self,
+            channel: &str,
+            chat_id: &str,
+            limit: usize,
+        ) -> Result<Vec<crate::task_execution::TaskRunRecord>> {
+            Ok(self
+                .active
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .filter(|record| {
+                    record.run.source_channel == channel
+                        && record.run.source_chat_id == chat_id
+                        && record.run.status.is_active()
+                })
+                .take(limit)
+                .cloned()
+                .collect())
+        }
+    }
+
+    #[derive(Default)]
     struct StubTaskArtifactStore;
 
     impl crate::task_execution::TaskArtifactStore for StubTaskArtifactStore {
@@ -1117,6 +1267,51 @@ mod tests {
             _limit: usize,
         ) -> Result<Vec<crate::task_execution::TaskLearningRecord>> {
             Ok(Vec::new())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubContinuityCapsuleStore {
+        entries: Mutex<Vec<crate::memory::ContinuityCapsule>>,
+        list_calls: Mutex<usize>,
+    }
+
+    impl crate::memory::ContinuityCapsuleStore for StubContinuityCapsuleStore {
+        fn upsert_many(
+            &self,
+            drafts: &[crate::memory::ContinuityCapsuleDraft],
+            now_secs: u64,
+        ) -> Result<crate::memory::ContinuityCapsuleWriteOutcome> {
+            let mut guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            Ok(crate::memory::apply_continuity_capsule_drafts(
+                &mut guard, drafts, now_secs,
+            ))
+        }
+
+        fn get(&self, capsule_id: &str) -> Result<Option<crate::memory::ContinuityCapsule>> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .find(|entry| entry.capsule_id == capsule_id)
+                .cloned())
+        }
+
+        fn list(&self, limit: usize) -> Result<Vec<crate::memory::ContinuityCapsule>> {
+            *self.list_calls.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .take(limit)
+                .cloned()
+                .collect())
+        }
+
+        fn count(&self) -> Result<usize> {
+            Ok(self.entries.lock().unwrap_or_else(|e| e.into_inner()).len())
         }
     }
 
@@ -1369,6 +1564,51 @@ mod tests {
         }
     }
 
+    fn make_active_task_run(
+        run_id: &str,
+        goal: &str,
+        step_title: &str,
+    ) -> crate::task_execution::TaskRunRecord {
+        crate::task_execution::TaskRunRecord {
+            run: crate::task_execution::TaskRun {
+                run_id: run_id.to_string(),
+                source_channel: "qq_channel".to_string(),
+                source_chat_id: "chat-1".to_string(),
+                user_request: goal.to_string(),
+                title: goal.to_string(),
+                status: crate::task_execution::TaskRunStatus::Running,
+                current_step_id: "s01".to_string(),
+                planner_reason: "needs a structured run".to_string(),
+                final_summary: String::new(),
+                failure_reason: String::new(),
+                plan_revision: 1,
+                created_at: 10,
+                updated_at: 10,
+                finished_at: 0,
+            },
+            plan: crate::task_execution::TaskPlan {
+                goal: goal.to_string(),
+                completion_definition: "Close the current work cleanly.".to_string(),
+                risk_notes: Vec::new(),
+                ordered_steps: vec![crate::task_execution::TaskStep {
+                    step_id: "s01".to_string(),
+                    title: step_title.to_string(),
+                    instruction: "Continue the current task chain.".to_string(),
+                    status: crate::task_execution::TaskStepStatus::Running,
+                    tool_budget: 2,
+                    retry_budget: 1,
+                    expected_artifacts: Vec::new(),
+                    review_criteria: Vec::new(),
+                    attempt_count: 1,
+                    last_result_summary: String::new(),
+                    last_review_summary: String::new(),
+                    started_at: 10,
+                    finished_at: 0,
+                }],
+            },
+        }
+    }
+
     #[test]
     fn loads_summary_and_uses_it_for_weak_query_recall() {
         let session_store = StubSessionStore {
@@ -1565,6 +1805,7 @@ mod tests {
         let task_run_store = StubTaskRunStore;
         let task_artifact_store = StubTaskArtifactStore;
         let skill_storage = StubSkillStorage::default();
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
         crate::skills::upsert_runtime_skill(
             &skill_storage,
             &crate::skills::RuntimeSkillWrite {
@@ -1614,6 +1855,7 @@ mod tests {
             task_store: &task_store,
             turn_ledger_store: &turn_ledger_store,
             skill_storage: &skill_storage,
+            continuity_capsule_store: &continuity_capsule_store,
         });
 
         assert_eq!(
@@ -1794,6 +2036,7 @@ mod tests {
         let task_run_store = StubTaskRunStore;
         let task_artifact_store = StubTaskArtifactStore;
         let skill_storage = StubSkillStorage::default();
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
 
         let context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
@@ -1830,6 +2073,7 @@ mod tests {
             task_store: &task_store,
             turn_ledger_store: &turn_ledger_store,
             skill_storage: &skill_storage,
+            continuity_capsule_store: &continuity_capsule_store,
         });
 
         assert_eq!(
@@ -1847,6 +2091,13 @@ mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .is_none());
+        assert_eq!(
+            *continuity_capsule_store
+                .list_calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+            0
+        );
     }
 
     #[test]
@@ -1974,6 +2225,7 @@ mod tests {
         let task_run_store = StubTaskRunStore;
         let task_artifact_store = StubTaskArtifactStore;
         let skill_storage = StubSkillStorage::default();
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
 
         let context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
@@ -2010,6 +2262,7 @@ mod tests {
             task_store: &task_store,
             turn_ledger_store: &turn_ledger_store,
             skill_storage: &skill_storage,
+            continuity_capsule_store: &continuity_capsule_store,
         });
 
         assert_eq!(context.summary_text.as_deref(), Some("summary"));
@@ -2086,6 +2339,7 @@ mod tests {
         let task_run_store = StubTaskRunStore;
         let task_artifact_store = StubTaskArtifactStore;
         let skill_storage = StubSkillStorage::default();
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
         let context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
             current_channel: "qq_channel",
@@ -2121,6 +2375,7 @@ mod tests {
             task_store: &StubTaskStore,
             turn_ledger_store: &turn_ledger_store,
             skill_storage: &skill_storage,
+            continuity_capsule_store: &continuity_capsule_store,
         });
 
         let rendered = context.self_authored_core_text.unwrap_or_default();
@@ -2159,6 +2414,7 @@ mod tests {
         let task_run_store = StubTaskRunStore;
         let task_artifact_store = StubTaskArtifactStore;
         let skill_storage = StubSkillStorage::default();
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
 
         let context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
@@ -2195,6 +2451,7 @@ mod tests {
             task_store: &StubTaskStore,
             turn_ledger_store: &turn_ledger_store,
             skill_storage: &skill_storage,
+            continuity_capsule_store: &continuity_capsule_store,
         });
 
         assert!(context.self_authored_core.is_none());
@@ -2204,5 +2461,350 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("fallback anchor"));
+    }
+
+    #[test]
+    fn continuity_router_moves_capsule_into_active_task_context() {
+        let session_store = StubSessionStore {
+            recent: Mutex::new(vec![SessionMessage {
+                role: "user".to_string(),
+                content: "继续".to_string(),
+            }]),
+        };
+        let summary_store = StubSessionSummaryStore {
+            summary: Mutex::new(Some(("continue the memory router work".to_string(), 2))),
+        };
+        let memory_store = StubLongTermMemoryStore {
+            entries: Mutex::new(vec![LongTermMemoryEntry {
+                id: "memory-router".to_string(),
+                kind: LongTermMemoryKind::Project,
+                topic: "memory router".to_string(),
+                content: "Canonical summary for the memory router project.".to_string(),
+                keywords: vec!["memory".to_string(), "router".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                source_type: crate::memory::LongTermMemorySourceType::Conversation,
+                source_scope: crate::memory::LongTermMemorySourceScope::User,
+                confidence: crate::memory::LongTermMemoryConfidence::High,
+                freshness: crate::memory::LongTermMemoryFreshness::Dynamic,
+                stale_hint: crate::memory::LongTermMemoryStaleHint::None,
+                supporting_citations: Vec::new(),
+                evidence_count: 2,
+                created_at: 1,
+                updated_at: 1,
+                observed_at: 1,
+                last_confirmed_at: 1,
+                source_revision: 1,
+                last_used_at: 0,
+            }]),
+            last_query: Mutex::new(None),
+        };
+        let archive_memory_store = StubMemoryStore {
+            daily_notes: Mutex::new(vec![(
+                "2026-04-06.md".to_string(),
+                "Archive note: memory router handoff still needs the recall order fixed."
+                    .to_string(),
+            )]),
+        };
+        let execution_state_store = StubExecutionStateStore {
+            state: Mutex::new(Some(ExecutionState {
+                status: ExecutionStatus::Active,
+                goal: "Close recall router".to_string(),
+                progress: "capsule exists".to_string(),
+                blocker: String::new(),
+                next_action: "wire it into prompt assembly".to_string(),
+                last_output: String::new(),
+                updated_at: 5,
+            })),
+        };
+        let task_run_store = StubActiveTaskRunStore {
+            active: Mutex::new(vec![make_active_task_run(
+                "run-router",
+                "Close recall router",
+                "Route continuity capsule into the prompt",
+            )]),
+        };
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
+        continuity_capsule_store
+            .upsert_many(
+                &[crate::memory::ContinuityCapsuleDraft {
+                    scope_kind: crate::memory::ContinuityCapsuleScopeKind::Chat,
+                    scope_id: "chat-1".to_string(),
+                    source_chat_id: "chat-1".to_string(),
+                    run_id: "run-router".to_string(),
+                    topic: "memory router".to_string(),
+                    summary: "Continue the recall-router work without reopening prior analysis."
+                        .to_string(),
+                    next_step: "Move capsule recall into Active Task Context.".to_string(),
+                    ..Default::default()
+                }],
+                100,
+            )
+            .unwrap();
+
+        let context = load_prompt_memory_context(PromptMemoryContextParams {
+            chat_id: "chat-1",
+            current_channel: "qq_channel",
+            user_query: "继续",
+            system_max_len: 1024,
+            now_secs: 100,
+            profile: MemoryProfile::Standard,
+            recent_messages_limit: 8,
+            load_long_term_memory: true,
+            include_private_garden_projection: false,
+            session_store: &session_store,
+            memory_store: &archive_memory_store,
+            session_summary_store: &summary_store,
+            long_term_memory_store: &memory_store,
+            execution_state_store: &execution_state_store,
+            task_run_store: &task_run_store,
+            task_artifact_store: &StubTaskArtifactStore,
+            task_learning_store: &StubTaskLearningStore,
+            self_model_store: &StubSelfModelStore::default(),
+            self_authored_core_store: &StubSelfAuthoredCoreStore::default(),
+            relationship_constitution_store: &StubRelationshipConstitutionStore::default(),
+            relationship_portfolio_store: &StubRelationshipPortfolioStore::default(),
+            relationship_topology_store: &StubRelationshipTopologyStore::default(),
+            world_sense_store: &StubWorldSenseStore::default(),
+            autonomy_strategy_store: &StubAutonomyStrategyStore::default(),
+            outer_voice_store: &StubOuterVoiceStore::default(),
+            inner_life_store: &StubInnerLifeStore::default(),
+            self_continuity_store: &StubSelfContinuityStore::default(),
+            private_doc_store: &StubPrivateDocStore::default(),
+            private_garden_store: &StubPrivateGardenStore::default(),
+            mental_privacy_store: &StubMentalPrivacyStore::default(),
+            remind_store: &StubRemindAtStore,
+            task_store: &StubTaskStore,
+            turn_ledger_store: &StubTurnLedgerStore::default(),
+            skill_storage: &StubSkillStorage::default(),
+            continuity_capsule_store: &continuity_capsule_store,
+        });
+
+        let active = context.active_task_context_text.unwrap_or_default();
+        assert!(active.contains("## Continuity Capsules"));
+        assert!(active.contains("## Task Workspace"));
+        assert!(
+            active.find("## Continuity Capsules").unwrap()
+                < active.find("## Task Workspace").unwrap()
+        );
+        assert!(!context
+            .governed_memory_evidence_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Continuity Capsules"));
+    }
+
+    #[test]
+    fn procedural_router_prioritizes_runtime_skill_before_capsule_and_archive() {
+        let session_store = StubSessionStore::default();
+        let summary_store = StubSessionSummaryStore {
+            summary: Mutex::new(Some(("reuse the proven release patch flow".to_string(), 3))),
+        };
+        let memory_store = StubLongTermMemoryStore {
+            entries: Mutex::new(vec![LongTermMemoryEntry {
+                id: "project-release".to_string(),
+                kind: LongTermMemoryKind::Project,
+                topic: "release".to_string(),
+                content: "Project release state is stable.".to_string(),
+                keywords: vec!["release".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                source_type: crate::memory::LongTermMemorySourceType::Conversation,
+                source_scope: crate::memory::LongTermMemorySourceScope::User,
+                confidence: crate::memory::LongTermMemoryConfidence::Medium,
+                freshness: crate::memory::LongTermMemoryFreshness::Dynamic,
+                stale_hint: crate::memory::LongTermMemoryStaleHint::None,
+                supporting_citations: Vec::new(),
+                evidence_count: 1,
+                created_at: 1,
+                updated_at: 1,
+                observed_at: 1,
+                last_confirmed_at: 1,
+                source_revision: 1,
+                last_used_at: 0,
+            }]),
+            last_query: Mutex::new(None),
+        };
+        let archive_memory_store = StubMemoryStore {
+            daily_notes: Mutex::new(vec![(
+                "2026-04-05.md".to_string(),
+                "Archive evidence: the release patch flow previously succeeded after checklist verification."
+                    .to_string(),
+            )]),
+        };
+        let skill_storage = StubSkillStorage::default();
+        crate::skills::upsert_runtime_skill(
+            &skill_storage,
+            &crate::skills::RuntimeSkillWrite {
+                name: String::new(),
+                topic: "release patch".to_string(),
+                title: "Release patch flow".to_string(),
+                summary: "Use the proved release patch sequence.".to_string(),
+                content: "- validate diff\n- run targeted tests\n- ship release patch".to_string(),
+                citations: vec!["task_learning:release_patch".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                observed_at: 10,
+            },
+        )
+        .unwrap();
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
+        continuity_capsule_store
+            .upsert_many(
+                &[crate::memory::ContinuityCapsuleDraft {
+                    scope_kind: crate::memory::ContinuityCapsuleScopeKind::Chat,
+                    scope_id: "chat-1".to_string(),
+                    source_chat_id: "chat-1".to_string(),
+                    topic: "release patch".to_string(),
+                    summary: "The last run proved the patch flow and left a reusable handoff."
+                        .to_string(),
+                    next_step: "Reuse the proven flow before improvising.".to_string(),
+                    ..Default::default()
+                }],
+                100,
+            )
+            .unwrap();
+
+        let context = load_prompt_memory_context(PromptMemoryContextParams {
+            chat_id: "chat-1",
+            current_channel: "qq_channel",
+            user_query: "按之前的 release patch 流程继续",
+            system_max_len: 1024,
+            now_secs: 100,
+            profile: MemoryProfile::Standard,
+            recent_messages_limit: 8,
+            load_long_term_memory: true,
+            include_private_garden_projection: false,
+            session_store: &session_store,
+            memory_store: &archive_memory_store,
+            session_summary_store: &summary_store,
+            long_term_memory_store: &memory_store,
+            execution_state_store: &StubExecutionStateStore::default(),
+            task_run_store: &StubTaskRunStore,
+            task_artifact_store: &StubTaskArtifactStore,
+            task_learning_store: &StubTaskLearningStore,
+            self_model_store: &StubSelfModelStore::default(),
+            self_authored_core_store: &StubSelfAuthoredCoreStore::default(),
+            relationship_constitution_store: &StubRelationshipConstitutionStore::default(),
+            relationship_portfolio_store: &StubRelationshipPortfolioStore::default(),
+            relationship_topology_store: &StubRelationshipTopologyStore::default(),
+            world_sense_store: &StubWorldSenseStore::default(),
+            autonomy_strategy_store: &StubAutonomyStrategyStore::default(),
+            outer_voice_store: &StubOuterVoiceStore::default(),
+            inner_life_store: &StubInnerLifeStore::default(),
+            self_continuity_store: &StubSelfContinuityStore::default(),
+            private_doc_store: &StubPrivateDocStore::default(),
+            private_garden_store: &StubPrivateGardenStore::default(),
+            mental_privacy_store: &StubMentalPrivacyStore::default(),
+            remind_store: &StubRemindAtStore,
+            task_store: &StubTaskStore,
+            turn_ledger_store: &StubTurnLedgerStore::default(),
+            skill_storage: &skill_storage,
+            continuity_capsule_store: &continuity_capsule_store,
+        });
+
+        let governed = context.governed_memory_evidence_text.unwrap_or_default();
+        let runtime_pos = governed.find("Runtime skills").unwrap();
+        let capsule_pos = governed.find("## Continuity Capsules").unwrap();
+        let archive_pos = governed.find("Archive evidence").unwrap();
+        assert!(runtime_pos < capsule_pos);
+        assert!(capsule_pos < archive_pos);
+    }
+
+    #[test]
+    fn evidence_router_prioritizes_archive_before_capsule_and_canonical_memory() {
+        let session_store = StubSessionStore::default();
+        let summary_store = StubSessionSummaryStore::default();
+        let memory_store = StubLongTermMemoryStore {
+            entries: Mutex::new(vec![LongTermMemoryEntry {
+                id: "network-outage-summary".to_string(),
+                kind: LongTermMemoryKind::Fact,
+                topic: "network outage".to_string(),
+                content: "Stable outage summary for the April incident.".to_string(),
+                keywords: vec!["network".to_string(), "outage".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                source_type: crate::memory::LongTermMemorySourceType::Conversation,
+                source_scope: crate::memory::LongTermMemorySourceScope::User,
+                confidence: crate::memory::LongTermMemoryConfidence::Medium,
+                freshness: crate::memory::LongTermMemoryFreshness::Stable,
+                stale_hint: crate::memory::LongTermMemoryStaleHint::None,
+                supporting_citations: Vec::new(),
+                evidence_count: 1,
+                created_at: 1,
+                updated_at: 1,
+                observed_at: 1,
+                last_confirmed_at: 1,
+                source_revision: 1,
+                last_used_at: 0,
+            }]),
+            last_query: Mutex::new(None),
+        };
+        let archive_memory_store = StubMemoryStore {
+            daily_notes: Mutex::new(vec![(
+                "2026-04-04.md".to_string(),
+                "Raw incident archive: network outage log excerpt with packet loss timeline and operator notes."
+                    .to_string(),
+            )]),
+        };
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
+        continuity_capsule_store
+            .upsert_many(
+                &[crate::memory::ContinuityCapsuleDraft {
+                    scope_kind: crate::memory::ContinuityCapsuleScopeKind::Chat,
+                    scope_id: "chat-1".to_string(),
+                    source_chat_id: "chat-1".to_string(),
+                    topic: "incident handoff".to_string(),
+                    summary: "Recent investigation stayed open around the network outage timeline."
+                        .to_string(),
+                    next_step: "Inspect the original retained record before concluding."
+                        .to_string(),
+                    status: crate::memory::ContinuityCapsuleStatus::Done,
+                    ..Default::default()
+                }],
+                100,
+            )
+            .unwrap();
+
+        let context = load_prompt_memory_context(PromptMemoryContextParams {
+            chat_id: "chat-1",
+            current_channel: "qq_channel",
+            user_query: "把那次 network outage 的原始记录翻出来",
+            system_max_len: 1024,
+            now_secs: 100,
+            profile: MemoryProfile::Standard,
+            recent_messages_limit: 8,
+            load_long_term_memory: true,
+            include_private_garden_projection: false,
+            session_store: &session_store,
+            memory_store: &archive_memory_store,
+            session_summary_store: &summary_store,
+            long_term_memory_store: &memory_store,
+            execution_state_store: &StubExecutionStateStore::default(),
+            task_run_store: &StubTaskRunStore,
+            task_artifact_store: &StubTaskArtifactStore,
+            task_learning_store: &StubTaskLearningStore,
+            self_model_store: &StubSelfModelStore::default(),
+            self_authored_core_store: &StubSelfAuthoredCoreStore::default(),
+            relationship_constitution_store: &StubRelationshipConstitutionStore::default(),
+            relationship_portfolio_store: &StubRelationshipPortfolioStore::default(),
+            relationship_topology_store: &StubRelationshipTopologyStore::default(),
+            world_sense_store: &StubWorldSenseStore::default(),
+            autonomy_strategy_store: &StubAutonomyStrategyStore::default(),
+            outer_voice_store: &StubOuterVoiceStore::default(),
+            inner_life_store: &StubInnerLifeStore::default(),
+            self_continuity_store: &StubSelfContinuityStore::default(),
+            private_doc_store: &StubPrivateDocStore::default(),
+            private_garden_store: &StubPrivateGardenStore::default(),
+            mental_privacy_store: &StubMentalPrivacyStore::default(),
+            remind_store: &StubRemindAtStore,
+            task_store: &StubTaskStore,
+            turn_ledger_store: &StubTurnLedgerStore::default(),
+            skill_storage: &StubSkillStorage::default(),
+            continuity_capsule_store: &continuity_capsule_store,
+        });
+
+        let governed = context.governed_memory_evidence_text.unwrap_or_default();
+        let archive_pos = governed.find("Archive evidence").unwrap();
+        let capsule_pos = governed.find("## Continuity Capsules").unwrap();
+        let canonical_pos = governed.find("Stable outage summary").unwrap();
+        assert!(archive_pos < capsule_pos);
+        assert!(capsule_pos < canonical_pos);
     }
 }

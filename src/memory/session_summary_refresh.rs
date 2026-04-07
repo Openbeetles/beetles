@@ -1,5 +1,6 @@
 //! 会话摘要刷新策略与执行。
 //! Session summary refresh policy and execution.
+#![allow(clippy::too_many_arguments)]
 
 use crate::constants::SESSION_SUMMARY_MAX_LEN;
 use crate::error::Result;

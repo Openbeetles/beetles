@@ -40,6 +40,7 @@ mod prompt_context;
 mod recall_benchmark;
 mod recall_contract;
 mod recall_inspection;
+mod recall_router;
 mod recent_persona_evidence;
 mod relationship_constitution;
 mod relationship_portfolio;
@@ -275,6 +276,7 @@ pub use recall_inspection::{
     inspect_working_recall, render_working_recall_inspection_markdown, WorkingRecallInspection,
     WorkingRecallInspectionInput,
 };
+pub(crate) use recall_router::{decide_prompt_recall_route, PromptRecallRouterDecision};
 pub use recent_persona_evidence::{
     derive_recent_persona_evidence, load_recent_persona_evidence,
     render_recent_persona_evidence_block, RecentPersonaEvidence,

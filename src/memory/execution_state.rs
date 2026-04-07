@@ -1,5 +1,6 @@
 //! 对话级执行状态：当前目标、进展、阻塞与下一步。
 //! Live execution state separate from long-term memory and session summary.
+#![allow(clippy::too_many_arguments)]
 
 use crate::bus::IngressKind;
 use crate::error::Result;

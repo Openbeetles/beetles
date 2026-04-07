@@ -1,5 +1,6 @@
 //! 私有文档工作区：inner journal / relationship notes / self reflection / private plan。
 //! Private internal document workspace with governed typed docs.
+#![allow(clippy::too_many_arguments)]
 
 use crate::bus::IngressKind;
 use crate::error::Result;

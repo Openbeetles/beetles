@@ -1,5 +1,6 @@
 //! Serial CLI：命令与 health；破坏性命令审计；无密钥输出。
 //! Serial CLI: commands and health; audit for destructive commands; no secrets in output.
+#![allow(clippy::too_many_arguments)]
 
 use crate::config::{self, AppConfig};
 use crate::error::Error;

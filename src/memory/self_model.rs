@@ -1,5 +1,6 @@
 //! 私有 Self Model：保存主观连续性，不与共享事实层混写。
 //! Private self-model: subjective continuity separate from shared factual memory.
+#![allow(clippy::too_many_arguments)]
 
 use crate::bus::IngressKind;
 use crate::error::Result;

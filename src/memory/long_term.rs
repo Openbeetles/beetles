@@ -2215,6 +2215,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn test_entry(
         id: &str,
         kind: LongTermMemoryKind,

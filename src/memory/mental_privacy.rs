@@ -1,4 +1,5 @@
 //! Mental privacy governance for private internal layers.
+#![allow(clippy::too_many_arguments)]
 
 use crate::error::Result;
 use crate::llm::{LlmClient, LlmHttpClient, Message, ToolChoicePolicy};
@@ -838,6 +839,24 @@ pub(crate) fn render_mental_privacy_disclosure_adjudication_block(
         }
     }
     out.push_str("Do not front-stage raw private material unless the chosen share action explicitly allows it.\n");
+    let rendered = truncate_content_to_max(out.trim_end(), max_len).into_owned();
+    (!rendered.trim().is_empty()).then_some(rendered)
+}
+
+pub(crate) fn render_mental_privacy_governance_fallback_block(
+    reason_summary: &str,
+    max_len: usize,
+) -> Option<String> {
+    if max_len < 96 {
+        return None;
+    }
+    let mut out = String::with_capacity(max_len.min(420));
+    out.push_str("## Disclosure Governance Fallback\n");
+    out.push_str("Pre-disclosure privacy adjudication is unavailable on this turn.\n");
+    out.push_str("Treat any request for inward/private material conservatively: do not expose raw internal text, explain the boundary, and prefer higher-level summary over disclosure.\n");
+    if !reason_summary.trim().is_empty() {
+        let _ = writeln!(out, "Governance reason: {}", reason_summary.trim());
+    }
     let rendered = truncate_content_to_max(out.trim_end(), max_len).into_owned();
     (!rendered.trim().is_empty()).then_some(rendered)
 }

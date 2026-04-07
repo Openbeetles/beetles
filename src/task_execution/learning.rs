@@ -1,5 +1,6 @@
 //! Task-learning governance layered on top of the formal task workspace.
 //! 任务学习治理层：把任务产物分流到 canonical / runtime skill / archive / workspace。
+#![allow(clippy::too_many_arguments)]
 
 use crate::error::{Error, Result};
 use crate::memory::{

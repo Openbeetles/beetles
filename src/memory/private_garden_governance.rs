@@ -1,5 +1,6 @@
 //! 私有花园治理：由 LLM 在回复后自主决定是否整理自由内部空间。
 //! Post-reply LLM governance for the free private garden workspace.
+#![allow(clippy::too_many_arguments)]
 
 use crate::bus::IngressKind;
 use crate::error::Result;

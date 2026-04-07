@@ -1131,6 +1131,7 @@ fn record_core_revision_review(
     store.set(scope_id, &next)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_non_adopted_record(
     outcome: CoreRevisionOutcome,
     existing_core: Option<&SelfAuthoredCore>,
@@ -1716,6 +1717,7 @@ fn render_repair_doctrine(
     doctrine
 }
 
+#[allow(clippy::too_many_arguments)]
 fn evaluate_self_authored_core_revision_gate(
     existing_core: Option<&SelfAuthoredCore>,
     self_model: Option<&SelfModel>,
