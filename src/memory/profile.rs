@@ -1,10 +1,51 @@
 //! 记忆策略档位与共享参数。
 //! Shared memory strategy profiles and policy values.
 
+use serde::{Deserialize, Serialize};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemoryProfile {
     Embedded,
     Standard,
+}
+
+impl MemoryProfile {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Embedded => "embedded",
+            Self::Standard => "standard",
+        }
+    }
+
+    pub const fn memory_system_kind(self) -> MemorySystemKind {
+        match self {
+            Self::Embedded => MemorySystemKind::EspCompact,
+            Self::Standard => MemorySystemKind::LinuxFull,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemorySystemKind {
+    EspCompact,
+    LinuxFull,
+}
+
+impl MemorySystemKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::EspCompact => "esp_compact",
+            Self::LinuxFull => "linux_full",
+        }
+    }
+
+    pub const fn memory_profile(self) -> MemoryProfile {
+        match self {
+            Self::EspCompact => MemoryProfile::Embedded,
+            Self::LinuxFull => MemoryProfile::Standard,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,9 +90,40 @@ impl PromptParticipationPlan {
         Self {
             load_l1_constitutional: true,
             load_l1_session: true,
-            load_l2_governed_recall: false,
+            load_l2_governed_recall: true,
             load_l2_background_governance: false,
             load_l3_private_depth: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PromptAssemblyPlan {
+    pub memory_system_kind: MemorySystemKind,
+    pub participation_plan: PromptParticipationPlan,
+    pub include_capability_package_text: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelfRuntimeAuthorityPlan {
+    pub allow_direct_inner_life: bool,
+    pub allow_direct_private_docs: bool,
+    pub allow_direct_private_garden: bool,
+    pub allow_direct_self_model: bool,
+    pub allow_direct_self_authored_core: bool,
+    pub allow_direct_self_continuity: bool,
+    pub allow_direct_boundary_persona: bool,
+    pub allow_direct_outer_voice: bool,
+    pub allow_factual_refresh_request: bool,
+    pub allow_method_distillation: bool,
+}
+
+impl SelfRuntimeAuthorityPlan {
+    pub fn allows_source_id(self, source_id: &str) -> bool {
+        match source_id {
+            "private_docs" => self.allow_direct_private_docs,
+            "private_garden" => self.allow_direct_private_garden,
+            _ => true,
         }
     }
 }
@@ -280,7 +352,7 @@ pub(crate) struct MemoryPolicy {
 }
 
 const EMBEDDED_PROMPT_PARTICIPATION_POLICY: PromptParticipationPolicy = PromptParticipationPolicy {
-    first_user_turn_l2_enabled: false,
+    first_user_turn_l2_enabled: true,
     first_user_turn_background_enabled: false,
     non_user_turn_private_projection_enabled: false,
     tool_round_recall_enabled: true,
@@ -652,14 +724,49 @@ pub(crate) fn prompt_participation_policy(profile: MemoryProfile) -> PromptParti
     }
 }
 
-pub(crate) fn decide_prompt_participation(
+pub(crate) fn decide_self_runtime_authority(
+    memory_system_kind: MemorySystemKind,
+    profile: MemoryProfile,
+) -> SelfRuntimeAuthorityPlan {
+    debug_assert_eq!(memory_system_kind.memory_profile(), profile);
+    match memory_system_kind {
+        MemorySystemKind::LinuxFull => SelfRuntimeAuthorityPlan {
+            allow_direct_inner_life: true,
+            allow_direct_private_docs: true,
+            allow_direct_private_garden: true,
+            allow_direct_self_model: true,
+            allow_direct_self_authored_core: true,
+            allow_direct_self_continuity: true,
+            allow_direct_boundary_persona: true,
+            allow_direct_outer_voice: true,
+            allow_factual_refresh_request: true,
+            allow_method_distillation: true,
+        },
+        MemorySystemKind::EspCompact => SelfRuntimeAuthorityPlan {
+            allow_direct_inner_life: true,
+            allow_direct_private_docs: false,
+            allow_direct_private_garden: false,
+            allow_direct_self_model: true,
+            allow_direct_self_authored_core: true,
+            allow_direct_self_continuity: true,
+            allow_direct_boundary_persona: true,
+            allow_direct_outer_voice: true,
+            allow_factual_refresh_request: true,
+            allow_method_distillation: true,
+        },
+    }
+}
+
+pub(crate) fn decide_prompt_assembly(
+    memory_system_kind: MemorySystemKind,
     profile: MemoryProfile,
     ingress: crate::bus::IngressKind,
     has_tools: bool,
     runtime_mode: crate::runtime::RuntimeModeSnapshot,
     pressure: crate::orchestrator::PressureLevel,
     system_budget: usize,
-) -> PromptParticipationPlan {
+) -> PromptAssemblyPlan {
+    debug_assert_eq!(memory_system_kind.memory_profile(), profile);
     let policy = prompt_participation_policy(profile);
     let budget_allows_governed =
         system_budget >= memory_policy(profile).long_term_recall.block_min_len;
@@ -667,25 +774,51 @@ pub(crate) fn decide_prompt_participation(
     let mode_allows_background = runtime_mode.allows_prompt_background_governance(pressure);
     let mode_allows_private_depth = runtime_mode.allows_prompt_private_depth(pressure);
 
-    match ingress {
-        crate::bus::IngressKind::User => PromptParticipationPlan {
-            load_l1_constitutional: true,
-            load_l1_session: true,
-            load_l2_governed_recall: policy.first_user_turn_l2_enabled
-                && budget_allows_governed
-                && mode_allows_governed
-                && !has_tools,
-            load_l2_background_governance: policy.first_user_turn_background_enabled
-                && mode_allows_background,
-            load_l3_private_depth: false,
+    match memory_system_kind {
+        MemorySystemKind::LinuxFull => PromptAssemblyPlan {
+            memory_system_kind,
+            participation_plan: match ingress {
+                crate::bus::IngressKind::User => PromptParticipationPlan {
+                    load_l1_constitutional: true,
+                    load_l1_session: true,
+                    load_l2_governed_recall: policy.first_user_turn_l2_enabled
+                        && budget_allows_governed
+                        && mode_allows_governed
+                        && !has_tools,
+                    load_l2_background_governance: policy.first_user_turn_background_enabled
+                        && mode_allows_background,
+                    load_l3_private_depth: false,
+                },
+                _ => PromptParticipationPlan {
+                    load_l1_constitutional: true,
+                    load_l1_session: true,
+                    load_l2_governed_recall: budget_allows_governed && mode_allows_governed,
+                    load_l2_background_governance: mode_allows_background,
+                    load_l3_private_depth: policy.non_user_turn_private_projection_enabled
+                        && mode_allows_private_depth,
+                },
+            },
+            include_capability_package_text: true,
         },
-        _ => PromptParticipationPlan {
-            load_l1_constitutional: true,
-            load_l1_session: true,
-            load_l2_governed_recall: budget_allows_governed && mode_allows_governed,
-            load_l2_background_governance: mode_allows_background,
-            load_l3_private_depth: policy.non_user_turn_private_projection_enabled
-                && mode_allows_private_depth,
+        MemorySystemKind::EspCompact => PromptAssemblyPlan {
+            memory_system_kind,
+            participation_plan: match ingress {
+                crate::bus::IngressKind::User => PromptParticipationPlan {
+                    load_l1_constitutional: true,
+                    load_l1_session: true,
+                    load_l2_governed_recall: budget_allows_governed && mode_allows_governed,
+                    load_l2_background_governance: false,
+                    load_l3_private_depth: false,
+                },
+                _ => PromptParticipationPlan {
+                    load_l1_constitutional: true,
+                    load_l1_session: true,
+                    load_l2_governed_recall: budget_allows_governed && mode_allows_governed,
+                    load_l2_background_governance: mode_allows_background,
+                    load_l3_private_depth: false,
+                },
+            },
+            include_capability_package_text: !matches!(ingress, crate::bus::IngressKind::User),
         },
     }
 }
@@ -700,6 +833,64 @@ pub(crate) fn shared_long_term_governance_policy() -> LongTermRecallPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_system_kind_maps_to_expected_profile() {
+        assert_eq!(
+            MemorySystemKind::EspCompact.memory_profile(),
+            MemoryProfile::Embedded
+        );
+        assert_eq!(
+            MemorySystemKind::LinuxFull.memory_profile(),
+            MemoryProfile::Standard
+        );
+    }
+
+    #[test]
+    fn memory_profile_maps_to_expected_memory_system_kind() {
+        assert_eq!(
+            MemoryProfile::Embedded.memory_system_kind(),
+            MemorySystemKind::EspCompact
+        );
+        assert_eq!(
+            MemoryProfile::Standard.memory_system_kind(),
+            MemorySystemKind::LinuxFull
+        );
+    }
+
+    #[test]
+    fn esp_compact_self_runtime_authority_keeps_growth_and_governed_distillation() {
+        let plan =
+            decide_self_runtime_authority(MemorySystemKind::EspCompact, MemoryProfile::Embedded);
+
+        assert!(plan.allow_direct_inner_life);
+        assert!(plan.allow_direct_self_model);
+        assert!(plan.allow_direct_self_authored_core);
+        assert!(plan.allow_direct_self_continuity);
+        assert!(plan.allow_direct_boundary_persona);
+        assert!(plan.allow_direct_outer_voice);
+        assert!(!plan.allow_direct_private_docs);
+        assert!(!plan.allow_direct_private_garden);
+        assert!(plan.allow_factual_refresh_request);
+        assert!(plan.allow_method_distillation);
+    }
+
+    #[test]
+    fn linux_full_self_runtime_authority_keeps_full_direct_authority() {
+        let plan =
+            decide_self_runtime_authority(MemorySystemKind::LinuxFull, MemoryProfile::Standard);
+
+        assert!(plan.allow_direct_inner_life);
+        assert!(plan.allow_direct_private_docs);
+        assert!(plan.allow_direct_private_garden);
+        assert!(plan.allow_direct_self_model);
+        assert!(plan.allow_direct_self_authored_core);
+        assert!(plan.allow_direct_self_continuity);
+        assert!(plan.allow_direct_boundary_persona);
+        assert!(plan.allow_direct_outer_voice);
+        assert!(plan.allow_factual_refresh_request);
+        assert!(plan.allow_method_distillation);
+    }
 
     #[test]
     fn standard_profile_keeps_larger_memory_windows() {
@@ -755,7 +946,7 @@ mod tests {
     fn embedded_prompt_participation_policy_keeps_private_depth_out_of_first_turn() {
         let embedded = prompt_participation_policy(MemoryProfile::Embedded);
 
-        assert!(!embedded.first_user_turn_l2_enabled);
+        assert!(embedded.first_user_turn_l2_enabled);
         assert!(!embedded.first_user_turn_background_enabled);
         assert!(!embedded.non_user_turn_private_projection_enabled);
         assert!(embedded.tool_round_recall_enabled);
@@ -772,8 +963,112 @@ mod tests {
     }
 
     #[test]
+    fn esp_compact_prompt_assembly_keeps_governed_recall_but_skips_background_on_first_user_turn() {
+        let plan = decide_prompt_assembly(
+            MemorySystemKind::EspCompact,
+            MemoryProfile::Embedded,
+            crate::bus::IngressKind::User,
+            false,
+            crate::runtime::RuntimeModeSnapshot {
+                current_mode: crate::runtime::RuntimeMode::Normal,
+                wifi_sta_connected: true,
+                boot_phase_active: false,
+                pairing_required: false,
+                pairing_state_known: true,
+                voice_exclusive_active: false,
+                background_maintenance_active: false,
+                config_plane_alive: true,
+                channel_plane_alive: true,
+                voice_plane_alive: false,
+                agent_plane_alive: true,
+                user_agent_lane_alive: true,
+                system_agent_lane_alive: false,
+                dual_agent_lanes_alive: false,
+                external_wss_managed_present: false,
+                external_wss_suspend_requested: false,
+                external_wss_suspended: false,
+                supervisor_present: false,
+                supervisor_alive: false,
+                supervisor_agent_alive: false,
+                recovery_safe_mode_active: false,
+                action_budget: crate::runtime::RuntimeModeActionBudget {
+                    allow_periodic_maintenance: true,
+                    allow_due_user_timers: true,
+                    allow_heartbeat_injection: true,
+                    allow_best_effort_delayed_tasks: true,
+                    allow_idle_self_runtime: true,
+                    allow_non_voice_outbound: true,
+                    allow_external_wss_connect: true,
+                    require_external_wss_suspended: false,
+                },
+            },
+            crate::orchestrator::PressureLevel::Normal,
+            2048,
+        );
+
+        assert_eq!(plan.memory_system_kind, MemorySystemKind::EspCompact);
+        assert!(plan.participation_plan.load_l1_constitutional);
+        assert!(plan.participation_plan.load_l1_session);
+        assert!(plan.participation_plan.load_l2_governed_recall);
+        assert!(!plan.participation_plan.load_l2_background_governance);
+        assert!(!plan.participation_plan.load_l3_private_depth);
+        assert!(!plan.include_capability_package_text);
+    }
+
+    #[test]
+    fn linux_full_prompt_assembly_keeps_background_and_capability_package_on_first_user_turn() {
+        let plan = decide_prompt_assembly(
+            MemorySystemKind::LinuxFull,
+            MemoryProfile::Standard,
+            crate::bus::IngressKind::User,
+            false,
+            crate::runtime::RuntimeModeSnapshot {
+                current_mode: crate::runtime::RuntimeMode::Normal,
+                wifi_sta_connected: true,
+                boot_phase_active: false,
+                pairing_required: false,
+                pairing_state_known: true,
+                voice_exclusive_active: false,
+                background_maintenance_active: false,
+                config_plane_alive: true,
+                channel_plane_alive: true,
+                voice_plane_alive: false,
+                agent_plane_alive: true,
+                user_agent_lane_alive: true,
+                system_agent_lane_alive: false,
+                dual_agent_lanes_alive: false,
+                external_wss_managed_present: false,
+                external_wss_suspend_requested: false,
+                external_wss_suspended: false,
+                supervisor_present: false,
+                supervisor_alive: false,
+                supervisor_agent_alive: false,
+                recovery_safe_mode_active: false,
+                action_budget: crate::runtime::RuntimeModeActionBudget {
+                    allow_periodic_maintenance: true,
+                    allow_due_user_timers: true,
+                    allow_heartbeat_injection: true,
+                    allow_best_effort_delayed_tasks: true,
+                    allow_idle_self_runtime: true,
+                    allow_non_voice_outbound: true,
+                    allow_external_wss_connect: true,
+                    require_external_wss_suspended: false,
+                },
+            },
+            crate::orchestrator::PressureLevel::Normal,
+            2048,
+        );
+
+        assert_eq!(plan.memory_system_kind, MemorySystemKind::LinuxFull);
+        assert!(plan.participation_plan.load_l2_governed_recall);
+        assert!(plan.participation_plan.load_l2_background_governance);
+        assert!(plan.include_capability_package_text);
+    }
+
+    #[test]
     fn voice_exclusive_blocks_nonessential_embedded_participation() {
-        let plan = decide_prompt_participation(
+        let plan = decide_prompt_assembly(
+            MemorySystemKind::EspCompact,
             MemoryProfile::Embedded,
             crate::bus::IngressKind::User,
             false,
@@ -812,7 +1107,8 @@ mod tests {
             },
             crate::orchestrator::PressureLevel::Normal,
             2048,
-        );
+        )
+        .participation_plan;
 
         assert!(plan.load_l1_constitutional);
         assert!(plan.load_l1_session);

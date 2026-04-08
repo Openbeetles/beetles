@@ -119,15 +119,15 @@
    - `P8`：闭环验收、acceptance suite、health / operator / doctor 共用口径已形成
 
 2. **只部分落地，不能宣称完成**
-   - `P2`：Prompt Assembly 已引入 `LinuxFull` / `EspCompact` 分叉入口，但 ESP 热路径仍未彻底脱离共享重装配骨架；`prepare_worker_conversation(...)` 里仍保留首轮同步重治理
+   - `P2`：Prompt Assembly 的首轮 compact assembly 已收口完成；但这不等于 ESP 已完成最终稳态化，后续仍需继续收 `P3` 的 authority / 后台成长边界
    - `P3`：`self_runtime authority` 已有正式分叉计划与部分代码约束，但 ESP 侧“更强但不越权”的后台成长边界还没有完全收口成最终稳态
 
 3. **当前不是有效阶段**
    - `P7`：当前设备仍是测试机，没有正式线上存量、没有发布升级迁移压力，因此本阶段对当前批次应视为 `N/A`，而不是必须执行的主线工作
 
 4. **仍未完成的关键现实**
-   - ESP 目前并没有完成“真正的功能削厚”或“完整热路径减负”
-   - 当前更准确的状态是：**制度分轨和类型分轨已做，ESP 首轮重治理仍未彻底移出主回复热路径**
+   - ESP 目前并没有完成最终稳态化
+   - 当前更准确的状态是：**制度分轨、类型分轨、首轮 compact assembly 已完成，但 authority / 后台成长边界仍未收口**
    - 因此，本文不能被理解为“ESP 已经完成最终稳态化”
 
 ### 2.5 下一步架构方向（待确认草案）
@@ -1014,6 +1014,32 @@ ESP 首轮主路径必须满足：
 2. 当前完成的是 `worker_context` 第一阶段收尾，不是整个 ESP prompt slimming 收尾
 3. 下一阶段主线应直接转向 `prompt_context` / `build_context` / `L0/L1/L2` 的真正 compact assembly 收口
 
+### 8.6 第二阶段已完成：`prompt_context / build_context` compact assembly 收口（2026-04-08）
+
+本阶段第二段编码已经完成，范围限定在：
+
+1. `src/memory/prompt_context.rs`
+2. `src/memory/profile.rs`
+3. `src/agent/context.rs`
+
+已确认落地的行为边界：
+
+1. `EspCompact` 首轮用户消息默认不再注入 capability package
+2. `EspCompact` 首轮继续保留：
+   - `Public Soul Capsule`
+   - session / execution / active task continuity
+   - compressed long-term recall
+3. `EspCompact` 首轮默认不再读取厚 `archive evidence / runtime skill / background governance / private depth`
+4. 若已存在持久化 `relationship_constitution`，`EspCompact` 首轮默认直接复用，不再为首轮 prompt 去读取 `relationship_topology / outer_voice / mental_privacy` 做关系治理重建
+5. `LinuxFull` 仍保留 capability package 与关系治理重建读取路径，未被一起降配
+
+这一阶段完成后的实际效果：
+
+1. ESP 首轮 prompt 已从“共享厚装配骨架”收成真正的 compact contract
+2. `worker_context` 的首轮减负现在与 `prompt_context / build_context` 的 compact assembly 已经闭合
+3. capability plane 不会因为启用而自动拉厚 ESP 首轮 prompt
+4. 下一阶段可以直接进入 `self_runtime authority` 收口，而不需要再回头补 prompt 主链
+
 ---
 
 ## 9. Operator / Recovery / Packaging 规则
@@ -1090,7 +1116,7 @@ ESP 上 recovery 的首要目标不是“把所有能力都救回来”，而是
 |---|---|---|
 | `P0` | 已完成 | 顶层宪法、术语矩阵、分叉边界已锁死 |
 | `P1` | 已完成 | `MemorySystemKind::{LinuxFull, EspCompact}` 与平台装配已进入主线 |
-| `P2` | 部分完成 | 已有分叉入口与装配制度，但 ESP 热路径仍未真正削厚 |
+| `P2` | 已完成 | `worker_context + prompt_context + build_context` 的首轮 compact assembly 已收口 |
 | `P3` | 部分完成 | authority 分叉已建模，但 ESP 后台成长边界仍未完全收口 |
 | `P4` | 已完成 | capability plane、Linux `discovery-first`、ESP `config/feature-gated` 已落地 |
 | `P5` | 已完成 | operator / recovery / windowed inspection 已有正式收口 |
@@ -1101,38 +1127,26 @@ ESP 上 recovery 的首要目标不是“把所有能力都救回来”，而是
 
 必须单独强调：
 
-1. `P2/P3` 没做完，不等于方案无效；它表示**架构方向已锁定，但 ESP 运行时削厚仍未收尾**
+1. `P3` 没做完，不等于方案无效；它表示**架构方向已锁定，但 ESP authority / 后台成长边界仍未收尾**
 2. 当前不能把本文解读成“ESP 已经完成最终稳态化”或“ESP 已经完成功能削减”
-3. 当前更准确的表述是：**制度分轨已成立，ESP 热路径减负尚未完成**
+3. 当前更准确的表述是：**制度分轨与首轮 compact assembly 已成立，ESP 最终稳态化仍取决于 `P3` 收口**
 
-### 11.1 下一步主线（第一阶段完成后）
+### 11.1 下一步主线（第二阶段完成后）
 
-如果继续执行本文主方案，下一步默认从下面三块开始。
+如果继续执行本文主方案，下一步默认从下面两块开始。
 
-#### A. `worker_context` 第一阶段已完成，后续不再回头补旧热链
+#### A. `worker_context / prompt_context / build_context` 两阶段已完成，后续不再回头补首轮 prompt 热链
 
 当前已经完成的边界如下：
 
 1. ESP 首轮同步 disclosure / persona / relationship constitution sync 已移出热路径
-2. Linux 仍保留同步深治理
-3. `worker_context` 后续只做配合型清理，不再作为“继续削第一阶段”的主战场
+2. ESP 首轮 compact assembly 已正式收成 `Public Soul Capsule + continuity + compressed recall`
+3. Linux 仍保留同步深治理与 full runtime prompt
+4. 这三条链路后续只做配合型清理，不再作为主战场
 
-因此，下一步不再回头继续在这条共享热链上堆新的 `if esp`，而是直接进入真正的 compact assembly 重构。
+因此，下一步不再回头继续在首轮 prompt 热链上堆新的 `if esp`，而是直接进入 authority 收口。
 
-#### B. 重写 `prompt_context`，让 ESP 真正拥有 compact assembly
-
-当前虽已有 `LinuxFull / EspCompact` 分入口，但 Linux / ESP 仍共享大量 inner 逻辑。
-
-下一步要把 ESP 装配收成真正独立的 compact contract：
-
-1. 默认只读取 `L0 Public Capsule`
-2. 默认只读取最小 session continuity
-3. 默认只读取最小 task continuity
-4. 默认只读取 compressed recall
-5. 不默认读取 `L1/L2` 厚 private / relation / world 块
-6. capability plane 默认不进入首轮 prompt 主合同
-
-#### C. 收紧 `self_runtime authority`
+#### B. 收紧 `self_runtime authority`
 
 ESP 的 `self_runtime` 只继续承担：
 
@@ -1149,7 +1163,7 @@ ESP 的 `self_runtime` 只继续承担：
 3. 显式深路径读取
 4. 非首轮再参与
 
-#### D. 固化 capability plane 的 prompt 侵入边界
+#### C. 固化 capability plane 的 prompt 侵入边界
 
 后续 `audio / camera / sensors` 都必须先进入：
 
