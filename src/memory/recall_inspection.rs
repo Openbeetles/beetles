@@ -16,11 +16,11 @@ use super::{
     recall_long_term_memory_block, render_continuity_capsule_block,
     render_exact_long_term_memory_block, search_archive_records_detailed,
     select_archive_hits_for_prompt_with_report, ArchivePromptSelectionReport, ArchiveSearchHit,
-    ArchiveSearchQuery, ArchiveSearchQueryReport, ContinuityCapsule, ContinuityCapsuleScopeKind,
-    ContinuityCapsuleStore, CrossPlaneRerankInput, CrossPlaneRerankResult, LongTermMemoryStore,
-    MemoryProfile, MemoryStore, PromptRecallIntent, RecallPlane, RecallQuery,
-    RecallSelectionReport, SessionMessage, SessionStore, SharedFactualPlaneSnapshot,
-    TurnLedgerStore,
+    ArchiveSearchQuery, ArchiveSearchQueryReport, ContinuityCapsule,
+    ContinuityCapsuleRecallInspectionInput, ContinuityCapsuleScopeKind, ContinuityCapsuleStore,
+    CrossPlaneRerankInput, CrossPlaneRerankResult, LongTermMemoryStore, MemoryProfile, MemoryStore,
+    PromptRecallIntent, RecallPlane, RecallQuery, RecallSelectionReport, SessionMessage,
+    SessionStore, SharedFactualPlaneSnapshot, TurnLedgerStore,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -151,17 +151,18 @@ pub fn inspect_working_recall(input: WorkingRecallInspectionInput<'_>) -> Workin
         input.system_max_len.min(768),
         input.profile,
     );
-    let (continuity_capsule_report, continuity_capsules) = inspect_continuity_capsule_recall(
-        input.continuity_capsule_store,
-        ContinuityCapsuleScopeKind::Chat,
-        input.chat_id,
-        Some(input.chat_id),
-        input.query,
-        input.summary_text,
-        input.recent,
-        input.system_max_len.min(480),
-        crate::util::current_unix_secs(),
-    );
+    let (continuity_capsule_report, continuity_capsules) =
+        inspect_continuity_capsule_recall(ContinuityCapsuleRecallInspectionInput {
+            store: input.continuity_capsule_store,
+            scope_kind: ContinuityCapsuleScopeKind::Chat,
+            scope_id: input.chat_id,
+            preferred_chat_id: Some(input.chat_id),
+            query: input.query,
+            summary_text: input.summary_text,
+            recent_messages: input.recent,
+            max_chars: input.system_max_len.min(480),
+            now_secs: crate::util::current_unix_secs(),
+        });
     let continuity_capsule_text =
         render_continuity_capsule_block(&continuity_capsules, input.system_max_len.min(480));
     let selection = select_archive_hits_for_prompt_with_report(

@@ -174,17 +174,21 @@ pub fn build_operator_status(
         input.channel_capability_registry,
         input.llm_stream_enabled,
     );
-    let personality_governance = inspect_operator_personality_governance(
-        input.platform.self_authored_core_store().as_ref(),
-        input.platform.core_revision_ledger_store().as_ref(),
-        input.platform.relationship_constitution_store().as_ref(),
-        input.platform.relationship_portfolio_store().as_ref(),
-        input.platform.relationship_topology_store().as_ref(),
-        input.platform.self_continuity_store().as_ref(),
-        input.platform.turn_ledger_store().as_ref(),
-        input.platform.memory_profile(),
-        current_unix_secs(),
-    )?;
+    let personality_governance =
+        inspect_operator_personality_governance(OperatorPersonalityGovernanceInspectInput {
+            self_authored_core_store: input.platform.self_authored_core_store().as_ref(),
+            core_revision_ledger_store: input.platform.core_revision_ledger_store().as_ref(),
+            relationship_constitution_store: input
+                .platform
+                .relationship_constitution_store()
+                .as_ref(),
+            relationship_portfolio_store: input.platform.relationship_portfolio_store().as_ref(),
+            relationship_topology_store: input.platform.relationship_topology_store().as_ref(),
+            self_continuity_store: input.platform.self_continuity_store().as_ref(),
+            turn_ledger_store: input.platform.turn_ledger_store().as_ref(),
+            profile: input.platform.memory_profile(),
+            now_secs: current_unix_secs(),
+        })?;
     let presence = runtime::inspect_platform_presence(input.platform, current_unix_secs());
     let initiative = runtime::inspect_platform_initiative(input.platform, current_unix_secs());
     let os_closure = runtime::inspect_beetle_os_closure(&presence, &initiative);
@@ -427,23 +431,27 @@ fn memory_profile_label(profile: MemoryProfile) -> &'static str {
     }
 }
 
-fn inspect_operator_personality_governance(
-    self_authored_core_store: &dyn SelfAuthoredCoreStore,
-    core_revision_ledger_store: &dyn CoreRevisionLedgerStore,
-    relationship_constitution_store: &dyn RelationshipConstitutionStore,
-    relationship_portfolio_store: &dyn RelationshipPortfolioStore,
-    relationship_topology_store: &dyn RelationshipTopologyStore,
-    self_continuity_store: &dyn SelfContinuityStore,
-    turn_ledger_store: &dyn TurnLedgerStore,
+struct OperatorPersonalityGovernanceInspectInput<'a> {
+    self_authored_core_store: &'a dyn SelfAuthoredCoreStore,
+    core_revision_ledger_store: &'a dyn CoreRevisionLedgerStore,
+    relationship_constitution_store: &'a dyn RelationshipConstitutionStore,
+    relationship_portfolio_store: &'a dyn RelationshipPortfolioStore,
+    relationship_topology_store: &'a dyn RelationshipTopologyStore,
+    self_continuity_store: &'a dyn SelfContinuityStore,
+    turn_ledger_store: &'a dyn TurnLedgerStore,
     profile: MemoryProfile,
     now_secs: u64,
+}
+
+fn inspect_operator_personality_governance(
+    input: OperatorPersonalityGovernanceInspectInput<'_>,
 ) -> crate::error::Result<Option<OperatorPersonalityGovernanceSnapshot>> {
     let subject_id = board_subject_scope_id();
-    let self_authored_core = self_authored_core_store.get(subject_id)?;
-    let core_revision_ledger = core_revision_ledger_store.get(subject_id)?;
-    let self_continuity = self_continuity_store.get(subject_id)?;
-    let relationship_portfolio = relationship_portfolio_store.get(subject_id)?;
-    let relationship_topology = relationship_topology_store.get(subject_id)?;
+    let self_authored_core = input.self_authored_core_store.get(subject_id)?;
+    let core_revision_ledger = input.core_revision_ledger_store.get(subject_id)?;
+    let self_continuity = input.self_continuity_store.get(subject_id)?;
+    let relationship_portfolio = input.relationship_portfolio_store.get(subject_id)?;
+    let relationship_topology = input.relationship_topology_store.get(subject_id)?;
     let has_governance_state = self_authored_core.is_some()
         || core_revision_ledger.is_some()
         || relationship_portfolio.is_some()
@@ -462,24 +470,26 @@ fn inspect_operator_personality_governance(
             .as_ref()
             .map(|core| core.stability_score)
             .unwrap_or(0),
-        now_secs,
+        input.now_secs,
     );
     let targets = select_operator_personality_governance_targets(
         self_continuity.as_ref(),
         relationship_portfolio.as_ref(),
         relationship_topology.as_ref(),
-        now_secs,
-        profile,
+        input.now_secs,
+        input.profile,
     );
     let mut relations = Vec::with_capacity(targets.len());
     for target in targets {
-        let relationship_constitution = relationship_constitution_store.get(&target.scope_id)?;
+        let relationship_constitution = input
+            .relationship_constitution_store
+            .get(&target.scope_id)?;
         let recent_persona_evidence =
-            load_recent_persona_evidence(turn_ledger_store, &target.scope_id)?;
+            load_recent_persona_evidence(input.turn_ledger_store, &target.scope_id)?;
         let inspection = inspect_personality_governance(PersonalityGovernanceInspectionInput {
             channel: &target.channel,
             chat_id: &target.chat_id,
-            now_secs,
+            now_secs: input.now_secs,
             self_authored_core: self_authored_core.as_ref(),
             core_revision_ledger: core_revision_ledger.as_ref(),
             relationship_constitution: relationship_constitution.as_ref(),
@@ -849,19 +859,20 @@ mod tests {
             )
             .unwrap();
 
-        let snapshot = inspect_operator_personality_governance(
-            &self_authored_core_store,
-            &core_revision_ledger_store,
-            &relationship_constitution_store,
-            &relationship_portfolio_store,
-            &relationship_topology_store,
-            &self_continuity_store,
-            &turn_ledger_store,
-            MemoryProfile::Embedded,
-            1_000,
-        )
-        .unwrap()
-        .expect("governance snapshot");
+        let snapshot =
+            inspect_operator_personality_governance(OperatorPersonalityGovernanceInspectInput {
+                self_authored_core_store: &self_authored_core_store,
+                core_revision_ledger_store: &core_revision_ledger_store,
+                relationship_constitution_store: &relationship_constitution_store,
+                relationship_portfolio_store: &relationship_portfolio_store,
+                relationship_topology_store: &relationship_topology_store,
+                self_continuity_store: &self_continuity_store,
+                turn_ledger_store: &turn_ledger_store,
+                profile: MemoryProfile::Embedded,
+                now_secs: 1_000,
+            })
+            .unwrap()
+            .expect("governance snapshot");
 
         assert!(snapshot.board_core_present);
         assert_eq!(snapshot.board_revision, 3);

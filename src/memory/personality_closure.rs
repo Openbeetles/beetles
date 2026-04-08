@@ -221,7 +221,7 @@ pub fn derive_personality_runtime_governance_gate_from_inspection(
         conservative_reply,
         allow_dynamic_persona_priority: !conservative_reply,
         allow_upward_distillation: !conservative_reply,
-        reason_summary: build_personality_runtime_gate_reason_summary(&inspection),
+        reason_summary: build_personality_runtime_gate_reason_summary(inspection),
         outstanding: inspection.closure.outstanding.clone(),
         repair_plan: inspection.repair_plan.clone(),
     }

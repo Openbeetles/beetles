@@ -78,6 +78,14 @@ pub(super) fn prepare_worker_conversation<'a>(
     let prompt_memory_system_budget = budget
         .system_prompt_max
         .saturating_sub(post_memory_tail_len);
+    let participation_plan = crate::memory::decide_prompt_participation(
+        config.memory_profile,
+        msg.ingress,
+        has_tools,
+        runtime_mode,
+        runtime.pressure,
+        prompt_memory_system_budget,
+    );
     log_prepare_stage("post_memory_budget_ready");
     log_prepare_stage("capability_package_start");
     let capability_package_text =
@@ -142,6 +150,7 @@ pub(super) fn prepare_worker_conversation<'a>(
         system_max_len: prompt_memory_system_budget,
         now_secs: runtime.now_secs,
         profile: config.memory_profile,
+        participation_plan,
         recent_messages_limit: config.session_max_messages,
         load_long_term_memory: true,
         include_private_garden_projection: msg.ingress != IngressKind::User,
@@ -189,6 +198,18 @@ pub(super) fn prepare_worker_conversation<'a>(
         load_recent_persona_evidence(config.turn_ledger_store.as_ref(), &relationship_id)
             .ok()
             .flatten();
+    let allow_tool_round_recall_refill =
+        crate::memory::prompt_participation_policy(config.memory_profile).tool_round_recall_enabled
+            && prompt_memory.long_term_memory_text.is_none()
+            && prompt_memory_system_budget
+                >= memory_policy(config.memory_profile)
+                    .long_term_recall
+                    .block_min_len
+            && runtime_mode.action_budget.allow_non_voice_outbound
+            && !matches!(
+                runtime.pressure,
+                crate::orchestrator::PressureLevel::Critical
+            );
     let prompt_mental_privacy_state = config
         .mental_privacy_store
         .get(&relationship_id)
@@ -478,6 +499,7 @@ pub(super) fn prepare_worker_conversation<'a>(
         system_scratch,
         deliberation_gate,
         interactive_fast_path,
+        allow_tool_round_recall_refill,
         prompt_memory_system_budget,
         pressure: runtime.pressure,
         mental_privacy_adjudication,

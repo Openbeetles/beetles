@@ -325,7 +325,7 @@ impl Tool for MemoryManageTool {
                         })?;
                         let write_outcome = write_governed_runtime_skills(
                             self.skill_storage.as_ref(),
-                            &[write.clone()],
+                            std::slice::from_ref(&write),
                             RuntimeSkillWriteSource::Manual,
                         )?;
                         if write_outcome.accepted == 0 && write_outcome.rejected > 0 {

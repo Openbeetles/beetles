@@ -100,6 +100,27 @@ impl RuntimeModeSnapshot {
             RuntimeMode::RecoverySafeMode => Some("recovery_safe_mode"),
         }
     }
+
+    pub fn allows_prompt_governed_recall(
+        self,
+        pressure: crate::orchestrator::PressureLevel,
+    ) -> bool {
+        self.action_budget.allow_non_voice_outbound
+            && !matches!(pressure, crate::orchestrator::PressureLevel::Critical)
+    }
+
+    pub fn allows_prompt_background_governance(
+        self,
+        pressure: crate::orchestrator::PressureLevel,
+    ) -> bool {
+        self.current_mode == RuntimeMode::Normal
+            && pressure == crate::orchestrator::PressureLevel::Normal
+    }
+
+    pub fn allows_prompt_private_depth(self, pressure: crate::orchestrator::PressureLevel) -> bool {
+        self.action_budget.allow_idle_self_runtime
+            && self.allows_prompt_background_governance(pressure)
+    }
 }
 
 pub fn snapshot_from_source(source: RuntimeModeSource) -> RuntimeModeSnapshot {
@@ -204,6 +225,7 @@ fn action_budget_for_mode(mode: RuntimeMode) -> RuntimeModeActionBudget {
 #[cfg(test)]
 mod tests {
     use super::{snapshot_from_source, RuntimeMode, RuntimeModeSource};
+    use crate::orchestrator::PressureLevel;
 
     #[test]
     fn recovery_safe_mode_has_highest_priority() {
@@ -255,5 +277,30 @@ mod tests {
         });
         assert_eq!(snapshot.current_mode, RuntimeMode::Pairing);
         assert!(!snapshot.action_budget.allow_heartbeat_injection);
+    }
+
+    #[test]
+    fn voice_exclusive_prompt_budget_blocks_governed_and_background_layers() {
+        let snapshot = snapshot_from_source(RuntimeModeSource {
+            voice_exclusive_active: true,
+            ..RuntimeModeSource::default()
+        });
+
+        assert!(!snapshot.allows_prompt_governed_recall(PressureLevel::Normal));
+        assert!(!snapshot.allows_prompt_background_governance(PressureLevel::Normal));
+        assert!(!snapshot.allows_prompt_private_depth(PressureLevel::Normal));
+    }
+
+    #[test]
+    fn normal_prompt_budget_allows_background_only_under_normal_pressure() {
+        let snapshot = snapshot_from_source(RuntimeModeSource::default());
+
+        assert!(snapshot.allows_prompt_governed_recall(PressureLevel::Normal));
+        assert!(snapshot.allows_prompt_background_governance(PressureLevel::Normal));
+        assert!(snapshot.allows_prompt_private_depth(PressureLevel::Normal));
+        assert!(snapshot.allows_prompt_governed_recall(PressureLevel::Cautious));
+        assert!(!snapshot.allows_prompt_background_governance(PressureLevel::Cautious));
+        assert!(!snapshot.allows_prompt_private_depth(PressureLevel::Cautious));
+        assert!(!snapshot.allows_prompt_governed_recall(PressureLevel::Critical));
     }
 }

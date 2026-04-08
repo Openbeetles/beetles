@@ -95,10 +95,10 @@ pub(crate) use continuity_capsule::{
 };
 pub use continuity_capsule::{
     inspect_continuity_capsule_recall, render_continuity_capsule_block, ContinuityCapsule,
-    ContinuityCapsuleDraft, ContinuityCapsuleKind, ContinuityCapsuleScopeKind,
-    ContinuityCapsuleSource, ContinuityCapsuleStatus, ContinuityCapsuleStore,
-    ContinuityCapsuleWriteOutcome, MAX_CONTINUITY_CAPSULES, MAX_CONTINUITY_CAPSULES_PER_SCOPE,
-    REL_PATH_CONTINUITY_CAPSULES,
+    ContinuityCapsuleDraft, ContinuityCapsuleKind, ContinuityCapsuleRecallInspectionInput,
+    ContinuityCapsuleScopeKind, ContinuityCapsuleSource, ContinuityCapsuleStatus,
+    ContinuityCapsuleStore, ContinuityCapsuleWriteOutcome, MAX_CONTINUITY_CAPSULES,
+    MAX_CONTINUITY_CAPSULES_PER_SCOPE, REL_PATH_CONTINUITY_CAPSULES,
 };
 pub(crate) use continuity_snapshot::select_active_continuity_snapshot_chat_ids;
 pub use continuity_snapshot::{
@@ -259,12 +259,15 @@ pub use private_garden_governance::{
     PrivateGardenGovernanceOutcome, PRIVATE_GARDEN_GOVERNANCE_SYSTEM_PROMPT,
 };
 pub(crate) use profile::{
-    memory_capability_profile, memory_policy, shared_long_term_governance_policy,
-    AutonomyStrategyPolicy, ExecutionStatePolicy, InnerLifePolicy, LongTermExtractionPolicy,
-    LongTermRecallPolicy, OuterVoicePolicy, PrivateDocsPolicy, PrivateGardenGovernancePolicy,
-    SelfContinuityPolicy, SelfModelPolicy, SessionSummaryPolicy, WorldSensePolicy,
+    decide_prompt_participation, memory_capability_profile, memory_policy,
+    prompt_participation_policy, shared_long_term_governance_policy, AutonomyStrategyPolicy,
+    ExecutionStatePolicy, InnerLifePolicy, LongTermExtractionPolicy, LongTermRecallPolicy,
+    OuterVoicePolicy, PrivateDocsPolicy, PrivateGardenGovernancePolicy, SelfContinuityPolicy,
+    SelfModelPolicy, SessionSummaryPolicy, WorldSensePolicy,
 };
-pub use profile::{MemoryCapabilityClass, MemoryHygieneLevel, MemoryProfile};
+pub use profile::{
+    MemoryCapabilityClass, MemoryHygieneLevel, MemoryProfile, PromptParticipationPlan,
+};
 pub use prompt_context::{
     load_prompt_memory_context, PromptMemoryContext, PromptMemoryContextParams,
 };

@@ -385,7 +385,7 @@ fn build_execution_state_refresh_input(
     if let Some(observation) = recent_observation.and_then(|observation| {
         render_turn_observation_ledger_block(
             observation,
-            policy.existing_state_max_len.min(320).max(160),
+            policy.existing_state_max_len.clamp(160, 320),
         )
     }) {
         input.push_str(&observation);

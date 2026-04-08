@@ -294,24 +294,24 @@ mod tests {
             selected_ids: Vec::new(),
             miss_reason: None,
             selection_note: None,
-            candidates: (score > 0)
-                .then(|| {
-                    vec![RecallCandidate {
-                        plane,
-                        candidate_id: "c1".to_string(),
-                        title: "candidate".to_string(),
-                        excerpt: String::new(),
-                        citation: None,
-                        source: "test".to_string(),
-                        observed_at: None,
-                        selected,
-                        score: RecallScoreBreakdown {
-                            total_score: score,
-                            ..RecallScoreBreakdown::default()
-                        },
-                    }]
-                })
-                .unwrap_or_default(),
+            candidates: if score > 0 {
+                vec![RecallCandidate {
+                    plane,
+                    candidate_id: "c1".to_string(),
+                    title: "candidate".to_string(),
+                    excerpt: String::new(),
+                    citation: None,
+                    source: "test".to_string(),
+                    observed_at: None,
+                    selected,
+                    score: RecallScoreBreakdown {
+                        total_score: score,
+                        ..RecallScoreBreakdown::default()
+                    },
+                }]
+            } else {
+                Vec::new()
+            },
         }
     }
 

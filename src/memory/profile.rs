@@ -20,6 +20,51 @@ pub enum MemoryHygieneLevel {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PromptParticipationPlan {
+    pub load_l1_constitutional: bool,
+    pub load_l1_session: bool,
+    pub load_l2_governed_recall: bool,
+    pub load_l2_background_governance: bool,
+    pub load_l3_private_depth: bool,
+}
+
+impl Default for PromptParticipationPlan {
+    fn default() -> Self {
+        Self::full()
+    }
+}
+
+impl PromptParticipationPlan {
+    pub const fn full() -> Self {
+        Self {
+            load_l1_constitutional: true,
+            load_l1_session: true,
+            load_l2_governed_recall: true,
+            load_l2_background_governance: true,
+            load_l3_private_depth: true,
+        }
+    }
+
+    pub const fn embedded_first_turn_default() -> Self {
+        Self {
+            load_l1_constitutional: true,
+            load_l1_session: true,
+            load_l2_governed_recall: false,
+            load_l2_background_governance: false,
+            load_l3_private_depth: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PromptParticipationPolicy {
+    pub first_user_turn_l2_enabled: bool,
+    pub first_user_turn_background_enabled: bool,
+    pub non_user_turn_private_projection_enabled: bool,
+    pub tool_round_recall_enabled: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MemoryCapabilityProfile {
     pub class: MemoryCapabilityClass,
     pub archive_prompt_max_items: usize,
@@ -233,6 +278,20 @@ pub(crate) struct MemoryPolicy {
     pub self_runtime: SelfRuntimePolicy,
     pub self_state: SelfStatePolicy,
 }
+
+const EMBEDDED_PROMPT_PARTICIPATION_POLICY: PromptParticipationPolicy = PromptParticipationPolicy {
+    first_user_turn_l2_enabled: false,
+    first_user_turn_background_enabled: false,
+    non_user_turn_private_projection_enabled: false,
+    tool_round_recall_enabled: true,
+};
+
+const STANDARD_PROMPT_PARTICIPATION_POLICY: PromptParticipationPolicy = PromptParticipationPolicy {
+    first_user_turn_l2_enabled: true,
+    first_user_turn_background_enabled: true,
+    non_user_turn_private_projection_enabled: true,
+    tool_round_recall_enabled: true,
+};
 
 const EMBEDDED_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
     session_summary: SessionSummaryPolicy {
@@ -586,6 +645,51 @@ pub(crate) fn memory_capability_profile(
     }
 }
 
+pub(crate) fn prompt_participation_policy(profile: MemoryProfile) -> PromptParticipationPolicy {
+    match profile {
+        MemoryProfile::Embedded => EMBEDDED_PROMPT_PARTICIPATION_POLICY,
+        MemoryProfile::Standard => STANDARD_PROMPT_PARTICIPATION_POLICY,
+    }
+}
+
+pub(crate) fn decide_prompt_participation(
+    profile: MemoryProfile,
+    ingress: crate::bus::IngressKind,
+    has_tools: bool,
+    runtime_mode: crate::runtime::RuntimeModeSnapshot,
+    pressure: crate::orchestrator::PressureLevel,
+    system_budget: usize,
+) -> PromptParticipationPlan {
+    let policy = prompt_participation_policy(profile);
+    let budget_allows_governed =
+        system_budget >= memory_policy(profile).long_term_recall.block_min_len;
+    let mode_allows_governed = runtime_mode.allows_prompt_governed_recall(pressure);
+    let mode_allows_background = runtime_mode.allows_prompt_background_governance(pressure);
+    let mode_allows_private_depth = runtime_mode.allows_prompt_private_depth(pressure);
+
+    match ingress {
+        crate::bus::IngressKind::User => PromptParticipationPlan {
+            load_l1_constitutional: true,
+            load_l1_session: true,
+            load_l2_governed_recall: policy.first_user_turn_l2_enabled
+                && budget_allows_governed
+                && mode_allows_governed
+                && !has_tools,
+            load_l2_background_governance: policy.first_user_turn_background_enabled
+                && mode_allows_background,
+            load_l3_private_depth: false,
+        },
+        _ => PromptParticipationPlan {
+            load_l1_constitutional: true,
+            load_l1_session: true,
+            load_l2_governed_recall: budget_allows_governed && mode_allows_governed,
+            load_l2_background_governance: mode_allows_background,
+            load_l3_private_depth: policy.non_user_turn_private_projection_enabled
+                && mode_allows_private_depth,
+        },
+    }
+}
+
 /// 长期记忆持久化治理（TTL / kind budget）当前在两端平台保持统一，
 /// 避免 ESP / Linux 对同一状态文件裁剪出不同结果。
 /// Prompt 注入窗口与提取节奏按 MemoryProfile 分档，但持久化治理口径先共享。
@@ -645,5 +749,75 @@ mod tests {
             MemoryHygieneLevel::Standard
         ));
         assert!(standard.runtime_max_jobs_per_tick > embedded.runtime_max_jobs_per_tick);
+    }
+
+    #[test]
+    fn embedded_prompt_participation_policy_keeps_private_depth_out_of_first_turn() {
+        let embedded = prompt_participation_policy(MemoryProfile::Embedded);
+
+        assert!(!embedded.first_user_turn_l2_enabled);
+        assert!(!embedded.first_user_turn_background_enabled);
+        assert!(!embedded.non_user_turn_private_projection_enabled);
+        assert!(embedded.tool_round_recall_enabled);
+    }
+
+    #[test]
+    fn standard_prompt_participation_policy_keeps_wider_sync_participation() {
+        let standard = prompt_participation_policy(MemoryProfile::Standard);
+
+        assert!(standard.first_user_turn_l2_enabled);
+        assert!(standard.first_user_turn_background_enabled);
+        assert!(standard.non_user_turn_private_projection_enabled);
+        assert!(standard.tool_round_recall_enabled);
+    }
+
+    #[test]
+    fn voice_exclusive_blocks_nonessential_embedded_participation() {
+        let plan = decide_prompt_participation(
+            MemoryProfile::Embedded,
+            crate::bus::IngressKind::User,
+            false,
+            crate::runtime::RuntimeModeSnapshot {
+                current_mode: crate::runtime::RuntimeMode::VoiceExclusive,
+                wifi_sta_connected: true,
+                boot_phase_active: false,
+                pairing_required: false,
+                pairing_state_known: true,
+                voice_exclusive_active: true,
+                background_maintenance_active: false,
+                config_plane_alive: false,
+                channel_plane_alive: true,
+                voice_plane_alive: true,
+                agent_plane_alive: true,
+                user_agent_lane_alive: true,
+                system_agent_lane_alive: false,
+                dual_agent_lanes_alive: false,
+                external_wss_managed_present: true,
+                external_wss_suspend_requested: true,
+                external_wss_suspended: true,
+                supervisor_present: false,
+                supervisor_alive: false,
+                supervisor_agent_alive: false,
+                recovery_safe_mode_active: false,
+                action_budget: crate::runtime::RuntimeModeActionBudget {
+                    allow_periodic_maintenance: false,
+                    allow_due_user_timers: false,
+                    allow_heartbeat_injection: false,
+                    allow_best_effort_delayed_tasks: false,
+                    allow_idle_self_runtime: false,
+                    allow_non_voice_outbound: false,
+                    allow_external_wss_connect: false,
+                    require_external_wss_suspended: true,
+                },
+            },
+            crate::orchestrator::PressureLevel::Normal,
+            2048,
+        );
+
+        assert!(plan.load_l1_constitutional);
+        assert!(plan.load_l1_session);
+        assert!(!plan.load_l2_governed_recall);
+        assert!(!plan.load_l2_background_governance);
+        assert!(!plan.load_l3_private_depth);
     }
 }

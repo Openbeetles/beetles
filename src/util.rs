@@ -1247,16 +1247,18 @@ mod stack_budget_tests {
 
     #[test]
     fn http_route_exec_stack_budget_covers_operator_surface() {
+        let stack_budget = std::hint::black_box(STACK_HTTP_ROUTE_WORKER);
         assert!(
-            STACK_HTTP_ROUTE_WORKER >= 32 * 1024,
+            stack_budget >= 32 * 1024,
             "http_route_exec stack budget must cover config/operator/memory surface assembly"
         );
     }
 
     #[test]
     fn bg_timer_stack_budget_covers_runtime_observability() {
+        let stack_budget = std::hint::black_box(STACK_BG_TIMER);
         assert!(
-            STACK_BG_TIMER >= 16 * 1024,
+            stack_budget >= 16 * 1024,
             "bg_timer stack budget must cover heartbeat, runtime snapshots, and cron/self-runtime"
         );
     }

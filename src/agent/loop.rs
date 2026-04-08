@@ -410,6 +410,7 @@ struct PreparedWorkerConversation {
     system_scratch: String,
     deliberation_gate: TurnDeliberationGate,
     interactive_fast_path: bool,
+    allow_tool_round_recall_refill: bool,
     prompt_memory_system_budget: usize,
     pressure: crate::orchestrator::PressureLevel,
     mental_privacy_adjudication: Option<crate::memory::MentalPrivacyDisclosureAdjudication>,
@@ -2657,6 +2658,7 @@ fn run_worker_path(
         mut system_scratch,
         deliberation_gate,
         interactive_fast_path,
+        allow_tool_round_recall_refill,
         prompt_memory_system_budget,
         pressure,
         mental_privacy_adjudication,
@@ -3007,6 +3009,7 @@ fn run_worker_path(
             if memory_grounding.is_none() {
                 if prompt_memory.long_term_memory_text.is_none()
                     && interactive_fast_path
+                    && allow_tool_round_recall_refill
                     && prompt_memory_system_budget
                         >= memory_policy(config.memory_profile)
                             .long_term_recall

@@ -1021,7 +1021,7 @@ mod tests {
         }
     }
 
-    fn inspect_ctx<'a>(
+    struct TestInspectStores<'a> {
         state_fs: &'a MemoryStateFs,
         session_store: &'a TestSessionStore,
         long_term_store: &'a TestLongTermStore,
@@ -1031,17 +1031,19 @@ mod tests {
         self_continuity_store: &'a TestSelfContinuityStore,
         relationship_portfolio_store: &'a TestRelationshipPortfolioStore,
         relationship_topology_store: &'a TestRelationshipTopologyStore,
-    ) -> SoulKernelInspectContext<'a> {
+    }
+
+    fn inspect_ctx(stores: TestInspectStores<'_>) -> SoulKernelInspectContext<'_> {
         SoulKernelInspectContext {
-            state_fs,
-            session_store,
-            long_term_memory_store: long_term_store,
-            self_model_store,
-            self_authored_core_store,
-            core_revision_ledger_store,
-            self_continuity_store,
-            relationship_portfolio_store,
-            relationship_topology_store,
+            state_fs: stores.state_fs,
+            session_store: stores.session_store,
+            long_term_memory_store: stores.long_term_store,
+            self_model_store: stores.self_model_store,
+            self_authored_core_store: stores.self_authored_core_store,
+            core_revision_ledger_store: stores.core_revision_ledger_store,
+            self_continuity_store: stores.self_continuity_store,
+            relationship_portfolio_store: stores.relationship_portfolio_store,
+            relationship_topology_store: stores.relationship_topology_store,
         }
     }
 
@@ -1058,17 +1060,17 @@ mod tests {
         let relationship_topology_store = TestRelationshipTopologyStore::default();
 
         let status = inspect_soul_kernel(
-            inspect_ctx(
-                &state_fs,
-                &session_store,
-                &long_term_store,
-                &self_model_store,
-                &self_authored_core_store,
-                &core_revision_ledger_store,
-                &self_continuity_store,
-                &relationship_portfolio_store,
-                &relationship_topology_store,
-            ),
+            inspect_ctx(TestInspectStores {
+                state_fs: &state_fs,
+                session_store: &session_store,
+                long_term_store: &long_term_store,
+                self_model_store: &self_model_store,
+                self_authored_core_store: &self_authored_core_store,
+                core_revision_ledger_store: &core_revision_ledger_store,
+                self_continuity_store: &self_continuity_store,
+                relationship_portfolio_store: &relationship_portfolio_store,
+                relationship_topology_store: &relationship_topology_store,
+            }),
             100,
         );
 
@@ -1098,17 +1100,17 @@ mod tests {
         let relationship_topology_store = TestRelationshipTopologyStore::default();
 
         let status = inspect_soul_kernel(
-            inspect_ctx(
-                &state_fs,
-                &session_store,
-                &long_term_store,
-                &self_model_store,
-                &self_authored_core_store,
-                &core_revision_ledger_store,
-                &self_continuity_store,
-                &relationship_portfolio_store,
-                &relationship_topology_store,
-            ),
+            inspect_ctx(TestInspectStores {
+                state_fs: &state_fs,
+                session_store: &session_store,
+                long_term_store: &long_term_store,
+                self_model_store: &self_model_store,
+                self_authored_core_store: &self_authored_core_store,
+                core_revision_ledger_store: &core_revision_ledger_store,
+                self_continuity_store: &self_continuity_store,
+                relationship_portfolio_store: &relationship_portfolio_store,
+                relationship_topology_store: &relationship_topology_store,
+            }),
             100,
         );
 
@@ -1235,17 +1237,17 @@ mod tests {
 
         let report = ensure_soul_kernel_recovery(
             SoulKernelRecoveryContext {
-                inspect: inspect_ctx(
-                    &state_fs,
-                    &session_store,
-                    &long_term_store,
-                    &self_model_store,
-                    &self_authored_core_store,
-                    &core_revision_ledger_store,
-                    &self_continuity_store,
-                    &relationship_portfolio_store,
-                    &relationship_topology_store,
-                ),
+                inspect: inspect_ctx(TestInspectStores {
+                    state_fs: &state_fs,
+                    session_store: &session_store,
+                    long_term_store: &long_term_store,
+                    self_model_store: &self_model_store,
+                    self_authored_core_store: &self_authored_core_store,
+                    core_revision_ledger_store: &core_revision_ledger_store,
+                    self_continuity_store: &self_continuity_store,
+                    relationship_portfolio_store: &relationship_portfolio_store,
+                    relationship_topology_store: &relationship_topology_store,
+                }),
                 session_summary_store: &session_summary_store,
                 execution_state_store: &execution_state_store,
                 relationship_constitution_store: &relationship_constitution_store,

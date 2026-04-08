@@ -370,32 +370,39 @@ pub fn render_continuity_capsule_block(
     (!capped.trim().is_empty()).then_some(capped)
 }
 
+pub struct ContinuityCapsuleRecallInspectionInput<'a> {
+    pub store: &'a dyn ContinuityCapsuleStore,
+    pub scope_kind: ContinuityCapsuleScopeKind,
+    pub scope_id: &'a str,
+    pub preferred_chat_id: Option<&'a str>,
+    pub query: &'a str,
+    pub summary_text: Option<&'a str>,
+    pub recent_messages: &'a [SessionMessage],
+    pub max_chars: usize,
+    pub now_secs: u64,
+}
+
 pub fn inspect_continuity_capsule_recall(
-    store: &dyn ContinuityCapsuleStore,
-    scope_kind: ContinuityCapsuleScopeKind,
-    scope_id: &str,
-    preferred_chat_id: Option<&str>,
-    query: &str,
-    summary_text: Option<&str>,
-    recent_messages: &[SessionMessage],
-    max_chars: usize,
-    now_secs: u64,
+    input: ContinuityCapsuleRecallInspectionInput<'_>,
 ) -> (RecallSelectionReport, Vec<ContinuityCapsule>) {
-    let normalized_scope_id = normalize_inline(scope_id, MAX_CONTINUITY_CAPSULE_TOPIC_CHARS);
-    let normalized_query = normalize_match_text(query);
+    let normalized_scope_id = normalize_inline(input.scope_id, MAX_CONTINUITY_CAPSULE_TOPIC_CHARS);
+    let normalized_query = normalize_match_text(input.query);
     let terms = collect_terms(&normalized_query);
-    let all_capsules = store.list(MAX_CONTINUITY_CAPSULES).unwrap_or_default();
+    let all_capsules = input
+        .store
+        .list(MAX_CONTINUITY_CAPSULES)
+        .unwrap_or_default();
     let (index_hints, backend) = continuity_capsule_index_hints(
         &all_capsules,
-        scope_kind,
+        input.scope_kind,
         &normalized_scope_id,
         &normalized_query,
         &terms,
-        preferred_chat_id,
+        input.preferred_chat_id,
     );
     let mut scoped = all_capsules;
     scoped.retain(|capsule| {
-        capsule.scope_kind == scope_kind && capsule.scope_id == normalized_scope_id
+        capsule.scope_kind == input.scope_kind && capsule.scope_id == normalized_scope_id
     });
 
     let mut scored = scoped
@@ -404,11 +411,11 @@ pub fn inspect_continuity_capsule_recall(
             let index_hint = index_hints.get(capsule.capsule_id.as_str());
             score_continuity_capsule(
                 &capsule,
-                preferred_chat_id,
+                input.preferred_chat_id,
                 &normalized_query,
                 &terms,
                 index_hint,
-                now_secs,
+                input.now_secs,
             )
             .map(|(score, reasons)| (score, reasons, capsule))
         })
@@ -431,20 +438,22 @@ pub fn inspect_continuity_capsule_recall(
         .collect::<Vec<_>>();
     let query = RecallQuery {
         plane: RecallPlane::ContinuityCapsule,
-        raw_query: query.trim().to_string(),
+        raw_query: input.query.trim().to_string(),
         normalized_query: truncate_content_to_max(&normalized_query, 240)
             .trim()
             .to_string(),
-        preferred_chat_id: preferred_chat_id.map(str::to_string),
+        preferred_chat_id: input.preferred_chat_id.map(str::to_string),
         current_channel: None,
-        summary_text: summary_text
+        summary_text: input
+            .summary_text
             .map(|value| {
                 truncate_content_to_max(value.trim(), 220)
                     .trim()
                     .to_string()
             })
             .filter(|value| !value.is_empty()),
-        recent_grounding: recent_messages
+        recent_grounding: input
+            .recent_messages
             .iter()
             .rev()
             .take(2)
@@ -458,10 +467,10 @@ pub fn inspect_continuity_capsule_recall(
         active_run_id: None,
         exact_lookup: None,
         requested_limit: MAX_CONTINUITY_CAPSULE_RECALL_SELECTED,
-        max_chars,
+        max_chars: input.max_chars,
         notes: vec![format!(
             "scope={}{}",
-            scope_kind.label(),
+            input.scope_kind.label(),
             if normalized_scope_id.is_empty() {
                 String::new()
             } else {
@@ -1062,7 +1071,7 @@ fn govern_continuity_capsules(entries: &mut Vec<ContinuityCapsule>, now_secs: u6
     let mut changed = false;
     *entries = entries
         .drain(..)
-        .filter_map(|capsule| canonicalize_continuity_capsule(capsule))
+        .filter_map(canonicalize_continuity_capsule)
         .collect();
     for capsule in entries.iter_mut() {
         if capsule.status == ContinuityCapsuleStatus::Done
@@ -1475,17 +1484,18 @@ mod tests {
                 .unwrap(),
             ],
         };
-        let (report, hits) = inspect_continuity_capsule_recall(
-            &store,
-            ContinuityCapsuleScopeKind::Chat,
-            "chat-1",
-            Some("chat-1"),
-            "继续 network setup",
-            None,
-            &[],
-            400,
-            120,
-        );
+        let (report, hits) =
+            inspect_continuity_capsule_recall(ContinuityCapsuleRecallInspectionInput {
+                store: &store,
+                scope_kind: ContinuityCapsuleScopeKind::Chat,
+                scope_id: "chat-1",
+                preferred_chat_id: Some("chat-1"),
+                query: "继续 network setup",
+                summary_text: None,
+                recent_messages: &[],
+                max_chars: 400,
+                now_secs: 120,
+            });
         assert_eq!(report.selected_count, 1);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].topic, "network setup");

@@ -115,6 +115,7 @@ struct MemoryStatusBody {
 struct MemoryStatusRequest {
     chat_id: Option<String>,
     channel: Option<String>,
+    deep: bool,
     query: String,
     run_id: Option<String>,
     profile: MemoryProfile,
@@ -225,8 +226,9 @@ pub fn body(ctx: &HandlerContext, uri: &str) -> Result<String, std::io::Error> {
     )
     .map_err(std::io::Error::other)?;
     let inspection = request
-        .chat_id
-        .as_deref()
+        .deep
+        .then_some(request.chat_id.as_deref())
+        .flatten()
         .map(|chat_id| build_deep_inspection(ctx, &request, chat_id))
         .transpose()?;
     let payload = MemoryStatusBody {
@@ -425,16 +427,21 @@ fn build_deep_inspection(
 
 fn parse_request(ctx: &HandlerContext, uri: &str) -> MemoryStatusRequest {
     let chat_id = query_param_from_uri(uri, "chat_id");
+    let deep = query_flag_from_uri(uri, "deep");
     let channel = query_param_from_uri(uri, "channel").or_else(|| {
-        chat_id.as_ref().and_then(|_| {
-            let config = ctx.config();
-            let enabled_channel = config.enabled_channel.trim();
-            (!enabled_channel.is_empty()).then_some(enabled_channel.to_string())
+        deep.then(|| {
+            chat_id.as_ref().and_then(|_| {
+                let config = ctx.config();
+                let enabled_channel = config.enabled_channel.trim();
+                (!enabled_channel.is_empty()).then_some(enabled_channel.to_string())
+            })
         })
+        .flatten()
     });
     MemoryStatusRequest {
         chat_id,
         channel,
+        deep,
         query: query_param_from_uri(uri, "query").unwrap_or_default(),
         run_id: query_param_from_uri(uri, "run_id"),
         profile: parse_memory_profile(
@@ -443,6 +450,25 @@ fn parse_request(ctx: &HandlerContext, uri: &str) -> MemoryStatusRequest {
         ),
         snapshot_mode: parse_snapshot_mode(query_param_from_uri(uri, "snapshot_mode").as_deref()),
     }
+}
+
+fn query_flag_from_uri(uri: &str, key: &str) -> bool {
+    let query = uri.find('?').map(|index| &uri[index + 1..]).unwrap_or("");
+    query.split('&').any(|pair| {
+        let mut it = pair.splitn(2, '=');
+        let Some(candidate) = it.next() else {
+            return false;
+        };
+        if !candidate.eq_ignore_ascii_case(key) {
+            return false;
+        }
+        match it.next().map(str::trim) {
+            None => true,
+            Some("") => true,
+            Some("1" | "true" | "yes" | "on") => true,
+            Some(_) => false,
+        }
+    })
 }
 
 fn query_param_from_uri(uri: &str, key: &str) -> Option<String> {
@@ -795,7 +821,7 @@ mod tests {
         }
 
         let uri = format!(
-            "/api/memory/status?chat_id={chat_id}&channel=telegram&query={topic}&run_id={run_id}&snapshot_mode=full_restore"
+            "/api/memory/status?chat_id={chat_id}&channel=telegram&query={topic}&run_id={run_id}&snapshot_mode=full_restore&deep=1"
         );
         let payload = body(&ctx, &uri).unwrap();
         let parsed: Value = serde_json::from_str(&payload).unwrap();
@@ -867,9 +893,18 @@ mod tests {
         let default_parsed: Value = serde_json::from_str(&default_payload).unwrap();
         assert!(default_parsed.get("inspection").is_none());
 
-        let targeted_payload = body(
+        let targeted_without_deep = body(
             &ctx,
             &format!("/api/memory/status?chat_id={chat_id}&channel=telegram&query=memory"),
+        )
+        .unwrap();
+        let targeted_without_deep_parsed: Value =
+            serde_json::from_str(&targeted_without_deep).unwrap();
+        assert!(targeted_without_deep_parsed.get("inspection").is_none());
+
+        let targeted_payload = body(
+            &ctx,
+            &format!("/api/memory/status?chat_id={chat_id}&channel=telegram&query=memory&deep=1"),
         )
         .unwrap();
         let targeted_parsed: Value = serde_json::from_str(&targeted_payload).unwrap();
@@ -892,6 +927,36 @@ mod tests {
 
         assert!(request.chat_id.is_none());
         assert!(request.channel.is_none());
+    }
+
+    #[test]
+    fn parse_request_keeps_target_channel_unset_without_deep() {
+        let ctx = build_test_context();
+        {
+            let mut config = ctx.cached_config.write().unwrap_or_else(|e| e.into_inner());
+            config.enabled_channel = "telegram".to_string();
+        }
+
+        let request = super::parse_request(&ctx, "/api/memory/status?chat_id=chat-1");
+
+        assert_eq!(request.chat_id.as_deref(), Some("chat-1"));
+        assert!(!request.deep);
+        assert!(request.channel.is_none());
+    }
+
+    #[test]
+    fn parse_request_defaults_target_channel_when_deep_inspection_is_enabled() {
+        let ctx = build_test_context();
+        {
+            let mut config = ctx.cached_config.write().unwrap_or_else(|e| e.into_inner());
+            config.enabled_channel = "telegram".to_string();
+        }
+
+        let request = super::parse_request(&ctx, "/api/memory/status?chat_id=chat-1&deep=1");
+
+        assert_eq!(request.chat_id.as_deref(), Some("chat-1"));
+        assert!(request.deep);
+        assert_eq!(request.channel.as_deref(), Some("telegram"));
     }
 
     fn build_test_context() -> crate::platform::http_server::handlers::HandlerContext {

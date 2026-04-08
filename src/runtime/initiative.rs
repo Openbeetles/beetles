@@ -578,6 +578,12 @@ pub fn reset_initiative_runtime_for_tests() {
 mod tests {
     use super::*;
     use crate::runtime::{RuntimeMode, RuntimeModeActionBudget};
+    use std::sync::{Mutex, OnceLock};
+
+    fn test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     fn runtime_mode() -> RuntimeModeSnapshot {
         RuntimeModeSnapshot {
@@ -682,6 +688,7 @@ mod tests {
 
     #[test]
     fn upcoming_reminder_nudge_wins_when_reminder_is_near() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
         reset_initiative_runtime_for_tests();
         let mut signal = signal();
         signal.next_reminder_at = 10_000;
@@ -700,6 +707,7 @@ mod tests {
 
     #[test]
     fn resume_checkin_applies_after_idle_gap() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
         reset_initiative_runtime_for_tests();
         let mut signal = signal();
         signal.upcoming_reminders = 0;
@@ -719,6 +727,7 @@ mod tests {
 
     #[test]
     fn cooldown_suppresses_repeat_nudge() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
         reset_initiative_runtime_for_tests();
         let now_secs = 1_000 + 60;
         let mut signal = signal();
@@ -745,6 +754,7 @@ mod tests {
 
     #[test]
     fn non_idle_presence_blocks_proactive_nudge() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
         reset_initiative_runtime_for_tests();
         let decision = decide_initiative(
             Some(&target()),
@@ -763,6 +773,7 @@ mod tests {
 
     #[test]
     fn pre_signal_gate_blocks_world_snapshot_when_presence_is_not_idle() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
         let decision = pre_signal_gate_decision(
             Some(&target()),
             PresenceState::Busy,
@@ -781,6 +792,7 @@ mod tests {
 
     #[test]
     fn pre_signal_gate_allows_signal_build_when_runtime_is_idle_and_budgeted() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
         let decision = pre_signal_gate_decision(
             Some(&target()),
             PresenceState::Idle,
@@ -790,5 +802,32 @@ mod tests {
         );
 
         assert!(decision.is_none());
+    }
+
+    #[test]
+    fn pre_signal_gate_blocks_world_snapshot_when_voice_exclusive_disables_prompt_budget() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let mut mode = runtime_mode();
+        mode.current_mode = RuntimeMode::VoiceExclusive;
+        mode.voice_exclusive_active = true;
+        mode.action_budget.allow_idle_self_runtime = false;
+        mode.action_budget.allow_non_voice_outbound = false;
+        mode.action_budget.allow_external_wss_connect = false;
+        mode.action_budget.require_external_wss_suspended = true;
+
+        let decision = pre_signal_gate_decision(
+            Some(&target()),
+            PresenceState::Idle,
+            mode,
+            &resource(),
+            true,
+        )
+        .expect("voice-exclusive mode should block before signal build");
+
+        assert_eq!(decision.action, InitiativeAction::Hold);
+        assert_eq!(
+            decision.suppression_reason,
+            Some(InitiativeSuppressionReason::RuntimeModeBlocked)
+        );
     }
 }

@@ -1614,10 +1614,15 @@ fn package_rel_path(package_id: &str, path: &str) -> String {
 }
 
 fn capability_package_registry_path() -> String {
-    if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
-        "cfg/cpkg.j".to_string()
-    } else {
-        REL_PATH_CAPABILITY_PACKAGE_REGISTRY.to_string()
+    capability_package_registry_path_for_layout(current_storage_layout())
+}
+
+fn capability_package_registry_path_for_layout(layout: CapabilityPackageStorageLayout) -> String {
+    match layout {
+        CapabilityPackageStorageLayout::Standard => {
+            REL_PATH_CAPABILITY_PACKAGE_REGISTRY.to_string()
+        }
+        CapabilityPackageStorageLayout::EspCompact => "cfg/cpkg.j".to_string(),
     }
 }
 
@@ -2017,7 +2022,8 @@ mod tests {
     #[test]
     fn esp_compact_paths_keep_long_package_entries_short() {
         let package_id = "qq_capability_overlay_package_with_a_really_long_identifier";
-        let registry = capability_package_registry_path();
+        let registry =
+            capability_package_registry_path_for_layout(CapabilityPackageStorageLayout::EspCompact);
         let manifest =
             manifest_path_for_layout(CapabilityPackageStorageLayout::EspCompact, package_id);
         let rollback =

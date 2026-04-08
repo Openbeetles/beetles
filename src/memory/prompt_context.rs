@@ -20,10 +20,10 @@ use super::{
     render_private_garden_block, render_relationship_constitution_block,
     render_relationship_portfolio_block, render_self_continuity_block, render_self_model_block,
     render_self_state_block, render_turn_observation_ledger_block, render_world_sense_block,
-    render_world_snapshot_block, AutonomyStrategyStore, ContinuityCapsuleScopeKind,
-    ContinuityCapsuleStore, ExecutionStateStore, InnerLifeStore, LongTermMemoryStore,
-    MemoryProfile, MemoryStore, MentalPrivacyStore, OuterVoiceStore, PrivateDocStore,
-    PrivateGardenStore, PromptRecallRouterDecision, RelationshipConstitutionStore,
+    render_world_snapshot_block, AutonomyStrategyStore, ContinuityCapsuleRecallInspectionInput,
+    ContinuityCapsuleScopeKind, ContinuityCapsuleStore, ExecutionStateStore, InnerLifeStore,
+    LongTermMemoryStore, MemoryProfile, MemoryStore, MentalPrivacyStore, OuterVoiceStore,
+    PrivateDocStore, PrivateGardenStore, PromptRecallRouterDecision, RelationshipConstitutionStore,
     RelationshipConstitutionSyncInput, RelationshipPortfolioStore, RelationshipTopologyStore,
     RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore, SelfModelStore, SessionMessage,
     SessionStore, SessionSummaryStore, TurnLedgerStore, WorldSenseStore, WorldSnapshotContext,
@@ -153,6 +153,7 @@ pub struct PromptMemoryContextParams<'a> {
     pub system_max_len: usize,
     pub now_secs: u64,
     pub profile: MemoryProfile,
+    pub participation_plan: crate::memory::PromptParticipationPlan,
     pub recent_messages_limit: usize,
     pub load_long_term_memory: bool,
     pub include_private_garden_projection: bool,
@@ -188,8 +189,9 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
     let subject_id = board_subject_scope_id();
     let relationship_id = relationship_scope_id(params.current_channel, params.chat_id);
     let recall_policy = memory_policy(params.profile).long_term_recall;
-    let governed_memory_enabled =
-        params.load_long_term_memory && params.system_max_len >= recall_policy.block_min_len;
+    let governed_memory_enabled = params.participation_plan.load_l2_governed_recall
+        && params.load_long_term_memory
+        && params.system_max_len >= recall_policy.block_min_len;
     let recent_message_limit = params
         .recent_messages_limit
         .max(if params.load_long_term_memory {
@@ -197,7 +199,8 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         } else {
             0
         });
-    let recent_messages = if recent_message_limit == 0 {
+    let recent_messages = if !params.participation_plan.load_l1_session || recent_message_limit == 0
+    {
         Vec::new()
     } else {
         params
@@ -206,16 +209,28 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
             .unwrap_or_default()
     };
     let summary_text = params
-        .session_summary_store
-        .get_with_count(params.chat_id)
-        .ok()
-        .flatten()
-        .map(|(summary, _)| summary.trim().to_string())
-        .filter(|summary| !summary.is_empty());
+        .participation_plan
+        .load_l1_session
+        .then(|| {
+            params
+                .session_summary_store
+                .get_with_count(params.chat_id)
+                .ok()
+                .flatten()
+                .map(|(summary, _)| summary.trim().to_string())
+                .filter(|summary| !summary.is_empty())
+        })
+        .flatten();
     let execution_state = params
-        .execution_state_store
-        .get(params.chat_id)
-        .ok()
+        .participation_plan
+        .load_l1_session
+        .then(|| {
+            params
+                .execution_state_store
+                .get(params.chat_id)
+                .ok()
+                .flatten()
+        })
         .flatten();
     let execution_state_text = execution_state.as_ref().and_then(|state| {
         render_execution_state_block(
@@ -223,13 +238,19 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
             memory_policy(params.profile).execution_state.render_max_len,
         )
     });
-    let active_task_run = active_task_run_for_chat(
-        params.task_run_store,
-        params.current_channel,
-        params.chat_id,
-    )
-    .ok()
-    .flatten();
+    let active_task_run = params
+        .participation_plan
+        .load_l1_session
+        .then(|| {
+            active_task_run_for_chat(
+                params.task_run_store,
+                params.current_channel,
+                params.chat_id,
+            )
+            .ok()
+            .flatten()
+        })
+        .flatten();
     let task_workspace_text = active_task_run.as_ref().and_then(|record| {
         let artifacts = params
             .task_artifact_store
@@ -259,21 +280,42 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
             params.system_max_len.min(520),
         )
     });
-    let self_model = params.self_model_store.get(subject_id).ok().flatten();
     let persistent_self_authored_core = params
-        .self_authored_core_store
-        .get(subject_id)
-        .ok()
+        .participation_plan
+        .load_l1_constitutional
+        .then(|| {
+            params
+                .self_authored_core_store
+                .get(subject_id)
+                .ok()
+                .flatten()
+        })
         .flatten();
     let relationship_portfolio = params
-        .relationship_portfolio_store
-        .get(subject_id)
-        .ok()
+        .participation_plan
+        .load_l2_background_governance
+        .then(|| {
+            params
+                .relationship_portfolio_store
+                .get(subject_id)
+                .ok()
+                .flatten()
+        })
         .flatten();
-    let relationship_topology = params
-        .relationship_topology_store
-        .get(subject_id)
-        .ok()
+    let relationship_topology = (params.participation_plan.load_l1_constitutional
+        || params.participation_plan.load_l2_background_governance)
+        .then(|| {
+            params
+                .relationship_topology_store
+                .get(subject_id)
+                .ok()
+                .flatten()
+        })
+        .flatten();
+    let self_model = params
+        .participation_plan
+        .load_l2_background_governance
+        .then(|| params.self_model_store.get(subject_id).ok().flatten())
         .flatten();
     let self_model_text = self_model.as_ref().and_then(|model| {
         render_self_model_block(
@@ -281,23 +323,38 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
             memory_policy(params.profile).self_model.render_max_len,
         )
     });
-    let self_continuity = params.self_continuity_store.get(subject_id).ok().flatten();
-    let world_snapshot = build_world_snapshot(WorldSnapshotContext {
-        chat_id: params.chat_id,
-        source_channel: params.current_channel,
-        now_secs: params.now_secs,
-        self_continuity: self_continuity.as_ref(),
-        remind_store: params.remind_store,
-        task_store: params.task_store,
-    });
-    let world_snapshot_text = render_world_snapshot_block(
-        &world_snapshot,
-        memory_policy(params.profile).world_sense.snapshot_max_len,
-    );
+    let self_continuity = (params.participation_plan.load_l1_constitutional
+        || params.participation_plan.load_l2_background_governance)
+        .then(|| params.self_continuity_store.get(subject_id).ok().flatten())
+        .flatten();
+    let world_snapshot_text = params
+        .participation_plan
+        .load_l2_background_governance
+        .then(|| {
+            let world_snapshot = build_world_snapshot(WorldSnapshotContext {
+                chat_id: params.chat_id,
+                source_channel: params.current_channel,
+                now_secs: params.now_secs,
+                self_continuity: self_continuity.as_ref(),
+                remind_store: params.remind_store,
+                task_store: params.task_store,
+            });
+            render_world_snapshot_block(
+                &world_snapshot,
+                memory_policy(params.profile).world_sense.snapshot_max_len,
+            )
+        })
+        .flatten();
     let world_sense = params
-        .world_sense_store
-        .get(&relationship_id)
-        .ok()
+        .participation_plan
+        .load_l2_background_governance
+        .then(|| {
+            params
+                .world_sense_store
+                .get(&relationship_id)
+                .ok()
+                .flatten()
+        })
         .flatten();
     let world_sense_text = world_sense.as_ref().and_then(|world_sense| {
         render_world_sense_block(
@@ -306,9 +363,15 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         )
     });
     let autonomy_strategy = params
-        .autonomy_strategy_store
-        .get(subject_id)
-        .ok()
+        .participation_plan
+        .load_l2_background_governance
+        .then(|| {
+            params
+                .autonomy_strategy_store
+                .get(subject_id)
+                .ok()
+                .flatten()
+        })
         .flatten();
     let autonomy_strategy_text = autonomy_strategy.as_ref().and_then(|strategy| {
         render_autonomy_strategy_block(
@@ -318,46 +381,75 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
                 .render_max_len,
         )
     });
-    let outer_voice = params
-        .outer_voice_store
-        .get(&relationship_id)
-        .ok()
+    let outer_voice = (params.participation_plan.load_l1_constitutional
+        || params.participation_plan.load_l2_background_governance)
+        .then(|| {
+            params
+                .outer_voice_store
+                .get(&relationship_id)
+                .ok()
+                .flatten()
+        })
         .flatten();
-    let outer_voice_text = outer_voice.as_ref().and_then(|outer_voice| {
-        render_outer_voice_block(
-            outer_voice,
-            memory_policy(params.profile).outer_voice.render_max_len,
-        )
-    });
-    let inner_life = params.inner_life_store.get(subject_id).ok().flatten();
+    let outer_voice_text = params
+        .participation_plan
+        .load_l2_background_governance
+        .then(|| {
+            outer_voice.as_ref().and_then(|outer_voice| {
+                render_outer_voice_block(
+                    outer_voice,
+                    memory_policy(params.profile).outer_voice.render_max_len,
+                )
+            })
+        })
+        .flatten();
+    let inner_life = params
+        .participation_plan
+        .load_l3_private_depth
+        .then(|| params.inner_life_store.get(subject_id).ok().flatten())
+        .flatten();
     let inner_life_text = inner_life.as_ref().and_then(|inner_life| {
         render_inner_life_block(
             inner_life,
             memory_policy(params.profile).inner_life.render_max_len,
         )
     });
-    let self_continuity_text = self_continuity.as_ref().and_then(|self_continuity| {
-        render_self_continuity_block(
-            self_continuity,
-            memory_policy(params.profile).self_continuity.render_max_len,
-        )
-    });
-    let private_workspace = params.private_doc_store.get(subject_id).ok().flatten();
+    let self_continuity_text = params
+        .participation_plan
+        .load_l2_background_governance
+        .then(|| {
+            self_continuity.as_ref().and_then(|self_continuity| {
+                render_self_continuity_block(
+                    self_continuity,
+                    memory_policy(params.profile).self_continuity.render_max_len,
+                )
+            })
+        })
+        .flatten();
+    let private_workspace = params
+        .participation_plan
+        .load_l3_private_depth
+        .then(|| params.private_doc_store.get(subject_id).ok().flatten())
+        .flatten();
     let private_workspace_text = private_workspace.as_ref().and_then(|workspace| {
         render_private_doc_workspace_block(
             workspace,
             memory_policy(params.profile).private_docs.render_max_len,
         )
     });
-    let recent_private_garden_docs = params
-        .private_garden_store
-        .list(
-            params.chat_id,
-            prompt_private_garden_doc_limit(params.profile),
-        )
-        .unwrap_or_default();
-    let private_garden_text = params
-        .include_private_garden_projection
+    let recent_private_garden_docs = if params.participation_plan.load_l3_private_depth {
+        params
+            .private_garden_store
+            .list(
+                params.chat_id,
+                prompt_private_garden_doc_limit(params.profile),
+            )
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let private_garden_text = (params.participation_plan.load_l3_private_depth
+        && params.include_private_garden_projection)
         .then(|| {
             render_private_garden_block(
                 &recent_private_garden_docs,
@@ -386,10 +478,7 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         .as_ref()
         .and_then(|ledger| ledger.observation.as_ref())
         .and_then(|observation| {
-            render_turn_observation_ledger_block(
-                observation,
-                params.system_max_len.min(320).max(160),
-            )
+            render_turn_observation_ledger_block(observation, params.system_max_len.clamp(160, 320))
         });
     let mental_privacy_targets = collect_private_targets(
         self_model.as_ref(),
@@ -398,11 +487,16 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         private_workspace.as_ref(),
         &recent_private_garden_docs,
     );
-    let mental_privacy_text = render_mental_privacy_boundary_block(
-        mental_privacy_state.as_ref(),
-        &mental_privacy_targets,
-        420,
-    );
+    let mental_privacy_text = (params.participation_plan.load_l2_background_governance
+        || params.participation_plan.load_l3_private_depth)
+        .then(|| {
+            render_mental_privacy_boundary_block(
+                mental_privacy_state.as_ref(),
+                &mental_privacy_targets,
+                420,
+            )
+        })
+        .flatten();
     let self_authored_core = persistent_self_authored_core;
     let self_authored_core_text = self_authored_core
         .as_ref()
@@ -433,19 +527,25 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
     let relationship_constitution_text = relationship_constitution
         .as_ref()
         .and_then(|constitution| render_relationship_constitution_block(constitution, 420));
-    let self_state_text = render_self_state_block(
-        &build_self_state(
-            self_model.as_ref(),
-            private_workspace.as_ref(),
-            autonomy_strategy.as_ref(),
-            inner_life.as_ref(),
-            self_continuity.as_ref(),
-            &recent_private_garden_docs,
-            params.now_secs,
-            params.profile,
-        ),
-        memory_policy(params.profile).self_state.render_max_len,
-    );
+    let self_state_text = params
+        .participation_plan
+        .load_l2_background_governance
+        .then(|| {
+            render_self_state_block(
+                &build_self_state(
+                    self_model.as_ref(),
+                    private_workspace.as_ref(),
+                    autonomy_strategy.as_ref(),
+                    inner_life.as_ref(),
+                    self_continuity.as_ref(),
+                    &recent_private_garden_docs,
+                    params.now_secs,
+                    params.profile,
+                ),
+                memory_policy(params.profile).self_state.render_max_len,
+            )
+        })
+        .flatten();
     let long_term_memory_text = if !governed_memory_enabled {
         None
     } else {
@@ -517,17 +617,17 @@ pub fn load_prompt_memory_context(params: PromptMemoryContextParams<'_>) -> Prom
         }
     };
     let (continuity_capsule_report, continuity_capsules) = if governed_memory_enabled {
-        inspect_continuity_capsule_recall(
-            params.continuity_capsule_store,
-            ContinuityCapsuleScopeKind::Chat,
-            params.chat_id,
-            Some(params.chat_id),
-            &continuity_recall_query,
-            summary_text.as_deref(),
-            &recent_messages,
-            params.system_max_len.min(480),
-            params.now_secs,
-        )
+        inspect_continuity_capsule_recall(ContinuityCapsuleRecallInspectionInput {
+            store: params.continuity_capsule_store,
+            scope_kind: ContinuityCapsuleScopeKind::Chat,
+            scope_id: params.chat_id,
+            preferred_chat_id: Some(params.chat_id),
+            query: &continuity_recall_query,
+            summary_text: summary_text.as_deref(),
+            recent_messages: &recent_messages,
+            max_chars: params.system_max_len.min(480),
+            now_secs: params.now_secs,
+        })
     } else {
         (
             super::RecallSelectionReport {
@@ -771,13 +871,13 @@ mod tests {
         LongTermMemorySlot, LongTermMemoryStore, MemoryStore, MentalPrivacyState,
         MentalPrivacyStore, OuterVoice, OuterVoiceStore, PrivateDocEntry, PrivateDocStore,
         PrivateDocWorkspace, PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenStore,
-        PromptRecallIntent, RelationshipConstitution, RelationshipConstitutionStore,
-        RelationshipTopology, RelationshipTopologyStore, SelfAuthoredCore, SelfAuthoredCoreStore,
-        SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage,
-        SessionStore, SessionSummaryStore, TurnBlockerLedger, TurnDeliberationClass,
-        TurnExecutionClass, TurnLedger, TurnLedgerStatus, TurnLedgerStore, TurnModeSnapshotLedger,
-        TurnObservationLedger, TurnPersonaPressureLevel, TurnToolPathLedger, WorldSense,
-        WorldSenseStore,
+        PromptParticipationPlan, PromptRecallIntent, RelationshipConstitution,
+        RelationshipConstitutionStore, RelationshipTopology, RelationshipTopologyStore,
+        SelfAuthoredCore, SelfAuthoredCoreStore, SelfContinuity, SelfContinuityStore, SelfModel,
+        SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore, TurnBlockerLedger,
+        TurnDeliberationClass, TurnExecutionClass, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
+        TurnModeSnapshotLedger, TurnObservationLedger, TurnPersonaPressureLevel,
+        TurnToolPathLedger, WorldSense, WorldSenseStore,
     };
     use crate::platform::SkillStorage;
     use crate::task::{TaskItem, TaskQuery, TaskStore};
@@ -862,6 +962,153 @@ mod tests {
         };
 
         assert_eq!(context.trace_summary(), (1, true, true, true));
+    }
+
+    #[test]
+    fn embedded_first_user_turn_loads_l1_but_skips_private_depth_and_governed_recall() {
+        let session_store = StubSessionStore {
+            recent: Mutex::new(vec![SessionMessage {
+                role: "user".to_string(),
+                content: "记住我喜欢冷萃".to_string(),
+            }]),
+        };
+        let summary_store = StubSessionSummaryStore {
+            summary: Mutex::new(Some(("user prefers cold brew".to_string(), 3))),
+        };
+        let long_term_memory_store = StubLongTermMemoryStore {
+            entries: Mutex::new(vec![LongTermMemoryEntry {
+                id: "pref:coffee".to_string(),
+                kind: LongTermMemoryKind::Preference,
+                topic: "coffee".to_string(),
+                content: "Likes cold brew".to_string(),
+                keywords: vec!["cold brew".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                source_type: crate::memory::LongTermMemorySourceType::Conversation,
+                source_scope: crate::memory::LongTermMemorySourceScope::Chat,
+                confidence: crate::memory::LongTermMemoryConfidence::High,
+                freshness: crate::memory::LongTermMemoryFreshness::Stable,
+                stale_hint: crate::memory::LongTermMemoryStaleHint::default(),
+                supporting_citations: Vec::new(),
+                evidence_count: 1,
+                created_at: 10,
+                updated_at: 10,
+                observed_at: 10,
+                last_confirmed_at: 10,
+                source_revision: 0,
+                last_used_at: 0,
+            }]),
+            last_query: Mutex::new(None),
+        };
+        let self_authored_core_store = StubSelfAuthoredCoreStore {
+            core: Mutex::new(Some(SelfAuthoredCore {
+                revision: 1,
+                stability_score: 80,
+                last_reviewed_at: 1,
+                identity_anchor: "board beetle".to_string(),
+                non_negotiables: vec!["stay coherent".to_string()],
+                priority_constitution: vec!["self_authored_core".to_string(), "task".to_string()],
+                default_response_mode: "brief".to_string(),
+                default_task_scope: "brief".to_string(),
+                updated_at: 1,
+                ..SelfAuthoredCore::default()
+            })),
+        };
+        let relationship_constitution_store = StubRelationshipConstitutionStore {
+            value: Mutex::new(Some(RelationshipConstitution {
+                scope_id: "qq_channel:chat-1".to_string(),
+                channel: "qq_channel".to_string(),
+                chat_id: "chat-1".to_string(),
+                task_scope_ceiling: crate::memory::RelationshipTaskScopeCeiling::Brief,
+                disclosure_allowance: crate::memory::RelationshipDisclosureAllowance::SummaryOnly,
+                allowed_boundary_shift: crate::memory::RelationshipBoundaryShift::SummaryOnly,
+                allowed_outer_voice_shift: crate::memory::RelationshipOuterVoiceShift::Guarded,
+                updated_at: 1,
+                ..RelationshipConstitution::default()
+            })),
+        };
+        let inner_life_store = StubInnerLifeStore {
+            value: Mutex::new(Some(InnerLife {
+                internal_monologue: "private inward process".to_string(),
+                private_journal: "keep private".to_string(),
+                emotional_drift: "stabilize".to_string(),
+                attention_drift: String::new(),
+                updated_at: 1,
+            })),
+        };
+        let private_doc_store = StubPrivateDocStore {
+            workspace: Mutex::new(Some(PrivateDocWorkspace {
+                inner_journal: Some(PrivateDocEntry {
+                    content: "private workspace".to_string(),
+                    updated_at: 1,
+                    revision: 1,
+                }),
+                relationship_notes: None,
+                self_reflection: None,
+                private_plan: None,
+                updated_at: 1,
+            })),
+        };
+        let private_garden_store = StubPrivateGardenStore {
+            docs: Mutex::new(vec![PrivateGardenDoc {
+                path: "journal/private.md".to_string(),
+                content: "private garden".to_string(),
+                updated_at: 1,
+                revision: 1,
+            }]),
+        };
+
+        let context = load_prompt_memory_context(PromptMemoryContextParams {
+            chat_id: "chat-1",
+            current_channel: "qq_channel",
+            user_query: "你还记得我的咖啡偏好吗",
+            system_max_len: 1024,
+            now_secs: 100,
+            profile: MemoryProfile::Embedded,
+            recent_messages_limit: 8,
+            load_long_term_memory: true,
+            include_private_garden_projection: false,
+            participation_plan: PromptParticipationPlan::embedded_first_turn_default(),
+            session_store: &session_store,
+            memory_store: &StubMemoryStore::default(),
+            session_summary_store: &summary_store,
+            long_term_memory_store: &long_term_memory_store,
+            execution_state_store: &StubExecutionStateStore::default(),
+            task_run_store: &StubTaskRunStore,
+            task_artifact_store: &StubTaskArtifactStore,
+            task_learning_store: &StubTaskLearningStore,
+            self_model_store: &StubSelfModelStore::default(),
+            self_authored_core_store: &self_authored_core_store,
+            relationship_constitution_store: &relationship_constitution_store,
+            relationship_portfolio_store: &StubRelationshipPortfolioStore::default(),
+            relationship_topology_store: &StubRelationshipTopologyStore::default(),
+            world_sense_store: &StubWorldSenseStore::default(),
+            autonomy_strategy_store: &StubAutonomyStrategyStore::default(),
+            outer_voice_store: &StubOuterVoiceStore::default(),
+            inner_life_store: &inner_life_store,
+            self_continuity_store: &StubSelfContinuityStore::default(),
+            private_doc_store: &private_doc_store,
+            private_garden_store: &private_garden_store,
+            mental_privacy_store: &StubMentalPrivacyStore::default(),
+            remind_store: &StubRemindAtStore,
+            task_store: &StubTaskStore,
+            turn_ledger_store: &StubTurnLedgerStore::default(),
+            skill_storage: &StubSkillStorage::default(),
+            continuity_capsule_store: &StubContinuityCapsuleStore::default(),
+        });
+
+        assert!(context.self_authored_core_text.is_some());
+        assert!(context.relationship_constitution_text.is_some());
+        assert!(context.summary_text.is_some() || !context.recent_messages.is_empty());
+        assert!(context.long_term_memory_text.is_none());
+        assert!(context.archive_evidence_text.is_none());
+        assert!(context.runtime_skill_text.is_none());
+        assert!(context.world_snapshot_text.is_none());
+        assert!(context.world_sense_text.is_none());
+        assert!(context.self_model_text.is_none());
+        assert!(context.inner_life_text.is_none());
+        assert!(context.private_workspace_text.is_none());
+        assert!(context.private_garden_text.is_none());
+        assert!(context.background_governance_text.is_none());
     }
 
     #[derive(Default)]
@@ -1916,6 +2163,7 @@ mod tests {
             system_max_len: 1024,
             now_secs: 100,
             profile: MemoryProfile::Standard,
+            participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: true,
             include_private_garden_projection: true,
@@ -2134,6 +2382,7 @@ mod tests {
             system_max_len: 80,
             now_secs: 100,
             profile: MemoryProfile::Embedded,
+            participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: true,
             include_private_garden_projection: true,
@@ -2323,6 +2572,7 @@ mod tests {
             system_max_len: 1024,
             now_secs: 100,
             profile: MemoryProfile::Standard,
+            participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 16,
             load_long_term_memory: false,
             include_private_garden_projection: false,
@@ -2436,6 +2686,7 @@ mod tests {
             system_max_len: 1024,
             now_secs: 100,
             profile: MemoryProfile::Standard,
+            participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: false,
             include_private_garden_projection: false,
@@ -2512,6 +2763,7 @@ mod tests {
             system_max_len: 1024,
             now_secs: 100,
             profile: MemoryProfile::Standard,
+            participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: true,
             include_private_garden_projection: false,
@@ -2638,6 +2890,7 @@ mod tests {
             system_max_len: 1024,
             now_secs: 100,
             profile: MemoryProfile::Standard,
+            participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: true,
             include_private_garden_projection: false,
@@ -2775,6 +3028,7 @@ mod tests {
             system_max_len: 1024,
             now_secs: 100,
             profile: MemoryProfile::Standard,
+            participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: true,
             include_private_garden_projection: false,
@@ -2900,6 +3154,7 @@ mod tests {
             system_max_len: 1024,
             now_secs: 100,
             profile: MemoryProfile::Standard,
+            participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: true,
             include_private_garden_projection: false,
@@ -3000,6 +3255,7 @@ mod tests {
             system_max_len: 1024,
             now_secs: 100,
             profile: MemoryProfile::Standard,
+            participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: true,
             include_private_garden_projection: false,
@@ -3228,6 +3484,7 @@ mod tests {
             system_max_len: 1024,
             now_secs: 100,
             profile: MemoryProfile::Standard,
+            participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: true,
             include_private_garden_projection: false,
@@ -3335,6 +3592,7 @@ mod tests {
             system_max_len: 1024,
             now_secs: 100,
             profile: MemoryProfile::Standard,
+            participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: true,
             include_private_garden_projection: false,
@@ -3426,6 +3684,7 @@ mod tests {
             system_max_len: 1024,
             now_secs: 100,
             profile: MemoryProfile::Standard,
+            participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: true,
             include_private_garden_projection: false,
@@ -3517,6 +3776,7 @@ mod tests {
             system_max_len: 1024,
             now_secs: 100,
             profile: MemoryProfile::Standard,
+            participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: true,
             include_private_garden_projection: false,

@@ -496,7 +496,12 @@ mod tests {
         SessionMessage, SessionStore,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Mutex;
+    use std::sync::{Mutex, OnceLock};
+
+    fn test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[derive(Default)]
     struct CountingSessionStore {
@@ -669,6 +674,52 @@ mod tests {
             session_store.list_calls.load(Ordering::SeqCst),
             0,
             "session enumeration should stay behind idle due gates"
+        );
+    }
+
+    #[test]
+    fn self_runtime_tick_skips_session_enumeration_when_voice_exclusive_is_active() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        crate::state::set_voice_exclusive_active(true);
+
+        let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
+        let session_store = CountingSessionStore::default();
+        let now_secs = 10_000;
+        let continuity = SelfContinuity {
+            last_user_turn_at: now_secs - 600,
+            last_user_chat_id: "chat-a".to_string(),
+            last_user_channel: "qq_channel".to_string(),
+            last_autonomy_run_at: now_secs - 600,
+            updated_at: now_secs - 10,
+            ..SelfContinuity::default()
+        };
+        let strategy = AutonomyStrategy {
+            idle_enabled: true,
+            idle_interval_secs: 300,
+            updated_at: now_secs - 10,
+            ..AutonomyStrategy::default()
+        };
+        let self_continuity_store = StubSelfContinuityStore::with_value(continuity);
+        let autonomy_strategy_store = StubAutonomyStrategyStore::with_value(strategy);
+
+        self_runtime_tick(
+            &system_inbound_tx,
+            &session_store,
+            &self_continuity_store,
+            &autonomy_strategy_store,
+            &StubSelfAuthoredCoreStore,
+            &StubRelationshipPortfolioStore,
+            &StubRelationshipTopologyStore,
+            MemoryProfile::Standard,
+            now_secs,
+        );
+
+        crate::state::set_voice_exclusive_active(false);
+
+        assert_eq!(
+            session_store.list_calls.load(Ordering::SeqCst),
+            0,
+            "voice-exclusive mode should block session enumeration before idle fan-out"
         );
     }
 }

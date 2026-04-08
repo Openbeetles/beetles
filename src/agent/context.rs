@@ -1095,4 +1095,75 @@ mod tests {
 
         assert!(!system.contains("## Daily Note"));
     }
+
+    #[test]
+    fn build_context_keeps_constitutional_stack_without_background_governance_on_first_turn() {
+        let msg = PcMsg::new_inbound("qq_channel", "chat-1", "你记得我的咖啡偏好吗", false)
+            .expect("pcmsg");
+        let memory = StubMemoryStore {
+            soul: "SOUL".to_string(),
+            user: "USER".to_string(),
+            memory: "MEMORY".to_string(),
+            daily_notes: Vec::new(),
+        };
+        let session = StubSessionStore;
+        let important = StubImportantMessageStore::default();
+
+        let (system, _) = build_context(&ContextParams {
+            msg: &msg,
+            memory: &memory,
+            session: &session,
+            important_message_store: &important,
+            has_tools: false,
+            skill_descriptions: "",
+            system_max_len: 1200,
+            messages_max_len: 256,
+            session_max_messages: 8,
+            group_activation: "always",
+            emotion_signal_suffix: None,
+            constitutional_stack_text: Some(
+                "## Self-Authored Core\nIdentity anchor: board beetle\n\n## Relationship Constitution\nDisclosure allowance: summary_only",
+            ),
+            subject_state_text: None,
+            deliberation_gate_text: None,
+            active_task_context_text: Some(
+                "## Session Summary\nUser prefers cold brew.\n\n## Recent Messages\nuser: 记住我喜欢冷萃",
+            ),
+            governed_memory_evidence_text: None,
+            background_governance_text: None,
+            execution_state_text: None,
+            task_workspace_text: None,
+            task_recall_text: None,
+            world_snapshot_text: None,
+            world_sense_text: None,
+            self_state_text: None,
+            self_authored_core_text: None,
+            relationship_portfolio_text: None,
+            relationship_constitution_text: None,
+            persona_priority_text: None,
+            self_model_text: None,
+            autonomy_strategy_text: None,
+            outer_voice_text: None,
+            inner_life_text: None,
+            self_continuity_text: None,
+            private_workspace_text: None,
+            private_garden_text: None,
+            mental_privacy_adjudication_text: None,
+            mental_privacy_text: None,
+            long_term_memory_text: None,
+            archive_evidence_text: None,
+            runtime_skill_text: None,
+            capability_package_text: None,
+            summary_text: None,
+            recent_messages: None,
+            runtime: None,
+            include_daily_notes: false,
+            llm_hint: "",
+        })
+        .expect("context");
+
+        assert!(system.contains("## Constitutional Stack"));
+        assert!(system.contains("## Active Task Context"));
+        assert!(!system.contains("## Background Governance"));
+    }
 }
