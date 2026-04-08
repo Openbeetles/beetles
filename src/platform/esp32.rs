@@ -8,7 +8,7 @@ use crate::platform::{
     display_driver::{install_display_state, DisplayState},
     heartbeat_file::read_heartbeat_file,
     spiffs::{
-        spiffs_usage, CachedSkillStorage, SpiffsAutonomyStrategyStore,
+        spiffs_usage, CachedSkillMetaStore, CachedSkillStorage, SpiffsAutonomyStrategyStore,
         SpiffsCalendarProviderCredentialStore, SpiffsCalendarStore, SpiffsContinuityCapsuleStore,
         SpiffsCoreRevisionLedgerStore, SpiffsExecutionStateStore, SpiffsImportantMessageStore,
         SpiffsInnerLifeStore, SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore,
@@ -61,7 +61,7 @@ pub struct Esp32Platform {
     state_fs: Arc<dyn StateFs + Send + Sync>,
     config_store: Arc<NvsConfigStore>,
     skill_storage: Arc<dyn crate::platform::SkillStorage + Send + Sync>,
-    skill_meta_store: Arc<SpiffsSkillMetaStore>,
+    skill_meta_store: Arc<dyn crate::platform::SkillMetaStore + Send + Sync>,
     memory_store: Arc<SpiffsMemoryStore>,
     long_term_memory_store: Arc<SpiffsLongTermMemoryStore>,
     continuity_capsule_store: Arc<dyn ContinuityCapsuleStore + Send + Sync>,
@@ -169,7 +169,7 @@ impl Esp32Platform {
             state_fs,
             config_store: Arc::new(NvsConfigStore),
             skill_storage: CachedSkillStorage::wrap(Arc::new(SpiffsSkillStorage)),
-            skill_meta_store: Arc::new(SpiffsSkillMetaStore),
+            skill_meta_store: CachedSkillMetaStore::wrap(Arc::new(SpiffsSkillMetaStore)),
             memory_store: Arc::new(SpiffsMemoryStore::new()),
             long_term_memory_store: Arc::new(SpiffsLongTermMemoryStore::new()),
             continuity_capsule_store: Arc::new(SpiffsContinuityCapsuleStore::new()),
@@ -450,7 +450,7 @@ impl Platform for Esp32Platform {
     }
 
     fn skill_meta_store(&self) -> Arc<dyn crate::platform::SkillMetaStore + Send + Sync> {
-        Arc::clone(&self.skill_meta_store) as Arc<dyn crate::platform::SkillMetaStore + Send + Sync>
+        Arc::clone(&self.skill_meta_store)
     }
 
     fn create_http_client(

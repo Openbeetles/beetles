@@ -12,7 +12,7 @@ pub fn get_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let config = ctx.config();
     let mut j: Value = serde_json::to_value(&*config).map_err(|e| to_io(e.to_string()))?;
     j["locale"] = serde_json::Value::String(config::get_locale(ctx.config_store.as_ref()));
-    serde_json::to_string_pretty(&j).map_err(|e| to_io(e.to_string()))
+    serde_json::to_string(&j).map_err(|e| to_io(e.to_string()))
 }
 
 /// POST /api/config/wifi：body 为 JSON，写 WiFi SSID/密码到 NVS。成功时返回 restart_required 提示需重启生效。
@@ -136,5 +136,83 @@ pub fn post_display(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std
             ))
         }
         Err(e) => Ok(ApiResponse::err_400(&tr_error(&e, loc))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_body;
+    use crate::config::{self, AppConfig};
+    use crate::platform::Platform;
+    use serde_json::Value;
+    use std::sync::Arc;
+
+    #[test]
+    fn get_body_returns_compact_json_and_forced_locale() {
+        let ctx = build_test_context();
+        config::set_locale(ctx.config_store.as_ref(), "en").unwrap();
+
+        let body = get_body(&ctx).unwrap();
+        let parsed: Value = serde_json::from_str(&body).unwrap();
+
+        assert_eq!(parsed["locale"], "en");
+        assert!(parsed.get("wifi_ssid").is_some());
+        assert!(
+            !body.contains('\n'),
+            "config response should stay compact on ESP default path"
+        );
+    }
+
+    fn build_test_context() -> crate::platform::http_server::handlers::HandlerContext {
+        let config = AppConfig::load_from_env();
+        let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
+        let (registry, _) = crate::tools::build_default_registry(
+            &config,
+            crate::tools::DefaultRegistryDeps {
+                platform: Arc::clone(&platform),
+                remind_at_store: platform.remind_at_store(),
+                session_store: platform.session_store(),
+                memory_store: platform.memory_store(),
+                long_term_memory_store: platform.long_term_memory_store(),
+                turn_ledger_store: platform.turn_ledger_store(),
+                private_garden_store: platform.private_garden_store(),
+                config_store: platform.config_store(),
+            },
+        );
+        let channel_capability_registry =
+            Arc::new(crate::build_channel_capability_registry(&config, false));
+        let skill_storage = platform.skill_storage();
+        let skill_meta_store = platform.skill_meta_store();
+        let skill_prompt_cache = Arc::new(crate::skills::SkillPromptCache::new(
+            Arc::clone(&skill_meta_store),
+            Arc::clone(&skill_storage),
+            8192,
+        ));
+        crate::platform::http_server::handlers::HandlerContext {
+            config_store: platform.config_store(),
+            config_file_store: Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(
+                &platform,
+            ))),
+            platform: Arc::clone(&platform),
+            memory_store: platform.memory_store(),
+            session_store: platform.session_store(),
+            skill_storage,
+            skill_meta_store,
+            skill_prompt_cache,
+            tool_registry: Arc::new(registry),
+            channel_capability_registry: Arc::clone(&channel_capability_registry),
+            capability_package_runtime_capabilities: Arc::new(
+                crate::build_capability_package_runtime_capabilities(
+                    channel_capability_registry.as_ref(),
+                    false,
+                ),
+            ),
+            inbound_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            outbound_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            version: Arc::from("0.0.0"),
+            board_id: Arc::from("test-board"),
+            cached_config: Arc::new(std::sync::RwLock::new(config)),
+            llm_stream_enabled: false,
+        }
     }
 }

@@ -75,6 +75,15 @@ pub struct PromptMemoryContext {
 }
 
 impl PromptMemoryContext {
+    pub fn trace_summary(&self) -> (usize, bool, bool, bool) {
+        (
+            self.recent_messages.len(),
+            self.summary_text.as_ref().is_some(),
+            self.message_summary_text.as_ref().is_some(),
+            self.self_model_text.as_ref().is_some(),
+        )
+    }
+
     pub fn refresh_reply_projection_groups(&mut self) {
         self.constitutional_stack_text = compose_prompt_projection_body(&[
             self.personality_governance_gate_text.as_deref(),
@@ -798,6 +807,61 @@ mod tests {
         fn list_chat_ids(&self) -> Result<Vec<String>> {
             Ok(Vec::new())
         }
+    }
+
+    #[test]
+    fn trace_summary_reports_current_prompt_memory_fields() {
+        let context = PromptMemoryContext {
+            constitutional_stack_text: None,
+            active_task_context_text: None,
+            governed_memory_evidence_text: None,
+            background_governance_text: None,
+            personality_governance_gate_text: None,
+            summary_text: Some("summary".to_string()),
+            message_summary_text: Some("message-summary".to_string()),
+            long_term_memory_text: None,
+            continuity_capsule_text: None,
+            archive_evidence_text: None,
+            runtime_skill_text: None,
+            recent_turn_observation_text: None,
+            execution_state_text: None,
+            task_workspace_text: None,
+            task_recall_text: None,
+            shared_factual_recall_report: crate::memory::RecallSelectionReport::default(),
+            continuity_capsule_report: crate::memory::RecallSelectionReport::default(),
+            archive_recall_report: crate::memory::RecallSelectionReport::default(),
+            runtime_skill_recall_report: crate::memory::RecallSelectionReport::default(),
+            task_recall_report: None,
+            world_snapshot_text: None,
+            world_sense_text: None,
+            self_state_text: None,
+            self_authored_core: None,
+            self_authored_core_text: None,
+            relationship_portfolio_text: None,
+            relationship_constitution: None,
+            relationship_constitution_text: None,
+            persona_priority_text: None,
+            self_continuity: None,
+            outer_voice: None,
+            self_model_text: Some("self-model".to_string()),
+            autonomy_strategy_text: None,
+            outer_voice_text: None,
+            inner_life_text: None,
+            self_continuity_text: None,
+            private_workspace_text: None,
+            private_garden_text: None,
+            mental_privacy_adjudication_text: None,
+            mental_privacy_text: None,
+            recent_messages: vec![SessionMessage {
+                role: "user".to_string(),
+                content: "hello".to_string(),
+            }],
+            recall_router: PromptRecallRouterDecision {
+                intent: PromptRecallIntent::Factual,
+            },
+        };
+
+        assert_eq!(context.trace_summary(), (1, true, true, true));
     }
 
     #[derive(Default)]

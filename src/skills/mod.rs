@@ -4,8 +4,10 @@
 use crate::error::{Error, Result};
 use crate::platform::{SkillMetaStore, SkillStorage};
 
+mod prompt_cache;
 mod runtime;
 
+pub use prompt_cache::SkillPromptCache;
 pub(crate) use runtime::retrieve_runtime_skill_hits_with_backend;
 pub use runtime::{
     build_runtime_skill_recall_block, govern_runtime_skills, is_runtime_skill_name,

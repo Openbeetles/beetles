@@ -225,13 +225,6 @@ pub fn self_runtime_tick(
     let policy = memory_policy(profile).self_runtime;
     let capability = memory_capability_profile(profile);
     let uptime_secs = crate::platform::time::uptime_secs();
-    let chat_ids = match session_store.list_chat_ids() {
-        Ok(chat_ids) => chat_ids,
-        Err(error) => {
-            log::warn!("[self_runtime] failed to list chat ids: {}", error);
-            return;
-        }
-    };
     let mut enqueued = 0usize;
     let subject_id = board_subject_scope_id();
     let continuity = match self_continuity_store.get(subject_id) {
@@ -365,6 +358,14 @@ pub fn self_runtime_tick(
         return;
     }
 
+    let chat_ids = match session_store.list_chat_ids() {
+        Ok(chat_ids) => chat_ids,
+        Err(error) => {
+            log::warn!("[self_runtime] failed to list chat ids: {}", error);
+            return;
+        }
+    };
+
     for chat_id in chat_ids {
         if enqueued >= max_jobs_per_tick {
             break;
@@ -481,4 +482,193 @@ fn idle_self_runtime_block_reason() -> Option<&'static str> {
         );
     }
     idle_self_runtime_scheduler_block_reason()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bus::new_inbound_channel;
+    use crate::error::Result;
+    use crate::memory::{
+        AutonomyStrategy, AutonomyStrategyStore, MemoryProfile, RelationshipPortfolio,
+        RelationshipPortfolioStore, RelationshipTopology, RelationshipTopologyStore,
+        SelfAuthoredCore, SelfAuthoredCoreStore, SelfContinuity, SelfContinuityStore,
+        SessionMessage, SessionStore,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct CountingSessionStore {
+        list_calls: AtomicUsize,
+    }
+
+    impl SessionStore for CountingSessionStore {
+        fn append(&self, _chat_id: &str, _role: &str, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn load_recent(&self, _chat_id: &str, _n: usize) -> Result<Vec<SessionMessage>> {
+            Ok(Vec::new())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_chat_ids(&self) -> Result<Vec<String>> {
+            self.list_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec!["chat-a".to_string()])
+        }
+    }
+
+    #[derive(Default)]
+    struct StubSelfContinuityStore {
+        value: Mutex<Option<SelfContinuity>>,
+    }
+
+    impl StubSelfContinuityStore {
+        fn with_value(value: SelfContinuity) -> Self {
+            Self {
+                value: Mutex::new(Some(value)),
+            }
+        }
+    }
+
+    impl SelfContinuityStore for StubSelfContinuityStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<SelfContinuity>> {
+            Ok(self.value.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _chat_id: &str, continuity: &SelfContinuity) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(continuity.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubAutonomyStrategyStore {
+        value: Mutex<Option<AutonomyStrategy>>,
+    }
+
+    impl StubAutonomyStrategyStore {
+        fn with_value(value: AutonomyStrategy) -> Self {
+            Self {
+                value: Mutex::new(Some(value)),
+            }
+        }
+    }
+
+    impl AutonomyStrategyStore for StubAutonomyStrategyStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<AutonomyStrategy>> {
+            Ok(self.value.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _chat_id: &str, strategy: &AutonomyStrategy) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(strategy.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubSelfAuthoredCoreStore;
+
+    impl SelfAuthoredCoreStore for StubSelfAuthoredCoreStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<SelfAuthoredCore>> {
+            Ok(None)
+        }
+
+        fn set(&self, _scope_id: &str, _core: &SelfAuthoredCore) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubRelationshipPortfolioStore;
+
+    impl RelationshipPortfolioStore for StubRelationshipPortfolioStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<RelationshipPortfolio>> {
+            Ok(None)
+        }
+
+        fn set(&self, _scope_id: &str, _portfolio: &RelationshipPortfolio) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubRelationshipTopologyStore;
+
+    impl RelationshipTopologyStore for StubRelationshipTopologyStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<RelationshipTopology>> {
+            Ok(None)
+        }
+
+        fn set(&self, _scope_id: &str, _topology: &RelationshipTopology) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn self_runtime_tick_skips_session_enumeration_when_idle_runtime_is_not_due() {
+        let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
+        let session_store = CountingSessionStore::default();
+        let now_secs = 10_000;
+        let continuity = SelfContinuity {
+            last_user_turn_at: now_secs - 30,
+            last_user_chat_id: "chat-a".to_string(),
+            last_user_channel: "qq_channel".to_string(),
+            last_autonomy_run_at: now_secs - 10,
+            updated_at: now_secs - 10,
+            ..SelfContinuity::default()
+        };
+        let strategy = AutonomyStrategy {
+            idle_enabled: true,
+            idle_interval_secs: 300,
+            updated_at: now_secs - 10,
+            ..AutonomyStrategy::default()
+        };
+        let self_continuity_store = StubSelfContinuityStore::with_value(continuity);
+        let autonomy_strategy_store = StubAutonomyStrategyStore::with_value(strategy);
+
+        self_runtime_tick(
+            &system_inbound_tx,
+            &session_store,
+            &self_continuity_store,
+            &autonomy_strategy_store,
+            &StubSelfAuthoredCoreStore,
+            &StubRelationshipPortfolioStore,
+            &StubRelationshipTopologyStore,
+            MemoryProfile::Standard,
+            now_secs,
+        );
+
+        assert_eq!(
+            session_store.list_calls.load(Ordering::SeqCst),
+            0,
+            "session enumeration should stay behind idle due gates"
+        );
+    }
 }

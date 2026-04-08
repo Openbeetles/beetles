@@ -37,6 +37,7 @@ use std::sync::Mutex;
     any(target_arch = "xtensa", target_arch = "riscv32")
 ))]
 use std::sync::RwLock;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
 use std::time::{Duration, Instant};
 
 const TAG: &str = "beetle";
@@ -76,6 +77,7 @@ struct HttpServerSpawnContext {
     outbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     memory_store: Arc<dyn beetle::memory::MemoryStore + Send + Sync>,
     session_store: Arc<dyn beetle::memory::SessionStore + Send + Sync>,
+    skill_prompt_cache: Arc<beetle::skills::SkillPromptCache>,
     inbound_tx: beetle::bus::InboundTx,
     shared_config: Arc<RwLock<AppConfig>>,
     llm_stream_enabled: bool,
@@ -277,6 +279,7 @@ fn spawn_http_config_server(
             ctx.outbound_depth,
             ctx.memory_store,
             ctx.session_store,
+            ctx.skill_prompt_cache,
             ctx.inbound_tx,
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             ctx.msg_id_cache,
@@ -1427,6 +1430,12 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     });
     let skill_storage = platform.skill_storage();
     let skill_meta_store = platform.skill_meta_store();
+    let skill_prompt_cache = Arc::new(beetle::skills::SkillPromptCache::new(
+        Arc::clone(&skill_meta_store),
+        Arc::clone(&skill_storage),
+        8192,
+    ));
+    let _ = skill_prompt_cache.refresh();
     let memory_store: Arc<dyn MemoryStore + Send + Sync> = platform.memory_store();
     let long_term_memory_store: Arc<dyn beetle::memory::LongTermMemoryStore + Send + Sync> =
         platform.long_term_memory_store();
@@ -1645,6 +1654,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             outbound_depth: Arc::clone(&outbound_depth),
             memory_store: Arc::clone(&memory_store),
             session_store: Arc::clone(&session_store),
+            skill_prompt_cache: Arc::clone(&skill_prompt_cache),
             inbound_tx: user_inbound_tx.clone(),
             shared_config: Arc::clone(&shared_runtime_config),
             llm_stream_enabled: config.llm_stream,
@@ -1900,25 +1910,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             &mut voice_event_tx_rx,
         );
 
-        let skill_meta_store_fn = Arc::clone(&skill_meta_store);
-        let skill_storage_fn = Arc::clone(&skill_storage);
-        let skill_prompt_cache = Arc::new(Mutex::new((None::<String>, Instant::now())));
-        let get_skill_descriptions: Arc<dyn Fn() -> String + Send + Sync> = Arc::new(move || {
-            const SKILL_PROMPT_CACHE_TTL: Duration = Duration::from_secs(5);
-            let mut guard = skill_prompt_cache.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(rendered) = guard.0.as_ref() {
-                if guard.1.elapsed() < SKILL_PROMPT_CACHE_TTL {
-                    return rendered.clone();
-                }
-            }
-            let rendered = beetle::skills::build_skill_descriptions_for_system_prompt(
-                skill_meta_store_fn.as_ref(),
-                skill_storage_fn.as_ref(),
-                8192,
-            );
-            *guard = (Some(rendered.clone()), Instant::now());
-            rendered
-        });
+        let get_skill_descriptions: Arc<dyn Fn() -> String + Send + Sync> =
+            Arc::new(move || skill_prompt_cache.get());
         let get_capability_package_text: CapabilityPackageTextProvider = Arc::new({
             let state_fs = platform.state_fs();
             let runtime_capabilities = Arc::clone(&capability_package_runtime_capabilities);

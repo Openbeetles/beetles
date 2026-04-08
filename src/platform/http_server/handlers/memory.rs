@@ -424,13 +424,14 @@ fn build_deep_inspection(
 }
 
 fn parse_request(ctx: &HandlerContext, uri: &str) -> MemoryStatusRequest {
-    let config_channel = {
-        let config = ctx.config();
-        config.enabled_channel.clone()
-    };
     let chat_id = query_param_from_uri(uri, "chat_id");
-    let channel = query_param_from_uri(uri, "channel")
-        .or_else(|| (!config_channel.trim().is_empty()).then_some(config_channel));
+    let channel = query_param_from_uri(uri, "channel").or_else(|| {
+        chat_id.as_ref().and_then(|_| {
+            let config = ctx.config();
+            let enabled_channel = config.enabled_channel.trim();
+            (!enabled_channel.is_empty()).then_some(enabled_channel.to_string())
+        })
+    });
     MemoryStatusRequest {
         chat_id,
         channel,
@@ -879,6 +880,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parse_request_skips_default_channel_when_chat_id_is_absent() {
+        let ctx = build_test_context();
+        {
+            let mut config = ctx.cached_config.write().unwrap_or_else(|e| e.into_inner());
+            config.enabled_channel = "telegram".to_string();
+        }
+
+        let request = super::parse_request(&ctx, "/api/memory/status");
+
+        assert!(request.chat_id.is_none());
+        assert!(request.channel.is_none());
+    }
+
     fn build_test_context() -> crate::platform::http_server::handlers::HandlerContext {
         let config = AppConfig::load_from_env();
         let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
@@ -897,6 +912,13 @@ mod tests {
         );
         let channel_capability_registry =
             Arc::new(crate::build_channel_capability_registry(&config, false));
+        let skill_storage = platform.skill_storage();
+        let skill_meta_store = platform.skill_meta_store();
+        let skill_prompt_cache = Arc::new(crate::skills::SkillPromptCache::new(
+            Arc::clone(&skill_meta_store),
+            Arc::clone(&skill_storage),
+            8192,
+        ));
         crate::platform::http_server::handlers::HandlerContext {
             config_store: platform.config_store(),
             config_file_store: Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(
@@ -905,8 +927,9 @@ mod tests {
             platform: Arc::clone(&platform),
             memory_store: platform.memory_store(),
             session_store: platform.session_store(),
-            skill_storage: platform.skill_storage(),
-            skill_meta_store: platform.skill_meta_store(),
+            skill_storage,
+            skill_meta_store,
+            skill_prompt_cache,
             tool_registry: Arc::new(registry),
             channel_capability_registry: Arc::clone(&channel_capability_registry),
             capability_package_runtime_capabilities: Arc::new(

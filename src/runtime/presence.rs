@@ -160,9 +160,14 @@ fn derive_presence_state(
     resource: &ResourceSnapshot,
     busy: bool,
 ) -> PresenceState {
-    if runtime_mode.recovery_safe_mode_active || !soul_kernel.safe_mode_minimum_readable {
+    let bootstrap_empty = soul_kernel.expected_bootstrap_empty;
+    if runtime_mode.recovery_safe_mode_active
+        || (!bootstrap_empty && !soul_kernel.safe_mode_minimum_readable)
+    {
         PresenceState::Recovery
-    } else if resource.pressure == PressureLevel::Critical || !soul_kernel.minimum_viable {
+    } else if resource.pressure == PressureLevel::Critical
+        || (!bootstrap_empty && !soul_kernel.minimum_viable)
+    {
         PresenceState::Fault
     } else if runtime_mode.current_mode == RuntimeMode::Booting {
         PresenceState::Booting
@@ -399,5 +404,23 @@ mod tests {
         );
         assert_eq!(subtitle, "doing low-priority housekeeping");
         assert_eq!(rationale, "maintenance_mode");
+    }
+
+    #[test]
+    fn expected_bootstrap_empty_does_not_force_recovery_or_fault() {
+        let mut snapshot = runtime_mode(RuntimeMode::Normal);
+        snapshot.wifi_sta_connected = false;
+        let state = derive_presence_state(
+            snapshot,
+            &crate::runtime::SoulKernelStatus {
+                expected_bootstrap_empty: true,
+                minimum_viable: false,
+                safe_mode_minimum_readable: false,
+                ..crate::runtime::SoulKernelStatus::default()
+            },
+            &resource(),
+            false,
+        );
+        assert_eq!(state, PresenceState::NoWifi);
     }
 }

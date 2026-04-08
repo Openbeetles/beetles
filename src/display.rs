@@ -15,6 +15,7 @@ pub const DISPLAY_SPI_FREQ_MAX: u32 = 80_000_000;
 /// Layout reference grid baseline (240x240 design space).
 pub const DISPLAY_LAYOUT_REF_PX: u32 = 240;
 const DISPLAY_SECTION_DIVIDER_GAP_PX: u16 = 6;
+const DISPLAY_HEADER_ICON_BOTTOM_BREATHING_PX: u16 = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -243,6 +244,7 @@ pub fn compute_layout(width: u16, height: u16) -> DisplayLayout {
     // would otherwise cut through the icon on landscape/wide panels.
     let min_middle_top = header_top
         .saturating_add(icon_size)
+        .saturating_add(DISPLAY_HEADER_ICON_BOTTOM_BREATHING_PX)
         .saturating_add(DISPLAY_SECTION_DIVIDER_GAP_PX);
     middle_top = middle_top.max(min_middle_top);
     let gap = icon_left;
@@ -445,6 +447,14 @@ mod tests {
         let header_bottom = layout.middle_top.saturating_sub(6);
         assert_eq!(layout.icon_size, 64);
         assert!(layout.header_top + layout.icon_size <= header_bottom);
+    }
+
+    #[test]
+    fn compute_layout_wide_header_keeps_bottom_breathing_room() {
+        let layout = compute_layout(320, 240);
+        let header_bottom = layout.middle_top.saturating_sub(6);
+        let bottom_gap = header_bottom.saturating_sub(layout.header_top + layout.icon_size);
+        assert!(bottom_gap >= 8);
     }
 
     #[test]

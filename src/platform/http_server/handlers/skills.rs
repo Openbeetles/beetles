@@ -7,6 +7,10 @@ use crate::state;
 
 use super::HandlerContext;
 
+fn refresh_skill_prompt_cache(ctx: &HandlerContext) {
+    let _ = ctx.skill_prompt_cache.refresh();
+}
+
 /// GET 成功时：单技能返回 text/plain，列表返回 JSON 字符串。
 #[derive(Clone)]
 pub enum SkillsGetResult {
@@ -56,7 +60,10 @@ pub fn post(ctx: &HandlerContext, body: &str) -> ApiResponse {
             .filter_map(|x| x.as_str().map(String::from))
             .collect();
         return match skills::set_skills_order(ctx.skill_meta_store.as_ref(), &order) {
-            Ok(()) => ApiResponse::ok_200_json("{\"ok\":true}"),
+            Ok(()) => {
+                refresh_skill_prompt_cache(ctx);
+                ApiResponse::ok_200_json("{\"ok\":true}")
+            }
             Err(e) => ApiResponse::err_400(&tr_error(&e, loc)),
         };
     }
@@ -64,7 +71,10 @@ pub fn post(ctx: &HandlerContext, body: &str) -> ApiResponse {
         if let Some(ref name) = name {
             let name = name.strip_suffix(".md").unwrap_or(name);
             return match skills::write_skill(ctx.skill_storage.as_ref(), name, content) {
-                Ok(()) => ApiResponse::ok_200_json("{\"ok\":true}"),
+                Ok(()) => {
+                    refresh_skill_prompt_cache(ctx);
+                    ApiResponse::ok_200_json("{\"ok\":true}")
+                }
                 Err(e) => ApiResponse::err_400(&tr_error(&e, loc)),
             };
         }
@@ -73,7 +83,10 @@ pub fn post(ctx: &HandlerContext, body: &str) -> ApiResponse {
     if let Some(enabled) = v.get("enabled").and_then(|e| e.as_bool()) {
         if let Some(ref name) = name {
             return match skills::set_skill_enabled(ctx.skill_meta_store.as_ref(), name, enabled) {
-                Ok(()) => ApiResponse::ok_200_json("{\"ok\":true}"),
+                Ok(()) => {
+                    refresh_skill_prompt_cache(ctx);
+                    ApiResponse::ok_200_json("{\"ok\":true}")
+                }
                 Err(e) => ApiResponse::err_400(&tr_error(&e, loc)),
             };
         }
@@ -87,7 +100,10 @@ pub fn delete(ctx: &HandlerContext, name: &str) -> ApiResponse {
     let loc = locale_from_store(ctx.config_store.as_ref());
     let name = name.strip_suffix(".md").unwrap_or(name);
     match skills::delete_skill(ctx.skill_storage.as_ref(), name) {
-        Ok(()) => ApiResponse::ok_200_json("{\"ok\":true}"),
+        Ok(()) => {
+            refresh_skill_prompt_cache(ctx);
+            ApiResponse::ok_200_json("{\"ok\":true}")
+        }
         Err(e) => {
             let msg = state::sanitize_error_for_log(&e);
             if msg.contains("not found") || msg.contains("No such file") {
@@ -140,7 +156,10 @@ pub fn import(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::
         Err(_) => return Ok(ApiResponse::err_400(&tr(Message::UrlBodyNotUtf8, loc))),
     };
     match skills::write_skill(ctx.skill_storage.as_ref(), &name, &content) {
-        Ok(()) => Ok(ApiResponse::ok_200_json("{\"ok\":true}")),
+        Ok(()) => {
+            refresh_skill_prompt_cache(ctx);
+            Ok(ApiResponse::ok_200_json("{\"ok\":true}"))
+        }
         Err(e) => Ok(ApiResponse::err_400(&tr_error(&e, loc))),
     }
 }

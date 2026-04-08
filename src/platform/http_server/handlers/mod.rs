@@ -18,6 +18,7 @@ pub struct HandlerContext {
     pub session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
     pub skill_storage: Arc<dyn SkillStorage + Send + Sync>,
     pub skill_meta_store: Arc<dyn SkillMetaStore + Send + Sync>,
+    pub skill_prompt_cache: Arc<crate::skills::SkillPromptCache>,
     pub tool_registry: Arc<crate::tools::ToolRegistry>,
     pub channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
     pub capability_package_runtime_capabilities: Arc<CapabilityPackageRuntimeCapabilities>,

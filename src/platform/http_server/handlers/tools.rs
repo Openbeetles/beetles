@@ -57,6 +57,8 @@ mod tests {
         );
         let channel_capability_registry =
             Arc::new(crate::build_channel_capability_registry(&config, false));
+        let skill_storage = platform.skill_storage();
+        let skill_meta_store = platform.skill_meta_store();
         let ctx = crate::platform::http_server::handlers::HandlerContext {
             config_store: platform.config_store(),
             config_file_store: Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(
@@ -65,8 +67,13 @@ mod tests {
             platform: Arc::clone(&platform),
             memory_store: platform.memory_store(),
             session_store: platform.session_store(),
-            skill_storage: platform.skill_storage(),
-            skill_meta_store: platform.skill_meta_store(),
+            skill_storage: Arc::clone(&skill_storage),
+            skill_meta_store: Arc::clone(&skill_meta_store),
+            skill_prompt_cache: Arc::new(crate::skills::SkillPromptCache::new(
+                Arc::clone(&skill_meta_store),
+                Arc::clone(&skill_storage),
+                8192,
+            )),
             tool_registry: Arc::new(registry),
             channel_capability_registry: Arc::clone(&channel_capability_registry),
             capability_package_runtime_capabilities: Arc::new(
@@ -113,6 +120,8 @@ mod tests {
         );
         let channel_capability_registry =
             Arc::new(crate::build_channel_capability_registry(&config, false));
+        let skill_storage = platform.skill_storage();
+        let skill_meta_store = platform.skill_meta_store();
         let ctx = crate::platform::http_server::handlers::HandlerContext {
             config_store: platform.config_store(),
             config_file_store: Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(
@@ -121,8 +130,13 @@ mod tests {
             platform: Arc::clone(&platform),
             memory_store: platform.memory_store(),
             session_store: platform.session_store(),
-            skill_storage: platform.skill_storage(),
-            skill_meta_store: platform.skill_meta_store(),
+            skill_storage: Arc::clone(&skill_storage),
+            skill_meta_store: Arc::clone(&skill_meta_store),
+            skill_prompt_cache: Arc::new(crate::skills::SkillPromptCache::new(
+                Arc::clone(&skill_meta_store),
+                Arc::clone(&skill_storage),
+                8192,
+            )),
             tool_registry: Arc::new(registry),
             channel_capability_registry: Arc::clone(&channel_capability_registry),
             capability_package_runtime_capabilities: Arc::new(

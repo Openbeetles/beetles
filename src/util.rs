@@ -952,10 +952,10 @@ pub const STACK_CHANNEL_WS: usize = 16384;
 pub const STACK_CHANNEL_WS: usize = LINUX_RUSTLS_THREAD_STACK;
 
 /// `agent_loop`：统一 agent 主执行面，承接用户消息与自治/system 作业。
-/// 保持 16KB；这轮观察到的 60s 后台崩溃根因是 idle self-runtime 误触发，
-/// 不是常规 agent 主链应长期吃更大栈。
+/// 当前首轮 prompt 组装、治理链与回忆装配在 ESP 上已明显变重，
+/// 先把预算抬到 24KB 稳住首消息路径；后续再继续拆分/瘦身而不是长期堆栈换空间。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub const STACK_AGENT_LOOP: usize = 16 * 1024;
+pub const STACK_AGENT_LOOP: usize = 24 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_AGENT_LOOP: usize = LINUX_RUSTLS_THREAD_STACK;
 

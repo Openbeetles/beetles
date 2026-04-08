@@ -7,6 +7,7 @@ use crate::platform::http_server::common::{
     self, ApiResponse, BodyReadError, HandlerResult, CORS_HEADERS, POST_BODY_MAX_LEN,
 };
 use crate::platform::http_server::handlers::HandlerContext;
+use crate::platform::http_server::lazy_executor::LazyExecutor;
 use crate::platform::http_server::router::{
     self, IncomingRequest, OutgoingResponse, RestartAction, RouterEnv,
 };
@@ -16,7 +17,7 @@ use embedded_svc::http::server::Request;
 use embedded_svc::http::{Headers, Method};
 use esp_idf_svc::http::server::Connection;
 use esp_idf_svc::http::server::EspHttpServer;
-use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SendError, SyncSender};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -46,40 +47,96 @@ impl EspRouteSpec {
 
 const ESP_ROUTE_EXEC_QUEUE_CAPACITY: usize = 4;
 const ESP_ROUTE_EXEC_TIMEOUT: Duration = Duration::from_secs(20);
+const ESP_ROUTE_EXEC_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+const ESP_ROUTE_EXEC_SUBMIT_ATTEMPTS: usize = 2;
 
 struct EspRouteJob {
     incoming: IncomingRequest,
     reply_tx: SyncSender<OutgoingResponse>,
 }
 
-#[derive(Clone)]
-struct EspRouteExecutor {
+struct EspRouteExecutorInner {
     submit_tx: SyncSender<EspRouteJob>,
 }
 
+#[derive(Clone)]
+struct EspRouteExecutor {
+    inner: LazyExecutor<EspRouteExecutorInner>,
+}
+
 impl EspRouteExecutor {
+    fn new(
+        ctx: &Arc<HandlerContext>,
+        env: &RouterEnv,
+        config_store: &Arc<dyn ConfigStore + Send + Sync>,
+    ) -> Self {
+        let ctx = Arc::clone(ctx);
+        let env = env.clone();
+        let store = Arc::clone(config_store);
+        Self {
+            inner: LazyExecutor::new(move || {
+                let (submit_tx, rx) = sync_channel(ESP_ROUTE_EXEC_QUEUE_CAPACITY);
+                let ctx = Arc::clone(&ctx);
+                let env = env.clone();
+                let store = Arc::clone(&store);
+                crate::util::spawn_guarded_with_profile(
+                    "http_route_exec",
+                    crate::util::STACK_HTTP_ROUTE_WORKER,
+                    Some(crate::util::SpawnCore::Core1),
+                    crate::util::HttpThreadRole::Io,
+                    move || run_esp_route_executor(ctx, env, store, rx),
+                );
+                log::info!("[http_server] http_route_exec lazy-started on first request");
+                EspRouteExecutorInner { submit_tx }
+            }),
+        }
+    }
+
     fn execute(&self, store: &dyn ConfigStore, incoming: IncomingRequest) -> OutgoingResponse {
         let (reply_tx, reply_rx) = sync_channel(1);
-        if let Err(e) = self.submit_tx.send(EspRouteJob { incoming, reply_tx }) {
-            return internal_server_error_response(
-                store,
-                "http_route_exec_submit",
-                format!("dispatch queue unavailable: {}", e),
-            );
+        let mut pending_job = Some(EspRouteJob { incoming, reply_tx });
+        for attempt in 0..ESP_ROUTE_EXEC_SUBMIT_ATTEMPTS {
+            let inner = self.inner.get();
+            let job = pending_job
+                .take()
+                .expect("route executor retry must keep pending job");
+            match inner.submit_tx.send(job) {
+                Ok(()) => {
+                    return match reply_rx.recv_timeout(ESP_ROUTE_EXEC_TIMEOUT) {
+                        Ok(out) => out,
+                        Err(RecvTimeoutError::Timeout) => internal_server_error_response(
+                            store,
+                            "http_route_exec_wait",
+                            "dispatch timed out".to_string(),
+                        ),
+                        Err(RecvTimeoutError::Disconnected) => {
+                            let _ = self.inner.clear_if(&inner);
+                            internal_server_error_response(
+                                store,
+                                "http_route_exec_wait",
+                                "dispatch worker stopped".to_string(),
+                            )
+                        }
+                    };
+                }
+                Err(SendError(job)) => {
+                    let _ = self.inner.clear_if(&inner);
+                    pending_job = Some(job);
+                    if attempt + 1 == ESP_ROUTE_EXEC_SUBMIT_ATTEMPTS {
+                        return internal_server_error_response(
+                            store,
+                            "http_route_exec_submit",
+                            "dispatch queue unavailable after worker restart".to_string(),
+                        );
+                    }
+                }
+            }
         }
-        match reply_rx.recv_timeout(ESP_ROUTE_EXEC_TIMEOUT) {
-            Ok(out) => out,
-            Err(RecvTimeoutError::Timeout) => internal_server_error_response(
-                store,
-                "http_route_exec_wait",
-                "dispatch timed out".to_string(),
-            ),
-            Err(RecvTimeoutError::Disconnected) => internal_server_error_response(
-                store,
-                "http_route_exec_wait",
-                "dispatch worker stopped".to_string(),
-            ),
-        }
+        internal_server_error_response(
+            store,
+            "http_route_exec_submit",
+            "dispatch queue unavailable".to_string(),
+        )
     }
 }
 
@@ -106,36 +163,29 @@ fn run_esp_route_executor(
     store: Arc<dyn ConfigStore + Send + Sync>,
     rx: Receiver<EspRouteJob>,
 ) {
-    while let Ok(job) = rx.recv() {
-        let out = match router::dispatch(ctx.as_ref(), &env, job.incoming) {
-            Ok(out) => out,
-            Err(e) => internal_server_error_response(
-                store.as_ref(),
-                "http_router_dispatch",
-                e.to_string(),
-            ),
-        };
-        let _ = job.reply_tx.send(out);
+    loop {
+        match rx.recv_timeout(ESP_ROUTE_EXEC_IDLE_TIMEOUT) {
+            Ok(job) => {
+                let out = match router::dispatch(ctx.as_ref(), &env, job.incoming) {
+                    Ok(out) => out,
+                    Err(e) => internal_server_error_response(
+                        store.as_ref(),
+                        "http_router_dispatch",
+                        e.to_string(),
+                    ),
+                };
+                let _ = job.reply_tx.send(out);
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                log::info!(
+                    "[http_server] http_route_exec idle-stopped after {}s",
+                    ESP_ROUTE_EXEC_IDLE_TIMEOUT.as_secs()
+                );
+                break;
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
     }
-}
-
-fn spawn_esp_route_executor(
-    ctx: &Arc<HandlerContext>,
-    env: &RouterEnv,
-    config_store: &Arc<dyn ConfigStore + Send + Sync>,
-) -> EspRouteExecutor {
-    let (submit_tx, rx) = sync_channel(ESP_ROUTE_EXEC_QUEUE_CAPACITY);
-    let ctx = Arc::clone(ctx);
-    let env = env.clone();
-    let store = Arc::clone(config_store);
-    crate::util::spawn_guarded_with_profile(
-        "http_route_exec",
-        crate::util::STACK_HTTP_ROUTE_WORKER,
-        Some(crate::util::SpawnCore::Core1),
-        crate::util::HttpThreadRole::Io,
-        move || run_esp_route_executor(ctx, env, store, rx),
-    );
-    EspRouteExecutor { submit_tx }
 }
 
 fn method_as_str(m: Method) -> &'static str {
@@ -575,7 +625,7 @@ pub(super) fn register_all_esp_routes(
     env: &RouterEnv,
     config_store: &Arc<dyn ConfigStore + Send + Sync>,
 ) -> Result<()> {
-    let executor = spawn_esp_route_executor(ctx, env, config_store);
+    let executor = EspRouteExecutor::new(ctx, env, config_store);
     register_static_page_routes(server, ctx, config_store, &executor)?;
     register_pairing_and_config_routes(server, ctx, config_store, &executor)?;
     register_observability_routes(server, ctx, config_store, &executor)?;

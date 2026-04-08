@@ -81,6 +81,11 @@ fn run(platform: Arc<dyn Platform>) -> Result<()> {
     let config = crate::bootstrap::load_config(&platform);
     let skill_storage = platform.skill_storage();
     let skill_meta_store = platform.skill_meta_store();
+    let skill_prompt_cache = Arc::new(crate::skills::SkillPromptCache::new(
+        Arc::clone(&skill_meta_store),
+        Arc::clone(&skill_storage),
+        8192,
+    ));
     let (tool_registry, _) = crate::build_default_registry(
         config.as_ref(),
         crate::DefaultRegistryDeps {
@@ -112,6 +117,7 @@ fn run(platform: Arc<dyn Platform>) -> Result<()> {
         session_store: platform.session_store(),
         skill_storage,
         skill_meta_store,
+        skill_prompt_cache,
         tool_registry,
         channel_capability_registry,
         capability_package_runtime_capabilities,

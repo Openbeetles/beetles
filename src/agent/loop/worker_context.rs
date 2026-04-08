@@ -22,6 +22,7 @@ pub(super) fn prepare_worker_conversation<'a>(
         }
     };
     log_prepare_stage("start");
+    log_prepare_stage("emotion_signal_start");
     let emotion_signal_suffix = config
         .emotion_signal_store
         .get_then_clear(&msg.chat_id)
@@ -34,6 +35,8 @@ pub(super) fn prepare_worker_conversation<'a>(
                 None
             }
         });
+    log_prepare_stage("emotion_signal_ready");
+    log_prepare_stage("runtime_snapshot_start");
     let budget = crate::orchestrator::current_budget();
     let snapshot = crate::orchestrator::snapshot();
     let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
@@ -56,9 +59,13 @@ pub(super) fn prepare_worker_conversation<'a>(
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         process_memory_kb: snapshot.process_memory_kb,
     };
+    log_prepare_stage("runtime_snapshot_ready");
     let context_start = Instant::now();
+    log_prepare_stage("skill_descriptions_start");
     let skill_descriptions = (config.get_skill_descriptions)();
+    log_prepare_stage("skill_descriptions_ready");
     let has_tools = request_plan.has_tools();
+    log_prepare_stage("post_memory_budget_start");
     let post_memory_tail_len = estimate_post_memory_system_tail_len(PostMemoryTailParams {
         has_tools,
         skill_descriptions: &skill_descriptions,
@@ -71,6 +78,8 @@ pub(super) fn prepare_worker_conversation<'a>(
     let prompt_memory_system_budget = budget
         .system_prompt_max
         .saturating_sub(post_memory_tail_len);
+    log_prepare_stage("post_memory_budget_ready");
+    log_prepare_stage("capability_package_start");
     let capability_package_text =
         (config.get_capability_package_text)(&msg.channel, prompt_memory_system_budget.min(1800));
     if prepare_trace_enabled {
@@ -84,6 +93,7 @@ pub(super) fn prepare_worker_conversation<'a>(
         );
     }
     let relationship_id = crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id);
+    log_prepare_stage("mental_privacy_start");
     let (mental_privacy_adjudication, mental_privacy_adjudication_failed) = if msg.ingress
         == IngressKind::User
     {
@@ -163,13 +173,16 @@ pub(super) fn prepare_worker_conversation<'a>(
         continuity_capsule_store: config.continuity_capsule_store.as_ref(),
     });
     if prepare_trace_enabled {
+        let (recent_messages, has_summary, has_message_summary, has_self_model_text) =
+            prompt_memory.trace_summary();
         log::info!(
-            "[agent_prepare] stage=prompt_memory_ready channel={} chat_id={} session_messages={} has_summary={} has_self_model={}",
+            "[agent_prepare] stage=prompt_memory_ready channel={} chat_id={} recent_messages={} has_summary={} has_message_summary={} has_self_model_text={}",
             msg.channel,
             msg.chat_id,
-            prompt_memory.session_messages.len(),
-            prompt_memory.session_summary.as_ref().is_some(),
-            prompt_memory.self_model.as_ref().is_some()
+            recent_messages,
+            has_summary,
+            has_message_summary,
+            has_self_model_text
         );
     }
     let recent_persona_evidence =

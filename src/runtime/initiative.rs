@@ -231,6 +231,73 @@ fn build_signal(world: &WorldSnapshot) -> InitiativeSignalSnapshot {
     }
 }
 
+fn pre_signal_gate_decision(
+    target: Option<&InitiativeTarget>,
+    presence_state: PresenceState,
+    runtime_mode: RuntimeModeSnapshot,
+    resource: &ResourceSnapshot,
+    idle_enabled: bool,
+) -> Option<InitiativeDecision> {
+    let Some(_target) = target else {
+        return Some(InitiativeDecision {
+            action: InitiativeAction::Hold,
+            rationale: "no_active_relation_target",
+            suppression_reason: Some(InitiativeSuppressionReason::NoTargetRelation),
+            last_triggered_at: None,
+            next_allowed_at: None,
+        });
+    };
+    if !runtime_mode.action_budget.allow_idle_self_runtime
+        || !runtime_mode.action_budget.allow_non_voice_outbound
+    {
+        return Some(InitiativeDecision {
+            action: InitiativeAction::Hold,
+            rationale: "runtime_mode_blocks_proactive_outbound",
+            suppression_reason: Some(InitiativeSuppressionReason::RuntimeModeBlocked),
+            last_triggered_at: None,
+            next_allowed_at: None,
+        });
+    }
+    if presence_state != PresenceState::Idle {
+        return Some(InitiativeDecision {
+            action: InitiativeAction::Hold,
+            rationale: "device_presence_not_idle",
+            suppression_reason: Some(InitiativeSuppressionReason::PresenceNotIdle),
+            last_triggered_at: None,
+            next_allowed_at: None,
+        });
+    }
+    if resource.pressure != PressureLevel::Normal {
+        return Some(InitiativeDecision {
+            action: InitiativeAction::Hold,
+            rationale: "resource_pressure_requires_silence",
+            suppression_reason: Some(InitiativeSuppressionReason::ResourcePressure),
+            last_triggered_at: None,
+            next_allowed_at: None,
+        });
+    }
+    if resource.active_agent_tasks > 0 || resource.inbound_depth > 0 || resource.outbound_depth > 0
+    {
+        return Some(InitiativeDecision {
+            action: InitiativeAction::Hold,
+            rationale: "runtime_queues_are_busy",
+            suppression_reason: Some(InitiativeSuppressionReason::QueuesBusy),
+            last_triggered_at: None,
+            next_allowed_at: None,
+        });
+    }
+    if !idle_enabled {
+        return Some(InitiativeDecision {
+            action: InitiativeAction::Hold,
+            rationale: "autonomy_strategy_disabled_idle_intervention",
+            suppression_reason: Some(InitiativeSuppressionReason::AutonomyDisabled),
+            last_triggered_at: None,
+            next_allowed_at: None,
+        });
+    }
+    None
+}
+
 fn decide_initiative(
     target: Option<&InitiativeTarget>,
     presence_state: PresenceState,
@@ -240,14 +307,13 @@ fn decide_initiative(
     idle_enabled: bool,
     now_secs: u64,
 ) -> InitiativeDecision {
+    if let Some(decision) =
+        pre_signal_gate_decision(target, presence_state, runtime_mode, resource, idle_enabled)
+    {
+        return decision;
+    }
     let Some(target) = target else {
-        return InitiativeDecision {
-            action: InitiativeAction::Hold,
-            rationale: "no_active_relation_target",
-            suppression_reason: Some(InitiativeSuppressionReason::NoTargetRelation),
-            last_triggered_at: None,
-            next_allowed_at: None,
-        };
+        unreachable!("pre_signal_gate_decision must handle missing initiative target");
     };
     let Some(signal) = signal else {
         return InitiativeDecision {
@@ -263,54 +329,6 @@ fn decide_initiative(
             action: InitiativeAction::Hold,
             rationale: "active_relation_went_stale",
             suppression_reason: Some(InitiativeSuppressionReason::StaleActiveRelation),
-            last_triggered_at: None,
-            next_allowed_at: None,
-        };
-    }
-    if !runtime_mode.action_budget.allow_idle_self_runtime
-        || !runtime_mode.action_budget.allow_non_voice_outbound
-    {
-        return InitiativeDecision {
-            action: InitiativeAction::Hold,
-            rationale: "runtime_mode_blocks_proactive_outbound",
-            suppression_reason: Some(InitiativeSuppressionReason::RuntimeModeBlocked),
-            last_triggered_at: None,
-            next_allowed_at: None,
-        };
-    }
-    if presence_state != PresenceState::Idle {
-        return InitiativeDecision {
-            action: InitiativeAction::Hold,
-            rationale: "device_presence_not_idle",
-            suppression_reason: Some(InitiativeSuppressionReason::PresenceNotIdle),
-            last_triggered_at: None,
-            next_allowed_at: None,
-        };
-    }
-    if resource.pressure != PressureLevel::Normal {
-        return InitiativeDecision {
-            action: InitiativeAction::Hold,
-            rationale: "resource_pressure_requires_silence",
-            suppression_reason: Some(InitiativeSuppressionReason::ResourcePressure),
-            last_triggered_at: None,
-            next_allowed_at: None,
-        };
-    }
-    if resource.active_agent_tasks > 0 || resource.inbound_depth > 0 || resource.outbound_depth > 0
-    {
-        return InitiativeDecision {
-            action: InitiativeAction::Hold,
-            rationale: "runtime_queues_are_busy",
-            suppression_reason: Some(InitiativeSuppressionReason::QueuesBusy),
-            last_triggered_at: None,
-            next_allowed_at: None,
-        };
-    }
-    if !idle_enabled {
-        return InitiativeDecision {
-            action: InitiativeAction::Hold,
-            rationale: "autonomy_strategy_disabled_idle_intervention",
-            suppression_reason: Some(InitiativeSuppressionReason::AutonomyDisabled),
             last_triggered_at: None,
             next_allowed_at: None,
         };
@@ -423,31 +441,44 @@ pub fn inspect_platform_initiative(platform: &dyn Platform, now_secs: u64) -> In
         .ok()
         .flatten();
     let target = select_target(continuity.as_ref(), now_secs, platform);
-    let world = target.as_ref().map(|target| {
-        let remind_store = platform.remind_at_store();
-        let task_store = platform.task_store();
-        build_world_snapshot(WorldSnapshotContext {
-            chat_id: target.chat_id.as_str(),
-            source_channel: target.channel.as_str(),
-            now_secs,
-            self_continuity: continuity.as_ref(),
-            remind_store: remind_store.as_ref(),
-            task_store: task_store.as_ref(),
-        })
-    });
-    let signal = world.as_ref().map(build_signal);
     let idle_enabled = strategy
         .as_ref()
         .is_none_or(|strategy| strategy.idle_enabled);
-    let decision = decide_initiative(
+    let pre_signal_decision = pre_signal_gate_decision(
         target.as_ref(),
         presence.state,
         presence.runtime_mode,
         &resource,
-        signal.as_ref(),
         idle_enabled,
-        now_secs,
     );
+    let signal = if pre_signal_decision.is_none() {
+        target.as_ref().map(|target| {
+            let remind_store = platform.remind_at_store();
+            let task_store = platform.task_store();
+            let world = build_world_snapshot(WorldSnapshotContext {
+                chat_id: target.chat_id.as_str(),
+                source_channel: target.channel.as_str(),
+                now_secs,
+                self_continuity: continuity.as_ref(),
+                remind_store: remind_store.as_ref(),
+                task_store: task_store.as_ref(),
+            });
+            build_signal(&world)
+        })
+    } else {
+        None
+    };
+    let decision = pre_signal_decision.unwrap_or_else(|| {
+        decide_initiative(
+            target.as_ref(),
+            presence.state,
+            presence.runtime_mode,
+            &resource,
+            signal.as_ref(),
+            idle_enabled,
+            now_secs,
+        )
+    });
     let locale = locale_from_store(platform.config_store().as_ref());
     let message_preview = signal
         .as_ref()
@@ -728,5 +759,36 @@ mod tests {
             decision.suppression_reason,
             Some(InitiativeSuppressionReason::PresenceNotIdle)
         );
+    }
+
+    #[test]
+    fn pre_signal_gate_blocks_world_snapshot_when_presence_is_not_idle() {
+        let decision = pre_signal_gate_decision(
+            Some(&target()),
+            PresenceState::Busy,
+            runtime_mode(),
+            &resource(),
+            true,
+        )
+        .expect("busy presence should be blocked before signal build");
+
+        assert_eq!(decision.action, InitiativeAction::Hold);
+        assert_eq!(
+            decision.suppression_reason,
+            Some(InitiativeSuppressionReason::PresenceNotIdle)
+        );
+    }
+
+    #[test]
+    fn pre_signal_gate_allows_signal_build_when_runtime_is_idle_and_budgeted() {
+        let decision = pre_signal_gate_decision(
+            Some(&target()),
+            PresenceState::Idle,
+            runtime_mode(),
+            &resource(),
+            true,
+        );
+
+        assert!(decision.is_none());
     }
 }

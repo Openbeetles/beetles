@@ -5,6 +5,8 @@ pub(crate) mod router;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 mod esp_transport;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+mod lazy_executor;
 
 use crate::error::{Error, Result};
 use std::sync::Arc;
@@ -50,6 +52,7 @@ pub fn run(
     outbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
     session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
+    skill_prompt_cache: Arc<crate::skills::SkillPromptCache>,
     inbound_tx: crate::bus::InboundTx,
     shared_config: Arc<std::sync::RwLock<crate::config::AppConfig>>,
     llm_stream_enabled: bool,
@@ -95,6 +98,7 @@ pub fn run(
             session_store: Arc::clone(&session_store),
             skill_storage: Arc::clone(&skill_storage),
             skill_meta_store: Arc::clone(&skill_meta_store),
+            skill_prompt_cache: Arc::clone(&skill_prompt_cache),
             tool_registry: Arc::clone(&tool_registry),
             channel_capability_registry: Arc::clone(&channel_capability_registry),
             capability_package_runtime_capabilities: Arc::clone(
@@ -232,6 +236,7 @@ pub fn run(
     outbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
     session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
+    skill_prompt_cache: Arc<crate::skills::SkillPromptCache>,
     inbound_tx: crate::bus::InboundTx,
     msg_id_cache: crate::channels::QqMsgIdCache,
     qq_webhook_enabled: bool,
@@ -262,6 +267,7 @@ pub fn run(
         session_store: Arc::clone(&session_store),
         skill_storage: Arc::clone(&skill_storage),
         skill_meta_store: Arc::clone(&skill_meta_store),
+        skill_prompt_cache,
         tool_registry,
         channel_capability_registry,
         capability_package_runtime_capabilities,
