@@ -244,8 +244,8 @@ impl Platform for Esp32Platform {
         }
     }
 
-    fn memory_profile(&self) -> crate::memory::MemoryProfile {
-        crate::memory::MemoryProfile::Embedded
+    fn memory_system_kind(&self) -> crate::memory::MemorySystemKind {
+        crate::memory::MemorySystemKind::EspCompact
     }
 
     fn init(&self) -> crate::error::Result<()> {

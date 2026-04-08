@@ -227,8 +227,8 @@ impl Platform for LinuxPlatform {
         crate::platform::memory_linux::linux_memory_snapshot()
     }
 
-    fn memory_profile(&self) -> crate::memory::MemoryProfile {
-        crate::memory::MemoryProfile::Standard
+    fn memory_system_kind(&self) -> crate::memory::MemorySystemKind {
+        crate::memory::MemorySystemKind::LinuxFull
     }
 
     fn init(&self) -> crate::error::Result<()> {

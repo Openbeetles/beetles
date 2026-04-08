@@ -152,16 +152,6 @@ fn relaxed_selector_reason(hit: &ArchiveSearchHit) -> String {
     )
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) fn select_archive_hits_for_prompt(
-    hits: Vec<ArchiveSearchHit>,
-    profile: MemoryProfile,
-    max_chars: usize,
-) -> Vec<ArchiveSearchHit> {
-    select_archive_hits_for_prompt_with_report(hits, profile, max_chars).hits
-}
-
 pub(crate) fn select_archive_hits_for_prompt_with_report(
     hits: Vec<ArchiveSearchHit>,
     profile: MemoryProfile,

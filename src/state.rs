@@ -36,6 +36,8 @@ static BACKGROUND_MAINTENANCE_ACTIVE: AtomicBool = AtomicBool::new(false);
 static CONFIG_PLANE_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// 当前进程是否仍处于启动引导阶段；steady-state 建立后显式清除。
 static BOOT_PHASE_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// ESP operator / deep-inspection window expiry timestamp.
+static ESP_OPERATOR_WINDOW_UNTIL_SECS: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone)]
 struct TimedError {
@@ -244,6 +246,37 @@ pub fn boot_phase_active() -> bool {
     BOOT_PHASE_ACTIVE.load(Ordering::Relaxed)
 }
 
+/// 打开 ESP operator window，返回过期时间。
+pub fn open_esp_operator_window(ttl_secs: u64) -> u64 {
+    let expires_at = now_unix_secs().saturating_add(ttl_secs);
+    let expires_at_u32 = u32::try_from(expires_at).unwrap_or(u32::MAX);
+    ESP_OPERATOR_WINDOW_UNTIL_SECS.store(expires_at_u32, Ordering::Relaxed);
+    u64::from(expires_at_u32)
+}
+
+/// 当前 ESP operator window 是否仍然有效。
+pub fn esp_operator_window_active() -> bool {
+    esp_operator_window_until().is_some()
+}
+
+/// 返回 ESP operator window 过期时间；过期后自动清零。
+pub fn esp_operator_window_until() -> Option<u64> {
+    let until = u64::from(ESP_OPERATOR_WINDOW_UNTIL_SECS.load(Ordering::Relaxed));
+    if until == 0 {
+        return None;
+    }
+    if until <= now_unix_secs() {
+        ESP_OPERATOR_WINDOW_UNTIL_SECS.store(0, Ordering::Relaxed);
+        return None;
+    }
+    Some(until)
+}
+
+/// 清空 ESP operator window。
+pub fn clear_esp_operator_window() {
+    ESP_OPERATOR_WINDOW_UNTIL_SECS.store(0, Ordering::Relaxed);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,5 +369,21 @@ mod tests {
         assert!(boot_phase_active());
         set_boot_phase_active(false);
         assert!(!boot_phase_active());
+    }
+
+    #[test]
+    fn esp_operator_window_expires_and_can_be_cleared() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        clear_esp_operator_window();
+        assert!(!esp_operator_window_active());
+
+        let expires_at = open_esp_operator_window(5);
+        assert!(expires_at >= now_unix_secs());
+        assert!(esp_operator_window_active());
+        assert!(esp_operator_window_until().is_some());
+
+        clear_esp_operator_window();
+        assert!(!esp_operator_window_active());
+        assert!(esp_operator_window_until().is_none());
     }
 }

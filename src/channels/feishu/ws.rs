@@ -93,8 +93,6 @@ pub fn get_ws_url(
     #[derive(serde::Deserialize)]
     struct Resp {
         data: Option<Data>,
-        #[allow(dead_code)]
-        code: Option<i32>,
     }
     let body = Req {
         app_id: app_id.to_string(),

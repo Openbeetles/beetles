@@ -2,13 +2,24 @@
 //! beetle - stable public API.
 
 mod build_info;
+mod build_package;
 pub mod capability_package;
 pub mod channel_capability;
 pub mod constants;
+pub mod device_capability;
 pub mod metrics;
 pub mod util;
 
 pub use build_info::ota_manifest_url;
+pub use build_package::{
+    compiled_build_package_capabilities, compiled_sensor_capability, compiled_vision_capability,
+    compiled_voice_capability, current_build_package, BuildPackageCapabilities,
+    BuildPackageSnapshot, BuildPackageTargetFamily, BUILD_PACKAGE_PROFILE_CORE_ONLY,
+    BUILD_PACKAGE_PROFILE_ESP_FULL, BUILD_PACKAGE_PROFILE_HOST_FULL,
+    BUILD_PACKAGE_PROFILE_LINUX_FULL, BUILD_PACKAGE_PROFILE_SENSOR, BUILD_PACKAGE_PROFILE_VISION,
+    BUILD_PACKAGE_PROFILE_VISION_SENSOR, BUILD_PACKAGE_PROFILE_VOICE,
+    BUILD_PACKAGE_PROFILE_VOICE_SENSOR, BUILD_PACKAGE_PROFILE_VOICE_VISION,
+};
 pub use capability_package::{
     build_capability_package_operator_snapshot, build_capability_package_runtime_capabilities,
     build_capability_package_runtime_prompt_bundle, build_capability_package_tool_policy_set,
@@ -23,6 +34,14 @@ pub use channel_capability::{
     ChannelCapabilityContract, ChannelCapabilityEntry, ChannelCapabilityRegistry,
     ChannelCapabilitySnapshot, ChannelDeliveryOrderingModel, CHANNEL_DINGTALK, CHANNEL_FEISHU,
     CHANNEL_QQ_CHANNEL, CHANNEL_TELEGRAM, CHANNEL_VOICE, CHANNEL_WEBSOCKET, CHANNEL_WECOM,
+};
+pub use device_capability::{
+    build_device_capability_registry, build_device_capability_registry_from_input,
+    build_device_capability_snapshots, build_device_capability_snapshots_for_registry,
+    DeviceCapabilityBuildInput, DeviceCapabilityObservationMode, DeviceCapabilityPlaneContract,
+    DeviceCapabilityPlaneEntry, DeviceCapabilityPlaneMountModel, DeviceCapabilityPlaneSnapshot,
+    DeviceCapabilityRegistry, DEVICE_CAPABILITY_SENSOR, DEVICE_CAPABILITY_VISION,
+    DEVICE_CAPABILITY_VOICE,
 };
 pub use platform::runtime_board::resolved_board_id;
 /// Re-export PlatformHttpClient at crate root so core modules (agent, tools) can depend on

@@ -7,7 +7,7 @@ use crate::display::{DisplayCommand, DisplayConfig};
 use crate::error::{Error, Result};
 use crate::memory::{
     AutonomyStrategyStore, CoreRevisionLedgerStore, ExecutionStateStore, ImportantMessageStore,
-    InnerLifeStore, LongTermMemoryStore, MemoryProfile, MemoryStore, MentalPrivacyStore,
+    InnerLifeStore, LongTermMemoryStore, MemoryStore, MemorySystemKind, MentalPrivacyStore,
     OuterVoiceStore, PendingRetryStore, PrivateDocStore, PrivateGardenStore,
     RelationshipConstitutionStore, RelationshipPortfolioStore, RelationshipTopologyStore,
     RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore, SelfModelStore, SessionStore,
@@ -535,8 +535,8 @@ pub trait Platform: Send + Sync {
 
     /// 当前内存快照；须来自真实数据源（ESP: `heap`；Linux: `/proc/meminfo`），禁止占位常量。
     fn memory_snapshot(&self) -> MemorySnapshot;
-    /// 记忆资源档位；由平台决定，供 memory 模块选择共享策略，不暴露为用户配置。
-    fn memory_profile(&self) -> MemoryProfile;
+    /// 记忆承载制度；用于区分 Linux 厚治理体系与 ESP 紧凑体系。
+    fn memory_system_kind(&self) -> MemorySystemKind;
 
     /// 平台初始化（link_patches、日志、NVS、SPIFFS 等）。main 在构造后首先调用。
     fn init(&self) -> Result<()> {

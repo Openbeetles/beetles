@@ -14,7 +14,8 @@ NC='\033[0m'
 show_help() {
   cat <<'EOF'
 Usage:
-  ./build.sh [--flash | --flash-update] [--no-monitor] [--no-deploy] [--deploy-linux] [cargo build args...]
+  ./build.sh [--flash | --flash-update] [--no-monitor] [--no-deploy] [--deploy-linux]
+             [--package-profile <name>] [cargo build args...]
 
 Linux SSH deploy only (no compile; needs an existing target/*/release/beetle):
   ./build.sh --deploy-linux
@@ -31,10 +32,13 @@ Skip the question and flash ESP immediately (automation):
 
 Quick examples:
   ./build.sh
+  ./build.sh --package-profile core-only
   TARGET=linux ./build.sh
+  TARGET=linux ./build.sh --package-profile linux-full
   TARGET=linux-armv7 ./build.sh
   TARGET=linux-aarch64 ./build.sh
   TARGET=esp ./build.sh
+  TARGET=esp ./build.sh --package-profile voice
   TARGET=esp ./build.sh --flash
   ./build.sh --deploy-linux
 
@@ -90,6 +94,7 @@ NO_DEPLOY_PROMPT=""
 FLASH_NO_ERASE=""
 BUILD_METHOD="${BUILD_METHOD:-auto}" # auto | docker | local | remote
 BUILD_PROFILE="release"
+PACKAGE_PROFILE="${PACKAGE_PROFILE:-}"
 BUILD_ARGS=()
 REMOTE_BUILD_ROLE=""
 REMOTE_BUILD_DIR=""
@@ -97,17 +102,72 @@ REMOTE_BUILD_BIN=""
 REMOTE_BUILD_TARGET_ENV=""
 REMOTE_BUILD_ACTIVE=0
 REMOTE_TARGET_PREPARED=0
-for arg in "$@"; do
-  case "$arg" in
-    -h|--help)       show_help; exit 0 ;;
-    --flash)         DO_FLASH=1 ;;
-    --flash-update)  DO_FLASH=1; FLASH_NO_ERASE=1 ;;
-    --no-monitor)    NO_MONITOR=1 ;;
-    --no-deploy)     NO_DEPLOY_PROMPT=1 ;;
-    --deploy-linux)  DO_DEPLOY_LINUX=1 ;;
-    *)               BUILD_ARGS+=("$arg") ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)             show_help; exit 0 ;;
+    --flash)               DO_FLASH=1 ;;
+    --flash-update)        DO_FLASH=1; FLASH_NO_ERASE=1 ;;
+    --no-monitor)          NO_MONITOR=1 ;;
+    --no-deploy)           NO_DEPLOY_PROMPT=1 ;;
+    --deploy-linux)        DO_DEPLOY_LINUX=1 ;;
+    --package-profile)
+      shift
+      [[ $# -gt 0 ]] || { echo "Error: --package-profile requires a value." >&2; exit 1; }
+      PACKAGE_PROFILE="$1"
+      ;;
+    --package-profile=*)
+      PACKAGE_PROFILE="${1#*=}"
+      ;;
+    *)
+      BUILD_ARGS+=("$1")
+      ;;
   esac
+  shift
 done
+
+package_profile_features() {
+  local profile="$1"
+  case "$profile" in
+    core-only)
+      printf '%s\n' '--no-default-features --features default_runtime'
+      ;;
+    voice)
+      printf '%s\n' '--no-default-features --features default_runtime,capability_voice'
+      ;;
+    vision)
+      printf '%s\n' '--no-default-features --features default_runtime,capability_vision'
+      ;;
+    sensor)
+      printf '%s\n' '--no-default-features --features default_runtime,capability_sensor'
+      ;;
+    voice+vision)
+      printf '%s\n' '--no-default-features --features default_runtime,capability_voice,capability_vision'
+      ;;
+    voice+sensor)
+      printf '%s\n' '--no-default-features --features default_runtime,capability_voice,capability_sensor'
+      ;;
+    vision+sensor)
+      printf '%s\n' '--no-default-features --features default_runtime,capability_vision,capability_sensor'
+      ;;
+    voice+vision+sensor|linux-full)
+      printf '%s\n' '--no-default-features --features default_runtime,capability_voice,capability_vision,capability_sensor'
+      ;;
+    *)
+      echo "Error: unsupported package profile: $profile" >&2
+      echo "Supported: core-only, voice, vision, sensor, voice+vision, voice+sensor, vision+sensor, voice+vision+sensor, linux-full" >&2
+      exit 1
+      ;;
+  esac
+}
+
+default_package_profile_for_target() {
+  local target="$1"
+  if [[ "$target" =~ -unknown-linux ]]; then
+    printf '%s\n' 'linux-full'
+  else
+    printf '%s\n' 'voice+vision+sensor'
+  fi
+}
 
 linux_detect_pkg_manager() {
     local pm
@@ -1996,6 +2056,9 @@ if [[ -n "${BOARD:-}" ]]; then
   BUILD_TARGET=$(echo "$block" | grep -E '^target\s*=' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
   [[ -z "$BUILD_TARGET" ]] && { echo "Error: board $BOARD has no 'target' in board_presets.toml" >&2; exit 1; }
   PARTITION_TABLE=$(echo "$block" | grep -E '^partition_table\s*=' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+  if [[ -z "$PACKAGE_PROFILE" ]]; then
+    PACKAGE_PROFILE=$(echo "$block" | grep -E '^package_profile\s*=' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+  fi
   if [[ -z "$PARTITION_TABLE" ]]; then
     case "$BOARD" in
       esp32-s3-8mb)  PARTITION_TABLE=partitions_8mb.csv ;;
@@ -2019,6 +2082,16 @@ if [[ ! "$BUILD_TARGET" =~ ^[a-zA-Z0-9_-]+$ ]]; then
   exit 1
 fi
 
+if [[ -z "$PACKAGE_PROFILE" ]]; then
+  PACKAGE_PROFILE="$(default_package_profile_for_target "$BUILD_TARGET")"
+fi
+if [[ ! "$PACKAGE_PROFILE" =~ ^[a-z0-9+_-]+$ ]]; then
+  echo "Error: invalid package profile: $PACKAGE_PROFILE" >&2
+  exit 1
+fi
+BUILD_FEATURES="$(package_profile_features "$PACKAGE_PROFILE")"
+export BEETLE_PACKAGE_PROFILE="$PACKAGE_PROFILE"
+
 # Derive chip from target for flash (same as build.ps1)
 FLASH_CHIP=""
 if [[ "$BUILD_TARGET" =~ (esp32[a-z0-9]+) ]]; then
@@ -2033,6 +2106,7 @@ echo "  Build target:      $BUILD_TARGET"
 echo "  BOARD (optional):  ${BOARD:-(not set)}"
 echo "  Partition table:   $PARTITION_TABLE"
 echo "  Chip (for flash):  ${FLASH_CHIP:-(N/A)}"
+echo "  Package profile:   ${PACKAGE_PROFILE:-(none)}"
 echo "  Features:          ${BUILD_FEATURES:-(none)}"
 echo "  Profile:           $BUILD_PROFILE"
 echo ""
@@ -2383,6 +2457,7 @@ run_esp_flash_workflow() {
   echo "  Build target:      $BUILD_TARGET"
   echo "  BOARD (optional):  ${BOARD:-(not set)}"
   echo "  Chip (for flash):  ${FLASH_CHIP:-(N/A)}"
+  echo "  Package profile:   ${PACKAGE_PROFILE:-(none)}"
   echo "  Features:          ${BUILD_FEATURES:-(none)}"
   echo -e "  ${BLUE}Serial port:${NC}       $CHOSEN_PORT"
   echo "  Partition table:   $PARTITION_FOR_FLASH"

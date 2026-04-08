@@ -8,6 +8,7 @@ use crate::channel_capability::{
     build_channel_capability_snapshots_for_registry, ChannelCapabilityRegistry,
     ChannelCapabilitySnapshot,
 };
+use crate::device_capability::{build_device_capability_snapshots, DeviceCapabilityPlaneSnapshot};
 use crate::memory::{
     board_subject_scope_id, compute_core_revision_governance_digest,
     inspect_personality_governance, load_recent_persona_evidence,
@@ -62,6 +63,7 @@ pub struct OperatorPersonalityGovernanceSnapshot {
 }
 
 pub struct OperatorStatusInput<'a> {
+    pub config: &'a crate::config::AppConfig,
     pub platform: &'a dyn Platform,
     pub tool_registry: &'a ToolRegistry,
     pub channel_capability_registry: &'a ChannelCapabilityRegistry,
@@ -78,7 +80,7 @@ pub struct OperatorStatusInput<'a> {
 pub struct OperatorPlatformContract {
     pub board_id: String,
     pub firmware_version: String,
-    pub memory_profile: String,
+    pub memory_system_kind: String,
     pub wifi_connected: bool,
     pub config_plane_active: bool,
     pub display_available: bool,
@@ -107,6 +109,8 @@ pub struct OperatorContinuityTooling {
 #[derive(Serialize)]
 pub struct OperatorStatusSnapshot {
     pub platform_contract: OperatorPlatformContract,
+    pub build_package: crate::BuildPackageSnapshot,
+    pub operator_surface: crate::platform::operator_surface::OperatorSurfaceBudget,
     pub inbound_depth: usize,
     pub outbound_depth: usize,
     pub last_error: String,
@@ -121,6 +125,8 @@ pub struct OperatorStatusSnapshot {
     pub continuity_tooling: OperatorContinuityTooling,
     pub task_execution: TaskExecutionOperatorSnapshot,
     pub capability_packages: CapabilityPackageOperatorSnapshot,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capability_planes: Vec<DeviceCapabilityPlaneSnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub channels: Vec<ChannelCapabilitySnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -140,26 +146,42 @@ pub struct OperatorStatusSnapshot {
 pub fn build_operator_status(
     input: OperatorStatusInput<'_>,
 ) -> crate::error::Result<OperatorStatusSnapshot> {
+    let memory_system_kind = input.platform.memory_system_kind();
+    let operator_surface =
+        crate::platform::operator_surface::current_operator_surface_budget(memory_system_kind);
+    let compact_view = operator_surface.compact_view;
     let continuity_tool_available = input.tool_registry.get("continuity_snapshot").is_some();
-    let tool_governance = input.tool_registry.inspect_execution_governance()?;
+    let tool_governance = if compact_view {
+        None
+    } else {
+        input.tool_registry.inspect_execution_governance()?
+    };
     let storage_media = input.platform.storage_media();
     let (storage_media_count, storage_media_error) = match storage_media {
         Ok(items) => (items.len(), None),
         Err(error) => (0, Some(error.to_string())),
     };
-    let saved_snapshots = input
-        .platform
-        .state_fs()
-        .list_dir(REL_DIR_MANUAL_CONTINUITY_SNAPSHOTS)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|name| {
-            name.strip_suffix(".json")
-                .map(str::to_string)
-                .filter(|value| !value.trim().is_empty())
-        })
-        .collect::<Vec<_>>();
-    let audio_caps = input.platform.audio_duplex_capabilities();
+    let saved_snapshots = if compact_view {
+        Vec::new()
+    } else {
+        input
+            .platform
+            .state_fs()
+            .list_dir(REL_DIR_MANUAL_CONTINUITY_SNAPSHOTS)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|name| {
+                name.strip_suffix(".json")
+                    .map(str::to_string)
+                    .filter(|value| !value.trim().is_empty())
+            })
+            .collect::<Vec<_>>()
+    };
+    let audio_caps = if crate::compiled_voice_capability() {
+        input.platform.audio_duplex_capabilities()
+    } else {
+        crate::platform::AudioDuplexCapabilities::unavailable()
+    };
     let task_execution = build_task_execution_operator_snapshot(
         input.platform.task_run_store().as_ref(),
         input.platform.task_artifact_store().as_ref(),
@@ -170,11 +192,18 @@ pub fn build_operator_status(
         input.capability_package_runtime_capabilities,
         input.current_channel,
     )?;
-    let channels = build_channel_capability_snapshots_for_registry(
-        input.channel_capability_registry,
-        input.llm_stream_enabled,
-    );
-    let personality_governance =
+    let capability_planes = build_device_capability_snapshots(input.config, input.platform);
+    let channels = if compact_view {
+        Vec::new()
+    } else {
+        build_channel_capability_snapshots_for_registry(
+            input.channel_capability_registry,
+            input.llm_stream_enabled,
+        )
+    };
+    let personality_governance = if compact_view {
+        None
+    } else {
         inspect_operator_personality_governance(OperatorPersonalityGovernanceInspectInput {
             self_authored_core_store: input.platform.self_authored_core_store().as_ref(),
             core_revision_ledger_store: input.platform.core_revision_ledger_store().as_ref(),
@@ -186,9 +215,10 @@ pub fn build_operator_status(
             relationship_topology_store: input.platform.relationship_topology_store().as_ref(),
             self_continuity_store: input.platform.self_continuity_store().as_ref(),
             turn_ledger_store: input.platform.turn_ledger_store().as_ref(),
-            profile: input.platform.memory_profile(),
+            profile: memory_system_kind.memory_profile(),
             now_secs: current_unix_secs(),
-        })?;
+        })?
+    };
     let presence = runtime::inspect_platform_presence(input.platform, current_unix_secs());
     let initiative = runtime::inspect_platform_initiative(input.platform, current_unix_secs());
     let os_closure = runtime::inspect_beetle_os_closure(&presence, &initiative);
@@ -202,7 +232,7 @@ pub fn build_operator_status(
         platform_contract: OperatorPlatformContract {
             board_id: input.board_id.to_string(),
             firmware_version: input.version.to_string(),
-            memory_profile: memory_profile_label(input.platform.memory_profile()).to_string(),
+            memory_system_kind: memory_system_kind.as_str().to_string(),
             wifi_connected: crate::state::wifi_sta_connected(),
             config_plane_active: crate::state::config_plane_active(),
             display_available: input.platform.display_available(),
@@ -213,6 +243,8 @@ pub fn build_operator_status(
             storage_media_count,
             storage_media_error,
         },
+        build_package: crate::current_build_package(),
+        operator_surface,
         inbound_depth: input.inbound_depth,
         outbound_depth: input.outbound_depth,
         last_error: crate::state::get_current_error().unwrap_or_else(|| "none".to_string()),
@@ -237,8 +269,13 @@ pub fn build_operator_status(
         },
         task_execution,
         capability_packages,
+        capability_planes,
         channels,
-        tools: input.tool_registry.tool_catalog()?,
+        tools: if compact_view {
+            Vec::new()
+        } else {
+            input.tool_registry.tool_catalog()?
+        },
         tool_governance,
         personality_governance,
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -251,10 +288,19 @@ pub fn build_operator_status(
 pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String {
     let mut out = String::from("operator_status:\n");
     out.push_str(&format!(
-        "  board_id: {}\n  firmware_version: {}\n  memory_profile: {}\n  wifi_connected: {}\n  config_plane_active: {}\n  display_available: {}\n  wifi_scan_available: {}\n  hardware_discovery_available: {}\n  ota_supported: {}\n  audio_duplex_profile: {}\n  storage_media_count: {}\n",
+        "  build_package_profile: {}\n  build_package_target: {}\n  build_package_default_full: {}\n  build_package_caps: voice={} vision={} sensor={}\n",
+        snapshot.build_package.profile,
+        snapshot.build_package.target_family.as_str(),
+        snapshot.build_package.default_full_package,
+        snapshot.build_package.capabilities.voice,
+        snapshot.build_package.capabilities.vision,
+        snapshot.build_package.capabilities.sensor,
+    ));
+    out.push_str(&format!(
+        "  board_id: {}\n  firmware_version: {}\n  memory_system_kind: {}\n  wifi_connected: {}\n  config_plane_active: {}\n  display_available: {}\n  wifi_scan_available: {}\n  hardware_discovery_available: {}\n  ota_supported: {}\n  audio_duplex_profile: {}\n  storage_media_count: {}\n  operator_surface_compact: {}\n  operator_window_required: {}\n",
         snapshot.platform_contract.board_id,
         snapshot.platform_contract.firmware_version,
-        snapshot.platform_contract.memory_profile,
+        snapshot.platform_contract.memory_system_kind,
         snapshot.platform_contract.wifi_connected,
         snapshot.platform_contract.config_plane_active,
         snapshot.platform_contract.display_available,
@@ -263,9 +309,17 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
         snapshot.platform_contract.ota_supported,
         snapshot.platform_contract.audio_duplex_profile,
         snapshot.platform_contract.storage_media_count,
+        snapshot.operator_surface.compact_view,
+        snapshot.operator_surface.window_required_for_deep_routes,
     ));
     if let Some(error) = snapshot.platform_contract.storage_media_error.as_deref() {
         out.push_str(&format!("  storage_media_error: {}\n", error));
+    }
+    if let Some(window) = snapshot.operator_surface.operator_window.as_ref() {
+        out.push_str(&format!(
+            "  operator_window_active: {}\n  operator_window_remaining_secs: {}\n",
+            window.active, window.remaining_secs,
+        ));
     }
     out.push_str(&format!(
         "  inbound_depth: {}\n  outbound_depth: {}\n  last_error: {}\n  presence_state: {}\n  presence_headline: {}\n  presence_rationale: {}\n  initiative_action: {}\n  initiative_ready: {}\n  initiative_rationale: {}\n  runtime_mode: {}\n  soul_kernel_ready: {}\n  soul_kernel_safe_mode_readable: {}\n  soul_kernel_degraded: {}\n  soul_kernel_key_memory: {}\n  pressure: {:?}\n  continuity_saved_snapshots: {}\n",
@@ -315,6 +369,19 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
         out.push_str(&format!(
             "  soul_kernel_degradation: {}\n",
             snapshot.soul_kernel.degradation_reasons.join(", ")
+        ));
+    }
+    out.push_str("  capability_planes:\n");
+    for plane in &snapshot.capability_planes {
+        out.push_str(&format!(
+            "    - {} configured={} discovered={} mounted={} runtime_active={} candidates={} mode={:?}\n",
+            plane.id,
+            plane.configured,
+            plane.discovered,
+            plane.mounted,
+            plane.runtime_active,
+            plane.candidate_count,
+            plane.mount_model,
         ));
     }
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -422,13 +489,6 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
         ));
     }
     out
-}
-
-fn memory_profile_label(profile: MemoryProfile) -> &'static str {
-    match profile {
-        MemoryProfile::Embedded => "embedded",
-        MemoryProfile::Standard => "standard",
-    }
 }
 
 struct OperatorPersonalityGovernanceInspectInput<'a> {
@@ -566,6 +626,7 @@ fn operator_governance_relation_limit(profile: MemoryProfile) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AppConfig;
     use crate::error::Result;
     use crate::memory::{
         board_subject_scope_id, CoreRevisionLedger, CoreRevisionRecord,
@@ -574,6 +635,7 @@ mod tests {
         SelfAuthoredCore, SelfContinuity, TurnLedger,
     };
     use std::collections::HashMap;
+    use std::sync::Arc;
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -884,5 +946,75 @@ mod tests {
         );
         assert!(snapshot.relations[0].repair_needed);
         assert_eq!(snapshot.relations[0].chat_id, "chat-a");
+    }
+
+    #[test]
+    fn build_operator_status_includes_device_capability_planes() {
+        let config = AppConfig::load_from_env();
+        let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
+        let (tool_registry, _) = crate::tools::build_default_registry(
+            &config,
+            crate::tools::DefaultRegistryDeps {
+                platform: Arc::clone(&platform),
+                remind_at_store: platform.remind_at_store(),
+                session_store: platform.session_store(),
+                memory_store: platform.memory_store(),
+                long_term_memory_store: platform.long_term_memory_store(),
+                turn_ledger_store: platform.turn_ledger_store(),
+                private_garden_store: platform.private_garden_store(),
+                config_store: platform.config_store(),
+            },
+        );
+        let channel_capability_registry = crate::build_channel_capability_registry(&config, false);
+        let capability_package_runtime_capabilities =
+            crate::build_capability_package_runtime_capabilities(
+                &channel_capability_registry,
+                false,
+            );
+
+        let snapshot = build_operator_status(OperatorStatusInput {
+            config: &config,
+            platform: platform.as_ref(),
+            tool_registry: &tool_registry,
+            channel_capability_registry: &channel_capability_registry,
+            capability_package_runtime_capabilities: &capability_package_runtime_capabilities,
+            current_channel: config.enabled_channel.as_str(),
+            inbound_depth: 0,
+            outbound_depth: 0,
+            version: "0.0.0",
+            board_id: "test-board",
+            llm_stream_enabled: false,
+        })
+        .expect("operator status");
+
+        assert!(snapshot
+            .capability_planes
+            .iter()
+            .any(|plane| plane.id == crate::DEVICE_CAPABILITY_VOICE));
+        assert!(snapshot
+            .capability_planes
+            .iter()
+            .any(|plane| plane.id == crate::DEVICE_CAPABILITY_SENSOR));
+
+        let payload = serde_json::to_value(&snapshot).expect("serialize operator status");
+        assert!(payload.get("build_package").is_some());
+        assert!(payload["build_package"].get("profile").is_some());
+        assert!(payload["build_package"]
+            .get("default_full_package")
+            .is_some());
+        assert!(payload["build_package"]["capabilities"]
+            .get("voice")
+            .is_some());
+    }
+
+    #[test]
+    fn embedded_operator_surface_defaults_to_compact_budget() {
+        let budget = crate::platform::operator_surface::operator_surface_budget(
+            crate::memory::MemorySystemKind::EspCompact,
+            false,
+        );
+
+        assert!(budget.compact_view);
+        assert!(budget.window_required_for_deep_routes);
     }
 }

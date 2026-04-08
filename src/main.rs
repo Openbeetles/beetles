@@ -1424,6 +1424,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         move || p.memory_snapshot()
     }));
     let config_store = platform.config_store();
+    let memory_system_kind = platform.memory_system_kind();
     let resolve_locale_ui: Arc<dyn Fn() -> beetle::i18n::Locale + Send + Sync> = Arc::new({
         let cs = Arc::clone(&config_store);
         move || beetle::i18n::Locale::from_storage(&beetle::config::get_locale(cs.as_ref()))
@@ -1582,6 +1583,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             ..
         })
     );
+    let device_capability_registry =
+        beetle::build_device_capability_registry(config.as_ref(), platform.as_ref());
     let channel_capability_registry = Arc::new(beetle::build_channel_capability_registry(
         config.as_ref(),
         voice_channel_enabled,
@@ -1705,18 +1708,20 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         system_inbound_depth: Arc::clone(&system_inbound_depth),
         outbound_depth: Arc::clone(&outbound_depth),
         session_store: Arc::clone(&session_store),
-        memory_profile: platform.memory_profile(),
+        memory_system_kind,
         autonomy_strategy_store: Arc::clone(&autonomy_strategy_store),
         self_authored_core_store: Arc::clone(&self_authored_core_store),
         self_continuity_store: Arc::clone(&self_continuity_store),
         relationship_portfolio_store: Arc::clone(&relationship_portfolio_store),
         relationship_topology_store: Arc::clone(&relationship_topology_store),
         memory_store: Some(Arc::clone(&memory_store)),
-        sensor_watch: Some(beetle::cron::SensorWatchContext {
-            platform: Arc::clone(&platform),
-            devices: config.hardware_devices.clone(),
-            i2c_sensors: config.i2c_sensors.clone(),
-        }),
+        sensor_watch: device_capability_registry
+            .is_mounted(beetle::DEVICE_CAPABILITY_SENSOR)
+            .then(|| beetle::cron::SensorWatchContext {
+                platform: Arc::clone(&platform),
+                devices: config.hardware_devices.clone(),
+                i2c_sensors: config.i2c_sensors.clone(),
+            }),
         remind_store: Arc::clone(&remind_at_store),
         task_store: Arc::clone(&task_store),
     });
@@ -2023,7 +2028,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             mental_privacy_store: Arc::clone(&mental_privacy_store),
             turn_ledger_store: Arc::clone(&turn_ledger_store),
             skill_storage: Arc::clone(&skill_storage),
-            memory_profile: platform.memory_profile(),
+            memory_system_kind,
             get_skill_descriptions,
             get_capability_package_text,
             session_max_messages: session_max,

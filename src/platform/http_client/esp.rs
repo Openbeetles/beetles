@@ -79,8 +79,6 @@ const TLS_ADMISSION_TIMEOUT_SECS: u64 = 30;
 pub struct EspHttpClient {
     /// 若设置，请求应经 CONNECT 隧道；当前未实现则 get/post 返回错误。
     proxy_host: Option<String>,
-    #[allow(dead_code)]
-    proxy_port: Option<String>,
     /// HTTP 请求优先级，用于 orchestrator 准入控制。
     priority: Priority,
 }
@@ -122,13 +120,9 @@ impl EspHttpClient {
                 TAG
             );
         }
-        let (proxy_host, proxy_port) = match proxy {
-            Some((h, p)) => (Some(h), Some(p)),
-            None => (None, None),
-        };
+        let proxy_host = proxy.map(|(host, _port)| host);
         Ok(EspHttpClient {
             proxy_host,
-            proxy_port,
             priority,
         })
     }

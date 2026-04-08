@@ -524,6 +524,7 @@ fn register_core_tools(
 fn register_extended_runtime_tools(
     registry: &mut ToolRegistry,
     config: &AppConfig,
+    device_capability_registry: &crate::DeviceCapabilityRegistry,
     platform: &Arc<dyn crate::Platform>,
     tool_execution_governance: &Arc<ToolExecutionGovernance>,
     memory_store: &Arc<dyn crate::memory::MemoryStore + Send + Sync>,
@@ -565,7 +566,7 @@ fn register_extended_runtime_tools(
     #[cfg(feature = "tools_diagnostics")]
     registry.register(Box::new(super::NetworkScanTool::new(Arc::clone(platform))));
     #[cfg(feature = "tools_diagnostics")]
-    if !config.hardware_devices.is_empty() || !config.i2c_sensors.is_empty() {
+    if device_capability_registry.is_mounted(crate::DEVICE_CAPABILITY_SENSOR) {
         registry.register(Box::new(super::SensorWatchTool::new(
             Arc::clone(memory_store),
             config.hardware_devices.clone(),
@@ -593,8 +594,12 @@ fn register_extended_runtime_tools(
 fn register_audio_tools(
     registry: &mut ToolRegistry,
     config: &AppConfig,
+    device_capability_registry: &crate::DeviceCapabilityRegistry,
     platform: &Arc<dyn crate::Platform>,
 ) -> Option<Arc<crate::audio::baidu_token::BaiduTokenCache>> {
+    if !device_capability_registry.is_mounted(crate::DEVICE_CAPABILITY_VOICE) {
+        return None;
+    }
     let audio_cfg = config.audio.clone()?;
     let baidu_speech_credentials_ok = !audio_cfg.speech.api_key.trim().is_empty()
         && !audio_cfg.speech.api_secret.trim().is_empty();
@@ -656,6 +661,8 @@ pub fn build_default_registry(
         private_garden_store,
         config_store,
     } = deps;
+    let device_capability_registry =
+        crate::build_device_capability_registry(config, platform.as_ref());
     let tool_execution_governance = Arc::new(ToolExecutionGovernance::new(platform.state_fs()));
     let mut registry =
         ToolRegistry::new().with_execution_governance(Arc::clone(&tool_execution_governance));
@@ -674,6 +681,7 @@ pub fn build_default_registry(
     register_extended_runtime_tools(
         &mut registry,
         config,
+        &device_capability_registry,
         &platform,
         &tool_execution_governance,
         &memory_store,
@@ -681,7 +689,12 @@ pub fn build_default_registry(
         &session_store,
         &config_store,
     );
-    let shared_baidu_token = register_audio_tools(&mut registry, config, &platform);
+    let shared_baidu_token = register_audio_tools(
+        &mut registry,
+        config,
+        &device_capability_registry,
+        &platform,
+    );
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     register_host_only_tools(&mut registry);
     (registry, shared_baidu_token)

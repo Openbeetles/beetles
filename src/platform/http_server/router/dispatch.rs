@@ -132,6 +132,21 @@ fn err_other(stage: &'static str, msg: impl std::fmt::Display) -> Error {
     }
 }
 
+fn operator_window_required_response(path: &str) -> OutgoingResponse {
+    let body = serde_json::json!({
+        "error": "operator window required",
+        "path": path,
+        "open_endpoint": "POST /api/operator/window",
+    });
+    OutgoingResponse::json(
+        403,
+        "Forbidden",
+        CORS_HEADERS,
+        serde_json::to_vec(&body)
+            .unwrap_or_else(|_| br#"{"error":"operator window required"}"#.to_vec()),
+    )
+}
+
 /// 配置 API 唯一入口：ESP / Linux 在组装 `IncomingRequest` 后调用。
 #[inline(never)]
 pub fn dispatch(
@@ -153,6 +168,14 @@ pub fn dispatch(
             body: OPTIONS_BODY.to_vec(),
             restart: RestartAction::None,
         });
+    }
+
+    let memory_system_kind = ctx.platform.memory_system_kind();
+    if crate::platform::operator_surface::route_requires_operator_window(memory_system_kind, path)
+        && crate::platform::operator_surface::current_operator_surface_budget(memory_system_kind)
+            .window_required_for_deep_routes
+    {
+        return Ok(operator_window_required_response(path));
     }
 
     match (method, path) {
@@ -534,6 +557,22 @@ pub fn dispatch(
                 return Ok(api_to_out(r));
             }
             let body = handlers::system_info::body(ctx)
+                .map_err(|e| err_other("http_router_dispatch", e))?;
+            Ok(OutgoingResponse::json(
+                200,
+                "OK",
+                CORS_HEADERS,
+                body.into_bytes(),
+            ))
+        }
+        ("POST", "/api/operator/window") => {
+            if let Some(r) = auth::require_activated(store) {
+                return Ok(api_to_out(r));
+            }
+            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
+                return Ok(o);
+            }
+            let body = handlers::operator_window::post(ctx)
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(OutgoingResponse::json(
                 200,

@@ -27,12 +27,6 @@ pub(crate) fn get_object_text(object: &Map<String, Value>, key: &str) -> String 
     object.get(key).map(coerce_json_text).unwrap_or_default()
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) fn get_optional_object_text(object: &Map<String, Value>, key: &str) -> Option<String> {
-    object.get(key).map(coerce_json_text)
-}
-
 pub(crate) fn get_object_bool(object: &Map<String, Value>, key: &str) -> Option<bool> {
     object.get(key).and_then(coerce_json_bool)
 }

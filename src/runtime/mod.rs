@@ -46,8 +46,8 @@ pub use presence::{
     inspect_platform_presence, PresenceDisplayProjection, PresenceSnapshot, PresenceState,
 };
 pub use soul_kernel::{
-    ensure_platform_soul_kernel_recovery, inspect_platform_soul_kernel, SoulKernelRecoveryAction,
-    SoulKernelRecoveryReport, SoulKernelStatus,
+    ensure_platform_soul_kernel_recovery, inspect_platform_soul_kernel, SoulKernelPromptProjection,
+    SoulKernelRecoveryAction, SoulKernelRecoveryReport, SoulKernelStatus,
 };
 pub use stream_http::{execute_stream_http_op, invalidate_stream_http_slot};
 pub use thread_registry::ThreadRegistrySnapshot;

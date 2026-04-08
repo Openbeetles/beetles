@@ -15,6 +15,17 @@ pub fn get_body(
     bus: HardwareDiscoveryBus,
     capability: HardwareCapability,
 ) -> Result<String, HardwareDiscoveryError> {
+    match capability {
+        HardwareCapability::AudioInput | HardwareCapability::AudioOutput
+            if !crate::compiled_voice_capability() =>
+        {
+            return Err(HardwareDiscoveryError::Unavailable);
+        }
+        HardwareCapability::Camera if !crate::compiled_vision_capability() => {
+            return Err(HardwareDiscoveryError::Unavailable);
+        }
+        _ => {}
+    }
     let discovery = ctx
         .platform
         .hardware_discovery()

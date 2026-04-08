@@ -68,6 +68,7 @@ pub mod health;
 pub mod memory;
 pub mod metrics;
 pub mod operator_status;
+pub mod operator_window;
 pub mod pairing;
 pub mod resource;
 pub mod restart;

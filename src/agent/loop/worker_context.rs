@@ -142,7 +142,6 @@ fn prepare_worker_conversation_impl<'a>(
         .saturating_sub(post_memory_tail_len);
     let assembly_plan = crate::memory::decide_prompt_assembly(
         config.memory_system_kind,
-        config.memory_profile,
         msg.ingress,
         has_tools,
         runtime_mode,
@@ -224,7 +223,6 @@ fn prepare_worker_conversation_impl<'a>(
         memory_system_kind: config.memory_system_kind,
         system_max_len: prompt_memory_system_budget,
         now_secs: runtime.now_secs,
-        profile: config.memory_profile,
         participation_plan,
         recent_messages_limit: config.session_max_messages,
         load_long_term_memory: true,
@@ -274,10 +272,11 @@ fn prepare_worker_conversation_impl<'a>(
             .ok()
             .flatten();
     let allow_tool_round_recall_refill =
-        crate::memory::prompt_participation_policy(config.memory_profile).tool_round_recall_enabled
+        crate::memory::prompt_participation_policy(config.memory_system_kind)
+            .tool_round_recall_enabled
             && prompt_memory.long_term_memory_text.is_none()
             && prompt_memory_system_budget
-                >= memory_policy(config.memory_profile)
+                >= memory_policy(config.memory_system_kind)
                     .long_term_recall
                     .block_min_len
             && runtime_mode.action_budget.allow_non_voice_outbound

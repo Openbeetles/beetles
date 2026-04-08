@@ -65,6 +65,13 @@ fn minify_content(content: &str, strip_line_comment: bool, strip_block_comment: 
 
 fn main() {
     let target = std::env::var("TARGET").unwrap_or_default();
+    println!("cargo:rerun-if-env-changed=BEETLE_PACKAGE_PROFILE");
+    if let Ok(profile) = std::env::var("BEETLE_PACKAGE_PROFILE") {
+        let trimmed = profile.trim();
+        if !trimmed.is_empty() {
+            println!("cargo:rustc-env=BEETLE_PACKAGE_PROFILE={}", trimmed);
+        }
+    }
     // Artifact target triple: Xtensa or ESP-IDF RISC-V only (avoid matching unrelated "esp" substrings).
     let is_esp =
         target.contains("xtensa") || (target.contains("riscv32") && target.contains("espidf"));

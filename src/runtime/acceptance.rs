@@ -719,4 +719,105 @@ mod tests {
             .iter()
             .any(|item| item == "runtime_mode:voice_exclusive_allows_non_voice_outbound"));
     }
+
+    #[test]
+    fn acceptance_flags_missing_presence_copy_as_contract_drift() {
+        let mut broken_presence = presence();
+        broken_presence.headline.clear();
+        broken_presence.subtitle.clear();
+        broken_presence.rationale.clear();
+
+        let report = inspect_beetle_os_closure(&broken_presence, &initiative());
+        assert!(!report.ready, "{report:?}");
+        assert!(report
+            .outstanding
+            .iter()
+            .any(|item| item == "presence:missing_presence_headline"));
+        assert!(report
+            .outstanding
+            .iter()
+            .any(|item| item == "presence:missing_presence_subtitle"));
+        assert!(report
+            .outstanding
+            .iter()
+            .any(|item| item == "presence:missing_presence_rationale"));
+    }
+
+    #[test]
+    fn acceptance_flags_suppressed_initiative_without_reason_or_hold_action() {
+        let mut broken_initiative = initiative();
+        broken_initiative.action = InitiativeAction::ResumeTaskCheckIn;
+        broken_initiative.suppression_reason = None;
+
+        let report = inspect_beetle_os_closure(&presence(), &broken_initiative);
+        assert!(!report.ready, "{report:?}");
+        assert!(report
+            .outstanding
+            .iter()
+            .any(|item| item == "initiative:suppressed_initiative_keeps_non_hold_action"));
+        assert!(report
+            .outstanding
+            .iter()
+            .any(|item| item == "initiative:suppressed_initiative_missing_reason"));
+    }
+
+    #[test]
+    fn acceptance_flags_degraded_soul_kernel_without_reason() {
+        let mut broken_presence = presence();
+        broken_presence.soul_kernel.degraded = true;
+        broken_presence.soul_kernel.degradation_reasons.clear();
+
+        let report = inspect_beetle_os_closure(&broken_presence, &initiative());
+        assert!(!report.ready, "{report:?}");
+        assert!(report
+            .outstanding
+            .iter()
+            .any(|item| item == "soul_kernel:degraded_kernel_without_reason"));
+    }
+
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[test]
+    fn acceptance_flags_linux_release_schema_and_unit_drift() {
+        let mut broken_presence = presence();
+        let mut release = broken_presence.release.clone().expect("linux release");
+        release.state_schema_current = false;
+        release.systemd_unit_consistent = Some(false);
+        release.init_script_consistent = Some(false);
+        broken_presence.release = Some(release);
+
+        let report = inspect_beetle_os_closure(&broken_presence, &initiative());
+        assert!(!report.ready, "{report:?}");
+        assert!(report
+            .outstanding
+            .iter()
+            .any(|item| item == "release:state_schema_outdated"));
+        assert!(report
+            .outstanding
+            .iter()
+            .any(|item| item == "release:systemd_unit_inconsistent"));
+        assert!(report
+            .outstanding
+            .iter()
+            .any(|item| item == "release:init_script_inconsistent"));
+    }
+
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[test]
+    fn acceptance_flags_linux_supervisor_safe_mode_without_reason() {
+        let mut broken_presence = presence();
+        let mut supervisor = broken_presence
+            .supervisor
+            .clone()
+            .expect("linux supervisor");
+        supervisor.state.current_state = "safe_mode".to_string();
+        supervisor.state.safe_mode_reason = None;
+        broken_presence.supervisor = Some(supervisor);
+
+        let report = inspect_beetle_os_closure(&broken_presence, &initiative());
+        assert!(!report.ready, "{report:?}");
+        assert!(report
+            .outstanding
+            .iter()
+            .any(|item| item == "supervisor:safe_mode_without_reason"));
+    }
 }

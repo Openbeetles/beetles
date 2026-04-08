@@ -25,8 +25,10 @@ struct HealthBody {
     inbound_depth: usize,
     outbound_depth: usize,
     last_error: String,
+    build_package: crate::BuildPackageSnapshot,
     display: DisplayHealth,
     audio: AudioHealth,
+    capability_planes: Vec<crate::DeviceCapabilityPlaneSnapshot>,
     metrics: metrics::MetricsSnapshot,
     resource: orchestrator::ResourceSnapshot,
     threads: runtime::ThreadRegistrySnapshot,
@@ -52,7 +54,15 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         "disconnected"
     };
     let last_err = state::get_current_error().unwrap_or_else(|| "none".to_string());
-    let audio_caps = ctx.platform.audio_duplex_capabilities();
+    let audio_caps = if crate::compiled_voice_capability() {
+        ctx.platform.audio_duplex_capabilities()
+    } else {
+        crate::platform::AudioDuplexCapabilities::unavailable()
+    };
+    let capability_planes = {
+        let config = ctx.config();
+        crate::build_device_capability_snapshots(&config, ctx.platform.as_ref())
+    };
     let presence = runtime::inspect_platform_presence(ctx.platform.as_ref(), now_secs);
     let runtime_mode = presence.runtime_mode;
     let soul_kernel = presence.soul_kernel.clone();
@@ -67,6 +77,7 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         inbound_depth: ctx.inbound_depth.load(Ordering::Relaxed),
         outbound_depth: ctx.outbound_depth.load(Ordering::Relaxed),
         last_error: last_err,
+        build_package: crate::current_build_package(),
         display: DisplayHealth {
             available: ctx.platform.display_available(),
         },
@@ -74,6 +85,7 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
             duplex_profile: audio_caps.profile(),
             duplex_capabilities: audio_caps,
         },
+        capability_planes,
         metrics: metrics::snapshot(),
         resource: orchestrator::snapshot(),
         threads: runtime::thread_registry::snapshot(),
@@ -107,8 +119,39 @@ mod tests {
 
         assert!(parsed.get("metrics").is_some());
         assert!(parsed.get("resource").is_some());
+        assert!(parsed.get("os_closure").is_some());
+        assert!(parsed.get("initiative").is_some());
         assert!(parsed.get("runtime_mode").is_some());
         assert!(parsed.get("presence").is_some());
+        assert!(parsed.get("soul_kernel").is_some());
+        assert!(parsed.get("capability_planes").is_some());
+        assert!(parsed.get("build_package").is_some());
+        assert!(parsed["build_package"].get("profile").is_some());
+        assert!(parsed["build_package"]["capabilities"]
+            .get("voice")
+            .is_some());
+    }
+
+    #[test]
+    fn body_keeps_os_closure_consistent_with_presence_and_runtime_mode() {
+        let ctx = build_test_context();
+
+        let payload = body(&ctx).unwrap();
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+
+        let os_closure = &parsed["os_closure"];
+        assert_eq!(
+            os_closure["current_mode"].as_str(),
+            parsed["runtime_mode"]["current_mode"].as_str()
+        );
+        assert_eq!(
+            os_closure["presence_state"].as_str(),
+            parsed["presence"]["state"].as_str()
+        );
+        assert_eq!(
+            parsed["soul_kernel"]["minimum_viable"].as_bool(),
+            parsed["presence"]["soul_kernel"]["minimum_viable"].as_bool()
+        );
     }
 
     fn build_test_context() -> crate::platform::http_server::handlers::HandlerContext {

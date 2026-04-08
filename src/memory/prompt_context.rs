@@ -158,7 +158,6 @@ pub struct PromptMemoryContextParams<'a> {
     pub memory_system_kind: MemorySystemKind,
     pub system_max_len: usize,
     pub now_secs: u64,
-    pub profile: MemoryProfile,
     pub participation_plan: crate::memory::PromptParticipationPlan,
     pub recent_messages_limit: usize,
     pub load_long_term_memory: bool,
@@ -213,9 +212,10 @@ pub fn load_esp_prompt_memory_context(
 }
 
 fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> PromptMemoryContext {
+    let profile = params.memory_system_kind.memory_profile();
     let subject_id = board_subject_scope_id();
     let relationship_id = relationship_scope_id(params.current_channel, params.chat_id);
-    let recall_policy = memory_policy(params.profile).long_term_recall;
+    let recall_policy = memory_policy(profile).long_term_recall;
     let esp_compact_first_turn_graph =
         matches!(params.memory_system_kind, MemorySystemKind::EspCompact)
             && params.participation_plan.load_l2_governed_recall
@@ -272,10 +272,7 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
         })
         .flatten();
     let execution_state_text = execution_state.as_ref().and_then(|state| {
-        render_execution_state_block(
-            state,
-            memory_policy(params.profile).execution_state.render_max_len,
-        )
+        render_execution_state_block(state, memory_policy(profile).execution_state.render_max_len)
     });
     let active_task_run = params
         .participation_plan
@@ -358,10 +355,7 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
         .then(|| params.self_model_store.get(subject_id).ok().flatten())
         .flatten();
     let self_model_text = self_model.as_ref().and_then(|model| {
-        render_self_model_block(
-            model,
-            memory_policy(params.profile).self_model.render_max_len,
-        )
+        render_self_model_block(model, memory_policy(profile).self_model.render_max_len)
     });
     let self_continuity = (params.participation_plan.load_l1_constitutional
         || params.participation_plan.load_l2_background_governance)
@@ -381,7 +375,7 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
             });
             render_world_snapshot_block(
                 &world_snapshot,
-                memory_policy(params.profile).world_sense.snapshot_max_len,
+                memory_policy(profile).world_sense.snapshot_max_len,
             )
         })
         .flatten();
@@ -399,7 +393,7 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
     let world_sense_text = world_sense.as_ref().and_then(|world_sense| {
         render_world_sense_block(
             world_sense,
-            memory_policy(params.profile).world_sense.render_max_len,
+            memory_policy(profile).world_sense.render_max_len,
         )
     });
     let autonomy_strategy = params
@@ -416,9 +410,7 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
     let autonomy_strategy_text = autonomy_strategy.as_ref().and_then(|strategy| {
         render_autonomy_strategy_block(
             strategy,
-            memory_policy(params.profile)
-                .autonomy_strategy
-                .render_max_len,
+            memory_policy(profile).autonomy_strategy.render_max_len,
         )
     });
     let outer_voice = ((params.participation_plan.load_l1_constitutional
@@ -439,7 +431,7 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
             outer_voice.as_ref().and_then(|outer_voice| {
                 render_outer_voice_block(
                     outer_voice,
-                    memory_policy(params.profile).outer_voice.render_max_len,
+                    memory_policy(profile).outer_voice.render_max_len,
                 )
             })
         })
@@ -450,10 +442,7 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
         .then(|| params.inner_life_store.get(subject_id).ok().flatten())
         .flatten();
     let inner_life_text = inner_life.as_ref().and_then(|inner_life| {
-        render_inner_life_block(
-            inner_life,
-            memory_policy(params.profile).inner_life.render_max_len,
-        )
+        render_inner_life_block(inner_life, memory_policy(profile).inner_life.render_max_len)
     });
     let self_continuity_text = params
         .participation_plan
@@ -462,7 +451,7 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
             self_continuity.as_ref().and_then(|self_continuity| {
                 render_self_continuity_block(
                     self_continuity,
-                    memory_policy(params.profile).self_continuity.render_max_len,
+                    memory_policy(profile).self_continuity.render_max_len,
                 )
             })
         })
@@ -475,16 +464,13 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
     let private_workspace_text = private_workspace.as_ref().and_then(|workspace| {
         render_private_doc_workspace_block(
             workspace,
-            memory_policy(params.profile).private_docs.render_max_len,
+            memory_policy(profile).private_docs.render_max_len,
         )
     });
     let recent_private_garden_docs = if params.participation_plan.load_l3_private_depth {
         params
             .private_garden_store
-            .list(
-                params.chat_id,
-                prompt_private_garden_doc_limit(params.profile),
-            )
+            .list(params.chat_id, prompt_private_garden_doc_limit(profile))
             .unwrap_or_default()
     } else {
         Vec::new()
@@ -494,10 +480,8 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
         .then(|| {
             render_private_garden_block(
                 &recent_private_garden_docs,
-                memory_policy(params.profile)
-                    .private_garden
-                    .recent_doc_count,
-                memory_policy(params.profile).private_garden.render_max_len,
+                memory_policy(profile).private_garden.recent_doc_count,
+                memory_policy(profile).private_garden.render_max_len,
             )
         })
         .flatten();
@@ -586,9 +570,9 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
                     self_continuity.as_ref(),
                     &recent_private_garden_docs,
                     params.now_secs,
-                    params.profile,
+                    profile,
                 ),
-                memory_policy(params.profile).self_state.render_max_len,
+                memory_policy(profile).self_state.render_max_len,
             )
         })
         .flatten();
@@ -598,7 +582,7 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
         let grounding_start = recent_messages
             .len()
             .saturating_sub(recall_policy.recent_grounding_message_count);
-        let capability = memory_capability_profile(params.profile);
+        let capability = memory_capability_profile(profile);
         if capability.prompt_exact_lookup_enabled {
             parse_explicit_long_term_slot_query(params.user_query)
                 .and_then(|slot| {
@@ -616,7 +600,7 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
                         summary_text.as_deref(),
                         &recent_messages[grounding_start..],
                         params.system_max_len,
-                        params.profile,
+                        profile,
                     )
                 })
         } else {
@@ -627,7 +611,7 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
                 summary_text.as_deref(),
                 &recent_messages[grounding_start..],
                 params.system_max_len,
-                params.profile,
+                profile,
             )
         }
     };
@@ -712,7 +696,7 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
             params.chat_id,
             params.user_query,
             params.system_max_len,
-            params.profile,
+            profile,
         )
     };
     let shared_factual_recall_report = if governed_memory_enabled {
@@ -723,7 +707,7 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
             summary_text.as_deref(),
             &recent_messages,
             params.system_max_len,
-            params.profile,
+            profile,
             params.now_secs,
         )
     } else {
@@ -756,7 +740,7 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
             summary_text.as_deref(),
             &recent_messages,
             params.system_max_len.min(768),
-            params.profile,
+            profile,
         )
     } else {
         super::RecallSelectionReport {
@@ -1171,7 +1155,6 @@ mod tests {
             memory_system_kind: crate::memory::MemorySystemKind::EspCompact,
             system_max_len: 1024,
             now_secs: 100,
-            profile: MemoryProfile::Embedded,
             recent_messages_limit: 8,
             load_long_term_memory: true,
             include_private_garden_projection: false,
@@ -1257,7 +1240,6 @@ mod tests {
             memory_system_kind: crate::memory::MemorySystemKind::EspCompact,
             system_max_len: 1024,
             now_secs: 100,
-            profile: MemoryProfile::Embedded,
             participation_plan: PromptParticipationPlan::embedded_first_turn_default(),
             recent_messages_limit: 8,
             load_long_term_memory: true,
@@ -1334,7 +1316,6 @@ mod tests {
             memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
             system_max_len: 1024,
             now_secs: 100,
-            profile: MemoryProfile::Standard,
             participation_plan: PromptParticipationPlan {
                 load_l1_constitutional: true,
                 load_l1_session: true,
@@ -2518,7 +2499,6 @@ mod tests {
             memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
             system_max_len: 1024,
             now_secs: 100,
-            profile: MemoryProfile::Standard,
             participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: true,
@@ -2738,7 +2718,6 @@ mod tests {
             memory_system_kind: crate::memory::MemorySystemKind::EspCompact,
             system_max_len: 80,
             now_secs: 100,
-            profile: MemoryProfile::Embedded,
             participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: true,
@@ -2929,7 +2908,6 @@ mod tests {
             memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
             system_max_len: 1024,
             now_secs: 100,
-            profile: MemoryProfile::Standard,
             participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 16,
             load_long_term_memory: false,
@@ -3044,7 +3022,6 @@ mod tests {
             memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
             system_max_len: 1024,
             now_secs: 100,
-            profile: MemoryProfile::Standard,
             participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: false,
@@ -3122,7 +3099,6 @@ mod tests {
             memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
             system_max_len: 1024,
             now_secs: 100,
-            profile: MemoryProfile::Standard,
             participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: true,
@@ -3250,7 +3226,6 @@ mod tests {
             memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
             system_max_len: 1024,
             now_secs: 100,
-            profile: MemoryProfile::Standard,
             participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: true,
@@ -3389,7 +3364,6 @@ mod tests {
             memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
             system_max_len: 1024,
             now_secs: 100,
-            profile: MemoryProfile::Standard,
             participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: true,
@@ -3516,7 +3490,6 @@ mod tests {
             memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
             system_max_len: 1024,
             now_secs: 100,
-            profile: MemoryProfile::Standard,
             participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: true,
@@ -3618,7 +3591,6 @@ mod tests {
             memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
             system_max_len: 1024,
             now_secs: 100,
-            profile: MemoryProfile::Standard,
             participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: true,
@@ -3848,7 +3820,6 @@ mod tests {
             memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
             system_max_len: 1024,
             now_secs: 100,
-            profile: MemoryProfile::Standard,
             participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: true,
@@ -3957,7 +3928,6 @@ mod tests {
             memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
             system_max_len: 1024,
             now_secs: 100,
-            profile: MemoryProfile::Standard,
             participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: true,
@@ -4050,7 +4020,6 @@ mod tests {
             memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
             system_max_len: 1024,
             now_secs: 100,
-            profile: MemoryProfile::Standard,
             participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: true,
@@ -4143,7 +4112,6 @@ mod tests {
             memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
             system_max_len: 1024,
             now_secs: 100,
-            profile: MemoryProfile::Standard,
             participation_plan: PromptParticipationPlan::full(),
             recent_messages_limit: 8,
             load_long_term_memory: true,

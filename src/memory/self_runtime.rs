@@ -586,11 +586,11 @@ fn execute_self_runtime_actions(
     ctx: &SelfRuntimeContext<'_>,
     chat_id: &str,
     payload: &SelfRuntimeJobPayload,
-    profile: MemoryProfile,
     state: &LoadedSelfRuntimeState,
     prelude: &SelfRuntimeRefreshPrelude,
 ) -> Box<SelfRuntimeActionResults> {
-    let authority_plan = decide_self_runtime_authority(ctx.memory_system_kind, profile);
+    let profile = ctx.memory_system_kind.memory_profile();
+    let authority_plan = decide_self_runtime_authority(ctx.memory_system_kind);
     let subject_id = board_subject_scope_id();
     let relationship_id = state.active_relationship_scope_id.as_str();
     let boundary_signal = detect_boundary_flush_signal(payload, state, prelude);
@@ -1273,9 +1273,9 @@ pub fn run_self_runtime(
     ctx: SelfRuntimeContext<'_>,
     chat_id: &str,
     payload: &SelfRuntimeJobPayload,
-    profile: MemoryProfile,
 ) -> Box<SelfRuntimeOutcome> {
-    let authority_plan = decide_self_runtime_authority(ctx.memory_system_kind, profile);
+    let profile = ctx.memory_system_kind.memory_profile();
+    let authority_plan = decide_self_runtime_authority(ctx.memory_system_kind);
     sync_self_runtime_relationship_topology(
         &ctx,
         payload.source_channel.as_str(),
@@ -1294,7 +1294,6 @@ pub fn run_self_runtime(
         &ctx,
         chat_id,
         payload,
-        profile,
         state.as_ref(),
         prelude.as_ref(),
     );
@@ -1569,8 +1568,7 @@ mod tests {
 
     #[test]
     fn esp_authority_plan_strips_non_growth_direct_actions_and_sources() {
-        let plan =
-            decide_self_runtime_authority(MemorySystemKind::EspCompact, MemoryProfile::Embedded);
+        let plan = decide_self_runtime_authority(MemorySystemKind::EspCompact);
         let mut decision = SelfRuntimeDecision {
             refresh_inner_life: true,
             inner_life_intent: "keep the inner thread warm".to_string(),
@@ -2001,8 +1999,7 @@ mod tests {
     #[test]
     fn self_runtime_method_distillation_uses_governed_task_learning_pipeline() {
         let now_secs = crate::util::ymdhms_to_epoch(2026, 4, 8, 13, 0, 0);
-        let authority =
-            decide_self_runtime_authority(MemorySystemKind::EspCompact, MemoryProfile::Embedded);
+        let authority = decide_self_runtime_authority(MemorySystemKind::EspCompact);
         let task_run_store = StubTaskRunStore::new(vec![
             sample_task_run_record(
                 "tr_prev",

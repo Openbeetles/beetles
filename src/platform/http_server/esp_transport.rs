@@ -450,6 +450,8 @@ const OBSERVABILITY_ROUTES: &[EspRouteSpec] = &[
     EspRouteSpec::new("/api/health", Method::Options, EspBodyMode::None),
     EspRouteSpec::new("/api/operator/status", Method::Get, EspBodyMode::None),
     EspRouteSpec::new("/api/operator/status", Method::Options, EspBodyMode::None),
+    EspRouteSpec::new("/api/operator/window", Method::Post, EspBodyMode::None),
+    EspRouteSpec::new("/api/operator/window", Method::Options, EspBodyMode::None),
     EspRouteSpec::new("/api/metrics", Method::Get, EspBodyMode::None),
     EspRouteSpec::new("/api/metrics", Method::Options, EspBodyMode::None),
     EspRouteSpec::new("/api/resource", Method::Get, EspBodyMode::None),

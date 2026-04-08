@@ -1117,7 +1117,7 @@ ESP 上 recovery 的首要目标不是“把所有能力都救回来”，而是
 | `P0` | 已完成 | 顶层宪法、术语矩阵、分叉边界已锁死 |
 | `P1` | 已完成 | `MemorySystemKind::{LinuxFull, EspCompact}` 与平台装配已进入主线 |
 | `P2` | 已完成 | `worker_context + prompt_context + build_context` 的首轮 compact assembly 已收口 |
-| `P3` | 部分完成 | authority 分叉已建模，但 ESP 后台成长边界仍未完全收口 |
+| `P3` | 已完成 | ESP `self_runtime` direct authority 已收成成长 / 连续性 / 方法沉淀，厚关系治理不再留在默认后台直写面 |
 | `P4` | 已完成 | capability plane、Linux `discovery-first`、ESP `config/feature-gated` 已落地 |
 | `P5` | 已完成 | operator / recovery / windowed inspection 已有正式收口 |
 | `P6` | 已完成 | packaging / feature matrix / health / operator 口径已统一 |
@@ -1127,9 +1127,9 @@ ESP 上 recovery 的首要目标不是“把所有能力都救回来”，而是
 
 必须单独强调：
 
-1. `P3` 没做完，不等于方案无效；它表示**架构方向已锁定，但 ESP authority / 后台成长边界仍未收尾**
-2. 当前不能把本文解读成“ESP 已经完成最终稳态化”或“ESP 已经完成功能削减”
-3. 当前更准确的表述是：**制度分轨与首轮 compact assembly 已成立，ESP 最终稳态化仍取决于 `P3` 收口**
+1. `P3` 已完成，表示 ESP `self_runtime` 的 direct authority 已被正式收口为 compact contract，而不是继续沿 Linux 厚治理路径做局部减法
+2. 这不等于 ESP 已经完成所有后续架构工作；它只表示 `Prompt Assembly + SelfRuntime Authority` 两条主链已经闭合
+3. 后续若还要继续做 ESP runtime slimming，主战场将不再是首轮 prompt 或 `self_runtime` 直写 authority，而是 capability/runtime plane 的稳态治理
 
 ### 11.1 下一步主线（第二阶段完成后）
 
@@ -1146,13 +1146,31 @@ ESP 上 recovery 的首要目标不是“把所有能力都救回来”，而是
 
 因此，下一步不再回头继续在首轮 prompt 热链上堆新的 `if esp`，而是直接进入 authority 收口。
 
-#### B. 收紧 `self_runtime authority`
+#### B. 收紧 `self_runtime authority`（已完成）
 
-ESP 的 `self_runtime` 只继续承担：
+ESP 的 `self_runtime` 现已只继续承担：
 
 1. soul growth
 2. continuity maintenance
 3. method distillation
+
+已经明确落地的 direct authority 边界：
+
+1. 保留：
+   - `inner_life`
+   - `self_model`
+   - `self_continuity`
+   - governed `method distillation`
+2. 移出 ESP direct authority：
+   - `private_docs`
+   - `private_garden`
+   - `self_authored_core`
+   - `boundary_persona`
+   - `outer_voice`
+   - direct `factual_refresh_request`
+3. 配套执行面同步收口：
+   - `load_self_runtime_state(...)` 不再为 ESP direct authority 默认装载 `self_authored_core / core_revision_ledger / mental_privacy / outer_voice / relationship_constitution`
+   - `self_runtime` 不再在 ESP compact authority 下同步回写 `relationship_constitution`
 
 它不再承担“主回复前重治理预计算器”的角色。
 
@@ -1260,7 +1278,7 @@ ESP 的 `self_runtime` 只继续承担：
    - 压缩长期记忆
 2. camera / sensors 启用后也不默认加厚首轮 prompt
 
-### P3：重写 ESP `self_runtime` authority
+### P3：重写 ESP `self_runtime` authority（已完成，2026-04-08）
 
 **目标**
 
@@ -1279,6 +1297,23 @@ ESP 的 `self_runtime` 只继续承担：
 
 1. `self_runtime` 不再需要假装所有成长都是 factual merge
 2. 同时也不能绕过事实治理
+
+**本阶段已确认落地**
+
+1. `EspCompact` direct authority 已正式收成：
+   - `inner_life`
+   - `self_model`
+   - `self_continuity`
+   - `method distillation`
+2. `EspCompact` 已停止 direct authority：
+   - `private_docs`
+   - `private_garden`
+   - `self_authored_core`
+   - `boundary_persona`
+   - `outer_voice`
+   - direct `factual_refresh_request`
+3. `self_runtime` 在 ESP compact authority 下已不再同步回写 `relationship_constitution`
+4. Linux `LinuxFull` authority 未被一起降配，仍保留 full direct runtime authority
 
 ### P4：把 audio / camera / sensors 全部平面化
 

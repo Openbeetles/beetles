@@ -590,12 +590,6 @@ fn current_task_handle_key() -> usize {
         .unwrap_or(0)
 }
 
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-#[allow(dead_code)]
-fn current_task_handle_key() -> usize {
-    0
-}
-
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn sample_stack_high_water_free_bytes(entry: &ThreadEntry) -> Option<usize> {
     unsafe extern "C" {

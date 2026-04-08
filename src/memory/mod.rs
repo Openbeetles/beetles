@@ -259,14 +259,16 @@ pub use private_garden_governance::{
     PrivateGardenGovernanceOutcome, PRIVATE_GARDEN_GOVERNANCE_SYSTEM_PROMPT,
 };
 pub(crate) use profile::{
-    decide_prompt_participation, memory_capability_profile, memory_policy,
-    prompt_participation_policy, shared_long_term_governance_policy, AutonomyStrategyPolicy,
-    ExecutionStatePolicy, InnerLifePolicy, LongTermExtractionPolicy, LongTermRecallPolicy,
-    OuterVoicePolicy, PrivateDocsPolicy, PrivateGardenGovernancePolicy, SelfContinuityPolicy,
-    SelfModelPolicy, SessionSummaryPolicy, WorldSensePolicy,
+    decide_prompt_assembly, decide_self_runtime_authority, memory_capability_profile,
+    memory_policy, prompt_participation_policy, shared_long_term_governance_policy,
+    AutonomyStrategyPolicy, ExecutionStatePolicy, InnerLifePolicy, LongTermExtractionPolicy,
+    LongTermRecallPolicy, OuterVoicePolicy, PrivateDocsPolicy, PrivateGardenGovernancePolicy,
+    SelfContinuityPolicy, SelfModelPolicy, SelfRuntimeAuthorityPlan, SessionSummaryPolicy,
+    WorldSensePolicy,
 };
 pub use profile::{
-    MemoryCapabilityClass, MemoryHygieneLevel, MemoryProfile, PromptParticipationPlan,
+    MemoryCapabilityClass, MemoryHygieneLevel, MemoryProfile, MemorySystemKind,
+    PromptParticipationPlan,
 };
 pub use prompt_context::{
     load_prompt_memory_context, PromptMemoryContext, PromptMemoryContextParams,

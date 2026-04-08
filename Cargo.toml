@@ -87,12 +87,21 @@ embedded-graphics-framebuf = "0.5.0"
 
 [features]
 default = [
+    "default_runtime",
+    "capability_voice",
+    "capability_vision",
+    "capability_sensor",
+]
+default_runtime = [
     "config_api",
     "feishu",
     "tools_diagnostics",
     "tools_network_extra",
     "thread_panic_catch",
 ]
+capability_voice = []
+capability_vision = []
+capability_sensor = []
 config_api = []
 telegram = []
 feishu = []  # 通道核心功能，默认开启

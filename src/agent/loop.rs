@@ -1377,7 +1377,7 @@ fn run_long_term_memory_refresh_job(
         },
         &msg.chat_id,
         crate::orchestrator::snapshot().pressure,
-        config.memory_profile,
+        config.memory_system_kind.memory_profile(),
     );
     outcome.persist(
         config.long_term_memory_extraction_state_store.as_ref(),
@@ -1790,7 +1790,7 @@ fn run_post_reply_maintenance_job(
             user_content: &payload.user_content,
             reply_content: &payload.reply_content,
             pressure: crate::orchestrator::snapshot().pressure,
-            memory_profile: config.memory_profile,
+            memory_profile: config.memory_system_kind.memory_profile(),
             tool_calls: payload.tool_calls,
             external_content_used: payload.external_content_used,
             now_secs: payload.now_secs,
@@ -1934,7 +1934,6 @@ fn run_self_runtime_job(
         },
         &msg.chat_id,
         &payload,
-        config.memory_profile,
     );
     let crate::memory::SelfRuntimeOutcome {
         decision,
@@ -2246,7 +2245,6 @@ pub struct AgentLoopConfig {
     pub mental_privacy_store: Arc<dyn MentalPrivacyStore + Send + Sync>,
     pub turn_ledger_store: Arc<dyn TurnLedgerStore + Send + Sync>,
     pub skill_storage: Arc<dyn crate::platform::SkillStorage + Send + Sync>,
-    pub memory_profile: crate::memory::MemoryProfile,
     pub memory_system_kind: crate::memory::MemorySystemKind,
     pub get_skill_descriptions: Arc<dyn Fn() -> String + Send + Sync>,
     pub get_capability_package_text: CapabilityPackageTextProvider,
@@ -3031,11 +3029,11 @@ fn run_worker_path(
                     && interactive_fast_path
                     && allow_tool_round_recall_refill
                     && prompt_memory_system_budget
-                        >= memory_policy(config.memory_profile)
+                        >= memory_policy(config.memory_system_kind)
                             .long_term_recall
                             .block_min_len
                 {
-                    let recall_recent_count = memory_policy(config.memory_profile)
+                    let recall_recent_count = memory_policy(config.memory_system_kind)
                         .long_term_recall
                         .recent_grounding_message_count;
                     let recent_start = prompt_memory
@@ -3049,7 +3047,7 @@ fn run_worker_path(
                         prompt_memory.summary_text.as_deref(),
                         &prompt_memory.recent_messages[recent_start..],
                         prompt_memory_system_budget,
-                        config.memory_profile,
+                        config.memory_system_kind.memory_profile(),
                     );
                 }
                 memory_grounding = build_memory_grounding_text(
@@ -4108,7 +4106,6 @@ mod tests {
             mental_privacy_store: Arc::new(StubMentalPrivacyStore),
             turn_ledger_store: Arc::new(StubTurnLedgerStore),
             skill_storage: Arc::new(crate::platform::SpiffsSkillStorage),
-            memory_profile: crate::memory::MemoryProfile::Embedded,
             memory_system_kind: crate::memory::MemorySystemKind::EspCompact,
             get_skill_descriptions: Arc::new(String::new),
             get_capability_package_text: Arc::new(|_, _| None),
@@ -4671,7 +4668,6 @@ mod tests {
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let registry = crate::tools::ToolRegistry::new();
         let mut config = test_agent_loop_config();
-        config.memory_profile = crate::memory::MemoryProfile::Standard;
         config.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
         config.inner_life_store = Arc::new(LoadedInnerLifeStore {
             value: crate::memory::InnerLife {
@@ -4790,7 +4786,6 @@ mod tests {
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let registry = crate::tools::ToolRegistry::new();
         let mut config = test_agent_loop_config();
-        config.memory_profile = crate::memory::MemoryProfile::Standard;
         config.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
         config.self_authored_core_store = Arc::new(LoadedSelfAuthoredCoreStore {
             value: crate::memory::SelfAuthoredCore {

@@ -12,6 +12,8 @@ pub fn get_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let config = ctx.config();
     let mut j: Value = serde_json::to_value(&*config).map_err(|e| to_io(e.to_string()))?;
     j["locale"] = serde_json::Value::String(config::get_locale(ctx.config_store.as_ref()));
+    j["build_package"] =
+        serde_json::to_value(crate::current_build_package()).map_err(|e| to_io(e.to_string()))?;
     serde_json::to_string(&j).map_err(|e| to_io(e.to_string()))
 }
 
@@ -157,6 +159,20 @@ mod tests {
 
         assert_eq!(parsed["locale"], "en");
         assert!(parsed.get("wifi_ssid").is_some());
+        assert!(parsed.get("build_package").is_some());
+        assert!(parsed["build_package"].get("profile").is_some());
+        assert!(parsed["build_package"]
+            .get("default_full_package")
+            .is_some());
+        assert!(parsed["build_package"]["capabilities"]
+            .get("voice")
+            .is_some());
+        assert!(parsed["build_package"]["capabilities"]
+            .get("vision")
+            .is_some());
+        assert!(parsed["build_package"]["capabilities"]
+            .get("sensor")
+            .is_some());
         assert!(
             !body.contains('\n'),
             "config response should stay compact on ESP default path"

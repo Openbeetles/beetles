@@ -25,6 +25,12 @@ impl MemoryProfile {
     }
 }
 
+impl From<MemoryProfile> for MemorySystemKind {
+    fn from(value: MemoryProfile) -> Self {
+        value.memory_system_kind()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemorySystemKind {
@@ -713,34 +719,36 @@ const STANDARD_MEMORY_CAPABILITY_PROFILE: MemoryCapabilityProfile = MemoryCapabi
     runtime_max_jobs_per_tick: 4,
 };
 
-pub(crate) fn memory_policy(profile: MemoryProfile) -> &'static MemoryPolicy {
-    match profile {
-        MemoryProfile::Embedded => &EMBEDDED_MEMORY_POLICY,
-        MemoryProfile::Standard => &STANDARD_MEMORY_POLICY,
+pub(crate) fn memory_policy(
+    memory_system_kind: impl Into<MemorySystemKind>,
+) -> &'static MemoryPolicy {
+    match memory_system_kind.into() {
+        MemorySystemKind::EspCompact => &EMBEDDED_MEMORY_POLICY,
+        MemorySystemKind::LinuxFull => &STANDARD_MEMORY_POLICY,
     }
 }
 
 pub(crate) fn memory_capability_profile(
-    profile: MemoryProfile,
+    memory_system_kind: impl Into<MemorySystemKind>,
 ) -> &'static MemoryCapabilityProfile {
-    match profile {
-        MemoryProfile::Embedded => &EMBEDDED_MEMORY_CAPABILITY_PROFILE,
-        MemoryProfile::Standard => &STANDARD_MEMORY_CAPABILITY_PROFILE,
+    match memory_system_kind.into() {
+        MemorySystemKind::EspCompact => &EMBEDDED_MEMORY_CAPABILITY_PROFILE,
+        MemorySystemKind::LinuxFull => &STANDARD_MEMORY_CAPABILITY_PROFILE,
     }
 }
 
-pub(crate) fn prompt_participation_policy(profile: MemoryProfile) -> PromptParticipationPolicy {
-    match profile {
-        MemoryProfile::Embedded => EMBEDDED_PROMPT_PARTICIPATION_POLICY,
-        MemoryProfile::Standard => STANDARD_PROMPT_PARTICIPATION_POLICY,
+pub(crate) fn prompt_participation_policy(
+    memory_system_kind: impl Into<MemorySystemKind>,
+) -> PromptParticipationPolicy {
+    match memory_system_kind.into() {
+        MemorySystemKind::EspCompact => EMBEDDED_PROMPT_PARTICIPATION_POLICY,
+        MemorySystemKind::LinuxFull => STANDARD_PROMPT_PARTICIPATION_POLICY,
     }
 }
 
 pub(crate) fn decide_self_runtime_authority(
     memory_system_kind: MemorySystemKind,
-    profile: MemoryProfile,
 ) -> SelfRuntimeAuthorityPlan {
-    debug_assert_eq!(memory_system_kind.memory_profile(), profile);
     match memory_system_kind {
         MemorySystemKind::LinuxFull => SelfRuntimeAuthorityPlan {
             allow_direct_inner_life: true,
@@ -771,17 +779,17 @@ pub(crate) fn decide_self_runtime_authority(
 
 pub(crate) fn decide_prompt_assembly(
     memory_system_kind: MemorySystemKind,
-    profile: MemoryProfile,
     ingress: crate::bus::IngressKind,
     has_tools: bool,
     runtime_mode: crate::runtime::RuntimeModeSnapshot,
     pressure: crate::orchestrator::PressureLevel,
     system_budget: usize,
 ) -> PromptAssemblyPlan {
-    debug_assert_eq!(memory_system_kind.memory_profile(), profile);
-    let policy = prompt_participation_policy(profile);
-    let budget_allows_governed =
-        system_budget >= memory_policy(profile).long_term_recall.block_min_len;
+    let policy = prompt_participation_policy(memory_system_kind);
+    let budget_allows_governed = system_budget
+        >= memory_policy(memory_system_kind)
+            .long_term_recall
+            .block_min_len;
     let mode_allows_governed = runtime_mode.allows_prompt_governed_recall(pressure);
     let mode_allows_background = runtime_mode.allows_prompt_background_governance(pressure);
     let mode_allows_private_depth = runtime_mode.allows_prompt_private_depth(pressure);
@@ -872,8 +880,7 @@ mod tests {
 
     #[test]
     fn esp_compact_self_runtime_authority_is_limited_to_growth_continuity_and_methods() {
-        let plan =
-            decide_self_runtime_authority(MemorySystemKind::EspCompact, MemoryProfile::Embedded);
+        let plan = decide_self_runtime_authority(MemorySystemKind::EspCompact);
 
         assert!(plan.allow_direct_inner_life);
         assert!(plan.allow_direct_self_model);
@@ -889,8 +896,7 @@ mod tests {
 
     #[test]
     fn linux_full_self_runtime_authority_keeps_full_direct_authority() {
-        let plan =
-            decide_self_runtime_authority(MemorySystemKind::LinuxFull, MemoryProfile::Standard);
+        let plan = decide_self_runtime_authority(MemorySystemKind::LinuxFull);
 
         assert!(plan.allow_direct_inner_life);
         assert!(plan.allow_direct_private_docs);
@@ -906,8 +912,8 @@ mod tests {
 
     #[test]
     fn standard_profile_keeps_larger_memory_windows() {
-        let embedded = memory_policy(MemoryProfile::Embedded);
-        let standard = memory_policy(MemoryProfile::Standard);
+        let embedded = memory_policy(MemorySystemKind::EspCompact);
+        let standard = memory_policy(MemorySystemKind::LinuxFull);
         assert!(
             standard.session_summary.recent_message_count
                 > embedded.session_summary.recent_message_count
@@ -941,8 +947,8 @@ mod tests {
 
     #[test]
     fn standard_capability_profile_supports_stronger_memory_sidecar() {
-        let embedded = memory_capability_profile(MemoryProfile::Embedded);
-        let standard = memory_capability_profile(MemoryProfile::Standard);
+        let embedded = memory_capability_profile(MemorySystemKind::EspCompact);
+        let standard = memory_capability_profile(MemorySystemKind::LinuxFull);
         assert!(standard.archive_prompt_max_items > embedded.archive_prompt_max_items);
         assert!(standard.archive_prompt_max_chars > embedded.archive_prompt_max_chars);
         assert!(standard.shared_factual_archive_hits > embedded.shared_factual_archive_hits);
@@ -956,7 +962,7 @@ mod tests {
 
     #[test]
     fn embedded_prompt_participation_policy_keeps_private_depth_out_of_first_turn() {
-        let embedded = prompt_participation_policy(MemoryProfile::Embedded);
+        let embedded = prompt_participation_policy(MemorySystemKind::EspCompact);
 
         assert!(embedded.first_user_turn_l2_enabled);
         assert!(!embedded.first_user_turn_background_enabled);
@@ -966,7 +972,7 @@ mod tests {
 
     #[test]
     fn standard_prompt_participation_policy_keeps_wider_sync_participation() {
-        let standard = prompt_participation_policy(MemoryProfile::Standard);
+        let standard = prompt_participation_policy(MemorySystemKind::LinuxFull);
 
         assert!(standard.first_user_turn_l2_enabled);
         assert!(standard.first_user_turn_background_enabled);
@@ -978,7 +984,6 @@ mod tests {
     fn esp_compact_prompt_assembly_keeps_governed_recall_but_skips_background_on_first_user_turn() {
         let plan = decide_prompt_assembly(
             MemorySystemKind::EspCompact,
-            MemoryProfile::Embedded,
             crate::bus::IngressKind::User,
             false,
             crate::runtime::RuntimeModeSnapshot {
@@ -1031,7 +1036,6 @@ mod tests {
     fn linux_full_prompt_assembly_keeps_background_and_capability_package_on_first_user_turn() {
         let plan = decide_prompt_assembly(
             MemorySystemKind::LinuxFull,
-            MemoryProfile::Standard,
             crate::bus::IngressKind::User,
             false,
             crate::runtime::RuntimeModeSnapshot {
@@ -1081,7 +1085,6 @@ mod tests {
     fn voice_exclusive_blocks_nonessential_embedded_participation() {
         let plan = decide_prompt_assembly(
             MemorySystemKind::EspCompact,
-            MemoryProfile::Embedded,
             crate::bus::IngressKind::User,
             false,
             crate::runtime::RuntimeModeSnapshot {

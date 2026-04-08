@@ -1,4 +1,5 @@
 # 板型预设：BOARD=xxx 时 build.sh / build.ps1 据此选择 target、分区表与 sdkconfig 覆盖。
+# 可选 `package_profile = "..."` 用于板级默认能力包；若未设置则仍走默认全功能打包。
 # 仅支持带 PSRAM 的 ESP32-S3（N8R8 / N16R8 / N32R16）。
 
 [boards.esp32-s3-8mb]

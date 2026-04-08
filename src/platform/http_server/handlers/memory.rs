@@ -5,7 +5,7 @@ use crate::memory::{
     board_subject_scope_id, compute_core_revision_governance_digest, export_continuity_snapshot,
     inspect_intelligence_replay, inspect_memory_hygiene, inspect_working_recall,
     ContinuitySnapshotExportContext, ContinuitySnapshotManifest, ContinuitySnapshotMode,
-    IntelligenceReplayInspection, MemoryHygieneContext, MemoryHygieneInspection, MemoryProfile,
+    IntelligenceReplayInspection, MemoryHygieneContext, MemoryHygieneInspection, MemorySystemKind,
     WorkingRecallInspection, WorkingRecallInspectionInput,
 };
 use crate::skills::is_runtime_skill_name;
@@ -71,7 +71,7 @@ struct MemoryInspectionTarget {
     chat_id: String,
     channel: String,
     query: String,
-    profile: String,
+    memory_system_kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     run_id: Option<String>,
     message_count: usize,
@@ -96,7 +96,7 @@ struct MemoryDeepInspection {
 
 #[derive(Debug, Serialize)]
 struct MemoryStatusBody {
-    memory_profile: String,
+    memory_system_kind: String,
     inbound_depth: usize,
     outbound_depth: usize,
     memory_len: usize,
@@ -118,13 +118,24 @@ struct MemoryStatusRequest {
     deep: bool,
     query: String,
     run_id: Option<String>,
-    profile: MemoryProfile,
+    memory_system_kind: MemorySystemKind,
     snapshot_mode: ContinuitySnapshotMode,
 }
 
 /// Generate a structured memory/operator JSON body.
 pub fn body(ctx: &HandlerContext, uri: &str) -> Result<String, std::io::Error> {
     let request = parse_request(ctx, uri);
+    if crate::platform::operator_surface::operator_surface_budget(
+        request.memory_system_kind,
+        crate::state::esp_operator_window_active(),
+    )
+    .window_required_for_deep_routes
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "embedded memory inspection requires operator window",
+        ));
+    }
     let subject_id = board_subject_scope_id();
     let chat_ids = ctx
         .session_store
@@ -232,7 +243,7 @@ pub fn body(ctx: &HandlerContext, uri: &str) -> Result<String, std::io::Error> {
         .map(|chat_id| build_deep_inspection(ctx, &request, chat_id))
         .transpose()?;
     let payload = MemoryStatusBody {
-        memory_profile: memory_profile_label(ctx.platform.memory_profile()).to_string(),
+        memory_system_kind: ctx.platform.memory_system_kind().as_str().to_string(),
         inbound_depth: ctx.inbound_depth.load(Ordering::Relaxed),
         outbound_depth: ctx.outbound_depth.load(Ordering::Relaxed),
         memory_len,
@@ -298,6 +309,7 @@ fn build_deep_inspection(
     request: &MemoryStatusRequest,
     chat_id: &str,
 ) -> Result<MemoryDeepInspection, std::io::Error> {
+    let profile = request.memory_system_kind.memory_profile();
     let channel = request.channel.clone().unwrap_or_default();
     let summary_with_count = ctx
         .platform
@@ -355,7 +367,7 @@ fn build_deep_inspection(
         summary_text,
         recent: &recent,
         system_max_len: MEMORY_STATUS_RECALL_SYSTEM_MAX_LEN,
-        profile: request.profile,
+        profile,
         current_channel: (!channel.trim().is_empty()).then_some(channel.as_str()),
         session_store: ctx.session_store.as_ref(),
         memory_store: ctx.memory_store.as_ref(),
@@ -376,7 +388,7 @@ fn build_deep_inspection(
             skill_storage: ctx.skill_storage.as_ref(),
         },
         chat_id,
-        request.profile,
+        profile,
         current_unix_secs(),
     );
     let (task_learning, task_workspace) = if channel.trim().is_empty() {
@@ -405,7 +417,7 @@ fn build_deep_inspection(
             chat_id: chat_id.to_string(),
             channel,
             query: request.query.clone(),
-            profile: memory_profile_label(request.profile).to_string(),
+            memory_system_kind: request.memory_system_kind.as_str().to_string(),
             run_id: request.run_id.clone(),
             message_count,
             recent_message_count: recent.len(),
@@ -444,9 +456,10 @@ fn parse_request(ctx: &HandlerContext, uri: &str) -> MemoryStatusRequest {
         deep,
         query: query_param_from_uri(uri, "query").unwrap_or_default(),
         run_id: query_param_from_uri(uri, "run_id"),
-        profile: parse_memory_profile(
+        memory_system_kind: parse_memory_system_kind(
+            query_param_from_uri(uri, "memory_system_kind").as_deref(),
             query_param_from_uri(uri, "profile").as_deref(),
-            ctx.platform.memory_profile(),
+            ctx.platform.memory_system_kind(),
         ),
         snapshot_mode: parse_snapshot_mode(query_param_from_uri(uri, "snapshot_mode").as_deref()),
     }
@@ -492,14 +505,6 @@ fn query_param_from_uri(uri: &str, key: &str) -> Option<String> {
     None
 }
 
-fn parse_memory_profile(value: Option<&str>, fallback: MemoryProfile) -> MemoryProfile {
-    match value.map(str::trim) {
-        Some("embedded") => MemoryProfile::Embedded,
-        Some("standard") => MemoryProfile::Standard,
-        _ => fallback,
-    }
-}
-
 fn parse_snapshot_mode(value: Option<&str>) -> ContinuitySnapshotMode {
     match value.map(str::trim) {
         Some("full_restore") => ContinuitySnapshotMode::FullRestore,
@@ -507,10 +512,19 @@ fn parse_snapshot_mode(value: Option<&str>) -> ContinuitySnapshotMode {
     }
 }
 
-fn memory_profile_label(profile: MemoryProfile) -> &'static str {
-    match profile {
-        MemoryProfile::Embedded => "embedded",
-        MemoryProfile::Standard => "standard",
+fn parse_memory_system_kind(
+    primary: Option<&str>,
+    legacy_profile: Option<&str>,
+    fallback: MemorySystemKind,
+) -> MemorySystemKind {
+    match primary.map(str::trim) {
+        Some("esp_compact") => MemorySystemKind::EspCompact,
+        Some("linux_full") => MemorySystemKind::LinuxFull,
+        _ => match legacy_profile.map(str::trim) {
+            Some("embedded") => MemorySystemKind::EspCompact,
+            Some("standard") => MemorySystemKind::LinuxFull,
+            _ => fallback,
+        },
     }
 }
 
@@ -542,7 +556,7 @@ mod tests {
         let ctx = build_test_context();
         let payload = body(&ctx, "/api/memory/status").unwrap();
         let parsed: Value = serde_json::from_str(&payload).unwrap();
-        assert_eq!(parsed["memory_profile"], "standard");
+        assert_eq!(parsed["memory_system_kind"], "linux_full");
         assert!(parsed.get("stores").is_some());
         assert!(parsed.get("personality").is_some());
         assert!(parsed.get("continuity_tooling").is_some());
@@ -957,6 +971,30 @@ mod tests {
         assert_eq!(request.chat_id.as_deref(), Some("chat-1"));
         assert!(request.deep);
         assert_eq!(request.channel.as_deref(), Some("telegram"));
+    }
+
+    #[test]
+    fn embedded_memory_status_requires_explicit_operator_window_for_deep_inspection() {
+        let ctx = build_test_context();
+        let unique = unique_suffix();
+        let chat_id = format!("memory-status-embedded-{unique}");
+
+        ctx.session_store
+            .append(&chat_id, "user", "Inspect the embedded memory state.")
+            .unwrap();
+        ctx.session_store
+            .append(&chat_id, "assistant", "Embedded memory state is ready.")
+            .unwrap();
+
+        let error = body(
+            &ctx,
+            &format!(
+                "/api/memory/status?chat_id={chat_id}&channel=telegram&query=memory&profile=embedded&deep=1"
+            ),
+        )
+        .expect_err("embedded deep inspection should require operator window");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
     }
 
     fn build_test_context() -> crate::platform::http_server::handlers::HandlerContext {

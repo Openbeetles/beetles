@@ -295,6 +295,7 @@ fn cmd_ops_status(ctx: &CliContext) -> String {
         .unwrap_or(0);
     match crate::platform::operator_status::build_operator_status(
         crate::platform::operator_status::OperatorStatusInput {
+            config: &ctx.config,
             platform: ctx.platform.as_ref(),
             tool_registry: ctx.tool_registry.as_ref(),
             channel_capability_registry: ctx.channel_capability_registry.as_ref(),

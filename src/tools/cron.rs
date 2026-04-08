@@ -72,7 +72,6 @@ pub(crate) fn parse_cron_field(s: &str, min_val: u32, max_val: u32) -> Result<Ve
     Ok(out)
 }
 
-#[allow(dead_code)]
 fn unix_to_iso(secs: u64) -> String {
     let (y, mo, d, h, min, s) = epoch_to_ymdhms(secs);
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mo, d, h, min, s)

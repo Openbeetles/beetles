@@ -160,24 +160,26 @@ fn post_wifi_display_bootstrap(
 /// 启动后音频初始化（从 bootstrap 移出，由 run_app 在 MessageBus 创建后调用）。
 /// Audio init after boot (moved out of bootstrap; called by run_app after MessageBus).
 pub fn init_audio_if_enabled(platform: &Arc<dyn Platform>, config: &Arc<AppConfig>) {
+    let registry = crate::build_device_capability_registry(config.as_ref(), platform.as_ref());
+    if !registry.is_mounted(crate::DEVICE_CAPABILITY_VOICE) {
+        return;
+    }
     if let Some(audio_cfg) = config.audio.as_ref() {
-        if audio_cfg.enabled {
-            if let Err(e) = platform.init_audio(audio_cfg) {
-                log::warn!("[{}] audio init failed (degraded): {}", TAG, e);
-            } else {
-                let caps = platform.audio_duplex_capabilities();
-                log::info!(
-                    "[{}] audio initialized (profile={} mic={} speaker={} duplex={} barge_in={} reference={:?} aec={:?})",
-                    TAG,
-                    caps.profile().as_str(),
-                    caps.microphone_input,
-                    caps.speaker_output,
-                    caps.concurrent_capture_playback,
-                    caps.barge_in,
-                    caps.reference_capture,
-                    caps.echo_cancellation
-                );
-            }
+        if let Err(e) = platform.init_audio(audio_cfg) {
+            log::warn!("[{}] audio init failed (degraded): {}", TAG, e);
+        } else {
+            let caps = platform.audio_duplex_capabilities();
+            log::info!(
+                "[{}] audio initialized (profile={} mic={} speaker={} duplex={} barge_in={} reference={:?} aec={:?})",
+                TAG,
+                caps.profile().as_str(),
+                caps.microphone_input,
+                caps.speaker_output,
+                caps.concurrent_capture_playback,
+                caps.barge_in,
+                caps.reference_capture,
+                caps.echo_cancellation
+            );
         }
     }
 }

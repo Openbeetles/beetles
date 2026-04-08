@@ -8,7 +8,7 @@ use crate::cron::{CronTickState, SensorWatchContext};
 use crate::heartbeat::HeartbeatTickState;
 use crate::i18n::Locale;
 use crate::memory::{
-    AutonomyStrategyStore, MemoryProfile, MemoryStore, RelationshipPortfolioStore,
+    AutonomyStrategyStore, MemoryStore, MemorySystemKind, RelationshipPortfolioStore,
     RelationshipTopologyStore, RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore,
     SessionStore,
 };
@@ -80,7 +80,7 @@ pub struct BgTimerContext {
     pub system_inbound_depth: Arc<AtomicUsize>,
     pub outbound_depth: Arc<AtomicUsize>,
     pub session_store: Arc<dyn SessionStore + Send + Sync>,
-    pub memory_profile: MemoryProfile,
+    pub memory_system_kind: MemorySystemKind,
     pub autonomy_strategy_store: Arc<dyn AutonomyStrategyStore + Send + Sync>,
     pub self_authored_core_store: Arc<dyn SelfAuthoredCoreStore + Send + Sync>,
     pub self_continuity_store: Arc<dyn SelfContinuityStore + Send + Sync>,
@@ -185,7 +185,7 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
                         ctx.self_authored_core_store.as_ref(),
                         ctx.relationship_portfolio_store.as_ref(),
                         ctx.relationship_topology_store.as_ref(),
-                        ctx.memory_profile,
+                        ctx.memory_system_kind.memory_profile(),
                         now_unix_secs,
                     );
                     crate::runtime::initiative_tick(

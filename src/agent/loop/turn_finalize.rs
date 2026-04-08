@@ -323,7 +323,7 @@ pub(super) fn finalize_lane_turn(
             config.self_continuity_store.as_ref(),
             config.autonomy_strategy_store.as_ref(),
             config.self_authored_core_store.as_ref(),
-            config.memory_profile,
+            config.memory_system_kind.memory_profile(),
             msg.chat_id.as_ref(),
             msg.channel.as_ref(),
             &msg.content,

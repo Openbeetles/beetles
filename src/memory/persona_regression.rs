@@ -261,6 +261,7 @@ fn assemble_persona_regression_system(
     let important = RegressionImportantMessageStore::default();
     let (system, _) = build_context(&ContextParams {
         msg: &msg,
+        memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
         memory: &memory,
         session: &session,
         important_message_store: &important,

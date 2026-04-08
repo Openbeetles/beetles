@@ -3,61 +3,52 @@
 use super::HandlerContext;
 
 pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
-    let mut endpoints: Vec<&'static str> = vec![
-        "GET /pairing",
-        "GET /wifi",
-        "GET /api/pairing_code",
-        "POST /api/pairing_code",
-        "GET /api/config",
-        "POST /api/config/llm",
-        "POST /api/config/channels",
-        "POST /api/config/system",
-        "GET /api/config/hardware",
-        "POST /api/config/hardware",
-        "GET /api/config/audio",
-        "POST /api/config/audio",
-        "GET /api/hardware/discovery",
-        "GET /api/wifi/scan",
-        "GET /api/health",
-        "GET /api/operator/status",
-        "GET /api/diagnose",
-        "GET /api/system_info",
-        "GET /api/channel_connectivity",
-        "GET /api/tools",
-        "GET /api/soul",
-        "GET /api/user",
-        "POST /api/soul",
-        "POST /api/user",
-        "GET /api/sessions",
-        "GET /api/memory/status",
-        "GET /api/capability_packages",
-        "POST /api/capability_packages",
-        "GET /api/skills",
-        "POST /api/skills",
-        "DELETE /api/skills",
-        "POST /api/skills/import",
-        "POST /api/restart",
-        "POST /api/config_reset",
-        "POST /api/webhook",
-    ];
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    {
-        endpoints.push("POST /api/feishu/event");
-        endpoints.push("POST /api/dingtalk/webhook");
-        endpoints.push("GET /api/wecom/webhook");
-        endpoints.push("POST /api/wecom/webhook");
-        endpoints.push("POST /api/webhook/qq");
-    }
-    if cfg!(feature = "ota") {
-        endpoints.push("GET /api/ota/check");
-        endpoints.push("POST /api/ota");
-    }
-    let endpoints_json =
-        serde_json::to_string(&endpoints).unwrap_or_else(|_| r#"["GET /api/config"]"#.into());
-    let s = format!(
-        r#"{{"name":"beetle","version":"{}","endpoints":{}}}"#,
-        ctx.version.as_ref(),
-        endpoints_json
+    let inventory = crate::platform::operator_surface::control_plane_inventory(
+        ctx.platform.memory_system_kind(),
+        crate::state::esp_operator_window_active(),
+        cfg!(feature = "ota"),
     );
-    Ok(s)
+    let crate::platform::operator_surface::ControlPlaneInventory {
+        endpoints,
+        windowed_endpoints,
+        operator_window,
+    } = inventory;
+    let mut payload = serde_json::json!({
+        "name": "beetle",
+        "version": ctx.version.as_ref(),
+        "endpoints": endpoints,
+    });
+    if let Some(obj) = payload.as_object_mut() {
+        if !windowed_endpoints.is_empty() {
+            obj.insert(
+                "windowed_endpoints".to_string(),
+                serde_json::json!(windowed_endpoints),
+            );
+        }
+        if let Some(window) = operator_window {
+            obj.insert("operator_window".to_string(), serde_json::json!(window));
+        }
+    }
+    serde_json::to_string(&payload).map_err(std::io::Error::other)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::memory::MemorySystemKind;
+
+    #[test]
+    fn embedded_root_inventory_separates_minimal_and_windowed_routes() {
+        let inventory = crate::platform::operator_surface::control_plane_inventory(
+            MemorySystemKind::EspCompact,
+            false,
+            true,
+        );
+
+        assert!(inventory.endpoints.contains(&"GET /api/health"));
+        assert!(inventory.endpoints.contains(&"POST /api/operator/window"));
+        assert!(!inventory.endpoints.contains(&"GET /api/memory/status"));
+        assert!(inventory
+            .windowed_endpoints
+            .contains(&"GET /api/memory/status"));
+    }
 }

@@ -19,6 +19,41 @@ const SOUL_KERNEL_ACTIVE_WINDOW_SECS: u64 = 7 * 86_400;
 const SOUL_KERNEL_ACTIVE_CHAT_LIMIT: usize = 4;
 const SOUL_KERNEL_KEY_MEMORY_SCAN_LIMIT: usize = 64;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SoulKernelPromptProjection {
+    pub personality_governance_gate_text: Option<String>,
+    pub self_authored_core_text: Option<String>,
+    pub relationship_constitution_text: Option<String>,
+    pub persona_priority_text: Option<String>,
+    pub mental_privacy_adjudication_text: Option<String>,
+}
+
+impl SoulKernelPromptProjection {
+    pub fn constitutional_stack_text(&self) -> Option<String> {
+        let mut out = String::new();
+        for part in [
+            self.personality_governance_gate_text.as_deref(),
+            self.self_authored_core_text.as_deref(),
+            self.relationship_constitution_text.as_deref(),
+            self.persona_priority_text.as_deref(),
+            self.mental_privacy_adjudication_text.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let trimmed = part.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            out.push_str(trimmed);
+        }
+        (!out.is_empty()).then_some(out)
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SoulKernelLayerStatus {
     pub readable: bool,
