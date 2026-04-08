@@ -119,10 +119,22 @@ pub struct SelfRuntimeAuthorityPlan {
 }
 
 impl SelfRuntimeAuthorityPlan {
+    pub const fn allows_relationship_governance(self) -> bool {
+        self.allow_direct_self_authored_core
+            || self.allow_direct_boundary_persona
+            || self.allow_direct_outer_voice
+    }
+
     pub fn allows_source_id(self, source_id: &str) -> bool {
         match source_id {
+            "inner_life" => self.allow_direct_inner_life,
             "private_docs" => self.allow_direct_private_docs,
             "private_garden" => self.allow_direct_private_garden,
+            "self_model" => self.allow_direct_self_model,
+            "self_authored_core" => self.allow_direct_self_authored_core,
+            "self_continuity" => self.allow_direct_self_continuity,
+            "boundary_persona" => self.allow_direct_boundary_persona,
+            "outer_voice" => self.allow_direct_outer_voice,
             _ => true,
         }
     }
@@ -747,11 +759,11 @@ pub(crate) fn decide_self_runtime_authority(
             allow_direct_private_docs: false,
             allow_direct_private_garden: false,
             allow_direct_self_model: true,
-            allow_direct_self_authored_core: true,
+            allow_direct_self_authored_core: false,
             allow_direct_self_continuity: true,
-            allow_direct_boundary_persona: true,
-            allow_direct_outer_voice: true,
-            allow_factual_refresh_request: true,
+            allow_direct_boundary_persona: false,
+            allow_direct_outer_voice: false,
+            allow_factual_refresh_request: false,
             allow_method_distillation: true,
         },
     }
@@ -859,19 +871,19 @@ mod tests {
     }
 
     #[test]
-    fn esp_compact_self_runtime_authority_keeps_growth_and_governed_distillation() {
+    fn esp_compact_self_runtime_authority_is_limited_to_growth_continuity_and_methods() {
         let plan =
             decide_self_runtime_authority(MemorySystemKind::EspCompact, MemoryProfile::Embedded);
 
         assert!(plan.allow_direct_inner_life);
         assert!(plan.allow_direct_self_model);
-        assert!(plan.allow_direct_self_authored_core);
         assert!(plan.allow_direct_self_continuity);
-        assert!(plan.allow_direct_boundary_persona);
-        assert!(plan.allow_direct_outer_voice);
+        assert!(!plan.allow_direct_self_authored_core);
+        assert!(!plan.allow_direct_boundary_persona);
+        assert!(!plan.allow_direct_outer_voice);
         assert!(!plan.allow_direct_private_docs);
         assert!(!plan.allow_direct_private_garden);
-        assert!(plan.allow_factual_refresh_request);
+        assert!(!plan.allow_factual_refresh_request);
         assert!(plan.allow_method_distillation);
     }
 

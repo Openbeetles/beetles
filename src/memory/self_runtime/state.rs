@@ -5,8 +5,10 @@ pub(super) fn load_self_runtime_state(
     chat_id: &str,
     payload: &SelfRuntimeJobPayload,
     profile: MemoryProfile,
+    authority_plan: SelfRuntimeAuthorityPlan,
 ) -> Box<LoadedSelfRuntimeState> {
     let subject_id = board_subject_scope_id();
+    let relationship_governance_enabled = authority_plan.allows_relationship_governance();
     let summary_text = ctx
         .session_summary_store
         .get_with_count(chat_id)
@@ -15,11 +17,18 @@ pub(super) fn load_self_runtime_state(
         .map(|(summary, _)| summary);
     let execution_state = ctx.execution_state_store.get(chat_id).ok().flatten();
     let self_model = ctx.self_model_store.get(subject_id).ok().flatten();
-    let self_authored_core = ctx.self_authored_core_store.get(subject_id).ok().flatten();
-    let core_revision_ledger = ctx
-        .core_revision_ledger_store
-        .get(subject_id)
-        .ok()
+    let self_authored_core = authority_plan
+        .allow_direct_self_authored_core
+        .then(|| ctx.self_authored_core_store.get(subject_id).ok().flatten())
+        .flatten();
+    let core_revision_ledger = authority_plan
+        .allow_direct_self_authored_core
+        .then(|| {
+            ctx.core_revision_ledger_store
+                .get(subject_id)
+                .ok()
+                .flatten()
+        })
         .flatten();
     let core_revision_governance = compute_core_revision_governance_digest(
         core_revision_ledger.as_ref(),
@@ -33,11 +42,17 @@ pub(super) fn load_self_runtime_state(
             .unwrap_or(0),
         payload.now_secs,
     );
-    let private_docs = ctx.private_doc_store.get(subject_id).ok().flatten();
-    let private_garden_docs = ctx
-        .private_garden_store
-        .list(chat_id, self_runtime_private_garden_doc_limit(profile))
-        .unwrap_or_default();
+    let private_docs = authority_plan
+        .allow_direct_private_docs
+        .then(|| ctx.private_doc_store.get(subject_id).ok().flatten())
+        .flatten();
+    let private_garden_docs = if authority_plan.allow_direct_private_garden {
+        ctx.private_garden_store
+            .list(chat_id, self_runtime_private_garden_doc_limit(profile))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let inner_life = ctx.inner_life_store.get(subject_id).ok().flatten();
     let self_continuity = ctx.self_continuity_store.get(subject_id).ok().flatten();
     let relationship_topology = ctx
@@ -77,43 +92,55 @@ pub(super) fn load_self_runtime_state(
         .ok()
         .flatten();
     let autonomy_strategy = ctx.autonomy_strategy_store.get(subject_id).ok().flatten();
-    let outer_voice = ctx
-        .outer_voice_store
-        .get(&active_relationship_scope_id)
-        .ok()
+    let outer_voice = authority_plan
+        .allow_direct_outer_voice
+        .then(|| {
+            ctx.outer_voice_store
+                .get(&active_relationship_scope_id)
+                .ok()
+                .flatten()
+        })
         .flatten();
-    let mental_privacy_state = ctx
-        .mental_privacy_store
-        .get(&active_relationship_scope_id)
-        .ok()
+    let mental_privacy_state = authority_plan
+        .allow_direct_boundary_persona
+        .then(|| {
+            ctx.mental_privacy_store
+                .get(&active_relationship_scope_id)
+                .ok()
+                .flatten()
+        })
         .flatten();
     let recent_persona_evidence =
         load_recent_persona_evidence(ctx.turn_ledger_store, &active_relationship_scope_id)
             .ok()
             .flatten();
-    let relationship_constitution = sync_relationship_constitution(
-        ctx.relationship_constitution_store,
-        RelationshipConstitutionSyncInput {
-            scope_id: &active_relationship_scope_id,
-            channel: &active_relationship_channel,
-            chat_id,
-            now_secs: payload.now_secs,
-            self_authored_core: self_authored_core.as_ref(),
-            relationship_portfolio: relationship_portfolio.as_ref(),
-            relationship_topology: relationship_topology.as_ref(),
-            mental_privacy_state: mental_privacy_state.as_ref(),
-            outer_voice: outer_voice.as_ref(),
-            recent_persona_evidence: recent_persona_evidence.as_ref(),
-        },
-    )
-    .ok()
-    .flatten()
-    .or_else(|| {
-        ctx.relationship_constitution_store
-            .get(&active_relationship_scope_id)
-            .ok()
-            .flatten()
-    });
+    let relationship_constitution = if relationship_governance_enabled {
+        sync_relationship_constitution(
+            ctx.relationship_constitution_store,
+            RelationshipConstitutionSyncInput {
+                scope_id: &active_relationship_scope_id,
+                channel: &active_relationship_channel,
+                chat_id,
+                now_secs: payload.now_secs,
+                self_authored_core: self_authored_core.as_ref(),
+                relationship_portfolio: relationship_portfolio.as_ref(),
+                relationship_topology: relationship_topology.as_ref(),
+                mental_privacy_state: mental_privacy_state.as_ref(),
+                outer_voice: outer_voice.as_ref(),
+                recent_persona_evidence: recent_persona_evidence.as_ref(),
+            },
+        )
+        .ok()
+        .flatten()
+        .or_else(|| {
+            ctx.relationship_constitution_store
+                .get(&active_relationship_scope_id)
+                .ok()
+                .flatten()
+        })
+    } else {
+        None
+    };
     let self_continuity = if payload.trigger == SelfRuntimeTrigger::PostReply {
         let mut continuity = self_continuity.unwrap_or_default();
         continuity.last_user_turn_at = payload.now_secs;

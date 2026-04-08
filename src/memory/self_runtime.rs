@@ -17,6 +17,10 @@ use crate::llm::{LlmClient, LlmHttpClient, Message, ToolChoicePolicy};
 use crate::orchestrator::PressureLevel;
 use crate::platform::SkillStorage;
 use crate::task::TaskStore;
+use crate::task_execution::{
+    run_task_learning_maintenance, TaskArtifactStore, TaskLearningMaintenanceContext,
+    TaskLearningMaintenanceOutcome, TaskLearningStore, TaskRunStore,
+};
 use crate::util::{current_unix_secs, scrub_credentials, truncate_content_to_max};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -47,7 +51,8 @@ use self::state::{
 use super::{
     autonomy_idle_interval_secs, board_subject_scope_id, build_archive_evidence_block,
     build_self_state, build_world_snapshot, compute_core_revision_governance_digest,
-    derive_personality_runtime_governance_gate_from_inspection, inspect_personality_governance,
+    decide_self_runtime_authority, derive_personality_runtime_governance_gate_from_inspection,
+    inspect_personality_governance,
     llm_json::{
         get_object_bool, get_object_string_list, get_object_text, parse_llm_json_payload,
         LlmJsonPayload,
@@ -86,8 +91,8 @@ use super::{
     SelfAuthoredCoreStore, SelfContinuityRefreshContext, SelfContinuityRefreshInput,
     SelfContinuityRefreshOutcome, SelfContinuityStore, SelfMemorySpaceBottleneck,
     SelfMemorySpacePressure, SelfModelRefreshContext, SelfModelRefreshInput,
-    SelfModelRefreshOutcome, SelfModelStore, SelfState, SessionStore, SessionSummaryStore,
-    SharedFactualPlaneSnapshot, SharedFactualReconcileAction, TurnLedgerStore,
+    SelfModelRefreshOutcome, SelfModelStore, SelfRuntimeAuthorityPlan, SelfState, SessionStore,
+    SessionSummaryStore, SharedFactualPlaneSnapshot, SharedFactualReconcileAction, TurnLedgerStore,
     WorldSenseRefreshContext, WorldSenseRefreshInput, WorldSenseRefreshOutcome, WorldSenseStore,
     WorldSnapshotContext,
 };
@@ -188,6 +193,7 @@ pub struct SelfRuntimeDecision {
 }
 
 pub struct SelfRuntimeContext<'a> {
+    pub memory_system_kind: crate::memory::MemorySystemKind,
     pub session_store: &'a dyn SessionStore,
     pub memory_store: &'a dyn MemoryStore,
     pub session_summary_store: &'a dyn SessionSummaryStore,
@@ -209,6 +215,9 @@ pub struct SelfRuntimeContext<'a> {
     pub mental_privacy_store: &'a dyn MentalPrivacyStore,
     pub remind_store: &'a dyn RemindAtStore,
     pub task_store: &'a dyn TaskStore,
+    pub task_run_store: &'a dyn TaskRunStore,
+    pub task_artifact_store: &'a dyn TaskArtifactStore,
+    pub task_learning_store: &'a dyn TaskLearningStore,
     pub turn_ledger_store: &'a dyn TurnLedgerStore,
     pub skill_storage: &'a dyn SkillStorage,
 }
@@ -222,6 +231,7 @@ pub struct SelfRuntimeOutcome {
     pub self_model_result: Result<SelfModelRefreshOutcome>,
     pub self_authored_core_result: Result<SelfAuthoredCoreRefreshOutcome>,
     pub self_continuity_result: Result<SelfContinuityRefreshOutcome>,
+    pub task_learning_result: Result<TaskLearningMaintenanceOutcome>,
     pub private_garden_result: Result<PrivateGardenGovernanceOutcome>,
     pub boundary_persona_result: Result<BoundaryPersonaRefreshOutcome>,
     pub outer_voice_result: Result<OuterVoiceRefreshOutcome>,
@@ -268,6 +278,7 @@ struct SelfRuntimeActionResults {
     self_model_result: Result<SelfModelRefreshOutcome>,
     self_authored_core_result: Result<SelfAuthoredCoreRefreshOutcome>,
     self_continuity_result: Result<SelfContinuityRefreshOutcome>,
+    task_learning_result: Result<TaskLearningMaintenanceOutcome>,
     private_garden_result: Result<PrivateGardenGovernanceOutcome>,
     boundary_persona_result: Result<BoundaryPersonaRefreshOutcome>,
     outer_voice_result: Result<OuterVoiceRefreshOutcome>,
@@ -308,6 +319,99 @@ fn self_runtime_ingress(trigger: SelfRuntimeTrigger) -> IngressKind {
         SelfRuntimeTrigger::PostReply => IngressKind::User,
         SelfRuntimeTrigger::IdleTick => IngressKind::System,
     }
+}
+
+fn retain_runtime_sources_for_authority(
+    sources: &mut Vec<String>,
+    authority_plan: SelfRuntimeAuthorityPlan,
+) {
+    sources.retain(|source| authority_plan.allows_source_id(source.as_str()));
+}
+
+fn apply_self_runtime_authority_plan(
+    decision: &mut SelfRuntimeDecision,
+    authority_plan: SelfRuntimeAuthorityPlan,
+) {
+    if !authority_plan.allow_direct_private_docs {
+        decision.refresh_private_docs = false;
+        decision.private_docs_intent.clear();
+        decision.private_docs_action = SelfRuntimeGovernanceAction::Hold;
+    }
+    if !authority_plan.allow_direct_private_garden {
+        decision.refresh_private_garden = false;
+        decision.private_garden_intent.clear();
+        decision.private_garden_action = SelfRuntimeGovernanceAction::Hold;
+    }
+    if !authority_plan.allow_direct_inner_life {
+        decision.refresh_inner_life = false;
+        decision.inner_life_intent.clear();
+    }
+    if !authority_plan.allow_direct_self_model {
+        decision.refresh_self_model = false;
+        decision.self_model_intent.clear();
+        decision.self_model_sources.clear();
+    }
+    if !authority_plan.allow_direct_self_authored_core {
+        decision.refresh_self_authored_core = false;
+        decision.self_authored_core_intent.clear();
+        decision.self_authored_core_sources.clear();
+    }
+    if !authority_plan.allow_direct_self_continuity {
+        decision.refresh_self_continuity = false;
+        decision.self_continuity_intent.clear();
+        decision.self_continuity_sources.clear();
+    }
+    if !authority_plan.allow_direct_boundary_persona {
+        decision.refresh_boundary_persona = false;
+        decision.boundary_persona_intent.clear();
+    }
+    if !authority_plan.allow_direct_outer_voice {
+        decision.refresh_outer_voice = false;
+        decision.outer_voice_intent.clear();
+        decision.outer_voice_sources.clear();
+    }
+    if !authority_plan.allow_factual_refresh_request {
+        decision.request_factual_refresh = false;
+        decision.factual_reconcile_action = SharedFactualReconcileAction::Hold;
+        decision.factual_reconcile_intent.clear();
+    }
+
+    retain_runtime_sources_for_authority(&mut decision.self_model_sources, authority_plan);
+    retain_runtime_sources_for_authority(&mut decision.self_authored_core_sources, authority_plan);
+    retain_runtime_sources_for_authority(&mut decision.self_continuity_sources, authority_plan);
+    retain_runtime_sources_for_authority(&mut decision.outer_voice_sources, authority_plan);
+}
+
+fn run_self_runtime_method_distillation(
+    task_run_store: &dyn TaskRunStore,
+    task_artifact_store: &dyn TaskArtifactStore,
+    task_learning_store: &dyn TaskLearningStore,
+    long_term_memory_store: &dyn LongTermMemoryStore,
+    skill_storage: &dyn SkillStorage,
+    memory_store: &dyn MemoryStore,
+    authority_plan: SelfRuntimeAuthorityPlan,
+    channel: &str,
+    chat_id: &str,
+    now_secs: u64,
+) -> Result<TaskLearningMaintenanceOutcome> {
+    if !authority_plan.allow_method_distillation {
+        return Ok(TaskLearningMaintenanceOutcome::default());
+    }
+    run_task_learning_maintenance(
+        TaskLearningMaintenanceContext {
+            task_run_store,
+            task_artifact_store,
+            task_learning_store,
+            long_term_memory_store,
+            skill_storage,
+            memory_store,
+        },
+        crate::task_execution::TaskLearningMaintenanceInput {
+            channel,
+            chat_id,
+            now_secs,
+        },
+    )
 }
 
 fn refresh_world_and_autonomy(
@@ -486,6 +590,7 @@ fn execute_self_runtime_actions(
     state: &LoadedSelfRuntimeState,
     prelude: &SelfRuntimeRefreshPrelude,
 ) -> Box<SelfRuntimeActionResults> {
+    let authority_plan = decide_self_runtime_authority(ctx.memory_system_kind, profile);
     let subject_id = board_subject_scope_id();
     let relationship_id = state.active_relationship_scope_id.as_str();
     let boundary_signal = detect_boundary_flush_signal(payload, state, prelude);
@@ -502,6 +607,19 @@ fn execute_self_runtime_actions(
         });
     let personality_governance_gate = derive_personality_runtime_governance_gate_from_inspection(
         &personality_governance_inspection,
+    );
+    crate::platform::task_wdt::feed_current_task();
+    let task_learning_result = run_self_runtime_method_distillation(
+        ctx.task_run_store,
+        ctx.task_artifact_store,
+        ctx.task_learning_store,
+        ctx.long_term_memory_store,
+        ctx.skill_storage,
+        ctx.memory_store,
+        authority_plan,
+        state.active_relationship_channel.as_str(),
+        chat_id,
+        payload.now_secs,
     );
     crate::platform::task_wdt::feed_current_task();
     let query_hint = if !payload.user_content.trim().is_empty() {
@@ -592,6 +710,7 @@ fn execute_self_runtime_actions(
                 prelude.refreshed_autonomy_strategy.is_some() || state.autonomy_strategy.is_some(),
                 state.recent_persona_evidence.is_some(),
             );
+            apply_self_runtime_authority_plan(&mut decision, authority_plan);
             Some(decision)
         }
         Err(error) => {
@@ -602,6 +721,7 @@ fn execute_self_runtime_actions(
                 self_model_result: Ok(SelfModelRefreshOutcome::Skipped),
                 self_authored_core_result: Ok(SelfAuthoredCoreRefreshOutcome::Skipped),
                 self_continuity_result: Ok(SelfContinuityRefreshOutcome::Skipped),
+                task_learning_result,
                 private_garden_result: Ok(PrivateGardenGovernanceOutcome::Skipped),
                 boundary_persona_result: Ok(BoundaryPersonaRefreshOutcome::Skipped),
                 outer_voice_result: Ok(OuterVoiceRefreshOutcome::Skipped),
@@ -774,6 +894,9 @@ fn execute_self_runtime_actions(
         refreshed_mental_privacy.as_ref(),
         state.recent_persona_evidence.as_ref(),
     );
+    if let Some(decision_ref) = decision.as_mut() {
+        apply_self_runtime_authority_plan(decision_ref, authority_plan);
+    }
     crate::platform::task_wdt::feed_current_task();
     let decision_ref = decision.as_ref();
     let self_model_result = if decision_ref.is_some_and(|d| d.refresh_self_model) {
@@ -839,6 +962,9 @@ fn execute_self_runtime_actions(
         refreshed_mental_privacy.as_ref(),
         state.recent_persona_evidence.as_ref(),
     );
+    if let Some(decision_ref) = decision.as_mut() {
+        apply_self_runtime_authority_plan(decision_ref, authority_plan);
+    }
     crate::platform::task_wdt::feed_current_task();
     let decision_ref = decision.as_ref();
     let self_continuity_result = if decision_ref.is_some_and(|d| d.refresh_self_continuity) {
@@ -908,6 +1034,9 @@ fn execute_self_runtime_actions(
         refreshed_mental_privacy.as_ref(),
         state.recent_persona_evidence.as_ref(),
     );
+    if let Some(decision_ref) = decision.as_mut() {
+        apply_self_runtime_authority_plan(decision_ref, authority_plan);
+    }
     crate::platform::task_wdt::feed_current_task();
     let decision_ref = decision.as_ref();
     let boundary_persona_result = if decision_ref.is_some_and(|d| d.refresh_boundary_persona) {
@@ -955,16 +1084,18 @@ fn execute_self_runtime_actions(
         .ok()
         .flatten()
         .or(refreshed_mental_privacy);
-    refreshed_relationship_constitution = refresh_runtime_relationship_constitution(
-        ctx,
-        state,
-        chat_id,
-        payload.now_secs,
-        refreshed_self_authored_core.as_ref(),
-        refreshed_mental_privacy.as_ref(),
-        refreshed_outer_voice.as_ref(),
-    )
-    .or(refreshed_relationship_constitution);
+    if authority_plan.allows_relationship_governance() {
+        refreshed_relationship_constitution = refresh_runtime_relationship_constitution(
+            ctx,
+            state,
+            chat_id,
+            payload.now_secs,
+            refreshed_self_authored_core.as_ref(),
+            refreshed_mental_privacy.as_ref(),
+            refreshed_outer_voice.as_ref(),
+        )
+        .or(refreshed_relationship_constitution);
+    }
     crate::platform::task_wdt::feed_current_task();
     re_finalize_staged_self_runtime_decision(
         &mut decision,
@@ -981,6 +1112,9 @@ fn execute_self_runtime_actions(
         refreshed_mental_privacy.as_ref(),
         state.recent_persona_evidence.as_ref(),
     );
+    if let Some(decision_ref) = decision.as_mut() {
+        apply_self_runtime_authority_plan(decision_ref, authority_plan);
+    }
     crate::platform::task_wdt::feed_current_task();
     let decision_ref = decision.as_ref();
     let outer_voice_result = if decision_ref.is_some_and(|d| d.refresh_outer_voice) {
@@ -1034,15 +1168,17 @@ fn execute_self_runtime_actions(
         .ok()
         .flatten()
         .or(refreshed_outer_voice);
-    let _ = refresh_runtime_relationship_constitution(
-        ctx,
-        state,
-        chat_id,
-        payload.now_secs,
-        refreshed_self_authored_core.as_ref(),
-        refreshed_mental_privacy.as_ref(),
-        refreshed_outer_voice.as_ref(),
-    );
+    if authority_plan.allows_relationship_governance() {
+        let _ = refresh_runtime_relationship_constitution(
+            ctx,
+            state,
+            chat_id,
+            payload.now_secs,
+            refreshed_self_authored_core.as_ref(),
+            refreshed_mental_privacy.as_ref(),
+            refreshed_outer_voice.as_ref(),
+        );
+    }
     crate::platform::task_wdt::feed_current_task();
     let decision_ref = decision.as_ref();
     let self_authored_core_result = if decision_ref.is_some_and(|d| d.refresh_self_authored_core) {
@@ -1105,15 +1241,17 @@ fn execute_self_runtime_actions(
         .ok()
         .flatten()
         .or(refreshed_self_authored_core);
-    let _ = refresh_runtime_relationship_constitution(
-        ctx,
-        state,
-        chat_id,
-        payload.now_secs,
-        refreshed_self_authored_core.as_ref(),
-        refreshed_mental_privacy.as_ref(),
-        refreshed_outer_voice.as_ref(),
-    );
+    if authority_plan.allows_relationship_governance() {
+        let _ = refresh_runtime_relationship_constitution(
+            ctx,
+            state,
+            chat_id,
+            payload.now_secs,
+            refreshed_self_authored_core.as_ref(),
+            refreshed_mental_privacy.as_ref(),
+            refreshed_outer_voice.as_ref(),
+        );
+    }
     crate::platform::task_wdt::feed_current_task();
     Box::new(SelfRuntimeActionResults {
         decision,
@@ -1122,6 +1260,7 @@ fn execute_self_runtime_actions(
         self_model_result,
         self_authored_core_result,
         self_continuity_result,
+        task_learning_result,
         private_garden_result,
         boundary_persona_result,
         outer_voice_result,
@@ -1136,6 +1275,7 @@ pub fn run_self_runtime(
     payload: &SelfRuntimeJobPayload,
     profile: MemoryProfile,
 ) -> Box<SelfRuntimeOutcome> {
+    let authority_plan = decide_self_runtime_authority(ctx.memory_system_kind, profile);
     sync_self_runtime_relationship_topology(
         &ctx,
         payload.source_channel.as_str(),
@@ -1143,7 +1283,7 @@ pub fn run_self_runtime(
         payload.now_secs,
     );
     let _ = sync_self_runtime_relationship_portfolio(&ctx, payload.now_secs);
-    let state = load_self_runtime_state(&ctx, chat_id, payload, profile);
+    let state = load_self_runtime_state(&ctx, chat_id, payload, profile, authority_plan);
     crate::platform::task_wdt::feed_current_task();
     let prelude =
         refresh_world_and_autonomy(http, llm, &ctx, chat_id, payload, profile, state.as_ref());
@@ -1201,21 +1341,23 @@ pub fn run_self_runtime(
         .ok()
         .flatten()
         .or(state.mental_privacy_state.clone());
-    let _ = sync_self_runtime_relationship_constitution(
-        &ctx,
-        state.active_relationship_scope_id.as_str(),
-        state.active_relationship_channel.as_str(),
-        chat_id,
-        payload.now_secs,
-        latest_self_authored_core.as_ref(),
-        portfolio_after
-            .as_ref()
-            .or(state.relationship_portfolio.as_ref()),
-        latest_relationship_topology.as_ref(),
-        latest_mental_privacy.as_ref(),
-        latest_outer_voice.as_ref(),
-        state.recent_persona_evidence.as_ref(),
-    );
+    if authority_plan.allows_relationship_governance() {
+        let _ = sync_self_runtime_relationship_constitution(
+            &ctx,
+            state.active_relationship_scope_id.as_str(),
+            state.active_relationship_channel.as_str(),
+            chat_id,
+            payload.now_secs,
+            latest_self_authored_core.as_ref(),
+            portfolio_after
+                .as_ref()
+                .or(state.relationship_portfolio.as_ref()),
+            latest_relationship_topology.as_ref(),
+            latest_mental_privacy.as_ref(),
+            latest_outer_voice.as_ref(),
+            state.recent_persona_evidence.as_ref(),
+        );
+    }
     crate::platform::task_wdt::feed_current_task();
     if matches!(payload.trigger, SelfRuntimeTrigger::IdleTick) {
         if idle_memory_hygiene_budget_allows_run() {
@@ -1249,6 +1391,7 @@ pub fn run_self_runtime(
         self_model_result: action_results.self_model_result,
         self_authored_core_result: action_results.self_authored_core_result,
         self_continuity_result: action_results.self_continuity_result,
+        task_learning_result: action_results.task_learning_result,
         private_garden_result: action_results.private_garden_result,
         boundary_persona_result: action_results.boundary_persona_result,
         outer_voice_result: action_results.outer_voice_result,
@@ -1260,7 +1403,19 @@ pub fn run_self_runtime(
 mod tests {
     use super::llm::parse_self_runtime_decision;
     use super::*;
+    use crate::error::Result as BeetleResult;
+    use crate::memory::{
+        LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemorySlot, MemoryStore, MemorySystemKind,
+    };
+    use crate::platform::SkillStorage;
+    use crate::task_execution::{
+        TaskArtifactRecord, TaskArtifactStore, TaskLearningKind, TaskLearningRecord,
+        TaskLearningRoute, TaskLearningStore, TaskPlan, TaskRun, TaskRunRecord, TaskRunStatus,
+        TaskRunStore,
+    };
     use serde_json::json;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
 
     fn sample_self_state() -> SelfState {
         SelfState {
@@ -1410,6 +1565,500 @@ mod tests {
         assert!(parsed
             .factual_reconcile_intent
             .contains("why: recent transcript diverges"));
+    }
+
+    #[test]
+    fn esp_authority_plan_strips_non_growth_direct_actions_and_sources() {
+        let plan =
+            decide_self_runtime_authority(MemorySystemKind::EspCompact, MemoryProfile::Embedded);
+        let mut decision = SelfRuntimeDecision {
+            refresh_inner_life: true,
+            inner_life_intent: "keep the inner thread warm".to_string(),
+            refresh_private_docs: true,
+            private_docs_intent: "rewrite workspace".to_string(),
+            private_docs_action: SelfRuntimeGovernanceAction::Rewrite,
+            refresh_private_garden: true,
+            private_garden_intent: "compress garden".to_string(),
+            private_garden_action: SelfRuntimeGovernanceAction::Compress,
+            refresh_self_model: true,
+            self_model_intent: "distill kernel".to_string(),
+            self_model_sources: vec![
+                "private_docs".to_string(),
+                "private_garden".to_string(),
+                "inner_life".to_string(),
+            ],
+            refresh_self_authored_core: true,
+            self_authored_core_intent: "refresh board core".to_string(),
+            self_authored_core_sources: vec![
+                "private_docs".to_string(),
+                "self_model".to_string(),
+                "private_garden".to_string(),
+            ],
+            refresh_self_continuity: true,
+            self_continuity_intent: "bridge continuity".to_string(),
+            self_continuity_sources: vec![
+                "private_docs".to_string(),
+                "boundary_persona".to_string(),
+                "outer_voice".to_string(),
+                "world_sense".to_string(),
+            ],
+            refresh_boundary_persona: true,
+            boundary_persona_intent: "retune relation boundary".to_string(),
+            refresh_outer_voice: true,
+            outer_voice_intent: "stabilize outer voice".to_string(),
+            outer_voice_sources: vec!["private_garden".to_string(), "boundary_persona".to_string()],
+            request_factual_refresh: true,
+            factual_reconcile_action: SharedFactualReconcileAction::Correct,
+            factual_reconcile_intent: "repair stale fact grounding".to_string(),
+            ..Default::default()
+        };
+
+        apply_self_runtime_authority_plan(&mut decision, plan);
+
+        assert!(decision.refresh_inner_life);
+        assert!(!decision.refresh_private_docs);
+        assert!(decision.private_docs_intent.is_empty());
+        assert_eq!(
+            decision.private_docs_action,
+            SelfRuntimeGovernanceAction::Hold
+        );
+        assert!(!decision.refresh_private_garden);
+        assert!(decision.private_garden_intent.is_empty());
+        assert_eq!(
+            decision.private_garden_action,
+            SelfRuntimeGovernanceAction::Hold
+        );
+        assert_eq!(decision.self_model_sources, vec!["inner_life".to_string()]);
+        assert!(!decision.refresh_self_authored_core);
+        assert!(decision.self_authored_core_intent.is_empty());
+        assert!(decision.self_authored_core_sources.is_empty());
+        assert_eq!(
+            decision.self_continuity_sources,
+            vec!["world_sense".to_string()]
+        );
+        assert!(!decision.refresh_boundary_persona);
+        assert!(decision.boundary_persona_intent.is_empty());
+        assert!(!decision.refresh_outer_voice);
+        assert!(decision.outer_voice_intent.is_empty());
+        assert!(decision.outer_voice_sources.is_empty());
+        assert!(!decision.request_factual_refresh);
+        assert_eq!(
+            decision.factual_reconcile_action,
+            SharedFactualReconcileAction::Hold
+        );
+        assert!(decision.factual_reconcile_intent.is_empty());
+    }
+
+    #[derive(Default)]
+    struct StubTaskLearningStore {
+        records: Mutex<HashMap<String, TaskLearningRecord>>,
+    }
+
+    impl StubTaskLearningStore {
+        fn with_records(records: Vec<TaskLearningRecord>) -> Self {
+            let map = records
+                .into_iter()
+                .map(|record| (record.learning_id.clone(), record))
+                .collect();
+            Self {
+                records: Mutex::new(map),
+            }
+        }
+    }
+
+    impl TaskLearningStore for StubTaskLearningStore {
+        fn get(&self, learning_id: &str) -> BeetleResult<Option<TaskLearningRecord>> {
+            Ok(self
+                .records
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(learning_id)
+                .cloned())
+        }
+
+        fn upsert(&self, record: &TaskLearningRecord) -> BeetleResult<()> {
+            self.records
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(record.learning_id.clone(), record.clone());
+            Ok(())
+        }
+
+        fn list_recent(&self, limit: usize) -> BeetleResult<Vec<TaskLearningRecord>> {
+            let mut records = self
+                .records
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .cloned()
+                .collect::<Vec<_>>();
+            records.sort_by_key(|record| std::cmp::Reverse(record.observed_at));
+            records.truncate(limit);
+            Ok(records)
+        }
+
+        fn list_for_chat(
+            &self,
+            channel: &str,
+            chat_id: &str,
+            limit: usize,
+        ) -> BeetleResult<Vec<TaskLearningRecord>> {
+            let mut records = self
+                .records
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .filter(|record| {
+                    record.source_channel == channel && record.source_chat_id == chat_id
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            records.sort_by_key(|record| std::cmp::Reverse(record.observed_at));
+            records.truncate(limit);
+            Ok(records)
+        }
+
+        fn list_for_run(
+            &self,
+            run_id: &str,
+            limit: usize,
+        ) -> BeetleResult<Vec<TaskLearningRecord>> {
+            let mut records = self
+                .records
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .filter(|record| record.run_id == run_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            records.sort_by_key(|record| std::cmp::Reverse(record.observed_at));
+            records.truncate(limit);
+            Ok(records)
+        }
+    }
+
+    struct StubTaskRunStore {
+        records: HashMap<String, TaskRunRecord>,
+    }
+
+    impl StubTaskRunStore {
+        fn new(records: Vec<TaskRunRecord>) -> Self {
+            Self {
+                records: records
+                    .into_iter()
+                    .map(|record| (record.run.run_id.clone(), record))
+                    .collect(),
+            }
+        }
+    }
+
+    impl TaskRunStore for StubTaskRunStore {
+        fn get(&self, run_id: &str) -> BeetleResult<Option<TaskRunRecord>> {
+            Ok(self.records.get(run_id).cloned())
+        }
+
+        fn upsert(&self, _record: &TaskRunRecord) -> BeetleResult<()> {
+            Ok(())
+        }
+
+        fn list_recent(&self, limit: usize) -> BeetleResult<Vec<TaskRunRecord>> {
+            let mut records = self.records.values().cloned().collect::<Vec<_>>();
+            records.sort_by_key(|record| std::cmp::Reverse(record.run.updated_at));
+            records.truncate(limit);
+            Ok(records)
+        }
+
+        fn list_active_for_chat(
+            &self,
+            channel: &str,
+            chat_id: &str,
+            limit: usize,
+        ) -> BeetleResult<Vec<TaskRunRecord>> {
+            let mut records = self
+                .records
+                .values()
+                .filter(|record| {
+                    record.run.source_channel == channel
+                        && record.run.source_chat_id == chat_id
+                        && record.run.status.is_active()
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            records.sort_by_key(|record| std::cmp::Reverse(record.run.updated_at));
+            records.truncate(limit);
+            Ok(records)
+        }
+    }
+
+    #[derive(Default)]
+    struct StubTaskArtifactStore;
+
+    impl TaskArtifactStore for StubTaskArtifactStore {
+        fn put(&self, _record: &TaskArtifactRecord) -> BeetleResult<()> {
+            Ok(())
+        }
+
+        fn list_for_run(
+            &self,
+            _run_id: &str,
+            _limit: usize,
+        ) -> BeetleResult<Vec<TaskArtifactRecord>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubLongTermMemoryStore {
+        drafts: Mutex<Vec<LongTermMemoryDraft>>,
+    }
+
+    impl crate::memory::LongTermMemoryStore for StubLongTermMemoryStore {
+        fn upsert_many(
+            &self,
+            drafts: &[LongTermMemoryDraft],
+            _now_secs: u64,
+        ) -> BeetleResult<usize> {
+            self.drafts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .extend_from_slice(drafts);
+            Ok(drafts.len())
+        }
+
+        fn recall(
+            &self,
+            _query: &str,
+            _source_chat_id: Option<&str>,
+            _limit: usize,
+        ) -> BeetleResult<Vec<LongTermMemoryEntry>> {
+            Ok(Vec::new())
+        }
+
+        fn get(&self, _id: &str) -> BeetleResult<Option<LongTermMemoryEntry>> {
+            Ok(None)
+        }
+
+        fn list(&self, _limit: usize) -> BeetleResult<Vec<LongTermMemoryEntry>> {
+            Ok(Vec::new())
+        }
+
+        fn delete(&self, _id: &str) -> BeetleResult<bool> {
+            Ok(false)
+        }
+
+        fn delete_slot(&self, _slot: &LongTermMemorySlot) -> BeetleResult<bool> {
+            Ok(false)
+        }
+
+        fn count(&self) -> BeetleResult<usize> {
+            Ok(self.drafts.lock().unwrap_or_else(|e| e.into_inner()).len())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubSkillStorage {
+        files: Mutex<HashMap<String, Vec<u8>>>,
+    }
+
+    impl SkillStorage for StubSkillStorage {
+        fn list_names(&self) -> BeetleResult<Vec<String>> {
+            Ok(self
+                .files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .keys()
+                .cloned()
+                .collect())
+        }
+
+        fn read(&self, name: &str) -> BeetleResult<Vec<u8>> {
+            Ok(self
+                .files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(name)
+                .cloned()
+                .unwrap_or_default())
+        }
+
+        fn write(&self, name: &str, content: &[u8]) -> BeetleResult<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(name.to_string(), content.to_vec());
+            Ok(())
+        }
+
+        fn remove(&self, name: &str) -> BeetleResult<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(name);
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubMemoryStore;
+
+    impl MemoryStore for StubMemoryStore {
+        fn get_memory(&self) -> BeetleResult<String> {
+            Ok(String::new())
+        }
+
+        fn set_memory(&self, _content: &str) -> BeetleResult<()> {
+            Ok(())
+        }
+
+        fn get_soul(&self) -> BeetleResult<String> {
+            Ok(String::new())
+        }
+
+        fn set_soul(&self, _content: &str) -> BeetleResult<()> {
+            Ok(())
+        }
+
+        fn get_user(&self) -> BeetleResult<String> {
+            Ok(String::new())
+        }
+
+        fn set_user(&self, _content: &str) -> BeetleResult<()> {
+            Ok(())
+        }
+
+        fn list_daily_note_names(&self, _recent_n: usize) -> BeetleResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn get_daily_note(&self, _name: &str) -> BeetleResult<String> {
+            Ok(String::new())
+        }
+
+        fn write_daily_note(&self, _name: &str, _content: &str) -> BeetleResult<()> {
+            Ok(())
+        }
+    }
+
+    fn sample_task_run_record(run_id: &str, status: TaskRunStatus, now_secs: u64) -> TaskRunRecord {
+        TaskRunRecord {
+            run: TaskRun {
+                run_id: run_id.to_string(),
+                source_channel: "qq_channel".to_string(),
+                source_chat_id: "chat-1".to_string(),
+                user_request: "Summarize the fix path".to_string(),
+                title: "release fix".to_string(),
+                status,
+                current_step_id: "s1".to_string(),
+                planner_reason: String::new(),
+                final_summary: String::new(),
+                failure_reason: String::new(),
+                plan_revision: 1,
+                created_at: now_secs,
+                updated_at: now_secs,
+                finished_at: now_secs,
+            },
+            plan: TaskPlan {
+                goal: "finish release recovery".to_string(),
+                completion_definition: "root cause and stable procedure recorded".to_string(),
+                risk_notes: Vec::new(),
+                ordered_steps: Vec::new(),
+            },
+        }
+    }
+
+    fn sample_task_learning_record(
+        learning_id: &str,
+        run_id: &str,
+        kind: TaskLearningKind,
+        route: TaskLearningRoute,
+        topic: &str,
+        summary: &str,
+        content: &str,
+        observed_at: u64,
+    ) -> TaskLearningRecord {
+        TaskLearningRecord {
+            learning_id: learning_id.to_string(),
+            source_channel: "qq_channel".to_string(),
+            source_chat_id: "chat-1".to_string(),
+            run_id: run_id.to_string(),
+            step_id: "s1".to_string(),
+            kind,
+            route,
+            run_status: TaskRunStatus::Completed,
+            topic: topic.to_string(),
+            summary: summary.to_string(),
+            content: content.to_string(),
+            memory_kind: Some(crate::memory::LongTermMemoryKind::Task),
+            review_summary: "review accepted".to_string(),
+            source_artifact_ids: vec!["a1".to_string(), "a2".to_string()],
+            provenance: "self_runtime".to_string(),
+            archive_note_name: String::new(),
+            route_detail: String::new(),
+            observed_at,
+        }
+    }
+
+    #[test]
+    fn self_runtime_method_distillation_uses_governed_task_learning_pipeline() {
+        let now_secs = crate::util::ymdhms_to_epoch(2026, 4, 8, 13, 0, 0);
+        let authority =
+            decide_self_runtime_authority(MemorySystemKind::EspCompact, MemoryProfile::Embedded);
+        let task_run_store = StubTaskRunStore::new(vec![
+            sample_task_run_record(
+                "tr_prev",
+                TaskRunStatus::Completed,
+                now_secs.saturating_sub(60),
+            ),
+            sample_task_run_record("tr_now", TaskRunStatus::Completed, now_secs),
+        ]);
+        let learning_store = StubTaskLearningStore::with_records(vec![
+            sample_task_learning_record(
+                "tl_prev",
+                "tr_prev",
+                TaskLearningKind::ReusableProcedure,
+                TaskLearningRoute::ArchivedEvidence,
+                "stable_release_patch",
+                "Stable release patch sequence",
+                "1. inspect logs\n2. patch guard\n3. verify artifact",
+                now_secs.saturating_sub(60),
+            ),
+            sample_task_learning_record(
+                "tl_now",
+                "tr_now",
+                TaskLearningKind::ReusableProcedure,
+                TaskLearningRoute::Pending,
+                "stable_release_patch",
+                "Stable release patch sequence",
+                "1. inspect logs\n2. patch guard\n3. verify artifact",
+                now_secs,
+            ),
+        ]);
+        let artifact_store = StubTaskArtifactStore;
+        let long_term_memory_store = StubLongTermMemoryStore::default();
+        let skill_storage = StubSkillStorage::default();
+        let memory_store = StubMemoryStore;
+
+        let outcome = run_self_runtime_method_distillation(
+            &task_run_store,
+            &artifact_store,
+            &learning_store,
+            &long_term_memory_store,
+            &skill_storage,
+            &memory_store,
+            authority,
+            "qq_channel",
+            "chat-1",
+            now_secs,
+        )
+        .expect("method distillation should route through governed maintenance");
+
+        assert_eq!(outcome.considered, 1);
+        assert_eq!(outcome.runtime_skill_promotions, 1);
+        let promoted = learning_store
+            .get("tl_now")
+            .expect("read promoted record")
+            .expect("promoted record exists");
+        assert_eq!(promoted.route, TaskLearningRoute::RuntimeSkill);
     }
 
     #[test]
