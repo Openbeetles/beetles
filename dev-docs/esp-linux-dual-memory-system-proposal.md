@@ -983,6 +983,37 @@ ESP 首轮主路径必须满足：
 4. 不因启用了 camera / sensors 就额外拉厚 prompt
 5. 不同步跑独立前置治理 LLM
 
+### 8.5 第一阶段已完成：`worker_context` 首轮热路径收口（2026-04-08）
+
+本阶段第一段编码已经完成，范围限定在 `src/agent/loop/worker_context.rs` 主入口与对应测试。
+
+已确认落地的行为边界：
+
+1. `prepare_worker_conversation(...)` 继续作为真实总入口，但 Linux / ESP 的首轮治理参与边界已正式分开
+2. `EspCompact` 的**首轮用户消息**已停止同步执行：
+   - `mental_privacy disclosure adjudication`
+   - dynamic `persona_priority adjudication`
+   - `relationship_constitution sync` 写回路径
+3. `EspCompact` 首轮仍保留：
+   - `prompt_context` 内的只读派生 `relationship_constitution`
+   - `Public Soul Capsule`
+   - session / task continuity
+   - compressed governed recall
+4. `LinuxFull` 仍保留同步 disclosure / relationship constitution / persona 治理路径，未被一起降配
+
+这一阶段完成后的实际效果：
+
+1. ESP 首轮主链已经回到“单轮主回复优先”的可控基础形态
+2. ESP 首轮不再为了维持旧制度而在热路径里做同步关系宪法写回
+3. Linux 仍保持 full runtime 的同步深治理能力
+4. 下一阶段可以直接进入 `prompt_context` / compact assembly 的实质性收口，而不是继续在旧热链上叠补丁
+
+必须明确：
+
+1. 这**仍然不等于** `P2` 已全部完成
+2. 当前完成的是 `worker_context` 第一阶段收尾，不是整个 ESP prompt slimming 收尾
+3. 下一阶段主线应直接转向 `prompt_context` / `build_context` / `L0/L1/L2` 的真正 compact assembly 收口
+
 ---
 
 ## 9. Operator / Recovery / Packaging 规则
@@ -1074,35 +1105,19 @@ ESP 上 recovery 的首要目标不是“把所有能力都救回来”，而是
 2. 当前不能把本文解读成“ESP 已经完成最终稳态化”或“ESP 已经完成功能削减”
 3. 当前更准确的表述是：**制度分轨已成立，ESP 热路径减负尚未完成**
 
-### 11.1 下一步主线（待确认）
+### 11.1 下一步主线（第一阶段完成后）
 
-如果继续执行本文主方案，下一步默认按下面四刀推进。
+如果继续执行本文主方案，下一步默认从下面三块开始。
 
-#### A. 重写 `worker_context`，正式拆开 Linux / ESP 回复前装配
+#### A. `worker_context` 第一阶段已完成，后续不再回头补旧热链
 
-目标不是继续在同一条共享重链上堆 `if embedded`，而是把：
+当前已经完成的边界如下：
 
-1. `prepare_linux_full_conversation(...)`
-2. `prepare_esp_compact_conversation(...)`
+1. ESP 首轮同步 disclosure / persona / relationship constitution sync 已移出热路径
+2. Linux 仍保留同步深治理
+3. `worker_context` 后续只做配合型清理，不再作为“继续削第一阶段”的主战场
 
-变成两条正式装配入口。
-
-ESP 主链保留：
-
-1. runtime snapshot
-2. budget 计算
-3. `Public Soul Capsule`
-4. `session_summary`
-5. task continuity
-6. compressed long-term recall
-
-ESP 首轮默认移出同步主链：
-
-1. `mental_privacy disclosure adjudication`
-2. dynamic `persona_priority adjudication`
-3. `relationship_constitution sync`
-4. 厚 background governance
-5. 厚 private workspace / private garden / inner life 投影
+因此，下一步不再回头继续在这条共享热链上堆新的 `if esp`，而是直接进入真正的 compact assembly 重构。
 
 #### B. 重写 `prompt_context`，让 ESP 真正拥有 compact assembly
 

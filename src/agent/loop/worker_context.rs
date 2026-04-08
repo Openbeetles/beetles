@@ -1,7 +1,69 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PreReplyGovernanceMode {
+    LinuxFull,
+    EspCompact,
+}
+
+impl PreReplyGovernanceMode {
+    fn for_turn(
+        memory_system_kind: crate::memory::MemorySystemKind,
+        ingress: IngressKind,
+    ) -> Option<Self> {
+        if ingress != IngressKind::User {
+            return None;
+        }
+        Some(match memory_system_kind {
+            crate::memory::MemorySystemKind::LinuxFull => Self::LinuxFull,
+            crate::memory::MemorySystemKind::EspCompact => Self::EspCompact,
+        })
+    }
+
+    fn allow_sync_disclosure_adjudication(self) -> bool {
+        matches!(self, Self::LinuxFull)
+    }
+
+    fn allow_dynamic_persona_adjudication(self) -> bool {
+        matches!(self, Self::LinuxFull)
+    }
+
+    fn allow_sync_relationship_constitution(self) -> bool {
+        matches!(self, Self::LinuxFull)
+    }
+}
+
 #[inline(never)]
 pub(super) fn prepare_worker_conversation<'a>(
+    worker_llm: &(dyn LlmClient + Send + Sync),
+    msg: &'a crate::bus::PcMsg,
+    request_plan: &AgentRequestPlan<'a>,
+    config: &AgentLoopConfig,
+    tool_ctx: &mut HttpClientToolContext<'_>,
+    latency: &mut WorkerLatency,
+) -> Result<PreparedWorkerConversation> {
+    match config.memory_system_kind {
+        crate::memory::MemorySystemKind::LinuxFull => prepare_worker_conversation_impl(
+            worker_llm,
+            msg,
+            request_plan,
+            config,
+            tool_ctx,
+            latency,
+        ),
+        crate::memory::MemorySystemKind::EspCompact => prepare_worker_conversation_impl(
+            worker_llm,
+            msg,
+            request_plan,
+            config,
+            tool_ctx,
+            latency,
+        ),
+    }
+}
+
+#[inline(never)]
+fn prepare_worker_conversation_impl<'a>(
     worker_llm: &(dyn LlmClient + Send + Sync),
     msg: &'a crate::bus::PcMsg,
     request_plan: &AgentRequestPlan<'a>,
@@ -78,7 +140,8 @@ pub(super) fn prepare_worker_conversation<'a>(
     let prompt_memory_system_budget = budget
         .system_prompt_max
         .saturating_sub(post_memory_tail_len);
-    let participation_plan = crate::memory::decide_prompt_participation(
+    let assembly_plan = crate::memory::decide_prompt_assembly(
+        config.memory_system_kind,
         config.memory_profile,
         msg.ingress,
         has_tools,
@@ -86,10 +149,18 @@ pub(super) fn prepare_worker_conversation<'a>(
         runtime.pressure,
         prompt_memory_system_budget,
     );
+    let participation_plan = assembly_plan.participation_plan;
     log_prepare_stage("post_memory_budget_ready");
     log_prepare_stage("capability_package_start");
-    let capability_package_text =
-        (config.get_capability_package_text)(&msg.channel, prompt_memory_system_budget.min(1800));
+    let capability_package_text = assembly_plan
+        .include_capability_package_text
+        .then(|| {
+            (config.get_capability_package_text)(
+                &msg.channel,
+                prompt_memory_system_budget.min(1800),
+            )
+        })
+        .flatten();
     if prepare_trace_enabled {
         log::info!(
             "[agent_prepare] stage=capability_package_ready channel={} chat_id={} has_text={}",
@@ -102,37 +173,40 @@ pub(super) fn prepare_worker_conversation<'a>(
     }
     let relationship_id = crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id);
     log_prepare_stage("mental_privacy_start");
-    let (mental_privacy_adjudication, mental_privacy_adjudication_failed) = if msg.ingress
-        == IngressKind::User
-    {
-        match run_mental_privacy_disclosure_adjudication(
-            tool_ctx,
-            worker_llm,
-            MentalPrivacyDisclosureAdjudicationContext {
-                mental_privacy_store: config.mental_privacy_store.as_ref(),
-                relationship_constitution_store: config.relationship_constitution_store.as_ref(),
-                self_model_store: config.self_model_store.as_ref(),
-                self_continuity_store: config.self_continuity_store.as_ref(),
-                inner_life_store: config.inner_life_store.as_ref(),
-                private_doc_store: config.private_doc_store.as_ref(),
-                private_garden_store: config.private_garden_store.as_ref(),
-            },
-            MentalPrivacyDisclosureAdjudicationInput {
-                channel: &msg.channel,
-                chat_id: &msg.chat_id,
-                user_content: &msg.content,
-                now_secs: runtime.now_secs,
-            },
-        ) {
-            Ok(result) => (result, false),
-            Err(error) => {
-                log::warn!("[agent_mental_privacy_adjudication] failed: {}", error);
-                (None, true)
+    let active_governance_mode =
+        PreReplyGovernanceMode::for_turn(config.memory_system_kind, msg.ingress);
+    let (mental_privacy_adjudication, mental_privacy_adjudication_failed) =
+        if active_governance_mode.is_some_and(|mode| mode.allow_sync_disclosure_adjudication()) {
+            match run_mental_privacy_disclosure_adjudication(
+                tool_ctx,
+                worker_llm,
+                MentalPrivacyDisclosureAdjudicationContext {
+                    mental_privacy_store: config.mental_privacy_store.as_ref(),
+                    relationship_constitution_store: config
+                        .relationship_constitution_store
+                        .as_ref(),
+                    self_model_store: config.self_model_store.as_ref(),
+                    self_continuity_store: config.self_continuity_store.as_ref(),
+                    inner_life_store: config.inner_life_store.as_ref(),
+                    private_doc_store: config.private_doc_store.as_ref(),
+                    private_garden_store: config.private_garden_store.as_ref(),
+                },
+                MentalPrivacyDisclosureAdjudicationInput {
+                    channel: &msg.channel,
+                    chat_id: &msg.chat_id,
+                    user_content: &msg.content,
+                    now_secs: runtime.now_secs,
+                },
+            ) {
+                Ok(result) => (result, false),
+                Err(error) => {
+                    log::warn!("[agent_mental_privacy_adjudication] failed: {}", error);
+                    (None, true)
+                }
             }
-        }
-    } else {
-        (None, false)
-    };
+        } else {
+            (None, false)
+        };
     if prepare_trace_enabled {
         log::info!(
             "[agent_prepare] stage=mental_privacy_ready channel={} chat_id={} adjudication={} failed={}",
@@ -147,6 +221,7 @@ pub(super) fn prepare_worker_conversation<'a>(
         chat_id: &msg.chat_id,
         current_channel: &msg.channel,
         user_query: &msg.content,
+        memory_system_kind: config.memory_system_kind,
         system_max_len: prompt_memory_system_budget,
         now_secs: runtime.now_secs,
         profile: config.memory_profile,
@@ -210,39 +285,49 @@ pub(super) fn prepare_worker_conversation<'a>(
                 runtime.pressure,
                 crate::orchestrator::PressureLevel::Critical
             );
-    let prompt_mental_privacy_state = config
-        .mental_privacy_store
-        .get(&relationship_id)
-        .ok()
-        .flatten();
-    let prompt_relationship_portfolio = config
-        .relationship_portfolio_store
-        .get(board_subject_scope_id())
-        .ok()
-        .flatten();
+    let prompt_mental_privacy_state = active_governance_mode
+        .filter(|mode| mode.allow_sync_relationship_constitution())
+        .and_then(|_| {
+            config
+                .mental_privacy_store
+                .get(&relationship_id)
+                .ok()
+                .flatten()
+        });
+    let prompt_relationship_portfolio = active_governance_mode
+        .filter(|mode| mode.allow_sync_relationship_constitution())
+        .and_then(|_| {
+            config
+                .relationship_portfolio_store
+                .get(board_subject_scope_id())
+                .ok()
+                .flatten()
+        });
     let prompt_relationship_topology = config
         .relationship_topology_store
         .get(board_subject_scope_id())
         .ok()
         .flatten();
-    if let Ok(Some(constitution)) = crate::memory::sync_relationship_constitution(
-        config.relationship_constitution_store.as_ref(),
-        crate::memory::RelationshipConstitutionSyncInput {
-            scope_id: &relationship_id,
-            channel: &msg.channel,
-            chat_id: &msg.chat_id,
-            now_secs: runtime.now_secs,
-            self_authored_core: prompt_memory.self_authored_core.as_ref(),
-            relationship_portfolio: prompt_relationship_portfolio.as_ref(),
-            relationship_topology: prompt_relationship_topology.as_ref(),
-            mental_privacy_state: prompt_mental_privacy_state.as_ref(),
-            outer_voice: prompt_memory.outer_voice.as_ref(),
-            recent_persona_evidence: recent_persona_evidence.as_ref(),
-        },
-    ) {
-        prompt_memory.relationship_constitution = Some(constitution.clone());
-        prompt_memory.relationship_constitution_text =
-            crate::memory::render_relationship_constitution_block(&constitution, 420);
+    if active_governance_mode.is_some_and(|mode| mode.allow_sync_relationship_constitution()) {
+        if let Ok(Some(constitution)) = crate::memory::sync_relationship_constitution(
+            config.relationship_constitution_store.as_ref(),
+            crate::memory::RelationshipConstitutionSyncInput {
+                scope_id: &relationship_id,
+                channel: &msg.channel,
+                chat_id: &msg.chat_id,
+                now_secs: runtime.now_secs,
+                self_authored_core: prompt_memory.self_authored_core.as_ref(),
+                relationship_portfolio: prompt_relationship_portfolio.as_ref(),
+                relationship_topology: prompt_relationship_topology.as_ref(),
+                mental_privacy_state: prompt_mental_privacy_state.as_ref(),
+                outer_voice: prompt_memory.outer_voice.as_ref(),
+                recent_persona_evidence: recent_persona_evidence.as_ref(),
+            },
+        ) {
+            prompt_memory.relationship_constitution = Some(constitution.clone());
+            prompt_memory.relationship_constitution_text =
+                crate::memory::render_relationship_constitution_block(&constitution, 420);
+        }
     }
     if prepare_trace_enabled {
         log::info!(
@@ -334,7 +419,9 @@ pub(super) fn prepare_worker_conversation<'a>(
         crate::memory::build_persistent_persona_priority_adjudication(persona_priority_runtime);
     let persistent_persona_priority_text =
         crate::memory::render_persona_priority_block(&persistent_persona_priority, 420);
-    let persona_priority_adjudication = if msg.ingress == IngressKind::User {
+    let persona_priority_adjudication = if active_governance_mode
+        .is_some_and(|mode| mode.allow_dynamic_persona_adjudication())
+    {
         if !personality_governance_gate.allow_dynamic_persona_priority {
             persistent_persona_priority_text
                 .as_ref()
@@ -436,6 +523,7 @@ pub(super) fn prepare_worker_conversation<'a>(
     prompt_memory.refresh_reply_projection_groups();
     let (mut system, messages) = build_context(&crate::agent::ContextParams {
         msg,
+        memory_system_kind: config.memory_system_kind,
         memory: config.memory_store.as_ref(),
         session: config.session_store.as_ref(),
         important_message_store: config.important_message_store.as_ref(),

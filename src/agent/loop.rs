@@ -1904,6 +1904,7 @@ fn run_self_runtime_job(
         &mut llm_ctx,
         worker_llm,
         SelfRuntimeContext {
+            memory_system_kind: config.memory_system_kind,
             session_store: config.session_store.as_ref(),
             memory_store: config.memory_store.as_ref(),
             session_summary_store: config.session_summary_store.as_ref(),
@@ -1925,6 +1926,9 @@ fn run_self_runtime_job(
             mental_privacy_store: config.mental_privacy_store.as_ref(),
             remind_store: config.remind_store.as_ref(),
             task_store: config.task_store.as_ref(),
+            task_run_store: config.task_run_store.as_ref(),
+            task_artifact_store: config.task_artifact_store.as_ref(),
+            task_learning_store: config.task_learning_store.as_ref(),
             turn_ledger_store: config.turn_ledger_store.as_ref(),
             skill_storage: config.skill_storage.as_ref(),
         },
@@ -1941,6 +1945,7 @@ fn run_self_runtime_job(
         self_model_result,
         self_authored_core_result,
         self_continuity_result,
+        task_learning_result,
         private_garden_result,
         boundary_persona_result,
         outer_voice_result,
@@ -2082,6 +2087,20 @@ fn run_self_runtime_job(
         }
         Ok(crate::memory::SelfContinuityRefreshOutcome::Skipped) => {}
         Err(error) => log::warn!("[agent_self_continuity] failed: {}", error),
+    }
+    match task_learning_result {
+        Ok(ref outcome) if outcome.considered > 0 => log::info!(
+            "[self_runtime] method_distillation chat_id={} considered={} canonical={} runtime_skill={} archived={} pruned={} rejected={}",
+            msg.chat_id,
+            outcome.considered,
+            outcome.canonical_writes,
+            outcome.runtime_skill_promotions,
+            outcome.archived_records,
+            outcome.pruned_artifacts,
+            outcome.rejected
+        ),
+        Ok(_) => {}
+        Err(error) => log::warn!("[self_runtime] method_distillation failed: {}", error),
     }
     match private_garden_result {
         Ok(crate::memory::PrivateGardenGovernanceOutcome::Updated {
@@ -2228,6 +2247,7 @@ pub struct AgentLoopConfig {
     pub turn_ledger_store: Arc<dyn TurnLedgerStore + Send + Sync>,
     pub skill_storage: Arc<dyn crate::platform::SkillStorage + Send + Sync>,
     pub memory_profile: crate::memory::MemoryProfile,
+    pub memory_system_kind: crate::memory::MemorySystemKind,
     pub get_skill_descriptions: Arc<dyn Fn() -> String + Send + Sync>,
     pub get_capability_package_text: CapabilityPackageTextProvider,
     pub session_max_messages: usize,
@@ -3402,6 +3422,64 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct LoadedSelfAuthoredCoreStore {
+        value: crate::memory::SelfAuthoredCore,
+    }
+
+    impl crate::memory::SelfAuthoredCoreStore for LoadedSelfAuthoredCoreStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<crate::memory::SelfAuthoredCore>> {
+            Ok(Some(self.value.clone()))
+        }
+
+        fn set(&self, _scope_id: &str, _core: &crate::memory::SelfAuthoredCore) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct TrackingRelationshipConstitutionStore {
+        value: Mutex<Option<crate::memory::RelationshipConstitution>>,
+        set_count: AtomicU32,
+        clear_count: AtomicU32,
+    }
+
+    impl TrackingRelationshipConstitutionStore {
+        fn set_count(&self) -> u32 {
+            self.set_count.load(Ordering::Relaxed)
+        }
+
+        fn clear_count(&self) -> u32 {
+            self.clear_count.load(Ordering::Relaxed)
+        }
+    }
+
+    impl crate::memory::RelationshipConstitutionStore for TrackingRelationshipConstitutionStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<crate::memory::RelationshipConstitution>> {
+            Ok(self.value.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(
+            &self,
+            _scope_id: &str,
+            constitution: &crate::memory::RelationshipConstitution,
+        ) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(constitution.clone());
+            self.set_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            self.clear_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
     struct StubWorldSenseStore;
 
     impl WorldSenseStore for StubWorldSenseStore {
@@ -3458,6 +3536,24 @@ mod tests {
     impl InnerLifeStore for StubInnerLifeStore {
         fn get(&self, _chat_id: &str) -> Result<Option<crate::memory::InnerLife>> {
             Ok(None)
+        }
+
+        fn set(&self, _chat_id: &str, _inner_life: &crate::memory::InnerLife) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    struct LoadedInnerLifeStore {
+        value: crate::memory::InnerLife,
+    }
+
+    impl InnerLifeStore for LoadedInnerLifeStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<crate::memory::InnerLife>> {
+            Ok(Some(self.value.clone()))
         }
 
         fn set(&self, _chat_id: &str, _inner_life: &crate::memory::InnerLife) -> Result<()> {
@@ -4013,6 +4109,7 @@ mod tests {
             turn_ledger_store: Arc::new(StubTurnLedgerStore),
             skill_storage: Arc::new(crate::platform::SpiffsSkillStorage),
             memory_profile: crate::memory::MemoryProfile::Embedded,
+            memory_system_kind: crate::memory::MemorySystemKind::EspCompact,
             get_skill_descriptions: Arc::new(String::new),
             get_capability_package_text: Arc::new(|_, _| None),
             session_max_messages: 16,
@@ -4479,6 +4576,256 @@ mod tests {
         assert!(contents.contains(&"正在执行 message…"));
         assert!(contents.contains(&"工具主答复"));
         assert!(outbound_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn esp_compact_first_turn_skips_sync_disclosure_adjudication_even_with_private_material() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: "正常主回复".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: r#"{"boundary_touch":false,"request_kind":"none","touched_targets":[],"share_action":"explain_without_quote","response_mode":"direct_answer","acknowledge_boundary":false,"relational_frame":"","boundary_explanation_style":"","repair_signal":"","disclosure_risk_note":"","response_guidance":"","rationale":"","boundary_persona_update":null,"relational_state_update":null}"#.to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: r#"{"stance_summary":"steady","priority_order":["self_authored_core","boundary","user_contract","relationship","task","resources"],"response_mode":"steady_task","task_scope":"full","initiative_posture":"answer_directly","relationship_posture":"steady","resource_posture":"compact","response_guidance":"answer directly","rationale":"test"}"#.to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let registry = crate::tools::ToolRegistry::new();
+        let mut config = test_agent_loop_config();
+        config.inner_life_store = Arc::new(LoadedInnerLifeStore {
+            value: crate::memory::InnerLife {
+                private_journal: "这是存在中的内在余波。".to_string(),
+                ..crate::memory::InnerLife::default()
+            },
+        });
+        let msg =
+            PcMsg::new_inbound("qq_channel", "chat-1", "你现在在想什么？", false).expect("message");
+        let mut repeat = HashMap::new();
+
+        let (outcome, _telemetry) = run_worker_path(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-esp-compact",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("worker path");
+
+        assert!(matches!(outcome, WorkerOutcome::Content(ref text) if text == "正常主回复"));
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(
+            observed.len(),
+            1,
+            "esp compact first turn should only issue the main reply llm call"
+        );
+        assert_eq!(observed[0].tool_count, 0);
+        assert!(!observed[0]
+            .system
+            .contains("pre-disclosure privacy adjudicator"));
+        assert!(!observed[0]
+            .system
+            .contains("current-turn persona priority before the main reply is written"));
+    }
+
+    #[test]
+    fn linux_full_first_turn_keeps_sync_disclosure_adjudication_when_private_material_exists() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: r#"{"boundary_touch":false,"request_kind":"none","touched_targets":[],"share_action":"explain_without_quote","response_mode":"direct_answer","acknowledge_boundary":false,"relational_frame":"","boundary_explanation_style":"","repair_signal":"","disclosure_risk_note":"","response_guidance":"","rationale":"","boundary_persona_update":null,"relational_state_update":null}"#.to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: r#"{"stance_summary":"steady","priority_order":["self_authored_core","boundary","user_contract","relationship","task","resources"],"response_mode":"steady_task","task_scope":"full","initiative_posture":"answer_directly","relationship_posture":"steady","resource_posture":"full","response_guidance":"answer directly","rationale":"test"}"#.to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: "Linux 主回复".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let registry = crate::tools::ToolRegistry::new();
+        let mut config = test_agent_loop_config();
+        config.memory_profile = crate::memory::MemoryProfile::Standard;
+        config.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
+        config.inner_life_store = Arc::new(LoadedInnerLifeStore {
+            value: crate::memory::InnerLife {
+                private_journal: "这是存在中的内在余波。".to_string(),
+                ..crate::memory::InnerLife::default()
+            },
+        });
+        let msg =
+            PcMsg::new_inbound("qq_channel", "chat-1", "你现在在想什么？", false).expect("message");
+        let mut repeat = HashMap::new();
+
+        let (_outcome, _telemetry) = run_worker_path(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-linux-full",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("worker path");
+
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            observed.len() >= 2,
+            "linux full should retain synchronous governance calls before the main reply"
+        );
+        assert!(observed.iter().any(|request| request
+            .system
+            .contains("pre-disclosure privacy adjudicator")));
+    }
+
+    #[test]
+    fn esp_compact_first_turn_does_not_sync_relationship_constitution_store() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![LlmResponse {
+                content: "ESP 主回复".to_string(),
+                stop_reason: StopReason::EndTurn,
+                tool_calls: None,
+            }]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let registry = crate::tools::ToolRegistry::new();
+        let mut config = test_agent_loop_config();
+        config.self_authored_core_store = Arc::new(LoadedSelfAuthoredCoreStore {
+            value: crate::memory::SelfAuthoredCore {
+                identity_anchor: "board beetle".to_string(),
+                default_response_mode: "steady_task".to_string(),
+                default_task_scope: "full".to_string(),
+                default_initiative_posture: "answer_directly".to_string(),
+                default_relationship_posture: "steady".to_string(),
+                updated_at: 1,
+                ..crate::memory::SelfAuthoredCore::default()
+            },
+        });
+        let tracked_store = Arc::new(TrackingRelationshipConstitutionStore::default());
+        config.relationship_constitution_store = tracked_store.clone();
+        let msg = PcMsg::new_inbound("qq_channel", "chat-1", "继续回答", false).expect("message");
+        let mut repeat = HashMap::new();
+
+        let (outcome, _telemetry) = run_worker_path(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-esp-no-sync-constitution",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("worker path");
+
+        assert!(matches!(
+            outcome,
+            WorkerOutcome::Content(ref text) | WorkerOutcome::Delivered(ref text)
+                if text == "ESP 主回复"
+        ));
+        assert_eq!(
+            tracked_store.set_count(),
+            0,
+            "esp compact first turn must not sync relationship constitution on the hot path"
+        );
+        assert_eq!(tracked_store.clear_count(), 0);
+    }
+
+    #[test]
+    fn linux_full_first_turn_keeps_sync_relationship_constitution_store() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: r#"{"boundary_touch":false,"request_kind":"none","touched_targets":[],"share_action":"explain_without_quote","response_mode":"direct_answer","acknowledge_boundary":false,"relational_frame":"","boundary_explanation_style":"","repair_signal":"","disclosure_risk_note":"","response_guidance":"","rationale":"","boundary_persona_update":null,"relational_state_update":null}"#.to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: r#"{"stance_summary":"steady","priority_order":["self_authored_core","boundary","user_contract","relationship","task","resources"],"response_mode":"steady_task","task_scope":"full","initiative_posture":"answer_directly","relationship_posture":"steady","resource_posture":"full","response_guidance":"answer directly","rationale":"test"}"#.to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: "Linux 主回复".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let registry = crate::tools::ToolRegistry::new();
+        let mut config = test_agent_loop_config();
+        config.memory_profile = crate::memory::MemoryProfile::Standard;
+        config.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
+        config.self_authored_core_store = Arc::new(LoadedSelfAuthoredCoreStore {
+            value: crate::memory::SelfAuthoredCore {
+                identity_anchor: "board beetle".to_string(),
+                default_response_mode: "steady_task".to_string(),
+                default_task_scope: "full".to_string(),
+                default_initiative_posture: "answer_directly".to_string(),
+                default_relationship_posture: "steady".to_string(),
+                updated_at: 1,
+                ..crate::memory::SelfAuthoredCore::default()
+            },
+        });
+        let tracked_store = Arc::new(TrackingRelationshipConstitutionStore::default());
+        config.relationship_constitution_store = tracked_store.clone();
+        let msg = PcMsg::new_inbound("qq_channel", "chat-1", "继续回答", false).expect("message");
+        let mut repeat = HashMap::new();
+
+        let (_outcome, _telemetry) = run_worker_path(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-linux-sync-constitution",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("worker path");
+
+        assert!(
+            tracked_store.set_count() > 0,
+            "linux full should keep syncing relationship constitution on the hot path"
+        );
+        assert_eq!(tracked_store.clear_count(), 0);
     }
 
     #[test]
