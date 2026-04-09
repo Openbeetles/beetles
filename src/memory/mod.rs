@@ -37,6 +37,7 @@ mod private_garden;
 mod private_garden_governance;
 mod profile;
 mod prompt_context;
+mod prompt_context_stages;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 mod recall_benchmark;
 mod recall_contract;

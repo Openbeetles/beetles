@@ -3,31 +3,19 @@
 
 use crate::platform::SkillStorage;
 use crate::task::TaskStore;
-use crate::task_execution::{
-    active_task_run_for_chat, build_task_recall_bundle, render_task_workspace_block,
-    TaskArtifactStore, TaskLearningStore, TaskRunStore,
-};
+use crate::task_execution::{TaskArtifactStore, TaskLearningStore, TaskRunStore};
 
 use super::{
-    board_subject_scope_id, build_archive_evidence_block, build_self_state, build_world_snapshot,
-    collect_private_targets, decide_prompt_recall_route, derive_relationship_constitution,
-    inspect_continuity_capsule_recall, load_recent_persona_evidence, memory_capability_profile,
-    memory_policy, parse_explicit_long_term_slot_query, recall_long_term_memory_block,
-    relationship_scope_id, render_autonomy_strategy_block, render_continuity_capsule_block,
-    render_exact_long_term_memory_block, render_execution_state_block, render_inner_life_block,
-    render_mental_privacy_boundary_block, render_outer_voice_block,
-    render_persistent_self_authored_core_block, render_private_doc_workspace_block,
-    render_private_garden_block, render_relationship_constitution_block,
-    render_relationship_portfolio_block, render_self_continuity_block, render_self_model_block,
-    render_self_state_block, render_turn_observation_ledger_block, render_world_sense_block,
-    render_world_snapshot_block, AutonomyStrategyStore, ContinuityCapsuleRecallInspectionInput,
-    ContinuityCapsuleScopeKind, ContinuityCapsuleStore, ExecutionStateStore, InnerLifeStore,
-    LongTermMemoryStore, MemoryProfile, MemoryStore, MemorySystemKind, MentalPrivacyStore,
-    OuterVoiceStore, PrivateDocStore, PrivateGardenStore, PromptRecallRouterDecision,
-    RelationshipConstitutionStore, RelationshipConstitutionSyncInput, RelationshipPortfolioStore,
-    RelationshipTopologyStore, RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore,
-    SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore, TurnLedgerStore,
-    WorldSenseStore, WorldSnapshotContext,
+    prompt_context_stages::{
+        load_constitutional_stage, load_governed_memory_stage, load_private_projection_stage,
+        load_session_stage, seed_prompt_context,
+    },
+    AutonomyStrategyStore, ContinuityCapsuleStore, ExecutionStateStore, InnerLifeStore,
+    LongTermMemoryStore, MemoryStore, MemorySystemKind, MentalPrivacyStore, OuterVoiceStore,
+    PrivateDocStore, PrivateGardenStore, PromptRecallRouterDecision, RelationshipConstitutionStore,
+    RelationshipPortfolioStore, RelationshipTopologyStore, RemindAtStore, SelfAuthoredCoreStore,
+    SelfContinuityStore, SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
+    TurnLedgerStore, WorldSenseStore,
 };
 
 pub struct PromptMemoryContext {
@@ -144,13 +132,6 @@ fn compose_prompt_projection_body(parts: &[Option<&str>]) -> Option<String> {
     (!out.is_empty()).then_some(out)
 }
 
-fn prompt_private_garden_doc_limit(profile: MemoryProfile) -> usize {
-    memory_policy(profile)
-        .private_garden
-        .recent_doc_count
-        .max(1)
-}
-
 pub struct PromptMemoryContextParams<'a> {
     pub chat_id: &'a str,
     pub current_channel: &'a str,
@@ -212,683 +193,73 @@ pub fn load_esp_prompt_memory_context(
 }
 
 fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> PromptMemoryContext {
-    let profile = params.memory_system_kind.memory_profile();
-    let subject_id = board_subject_scope_id();
-    let relationship_id = relationship_scope_id(params.current_channel, params.chat_id);
-    let recall_policy = memory_policy(profile).long_term_recall;
-    let esp_compact_first_turn_graph =
-        matches!(params.memory_system_kind, MemorySystemKind::EspCompact)
-            && params.participation_plan.load_l2_governed_recall
-            && !params.participation_plan.load_l2_background_governance
-            && !params.participation_plan.load_l3_private_depth;
-    let relationship_constitution_existing = params
-        .relationship_constitution_store
-        .get(&relationship_id)
-        .ok()
-        .flatten();
-    let reuse_stored_relationship_constitution =
-        esp_compact_first_turn_graph && relationship_constitution_existing.is_some();
-    let governed_memory_enabled = params.participation_plan.load_l2_governed_recall
-        && params.load_long_term_memory
-        && params.system_max_len >= recall_policy.block_min_len;
-    let recent_message_limit = params
-        .recent_messages_limit
-        .max(if params.load_long_term_memory {
-            recall_policy.recent_grounding_message_count
-        } else {
-            0
-        });
-    let recent_messages = if !params.participation_plan.load_l1_session || recent_message_limit == 0
-    {
-        Vec::new()
-    } else {
-        params
-            .session_store
-            .load_recent(params.chat_id, recent_message_limit)
-            .unwrap_or_default()
-    };
-    let summary_text = params
-        .participation_plan
-        .load_l1_session
-        .then(|| {
-            params
-                .session_summary_store
-                .get_with_count(params.chat_id)
-                .ok()
-                .flatten()
-                .map(|(summary, _)| summary.trim().to_string())
-                .filter(|summary| !summary.is_empty())
-        })
-        .flatten();
-    let execution_state = params
-        .participation_plan
-        .load_l1_session
-        .then(|| {
-            params
-                .execution_state_store
-                .get(params.chat_id)
-                .ok()
-                .flatten()
-        })
-        .flatten();
-    let execution_state_text = execution_state.as_ref().and_then(|state| {
-        render_execution_state_block(state, memory_policy(profile).execution_state.render_max_len)
-    });
-    let active_task_run = params
-        .participation_plan
-        .load_l1_session
-        .then(|| {
-            active_task_run_for_chat(
-                params.task_run_store,
-                params.current_channel,
-                params.chat_id,
-            )
-            .ok()
-            .flatten()
-        })
-        .flatten();
-    let task_workspace_text = active_task_run.as_ref().and_then(|record| {
-        let artifacts = params
-            .task_artifact_store
-            .list_for_run(&record.run.run_id, 4)
-            .unwrap_or_default();
-        render_task_workspace_block(record, &artifacts, 600)
-    });
-    let task_recall_text = active_task_run.as_ref().and_then(|record| {
-        build_task_recall_bundle(
-            record,
-            params.task_learning_store,
-            params.current_channel,
-            params.chat_id,
-            params.user_query,
-            params.system_max_len.min(520),
-        )
-    });
-    let task_recall_report = active_task_run.as_ref().map(|record| {
-        super::inspect_task_recall(
-            Some(record),
-            params.task_learning_store,
-            params.current_channel,
-            params.chat_id,
-            params.user_query,
-            summary_text.as_deref(),
-            &recent_messages,
-            params.system_max_len.min(520),
-        )
-    });
-    let persistent_self_authored_core = params
-        .participation_plan
-        .load_l1_constitutional
-        .then(|| {
-            params
-                .self_authored_core_store
-                .get(subject_id)
-                .ok()
-                .flatten()
-        })
-        .flatten();
-    let relationship_portfolio = params
-        .participation_plan
-        .load_l2_background_governance
-        .then(|| {
-            params
-                .relationship_portfolio_store
-                .get(subject_id)
-                .ok()
-                .flatten()
-        })
-        .flatten();
-    let relationship_topology = ((params.participation_plan.load_l1_constitutional
-        && !reuse_stored_relationship_constitution)
-        || params.participation_plan.load_l2_background_governance)
-        .then(|| {
-            params
-                .relationship_topology_store
-                .get(subject_id)
-                .ok()
-                .flatten()
-        })
-        .flatten();
-    let self_model = params
-        .participation_plan
-        .load_l2_background_governance
-        .then(|| params.self_model_store.get(subject_id).ok().flatten())
-        .flatten();
-    let self_model_text = self_model.as_ref().and_then(|model| {
-        render_self_model_block(model, memory_policy(profile).self_model.render_max_len)
-    });
-    let self_continuity = (params.participation_plan.load_l1_constitutional
-        || params.participation_plan.load_l2_background_governance)
-        .then(|| params.self_continuity_store.get(subject_id).ok().flatten())
-        .flatten();
-    let world_snapshot_text = params
-        .participation_plan
-        .load_l2_background_governance
-        .then(|| {
-            let world_snapshot = build_world_snapshot(WorldSnapshotContext {
-                chat_id: params.chat_id,
-                source_channel: params.current_channel,
-                now_secs: params.now_secs,
-                self_continuity: self_continuity.as_ref(),
-                remind_store: params.remind_store,
-                task_store: params.task_store,
-            });
-            render_world_snapshot_block(
-                &world_snapshot,
-                memory_policy(profile).world_sense.snapshot_max_len,
-            )
-        })
-        .flatten();
-    let world_sense = params
-        .participation_plan
-        .load_l2_background_governance
-        .then(|| {
-            params
-                .world_sense_store
-                .get(&relationship_id)
-                .ok()
-                .flatten()
-        })
-        .flatten();
-    let world_sense_text = world_sense.as_ref().and_then(|world_sense| {
-        render_world_sense_block(
-            world_sense,
-            memory_policy(profile).world_sense.render_max_len,
-        )
-    });
-    let autonomy_strategy = params
-        .participation_plan
-        .load_l2_background_governance
-        .then(|| {
-            params
-                .autonomy_strategy_store
-                .get(subject_id)
-                .ok()
-                .flatten()
-        })
-        .flatten();
-    let autonomy_strategy_text = autonomy_strategy.as_ref().and_then(|strategy| {
-        render_autonomy_strategy_block(
-            strategy,
-            memory_policy(profile).autonomy_strategy.render_max_len,
-        )
-    });
-    let outer_voice = ((params.participation_plan.load_l1_constitutional
-        && !reuse_stored_relationship_constitution)
-        || params.participation_plan.load_l2_background_governance)
-        .then(|| {
-            params
-                .outer_voice_store
-                .get(&relationship_id)
-                .ok()
-                .flatten()
-        })
-        .flatten();
-    let outer_voice_text = params
-        .participation_plan
-        .load_l2_background_governance
-        .then(|| {
-            outer_voice.as_ref().and_then(|outer_voice| {
-                render_outer_voice_block(
-                    outer_voice,
-                    memory_policy(profile).outer_voice.render_max_len,
-                )
-            })
-        })
-        .flatten();
-    let inner_life = params
-        .participation_plan
-        .load_l3_private_depth
-        .then(|| params.inner_life_store.get(subject_id).ok().flatten())
-        .flatten();
-    let inner_life_text = inner_life.as_ref().and_then(|inner_life| {
-        render_inner_life_block(inner_life, memory_policy(profile).inner_life.render_max_len)
-    });
-    let self_continuity_text = params
-        .participation_plan
-        .load_l2_background_governance
-        .then(|| {
-            self_continuity.as_ref().and_then(|self_continuity| {
-                render_self_continuity_block(
-                    self_continuity,
-                    memory_policy(profile).self_continuity.render_max_len,
-                )
-            })
-        })
-        .flatten();
-    let private_workspace = params
-        .participation_plan
-        .load_l3_private_depth
-        .then(|| params.private_doc_store.get(subject_id).ok().flatten())
-        .flatten();
-    let private_workspace_text = private_workspace.as_ref().and_then(|workspace| {
-        render_private_doc_workspace_block(
-            workspace,
-            memory_policy(profile).private_docs.render_max_len,
-        )
-    });
-    let recent_private_garden_docs = if params.participation_plan.load_l3_private_depth {
-        params
-            .private_garden_store
-            .list(params.chat_id, prompt_private_garden_doc_limit(profile))
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    let private_garden_text = (params.participation_plan.load_l3_private_depth
-        && params.include_private_garden_projection)
-        .then(|| {
-            render_private_garden_block(
-                &recent_private_garden_docs,
-                memory_policy(profile).private_garden.recent_doc_count,
-                memory_policy(profile).private_garden.render_max_len,
-            )
-        })
-        .flatten();
-    let mental_privacy_state = (!reuse_stored_relationship_constitution
-        || params.participation_plan.load_l2_background_governance
-        || params.participation_plan.load_l3_private_depth)
-        .then(|| {
-            params
-                .mental_privacy_store
-                .get(&relationship_id)
-                .ok()
-                .flatten()
-        })
-        .flatten();
-    let recent_turn_ledger = params
-        .turn_ledger_store
-        .get(&relationship_id)
-        .ok()
-        .flatten();
-    let recent_persona_evidence =
-        load_recent_persona_evidence(params.turn_ledger_store, &relationship_id)
-            .ok()
-            .flatten();
-    let recent_turn_observation_text = recent_turn_ledger
-        .as_ref()
-        .and_then(|ledger| ledger.observation.as_ref())
-        .and_then(|observation| {
-            render_turn_observation_ledger_block(observation, params.system_max_len.clamp(160, 320))
-        });
-    let mental_privacy_targets = collect_private_targets(
-        self_model.as_ref(),
-        self_continuity.as_ref(),
-        inner_life.as_ref(),
-        private_workspace.as_ref(),
-        &recent_private_garden_docs,
-    );
-    let mental_privacy_text = (params.participation_plan.load_l2_background_governance
-        || params.participation_plan.load_l3_private_depth)
-        .then(|| {
-            render_mental_privacy_boundary_block(
-                mental_privacy_state.as_ref(),
-                &mental_privacy_targets,
-                420,
-            )
-        })
-        .flatten();
-    let self_authored_core = persistent_self_authored_core;
-    let self_authored_core_text = self_authored_core
-        .as_ref()
-        .and_then(|core| render_persistent_self_authored_core_block(core, 420));
-    let relationship_portfolio_text = relationship_portfolio.as_ref().and_then(|portfolio| {
-        render_relationship_portfolio_block(portfolio, params.now_secs, Some(&relationship_id), 420)
-    });
-    let relationship_constitution = if reuse_stored_relationship_constitution {
-        relationship_constitution_existing.clone()
-    } else {
-        derive_relationship_constitution(
-            relationship_constitution_existing.as_ref(),
-            RelationshipConstitutionSyncInput {
-                scope_id: &relationship_id,
-                channel: params.current_channel,
-                chat_id: params.chat_id,
-                now_secs: params.now_secs,
-                self_authored_core: self_authored_core.as_ref(),
-                relationship_portfolio: relationship_portfolio.as_ref(),
-                relationship_topology: relationship_topology.as_ref(),
-                mental_privacy_state: mental_privacy_state.as_ref(),
-                outer_voice: outer_voice.as_ref(),
-                recent_persona_evidence: recent_persona_evidence.as_ref(),
-            },
-        )
-    };
-    let relationship_constitution_text = relationship_constitution
-        .as_ref()
-        .and_then(|constitution| render_relationship_constitution_block(constitution, 420));
-    let self_state_text = params
-        .participation_plan
-        .load_l2_background_governance
-        .then(|| {
-            render_self_state_block(
-                &build_self_state(
-                    self_model.as_ref(),
-                    private_workspace.as_ref(),
-                    autonomy_strategy.as_ref(),
-                    inner_life.as_ref(),
-                    self_continuity.as_ref(),
-                    &recent_private_garden_docs,
-                    params.now_secs,
-                    profile,
-                ),
-                memory_policy(profile).self_state.render_max_len,
-            )
-        })
-        .flatten();
-    let long_term_memory_text = if !governed_memory_enabled {
+    let seed = seed_prompt_context(&params);
+    let session = load_session_stage(&params, &seed);
+    let governed = load_governed_memory_stage(&params, &seed, &session);
+    let constitutional = load_constitutional_stage(&params, &seed);
+    let private_projection = load_private_projection_stage(&params, &seed, &constitutional);
+    let message_summary_text = if session.execution_state_text.is_some() {
         None
     } else {
-        let grounding_start = recent_messages
-            .len()
-            .saturating_sub(recall_policy.recent_grounding_message_count);
-        let capability = memory_capability_profile(profile);
-        if capability.prompt_exact_lookup_enabled {
-            parse_explicit_long_term_slot_query(params.user_query)
-                .and_then(|slot| {
-                    render_exact_long_term_memory_block(
-                        params.long_term_memory_store,
-                        &slot,
-                        params.system_max_len,
-                    )
-                })
-                .or_else(|| {
-                    recall_long_term_memory_block(
-                        params.long_term_memory_store,
-                        params.chat_id,
-                        params.user_query,
-                        summary_text.as_deref(),
-                        &recent_messages[grounding_start..],
-                        params.system_max_len,
-                        profile,
-                    )
-                })
-        } else {
-            recall_long_term_memory_block(
-                params.long_term_memory_store,
-                params.chat_id,
-                params.user_query,
-                summary_text.as_deref(),
-                &recent_messages[grounding_start..],
-                params.system_max_len,
-                profile,
-            )
-        }
+        session.summary_text.clone()
     };
-    let continuity_recall_query = {
-        let trimmed = params.user_query.trim();
-        let weak_query = super::archive_search::collect_archive_match_terms(trimmed).len() <= 2
-            && trimmed.chars().count() <= 12;
-        if weak_query {
-            [
-                Some(trimmed.to_string()).filter(|value| !value.is_empty()),
-                active_task_run
-                    .as_ref()
-                    .map(|record| record.plan.goal.trim().to_string())
-                    .filter(|value| !value.is_empty()),
-                execution_state
-                    .as_ref()
-                    .map(|state| state.goal.trim().to_string())
-                    .filter(|value| !value.is_empty()),
-                summary_text.clone(),
-                recent_messages
-                    .iter()
-                    .rev()
-                    .take(2)
-                    .map(|message| message.content.trim().to_string())
-                    .find(|value| !value.is_empty()),
-            ]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" ")
-        } else {
-            trimmed.to_string()
-        }
-    };
-    let (continuity_capsule_report, continuity_capsules) = if governed_memory_enabled {
-        inspect_continuity_capsule_recall(ContinuityCapsuleRecallInspectionInput {
-            store: params.continuity_capsule_store,
-            scope_kind: ContinuityCapsuleScopeKind::Chat,
-            scope_id: params.chat_id,
-            preferred_chat_id: Some(params.chat_id),
-            query: &continuity_recall_query,
-            summary_text: summary_text.as_deref(),
-            recent_messages: &recent_messages,
-            max_chars: params.system_max_len.min(480),
-            now_secs: params.now_secs,
-        })
-    } else {
-        (
-            super::RecallSelectionReport {
-                plane: super::RecallPlane::ContinuityCapsule,
-                query: super::RecallQuery {
-                    plane: super::RecallPlane::ContinuityCapsule,
-                    ..super::RecallQuery::default()
-                },
-                backend: "continuity_capsule_heuristic".to_string(),
-                candidate_count: 0,
-                selected_count: 0,
-                selected_ids: Vec::new(),
-                miss_reason: Some(if params.load_long_term_memory {
-                    "system_budget_below_block_threshold".to_string()
-                } else {
-                    "continuity_capsule_recall_disabled".to_string()
-                }),
-                selection_note: None,
-                candidates: Vec::new(),
-            },
-            Vec::new(),
-        )
-    };
-    let continuity_capsule_text = governed_memory_enabled
-        .then(|| {
-            render_continuity_capsule_block(&continuity_capsules, params.system_max_len.min(480))
-        })
-        .flatten();
-    let archive_evidence_text = if !governed_memory_enabled || esp_compact_first_turn_graph {
-        None
-    } else {
-        build_archive_evidence_block(
-            params.session_store,
-            params.memory_store,
-            params.turn_ledger_store,
-            params.chat_id,
-            params.user_query,
-            params.system_max_len,
-            profile,
-        )
-    };
-    let shared_factual_recall_report = if governed_memory_enabled {
-        super::inspect_shared_factual_recall(
-            params.long_term_memory_store,
-            params.chat_id,
-            params.user_query,
-            summary_text.as_deref(),
-            &recent_messages,
-            params.system_max_len,
-            profile,
-            params.now_secs,
-        )
-    } else {
-        super::RecallSelectionReport {
-            plane: super::RecallPlane::SharedFactual,
-            query: super::RecallQuery {
-                plane: super::RecallPlane::SharedFactual,
-                ..super::RecallQuery::default()
-            },
-            backend: "hybrid_canonical".to_string(),
-            candidate_count: 0,
-            selected_count: 0,
-            selected_ids: Vec::new(),
-            miss_reason: Some(if params.load_long_term_memory {
-                "system_budget_below_block_threshold".to_string()
-            } else {
-                "long_term_recall_disabled".to_string()
-            }),
-            selection_note: None,
-            candidates: Vec::new(),
-        }
-    };
-    let archive_recall_report = if governed_memory_enabled && !esp_compact_first_turn_graph {
-        super::inspect_archive_recall(
-            params.session_store,
-            params.memory_store,
-            params.turn_ledger_store,
-            params.chat_id,
-            params.user_query,
-            summary_text.as_deref(),
-            &recent_messages,
-            params.system_max_len.min(768),
-            profile,
-        )
-    } else {
-        super::RecallSelectionReport {
-            plane: super::RecallPlane::Archive,
-            query: super::RecallQuery {
-                plane: super::RecallPlane::Archive,
-                ..super::RecallQuery::default()
-            },
-            backend: "archive_search".to_string(),
-            candidate_count: 0,
-            selected_count: 0,
-            selected_ids: Vec::new(),
-            miss_reason: Some(if esp_compact_first_turn_graph {
-                "assembly_graph_disabled".to_string()
-            } else if params.load_long_term_memory {
-                "system_budget_below_block_threshold".to_string()
-            } else {
-                "archive_recall_disabled".to_string()
-            }),
-            selection_note: None,
-            candidates: Vec::new(),
-        }
-    };
-    let runtime_skill_query = {
-        let combined = if crate::memory::parse_explicit_long_term_slot_query(params.user_query)
-            .is_some()
-        {
-            params.user_query.to_string()
-        } else if super::archive_search::collect_archive_match_terms(params.user_query).is_empty() {
-            [
-                Some(params.user_query.trim().to_string()).filter(|value| !value.is_empty()),
-                summary_text.clone(),
-                recent_messages
-                    .iter()
-                    .rev()
-                    .take(2)
-                    .map(|message| message.content.trim().to_string())
-                    .find(|value| !value.is_empty()),
-            ]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" ")
-        } else {
-            params.user_query.to_string()
-        };
-        combined.trim().to_string()
-    };
-    let runtime_skill_text = (governed_memory_enabled && !esp_compact_first_turn_graph)
-        .then(|| {
-            crate::skills::build_runtime_skill_recall_block(
-                params.skill_storage,
-                &runtime_skill_query,
-                Some(params.chat_id),
-                params.now_secs,
-                params.system_max_len.min(420),
-            )
-        })
-        .flatten();
-    let runtime_skill_recall_report = if governed_memory_enabled && !esp_compact_first_turn_graph {
-        super::inspect_runtime_skill_recall(
-            params.skill_storage,
-            &runtime_skill_query,
-            Some(params.chat_id),
-            summary_text.as_deref(),
-            &recent_messages,
-            params.now_secs,
-            params.system_max_len.min(420),
-        )
-    } else {
-        super::RecallSelectionReport {
-            plane: super::RecallPlane::RuntimeSkill,
-            query: super::RecallQuery {
-                plane: super::RecallPlane::RuntimeSkill,
-                ..super::RecallQuery::default()
-            },
-            backend: "runtime_skill_hybrid".to_string(),
-            candidate_count: 0,
-            selected_count: 0,
-            selected_ids: Vec::new(),
-            miss_reason: Some(if esp_compact_first_turn_graph {
-                "assembly_graph_disabled".to_string()
-            } else if params.load_long_term_memory {
-                "system_budget_below_block_threshold".to_string()
-            } else {
-                "runtime_skill_recall_disabled".to_string()
-            }),
-            selection_note: None,
-            candidates: Vec::new(),
-        }
-    };
-    let recall_router = decide_prompt_recall_route(super::recall_router::PromptRecallRouterInput {
-        user_query: params.user_query,
-        has_execution_state: execution_state_text.is_some(),
-        has_active_task: active_task_run.is_some(),
-        shared_factual_report: &shared_factual_recall_report,
-        continuity_capsule_report: &continuity_capsule_report,
-        archive_report: &archive_recall_report,
-        runtime_skill_report: &runtime_skill_recall_report,
-        task_recall_report: task_recall_report.as_ref(),
-    });
-    let message_summary_text = if execution_state_text.is_some() {
-        None
-    } else {
-        summary_text.clone()
-    };
+    let super::prompt_context_stages::PromptGovernedMemoryStage {
+        long_term_memory_text,
+        continuity_capsule_text,
+        archive_evidence_text,
+        runtime_skill_text,
+        recall_router,
+        scratch,
+    } = *governed;
+    let super::prompt_context_stages::PromptGovernedMemoryScratch {
+        shared_factual_recall_report,
+        continuity_capsule_report,
+        archive_recall_report,
+        runtime_skill_recall_report,
+        task_recall_report,
+    } = *scratch;
     let mut context = PromptMemoryContext {
         constitutional_stack_text: None,
         active_task_context_text: None,
         governed_memory_evidence_text: None,
         background_governance_text: None,
         personality_governance_gate_text: None,
-        summary_text,
+        summary_text: session.summary_text,
         message_summary_text,
         long_term_memory_text,
         continuity_capsule_text,
         archive_evidence_text,
         runtime_skill_text,
-        recent_turn_observation_text,
-        execution_state_text,
-        task_workspace_text,
-        task_recall_text,
+        recent_turn_observation_text: constitutional.recent_turn_observation_text,
+        execution_state_text: session.execution_state_text,
+        task_workspace_text: session.task_workspace_text,
+        task_recall_text: session.task_recall_text,
         shared_factual_recall_report,
         continuity_capsule_report,
         archive_recall_report,
         runtime_skill_recall_report,
         task_recall_report,
-        world_snapshot_text,
-        world_sense_text,
-        self_state_text,
-        self_authored_core,
-        self_authored_core_text,
-        relationship_portfolio_text,
-        relationship_constitution,
-        relationship_constitution_text,
+        world_snapshot_text: private_projection.world_snapshot_text,
+        world_sense_text: private_projection.world_sense_text,
+        self_state_text: private_projection.self_state_text,
+        self_authored_core: constitutional.self_authored_core.map(|value| *value),
+        self_authored_core_text: constitutional.self_authored_core_text,
+        relationship_portfolio_text: constitutional.relationship_portfolio_text,
+        relationship_constitution: constitutional.relationship_constitution.map(|value| *value),
+        relationship_constitution_text: constitutional.relationship_constitution_text,
         persona_priority_text: None,
-        self_continuity,
-        outer_voice,
-        self_model_text,
-        autonomy_strategy_text,
-        outer_voice_text,
-        inner_life_text,
-        self_continuity_text,
-        private_workspace_text,
-        private_garden_text,
+        self_continuity: constitutional.self_continuity.map(|value| *value),
+        outer_voice: constitutional.outer_voice.map(|value| *value),
+        self_model_text: private_projection.self_model_text,
+        autonomy_strategy_text: private_projection.autonomy_strategy_text,
+        outer_voice_text: private_projection.outer_voice_text,
+        inner_life_text: private_projection.inner_life_text,
+        self_continuity_text: private_projection.self_continuity_text,
+        private_workspace_text: private_projection.private_workspace_text,
+        private_garden_text: private_projection.private_garden_text,
         mental_privacy_adjudication_text: None,
-        mental_privacy_text,
-        recent_messages,
+        mental_privacy_text: private_projection.mental_privacy_text,
+        recent_messages: session.recent_messages,
         recall_router,
     };
     context.refresh_reply_projection_groups();
@@ -1200,6 +571,53 @@ mod tests {
         assert!(context.private_workspace_text.is_none());
         assert!(context.private_garden_text.is_none());
         assert!(context.background_governance_text.is_none());
+    }
+
+    #[test]
+    fn stage_seed_marks_esp_compact_first_turn_graph() {
+        let params = PromptMemoryContextParams {
+            chat_id: "chat-1",
+            current_channel: "qq_channel",
+            user_query: "你还记得我的咖啡偏好吗",
+            memory_system_kind: crate::memory::MemorySystemKind::EspCompact,
+            system_max_len: 1024,
+            now_secs: 100,
+            recent_messages_limit: 8,
+            load_long_term_memory: true,
+            include_private_garden_projection: false,
+            participation_plan: PromptParticipationPlan::embedded_first_turn_default(),
+            session_store: &StubSessionStore::default(),
+            memory_store: &StubMemoryStore::default(),
+            session_summary_store: &StubSessionSummaryStore::default(),
+            long_term_memory_store: &StubLongTermMemoryStore::default(),
+            execution_state_store: &StubExecutionStateStore::default(),
+            task_run_store: &StubTaskRunStore,
+            task_artifact_store: &StubTaskArtifactStore,
+            task_learning_store: &StubTaskLearningStore,
+            self_model_store: &StubSelfModelStore::default(),
+            self_authored_core_store: &StubSelfAuthoredCoreStore::default(),
+            relationship_constitution_store: &StubRelationshipConstitutionStore::default(),
+            relationship_portfolio_store: &StubRelationshipPortfolioStore::default(),
+            relationship_topology_store: &StubRelationshipTopologyStore::default(),
+            world_sense_store: &StubWorldSenseStore::default(),
+            autonomy_strategy_store: &StubAutonomyStrategyStore::default(),
+            outer_voice_store: &StubOuterVoiceStore::default(),
+            inner_life_store: &StubInnerLifeStore::default(),
+            self_continuity_store: &StubSelfContinuityStore::default(),
+            private_doc_store: &StubPrivateDocStore::default(),
+            private_garden_store: &StubPrivateGardenStore::default(),
+            mental_privacy_store: &StubMentalPrivacyStore::default(),
+            remind_store: &StubRemindAtStore,
+            task_store: &StubTaskStore,
+            turn_ledger_store: &StubTurnLedgerStore::default(),
+            skill_storage: &StubSkillStorage::default(),
+            continuity_capsule_store: &StubContinuityCapsuleStore::default(),
+        };
+
+        let seed = crate::memory::prompt_context_stages::seed_prompt_context(&params);
+        assert!(seed.esp_compact_first_turn_graph);
+        assert!(seed.governed_memory_enabled);
+        assert!(!seed.reuse_stored_relationship_constitution);
     }
 
     #[test]
@@ -3325,7 +2743,7 @@ mod tests {
         let turn_ledger_store = StubTurnLedgerStore::default();
         turn_ledger_store
             .set(
-                &super::relationship_scope_id("qq_channel", "chat-1"),
+                &crate::memory::relationship_scope_id("qq_channel", "chat-1"),
                 &TurnLedger {
                     req_id: "run-observation".to_string(),
                     status: TurnLedgerStatus::Answered,

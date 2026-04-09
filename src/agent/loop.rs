@@ -8,6 +8,7 @@ mod task_execution;
 mod tool_round;
 mod turn_finalize;
 mod worker_context;
+mod worker_context_stages;
 
 use super::delivery::{DeliveryReport, DeliverySession, ToolIntentDelivery};
 use super::final_reply::finalize_user_visible_reply;
@@ -4639,6 +4640,27 @@ mod tests {
         assert!(!observed[0]
             .system
             .contains("current-turn persona priority before the main reply is written"));
+    }
+
+    #[test]
+    fn esp_compact_prepare_runtime_keeps_embedded_first_turn_plan() {
+        let config = test_agent_loop_config();
+        let msg = PcMsg::new_inbound("qq_channel", "chat-1", "你好", false).expect("message");
+        let registry = crate::tools::ToolRegistry::new();
+        let llm = SequenceStubLlm {
+            responses: Mutex::new(Vec::new()),
+        };
+        let request_plan =
+            AgentRequestPlan::build(&msg, &registry, &llm, AgentRunStrategy::Embedded);
+
+        let runtime_stage =
+            self::worker_context_stages::compute_prepare_runtime(&msg, &config, &request_plan);
+        assert_eq!(
+            runtime_stage.participation_plan,
+            crate::memory::PromptParticipationPlan::embedded_first_turn_default()
+        );
+        assert!(!runtime_stage.has_tools);
+        assert!(runtime_stage.capability_package_text.is_none());
     }
 
     #[test]

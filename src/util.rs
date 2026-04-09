@@ -953,9 +953,9 @@ pub const STACK_CHANNEL_WS: usize = LINUX_RUSTLS_THREAD_STACK;
 
 /// `agent_loop`：统一 agent 主执行面，承接用户消息与自治/system 作业。
 /// 当前首轮 prompt 组装、治理链与回忆装配在 ESP 上已明显变重，
-/// 先把预算抬到 24KB 稳住首消息路径；后续再继续拆分/瘦身而不是长期堆栈换空间。
+/// 结构拆栈落地期间先把预算抬到 32KB 作为 guardrail；后续继续靠阶段收窄而不是长期堆栈换空间。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub const STACK_AGENT_LOOP: usize = 24 * 1024;
+pub const STACK_AGENT_LOOP: usize = 32 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_AGENT_LOOP: usize = LINUX_RUSTLS_THREAD_STACK;
 
@@ -1244,6 +1244,24 @@ mod marker_string_tests {
 #[cfg(test)]
 mod stack_budget_tests {
     use super::*;
+
+    #[test]
+    fn agent_loop_stack_budget_covers_pre_message_prepare_chain() {
+        let stack_budget = std::hint::black_box(STACK_AGENT_LOOP);
+        assert!(
+            stack_budget >= 32 * 1024,
+            "agent_loop stack budget must cover compact prompt assembly while structural hardening is landing"
+        );
+    }
+
+    #[test]
+    fn agent_loop_stack_budget_stays_above_esp_prepare_floor() {
+        let stack_budget = std::hint::black_box(STACK_AGENT_LOOP);
+        assert!(
+            stack_budget >= 32 * 1024,
+            "agent_loop stack budget must not regress below the hardened ESP prepare floor"
+        );
+    }
 
     #[test]
     fn http_route_exec_stack_budget_covers_operator_surface() {
