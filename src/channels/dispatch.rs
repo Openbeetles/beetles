@@ -250,12 +250,8 @@ pub fn run_dispatch(outbound_rx: OutboundRx, sinks: Arc<ChannelSinks>) {
     crate::platform::task_wdt::register_current_task_to_task_wdt();
 
     loop {
-        crate::runtime::service_delayed_tasks();
         crate::platform::task_wdt::feed_current_task();
-        let wait = crate::runtime::next_delayed_task_wait(Duration::from_millis(
-            DISPATCH_POLL_MAX_WAIT_MS,
-        ));
-        let msg = match outbound_rx.recv_timeout(wait) {
+        let msg = match outbound_rx.recv_timeout(Duration::from_millis(DISPATCH_POLL_MAX_WAIT_MS)) {
             Ok(m) => m,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
             Err(e) => {

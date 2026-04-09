@@ -98,7 +98,7 @@ pub struct ThreadRuntimeSnapshot {
 /// 全量线程注册表快照，含汇总计数与明细。
 pub struct ThreadRegistrySnapshot {
     pub alive_threads: usize,
-    pub registered_threads: usize,
+    pub historical_threads: usize,
     pub total_stack_bytes: usize,
     pub io_threads: usize,
     pub interactive_threads: usize,
@@ -254,9 +254,9 @@ fn runtime_plane_flags() -> RuntimePlaneFlags {
 pub fn format_baseline_log_line() -> String {
     let snapshot = build_snapshot(false);
     format!(
-        "threads alive={} registered={} stack_total={} io={} interactive={} background={} core0={} core1={} unpinned={} std={} native={} tls={} http={} wss={} mode_sensitive={} high_risk={} critical={} low_margin={} hw_samples={}",
+        "threads alive={} historical={} stack_total={} io={} interactive={} background={} core0={} core1={} unpinned={} std={} native={} tls={} http={} wss={} mode_sensitive={} high_risk={} critical={} low_margin={} hw_samples={}",
         snapshot.alive_threads,
-        snapshot.registered_threads,
+        snapshot.historical_threads,
         snapshot.total_stack_bytes,
         snapshot.io_threads,
         snapshot.interactive_threads,
@@ -356,7 +356,8 @@ fn build_snapshot(include_details: bool) -> ThreadRegistrySnapshot {
 
     for entry in guard.iter().filter(|entry| entry.alive) {
         let profile = thread_profile(entry.name.as_str());
-        let stack_free = sample_stack_high_water_free_bytes(entry);
+        let stack_free = sample_stack_high_water_free_bytes(entry)
+            .map(|free| normalize_stack_high_water_free_bytes(entry.stack_size, free));
         let stack_used = stack_free.map(|free| entry.stack_size.saturating_sub(free));
         let stack_margin_percent = stack_free.map(|free| {
             if entry.stack_size == 0 {
@@ -447,7 +448,7 @@ fn build_snapshot(include_details: bool) -> ThreadRegistrySnapshot {
 
     ThreadRegistrySnapshot {
         alive_threads,
-        registered_threads: guard.len(),
+        historical_threads: guard.len(),
         total_stack_bytes,
         io_threads,
         interactive_threads,
@@ -554,16 +555,22 @@ fn thread_profile(name: &str) -> ThreadProfile {
             wss_capable: false,
             mode_sensitive: false,
         },
-        "dispatch" | "bg_timer" | "heartbeat" | "restart_defer" | "cron" | "remind" => {
-            ThreadProfile {
-                execution_class: ThreadExecutionClass::Runtime,
-                risk_class: ThreadRiskClass::Low,
-                tls_capable: false,
-                http_capable: false,
-                wss_capable: false,
-                mode_sensitive: false,
-            }
-        }
+        "dispatch" => ThreadProfile {
+            execution_class: ThreadExecutionClass::Runtime,
+            risk_class: ThreadRiskClass::High,
+            tls_capable: false,
+            http_capable: false,
+            wss_capable: false,
+            mode_sensitive: true,
+        },
+        "bg_timer" | "heartbeat" | "restart_defer" | "cron" | "remind" => ThreadProfile {
+            execution_class: ThreadExecutionClass::Runtime,
+            risk_class: ThreadRiskClass::Low,
+            tls_capable: false,
+            http_capable: false,
+            wss_capable: false,
+            mode_sensitive: false,
+        },
         "display" => ThreadProfile {
             execution_class: ThreadExecutionClass::Ui,
             risk_class: ThreadRiskClass::Low,
@@ -583,6 +590,13 @@ fn thread_profile(name: &str) -> ThreadProfile {
     }
 }
 
+fn normalize_stack_high_water_free_bytes(
+    stack_budget_bytes: usize,
+    sampled_free_bytes: usize,
+) -> usize {
+    sampled_free_bytes.min(stack_budget_bytes)
+}
+
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn current_task_handle_key() -> usize {
     esp_idf_hal::task::current()
@@ -599,13 +613,60 @@ fn sample_stack_high_water_free_bytes(entry: &ThreadEntry) -> Option<usize> {
     if entry.task_handle_key == 0 {
         return None;
     }
-    let words = unsafe {
+    let bytes = unsafe {
         uxTaskGetStackHighWaterMark(entry.task_handle_key as esp_idf_hal::sys::TaskHandle_t)
     } as usize;
-    Some(words.saturating_mul(core::mem::size_of::<u32>()))
+    Some(bytes)
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn sample_stack_high_water_free_bytes(_entry: &ThreadEntry) -> Option<usize> {
     None
+}
+
+#[cfg(test)]
+pub fn reset_for_tests() {
+    registry().lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn baseline_log_line_reports_historical_threads_separately() {
+        reset_for_tests();
+        register_thread(
+            "dispatch",
+            8192,
+            None,
+            HttpThreadRole::Io,
+            TaskSpawnSurface::StdThread,
+        );
+        register_thread(
+            "http_route_exec",
+            32768,
+            None,
+            HttpThreadRole::Io,
+            TaskSpawnSurface::StdThread,
+        );
+        mark_thread_stopped("http_route_exec");
+
+        let snapshot = snapshot();
+        assert_eq!(snapshot.alive_threads, 1);
+        assert_eq!(snapshot.historical_threads, 2);
+
+        let line = format_baseline_log_line();
+        assert!(line.contains("alive=1"));
+        assert!(line.contains("historical=2"));
+        assert!(!line.contains("registered="));
+
+        reset_for_tests();
+    }
+
+    #[test]
+    fn normalize_stack_high_water_caps_impossible_samples() {
+        assert_eq!(normalize_stack_high_water_free_bytes(8192, 4096), 4096);
+        assert_eq!(normalize_stack_high_water_free_bytes(8192, 32768), 8192);
+    }
 }

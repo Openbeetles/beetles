@@ -927,7 +927,7 @@ pub fn is_private_url(url: &str) -> bool {
 // | audio_io_worker                       | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS, I2S + WakeNet NN
 // | http_server                           | (inline 6144)          | 6 KB  | 6 KB  | ← wrapper thread only; IDF httpd has its own task
 // | http_route_exec                       | STACK_HTTP_ROUTE_WORKER| 32 KB | 32 KB | ← operator/memory surface + continuity inspection now run here
-// | dispatch                              | STACK_DISPATCH         | 8 KB  | 8 KB  | ← delayed-task service + admission + retry/cooldown replay
+// | dispatch                              | STACK_DISPATCH         | 8 KB  | 8 KB  | ← outbound admission + retry/cooldown replay only; delayed-task execution stays off this thread
 // | bg_timer                              | STACK_BG_TIMER         | 16 KB | 16 KB | ← heartbeat + thread/runtime snapshots + cron/self-runtime
 // | heartbeat, cli_repl                  | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS
 // | voice_session                         | STACK_VOICE_CONTROL    | 16 KB | 8 KB  | ← realtime voice now runs inline here on ESP
@@ -967,8 +967,8 @@ pub const STACK_CHANNEL_SENDER: usize = 8192;
 pub const STACK_CHANNEL_SENDER: usize = LINUX_RUSTLS_THREAD_STACK;
 
 /// `dispatch`：出站调度线程。
-/// 当前职责已包含 delayed-task service、orchestrator admission、cooldown replay
-/// 与 send retry，不再适合维持 4KB 小栈。
+/// 仅承接 outbound admission、cooldown replay 与 send retry；
+/// delayed-task 执行已收口到其他执行面，避免低栈 dispatch 偷跑持久化/后台作业。
 pub const STACK_DISPATCH: usize = 8192;
 
 /// `display`：显示刷新线程。

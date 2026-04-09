@@ -235,6 +235,10 @@ pub const AUDIO_STT_MAX_PCM_BYTES: usize = 960_000;
 pub const AUDIO_TTS_MAX_TEXT_LEN: usize = 512;
 /// TTS 播放写喇叭时的分块样本数。
 pub const AUDIO_TTS_WRITE_CHUNK_SAMPLES: usize = 1024;
+/// 等待喇叭播放队列排空时的轮询间隔（毫秒）。
+pub const AUDIO_SPEAKER_DRAIN_POLL_MS: u64 = 10;
+/// 在预估播放时长之上追加的排空宽限（毫秒）。
+pub const AUDIO_SPEAKER_DRAIN_GRACE_MS: u64 = 1_500;
 /// `raw` 模型 `options.init_cmd` 最大长度（字节）。
 pub const I2C_SENSOR_MAX_CMD_LEN: usize = 4;
 // ---------- wake_word / voice session ----------

@@ -5,11 +5,13 @@ use crate::audio::baidu_token::BaiduTokenCache;
 use crate::audio::capture::{capture_speech, AudioRecordingGuard};
 use crate::audio::{stt_baidu, tts_baidu};
 use crate::config::AudioSegment;
-use crate::constants::AUDIO_TTS_WRITE_CHUNK_SAMPLES;
-use crate::error::Result;
+use crate::constants::{
+    AUDIO_SPEAKER_DRAIN_GRACE_MS, AUDIO_SPEAKER_DRAIN_POLL_MS, AUDIO_TTS_WRITE_CHUNK_SAMPLES,
+};
+use crate::error::{Error, Result};
 use crate::platform::PlatformHttpClient;
 use crate::Platform;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub struct VoicePlaybackStats {
     pub played_samples: usize,
@@ -87,6 +89,7 @@ pub fn speak_text(
     })();
     crate::orchestrator::set_audio_playing(false);
     let played_samples = result?;
+    wait_for_platform_playback_drain(platform, audio_cfg.speaker.sample_rate, played_samples)?;
     let total_ms = tts_start.elapsed().as_millis();
     let play_ms = first_pcm_at.map(|at| at.elapsed().as_millis()).unwrap_or(0);
     Ok(VoicePlaybackStats {
@@ -94,4 +97,112 @@ pub fn speak_text(
         tts_http_ms: total_ms,
         play_ms,
     })
+}
+
+fn wait_for_platform_playback_drain(
+    platform: &dyn Platform,
+    sample_rate: u32,
+    played_samples: usize,
+) -> Result<()> {
+    if played_samples == 0 {
+        return Ok(());
+    }
+    let sample_rate = u128::from(sample_rate.max(8_000));
+    let playback_ms = (played_samples as u128)
+        .saturating_mul(1_000)
+        .saturating_add(sample_rate.saturating_sub(1))
+        / sample_rate;
+    let timeout_ms = playback_ms
+        .saturating_add(u128::from(AUDIO_SPEAKER_DRAIN_GRACE_MS))
+        .min(u128::from(u64::MAX)) as u64;
+    wait_for_playback_drain(
+        || {
+            (
+                platform.audio_speaker_ready(),
+                platform
+                    .speaker_buffered_samples()
+                    .saturating_add(platform.speaker_staging_samples()),
+            )
+        },
+        Duration::from_millis(timeout_ms),
+        Duration::from_millis(AUDIO_SPEAKER_DRAIN_POLL_MS),
+    )
+}
+
+fn wait_for_playback_drain(
+    mut state: impl FnMut() -> (bool, usize),
+    timeout: Duration,
+    poll_interval: Duration,
+) -> Result<()> {
+    let started_at = Instant::now();
+    let mut saw_pending_samples = false;
+    loop {
+        let (ready, pending_samples) = state();
+        saw_pending_samples |= pending_samples > 0;
+        if pending_samples == 0 {
+            if saw_pending_samples && !ready {
+                return Err(Error::config(
+                    "audio_speaker",
+                    "speaker became unavailable during playback",
+                ));
+            }
+            return Ok(());
+        }
+        if !ready {
+            return Err(Error::config(
+                "audio_speaker",
+                "speaker became unavailable during playback",
+            ));
+        }
+        if started_at.elapsed() >= timeout {
+            return Err(Error::config(
+                "audio_speaker",
+                format!(
+                    "speaker playback drain timeout after {} ms (pending_samples={})",
+                    timeout.as_millis(),
+                    pending_samples
+                ),
+            ));
+        }
+        if !poll_interval.is_zero() {
+            std::thread::sleep(poll_interval);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+    use std::time::Duration;
+
+    use crate::error::Result;
+
+    use super::wait_for_playback_drain;
+
+    #[test]
+    fn playback_drain_fails_when_speaker_drops_before_queue_drains() {
+        let mut states = VecDeque::from([
+            (true, 2048usize),
+            (true, 1024usize),
+            (false, 512usize),
+        ]);
+        let error = wait_for_playback_drain(
+            || states.pop_front().unwrap_or((false, 512)),
+            Duration::from_millis(50),
+            Duration::from_millis(0),
+        )
+        .expect_err("speaker drop should surface as an error");
+        assert_eq!(error.stage(), "audio_speaker");
+        assert!(error.to_string().contains("became unavailable"));
+    }
+
+    #[test]
+    fn playback_drain_succeeds_after_pending_samples_reach_zero() -> Result<()> {
+        let mut states = VecDeque::from([(true, 1024usize), (true, 256usize), (true, 0usize)]);
+        wait_for_playback_drain(
+            || states.pop_front().unwrap_or((true, 0)),
+            Duration::from_millis(50),
+            Duration::from_millis(0),
+        )
+    }
 }

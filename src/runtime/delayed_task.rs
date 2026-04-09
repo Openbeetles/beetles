@@ -22,6 +22,12 @@ enum DelayedTaskPriority {
     Critical,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DelayedTaskServiceScope {
+    AllEligible,
+    CriticalOnly,
+}
+
 struct DelayedTaskJob {
     due_at: Instant,
     priority: DelayedTaskPriority,
@@ -63,9 +69,10 @@ fn take_due_jobs_locked(pending: &mut Vec<DelayedTaskJob>, now: Instant) -> Vec<
 fn take_due_jobs_locked_with_policy(
     pending: &mut Vec<DelayedTaskJob>,
     now: Instant,
+    scope: DelayedTaskServiceScope,
     allow_best_effort: bool,
 ) -> Vec<DelayedTaskJob> {
-    if allow_best_effort {
+    if scope == DelayedTaskServiceScope::AllEligible && allow_best_effort {
         return take_due_jobs_locked(pending, now);
     }
     let mut due = Vec::new();
@@ -98,13 +105,8 @@ fn schedule_delayed_task_with_priority(
     let mut dropped_best_effort = false;
     let mut notify_deadline_changed = false;
     let mut task = Some(task);
-    let allow_best_effort = crate::runtime::thread_registry::runtime_mode_snapshot()
-        .action_budget
-        .allow_best_effort_delayed_tasks;
-    let due_now = {
+    {
         let mut pending = state().pending.lock().unwrap_or_else(|e| e.into_inner());
-        let due_now =
-            take_due_jobs_locked_with_policy(&mut pending, Instant::now(), allow_best_effort);
         match priority {
             DelayedTaskPriority::BestEffort => {
                 let best_effort_count = pending
@@ -139,12 +141,10 @@ fn schedule_delayed_task_with_priority(
                 }
             }
         }
-        due_now
-    };
+    }
     if notify_deadline_changed {
         crate::bg_timer::notify_deadline_changed();
     }
-    execute_jobs(due_now);
     if dropped_best_effort {
         log::warn!("[delayed_task] dropped oldest best-effort job to reserve critical capacity");
     }
@@ -166,12 +166,20 @@ pub fn schedule_critical_delayed_task(
 }
 
 pub fn service_delayed_tasks() {
+    service_delayed_tasks_with_scope(DelayedTaskServiceScope::AllEligible);
+}
+
+pub fn service_critical_delayed_tasks() {
+    service_delayed_tasks_with_scope(DelayedTaskServiceScope::CriticalOnly);
+}
+
+fn service_delayed_tasks_with_scope(scope: DelayedTaskServiceScope) {
     let allow_best_effort = crate::runtime::thread_registry::runtime_mode_snapshot()
         .action_budget
         .allow_best_effort_delayed_tasks;
     let due = {
         let mut pending = state().pending.lock().unwrap_or_else(|e| e.into_inner());
-        take_due_jobs_locked_with_policy(&mut pending, Instant::now(), allow_best_effort)
+        take_due_jobs_locked_with_policy(&mut pending, Instant::now(), scope, allow_best_effort)
     };
     execute_jobs(due);
 }
@@ -298,5 +306,78 @@ mod tests {
                 DELAYED_TASK_CRITICAL_RESERVED + 1
             )
         );
+    }
+
+    #[test]
+    fn scheduling_new_job_does_not_run_overdue_jobs_inline() {
+        let _guard = delayed_task_test_guard();
+        reset_delayed_tasks_for_tests();
+        let executed = Arc::new(Mutex::new(Vec::new()));
+        let now = Instant::now();
+
+        {
+            let executed = Arc::clone(&executed);
+            assert!(schedule_delayed_task(
+                now,
+                Box::new(move || {
+                    executed.lock().unwrap_or_else(|e| e.into_inner()).push(1);
+                }),
+            ));
+        }
+        {
+            let executed = Arc::clone(&executed);
+            assert!(schedule_delayed_task(
+                now + Duration::from_secs(1),
+                Box::new(move || {
+                    executed.lock().unwrap_or_else(|e| e.into_inner()).push(2);
+                }),
+            ));
+        }
+
+        assert!(executed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty());
+
+        service_delayed_tasks();
+        let got = executed.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert_eq!(got, vec![1]);
+    }
+
+    #[test]
+    fn critical_only_service_skips_best_effort_jobs() {
+        let _guard = delayed_task_test_guard();
+        reset_delayed_tasks_for_tests();
+        let executed = Arc::new(Mutex::new(Vec::new()));
+        let now = Instant::now();
+
+        {
+            let executed = Arc::clone(&executed);
+            assert!(schedule_delayed_task(
+                now,
+                Box::new(move || {
+                    executed.lock().unwrap_or_else(|e| e.into_inner()).push(1);
+                }),
+            ));
+        }
+        {
+            let executed = Arc::clone(&executed);
+            assert!(schedule_critical_delayed_task(
+                now,
+                Box::new(move || {
+                    executed.lock().unwrap_or_else(|e| e.into_inner()).push(2);
+                }),
+            )
+            .is_ok());
+        }
+
+        service_critical_delayed_tasks();
+        let got = executed.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert_eq!(got, vec![2]);
+        assert_eq!(pending_counts_for_tests(), (1, 0));
+
+        service_delayed_tasks();
+        let got = executed.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert_eq!(got, vec![2, 1]);
     }
 }
