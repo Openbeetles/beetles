@@ -8,25 +8,22 @@ use crate::orchestrator::PressureLevel;
 use crate::platform::SkillStorage;
 use crate::skills::{record_runtime_skill_outcomes, RuntimeSkillReuseOutcome};
 use crate::task_execution::{
-    active_task_run_for_chat, current_or_next_step, run_task_learning_maintenance,
-    TaskArtifactRecord, TaskArtifactStore, TaskLearningMaintenanceContext,
-    TaskLearningMaintenanceInput, TaskLearningMaintenanceOutcome, TaskLearningRecord,
-    TaskLearningRoute, TaskLearningStore, TaskRunRecord, TaskRunStore,
+    active_task_run_for_chat, run_task_learning_maintenance, TaskArtifactStore,
+    TaskLearningMaintenanceContext, TaskLearningMaintenanceInput, TaskLearningMaintenanceOutcome,
+    TaskLearningStore, TaskRunStore,
 };
 
 use super::{
-    evaluate_long_term_memory_extraction_turn, load_session_summary_snapshot,
-    mark_long_term_memory_extraction_requested, memory_capability_profile, memory_policy,
-    persist_long_term_memory_extraction_state, run_execution_state_refresh_with_state,
-    run_memory_governance_kernel, run_memory_hygiene_jobs,
+    build_post_reply_continuity_drafts, evaluate_long_term_memory_extraction_turn,
+    load_session_summary_snapshot, mark_long_term_memory_extraction_requested,
+    memory_capability_profile, memory_policy, persist_long_term_memory_extraction_state,
+    run_execution_state_refresh_with_state, run_memory_governance_kernel, run_memory_hygiene_jobs,
     run_session_summary_refresh_with_snapshot, should_refresh_execution_state,
-    ContinuityCapsuleDraft, ContinuityCapsuleKind, ContinuityCapsuleScopeKind,
-    ContinuityCapsuleSource, ContinuityCapsuleStatus, ContinuityCapsuleStore,
-    ExecutionStateRefreshContext, ExecutionStateRefreshInput, ExecutionStateRefreshOutcome,
-    ExecutionStateStore, LongTermMemoryExtractionStateStore, LongTermMemoryExtractionTurnInput,
-    LongTermMemoryStore, MemoryGovernanceContext, MemoryGovernanceInput, MemoryHygieneContext,
-    MemoryProfile, MemoryStore, PromptRecallIntent, SessionStore, SessionSummaryRefreshOutcome,
-    SessionSummaryStore, TurnLedgerStore,
+    ContinuityCapsuleStore, ExecutionStateRefreshContext, ExecutionStateRefreshInput,
+    ExecutionStateRefreshOutcome, ExecutionStateStore, LongTermMemoryExtractionStateStore,
+    LongTermMemoryExtractionTurnInput, LongTermMemoryStore, MemoryGovernanceContext,
+    MemoryGovernanceInput, MemoryHygieneContext, MemoryProfile, MemoryStore, PromptRecallIntent,
+    SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore, TurnLedgerStore,
 };
 
 const CONTINUITY_CAPSULE_RECENT_RUN_WINDOW_SECS: u64 = 6 * 60 * 60;
@@ -486,12 +483,13 @@ fn run_continuity_capsule_maintenance(
             .find(|record| {
                 record.run.source_channel == input.channel
                     && record.run.source_chat_id == input.chat_id
+                    && record.run.status.is_terminal()
                     && input.now_secs.saturating_sub(record.run.updated_at)
                         <= CONTINUITY_CAPSULE_RECENT_RUN_WINDOW_SECS
             })
     };
     let selected_run = active_run.or(recent_run);
-    let drafts = if let Some(run) = selected_run.as_ref() {
+    let (artifacts, learning_records) = if let Some(run) = selected_run.as_ref() {
         let artifacts = ctx
             .task_artifact_store
             .list_for_run(&run.run.run_id, 6)
@@ -500,20 +498,20 @@ fn run_continuity_capsule_maintenance(
             .task_learning_store
             .list_for_run(&run.run.run_id, 6)
             .unwrap_or_default();
-        build_task_continuity_capsule_drafts(
-            run,
-            execution_state.as_ref(),
-            input,
-            &artifacts,
-            &learning_records,
-        )
+        (artifacts, learning_records)
     } else {
-        execution_state
-            .as_ref()
-            .and_then(|state| build_execution_continuity_capsule_draft(state, input, summary_text))
-            .into_iter()
-            .collect()
+        (Vec::new(), Vec::new())
     };
+    let drafts = build_post_reply_continuity_drafts(
+        selected_run.as_ref(),
+        execution_state.as_ref(),
+        input.chat_id,
+        input.channel,
+        input.now_secs,
+        &artifacts,
+        &learning_records,
+        summary_text,
+    );
     if drafts.is_empty() {
         return Ok(ContinuityCapsuleMaintenanceOutcome::default());
     }
@@ -526,222 +524,6 @@ fn run_continuity_capsule_maintenance(
         superseded: write.superseded,
         total: write.total,
     })
-}
-
-fn build_task_continuity_capsule_drafts(
-    run: &TaskRunRecord,
-    execution_state: Option<&crate::memory::ExecutionState>,
-    input: &PostReplyMemoryMaintenanceInput<'_>,
-    artifacts: &[TaskArtifactRecord],
-    learning_records: &[TaskLearningRecord],
-) -> Vec<ContinuityCapsuleDraft> {
-    let topic = first_non_empty(&[
-        run.run.title.as_str(),
-        run.plan.goal.as_str(),
-        execution_state
-            .map(|state| state.goal.as_str())
-            .unwrap_or(""),
-    ]);
-    if topic.is_empty() {
-        return Vec::new();
-    }
-    let step = current_or_next_step(run);
-    let summary = first_non_empty(&[
-        execution_state
-            .map(|state| state.progress.as_str())
-            .unwrap_or(""),
-        step.map(|value| value.last_result_summary.as_str())
-            .unwrap_or(""),
-        run.plan.goal.as_str(),
-    ]);
-    let is_terminal = run.run.status.is_terminal();
-    let outcome = if is_terminal {
-        first_non_empty(&[
-            run.run.final_summary.as_str(),
-            execution_state
-                .map(|state| state.last_output.as_str())
-                .unwrap_or(""),
-            step.map(|value| value.last_result_summary.as_str())
-                .unwrap_or(""),
-        ])
-    } else {
-        String::new()
-    };
-    let next_step = if is_terminal {
-        String::new()
-    } else {
-        first_non_empty(&[
-            execution_state
-                .map(|state| state.next_action.as_str())
-                .unwrap_or(""),
-            step.map(|value| value.instruction.as_str()).unwrap_or(""),
-        ])
-    };
-    let mut unresolved = Vec::new();
-    push_compact(
-        &mut unresolved,
-        execution_state
-            .map(|state| state.blocker.as_str())
-            .unwrap_or(""),
-    );
-    push_compact(&mut unresolved, run.run.failure_reason.as_str());
-    if let Some(step) = step {
-        if matches!(
-            step.status,
-            crate::task_execution::TaskStepStatus::Blocked
-                | crate::task_execution::TaskStepStatus::Failed
-        ) {
-            push_compact(&mut unresolved, step.last_review_summary.as_str());
-        }
-    }
-    let mut decisions = Vec::new();
-    for record in learning_records {
-        match record.route {
-            TaskLearningRoute::RuntimeSkill | TaskLearningRoute::CanonicalFactual => {
-                push_compact(&mut decisions, record.summary.as_str());
-            }
-            TaskLearningRoute::ArchivedEvidence
-            | TaskLearningRoute::Pending
-            | TaskLearningRoute::WorkspacePruned
-            | TaskLearningRoute::Rejected => {}
-        }
-    }
-    let mut artifact_refs = Vec::new();
-    for artifact in artifacts {
-        push_compact(
-            &mut artifact_refs,
-            format!("artifact:{}", artifact.artifact.artifact_id).as_str(),
-        );
-    }
-    let mut provenance_refs = vec![
-        "source=post_reply_maintenance".to_string(),
-        format!("run={}", run.run.run_id),
-        format!("run_status={:?}", run.run.status).to_ascii_lowercase(),
-    ];
-    if !input.channel.trim().is_empty() {
-        provenance_refs.push(format!("channel={}", input.channel.trim()));
-    }
-    if !learning_records.is_empty() {
-        provenance_refs.push(format!("learning_records={}", learning_records.len()));
-    }
-    vec![ContinuityCapsuleDraft {
-        kind: if is_terminal {
-            ContinuityCapsuleKind::TaskResolution
-        } else {
-            ContinuityCapsuleKind::WorkSession
-        },
-        scope_kind: ContinuityCapsuleScopeKind::Chat,
-        scope_id: input.chat_id.to_string(),
-        source_chat_id: input.chat_id.to_string(),
-        source_channel: input.channel.to_string(),
-        run_id: run.run.run_id.clone(),
-        topic,
-        summary,
-        outcome,
-        decisions,
-        next_step,
-        unresolved,
-        artifact_refs,
-        provenance_refs,
-        source: if is_terminal {
-            ContinuityCapsuleSource::TaskCompletion
-        } else {
-            ContinuityCapsuleSource::PostReplyMaintenance
-        },
-        status: if is_terminal {
-            ContinuityCapsuleStatus::Done
-        } else {
-            ContinuityCapsuleStatus::Active
-        },
-        observed_at: run.run.updated_at.max(input.now_secs),
-    }]
-}
-
-fn build_execution_continuity_capsule_draft(
-    state: &crate::memory::ExecutionState,
-    input: &PostReplyMemoryMaintenanceInput<'_>,
-    summary_text: Option<&str>,
-) -> Option<ContinuityCapsuleDraft> {
-    let topic = first_non_empty(&[state.goal.as_str()]);
-    if topic.is_empty() {
-        return None;
-    }
-    let is_done = state.status == crate::memory::ExecutionStatus::Done;
-    let mut provenance_refs = vec![
-        "source=post_reply_maintenance".to_string(),
-        "execution_state".to_string(),
-    ];
-    if summary_text.is_some() {
-        provenance_refs.push("summary_snapshot".to_string());
-    }
-    Some(ContinuityCapsuleDraft {
-        kind: if is_done {
-            ContinuityCapsuleKind::TaskResolution
-        } else {
-            ContinuityCapsuleKind::HandoffState
-        },
-        scope_kind: ContinuityCapsuleScopeKind::Chat,
-        scope_id: input.chat_id.to_string(),
-        source_chat_id: input.chat_id.to_string(),
-        source_channel: input.channel.to_string(),
-        run_id: String::new(),
-        topic,
-        summary: first_non_empty(&[state.progress.as_str(), summary_text.unwrap_or_default()]),
-        outcome: if is_done {
-            first_non_empty(&[state.last_output.as_str()])
-        } else {
-            String::new()
-        },
-        decisions: Vec::new(),
-        next_step: if is_done {
-            String::new()
-        } else {
-            first_non_empty(&[state.next_action.as_str()])
-        },
-        unresolved: non_empty_list(&[state.blocker.as_str()]),
-        artifact_refs: Vec::new(),
-        provenance_refs,
-        source: ContinuityCapsuleSource::PostReplyMaintenance,
-        status: if is_done {
-            ContinuityCapsuleStatus::Done
-        } else {
-            ContinuityCapsuleStatus::Active
-        },
-        observed_at: input.now_secs,
-    })
-}
-
-fn push_compact(out: &mut Vec<String>, value: &str) {
-    let normalized = crate::util::truncate_content_to_max(value.trim(), 120)
-        .trim()
-        .to_string();
-    if normalized.is_empty() || out.iter().any(|existing| existing == &normalized) {
-        return;
-    }
-    if out.len() < 4 {
-        out.push(normalized);
-    }
-}
-
-fn non_empty_list(values: &[&str]) -> Vec<String> {
-    let mut out = Vec::new();
-    for value in values {
-        push_compact(&mut out, value);
-    }
-    out
-}
-
-fn first_non_empty(values: &[&str]) -> String {
-    values
-        .iter()
-        .find_map(|value| {
-            let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
-            let trimmed = crate::util::truncate_content_to_max(normalized.trim(), 180)
-                .trim()
-                .to_string();
-            (!trimmed.is_empty()).then_some(trimmed)
-        })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -1805,6 +1587,279 @@ mod tests {
     }
 
     #[test]
+    fn post_reply_maintenance_emits_handoff_capsule_when_only_recent_run_is_unsettled() {
+        let execution_state_store = StubExecutionStateStore {
+            state: Mutex::new(Some(ExecutionState {
+                status: crate::memory::ExecutionStatus::Active,
+                goal: "Close continuity capsule productionization".to_string(),
+                progress: "Task 1 maintenance path reviewed".to_string(),
+                blocker: String::new(),
+                next_action: "Promote the shared post-reply draft builder".to_string(),
+                last_output: String::new(),
+                active_constraints: Vec::new(),
+                open_questions: Vec::new(),
+                latest_observations: Vec::new(),
+                next_best_actions: Vec::new(),
+                updated_at: 88,
+            })),
+            ..Default::default()
+        };
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
+        let task_run_store = StubTaskRunStore {
+            active: Vec::new(),
+            recent: vec![crate::task_execution::TaskRunRecord {
+                run: crate::task_execution::TaskRun {
+                    run_id: "run-unsettled".to_string(),
+                    source_channel: "qq_channel".to_string(),
+                    source_chat_id: "chat-1".to_string(),
+                    user_request: "继续收口 continuity capsule".to_string(),
+                    title: "Continuity capsule productionization".to_string(),
+                    status: crate::task_execution::TaskRunStatus::Running,
+                    current_step_id: "s01".to_string(),
+                    planner_reason: String::new(),
+                    final_summary: String::new(),
+                    failure_reason: String::new(),
+                    plan_revision: 1,
+                    created_at: 60,
+                    updated_at: 90,
+                    finished_at: 0,
+                },
+                plan: crate::task_execution::TaskPlan {
+                    goal: "Land continuity capsule productionization".to_string(),
+                    completion_definition: "maintenance and recall use one continuity contract"
+                        .to_string(),
+                    risk_notes: Vec::new(),
+                    ordered_steps: vec![crate::task_execution::TaskStep {
+                        step_id: "s01".to_string(),
+                        title: "Unify sources".to_string(),
+                        instruction: "Keep the post-reply path on one shared builder".to_string(),
+                        status: crate::task_execution::TaskStepStatus::Running,
+                        tool_budget: 3,
+                        retry_budget: 1,
+                        expected_artifacts: Vec::new(),
+                        review_criteria: Vec::new(),
+                        attempt_count: 0,
+                        last_result_summary: "builder still lives in maintenance.rs".to_string(),
+                        last_review_summary: String::new(),
+                        started_at: 70,
+                        finished_at: 0,
+                    }],
+                },
+            }],
+        };
+
+        let outcome = run_continuity_capsule_maintenance(
+            &PostReplyMemoryMaintenanceContext {
+                session_store: &StubSessionStore::default(),
+                memory_store: &StubMemoryStore,
+                session_summary_store: &StubSessionSummaryStore::default(),
+                execution_state_store: &execution_state_store,
+                long_term_memory_store: &StubLongTermMemoryStore,
+                continuity_capsule_store: &continuity_capsule_store,
+                extraction_state_store: &StubExtractionStateStore::default(),
+                turn_ledger_store: &StubTurnLedgerStore,
+                skill_storage: &StubSkillStorage::default(),
+                task_run_store: &task_run_store,
+                task_artifact_store: &StubTaskArtifactStore::default(),
+                task_learning_store: &StubTaskLearningStore::default(),
+            },
+            &PostReplyMemoryMaintenanceInput {
+                chat_id: "chat-1",
+                ingress: IngressKind::User,
+                channel: "qq_channel",
+                user_content: "继续把 continuity capsule 收口",
+                reply_content: "我会优先落 shared builder，再补 recall",
+                pressure: PressureLevel::Normal,
+                memory_profile: MemoryProfile::Embedded,
+                tool_calls: 1,
+                external_content_used: false,
+                prompt_recall_intent: PromptRecallIntent::Mixed,
+                runtime_skill_selected_ids: Vec::new(),
+                task_learning_selected_ids: Vec::new(),
+                reuse_outcome: RuntimeSkillReuseOutcome::Neutral,
+                reuse_outcome_note: "",
+                now_secs: 100,
+            },
+            Some("Post-reply maintenance can now reuse one continuity builder"),
+        )
+        .unwrap();
+
+        assert_eq!(outcome.drafted, 1);
+        let stored = continuity_capsule_store.list(8).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(
+            stored[0].kind,
+            crate::memory::ContinuityCapsuleKind::HandoffState
+        );
+        assert_eq!(
+            stored[0].source,
+            crate::memory::ContinuityCapsuleSource::PostReplyMaintenance
+        );
+        assert_eq!(stored[0].run_id, "");
+        assert_eq!(
+            stored[0].next_step,
+            "Promote the shared post-reply draft builder"
+        );
+        assert!(stored[0]
+            .provenance_refs
+            .iter()
+            .any(|value| value == "execution_state"));
+        assert!(stored[0]
+            .provenance_refs
+            .iter()
+            .any(|value| value == "summary_snapshot"));
+    }
+
+    #[test]
+    fn post_reply_maintenance_prefers_recent_settled_run_over_unsettled_recent_run() {
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
+        let task_run_store = StubTaskRunStore {
+            active: Vec::new(),
+            recent: vec![
+                crate::task_execution::TaskRunRecord {
+                    run: crate::task_execution::TaskRun {
+                        run_id: "run-unsettled".to_string(),
+                        source_channel: "qq_channel".to_string(),
+                        source_chat_id: "chat-1".to_string(),
+                        user_request: "继续收口 continuity capsule".to_string(),
+                        title: "Continuity capsule productionization".to_string(),
+                        status: crate::task_execution::TaskRunStatus::Running,
+                        current_step_id: "s01".to_string(),
+                        planner_reason: String::new(),
+                        final_summary: String::new(),
+                        failure_reason: String::new(),
+                        plan_revision: 1,
+                        created_at: 60,
+                        updated_at: 95,
+                        finished_at: 0,
+                    },
+                    plan: crate::task_execution::TaskPlan {
+                        goal: "Land continuity capsule productionization".to_string(),
+                        completion_definition: "maintenance and recall use one continuity contract"
+                            .to_string(),
+                        risk_notes: Vec::new(),
+                        ordered_steps: vec![crate::task_execution::TaskStep {
+                            step_id: "s01".to_string(),
+                            title: "Unify sources".to_string(),
+                            instruction: "Do not let an unsettled recent run mask handoff state"
+                                .to_string(),
+                            status: crate::task_execution::TaskStepStatus::Running,
+                            tool_budget: 3,
+                            retry_budget: 1,
+                            expected_artifacts: Vec::new(),
+                            review_criteria: Vec::new(),
+                            attempt_count: 0,
+                            last_result_summary: "nonterminal recent runs still win today"
+                                .to_string(),
+                            last_review_summary: String::new(),
+                            started_at: 80,
+                            finished_at: 0,
+                        }],
+                    },
+                },
+                crate::task_execution::TaskRunRecord {
+                    run: crate::task_execution::TaskRun {
+                        run_id: "run-settled".to_string(),
+                        source_channel: "qq_channel".to_string(),
+                        source_chat_id: "chat-1".to_string(),
+                        user_request: "继续收口 continuity capsule".to_string(),
+                        title: "Continuity capsule productionization".to_string(),
+                        status: crate::task_execution::TaskRunStatus::Completed,
+                        current_step_id: "s02".to_string(),
+                        planner_reason: String::new(),
+                        final_summary: "Continuity capsule draft sources unified".to_string(),
+                        failure_reason: String::new(),
+                        plan_revision: 1,
+                        created_at: 40,
+                        updated_at: 94,
+                        finished_at: 94,
+                    },
+                    plan: crate::task_execution::TaskPlan {
+                        goal: "Land continuity capsule productionization".to_string(),
+                        completion_definition: "maintenance and recall use one continuity contract"
+                            .to_string(),
+                        risk_notes: Vec::new(),
+                        ordered_steps: vec![crate::task_execution::TaskStep {
+                            step_id: "s02".to_string(),
+                            title: "Close Task 1".to_string(),
+                            instruction: "Reuse the settled run as the continuity contract"
+                                .to_string(),
+                            status: crate::task_execution::TaskStepStatus::Passed,
+                            tool_budget: 3,
+                            retry_budget: 1,
+                            expected_artifacts: Vec::new(),
+                            review_criteria: Vec::new(),
+                            attempt_count: 0,
+                            last_result_summary: "shared builder moved to continuity_capsule.rs"
+                                .to_string(),
+                            last_review_summary: String::new(),
+                            started_at: 70,
+                            finished_at: 94,
+                        }],
+                    },
+                },
+            ],
+        };
+
+        let outcome = run_continuity_capsule_maintenance(
+            &PostReplyMemoryMaintenanceContext {
+                session_store: &StubSessionStore::default(),
+                memory_store: &StubMemoryStore,
+                session_summary_store: &StubSessionSummaryStore::default(),
+                execution_state_store: &StubExecutionStateStore::default(),
+                long_term_memory_store: &StubLongTermMemoryStore,
+                continuity_capsule_store: &continuity_capsule_store,
+                extraction_state_store: &StubExtractionStateStore::default(),
+                turn_ledger_store: &StubTurnLedgerStore,
+                skill_storage: &StubSkillStorage::default(),
+                task_run_store: &task_run_store,
+                task_artifact_store: &StubTaskArtifactStore::default(),
+                task_learning_store: &StubTaskLearningStore::default(),
+            },
+            &PostReplyMemoryMaintenanceInput {
+                chat_id: "chat-1",
+                ingress: IngressKind::User,
+                channel: "qq_channel",
+                user_content: "继续把 continuity capsule 收口",
+                reply_content: "这轮会优先复用已 settled 的 run 合同",
+                pressure: PressureLevel::Normal,
+                memory_profile: MemoryProfile::Embedded,
+                tool_calls: 1,
+                external_content_used: false,
+                prompt_recall_intent: PromptRecallIntent::Mixed,
+                runtime_skill_selected_ids: Vec::new(),
+                task_learning_selected_ids: Vec::new(),
+                reuse_outcome: RuntimeSkillReuseOutcome::Neutral,
+                reuse_outcome_note: "",
+                now_secs: 100,
+            },
+            Some("Settled runs should beat unsettled recent runs"),
+        )
+        .unwrap();
+
+        assert_eq!(outcome.drafted, 1);
+        let stored = continuity_capsule_store.list(8).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].run_id, "run-settled");
+        assert_eq!(
+            stored[0].kind,
+            crate::memory::ContinuityCapsuleKind::TaskResolution
+        );
+        assert_eq!(
+            stored[0].source,
+            crate::memory::ContinuityCapsuleSource::TaskCompletion
+        );
+        assert_eq!(
+            stored[0].status,
+            crate::memory::ContinuityCapsuleStatus::Done
+        );
+        assert_eq!(
+            stored[0].outcome,
+            "Continuity capsule draft sources unified"
+        );
+    }
+
+    #[test]
     fn task_continuity_capsule_excludes_archive_only_learning_from_decisions() {
         let run = crate::task_execution::TaskRunRecord {
             run: crate::task_execution::TaskRun {
@@ -1847,26 +1902,12 @@ mod tests {
                 }],
             },
         };
-        let drafts = build_task_continuity_capsule_drafts(
-            &run,
+        let drafts = build_post_reply_continuity_drafts(
+            Some(&run),
             None,
-            &PostReplyMemoryMaintenanceInput {
-                chat_id: "chat-1",
-                ingress: IngressKind::User,
-                channel: "qq_channel",
-                user_content: "继续收口写入治理",
-                reply_content: "我会统一 factual 和 runtime skill 的写入门",
-                pressure: PressureLevel::Normal,
-                memory_profile: MemoryProfile::Embedded,
-                tool_calls: 1,
-                external_content_used: false,
-                prompt_recall_intent: PromptRecallIntent::Mixed,
-                runtime_skill_selected_ids: Vec::new(),
-                task_learning_selected_ids: Vec::new(),
-                reuse_outcome: RuntimeSkillReuseOutcome::Neutral,
-                reuse_outcome_note: "",
-                now_secs: 30,
-            },
+            "chat-1",
+            "qq_channel",
+            30,
             &[],
             &[
                 crate::task_execution::TaskLearningRecord {
@@ -1920,6 +1961,7 @@ mod tests {
                     observed_at: 20,
                 },
             ],
+            None,
         );
         assert_eq!(drafts.len(), 1);
         assert_eq!(drafts[0].decisions.len(), 1);

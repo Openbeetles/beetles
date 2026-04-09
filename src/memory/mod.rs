@@ -92,14 +92,16 @@ pub use autonomy_strategy::{
 };
 pub use context_window::build_context_messages;
 pub(crate) use continuity_capsule::{
-    apply_continuity_capsule_drafts, canonicalize_continuity_capsule,
+    apply_continuity_capsule_drafts, build_post_reply_continuity_drafts,
+    canonicalize_continuity_capsule,
 };
 pub use continuity_capsule::{
-    inspect_continuity_capsule_recall, render_continuity_capsule_block, ContinuityCapsule,
-    ContinuityCapsuleDraft, ContinuityCapsuleKind, ContinuityCapsuleRecallInspectionInput,
-    ContinuityCapsuleScopeKind, ContinuityCapsuleSource, ContinuityCapsuleStatus,
-    ContinuityCapsuleStore, ContinuityCapsuleWriteOutcome, MAX_CONTINUITY_CAPSULES,
-    MAX_CONTINUITY_CAPSULES_PER_SCOPE, REL_PATH_CONTINUITY_CAPSULES,
+    build_continuity_capsule_operator_summary, inspect_continuity_capsule_recall,
+    render_continuity_capsule_block, ContinuityCapsule, ContinuityCapsuleDraft,
+    ContinuityCapsuleKind, ContinuityCapsuleOperatorSummary,
+    ContinuityCapsuleRecallInspectionInput, ContinuityCapsuleScopeKind, ContinuityCapsuleSource,
+    ContinuityCapsuleStatus, ContinuityCapsuleStore, ContinuityCapsuleWriteOutcome,
+    MAX_CONTINUITY_CAPSULES, MAX_CONTINUITY_CAPSULES_PER_SCOPE, REL_PATH_CONTINUITY_CAPSULES,
 };
 pub(crate) use continuity_snapshot::select_active_continuity_snapshot_chat_ids;
 pub use continuity_snapshot::{
@@ -295,7 +297,8 @@ pub(crate) use recall_rerank::{
 #[cfg(test)]
 pub(crate) use recall_rerank::{CrossPlanePlaneSignal, CrossPlaneRerankCandidate};
 pub(crate) use recall_router::{
-    decide_prompt_recall_route, PromptRecallIntent, PromptRecallRouterDecision,
+    build_continuity_recall_query, decide_prompt_recall_route, PromptRecallIntent,
+    PromptRecallRouterDecision,
 };
 pub use recent_persona_evidence::{
     derive_recent_persona_evidence, load_recent_persona_evidence,

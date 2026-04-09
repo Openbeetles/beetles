@@ -1939,6 +1939,7 @@ fn run_self_runtime_job(
             session_summary_store: config.session_summary_store.as_ref(),
             execution_state_store: config.execution_state_store.as_ref(),
             long_term_memory_store: config.long_term_memory_store.as_ref(),
+            continuity_capsule_store: config.continuity_capsule_store.as_ref(),
             self_model_store: config.self_model_store.as_ref(),
             self_authored_core_store: config.self_authored_core_store.as_ref(),
             core_revision_ledger_store: config.core_revision_ledger_store.as_ref(),

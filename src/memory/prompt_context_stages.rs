@@ -3,11 +3,12 @@ use crate::task_execution::{
 };
 
 use super::{
-    board_subject_scope_id, build_archive_evidence_block, build_self_state, build_world_snapshot,
-    collect_private_targets, decide_prompt_recall_route, derive_relationship_constitution,
-    inspect_continuity_capsule_recall, load_recent_persona_evidence, memory_capability_profile,
-    memory_policy, parse_explicit_long_term_slot_query, recall_long_term_memory_block,
-    relationship_scope_id, render_autonomy_strategy_block, render_continuity_capsule_block,
+    board_subject_scope_id, build_archive_evidence_block, build_continuity_recall_query,
+    build_self_state, build_world_snapshot, collect_private_targets, decide_prompt_recall_route,
+    derive_relationship_constitution, inspect_continuity_capsule_recall,
+    load_recent_persona_evidence, memory_capability_profile, memory_policy,
+    parse_explicit_long_term_slot_query, recall_long_term_memory_block, relationship_scope_id,
+    render_autonomy_strategy_block, render_continuity_capsule_block,
     render_exact_long_term_memory_block, render_execution_state_block, render_inner_life_block,
     render_mental_privacy_boundary_block, render_outer_voice_block,
     render_persistent_self_authored_core_block, render_private_doc_workspace_block,
@@ -650,40 +651,13 @@ pub(crate) fn load_governed_memory_stage(
             )
         }
     };
-    let continuity_recall_query = {
-        let trimmed = params.user_query.trim();
-        let weak_query = super::archive_search::collect_archive_match_terms(trimmed).len() <= 2
-            && trimmed.chars().count() <= 12;
-        if weak_query {
-            [
-                Some(trimmed.to_string()).filter(|value| !value.is_empty()),
-                session
-                    .active_task_run
-                    .as_ref()
-                    .map(|record| record.plan.goal.trim().to_string())
-                    .filter(|value| !value.is_empty()),
-                session
-                    .execution_state
-                    .as_ref()
-                    .map(|state| state.goal.trim().to_string())
-                    .filter(|value| !value.is_empty()),
-                session.summary_text.clone(),
-                session
-                    .recent_messages
-                    .iter()
-                    .rev()
-                    .take(2)
-                    .map(|message| message.content.trim().to_string())
-                    .find(|value| !value.is_empty()),
-            ]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" ")
-        } else {
-            trimmed.to_string()
-        }
-    };
+    let continuity_recall_query = build_continuity_recall_query(
+        params.user_query,
+        session.summary_text.as_deref(),
+        &session.recent_messages,
+        session.execution_state.as_deref(),
+        session.active_task_run.as_deref(),
+    );
     let (continuity_capsule_report, continuity_capsules) = if seed.governed_memory_enabled {
         inspect_continuity_capsule_recall(ContinuityCapsuleRecallInspectionInput {
             store: params.continuity_capsule_store,

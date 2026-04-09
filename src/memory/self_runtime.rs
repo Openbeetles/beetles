@@ -18,8 +18,9 @@ use crate::orchestrator::PressureLevel;
 use crate::platform::SkillStorage;
 use crate::task::TaskStore;
 use crate::task_execution::{
-    run_task_learning_maintenance, TaskArtifactStore, TaskLearningMaintenanceContext,
-    TaskLearningMaintenanceOutcome, TaskLearningStore, TaskRunStore,
+    active_task_run_for_chat, run_task_learning_maintenance, TaskArtifactStore,
+    TaskLearningMaintenanceContext, TaskLearningMaintenanceOutcome, TaskLearningStore,
+    TaskRunRecord, TaskRunStore,
 };
 use crate::util::{current_unix_secs, scrub_credentials, truncate_content_to_max};
 use serde::{Deserialize, Serialize};
@@ -76,11 +77,13 @@ use super::{
     upsert_relationship_topology_entry, AutonomyGovernanceTendency, AutonomyStrategyRefreshContext,
     AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome, AutonomyStrategyStore,
     BoundaryPersonaRefreshContext, BoundaryPersonaRefreshInput, BoundaryPersonaRefreshOutcome,
-    CoreRevisionGovernanceDigest, CoreRevisionLedgerStore, ExecutionStateStore,
-    InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome, InnerLifeStore,
-    InternalMemoryLayerFocus, LongTermMemoryStore, MemoryGovernanceContext, MemoryGovernanceInput,
-    MemoryHygieneContext, MemoryProfile, MemoryStore, MentalPrivacyStore, OuterVoiceRefreshContext,
-    OuterVoiceRefreshInput, OuterVoiceRefreshOutcome, OuterVoiceStore,
+    ContinuityCapsuleDraft, ContinuityCapsuleKind, ContinuityCapsuleScopeKind,
+    ContinuityCapsuleSource, ContinuityCapsuleStatus, ContinuityCapsuleStore,
+    ContinuityCapsuleWriteOutcome, CoreRevisionGovernanceDigest, CoreRevisionLedgerStore,
+    ExecutionStateStore, InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome,
+    InnerLifeStore, InternalMemoryLayerFocus, LongTermMemoryStore, MemoryGovernanceContext,
+    MemoryGovernanceInput, MemoryHygieneContext, MemoryProfile, MemoryStore, MentalPrivacyStore,
+    OuterVoiceRefreshContext, OuterVoiceRefreshInput, OuterVoiceRefreshOutcome, OuterVoiceStore,
     PersonalityGovernanceInspectionInput, PrivateDocStore, PrivateDocWorkspaceRefreshContext,
     PrivateDocWorkspaceRefreshInput, PrivateDocWorkspaceRefreshOutcome,
     PrivateGardenGovernanceContext, PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome,
@@ -199,6 +202,7 @@ pub struct SelfRuntimeContext<'a> {
     pub session_summary_store: &'a dyn SessionSummaryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
+    pub continuity_capsule_store: &'a dyn ContinuityCapsuleStore,
     pub self_model_store: &'a dyn SelfModelStore,
     pub self_authored_core_store: &'a dyn SelfAuthoredCoreStore,
     pub core_revision_ledger_store: &'a dyn CoreRevisionLedgerStore,
@@ -1267,6 +1271,315 @@ fn execute_self_runtime_actions(
     })
 }
 
+fn persist_self_runtime_continuity_capsules(
+    continuity_capsule_store: &dyn ContinuityCapsuleStore,
+    task_run_store: &dyn TaskRunStore,
+    chat_id: &str,
+    payload: &SelfRuntimeJobPayload,
+    state: &LoadedSelfRuntimeState,
+    decision: &SelfRuntimeDecision,
+) -> Result<ContinuityCapsuleWriteOutcome> {
+    let active_run = active_task_run_for_chat(
+        task_run_store,
+        state.active_relationship_channel.as_str(),
+        chat_id,
+    )?;
+    let drafts = build_self_runtime_continuity_drafts(
+        chat_id,
+        payload,
+        state,
+        decision,
+        active_run.as_ref(),
+    );
+    if drafts.is_empty() {
+        return Ok(ContinuityCapsuleWriteOutcome::default());
+    }
+    continuity_capsule_store.upsert_many(&drafts, payload.now_secs)
+}
+
+fn build_self_runtime_continuity_drafts(
+    chat_id: &str,
+    payload: &SelfRuntimeJobPayload,
+    state: &LoadedSelfRuntimeState,
+    decision: &SelfRuntimeDecision,
+    active_run: Option<&TaskRunRecord>,
+) -> Vec<ContinuityCapsuleDraft> {
+    if let Some(draft) =
+        build_reboot_continuity_capsule_draft(chat_id, payload, state, decision, active_run)
+    {
+        return vec![draft];
+    }
+    build_boundary_flush_continuity_capsule_draft(chat_id, payload, state, decision, active_run)
+        .into_iter()
+        .collect()
+}
+
+fn build_boundary_flush_continuity_capsule_draft(
+    chat_id: &str,
+    payload: &SelfRuntimeJobPayload,
+    state: &LoadedSelfRuntimeState,
+    decision: &SelfRuntimeDecision,
+    active_run: Option<&TaskRunRecord>,
+) -> Option<ContinuityCapsuleDraft> {
+    if !decision.boundary_flush {
+        return None;
+    }
+    let topic = self_runtime_continuity_first(&[
+        state
+            .execution_state
+            .as_ref()
+            .map(|value| value.goal.as_str()),
+        active_run.map(|run| run.run.title.as_str()),
+        active_run.map(|run| run.plan.goal.as_str()),
+        state
+            .self_continuity
+            .as_ref()
+            .map(|value| value.task_posture.as_str()),
+        state
+            .self_continuity
+            .as_ref()
+            .map(|value| value.wake_anchor.as_str()),
+    ]);
+    let summary = self_runtime_continuity_first(&[
+        state
+            .execution_state
+            .as_ref()
+            .map(|value| value.progress.as_str()),
+        state.summary_text.as_deref(),
+        state
+            .self_continuity
+            .as_ref()
+            .map(|value| value.current_self_state.as_str()),
+        state
+            .self_continuity
+            .as_ref()
+            .map(|value| value.continuity_bridge.as_str()),
+        Some(decision.boundary_flush_reason.as_str()),
+    ]);
+    let outcome = if state
+        .execution_state
+        .as_ref()
+        .is_some_and(|value| value.status == crate::memory::ExecutionStatus::Done)
+    {
+        self_runtime_continuity_first(&[
+            state
+                .execution_state
+                .as_ref()
+                .map(|value| value.last_output.as_str()),
+            active_run.map(|run| run.run.final_summary.as_str()),
+        ])
+    } else {
+        String::new()
+    };
+    let next_step = if outcome.is_empty() {
+        self_runtime_continuity_first(&[
+            state
+                .execution_state
+                .as_ref()
+                .map(|value| value.next_action.as_str()),
+            active_run.and_then(self_runtime_active_step_instruction),
+            state
+                .self_continuity
+                .as_ref()
+                .map(|value| value.task_posture.as_str()),
+        ])
+    } else {
+        String::new()
+    };
+    if topic.is_empty() || (summary.is_empty() && outcome.is_empty() && next_step.is_empty()) {
+        return None;
+    }
+    let mut unresolved = Vec::new();
+    self_runtime_push_compact(
+        &mut unresolved,
+        state
+            .execution_state
+            .as_ref()
+            .map(|value| value.blocker.as_str())
+            .unwrap_or(""),
+    );
+    let mut provenance_refs = vec![
+        "source=self_runtime".to_string(),
+        format!("trigger={:?}", payload.trigger).to_ascii_lowercase(),
+        format!(
+            "boundary_flush_reason={}",
+            decision.boundary_flush_reason.trim()
+        ),
+    ];
+    if state.execution_state.is_some() {
+        provenance_refs.push("execution_state".to_string());
+    }
+    if state.summary_text.is_some() {
+        provenance_refs.push("summary_snapshot".to_string());
+    }
+    if state.self_continuity.is_some() {
+        provenance_refs.push("self_continuity".to_string());
+    }
+    if let Some(run) = active_run {
+        provenance_refs.push(format!("active_run={}", run.run.run_id));
+    }
+    Some(ContinuityCapsuleDraft {
+        kind: if outcome.is_empty() {
+            ContinuityCapsuleKind::HandoffState
+        } else {
+            ContinuityCapsuleKind::TaskResolution
+        },
+        scope_kind: ContinuityCapsuleScopeKind::Chat,
+        scope_id: chat_id.to_string(),
+        source_chat_id: chat_id.to_string(),
+        source_channel: state.active_relationship_channel.clone(),
+        run_id: active_run
+            .map(|run| run.run.run_id.clone())
+            .unwrap_or_default(),
+        topic,
+        summary,
+        outcome,
+        decisions: Vec::new(),
+        next_step: next_step.clone(),
+        unresolved,
+        artifact_refs: Vec::new(),
+        provenance_refs,
+        source: if decision.boundary_flush_reason.contains("channel_handoff")
+            || decision.boundary_flush_reason.contains("autonomy_shift")
+        {
+            ContinuityCapsuleSource::HandoffFlush
+        } else {
+            ContinuityCapsuleSource::BoundaryFlush
+        },
+        status: if state
+            .execution_state
+            .as_ref()
+            .is_some_and(|value| value.status == crate::memory::ExecutionStatus::Done)
+            && next_step.is_empty()
+        {
+            ContinuityCapsuleStatus::Done
+        } else {
+            ContinuityCapsuleStatus::Active
+        },
+        observed_at: payload.now_secs,
+    })
+}
+
+fn build_reboot_continuity_capsule_draft(
+    chat_id: &str,
+    payload: &SelfRuntimeJobPayload,
+    state: &LoadedSelfRuntimeState,
+    _decision: &SelfRuntimeDecision,
+    active_run: Option<&TaskRunRecord>,
+) -> Option<ContinuityCapsuleDraft> {
+    let continuity = state.self_continuity.as_ref()?;
+    if payload.trigger != SelfRuntimeTrigger::IdleTick
+        || continuity.last_user_turn_at == 0
+        || continuity.last_autonomy_run_at > 0
+    {
+        return None;
+    }
+    let topic = self_runtime_continuity_first(&[
+        state
+            .execution_state
+            .as_ref()
+            .map(|value| value.goal.as_str()),
+        active_run.map(|run| run.run.title.as_str()),
+        active_run.map(|run| run.plan.goal.as_str()),
+        Some(continuity.task_posture.as_str()),
+        Some(continuity.wake_anchor.as_str()),
+    ]);
+    let summary = self_runtime_continuity_first(&[
+        Some(continuity.continuity_bridge.as_str()),
+        Some(continuity.current_self_state.as_str()),
+        state
+            .execution_state
+            .as_ref()
+            .map(|value| value.progress.as_str()),
+        state.summary_text.as_deref(),
+    ]);
+    let next_step = self_runtime_continuity_first(&[
+        state
+            .execution_state
+            .as_ref()
+            .map(|value| value.next_action.as_str()),
+        active_run.and_then(self_runtime_active_step_instruction),
+        Some(continuity.task_posture.as_str()),
+    ]);
+    if topic.is_empty() || (summary.is_empty() && next_step.is_empty()) {
+        return None;
+    }
+    let mut provenance_refs = vec![
+        "source=self_runtime".to_string(),
+        "reboot_continuity".to_string(),
+        "self_continuity".to_string(),
+    ];
+    if state.execution_state.is_some() {
+        provenance_refs.push("execution_state".to_string());
+    }
+    if let Some(run) = active_run {
+        provenance_refs.push(format!("active_run={}", run.run.run_id));
+    }
+    Some(ContinuityCapsuleDraft {
+        kind: ContinuityCapsuleKind::HandoffState,
+        scope_kind: ContinuityCapsuleScopeKind::Chat,
+        scope_id: chat_id.to_string(),
+        source_chat_id: chat_id.to_string(),
+        source_channel: state.active_relationship_channel.clone(),
+        run_id: active_run
+            .map(|run| run.run.run_id.clone())
+            .unwrap_or_default(),
+        topic,
+        summary,
+        outcome: String::new(),
+        decisions: Vec::new(),
+        next_step,
+        unresolved: Vec::new(),
+        artifact_refs: Vec::new(),
+        provenance_refs,
+        source: ContinuityCapsuleSource::RebootContinuity,
+        status: ContinuityCapsuleStatus::Active,
+        observed_at: payload.now_secs,
+    })
+}
+
+fn self_runtime_active_step_instruction(run: &TaskRunRecord) -> Option<&str> {
+    run.plan
+        .ordered_steps
+        .iter()
+        .find(|step| step.step_id == run.run.current_step_id)
+        .or_else(|| {
+            run.plan
+                .ordered_steps
+                .iter()
+                .find(|step| !step.status.is_terminal())
+        })
+        .map(|step| step.instruction.as_str())
+}
+
+fn self_runtime_continuity_first(values: &[Option<&str>]) -> String {
+    values
+        .iter()
+        .flatten()
+        .find_map(|value| {
+            let normalized = truncate_content_to_max(
+                &value.split_whitespace().collect::<Vec<_>>().join(" "),
+                180,
+            )
+            .trim()
+            .to_string();
+            (!normalized.is_empty()).then_some(normalized)
+        })
+        .unwrap_or_default()
+}
+
+fn self_runtime_push_compact(out: &mut Vec<String>, value: &str) {
+    let normalized = truncate_content_to_max(value.trim(), 120)
+        .trim()
+        .to_string();
+    if normalized.is_empty() || out.iter().any(|existing| existing == &normalized) {
+        return;
+    }
+    if out.len() < 4 {
+        out.push(normalized);
+    }
+}
+
 pub fn run_self_runtime(
     http: &mut dyn LlmHttpClient,
     llm: &(dyn LlmClient + Send + Sync),
@@ -1298,6 +1611,23 @@ pub fn run_self_runtime(
         prelude.as_ref(),
     );
     crate::platform::task_wdt::feed_current_task();
+    if let Some(decision) = action_results.decision.as_ref() {
+        if let Err(error) = persist_self_runtime_continuity_capsules(
+            ctx.continuity_capsule_store,
+            ctx.task_run_store,
+            chat_id,
+            payload,
+            state.as_ref(),
+            decision,
+        ) {
+            log::warn!(
+                "[self_runtime] continuity capsule persistence failed chat_id={}: {}",
+                chat_id,
+                error
+            );
+        }
+        crate::platform::task_wdt::feed_current_task();
+    }
 
     let _ = touch_self_continuity_runtime(
         ctx.self_continuity_store,
@@ -1404,7 +1734,9 @@ mod tests {
     use super::*;
     use crate::error::Result as BeetleResult;
     use crate::memory::{
-        LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemorySlot, MemoryStore, MemorySystemKind,
+        ContinuityCapsule, ContinuityCapsuleDraft, ContinuityCapsuleSource, ContinuityCapsuleStore,
+        LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemorySlot, MemoryStore,
+        MemorySystemKind,
     };
     use crate::platform::SkillStorage;
     use crate::task_execution::{
@@ -1810,6 +2142,51 @@ mod tests {
         drafts: Mutex<Vec<LongTermMemoryDraft>>,
     }
 
+    #[derive(Default)]
+    struct StubContinuityCapsuleStore {
+        entries: Mutex<Vec<ContinuityCapsule>>,
+    }
+
+    impl ContinuityCapsuleStore for StubContinuityCapsuleStore {
+        fn upsert_many(
+            &self,
+            drafts: &[ContinuityCapsuleDraft],
+            now_secs: u64,
+        ) -> BeetleResult<crate::memory::ContinuityCapsuleWriteOutcome> {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            Ok(crate::memory::apply_continuity_capsule_drafts(
+                &mut entries,
+                drafts,
+                now_secs,
+            ))
+        }
+
+        fn get(&self, capsule_id: &str) -> BeetleResult<Option<ContinuityCapsule>> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .find(|entry| entry.capsule_id == capsule_id)
+                .cloned())
+        }
+
+        fn list(&self, limit: usize) -> BeetleResult<Vec<ContinuityCapsule>> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .take(limit)
+                .cloned()
+                .collect())
+        }
+
+        fn count(&self) -> BeetleResult<usize> {
+            Ok(self.entries.lock().unwrap_or_else(|e| e.into_inner()).len())
+        }
+    }
+
     impl crate::memory::LongTermMemoryStore for StubLongTermMemoryStore {
         fn upsert_many(
             &self,
@@ -2010,6 +2387,63 @@ mod tests {
         }
     }
 
+    fn sample_loaded_self_runtime_state() -> LoadedSelfRuntimeState {
+        LoadedSelfRuntimeState {
+            summary_text: None,
+            execution_state: None,
+            self_model: None,
+            self_authored_core: None,
+            core_revision_ledger: None,
+            core_revision_governance: CoreRevisionGovernanceDigest::default(),
+            private_docs: None,
+            private_garden_docs: Vec::new(),
+            inner_life: None,
+            self_continuity: None,
+            relationship_portfolio: None,
+            relationship_topology: None,
+            relationship_constitution: None,
+            world_sense: None,
+            autonomy_strategy: None,
+            outer_voice: None,
+            mental_privacy_state: None,
+            recent_persona_evidence: None,
+            active_relationship_scope_id: "rel:qq_channel:chat-1".to_string(),
+            active_relationship_channel: "qq_channel".to_string(),
+            prior_user_channel: "qq_channel".to_string(),
+            world_snapshot: crate::memory::WorldSnapshot {
+                weekday: "Thu".to_string(),
+                hour: 10,
+                day_phase: "morning".to_string(),
+                interaction_mode: "chat".to_string(),
+                activity_rhythm: "active".to_string(),
+                situational_pull: "coding".to_string(),
+                resource_tension: "normal".to_string(),
+                pressure: PressureLevel::Normal,
+                memory_available_bytes: 0,
+                active_http_count: 0,
+                active_wss_count: 0,
+                active_agent_tasks: 0,
+                inbound_depth: 0,
+                outbound_depth: 0,
+                storage_used_kb: 0,
+                storage_total_kb: 0,
+                wifi_connected: true,
+                audio_recording: false,
+                audio_playing: false,
+                source_channel: "qq_channel".to_string(),
+                open_tasks: 0,
+                in_progress_tasks: 0,
+                due_tasks: 0,
+                high_priority_tasks: 0,
+                upcoming_reminders: 0,
+                next_reminder_at: 0,
+                user_idle_secs: 0,
+                autonomy_idle_secs: 0,
+            },
+            recent: Vec::new(),
+        }
+    }
+
     #[test]
     fn self_runtime_method_distillation_uses_governed_task_learning_pipeline() {
         let now_secs = crate::util::ymdhms_to_epoch(2026, 4, 8, 13, 0, 0);
@@ -2070,6 +2504,140 @@ mod tests {
             .expect("read promoted record")
             .expect("promoted record exists");
         assert_eq!(promoted.route, TaskLearningRoute::RuntimeSkill);
+    }
+
+    #[test]
+    fn self_runtime_boundary_flush_writes_continuity_capsule_when_signal_is_meaningful() {
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
+        let task_run_store = StubTaskRunStore::new(Vec::new());
+        let payload = SelfRuntimeJobPayload {
+            trigger: SelfRuntimeTrigger::PostReply,
+            source_channel: "qq_channel".to_string(),
+            user_content: "继续把 continuity capsule 收口".to_string(),
+            reply_content: "这轮先落 self_runtime continuity".to_string(),
+            tool_calls: 0,
+            external_content_used: false,
+            now_secs: 1_000,
+        };
+        let mut state = sample_loaded_self_runtime_state();
+        state.summary_text =
+            Some("Self runtime is about to checkpoint the handoff state".to_string());
+        state.execution_state = Some(crate::memory::ExecutionState {
+            status: crate::memory::ExecutionStatus::Active,
+            goal: "Close continuity capsule productionization".to_string(),
+            progress: "Task 2 is wiring self-runtime continuity persistence".to_string(),
+            blocker: String::new(),
+            next_action: "Persist the finalized boundary decision as a capsule".to_string(),
+            last_output: String::new(),
+            active_constraints: Vec::new(),
+            open_questions: Vec::new(),
+            latest_observations: Vec::new(),
+            next_best_actions: Vec::new(),
+            updated_at: 990,
+        });
+        let decision = SelfRuntimeDecision {
+            boundary_flush: true,
+            boundary_flush_reason: "channel_handoff".to_string(),
+            ..Default::default()
+        };
+
+        let outcome = persist_self_runtime_continuity_capsules(
+            &continuity_capsule_store,
+            &task_run_store,
+            "chat-1",
+            &payload,
+            &state,
+            &decision,
+        )
+        .expect("boundary flush continuity write should succeed");
+
+        assert_eq!(outcome.upserted, 1);
+        let stored = continuity_capsule_store
+            .list(8)
+            .expect("list continuity capsules");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].source, ContinuityCapsuleSource::HandoffFlush);
+        assert_eq!(
+            stored[0].topic,
+            "Close continuity capsule productionization"
+        );
+        assert_eq!(
+            stored[0].next_step,
+            "Persist the finalized boundary decision as a capsule"
+        );
+        assert!(stored[0]
+            .provenance_refs
+            .iter()
+            .any(|value| value == "execution_state"));
+    }
+
+    #[test]
+    fn self_runtime_reboot_continuity_writes_reboot_capsule_without_new_thread_surface() {
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
+        let task_run_store = StubTaskRunStore::new(Vec::new());
+        let payload = SelfRuntimeJobPayload {
+            trigger: SelfRuntimeTrigger::IdleTick,
+            source_channel: "self_runtime_idle".to_string(),
+            user_content: String::new(),
+            reply_content: String::new(),
+            tool_calls: 0,
+            external_content_used: false,
+            now_secs: 2_000,
+        };
+        let mut state = sample_loaded_self_runtime_state();
+        state.execution_state = Some(crate::memory::ExecutionState {
+            status: crate::memory::ExecutionStatus::Active,
+            goal: "Restore continuity after reboot".to_string(),
+            progress: "Runtime state was recovered from persisted layers".to_string(),
+            blocker: String::new(),
+            next_action: "Resume the continuity productionization task".to_string(),
+            last_output: String::new(),
+            active_constraints: Vec::new(),
+            open_questions: Vec::new(),
+            latest_observations: Vec::new(),
+            next_best_actions: Vec::new(),
+            updated_at: 1_950,
+        });
+        state.self_continuity = Some(crate::memory::SelfContinuity {
+            wake_anchor: "Still the same build-recovery self".to_string(),
+            current_self_state: "Recovered enough state to resume without replaying transcript"
+                .to_string(),
+            recent_changes: String::new(),
+            continuity_bridge:
+                "Resume from the persisted continuity contract instead of rescanning history"
+                    .to_string(),
+            priority_posture: String::new(),
+            relationship_posture: String::new(),
+            task_posture: "Resume continuity capsule productionization".to_string(),
+            last_user_turn_at: 1_900,
+            last_user_chat_id: "chat-1".to_string(),
+            last_user_channel: "qq_channel".to_string(),
+            last_autonomy_run_at: 0,
+            updated_at: 1_900,
+        });
+
+        let outcome = persist_self_runtime_continuity_capsules(
+            &continuity_capsule_store,
+            &task_run_store,
+            "chat-1",
+            &payload,
+            &state,
+            &SelfRuntimeDecision::default(),
+        )
+        .expect("reboot continuity write should succeed");
+
+        assert_eq!(outcome.upserted, 1);
+        let stored = continuity_capsule_store
+            .list(8)
+            .expect("list continuity capsules");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].source, ContinuityCapsuleSource::RebootContinuity);
+        assert_eq!(stored[0].topic, "Restore continuity after reboot");
+        assert!(stored[0].summary.contains("persisted continuity contract"));
+        assert_eq!(
+            stored[0].next_step,
+            "Resume the continuity productionization task"
+        );
     }
 
     #[test]

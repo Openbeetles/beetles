@@ -108,17 +108,27 @@ impl PromptMemoryContext {
 
     pub fn refresh_reply_projection_groups(&mut self) {
         self.constitutional_stack_text = self.soul_kernel_projection().constitutional_stack_text();
+        let continuity_capsule_in_active =
+            matches!(self.recall_router.intent, PromptRecallIntent::Continuity)
+                && (self.execution_state_text.is_some()
+                    || self.recent_turn_observation_text.is_some()
+                    || self.task_workspace_text.is_some()
+                    || self.task_recall_text.is_some());
         let active_task_parts = self.recall_router.active_task_parts(
             self.execution_state_text.as_deref(),
             self.recent_turn_observation_text.as_deref(),
             self.task_workspace_text.as_deref(),
             self.task_recall_text.as_deref(),
-            self.continuity_capsule_text.as_deref(),
+            continuity_capsule_in_active
+                .then_some(self.continuity_capsule_text.as_deref())
+                .flatten(),
         );
         self.active_task_context_text = compose_prompt_projection_body(&active_task_parts);
         let governed_memory_parts = self.recall_router.governed_memory_parts(
             self.long_term_memory_text.as_deref(),
-            self.continuity_capsule_text.as_deref(),
+            (!continuity_capsule_in_active)
+                .then_some(self.continuity_capsule_text.as_deref())
+                .flatten(),
             self.archive_evidence_text.as_deref(),
             self.runtime_skill_text.as_deref(),
         );
@@ -3191,6 +3201,22 @@ mod tests {
     }
 
     #[test]
+    fn continuity_query_prefers_capsule_before_archive_fallback() {
+        let context = continuity_router_context_for_regression();
+        let active = context.active_task_context_text.clone().unwrap_or_default();
+        let governed = context.governed_memory_evidence_text.unwrap_or_default();
+
+        assert_eq!(context.recall_router.intent, PromptRecallIntent::Continuity);
+        let capsule_pos = active.find("## Continuity Capsules").unwrap();
+        let workspace_pos = active.find("## Task Workspace").unwrap();
+        let archive_pos = governed.find("Archive evidence").unwrap();
+        let canonical_pos = governed.find("## Long-term memory").unwrap();
+        assert!(capsule_pos < workspace_pos);
+        assert!(!governed.contains("## Continuity Capsules"));
+        assert!(archive_pos < canonical_pos);
+    }
+
+    #[test]
     fn prompt_projection_regression_suite_covers_router_contract() {
         let observations = vec![
             observe_prompt_projection_case(
@@ -3198,7 +3224,7 @@ mod tests {
                 continuity_router_context_for_regression(),
                 PromptRecallIntent::Continuity,
                 &["## Continuity Capsules", "## Task Workspace"],
-                &[],
+                &["Archive evidence", "## Long-term memory"],
             ),
             observe_prompt_projection_case(
                 "procedural",

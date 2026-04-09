@@ -2,6 +2,9 @@
 //! 连续性 capsule 平面：保存“做到哪、为什么停、下一步是什么”的紧凑工作续接合同。
 
 use crate::error::Result;
+use crate::task_execution::{
+    current_or_next_step, TaskArtifactRecord, TaskLearningRecord, TaskLearningRoute, TaskRunRecord,
+};
 use crate::util::truncate_content_to_max;
 #[cfg(target_os = "linux")]
 use rusqlite::{params, Connection, OptionalExtension};
@@ -14,8 +17,8 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
 use super::{
-    RecallCandidate, RecallPlane, RecallQuery, RecallScoreBreakdown, RecallSelectionReport,
-    SessionMessage,
+    ExecutionState, ExecutionStatus, RecallCandidate, RecallPlane, RecallQuery,
+    RecallScoreBreakdown, RecallSelectionReport, SessionMessage,
 };
 
 pub const REL_PATH_CONTINUITY_CAPSULES: &str = "memory/continuity_capsules.json";
@@ -235,6 +238,22 @@ pub struct ContinuityCapsuleWriteOutcome {
     pub total: usize,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContinuityCapsuleOperatorSummary {
+    pub total: usize,
+    pub active: usize,
+    pub done: usize,
+    pub stale: usize,
+    pub superseded: usize,
+    pub post_reply: usize,
+    pub task_completion: usize,
+    pub boundary_flush: usize,
+    pub handoff_flush: usize,
+    pub reboot_continuity: usize,
+    #[serde(default)]
+    pub recent_capsules: Vec<ContinuityCapsule>,
+}
+
 pub trait ContinuityCapsuleStore: Send + Sync {
     fn upsert_many(
         &self,
@@ -332,6 +351,228 @@ pub(crate) fn apply_continuity_capsule_drafts(
     outcome
 }
 
+pub(crate) fn build_post_reply_continuity_drafts(
+    run: Option<&TaskRunRecord>,
+    execution_state: Option<&ExecutionState>,
+    chat_id: &str,
+    channel: &str,
+    now_secs: u64,
+    artifacts: &[TaskArtifactRecord],
+    learning_records: &[TaskLearningRecord],
+    summary_text: Option<&str>,
+) -> Vec<ContinuityCapsuleDraft> {
+    if let Some(run) = run {
+        return build_task_continuity_capsule_drafts(
+            run,
+            execution_state,
+            chat_id,
+            channel,
+            now_secs,
+            artifacts,
+            learning_records,
+        );
+    }
+    execution_state
+        .and_then(|state| {
+            build_execution_continuity_capsule_draft(
+                state,
+                chat_id,
+                channel,
+                now_secs,
+                summary_text,
+            )
+        })
+        .into_iter()
+        .collect()
+}
+
+fn build_task_continuity_capsule_drafts(
+    run: &TaskRunRecord,
+    execution_state: Option<&ExecutionState>,
+    chat_id: &str,
+    channel: &str,
+    now_secs: u64,
+    artifacts: &[TaskArtifactRecord],
+    learning_records: &[TaskLearningRecord],
+) -> Vec<ContinuityCapsuleDraft> {
+    let topic = first_non_empty(&[
+        run.run.title.as_str(),
+        run.plan.goal.as_str(),
+        execution_state
+            .map(|state| state.goal.as_str())
+            .unwrap_or(""),
+    ]);
+    if topic.is_empty() {
+        return Vec::new();
+    }
+    let step = current_or_next_step(run);
+    let summary = first_non_empty(&[
+        execution_state
+            .map(|state| state.progress.as_str())
+            .unwrap_or(""),
+        step.map(|value| value.last_result_summary.as_str())
+            .unwrap_or(""),
+        run.plan.goal.as_str(),
+    ]);
+    let is_terminal = run.run.status.is_terminal();
+    let outcome = if is_terminal {
+        first_non_empty(&[
+            run.run.final_summary.as_str(),
+            execution_state
+                .map(|state| state.last_output.as_str())
+                .unwrap_or(""),
+            step.map(|value| value.last_result_summary.as_str())
+                .unwrap_or(""),
+        ])
+    } else {
+        String::new()
+    };
+    let next_step = if is_terminal {
+        String::new()
+    } else {
+        first_non_empty(&[
+            execution_state
+                .map(|state| state.next_action.as_str())
+                .unwrap_or(""),
+            step.map(|value| value.instruction.as_str()).unwrap_or(""),
+        ])
+    };
+    let mut unresolved = Vec::new();
+    push_compact(
+        &mut unresolved,
+        execution_state
+            .map(|state| state.blocker.as_str())
+            .unwrap_or(""),
+    );
+    push_compact(&mut unresolved, run.run.failure_reason.as_str());
+    if let Some(step) = step {
+        if matches!(
+            step.status,
+            crate::task_execution::TaskStepStatus::Blocked
+                | crate::task_execution::TaskStepStatus::Failed
+        ) {
+            push_compact(&mut unresolved, step.last_review_summary.as_str());
+        }
+    }
+    let mut decisions = Vec::new();
+    for record in learning_records {
+        match record.route {
+            TaskLearningRoute::RuntimeSkill | TaskLearningRoute::CanonicalFactual => {
+                push_compact(&mut decisions, record.summary.as_str());
+            }
+            TaskLearningRoute::ArchivedEvidence
+            | TaskLearningRoute::Pending
+            | TaskLearningRoute::WorkspacePruned
+            | TaskLearningRoute::Rejected => {}
+        }
+    }
+    let mut artifact_refs = Vec::new();
+    for artifact in artifacts {
+        push_compact(
+            &mut artifact_refs,
+            format!("artifact:{}", artifact.artifact.artifact_id).as_str(),
+        );
+    }
+    let mut provenance_refs = vec![
+        "source=post_reply_maintenance".to_string(),
+        format!("run={}", run.run.run_id),
+        format!("run_status={:?}", run.run.status).to_ascii_lowercase(),
+    ];
+    if !channel.trim().is_empty() {
+        provenance_refs.push(format!("channel={}", channel.trim()));
+    }
+    if !learning_records.is_empty() {
+        provenance_refs.push(format!("learning_records={}", learning_records.len()));
+    }
+    vec![ContinuityCapsuleDraft {
+        kind: if is_terminal {
+            ContinuityCapsuleKind::TaskResolution
+        } else {
+            ContinuityCapsuleKind::WorkSession
+        },
+        scope_kind: ContinuityCapsuleScopeKind::Chat,
+        scope_id: chat_id.to_string(),
+        source_chat_id: chat_id.to_string(),
+        source_channel: channel.to_string(),
+        run_id: run.run.run_id.clone(),
+        topic,
+        summary,
+        outcome,
+        decisions,
+        next_step,
+        unresolved,
+        artifact_refs,
+        provenance_refs,
+        source: if is_terminal {
+            ContinuityCapsuleSource::TaskCompletion
+        } else {
+            ContinuityCapsuleSource::PostReplyMaintenance
+        },
+        status: if is_terminal {
+            ContinuityCapsuleStatus::Done
+        } else {
+            ContinuityCapsuleStatus::Active
+        },
+        observed_at: run.run.updated_at.max(now_secs),
+    }]
+}
+
+fn build_execution_continuity_capsule_draft(
+    state: &ExecutionState,
+    chat_id: &str,
+    channel: &str,
+    now_secs: u64,
+    summary_text: Option<&str>,
+) -> Option<ContinuityCapsuleDraft> {
+    let topic = first_non_empty(&[state.goal.as_str()]);
+    if topic.is_empty() {
+        return None;
+    }
+    let is_done = state.status == ExecutionStatus::Done;
+    let mut provenance_refs = vec![
+        "source=post_reply_maintenance".to_string(),
+        "execution_state".to_string(),
+    ];
+    if summary_text.is_some() {
+        provenance_refs.push("summary_snapshot".to_string());
+    }
+    Some(ContinuityCapsuleDraft {
+        kind: if is_done {
+            ContinuityCapsuleKind::TaskResolution
+        } else {
+            ContinuityCapsuleKind::HandoffState
+        },
+        scope_kind: ContinuityCapsuleScopeKind::Chat,
+        scope_id: chat_id.to_string(),
+        source_chat_id: chat_id.to_string(),
+        source_channel: channel.to_string(),
+        run_id: String::new(),
+        topic,
+        summary: first_non_empty(&[state.progress.as_str(), summary_text.unwrap_or_default()]),
+        outcome: if is_done {
+            first_non_empty(&[state.last_output.as_str()])
+        } else {
+            String::new()
+        },
+        decisions: Vec::new(),
+        next_step: if is_done {
+            String::new()
+        } else {
+            first_non_empty(&[state.next_action.as_str()])
+        },
+        unresolved: non_empty_list(&[state.blocker.as_str()]),
+        artifact_refs: Vec::new(),
+        provenance_refs,
+        source: ContinuityCapsuleSource::PostReplyMaintenance,
+        status: if is_done {
+            ContinuityCapsuleStatus::Done
+        } else {
+            ContinuityCapsuleStatus::Active
+        },
+        observed_at: now_secs,
+    })
+}
+
 pub fn render_continuity_capsule_block(
     capsules: &[ContinuityCapsule],
     max_len: usize,
@@ -368,6 +609,38 @@ pub fn render_continuity_capsule_block(
     }
     let capped = truncate_content_to_max(out.trim_end(), max_len).into_owned();
     (!capped.trim().is_empty()).then_some(capped)
+}
+
+pub fn build_continuity_capsule_operator_summary(
+    store: &dyn ContinuityCapsuleStore,
+) -> Result<ContinuityCapsuleOperatorSummary> {
+    let entries = store.list(MAX_CONTINUITY_CAPSULES)?;
+    let mut summary = ContinuityCapsuleOperatorSummary {
+        total: entries.len(),
+        ..ContinuityCapsuleOperatorSummary::default()
+    };
+    for capsule in &entries {
+        match capsule.status {
+            ContinuityCapsuleStatus::Active => summary.active += 1,
+            ContinuityCapsuleStatus::Done => summary.done += 1,
+            ContinuityCapsuleStatus::Stale => summary.stale += 1,
+            ContinuityCapsuleStatus::Superseded => summary.superseded += 1,
+        }
+        match capsule.source {
+            ContinuityCapsuleSource::PostReplyMaintenance => summary.post_reply += 1,
+            ContinuityCapsuleSource::TaskCompletion => summary.task_completion += 1,
+            ContinuityCapsuleSource::BoundaryFlush => summary.boundary_flush += 1,
+            ContinuityCapsuleSource::HandoffFlush => summary.handoff_flush += 1,
+            ContinuityCapsuleSource::RebootContinuity => summary.reboot_continuity += 1,
+        }
+    }
+    summary.recent_capsules = entries
+        .iter()
+        .filter(|capsule| capsule.status != ContinuityCapsuleStatus::Superseded)
+        .take(6)
+        .cloned()
+        .collect();
+    Ok(summary)
 }
 
 pub struct ContinuityCapsuleRecallInspectionInput<'a> {
@@ -1295,6 +1568,39 @@ fn normalize_reason_fragments(values: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+fn push_compact(out: &mut Vec<String>, value: &str) {
+    let normalized = truncate_content_to_max(value.trim(), 120)
+        .trim()
+        .to_string();
+    if normalized.is_empty() || out.iter().any(|existing| existing == &normalized) {
+        return;
+    }
+    if out.len() < 4 {
+        out.push(normalized);
+    }
+}
+
+fn non_empty_list(values: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    for value in values {
+        push_compact(&mut out, value);
+    }
+    out
+}
+
+fn first_non_empty(values: &[&str]) -> String {
+    values
+        .iter()
+        .find_map(|value| {
+            let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+            let trimmed = truncate_content_to_max(normalized.trim(), 180)
+                .trim()
+                .to_string();
+            (!trimmed.is_empty()).then_some(trimmed)
+        })
+        .unwrap_or_default()
+}
+
 fn normalize_ref_list(values: &[String]) -> Vec<String> {
     values
         .iter()
@@ -1370,6 +1676,37 @@ fn collect_terms(normalized: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    #[derive(Clone)]
+    struct StubStore {
+        entries: Vec<ContinuityCapsule>,
+    }
+
+    impl ContinuityCapsuleStore for StubStore {
+        fn upsert_many(
+            &self,
+            _drafts: &[ContinuityCapsuleDraft],
+            _now_secs: u64,
+        ) -> Result<ContinuityCapsuleWriteOutcome> {
+            Ok(ContinuityCapsuleWriteOutcome::default())
+        }
+
+        fn get(&self, capsule_id: &str) -> Result<Option<ContinuityCapsule>> {
+            Ok(self
+                .entries
+                .iter()
+                .find(|entry| entry.capsule_id == capsule_id)
+                .cloned())
+        }
+
+        fn list(&self, limit: usize) -> Result<Vec<ContinuityCapsule>> {
+            Ok(self.entries.iter().take(limit).cloned().collect())
+        }
+
+        fn count(&self) -> Result<usize> {
+            Ok(self.entries.len())
+        }
+    }
+
     #[test]
     fn stable_id_prefers_run_identity_over_kind_shift() {
         let active = ContinuityCapsuleDraft {
@@ -1425,35 +1762,6 @@ mod tests {
 
     #[test]
     fn continuity_capsule_recall_prefers_exact_topic_and_same_chat() {
-        struct StubStore {
-            entries: Vec<ContinuityCapsule>,
-        }
-        impl ContinuityCapsuleStore for StubStore {
-            fn upsert_many(
-                &self,
-                _drafts: &[ContinuityCapsuleDraft],
-                _now_secs: u64,
-            ) -> Result<ContinuityCapsuleWriteOutcome> {
-                Ok(ContinuityCapsuleWriteOutcome::default())
-            }
-
-            fn get(&self, capsule_id: &str) -> Result<Option<ContinuityCapsule>> {
-                Ok(self
-                    .entries
-                    .iter()
-                    .find(|entry| entry.capsule_id == capsule_id)
-                    .cloned())
-            }
-
-            fn list(&self, limit: usize) -> Result<Vec<ContinuityCapsule>> {
-                Ok(self.entries.iter().take(limit).cloned().collect())
-            }
-
-            fn count(&self) -> Result<usize> {
-                Ok(self.entries.len())
-            }
-        }
-
         let store = StubStore {
             entries: vec![
                 continuity_capsule_from_draft(
@@ -1504,5 +1812,102 @@ mod tests {
             .reason_fragments
             .iter()
             .any(|reason| reason.contains("exact topic")));
+    }
+
+    #[test]
+    fn continuity_capsule_operator_summary_counts_status_and_source_distribution() {
+        let store = StubStore {
+            entries: vec![
+                continuity_capsule_from_draft(
+                    &ContinuityCapsuleDraft {
+                        scope_kind: ContinuityCapsuleScopeKind::Chat,
+                        scope_id: "chat-1".to_string(),
+                        source_chat_id: "chat-1".to_string(),
+                        topic: "resume release work".to_string(),
+                        summary: "continue validation".to_string(),
+                        source: ContinuityCapsuleSource::PostReplyMaintenance,
+                        status: ContinuityCapsuleStatus::Active,
+                        ..Default::default()
+                    },
+                    120,
+                )
+                .unwrap(),
+                continuity_capsule_from_draft(
+                    &ContinuityCapsuleDraft {
+                        scope_kind: ContinuityCapsuleScopeKind::Chat,
+                        scope_id: "chat-1".to_string(),
+                        source_chat_id: "chat-1".to_string(),
+                        topic: "close release work".to_string(),
+                        outcome: "done".to_string(),
+                        source: ContinuityCapsuleSource::TaskCompletion,
+                        status: ContinuityCapsuleStatus::Done,
+                        ..Default::default()
+                    },
+                    110,
+                )
+                .unwrap(),
+                continuity_capsule_from_draft(
+                    &ContinuityCapsuleDraft {
+                        scope_kind: ContinuityCapsuleScopeKind::Chat,
+                        scope_id: "chat-2".to_string(),
+                        source_chat_id: "chat-2".to_string(),
+                        topic: "boundary carry".to_string(),
+                        next_step: "pick up later".to_string(),
+                        source: ContinuityCapsuleSource::BoundaryFlush,
+                        status: ContinuityCapsuleStatus::Stale,
+                        ..Default::default()
+                    },
+                    100,
+                )
+                .unwrap(),
+                continuity_capsule_from_draft(
+                    &ContinuityCapsuleDraft {
+                        scope_kind: ContinuityCapsuleScopeKind::Chat,
+                        scope_id: "chat-3".to_string(),
+                        source_chat_id: "chat-3".to_string(),
+                        topic: "handoff state".to_string(),
+                        next_step: "resume after handoff".to_string(),
+                        source: ContinuityCapsuleSource::HandoffFlush,
+                        status: ContinuityCapsuleStatus::Superseded,
+                        ..Default::default()
+                    },
+                    90,
+                )
+                .unwrap(),
+                continuity_capsule_from_draft(
+                    &ContinuityCapsuleDraft {
+                        scope_kind: ContinuityCapsuleScopeKind::Chat,
+                        scope_id: "chat-4".to_string(),
+                        source_chat_id: "chat-4".to_string(),
+                        topic: "reboot resume".to_string(),
+                        next_step: "restore operator context".to_string(),
+                        source: ContinuityCapsuleSource::RebootContinuity,
+                        status: ContinuityCapsuleStatus::Active,
+                        ..Default::default()
+                    },
+                    80,
+                )
+                .unwrap(),
+            ],
+        };
+
+        let summary = build_continuity_capsule_operator_summary(&store).unwrap();
+
+        assert_eq!(summary.total, 5);
+        assert_eq!(summary.active, 2);
+        assert_eq!(summary.done, 1);
+        assert_eq!(summary.stale, 1);
+        assert_eq!(summary.superseded, 1);
+        assert_eq!(summary.post_reply, 1);
+        assert_eq!(summary.task_completion, 1);
+        assert_eq!(summary.boundary_flush, 1);
+        assert_eq!(summary.handoff_flush, 1);
+        assert_eq!(summary.reboot_continuity, 1);
+        assert_eq!(summary.recent_capsules.len(), 4);
+        assert!(summary
+            .recent_capsules
+            .iter()
+            .all(|capsule| capsule.status != ContinuityCapsuleStatus::Superseded));
+        assert_eq!(summary.recent_capsules[0].topic, "resume release work");
     }
 }

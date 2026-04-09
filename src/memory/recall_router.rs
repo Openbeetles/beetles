@@ -3,8 +3,9 @@
 
 use super::{
     build_cross_plane_rerank_result, plane_signal_score, CrossPlaneRerankInput, RecallPlane,
-    RecallSelectionReport,
+    RecallSelectionReport, SessionMessage,
 };
+use crate::task_execution::TaskRunRecord;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -94,10 +95,10 @@ impl PromptRecallRouterDecision {
                 long_term_memory_text,
             ],
             PromptRecallIntent::Continuity => [
+                continuity_capsule_text,
                 archive_evidence_text,
                 long_term_memory_text,
                 runtime_skill_text,
-                None,
             ],
             PromptRecallIntent::Evidence => [
                 archive_evidence_text,
@@ -112,6 +113,43 @@ impl PromptRecallRouterDecision {
                 runtime_skill_text,
             ],
         }
+    }
+}
+
+pub(crate) fn build_continuity_recall_query(
+    user_query: &str,
+    summary_text: Option<&str>,
+    recent_messages: &[SessionMessage],
+    execution_state: Option<&super::ExecutionState>,
+    active_task_run: Option<&TaskRunRecord>,
+) -> String {
+    let trimmed = user_query.trim();
+    if !structurally_weak_query(trimmed) {
+        return trimmed.to_string();
+    }
+    let expanded = [
+        Some(trimmed),
+        active_task_run.map(|record| record.run.title.trim()),
+        active_task_run.map(|record| record.plan.goal.trim()),
+        execution_state.map(|state| state.goal.trim()),
+        summary_text.map(str::trim),
+        recent_messages
+            .iter()
+            .rev()
+            .take(2)
+            .map(|message| message.content.trim())
+            .find(|value| !value.is_empty()),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|value| !value.is_empty())
+    .map(str::to_string)
+    .collect::<Vec<_>>()
+    .join(" ");
+    if expanded.is_empty() {
+        trimmed.to_string()
+    } else {
+        expanded
     }
 }
 

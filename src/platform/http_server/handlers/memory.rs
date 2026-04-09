@@ -2,11 +2,13 @@
 
 use super::HandlerContext;
 use crate::memory::{
-    board_subject_scope_id, compute_core_revision_governance_digest, export_continuity_snapshot,
+    board_subject_scope_id, build_continuity_capsule_operator_summary,
+    compute_core_revision_governance_digest, export_continuity_snapshot,
     inspect_intelligence_replay, inspect_memory_hygiene, inspect_working_recall,
-    ContinuitySnapshotExportContext, ContinuitySnapshotManifest, ContinuitySnapshotMode,
-    IntelligenceReplayInspection, MemoryHygieneContext, MemoryHygieneInspection, MemorySystemKind,
-    WorkingRecallInspection, WorkingRecallInspectionInput,
+    ContinuityCapsuleOperatorSummary, ContinuitySnapshotExportContext, ContinuitySnapshotManifest,
+    ContinuitySnapshotMode, IntelligenceReplayInspection, MemoryHygieneContext,
+    MemoryHygieneInspection, MemorySystemKind, WorkingRecallInspection,
+    WorkingRecallInspectionInput,
 };
 use crate::skills::{build_runtime_skill_operator_summary, is_runtime_skill_name};
 use crate::task_execution::{
@@ -123,6 +125,7 @@ struct MemoryStatusBody {
     stores: MemoryStoreStatus,
     personality: MemoryPersonalityStatus,
     continuity_tooling: MemoryContinuityTooling,
+    continuity_capsules: ContinuityCapsuleOperatorSummary,
     task_execution: TaskExecutionOperatorSnapshot,
     learning: MemoryLearningStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -183,6 +186,9 @@ pub fn body(ctx: &HandlerContext, uri: &str) -> Result<String, std::io::Error> {
         .continuity_capsule_store()
         .count()
         .unwrap_or_default();
+    let continuity_capsules =
+        build_continuity_capsule_operator_summary(ctx.platform.continuity_capsule_store().as_ref())
+            .map_err(std::io::Error::other)?;
     let runtime_skill_count = ctx
         .skill_storage
         .list_names()
@@ -327,6 +333,7 @@ pub fn body(ctx: &HandlerContext, uri: &str) -> Result<String, std::io::Error> {
             saved_snapshot_count: saved_snapshots.len(),
             saved_snapshots,
         },
+        continuity_capsules,
         task_execution,
         learning,
         inspection,
@@ -995,6 +1002,68 @@ mod tests {
             .any(|item| item["name"] == skill_name
                 && item["validated_success_count"] == 1
                 && item["last_outcome_note"] == "final_answer"));
+    }
+
+    #[test]
+    fn memory_status_api_includes_continuity_capsule_summary() {
+        let ctx = build_test_context();
+        let now_secs = crate::util::current_unix_secs();
+        ctx.platform
+            .continuity_capsule_store()
+            .upsert_many(
+                &[
+                    crate::memory::ContinuityCapsuleDraft {
+                        scope_kind: crate::memory::ContinuityCapsuleScopeKind::Chat,
+                        scope_id: "chat-1".to_string(),
+                        source_chat_id: "chat-1".to_string(),
+                        topic: "resume release work".to_string(),
+                        next_step: "apply final patch".to_string(),
+                        source: crate::memory::ContinuityCapsuleSource::PostReplyMaintenance,
+                        status: crate::memory::ContinuityCapsuleStatus::Active,
+                        observed_at: now_secs,
+                        ..Default::default()
+                    },
+                    crate::memory::ContinuityCapsuleDraft {
+                        scope_kind: crate::memory::ContinuityCapsuleScopeKind::Chat,
+                        scope_id: "chat-2".to_string(),
+                        source_chat_id: "chat-2".to_string(),
+                        topic: "resume after reboot".to_string(),
+                        next_step: "restore context".to_string(),
+                        source: crate::memory::ContinuityCapsuleSource::RebootContinuity,
+                        status: crate::memory::ContinuityCapsuleStatus::Active,
+                        observed_at: now_secs.saturating_sub(10),
+                        ..Default::default()
+                    },
+                    crate::memory::ContinuityCapsuleDraft {
+                        scope_kind: crate::memory::ContinuityCapsuleScopeKind::Chat,
+                        scope_id: "chat-3".to_string(),
+                        source_chat_id: "chat-3".to_string(),
+                        topic: "completed release".to_string(),
+                        outcome: "done".to_string(),
+                        source: crate::memory::ContinuityCapsuleSource::TaskCompletion,
+                        status: crate::memory::ContinuityCapsuleStatus::Done,
+                        observed_at: now_secs.saturating_sub(20),
+                        ..Default::default()
+                    },
+                ],
+                now_secs,
+            )
+            .unwrap();
+
+        let payload = body(&ctx, "/api/memory/status").unwrap();
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+
+        assert_eq!(parsed["continuity_capsules"]["total"], 3);
+        assert_eq!(parsed["continuity_capsules"]["active"], 2);
+        assert_eq!(parsed["continuity_capsules"]["done"], 1);
+        assert_eq!(parsed["continuity_capsules"]["post_reply"], 1);
+        assert_eq!(parsed["continuity_capsules"]["reboot_continuity"], 1);
+        assert_eq!(parsed["continuity_capsules"]["task_completion"], 1);
+        assert!(parsed["continuity_capsules"]["recent_capsules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["topic"] == "resume release work"));
     }
 
     #[test]

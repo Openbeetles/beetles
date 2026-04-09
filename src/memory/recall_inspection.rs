@@ -9,7 +9,7 @@ use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    build_archive_evidence_block, build_cross_plane_rerank_result,
+    build_archive_evidence_block, build_continuity_recall_query, build_cross_plane_rerank_result,
     build_shared_factual_plane_snapshot, decide_prompt_recall_route, inspect_archive_recall,
     inspect_continuity_capsule_recall, inspect_runtime_skill_recall, inspect_shared_factual_recall,
     inspect_task_recall, memory_policy, parse_explicit_long_term_slot_query,
@@ -151,13 +151,28 @@ pub fn inspect_working_recall(input: WorkingRecallInspectionInput<'_>) -> Workin
         input.system_max_len.min(768),
         input.profile,
     );
+    let active_task_run = match (input.current_channel, input.task_run_store) {
+        (Some(channel), Some(task_run_store)) => {
+            active_task_run_for_chat(task_run_store, channel, input.chat_id)
+                .ok()
+                .flatten()
+        }
+        _ => None,
+    };
+    let continuity_query = build_continuity_recall_query(
+        input.query,
+        input.summary_text,
+        input.recent,
+        None,
+        active_task_run.as_ref(),
+    );
     let (continuity_capsule_report, continuity_capsules) =
         inspect_continuity_capsule_recall(ContinuityCapsuleRecallInspectionInput {
             store: input.continuity_capsule_store,
             scope_kind: ContinuityCapsuleScopeKind::Chat,
             scope_id: input.chat_id,
             preferred_chat_id: Some(input.chat_id),
-            query: input.query,
+            query: &continuity_query,
             summary_text: input.summary_text,
             recent_messages: input.recent,
             max_chars: input.system_max_len.min(480),
@@ -215,14 +230,6 @@ pub fn inspect_working_recall(input: WorkingRecallInspectionInput<'_>) -> Workin
             )
         },
     );
-    let active_task_run = match (input.current_channel, input.task_run_store) {
-        (Some(channel), Some(task_run_store)) => {
-            active_task_run_for_chat(task_run_store, channel, input.chat_id)
-                .ok()
-                .flatten()
-        }
-        _ => None,
-    };
     let task_recall_text = match (
         active_task_run.as_ref(),
         input.current_channel,
@@ -512,9 +519,197 @@ pub fn render_working_recall_inspection_markdown(inspection: &WorkingRecallInspe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Result;
     use crate::memory::{
-        CrossPlanePlaneSignal, CrossPlaneRerankCandidate, SharedFactualPlaneSnapshot,
+        apply_continuity_capsule_drafts, ContinuityCapsule, ContinuityCapsuleDraft,
+        ContinuityCapsuleStore, CrossPlanePlaneSignal, CrossPlaneRerankCandidate, MemoryStore,
+        SessionStore, SharedFactualPlaneSnapshot, TurnLedger, TurnLedgerStore,
     };
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct StubSessionStore {
+        recent: Vec<SessionMessage>,
+    }
+
+    impl SessionStore for StubSessionStore {
+        fn append(&self, _chat_id: &str, _role: &str, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn load_recent(&self, _chat_id: &str, limit: usize) -> Result<Vec<SessionMessage>> {
+            Ok(self.recent.iter().take(limit).cloned().collect())
+        }
+
+        fn message_count(&self, _chat_id: &str) -> Result<usize> {
+            Ok(self.recent.len())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_chat_ids(&self) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubMemoryStore {
+        daily_notes: Vec<(String, String)>,
+    }
+
+    impl MemoryStore for StubMemoryStore {
+        fn get_memory(&self) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn set_memory(&self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_soul(&self) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn set_soul(&self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_user(&self) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn set_user(&self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_daily_note_names(&self, recent_n: usize) -> Result<Vec<String>> {
+            Ok(self
+                .daily_notes
+                .iter()
+                .take(recent_n)
+                .map(|(name, _)| name.clone())
+                .collect())
+        }
+
+        fn get_daily_note(&self, name: &str) -> Result<String> {
+            Ok(self
+                .daily_notes
+                .iter()
+                .find(|(note_name, _)| note_name == name)
+                .map(|(_, content)| content.clone())
+                .unwrap_or_default())
+        }
+
+        fn write_daily_note(&self, _name: &str, _content: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubTurnLedgerStore;
+
+    impl TurnLedgerStore for StubTurnLedgerStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<TurnLedger>> {
+            Ok(None)
+        }
+
+        fn set(&self, _chat_id: &str, _ledger: &TurnLedger) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubLongTermMemoryStore;
+
+    impl LongTermMemoryStore for StubLongTermMemoryStore {
+        fn upsert_many(
+            &self,
+            _drafts: &[crate::memory::LongTermMemoryDraft],
+            _now_secs: u64,
+        ) -> Result<usize> {
+            Ok(0)
+        }
+
+        fn recall(
+            &self,
+            _query: &str,
+            _source_chat_id: Option<&str>,
+            _limit: usize,
+        ) -> Result<Vec<crate::memory::LongTermMemoryEntry>> {
+            Ok(Vec::new())
+        }
+
+        fn get(&self, _id: &str) -> Result<Option<crate::memory::LongTermMemoryEntry>> {
+            Ok(None)
+        }
+
+        fn list(&self, _limit: usize) -> Result<Vec<crate::memory::LongTermMemoryEntry>> {
+            Ok(Vec::new())
+        }
+
+        fn delete(&self, _id: &str) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn delete_slot(&self, _slot: &crate::memory::LongTermMemorySlot) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn count(&self) -> Result<usize> {
+            Ok(0)
+        }
+    }
+
+    #[derive(Default)]
+    struct StubContinuityCapsuleStore {
+        entries: Mutex<Vec<ContinuityCapsule>>,
+    }
+
+    impl ContinuityCapsuleStore for StubContinuityCapsuleStore {
+        fn upsert_many(
+            &self,
+            drafts: &[ContinuityCapsuleDraft],
+            now_secs: u64,
+        ) -> Result<crate::memory::ContinuityCapsuleWriteOutcome> {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            Ok(apply_continuity_capsule_drafts(
+                &mut entries,
+                drafts,
+                now_secs,
+            ))
+        }
+
+        fn get(&self, capsule_id: &str) -> Result<Option<ContinuityCapsule>> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .find(|entry| entry.capsule_id == capsule_id)
+                .cloned())
+        }
+
+        fn list(&self, limit: usize) -> Result<Vec<ContinuityCapsule>> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .take(limit)
+                .cloned()
+                .collect())
+        }
+
+        fn count(&self) -> Result<usize> {
+            Ok(self.entries.lock().unwrap_or_else(|e| e.into_inner()).len())
+        }
+    }
 
     #[test]
     fn inspection_markdown_includes_cross_plane_rerank_section() {
@@ -597,5 +792,67 @@ mod tests {
         assert!(markdown.contains("intent: procedural"));
         assert!(markdown.contains("plane=runtime_skill"));
         assert!(markdown.contains("Release patch flow"));
+    }
+
+    #[test]
+    fn weak_continuity_inspection_prefers_capsule_before_archive_fallback() {
+        let session_store = StubSessionStore {
+            recent: vec![SessionMessage {
+                role: "user".to_string(),
+                content: "继续".to_string(),
+            }],
+        };
+        let memory_store = StubMemoryStore {
+            daily_notes: vec![(
+                "2026-04-09.md".to_string(),
+                "Archive evidence: the raw router diary still exists, but it should only be fallback."
+                    .to_string(),
+            )],
+        };
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
+        continuity_capsule_store
+            .upsert_many(
+                &[ContinuityCapsuleDraft {
+                    scope_kind: crate::memory::ContinuityCapsuleScopeKind::Chat,
+                    scope_id: "chat-1".to_string(),
+                    source_chat_id: "chat-1".to_string(),
+                    topic: "memory router".to_string(),
+                    summary: "Continue the memory router work without reopening archive notes."
+                        .to_string(),
+                    next_step: "Route continuity capsule before archive fallback.".to_string(),
+                    ..Default::default()
+                }],
+                100,
+            )
+            .expect("seed continuity capsule");
+
+        let inspection = inspect_working_recall(WorkingRecallInspectionInput {
+            chat_id: "chat-1",
+            query: "继续",
+            summary_text: Some("continue the memory router work"),
+            recent: &session_store.recent,
+            system_max_len: 1024,
+            profile: MemoryProfile::Standard,
+            current_channel: None,
+            session_store: &session_store,
+            memory_store: &memory_store,
+            long_term_memory_store: &StubLongTermMemoryStore,
+            continuity_capsule_store: &continuity_capsule_store,
+            turn_ledger_store: &StubTurnLedgerStore,
+            skill_storage: None,
+            task_run_store: None,
+            task_learning_store: None,
+        });
+
+        assert_eq!(
+            inspection.prompt_recall_intent,
+            PromptRecallIntent::Continuity
+        );
+        assert!(inspection
+            .continuity_capsule_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Continuity Capsules"));
+        assert!(inspection.continuity_capsule_report.selected_count > 0);
     }
 }
