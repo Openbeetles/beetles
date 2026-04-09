@@ -8,6 +8,7 @@ use crate::platform::wifi::linux_ctrl::process::{
     is_pid_alive, run_checked, signal_pid as signal_process, write_secure_atomic,
 };
 use crate::platform::wifi::linux_ctrl::HOSTAPD_CTRL_INTERFACE_DIR;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -32,9 +33,46 @@ fn kill_and_wait(pid: u32) {
     std::thread::sleep(Duration::from_millis(500));
 }
 
-/// 通过 /proc/*/comm 扫描所有名为 `comm` 的进程 PID。
-/// 用于清理无 PID 文件的残留进程（如系统 dnsmasq 或崩溃遗留）。
-fn find_pids_by_comm(comm: &str) -> Vec<u32> {
+/// Parse dnsmasq argv and confirm it points at beetle-owned config or pidfile.
+fn dnsmasq_cmdline_matches_owned_paths(
+    cmdline: &[u8],
+    conf_path: &Path,
+    pidfile_path: &Path,
+) -> bool {
+    let expected_conf = conf_path.to_string_lossy();
+    let expected_pidfile = pidfile_path.to_string_lossy();
+    let args = cmdline
+        .split(|byte| *byte == 0)
+        .filter(|segment| !segment.is_empty())
+        .map(String::from_utf8_lossy)
+        .collect::<Vec<_>>();
+    for (index, arg) in args.iter().enumerate() {
+        if arg.as_ref() == format!("--conf-file={}", expected_conf) {
+            return true;
+        }
+        if arg.as_ref() == format!("--pid-file={}", expected_pidfile) {
+            return true;
+        }
+        if arg.as_ref() == "--conf-file"
+            && args
+                .get(index + 1)
+                .is_some_and(|next| next.as_ref() == expected_conf.as_ref())
+        {
+            return true;
+        }
+        if arg.as_ref() == "--pid-file"
+            && args
+                .get(index + 1)
+                .is_some_and(|next| next.as_ref() == expected_pidfile.as_ref())
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// 通过 /proc 扫描仍指向 beetle 自己 dnsmasq.conf/pidfile 的 dnsmasq 进程。
+fn find_owned_dnsmasq_pids(conf_path: &Path, pidfile_path: &Path) -> Vec<u32> {
     let mut pids = Vec::new();
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return pids;
@@ -45,8 +83,14 @@ fn find_pids_by_comm(comm: &str) -> Vec<u32> {
         };
         let comm_path = entry.path().join("comm");
         if let Ok(c) = std::fs::read_to_string(comm_path) {
-            if c.trim() == comm {
-                pids.push(pid);
+            if c.trim() != "dnsmasq" {
+                continue;
+            }
+            let cmdline_path = entry.path().join("cmdline");
+            if let Ok(cmdline) = std::fs::read(cmdline_path) {
+                if dnsmasq_cmdline_matches_owned_paths(&cmdline, conf_path, pidfile_path) {
+                    pids.push(pid);
+                }
             }
         }
     }
@@ -183,10 +227,14 @@ pub fn start_ap_on_channel(iface: &str, ssid: &str, ip: &str, channel: u8) -> Re
 /// Stop strategy:
 /// 1. Graceful terminate via hostapd ctrl socket.
 /// 2. TERM → wait-for-exit (≤2 s) → KILL for each PID-file-tracked process.
-/// 3. Scan /proc for any remaining dnsmasq not covered by PID files
-///    (system dnsmasq, prior crash without cleanup) and kill them so port 67 is free.
+/// 3. Scan /proc for any remaining beetle-owned dnsmasq not covered by PID files
+///    (e.g. prior crash without cleanup) and kill them so port 67 is free.
 pub fn stop_ap(iface: &str) {
     hostapd_ctrl::try_terminate(iface, Duration::from_secs(3));
+
+    let dnsmasq_conf = dnsmasq_conf_path();
+    let dnsmasq_pid_path = pidfile("dnsmasq");
+    let mut killed_pids = HashSet::new();
 
     // Kill PID-file-tracked processes; wait for each to release its sockets.
     for name in ["dnsmasq", "hostapd"] {
@@ -194,6 +242,7 @@ pub fn stop_ap(iface: &str) {
         if let Ok(raw) = std::fs::read_to_string(&pid_path) {
             if let Ok(pid) = raw.trim().parse::<u32>() {
                 if pid > 0 {
+                    killed_pids.insert(pid);
                     kill_and_wait(pid);
                 }
             }
@@ -201,11 +250,12 @@ pub fn stop_ap(iface: &str) {
         let _ = std::fs::remove_file(&pid_path);
     }
 
-    // Kill any remaining dnsmasq not tracked by our PID file (e.g. system service,
-    // or previous instance that crashed before writing the file).
-    // Port 67/udp must be free before we start our own dnsmasq.
-    for pid in find_pids_by_comm("dnsmasq") {
-        log::debug!("[hostapd] killing untracked dnsmasq pid={}", pid);
+    // Kill any remaining beetle-owned dnsmasq not tracked by our PID file.
+    for pid in find_owned_dnsmasq_pids(&dnsmasq_conf, &dnsmasq_pid_path) {
+        if killed_pids.contains(&pid) {
+            continue;
+        }
+        log::debug!("[hostapd] killing owned untracked dnsmasq pid={}", pid);
         kill_and_wait(pid);
     }
 
@@ -229,4 +279,43 @@ fn ap_pool_end(ip: &str) -> String {
         return parts.join(".");
     }
     "192.168.1.180".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    #[test]
+    fn owned_dnsmasq_match_rejects_unrelated_instances() {
+        let conf = Path::new("/tmp/beetle/wifi/linux/dnsmasq.conf");
+        let pidfile = Path::new("/tmp/beetle/wifi/linux/dnsmasq.pid");
+
+        assert!(!super::dnsmasq_cmdline_matches_owned_paths(
+            b"dnsmasq\0--conf-file=/etc/dnsmasq.conf\0--pid-file=/run/dnsmasq.pid\0",
+            conf,
+            pidfile,
+        ));
+        assert!(!super::dnsmasq_cmdline_matches_owned_paths(
+            b"dnsmasq\0--dhcp-range=192.168.1.2,192.168.1.10\0",
+            conf,
+            pidfile,
+        ));
+    }
+
+    #[test]
+    fn owned_dnsmasq_match_accepts_owned_conf_or_pidfile() {
+        let conf = Path::new("/tmp/beetle/wifi/linux/dnsmasq.conf");
+        let pidfile = Path::new("/tmp/beetle/wifi/linux/dnsmasq.pid");
+
+        assert!(super::dnsmasq_cmdline_matches_owned_paths(
+            b"dnsmasq\0--conf-file=/tmp/beetle/wifi/linux/dnsmasq.conf\0",
+            conf,
+            pidfile,
+        ));
+        assert!(super::dnsmasq_cmdline_matches_owned_paths(
+            b"dnsmasq\0--pid-file\0/tmp/beetle/wifi/linux/dnsmasq.pid\0",
+            conf,
+            pidfile,
+        ));
+    }
 }

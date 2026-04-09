@@ -2,6 +2,8 @@
 
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
@@ -9,6 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const REL_PATH_LINUX_SUPERVISOR_STATE: &str = "runtime/linux_supervisor/status.json";
+const REL_PATH_LINUX_SUPERVISOR_LOCK: &str = "runtime/linux_supervisor/supervisor.lock";
 const REL_PATH_LINUX_SUPERVISOR_RESTART_REQUEST: &str =
     "runtime/linux_supervisor/control/restart.json";
 const REL_PATH_LINUX_SUPERVISOR_STOP_REQUEST: &str = "runtime/linux_supervisor/control/stop.json";
@@ -83,6 +86,17 @@ struct ChildExit {
     signal: Option<i32>,
 }
 
+#[derive(Debug)]
+struct SupervisorLockGuard {
+    path: PathBuf,
+}
+
+impl Drop for SupervisorLockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 impl LinuxSupervisorState {
     fn new(config_path: Option<String>, now_secs: u64) -> Self {
         Self {
@@ -116,17 +130,7 @@ pub fn run_supervisor(
     config_path: Option<String>,
 ) -> Result<()> {
     crate::state::set_boot_phase_active(true);
-    if let Some(snapshot) = read_status_snapshot()? {
-        if snapshot.supervisor_alive {
-            return Err(Error::config(
-                "linux_supervisor",
-                format!(
-                    "another beetle supervisor is already running (pid={})",
-                    snapshot.state.supervisor_pid
-                ),
-            ));
-        }
-    }
+    let _lock = try_acquire_supervisor_lock()?;
 
     clear_control_requests()?;
 
@@ -575,6 +579,54 @@ fn write_state(state: &LinuxSupervisorState) -> Result<()> {
     crate::platform::fs_atomic::atomic_write(supervisor_state_path().as_path(), &payload)
 }
 
+fn try_acquire_supervisor_lock() -> Result<SupervisorLockGuard> {
+    try_acquire_supervisor_lock_at(&supervisor_lock_path(), std::process::id(), is_pid_alive)
+}
+
+fn try_acquire_supervisor_lock_at(
+    path: &Path,
+    current_pid: u32,
+    is_alive: impl Fn(u32) -> bool,
+) -> Result<SupervisorLockGuard> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| Error::io("linux_supervisor_lock", error))?;
+    }
+    for _ in 0..2 {
+        match OpenOptions::new().create_new(true).write(true).open(path) {
+            Ok(mut file) => {
+                writeln!(file, "{}", current_pid)
+                    .map_err(|error| Error::io("linux_supervisor_lock", error))?;
+                file.sync_all()
+                    .map_err(|error| Error::io("linux_supervisor_lock", error))?;
+                return Ok(SupervisorLockGuard {
+                    path: path.to_path_buf(),
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let existing_pid = std::fs::read_to_string(path)
+                    .ok()
+                    .and_then(|raw| raw.trim().parse::<u32>().ok());
+                if existing_pid.is_some_and(&is_alive) {
+                    return Err(Error::config(
+                        "linux_supervisor",
+                        format!(
+                            "another beetle supervisor is already running (pid={})",
+                            existing_pid.unwrap_or_default()
+                        ),
+                    ));
+                }
+                remove_if_exists(path)?;
+            }
+            Err(error) => return Err(Error::io("linux_supervisor_lock", error)),
+        }
+    }
+    Err(Error::config(
+        "linux_supervisor",
+        "failed to acquire supervisor lock after stale-lock cleanup",
+    ))
+}
+
 fn read_optional_file(path: PathBuf) -> Result<Option<Vec<u8>>> {
     match std::fs::read(&path) {
         Ok(bytes) => Ok(Some(bytes)),
@@ -593,6 +645,10 @@ fn remove_if_exists(path: &Path) -> Result<()> {
 
 fn supervisor_state_path() -> PathBuf {
     crate::platform::state_mount_path().join(REL_PATH_LINUX_SUPERVISOR_STATE)
+}
+
+fn supervisor_lock_path() -> PathBuf {
+    crate::platform::state_mount_path().join(REL_PATH_LINUX_SUPERVISOR_LOCK)
 }
 
 fn control_request_path(action: SupervisorControlAction) -> PathBuf {
@@ -634,8 +690,8 @@ fn is_pid_alive(pid: u32) -> bool {
 mod tests {
     use super::{
         clear_failure_burst, clear_safe_mode, parse_exit_status, record_quick_failure,
-        restart_backoff_secs, safe_mode_active, LinuxSupervisorState,
-        SUPERVISOR_FAILURE_BURST_WINDOW_SECS,
+        restart_backoff_secs, safe_mode_active, try_acquire_supervisor_lock_at,
+        LinuxSupervisorState, SUPERVISOR_FAILURE_BURST_WINDOW_SECS,
     };
     use std::os::unix::process::ExitStatusExt;
 
@@ -692,5 +748,40 @@ mod tests {
         assert_eq!(state.failure_burst_count, 0);
         assert!(state.failure_burst_started_at.is_none());
         assert!(state.safe_mode_reason.is_none());
+    }
+
+    #[test]
+    fn supervisor_lock_is_exclusive_until_released() {
+        let path = std::env::temp_dir().join(format!(
+            "beetle-supervisor-lock-{}.lock",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let _guard = try_acquire_supervisor_lock_at(&path, 111, |_| false).unwrap();
+        let error = try_acquire_supervisor_lock_at(&path, 222, |_| true).unwrap_err();
+        assert!(error.to_string().contains("already running"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn supervisor_lock_reclaims_stale_pid_file() {
+        let path = std::env::temp_dir().join(format!(
+            "beetle-supervisor-stale-lock-{}.lock",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"333\n").unwrap();
+
+        let _guard = try_acquire_supervisor_lock_at(&path, 444, |pid| pid == 444).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(contents.trim(), "444");
+
+        let _ = std::fs::remove_file(path);
     }
 }
