@@ -29,6 +29,7 @@ struct HealthBody {
     display: DisplayHealth,
     audio: AudioHealth,
     capability_planes: Vec<crate::DeviceCapabilityPlaneSnapshot>,
+    runtime_capabilities: Vec<crate::orchestrator::RuntimeCapabilityState>,
     metrics: metrics::MetricsSnapshot,
     resource: orchestrator::ResourceSnapshot,
     threads: runtime::ThreadRegistrySnapshot,
@@ -86,6 +87,7 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
             duplex_capabilities: audio_caps,
         },
         capability_planes,
+        runtime_capabilities: orchestrator::runtime_capability_snapshot(),
         metrics: metrics::snapshot(),
         resource: orchestrator::snapshot(),
         threads: runtime::thread_registry::snapshot(),
@@ -119,6 +121,7 @@ mod tests {
 
         assert!(parsed.get("metrics").is_some());
         assert!(parsed.get("resource").is_some());
+        assert!(parsed.get("runtime_capabilities").is_some());
         assert!(parsed.get("os_closure").is_some());
         assert!(parsed.get("initiative").is_some());
         assert!(parsed.get("runtime_mode").is_some());

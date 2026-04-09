@@ -263,6 +263,32 @@ impl From<&str> for ToolExecutionOutcome {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct ToolCapabilityContract {
+    pub required: &'static [&'static str],
+    pub allow_when_degraded: bool,
+}
+
+impl ToolCapabilityContract {
+    pub const fn required(required: &'static [&'static str]) -> Self {
+        Self {
+            required,
+            allow_when_degraded: false,
+        }
+    }
+
+    pub const fn required_allowing_degraded(required: &'static [&'static str]) -> Self {
+        Self {
+            required,
+            allow_when_degraded: true,
+        }
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.required.is_empty()
+    }
+}
+
 /// 工具执行时注入的上下文；HTTP 等由 lib 实现（如 EspHttpClient）。
 /// 当前会话的 chat_id/channel 供 remind_at 等工具使用；默认 None，agent 循环内用 wrapper 注入。
 pub trait ToolContext {
@@ -388,5 +414,9 @@ pub trait Tool: Send + Sync {
     /// Whether this tool requires network (HTTP/TLS); orchestrator denies network tools under high pressure.
     fn requires_network(&self) -> bool {
         false
+    }
+    /// 运行态能力合同：由 ToolRegistry 在 LLM 暴露与执行前统一裁决，不由工具体自行零散判断。
+    fn capability_contract(&self) -> ToolCapabilityContract {
+        ToolCapabilityContract::default()
     }
 }

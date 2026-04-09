@@ -1821,6 +1821,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     }
     let wifi_init_status = if wifi_init_ok { "ok" } else { "failed" };
     let sta_up = beetle::platform::is_wifi_sta_connected();
+    let state_fs_ready = platform.spiffs_usage().is_some();
+    let http_client_ready = platform.create_http_client(config.as_ref()).is_ok();
     let spiffs_info = platform
         .spiffs_usage()
         .map(|(total, used)| format!("{} free", total.saturating_sub(used)))
@@ -1831,6 +1833,11 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         wifi_init_status,
         sta_up,
         spiffs_info
+    );
+    beetle::orchestrator::observe_runtime_capabilities_from_platform(
+        platform.as_ref(),
+        http_client_ready,
+        Some(state_fs_ready),
     );
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_baseline();
@@ -2031,7 +2038,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     let mut agent_handle: Option<beetle::util::TaskHandle> = None;
 
     // Agent / flush 与各通道工厂均经 `create_http_client`，与代理配置一致。
-    if platform.create_http_client(config.as_ref()).is_ok() {
+    if http_client_ready {
         let outbound_rx_for_dispatch = outbound_rx;
         let sinks_clone = Arc::clone(&sinks);
         if let Err(error) = spawn_planned_handle("dispatch", STACK_DISPATCH, move || {

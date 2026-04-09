@@ -6,7 +6,7 @@ use crate::config::AudioSegment;
 use crate::constants::AUDIO_CAPTURE_MAX_MS;
 use crate::error::{Error, Result};
 use crate::tools::http_bridge::ToolContextHttpClient;
-use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
+use crate::tools::{parse_tool_args, Tool, ToolCapabilityContract, ToolContext, ToolMetadata};
 use crate::Platform;
 use std::sync::Arc;
 
@@ -88,6 +88,13 @@ impl Tool for VoiceInputTool {
 
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::task().with_system_ingress(false)
+    }
+
+    fn capability_contract(&self) -> ToolCapabilityContract {
+        ToolCapabilityContract::required(&[
+            crate::orchestrator::RUNTIME_CAPABILITY_AUDIO_INPUT,
+            crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
+        ])
     }
 }
 

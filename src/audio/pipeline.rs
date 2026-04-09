@@ -181,11 +181,7 @@ mod tests {
 
     #[test]
     fn playback_drain_fails_when_speaker_drops_before_queue_drains() {
-        let mut states = VecDeque::from([
-            (true, 2048usize),
-            (true, 1024usize),
-            (false, 512usize),
-        ]);
+        let mut states = VecDeque::from([(true, 2048usize), (true, 1024usize), (false, 512usize)]);
         let error = wait_for_playback_drain(
             || states.pop_front().unwrap_or((false, 512)),
             Duration::from_millis(50),

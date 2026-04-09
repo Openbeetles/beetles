@@ -8,6 +8,7 @@ pub mod admission;
 pub mod channel_health;
 pub mod permit;
 pub mod pressure;
+pub mod runtime_capability;
 pub mod state;
 
 use crate::error::Result;
@@ -20,6 +21,18 @@ pub use admission::{AdmissionDecision, LlmDecision, ToolDecision};
 pub use channel_health::is_channel_healthy;
 pub use permit::{AgentTaskGuard, HttpPermitGuard, HttpThreadRole, Priority, WssSessionGuard};
 pub use pressure::{PressureLevel, ResourceBudget};
+#[cfg(test)]
+pub use runtime_capability::reset_runtime_capabilities_for_tests;
+pub use runtime_capability::{
+    format_runtime_capability_baseline_line, get_runtime_capability,
+    observe_runtime_capabilities_from_platform, observe_runtime_capability_failure,
+    observe_runtime_capability_success, runtime_capability_blocker, runtime_capability_snapshot,
+    runtime_capability_summary, update_runtime_capability, RuntimeCapabilityBlocker,
+    RuntimeCapabilityReason, RuntimeCapabilityState, RuntimeCapabilityStatus,
+    RuntimeCapabilitySummary, RuntimeCapabilityUpdate, RUNTIME_CAPABILITY_AUDIO_INPUT,
+    RUNTIME_CAPABILITY_AUDIO_OUTPUT, RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
+    RUNTIME_CAPABILITY_STORAGE_STATE_FS,
+};
 pub use state::ResourceSnapshot;
 
 /// 全局单例 orchestrator 状态。

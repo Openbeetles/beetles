@@ -118,8 +118,21 @@ pub(crate) fn heartbeat_tick(
             .list_chat_ids()
             .map(|v| v.len() as u32)
             .unwrap_or(0);
-        let (s_used, s_total) = storage_usage_kb(platform);
+        let (s_used, s_total, state_fs_ready) = storage_usage_kb(platform);
         crate::orchestrator::update_session_storage(sess_count, s_used, s_total);
+        let outbound_ready = crate::orchestrator::get_runtime_capability(
+            crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
+        )
+        .is_some_and(|state| {
+            state.status != crate::orchestrator::RuntimeCapabilityStatus::Offline
+                || state.reason
+                    != crate::orchestrator::RuntimeCapabilityReason::RuntimeNotInitialized
+        });
+        crate::orchestrator::observe_runtime_capabilities_from_platform(
+            platform,
+            outbound_ready,
+            Some(state_fs_ready),
+        );
     }
 
     // Update queue depth snapshot for pressure computation.
@@ -139,6 +152,11 @@ pub(crate) fn heartbeat_tick(
     );
     let baseline = crate::metrics::snapshot().to_baseline_log_line();
     log::info!("[{}] {}", TAG, baseline);
+    log::info!(
+        "[{}] {}",
+        TAG,
+        crate::orchestrator::format_runtime_capability_baseline_line()
+    );
     log::info!(
         "[{}] {}",
         TAG,
@@ -196,13 +214,13 @@ pub(crate) fn heartbeat_tick(
 }
 
 /// 存储用量（KB）。经 [`crate::Platform::spiffs_usage`]；无数据时为 (0, 0)。
-fn storage_usage_kb(platform: &dyn crate::Platform) -> (u32, u32) {
+fn storage_usage_kb(platform: &dyn crate::Platform) -> (u32, u32, bool) {
     match platform.spiffs_usage() {
         Some((total, used)) => {
             let used_kb = (used / 1024).min(u32::MAX as u64) as u32;
             let total_kb = (total / 1024).min(u32::MAX as u64) as u32;
-            (used_kb, total_kb)
+            (used_kb, total_kb, true)
         }
-        None => (0, 0),
+        None => (0, 0, false),
     }
 }

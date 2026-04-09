@@ -130,8 +130,8 @@ pub use platform::{
 pub use tools::{
     build_default_registry, CalendarTool, DefaultRegistryDeps, FileEditTool, FileWriteTool,
     FilesTool, GetTimeTool, KvStoreTool, PrivateGardenTool, RemindAtTool, TaskTool, Tool,
-    ToolContext, ToolExposure, ToolMetadata, ToolPolicyContext, ToolRegistry, VoiceInputTool,
-    VoiceOutputTool,
+    ToolCapabilityContract, ToolContext, ToolExposure, ToolMetadata, ToolPolicyContext,
+    ToolRegistry, VoiceInputTool, VoiceOutputTool,
 };
 #[cfg(feature = "tools_diagnostics")]
 pub use tools::{

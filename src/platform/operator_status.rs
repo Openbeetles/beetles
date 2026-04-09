@@ -128,6 +128,8 @@ pub struct OperatorStatusSnapshot {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capability_planes: Vec<DeviceCapabilityPlaneSnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_capabilities: Vec<crate::orchestrator::RuntimeCapabilityState>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub channels: Vec<ChannelCapabilitySnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolCatalogEntry>,
@@ -270,6 +272,7 @@ pub fn build_operator_status(
         task_execution,
         capability_packages,
         capability_planes,
+        runtime_capabilities: orchestrator::runtime_capability_snapshot(),
         channels,
         tools: if compact_view {
             Vec::new()
@@ -340,6 +343,17 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
         snapshot.resource.pressure,
         snapshot.continuity_tooling.saved_snapshot_count,
     ));
+    let runtime_summary = orchestrator::runtime_capability_summary();
+    out.push_str(&format!(
+        "  runtime_capabilities_offline: {}\n  runtime_capabilities_degraded: {}\n",
+        runtime_summary.offline_count, runtime_summary.degraded_count,
+    ));
+    if !runtime_summary.offline_ids.is_empty() {
+        out.push_str(&format!(
+            "  runtime_capabilities_offline_ids: {}\n",
+            runtime_summary.offline_ids.join(", ")
+        ));
+    }
     out.push_str(&format!(
         "  os_closure_ready: {}\n  os_closure_summary: {}\n  os_closure_planes: {}/{}\n",
         snapshot.os_closure.ready,

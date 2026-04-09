@@ -4,8 +4,9 @@
 use crate::error::{Error, Result};
 use crate::tools::state_file_guard::{ensure_state_path_mutable, normalize_state_tool_path};
 use crate::tools::{
-    parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolContext, ToolEffectClass,
-    ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind, MAX_TOOL_RESULT_LEN,
+    parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolCapabilityContract,
+    ToolContext, ToolEffectClass, ToolExecutionShape, ToolMetadata, ToolRiskLevel,
+    ToolRollbackKind, MAX_TOOL_RESULT_LEN,
 };
 use serde::Serialize;
 use std::sync::Arc;
@@ -180,6 +181,12 @@ impl Tool for FilesTool {
             _ => self.metadata().default_execution_shape("files_unknown"),
         };
         Ok(shape)
+    }
+
+    fn capability_contract(&self) -> ToolCapabilityContract {
+        ToolCapabilityContract::required(&[
+            crate::orchestrator::RUNTIME_CAPABILITY_STORAGE_STATE_FS,
+        ])
     }
 }
 

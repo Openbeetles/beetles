@@ -21,6 +21,39 @@ fn unavailable_tool_execution_result(tool_name: &str) -> ToolCallExecutionResult
 
 #[cold]
 #[inline(never)]
+fn capability_blocked_tool_execution_result(
+    tool_name: &str,
+    blocker: &crate::orchestrator::RuntimeCapabilityBlocker,
+) -> ToolCallExecutionResult {
+    metrics::record_tool_call(false);
+    let payload = serde_json::json!({
+        "error": format!(
+            "tool '{}' is no longer callable because sub-capability '{}' is {:?}",
+            tool_name,
+            blocker.sub_capability,
+            blocker.capability_status
+        )
+        .to_ascii_lowercase(),
+        "failure_kind": "capability",
+        "tool": tool_name,
+        "sub_capability": blocker.sub_capability,
+        "capability_status": blocker.capability_status,
+        "capability_reason": blocker.capability_reason,
+        "epoch": blocker.epoch,
+        "epoch_changed": blocker.epoch_changed,
+        "retry_guidance": "stop_retrying_until_capability_recovers",
+        "recovery_hint": blocker.recovery_hint,
+    });
+    ToolCallExecutionResult {
+        result_owned: crate::util::scrub_credentials(&payload.to_string()),
+        failure_kind: Some(crate::agent::tool_outcome::ToolFailureKind::Capability),
+        delivered_reply: None,
+        call_succeeded: false,
+    }
+}
+
+#[cold]
+#[inline(never)]
 fn denied_tool_execution_result(reason: &str) -> ToolCallExecutionResult {
     let assessment = denied_tool_assessment(reason);
     ToolCallExecutionResult {
@@ -101,6 +134,9 @@ fn execute_tool_call(
     latency: &mut WorkerLatency,
 ) -> ToolCallExecutionResult {
     if !registry.is_llm_tool_visible(&tc.name, request_plan.policy()) {
+        if let Some(blocker) = registry.runtime_capability_blocker(&tc.name) {
+            return capability_blocked_tool_execution_result(&tc.name, &blocker);
+        }
         return unavailable_tool_execution_result(&tc.name);
     }
 
@@ -128,6 +164,9 @@ fn execute_tool_call(
             denied_tool_execution_result(reason)
         }
         ToolDecision::Allow => {
+            if let Some(blocker) = registry.runtime_capability_blocker(&tc.name) {
+                return capability_blocked_tool_execution_result(&tc.name, &blocker);
+            }
             let tool_exec_start = Instant::now();
             match registry.execute_permitted(&permit, &tc.input, tool_ctx) {
                 Ok(outcome) => {
@@ -174,6 +213,9 @@ fn execute_tool_call(
                     }
                 }
                 Err(error) => {
+                    if let Some(blocker) = registry.runtime_capability_blocker(&tc.name) {
+                        return capability_blocked_tool_execution_result(&tc.name, &blocker);
+                    }
                     latency.tool_exec_ms = latency
                         .tool_exec_ms
                         .saturating_add(tool_exec_start.elapsed().as_millis());

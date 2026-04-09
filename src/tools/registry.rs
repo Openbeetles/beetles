@@ -6,9 +6,9 @@ use crate::config::AppConfig;
 use crate::error::{Error, Result};
 use crate::llm::ToolSpec as LlmToolSpec;
 use crate::tools::{
-    Tool, ToolExecutionGateDecision, ToolExecutionGovernance, ToolExecutionGovernanceState,
-    ToolExecutionOutcome, ToolExecutionPermit, ToolExecutionRecord, ToolExecutionRequest,
-    ToolMetadata, ToolPolicyContext, MAX_TOOL_ARGS_LEN, MAX_TOOL_RESULT_LEN,
+    Tool, ToolCapabilityContract, ToolExecutionGateDecision, ToolExecutionGovernance,
+    ToolExecutionGovernanceState, ToolExecutionOutcome, ToolExecutionPermit, ToolExecutionRecord,
+    ToolExecutionRequest, ToolMetadata, ToolPolicyContext, MAX_TOOL_ARGS_LEN, MAX_TOOL_RESULT_LEN,
 };
 use crate::util::truncate_to_byte_len;
 use indexmap::IndexMap;
@@ -31,6 +31,7 @@ struct RegisteredTool {
     llm_spec: LlmToolSpec,
     metadata: ToolMetadata,
     requires_network: bool,
+    capability_contract: ToolCapabilityContract,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -90,6 +91,7 @@ impl ToolRegistry {
         let name = tool.name();
         let metadata = tool.metadata();
         let requires_network = tool.requires_network();
+        let capability_contract = tool.capability_contract();
         let llm_spec = LlmToolSpec {
             name: name.to_string(),
             description: tool.description().to_string(),
@@ -102,6 +104,7 @@ impl ToolRegistry {
                 llm_spec,
                 metadata,
                 requires_network,
+                capability_contract,
             },
         );
     }
@@ -192,8 +195,12 @@ impl ToolRegistry {
             )),
             stage: "tool_execute",
         })?;
+        if let Some(blocker) = self.runtime_capability_blocker(name) {
+            return Err(runtime_capability_error(name, &blocker));
+        }
         let mut outcome = tool.execute_outcome(args, ctx)?;
         outcome.content = truncate_to_byte_len(&outcome.content, MAX_TOOL_RESULT_LEN);
+        self.observe_runtime_capability_success(name);
         Ok(outcome)
     }
 
@@ -252,6 +259,9 @@ impl ToolRegistry {
         args: &str,
         ctx: &mut dyn crate::tools::ToolContext,
     ) -> Result<ToolExecutionOutcome> {
+        if let Some(blocker) = self.runtime_capability_blocker(permit.tool_name()) {
+            return Err(runtime_capability_error(permit.tool_name(), &blocker));
+        }
         let tool = self.get(permit.tool_name()).ok_or_else(|| Error::Other {
             source: Box::new(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -261,6 +271,7 @@ impl ToolRegistry {
         })?;
         let mut outcome = tool.execute_outcome(args, ctx)?;
         outcome.content = truncate_to_byte_len(&outcome.content, MAX_TOOL_RESULT_LEN);
+        self.observe_runtime_capability_success(permit.tool_name());
         if let Some(governance) = self.execution_governance.as_ref() {
             if let Err(error) = governance.record_success(permit, &outcome) {
                 log::warn!(
@@ -278,6 +289,7 @@ impl ToolRegistry {
         permit: &ToolExecutionPermit,
         error: &Error,
     ) -> Result<()> {
+        self.observe_runtime_capability_failure(permit.tool_name(), error);
         if let Some(governance) = self.execution_governance.as_ref() {
             governance.record_failure(permit, error)?;
         }
@@ -369,10 +381,92 @@ impl ToolRegistry {
         overlay_set: Option<&crate::capability_package::CapabilityPackageToolPolicySet>,
     ) -> bool {
         let base_visible = entry.metadata.is_exposed_to_llm(policy);
-        overlay_set.map_or(base_visible, |overlays| {
+        let policy_visible = overlay_set.map_or(base_visible, |overlays| {
             overlays.llm_visibility_for(tool_name, policy, base_visible)
-        })
+        });
+        policy_visible && self.runtime_capability_blocker(tool_name).is_none()
     }
+
+    pub(crate) fn runtime_capability_blocker(
+        &self,
+        tool_name: &str,
+    ) -> Option<crate::orchestrator::RuntimeCapabilityBlocker> {
+        let entry = self.tools.get(tool_name)?;
+        if entry.capability_contract.is_empty() {
+            return None;
+        }
+        let blocker =
+            crate::orchestrator::runtime_capability_blocker(entry.capability_contract.required)?;
+        match blocker.capability_status {
+            crate::orchestrator::RuntimeCapabilityStatus::Degraded
+                if entry.capability_contract.allow_when_degraded =>
+            {
+                None
+            }
+            _ => Some(blocker),
+        }
+    }
+
+    fn observe_runtime_capability_success(&self, tool_name: &str) {
+        let Some(entry) = self.tools.get(tool_name) else {
+            return;
+        };
+        if entry.capability_contract.is_empty() {
+            return;
+        }
+        crate::orchestrator::observe_runtime_capability_success(entry.capability_contract.required);
+    }
+
+    fn observe_runtime_capability_failure(&self, tool_name: &str, error: &Error) {
+        let Some(entry) = self.tools.get(tool_name) else {
+            return;
+        };
+        for capability in entry.capability_contract.required {
+            let reason = match (*capability, error) {
+                (
+                    crate::orchestrator::RUNTIME_CAPABILITY_AUDIO_OUTPUT,
+                    Error::Config { message, .. },
+                ) if message.contains("speaker unavailable") => {
+                    Some(crate::orchestrator::RuntimeCapabilityReason::DeviceDisconnected)
+                }
+                (
+                    crate::orchestrator::RUNTIME_CAPABILITY_AUDIO_INPUT,
+                    Error::Config { message, .. },
+                ) if message.contains("microphone unavailable") => {
+                    Some(crate::orchestrator::RuntimeCapabilityReason::DeviceDisconnected)
+                }
+                (crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP, err)
+                    if err.is_tls_admission()
+                        || err.is_connect_error()
+                        || err.is_retryable_upstream() =>
+                {
+                    Some(crate::orchestrator::RuntimeCapabilityReason::UpstreamUnavailable)
+                }
+                (
+                    crate::orchestrator::RUNTIME_CAPABILITY_STORAGE_STATE_FS,
+                    Error::Spiffs { .. } | Error::Nvs { .. } | Error::Io { .. },
+                ) => Some(crate::orchestrator::RuntimeCapabilityReason::DriverError),
+                _ => None,
+            };
+            if let Some(reason) = reason {
+                crate::orchestrator::observe_runtime_capability_failure(capability, reason);
+            }
+        }
+    }
+}
+
+fn runtime_capability_error(
+    tool_name: &str,
+    blocker: &crate::orchestrator::RuntimeCapabilityBlocker,
+) -> Error {
+    Error::config(
+        "tool_execute_capability",
+        format!(
+            "tool '{tool_name}' requires sub-capability '{}' but it is {:?} ({:?})",
+            blocker.sub_capability, blocker.capability_status, blocker.capability_reason
+        )
+        .to_ascii_lowercase(),
+    )
 }
 
 fn last_record_for_tool<'a>(
@@ -704,12 +798,17 @@ pub fn build_default_registry(
 mod tests {
     use super::*;
     use crate::tools::{ToolExposure, ToolMetadata};
+    use std::sync::Mutex;
+
+    static RUNTIME_CAPABILITY_TEST_GUARD: Mutex<()> = Mutex::new(());
+
     struct VisibleTool;
     struct StatefulTool;
     struct AdminTool;
     struct InternalOnlyTool;
     struct UserOnlyTaskTool;
     struct OutcomeTool;
+    struct CapabilityBoundTool;
     struct StubToolContext;
 
     impl Tool for VisibleTool {
@@ -827,6 +926,24 @@ mod tests {
         }
     }
 
+    impl Tool for CapabilityBoundTool {
+        fn name(&self) -> &'static str {
+            "capability_bound"
+        }
+        fn description(&self) -> &str {
+            "tool guarded by runtime capability"
+        }
+        fn schema(&self) -> &str {
+            r#"{"type":"object"}"#
+        }
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok("ok".to_string())
+        }
+        fn capability_contract(&self) -> crate::tools::ToolCapabilityContract {
+            crate::tools::ToolCapabilityContract::required(&["audio_output"])
+        }
+    }
+
     impl crate::tools::ToolContext for StubToolContext {
         fn get_with_headers(
             &mut self,
@@ -895,5 +1012,89 @@ mod tests {
                 content: "tool delivered reply".to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn llm_tool_specs_hide_tools_when_required_runtime_capability_is_offline() {
+        let _guard = RUNTIME_CAPABILITY_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::orchestrator::reset_runtime_capabilities_for_tests();
+        crate::orchestrator::update_runtime_capability(
+            crate::orchestrator::RuntimeCapabilityUpdate {
+                id: "audio_output",
+                status: crate::orchestrator::RuntimeCapabilityStatus::Offline,
+                reason: crate::orchestrator::RuntimeCapabilityReason::DeviceDisconnected,
+                observed_at_secs: 10,
+                recovery_hint: Some("wait_for_audio_output_recovery"),
+            },
+        );
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(CapabilityBoundTool));
+
+        let user = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
+        let user_specs = registry.tool_specs_for_llm_with_max(&user, 4096);
+
+        assert!(user_specs.is_empty());
+        let blocker = registry
+            .runtime_capability_blocker("capability_bound")
+            .expect("runtime capability blocker");
+        assert_eq!(blocker.sub_capability, "audio_output");
+        assert_eq!(
+            blocker.capability_status,
+            crate::orchestrator::RuntimeCapabilityStatus::Offline
+        );
+    }
+
+    #[test]
+    fn execute_permitted_rechecks_runtime_capability_before_tool_body_runs() {
+        let _guard = RUNTIME_CAPABILITY_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::orchestrator::reset_runtime_capabilities_for_tests();
+        crate::orchestrator::update_runtime_capability(
+            crate::orchestrator::RuntimeCapabilityUpdate {
+                id: "audio_output",
+                status: crate::orchestrator::RuntimeCapabilityStatus::Online,
+                reason: crate::orchestrator::RuntimeCapabilityReason::Nominal,
+                observed_at_secs: 1,
+                recovery_hint: None,
+            },
+        );
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(CapabilityBoundTool));
+        let policy = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
+        let permit = match registry
+            .assess_llm_execution("capability_bound", "{}", &policy)
+            .expect("assess")
+        {
+            crate::tools::ToolExecutionGateDecision::Allow(permit) => permit,
+            other => panic!("expected allow, got {:?}", other),
+        };
+
+        crate::orchestrator::update_runtime_capability(
+            crate::orchestrator::RuntimeCapabilityUpdate {
+                id: "audio_output",
+                status: crate::orchestrator::RuntimeCapabilityStatus::Offline,
+                reason: crate::orchestrator::RuntimeCapabilityReason::DeviceDisconnected,
+                observed_at_secs: 2,
+                recovery_hint: Some("wait_for_audio_output_recovery"),
+            },
+        );
+
+        let mut ctx = StubToolContext;
+        let err = registry
+            .execute_permitted(&permit, "{}", &mut ctx)
+            .expect_err("runtime capability gate should deny execution");
+
+        match err {
+            crate::Error::Config { message, stage } => {
+                assert_eq!(stage, "tool_execute_capability");
+                assert!(message.contains("audio_output"));
+            }
+            other => panic!("expected config error, got {other:?}"),
+        }
     }
 }
