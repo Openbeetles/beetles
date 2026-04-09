@@ -14,7 +14,6 @@ use super::{
 };
 
 pub const REL_PATH_TURN_LEDGERS: &str = "memory/turn_ledgers";
-pub const REL_PATH_TURN_LEDGERS_LEGACY: &str = "memory/turn_ledgers.json";
 pub const REL_PATH_TURN_LEDGER_HISTORY: &str = "memory/turn_ledger_history";
 pub const TURN_LEDGER_HISTORY_MAX_ITEMS: usize = 32;
 const TURN_LEDGER_PREVIEW_MAX_CHARS: usize = 240;

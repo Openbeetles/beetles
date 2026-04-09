@@ -426,7 +426,11 @@ fn build_deep_inspection(
             execution_state_present,
         },
         snapshot_preview: MemorySnapshotPreview {
-            mode: continuity_snapshot_mode_label(request.snapshot_mode).to_string(),
+            mode: match request.snapshot_mode {
+                ContinuitySnapshotMode::Bootstrap => "bootstrap",
+                ContinuitySnapshotMode::FullRestore => "full_restore",
+            }
+            .to_string(),
             manifest: snapshot.manifest,
         },
         intelligence_replay,
@@ -456,12 +460,15 @@ fn parse_request(ctx: &HandlerContext, uri: &str) -> MemoryStatusRequest {
         deep,
         query: query_param_from_uri(uri, "query").unwrap_or_default(),
         run_id: query_param_from_uri(uri, "run_id"),
-        memory_system_kind: parse_memory_system_kind(
-            query_param_from_uri(uri, "memory_system_kind").as_deref(),
-            query_param_from_uri(uri, "profile").as_deref(),
-            ctx.platform.memory_system_kind(),
-        ),
-        snapshot_mode: parse_snapshot_mode(query_param_from_uri(uri, "snapshot_mode").as_deref()),
+        memory_system_kind: match query_param_from_uri(uri, "memory_system_kind").as_deref() {
+            Some("esp_compact") => MemorySystemKind::EspCompact,
+            Some("linux_full") => MemorySystemKind::LinuxFull,
+            _ => ctx.platform.memory_system_kind(),
+        },
+        snapshot_mode: match query_param_from_uri(uri, "snapshot_mode").as_deref() {
+            Some("full_restore") => ContinuitySnapshotMode::FullRestore,
+            _ => ContinuitySnapshotMode::Bootstrap,
+        },
     }
 }
 
@@ -503,36 +510,6 @@ fn query_param_from_uri(uri: &str, key: &str) -> Option<String> {
         return Some(percent_decode_query(value).trim().to_string());
     }
     None
-}
-
-fn parse_snapshot_mode(value: Option<&str>) -> ContinuitySnapshotMode {
-    match value.map(str::trim) {
-        Some("full_restore") => ContinuitySnapshotMode::FullRestore,
-        _ => ContinuitySnapshotMode::Bootstrap,
-    }
-}
-
-fn parse_memory_system_kind(
-    primary: Option<&str>,
-    legacy_profile: Option<&str>,
-    fallback: MemorySystemKind,
-) -> MemorySystemKind {
-    match primary.map(str::trim) {
-        Some("esp_compact") => MemorySystemKind::EspCompact,
-        Some("linux_full") => MemorySystemKind::LinuxFull,
-        _ => match legacy_profile.map(str::trim) {
-            Some("embedded") => MemorySystemKind::EspCompact,
-            Some("standard") => MemorySystemKind::LinuxFull,
-            _ => fallback,
-        },
-    }
-}
-
-fn continuity_snapshot_mode_label(mode: ContinuitySnapshotMode) -> &'static str {
-    match mode {
-        ContinuitySnapshotMode::Bootstrap => "bootstrap",
-        ContinuitySnapshotMode::FullRestore => "full_restore",
-    }
 }
 
 #[cfg(test)]
@@ -989,12 +966,37 @@ mod tests {
         let error = body(
             &ctx,
             &format!(
-                "/api/memory/status?chat_id={chat_id}&channel=telegram&query=memory&profile=embedded&deep=1"
+                "/api/memory/status?chat_id={chat_id}&channel=telegram&query=memory&memory_system_kind=esp_compact&deep=1"
             ),
         )
         .expect_err("embedded deep inspection should require operator window");
 
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn legacy_profile_param_no_longer_overrides_memory_system_kind() {
+        let ctx = build_test_context();
+        let unique = unique_suffix();
+        let chat_id = format!("memory-status-legacy-profile-{unique}");
+
+        ctx.session_store
+            .append(&chat_id, "user", "Inspect memory without legacy profile override.")
+            .unwrap();
+        ctx.session_store
+            .append(&chat_id, "assistant", "Memory inspection is ready.")
+            .unwrap();
+
+        let payload = body(
+            &ctx,
+            &format!(
+                "/api/memory/status?chat_id={chat_id}&channel=telegram&query=memory&profile=embedded&deep=1"
+            ),
+        )
+        .expect("legacy profile should be ignored");
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+
+        assert_eq!(parsed["memory_system_kind"], "linux_full");
     }
 
     fn build_test_context() -> crate::platform::http_server::handlers::HandlerContext {

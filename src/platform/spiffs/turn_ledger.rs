@@ -4,19 +4,14 @@ use crate::error::{Error, Result};
 use crate::memory::{
     derive_recent_persona_evidence, RecentPersonaEvidence, TurnLedger, TurnLedgerStore,
     RECENT_PERSONA_EVIDENCE_HISTORY_LOOKBACK, RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
-    REL_PATH_TURN_LEDGERS, REL_PATH_TURN_LEDGERS_LEGACY, REL_PATH_TURN_LEDGER_HISTORY,
-    TURN_LEDGER_HISTORY_MAX_ITEMS,
+    REL_PATH_TURN_LEDGERS, REL_PATH_TURN_LEDGER_HISTORY, TURN_LEDGER_HISTORY_MAX_ITEMS,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use crate::platform::state_root::state_mount_path;
 
-use super::{read_file, remove_file, state_path_join, write_file};
-
-const TAG: &str = "platform::spiffs::turn_ledger";
+use super::{read_file, remove_file, write_file};
 const MAX_CHAT_ID_FILENAME_LEN: usize = 20;
 const LEDGER_FILE_EXT: &str = ".json";
 const REL_PATH_TURN_LEDGERS_FLAT_SPIFFS: &str = "memory/tl";
@@ -46,10 +41,6 @@ fn fnv1a_hash(s: &str) -> u32 {
         h = h.wrapping_mul(16777619);
     }
     h
-}
-
-fn legacy_full_path() -> PathBuf {
-    state_path_join(REL_PATH_TURN_LEDGERS_LEGACY)
 }
 
 fn ledger_rel_path(chat_id: &str, flat_spiffs_namespace: bool) -> Result<PathBuf> {
@@ -248,47 +239,11 @@ fn load_recent_persona_evidence_from_path(path: &Path) -> Result<Option<RecentPe
     }
 }
 
-fn load_legacy_map(path: &Path) -> Result<HashMap<String, StoredTurnLedger>> {
-    let buf = match read_file(path) {
-        Ok(buf) => buf,
-        Err(Error::Io { .. }) | Err(Error::Other { .. }) => return Ok(HashMap::new()),
-        Err(error) => return Err(error),
-    };
-    if buf.len() <= 2 {
-        return Ok(HashMap::new());
-    }
-    serde_json::from_slice(&buf).map_err(|e| Error::config("turn_ledger_legacy", e.to_string()))
-}
-
-pub struct SpiffsTurnLedgerStore {
-    legacy_cache: Mutex<Option<HashMap<String, StoredTurnLedger>>>,
-}
+pub struct SpiffsTurnLedgerStore;
 
 impl SpiffsTurnLedgerStore {
     pub fn new() -> Self {
-        Self {
-            legacy_cache: Mutex::new(None),
-        }
-    }
-
-    fn load_legacy_cached(&self, chat_id: &str) -> Result<Option<TurnLedger>> {
-        let mut cache = self.legacy_cache.lock().unwrap_or_else(|e| e.into_inner());
-        if cache.is_none() {
-            let path = legacy_full_path();
-            let loaded = load_legacy_map(&path)?;
-            if !loaded.is_empty() {
-                log::info!(
-                    "[{}] loaded legacy turn ledger map for compatibility (entries={})",
-                    TAG,
-                    loaded.len()
-                );
-            }
-            *cache = Some(loaded);
-        }
-        Ok(cache
-            .as_ref()
-            .and_then(|map| map.get(chat_id))
-            .map(|stored| stored.0.clone()))
+        Self
     }
 }
 
@@ -301,10 +256,7 @@ impl Default for SpiffsTurnLedgerStore {
 impl TurnLedgerStore for SpiffsTurnLedgerStore {
     fn get(&self, chat_id: &str) -> Result<Option<TurnLedger>> {
         let path = ledger_path(chat_id)?;
-        if let Some(ledger) = load_ledger_from_path(&path)? {
-            return Ok(Some(ledger));
-        }
-        self.load_legacy_cached(chat_id)
+        load_ledger_from_path(&path)
     }
 
     fn set(&self, chat_id: &str, ledger: &TurnLedger) -> Result<()> {
@@ -330,14 +282,6 @@ impl TurnLedgerStore for SpiffsTurnLedgerStore {
         let evidence_path = recent_persona_evidence_path(chat_id)?;
         if evidence_path.exists() {
             remove_file(&evidence_path)?;
-        }
-        if let Some(cache) = self
-            .legacy_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_mut()
-        {
-            cache.remove(chat_id);
         }
         Ok(())
     }
@@ -426,6 +370,7 @@ mod tests {
         MentalPrivacyShareAction, TurnLedger, TurnLedgerStatus, TurnPersonaDisclosureLedger,
         TurnPersonaLedger, TurnPersonaPriorityLedger, TurnPersonaPressureLevel, TurnLedgerStore,
     };
+    use crate::platform::spiffs::state_path_join;
     fn meaningful_persona_ledger() -> TurnLedger {
         TurnLedger {
             ingress: IngressKind::User,
@@ -514,6 +459,29 @@ mod tests {
         assert!(loaded.is_some());
         assert_eq!(loaded.unwrap().meaningful_turns, 1);
 
+        store.clear(&chat_id).unwrap();
+    }
+
+    #[test]
+    fn get_ignores_legacy_aggregate_file() {
+        let store = super::SpiffsTurnLedgerStore::new();
+        let chat_id = format!(
+            "legacy-turn-ledger-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        store.clear(&chat_id).unwrap();
+
+        let legacy_path = state_path_join("memory/turn_ledgers.json");
+        let legacy_bytes = format!(r#"{{"{chat_id}":{{}}}}"#).into_bytes();
+        super::write_file(&legacy_path, &legacy_bytes).unwrap();
+
+        let loaded = store.get(&chat_id).unwrap();
+        assert!(loaded.is_none());
+
+        let _ = super::remove_file(&legacy_path);
         store.clear(&chat_id).unwrap();
     }
 }

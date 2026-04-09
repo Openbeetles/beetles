@@ -3,7 +3,6 @@
 
 use crate::error::Result;
 use crate::memory::{ImportantMessageStore, REL_PATH_IMPORTANT_MESSAGE};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -14,13 +13,6 @@ const MAX_IMPORTANT_MESSAGE_CHATS: usize = 32;
 
 fn full_path() -> PathBuf {
     state_path_join(REL_PATH_IMPORTANT_MESSAGE)
-}
-
-/// 兼容旧格式：单 chat 单 offset。
-#[derive(Serialize, Deserialize)]
-struct LegacyImportantMessageState {
-    chat_id: String,
-    offset_from_end: u32,
 }
 
 /// 单文件缓存；按 chat_id 保存待保留的重要消息偏移。
@@ -50,11 +42,6 @@ impl SpiffsImportantMessageStore {
             return HashMap::new();
         }
         if let Ok(map) = serde_json::from_slice::<HashMap<String, u32>>(&buf) {
-            return map;
-        }
-        if let Ok(legacy) = serde_json::from_slice::<LegacyImportantMessageState>(&buf) {
-            let mut map = HashMap::with_capacity(1);
-            map.insert(legacy.chat_id, legacy.offset_from_end);
             return map;
         }
         HashMap::new()
@@ -95,5 +82,34 @@ impl ImportantMessageStore for SpiffsImportantMessageStore {
             }
             Ok(StoreOp::clean(()))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{full_path, SpiffsImportantMessageStore};
+    use crate::memory::ImportantMessageStore;
+
+    #[test]
+    fn store_ignores_legacy_single_chat_payload() {
+        let chat_id = format!(
+            "legacy-important-message-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let store = SpiffsImportantMessageStore::new();
+        store.clear_important(&chat_id).unwrap();
+
+        let payload = format!(r#"{{"chat_id":"{chat_id}","offset_from_end":7}}"#).into_bytes();
+        super::super::write_file(full_path(), &payload).unwrap();
+
+        let store = SpiffsImportantMessageStore::new();
+        let loaded = store.get_important_offset(&chat_id).unwrap();
+        assert_eq!(loaded, None);
+
+        let _ = super::super::remove_file(full_path());
+        store.clear_important(&chat_id).unwrap();
     }
 }

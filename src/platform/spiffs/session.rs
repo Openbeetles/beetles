@@ -25,9 +25,6 @@ const TAG: &str = "platform::spiffs::session";
 const MAX_CHAT_ID_FILENAME_LEN: usize = 20;
 const SESSION_FILE_EXT: &str = ".jsonl";
 const CHAT_ID_HEADER_PREFIX: &str = "# chat_id: ";
-/// Legacy count-sidecar suffix; no longer used on the hot path, but cleaned up
-/// on destructive operations so old files do not accumulate forever.
-const COUNT_FILE_EXT: &str = ".c";
 
 fn fnv1a_hash(s: &str) -> u32 {
     let mut h: u32 = 2166136261;
@@ -178,10 +175,10 @@ fn scan_session_file(buf: &[u8]) -> SessionFileSnapshot {
     }
 }
 
-fn count_path(path: &Path) -> PathBuf {
-    let mut value = path.as_os_str().to_os_string();
-    value.push(COUNT_FILE_EXT);
-    PathBuf::from(value)
+fn cleanup_legacy_count_sidecar(path: &Path) {
+    let mut legacy_path = path.as_os_str().to_os_string();
+    legacy_path.push(".c");
+    let _ = super::remove_file(PathBuf::from(legacy_path));
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -653,7 +650,7 @@ impl SessionStore for SpiffsSessionStore {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(chat_id);
-        let _ = super::remove_file(count_path(&path));
+        cleanup_legacy_count_sidecar(&path);
         Ok(())
     }
 
@@ -703,7 +700,7 @@ impl SessionStore for SpiffsSessionStore {
                         .remove(chat_id.as_str());
                     self.note_chat_id_removed(&chat_id);
                 }
-                let _ = super::remove_file(count_path(&p));
+                cleanup_legacy_count_sidecar(&p);
                 removed += 1;
                 log::info!("[{}] gc: removed stale session file {:?}", TAG, name);
             }
@@ -729,7 +726,7 @@ impl SessionStore for SpiffsSessionStore {
         if path.exists() {
             super::remove_file(&path)?;
         }
-        let _ = super::remove_file(count_path(&path));
+        cleanup_legacy_count_sidecar(&path);
         Ok(())
     }
 }

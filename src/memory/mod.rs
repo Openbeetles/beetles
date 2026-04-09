@@ -385,7 +385,7 @@ pub use turn_ledger::{
     TurnObservationLedger, TurnPersonaDisclosureLedger, TurnPersonaLedger,
     TurnPersonaPressureLevel, TurnPersonaPriorityLedger, TurnPersonaReviewLedger,
     TurnSubjectStateLedger, TurnToolPathLedger, REL_PATH_TURN_LEDGERS,
-    REL_PATH_TURN_LEDGERS_LEGACY, REL_PATH_TURN_LEDGER_HISTORY, TURN_LEDGER_HISTORY_MAX_ITEMS,
+    REL_PATH_TURN_LEDGER_HISTORY, TURN_LEDGER_HISTORY_MAX_ITEMS,
 };
 pub(crate) use world_sense::run_world_sense_refresh_with_state;
 pub use world_sense::{
