@@ -8,7 +8,7 @@ use crate::memory::{
     IntelligenceReplayInspection, MemoryHygieneContext, MemoryHygieneInspection, MemorySystemKind,
     WorkingRecallInspection, WorkingRecallInspectionInput,
 };
-use crate::skills::is_runtime_skill_name;
+use crate::skills::{build_runtime_skill_operator_summary, is_runtime_skill_name};
 use crate::task_execution::{
     build_task_execution_operator_snapshot, inspect_task_learning, inspect_task_workspace,
     TaskExecutionOperatorSnapshot, TaskLearningInspection, TaskWorkspaceInspection,
@@ -95,6 +95,22 @@ struct MemoryDeepInspection {
 }
 
 #[derive(Debug, Serialize)]
+struct MemoryLearningMetrics {
+    validated_runtime_skills: usize,
+    revision_pending_runtime_skills: usize,
+    promoted_task_candidates: usize,
+    observed_task_candidates: usize,
+    rejected_task_candidates: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct MemoryLearningStatus {
+    task_candidates: crate::task_execution::TaskLearningOperatorSnapshot,
+    runtime_skills: crate::skills::RuntimeSkillOperatorSummary,
+    metrics: MemoryLearningMetrics,
+}
+
+#[derive(Debug, Serialize)]
 struct MemoryStatusBody {
     memory_system_kind: String,
     inbound_depth: usize,
@@ -108,6 +124,7 @@ struct MemoryStatusBody {
     personality: MemoryPersonalityStatus,
     continuity_tooling: MemoryContinuityTooling,
     task_execution: TaskExecutionOperatorSnapshot,
+    learning: MemoryLearningStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     inspection: Option<MemoryDeepInspection>,
 }
@@ -236,6 +253,18 @@ pub fn body(ctx: &HandlerContext, uri: &str) -> Result<String, std::io::Error> {
         ctx.platform.task_learning_store().as_ref(),
     )
     .map_err(std::io::Error::other)?;
+    let runtime_skill_learning = build_runtime_skill_operator_summary(ctx.skill_storage.as_ref());
+    let learning = MemoryLearningStatus {
+        task_candidates: task_execution.learning.clone(),
+        runtime_skills: runtime_skill_learning.clone(),
+        metrics: MemoryLearningMetrics {
+            validated_runtime_skills: runtime_skill_learning.validated,
+            revision_pending_runtime_skills: runtime_skill_learning.revision_pending,
+            promoted_task_candidates: task_execution.learning.candidate_promoted,
+            observed_task_candidates: task_execution.learning.candidate_observed,
+            rejected_task_candidates: task_execution.learning.candidate_rejected,
+        },
+    };
     let inspection = request
         .deep
         .then_some(request.chat_id.as_deref())
@@ -299,6 +328,7 @@ pub fn body(ctx: &HandlerContext, uri: &str) -> Result<String, std::io::Error> {
             saved_snapshots,
         },
         task_execution,
+        learning,
         inspection,
     };
     serde_json::to_string(&payload).map_err(std::io::Error::other)
@@ -880,6 +910,91 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item["topic"] == topic));
+    }
+
+    #[test]
+    fn memory_status_api_includes_learning_summary_and_metrics() {
+        let ctx = build_test_context();
+        let unique = unique_suffix();
+        let now_secs = crate::util::current_unix_secs();
+        let topic = format!("release_patch_flow_{unique}");
+        let skill_name = format!("runtime_skill__{topic}");
+
+        crate::skills::upsert_runtime_skill(
+            ctx.skill_storage.as_ref(),
+            &crate::skills::RuntimeSkillWrite {
+                name: skill_name.clone(),
+                topic: topic.clone(),
+                title: "Release patch flow".to_string(),
+                summary: "Validated release patch flow.".to_string(),
+                content: "1. inspect diff\n2. patch\n3. verify".to_string(),
+                citations: Vec::new(),
+                source_chat_id: Some("chat-1".to_string()),
+                observed_at: now_secs.saturating_sub(60),
+            },
+        )
+        .unwrap();
+        crate::skills::record_runtime_skill_outcomes(
+            ctx.skill_storage.as_ref(),
+            std::slice::from_ref(&skill_name),
+            crate::skills::RuntimeSkillReuseOutcome::Succeeded,
+            now_secs,
+            "final_answer",
+        )
+        .unwrap();
+        ctx.platform
+            .task_learning_store()
+            .upsert(&TaskLearningRecord {
+                learning_id: format!("learning-{unique}"),
+                source_channel: "telegram".to_string(),
+                source_chat_id: "chat-1".to_string(),
+                run_id: format!("run-{unique}"),
+                step_id: "s01".to_string(),
+                kind: TaskLearningKind::ReusableProcedure,
+                route: TaskLearningRoute::RuntimeSkill,
+                run_status: TaskRunStatus::Completed,
+                topic,
+                summary: "Promoted release patch procedure.".to_string(),
+                content: "Inspect diff, patch, verify.".to_string(),
+                memory_kind: None,
+                review_summary: "Reusable".to_string(),
+                source_artifact_ids: Vec::new(),
+                provenance: "memory status test".to_string(),
+                archive_note_name: String::new(),
+                route_detail: "promoted".to_string(),
+                candidate_state: Some(TaskLearningCandidateState::Promoted),
+                candidate_state_updated_at: now_secs,
+                last_failure_reason: String::new(),
+                observed_at: now_secs,
+            })
+            .unwrap();
+
+        let payload = body(&ctx, "/api/memory/status").unwrap();
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+
+        assert!(
+            parsed["learning"]["runtime_skills"]["validated"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 1
+        );
+        assert_eq!(
+            parsed["learning"]["metrics"]["validated_runtime_skills"],
+            parsed["learning"]["runtime_skills"]["validated"]
+        );
+        assert!(
+            parsed["learning"]["task_candidates"]["candidate_promoted"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 1
+        );
+        assert!(parsed["learning"]["runtime_skills"]["recent_records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["name"] == skill_name
+                && item["validated_success_count"] == 1
+                && item["last_outcome_note"] == "final_answer"));
     }
 
     #[test]

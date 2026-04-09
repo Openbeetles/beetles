@@ -191,6 +191,17 @@ fn base_recall_query(
     }
 }
 
+fn runtime_skill_selection_note(hits: &[crate::skills::RuntimeSkillHit]) -> Option<String> {
+    let top = hits.first()?;
+    Some(if top.record.revision_pending {
+        "fallback_revision_pending_runtime_skill".to_string()
+    } else if top.record.validated_success_count > 0 {
+        "stable_validated_runtime_skill".to_string()
+    } else {
+        "fallback_promoted_runtime_skill".to_string()
+    })
+}
+
 fn build_shared_factual_candidate(
     entry: &LongTermMemoryEntry,
     selected: bool,
@@ -512,11 +523,7 @@ pub fn inspect_runtime_skill_recall(
         selected_count: hits.len(),
         selected_ids,
         miss_reason,
-        selection_note: if hits.is_empty() {
-            None
-        } else {
-            Some("top_runtime_skills_for_current_query".to_string())
-        },
+        selection_note: runtime_skill_selection_note(&hits),
         candidates: hits
             .into_iter()
             .map(|hit| RecallCandidate {
@@ -641,4 +648,151 @@ pub fn inspect_task_recall(
         })
         .collect();
     report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::{Error, Result};
+    use crate::skills::{
+        record_runtime_skill_outcomes, upsert_runtime_skill, RuntimeSkillReuseOutcome,
+        RuntimeSkillWrite,
+    };
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct StubSkillStorage {
+        files: Mutex<HashMap<String, Vec<u8>>>,
+    }
+
+    impl SkillStorage for StubSkillStorage {
+        fn list_names(&self) -> Result<Vec<String>> {
+            Ok(self
+                .files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .keys()
+                .cloned()
+                .collect())
+        }
+
+        fn read(&self, name: &str) -> Result<Vec<u8>> {
+            self.files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(name)
+                .cloned()
+                .ok_or_else(|| Error::config("skill", "missing"))
+        }
+
+        fn write(&self, name: &str, content: &[u8]) -> Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(name.to_string(), content.to_vec());
+            Ok(())
+        }
+
+        fn remove(&self, name: &str) -> Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(name);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn inspect_runtime_skill_recall_surfaces_stable_and_fallback_selection_notes() {
+        let stable_storage = StubSkillStorage::default();
+        upsert_runtime_skill(
+            &stable_storage,
+            &RuntimeSkillWrite {
+                name: String::new(),
+                topic: "release_patch_flow".to_string(),
+                title: "Release patch flow".to_string(),
+                summary: "Validated release patch flow.".to_string(),
+                content: "1. inspect diff\n2. patch\n3. verify".to_string(),
+                citations: Vec::new(),
+                source_chat_id: Some("chat-1".to_string()),
+                observed_at: 100,
+            },
+        )
+        .unwrap();
+        record_runtime_skill_outcomes(
+            &stable_storage,
+            &[String::from("runtime_skill__release_patch_flow")],
+            RuntimeSkillReuseOutcome::Succeeded,
+            200,
+            "final_answer",
+        )
+        .unwrap();
+
+        let stable_report = inspect_runtime_skill_recall(
+            &stable_storage,
+            "继续按 release patch flow 做",
+            Some("chat-1"),
+            None,
+            &[],
+            300,
+            420,
+        );
+        assert_eq!(
+            stable_report.selection_note.as_deref(),
+            Some("stable_validated_runtime_skill")
+        );
+
+        let fallback_storage = StubSkillStorage::default();
+        upsert_runtime_skill(
+            &fallback_storage,
+            &RuntimeSkillWrite {
+                name: String::new(),
+                topic: "release_patch_flow".to_string(),
+                title: "Release patch flow".to_string(),
+                summary: "Fresh promoted release patch flow.".to_string(),
+                content: "1. inspect diff\n2. patch\n3. verify".to_string(),
+                citations: Vec::new(),
+                source_chat_id: Some("chat-1".to_string()),
+                observed_at: 100,
+            },
+        )
+        .unwrap();
+
+        let fallback_report = inspect_runtime_skill_recall(
+            &fallback_storage,
+            "继续按 release patch flow 做",
+            Some("chat-1"),
+            None,
+            &[],
+            300,
+            420,
+        );
+        assert_eq!(
+            fallback_report.selection_note.as_deref(),
+            Some("fallback_promoted_runtime_skill")
+        );
+
+        record_runtime_skill_outcomes(
+            &fallback_storage,
+            &[String::from("runtime_skill__release_patch_flow")],
+            RuntimeSkillReuseOutcome::Mismatch,
+            320,
+            "final_recovery",
+        )
+        .unwrap();
+        let revision_pending_report = inspect_runtime_skill_recall(
+            &fallback_storage,
+            "继续按 release patch flow 做",
+            Some("chat-1"),
+            None,
+            &[],
+            360,
+            420,
+        );
+        assert_eq!(
+            revision_pending_report.selection_note.as_deref(),
+            Some("fallback_revision_pending_runtime_skill")
+        );
+    }
 }

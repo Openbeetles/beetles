@@ -148,7 +148,10 @@ mod tests {
         TurnLedger, TurnLedgerStatus, TurnLedgerStore,
     };
     use crate::platform::SkillStorage;
-    use crate::skills::{upsert_runtime_skill, RuntimeSkillWrite};
+    use crate::skills::{
+        record_runtime_skill_outcomes, upsert_runtime_skill, RuntimeSkillReuseOutcome,
+        RuntimeSkillWrite,
+    };
     use crate::task_execution::{
         TaskLearningKind, TaskLearningRecord, TaskLearningRoute, TaskLearningStore, TaskPlan,
         TaskRun, TaskRunRecord, TaskRunStatus, TaskRunStore, TaskStep, TaskStepStatus,
@@ -609,6 +612,14 @@ mod tests {
             },
         )
         .unwrap();
+        record_runtime_skill_outcomes(
+            &skill_storage,
+            &[String::from("runtime_skill__network_setup")],
+            RuntimeSkillReuseOutcome::Succeeded,
+            180,
+            "final_answer",
+        )
+        .unwrap();
 
         let run = sample_task_run();
         task_run_store.upsert(&run).unwrap();
@@ -668,6 +679,10 @@ mod tests {
             &session_store.load_recent("chat-a", 2).unwrap(),
             200,
             420,
+        );
+        assert_eq!(
+            runtime_report.selection_note.as_deref(),
+            Some("stable_validated_runtime_skill")
         );
         let task_report = inspect_task_recall(
             Some(&run),

@@ -12,10 +12,10 @@ use super::{
     },
     AutonomyStrategyStore, ContinuityCapsuleStore, ExecutionStateStore, InnerLifeStore,
     LongTermMemoryStore, MemoryStore, MemorySystemKind, MentalPrivacyStore, OuterVoiceStore,
-    PrivateDocStore, PrivateGardenStore, PromptRecallRouterDecision, RelationshipConstitutionStore,
-    RelationshipPortfolioStore, RelationshipTopologyStore, RemindAtStore, SelfAuthoredCoreStore,
-    SelfContinuityStore, SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
-    TurnLedgerStore, WorldSenseStore,
+    PrivateDocStore, PrivateGardenStore, PromptRecallIntent, PromptRecallRouterDecision,
+    RelationshipConstitutionStore, RelationshipPortfolioStore, RelationshipTopologyStore,
+    RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore, SelfModelStore, SessionMessage,
+    SessionStore, SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
 };
 
 pub struct PromptMemoryContext {
@@ -67,6 +67,9 @@ pub struct PromptRuntimeCarry {
     pub summary_text: Option<String>,
     pub long_term_memory_text: Option<String>,
     pub recent_messages: Vec<SessionMessage>,
+    pub prompt_recall_intent: PromptRecallIntent,
+    pub runtime_skill_selected_ids: Vec<String>,
+    pub task_recall_selected_ids: Vec<String>,
 }
 
 impl PromptMemoryContext {
@@ -94,6 +97,12 @@ impl PromptMemoryContext {
             summary_text: self.summary_text,
             long_term_memory_text: self.long_term_memory_text,
             recent_messages: self.recent_messages,
+            prompt_recall_intent: self.recall_router.intent,
+            runtime_skill_selected_ids: self.runtime_skill_recall_report.selected_ids,
+            task_recall_selected_ids: self
+                .task_recall_report
+                .map(|report| report.selected_ids)
+                .unwrap_or_default(),
         }
     }
 

@@ -68,7 +68,10 @@ struct RuntimeSkillIndexHint {
     reasons: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+const MAX_RUNTIME_SKILL_OPERATOR_RECORDS: usize = 6;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RuntimeSkillStatus {
     Active,
     Stale,
@@ -99,6 +102,15 @@ pub struct RuntimeSkillGovernanceOutcome {
     pub pruned: usize,
     pub stale_marked: usize,
     pub low_value_marked: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSkillReuseOutcome {
+    #[default]
+    Neutral,
+    Succeeded,
+    Mismatch,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -183,8 +195,50 @@ pub struct RuntimeSkillRecord {
     pub use_count: u32,
     pub quality_score: u8,
     pub status: RuntimeSkillStatus,
+    pub validated_success_count: u32,
+    pub mismatch_count: u32,
+    pub revision_count: u32,
+    pub revision_pending: bool,
+    pub last_outcome_at: Option<u64>,
+    pub last_outcome_note: String,
     pub supersedes: Vec<String>,
     pub component_topics: Vec<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct RuntimeSkillOperatorRecord {
+    pub name: String,
+    pub title: String,
+    pub topic: String,
+    pub status: RuntimeSkillStatus,
+    pub quality_score: u8,
+    pub use_count: u32,
+    pub validated_success_count: u32,
+    pub mismatch_count: u32,
+    pub revision_pending: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_outcome_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub last_outcome_note: String,
+    pub updated_at: u64,
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct RuntimeSkillOperatorSummary {
+    #[serde(default)]
+    pub total: usize,
+    #[serde(default)]
+    pub active: usize,
+    #[serde(default)]
+    pub stale: usize,
+    #[serde(default)]
+    pub low_value: usize,
+    #[serde(default)]
+    pub validated: usize,
+    #[serde(default)]
+    pub revision_pending: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_records: Vec<RuntimeSkillOperatorRecord>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -236,6 +290,61 @@ pub fn retrieve_runtime_skill_hits(
 ) -> Vec<RuntimeSkillHit> {
     retrieve_runtime_skill_hits_with_backend(storage, query, preferred_chat_id, now_secs, limit)
         .hits
+}
+
+pub fn build_runtime_skill_operator_summary(
+    storage: &dyn SkillStorage,
+) -> RuntimeSkillOperatorSummary {
+    let mut records = list_runtime_skill_records(storage);
+    let mut summary = RuntimeSkillOperatorSummary {
+        total: records.len(),
+        ..RuntimeSkillOperatorSummary::default()
+    };
+    for record in &records {
+        match record.status {
+            RuntimeSkillStatus::Active => summary.active = summary.active.saturating_add(1),
+            RuntimeSkillStatus::Stale => summary.stale = summary.stale.saturating_add(1),
+            RuntimeSkillStatus::LowValue => {
+                summary.low_value = summary.low_value.saturating_add(1);
+            }
+        }
+        if record.validated_success_count > 0 {
+            summary.validated = summary.validated.saturating_add(1);
+        }
+        if record.revision_pending {
+            summary.revision_pending = summary.revision_pending.saturating_add(1);
+        }
+    }
+    records.sort_by(|a, b| {
+        b.last_outcome_at
+            .cmp(&a.last_outcome_at)
+            .then_with(|| b.updated_at.cmp(&a.updated_at))
+            .then_with(|| {
+                b.validated_success_count
+                    .cmp(&a.validated_success_count)
+                    .then_with(|| b.use_count.cmp(&a.use_count))
+            })
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    summary.recent_records = records
+        .into_iter()
+        .take(MAX_RUNTIME_SKILL_OPERATOR_RECORDS)
+        .map(|record| RuntimeSkillOperatorRecord {
+            name: record.name,
+            title: record.title,
+            topic: record.topic,
+            status: record.status,
+            quality_score: record.quality_score,
+            use_count: record.use_count,
+            validated_success_count: record.validated_success_count,
+            mismatch_count: record.mismatch_count,
+            revision_pending: record.revision_pending,
+            last_outcome_at: record.last_outcome_at,
+            last_outcome_note: record.last_outcome_note,
+            updated_at: record.updated_at,
+        })
+        .collect();
+    summary
 }
 
 pub(crate) fn retrieve_runtime_skill_hits_with_backend(
@@ -419,6 +528,47 @@ pub fn build_runtime_skill_recall_block(
     }
 }
 
+pub fn record_runtime_skill_outcomes(
+    storage: &dyn SkillStorage,
+    skill_names: &[String],
+    outcome: RuntimeSkillReuseOutcome,
+    now_secs: u64,
+    outcome_note: &str,
+) -> crate::error::Result<usize> {
+    if matches!(outcome, RuntimeSkillReuseOutcome::Neutral) || skill_names.is_empty() {
+        return Ok(0);
+    }
+    let mut changed = 0usize;
+    for skill_name in skill_names {
+        let Some(content) = get_skill_content(storage, skill_name) else {
+            continue;
+        };
+        let Some(mut record) = parse_runtime_skill_record(skill_name, &content) else {
+            continue;
+        };
+        let note = truncate_content_to_max(outcome_note.trim(), 160).into_owned();
+        match outcome {
+            RuntimeSkillReuseOutcome::Neutral => {}
+            RuntimeSkillReuseOutcome::Succeeded => {
+                record.validated_success_count = record.validated_success_count.saturating_add(1);
+                record.revision_pending = false;
+            }
+            RuntimeSkillReuseOutcome::Mismatch => {
+                record.mismatch_count = record.mismatch_count.saturating_add(1);
+                record.revision_count = record.revision_count.saturating_add(1);
+                record.revision_pending = true;
+            }
+        }
+        record.last_outcome_at = Some(now_secs);
+        record.last_outcome_note = note;
+        record.updated_at = record.updated_at.max(now_secs);
+        record.quality_score = compute_runtime_skill_quality(&record);
+        write_runtime_skill_record(storage, &record)?;
+        changed = changed.saturating_add(1);
+    }
+    Ok(changed)
+}
+
 pub fn write_governed_runtime_skills(
     storage: &dyn SkillStorage,
     writes: &[RuntimeSkillWrite],
@@ -553,13 +703,23 @@ fn fallback_runtime_skill_hits(
             if matches!(record.status, RuntimeSkillStatus::LowValue) {
                 reasons.push("low-value".to_string());
             }
-            let confidence_score = (record.quality_score / 8) as u32;
+            if record.validated_success_count > 0 {
+                reasons.push("validated reuse evidence".to_string());
+            }
+            if record.revision_pending {
+                reasons.push("revision pending".to_string());
+            }
+            let confidence_score =
+                (record.quality_score / 8) as u32 + runtime_skill_validated_bonus(&record);
             let importance_score = record.use_count.min(6).saturating_mul(2);
-            let governance_score = match record.status {
-                RuntimeSkillStatus::Active => 4,
-                RuntimeSkillStatus::Stale => 1,
-                RuntimeSkillStatus::LowValue => 0,
-            };
+            let governance_score = runtime_skill_governance_score(
+                &record,
+                match record.status {
+                    RuntimeSkillStatus::Active => 4,
+                    RuntimeSkillStatus::Stale => 1,
+                    RuntimeSkillStatus::LowValue => 0,
+                },
+            );
             let source_score = record.citations.len().min(3) as u32 * 2;
             let breakdown = RuntimeSkillRecallScoreBreakdown {
                 lexical_score: 0,
@@ -1132,6 +1292,36 @@ fn parse_runtime_skill_record(name: &str, content: &str) -> Option<RuntimeSkillR
                 use_count,
                 quality_score: 0,
                 status: RuntimeSkillStatus::Active,
+                validated_success_count: meta
+                    .get("validated success count")
+                    .or_else(|| meta.get("validated_success_count"))
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .unwrap_or(0),
+                mismatch_count: meta
+                    .get("mismatch count")
+                    .or_else(|| meta.get("mismatch_count"))
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .unwrap_or(0),
+                revision_count: meta
+                    .get("revision count")
+                    .or_else(|| meta.get("revision_count"))
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .unwrap_or(0),
+                revision_pending: meta
+                    .get("revision pending")
+                    .or_else(|| meta.get("revision_pending"))
+                    .map(|value| matches!(value.trim(), "true" | "1" | "yes"))
+                    .unwrap_or(false),
+                last_outcome_at: meta
+                    .get("last outcome at")
+                    .or_else(|| meta.get("last_outcome_at"))
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .filter(|value| *value > 0),
+                last_outcome_note: meta
+                    .get("last outcome note")
+                    .or_else(|| meta.get("last_outcome_note"))
+                    .cloned()
+                    .unwrap_or_default(),
                 supersedes: Vec::new(),
                 component_topics: vec![topic.clone()],
             })
@@ -1163,6 +1353,36 @@ fn parse_runtime_skill_record(name: &str, content: &str) -> Option<RuntimeSkillR
             .get("status")
             .map(|value| RuntimeSkillStatus::parse(value))
             .unwrap_or(RuntimeSkillStatus::Active),
+        validated_success_count: meta
+            .get("validated success count")
+            .or_else(|| meta.get("validated_success_count"))
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(0),
+        mismatch_count: meta
+            .get("mismatch count")
+            .or_else(|| meta.get("mismatch_count"))
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(0),
+        revision_count: meta
+            .get("revision count")
+            .or_else(|| meta.get("revision_count"))
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(0),
+        revision_pending: meta
+            .get("revision pending")
+            .or_else(|| meta.get("revision_pending"))
+            .map(|value| matches!(value.trim(), "true" | "1" | "yes"))
+            .unwrap_or(false),
+        last_outcome_at: meta
+            .get("last outcome at")
+            .or_else(|| meta.get("last_outcome_at"))
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0),
+        last_outcome_note: meta
+            .get("last outcome note")
+            .or_else(|| meta.get("last_outcome_note"))
+            .cloned()
+            .unwrap_or_default(),
         supersedes: meta
             .get("supersedes")
             .map(|value| parse_list_field(value))
@@ -1239,6 +1459,18 @@ fn merge_runtime_skill_record(
         status: existing
             .map(|record| record.status)
             .unwrap_or(RuntimeSkillStatus::Active),
+        validated_success_count: existing
+            .map(|record| record.validated_success_count)
+            .unwrap_or(0),
+        mismatch_count: existing.map(|record| record.mismatch_count).unwrap_or(0),
+        revision_count: existing.map(|record| record.revision_count).unwrap_or(0),
+        revision_pending: existing
+            .map(|record| record.revision_pending)
+            .unwrap_or(false),
+        last_outcome_at: existing.and_then(|record| record.last_outcome_at),
+        last_outcome_note: existing
+            .map(|record| record.last_outcome_note.clone())
+            .unwrap_or_default(),
         supersedes: existing
             .map(|record| record.supersedes.clone())
             .unwrap_or_default(),
@@ -1343,6 +1575,32 @@ fn render_runtime_skill_record(record: &RuntimeSkillRecord) -> String {
     out.push_str("Quality: ");
     out.push_str(&record.quality_score.to_string());
     out.push('\n');
+    out.push_str("Validated success count: ");
+    out.push_str(&record.validated_success_count.to_string());
+    out.push('\n');
+    out.push_str("Mismatch count: ");
+    out.push_str(&record.mismatch_count.to_string());
+    out.push('\n');
+    out.push_str("Revision count: ");
+    out.push_str(&record.revision_count.to_string());
+    out.push('\n');
+    out.push_str("Revision pending: ");
+    out.push_str(if record.revision_pending {
+        "true"
+    } else {
+        "false"
+    });
+    out.push('\n');
+    if let Some(last_outcome_at) = record.last_outcome_at.filter(|value| *value > 0) {
+        out.push_str("Last outcome at: ");
+        out.push_str(&last_outcome_at.to_string());
+        out.push('\n');
+    }
+    if !record.last_outcome_note.trim().is_empty() {
+        out.push_str("Last outcome note: ");
+        out.push_str(record.last_outcome_note.trim());
+        out.push('\n');
+    }
     if !record.supersedes.is_empty() {
         out.push_str("Supersedes: ");
         out.push_str(&record.supersedes.join(", "));
@@ -1372,13 +1630,19 @@ fn compute_runtime_skill_quality(record: &RuntimeSkillRecord) -> u8 {
     let summary_signal = u8::from(!record.summary.trim().is_empty()) * 18;
     let provenance_signal = (record.citations.len().min(4) as u8).saturating_mul(10);
     let reuse_signal = (record.use_count.min(5) as u8).saturating_mul(6);
+    let validated_signal = (record.validated_success_count.min(4) as u8).saturating_mul(5);
     let structure_signal = u8::from(record.procedure.lines().count() >= 2) * 14;
     let chat_signal = u8::from(record.source_chat_id.is_some()) * 6;
+    let penalty = (record.mismatch_count.min(3) as u8)
+        .saturating_mul(4)
+        .saturating_add(u8::from(record.revision_pending) * 6);
     20u8.saturating_add(summary_signal)
         .saturating_add(provenance_signal)
         .saturating_add(reuse_signal)
+        .saturating_add(validated_signal)
         .saturating_add(structure_signal)
         .saturating_add(chat_signal)
+        .saturating_sub(penalty)
         .min(100)
 }
 
@@ -1494,7 +1758,14 @@ fn score_runtime_skill_record_breakdown(
     if recency_score > 0 {
         reasons.push("recently reused".to_string());
     }
-    let confidence_score = (record.quality_score / 8) as u32;
+    if record.validated_success_count > 0 {
+        reasons.push("validated reuse evidence".to_string());
+    }
+    if record.revision_pending {
+        reasons.push("revision pending".to_string());
+    }
+    let confidence_score =
+        (record.quality_score / 8) as u32 + runtime_skill_validated_bonus(record);
     let importance_score = record.use_count.min(6).saturating_mul(2);
     let source_score = if record.citations.is_empty() {
         0
@@ -1504,11 +1775,14 @@ fn score_runtime_skill_record_breakdown(
     if source_score > 0 {
         reasons.push(format!("{} provenance refs", record.citations.len()));
     }
-    let governance_score = match record.status {
-        RuntimeSkillStatus::Active => 6,
-        RuntimeSkillStatus::Stale => 1,
-        RuntimeSkillStatus::LowValue => 0,
-    };
+    let governance_score = runtime_skill_governance_score(
+        record,
+        match record.status {
+            RuntimeSkillStatus::Active => 6,
+            RuntimeSkillStatus::Stale => 1,
+            RuntimeSkillStatus::LowValue => 0,
+        },
+    );
     if runtime_skill_is_stale(record, now_secs) {
         reasons.push("stale".to_string());
     }
@@ -1537,6 +1811,16 @@ fn score_runtime_skill_record_breakdown(
         total_score,
         reason_fragments: reasons,
     })
+}
+
+fn runtime_skill_validated_bonus(record: &RuntimeSkillRecord) -> u32 {
+    record.validated_success_count.min(3).saturating_mul(4)
+}
+
+fn runtime_skill_governance_score(record: &RuntimeSkillRecord, base: u32) -> u32 {
+    let penalty = u32::from(record.revision_pending).saturating_mul(5)
+        + record.mismatch_count.min(2).saturating_mul(2);
+    base.saturating_sub(penalty)
 }
 
 fn runtime_skill_is_stale(record: &RuntimeSkillRecord, now_secs: u64) -> bool {
@@ -1598,6 +1882,12 @@ fn find_canonical_runtime_skill_name(
         use_count: 0,
         quality_score: 0,
         status: RuntimeSkillStatus::Active,
+        validated_success_count: 0,
+        mismatch_count: 0,
+        revision_count: 0,
+        revision_pending: false,
+        last_outcome_at: None,
+        last_outcome_note: String::new(),
         supersedes: Vec::new(),
         component_topics: vec![input.topic.clone()],
     };
@@ -1900,9 +2190,63 @@ mod tests {
             use_count: 0,
             quality_score: 0,
             status: RuntimeSkillStatus::Active,
+            validated_success_count: 0,
+            mismatch_count: 0,
+            revision_count: 0,
+            revision_pending: false,
+            last_outcome_at: None,
+            last_outcome_note: String::new(),
             supersedes: Vec::new(),
             component_topics: vec![topic.to_string()],
         }
+    }
+
+    #[test]
+    fn record_runtime_skill_outcome_marks_validated_and_revision_pending_states() {
+        let storage = StubSkillStorage::default();
+        upsert_runtime_skill(
+            &storage,
+            &RuntimeSkillWrite {
+                name: String::new(),
+                topic: "release_patch_flow".to_string(),
+                title: "Release patch flow".to_string(),
+                summary: "Apply the release patch safely.".to_string(),
+                content: "1. inspect diff\n2. patch\n3. verify".to_string(),
+                citations: Vec::new(),
+                source_chat_id: Some("chat-1".to_string()),
+                observed_at: 100,
+            },
+        )
+        .unwrap();
+
+        record_runtime_skill_outcomes(
+            &storage,
+            &[String::from("runtime_skill__release_patch_flow")],
+            RuntimeSkillReuseOutcome::Succeeded,
+            200,
+            "final_answer",
+        )
+        .unwrap();
+        record_runtime_skill_outcomes(
+            &storage,
+            &[String::from("runtime_skill__release_patch_flow")],
+            RuntimeSkillReuseOutcome::Mismatch,
+            260,
+            "final_recovery",
+        )
+        .unwrap();
+
+        let record = parse_runtime_skill_record(
+            "runtime_skill__release_patch_flow",
+            &get_skill_content(&storage, "runtime_skill__release_patch_flow").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(record.validated_success_count, 1);
+        assert_eq!(record.mismatch_count, 1);
+        assert_eq!(record.revision_count, 1);
+        assert!(record.revision_pending);
+        assert_eq!(record.last_outcome_at, Some(260));
+        assert_eq!(record.last_outcome_note, "final_recovery");
     }
 
     #[test]
@@ -1932,6 +2276,61 @@ mod tests {
             .reasons
             .iter()
             .any(|reason| reason.contains("exact topic")));
+    }
+
+    #[test]
+    fn runtime_skill_recall_prefers_validated_skill_and_surfaces_learning_reason() {
+        let storage = StubSkillStorage::default();
+        upsert_runtime_skill(
+            &storage,
+            &RuntimeSkillWrite {
+                name: String::new(),
+                topic: "release_patch_flow".to_string(),
+                title: "Release patch flow".to_string(),
+                summary: "Validated release patch procedure.".to_string(),
+                content: "1. inspect diff\n2. patch\n3. verify".to_string(),
+                citations: Vec::new(),
+                source_chat_id: Some("chat-1".to_string()),
+                observed_at: 100,
+            },
+        )
+        .unwrap();
+        upsert_runtime_skill(
+            &storage,
+            &RuntimeSkillWrite {
+                name: "runtime_skill__release_patch_fallback".to_string(),
+                topic: "release_patch_flow".to_string(),
+                title: "Release patch fallback".to_string(),
+                summary: "Fresh promoted procedure.".to_string(),
+                content: "1. inspect diff\n2. patch\n3. verify".to_string(),
+                citations: Vec::new(),
+                source_chat_id: Some("chat-1".to_string()),
+                observed_at: 120,
+            },
+        )
+        .unwrap();
+        record_runtime_skill_outcomes(
+            &storage,
+            &[String::from("runtime_skill__release_patch_flow")],
+            RuntimeSkillReuseOutcome::Succeeded,
+            200,
+            "final_answer",
+        )
+        .unwrap();
+
+        let hits = retrieve_runtime_skill_hits(
+            &storage,
+            "继续按 release patch flow 做",
+            Some("chat-1"),
+            300,
+            3,
+        );
+
+        assert_eq!(hits[0].record.name, "runtime_skill__release_patch_flow");
+        assert!(hits[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("validated reuse")));
     }
 
     #[test]

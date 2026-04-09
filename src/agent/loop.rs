@@ -279,6 +279,16 @@ struct PostReplyMaintenanceJobPayload {
     tool_calls: u32,
     #[serde(default)]
     external_content_used: bool,
+    #[serde(default)]
+    prompt_recall_intent: crate::memory::PromptRecallIntent,
+    #[serde(default)]
+    runtime_skill_selected_ids: Vec<String>,
+    #[serde(default)]
+    task_learning_selected_ids: Vec<String>,
+    #[serde(default)]
+    reuse_outcome: crate::skills::RuntimeSkillReuseOutcome,
+    #[serde(default)]
+    reuse_outcome_note: String,
     now_secs: u64,
 }
 
@@ -288,6 +298,11 @@ impl PostReplyMaintenanceJobPayload {
         reply_content: &str,
         tool_calls: u32,
         external_content_used: bool,
+        prompt_recall_intent: crate::memory::PromptRecallIntent,
+        runtime_skill_selected_ids: &[String],
+        task_learning_selected_ids: &[String],
+        reuse_outcome: crate::skills::RuntimeSkillReuseOutcome,
+        reuse_outcome_note: &str,
     ) -> Self {
         Self {
             ingress: msg.ingress,
@@ -304,6 +319,11 @@ impl PostReplyMaintenanceJobPayload {
             .into_owned(),
             tool_calls,
             external_content_used,
+            prompt_recall_intent,
+            runtime_skill_selected_ids: runtime_skill_selected_ids.to_vec(),
+            task_learning_selected_ids: task_learning_selected_ids.to_vec(),
+            reuse_outcome,
+            reuse_outcome_note: truncate_content_to_max(reuse_outcome_note, 120).into_owned(),
             now_secs: crate::util::current_unix_secs(),
         }
     }
@@ -333,6 +353,9 @@ struct WorkerRunTelemetry {
     runtime_mode: crate::runtime::RuntimeModeSnapshot,
     deliberation_class: crate::memory::TurnDeliberationClass,
     tool_blocker: Option<ToolBlockerSummary>,
+    prompt_recall_intent: crate::memory::PromptRecallIntent,
+    runtime_skill_selected_ids: Vec<String>,
+    task_learning_selected_ids: Vec<String>,
     subject_state: Option<SubjectState>,
     mental_privacy_adjudication: Option<crate::memory::MentalPrivacyDisclosureAdjudication>,
     persona_priority_adjudication: Option<PersonaPriorityAdjudication>,
@@ -1794,6 +1817,11 @@ fn run_post_reply_maintenance_job(
             memory_profile: config.memory_system_kind.memory_profile(),
             tool_calls: payload.tool_calls,
             external_content_used: payload.external_content_used,
+            prompt_recall_intent: payload.prompt_recall_intent,
+            runtime_skill_selected_ids: payload.runtime_skill_selected_ids,
+            task_learning_selected_ids: payload.task_learning_selected_ids,
+            reuse_outcome: payload.reuse_outcome,
+            reuse_outcome_note: &payload.reuse_outcome_note,
             now_secs: payload.now_secs,
         },
         || match PcMsg::new_system(CHANNEL_LONG_TERM_MEMORY_REFRESH, msg.chat_id.as_ref(), "") {
@@ -2562,6 +2590,9 @@ fn run_agent_loop_main(
             runtime_mode,
             deliberation_class,
             tool_blocker,
+            prompt_recall_intent,
+            runtime_skill_selected_ids,
+            task_learning_selected_ids,
             subject_state,
             mental_privacy_adjudication,
             persona_priority_adjudication,
@@ -2599,6 +2630,9 @@ fn run_agent_loop_main(
                 runtime_mode,
                 deliberation_class,
                 tool_blocker,
+                prompt_recall_intent,
+                runtime_skill_selected_ids,
+                task_learning_selected_ids,
                 subject_state,
                 mental_privacy_adjudication,
                 persona_priority_adjudication,
@@ -2867,6 +2901,9 @@ fn run_worker_path(
                     runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
                     deliberation_class: deliberation_gate.class,
                     tool_blocker: recent_tool_round.blocker,
+                    prompt_recall_intent: runtime_carry.prompt_recall_intent,
+                    runtime_skill_selected_ids: runtime_carry.runtime_skill_selected_ids.clone(),
+                    task_learning_selected_ids: runtime_carry.task_recall_selected_ids.clone(),
                     subject_state: subject_state.as_deref().cloned(),
                     mental_privacy_adjudication: mental_privacy_adjudication.as_deref().cloned(),
                     persona_priority_adjudication: persona_priority_adjudication
@@ -3110,6 +3147,9 @@ fn run_worker_path(
                 runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
                 deliberation_class: deliberation_gate.class,
                 tool_blocker: recent_tool_round.blocker,
+                prompt_recall_intent: runtime_carry.prompt_recall_intent,
+                runtime_skill_selected_ids: runtime_carry.runtime_skill_selected_ids.clone(),
+                task_learning_selected_ids: runtime_carry.task_recall_selected_ids.clone(),
                 subject_state: subject_state.as_deref().cloned(),
                 mental_privacy_adjudication: mental_privacy_adjudication.as_deref().cloned(),
                 persona_priority_adjudication: persona_priority_adjudication.as_deref().cloned(),
@@ -3152,6 +3192,9 @@ fn run_worker_path(
             runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
             deliberation_class: deliberation_gate.class,
             tool_blocker: recent_tool_round.blocker,
+            prompt_recall_intent: runtime_carry.prompt_recall_intent,
+            runtime_skill_selected_ids: runtime_carry.runtime_skill_selected_ids,
+            task_learning_selected_ids: runtime_carry.task_recall_selected_ids,
             subject_state: subject_state.map(|value| *value),
             mental_privacy_adjudication: mental_privacy_adjudication.map(|value| *value),
             persona_priority_adjudication: persona_priority_adjudication.map(|value| *value),
@@ -4924,6 +4967,9 @@ mod tests {
                     ..ToolFailureSummary::default()
                 },
             ),
+            prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
+            runtime_skill_selected_ids: Vec::new(),
+            task_learning_selected_ids: Vec::new(),
             subject_state: None,
             mental_privacy_adjudication: None,
             persona_priority_adjudication: None,

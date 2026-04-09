@@ -8,12 +8,22 @@ pub(super) fn enqueue_post_reply_maintenance_job(
     reply_content: &str,
     tool_calls: u32,
     external_content_used: bool,
+    prompt_recall_intent: crate::memory::PromptRecallIntent,
+    runtime_skill_selected_ids: &[String],
+    task_learning_selected_ids: &[String],
+    reuse_outcome: crate::skills::RuntimeSkillReuseOutcome,
+    reuse_outcome_note: &str,
 ) -> bool {
     let payload = PostReplyMaintenanceJobPayload::from_turn(
         msg,
         reply_content,
         tool_calls,
         external_content_used,
+        prompt_recall_intent,
+        runtime_skill_selected_ids,
+        task_learning_selected_ids,
+        reuse_outcome,
+        reuse_outcome_note,
     );
     let body = match serde_json::to_string(&payload) {
         Ok(body) => body,

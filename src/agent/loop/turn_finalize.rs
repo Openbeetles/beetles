@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::tool_outcome::ToolBlockerKind;
 
 pub(super) fn persist_turn_ledger(
     store: &dyn TurnLedgerStore,
@@ -136,7 +137,10 @@ pub(super) fn finalize_lane_turn(
         pressure,
         runtime_mode: _runtime_mode,
         deliberation_class: _deliberation_class,
-        tool_blocker: _tool_blocker,
+        tool_blocker,
+        prompt_recall_intent,
+        runtime_skill_selected_ids,
+        task_learning_selected_ids,
         subject_state,
         mental_privacy_adjudication,
         persona_priority_adjudication,
@@ -303,6 +307,34 @@ pub(super) fn finalize_lane_turn(
         .saturating_add(worker_latency.tool_exec_ms)
         .saturating_add(worker_latency.session_write_ms);
 
+    let reuse_outcome = if is_interrupt
+        || (runtime_skill_selected_ids.is_empty() && task_learning_selected_ids.is_empty())
+    {
+        crate::skills::RuntimeSkillReuseOutcome::Neutral
+    } else if used_final_answer_recovery
+        || tool_blocker
+            .as_ref()
+            .is_some_and(|blocker| !matches!(blocker.kind, ToolBlockerKind::Retryable))
+    {
+        crate::skills::RuntimeSkillReuseOutcome::Mismatch
+    } else {
+        crate::skills::RuntimeSkillReuseOutcome::Succeeded
+    };
+    let reuse_outcome_note = if used_final_answer_recovery {
+        "final_recovery"
+    } else if let Some(blocker) = tool_blocker.as_ref() {
+        match blocker.kind {
+            ToolBlockerKind::Retryable => "retryable",
+            ToolBlockerKind::Permanent => "permanent",
+            ToolBlockerKind::Capability => "capability",
+            ToolBlockerKind::Mixed => "mixed",
+        }
+    } else if delivery.current_primary_delivered {
+        "current_primary"
+    } else {
+        "final_answer"
+    };
+
     if delivered
         && !super::enqueue_post_reply_maintenance_job(
             system_inbound_tx,
@@ -310,6 +342,11 @@ pub(super) fn finalize_lane_turn(
             &reply_content,
             worker_latency.tool_calls,
             external_content_used,
+            prompt_recall_intent,
+            &runtime_skill_selected_ids,
+            &task_learning_selected_ids,
+            reuse_outcome,
+            reuse_outcome_note,
         )
     {
         log::debug!(
