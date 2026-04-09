@@ -18,6 +18,7 @@ pub fn post(ctx: &HandlerContext) -> Result<String, std::io::Error> {
             ctx.platform.memory_system_kind(),
             true,
             cfg!(feature = "ota"),
+            ctx.route_contract.inbound_webhooks_enabled,
         )
         .windowed_endpoints,
     });

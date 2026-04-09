@@ -109,6 +109,7 @@ pub fn control_plane_inventory(
     memory_system_kind: MemorySystemKind,
     window_active: bool,
     ota_supported: bool,
+    inbound_webhooks_enabled: bool,
 ) -> ControlPlaneInventory {
     if !is_embedded_surface(memory_system_kind) {
         let mut endpoints = vec![
@@ -146,15 +147,17 @@ pub fn control_plane_inventory(
             "POST /api/skills/import",
             "POST /api/restart",
             "POST /api/config_reset",
-            "POST /api/webhook",
         ];
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        {
-            endpoints.push("POST /api/feishu/event");
-            endpoints.push("POST /api/dingtalk/webhook");
-            endpoints.push("GET /api/wecom/webhook");
-            endpoints.push("POST /api/wecom/webhook");
-            endpoints.push("POST /api/webhook/qq");
+        if inbound_webhooks_enabled {
+            endpoints.push("POST /api/webhook");
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            {
+                endpoints.push("POST /api/feishu/event");
+                endpoints.push("POST /api/dingtalk/webhook");
+                endpoints.push("GET /api/wecom/webhook");
+                endpoints.push("POST /api/wecom/webhook");
+                endpoints.push("POST /api/webhook/qq");
+            }
         }
         if ota_supported {
             endpoints.push("GET /api/ota/check");

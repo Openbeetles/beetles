@@ -7,6 +7,21 @@ use crate::CapabilityPackageRuntimeCapabilities;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, RwLock};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ControlPlaneRouteContract {
+    pub inbound_webhooks_enabled: bool,
+}
+
+impl ControlPlaneRouteContract {
+    pub const FULL: Self = Self {
+        inbound_webhooks_enabled: true,
+    };
+
+    pub const SUPERVISOR_MINIMAL: Self = Self {
+        inbound_webhooks_enabled: false,
+    };
+}
+
 /// 各 handler 共享的上下文，由 run() 构建后以 Arc 传入闭包。
 /// `cached_config` 缓存最新配置：读路径零 `AppConfig::load()`，写路径保存后 `reload_config()` 刷新。
 #[allow(dead_code)]
@@ -28,6 +43,7 @@ pub struct HandlerContext {
     pub board_id: Arc<str>,
     pub cached_config: Arc<RwLock<AppConfig>>,
     pub llm_stream_enabled: bool,
+    pub route_contract: ControlPlaneRouteContract,
 }
 
 impl HandlerContext {

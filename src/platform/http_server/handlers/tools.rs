@@ -88,6 +88,7 @@ mod tests {
             board_id: Arc::from("test"),
             cached_config: Arc::new(std::sync::RwLock::new(config)),
             llm_stream_enabled: false,
+            route_contract: crate::platform::http_server::handlers::ControlPlaneRouteContract::FULL,
         };
         let payload = serde_json::to_string(&tool_infos(&ctx)).unwrap();
         let parsed: Value = serde_json::from_str(&payload).unwrap();
@@ -151,6 +152,7 @@ mod tests {
             board_id: Arc::from("test"),
             cached_config: Arc::new(std::sync::RwLock::new(config)),
             llm_stream_enabled: false,
+            route_contract: crate::platform::http_server::handlers::ControlPlaneRouteContract::FULL,
         };
         let tools = tool_infos(&ctx);
         let board_info = tools.iter().find(|tool| tool.name == "board_info").unwrap();

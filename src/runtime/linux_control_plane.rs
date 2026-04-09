@@ -1,19 +1,20 @@
 //! Linux supervisor-owned control plane.
 
+use crate::bus::new_inbound_channel;
 use crate::channel_capability::build_channel_capability_registry;
+use crate::channels::QqMsgIdCache;
+use crate::config::AppConfig;
 use crate::error::{Error, Result};
-use crate::platform::http_server::common::{
-    self, ApiResponse, CORS_AND_TEXT_PLAIN, CORS_HEADERS, CORS_OPTIONS_HEADERS, CSS_HEADERS,
-    HTML_HEADERS, JS_HEADERS, REDIRECT_PAIRING_HEADERS,
-};
-use crate::platform::http_server::handlers::{self, HandlerContext};
+use crate::platform::http_server::common::{self, CORS_HEADERS};
+use crate::platform::http_server::handlers::{ControlPlaneRouteContract, HandlerContext};
 use crate::platform::http_server::router::{
-    auth, IncomingRequest, OutgoingResponse, RestartAction,
+    self, IncomingRequest, OutgoingResponse, RestartAction, RouterEnv,
 };
 use crate::platform::Platform;
+use std::collections::HashMap;
 use std::io::Read as _;
 use std::sync::atomic::AtomicUsize;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 const LINUX_HTTP_WORKERS: usize = 4;
 
@@ -127,7 +128,9 @@ fn run(platform: Arc<dyn Platform>) -> Result<()> {
         board_id: Arc::from(crate::platform::runtime_board::resolved_board_id()),
         cached_config: Arc::new(RwLock::new((*config).clone())),
         llm_stream_enabled: config.llm_stream,
+        route_contract: ControlPlaneRouteContract::SUPERVISOR_MINIMAL,
     });
+    let router_env = Arc::new(build_router_env(config.as_ref()));
     let listen =
         std::env::var("BEETLE_CONFIG_HTTP_LISTEN").unwrap_or_else(|_| "0.0.0.0:80".to_string());
     let server = Arc::new(tiny_http::Server::http(&listen).map_err(|e| Error::Other {
@@ -143,6 +146,7 @@ fn run(platform: Arc<dyn Platform>) -> Result<()> {
         let worker_name = format!("linux_control_plane_worker_{}", index);
         let server = Arc::clone(&server);
         let ctx = Arc::clone(&ctx);
+        let router_env = Arc::clone(&router_env);
         crate::util::spawn_guarded_with_profile(
             &worker_name,
             crate::util::STACK_CHANNEL_SENDER,
@@ -150,7 +154,7 @@ fn run(platform: Arc<dyn Platform>) -> Result<()> {
             crate::util::HttpThreadRole::Background,
             move || loop {
                 match server.recv() {
-                    Ok(request) => handle_request(&ctx, request),
+                    Ok(request) => handle_request(&ctx, router_env.as_ref(), request),
                     Err(error) => {
                         log::warn!("[linux_control_plane] recv failed: {}", error);
                         break;
@@ -164,7 +168,11 @@ fn run(platform: Arc<dyn Platform>) -> Result<()> {
     }
 }
 
-fn handle_request(ctx: &Arc<HandlerContext>, mut request: tiny_http::Request) {
+fn handle_request(
+    ctx: &Arc<HandlerContext>,
+    router_env: &RouterEnv,
+    mut request: tiny_http::Request,
+) {
     let method = request.method().as_str().to_string();
     let uri = request.url().to_string();
     let path = uri.split('?').next().unwrap_or("/").to_string();
@@ -199,7 +207,7 @@ fn handle_request(ctx: &Arc<HandlerContext>, mut request: tiny_http::Request) {
         headers,
         body,
     };
-    let response = dispatch(ctx, incoming).unwrap_or_else(|error| {
+    let response = dispatch(ctx, router_env, incoming).unwrap_or_else(|error| {
         log::warn!("[linux_control_plane] dispatch failed: {}", error);
         OutgoingResponse::json(
             500,
@@ -229,433 +237,45 @@ fn handle_request(ctx: &Arc<HandlerContext>, mut request: tiny_http::Request) {
     }
 }
 
-fn dispatch(ctx: &HandlerContext, incoming: IncomingRequest) -> Result<OutgoingResponse> {
+fn dispatch(
+    ctx: &HandlerContext,
+    router_env: &RouterEnv,
+    incoming: IncomingRequest,
+) -> Result<OutgoingResponse> {
     let path = incoming.uri.split('?').next().unwrap_or("/");
-    let method = incoming.method.as_str();
-    let store = ctx.config_store.as_ref();
-    let uri = incoming.uri.as_str();
-
-    if method.eq_ignore_ascii_case("OPTIONS") {
+    if !ctx.route_contract.inbound_webhooks_enabled && supervisor_blocks_webhook_route(path) {
         return Ok(OutgoingResponse::json(
-            200,
-            "OK",
-            CORS_OPTIONS_HEADERS,
-            b" ".to_vec(),
-        ));
-    }
-
-    match (method, path) {
-        ("GET", "/") => {
-            if !crate::platform::pairing::code_set(store) {
-                return Ok(OutgoingResponse::json(
-                    302,
-                    "Found",
-                    REDIRECT_PAIRING_HEADERS,
-                    Vec::new(),
-                ));
-            }
-            let body = control_plane_root_body(ctx)?;
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            ))
-        }
-        ("GET", "/wifi") => Ok(OutgoingResponse::json(
-            200,
-            "OK",
-            HTML_HEADERS,
-            handlers::config_page::html().as_bytes().to_vec(),
-        )),
-        ("GET", "/pairing") => Ok(OutgoingResponse::json(
-            200,
-            "OK",
-            HTML_HEADERS,
-            handlers::config_page::pairing_html().as_bytes().to_vec(),
-        )),
-        ("GET", "/common.css") => Ok(OutgoingResponse::json(
-            200,
-            "OK",
-            CSS_HEADERS,
-            handlers::config_page::common_css().as_bytes().to_vec(),
-        )),
-        ("GET", "/common.js") => Ok(OutgoingResponse::json(
-            200,
-            "OK",
-            JS_HEADERS,
-            handlers::config_page::common_js().as_bytes().to_vec(),
-        )),
-        ("GET", "/api/pairing_code") => Ok(OutgoingResponse::json(
-            200,
-            "OK",
-            CORS_HEADERS,
-            handlers::pairing::body(ctx).into_bytes(),
-        )),
-        ("POST", "/api/pairing_code") => {
-            let body = utf8_body(&incoming.body)?;
-            Ok(api_to_out(handlers::pairing::post_body(ctx, body)))
-        }
-        ("GET", "/api/csrf_token") => {
-            let body = handlers::csrf_token::body(ctx)
-                .map_err(|e| route_error("linux_control_plane_dispatch", e))?;
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            ))
-        }
-        ("GET", "/api/config") => {
-            if let Some(response) = auth::require_pairing_code(store, uri, &incoming.headers) {
-                return Ok(api_to_out(response));
-            }
-            let body = handlers::config::get_body(ctx)
-                .map_err(|e| route_error("linux_control_plane_dispatch", e))?;
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            ))
-        }
-        ("POST", "/api/config/wifi") => {
-            if let Some(response) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(response);
-            }
-            let body = utf8_body(&incoming.body)?;
-            let response = handlers::config::post_wifi(ctx, body)
-                .map_err(|e| route_error("linux_control_plane_dispatch", e))?;
-            Ok(with_optional_restart(response, uri))
-        }
-        ("POST", "/api/config/llm") => {
-            if let Some(response) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(response);
-            }
-            let body = utf8_body(&incoming.body)?;
-            Ok(api_to_out(handlers::config::post_llm(ctx, body).map_err(
-                |e| route_error("linux_control_plane_dispatch", e),
-            )?))
-        }
-        ("POST", "/api/config/channels") => {
-            if let Some(response) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(response);
-            }
-            let body = utf8_body(&incoming.body)?;
-            Ok(api_to_out(
-                handlers::config::post_channels(ctx, body)
-                    .map_err(|e| route_error("linux_control_plane_dispatch", e))?,
-            ))
-        }
-        ("POST", "/api/config/system") => {
-            if let Some(response) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(response);
-            }
-            let body = utf8_body(&incoming.body)?;
-            Ok(api_to_out(
-                handlers::config::post_system(ctx, body)
-                    .map_err(|e| route_error("linux_control_plane_dispatch", e))?,
-            ))
-        }
-        ("GET", "/api/config/hardware") => {
-            if let Some(response) = auth::require_pairing_code(store, uri, &incoming.headers) {
-                return Ok(api_to_out(response));
-            }
-            let body = handlers::config::get_hardware_body(ctx)
-                .map_err(|e| route_error("linux_control_plane_dispatch", e))?;
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            ))
-        }
-        ("POST", "/api/config/hardware") => {
-            if let Some(response) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(response);
-            }
-            let body = utf8_body(&incoming.body)?;
-            Ok(api_to_out(
-                handlers::config::post_hardware(ctx, body)
-                    .map_err(|e| route_error("linux_control_plane_dispatch", e))?,
-            ))
-        }
-        ("GET", "/api/config/audio") => {
-            if let Some(response) = auth::require_pairing_code(store, uri, &incoming.headers) {
-                return Ok(api_to_out(response));
-            }
-            let body = handlers::config::get_audio_body(ctx)
-                .map_err(|e| route_error("linux_control_plane_dispatch", e))?;
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            ))
-        }
-        ("POST", "/api/config/audio") => {
-            if let Some(response) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(response);
-            }
-            let body = utf8_body(&incoming.body)?;
-            let response = handlers::config::post_audio(ctx, body)
-                .map_err(|e| route_error("linux_control_plane_dispatch", e))?;
-            Ok(with_optional_restart(response, uri))
-        }
-        ("GET", "/api/config/display") => {
-            if let Some(response) = auth::require_pairing_code(store, uri, &incoming.headers) {
-                return Ok(api_to_out(response));
-            }
-            let body = handlers::config::get_display_body(ctx)
-                .map_err(|e| route_error("linux_control_plane_dispatch", e))?;
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            ))
-        }
-        ("POST", "/api/config/display") => {
-            if let Some(response) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(response);
-            }
-            let body = utf8_body(&incoming.body)?;
-            let response = handlers::config::post_display(ctx, body)
-                .map_err(|e| route_error("linux_control_plane_dispatch", e))?;
-            Ok(with_optional_restart(response, uri))
-        }
-        ("GET", "/api/wifi/scan") => match handlers::wifi_scan::get_body(ctx) {
-            Ok(body) => Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            )),
-            Err(handlers::wifi_scan::WifiScanError::Unavailable) => Ok(OutgoingResponse::json(
-                503,
-                "Service Unavailable",
-                CORS_HEADERS,
-                br#"{"error":"wifi scan not available"}"#.to_vec(),
-            )),
-            Err(handlers::wifi_scan::WifiScanError::Other(error)) => Ok(OutgoingResponse::json(
-                500,
-                "Internal Server Error",
-                CORS_HEADERS,
-                format!(r#"{{"error":"{}"}}"#, escape_json(&error.to_string())).into_bytes(),
-            )),
-        },
-        ("GET", "/api/hardware/discovery") => {
-            if let Some(response) = auth::require_pairing_code(store, uri, &incoming.headers) {
-                return Ok(api_to_out(response));
-            }
-            let Some(bus) = hardware_bus_from_uri(uri) else {
-                return Ok(api_to_out(ApiResponse::err_400("missing or invalid bus")));
-            };
-            let Some(capability) = hardware_capability_from_uri(uri) else {
-                return Ok(api_to_out(ApiResponse::err_400(
-                    "missing or invalid capability",
-                )));
-            };
-            match handlers::hardware_discovery::get_body(ctx, bus, capability) {
-                Ok(body) => Ok(OutgoingResponse::json(
-                    200,
-                    "OK",
-                    CORS_HEADERS,
-                    body.into_bytes(),
-                )),
-                Err(handlers::hardware_discovery::HardwareDiscoveryError::Unavailable) => {
-                    Ok(OutgoingResponse::json(
-                        503,
-                        "Service Unavailable",
-                        CORS_HEADERS,
-                        br#"{"error":"hardware discovery not available"}"#.to_vec(),
-                    ))
-                }
-                Err(handlers::hardware_discovery::HardwareDiscoveryError::Other(error)) => {
-                    Ok(OutgoingResponse::json(
-                        500,
-                        "Internal Server Error",
-                        CORS_HEADERS,
-                        format!(r#"{{"error":"{}"}}"#, escape_json(&error.to_string()))
-                            .into_bytes(),
-                    ))
-                }
-            }
-        }
-        ("GET", "/api/health") => {
-            if let Some(response) = auth::require_activated(store) {
-                return Ok(api_to_out(response));
-            }
-            let body = handlers::health::body(ctx)
-                .map_err(|e| route_error("linux_control_plane_dispatch", e))?;
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            ))
-        }
-        ("GET", "/api/resource") => {
-            if let Some(response) = auth::require_activated(store) {
-                return Ok(api_to_out(response));
-            }
-            let body = handlers::resource::body(ctx)
-                .map_err(|e| route_error("linux_control_plane_dispatch", e))?;
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            ))
-        }
-        ("GET", "/api/metrics") => {
-            if let Some(response) = auth::require_activated(store) {
-                return Ok(api_to_out(response));
-            }
-            if uri.contains("format=prometheus") {
-                let body = handlers::metrics::body_prometheus(ctx)
-                    .map_err(|e| route_error("linux_control_plane_dispatch", e))?;
-                Ok(OutgoingResponse::json(
-                    200,
-                    "OK",
-                    CORS_AND_TEXT_PLAIN,
-                    body.into_bytes(),
-                ))
-            } else {
-                let body = handlers::metrics::body(ctx)
-                    .map_err(|e| route_error("linux_control_plane_dispatch", e))?;
-                Ok(OutgoingResponse::json(
-                    200,
-                    "OK",
-                    CORS_HEADERS,
-                    body.into_bytes(),
-                ))
-            }
-        }
-        ("GET", "/api/operator/status") => {
-            if let Some(response) = auth::require_activated(store) {
-                return Ok(api_to_out(response));
-            }
-            let body = handlers::operator_status::body(ctx)
-                .map_err(|e| route_error("linux_control_plane_dispatch", e))?;
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            ))
-        }
-        ("GET", "/api/diagnose") => {
-            if let Some(response) = auth::require_activated(store) {
-                return Ok(api_to_out(response));
-            }
-            let body = handlers::diagnose::body(ctx)
-                .map_err(|e| route_error("linux_control_plane_dispatch", e))?;
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            ))
-        }
-        ("GET", "/api/system_info") => {
-            if let Some(response) = auth::require_activated(store) {
-                return Ok(api_to_out(response));
-            }
-            let body = handlers::system_info::body(ctx)
-                .map_err(|e| route_error("linux_control_plane_dispatch", e))?;
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            ))
-        }
-        ("GET", "/api/channel_connectivity") => {
-            if let Some(response) = auth::require_activated(store) {
-                return Ok(api_to_out(response));
-            }
-            match handlers::channel_connectivity::body(ctx) {
-                Ok(body) => Ok(OutgoingResponse::json(
-                    200,
-                    "OK",
-                    CORS_HEADERS,
-                    body.into_bytes(),
-                )),
-                Err(message) => Ok(OutgoingResponse::json(
-                    500,
-                    "Internal Server Error",
-                    CORS_HEADERS,
-                    format!(r#"{{"error":"{}"}}"#, escape_json(&message)).into_bytes(),
-                )),
-            }
-        }
-        ("POST", "/api/restart") => {
-            if let Some(response) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(response);
-            }
-            let (response, should_restart) = handlers::restart::post(ctx)
-                .map_err(|e| route_error("linux_control_plane_dispatch", e))?;
-            let mut outgoing = api_to_out(response);
-            if should_restart {
-                outgoing.restart = RestartAction::After300Ms;
-            }
-            Ok(outgoing)
-        }
-        ("POST", "/api/config_reset") => {
-            if let Some(response) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(response);
-            }
-            Ok(api_to_out(handlers::config_reset::post(ctx).map_err(
-                |e| route_error("linux_control_plane_dispatch", e),
-            )?))
-        }
-        _ => Ok(OutgoingResponse::json(
             404,
             "Not Found",
             CORS_HEADERS,
             br#"{"error":"not found"}"#.to_vec(),
-        )),
+        ));
     }
+    router::dispatch(ctx, router_env, incoming)
 }
 
-fn control_plane_root_body(ctx: &HandlerContext) -> Result<String> {
-    let endpoints = vec![
-        "GET /pairing",
-        "GET /wifi",
-        "GET /api/pairing_code",
-        "POST /api/pairing_code",
-        "GET /api/csrf_token",
-        "GET /api/config",
-        "POST /api/config/wifi",
-        "POST /api/config/llm",
-        "POST /api/config/channels",
-        "POST /api/config/system",
-        "GET /api/config/hardware",
-        "POST /api/config/hardware",
-        "GET /api/config/audio",
-        "POST /api/config/audio",
-        "GET /api/config/display",
-        "POST /api/config/display",
-        "GET /api/wifi/scan",
-        "GET /api/hardware/discovery",
-        "GET /api/health",
-        "GET /api/resource",
-        "GET /api/metrics",
-        "GET /api/operator/status",
-        "GET /api/diagnose",
-        "GET /api/system_info",
-        "GET /api/channel_connectivity",
-        "POST /api/restart",
-        "POST /api/config_reset",
-    ];
-    let endpoints_json = serde_json::to_string(&endpoints)
-        .map_err(|e| Error::config("linux_control_plane", e.to_string()))?;
-    Ok(format!(
-        r#"{{"name":"beetle-control-plane","version":"{}","endpoints":{}}}"#,
-        ctx.version.as_ref(),
-        endpoints_json
-    ))
+fn build_router_env(config: &AppConfig) -> RouterEnv {
+    let (inbound_tx, _inbound_rx, _inbound_depth) =
+        new_inbound_channel(crate::constants::DEFAULT_CAPACITY);
+    let qq_msg_id_cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
+    RouterEnv::new(
+        inbound_tx,
+        qq_msg_id_cache,
+        false,
+        config.qq_channel_app_id.clone(),
+        config.qq_channel_secret.clone(),
+    )
+}
+
+fn supervisor_blocks_webhook_route(path: &str) -> bool {
+    matches!(
+        path,
+        "/api/webhook"
+            | "/api/feishu/event"
+            | "/api/dingtalk/webhook"
+            | "/api/wecom/webhook"
+            | "/api/webhook/qq"
+    )
 }
 
 fn respond(request: tiny_http::Request, outgoing: OutgoingResponse) {
@@ -671,35 +291,6 @@ fn respond(request: tiny_http::Request, outgoing: OutgoingResponse) {
     }
 }
 
-fn with_optional_restart(response: ApiResponse, uri: &str) -> OutgoingResponse {
-    let mut outgoing = api_to_out(response);
-    if outgoing.status == 200 && common::restart_requested_from_uri(uri) {
-        outgoing.restart = RestartAction::After300Ms;
-    }
-    outgoing
-}
-
-fn api_to_out(response: ApiResponse) -> OutgoingResponse {
-    OutgoingResponse {
-        status: response.status,
-        status_text: response.status_text,
-        headers: CORS_HEADERS,
-        body: response.body,
-        restart: RestartAction::None,
-    }
-}
-
-fn guard_pairing_csrf(
-    store: &dyn crate::platform::ConfigStore,
-    uri: &str,
-    headers: &[(String, String)],
-) -> Option<OutgoingResponse> {
-    if let Some(response) = auth::require_pairing_code(store, uri, headers) {
-        return Some(api_to_out(response));
-    }
-    auth::require_csrf(store, headers).map(api_to_out)
-}
-
 fn linux_max_body_bytes(path: &str, method: &str) -> usize {
     let method = method.to_ascii_uppercase();
     if matches!(method.as_str(), "GET" | "OPTIONS" | "HEAD" | "DELETE") {
@@ -707,43 +298,135 @@ fn linux_max_body_bytes(path: &str, method: &str) -> usize {
     }
     match path {
         "/api/soul" | "/api/user" => crate::memory::MAX_SOUL_USER_LEN,
+        "/api/capability_packages" => {
+            crate::capability_package::MAX_CAPABILITY_PACKAGE_HTTP_BODY_LEN
+        }
+        "/api/feishu/event" => 64 * 1024,
+        "/api/webhook/qq" => crate::channels::QQ_WEBHOOK_BODY_MAX,
         _ => common::POST_BODY_MAX_LEN,
     }
 }
 
-fn utf8_body(body: &[u8]) -> Result<&str> {
-    std::str::from_utf8(body).map_err(|_| route_error("linux_control_plane_body", "invalid utf8"))
-}
+#[cfg(test)]
+mod tests {
+    use super::{build_router_env, dispatch};
+    use crate::config::AppConfig;
+    use crate::platform::http_server::handlers::{ControlPlaneRouteContract, HandlerContext};
+    use crate::platform::http_server::router::IncomingRequest;
+    use crate::platform::Platform;
+    use serde_json::Value;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::{Arc, RwLock};
 
-fn route_error(stage: &'static str, message: impl std::fmt::Display) -> Error {
-    Error::Other {
-        source: Box::new(std::io::Error::other(message.to_string())),
-        stage,
+    fn build_test_context() -> (HandlerContext, super::RouterEnv) {
+        let config = AppConfig::load_from_env();
+        let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
+        crate::platform::pairing::clear_code(platform.config_store().as_ref()).unwrap();
+        assert!(crate::platform::pairing::set_code(
+            platform.config_store().as_ref(),
+            "123456",
+        )
+        .unwrap());
+
+        let skill_storage = platform.skill_storage();
+        let skill_meta_store = platform.skill_meta_store();
+        let skill_prompt_cache = Arc::new(crate::skills::SkillPromptCache::new(
+            Arc::clone(&skill_meta_store),
+            Arc::clone(&skill_storage),
+            8192,
+        ));
+        let (tool_registry, _) = crate::build_default_registry(
+            &config,
+            crate::DefaultRegistryDeps {
+                platform: Arc::clone(&platform),
+                remind_at_store: platform.remind_at_store(),
+                session_store: platform.session_store(),
+                memory_store: platform.memory_store(),
+                long_term_memory_store: platform.long_term_memory_store(),
+                turn_ledger_store: platform.turn_ledger_store(),
+                private_garden_store: platform.private_garden_store(),
+                config_store: platform.config_store(),
+            },
+        );
+        let channel_capability_registry =
+            Arc::new(crate::build_channel_capability_registry(&config, false));
+        let ctx = HandlerContext {
+            config_store: platform.config_store(),
+            config_file_store: Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(
+                &platform,
+            ))),
+            platform: Arc::clone(&platform),
+            memory_store: platform.memory_store(),
+            session_store: platform.session_store(),
+            skill_storage,
+            skill_meta_store,
+            skill_prompt_cache,
+            tool_registry: Arc::new(tool_registry),
+            channel_capability_registry: Arc::clone(&channel_capability_registry),
+            capability_package_runtime_capabilities: Arc::new(
+                crate::build_capability_package_runtime_capabilities(
+                    channel_capability_registry.as_ref(),
+                    false,
+                ),
+            ),
+            inbound_depth: Arc::new(AtomicUsize::new(0)),
+            outbound_depth: Arc::new(AtomicUsize::new(0)),
+            version: Arc::from("0.0.0"),
+            board_id: Arc::from("linux"),
+            cached_config: Arc::new(RwLock::new(config.clone())),
+            llm_stream_enabled: false,
+            route_contract: ControlPlaneRouteContract::SUPERVISOR_MINIMAL,
+        };
+        let router_env = build_router_env(&config);
+        (ctx, router_env)
     }
-}
 
-fn escape_json(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-fn query_param_from_uri<'a>(uri: &'a str, key: &str) -> Option<&'a str> {
-    let query = uri.find('?').map(|index| &uri[index + 1..]).unwrap_or("");
-    for pair in query.split('&') {
-        let mut parts = pair.splitn(2, '=');
-        if parts
-            .next()
-            .is_some_and(|name| name.eq_ignore_ascii_case(key))
-        {
-            return parts.next().filter(|value| !value.is_empty());
+    fn request(method: &str, uri: &str) -> IncomingRequest {
+        IncomingRequest {
+            method: method.to_string(),
+            uri: uri.to_string(),
+            headers: Vec::new(),
+            body: Vec::new(),
         }
     }
-    None
-}
 
-fn hardware_bus_from_uri(uri: &str) -> Option<crate::platform::HardwareDiscoveryBus> {
-    query_param_from_uri(uri, "bus").and_then(crate::platform::HardwareDiscoveryBus::parse)
-}
+    #[test]
+    fn supervisor_root_inventory_exposes_shared_tools_and_skills_routes() {
+        let (ctx, router_env) = build_test_context();
+        let out = dispatch(&ctx, &router_env, request("GET", "/")).expect("dispatch /");
+        assert_eq!(out.status, 200);
 
-fn hardware_capability_from_uri(uri: &str) -> Option<crate::platform::HardwareCapability> {
-    query_param_from_uri(uri, "capability").and_then(crate::platform::HardwareCapability::parse)
+        let body = String::from_utf8(out.body).expect("utf8 body");
+        let parsed: Value = serde_json::from_str(&body).expect("root json");
+        let endpoints = parsed
+            .get("endpoints")
+            .and_then(Value::as_array)
+            .expect("endpoints array");
+        let endpoint_values: Vec<&str> = endpoints.iter().filter_map(Value::as_str).collect();
+
+        assert_eq!(parsed.get("name").and_then(Value::as_str), Some("beetle"));
+        assert!(endpoint_values.contains(&"GET /api/tools"));
+        assert!(endpoint_values.contains(&"GET /api/skills"));
+        assert!(!endpoint_values.contains(&"POST /api/webhook"));
+        assert!(!endpoint_values.contains(&"POST /api/webhook/qq"));
+    }
+
+    #[test]
+    fn supervisor_control_plane_dispatches_tools_and_skills_routes() {
+        let (ctx, router_env) = build_test_context();
+
+        let tools = dispatch(&ctx, &router_env, request("GET", "/api/tools")).expect("tools");
+        assert_eq!(tools.status, 200);
+
+        let skills = dispatch(&ctx, &router_env, request("GET", "/api/skills")).expect("skills");
+        assert_eq!(skills.status, 200);
+    }
+
+    #[test]
+    fn supervisor_control_plane_keeps_webhook_ingress_unavailable() {
+        let (ctx, router_env) = build_test_context();
+        let out = dispatch(&ctx, &router_env, request("POST", "/api/webhook"))
+            .expect("webhook dispatch");
+        assert_eq!(out.status, 404);
+    }
 }

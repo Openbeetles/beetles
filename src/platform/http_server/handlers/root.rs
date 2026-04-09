@@ -7,6 +7,7 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         ctx.platform.memory_system_kind(),
         crate::state::esp_operator_window_active(),
         cfg!(feature = "ota"),
+        ctx.route_contract.inbound_webhooks_enabled,
     );
     let crate::platform::operator_surface::ControlPlaneInventory {
         endpoints,
@@ -41,6 +42,7 @@ mod tests {
         let inventory = crate::platform::operator_surface::control_plane_inventory(
             MemorySystemKind::EspCompact,
             false,
+            true,
             true,
         );
 

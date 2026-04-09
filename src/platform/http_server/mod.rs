@@ -110,6 +110,7 @@ pub fn run(
             board_id: Arc::from(crate::platform::runtime_board::resolved_board_id()),
             cached_config: Arc::clone(&shared_config),
             llm_stream_enabled,
+            route_contract: handlers::ControlPlaneRouteContract::FULL,
         });
 
         let router_env = router::RouterEnv::new(inbound_tx.clone());
@@ -277,6 +278,7 @@ pub fn run(
         board_id: Arc::from(crate::platform::runtime_board::resolved_board_id()),
         cached_config: shared_config,
         llm_stream_enabled,
+        route_contract: handlers::ControlPlaneRouteContract::FULL,
     });
     let router_env = router::RouterEnv::new(
         inbound_tx.clone(),

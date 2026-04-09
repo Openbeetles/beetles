@@ -207,6 +207,7 @@ mod tests {
             board_id: Arc::from("test-board"),
             cached_config: Arc::new(std::sync::RwLock::new(config)),
             llm_stream_enabled: false,
+            route_contract: crate::platform::http_server::handlers::ControlPlaneRouteContract::FULL,
         }
     }
 }
