@@ -520,9 +520,9 @@ mod tests {
     use crate::platform::Platform;
     use crate::task_execution::{
         build_task_run_record, TaskArtifact, TaskArtifactKind, TaskArtifactRecord,
-        TaskExecutionLedgerEntry, TaskExecutionRoute, TaskLearningKind, TaskLearningRecord,
-        TaskLearningRoute, TaskLedgerKind, TaskPlannerDecision, TaskPlannerStepDraft,
-        TaskRunStatus,
+        TaskExecutionLedgerEntry, TaskExecutionRoute, TaskLearningCandidateState, TaskLearningKind,
+        TaskLearningRecord, TaskLearningRoute, TaskLedgerKind, TaskPlannerDecision,
+        TaskPlannerStepDraft, TaskRunStatus,
     };
     use serde_json::Value;
     use std::sync::Arc;
@@ -540,6 +540,15 @@ mod tests {
         assert!(parsed.get("task_execution").is_some());
         assert!(parsed.get("memory_len").is_some());
         assert!(parsed.get("long_term_count").is_some());
+        assert!(parsed["task_execution"]["learning"]
+            .get("candidate_observed")
+            .is_some());
+        assert!(parsed["task_execution"]["learning"]
+            .get("candidate_promoted")
+            .is_some());
+        assert!(parsed["task_execution"]["learning"]
+            .get("candidate_rejected")
+            .is_some());
     }
 
     #[test]
@@ -668,6 +677,9 @@ mod tests {
                 provenance: "memory handler test".to_string(),
                 archive_note_name: String::new(),
                 route_detail: "exact topic match".to_string(),
+                candidate_state: Some(TaskLearningCandidateState::Promoted),
+                candidate_state_updated_at: now_secs,
+                last_failure_reason: String::new(),
                 observed_at: now_secs,
             })
             .unwrap();
@@ -846,11 +858,18 @@ mod tests {
             inspection["task_learning"]["route_counts"]["runtime_skill"],
             1
         );
+        assert!(
+            parsed["task_execution"]["learning"]["candidate_promoted"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 1
+        );
         assert!(inspection["task_learning"]["scored_hits"]
             .as_array()
             .unwrap()
             .iter()
             .any(|item| item["topic"] == topic
+                && item["candidate_state"] == "promoted"
                 && item["reasons"]
                     .as_array()
                     .unwrap()

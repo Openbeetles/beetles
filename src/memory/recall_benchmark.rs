@@ -632,6 +632,9 @@ mod tests {
                 provenance: String::new(),
                 archive_note_name: "2026-04-06-task-network".to_string(),
                 route_detail: String::new(),
+                candidate_state: Some(crate::task_execution::TaskLearningCandidateState::Promoted),
+                candidate_state_updated_at: 120,
+                last_failure_reason: String::new(),
                 observed_at: 120,
             })
             .unwrap();

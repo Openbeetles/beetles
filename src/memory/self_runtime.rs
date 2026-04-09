@@ -1992,6 +1992,20 @@ mod tests {
             provenance: "self_runtime".to_string(),
             archive_note_name: String::new(),
             route_detail: String::new(),
+            candidate_state: match kind {
+                TaskLearningKind::ReusableProcedure => match route {
+                    TaskLearningRoute::RuntimeSkill => {
+                        Some(crate::task_execution::TaskLearningCandidateState::Promoted)
+                    }
+                    TaskLearningRoute::Rejected => {
+                        Some(crate::task_execution::TaskLearningCandidateState::Rejected)
+                    }
+                    _ => Some(crate::task_execution::TaskLearningCandidateState::Observed),
+                },
+                _ => None,
+            },
+            candidate_state_updated_at: observed_at,
+            last_failure_reason: String::new(),
             observed_at,
         }
     }

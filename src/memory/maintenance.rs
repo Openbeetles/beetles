@@ -1661,6 +1661,9 @@ mod tests {
                 provenance: "test".to_string(),
                 archive_note_name: String::new(),
                 route_detail: String::new(),
+                candidate_state: Some(crate::task_execution::TaskLearningCandidateState::Promoted),
+                candidate_state_updated_at: 20,
+                last_failure_reason: String::new(),
                 observed_at: 20,
             }],
         };
@@ -1797,6 +1800,11 @@ mod tests {
                     provenance: String::new(),
                     archive_note_name: String::new(),
                     route_detail: String::new(),
+                    candidate_state: Some(
+                        crate::task_execution::TaskLearningCandidateState::Promoted,
+                    ),
+                    candidate_state_updated_at: 20,
+                    last_failure_reason: String::new(),
                     observed_at: 20,
                 },
                 crate::task_execution::TaskLearningRecord {
@@ -1818,6 +1826,9 @@ mod tests {
                     provenance: String::new(),
                     archive_note_name: String::new(),
                     route_detail: String::new(),
+                    candidate_state: None,
+                    candidate_state_updated_at: 20,
+                    last_failure_reason: String::new(),
                     observed_at: 20,
                 },
             ],

@@ -89,6 +89,24 @@ impl TaskLearningRoute {
     }
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskLearningCandidateState {
+    Observed,
+    Promoted,
+    Rejected,
+}
+
+impl TaskLearningCandidateState {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Observed => "observed",
+            Self::Promoted => "promoted",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TaskLearningDraft {
     pub topic: String,
@@ -125,6 +143,12 @@ pub struct TaskLearningRecord {
     pub archive_note_name: String,
     #[serde(default)]
     pub route_detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_state: Option<TaskLearningCandidateState>,
+    #[serde(default)]
+    pub candidate_state_updated_at: u64,
+    #[serde(default)]
+    pub last_failure_reason: String,
     #[serde(default)]
     pub observed_at: u64,
 }
@@ -213,6 +237,8 @@ pub struct TaskLearningInspectionHit {
     pub observed_at: u64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub route_detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_state: Option<TaskLearningCandidateState>,
     pub score_breakdown: TaskLearningScoreBreakdown,
 }
 
@@ -224,6 +250,10 @@ pub struct TaskLearningOperatorRecord {
     pub route: TaskLearningRoute,
     pub topic: String,
     pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_state: Option<TaskLearningCandidateState>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub last_failure_reason: String,
     pub observed_at: u64,
 }
 
@@ -239,6 +269,12 @@ pub struct TaskLearningOperatorSnapshot {
     pub archived_evidence: usize,
     #[serde(default)]
     pub workspace_pruned: usize,
+    #[serde(default)]
+    pub candidate_observed: usize,
+    #[serde(default)]
+    pub candidate_promoted: usize,
+    #[serde(default)]
+    pub candidate_rejected: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recent_records: Vec<TaskLearningOperatorRecord>,
 }
@@ -311,6 +347,39 @@ pub struct TaskLearningMaintenanceInput<'a> {
     pub channel: &'a str,
     pub chat_id: &'a str,
     pub now_secs: u64,
+}
+
+fn inferred_task_learning_candidate_state(
+    kind: TaskLearningKind,
+    route: TaskLearningRoute,
+) -> Option<TaskLearningCandidateState> {
+    if kind != TaskLearningKind::ReusableProcedure {
+        return None;
+    }
+    Some(match route {
+        TaskLearningRoute::RuntimeSkill => TaskLearningCandidateState::Promoted,
+        TaskLearningRoute::Rejected => TaskLearningCandidateState::Rejected,
+        _ => TaskLearningCandidateState::Observed,
+    })
+}
+
+fn resolved_task_learning_candidate_state(
+    record: &TaskLearningRecord,
+) -> Option<TaskLearningCandidateState> {
+    record
+        .candidate_state
+        .or_else(|| inferred_task_learning_candidate_state(record.kind, record.route))
+}
+
+fn set_task_learning_candidate_state(
+    record: &mut TaskLearningRecord,
+    state: TaskLearningCandidateState,
+    now_secs: u64,
+    failure_reason: Option<String>,
+) {
+    record.candidate_state = Some(state);
+    record.candidate_state_updated_at = now_secs;
+    record.last_failure_reason = failure_reason.unwrap_or_default();
 }
 
 pub fn normalize_task_learning_drafts(
@@ -532,11 +601,22 @@ pub fn run_task_learning_maintenance(
                                 "promoted after {} distinct successful task runs",
                                 distinct_runs
                             );
+                            set_task_learning_candidate_state(
+                                &mut record,
+                                TaskLearningCandidateState::Promoted,
+                                input.now_secs,
+                                None,
+                            );
                             promoted_topics.insert(normalize_learning_match_key(
                                 &record.topic,
                                 &record.summary,
                             ));
                         } else {
+                            let failure_reason = write_outcome
+                                .reports
+                                .first()
+                                .map(|report| report.reason.label().to_string())
+                                .unwrap_or_else(|| "runtime_skill_governance_rejected".to_string());
                             record.route = TaskLearningRoute::ArchivedEvidence;
                             record.route_detail = write_outcome
                                 .reports
@@ -550,6 +630,12 @@ pub fn run_task_learning_maintenance(
                                 .unwrap_or_else(|| {
                                     "archived as procedural evidence after runtime-skill governance rejected promotion".to_string()
                                 });
+                            set_task_learning_candidate_state(
+                                &mut record,
+                                TaskLearningCandidateState::Rejected,
+                                input.now_secs,
+                                Some(failure_reason),
+                            );
                             outcome.archived_records = outcome.archived_records.saturating_add(1);
                         }
                     } else {
@@ -557,6 +643,12 @@ pub fn run_task_learning_maintenance(
                         record.route_detail = format!(
                             "archived as procedural evidence; waiting for repeated success ({}/{})",
                             distinct_runs, PROCEDURE_PROMOTION_MIN_DISTINCT_RUNS
+                        );
+                        set_task_learning_candidate_state(
+                            &mut record,
+                            TaskLearningCandidateState::Observed,
+                            input.now_secs,
+                            None,
                         );
                         outcome.archived_records = outcome.archived_records.saturating_add(1);
                     }
@@ -609,6 +701,12 @@ pub fn run_task_learning_maintenance(
                     existing.route_detail =
                         "matched a later promoted procedure for the same topic".to_string();
                 }
+                set_task_learning_candidate_state(
+                    &mut existing,
+                    TaskLearningCandidateState::Promoted,
+                    input.now_secs,
+                    None,
+                );
                 if existing.archive_note_name.is_empty() {
                     existing.archive_note_name = archive_note_name.clone();
                 }
@@ -1100,6 +1198,18 @@ pub fn build_task_learning_operator_snapshot(
 ) -> Result<TaskLearningOperatorSnapshot> {
     let mut snapshot = TaskLearningOperatorSnapshot::default();
     for record in task_learning_store.list_recent(MAX_TASK_LEARNING_RECORDS_PER_CHAT)? {
+        match resolved_task_learning_candidate_state(&record) {
+            Some(TaskLearningCandidateState::Observed) => {
+                snapshot.candidate_observed = snapshot.candidate_observed.saturating_add(1);
+            }
+            Some(TaskLearningCandidateState::Promoted) => {
+                snapshot.candidate_promoted = snapshot.candidate_promoted.saturating_add(1);
+            }
+            Some(TaskLearningCandidateState::Rejected) => {
+                snapshot.candidate_rejected = snapshot.candidate_rejected.saturating_add(1);
+            }
+            None => {}
+        }
         match record.route {
             TaskLearningRoute::Pending => snapshot.pending = snapshot.pending.saturating_add(1),
             TaskLearningRoute::RuntimeSkill => {
@@ -1117,6 +1227,7 @@ pub fn build_task_learning_operator_snapshot(
             }
             TaskLearningRoute::Rejected => {}
         }
+        let candidate_state = resolved_task_learning_candidate_state(&record);
         snapshot.recent_records.push(TaskLearningOperatorRecord {
             learning_id: record.learning_id,
             run_id: record.run_id,
@@ -1124,6 +1235,8 @@ pub fn build_task_learning_operator_snapshot(
             route: record.route,
             topic: record.topic,
             summary: record.summary,
+            candidate_state,
+            last_failure_reason: record.last_failure_reason,
             observed_at: record.observed_at,
         });
     }
@@ -1139,12 +1252,15 @@ pub fn build_task_learning_operator_snapshot(
 pub fn render_task_learning_operator_text(snapshot: &TaskLearningOperatorSnapshot) -> String {
     let mut out = String::from("task_learning:\n");
     out.push_str(&format!(
-        "  pending: {}\n  runtime_skill_promoted: {}\n  canonical_facts_written: {}\n  archived_evidence: {}\n  workspace_pruned: {}\n",
+        "  pending: {}\n  runtime_skill_promoted: {}\n  canonical_facts_written: {}\n  archived_evidence: {}\n  workspace_pruned: {}\n  candidate_observed: {}\n  candidate_promoted: {}\n  candidate_rejected: {}\n",
         snapshot.pending,
         snapshot.runtime_skill_promoted,
         snapshot.canonical_facts_written,
         snapshot.archived_evidence,
         snapshot.workspace_pruned,
+        snapshot.candidate_observed,
+        snapshot.candidate_promoted,
+        snapshot.candidate_rejected,
     ));
     if snapshot.recent_records.is_empty() {
         out.push_str("  recent_records: none\n");
@@ -1153,12 +1269,21 @@ pub fn render_task_learning_operator_text(snapshot: &TaskLearningOperatorSnapsho
     out.push_str("  recent_records:\n");
     for record in &snapshot.recent_records {
         out.push_str(&format!(
-            "    - {} | {} | {} | {} | {}\n",
+            "    - {} | {} | {} | {} | {} | candidate_state={} | failure={}\n",
             record.learning_id,
             record.run_id,
             record.kind.label(),
             record.route.label(),
-            record.summary
+            record.summary,
+            record
+                .candidate_state
+                .map(TaskLearningCandidateState::label)
+                .unwrap_or("-"),
+            if record.last_failure_reason.is_empty() {
+                "-"
+            } else {
+                record.last_failure_reason.as_str()
+            }
         ));
     }
     out
@@ -1221,11 +1346,14 @@ pub fn render_task_learning_inspection_markdown(inspection: &TaskLearningInspect
     } else {
         for hit in &inspection.scored_hits {
             out.push_str(&format!(
-                "- [{} / {}] {} | route={} | run={} | score={}\n",
+                "- [{} / {}] {} | route={} | candidate_state={} | run={} | score={}\n",
                 hit.kind.label(),
                 hit.topic,
                 truncate_content_to_max(hit.summary.trim(), 140),
                 hit.route.label(),
+                hit.candidate_state
+                    .map(TaskLearningCandidateState::label)
+                    .unwrap_or("-"),
                 hit.run_id,
                 hit.score,
             ));
@@ -1243,11 +1371,14 @@ pub fn render_task_learning_inspection_markdown(inspection: &TaskLearningInspect
     } else {
         for record in &inspection.recent_records {
             out.push_str(&format!(
-                "- {} | {} | {} | route={} | artifacts={}\n",
+                "- {} | {} | {} | route={} | candidate_state={} | artifacts={}\n",
                 record.learning_id,
                 record.kind.label(),
                 truncate_content_to_max(record.summary.trim(), 120),
                 record.route.label(),
+                resolved_task_learning_candidate_state(record)
+                    .map(TaskLearningCandidateState::label)
+                    .unwrap_or("-"),
                 if record.source_artifact_ids.is_empty() {
                     "-".to_string()
                 } else {
@@ -1297,6 +1428,7 @@ fn task_learning_inspection_hit(hit: &TaskLearningHit) -> TaskLearningInspection
         reasons: hit.reasons.clone(),
         observed_at: hit.record.observed_at,
         route_detail: hit.record.route_detail.clone(),
+        candidate_state: resolved_task_learning_candidate_state(&hit.record),
         score_breakdown: hit.score_breakdown.clone(),
     }
 }
@@ -1477,6 +1609,9 @@ fn build_task_learning_record(
         .into_owned(),
         archive_note_name: String::new(),
         route_detail: String::new(),
+        candidate_state: inferred_task_learning_candidate_state(kind, TaskLearningRoute::Pending),
+        candidate_state_updated_at: now_secs,
+        last_failure_reason: String::new(),
         observed_at: now_secs,
     }
 }
@@ -2202,6 +2337,9 @@ mod tests {
             provenance: "run=tr001 step=s01 artifacts=a01".to_string(),
             archive_note_name: String::new(),
             route_detail: String::new(),
+            candidate_state: inferred_task_learning_candidate_state(kind, route),
+            candidate_state_updated_at: observed_at,
+            last_failure_reason: String::new(),
             observed_at,
         }
     }
@@ -2486,12 +2624,20 @@ mod tests {
             .expect("proc read")
             .expect("proc exists");
         assert_eq!(procedure.route, TaskLearningRoute::RuntimeSkill);
+        assert_eq!(
+            procedure.candidate_state,
+            Some(TaskLearningCandidateState::Promoted)
+        );
 
         let prior_promoted = learning_store
             .get("tl_old_proc")
             .expect("prior proc read")
             .expect("prior proc exists");
         assert_eq!(prior_promoted.route, TaskLearningRoute::RuntimeSkill);
+        assert_eq!(
+            prior_promoted.candidate_state,
+            Some(TaskLearningCandidateState::Promoted)
+        );
 
         let evidence = learning_store
             .get("tl_ev")
@@ -2598,9 +2744,59 @@ mod tests {
             .expect("proc read")
             .expect("proc exists");
         assert_eq!(procedure.route, TaskLearningRoute::ArchivedEvidence);
+        assert_eq!(
+            procedure.candidate_state,
+            Some(TaskLearningCandidateState::Rejected)
+        );
         assert!(procedure
             .route_detail
             .contains("runtime-skill governance rejected"));
         assert!(skill_storage.list_names().unwrap().is_empty());
+    }
+
+    #[test]
+    fn task_learning_operator_snapshot_surfaces_candidate_lifecycle_counts() {
+        let store = StubTaskLearningStore::with_records(vec![
+            make_learning_record(
+                "tl_observed",
+                "tr_observed",
+                TaskLearningKind::ReusableProcedure,
+                TaskLearningRoute::ArchivedEvidence,
+                "draft_release_fix",
+                "Observed procedure candidate",
+                "1. inspect\n2. compare outputs",
+                1_800_000_000,
+            ),
+            make_learning_record(
+                "tl_promoted",
+                "tr_promoted",
+                TaskLearningKind::ReusableProcedure,
+                TaskLearningRoute::RuntimeSkill,
+                "stable_release_fix",
+                "Promoted procedure candidate",
+                "1. inspect diff\n2. patch\n3. verify",
+                1_800_000_010,
+            ),
+            make_learning_record(
+                "tl_rejected",
+                "tr_rejected",
+                TaskLearningKind::ReusableProcedure,
+                TaskLearningRoute::Rejected,
+                "weak_fact_like_note",
+                "Rejected procedure candidate",
+                "Owner timezone is Asia/Shanghai.",
+                1_800_000_020,
+            ),
+        ]);
+
+        let snapshot = build_task_learning_operator_snapshot(&store).expect("snapshot");
+
+        assert_eq!(snapshot.candidate_observed, 1);
+        assert_eq!(snapshot.candidate_promoted, 1);
+        assert_eq!(snapshot.candidate_rejected, 1);
+        assert!(snapshot.recent_records.iter().any(|record| {
+            record.learning_id == "tl_promoted"
+                && record.candidate_state == Some(TaskLearningCandidateState::Promoted)
+        }));
     }
 }
