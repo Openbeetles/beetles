@@ -203,12 +203,14 @@
 
 - **用途**：写入音频配置，保存到 `config/audio.json`。请求体要把这一整段完整传上来。改完后重启生效。
 - **鉴权**：已激活 + 配对码 + CSRF。
-- **请求**：`Content-Type: application/json`，Body 为 `AudioSegment`，结构见 [`voice-interaction-plan.md`](../../dev-docs/voice-interaction-plan.md) 的 `config/audio.json` 示例（含 `microphone`、`speaker`、`vad`、`wake_word`、`stt`、`tts`、`ambient_listening`、`led_indicator`）。
+- **请求**：`Content-Type: application/json`，Body 为 `AudioSegment`，结构见 [`voice-interaction-plan.md`](../../dev-docs/voice-interaction-plan.md) 的 `config/audio.json` 示例（含 `microphone`、`speaker`、`vad`、`wake_word`、`speech`、`tts`、`realtime`、`ambient_listening`、`led_indicator`）。
 - **校验**（仅本段）：
   - `version` 必须为 `1`
   - 启用的 microphone/speaker 引脚需在 1～48；采样率 8000～48000；位深 16/24/32
   - microphone `buffer_size` 需在 256～16384
-  - 当 `enabled=true` 且 `microphone.enabled=true` 且 `stt.provider="baidu"` 时，`stt.api_key` 与 `stt.api_secret` 必填
+  - 当启用唤醒词链路且未配置 realtime voice 时，当前回退语音服务商若为 `baidu`，则 `speech.api_key` 与 `speech.api_secret` 必填
+  - realtime voice 的 `realtime.provider` 当前仅支持 `openai_compatible`、`qwen`、`doubao`
+  - realtime voice 启用时，`realtime.api_key`、`realtime.model`、`realtime.voice`、`realtime.ws_url` 必填，且麦克风/喇叭采样率都必须为 `24000`
   - `vad.threshold` 需在 [0,1]；`silence_duration_ms` 需在 1～60000
   - `ambient_listening.sound_events` 最多 16 项，每项 1～32 字符；`check_interval_seconds` 需在 1～86400
 - **响应**：成功 200，`{"ok": true, "restart_required": true}`；校验失败 400。

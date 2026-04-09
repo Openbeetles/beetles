@@ -201,12 +201,14 @@ Includes: `POST /api/config/wifi`, `/api/config/llm`, `/api/config/channels`, `/
 
 - **Purpose**: Write the audio device config segment to SPIFFS (`config/audio.json`); request body is the full segment; backend validates and writes. Takes effect after reboot.
 - **Auth**: Activated + pairing code + CSRF.
-- **Request**: `Content-Type: application/json`, Body is `AudioSegment`, structure aligned with the `config/audio.json` example in [`voice-interaction-plan.md`](../../dev-docs/voice-interaction-plan.md) (`microphone`, `speaker`, `vad`, `wake_word`, `stt`, `tts`, `ambient_listening`, `led_indicator`).
+- **Request**: `Content-Type: application/json`, Body is `AudioSegment`, structure aligned with the `config/audio.json` example in [`voice-interaction-plan.md`](../../dev-docs/voice-interaction-plan.md) (`microphone`, `speaker`, `vad`, `wake_word`, `speech`, `tts`, `realtime`, `ambient_listening`, `led_indicator`).
 - **Validation** (this segment only):
   - `version` must be `1`
   - For enabled microphone/speaker: pins in 1–48; sample rate 8000–48000; bits per sample in 16/24/32
   - microphone `buffer_size` must be 256–16384
-  - When `enabled=true`, `microphone.enabled=true`, and `stt.provider="baidu"`, both `stt.api_key` and `stt.api_secret` are required
+  - When the wake-word path is enabled but realtime voice is not configured, the current fallback speech provider still requires its credentials; for `baidu`, both `speech.api_key` and `speech.api_secret` are required
+  - `realtime.provider` currently supports only `openai_compatible`, `qwen`, and `doubao`
+  - When realtime voice is enabled, `realtime.api_key`, `realtime.model`, `realtime.voice`, and `realtime.ws_url` are required, and both microphone/speaker sample rates must be `24000`
   - `vad.threshold` must be in [0,1], `silence_duration_ms` in 1–60000
   - `ambient_listening.sound_events` max 16 items, each 1–32 chars; `check_interval_seconds` in 1–86400
 - **Response**: Success 200 `{"ok": true, "restart_required": true}`; validation failure 400.

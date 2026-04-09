@@ -58,14 +58,9 @@ export interface AudioRealtimeConfig {
   provider: string
   ws_url: string
   api_key: string
-  api_secret: string
-  app_id: string
   model: string
   voice: string
   instructions: string
-  user_id: string
-  license_key: string
-  device_id: string
 }
 
 export interface AudioAmbientListeningConfig {
@@ -116,7 +111,6 @@ export const AUDIO_PIN_MAX = 48
 export const AUDIO_SAMPLE_RATE_MIN = 8_000
 export const AUDIO_SAMPLE_RATE_MAX = 48_000
 export const AUDIO_REALTIME_PCM16_SAMPLE_RATE = 24_000
-export const AUDIO_REALTIME_BAIDU_SAMPLE_RATE = 16_000
 export const AUDIO_BUFFER_SIZE_MIN = 256
 export const AUDIO_BUFFER_SIZE_MAX = 16 * 1024
 export const AUDIO_BITS_PER_SAMPLE_ALLOWED = [16, 24, 32] as const
@@ -141,7 +135,7 @@ export const AUDIO_VAD_SILENCE_MS_PRESETS = [500, 750, 1000, 1500, 2000, 3000] a
 
 export const AUDIO_SPEECH_PROVIDERS = ['baidu', 'whisper', 'xunfei'] as const
 export const AUDIO_SPEECH_LANGUAGES = ['zh', 'en', 'ja', 'ko'] as const
-export const AUDIO_REALTIME_PROVIDERS = ['openai_compatible', 'qwen', 'baidu'] as const
+export const AUDIO_REALTIME_PROVIDERS = ['openai_compatible', 'qwen', 'doubao'] as const
 
 export type AudioRealtimeProvider = (typeof AUDIO_REALTIME_PROVIDERS)[number]
 
@@ -167,7 +161,9 @@ export const DEFAULT_REALTIME_VOICE_OPENAI = 'alloy'
 export const DEFAULT_REALTIME_WS_URL_QWEN = 'wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime'
 export const DEFAULT_REALTIME_MODEL_QWEN = 'qwen3.5-omni-plus-realtime'
 export const DEFAULT_REALTIME_VOICE_QWEN = 'Cherry'
-export const DEFAULT_REALTIME_WS_URL_BAIDU = 'wss://rtc-aiotgw.exp.bcelive.com/v1/realtime'
+export const DEFAULT_REALTIME_WS_URL_DOUBAO = 'wss://ai-gateway.vei.volces.com/v1/realtime'
+export const DEFAULT_REALTIME_MODEL_DOUBAO = ''
+export const DEFAULT_REALTIME_VOICE_DOUBAO = ''
 
 interface AudioRealtimeProviderDefaults {
   ws_url: string
@@ -186,10 +182,10 @@ const AUDIO_REALTIME_PROVIDER_DEFAULTS: Record<AudioRealtimeProvider, AudioRealt
     model: DEFAULT_REALTIME_MODEL_QWEN,
     voice: DEFAULT_REALTIME_VOICE_QWEN,
   },
-  baidu: {
-    ws_url: DEFAULT_REALTIME_WS_URL_BAIDU,
-    model: '',
-    voice: '',
+  doubao: {
+    ws_url: DEFAULT_REALTIME_WS_URL_DOUBAO,
+    model: DEFAULT_REALTIME_MODEL_DOUBAO,
+    voice: DEFAULT_REALTIME_VOICE_DOUBAO,
   },
 }
 
@@ -255,27 +251,14 @@ function defaultRealtimeConfig(provider: AudioRealtimeProvider = DEFAULT_REALTIM
     provider,
     ws_url: defaults.ws_url,
     api_key: '',
-    api_secret: '',
-    app_id: '',
     model: defaults.model,
     voice: defaults.voice,
     instructions: '你是甲壳虫的语音助手。请直接口语化回应，简洁自然，默认使用中文。',
-    user_id: '',
-    license_key: '',
-    device_id: '',
   }
 }
 
 export function audioRealtimeConfigured(c: Pick<AudioConfig, 'realtime'> | AudioConfig): boolean {
   const realtime = c.realtime
-  if (realtime.provider === 'baidu') {
-    return Boolean(
-      realtime.app_id.trim() &&
-        realtime.api_key.trim() &&
-        realtime.api_secret.trim() &&
-        realtime.ws_url.trim(),
-    )
-  }
   return Boolean(
     realtime.api_key.trim() &&
       realtime.model.trim() &&
@@ -427,9 +410,8 @@ export function unionFloatPreset(presets: readonly number[], current: number): n
 }
 
 export function realtimeRequiredSampleRate(provider: string): number {
-  return provider === 'baidu'
-    ? AUDIO_REALTIME_BAIDU_SAMPLE_RATE
-    : AUDIO_REALTIME_PCM16_SAMPLE_RATE
+  void provider
+  return AUDIO_REALTIME_PCM16_SAMPLE_RATE
 }
 
 export function defaultAudioConfig(): AudioConfig {
