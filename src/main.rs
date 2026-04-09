@@ -518,6 +518,28 @@ mod tests {
         assert_eq!(state.last_msg_out, 9);
         assert_eq!(state.last_llm_ms, 88);
     }
+
+    #[test]
+    fn display_thread_stack_budget_is_large_enough_for_dashboard_render_path() {
+        assert!(
+            beetle::util::STACK_DISPLAY >= 12 * 1024,
+            "display stack budget regressed below the verified 12KB floor",
+        );
+    }
+
+    #[test]
+    fn steady_state_state_change_uses_header_only_refresh() {
+        use beetle::DisplaySystemState;
+
+        assert_eq!(
+            super::state_change_display_refresh_mode(Some(DisplaySystemState::Idle)),
+            super::StateChangeDisplayRefreshMode::StateHeaderOnly,
+        );
+        assert_eq!(
+            super::state_change_display_refresh_mode(None),
+            super::StateChangeDisplayRefreshMode::FullDashboard,
+        );
+    }
 }
 
 fn build_voice_event_channel(
@@ -584,6 +606,18 @@ struct DisplayLoopState {
     backlight_off: bool,
 }
 
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StateChangeDisplayRefreshMode {
+    FullDashboard,
+    StateHeaderOnly,
+}
+
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
 impl Default for DisplayLoopState {
     fn default() -> Self {
@@ -607,6 +641,22 @@ impl Default for DisplayLoopState {
     }
 }
 
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+fn state_change_display_refresh_mode(
+    last_state: Option<beetle::DisplaySystemState>,
+) -> StateChangeDisplayRefreshMode {
+    if last_state.is_none() {
+        StateChangeDisplayRefreshMode::FullDashboard
+    } else {
+        StateChangeDisplayRefreshMode::StateHeaderOnly
+    }
+}
+
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
 fn update_display_loop_cache(
     loop_state: &mut DisplayLoopState,
@@ -619,7 +669,9 @@ fn update_display_loop_cache(
     msg_out: Option<u32>,
     llm_ms: Option<u32>,
 ) {
-    loop_state.last_presence_subtitle.clone_from(presence_subtitle);
+    loop_state
+        .last_presence_subtitle
+        .clone_from(presence_subtitle);
     loop_state.last_ip.clone_from(ip);
     for (i, ch) in channels.iter().enumerate() {
         loop_state.last_channels[i] = (ch.enabled, ch.healthy, ch.consecutive_failures);
@@ -833,21 +885,32 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
         if state_changed {
             let presence_subtitle = display_projection.subtitle_override.clone();
             let ip_owned = ip.clone();
-            let cmd = DisplayCommand::RefreshDashboard {
-                state,
-                presence_subtitle,
-                wifi_connected: sta_connected,
-                ip_address: Some(ip_owned.clone()),
-                channels,
-                pressure,
-                heap_percent,
-                messages_in: msg_in,
-                messages_out: msg_out,
-                last_active_epoch_secs: last_active,
-                uptime_secs,
-                busy_phase: loop_state.busy_toggle,
-                llm_last_ms: llm_ms,
-                error_flash: show_flash,
+            let cmd = match state_change_display_refresh_mode(loop_state.last_state) {
+                StateChangeDisplayRefreshMode::FullDashboard => DisplayCommand::RefreshDashboard {
+                    state,
+                    presence_subtitle,
+                    wifi_connected: sta_connected,
+                    ip_address: Some(ip_owned.clone()),
+                    channels,
+                    pressure,
+                    heap_percent,
+                    messages_in: msg_in,
+                    messages_out: msg_out,
+                    last_active_epoch_secs: last_active,
+                    uptime_secs,
+                    busy_phase: loop_state.busy_toggle,
+                    llm_last_ms: llm_ms,
+                    error_flash: show_flash,
+                },
+                StateChangeDisplayRefreshMode::StateHeaderOnly => {
+                    DisplayCommand::UpdateStateHeader {
+                        state,
+                        presence_subtitle,
+                        ip_address: Some(ip_owned.clone()),
+                        uptime_secs,
+                        busy_phase: loop_state.busy_toggle,
+                    }
+                }
             };
             if let Err(e) = platform.display_command(cmd) {
                 log::warn!("[{}] display refresh failed: {}", TAG, e);
@@ -1867,7 +1930,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         let plan = thread_plan("display");
         let _ = beetle::util::spawn_guarded_with_profile_handle(
             "display",
-            6144,
+            beetle::util::STACK_DISPLAY,
             plan.core,
             plan.role,
             move || run_display_loop(display_platform, display_config),
@@ -2283,9 +2346,9 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         };
     } else {
         log::warn!(
-            "[{}] HTTP client not available (create_http_client failed): dispatch, agent, Telegram poll, and outbound sender threads were not started. On Linux, ensure ureq/rustls stack and network; see dev-docs/linux-migration-plan.md.",
-            TAG
-        );
+                "[{}] HTTP client not available (create_http_client failed): dispatch, agent, Telegram poll, and outbound sender threads were not started. On Linux, ensure ureq/rustls stack and network; see dev-docs/beetle-os-plan.md and dev-docs/architecture-and-code.md.",
+                TAG
+            );
     }
 
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]

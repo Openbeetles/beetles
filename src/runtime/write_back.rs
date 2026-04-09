@@ -5,15 +5,15 @@
 use crate::error::{Error, Result};
 use crate::memory::{
     derive_recent_persona_evidence, AutonomyStrategy, AutonomyStrategyStore, CoreRevisionLedger,
-    CoreRevisionLedgerStore, ExecutionState, ExecutionStateStore, ImportantMessageStore,
-    InnerLife, InnerLifeStore, LongTermMemoryExtractionState, LongTermMemoryExtractionStateStore,
-    MentalPrivacyState, MentalPrivacyStore, OuterVoice, OuterVoiceStore,
-    RecentPersonaEvidence, RelationshipConstitution, RelationshipConstitutionStore,
-    RelationshipPortfolio, RelationshipPortfolioStore, RelationshipTopology,
-    RelationshipTopologyStore, SelfAuthoredCore, SelfAuthoredCoreStore, SelfContinuity,
-    SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
-    SessionSummaryStore, TurnLedger, TurnLedgerStore, WorldSense, WorldSenseStore,
-    RECENT_PERSONA_EVIDENCE_HISTORY_LOOKBACK, RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
+    CoreRevisionLedgerStore, ExecutionState, ExecutionStateStore, ImportantMessageStore, InnerLife,
+    InnerLifeStore, LongTermMemoryExtractionState, LongTermMemoryExtractionStateStore,
+    MentalPrivacyState, MentalPrivacyStore, OuterVoice, OuterVoiceStore, RecentPersonaEvidence,
+    RelationshipConstitution, RelationshipConstitutionStore, RelationshipPortfolio,
+    RelationshipPortfolioStore, RelationshipTopology, RelationshipTopologyStore, SelfAuthoredCore,
+    SelfAuthoredCoreStore, SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore,
+    SessionMessage, SessionStore, SessionSummaryStore, TurnLedger, TurnLedgerStore, WorldSense,
+    WorldSenseStore, RECENT_PERSONA_EVIDENCE_HISTORY_LOOKBACK,
+    RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -438,8 +438,8 @@ impl TurnLedgerStore for BufferedTurnLedgerStore {
                 recent.retain(|existing| {
                     let same_req_id =
                         !ledger.req_id.trim().is_empty() && existing.req_id == ledger.req_id;
-                    let same_started_at = ledger.started_at_ms > 0
-                        && existing.started_at_ms == ledger.started_at_ms;
+                    let same_started_at =
+                        ledger.started_at_ms > 0 && existing.started_at_ms == ledger.started_at_ms;
                     !(same_req_id || same_started_at)
                 });
                 recent.insert(0, ledger);

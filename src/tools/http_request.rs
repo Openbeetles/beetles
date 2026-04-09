@@ -99,7 +99,10 @@ impl Tool for HttpRequestTool {
         // Truncate response to avoid excessive token usage
         let max_resp = 8 * 1024;
         let (truncated, body_out) = if body_text.len() > max_resp {
-            (true, truncate_utf8_at_byte_boundary(body_text.as_ref(), max_resp))
+            (
+                true,
+                truncate_utf8_at_byte_boundary(body_text.as_ref(), max_resp),
+            )
         } else {
             (false, body_text.as_ref())
         };

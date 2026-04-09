@@ -13,7 +13,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-#[cfg_attr(not(any(target_arch = "xtensa", target_arch = "riscv32")), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_arch = "xtensa", target_arch = "riscv32")),
+    allow(dead_code)
+)]
 const ESP_SAFE_REL_PATH_LEN: usize = 31;
 
 /// 兼容旧名：状态根路径字符串。ESP 上为 `/spiffs`；host 上为 `state_mount_path()` 的运行时值。
@@ -34,7 +37,10 @@ pub(crate) fn state_path_join(rel: impl AsRef<Path>) -> PathBuf {
     }
 }
 
-#[cfg_attr(not(any(target_arch = "xtensa", target_arch = "riscv32")), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_arch = "xtensa", target_arch = "riscv32")),
+    allow(dead_code)
+)]
 fn fnv1a64_hash(s: &str) -> u64 {
     let mut h: u64 = 14695981039346656037;
     for b in s.bytes() {
@@ -44,7 +50,10 @@ fn fnv1a64_hash(s: &str) -> u64 {
     h
 }
 
-#[cfg_attr(not(any(target_arch = "xtensa", target_arch = "riscv32")), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_arch = "xtensa", target_arch = "riscv32")),
+    allow(dead_code)
+)]
 pub(crate) fn esp_storage_rel_path(rel: &Path) -> PathBuf {
     let rel_str = rel.to_string_lossy();
     match rel_str.as_ref() {
@@ -77,7 +86,10 @@ pub(crate) fn esp_storage_rel_path(rel: &Path) -> PathBuf {
     }
 }
 
-#[cfg_attr(not(any(target_arch = "xtensa", target_arch = "riscv32")), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_arch = "xtensa", target_arch = "riscv32")),
+    allow(dead_code)
+)]
 fn esp_hashed_rel_path(rel: &str) -> PathBuf {
     let namespace = match rel.split('/').next().unwrap_or_default() {
         "memory" => "m",
@@ -87,13 +99,13 @@ fn esp_hashed_rel_path(rel: &str) -> PathBuf {
         _ => "s",
     };
     let ext = esp_alias_extension(rel);
-    PathBuf::from(format!(
-        "{namespace}/h{:016x}.{ext}",
-        fnv1a64_hash(rel)
-    ))
+    PathBuf::from(format!("{namespace}/h{:016x}.{ext}", fnv1a64_hash(rel)))
 }
 
-#[cfg_attr(not(any(target_arch = "xtensa", target_arch = "riscv32")), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_arch = "xtensa", target_arch = "riscv32")),
+    allow(dead_code)
+)]
 fn esp_alias_extension(rel: &str) -> &'static str {
     match Path::new(rel).extension().and_then(|ext| ext.to_str()) {
         Some("md") => "md",
@@ -412,12 +424,11 @@ pub use world_sense::SpiffsWorldSenseStore;
 mod tests {
     use super::esp_storage_rel_path;
     use crate::memory::{
-        REL_PATH_AUTONOMY_STRATEGIES, REL_PATH_CONTINUITY_CAPSULES,
-        REL_PATH_CORE_REVISION_LEDGERS, REL_PATH_IMPORTANT_MESSAGE,
-        REL_PATH_LONG_TERM_EXTRACTION_STATES, REL_PATH_PRIVATE_DOC_WORKSPACES,
-        REL_PATH_PRIVATE_GARDEN_DIR, REL_PATH_PRIVATE_GARDEN_INDEX,
-        REL_PATH_RELATIONSHIP_PORTFOLIOS, REL_PATH_SELF_AUTHORED_CORES,
-        REL_PATH_SESSION_SUMMARIES,
+        REL_PATH_AUTONOMY_STRATEGIES, REL_PATH_CONTINUITY_CAPSULES, REL_PATH_CORE_REVISION_LEDGERS,
+        REL_PATH_IMPORTANT_MESSAGE, REL_PATH_LONG_TERM_EXTRACTION_STATES,
+        REL_PATH_PRIVATE_DOC_WORKSPACES, REL_PATH_PRIVATE_GARDEN_DIR,
+        REL_PATH_PRIVATE_GARDEN_INDEX, REL_PATH_RELATIONSHIP_PORTFOLIOS,
+        REL_PATH_SELF_AUTHORED_CORES, REL_PATH_SESSION_SUMMARIES,
     };
     use crate::runtime::REL_PATH_LINUX_RELEASE_STATE;
     use std::path::{Path, PathBuf};
@@ -454,7 +465,10 @@ mod tests {
             ("memory/tool_execution_governance.json", "m/teg.json"),
         ];
         for (rel, expected) in cases {
-            assert_eq!(esp_storage_rel_path(Path::new(rel)), PathBuf::from(expected));
+            assert_eq!(
+                esp_storage_rel_path(Path::new(rel)),
+                PathBuf::from(expected)
+            );
         }
     }
 

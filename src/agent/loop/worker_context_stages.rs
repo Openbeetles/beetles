@@ -197,7 +197,7 @@ pub(super) fn run_prepare_mental_privacy(
     msg: &crate::bus::PcMsg,
     config: &AgentLoopConfig,
     tool_ctx: &mut HttpClientToolContext<'_>,
-){
+) {
     let runtime_stage = session
         .runtime
         .as_ref()
@@ -260,7 +260,7 @@ pub(super) fn load_prepare_prompt_memory(
     session: &mut WorkerPrepareSession,
     msg: &crate::bus::PcMsg,
     config: &AgentLoopConfig,
-){
+) {
     let runtime_stage = session
         .runtime
         .as_ref()
@@ -386,7 +386,7 @@ pub(super) fn enrich_prepare_governance(
     msg: &crate::bus::PcMsg,
     config: &AgentLoopConfig,
     tool_ctx: &mut HttpClientToolContext<'_>,
-){
+) {
     let runtime_stage = session
         .runtime
         .as_ref()
@@ -747,11 +747,7 @@ pub(super) fn finalize_prepare_context<'a>(
         allow_tool_round_recall_refill,
         prompt_memory_system_budget: runtime_stage.prompt_memory_system_budget,
         pressure: runtime_stage.runtime.pressure,
-        mental_privacy_adjudication: governance_stage
-            .mental_privacy_adjudication
-            .map(Box::new),
-        persona_priority_adjudication: governance_stage
-            .persona_priority_adjudication
-            .map(Box::new),
+        mental_privacy_adjudication: governance_stage.mental_privacy_adjudication.map(Box::new),
+        persona_priority_adjudication: governance_stage.persona_priority_adjudication.map(Box::new),
     })
 }

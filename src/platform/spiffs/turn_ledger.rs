@@ -367,8 +367,9 @@ mod tests {
     };
     use crate::bus::IngressKind;
     use crate::memory::{
-        MentalPrivacyShareAction, TurnLedger, TurnLedgerStatus, TurnPersonaDisclosureLedger,
-        TurnPersonaLedger, TurnPersonaPriorityLedger, TurnPersonaPressureLevel, TurnLedgerStore,
+        MentalPrivacyShareAction, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
+        TurnPersonaDisclosureLedger, TurnPersonaLedger, TurnPersonaPressureLevel,
+        TurnPersonaPriorityLedger,
     };
     use crate::platform::spiffs::state_path_join;
     fn meaningful_persona_ledger() -> TurnLedger {

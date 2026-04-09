@@ -4,10 +4,10 @@
 use crate::config::{parse_proxy_url_to_host_port, AppConfig};
 use crate::error::{Error, Result};
 use crate::orchestrator::Priority;
+use crate::platform::heap::alloc_spiram_buffer;
 use crate::platform::http_client::response_buffer::{
     choose_response_body_read_plan, ResponseBodyReadPlan,
 };
-use crate::platform::heap::alloc_spiram_buffer;
 use crate::platform::ResponseBody;
 use embedded_svc::http::client::Client as HttpClient;
 use embedded_svc::http::Method;

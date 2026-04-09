@@ -611,6 +611,30 @@ where
                 flush_h,
             )?;
         }
+        DisplayCommand::UpdateStateHeader {
+            state,
+            presence_subtitle,
+            ip_address,
+            uptime_secs,
+            busy_phase,
+        } => {
+            render_state_header_partial(
+                backend,
+                *state,
+                presence_subtitle.as_deref(),
+                ip_address.as_deref(),
+                *uptime_secs,
+                *busy_phase,
+                config.width,
+                layout,
+            );
+            backend.flush_rows(
+                config.offset_x,
+                config.offset_y,
+                0,
+                header_flush_rows(layout),
+            )?;
+        }
         DisplayCommand::UpdatePressure {
             level,
             heap_percent,
@@ -1443,6 +1467,16 @@ struct DashboardParams<'a> {
     error_flash: bool,
 }
 
+struct StateHeaderParams<'a> {
+    layout: &'a DisplayLayout,
+    state: DisplaySystemState,
+    presence_subtitle: Option<&'a str>,
+    ip_address: Option<&'a str>,
+    width: u16,
+    uptime_secs: u64,
+    busy_phase: bool,
+}
+
 /// Title column strip: only covers the state title row (ends above `subtitle_top`).
 /// 标题区窄背景；不覆盖副标题行，与 `UpdateIp` 局部刷新兼容。
 fn draw_title_strip<D: DrawTarget<Color = Rgb565>>(
@@ -1534,6 +1568,44 @@ fn render_dashboard<D: DrawTarget<Color = Rgb565>>(target: &mut D, p: &Dashboard
         PANEL_BORDER,
     );
 
+    render_state_header_content(
+        target,
+        &StateHeaderParams {
+            layout,
+            state: p.state,
+            presence_subtitle: p.presence_subtitle,
+            ip_address: p.ip_address,
+            width: p.width,
+            uptime_secs: p.uptime_secs,
+            busy_phase: p.busy_phase,
+        },
+    );
+
+    // --- Channel status (middle section) with F5 failure count ---
+    render_channels_inner(target, p.channels, p.width, layout);
+
+    // --- Footer: pressure level + heap progress bar ---
+    render_footer(
+        target,
+        layout,
+        p.pressure,
+        p.heap_percent,
+        p.width,
+        p.height,
+        p.messages_in,
+        p.messages_out,
+        p.last_active_epoch_secs,
+        p.llm_last_ms,
+        p.error_flash,
+    );
+}
+
+fn render_state_header_content<D: DrawTarget<Color = Rgb565>>(
+    target: &mut D,
+    p: &StateHeaderParams<'_>,
+) {
+    let layout = p.layout;
+    let beetle_color = state_accent_color(p.state);
     draw_title_strip(target, layout, p.width, TITLE_STRIP_BG);
 
     let icon_size = layout.icon_size as i32;
@@ -1566,10 +1638,8 @@ fn render_dashboard<D: DrawTarget<Color = Rgb565>>(target: &mut D, p: &Dashboard
         &opts,
     );
 
-    // --- State-specific overlays ---
     match p.state {
         DisplaySystemState::Booting => {
-            // Loading dots on body: 3 circles of increasing size
             let dot_color = Rgb565::WHITE;
             let dot_style = PrimitiveStyle::with_fill(dot_color);
             let dot_y = body_cy;
@@ -1580,19 +1650,16 @@ fn render_dashboard<D: DrawTarget<Color = Rgb565>>(target: &mut D, p: &Dashboard
                     .into_styled(dot_style)
                     .draw(target);
             }
-            // Dashed WiFi arcs above head (dots instead of solid lines)
             let sig_y = head_cy - head_r - 4;
             draw_dashed_top_arc(target, cx, sig_y, 7, beetle_color);
             draw_dashed_top_arc(target, cx, sig_y, 13, beetle_color);
         }
         DisplaySystemState::NoWifi => {
-            // Solid WiFi signal arcs above head
             let sig_y = head_cy - head_r - 4;
             let arc_style = PrimitiveStyle::with_stroke(beetle_color, 2);
             for &r in &[7i32, 13] {
                 draw_top_arc(target, cx, sig_y, r, &arc_style);
             }
-            // X mark over WiFi (signal crossed out)
             let x_style = PrimitiveStyle::with_stroke(rgb565(0xff, 0x44, 0x44), 2);
             let x_sz = 6i32;
             let _ = Line::new(
@@ -1609,7 +1676,6 @@ fn render_dashboard<D: DrawTarget<Color = Rgb565>>(target: &mut D, p: &Dashboard
             .draw(target);
         }
         DisplaySystemState::Idle => {
-            // Checkmark on body
             let check_style = PrimitiveStyle::with_stroke(Rgb565::WHITE, 3);
             let m = 8i32;
             let _ = Line::new(
@@ -1660,7 +1726,6 @@ fn render_dashboard<D: DrawTarget<Color = Rgb565>>(target: &mut D, p: &Dashboard
             .draw(target);
         }
         DisplaySystemState::Fault => {
-            // Exclamation mark on body
             let ex_style = PrimitiveStyle::with_stroke(Rgb565::WHITE, 2);
             let _ = Line::new(
                 Point::new(cx, body_cy - body_r * 40 / 100),
@@ -1674,7 +1739,6 @@ fn render_dashboard<D: DrawTarget<Color = Rgb565>>(target: &mut D, p: &Dashboard
                 .draw(target);
         }
         DisplaySystemState::Busy => {
-            // F4: Busy 呼吸动画 — 交替大小白点
             let dot_color = Rgb565::WHITE;
             let dot_style = PrimitiveStyle::with_fill(dot_color);
             let dot_y = body_cy;
@@ -1688,16 +1752,13 @@ fn render_dashboard<D: DrawTarget<Color = Rgb565>>(target: &mut D, p: &Dashboard
             }
         }
         DisplaySystemState::Recording => {
-            // 麦克风图标：竖线（话筒杆）+ 顶部半圆（话筒头）+ 底部短横（底座）
             let mic_style = PrimitiveStyle::with_stroke(Rgb565::WHITE, 2);
-            let mic_h = body_r * 60 / 100; // 话筒杆高度
+            let mic_h = body_r * 60 / 100;
             let mic_top = body_cy - mic_h / 2;
             let mic_bot = body_cy + mic_h / 2;
-            // 话筒杆
             let _ = Line::new(Point::new(cx, mic_top), Point::new(cx, mic_bot))
                 .into_styled(mic_style)
                 .draw(target);
-            // 话筒头（顶部半圆，用小圆近似）
             let head_sz = body_r * 28 / 100;
             let _ = Circle::new(
                 Point::new(cx - head_sz, mic_top - head_sz),
@@ -1705,7 +1766,6 @@ fn render_dashboard<D: DrawTarget<Color = Rgb565>>(target: &mut D, p: &Dashboard
             )
             .into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 2))
             .draw(target);
-            // 底座短横
             let base_w = body_r * 30 / 100;
             let _ = Line::new(
                 Point::new(cx - base_w, mic_bot),
@@ -1713,13 +1773,10 @@ fn render_dashboard<D: DrawTarget<Color = Rgb565>>(target: &mut D, p: &Dashboard
             )
             .into_styled(mic_style)
             .draw(target);
-
-            // 头部两侧声波弧线（2-3 层）
             let wave_color = beetle_color;
             let wave_style = PrimitiveStyle::with_stroke(wave_color, 1);
             for layer in 1..=3i32 {
                 let r = head_r + layer * 5;
-                // 左侧弧线（向左的短弧）
                 let arc_pts = 6;
                 for j in (0..arc_pts).step_by(2) {
                     let a0 = 120 + j * (60 / arc_pts);
@@ -1733,7 +1790,6 @@ fn render_dashboard<D: DrawTarget<Color = Rgb565>>(target: &mut D, p: &Dashboard
                     .into_styled(wave_style)
                     .draw(target);
                 }
-                // 右侧弧线（向右的短弧，对称）
                 for j in (0..arc_pts).step_by(2) {
                     let a0 = 120 + j * (60 / arc_pts);
                     let a1 = 120 + (j + 1) * (60 / arc_pts);
@@ -1749,15 +1805,13 @@ fn render_dashboard<D: DrawTarget<Color = Rgb565>>(target: &mut D, p: &Dashboard
             }
         }
         DisplaySystemState::Playing => {
-            // 喇叭图标：梯形喇叭口 + 向右的声波弧线
             let speaker_style = PrimitiveStyle::with_stroke(Rgb565::WHITE, 2);
-            let horn_w = body_r * 25 / 100; // 喇叭口宽度
-            let horn_h = body_r * 50 / 100; // 喇叭高度
+            let horn_w = body_r * 25 / 100;
+            let horn_h = body_r * 50 / 100;
             let horn_left = cx - horn_w;
             let horn_right = cx;
             let horn_top = body_cy - horn_h / 2;
             let horn_bot = body_cy + horn_h / 2;
-            // 喇叭梯形（左窄右宽）
             let narrow_w = horn_w * 40 / 100;
             let _ = Line::new(
                 Point::new(horn_left, body_cy - narrow_w / 2),
@@ -1777,8 +1831,6 @@ fn render_dashboard<D: DrawTarget<Color = Rgb565>>(target: &mut D, p: &Dashboard
             )
             .into_styled(speaker_style)
             .draw(target);
-
-            // 向右的声波弧线（3层，虚线科技感）
             let wave_style = PrimitiveStyle::with_stroke(beetle_color, 1);
             for layer in 1..=3i32 {
                 let r = body_r * 20 / 100 + layer * 6;
@@ -1799,7 +1851,6 @@ fn render_dashboard<D: DrawTarget<Color = Rgb565>>(target: &mut D, p: &Dashboard
         }
     }
 
-    // --- Title text: state name ---
     let title_style = MonoTextStyle::new(&FONT_9X18_BOLD, beetle_color);
     let state_name = match p.state {
         DisplaySystemState::Booting => "BOOTING",
@@ -1826,7 +1877,6 @@ fn render_dashboard<D: DrawTarget<Color = Rgb565>>(target: &mut D, p: &Dashboard
         beetle_color,
     );
 
-    // --- Subtitle: IP address (+ uptime for Idle/Busy) or version ---
     let subtitle_style = MonoTextStyle::new(&FONT_6X13, TEXT_SECONDARY);
     if let Some(subtitle) = p.presence_subtitle {
         let _ = Text::new(
@@ -1846,7 +1896,6 @@ fn render_dashboard<D: DrawTarget<Color = Rgb565>>(target: &mut D, p: &Dashboard
         )
         .draw(target);
     } else {
-        // F3: IP + uptime — 窄屏单行；宽屏（≥200px）分两行，避免 `Up:` 被裁切。
         let ip = p.ip_address.unwrap_or("---.---.---.---");
         let sx = layout.title_left as i32;
         let y0 = layout.subtitle_top as i32 + 11;
@@ -1872,24 +1921,6 @@ fn render_dashboard<D: DrawTarget<Color = Rgb565>>(target: &mut D, p: &Dashboard
             let _ = Text::new(sub_str, Point::new(sx, y0), subtitle_style).draw(target);
         }
     }
-
-    // --- Channel status (middle section) with F5 failure count ---
-    render_channels_inner(target, p.channels, p.width, layout);
-
-    // --- Footer: pressure level + heap progress bar ---
-    render_footer(
-        target,
-        layout,
-        p.pressure,
-        p.heap_percent,
-        p.width,
-        p.height,
-        p.messages_in,
-        p.messages_out,
-        p.last_active_epoch_secs,
-        p.llm_last_ms,
-        p.error_flash,
-    );
 }
 
 /// Dashboard base background.
@@ -1941,6 +1972,11 @@ fn subtitle_ip_flush_rows(width: u16, uptime_secs: u64) -> u16 {
     } else {
         16
     }
+}
+
+/// `UpdateStateHeader` 局刷高度：覆盖顶栏、头部 panel 与中间分割线，避免 steady-state 状态切换重刷中下半屏。
+fn header_flush_rows(layout: &DisplayLayout) -> u16 {
+    layout.middle_top
 }
 
 #[inline]
@@ -2293,6 +2329,62 @@ fn render_ip_partial<D: DrawTarget<Color = Rgb565>>(
     }
 }
 
+/// Partial update: repaint only the state header region used by steady-state status flips.
+fn render_state_header_partial<D: DrawTarget<Color = Rgb565>>(
+    target: &mut D,
+    state: DisplaySystemState,
+    presence_subtitle: Option<&str>,
+    ip_address: Option<&str>,
+    uptime_secs: u64,
+    busy_phase: bool,
+    width: u16,
+    layout: &DisplayLayout,
+) {
+    let flush_h = header_flush_rows(layout);
+    let _ = Rectangle::new(Point::new(0, 0), Size::new(width as u32, flush_h as u32))
+        .into_styled(PrimitiveStyle::with_fill(DISPLAY_BG))
+        .draw(target);
+
+    let accent = state_accent_color(state);
+    let _ = Rectangle::new(Point::new(0, 0), Size::new(width as u32, 3))
+        .into_styled(PrimitiveStyle::with_fill(accent))
+        .draw(target);
+
+    let head_y = (layout.header_top as i32).saturating_sub(8).max(4);
+    let mid_div_y = layout.middle_top.saturating_sub(6) as i32;
+    let div_margin = layout.margin_x as i32;
+    let head_h = (mid_div_y - head_y).max(24) as u32;
+    let div_style = PrimitiveStyle::with_stroke(DIVIDER, 1);
+    draw_panel_fill(
+        target,
+        0,
+        head_y,
+        width as u32,
+        head_h,
+        PANEL_BG,
+        PANEL_BORDER,
+    );
+    let _ = Line::new(
+        Point::new(div_margin, mid_div_y),
+        Point::new(width as i32 - div_margin, mid_div_y),
+    )
+    .into_styled(div_style)
+    .draw(target);
+
+    render_state_header_content(
+        target,
+        &StateHeaderParams {
+            layout,
+            state,
+            presence_subtitle,
+            ip_address,
+            width,
+            uptime_secs,
+            busy_phase,
+        },
+    );
+}
+
 /// Partial update: repaint only the channel status (middle) region.
 fn render_channels_partial<D: DrawTarget<Color = Rgb565>>(
     target: &mut D,
@@ -2368,6 +2460,79 @@ fn render_pressure_partial<D: DrawTarget<Color = Rgb565>>(
         fp.llm_last_ms,
         fp.error_flash,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::display::default_disabled_display_config;
+    use embedded_graphics_core::{
+        draw_target::DrawTarget,
+        geometry::{OriginDimensions, Size},
+        pixelcolor::Rgb565,
+        Pixel,
+    };
+
+    #[derive(Default)]
+    struct FakeBackend {
+        flush_calls: usize,
+        flush_rows_calls: Vec<(u16, u16)>,
+    }
+
+    impl OriginDimensions for FakeBackend {
+        fn size(&self) -> Size {
+            Size::new(240, 240)
+        }
+    }
+
+    impl DrawTarget for FakeBackend {
+        type Color = Rgb565;
+        type Error = Infallible;
+
+        fn draw_iter<I>(&mut self, _pixels: I) -> core::result::Result<(), Self::Error>
+        where
+            I: IntoIterator<Item = Pixel<Self::Color>>,
+        {
+            Ok(())
+        }
+    }
+
+    impl FlushRgb565 for FakeBackend {
+        fn flush(&mut self, _offset_x: i16, _offset_y: i16) -> Result<()> {
+            self.flush_calls += 1;
+            Ok(())
+        }
+
+        fn flush_rows(&mut self, _offset_x: i16, _offset_y: i16, ry: u16, rh: u16) -> Result<()> {
+            self.flush_rows_calls.push((ry, rh));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn state_header_update_uses_partial_flush_instead_of_full_dashboard_flush() {
+        let config = default_disabled_display_config();
+        let layout = compute_layout(config.width, config.height);
+        let mut backend = FakeBackend::default();
+
+        dispatch_display_command(
+            &mut backend,
+            &config,
+            &layout,
+            &DisplayCommand::UpdateStateHeader {
+                state: DisplaySystemState::Busy,
+                presence_subtitle: None,
+                ip_address: Some("192.168.2.101".to_string()),
+                uptime_secs: 42,
+                busy_phase: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(backend.flush_calls, 0);
+        assert_eq!(backend.flush_rows_calls.len(), 1);
+        assert_eq!(backend.flush_rows_calls[0].0, 0);
+    }
 }
 
 /// Shared footer rendering: pressure label + progress bar + percentage text + message stats.

@@ -172,6 +172,16 @@ pub enum DisplayCommand {
         presence_subtitle: Option<String>,
         uptime_secs: u64,
     },
+    /// 仅头部状态区局部刷新；用于 steady-state 下的 `Idle/Busy/Listen/Speak` 等状态切换，
+    /// 避免每次状态变化都重走整屏 dashboard 渲染。
+    UpdateStateHeader {
+        state: DisplaySystemState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        presence_subtitle: Option<String>,
+        ip_address: Option<String>,
+        uptime_secs: u64,
+        busy_phase: bool,
+    },
     UpdatePressure {
         level: DisplayPressureLevel,
         heap_percent: u8,

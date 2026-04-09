@@ -923,7 +923,7 @@ pub fn is_private_url(url: &str) -> bool {
 // | agent_loop                            | STACK_AGENT_LOOP       | 16 KB | 64 KB |
 // | tg_sender, qq_sender, fs/dt/wc_sender | STACK_CHANNEL_SENDER   | 8 KB  | 64 KB |
 // | tg_poll                               | STACK_CHANNEL_SENDER   | 8 KB  | 64 KB |
-// | display                               | (inline 6144)          | 6 KB  | 6 KB  | ← no TLS, render chain ~3.5KB peak
+// | display                               | STACK_DISPLAY          | 12 KB | 12 KB | ← no TLS, but dashboard/render path + SPI flush no longer fits the old 6 KB budget
 // | audio_io_worker                       | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS, I2S + WakeNet NN
 // | http_server                           | (inline 6144)          | 6 KB  | 6 KB  | ← wrapper thread only; IDF httpd has its own task
 // | http_route_exec                       | STACK_HTTP_ROUTE_WORKER| 32 KB | 32 KB | ← operator/memory surface + continuity inspection now run here
@@ -970,6 +970,12 @@ pub const STACK_CHANNEL_SENDER: usize = LINUX_RUSTLS_THREAD_STACK;
 /// 当前职责已包含 delayed-task service、orchestrator admission、cooldown replay
 /// 与 send retry，不再适合维持 4KB 小栈。
 pub const STACK_DISPATCH: usize = 8192;
+
+/// `display`：显示刷新线程。
+/// 早期 6KB 预算在启动页仍可工作，但当前 steady-state 会走完整 dashboard 渲染、
+/// busy/recovery 态切换、footer/channel partial update 和 SPI flush 链，ESP 实测已溢出。
+/// 这里统一收口为常量，避免再次写回过期 inline 数字。
+pub const STACK_DISPLAY: usize = 12 * 1024;
 
 /// `voice_session`：语音会话调度线程。
 /// ESP 上 realtime 会在此线程内直跑；Linux 仅保留调度，TLS 重活放到

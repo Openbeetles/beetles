@@ -981,7 +981,11 @@ mod tests {
         let chat_id = format!("memory-status-legacy-profile-{unique}");
 
         ctx.session_store
-            .append(&chat_id, "user", "Inspect memory without legacy profile override.")
+            .append(
+                &chat_id,
+                "user",
+                "Inspect memory without legacy profile override.",
+            )
             .unwrap();
         ctx.session_store
             .append(&chat_id, "assistant", "Memory inspection is ready.")

@@ -3112,9 +3112,7 @@ fn run_worker_path(
                 tool_blocker: recent_tool_round.blocker,
                 subject_state: subject_state.as_deref().cloned(),
                 mental_privacy_adjudication: mental_privacy_adjudication.as_deref().cloned(),
-                persona_priority_adjudication: persona_priority_adjudication
-                    .as_deref()
-                    .cloned(),
+                persona_priority_adjudication: persona_priority_adjudication.as_deref().cloned(),
             };
             return Ok((WorkerOutcome::Interrupt(confirmation), telemetry));
         }
