@@ -37,6 +37,10 @@ import { useAppPreferences } from "../hooks/useAppPreferences";
 import { useToast } from "../hooks/useToast";
 import { createAsyncState } from "../types/asyncState";
 import {
+  endpointSupportedByInventory,
+  parseRootInventory,
+} from "../api/rootInventory";
+import {
   SETTINGS_SECTION_LIST_EMPTY_SX,
   SETTINGS_SECTION_LIST_ROW_SX,
 } from "../theme/listItemStyles";
@@ -83,13 +87,21 @@ export function SkillsPage() {
         data: { skills: res.data.skills, order: res.data.order ?? [] },
       });
     } else {
+      let nextError = res.error ?? ""
+      if (nextError === "Not Found" || nextError === "not found") {
+        const probe = await api.device.probe()
+        const inventory = probe.ok ? parseRootInventory(probe.data) : null
+        if (!endpointSupportedByInventory(inventory, "GET /api/skills")) {
+          nextError = t("skills.unsupportedEndpoint")
+        }
+      }
       setListState((prev) => ({
         ...prev,
         loading: false,
-        error: res.error ?? "",
+        error: nextError,
       }));
     }
-  }, [api.skills, ready]);
+  }, [api.device, api.skills, ready, t]);
 
   useEffect(() => {
     if (!ready) return;
@@ -129,7 +141,7 @@ export function SkillsPage() {
 
   /** MDX 挂载后会做一次规范化 onChange；同步 initial，避免未编辑点取消仍提示放弃。 */
   const handleEditContentChange = useCallback(
-    (markdown: string, initialMarkdownNormalize: boolean) => {
+    (markdown: string, initialMarkdownNormalize?: boolean) => {
       setEditContent(markdown);
       if (initialMarkdownNormalize) {
         setEditContentInitial(markdown);

@@ -13,6 +13,10 @@ import type { ToolInfo } from "../api/endpoints/tools";
 import { useDeviceApi } from "../hooks/useDeviceApi";
 import { createAsyncState } from "../types/asyncState";
 import {
+  endpointSupportedByInventory,
+  parseRootInventory,
+} from "../api/rootInventory";
+import {
   SETTINGS_SECTION_LIST_EMPTY_SX,
   SETTINGS_SECTION_LIST_ROW_SX,
 } from "../theme/listItemStyles";
@@ -31,13 +35,21 @@ export function ToolsPage() {
     if (res.ok && res.data) {
       setState({ loading: false, error: "", data: res.data });
     } else {
+      let nextError = res.error ?? ""
+      if (nextError === "Not Found" || nextError === "not found") {
+        const probe = await api.device.probe()
+        const inventory = probe.ok ? parseRootInventory(probe.data) : null
+        if (!endpointSupportedByInventory(inventory, "GET /api/tools")) {
+          nextError = t("tools.unsupportedEndpoint")
+        }
+      }
       setState((prev) => ({
         ...prev,
         loading: false,
-        error: res.error ?? "",
+        error: nextError,
       }));
     }
-  }, [api.tools, ready]);
+  }, [api.device, api.tools, ready, t]);
 
   useEffect(() => {
     if (!ready) return;

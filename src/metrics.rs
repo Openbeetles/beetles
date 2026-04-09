@@ -108,20 +108,29 @@ static ERRORS_TLS_ADMISSION: AtomicU32 = AtomicU32::new(0);
 static ERRORS_OTHER: AtomicU32 = AtomicU32::new(0);
 
 #[inline]
-pub fn record_message_in() {
-    MESSAGES_IN.fetch_add(1, Ordering::Relaxed);
-}
-
-#[inline]
-pub fn record_message_out() {
-    MESSAGES_OUT.fetch_add(1, Ordering::Relaxed);
-    // Update last-active timestamp (epoch seconds).
+fn record_activity_now() {
     let epoch_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
         .min(u32::MAX as u64) as u32;
     LAST_ACTIVE_EPOCH_SECS.store(epoch_secs, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_message_in() {
+    MESSAGES_IN.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_user_activity() {
+    record_activity_now();
+}
+
+#[inline]
+pub fn record_message_out() {
+    MESSAGES_OUT.fetch_add(1, Ordering::Relaxed);
+    record_activity_now();
 }
 
 #[inline]

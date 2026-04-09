@@ -496,7 +496,7 @@ fn reconcile_entry_observation(
     let has_recent_hit = hits
         .iter()
         .any(|hit| hit_is_recent_since(hit, latest_confirmation));
-    let reconcile_action = if hits.is_empty() {
+    let base_reconcile_action = if hits.is_empty() {
         match evidence_state {
             LongTermMemoryEvidenceState::PossiblyStale
             | LongTermMemoryEvidenceState::NeedsReview => SharedFactualReconcileAction::Stale,
@@ -531,6 +531,10 @@ fn reconcile_entry_observation(
     } else {
         SharedFactualReconcileAction::Hold
     };
+    let runtime_override = runtime_authoritative_reconcile_override(entry);
+    let reconcile_action = runtime_override
+        .map(|(_, action)| action)
+        .unwrap_or(base_reconcile_action);
 
     let top_citations = collect_top_archive_citations(hits, 3);
     let evidence_summary = build_observation_evidence_summary(hits, support_count, conflict_count);
@@ -552,6 +556,9 @@ fn reconcile_entry_observation(
     if let Some(citation) = top_citations.first() {
         summary.push_str(&format!(", archive={}", citation));
     }
+    if let Some((reason, _)) = runtime_override {
+        summary.push_str(&format!(", runtime={reason}"));
+    }
     summary.push_str(&format!(
         ", evidence={}",
         truncate_content_to_max(&evidence_summary, 180)
@@ -566,6 +573,27 @@ fn reconcile_entry_observation(
         top_citations,
         evidence_summary,
         summary,
+    }
+}
+
+fn runtime_authoritative_reconcile_override(
+    entry: &LongTermMemoryEntry,
+) -> Option<(&'static str, SharedFactualReconcileAction)> {
+    if entry.topic != "audio_profile_status" {
+        return None;
+    }
+    let input_offline = crate::orchestrator::get_runtime_capability(
+        crate::orchestrator::RUNTIME_CAPABILITY_AUDIO_INPUT,
+    )
+    .is_some_and(|state| state.status != crate::orchestrator::RuntimeCapabilityStatus::Online);
+    let output_offline = crate::orchestrator::get_runtime_capability(
+        crate::orchestrator::RUNTIME_CAPABILITY_AUDIO_OUTPUT,
+    )
+    .is_some_and(|state| state.status != crate::orchestrator::RuntimeCapabilityStatus::Online);
+    if input_offline || output_offline {
+        Some(("audio_capability_offline", SharedFactualReconcileAction::Stale))
+    } else {
+        None
     }
 }
 
@@ -767,6 +795,17 @@ mod tests {
     use super::*;
     use crate::error::Result;
     use crate::memory::{LongTermMemoryEntry, LongTermMemoryStore};
+    use crate::orchestrator::{
+        reset_runtime_capabilities_for_tests, update_runtime_capability, RuntimeCapabilityReason,
+        RuntimeCapabilityStatus, RuntimeCapabilityUpdate, RUNTIME_CAPABILITY_AUDIO_INPUT,
+        RUNTIME_CAPABILITY_AUDIO_OUTPUT,
+    };
+    use std::sync::{Mutex, OnceLock};
+
+    fn runtime_capability_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[derive(Default)]
     struct StubLongTermMemoryStore {
@@ -867,5 +906,56 @@ mod tests {
 
         assert!(block.contains("Shared factual plane is canonical"));
         assert!(block.contains("self_model"));
+    }
+
+    #[test]
+    fn audio_profile_fact_turns_stale_when_runtime_audio_is_offline() {
+        let _guard = runtime_capability_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        reset_runtime_capabilities_for_tests();
+        update_runtime_capability(RuntimeCapabilityUpdate {
+            id: RUNTIME_CAPABILITY_AUDIO_INPUT,
+            status: RuntimeCapabilityStatus::Offline,
+            reason: RuntimeCapabilityReason::DeviceMissing,
+            observed_at_secs: 100,
+            recovery_hint: None,
+        });
+        update_runtime_capability(RuntimeCapabilityUpdate {
+            id: RUNTIME_CAPABILITY_AUDIO_OUTPUT,
+            status: RuntimeCapabilityStatus::Offline,
+            reason: RuntimeCapabilityReason::DeviceMissing,
+            observed_at_secs: 100,
+            recovery_hint: None,
+        });
+
+        let entry = LongTermMemoryEntry {
+            id: "ltm-audio".to_string(),
+            kind: crate::memory::LongTermMemoryKind::Fact,
+            topic: "audio_profile_status".to_string(),
+            content: "audio input and output are available".to_string(),
+            keywords: vec!["audio".to_string(), "duplex".to_string()],
+            source_chat_id: Some("chat-1".to_string()),
+            source_type: crate::memory::LongTermMemorySourceType::Conversation,
+            source_scope: crate::memory::LongTermMemorySourceScope::World,
+            confidence: crate::memory::LongTermMemoryConfidence::High,
+            freshness: crate::memory::LongTermMemoryFreshness::Dynamic,
+            stale_hint: crate::memory::LongTermMemoryStaleHint::ReviewBeforeUse,
+            supporting_citations: vec!["transcript:chat-1#message=1".to_string()],
+            evidence_count: 1,
+            created_at: 1,
+            updated_at: 1,
+            observed_at: 1,
+            last_confirmed_at: 1,
+            source_revision: 0,
+            last_used_at: 0,
+        };
+
+        let observation = reconcile_entry_observation(&entry, &[], 100);
+        assert_eq!(
+            observation.reconcile_action,
+            SharedFactualReconcileAction::Stale
+        );
+        reset_runtime_capabilities_for_tests();
     }
 }

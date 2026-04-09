@@ -235,10 +235,25 @@ fn background_enqueue_block_reason() -> Option<&'static str> {
 const IDLE_SELF_RUNTIME_RETRY_DELAY_MS: u64 = 5_000;
 
 fn should_defer_background_job(msg: &PcMsg) -> Option<(&'static str, u64)> {
+    let post_reply_quiet_delay_ms = || {
+        crate::runtime::system_work::post_reply_quiet_window_remaining_ms(
+            crate::util::current_unix_secs(),
+            crate::metrics::snapshot().last_active_epoch_secs,
+        )
+    };
+    if is_post_reply_maintenance_job(msg) {
+        if let Some(delay_ms) = post_reply_quiet_delay_ms() {
+            return Some(("post_reply_quiet_window", delay_ms));
+        }
+        return None;
+    }
     if !is_self_runtime_job(msg) {
         return None;
     }
     let payload: crate::memory::SelfRuntimeJobPayload = serde_json::from_str(&msg.content).ok()?;
+    if payload.trigger == crate::memory::SelfRuntimeTrigger::PostReply {
+        return post_reply_quiet_delay_ms().map(|delay_ms| ("post_reply_quiet_window", delay_ms));
+    }
     if payload.trigger != crate::memory::SelfRuntimeTrigger::IdleTick {
         return None;
     }
@@ -2402,6 +2417,9 @@ fn run_agent_loop_main(
             consecutive_user_msgs = consecutive_user_msgs.saturating_add(1);
         }
         metrics::record_message_in();
+        if msg.ingress == IngressKind::User {
+            metrics::record_user_activity();
+        }
         crate::platform::task_wdt::feed_current_task();
         let loc = (config.resolve_locale)();
         let msg_start = Instant::now();
@@ -3235,6 +3253,17 @@ mod tests {
         let payload: PostReplyMaintenanceJobPayload =
             serde_json::from_str(&raw).expect("deserialize legacy payload");
         assert!(!payload.external_content_used);
+    }
+
+    #[test]
+    fn post_reply_maintenance_defers_inside_quiet_window() {
+        metrics::record_message_out();
+        let msg = PcMsg::new_system(CHANNEL_POST_REPLY_MAINTENANCE, "chat-1", "{}")
+            .expect("build maintenance message");
+        let (reason, delay_ms) =
+            should_defer_background_job(&msg).expect("post-reply maintenance should defer");
+        assert_eq!(reason, "post_reply_quiet_window");
+        assert!(delay_ms > 0);
     }
 
     #[derive(Default)]

@@ -144,6 +144,9 @@ pub const OUTBOUND_DEFER_DELAY_MS_CAUTIOUS: u64 = 350;
 pub const QQ_SEND_RETRY_DELAY_MS_STEP1: u64 = 300;
 /// QQ sender 第二次重试前等待毫秒数（attempt=3）。
 pub const QQ_SEND_RETRY_DELAY_MS_STEP2: u64 = 550;
+/// post-reply 后台维护进入主 lane 前要求的最小静默窗口（秒）。
+/// Prevents post-reply governance work from immediately stealing the next conversational turn.
+pub const POST_REPLY_BACKGROUND_QUIET_WINDOW_SECS: u64 = 15;
 
 // ---------- 显示自适应刷新频率 ----------
 /// 显示刷新间隔：Busy 状态（秒）。

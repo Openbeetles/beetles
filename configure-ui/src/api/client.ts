@@ -62,6 +62,7 @@ async function requestInternal<T = unknown>(
   path: string,
   options: ApiRequestOptions,
   csrfRetryCount: number,
+  operatorWindowRetryCount = 0,
 ): Promise<ApiResult<T>> {
   const { method = 'GET', body, pairingCode } = options
   const url = buildUrl(baseUrl, path)
@@ -97,7 +98,39 @@ async function requestInternal<T = unknown>(
         if (errMsg.includes('CSRF') && csrfRetryCount < 1) {
           const refreshedToken = await fetchCsrfToken(baseUrl)
           if (refreshedToken) {
-            return requestInternal<T>(baseUrl, path, options, csrfRetryCount + 1)
+            return requestInternal<T>(
+              baseUrl,
+              path,
+              options,
+              csrfRetryCount + 1,
+              operatorWindowRetryCount,
+            )
+          }
+        }
+        if (
+          errMsg.includes('operator window required') &&
+          pairingCode?.trim() &&
+          path !== '/api/operator/window' &&
+          operatorWindowRetryCount < 1
+        ) {
+          const openResult = await requestInternal<{ ok?: boolean }>(
+            baseUrl,
+            '/api/operator/window',
+            {
+              method: 'POST',
+              pairingCode: pairingCode.trim(),
+            },
+            0,
+            operatorWindowRetryCount + 1,
+          )
+          if (openResult.ok) {
+            return requestInternal<T>(
+              baseUrl,
+              path,
+              options,
+              csrfRetryCount,
+              operatorWindowRetryCount + 1,
+            )
           }
         }
       }

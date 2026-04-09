@@ -22,7 +22,7 @@ import DevicesOtherOutlined from "@mui/icons-material/DevicesOtherOutlined";
 import SmartToyOutlined from "@mui/icons-material/SmartToyOutlined";
 import { BeetleIcon } from "./BeetleIcon";
 import { useTranslation } from "react-i18next";
-import { useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { NavBlockerContext } from "../contexts/NavBlockerContext";
 import { SIDEBAR_WIDTH_EXPANDED, TOP_BAR_MIN_HEIGHT } from "../config/layout";
 import { useDevice } from "../hooks/useDevice";

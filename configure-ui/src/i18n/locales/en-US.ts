@@ -662,6 +662,8 @@ export const enUS = {
       deleteConfirmDesc: 'Delete skill "{{name}}"? This cannot be undone.',
       deleteOk: 'Skill deleted',
       importOk: 'Skill imported',
+      unsupportedEndpoint:
+        'The Beetle runtime currently running on this device does not expose the skills API. Check the device version or upgrade the firmware.',
       discardEditTitle: 'Discard changes?',
       discardEditDesc: 'You have unsaved changes. Close without saving?',
       discardImportTitle: 'Discard import?',
@@ -674,6 +676,8 @@ export const enUS = {
       sectionMain: 'Registered tools',
       sectionMainDesc: 'Tools available to the agent on this device.',
       emptyList: 'No tool entries.',
+      unsupportedEndpoint:
+        'The Beetle runtime currently running on this device does not expose the tools API. Check the device version or upgrade the firmware.',
       get_time: 'Get time',
       task: 'Tasks',
       calendar: 'Calendar',

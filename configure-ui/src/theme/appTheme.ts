@@ -374,19 +374,6 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           },
         },
       },
-      MuiTabScrollButton: {
-        styleOverrides: {
-          root: {
-            color: 'var(--muted)',
-            backgroundColor: 'var(--card)',
-            '&:hover': {
-              backgroundColor:
-                'color-mix(in srgb, var(--foreground) 5%, var(--card))',
-              color: 'var(--foreground)',
-            },
-          },
-        },
-      },
       MuiCardContent: {
         styleOverrides: {
           root: {

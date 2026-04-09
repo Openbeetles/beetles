@@ -24,6 +24,7 @@ import { fetchSystemInfoCoalesced } from "../session/systemInfoCoordinator";
 import { SystemStatusPanel } from "../components/SystemStatusPanel";
 import { SectionLoadProgress } from "../components/SectionLoadProgress";
 import { useUnsaved } from "../hooks/useUnsaved";
+import { runDeferredLoading } from "../util/deferredLoading";
 
 const DEFAULT_DEVICE_BASE_URL = "http://192.168.4.1";
 
@@ -105,92 +106,75 @@ export function DevicePage() {
 
   useEffect(() => {
     if (!deviceConnected || !baseUrl?.trim()) return;
-    let cancelled = false;
-    const tid = window.setTimeout(() => {
-      if (!cancelled) {
+    const code = (pairingCode ?? "").trim();
+    return runDeferredLoading({
+      run: () =>
+        fetchSystemInfoCoalesced(baseUrl.trim(), code, () => api.system.info(), {
+          force: false,
+        }),
+      onStart: () => {
         setSystemInfoLoading(true);
         setSystemInfoError("");
-      }
-    }, 0);
-    const code = (pairingCode ?? "").trim();
-    void fetchSystemInfoCoalesced(baseUrl.trim(), code, () => api.system.info(), {
-      force: false,
-    })
-      .then((res) => {
-        if (cancelled) return;
+      },
+      onSuccess: (res) => {
         setSystemInfoLoading(false);
         if (res.ok && res.data) {
           setSystemInfo(res.data);
-        } else setSystemInfoError(res.error ?? "");
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setSystemInfoLoading(false);
-          setSystemInfoError("config.errorNetwork");
+        } else {
+          setSystemInfoError(res.error ?? "");
         }
-      });
-    return () => {
-      cancelled = true;
-      window.clearTimeout(tid);
-    };
+      },
+      onError: () => {
+        setSystemInfoLoading(false);
+        setSystemInfoError("config.errorNetwork");
+      },
+    });
   }, [api.system, deviceConnected, baseUrl, pairingCode]);
 
   useEffect(() => {
     if (!deviceConnected || !baseUrl?.trim()) return;
-    let cancelled = false;
-    const tid = window.setTimeout(() => {
-      if (!cancelled) {
+    return runDeferredLoading({
+      run: () => api.system.health(),
+      onStart: () => {
         setHealthLoading(true);
         setHealthError("");
-      }
-    }, 0);
-    api.system
-      .health()
-      .then((res) => {
-        if (cancelled) return;
+      },
+      onSuccess: (res) => {
         setHealthLoading(false);
-        if (res.ok && res.data) setHealthData(res.data);
-        else setHealthError(res.error ?? "");
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setHealthLoading(false);
-          setHealthError("config.errorNetwork");
+        if (res.ok && res.data) {
+          setHealthData(res.data);
+        } else {
+          setHealthError(res.error ?? "");
         }
-      });
-    return () => {
-      cancelled = true;
-      window.clearTimeout(tid);
-    };
+      },
+      onError: () => {
+        setHealthLoading(false);
+        setHealthError("config.errorNetwork");
+      },
+    });
   }, [api.system, deviceConnected, baseUrl]);
 
   useEffect(() => {
     if (!deviceConnected || !baseUrl?.trim()) return;
-    let cancelled = false;
-    const tid = window.setTimeout(() => {
-      if (!cancelled) {
+    return runDeferredLoading({
+      run: () => api.system.channelConnectivity(),
+      onStart: () => {
         setChannelLoading(true);
         setChannelError("");
-      }
-    }, 0);
-    api.system
-      .channelConnectivity()
-      .then((res) => {
-        if (cancelled) return;
+      },
+      onSuccess: (res) => {
         setChannelLoading(false);
-        if (res.ok && res.data?.channels) setChannelList(res.data.channels);
-        else setChannelError(res.error ?? "channel connectivity unavailable");
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setChannelLoading(false);
-          setChannelError("config.errorNetwork");
+        if (res.ok && res.data?.channels) {
+          setChannelList(res.data.channels);
+        } else {
+          setChannelError(res.error ?? "channel connectivity unavailable");
         }
-      });
-    return () => {
-      cancelled = true;
-      window.clearTimeout(tid);
-    };
+      },
+      onError: () => {
+        setChannelLoading(false);
+        setChannelError("config.errorNetwork");
+      },
+    });
   }, [api.system, deviceConnected, baseUrl]);
 
   const reloadSystemInfo = () => {

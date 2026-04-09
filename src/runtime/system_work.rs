@@ -9,6 +9,25 @@ pub const CHANNEL_LONG_TERM_MEMORY_REFRESH: &str = "_memory_refresh";
 pub const CHANNEL_POST_REPLY_MAINTENANCE: &str = "_post_reply_maintenance";
 pub const CHANNEL_SELF_RUNTIME: &str = "_self_runtime";
 
+pub fn post_reply_quiet_window_remaining_ms(
+    now_secs: u64,
+    last_active_epoch_secs: u64,
+) -> Option<u64> {
+    if last_active_epoch_secs == 0 {
+        return None;
+    }
+    let elapsed_secs = now_secs.saturating_sub(last_active_epoch_secs);
+    if elapsed_secs >= crate::constants::POST_REPLY_BACKGROUND_QUIET_WINDOW_SECS {
+        None
+    } else {
+        Some(
+            crate::constants::POST_REPLY_BACKGROUND_QUIET_WINDOW_SECS
+                .saturating_sub(elapsed_secs)
+                .saturating_mul(1000),
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SystemWorkClass {
@@ -74,6 +93,22 @@ mod tests {
         assert_eq!(
             classify_system_work(CHANNEL_POST_REPLY_MAINTENANCE, IngressKind::System),
             SystemWorkClass::Maintenance
+        );
+    }
+
+    #[test]
+    fn post_reply_quiet_window_requires_recent_silence() {
+        assert_eq!(
+            post_reply_quiet_window_remaining_ms(1_000, 995),
+            Some(crate::constants::POST_REPLY_BACKGROUND_QUIET_WINDOW_SECS.saturating_sub(5) * 1000)
+        );
+        assert_eq!(post_reply_quiet_window_remaining_ms(1_000, 0), None);
+        assert_eq!(
+            post_reply_quiet_window_remaining_ms(
+                1_000,
+                1_000u64.saturating_sub(crate::constants::POST_REPLY_BACKGROUND_QUIET_WINDOW_SECS)
+            ),
+            None
         );
     }
 }
