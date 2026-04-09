@@ -38,6 +38,31 @@ pub(super) struct PrepareGovernanceStage {
     pub persona_priority_adjudication: Option<PersonaPriorityAdjudication>,
 }
 
+pub(super) struct WorkerPrepareSession {
+    context_start: Instant,
+    runtime: Option<PrepareRuntimeStage>,
+    primer: Option<PrepareGovernancePrimer>,
+    prompt: Option<PreparePromptStage>,
+    governance: Option<PrepareGovernanceStage>,
+}
+
+impl WorkerPrepareSession {
+    pub(super) fn new(context_start: Instant) -> Self {
+        Self {
+            context_start,
+            runtime: None,
+            primer: None,
+            prompt: None,
+            governance: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn runtime_stage(&self) -> Option<&PrepareRuntimeStage> {
+        self.runtime.as_ref()
+    }
+}
+
 fn log_prepare_stage(prepare_trace_enabled: bool, msg: &crate::bus::PcMsg, stage: &str) {
     if prepare_trace_enabled {
         log::info!(
@@ -51,10 +76,11 @@ fn log_prepare_stage(prepare_trace_enabled: bool, msg: &crate::bus::PcMsg, stage
 
 #[inline(never)]
 pub(super) fn compute_prepare_runtime<'a>(
+    session: &mut WorkerPrepareSession,
     msg: &'a crate::bus::PcMsg,
     config: &AgentLoopConfig,
     request_plan: &AgentRequestPlan<'a>,
-) -> PrepareRuntimeStage {
+) {
     let prepare_trace_enabled = cfg!(any(target_arch = "xtensa", target_arch = "riscv32"))
         && msg.ingress == IngressKind::User;
     log_prepare_stage(prepare_trace_enabled, msg, "start");
@@ -144,7 +170,7 @@ pub(super) fn compute_prepare_runtime<'a>(
         );
     }
 
-    PrepareRuntimeStage {
+    session.runtime = Some(PrepareRuntimeStage {
         prepare_trace_enabled,
         budget,
         runtime_mode,
@@ -161,17 +187,21 @@ pub(super) fn compute_prepare_runtime<'a>(
             msg.ingress,
         ),
         emotion_signal_suffix,
-    }
+    });
 }
 
 #[inline(never)]
 pub(super) fn run_prepare_mental_privacy(
+    session: &mut WorkerPrepareSession,
     worker_llm: &(dyn LlmClient + Send + Sync),
     msg: &crate::bus::PcMsg,
     config: &AgentLoopConfig,
     tool_ctx: &mut HttpClientToolContext<'_>,
-    runtime_stage: &PrepareRuntimeStage,
-) -> PrepareGovernancePrimer {
+){
+    let runtime_stage = session
+        .runtime
+        .as_ref()
+        .expect("prepare runtime stage must be computed first");
     log_prepare_stage(
         runtime_stage.prepare_trace_enabled,
         msg,
@@ -219,18 +249,22 @@ pub(super) fn run_prepare_mental_privacy(
         );
     }
 
-    PrepareGovernancePrimer {
+    session.primer = Some(PrepareGovernancePrimer {
         mental_privacy_adjudication,
         mental_privacy_adjudication_failed,
-    }
+    });
 }
 
 #[inline(never)]
 pub(super) fn load_prepare_prompt_memory(
+    session: &mut WorkerPrepareSession,
     msg: &crate::bus::PcMsg,
     config: &AgentLoopConfig,
-    runtime_stage: &PrepareRuntimeStage,
-) -> PreparePromptStage {
+){
+    let runtime_stage = session
+        .runtime
+        .as_ref()
+        .expect("prepare runtime stage must be computed first");
     log_prepare_stage(
         runtime_stage.prepare_trace_enabled,
         msg,
@@ -335,26 +369,36 @@ pub(super) fn load_prepare_prompt_memory(
                 crate::orchestrator::PressureLevel::Critical
             );
 
-    PreparePromptStage {
+    session.prompt = Some(PreparePromptStage {
         prompt_memory,
         recent_persona_evidence,
         prompt_mental_privacy_state,
         prompt_relationship_portfolio,
         prompt_relationship_topology,
         allow_tool_round_recall_refill,
-    }
+    });
 }
 
 #[inline(never)]
 pub(super) fn enrich_prepare_governance(
+    session: &mut WorkerPrepareSession,
     worker_llm: &(dyn LlmClient + Send + Sync),
     msg: &crate::bus::PcMsg,
     config: &AgentLoopConfig,
     tool_ctx: &mut HttpClientToolContext<'_>,
-    runtime_stage: &PrepareRuntimeStage,
-    primer: PrepareGovernancePrimer,
-    prompt_stage: &mut PreparePromptStage,
-) -> PrepareGovernanceStage {
+){
+    let runtime_stage = session
+        .runtime
+        .as_ref()
+        .expect("prepare runtime stage must be computed first");
+    let primer = session
+        .primer
+        .take()
+        .expect("prepare primer must be computed before governance enrichment");
+    let prompt_stage = session
+        .prompt
+        .as_mut()
+        .expect("prepare prompt stage must be loaded before governance enrichment");
     if runtime_stage
         .active_governance_mode
         .is_some_and(|mode| mode.allow_sync_relationship_constitution())
@@ -594,12 +638,12 @@ pub(super) fn enrich_prepare_governance(
     });
     prompt_stage.prompt_memory.refresh_reply_projection_groups();
 
-    PrepareGovernanceStage {
+    session.governance = Some(PrepareGovernanceStage {
         subject_state,
         deliberation_gate,
         mental_privacy_adjudication: primer.mental_privacy_adjudication,
         persona_priority_adjudication,
-    }
+    });
 }
 
 #[inline(never)]
@@ -607,12 +651,21 @@ pub(super) fn finalize_prepare_context<'a>(
     msg: &'a crate::bus::PcMsg,
     config: &AgentLoopConfig,
     request_plan: &AgentRequestPlan<'a>,
-    runtime_stage: PrepareRuntimeStage,
-    prompt_stage: PreparePromptStage,
-    governance_stage: PrepareGovernanceStage,
+    mut session: Box<WorkerPrepareSession>,
     latency: &mut WorkerLatency,
-    context_start: Instant,
 ) -> Result<PreparedWorkerConversation> {
+    let runtime_stage = session
+        .runtime
+        .take()
+        .expect("prepare runtime stage must exist during finalize");
+    let prompt_stage = session
+        .prompt
+        .take()
+        .expect("prepare prompt stage must exist during finalize");
+    let governance_stage = session
+        .governance
+        .take()
+        .expect("prepare governance stage must exist during finalize");
     let PreparePromptStage {
         prompt_memory,
         allow_tool_round_recall_refill,
@@ -674,17 +727,18 @@ pub(super) fn finalize_prepare_context<'a>(
         llm_hint: runtime_stage.budget.llm_hint,
     })
     .map_err(|e| e.with_stage("agent_context"))?;
-    latency.context_ms = context_start.elapsed().as_millis();
+    latency.context_ms = session.context_start.elapsed().as_millis();
     request_plan.apply_system_prompt(&mut system, runtime_stage.budget.system_prompt_max);
     let system_scratch = String::with_capacity(
         system
             .len()
             .saturating_add(TASK_EXECUTION_FINISHER_SYSTEM_SUFFIX.len()),
     );
+    let runtime_carry = Box::new(prompt_memory.into_runtime_carry());
 
     Ok(PreparedWorkerConversation {
-        prompt_memory,
-        subject_state: governance_stage.subject_state,
+        runtime_carry,
+        subject_state: governance_stage.subject_state.map(Box::new),
         system,
         messages,
         system_scratch,
@@ -693,7 +747,11 @@ pub(super) fn finalize_prepare_context<'a>(
         allow_tool_round_recall_refill,
         prompt_memory_system_budget: runtime_stage.prompt_memory_system_budget,
         pressure: runtime_stage.runtime.pressure,
-        mental_privacy_adjudication: governance_stage.mental_privacy_adjudication,
-        persona_priority_adjudication: governance_stage.persona_priority_adjudication,
+        mental_privacy_adjudication: governance_stage
+            .mental_privacy_adjudication
+            .map(Box::new),
+        persona_priority_adjudication: governance_stage
+            .persona_priority_adjudication
+            .map(Box::new),
     })
 }

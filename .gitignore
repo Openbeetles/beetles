@@ -42,3 +42,8 @@ packaging/linux/embed-deps/x86_64/*
 linux/Luckfox_Lyra_SDK_250815/
 # SDK 编译导出的整包镜像（体积大，勿提交）
 linux/firmware/
+.cursor/
+.claude/
+CLAUDE.md
+code.md
+AGENTS.md

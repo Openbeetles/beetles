@@ -8,6 +8,8 @@ use crate::error::{Error, Result};
 #[cfg(target_arch = "xtensa")]
 use crate::platform::heap::{alloc_spiram_buffer, free_spiram_buffer};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use crate::platform::psram_vec::PsramVec;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::runtime::thread_plan;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -24,7 +26,7 @@ use std::time::{Duration, Instant};
 struct MicState {
     rx_handle: esp_idf_svc::sys::i2s_chan_handle_t,
     /// Pre-allocated i32 buffer for I2S 32-bit reads, reused across calls.
-    read_buf: Vec<i32>,
+    read_buf: PsramVec<i32>,
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -32,7 +34,7 @@ struct SpeakerState {
     tx_handle: esp_idf_svc::sys::i2s_chan_handle_t,
     sd_pin: Option<i32>,
     /// Pre-allocated i32 buffer for I2S 32-bit writes, reused across calls.
-    write_buf: Vec<i32>,
+    write_buf: PsramVec<i32>,
 }
 
 // SAFETY: Handles are accessed exclusively behind Mutex<Option<AudioPipelineState>>
@@ -68,6 +70,14 @@ const AUDIO_SPEAKER_WRITE_MIN_SAMPLES: usize = 320;
 const AUDIO_SPEAKER_COALESCE_WAIT_MS: u64 = 12;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const AUDIO_REFERENCE_READ_WAIT_MS: u64 = 4;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+const AUDIO_MIC_FRAME_SAMPLES: usize = 320;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+const AUDIO_SPEAKER_FRAME_SAMPLES: usize = 1024;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+const AUDIO_MIC_I2S_STAGING_SAMPLES: usize = AUDIO_MIC_FRAME_SAMPLES;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+const AUDIO_SPEAKER_I2S_STAGING_SAMPLES: usize = AUDIO_SPEAKER_FRAME_SAMPLES;
 
 /// Check ESP-IDF return code; wrap non-OK as `Error::Esp`.
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -85,10 +95,17 @@ fn read_mic_i2s_pcm16(mic: &mut MicState, out: &mut [i16]) -> Result<usize> {
     }
     crate::platform::task_wdt::feed_current_task();
     let sample_count = out.len();
-    if mic.read_buf.len() < sample_count {
-        mic.read_buf.resize(sample_count, 0);
+    if sample_count > mic.read_buf.len() {
+        return Err(Error::config(
+            "audio_mic",
+            format!(
+                "mic frame {} exceeds staging capacity {}",
+                sample_count,
+                mic.read_buf.len()
+            ),
+        ));
     }
-    let buf32 = &mut mic.read_buf[..sample_count];
+    let buf32 = &mut mic.read_buf.as_mut_slice()[..sample_count];
     let byte_len = sample_count * 4;
     let mut bytes_read: usize = 0;
     let timeout_ticks: u32 = I2S_IO_TIMEOUT_MS / PORT_TICK_PERIOD_MS;
@@ -115,10 +132,17 @@ fn write_speaker_i2s_pcm16(speaker: &mut SpeakerState, buf: &[i16]) -> Result<()
         return Ok(());
     }
     crate::platform::task_wdt::feed_current_task();
-    if speaker.write_buf.len() < buf.len() {
-        speaker.write_buf.resize(buf.len(), 0);
+    if buf.len() > speaker.write_buf.len() {
+        return Err(Error::config(
+            "audio_speaker",
+            format!(
+                "speaker frame {} exceeds staging capacity {}",
+                buf.len(),
+                speaker.write_buf.len()
+            ),
+        ));
     }
-    let buf32 = &mut speaker.write_buf[..buf.len()];
+    let buf32 = &mut speaker.write_buf.as_mut_slice()[..buf.len()];
     for (i, &s) in buf.iter().enumerate() {
         buf32[i] = (s as i32) << 16;
     }
@@ -236,7 +260,7 @@ fn init_mic_channel(seg: &AudioSegment) -> Result<MicState> {
     );
     Ok(MicState {
         rx_handle,
-        read_buf: vec![0i32; 240], // matches DMA frame_num
+        read_buf: PsramVec::new(AUDIO_MIC_I2S_STAGING_SAMPLES),
     })
 }
 
@@ -368,7 +392,7 @@ fn init_speaker_channel(seg: &AudioSegment) -> Result<SpeakerState> {
     Ok(SpeakerState {
         tx_handle,
         sd_pin,
-        write_buf: Vec::new(), // grown on first use
+        write_buf: PsramVec::new(AUDIO_SPEAKER_I2S_STAGING_SAMPLES),
     })
 }
 
@@ -884,8 +908,8 @@ impl AudioPipelineState {
             worker_plan.role,
             move || {
                 crate::platform::task_wdt::register_current_task_to_task_wdt();
-                let mut mic_frame = vec![0i16; 320];
-                let mut speaker_frame = vec![0i16; 1024];
+                let mut mic_frame = vec![0i16; AUDIO_MIC_FRAME_SAMPLES];
+                let mut speaker_frame = vec![0i16; AUDIO_SPEAKER_FRAME_SAMPLES];
                 let speaker_min_samples = AUDIO_SPEAKER_WRITE_MIN_SAMPLES.min(speaker_frame.len());
                 let mut prev_audio_playing = false;
                 let mut speaker_saw_buffered_audio = false;
@@ -1270,7 +1294,10 @@ impl Drop for AudioPipelineState {
 
 #[cfg(test)]
 mod tests {
-    use super::should_read_mic_frame;
+    use super::{
+        should_read_mic_frame, AUDIO_MIC_FRAME_SAMPLES, AUDIO_MIC_I2S_STAGING_SAMPLES,
+        AUDIO_SPEAKER_FRAME_SAMPLES, AUDIO_SPEAKER_I2S_STAGING_SAMPLES,
+    };
 
     #[test]
     fn mic_polling_stays_off_when_no_consumer_exists() {
@@ -1287,5 +1314,11 @@ mod tests {
     fn audio_playback_only_reads_when_interrupt_listening_is_enabled() {
         assert!(!should_read_mic_frame(true, true, true, false));
         assert!(should_read_mic_frame(true, true, true, true));
+    }
+
+    #[test]
+    fn i2s_staging_buffers_cover_worker_frame_sizes() {
+        assert!(AUDIO_MIC_I2S_STAGING_SAMPLES >= AUDIO_MIC_FRAME_SAMPLES);
+        assert!(AUDIO_SPEAKER_I2S_STAGING_SAMPLES >= AUDIO_SPEAKER_FRAME_SAMPLES);
     }
 }

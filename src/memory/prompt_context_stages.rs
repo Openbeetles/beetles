@@ -377,10 +377,11 @@ pub(crate) fn load_constitutional_stage(
                 .map(Box::new)
         })
         .flatten();
-    let recent_persona_evidence =
-        load_recent_persona_evidence(params.turn_ledger_store, &seed.relationship_id)
-            .ok()
-            .flatten();
+    let recent_persona_evidence = (!seed.reuse_stored_relationship_constitution
+        || params.participation_plan.load_l2_background_governance
+        || params.participation_plan.load_l3_private_depth)
+        .then(|| load_recent_persona_evidence(params.turn_ledger_store, &seed.relationship_id))
+        .and_then(|result| result.ok().flatten());
     let recent_turn_ledger = params
         .turn_ledger_store
         .get(&seed.relationship_id)

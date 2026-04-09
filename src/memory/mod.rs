@@ -273,6 +273,7 @@ pub use profile::{
 };
 pub use prompt_context::{
     load_prompt_memory_context, PromptMemoryContext, PromptMemoryContextParams,
+    PromptRuntimeCarry,
 };
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use recall_benchmark::{

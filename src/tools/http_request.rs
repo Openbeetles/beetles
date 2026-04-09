@@ -7,6 +7,17 @@ use serde_json::json;
 
 pub struct HttpRequestTool;
 
+fn truncate_utf8_at_byte_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 impl Tool for HttpRequestTool {
     fn name(&self) -> &'static str {
         "http_request"
@@ -88,7 +99,7 @@ impl Tool for HttpRequestTool {
         // Truncate response to avoid excessive token usage
         let max_resp = 8 * 1024;
         let (truncated, body_out) = if body_text.len() > max_resp {
-            (true, &body_text[..max_resp])
+            (true, truncate_utf8_at_byte_boundary(body_text.as_ref(), max_resp))
         } else {
             (false, body_text.as_ref())
         };
@@ -173,7 +184,39 @@ fn parse_ipv4(host: &str) -> Option<[u8; 4]> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_private_url;
+    use super::{is_private_url, HttpRequestTool};
+    use crate::error::Result;
+    use crate::i18n::Locale;
+    use crate::platform::ResponseBody;
+    use crate::tools::{Tool, ToolContext};
+
+    struct MockToolContext {
+        status: u16,
+        body: Vec<u8>,
+    }
+
+    impl ToolContext for MockToolContext {
+        fn get_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+        ) -> Result<(u16, ResponseBody)> {
+            Ok((self.status, ResponseBody::Heap(self.body.clone())))
+        }
+
+        fn post_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> Result<(u16, ResponseBody)> {
+            unreachable!()
+        }
+
+        fn user_locale(&self) -> Locale {
+            Locale::Zh
+        }
+    }
 
     #[test]
     fn blocks_private_and_non_http_urls() {
@@ -187,5 +230,23 @@ mod tests {
     fn allows_public_http_urls() {
         assert!(!is_private_url("https://example.com"));
         assert!(!is_private_url("http://8.8.8.8/resolve"));
+    }
+
+    #[test]
+    fn execute_truncates_utf8_body_without_panicking_at_byte_boundary() {
+        let tool = HttpRequestTool;
+        let body = "中".repeat((8 * 1024 / 3) + 4).into_bytes();
+        let mut ctx = MockToolContext { status: 200, body };
+
+        let out = tool
+            .execute(r#"{"url":"https://example.com/api"}"#, &mut ctx)
+            .expect("http_request output");
+        let value: serde_json::Value = serde_json::from_str(&out).expect("json");
+        let body = value["body"].as_str().expect("body str");
+
+        assert_eq!(value["status"], 200);
+        assert_eq!(value["truncated"], true);
+        assert!(body.len() <= 8 * 1024);
+        assert!(body.chars().all(|ch| ch == '中'));
     }
 }

@@ -64,35 +64,30 @@ fn prepare_worker_conversation_impl<'a>(
     tool_ctx: &mut HttpClientToolContext<'_>,
     latency: &mut WorkerLatency,
 ) -> Result<PreparedWorkerConversation> {
-    let context_start = Instant::now();
-    let runtime_stage =
-        super::worker_context_stages::compute_prepare_runtime(msg, config, request_plan);
-    let primer = super::worker_context_stages::run_prepare_mental_privacy(
+    let mut session = Box::new(super::worker_context_stages::WorkerPrepareSession::new(
+        Instant::now(),
+    ));
+    super::worker_context_stages::compute_prepare_runtime(&mut session, msg, config, request_plan);
+    super::worker_context_stages::run_prepare_mental_privacy(
+        &mut session,
         worker_llm,
         msg,
         config,
         tool_ctx,
-        &runtime_stage,
     );
-    let mut prompt_stage =
-        super::worker_context_stages::load_prepare_prompt_memory(msg, config, &runtime_stage);
-    let governance_stage = super::worker_context_stages::enrich_prepare_governance(
+    super::worker_context_stages::load_prepare_prompt_memory(&mut session, msg, config);
+    super::worker_context_stages::enrich_prepare_governance(
+        &mut session,
         worker_llm,
         msg,
         config,
         tool_ctx,
-        &runtime_stage,
-        primer,
-        &mut prompt_stage,
     );
     super::worker_context_stages::finalize_prepare_context(
         msg,
         config,
         request_plan,
-        runtime_stage,
-        prompt_stage,
-        governance_stage,
+        session,
         latency,
-        context_start,
     )
 }

@@ -34,7 +34,7 @@ impl Tool for FileWriteTool {
         "file_write"
     }
     fn description(&self) -> &'static str {
-        "Write content to a file under storage. Supports overwrite and append modes. Protected system files cannot be written. Max content size: 16KB."
+        "Write content to a file under storage. Supports overwrite and append modes. Protected system files cannot be written. Max final file size: 16KB."
     }
     fn schema(&self) -> &str {
         r#"{"type":"object","properties":{"path":{"type":"string","description":"File path under storage root, e.g. notes/todo.txt"},"content":{"type":"string","description":"Content to write"},"append":{"type":"boolean","description":"If true, append to existing file (default false, overwrite)"}},"required":["path","content"]}"#
@@ -62,12 +62,26 @@ impl Tool for FileWriteTool {
         ensure_state_path_mutable(&rel, "tool_file_write")?;
 
         let final_bytes = if append {
-            let existing = self.state_fs.read(&rel)?.map_or(Ok(String::new()), |raw| {
-                String::from_utf8(raw).map_err(|_| {
-                    Error::config("tool_file_write", "existing file is not valid UTF-8")
-                })
-            })?;
-            format!("{}{}", existing, content).into_bytes()
+            let mut existing = self.state_fs.read(&rel)?.unwrap_or_default();
+            if std::str::from_utf8(&existing).is_err() {
+                return Err(Error::config(
+                    "tool_file_write",
+                    "existing file is not valid UTF-8",
+                ));
+            }
+            let final_len = existing
+                .len()
+                .checked_add(content.len())
+                .ok_or_else(|| Error::config("tool_file_write", "final content size overflow"))?;
+            if final_len > FILE_WRITE_MAX_CONTENT_LEN {
+                return Err(Error::config(
+                    "tool_file_write",
+                    format!("final content exceeds {} bytes", FILE_WRITE_MAX_CONTENT_LEN),
+                ));
+            }
+            existing.reserve(content.len());
+            existing.extend_from_slice(content.as_bytes());
+            existing
         } else {
             content.as_bytes().to_vec()
         };
@@ -80,7 +94,7 @@ impl Tool for FileWriteTool {
                 path: path_arg,
                 ok: true,
                 append,
-                bytes_written: content.len(),
+                bytes_written: final_bytes.len(),
             },
         )
     }
@@ -168,5 +182,22 @@ mod tests {
             .unwrap_err();
 
         assert!(format!("{err}").contains("UTF-8"));
+    }
+
+    #[test]
+    fn append_rejects_when_final_size_exceeds_limit() {
+        let fs = Arc::new(MockStateFs::default());
+        let existing = vec![b'a'; crate::constants::FILE_WRITE_MAX_CONTENT_LEN - 4];
+        fs.write("notes/a.txt", &existing).unwrap();
+        let tool = FileWriteTool::new(Arc::clone(&fs) as Arc<dyn StateFs + Send + Sync>);
+
+        let err = tool
+            .execute(
+                r#"{"path":"notes/a.txt","content":"12345","append":true}"#,
+                &mut MockToolContext,
+            )
+            .unwrap_err();
+
+        assert!(format!("{err}").contains("final content exceeds"));
     }
 }

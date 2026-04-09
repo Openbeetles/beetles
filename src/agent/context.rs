@@ -381,16 +381,39 @@ pub fn estimate_post_memory_system_tail_len(params: PostMemoryTailParams<'_>) ->
 /// **messages**：历史会话（最近 session_max_messages 条）+ 当前用户 content，总长 ≤ messages_max_len；超限从最旧消息起丢弃。
 pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
     match p.memory_system_kind {
-        crate::memory::MemorySystemKind::LinuxFull => build_context_inner(p, true),
-        crate::memory::MemorySystemKind::EspCompact => {
-            build_context_inner(p, !matches!(p.msg.ingress, crate::bus::IngressKind::User))
+        crate::memory::MemorySystemKind::LinuxFull => {
+            build_context_inner(p, ContextAssemblyMode::LinuxFull)
         }
+        crate::memory::MemorySystemKind::EspCompact
+            if matches!(p.msg.ingress, crate::bus::IngressKind::User) =>
+        {
+            build_context_inner(p, ContextAssemblyMode::EspCompactUser)
+        }
+        crate::memory::MemorySystemKind::EspCompact => {
+            build_context_inner(p, ContextAssemblyMode::LinuxFull)
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ContextAssemblyMode {
+    LinuxFull,
+    EspCompactUser,
+}
+
+impl ContextAssemblyMode {
+    fn include_capability_package_text(self) -> bool {
+        matches!(self, Self::LinuxFull)
+    }
+
+    fn include_background_governance_section(self) -> bool {
+        matches!(self, Self::LinuxFull)
     }
 }
 
 fn build_context_inner(
     p: &ContextParams<'_>,
-    include_capability_package_text: bool,
+    mode: ContextAssemblyMode,
 ) -> Result<(String, Vec<Message>)> {
     let soul_res = p.memory.get_soul();
     state::set_soul_load_ok(soul_res.is_ok());
@@ -443,7 +466,7 @@ fn build_context_inner(
                 p.runtime_skill_text,
             ])
         });
-    let background_governance_text =
+    let background_governance_text = if mode.include_background_governance_section() {
         p.background_governance_text
             .map(str::to_string)
             .or_else(|| {
@@ -461,7 +484,10 @@ fn build_context_inner(
                     p.private_garden_text,
                     p.mental_privacy_text,
                 ])
-            });
+            })
+    } else {
+        None
+    };
     let priority_memory_reserve = reserve_priority_memory_budget(
         PriorityMemoryBudgetInputs {
             constitutional_stack_text: constitutional_stack_text.as_deref(),
@@ -520,7 +546,7 @@ fn build_context_inner(
         governed_memory_evidence_text.as_deref(),
         base_max,
     );
-    if include_capability_package_text {
+    if mode.include_capability_package_text() {
         if let Some(capability_package_text) = p.capability_package_text {
             let _ = append_capped_section(&mut system, "\n\n", capability_package_text, base_max);
         }
@@ -1253,6 +1279,76 @@ mod tests {
 
         assert!(system.contains("## Governed Memory Evidence"));
         assert!(!system.contains("## Capability Package"));
+    }
+
+    #[test]
+    fn build_context_esp_user_turn_does_not_materialize_background_governance_from_components() {
+        let msg = PcMsg::new_inbound("qq_channel", "chat-1", "继续", false).expect("pcmsg");
+        let memory = StubMemoryStore {
+            soul: "SOUL".to_string(),
+            user: "USER".to_string(),
+            memory: "MEMORY".to_string(),
+            daily_notes: Vec::new(),
+        };
+        let session = StubSessionStore;
+        let important = StubImportantMessageStore::default();
+
+        let (system, _) = build_context(&ContextParams {
+            msg: &msg,
+            memory_system_kind: crate::memory::MemorySystemKind::EspCompact,
+            memory: &memory,
+            session: &session,
+            important_message_store: &important,
+            has_tools: false,
+            skill_descriptions: "",
+            system_max_len: 1600,
+            messages_max_len: 256,
+            session_max_messages: 8,
+            group_activation: "always",
+            emotion_signal_suffix: None,
+            constitutional_stack_text: Some("## Self-Authored Core\nIdentity anchor: board beetle"),
+            subject_state_text: None,
+            deliberation_gate_text: None,
+            active_task_context_text: Some("## Active Task Context\nResume the current task."),
+            governed_memory_evidence_text: Some(
+                "## Governed Memory Evidence\nCompressed long-term memory.",
+            ),
+            background_governance_text: None,
+            execution_state_text: None,
+            task_workspace_text: None,
+            task_recall_text: None,
+            world_snapshot_text: Some("world snapshot"),
+            world_sense_text: Some("world sense"),
+            self_state_text: Some("self state"),
+            self_authored_core_text: None,
+            relationship_portfolio_text: Some("relationship portfolio"),
+            relationship_constitution_text: None,
+            persona_priority_text: None,
+            self_model_text: Some("self model"),
+            autonomy_strategy_text: Some("autonomy strategy"),
+            outer_voice_text: Some("outer voice"),
+            inner_life_text: Some("inner life"),
+            self_continuity_text: Some("self continuity"),
+            private_workspace_text: Some("private workspace"),
+            private_garden_text: Some("private garden"),
+            mental_privacy_adjudication_text: None,
+            mental_privacy_text: Some("mental privacy"),
+            long_term_memory_text: None,
+            archive_evidence_text: None,
+            runtime_skill_text: None,
+            capability_package_text: None,
+            summary_text: None,
+            recent_messages: None,
+            runtime: None,
+            include_daily_notes: false,
+            llm_hint: "",
+        })
+        .expect("context");
+
+        assert!(system.contains("## Governed Memory Evidence"));
+        assert!(!system.contains("## Background Governance"));
+        assert!(!system.contains("self model"));
+        assert!(!system.contains("private garden"));
     }
 
     #[test]

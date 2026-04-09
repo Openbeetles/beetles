@@ -453,6 +453,71 @@ mod tests {
         assert!(!caps.speak_capable);
         assert!(caps.wake_capable);
     }
+
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
+    #[test]
+    fn update_display_loop_cache_syncs_owned_dashboard_fields() {
+        use super::{update_display_loop_cache, DisplayLoopState};
+        use beetle::{DisplayChannelStatus, DisplayPressureLevel};
+
+        let mut state = DisplayLoopState::default();
+        let subtitle = Some("subtitle".to_string());
+        let ip = "192.168.4.1".to_string();
+        let channels = [
+            DisplayChannelStatus {
+                name: "qq",
+                enabled: true,
+                healthy: true,
+                consecutive_failures: 0,
+            },
+            DisplayChannelStatus {
+                name: "tg",
+                enabled: false,
+                healthy: false,
+                consecutive_failures: 2,
+            },
+            DisplayChannelStatus {
+                name: "fs",
+                enabled: false,
+                healthy: true,
+                consecutive_failures: 0,
+            },
+            DisplayChannelStatus {
+                name: "dt",
+                enabled: false,
+                healthy: true,
+                consecutive_failures: 0,
+            },
+            DisplayChannelStatus {
+                name: "wc",
+                enabled: false,
+                healthy: true,
+                consecutive_failures: 0,
+            },
+        ];
+
+        update_display_loop_cache(
+            &mut state,
+            &subtitle,
+            &ip,
+            &channels,
+            Some(DisplayPressureLevel::Cautious),
+            Some(42),
+            Some(7),
+            Some(9),
+            Some(88),
+        );
+
+        assert_eq!(state.last_presence_subtitle, subtitle);
+        assert_eq!(state.last_ip, ip);
+        assert_eq!(state.last_channels[0], (true, true, 0));
+        assert_eq!(state.last_channels[1], (false, false, 2));
+        assert_eq!(state.last_pressure, Some(DisplayPressureLevel::Cautious));
+        assert_eq!(state.last_heap, 42);
+        assert_eq!(state.last_msg_in, 7);
+        assert_eq!(state.last_msg_out, 9);
+        assert_eq!(state.last_llm_ms, 88);
+    }
 }
 
 fn build_voice_event_channel(
@@ -539,6 +604,40 @@ impl Default for DisplayLoopState {
             last_activity_at: Instant::now(),
             backlight_off: false,
         }
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
+fn update_display_loop_cache(
+    loop_state: &mut DisplayLoopState,
+    presence_subtitle: &Option<String>,
+    ip: &String,
+    channels: &[DisplayChannelStatus; 5],
+    pressure: Option<DisplayPressureLevel>,
+    heap_percent: Option<u8>,
+    msg_in: Option<u32>,
+    msg_out: Option<u32>,
+    llm_ms: Option<u32>,
+) {
+    loop_state.last_presence_subtitle.clone_from(presence_subtitle);
+    loop_state.last_ip.clone_from(ip);
+    for (i, ch) in channels.iter().enumerate() {
+        loop_state.last_channels[i] = (ch.enabled, ch.healthy, ch.consecutive_failures);
+    }
+    if let Some(pressure) = pressure {
+        loop_state.last_pressure = Some(pressure);
+    }
+    if let Some(heap_percent) = heap_percent {
+        loop_state.last_heap = heap_percent;
+    }
+    if let Some(msg_in) = msg_in {
+        loop_state.last_msg_in = msg_in;
+    }
+    if let Some(msg_out) = msg_out {
+        loop_state.last_msg_out = msg_out;
+    }
+    if let Some(llm_ms) = llm_ms {
+        loop_state.last_llm_ms = llm_ms;
     }
 }
 
@@ -732,13 +831,15 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
         }
 
         if state_changed {
+            let presence_subtitle = display_projection.subtitle_override.clone();
+            let ip_owned = ip.clone();
             let cmd = DisplayCommand::RefreshDashboard {
                 state,
-                presence_subtitle: display_projection.subtitle_override.clone(),
+                presence_subtitle,
                 wifi_connected: sta_connected,
-                ip_address: Some(ip.clone()),
-                channels: channels.clone(),
-                pressure: pressure.clone(),
+                ip_address: Some(ip_owned.clone()),
+                channels,
+                pressure,
                 heap_percent,
                 messages_in: msg_in,
                 messages_out: msg_out,
@@ -752,17 +853,17 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
                 log::warn!("[{}] display refresh failed: {}", TAG, e);
             }
             loop_state.last_state = Some(state);
-            loop_state.last_presence_subtitle = display_projection.subtitle_override.clone();
-            loop_state.last_ip.clear();
-            loop_state.last_ip.push_str(&ip);
-            for (i, ch) in channels.iter().enumerate() {
-                loop_state.last_channels[i] = (ch.enabled, ch.healthy, ch.consecutive_failures);
-            }
-            loop_state.last_pressure = Some(pressure.clone());
-            loop_state.last_heap = heap_percent;
-            loop_state.last_msg_in = msg_in;
-            loop_state.last_msg_out = msg_out;
-            loop_state.last_llm_ms = llm_ms;
+            update_display_loop_cache(
+                &mut loop_state,
+                &display_projection.subtitle_override,
+                &ip_owned,
+                &channels,
+                Some(pressure),
+                Some(heap_percent),
+                Some(msg_in),
+                Some(msg_out),
+                Some(llm_ms),
+            );
             loop_state.refresh_secs = compute_refresh_secs(
                 state,
                 loop_state.backlight_off,
@@ -772,26 +873,46 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
         }
 
         if ip_changed || subtitle_changed {
+            let presence_subtitle = display_projection.subtitle_override.clone();
+            let ip_owned = ip.clone();
             let _ = platform.display_command(DisplayCommand::UpdateIp {
-                ip: ip.clone(),
-                presence_subtitle: display_projection.subtitle_override.clone(),
+                ip: ip_owned.clone(),
+                presence_subtitle,
                 uptime_secs,
             });
-            loop_state.last_presence_subtitle = display_projection.subtitle_override.clone();
-            loop_state.last_ip.clear();
-            loop_state.last_ip.push_str(&ip);
+            update_display_loop_cache(
+                &mut loop_state,
+                &display_projection.subtitle_override,
+                &ip_owned,
+                &channels,
+                None,
+                None,
+                None,
+                None,
+                None,
+            );
         }
         if channels_changed {
-            let _ = platform.display_command(DisplayCommand::UpdateChannels {
-                channels: channels.clone(),
-            });
-            for (i, ch) in channels.iter().enumerate() {
-                loop_state.last_channels[i] = (ch.enabled, ch.healthy, ch.consecutive_failures);
-            }
+            let last_presence_subtitle = loop_state.last_presence_subtitle.clone();
+            let last_ip = loop_state.last_ip.clone();
+            let _ = platform.display_command(DisplayCommand::UpdateChannels { channels });
+            update_display_loop_cache(
+                &mut loop_state,
+                &last_presence_subtitle,
+                &last_ip,
+                &channels,
+                None,
+                None,
+                None,
+                None,
+                None,
+            );
         }
         if pressure_changed || heap_changed || msg_changed || llm_changed || show_flash {
+            let last_presence_subtitle = loop_state.last_presence_subtitle.clone();
+            let last_ip = loop_state.last_ip.clone();
             let _ = platform.display_command(DisplayCommand::UpdatePressure {
-                level: pressure.clone(),
+                level: pressure,
                 heap_percent,
                 messages_in: msg_in,
                 messages_out: msg_out,
@@ -799,11 +920,17 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
                 llm_last_ms: llm_ms,
                 error_flash: show_flash,
             });
-            loop_state.last_pressure = Some(pressure);
-            loop_state.last_heap = heap_percent;
-            loop_state.last_msg_in = msg_in;
-            loop_state.last_msg_out = msg_out;
-            loop_state.last_llm_ms = llm_ms;
+            update_display_loop_cache(
+                &mut loop_state,
+                &last_presence_subtitle,
+                &last_ip,
+                &channels,
+                Some(pressure),
+                Some(heap_percent),
+                Some(msg_in),
+                Some(msg_out),
+                Some(llm_ms),
+            );
         }
         loop_state.refresh_secs = compute_refresh_secs(
             state,

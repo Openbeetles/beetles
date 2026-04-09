@@ -44,7 +44,7 @@ pub enum DisplayColorOrder {
     Bgr,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 pub enum DisplayPressureLevel {
     Normal,
@@ -103,7 +103,7 @@ pub struct DisplayConfig {
     pub sleep_timeout_secs: u16,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 pub struct DisplayChannelStatus {
     pub name: &'static str,
     pub enabled: bool,

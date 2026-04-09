@@ -65,12 +65,12 @@ use crate::memory::{
     MentalPrivacyStore, OuterVoiceStore, PendingRetryStore, PersonaPriorityAdjudication,
     PersonaPriorityAdjudicationInput, PersonaPriorityGrounding, PersonaPriorityRuntimeState,
     PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput, PrivateDocStore,
-    PrivateGardenStore, PromptMemoryContext, PromptMemoryContextParams, RelationshipTopologyStore,
-    RemindAtStore, SelfContinuityStore, SelfModelStore, SelfRuntimeContext, SessionMessage,
-    SessionStore, SessionSummaryRefreshOutcome, SessionSummaryStore, TurnBlockerLedger,
-    TurnDeliveryLedger, TurnExecutionClass, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
-    TurnModeSnapshotLedger, TurnObservationLedger, TurnPersonaLedger, TurnPersonaReviewLedger,
-    TurnToolPathLedger, WorldSenseStore,
+    PrivateGardenStore, PromptMemoryContext, PromptMemoryContextParams, PromptRuntimeCarry,
+    RelationshipTopologyStore, RemindAtStore, SelfContinuityStore, SelfModelStore,
+    SelfRuntimeContext, SessionMessage, SessionStore, SessionSummaryRefreshOutcome,
+    SessionSummaryStore, TurnBlockerLedger, TurnDeliveryLedger, TurnExecutionClass, TurnLedger,
+    TurnLedgerStatus, TurnLedgerStore, TurnModeSnapshotLedger, TurnObservationLedger,
+    TurnPersonaLedger, TurnPersonaReviewLedger, TurnToolPathLedger, WorldSenseStore,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
@@ -404,8 +404,8 @@ fn build_turn_observation_ledger(
 }
 
 struct PreparedWorkerConversation {
-    prompt_memory: PromptMemoryContext,
-    subject_state: Option<SubjectState>,
+    runtime_carry: Box<PromptRuntimeCarry>,
+    subject_state: Option<Box<SubjectState>>,
     system: String,
     messages: Vec<Message>,
     system_scratch: String,
@@ -414,8 +414,8 @@ struct PreparedWorkerConversation {
     allow_tool_round_recall_refill: bool,
     prompt_memory_system_budget: usize,
     pressure: crate::orchestrator::PressureLevel,
-    mental_privacy_adjudication: Option<crate::memory::MentalPrivacyDisclosureAdjudication>,
-    persona_priority_adjudication: Option<PersonaPriorityAdjudication>,
+    mental_privacy_adjudication: Option<Box<crate::memory::MentalPrivacyDisclosureAdjudication>>,
+    persona_priority_adjudication: Option<Box<PersonaPriorityAdjudication>>,
 }
 
 struct ToolCallExecutionResult {
@@ -2670,7 +2670,7 @@ fn run_worker_path(
     let mut delivery =
         DeliverySession::new(msg, req_id, outbound_tx, editor, channel_capability, loc);
     let PreparedWorkerConversation {
-        mut prompt_memory,
+        mut runtime_carry,
         subject_state,
         system,
         mut messages,
@@ -2705,9 +2705,9 @@ fn run_worker_path(
         &mut system_scratch,
         pressure,
         deliberation_gate.class,
-        subject_state.clone(),
-        mental_privacy_adjudication.clone(),
-        persona_priority_adjudication.clone(),
+        subject_state.as_deref().cloned(),
+        mental_privacy_adjudication.as_deref().cloned(),
+        persona_priority_adjudication.as_deref().cloned(),
     )? {
         return Ok(task_execution_outcome);
     }
@@ -2867,9 +2867,11 @@ fn run_worker_path(
                     runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
                     deliberation_class: deliberation_gate.class,
                     tool_blocker: recent_tool_round.blocker,
-                    subject_state: subject_state.clone(),
-                    mental_privacy_adjudication: mental_privacy_adjudication.clone(),
-                    persona_priority_adjudication: persona_priority_adjudication.clone(),
+                    subject_state: subject_state.as_deref().cloned(),
+                    mental_privacy_adjudication: mental_privacy_adjudication.as_deref().cloned(),
+                    persona_priority_adjudication: persona_priority_adjudication
+                        .as_deref()
+                        .cloned(),
                 };
                 return Ok((WorkerOutcome::Interrupt(confirmation), telemetry));
             }
@@ -3026,7 +3028,7 @@ fn run_worker_path(
                 }
             }
             if memory_grounding.is_none() {
-                if prompt_memory.long_term_memory_text.is_none()
+                if runtime_carry.long_term_memory_text.is_none()
                     && interactive_fast_path
                     && allow_tool_round_recall_refill
                     && prompt_memory_system_budget
@@ -3037,23 +3039,23 @@ fn run_worker_path(
                     let recall_recent_count = memory_policy(config.memory_system_kind)
                         .long_term_recall
                         .recent_grounding_message_count;
-                    let recent_start = prompt_memory
+                    let recent_start = runtime_carry
                         .recent_messages
                         .len()
                         .saturating_sub(recall_recent_count);
-                    prompt_memory.long_term_memory_text = recall_long_term_memory_block(
+                    runtime_carry.long_term_memory_text = recall_long_term_memory_block(
                         config.long_term_memory_store.as_ref(),
                         &msg.chat_id,
                         &msg.content,
-                        prompt_memory.summary_text.as_deref(),
-                        &prompt_memory.recent_messages[recent_start..],
+                        runtime_carry.summary_text.as_deref(),
+                        &runtime_carry.recent_messages[recent_start..],
                         prompt_memory_system_budget,
                         config.memory_system_kind.memory_profile(),
                     );
                 }
                 memory_grounding = build_memory_grounding_text(
-                    prompt_memory.summary_text.as_deref(),
-                    prompt_memory.long_term_memory_text.as_deref(),
+                    runtime_carry.summary_text.as_deref(),
+                    runtime_carry.long_term_memory_text.as_deref(),
                 );
             }
             if let Some(memory_grounding) = memory_grounding.as_deref() {
@@ -3108,9 +3110,11 @@ fn run_worker_path(
                 runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
                 deliberation_class: deliberation_gate.class,
                 tool_blocker: recent_tool_round.blocker,
-                subject_state: subject_state.clone(),
-                mental_privacy_adjudication: mental_privacy_adjudication.clone(),
-                persona_priority_adjudication: persona_priority_adjudication.clone(),
+                subject_state: subject_state.as_deref().cloned(),
+                mental_privacy_adjudication: mental_privacy_adjudication.as_deref().cloned(),
+                persona_priority_adjudication: persona_priority_adjudication
+                    .as_deref()
+                    .cloned(),
             };
             return Ok((WorkerOutcome::Interrupt(confirmation), telemetry));
         }
@@ -3150,9 +3154,9 @@ fn run_worker_path(
             runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
             deliberation_class: deliberation_gate.class,
             tool_blocker: recent_tool_round.blocker,
-            subject_state,
-            mental_privacy_adjudication,
-            persona_priority_adjudication,
+            subject_state: subject_state.map(|value| *value),
+            mental_privacy_adjudication: mental_privacy_adjudication.map(|value| *value),
+            persona_priority_adjudication: persona_priority_adjudication.map(|value| *value),
         },
     ))
 }
@@ -4653,8 +4657,16 @@ mod tests {
         let request_plan =
             AgentRequestPlan::build(&msg, &registry, &llm, AgentRunStrategy::Embedded);
 
-        let runtime_stage =
-            self::worker_context_stages::compute_prepare_runtime(&msg, &config, &request_plan);
+        let mut session = Box::new(self::worker_context_stages::WorkerPrepareSession::new(
+            Instant::now(),
+        ));
+        self::worker_context_stages::compute_prepare_runtime(
+            &mut session,
+            &msg,
+            &config,
+            &request_plan,
+        );
+        let runtime_stage = session.runtime_stage().expect("runtime stage");
         assert_eq!(
             runtime_stage.participation_plan,
             crate::memory::PromptParticipationPlan::embedded_first_turn_default()
@@ -4843,6 +4855,15 @@ mod tests {
             "linux full should keep syncing relationship constitution on the hot path"
         );
         assert_eq!(tracked_store.clear_count(), 0);
+    }
+
+    #[test]
+    fn prepared_worker_conversation_size_stays_within_compact_budget() {
+        let size = std::mem::size_of::<PreparedWorkerConversation>();
+        assert!(
+            size <= 512,
+            "PreparedWorkerConversation should stay compact on ESP; got {size} bytes"
+        );
     }
 
     #[test]

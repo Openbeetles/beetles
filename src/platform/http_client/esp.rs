@@ -4,6 +4,9 @@
 use crate::config::{parse_proxy_url_to_host_port, AppConfig};
 use crate::error::{Error, Result};
 use crate::orchestrator::Priority;
+use crate::platform::http_client::response_buffer::{
+    choose_response_body_read_plan, ResponseBodyReadPlan,
+};
 use crate::platform::heap::alloc_spiram_buffer;
 use crate::platform::ResponseBody;
 use embedded_svc::http::client::Client as HttpClient;
@@ -357,6 +360,15 @@ const PSRAM_RESPONSE_PREALLOC_THRESHOLD: usize = 8 * 1024;
 /// 最多 drain 的字节数，防止无限读取恶意超长响应。
 const MAX_DRAIN_BYTES: usize = 512 * 1024;
 
+#[cfg(target_arch = "xtensa")]
+fn psram_backed_vec_with_capacity(cap: usize) -> Vec<u8> {
+    if let Some(ptr) = alloc_spiram_buffer(cap) {
+        unsafe { Vec::from_raw_parts(ptr, 0, cap) }
+    } else {
+        Vec::with_capacity(cap)
+    }
+}
+
 /// 将响应体读空（最多 MAX_DRAIN_BYTES），便于当前请求在收尾阶段尽快释放底层连接资源。
 fn drain_response<R: Read>(r: &mut R)
 where
@@ -388,16 +400,48 @@ where
     R::Error: std::error::Error + 'static,
 {
     let max_len = crate::orchestrator::current_budget().response_body_max;
-    let hinted_len = content_length_hint.map(|len| len.min(max_len));
+    let plan = choose_response_body_read_plan(
+        max_len,
+        content_length_hint,
+        cfg!(target_arch = "xtensa"),
+        INITIAL_RESPONSE_BODY_CAP,
+        PSRAM_RESPONSE_PREALLOC_THRESHOLD,
+    );
     #[cfg(target_arch = "xtensa")]
-    if let Some(prealloc_len) = hinted_len.filter(|len| *len >= PSRAM_RESPONSE_PREALLOC_THRESHOLD) {
-        if let Some(psram_ptr) = alloc_spiram_buffer(prealloc_len) {
-            return read_response_body_into_psram(psram_ptr, prealloc_len, r);
+    match plan {
+        ResponseBodyReadPlan::PsramExact { cap } => {
+            if let Some(psram_ptr) = alloc_spiram_buffer(cap) {
+                return read_response_body_into_psram(psram_ptr, cap, r);
+            }
         }
+        ResponseBodyReadPlan::PsramSeededVec { initial_cap } => {
+            return read_response_body_into_heap_like(
+                psram_backed_vec_with_capacity(initial_cap),
+                max_len,
+                r,
+            );
+        }
+        ResponseBodyReadPlan::Heap { .. } => {}
     }
 
-    let initial_cap = hinted_len.unwrap_or(INITIAL_RESPONSE_BODY_CAP).min(max_len);
-    let mut out = Vec::with_capacity(initial_cap);
+    #[cfg(not(target_arch = "xtensa"))]
+    let _ = plan;
+    let initial_cap = match plan {
+        ResponseBodyReadPlan::Heap { initial_cap } => initial_cap,
+        ResponseBodyReadPlan::PsramSeededVec { initial_cap } => initial_cap,
+        ResponseBodyReadPlan::PsramExact { cap } => cap.min(INITIAL_RESPONSE_BODY_CAP),
+    };
+    read_response_body_into_heap_like(Vec::with_capacity(initial_cap), max_len, r)
+}
+
+fn read_response_body_into_heap_like<R: Read>(
+    mut out: Vec<u8>,
+    max_len: usize,
+    r: &mut R,
+) -> Result<ResponseBody>
+where
+    R::Error: std::error::Error + 'static,
+{
     let mut buf = [0u8; RESPONSE_READ_CHUNK];
     loop {
         let n = read_with_retry(r, &mut buf)?;
