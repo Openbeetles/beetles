@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
 use super::{
+    derive_recent_persona_evidence, RecentPersonaEvidence,
+    RECENT_PERSONA_EVIDENCE_HISTORY_LOOKBACK, RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
     MentalPrivacyDisclosureAdjudication, MentalPrivacyShareAction, PersonaPriorityAdjudication,
 };
 
@@ -399,6 +401,14 @@ pub trait TurnLedgerStore: Send + Sync {
             return Ok(Vec::new());
         }
         Ok(self.get(chat_id)?.into_iter().collect())
+    }
+
+    fn recent_persona_evidence(&self, chat_id: &str) -> Result<Option<RecentPersonaEvidence>> {
+        let ledgers = self.list_recent(chat_id, RECENT_PERSONA_EVIDENCE_HISTORY_LOOKBACK)?;
+        Ok(derive_recent_persona_evidence(
+            &ledgers,
+            RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
+        ))
     }
 }
 

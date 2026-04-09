@@ -5,7 +5,7 @@ use crate::error::{Error, Result};
 use crate::platform::abstraction::StateFs;
 use crate::platform::spiffs::{self, MAX_WRITE_SIZE};
 use crate::platform::state_root::state_mount_path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// 零大小类型；SPIFFS 串行化在 `spiffs::*` 内完成。
 #[derive(Debug, Default)]
@@ -13,7 +13,7 @@ pub struct Esp32StateFs;
 
 fn abs_path(rel_path: &str) -> Result<PathBuf> {
     let rel = crate::util::normalize_state_rel_path(rel_path)?;
-    Ok(state_mount_path().join(rel))
+    Ok(state_mount_path().join(spiffs::esp_storage_rel_path(Path::new(&rel))))
 }
 
 fn map_read_result(r: std::result::Result<Vec<u8>, Error>) -> Result<Option<Vec<u8>>> {

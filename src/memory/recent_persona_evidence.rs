@@ -65,11 +65,7 @@ pub fn load_recent_persona_evidence(
     store: &dyn TurnLedgerStore,
     chat_id: &str,
 ) -> Result<Option<RecentPersonaEvidence>> {
-    let ledgers = store.list_recent(chat_id, RECENT_PERSONA_EVIDENCE_HISTORY_LOOKBACK)?;
-    Ok(derive_recent_persona_evidence(
-        &ledgers,
-        RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
-    ))
+    store.recent_persona_evidence(chat_id)
 }
 
 pub fn derive_recent_persona_evidence(
@@ -437,6 +433,7 @@ mod tests {
     use crate::memory::{
         TurnLedgerStatus, TurnPersonaDisclosureLedger, TurnPersonaLedger, TurnPersonaPriorityLedger,
     };
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn build_persona_ledger(scope: &str, pressure: TurnPersonaPressureLevel) -> TurnLedger {
         TurnLedger {
@@ -513,5 +510,51 @@ mod tests {
         let block = render_recent_persona_evidence_block(&evidence, 480).unwrap();
         assert!(block.contains("Recent Persona Evidence"));
         assert!(block.contains("evidence, not automatic personality promotion"));
+    }
+
+    struct FastPathStore {
+        list_recent_calls: AtomicUsize,
+        evidence: Option<RecentPersonaEvidence>,
+    }
+
+    impl TurnLedgerStore for FastPathStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<TurnLedger>> {
+            Ok(None)
+        }
+
+        fn set(&self, _chat_id: &str, _ledger: &TurnLedger) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_recent(&self, _chat_id: &str, _limit: usize) -> Result<Vec<TurnLedger>> {
+            self.list_recent_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(Vec::new())
+        }
+
+        fn recent_persona_evidence(&self, _chat_id: &str) -> Result<Option<RecentPersonaEvidence>> {
+            Ok(self.evidence.clone())
+        }
+    }
+
+    #[test]
+    fn load_recent_persona_evidence_prefers_store_fast_path() {
+        let expected = RecentPersonaEvidence {
+            meaningful_turns: 4,
+            repeated_reply_scope: "brief".to_string(),
+            ..RecentPersonaEvidence::default()
+        };
+        let store = FastPathStore {
+            list_recent_calls: AtomicUsize::new(0),
+            evidence: Some(expected.clone()),
+        };
+
+        let actual = load_recent_persona_evidence(&store, "chat-1").unwrap();
+
+        assert_eq!(actual, Some(expected));
+        assert_eq!(store.list_recent_calls.load(Ordering::Relaxed), 0);
     }
 }

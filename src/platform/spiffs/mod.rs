@@ -13,6 +13,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
+#[cfg_attr(not(any(target_arch = "xtensa", target_arch = "riscv32")), allow(dead_code))]
+const ESP_SAFE_REL_PATH_LEN: usize = 31;
+
 /// 兼容旧名：状态根路径字符串。ESP 上为 `/spiffs`；host 上为 `state_mount_path()` 的运行时值。
 /// Legacy name for state root path string.
 pub fn spiffs_base_string() -> String {
@@ -23,7 +26,7 @@ pub fn spiffs_base_string() -> String {
 pub(crate) fn state_path_join(rel: impl AsRef<Path>) -> PathBuf {
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     {
-        state_mount_path().join(esp_rel_path_alias(rel.as_ref()))
+        state_mount_path().join(esp_storage_rel_path(rel.as_ref()))
     }
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     {
@@ -31,7 +34,7 @@ pub(crate) fn state_path_join(rel: impl AsRef<Path>) -> PathBuf {
     }
 }
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+#[cfg_attr(not(any(target_arch = "xtensa", target_arch = "riscv32")), allow(dead_code))]
 fn fnv1a64_hash(s: &str) -> u64 {
     let mut h: u64 = 14695981039346656037;
     for b in s.bytes() {
@@ -41,23 +44,64 @@ fn fnv1a64_hash(s: &str) -> u64 {
     h
 }
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-fn esp_rel_path_alias(rel: &Path) -> PathBuf {
+#[cfg_attr(not(any(target_arch = "xtensa", target_arch = "riscv32")), allow(dead_code))]
+pub(crate) fn esp_storage_rel_path(rel: &Path) -> PathBuf {
     let rel_str = rel.to_string_lossy();
     match rel_str.as_ref() {
+        crate::memory::REL_PATH_EXECUTION_STATES => PathBuf::from("m/es.json"),
+        crate::memory::REL_PATH_IMPORTANT_MESSAGE => PathBuf::from("m/im.json"),
+        crate::memory::REL_PATH_SESSION_SUMMARIES => PathBuf::from("m/ss.json"),
+        crate::memory::REL_PATH_LONG_TERM_MEMORIES => PathBuf::from("m/ltm.json"),
         crate::memory::REL_PATH_AUTONOMY_STRATEGIES => PathBuf::from("m/as.json"),
         crate::memory::REL_PATH_CONTINUITY_CAPSULES => PathBuf::from("m/cc.json"),
+        "memory/continuity_capsule_index.sqlite3" => PathBuf::from("m/cci.db"),
+        crate::memory::REL_PATH_SELF_AUTHORED_CORES => PathBuf::from("m/sac.json"),
+        crate::memory::REL_PATH_CORE_REVISION_LEDGERS => PathBuf::from("m/crl.json"),
+        "memory/relationship_constitutions.json" => PathBuf::from("m/rct.json"),
+        crate::memory::REL_PATH_RELATIONSHIP_PORTFOLIOS => PathBuf::from("m/rpf.json"),
+        "memory/relationship_topologies.json" => PathBuf::from("m/rtp.json"),
         crate::memory::REL_PATH_LONG_TERM_EXTRACTION_STATES => PathBuf::from("m/lte.json"),
         crate::memory::REL_PATH_MENTAL_PRIVACY_STATES => PathBuf::from("m/mps.json"),
         crate::memory::REL_PATH_PRIVATE_DOC_WORKSPACES => PathBuf::from("m/pdw.json"),
         crate::memory::REL_PATH_PRIVATE_GARDEN_INDEX => PathBuf::from("m/pgi.json"),
+        "memory/tool_execution_governance.json" => PathBuf::from("m/teg.json"),
         _ => {
             if rel_str.starts_with(crate::memory::REL_PATH_PRIVATE_GARDEN_DIR) {
                 PathBuf::from(format!("g/{:016x}.md", fnv1a64_hash(rel_str.as_ref())))
+            } else if rel_str.len() > ESP_SAFE_REL_PATH_LEN {
+                esp_hashed_rel_path(rel_str.as_ref())
             } else {
                 rel.to_path_buf()
             }
         }
+    }
+}
+
+#[cfg_attr(not(any(target_arch = "xtensa", target_arch = "riscv32")), allow(dead_code))]
+fn esp_hashed_rel_path(rel: &str) -> PathBuf {
+    let namespace = match rel.split('/').next().unwrap_or_default() {
+        "memory" => "m",
+        "runtime" => "r",
+        "config" => "c",
+        "skills" => "k",
+        _ => "s",
+    };
+    let ext = esp_alias_extension(rel);
+    PathBuf::from(format!(
+        "{namespace}/h{:016x}.{ext}",
+        fnv1a64_hash(rel)
+    ))
+}
+
+#[cfg_attr(not(any(target_arch = "xtensa", target_arch = "riscv32")), allow(dead_code))]
+fn esp_alias_extension(rel: &str) -> &'static str {
+    match Path::new(rel).extension().and_then(|ext| ext.to_str()) {
+        Some("md") => "md",
+        Some("json") => "j",
+        Some("jsonl") => "jl",
+        Some("sqlite3") => "db",
+        Some("txt") => "txt",
+        _ => "bin",
     }
 }
 
@@ -185,7 +229,8 @@ pub fn spiffs_usage() -> Option<(u64, u64)> {
 const PSRAM_FILE_THRESHOLD: usize = 8 * 1024;
 
 /// Allocate a `Vec<u8>` with `len=0, capacity=cap` backed by PSRAM when available.
-/// Safe to drop: `Esp32Alloc::dealloc` uses `heap_caps_free` for both regions.
+/// Safe to drop on ESP-IDF std builds: Rust `Vec` deallocates via `libc::free`,
+/// and IDF documents `free(p)` as equivalent to `heap_caps_free(p)`.
 fn psram_vec_with_capacity(cap: usize) -> Vec<u8> {
     if let Some(ptr) = crate::platform::heap::alloc_spiram_buffer(cap) {
         unsafe { Vec::from_raw_parts(ptr, 0, cap) }
@@ -362,3 +407,94 @@ pub use task_execution::{
 };
 pub use task_store::SpiffsTaskStore;
 pub use world_sense::SpiffsWorldSenseStore;
+
+#[cfg(test)]
+mod tests {
+    use super::esp_storage_rel_path;
+    use crate::memory::{
+        REL_PATH_AUTONOMY_STRATEGIES, REL_PATH_CONTINUITY_CAPSULES,
+        REL_PATH_CORE_REVISION_LEDGERS, REL_PATH_IMPORTANT_MESSAGE,
+        REL_PATH_LONG_TERM_EXTRACTION_STATES, REL_PATH_PRIVATE_DOC_WORKSPACES,
+        REL_PATH_PRIVATE_GARDEN_DIR, REL_PATH_PRIVATE_GARDEN_INDEX,
+        REL_PATH_RELATIONSHIP_PORTFOLIOS, REL_PATH_SELF_AUTHORED_CORES,
+        REL_PATH_SESSION_SUMMARIES,
+    };
+    use crate::runtime::REL_PATH_LINUX_RELEASE_STATE;
+    use std::path::{Path, PathBuf};
+
+    const MAX_SAFE_ESP_REL_PATH_LEN: usize = 31;
+
+    #[test]
+    fn esp_storage_rel_path_keeps_short_paths_stable() {
+        assert_eq!(
+            esp_storage_rel_path(Path::new("memory/world_sense.json")),
+            PathBuf::from("memory/world_sense.json")
+        );
+        assert_eq!(
+            esp_storage_rel_path(Path::new("config/llm.json")),
+            PathBuf::from("config/llm.json")
+        );
+    }
+
+    #[test]
+    fn esp_storage_rel_path_aliases_known_long_internal_paths() {
+        let cases = [
+            (REL_PATH_AUTONOMY_STRATEGIES, "m/as.json"),
+            (REL_PATH_CONTINUITY_CAPSULES, "m/cc.json"),
+            (REL_PATH_CORE_REVISION_LEDGERS, "m/crl.json"),
+            (REL_PATH_IMPORTANT_MESSAGE, "m/im.json"),
+            (REL_PATH_LONG_TERM_EXTRACTION_STATES, "m/lte.json"),
+            (REL_PATH_PRIVATE_DOC_WORKSPACES, "m/pdw.json"),
+            (REL_PATH_PRIVATE_GARDEN_INDEX, "m/pgi.json"),
+            ("memory/relationship_constitutions.json", "m/rct.json"),
+            (REL_PATH_RELATIONSHIP_PORTFOLIOS, "m/rpf.json"),
+            ("memory/relationship_topologies.json", "m/rtp.json"),
+            (REL_PATH_SELF_AUTHORED_CORES, "m/sac.json"),
+            (REL_PATH_SESSION_SUMMARIES, "m/ss.json"),
+            ("memory/tool_execution_governance.json", "m/teg.json"),
+        ];
+        for (rel, expected) in cases {
+            assert_eq!(esp_storage_rel_path(Path::new(rel)), PathBuf::from(expected));
+        }
+    }
+
+    #[test]
+    fn esp_storage_rel_path_hashes_long_runtime_paths_into_safe_namespace() {
+        let bundle = esp_storage_rel_path(Path::new(
+            "memory/continuity_snapshots/runtime/latest_reboot_bundle.json",
+        ));
+        let markdown = esp_storage_rel_path(Path::new(
+            "memory/continuity_snapshots/runtime/latest_reboot_bundle.md",
+        ));
+        let linux_release = esp_storage_rel_path(Path::new(REL_PATH_LINUX_RELEASE_STATE));
+
+        for mapped in [&bundle, &markdown] {
+            let rendered = mapped.to_string_lossy();
+            assert!(rendered.len() <= MAX_SAFE_ESP_REL_PATH_LEN);
+            assert!(rendered.starts_with("m/"));
+        }
+        let linux_release_rendered = linux_release.to_string_lossy();
+        assert!(linux_release_rendered.len() <= MAX_SAFE_ESP_REL_PATH_LEN);
+        assert!(linux_release_rendered.starts_with("r/"));
+        assert_ne!(
+            bundle,
+            PathBuf::from("memory/continuity_snapshots/runtime/latest_reboot_bundle.json")
+        );
+        assert_eq!(
+            esp_storage_rel_path(Path::new(
+                "memory/continuity_snapshots/runtime/latest_reboot_bundle.json",
+            )),
+            bundle
+        );
+    }
+
+    #[test]
+    fn esp_storage_rel_path_preserves_private_garden_hashing() {
+        let rel = format!("{REL_PATH_PRIVATE_GARDEN_DIR}/board.self/entry.md");
+        let mapped = esp_storage_rel_path(Path::new(&rel));
+        let rendered = mapped.to_string_lossy();
+        assert!(rendered.starts_with("g/"));
+        assert!(rendered.ends_with(".md"));
+        assert!(rendered.len() <= MAX_SAFE_ESP_REL_PATH_LEN);
+    }
+}

@@ -362,6 +362,8 @@ const MAX_DRAIN_BYTES: usize = 512 * 1024;
 
 #[cfg(target_arch = "xtensa")]
 fn psram_backed_vec_with_capacity(cap: usize) -> Vec<u8> {
+    // Safe on ESP-IDF std builds: Rust `Vec` deallocates through `libc::free`,
+    // and IDF specifies `free(p)` as equivalent to `heap_caps_free(p)`.
     if let Some(ptr) = alloc_spiram_buffer(cap) {
         unsafe { Vec::from_raw_parts(ptr, 0, cap) }
     } else {
