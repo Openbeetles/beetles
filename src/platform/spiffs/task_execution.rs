@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::cached_json::{load_json_or_default, CachedJsonFileStore, StoreOp};
-use super::{list_dir, read_file, state_path_join, write_file};
+use super::{list_dir, read_file, remove_file, state_path_join, write_file};
 
 const RUN_INDEX_STAGE_LOCK: &str = "task_run_index_lock";
 const RUN_INDEX_STAGE_CACHE: &str = "task_run_index_cache";
@@ -125,6 +125,12 @@ fn learning_file_path(learning_id: &str) -> PathBuf {
     state_path_join(format!("{REL_DIR_TASK_LEARNING_FILES}/{learning_id}{ext}"))
 }
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn ensure_parent_dir(_path: &Path, _stage: &'static str) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn ensure_parent_dir(path: &Path, stage: &'static str) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| Error::io(stage, error))?;
@@ -307,11 +313,13 @@ impl TaskArtifactStore for SpiffsTaskArtifactStore {
 
     fn delete(&self, run_id: &str, artifact_id: &str) -> Result<bool> {
         let path = artifact_file_path(run_id, artifact_id);
-        if !path.exists() {
-            return Ok(false);
+        match remove_file(&path) {
+            Ok(()) => Ok(true),
+            Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+                Ok(false)
+            }
+            Err(error) => Err(error),
         }
-        std::fs::remove_file(&path).map_err(|error| Error::io("task_artifact_delete", error))?;
-        Ok(true)
     }
 }
 
@@ -334,8 +342,8 @@ impl TaskExecutionLedgerStore for SpiffsTaskExecutionLedgerStore {
         let path = ledger_file_path(run_id);
         ensure_parent_dir(&path, "task_execution_ledger_dir")?;
         let mut existing = String::new();
-        if let Ok(buf) = read_file(&path) {
-            existing = String::from_utf8(buf.into_vec())
+        if let Ok(buf) = super::read_file_to_vec(&path) {
+            existing = String::from_utf8(buf)
                 .map_err(|error| Error::config("task_execution_ledger_utf8", error.to_string()))?;
         }
         let line = serde_json::to_string(entry)
@@ -350,7 +358,7 @@ impl TaskExecutionLedgerStore for SpiffsTaskExecutionLedgerStore {
 
     fn list(&self, run_id: &str, limit: usize) -> Result<Vec<TaskExecutionLedgerEntry>> {
         let path = ledger_file_path(run_id);
-        let buf = match read_file(&path) {
+        let buf = match super::read_file_to_vec(&path) {
             Ok(buf) => buf,
             Err(Error::Io { .. }) | Err(Error::Other { .. }) => return Ok(Vec::new()),
             Err(error) => return Err(error),
@@ -358,7 +366,7 @@ impl TaskExecutionLedgerStore for SpiffsTaskExecutionLedgerStore {
         if buf.is_empty() {
             return Ok(Vec::new());
         }
-        let content = String::from_utf8(buf.into_vec())
+        let content = String::from_utf8(buf)
             .map_err(|error| Error::config("task_execution_ledger_utf8", error.to_string()))?;
         let mut out = Vec::new();
         for line in content.lines().rev().take(limit.max(1)) {

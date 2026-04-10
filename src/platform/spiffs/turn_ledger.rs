@@ -272,17 +272,11 @@ impl TurnLedgerStore for SpiffsTurnLedgerStore {
 
     fn clear(&self, chat_id: &str) -> Result<()> {
         let path = ledger_path(chat_id)?;
-        if path.exists() {
-            remove_file(&path)?;
-        }
+        ignore_missing_remove(&path)?;
         let history_path = history_path(chat_id)?;
-        if history_path.exists() {
-            remove_file(&history_path)?;
-        }
+        ignore_missing_remove(&history_path)?;
         let evidence_path = recent_persona_evidence_path(chat_id)?;
-        if evidence_path.exists() {
-            remove_file(&evidence_path)?;
-        }
+        ignore_missing_remove(&evidence_path)?;
         Ok(())
     }
 
@@ -348,14 +342,20 @@ impl SpiffsTurnLedgerStore {
     ) -> Result<()> {
         let path = recent_persona_evidence_path(chat_id)?;
         let Some(evidence) = evidence else {
-            if path.exists() {
-                remove_file(&path)?;
-            }
+            ignore_missing_remove(&path)?;
             return Ok(());
         };
         let json = serde_json::to_vec(&StoredRecentPersonaEvidence { evidence })
             .map_err(|e| Error::config("recent_persona_evidence_write", e.to_string()))?;
         write_file(path, &json)
+    }
+}
+
+fn ignore_missing_remove(path: &Path) -> Result<()> {
+    match remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 

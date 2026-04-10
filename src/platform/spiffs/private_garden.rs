@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use super::cached_json::{load_json_or_default, CachedJsonFileStore, StoreOp};
-use super::{read_file, remove_file, state_path_join, write_file};
+use super::{remove_file, state_path_join, write_file};
 
 const MAX_PRIVATE_GARDEN_CHATS: usize = 32;
 const PRIVATE_GARDEN_DOC_CACHE_MAX: usize = 24;
@@ -205,14 +205,14 @@ impl PrivateGardenStore for SpiffsPrivateGardenStore {
                 return Ok(StoreOp::clean(Some(doc)));
             }
             let rel_path = chat_doc_rel_path(chat_id, &doc_path);
-            let buf = match read_file(state_path_join(&rel_path)) {
+            let buf = match super::read_file_to_vec(state_path_join(&rel_path)) {
                 Ok(buf) => buf,
                 Err(Error::Other { .. }) | Err(Error::Io { .. }) => {
                     return Ok(StoreOp::clean(None));
                 }
                 Err(error) => return Err(error),
             };
-            let content = String::from_utf8(buf.into_vec()).map_err(|_| {
+            let content = String::from_utf8(buf).map_err(|_| {
                 Error::config("private_garden_read", "stored document is not valid UTF-8")
             })?;
             let doc = PrivateGardenDoc {
@@ -334,14 +334,14 @@ impl PrivateGardenStore for SpiffsPrivateGardenStore {
                 return Ok(StoreOp::clean(None));
             };
             let rel_from_path = chat_doc_rel_path(chat_id, &from_path);
-            let buf = match read_file(state_path_join(&rel_from_path)) {
+            let buf = match super::read_file_to_vec(state_path_join(&rel_from_path)) {
                 Ok(buf) => buf,
                 Err(Error::Other { .. }) | Err(Error::Io { .. }) => {
                     return Ok(StoreOp::clean(None));
                 }
                 Err(error) => return Err(error),
             };
-            let content = String::from_utf8(buf.into_vec()).map_err(|_| {
+            let content = String::from_utf8(buf).map_err(|_| {
                 Error::config("private_garden_move", "stored document is not valid UTF-8")
             })?;
             let rel_to_path = chat_doc_rel_path(chat_id, &to_path);

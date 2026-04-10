@@ -105,6 +105,14 @@ channel -> inbound queue -> agent -> tools / memory / llm -> outbound queue -> d
 
 比较明显的例外，是 `channels/wss_gateway/esp_conn.rs` 这种明显只属于 ESP 的实现。像这类代码会直接依赖 ESP-IDF，本来就不需要兼容 Linux。
 
+另外，ESP 上的持久化访问有两条必须遵守的约束：
+
+- 状态文件和 SPIFFS 访问必须统一走 `platform::spiffs` / `StateFs` 门面，不要在业务模块里直接对 `/spiffs` 或 `state_mount_path()` 做裸 `std::fs` 读写。
+- 显示刷新、presence 轮询这类热路径不能周期性扫 SPIFFS；需要展示的持久化状态要通过缓存、快照或显式恢复路径更新，避免把 flash/VFS 访问塞进高频循环。
+- 像 `runtime_bundle` 这类仅在恢复/重启边界变化的持久化状态，在 ESP 运行态必须走显式失效缓存；禁止把 bundle 文件读取留在 display/presence 轮询路径里。
+- ESP 启动顺序里，`soul_kernel recovery` 必须先于 WiFi bring-up；不要让重启恢复期的 SPIFFS 读取与 WiFi 异步启动窗口重叠。
+- ESP 启动恢复不能直接压在 `main task` 上跑；`soul_kernel recovery` 必须在独立的 startup recovery 执行面内同步完成，再进入配置加载与 WiFi bring-up，避免把 continuity import / serde / SPIFFS 链路压进 `CONFIG_ESP_MAIN_TASK_STACK_SIZE`。
+
 ## 相关文档
 
 - [tools.md](tools.md)

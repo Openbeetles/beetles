@@ -6,7 +6,7 @@ use crate::platform::abstraction::SkillStorage;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use super::{list_dir, read_file, remove_file, state_path_join, write_file};
+use super::{list_dir, read_file_to_vec, remove_file, state_path_join, write_file};
 
 const SKILLS_SUBDIR: &str = "skills";
 const MAX_SKILL_COUNT: usize = 64;
@@ -64,7 +64,7 @@ impl SkillStorage for SpiffsSkillStorage {
     fn read(&self, name: &str) -> Result<Vec<u8>> {
         let mut path = skills_dir();
         path.push(format!("{}.md", name));
-        read_file(&path).map(|buf| buf.into_vec())
+        read_file_to_vec(&path)
     }
 
     fn write(&self, name: &str, content: &[u8]) -> Result<()> {

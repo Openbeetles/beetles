@@ -12,6 +12,13 @@ use std::sync::Arc;
 
 const TAG: &str = "bootstrap";
 
+fn enforce_heap_checkpoint(stage: &'static str) {
+    if let Err(error) = crate::platform::debug_heap_checkpoint(stage) {
+        log::error!("[{}] {}", TAG, error);
+        panic!("[{}] {}", TAG, error);
+    }
+}
+
 /// 共享：只加载配置，不触发 WiFi、显示、音频等启动副作用。
 pub fn load_config(platform: &Arc<dyn Platform>) -> Arc<AppConfig> {
     let config_store = platform.config_store();
@@ -93,7 +100,9 @@ fn post_wifi_display_bootstrap(
                 log::warn!("[{}] display init failed (degraded): {}", TAG, e);
             } else {
                 log::info!("[{}] display initialized", TAG);
+                enforce_heap_checkpoint("heap_after_display_init");
                 let _ = platform.display_command(DisplayCommand::UpdateBootProgress { stage: 0 });
+                enforce_heap_checkpoint("heap_after_display_boot_stage0");
                 let _ = platform.display_command(DisplayCommand::RefreshDashboard {
                     state: DisplaySystemState::Booting,
                     presence_subtitle: Some("restoring runtime shell".to_string()),
@@ -141,6 +150,7 @@ fn post_wifi_display_bootstrap(
                     llm_last_ms: 0,
                     error_flash: false,
                 });
+                enforce_heap_checkpoint("heap_after_display_boot_dashboard");
             }
         }
     }

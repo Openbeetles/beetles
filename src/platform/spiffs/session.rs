@@ -803,8 +803,10 @@ impl SessionStore for SpiffsSessionStore {
             .unwrap_or_else(|e| e.into_inner())
             .remove(chat_id);
         self.note_chat_id_removed(chat_id);
-        if path.exists() {
-            super::remove_file(&path)?;
+        match super::remove_file(&path) {
+            Ok(()) => {}
+            Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
         }
         cleanup_legacy_count_sidecar(&path);
         Ok(())

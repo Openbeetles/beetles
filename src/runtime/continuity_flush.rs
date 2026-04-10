@@ -122,6 +122,8 @@ pub fn flush_reboot_continuity_bundle(
     platform
         .state_fs()
         .write(REL_PATH_REBOOT_CONTINUITY_MARKDOWN, markdown.as_bytes())?;
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    crate::runtime::soul_kernel::invalidate_platform_soul_kernel_status_cache();
     Ok(bundle.snapshots.len())
 }
 

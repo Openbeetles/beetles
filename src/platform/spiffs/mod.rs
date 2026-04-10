@@ -283,6 +283,46 @@ pub fn read_file(path: impl AsRef<Path>) -> Result<PsramVec<u8>> {
     })
 }
 
+/// 读整个文件到普通 `Vec<u8>`。用于最终 API 本身就要求 `Vec<u8>` 的路径，
+/// 避免先落 PSRAM 再 `into_vec()` 复制一遍。
+pub fn read_file_to_vec(path: impl AsRef<Path>) -> Result<Vec<u8>> {
+    with_fs_lock(|| {
+        let p = path.as_ref();
+        let path_str = p
+            .to_str()
+            .ok_or_else(|| Error::config("spiffs_read", "invalid path"))?;
+        let mut f = std::fs::File::open(path_str).map_err(|e| Error::io("spiffs_read", e))?;
+        let capacity = f
+            .metadata()
+            .ok()
+            .and_then(|m| m.len().try_into().ok())
+            .map(|len: usize| len.min(MAX_WRITE_SIZE))
+            .unwrap_or(0);
+        let mut buf = if capacity > 0 {
+            Vec::with_capacity(capacity)
+        } else {
+            Vec::new()
+        };
+        let mut chunk = [0u8; 1024];
+        loop {
+            let n = f
+                .read(&mut chunk)
+                .map_err(|e| Error::io("spiffs_read", e))?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        if buf.len() > MAX_WRITE_SIZE {
+            return Err(Error::config(
+                "spiffs_read",
+                format!("file size {} exceeds {}", buf.len(), MAX_WRITE_SIZE),
+            ));
+        }
+        Ok(buf)
+    })
+}
+
 /// 写字节到文件。超过 MAX_WRITE_SIZE 返回错误。
 /// ESP：SPIFFS 不支持可靠 rename，直接覆盖。host：同目录 tmp + fsync + rename（原子替换）。
 pub fn write_file(path: impl AsRef<Path>, data: &[u8]) -> Result<()> {

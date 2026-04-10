@@ -55,6 +55,7 @@ pub use abstraction::{
 pub use esp32::Esp32Platform;
 pub use fetch_url::fetch_url_with_client;
 pub use heartbeat_file::read_heartbeat_file;
+pub use heap::debug_heap_checkpoint;
 pub use http_client::EspHttpClient;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use linux::LinuxPlatform;

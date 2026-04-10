@@ -1,6 +1,8 @@
 //! ESP 堆查询与 PSRAM 大块分配：供 orchestrator、HTTP 响应体与可观测性复用。
 //! Heap query and PSRAM allocation for ESP.
 
+use crate::error::{Error, Result};
+
 /// 返回当前内部堆空闲字节数。仅 ESP 目标有效；非 ESP 返回 u32::MAX（视为充足）。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub fn heap_free_internal() -> usize {
@@ -91,3 +93,19 @@ pub fn alloc_spiram_buffer(_size: usize) -> Option<*mut u8> {
 #[cfg(not(target_arch = "xtensa"))]
 #[allow(dead_code)]
 pub unsafe fn free_spiram_buffer(_ptr: *mut u8) {}
+
+/// 调试期堆完整性断点：用于把 heap 破坏收窄到具体启动阶段。
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub fn debug_heap_checkpoint(stage: &'static str) -> Result<()> {
+    let ok = unsafe { esp_idf_svc::sys::heap_caps_check_integrity_all(true) };
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::config(stage, "heap integrity check failed"))
+    }
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub fn debug_heap_checkpoint(_stage: &'static str) -> Result<()> {
+    Ok(())
+}

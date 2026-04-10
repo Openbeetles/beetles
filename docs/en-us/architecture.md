@@ -97,6 +97,14 @@ Most of the codebase talks to the platform through abstractions.
 
 The main intentional exception is ESP-specific WSS transport under `channels/wss_gateway/esp_conn.rs`, which directly depends on ESP-IDF-side support.
 
+There are two additional ESP persistence rules worth keeping explicit:
+
+- State-file and SPIFFS access must go through the `platform::spiffs` / `StateFs` boundary. Do not add ad-hoc `std::fs` reads or writes against `/spiffs` or `state_mount_path()` from business modules.
+- Display refresh, presence polling, and other hot loops must not repeatedly scan SPIFFS. Persistent status that needs to appear in those loops should come from caches, snapshots, or explicit recovery/update paths instead of periodic flash reads.
+- Persistent artifacts such as the reboot `runtime_bundle`, which only change on recovery/restart boundaries, must use invalidation-driven caching on ESP. Do not leave bundle file reads in display/presence polling paths.
+- On ESP startup, `soul_kernel recovery` must complete before WiFi bring-up starts. Do not overlap reboot-recovery SPIFFS reads with the asynchronous WiFi startup window.
+- ESP startup recovery must not run inline on `main task`. Run `soul_kernel recovery` on a dedicated startup-recovery execution plane, wait for it to finish, and only then continue into config load and WiFi bring-up so continuity import / serde / SPIFFS work does not consume `CONFIG_ESP_MAIN_TASK_STACK_SIZE`.
+
 ## Related Docs
 
 - [tools.md](tools.md)

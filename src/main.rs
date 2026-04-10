@@ -1,6 +1,6 @@
 //! 甲壳虫 (beetle) - ESP32-S3 firmware entry.
 //! Firmware version is embedded for OTA and ops.
-//! Startup order: NVS → SPIFFS → config → WiFi → memory/session stores → MessageBus → self-check → cron/heartbeat/sinks/dispatch/CLI → agent_loop.
+//! Startup order: NVS → SPIFFS → soul-kernel recovery → config → WiFi → memory/session stores → MessageBus → self-check → cron/heartbeat/sinks/dispatch/CLI → agent_loop.
 //! ESP32: no graceful shutdown; process runs until power off.
 #![allow(clippy::items_after_test_module)]
 
@@ -771,6 +771,13 @@ fn state_change_display_refresh_mode(
     }
 }
 
+fn enforce_heap_checkpoint(stage: &'static str) {
+    if let Err(error) = beetle::platform::debug_heap_checkpoint(stage) {
+        log::error!("[{}] {}", TAG, error);
+        panic!("[{}] {}", TAG, error);
+    }
+}
+
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
 fn update_display_loop_cache(
     loop_state: &mut DisplayLoopState,
@@ -924,11 +931,13 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
 
     loop {
         std::thread::sleep(Duration::from_secs(loop_state.refresh_secs));
+        enforce_heap_checkpoint("heap_display_loop_before_presence");
         let snapshot = beetle::orchestrator::snapshot();
         let presence = beetle::runtime::inspect_platform_presence(
             platform.as_ref(),
             beetle::util::current_unix_secs(),
         );
+        enforce_heap_checkpoint("heap_display_loop_after_presence");
         let pressure = match snapshot.pressure {
             beetle::orchestrator::PressureLevel::Normal => DisplayPressureLevel::Normal,
             beetle::orchestrator::PressureLevel::Cautious => DisplayPressureLevel::Cautious,
@@ -1029,6 +1038,7 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
             if let Err(e) = platform.display_command(cmd) {
                 log::warn!("[{}] display refresh failed: {}", TAG, e);
             }
+            enforce_heap_checkpoint("heap_display_loop_after_state_command");
             loop_state.last_state = Some(state);
             update_display_loop_cache(
                 &mut loop_state,
@@ -1620,6 +1630,7 @@ fn log_start_banner(config_path: Option<&str>) {
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn run_linux_agent_entry(platform: Arc<dyn Platform>) {
+    startup_soul_kernel_recovery(Arc::clone(&platform));
     let (config, wifi_init_ok) = beetle::bootstrap::bootstrap_config_and_wifi(&platform);
     run_app(platform, config, wifi_init_ok);
 }
@@ -1700,8 +1711,87 @@ fn main() {
     log::info!("  甲壳虫 beetle v{}", VERSION);
     log::info!("========================================");
 
+    startup_soul_kernel_recovery(Arc::clone(&platform));
     let (config, wifi_init_ok) = beetle::bootstrap::bootstrap_config_and_wifi(&platform);
     run_app(platform, config, wifi_init_ok);
+}
+
+fn log_soul_kernel_recovery_report(report: &beetle::runtime::SoulKernelRecoveryReport) {
+    if report.restore_attempted {
+        log::info!(
+            "[{}] soul_kernel recovery action={:?} restored_snapshots={} restored_layers={} degraded_after={}",
+            TAG,
+            report.action,
+            report.restored_snapshots,
+            report.restored_layers.len(),
+            report.status_after.degraded,
+        );
+    } else {
+        log::info!(
+            "[{}] soul_kernel ready={} safe_mode_readable={} degraded={}",
+            TAG,
+            report.status_after.minimum_viable,
+            report.status_after.safe_mode_minimum_readable,
+            report.status_after.degraded,
+        );
+    }
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn startup_soul_kernel_recovery(platform: Arc<dyn Platform>) {
+    let report = beetle::runtime::ensure_platform_soul_kernel_recovery(
+        platform.as_ref(),
+        beetle::util::current_unix_secs(),
+    );
+    log_soul_kernel_recovery_report(&report);
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn startup_soul_kernel_recovery(platform: Arc<dyn Platform>) {
+    let now_secs = beetle::util::current_unix_secs();
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let worker_platform = Arc::clone(&platform);
+    match beetle::util::spawn_guarded_with_profile_handle(
+        "startup_recovery",
+        beetle::util::STACK_RESTART_DEFER,
+        Some(beetle::util::SpawnCore::Core1),
+        beetle::util::HttpThreadRole::Background,
+        move || {
+            let report =
+                beetle::runtime::ensure_platform_soul_kernel_recovery(worker_platform.as_ref(), now_secs);
+            let _ = tx.send(report);
+        },
+    ) {
+        Ok(handle) => {
+            match rx.recv() {
+                Ok(report) => log_soul_kernel_recovery_report(&report),
+                Err(error) => {
+                    log::error!(
+                        "[{}] startup_recovery worker exited without report: {}",
+                        TAG,
+                        error
+                    );
+                }
+            }
+            if let Err(error) = handle.join() {
+                let message = if let Some(msg) = error.downcast_ref::<&str>() {
+                    (*msg).to_string()
+                } else if let Some(msg) = error.downcast_ref::<String>() {
+                    msg.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                log::error!("[{}] startup_recovery join failed: {}", TAG, message);
+            }
+        }
+        Err(error) => {
+            log::error!(
+                "[{}] startup_recovery spawn failed; continuing without pre-WiFi recovery: {}",
+                TAG,
+                error
+            );
+        }
+    }
 }
 
 /// 启动编排：存储与总线 → 自检 → 后台任务与通道 → agent 循环与 flush。与 main 解耦便于单文件内可读性。
@@ -1749,6 +1839,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     } else {
         log::warn!("[{}] user read failed", TAG);
     }
+    enforce_heap_checkpoint("heap_after_boot_memory_reads");
 
     let session_store: Arc<dyn SessionStore + Send + Sync> = platform.session_store();
     let pending_retry_store: Arc<dyn beetle::memory::PendingRetryStore + Send + Sync> =
@@ -1805,28 +1896,6 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     let turn_ledger_store: Arc<dyn beetle::memory::TurnLedgerStore + Send + Sync> =
         platform.turn_ledger_store();
     let emotion_signal_store = Arc::new(beetle::memory::MemoryEmotionSignalStore::new());
-    let soul_kernel_report = beetle::runtime::ensure_platform_soul_kernel_recovery(
-        platform.as_ref(),
-        beetle::util::current_unix_secs(),
-    );
-    if soul_kernel_report.restore_attempted {
-        log::info!(
-            "[{}] soul_kernel recovery action={:?} restored_snapshots={} restored_layers={} degraded_after={}",
-            TAG,
-            soul_kernel_report.action,
-            soul_kernel_report.restored_snapshots,
-            soul_kernel_report.restored_layers.len(),
-            soul_kernel_report.status_after.degraded,
-        );
-    } else {
-        log::info!(
-            "[{}] soul_kernel ready={} safe_mode_readable={} degraded={}",
-            TAG,
-            soul_kernel_report.status_after.minimum_viable,
-            soul_kernel_report.status_after.safe_mode_minimum_readable,
-            soul_kernel_report.status_after.degraded,
-        );
-    }
 
     let (bus, user_inbound_rx, outbound_rx) = MessageBus::new(DEFAULT_CAPACITY);
     let (system_inbound_tx, system_inbound_rx, system_inbound_depth) =
@@ -1862,6 +1931,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     );
     // ── Audio init + voice runtime preparation (after MessageBus) ──────────
     beetle::bootstrap::init_audio_if_enabled(&platform, &config);
+    enforce_heap_checkpoint("heap_after_audio_init");
     let mut voice_event_tx_rx =
         build_voice_event_channel(&platform, &config, baidu_token_cache.as_ref());
     let voice_channel_enabled = matches!(

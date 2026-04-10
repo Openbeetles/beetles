@@ -29,7 +29,7 @@ fn map_read_result(r: std::result::Result<Vec<u8>, Error>) -> Result<Option<Vec<
 impl StateFs for Esp32StateFs {
     fn read(&self, rel_path: &str) -> Result<Option<Vec<u8>>> {
         let path = abs_path(rel_path)?;
-        map_read_result(spiffs::read_file(&path).map(|buf| buf.into_vec()))
+        map_read_result(spiffs::read_file_to_vec(&path))
     }
 
     fn write(&self, rel_path: &str, data: &[u8]) -> Result<()> {

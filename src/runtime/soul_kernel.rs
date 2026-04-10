@@ -14,10 +14,29 @@ use crate::runtime::continuity_flush::{
     ContinuitySnapshotBundle, REL_PATH_REBOOT_CONTINUITY_BUNDLE,
 };
 use serde::{Deserialize, Serialize};
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use std::sync::{Mutex, OnceLock};
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use std::time::{Duration, Instant};
 
 const SOUL_KERNEL_ACTIVE_WINDOW_SECS: u64 = 7 * 86_400;
 const SOUL_KERNEL_ACTIVE_CHAT_LIMIT: usize = 4;
 const SOUL_KERNEL_KEY_MEMORY_SCAN_LIMIT: usize = 64;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+const SOUL_KERNEL_STATUS_CACHE_TTL: Duration = Duration::from_secs(30);
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+#[derive(Clone, Debug)]
+struct CachedSoulKernelStatus {
+    cached_at: Instant,
+    status: SoulKernelStatus,
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+static SOUL_KERNEL_STATUS_CACHE: OnceLock<Mutex<Option<CachedSoulKernelStatus>>> = OnceLock::new();
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+static RUNTIME_BUNDLE_STATUS_CACHE: OnceLock<Mutex<Option<SoulKernelRuntimeBundleStatus>>> =
+    OnceLock::new();
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SoulKernelPromptProjection {
@@ -145,7 +164,12 @@ pub struct SoulKernelRecoveryContext<'a> {
 }
 
 pub fn inspect_platform_soul_kernel(platform: &dyn Platform, now_secs: u64) -> SoulKernelStatus {
-    inspect_soul_kernel(
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    if let Some(status) = cached_platform_soul_kernel_status() {
+        return status;
+    }
+
+    let status = inspect_soul_kernel(
         SoulKernelInspectContext {
             state_fs: platform.state_fs().as_ref(),
             session_store: platform.session_store().as_ref(),
@@ -158,14 +182,22 @@ pub fn inspect_platform_soul_kernel(platform: &dyn Platform, now_secs: u64) -> S
             relationship_topology_store: platform.relationship_topology_store().as_ref(),
         },
         now_secs,
-    )
+    );
+
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    update_platform_soul_kernel_status_cache(&status);
+
+    status
 }
 
 pub fn ensure_platform_soul_kernel_recovery(
     platform: &dyn Platform,
     now_secs: u64,
 ) -> SoulKernelRecoveryReport {
-    ensure_soul_kernel_recovery(
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    invalidate_platform_soul_kernel_status_cache();
+
+    let report = ensure_soul_kernel_recovery(
         SoulKernelRecoveryContext {
             inspect: SoulKernelInspectContext {
                 state_fs: platform.state_fs().as_ref(),
@@ -183,10 +215,24 @@ pub fn ensure_platform_soul_kernel_recovery(
             relationship_constitution_store: platform.relationship_constitution_store().as_ref(),
         },
         now_secs,
-    )
+    );
+
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    update_platform_soul_kernel_status_cache(&report.status_after);
+
+    report
 }
 
 pub fn inspect_soul_kernel(ctx: SoulKernelInspectContext<'_>, now_secs: u64) -> SoulKernelStatus {
+    let runtime_bundle = read_runtime_bundle_status(ctx.state_fs);
+    inspect_soul_kernel_with_runtime_bundle_status(ctx, now_secs, runtime_bundle)
+}
+
+fn inspect_soul_kernel_with_runtime_bundle_status(
+    ctx: SoulKernelInspectContext<'_>,
+    now_secs: u64,
+    runtime_bundle: SoulKernelRuntimeBundleStatus,
+) -> SoulKernelStatus {
     let subject_id = board_subject_scope_id().to_string();
     let session_chat_count = ctx
         .session_store
@@ -228,7 +274,6 @@ pub fn inspect_soul_kernel(ctx: SoulKernelInspectContext<'_>, now_secs: u64) -> 
 
     let (key_memory_readable, key_memory_count, key_memory_error) =
         count_key_memory(ctx.long_term_memory_store, &active_chat_ids);
-    let runtime_bundle = read_runtime_bundle_status(ctx.state_fs);
 
     let identity_anchor_ready = self_authored_core.present || self_model.present;
     let continuity_anchor_ready = self_continuity.present;
@@ -310,7 +355,9 @@ pub fn ensure_soul_kernel_recovery(
     ctx: SoulKernelRecoveryContext<'_>,
     now_secs: u64,
 ) -> SoulKernelRecoveryReport {
-    let status_before = inspect_soul_kernel(
+    let runtime_bundle_load = load_runtime_bundle(ctx.inspect.state_fs);
+    let runtime_bundle_status = runtime_bundle_status_from_load_result(&runtime_bundle_load);
+    let status_before = inspect_soul_kernel_with_runtime_bundle_status(
         SoulKernelInspectContext {
             state_fs: ctx.inspect.state_fs,
             session_store: ctx.inspect.session_store,
@@ -323,6 +370,7 @@ pub fn ensure_soul_kernel_recovery(
             relationship_topology_store: ctx.inspect.relationship_topology_store,
         },
         now_secs,
+        runtime_bundle_status.clone(),
     );
 
     if status_before.expected_bootstrap_empty
@@ -339,7 +387,7 @@ pub fn ensure_soul_kernel_recovery(
         };
     }
 
-    let bundle = match load_runtime_bundle(ctx.inspect.state_fs) {
+    let bundle = match runtime_bundle_load {
         Ok(Some(bundle)) => bundle,
         Ok(None) => {
             return SoulKernelRecoveryReport {
@@ -451,7 +499,7 @@ pub fn ensure_soul_kernel_recovery(
     }
     dedup_strings(&mut restored_layers);
 
-    let status_after = inspect_soul_kernel(
+    let status_after = inspect_soul_kernel_with_runtime_bundle_status(
         SoulKernelInspectContext {
             state_fs: ctx.inspect.state_fs,
             session_store: ctx.inspect.session_store,
@@ -464,6 +512,7 @@ pub fn ensure_soul_kernel_recovery(
             relationship_topology_store: ctx.inspect.relationship_topology_store,
         },
         now_secs,
+        runtime_bundle_status,
     );
 
     let action = if restored_snapshots > 0 || !restored_layers.is_empty() {
@@ -547,13 +596,29 @@ fn is_soul_kernel_key_memory(entry: &LongTermMemoryEntry, active_chat_ids: &[Str
 }
 
 fn read_runtime_bundle_status(state_fs: &dyn StateFs) -> SoulKernelRuntimeBundleStatus {
-    match load_runtime_bundle(state_fs) {
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    if let Some(status) = cached_runtime_bundle_status() {
+        return status;
+    }
+
+    let status = runtime_bundle_status_from_load_result(&load_runtime_bundle(state_fs));
+
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    update_runtime_bundle_status_cache(&status);
+
+    status
+}
+
+fn runtime_bundle_status_from_load_result(
+    result: &std::result::Result<Option<ContinuitySnapshotBundle>, String>,
+) -> SoulKernelRuntimeBundleStatus {
+    match result {
         Ok(Some(bundle)) => SoulKernelRuntimeBundleStatus {
             present: true,
             loadable: true,
             snapshot_count: bundle.snapshots.len(),
-            primary_chat_id: bundle.primary_chat_id,
-            reason: Some(bundle.reason),
+            primary_chat_id: bundle.primary_chat_id.clone(),
+            reason: Some(bundle.reason.clone()),
             flushed_at: Some(bundle.flushed_at),
             error: None,
         },
@@ -565,7 +630,7 @@ fn read_runtime_bundle_status(state_fs: &dyn StateFs) -> SoulKernelRuntimeBundle
             primary_chat_id: None,
             reason: None,
             flushed_at: None,
-            error: Some(error),
+            error: Some(error.clone()),
         },
     }
 }
@@ -607,6 +672,75 @@ fn push_layer_degradation(layer_name: &str, status: &SoulKernelLayerStatus, out:
 fn dedup_strings(values: &mut Vec<String>) {
     values.sort();
     values.dedup();
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn soul_kernel_status_cache() -> &'static Mutex<Option<CachedSoulKernelStatus>> {
+    SOUL_KERNEL_STATUS_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn runtime_bundle_status_cache() -> &'static Mutex<Option<SoulKernelRuntimeBundleStatus>> {
+    RUNTIME_BUNDLE_STATUS_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn cached_platform_soul_kernel_status() -> Option<SoulKernelStatus> {
+    let guard = soul_kernel_status_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let cached = guard.as_ref()?;
+    (cached.cached_at.elapsed() <= SOUL_KERNEL_STATUS_CACHE_TTL).then(|| cached.status.clone())
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn cached_runtime_bundle_status() -> Option<SoulKernelRuntimeBundleStatus> {
+    runtime_bundle_status_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn update_runtime_bundle_status_cache(status: &SoulKernelRuntimeBundleStatus) {
+    let mut guard = runtime_bundle_status_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    *guard = Some(status.clone());
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn update_platform_soul_kernel_status_cache(status: &SoulKernelStatus) {
+    let mut guard = soul_kernel_status_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    *guard = Some(CachedSoulKernelStatus {
+        cached_at: Instant::now(),
+        status: status.clone(),
+    });
+    update_runtime_bundle_status_cache(&status.runtime_bundle);
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn clear_platform_soul_kernel_status_cache() {
+    let mut guard = soul_kernel_status_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    *guard = None;
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn clear_runtime_bundle_status_cache() {
+    let mut guard = runtime_bundle_status_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    *guard = None;
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub(crate) fn invalidate_platform_soul_kernel_status_cache() {
+    clear_platform_soul_kernel_status_cache();
+    clear_runtime_bundle_status_cache();
 }
 
 #[cfg(test)]
@@ -679,6 +813,47 @@ mod tests {
                 }
             }
             Ok(names.into_iter().collect())
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingStateFs {
+        inner: MemoryStateFs,
+        reads: Mutex<HashMap<String, usize>>,
+    }
+
+    impl CountingStateFs {
+        fn read_count(&self, rel_path: &str) -> usize {
+            self.reads
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(rel_path)
+                .copied()
+                .unwrap_or(0)
+        }
+    }
+
+    impl StateFs for CountingStateFs {
+        fn read(&self, rel_path: &str) -> Result<Option<Vec<u8>>> {
+            self.reads
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .entry(rel_path.to_string())
+                .and_modify(|count| *count += 1)
+                .or_insert(1);
+            self.inner.read(rel_path)
+        }
+
+        fn write(&self, rel_path: &str, data: &[u8]) -> Result<()> {
+            self.inner.write(rel_path, data)
+        }
+
+        fn remove(&self, rel_path: &str) -> Result<()> {
+            self.inner.remove(rel_path)
+        }
+
+        fn list_dir(&self, rel_path: &str) -> Result<Vec<String>> {
+            self.inner.list_dir(rel_path)
         }
     }
 
@@ -1057,7 +1232,7 @@ mod tests {
     }
 
     struct TestInspectStores<'a> {
-        state_fs: &'a MemoryStateFs,
+        state_fs: &'a dyn StateFs,
         session_store: &'a TestSessionStore,
         long_term_store: &'a TestLongTermStore,
         self_model_store: &'a TestSelfModelStore,
@@ -1298,5 +1473,119 @@ mod tests {
         assert!(self_model_store.get(&subject_id).unwrap().is_some());
         assert!(self_authored_core_store.get(&subject_id).unwrap().is_some());
         assert!(self_continuity_store.get(&subject_id).unwrap().is_some());
+    }
+
+    #[test]
+    fn recovery_reads_runtime_bundle_only_once() {
+        let state_fs = CountingStateFs::default();
+        let session_store = TestSessionStore::default();
+        session_store
+            .chat_ids
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push("chat-a".to_string());
+        let long_term_store = TestLongTermStore::default();
+        let self_model_store = TestSelfModelStore::default();
+        let self_authored_core_store = TestSelfAuthoredCoreStore::default();
+        let core_revision_ledger_store = TestCoreRevisionLedgerStore::default();
+        let self_continuity_store = TestSelfContinuityStore::default();
+        let relationship_portfolio_store = TestRelationshipPortfolioStore::default();
+        let relationship_topology_store = TestRelationshipTopologyStore::default();
+        let session_summary_store = TestSessionSummaryStore::default();
+        let execution_state_store = TestExecutionStateStore::default();
+        let relationship_constitution_store = TestRelationshipConstitutionStore::default();
+
+        let subject_id = board_subject_scope_id().to_string();
+        self_model_store
+            .set(
+                &subject_id,
+                &SelfModel {
+                    continuity_anchor: "steady self".to_string(),
+                    updated_at: 90,
+                    ..SelfModel::default()
+                },
+            )
+            .unwrap();
+        self_authored_core_store
+            .set(
+                &subject_id,
+                &SelfAuthoredCore {
+                    identity_anchor: "board self".to_string(),
+                    updated_at: 90,
+                    ..SelfAuthoredCore::default()
+                },
+            )
+            .unwrap();
+        self_continuity_store
+            .set(
+                &subject_id,
+                &SelfContinuity {
+                    current_self_state: "still here".to_string(),
+                    last_user_chat_id: "chat-a".to_string(),
+                    last_user_channel: "telegram".to_string(),
+                    updated_at: 90,
+                    ..SelfContinuity::default()
+                },
+            )
+            .unwrap();
+
+        let snapshot = crate::memory::export_continuity_snapshot(
+            crate::memory::ContinuitySnapshotExportContext {
+                long_term_memory_store: &long_term_store,
+                session_summary_store: &session_summary_store,
+                execution_state_store: &execution_state_store,
+                self_model_store: &self_model_store,
+                self_authored_core_store: &self_authored_core_store,
+                core_revision_ledger_store: &core_revision_ledger_store,
+                self_continuity_store: &self_continuity_store,
+                relationship_constitution_store: &relationship_constitution_store,
+                relationship_portfolio_store: &relationship_portfolio_store,
+                relationship_topology_store: &relationship_topology_store,
+            },
+            "chat-a",
+            crate::memory::ContinuitySnapshotMode::FullRestore,
+            100,
+        )
+        .unwrap();
+
+        let bundle = ContinuitySnapshotBundle {
+            version: 1,
+            reason: "agent_exit".to_string(),
+            flushed_at: 100,
+            primary_chat_id: Some("chat-a".to_string()),
+            snapshots: vec![snapshot],
+        };
+        state_fs
+            .write(
+                REL_PATH_REBOOT_CONTINUITY_BUNDLE,
+                serde_json::to_vec(&bundle).unwrap().as_slice(),
+            )
+            .unwrap();
+
+        self_model_store.clear(&subject_id).unwrap();
+        self_authored_core_store.clear(&subject_id).unwrap();
+        self_continuity_store.clear(&subject_id).unwrap();
+
+        let _ = ensure_soul_kernel_recovery(
+            SoulKernelRecoveryContext {
+                inspect: inspect_ctx(TestInspectStores {
+                    state_fs: &state_fs,
+                    session_store: &session_store,
+                    long_term_store: &long_term_store,
+                    self_model_store: &self_model_store,
+                    self_authored_core_store: &self_authored_core_store,
+                    core_revision_ledger_store: &core_revision_ledger_store,
+                    self_continuity_store: &self_continuity_store,
+                    relationship_portfolio_store: &relationship_portfolio_store,
+                    relationship_topology_store: &relationship_topology_store,
+                }),
+                session_summary_store: &session_summary_store,
+                execution_state_store: &execution_state_store,
+                relationship_constitution_store: &relationship_constitution_store,
+            },
+            120,
+        );
+
+        assert_eq!(state_fs.read_count(REL_PATH_REBOOT_CONTINUITY_BUNDLE), 1);
     }
 }
