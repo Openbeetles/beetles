@@ -100,7 +100,9 @@ mod tests {
     fn post_reply_quiet_window_requires_recent_silence() {
         assert_eq!(
             post_reply_quiet_window_remaining_ms(1_000, 995),
-            Some(crate::constants::POST_REPLY_BACKGROUND_QUIET_WINDOW_SECS.saturating_sub(5) * 1000)
+            Some(
+                crate::constants::POST_REPLY_BACKGROUND_QUIET_WINDOW_SECS.saturating_sub(5) * 1000
+            )
         );
         assert_eq!(post_reply_quiet_window_remaining_ms(1_000, 0), None);
         assert_eq!(

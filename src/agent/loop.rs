@@ -3,10 +3,15 @@
 #![allow(clippy::too_many_arguments)]
 
 mod background_jobs;
+mod delivery_handoff;
 mod driver;
+mod ingress_admission;
+mod reply_finalize;
 mod task_execution;
 mod tool_round;
+mod turn_execution;
 mod turn_finalize;
+mod turn_prepare;
 mod worker_context;
 mod worker_context_stages;
 
@@ -73,7 +78,7 @@ use crate::memory::{
     TurnPersonaLedger, TurnPersonaReviewLedger, TurnToolPathLedger, WorldSenseStore,
 };
 use crate::metrics;
-use crate::orchestrator::admission::{AdmissionDecision, LlmDecision, ToolDecision};
+use crate::orchestrator::admission::{LlmDecision, ToolDecision};
 use crate::runtime::system_work::{
     classify_system_work, CHANNEL_CRON, CHANNEL_LONG_TERM_MEMORY_REFRESH,
     CHANNEL_POST_REPLY_MAINTENANCE, CHANNEL_SELF_RUNTIME,
@@ -109,16 +114,19 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use self::background_jobs::{
-    enqueue_post_reply_maintenance_job, handle_admission_defer, handle_admission_reject,
     maybe_yield_background_job_to_pending_user, run_background_job_with_accounting,
 };
+use self::delivery_handoff::deliver_turn;
 use self::driver::{
     enqueue_end_turn_followup, prepare_system_with_suffix, recv_next_agent_msg,
     resolve_end_turn_followup, run_final_answer_recovery_round,
 };
+use self::ingress_admission::admit_turn;
+use self::reply_finalize::{complete_turn, finalize_turn};
 use self::task_execution::try_run_task_execution;
 use self::tool_round::execute_tool_use_round;
-use self::turn_finalize::{finalize_lane_turn, persist_turn_ledger};
+use self::turn_execution::execute_turn;
+use self::turn_finalize::persist_turn_ledger;
 use self::worker_context::prepare_worker_conversation;
 use super::deliberation::{
     compile_turn_deliberation_gate, recovery_suffix_for_gate, render_turn_deliberation_gate_block,
@@ -2426,13 +2434,6 @@ fn run_agent_loop_main(
         if msg.req_id.is_none() {
             msg.req_id = Some(next_req_id(&msg.channel, &msg.chat_id));
         }
-        let queue_wait_ms = now_unix_ms().saturating_sub(msg.enqueue_ts_ms) as u128;
-        if msg.ingress == IngressKind::System {
-            metrics::record_system_queue_wait_ms(queue_wait_ms);
-        } else {
-            metrics::record_user_queue_wait_ms(queue_wait_ms);
-        }
-
         // Periodic GC: evict expired failure/defer entries to prevent unbounded growth.
         msg_since_gc += 1;
         if msg_since_gc >= GC_INTERVAL_MSGS
@@ -2445,7 +2446,6 @@ fn run_agent_loop_main(
             defer_tracker.retain(|_, (_, ts)| now_gc.duration_since(*ts) < DEFER_EXPIRY);
         }
 
-        let work_class = classify_system_work(msg.channel.as_ref(), msg.ingress);
         let msg_key = {
             let mut hasher = DefaultHasher::new();
             msg.channel.hash(&mut hasher);
@@ -2472,33 +2472,7 @@ fn run_agent_loop_main(
             continue;
         }
 
-        // Refresh heap state if stale before admission check.
-        crate::orchestrator::refresh_heap_if_stale();
-        match crate::orchestrator::should_accept_inbound_pub(&msg.channel, msg.ingress) {
-            AdmissionDecision::Accept => {}
-            AdmissionDecision::Defer { delay_ms } => {
-                handle_admission_defer(
-                    delay_ms,
-                    msg,
-                    msg_key,
-                    AdmissionDeferContext {
-                        loc,
-                        user_inbound_tx: &user_inbound_tx,
-                        system_inbound_tx: &system_inbound_tx,
-                        outbound_tx: &outbound_tx,
-                        config,
-                        defer_tracker: &mut defer_tracker,
-                        low_mem_defer_log: &mut low_mem_defer_log,
-                    },
-                );
-                continue;
-            }
-            AdmissionDecision::Reject { reason } => {
-                handle_admission_reject(reason, &mut low_mem_defer_log);
-                continue;
-            }
-        }
-        let admission_ms = msg_start.elapsed().as_millis();
+        let work_class = classify_system_work(msg.channel.as_ref(), msg.ingress);
 
         if work_class.is_background_job() && is_lane_background_job(&msg) {
             run_background_job_with_accounting(
@@ -2514,24 +2488,28 @@ fn run_agent_loop_main(
             continue;
         }
 
-        // LLM 门控先于任务槽位获取与 typing 提示，确保：
-        // 1. RetryLater 睡眠期间 active_agent_tasks 不被错误计为 1；
-        // 2. typing 仅在真正进入 LLM 路径时才发送，避免产生空响应。
-        msg = match handle_llm_gate(
+        let admitted = match admit_turn(
             msg,
+            msg_start,
             loc,
             &user_inbound_tx,
             &system_inbound_tx,
             &outbound_tx,
             config,
+            &mut defer_tracker,
+            &mut low_mem_defer_log,
         ) {
-            GateResult::Proceed(msg) => msg,
-            GateResult::Skipped => continue,
+            Some(admitted) => admitted,
+            None => continue,
         };
-
-        // Gate 通过后获取任务槽位：Guard Drop 时自动递减，覆盖整个任务生命周期（含工具调用、会话写入、回复发送）。
-        // Acquire task slot only after gate passes; guard auto-decrements on drop.
-        let _agent_task_guard = crate::orchestrator::begin_agent_task();
+        let ingress_admission::AdmittedTurn {
+            mut msg,
+            msg_key,
+            queue_wait_ms,
+            admission_ms,
+            work_class: _work_class,
+            _agent_task_guard,
+        } = admitted;
         let turn_started_at_ms = now_unix_ms();
         let mut turn_ledger = build_turn_ledger_start(
             msg.req_id.as_deref().unwrap_or_default(),
@@ -2562,7 +2540,7 @@ fn run_agent_loop_main(
                 worker_prepare_ms
             );
         }
-        let final_content = run_worker_path(
+        let executed = execute_turn(
             http,
             worker_llm,
             &msg,
@@ -2574,7 +2552,7 @@ fn run_agent_loop_main(
             loc,
         );
 
-        let (outcome, telemetry) = match final_content {
+        let turn_execution::ExecutedTurn { outcome, telemetry } = match executed {
             Ok(ok) => ok,
             Err(e) => {
                 handle_worker_path_error(
@@ -2597,28 +2575,11 @@ fn run_agent_loop_main(
                 continue;
             }
         };
-        let WorkerRunTelemetry {
-            streamed,
-            latency,
-            delivery,
-            any_tool_used,
-            external_content_used,
-            used_final_answer_recovery,
-            task_execution_used,
-            pressure,
-            runtime_mode,
-            deliberation_class,
-            tool_blocker,
-            prompt_recall_intent,
-            runtime_skill_selected_ids,
-            task_learning_selected_ids,
-            subject_state,
-            mental_privacy_adjudication,
-            persona_priority_adjudication,
-        } = telemetry;
-        finalize_lane_turn(
-            http,
-            worker_llm,
+        let finalized = finalize_turn(
+            http, worker_llm, config, &msg, loc, msg_start, outcome, telemetry,
+        );
+        let handoff = deliver_turn(&outbound_tx, &msg, &finalized);
+        complete_turn(
             LaneTurnFinalizeContext {
                 worker_lane_tag: AGENT_LOOP_TAG,
                 config,
@@ -2636,26 +2597,8 @@ fn run_agent_loop_main(
             },
             &mut llm_failure_count,
             &mut defer_tracker,
-            outcome,
-            WorkerRunTelemetry {
-                streamed,
-                latency,
-                delivery,
-                any_tool_used,
-                external_content_used,
-                used_final_answer_recovery,
-                task_execution_used,
-                pressure,
-                runtime_mode,
-                deliberation_class,
-                tool_blocker,
-                prompt_recall_intent,
-                runtime_skill_selected_ids,
-                task_learning_selected_ids,
-                subject_state,
-                mental_privacy_adjudication,
-                persona_priority_adjudication,
-            },
+            finalized,
+            handoff,
         );
     }
     Ok(())

@@ -74,7 +74,10 @@ mod tests {
         let payload = body(&ctx).unwrap();
         let parsed: Value = serde_json::from_str(&payload).unwrap();
 
-        assert_eq!(parsed.get("wifi").and_then(Value::as_str), Some("disconnected"));
+        assert_eq!(
+            parsed.get("wifi").and_then(Value::as_str),
+            Some("disconnected")
+        );
         assert!(parsed.get("last_error").is_some());
         assert!(parsed.get("display").is_some());
         assert!(parsed.get("audio").is_some());

@@ -254,7 +254,10 @@ pub(super) fn try_run_task_execution(
             is_group: false,
         };
         let mut step_repeat = HashMap::new();
-        let (step_outcome, step_telemetry) = super::run_worker_path(
+        let super::turn_execution::ExecutedTurn {
+            outcome: step_outcome,
+            telemetry: step_telemetry,
+        } = super::turn_execution::execute_turn(
             tool_ctx,
             worker_llm,
             &step_msg,

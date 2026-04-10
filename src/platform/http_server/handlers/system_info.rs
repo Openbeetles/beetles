@@ -176,7 +176,10 @@ mod tests {
         let payload = body(&ctx).unwrap();
         let parsed: Value = serde_json::from_str(&payload).unwrap();
 
-        assert_eq!(parsed.get("product_name").and_then(Value::as_str), Some("beetle"));
+        assert_eq!(
+            parsed.get("product_name").and_then(Value::as_str),
+            Some("beetle")
+        );
         assert!(parsed.get("system_status").is_none());
         assert!(parsed.get("firmware_version").is_some());
         assert!(parsed.get("board_id").is_some());

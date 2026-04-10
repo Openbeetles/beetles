@@ -51,9 +51,13 @@ mod tests {
         assert!(parsed.get("outbound_depth").is_none());
         assert!(parsed.get("last_error").is_none());
         assert!(parsed["platform_contract"].get("board_id").is_none());
-        assert!(parsed["platform_contract"].get("firmware_version").is_none());
+        assert!(parsed["platform_contract"]
+            .get("firmware_version")
+            .is_none());
         assert!(parsed["platform_contract"].get("wifi_connected").is_none());
-        assert!(parsed["platform_contract"].get("display_available").is_none());
+        assert!(parsed["platform_contract"]
+            .get("display_available")
+            .is_none());
         assert!(parsed["platform_contract"].get("ota_supported").is_none());
         assert!(parsed["platform_contract"]
             .get("audio_duplex_profile")

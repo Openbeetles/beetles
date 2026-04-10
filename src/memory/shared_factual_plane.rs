@@ -591,7 +591,10 @@ fn runtime_authoritative_reconcile_override(
     )
     .is_some_and(|state| state.status != crate::orchestrator::RuntimeCapabilityStatus::Online);
     if input_offline || output_offline {
-        Some(("audio_capability_offline", SharedFactualReconcileAction::Stale))
+        Some((
+            "audio_capability_offline",
+            SharedFactualReconcileAction::Stale,
+        ))
     } else {
         None
     }

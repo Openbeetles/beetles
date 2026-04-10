@@ -322,11 +322,10 @@ mod tests {
         let config = AppConfig::load_from_env();
         let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
         crate::platform::pairing::clear_code(platform.config_store().as_ref()).unwrap();
-        assert!(crate::platform::pairing::set_code(
-            platform.config_store().as_ref(),
-            "123456",
-        )
-        .unwrap());
+        assert!(
+            crate::platform::pairing::set_code(platform.config_store().as_ref(), "123456",)
+                .unwrap()
+        );
 
         let skill_storage = platform.skill_storage();
         let skill_meta_store = platform.skill_meta_store();
@@ -425,8 +424,8 @@ mod tests {
     #[test]
     fn supervisor_control_plane_keeps_webhook_ingress_unavailable() {
         let (ctx, router_env) = build_test_context();
-        let out = dispatch(&ctx, &router_env, request("POST", "/api/webhook"))
-            .expect("webhook dispatch");
+        let out =
+            dispatch(&ctx, &router_env, request("POST", "/api/webhook")).expect("webhook dispatch");
         assert_eq!(out.status, 404);
     }
 }
