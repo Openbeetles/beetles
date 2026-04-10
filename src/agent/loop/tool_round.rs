@@ -71,7 +71,7 @@ fn outbound_error_tool_execution_result(
     error: &crate::error::Error,
 ) -> ToolCallExecutionResult {
     metrics::record_tool_call(false);
-    metrics::record_error_by_stage(error.stage());
+    metrics::record_error_by_stage(error.metrics_stage());
     log::error!(
         "[agent_tool] {} outbound intent delivery failed: {}",
         tool_name,
@@ -101,7 +101,7 @@ fn execute_error_tool_execution_result(
     error: &crate::error::Error,
 ) -> ToolCallExecutionResult {
     metrics::record_tool_call(false);
-    metrics::record_error_by_stage(error.stage());
+    metrics::record_error_by_stage(error.metrics_stage());
     log::error!(
         "[agent_tool] {} execute failed: {} input={:?}",
         tool_name,

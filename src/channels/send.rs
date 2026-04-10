@@ -60,7 +60,7 @@ pub(crate) fn record_outbound_http_success() {
 
 pub(crate) fn record_outbound_http_failure(error: &crate::error::Error) {
     crate::metrics::record_channel_http_result(false);
-    crate::metrics::record_error_by_stage(error.stage());
+    crate::metrics::record_error_by_stage(error.metrics_stage());
     if error.is_tls_admission() || error.is_connect_error() || error.is_retryable_upstream() {
         crate::orchestrator::observe_runtime_capability_failure(
             crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
@@ -214,5 +214,22 @@ mod tests {
             capability.reason,
             crate::orchestrator::RuntimeCapabilityReason::Nominal
         );
+    }
+
+    #[test]
+    fn wrapped_tls_admission_failure_records_root_stage() {
+        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        crate::orchestrator::reset_runtime_capabilities_for_tests();
+        let before = crate::metrics::snapshot();
+        let err = Error::Other {
+            source: Box::new(Error::config("tls_admission", "permit timeout")),
+            stage: "telegram_send",
+        };
+
+        record_outbound_http_failure(&err);
+
+        let after = crate::metrics::snapshot();
+        assert!(after.channel_http_fail >= before.channel_http_fail + 1);
+        assert!(after.errors_tls_admission >= before.errors_tls_admission + 1);
     }
 }

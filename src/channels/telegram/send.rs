@@ -208,19 +208,32 @@ pub fn send_chat_action<H: ChannelHttpClient + ?Sized>(
         source: Box::new(e),
         stage: "sendChatAction",
     })?;
-    let (status, _) = http
-        .http_post(&url, &body_bytes)
-        .map_err(|e| map_stage(e, "sendChatAction"))?;
+    let (status, _) = match http.http_post(&url, &body_bytes) {
+        Ok(resp) => resp,
+        Err(e) => {
+            let error = map_stage(e, "sendChatAction");
+            record_outbound_http_failure(&error);
+            return Err(error);
+        }
+    };
     if status == 401 {
         LAST_401_SECS.store(now_secs, Ordering::Relaxed);
+        let error = Error::Http {
+            status_code: status,
+            stage: "sendChatAction",
+        };
+        record_outbound_http_failure(&error);
         return Ok(());
     }
     if status >= 400 {
-        return Err(Error::Http {
+        let error = Error::Http {
             status_code: status,
             stage: "sendChatAction",
-        });
+        };
+        record_outbound_http_failure(&error);
+        return Err(error);
     }
+    record_outbound_http_success();
     Ok(())
 }
 
@@ -242,15 +255,23 @@ pub fn set_message_reaction<H: ChannelHttpClient>(
         source: Box::new(e),
         stage: "setMessageReaction",
     })?;
-    let (status, _) = http
-        .http_post(&url, &body_bytes)
-        .map_err(|e| map_stage(e, "setMessageReaction"))?;
+    let (status, _) = match http.http_post(&url, &body_bytes) {
+        Ok(resp) => resp,
+        Err(e) => {
+            let error = map_stage(e, "setMessageReaction");
+            record_outbound_http_failure(&error);
+            return Err(error);
+        }
+    };
     if status >= 400 {
-        return Err(Error::Http {
+        let error = Error::Http {
             status_code: status,
             stage: "setMessageReaction",
-        });
+        };
+        record_outbound_http_failure(&error);
+        return Err(error);
     }
+    record_outbound_http_success();
     Ok(())
 }
 
@@ -270,15 +291,23 @@ pub fn send_and_get_id<H: ChannelHttpClient>(
         stage: "telegram_send",
     })?;
     let url = format!("{}{}/sendMessage", TELEGRAM_API_BASE, token);
-    let (status, resp_body) = http
-        .http_post(&url, &body_bytes)
-        .map_err(|e| map_stage(e, "telegram_send"))?;
+    let (status, resp_body) = match http.http_post(&url, &body_bytes) {
+        Ok(resp) => resp,
+        Err(e) => {
+            let error = map_stage(e, "telegram_send");
+            record_outbound_http_failure(&error);
+            return Err(error);
+        }
+    };
     if status >= 400 {
-        return Err(Error::Http {
+        let error = Error::Http {
             status_code: status,
             stage: "telegram_send",
-        });
+        };
+        record_outbound_http_failure(&error);
+        return Err(error);
     }
+    record_outbound_http_success();
     #[derive(serde::Deserialize)]
     struct R {
         result: Option<Inner>,
@@ -315,15 +344,23 @@ pub fn edit_message_text<H: ChannelHttpClient>(
         stage: "telegram_edit",
     })?;
     let url = format!("{}{}/editMessageText", TELEGRAM_API_BASE, token);
-    let (status, _) = http
-        .http_post(&url, &body_bytes)
-        .map_err(|e| map_stage(e, "telegram_edit"))?;
+    let (status, _) = match http.http_post(&url, &body_bytes) {
+        Ok(resp) => resp,
+        Err(e) => {
+            let error = map_stage(e, "telegram_edit");
+            record_outbound_http_failure(&error);
+            return Err(error);
+        }
+    };
     if status >= 400 {
-        return Err(Error::Http {
+        let error = Error::Http {
             status_code: status,
             stage: "telegram_edit",
-        });
+        };
+        record_outbound_http_failure(&error);
+        return Err(error);
     }
+    record_outbound_http_success();
     Ok(())
 }
 
@@ -350,4 +387,85 @@ pub fn get_bot_username<H: ChannelHttpClient + ?Sized>(
         stage: "getMe_parse",
     })?;
     Ok(r.result.and_then(|u| u.username).filter(|s| !s.is_empty()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::ResponseBody;
+    use std::collections::VecDeque;
+
+    #[derive(Default)]
+    struct StubHttp {
+        post_results: VecDeque<Result<(u16, ResponseBody)>>,
+    }
+
+    impl ChannelHttpClient for StubHttp {
+        fn http_get(&mut self, _url: &str) -> Result<(u16, ResponseBody)> {
+            Ok((200, ResponseBody::Heap(b"{}".to_vec())))
+        }
+
+        fn http_get_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+        ) -> Result<(u16, ResponseBody)> {
+            Ok((200, ResponseBody::Heap(b"{}".to_vec())))
+        }
+
+        fn http_post(&mut self, _url: &str, _body: &[u8]) -> Result<(u16, ResponseBody)> {
+            self.post_results
+                .pop_front()
+                .unwrap_or_else(|| Ok((200, ResponseBody::Heap(b"{}".to_vec()))))
+        }
+
+        fn http_post_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> Result<(u16, ResponseBody)> {
+            self.http_post("", &[])
+        }
+    }
+
+    #[test]
+    fn send_and_get_id_records_outbound_http_success() {
+        crate::orchestrator::reset_runtime_capabilities_for_tests();
+        let before = crate::metrics::snapshot();
+        let mut http = StubHttp {
+            post_results: VecDeque::from([Ok((
+                200,
+                ResponseBody::Heap(br#"{"result":{"message_id":42}}"#.to_vec()),
+            ))]),
+        };
+
+        let message_id = send_and_get_id(&mut http, "token", "chat-1", "hello").expect("send");
+
+        let after = crate::metrics::snapshot();
+        assert_eq!(message_id.as_deref(), Some("42"));
+        assert!(after.channel_http_ok >= before.channel_http_ok + 1);
+    }
+
+    #[test]
+    fn send_chat_action_failure_marks_outbound_http_offline() {
+        crate::orchestrator::reset_runtime_capabilities_for_tests();
+        let before = crate::metrics::snapshot();
+        let mut http = StubHttp {
+            post_results: VecDeque::from([Err(Error::config("tls_admission", "permit timeout"))]),
+        };
+
+        let _ = send_chat_action(&mut http, "token", "chat-1", "typing");
+
+        let after = crate::metrics::snapshot();
+        let capability = crate::orchestrator::get_runtime_capability(
+            crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
+        )
+        .expect("capability");
+        assert!(after.channel_http_fail >= before.channel_http_fail + 1);
+        assert_eq!(
+            capability.status,
+            crate::orchestrator::RuntimeCapabilityStatus::Offline
+        );
+    }
 }

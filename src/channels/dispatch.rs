@@ -170,6 +170,17 @@ fn replay_cooldown_buffer_with<FH, FS>(
     }
 }
 
+fn replay_ready_messages_for_tick<FH, FS>(
+    cooldown_buffer: &mut VecDeque<crate::bus::PcMsg>,
+    is_in_cooldown: FH,
+    send: FS,
+) where
+    FH: FnMut(&str) -> bool,
+    FS: FnMut(&crate::bus::PcMsg) -> bool,
+{
+    replay_cooldown_buffer_with(cooldown_buffer, is_in_cooldown, send);
+}
+
 fn dispatch_via_sink(
     tag: &str,
     sinks: &ChannelSinks,
@@ -251,6 +262,13 @@ pub fn run_dispatch(outbound_rx: OutboundRx, sinks: Arc<ChannelSinks>) {
 
     loop {
         crate::platform::task_wdt::feed_current_task();
+        replay_ready_messages_for_tick(&mut cooldown_buffer, is_channel_in_cooldown, |buffered| {
+            if outbound_blocked(buffered) {
+                return false;
+            }
+            let buffered_content = truncate_content_to_max(&buffered.content, MAX_CONTENT_LEN);
+            dispatch_via_sink(TAG, sinks.as_ref(), buffered, &buffered_content)
+        });
         let msg = match outbound_rx.recv_timeout(Duration::from_millis(DISPATCH_POLL_MAX_WAIT_MS)) {
             Ok(m) => m,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
@@ -264,15 +282,6 @@ pub fn run_dispatch(outbound_rx: OutboundRx, sinks: Arc<ChannelSinks>) {
         if content.trim() == "SILENT" || msg.channel.as_ref() == "cron" {
             continue;
         }
-
-        // Replay buffered messages whose channel is out of cooldown
-        replay_cooldown_buffer_with(&mut cooldown_buffer, is_channel_in_cooldown, |buffered| {
-            if outbound_blocked(buffered) {
-                return false;
-            }
-            let buffered_content = truncate_content_to_max(&buffered.content, MAX_CONTENT_LEN);
-            dispatch_via_sink(TAG, sinks.as_ref(), buffered, &buffered_content)
-        });
 
         if outbound_blocked(&msg) {
             log::info!(
@@ -537,6 +546,7 @@ pub fn spawn_sender_threads(
 #[cfg(test)]
 mod tests {
     use super::replay_cooldown_buffer_with;
+    use super::replay_ready_messages_for_tick;
     use crate::bus::PcMsg;
     use std::collections::VecDeque;
 
@@ -588,5 +598,23 @@ mod tests {
         assert_eq!(buffer.len(), 2);
         assert_eq!(buffer[0].content, "first-ready");
         assert_eq!(buffer[1].content, "second-ready");
+    }
+
+    #[test]
+    fn idle_tick_replays_ready_messages_without_new_inbound() {
+        let mut buffer = VecDeque::from(vec![build_msg("ready", "chat-1", "deferred")]);
+        let mut replayed = Vec::new();
+
+        replay_ready_messages_for_tick(
+            &mut buffer,
+            |_channel| false,
+            |msg| {
+                replayed.push(msg.content.clone());
+                true
+            },
+        );
+
+        assert_eq!(replayed, vec!["deferred"]);
+        assert!(buffer.is_empty());
     }
 }

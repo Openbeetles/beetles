@@ -61,9 +61,7 @@ impl FeishuTokenCache {
             None => true,
         };
         if need_refresh {
-            let token = acquire_tenant_token(http, app_id, app_secret).ok_or_else(|| {
-                crate::error::Error::config(stage, "failed to acquire tenant_token")
-            })?;
+            let token = acquire_tenant_token_with_stage(http, app_id, app_secret, stage)?;
             self.token = Some((token.clone(), std::time::Instant::now()));
             return Ok(token);
         }
@@ -84,42 +82,58 @@ pub fn acquire_tenant_token<H: ChannelHttpClient + ?Sized>(
     http: &mut H,
     app_id: &str,
     app_secret: &str,
-) -> Option<String> {
+) -> crate::error::Result<String> {
+    acquire_tenant_token_with_stage(http, app_id, app_secret, "feishu_token")
+}
+
+fn acquire_tenant_token_with_stage<H: ChannelHttpClient + ?Sized>(
+    http: &mut H,
+    app_id: &str,
+    app_secret: &str,
+    stage: &'static str,
+) -> crate::error::Result<String> {
     const TAG: &str = "feishu_send";
     let body = FeishuTokenRequest {
         app_id: app_id.to_string(),
         app_secret: app_secret.to_string(),
     };
-    let body_bytes = match serde_json::to_vec(&body) {
-        Ok(b) => b,
-        Err(e) => {
-            log::warn!("[{}] token json: {}", TAG, e);
-            return None;
-        }
-    };
+    let body_bytes = serde_json::to_vec(&body).map_err(|e| crate::error::Error::Other {
+        source: Box::new(e),
+        stage,
+    })?;
     let (status, resp_body) = match http.http_post(FEISHU_TOKEN_URL, &body_bytes) {
         Ok(r) => r,
         Err(e) => {
-            log::warn!("[{}] tenant_access_token failed: {}", TAG, e);
-            return None;
+            let error = crate::error::Error::Other {
+                source: Box::new(e),
+                stage,
+            };
+            record_outbound_http_failure(&error);
+            return Err(error);
         }
     };
     if status >= 400 {
-        log::warn!("[{}] token status={}", TAG, status);
-        return None;
+        let error = crate::error::Error::Http {
+            status_code: status,
+            stage,
+        };
+        record_outbound_http_failure(&error);
+        return Err(error);
     }
-    let token_resp: FeishuTokenResponse = match serde_json::from_slice(resp_body.as_ref()) {
-        Ok(t) => t,
-        Err(e) => {
-            log::warn!("[{}] token parse: {}", TAG, e);
-            return None;
-        }
-    };
+    record_outbound_http_success();
+    let token_resp: FeishuTokenResponse =
+        serde_json::from_slice(resp_body.as_ref()).map_err(|e| crate::error::Error::Other {
+            source: Box::new(e),
+            stage,
+        })?;
     match token_resp.tenant_access_token {
-        Some(t) if !t.is_empty() => Some(t),
+        Some(t) if !t.is_empty() => Ok(t),
         _ => {
             log::warn!("[{}] token empty code={}", TAG, token_resp.code);
-            None
+            Err(crate::error::Error::config(
+                stage,
+                "tenant_access_token missing",
+            ))
         }
     }
 }
@@ -195,10 +209,14 @@ pub fn flush_feishu_sends<H: ChannelHttpClient>(
     if app_id.is_empty() || app_secret.is_empty() {
         return;
     }
-    let token = match acquire_tenant_token(http, app_id, app_secret) {
-        Some(t) => t,
-        None => return,
-    };
+    let token =
+        match acquire_tenant_token_with_stage(http, app_id, app_secret, "feishu_flush_token") {
+            Ok(t) => t,
+            Err(error) => {
+                log::warn!("[feishu_flush] acquire token failed: {}", error);
+                return;
+            }
+        };
     while let Ok((chat_id, content, _req_id)) = rx.try_recv() {
         if let Err(error) = send_feishu_message(http, &token, &chat_id, &content) {
             record_outbound_http_failure(&error);
@@ -313,18 +331,27 @@ pub fn send_and_get_id<H: ChannelHttpClient>(
         ("Authorization", auth_val.as_str()),
         ("Content-Type", "application/json; charset=utf-8"),
     ];
-    let (status, resp_body) = http
-        .http_post_with_headers(FEISHU_SEND_URL, &headers, &body_bytes)
-        .map_err(|e| crate::error::Error::Other {
-            source: Box::new(e),
-            stage: "feishu_send",
-        })?;
+    let (status, resp_body) =
+        match http.http_post_with_headers(FEISHU_SEND_URL, &headers, &body_bytes) {
+            Ok(resp) => resp,
+            Err(e) => {
+                let error = crate::error::Error::Other {
+                    source: Box::new(e),
+                    stage: "feishu_send",
+                };
+                record_outbound_http_failure(&error);
+                return Err(error);
+            }
+        };
     if status >= 400 {
-        return Err(crate::error::Error::Http {
+        let error = crate::error::Error::Http {
             status_code: status,
             stage: "feishu_send",
-        });
+        };
+        record_outbound_http_failure(&error);
+        return Err(error);
     }
+    record_outbound_http_success();
     #[derive(serde::Deserialize)]
     struct R {
         data: Option<Inner>,
@@ -360,18 +387,26 @@ pub fn edit_message<H: ChannelHttpClient>(
         ("Authorization", auth_val.as_str()),
         ("Content-Type", "application/json; charset=utf-8"),
     ];
-    let (status, _) = http
-        .http_patch_with_headers(&url, &headers, &body_bytes)
-        .map_err(|e| crate::error::Error::Other {
-            source: Box::new(e),
-            stage: "feishu_edit",
-        })?;
+    let (status, _) = match http.http_patch_with_headers(&url, &headers, &body_bytes) {
+        Ok(resp) => resp,
+        Err(e) => {
+            let error = crate::error::Error::Other {
+                source: Box::new(e),
+                stage: "feishu_edit",
+            };
+            record_outbound_http_failure(&error);
+            return Err(error);
+        }
+    };
     if status >= 400 {
-        return Err(crate::error::Error::Http {
+        let error = crate::error::Error::Http {
             status_code: status,
             stage: "feishu_edit",
-        });
+        };
+        record_outbound_http_failure(&error);
+        return Err(error);
     }
+    record_outbound_http_success();
     Ok(())
 }
 
@@ -517,4 +552,98 @@ pub fn event_body_to_pcmsg(event_body: &str, allowed_chat_ids: &[String]) -> Opt
     }
     let is_group = matches!(chat_type, "group" | "topic_group");
     PcMsg::new_inbound("feishu", &chat_id, text, is_group).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::ResponseBody;
+    use std::collections::VecDeque;
+
+    #[derive(Default)]
+    struct StubHttp {
+        post_results: VecDeque<crate::error::Result<(u16, ResponseBody)>>,
+        patch_results: VecDeque<crate::error::Result<(u16, ResponseBody)>>,
+    }
+
+    impl ChannelHttpClient for StubHttp {
+        fn http_get(&mut self, _url: &str) -> crate::error::Result<(u16, ResponseBody)> {
+            Ok((200, ResponseBody::Heap(b"{}".to_vec())))
+        }
+
+        fn http_get_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+        ) -> crate::error::Result<(u16, ResponseBody)> {
+            Ok((200, ResponseBody::Heap(b"{}".to_vec())))
+        }
+
+        fn http_post(
+            &mut self,
+            _url: &str,
+            _body: &[u8],
+        ) -> crate::error::Result<(u16, ResponseBody)> {
+            self.post_results
+                .pop_front()
+                .unwrap_or_else(|| Ok((200, ResponseBody::Heap(b"{}".to_vec()))))
+        }
+
+        fn http_post_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> crate::error::Result<(u16, ResponseBody)> {
+            self.http_post("", &[])
+        }
+
+        fn http_patch_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> crate::error::Result<(u16, ResponseBody)> {
+            self.patch_results
+                .pop_front()
+                .unwrap_or_else(|| Ok((200, ResponseBody::Heap(b"{}".to_vec()))))
+        }
+    }
+
+    #[test]
+    fn ensure_token_preserves_transport_error() {
+        let mut cache = FeishuTokenCache::new();
+        let mut http = StubHttp {
+            post_results: VecDeque::from([Err(crate::error::Error::config(
+                "tls_admission",
+                "permit timeout",
+            ))]),
+            ..Default::default()
+        };
+
+        let err = cache
+            .ensure_token(&mut http, "app", "secret", "feishu_stream")
+            .expect_err("token refresh should fail");
+
+        assert!(err.is_tls_admission());
+    }
+
+    #[test]
+    fn send_and_get_id_records_outbound_http_success() {
+        crate::orchestrator::reset_runtime_capabilities_for_tests();
+        let before = crate::metrics::snapshot();
+        let mut http = StubHttp {
+            post_results: VecDeque::from([Ok((
+                200,
+                ResponseBody::Heap(br#"{"data":{"message_id":"om_123"}}"#.to_vec()),
+            ))]),
+            ..Default::default()
+        };
+
+        let message_id = send_and_get_id(&mut http, "token", "chat-1", "hello").expect("send");
+
+        let after = crate::metrics::snapshot();
+        assert_eq!(message_id.as_deref(), Some("om_123"));
+        assert!(after.channel_http_ok >= before.channel_http_ok + 1);
+    }
 }

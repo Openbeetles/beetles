@@ -317,16 +317,9 @@ fn do_request(
     if let Some(bearer) = auth_bearer {
         headers.insert(0, ("Authorization", bearer));
     }
-    let (status, resp_body) = http.do_post(url, &headers, body).map_err(|e| match e {
-        Error::Http { status_code, .. } => Error::Http {
-            status_code,
-            stage: "llm_request",
-        },
-        _ => Error::Other {
-            source: Box::new(std::io::Error::other(format!("{:?}", e))),
-            stage: "llm_request",
-        },
-    })?;
+    let (status, resp_body) = http
+        .do_post(url, &headers, body)
+        .map_err(|e| crate::llm::map_transport_error(e, "llm_request"))?;
 
     if status == 429 {
         log::warn!("[{}] rate limited (429)", TAG);
@@ -592,16 +585,7 @@ fn do_request_streaming(
                 Ok(())
             },
         )
-        .map_err(|e| match e {
-            Error::Http { status_code, .. } => Error::Http {
-                status_code,
-                stage: "llm_request",
-            },
-            _ => Error::Other {
-                source: Box::new(std::io::Error::other(format!("{:?}", e))),
-                stage: "llm_request",
-            },
-        })?;
+        .map_err(|e| crate::llm::map_transport_error(e, "llm_request"))?;
 
     if status == 429 {
         log::warn!("[{}] rate limited (429)", TAG);

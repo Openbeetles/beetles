@@ -241,7 +241,7 @@ pub(super) fn execute_turn(
             let content = response.content;
             let delivery_report = delivery.report();
             let primary_reply_already_delivered = delivery_report.current_primary_delivered;
-            let tool_outbound_reply_seen = delivery_report.tool_outbound_intents_seen > 0;
+            let tool_visible_reply_sent = delivery_report.tool_visible_updates_sent > 0;
             if content.contains(AGENT_MARKER_STOP) {
                 let confirmation = strip_agent_stop_confirmation(&content);
                 mark_ttft_if_visible(&mut latency, worker_start, &confirmation);
@@ -277,7 +277,7 @@ pub(super) fn execute_turn(
             }
             if let Some(followup) = empty_final_answer_followup(
                 config.strategy,
-                any_tool_used && !primary_reply_already_delivered && !tool_outbound_reply_seen,
+                any_tool_used && !primary_reply_already_delivered && !tool_visible_reply_sent,
                 &content,
             ) {
                 enqueue_end_turn_followup(&mut messages, &mut progress_history, &content, followup);

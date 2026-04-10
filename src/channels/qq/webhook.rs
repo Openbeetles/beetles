@@ -2,7 +2,7 @@
 
 use super::msg_id::{cache_msg_id, QqMsgIdCache};
 use super::signature::{sign_qq_url_verify, verify_qq_signature};
-use crate::bus::{InboundTx, PcMsg};
+use crate::bus::InboundTx;
 use crate::error::{Error, Result};
 
 /// Body 最大字节（拒绝超长请求）。与 http_server 读 body 上限一致，单一数据源。
@@ -127,7 +127,7 @@ pub fn handle_webhook(
             if let (Some(id), Some(ch), Some(content)) = (msg_id, chat_id, content) {
                 if !ch.is_empty() && !content.is_empty() {
                     cache_msg_id(&msg_id_cache, &ch, &id)?;
-                    let msg = PcMsg::new("qq_channel", ch, content)?;
+                    let msg = super::build_inbound_message(&ch, &content)?;
                     inbound_tx.send(msg).map_err(|e| Error::Other {
                         source: Box::new(e),
                         stage: "qq_inbound_send",
@@ -229,5 +229,40 @@ mod tests {
         assert!(matches!(result, QqHandlerResult::EventHandled));
         assert!(inbound_rx.try_recv().is_err());
         assert!(cache.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn group_webhook_marks_message_as_group() {
+        let secret = "qq-test-secret";
+        let timestamp = "1711936800";
+        let body = serde_json::json!({
+            "op": 0,
+            "t": "GROUP_AT_MESSAGE_CREATE",
+            "d": {
+                "id": "msg-group-1",
+                "group_openid": "group-openid-42",
+                "content": "@beetle hi"
+            }
+        });
+        let body_bytes = serde_json::to_vec(&body).unwrap();
+        let signature = sign_event(secret, timestamp, &body_bytes);
+        let (inbound_tx, inbound_rx, _) = new_inbound_channel(4);
+        let cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
+
+        let result = handle_webhook(
+            &body_bytes,
+            Some(timestamp),
+            Some(&signature),
+            "",
+            secret,
+            &inbound_tx,
+            Arc::clone(&cache),
+        )
+        .unwrap();
+
+        assert!(matches!(result, QqHandlerResult::EventHandled));
+        let msg = inbound_rx.try_recv().unwrap();
+        assert_eq!(msg.chat_id.as_ref(), "group:group-openid-42");
+        assert!(msg.is_group);
     }
 }

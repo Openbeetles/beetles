@@ -2,7 +2,6 @@
 //! 支持频道 AT_MESSAGE_CREATE、群聊 GROUP_AT_MESSAGE_CREATE、私聊 C2C_MESSAGE_CREATE。
 //! 与 HTTP webhook 可并存，由 main 按配置决定是否 spawn。
 
-use crate::bus::PcMsg;
 use crate::channels::send::{record_outbound_http_failure, record_outbound_http_success};
 use crate::channels::wss_gateway::{
     run_wss_gateway_loop, WssConnection, WssGatewayDriver, WssRecvAction, WssSessionState,
@@ -244,7 +243,7 @@ impl WssGatewayDriver for QqWssDriver {
                                     if let Some(mid) = msg_id {
                                         self.cache_msg_id(ch, mid);
                                     }
-                                    if let Ok(msg) = PcMsg::new("qq_channel", ch, content) {
+                                    if let Ok(msg) = super::build_inbound_message(ch, content) {
                                         return Ok(WssRecvAction::Dispatch(Some(msg)));
                                     }
                                 }
@@ -263,7 +262,8 @@ impl WssGatewayDriver for QqWssDriver {
                                     if let Some(mid) = msg_id {
                                         self.cache_msg_id(&chat_id, mid);
                                     }
-                                    if let Ok(msg) = PcMsg::new("qq_channel", &chat_id, content) {
+                                    if let Ok(msg) = super::build_inbound_message(&chat_id, content)
+                                    {
                                         return Ok(WssRecvAction::Dispatch(Some(msg)));
                                     }
                                 }
@@ -283,7 +283,8 @@ impl WssGatewayDriver for QqWssDriver {
                                     if let Some(mid) = msg_id {
                                         self.cache_msg_id(&chat_id, mid);
                                     }
-                                    if let Ok(msg) = PcMsg::new("qq_channel", &chat_id, content) {
+                                    if let Ok(msg) = super::build_inbound_message(&chat_id, content)
+                                    {
                                         return Ok(WssRecvAction::Dispatch(Some(msg)));
                                     }
                                 }
@@ -333,4 +334,36 @@ pub fn run_qq_ws_loop<H, C, CreateHttp, Conn>(
 {
     let driver = QqWssDriver::new(app_id, client_secret, msg_id_cache);
     run_wss_gateway_loop(TAG, driver, inbound_tx, pending_retry, create_http, connect);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn group_dispatch_message_is_marked_as_group() {
+        let cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
+        let mut driver = QqWssDriver::new("app".to_string(), "secret".to_string(), cache);
+        let payload = serde_json::json!({
+            "op": 0,
+            "t": "GROUP_AT_MESSAGE_CREATE",
+            "d": {
+                "id": "msg-1",
+                "group_openid": "group-openid-42",
+                "content": "@beetle hello"
+            }
+        });
+
+        let action = driver
+            .on_recv(payload.to_string().as_bytes())
+            .expect("recv action");
+
+        let WssRecvAction::Dispatch(Some(msg)) = action else {
+            panic!("expected dispatch with message");
+        };
+        assert_eq!(msg.chat_id.as_ref(), "group:group-openid-42");
+        assert!(msg.is_group);
+    }
 }

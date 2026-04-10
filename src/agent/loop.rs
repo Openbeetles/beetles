@@ -1485,7 +1485,7 @@ fn handle_worker_path_error(
         "error",
     );
     crate::platform::task_wdt::feed_current_task();
-    metrics::record_error_by_stage(error.stage());
+    metrics::record_error_by_stage(error.metrics_stage());
     log::warn!("[agent:{}] chat loop failed: {}", worker_lane_tag, error);
     log::warn!(
         "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} llm_ms={} total_ms={} status=llm_error",

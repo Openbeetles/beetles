@@ -140,7 +140,7 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
         let url = match driver.get_url(&mut http) {
             Ok(u) => u,
             Err(e) => {
-                crate::metrics::record_error_by_stage(e.stage());
+                crate::metrics::record_error_by_stage(e.metrics_stage());
                 log::warn!("[{}] get_url failed: {}", tag, e);
                 if e.is_tls_admission() {
                     sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
@@ -157,7 +157,7 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
         let mut conn = match connect(&url) {
             Ok(c) => c,
             Err(e) => {
-                crate::metrics::record_error_by_stage(e.stage());
+                crate::metrics::record_error_by_stage(e.metrics_stage());
                 log::warn!("[{}] connect failed: {}", tag, e);
                 sleep_with_wdt(backoff_secs);
                 backoff_secs = (backoff_secs * 2).min(BACKOFF_MAX_SECS);
@@ -194,7 +194,7 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                     identify_payload: None,
                 },
                 Err(e) => {
-                    crate::metrics::record_error_by_stage(e.stage());
+                    crate::metrics::record_error_by_stage(e.metrics_stage());
                     log::warn!("[{}] recv hello failed: {}", tag, e);
                     drop(conn);
                     sleep_with_wdt(backoff_secs);
@@ -376,7 +376,7 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                             session_ended = true;
                         }
                         Err(e) => {
-                            crate::metrics::record_error_by_stage(e.stage());
+                            crate::metrics::record_error_by_stage(e.metrics_stage());
                             log::warn!("[{}] on_recv failed: {}", tag, e);
                         }
                     }
@@ -410,7 +410,7 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                     }
                 }
                 Err(e) => {
-                    crate::metrics::record_error_by_stage(e.stage());
+                    crate::metrics::record_error_by_stage(e.metrics_stage());
                     log::warn!("[{}] recv failed: {}", tag, e);
                     session_ended = true;
                 }

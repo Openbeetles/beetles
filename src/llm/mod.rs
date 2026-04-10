@@ -24,7 +24,7 @@ pub use types::{
 };
 
 use crate::config::{AppConfig, LlmSource};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::i18n::Locale;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -86,6 +86,16 @@ fn box_client_for_source(s: &LlmSource, global_stream: bool) -> Box<dyn LlmClien
         "openai" | "openai_compatible" | "gemini" | "glm" | "qwen" | "deepseek" | "moonshot"
         | "ollama" => Box::new(OpenAiCompatibleClient::from_source(s, global_stream)),
         _ => Box::new(AnthropicClient::from_source(s, global_stream)),
+    }
+}
+
+pub(crate) fn map_transport_error(e: Error, stage: &'static str) -> Error {
+    match e {
+        Error::Http { status_code, .. } => Error::Http { status_code, stage },
+        other => Error::Other {
+            source: Box::new(other),
+            stage,
+        },
     }
 }
 

@@ -48,6 +48,10 @@ pub fn handle(body: &str, inbound_tx: &InboundTx) -> Result<()> {
         .filter(|s| !s.is_empty())
         .or(cb.sender_id.as_deref())
         .unwrap_or("dingtalk_default");
+    let is_group = cb
+        .conversation_id
+        .as_deref()
+        .is_some_and(|id| !id.is_empty());
 
     let sender = cb.sender_nick.as_deref().unwrap_or("unknown");
     log::info!(
@@ -58,9 +62,32 @@ pub fn handle(body: &str, inbound_tx: &InboundTx) -> Result<()> {
         content.len()
     );
 
-    let msg = PcMsg::new("dingtalk", chat_id, content)?;
+    let msg = PcMsg::new_inbound("dingtalk", chat_id, content, is_group)?;
     if inbound_tx.send(msg).is_err() {
         log::warn!("[{}] inbound_tx send failed (queue full?)", TAG);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::handle;
+    use crate::bus::new_inbound_channel;
+
+    #[test]
+    fn conversation_id_is_marked_as_group_message() {
+        let body = serde_json::json!({
+            "text": { "content": "hello" },
+            "senderId": "user-1",
+            "conversationId": "conv-1"
+        })
+        .to_string();
+        let (inbound_tx, inbound_rx, _) = new_inbound_channel(4);
+
+        handle(&body, &inbound_tx).expect("handle");
+
+        let msg = inbound_rx.try_recv().expect("message");
+        assert_eq!(msg.chat_id.as_ref(), "conv-1");
+        assert!(msg.is_group);
+    }
 }

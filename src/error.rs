@@ -52,6 +52,21 @@ pub enum Error {
 }
 
 impl Error {
+    fn nested_beetle_error(&self) -> Option<&Error> {
+        match self {
+            Error::Nvs {
+                source: Some(source),
+                ..
+            }
+            | Error::Spiffs {
+                source: Some(source),
+                ..
+            }
+            | Error::Other { source, .. } => source.downcast_ref::<Error>(),
+            _ => None,
+        }
+    }
+
     pub fn nvs_stage(stage: &'static str) -> Self {
         Error::Nvs {
             source: None,
@@ -121,18 +136,25 @@ impl Error {
     /// 是否为 TLS 准入相关错误（供退避/重试判定）。
     pub fn is_tls_admission(&self) -> bool {
         self.stage() == "tls_admission"
+            || self
+                .nested_beetle_error()
+                .is_some_and(|source| source.is_tls_admission())
     }
 
     /// 是否为连接层失败（TLS 握手超时、socket 连接失败等）。
     /// 此类错误短时间重试大概率仍会失败，应快速失败而非级联阻塞。
     pub fn is_connect_error(&self) -> bool {
-        match self {
+        let local = match self {
             Error::Io { stage, .. } | Error::Other { stage, .. } => matches!(
                 *stage,
                 "http_post_request" | "http_get_request" | "http_client_replace" | "http_read"
             ),
             _ => false,
-        }
+        };
+        local
+            || self
+                .nested_beetle_error()
+                .is_some_and(|source| source.is_connect_error())
     }
 
     pub fn http_status_code(&self) -> Option<u16> {
@@ -150,6 +172,15 @@ impl Error {
             self.http_status_code(),
             Some(408 | 409 | 425 | 429) | Some(500..=599)
         )
+    }
+
+    pub fn metrics_stage(&self) -> &'static str {
+        if self.stage() == "tls_admission" || self.is_connect_error() {
+            return self.stage();
+        }
+        self.nested_beetle_error()
+            .map(|source| source.metrics_stage())
+            .unwrap_or_else(|| self.stage())
     }
 
     /// 覆盖 stage 并返回同一变体，便于保留 Config/Http 等判别用于监控与排查。
@@ -190,6 +221,16 @@ mod tests {
             status_code: 429,
             stage: "llm_http_status",
         };
+        assert!(err.is_retryable_upstream());
+    }
+
+    #[test]
+    fn wrapped_tls_admission_error_stays_retryable() {
+        let err = Error::Other {
+            source: Box::new(Error::config("tls_admission", "largest block too small")),
+            stage: "llm_request",
+        };
+        assert!(err.is_tls_admission());
         assert!(err.is_retryable_upstream());
     }
 }
