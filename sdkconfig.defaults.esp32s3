@@ -5,14 +5,14 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 
-# PSRAM 8MB Octal；ALWAYSINTERNAL=128（小对象走 internal）+ RESERVE_INTERNAL=100KB。
+# PSRAM 8MB Octal；ALWAYSINTERNAL=64（小对象走 internal）+ RESERVE_INTERNAL=100KB。
 # P1/P2 已收窄常驻执行面并把关键 TLS/WSS 线程收回到受控任务面，
 # 但 Beetle 在启动峰值仍可能出现 agent + voice + ws + sender + config bootstrap 并存，
 # 因此这里只做保守回收，不照抄 xiaozhi 的 49KB。
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
-CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=128
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=64
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=102400
 # Allow selected IDF networking/system .bss sections (lwIP/net80211/libpp/wpa_supplicant, etc.)
 # to live in PSRAM, reducing persistent internal SRAM pressure without touching task stacks.
