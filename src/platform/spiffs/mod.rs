@@ -3,12 +3,11 @@
 //! ESP-IDF VFS/SPIFFS 多线程并发会引发 fd 错用或死锁，故所有通过本模块的 SPIFFS 访问在 ESP 下由 SPIFFS_MUTEX 串行化。
 
 use crate::error::{Error, Result};
+use crate::platform::psram_vec::PsramVec;
 use crate::platform::state_root::state_mount_path;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::ffi::CString;
-use std::io::Read;
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -235,20 +234,15 @@ pub fn spiffs_usage() -> Option<(u64, u64)> {
 const PSRAM_FILE_THRESHOLD: usize = 8 * 1024;
 
 /// Allocate a `Vec<u8>` with `len=0, capacity=cap` backed by PSRAM when available.
-/// Safe to drop on ESP-IDF std builds: Rust `Vec` deallocates via `libc::free`,
-/// and IDF documents `free(p)` as equivalent to `heap_caps_free(p)`.
-fn psram_vec_with_capacity(cap: usize) -> Vec<u8> {
-    if let Some(ptr) = crate::platform::heap::alloc_spiram_buffer(cap) {
-        unsafe { Vec::from_raw_parts(ptr, 0, cap) }
-    } else {
-        Vec::with_capacity(cap)
-    }
+/// Returned buffer keeps PSRAM ownership explicit instead of handing raw pointers to `Vec`.
+fn psram_vec_with_capacity(cap: usize) -> PsramVec<u8> {
+    PsramVec::with_max_capacity(cap)
 }
 
 /// 读整个文件到 Vec。路径相对于 SPIFFS_BASE，或绝对如 /spiffs/config/SOUL.md。
 /// 有 metadata 时预分配 capacity，减少 read_to_end 的多次 realloc。
 /// 大文件（>= 8KB）优先使用 PSRAM 分配。
-pub fn read_file(path: impl AsRef<Path>) -> Result<Vec<u8>> {
+pub fn read_file(path: impl AsRef<Path>) -> Result<PsramVec<u8>> {
     with_fs_lock(|| {
         let p = path.as_ref();
         let path_str = p
@@ -264,12 +258,21 @@ pub fn read_file(path: impl AsRef<Path>) -> Result<Vec<u8>> {
         let mut buf = if capacity >= PSRAM_FILE_THRESHOLD {
             psram_vec_with_capacity(capacity)
         } else if capacity > 0 {
-            Vec::with_capacity(capacity)
+            PsramVec::from(Vec::with_capacity(capacity))
         } else {
-            Vec::new()
+            PsramVec::from(Vec::new())
         };
-        f.read_to_end(&mut buf)
-            .map_err(|e| Error::io("spiffs_read", e))?;
+        let mut chunk = [0u8; 1024];
+        loop {
+            let n = f
+                .read(&mut chunk)
+                .map_err(|e| Error::io("spiffs_read", e))?;
+            if n == 0 {
+                break;
+            }
+            buf.write_all(&chunk[..n])
+                .map_err(|e| Error::io("spiffs_read", e))?;
+        }
         if buf.len() > MAX_WRITE_SIZE {
             return Err(Error::config(
                 "spiffs_read",

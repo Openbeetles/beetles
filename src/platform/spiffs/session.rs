@@ -15,6 +15,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use crate::platform::psram_vec::PsramVec;
 use crate::platform::state_root::state_mount_path;
 
 use super::{list_dir, read_file, with_fs_lock, write_file, MAX_WRITE_SIZE};
@@ -249,7 +250,7 @@ fn ensure_sessions_dir_exists(stage: &'static str) -> Result<()> {
     Ok(())
 }
 
-fn read_existing_file_unlocked(path: &Path) -> Result<Vec<u8>> {
+fn read_existing_file_unlocked(path: &Path) -> Result<PsramVec<u8>> {
     let path_str = path
         .to_str()
         .ok_or_else(|| Error::config("session_read", "invalid path"))?;
@@ -263,12 +264,21 @@ fn read_existing_file_unlocked(path: &Path) -> Result<Vec<u8>> {
     let mut buf = if capacity >= super::PSRAM_FILE_THRESHOLD {
         super::psram_vec_with_capacity(capacity)
     } else if capacity > 0 {
-        Vec::with_capacity(capacity)
+        PsramVec::from(Vec::with_capacity(capacity))
     } else {
-        Vec::new()
+        PsramVec::from(Vec::new())
     };
-    file.read_to_end(&mut buf)
-        .map_err(|e| Error::io("session_read", e))?;
+    let mut chunk = [0u8; 1024];
+    loop {
+        let n = file
+            .read(&mut chunk)
+            .map_err(|e| Error::io("session_read", e))?;
+        if n == 0 {
+            break;
+        }
+        buf.write_all(&chunk[..n])
+            .map_err(|e| Error::io("session_read", e))?;
+    }
     Ok(buf)
 }
 
@@ -371,7 +381,8 @@ fn load_session_snapshot_unlocked(
     chat_id: &str,
     write_header: bool,
 ) -> Result<SessionFileSnapshot> {
-    let existing_buf = read_existing_file_unlocked(path).unwrap_or_default();
+    let existing_buf =
+        read_existing_file_unlocked(path).unwrap_or_else(|_| PsramVec::from(Vec::new()));
     let snapshot = scan_session_file(&existing_buf);
     if snapshot.needs_repair {
         let body = build_session_body(chat_id, write_header, snapshot.messages.iter())?;

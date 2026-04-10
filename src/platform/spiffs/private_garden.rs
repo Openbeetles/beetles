@@ -212,7 +212,7 @@ impl PrivateGardenStore for SpiffsPrivateGardenStore {
                 }
                 Err(error) => return Err(error),
             };
-            let content = String::from_utf8(buf).map_err(|_| {
+            let content = String::from_utf8(buf.into_vec()).map_err(|_| {
                 Error::config("private_garden_read", "stored document is not valid UTF-8")
             })?;
             let doc = PrivateGardenDoc {
@@ -341,7 +341,7 @@ impl PrivateGardenStore for SpiffsPrivateGardenStore {
                 }
                 Err(error) => return Err(error),
             };
-            let content = String::from_utf8(buf).map_err(|_| {
+            let content = String::from_utf8(buf.into_vec()).map_err(|_| {
                 Error::config("private_garden_move", "stored document is not valid UTF-8")
             })?;
             let rel_to_path = chat_doc_rel_path(chat_id, &to_path);

@@ -335,7 +335,7 @@ impl TaskExecutionLedgerStore for SpiffsTaskExecutionLedgerStore {
         ensure_parent_dir(&path, "task_execution_ledger_dir")?;
         let mut existing = String::new();
         if let Ok(buf) = read_file(&path) {
-            existing = String::from_utf8(buf)
+            existing = String::from_utf8(buf.into_vec())
                 .map_err(|error| Error::config("task_execution_ledger_utf8", error.to_string()))?;
         }
         let line = serde_json::to_string(entry)
@@ -358,7 +358,7 @@ impl TaskExecutionLedgerStore for SpiffsTaskExecutionLedgerStore {
         if buf.is_empty() {
             return Ok(Vec::new());
         }
-        let content = String::from_utf8(buf)
+        let content = String::from_utf8(buf.into_vec())
             .map_err(|error| Error::config("task_execution_ledger_utf8", error.to_string()))?;
         let mut out = Vec::new();
         for line in content.lines().rev().take(limit.max(1)) {

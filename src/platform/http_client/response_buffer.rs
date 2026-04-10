@@ -6,7 +6,6 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResponseBodyReadPlan {
     Heap { initial_cap: usize },
-    PsramSeededVec { initial_cap: usize },
     PsramExact { cap: usize },
 }
 
@@ -24,8 +23,8 @@ pub(crate) fn choose_response_body_read_plan(
                 return ResponseBodyReadPlan::PsramExact { cap: prealloc_len };
             }
             Some(seed_len) => {
-                return ResponseBodyReadPlan::PsramSeededVec {
-                    initial_cap: seed_len.max(initial_response_body_cap).min(max_len),
+                return ResponseBodyReadPlan::PsramExact {
+                    cap: seed_len.max(initial_response_body_cap).min(max_len),
                 };
             }
             None => return ResponseBodyReadPlan::PsramExact { cap: max_len },
@@ -49,12 +48,7 @@ mod tests {
     #[test]
     fn tiny_known_length_starts_in_psram_seeded_vec_on_esp() {
         let plan = choose_response_body_read_plan(512 * 1024, Some(512), true, 8 * 1024, 8 * 1024);
-        assert_eq!(
-            plan,
-            ResponseBodyReadPlan::PsramSeededVec {
-                initial_cap: 8 * 1024
-            }
-        );
+        assert_eq!(plan, ResponseBodyReadPlan::PsramExact { cap: 8 * 1024 });
     }
 
     #[test]

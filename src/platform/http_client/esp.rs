@@ -360,17 +360,6 @@ const PSRAM_RESPONSE_PREALLOC_THRESHOLD: usize = 8 * 1024;
 /// 最多 drain 的字节数，防止无限读取恶意超长响应。
 const MAX_DRAIN_BYTES: usize = 512 * 1024;
 
-#[cfg(target_arch = "xtensa")]
-fn psram_backed_vec_with_capacity(cap: usize) -> Vec<u8> {
-    // Safe on ESP-IDF std builds: Rust `Vec` deallocates through `libc::free`,
-    // and IDF specifies `free(p)` as equivalent to `heap_caps_free(p)`.
-    if let Some(ptr) = alloc_spiram_buffer(cap) {
-        unsafe { Vec::from_raw_parts(ptr, 0, cap) }
-    } else {
-        Vec::with_capacity(cap)
-    }
-}
-
 /// 将响应体读空（最多 MAX_DRAIN_BYTES），便于当前请求在收尾阶段尽快释放底层连接资源。
 fn drain_response<R: Read>(r: &mut R)
 where
@@ -416,13 +405,6 @@ where
                 return read_response_body_into_psram(psram_ptr, cap, r);
             }
         }
-        ResponseBodyReadPlan::PsramSeededVec { initial_cap } => {
-            return read_response_body_into_heap_like(
-                psram_backed_vec_with_capacity(initial_cap),
-                max_len,
-                r,
-            );
-        }
         ResponseBodyReadPlan::Heap { .. } => {}
     }
 
@@ -430,7 +412,6 @@ where
     let _ = plan;
     let initial_cap = match plan {
         ResponseBodyReadPlan::Heap { initial_cap } => initial_cap,
-        ResponseBodyReadPlan::PsramSeededVec { initial_cap } => initial_cap,
         ResponseBodyReadPlan::PsramExact { cap } => cap.min(INITIAL_RESPONSE_BODY_CAP),
     };
     read_response_body_into_heap_like(Vec::with_capacity(initial_cap), max_len, r)

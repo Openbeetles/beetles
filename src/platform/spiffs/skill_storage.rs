@@ -64,7 +64,7 @@ impl SkillStorage for SpiffsSkillStorage {
     fn read(&self, name: &str) -> Result<Vec<u8>> {
         let mut path = skills_dir();
         path.push(format!("{}.md", name));
-        read_file(&path)
+        read_file(&path).map(|buf| buf.into_vec())
     }
 
     fn write(&self, name: &str, content: &[u8]) -> Result<()> {

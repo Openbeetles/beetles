@@ -62,6 +62,12 @@ impl<T: Copy + Default> PsramVec<T> {
 }
 
 impl<T> PsramVec<T> {
+    pub fn from_heap_vec(vec: Vec<T>) -> Self {
+        Self {
+            backing: Backing::Heap(vec),
+        }
+    }
+
     pub fn as_slice(&self) -> &[T] {
         match &self.backing {
             Backing::Spiram { ptr, len, .. } => unsafe { std::slice::from_raw_parts(*ptr, *len) },
@@ -103,6 +109,25 @@ impl<T> PsramVec<T> {
         match &mut self.backing {
             Backing::Spiram { len, .. } => *len = 0,
             Backing::Heap(v) => v.clear(),
+        }
+    }
+
+    pub fn into_vec(self) -> Vec<T>
+    where
+        T: Copy,
+    {
+        let mut this = std::mem::ManuallyDrop::new(self);
+        match &mut this.backing {
+            Backing::Spiram { ptr, len, .. } => {
+                let out = if !ptr.is_null() && *len > 0 {
+                    unsafe { std::slice::from_raw_parts(*ptr, *len).to_vec() }
+                } else {
+                    Vec::new()
+                };
+                unsafe { free_spiram_buffer(*ptr as *mut u8) };
+                out
+            }
+            Backing::Heap(v) => std::mem::take(v),
         }
     }
 }
@@ -162,3 +187,37 @@ impl<T> Drop for PsramVec<T> {
 }
 
 unsafe impl<T: Send> Send for PsramVec<T> {}
+
+impl<T> std::ops::Deref for PsramVec<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl<T> AsRef<[T]> for PsramVec<T> {
+    fn as_ref(&self) -> &[T] {
+        self.as_slice()
+    }
+}
+
+impl<T> From<Vec<T>> for PsramVec<T> {
+    fn from(value: Vec<T>) -> Self {
+        Self::from_heap_vec(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PsramVec;
+
+    #[test]
+    fn heap_backed_into_vec_round_trips_bytes() {
+        let mut buf = PsramVec::from(vec![1u8, 2, 3]);
+        buf.extend_from_slice(&[4, 5]);
+
+        assert_eq!(buf.as_ref(), &[1, 2, 3, 4, 5]);
+        assert_eq!(buf.into_vec(), vec![1, 2, 3, 4, 5]);
+    }
+}
