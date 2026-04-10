@@ -3,14 +3,51 @@
 
 use serde_json::json;
 
+fn esp_payload(
+    chip_model: &str,
+    chip_revision: u32,
+    cores: u32,
+    snap: &crate::orchestrator::ResourceSnapshot,
+    heap_min_free: u64,
+    uptime_secs: u64,
+    idf_version: &str,
+    wifi_sta_connected: bool,
+    spiffs: serde_json::Value,
+    spiffs_usage_pct: f32,
+) -> serde_json::Value {
+    let heap_internal = u64::from(snap.heap_free_internal);
+    let psram_free = u64::from(snap.heap_free_spiram);
+    let heap_total = heap_internal.saturating_add(psram_free);
+    json!({
+        "platform": "esp32",
+        "chip_model": chip_model,
+        "chip_revision": chip_revision,
+        "cores": cores,
+        // heap_free now matches the actual internal heap free bytes used by pressure/TLS checks.
+        // Keep heap_free_total for whole-device free memory across internal SRAM + PSRAM.
+        "heap_free": heap_internal,
+        "heap_free_internal": heap_internal,
+        "heap_free_total": heap_total,
+        "psram_free": psram_free,
+        "heap_min_free": heap_min_free,
+        "heap_largest_block_internal": snap.heap_largest_block_internal,
+        "tls_fragmentation_risk": snap.tls_fragmentation_risk,
+        "uptime_secs": uptime_secs,
+        "idf_version": idf_version,
+        "pressure_level": format!("{:?}", snap.pressure),
+        "hint": snap.budget.llm_hint,
+        "runtime_capabilities": crate::orchestrator::runtime_capability_summary(),
+        "wifi_sta_connected": wifi_sta_connected,
+        "spiffs": spiffs,
+        "spiffs_usage_percent": spiffs_usage_pct,
+    })
+}
+
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn collect_esp() -> String {
     let (chip_model, chip_revision, cores) =
         crate::platform::runtime_board::esp_chip_model_revision_cores();
     let snap = crate::orchestrator::snapshot();
-    let heap_internal = snap.heap_free_internal as usize;
-    let psram_free = snap.heap_free_spiram as usize;
-    let heap_total = heap_internal.saturating_add(psram_free);
     let heap_min_free = crate::platform::heap::heap_min_free_internal() as u64;
     let uptime_secs = crate::platform::time::uptime_secs();
     let idf_version = option_env!("IDF_VERSION").unwrap_or("unknown");
@@ -34,31 +71,18 @@ fn collect_esp() -> String {
         })
         .unwrap_or((serde_json::Value::Null, 0.0));
 
-    let out = json!({
-        "platform": "esp32",
-        "chip_model": chip_model,
-        "chip_revision": chip_revision,
-        "cores": cores,
-        // heap_free：兼容旧字段，等于 heap_free_total（内部 + PSRAM 空闲之和）。
-        // heap_free_total: internal free + PSRAM free (unified pool for legacy consumers).
-        "heap_free": heap_total,
-        "heap_free_total": heap_total,
-        // heap_free_internal：当前内部 SRAM 空闲（不含 PSRAM），反映实时堆压力。
-        // heap_free_internal: current internal SRAM free (excludes PSRAM); real-time pressure indicator.
-        "heap_free_internal": heap_internal,
-        // heap_min_free：内部 SRAM 空闲历史最低水位（启动以来最小值），反映峰值压力。
-        // heap_min_free: all-time minimum of internal SRAM free since boot (peak pressure watermark).
-        "heap_min_free": heap_min_free,
-        "psram_free": psram_free,
-        "uptime_secs": uptime_secs,
-        "idf_version": idf_version,
-        "pressure_level": format!("{:?}", snap.pressure),
-        "hint": snap.budget.llm_hint,
-        "runtime_capabilities": crate::orchestrator::runtime_capability_summary(),
-        "wifi_sta_connected": wifi_sta_connected,
-        "spiffs": spiffs,
-        "spiffs_usage_percent": spiffs_usage_pct,
-    });
+    let out = esp_payload(
+        chip_model,
+        chip_revision,
+        cores,
+        &snap,
+        heap_min_free,
+        uptime_secs,
+        idf_version,
+        wifi_sta_connected,
+        spiffs,
+        spiffs_usage_pct,
+    );
     out.to_string()
 }
 
@@ -609,6 +633,91 @@ pub fn board_info_json_string() -> String {
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     {
         collect_host()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::esp_payload;
+    use crate::orchestrator::{
+        pressure::{budget_for_level, PressureLevel},
+        ResourceSnapshot, TlsFragmentationRisk,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn esp_payload_uses_heap_free_for_internal_heap_only() {
+        let snap = sample_resource_snapshot();
+        let payload = esp_payload(
+            "esp32s3",
+            2,
+            2,
+            &snap,
+            69_800,
+            84,
+            "v6.0",
+            true,
+            json!({"total_bytes": 100, "used_bytes": 2, "free_bytes": 98}),
+            2.0,
+        );
+
+        assert_eq!(payload["heap_free"].as_u64(), Some(90_700));
+        assert_eq!(payload["heap_free_internal"].as_u64(), Some(90_700));
+        assert_eq!(payload["heap_free_total"].as_u64(), Some(7_780_700));
+        assert_eq!(payload["psram_free"].as_u64(), Some(7_690_000));
+        assert_eq!(
+            payload["heap_largest_block_internal"].as_u64(),
+            Some(18_432)
+        );
+        assert_eq!(
+            payload["tls_fragmentation_risk"].as_str(),
+            Some("critical")
+        );
+    }
+
+    fn sample_resource_snapshot() -> ResourceSnapshot {
+        ResourceSnapshot {
+            pressure: PressureLevel::Cautious,
+            tls_fragmentation_risk: TlsFragmentationRisk::Critical,
+            heap_free_internal: 90_700,
+            heap_free_spiram: 7_690_000,
+            heap_largest_block_internal: 18_432,
+            active_http_count: 0,
+            active_wss_count: 0,
+            active_agent_tasks: 0,
+            inbound_depth: 0,
+            outbound_depth: 0,
+            budget: budget_for_level(PressureLevel::Cautious),
+            channels: crate::orchestrator::state::ChannelsHealthSnapshot {
+                telegram: empty_channel_health(),
+                feishu: empty_channel_health(),
+                dingtalk: empty_channel_health(),
+                wecom: empty_channel_health(),
+                qq_channel: empty_channel_health(),
+            },
+            session_count: 0,
+            storage_used_kb: 0,
+            storage_total_kb: 0,
+            audio_recording: false,
+            audio_playing: false,
+            audio_interrupt_listening: false,
+            audio_interrupt_requested: false,
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            cpu_usage_percent: 0.0,
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            load_average: (0.0, 0.0, 0.0),
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            process_memory_kb: 0,
+        }
+    }
+
+    fn empty_channel_health() -> crate::orchestrator::state::ChannelHealthSnapshot {
+        crate::orchestrator::state::ChannelHealthSnapshot {
+            consecutive_failures: 0,
+            total_failures: 0,
+            total_successes: 0,
+            healthy: true,
+        }
     }
 }
 

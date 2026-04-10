@@ -23,7 +23,7 @@
 | `file_edit` | 对状态根中的文本文件做局部修改 |
 | `remind_at` | 创建提醒 |
 | `remind_list` | 列出当前对话的提醒 |
-| `board_info` | 查看芯片、内存、PSRAM、运行时间、WiFi 和存储信息 |
+| `board_info` | 查看芯片、internal heap、总可用内存、PSRAM、最大连续 internal 空闲块、TLS 碎片风险、运行时间、WiFi 和存储信息 |
 | `kv_store` | 持久键值存储 |
 | `private_garden` | 当前对话的私有空间 |
 | `memory_search` | 搜索聊天记录、每日记录、回合记录中的档案内容 |

@@ -36,6 +36,20 @@ fn format_wss_close_event(event: &WssEvent) -> String {
     }
 }
 
+fn tls_admission_retry_sleep_secs_for_pressure(
+    pressure: crate::orchestrator::PressureLevel,
+) -> u64 {
+    crate::orchestrator::pressure::budget_for_level(pressure)
+        .reconnect_backoff_secs
+        .max(TLS_ADMISSION_RETRY_SLEEP_SECS)
+}
+
+fn should_pause_external_wss_connect_for_pressure(
+    pressure: crate::orchestrator::PressureLevel,
+) -> bool {
+    pressure == crate::orchestrator::PressureLevel::Critical
+}
+
 /// 阻塞等待 WiFi STA 就绪，每 2s 轮询，最多 `WIFI_WAIT_MAX_SECS`。返回 true 表示已就绪，false 表示超时仍继续尝试。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn wait_for_wifi(tag: &str) -> bool {
@@ -125,6 +139,18 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
             }
             continue;
         }
+        let pressure = crate::orchestrator::current_pressure();
+        if should_pause_external_wss_connect_for_pressure(pressure) {
+            let sleep_secs = tls_admission_retry_sleep_secs_for_pressure(pressure);
+            log::info!(
+                "[{}] skip external WSS connect under {:?} pressure; retry in {}s",
+                tag,
+                pressure,
+                sleep_secs
+            );
+            sleep_with_wdt(sleep_secs);
+            continue;
+        }
         wait_for_external_wss_resume(tag);
         wait_for_wifi(tag);
 
@@ -143,7 +169,9 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                 crate::metrics::record_error_by_stage(e.metrics_stage());
                 log::warn!("[{}] get_url failed: {}", tag, e);
                 if e.is_tls_admission() {
-                    sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
+                    let sleep_secs =
+                        tls_admission_retry_sleep_secs_for_pressure(crate::orchestrator::current_pressure());
+                    sleep_with_wdt(sleep_secs);
                 } else {
                     sleep_with_wdt(backoff_secs);
                     backoff_secs = (backoff_secs * 2).min(BACKOFF_MAX_SECS);
@@ -448,5 +476,42 @@ fn sleep_with_wdt(secs: u64) {
         let remaining = total.saturating_sub(start.elapsed());
         std::thread::sleep(remaining.min(chunk));
         crate::platform::task_wdt::feed_current_task();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        should_pause_external_wss_connect_for_pressure, tls_admission_retry_sleep_secs_for_pressure,
+    };
+    use crate::orchestrator::PressureLevel;
+
+    #[test]
+    fn critical_pressure_pauses_external_wss_connect_attempts() {
+        assert!(should_pause_external_wss_connect_for_pressure(
+            PressureLevel::Critical
+        ));
+        assert!(!should_pause_external_wss_connect_for_pressure(
+            PressureLevel::Cautious
+        ));
+        assert!(!should_pause_external_wss_connect_for_pressure(
+            PressureLevel::Normal
+        ));
+    }
+
+    #[test]
+    fn tls_admission_retry_delay_tracks_pressure_budget() {
+        assert_eq!(
+            tls_admission_retry_sleep_secs_for_pressure(PressureLevel::Normal),
+            5
+        );
+        assert_eq!(
+            tls_admission_retry_sleep_secs_for_pressure(PressureLevel::Cautious),
+            15
+        );
+        assert_eq!(
+            tls_admission_retry_sleep_secs_for_pressure(PressureLevel::Critical),
+            30
+        );
     }
 }

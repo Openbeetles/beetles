@@ -23,7 +23,7 @@ Keep three things in mind:
 | `file_edit` | patch an existing text file under the state root |
 | `remind_at` | create a reminder |
 | `remind_list` | list reminders in the current chat |
-| `board_info` | chip, heap, PSRAM, uptime, WiFi, SPIFFS |
+| `board_info` | chip, internal heap, total free memory, PSRAM, largest internal free block, TLS fragmentation risk, uptime, WiFi, SPIFFS |
 | `kv_store` | persistent key-value storage |
 | `private_garden` | current-chat private workspace |
 | `memory_search` | search archive evidence from transcripts, daily notes, and turn logs |
