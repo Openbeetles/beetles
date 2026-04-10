@@ -26,7 +26,6 @@ import {
 } from "../api/endpoints/system";
 import { fetchSystemInfoCoalesced } from "../session/systemInfoCoordinator";
 import {
-  audioEchoCancellationLabel,
   pressureColor,
   wifiStaLabel,
   yesNo,
@@ -41,6 +40,11 @@ import {
   buildDeviceSummaryFields,
   pressureLabelKey,
 } from "./deviceHomeViewModel";
+import {
+  DASHBOARD_CARD_HEADER_ROW_SX,
+  DASHBOARD_CARD_SURFACE_SX,
+  UI_LABEL_SECONDARY_SX,
+} from "../theme/panelStyles";
 
 const DEFAULT_DEVICE_BASE_URL = "http://192.168.4.1";
 
@@ -66,45 +70,27 @@ export function DashboardCard({
       sx={{
         display: "flex",
         flexDirection: "column",
-        bgcolor: "var(--card)",
-        borderRadius: "var(--radius-card)",
-        border: "1px solid color-mix(in srgb, var(--border) 40%, transparent)",
-        boxShadow: "var(--shadow-subtle)",
-        overflow: "hidden",
         height: "100%",
-        transition: "all 0.2s ease",
-        "&:hover": {
-          borderColor: "color-mix(in srgb, var(--border) 80%, transparent)",
-          boxShadow: "0 4px 20px color-mix(in srgb, var(--foreground) 4%, transparent)",
-        },
+        ...DASHBOARD_CARD_SURFACE_SX,
         ...sx,
       }}
     >
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          px: 2.5,
-          py: 2,
-          borderBottom:
-            "1px solid color-mix(in srgb, var(--border) 12%, transparent)",
-          bgcolor: "color-mix(in srgb, var(--foreground) 1%, transparent)",
-        }}
-      >
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+      <Box sx={DASHBOARD_CARD_HEADER_ROW_SX}>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, minWidth: 0 }}>
           {icon && (
             <Box
               sx={{
-                width: 32,
-                height: 32,
+                width: "var(--icon-size-lg)",
+                height: "var(--icon-size-lg)",
                 borderRadius: "var(--radius-control)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 color: "var(--primary)",
                 bgcolor: "color-mix(in srgb, var(--primary) 8%, transparent)",
-                boxShadow: "inset 0 0 0 1px color-mix(in srgb, var(--primary) 15%, transparent)",
+                boxShadow:
+                  "inset 0 0 0 1px color-mix(in srgb, var(--primary) 15%, transparent)",
+                flexShrink: 0,
               }}
             >
               {icon}
@@ -114,10 +100,11 @@ export function DashboardCard({
             variant="subtitle2"
             sx={{
               fontWeight: 600,
-              letterSpacing: "0.05em",
+              letterSpacing: "var(--letter-spacing-label)",
               color: "var(--foreground)",
-              textTransform: "uppercase",
-              fontSize: "0.75rem",
+              textTransform: "none",
+              fontSize: "0.8125rem",
+              lineHeight: 1.35,
             }}
           >
             {title}
@@ -147,17 +134,33 @@ export function StatRow({ label, value }: { label: string; value: string }) {
         display: "flex",
         justifyContent: "space-between",
         alignItems: "center",
+        gap: 1.5,
         py: 1,
         borderBottom: "1px solid color-mix(in srgb, var(--border) 20%, transparent)",
-        "&:last-child": { borderBottom: "none" }
+        "&:last-child": { borderBottom: "none" },
       }}
     >
-      <Typography variant="body2" sx={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+      <Typography
+        variant="body2"
+        sx={{
+          ...UI_LABEL_SECONDARY_SX,
+          fontSize: "0.8rem",
+          flex: "1 1 auto",
+          minWidth: 0,
+        }}
+      >
         {label}
       </Typography>
       <Typography
         variant="body2"
-        sx={{ fontFamily: "var(--font-mono)", fontWeight: 500, color: "var(--foreground)", fontSize: "0.8rem" }}
+        sx={{
+          fontFamily: "var(--font-mono)",
+          fontWeight: 500,
+          fontSize: "var(--font-size-data-value)",
+          color: "var(--foreground)",
+          textAlign: "right",
+          flexShrink: 0,
+        }}
       >
         {value}
       </Typography>
@@ -423,31 +426,6 @@ export function DevicePage() {
       value: yesNo(healthData?.audio?.duplex_capabilities?.speaker_output, t),
       active: healthData?.audio?.duplex_capabilities?.speaker_output === true,
     },
-    {
-      label: t("device.audioCapabilityConcurrentCapturePlayback"),
-      value: yesNo(
-        healthData?.audio?.duplex_capabilities?.concurrent_capture_playback,
-        t,
-      ),
-      active:
-        healthData?.audio?.duplex_capabilities?.concurrent_capture_playback ===
-        true,
-    },
-    {
-      label: t("device.audioCapabilityBargeIn"),
-      value: yesNo(healthData?.audio?.duplex_capabilities?.barge_in, t),
-      active: healthData?.audio?.duplex_capabilities?.barge_in === true,
-    },
-    {
-      label: t("device.audioCapabilityEchoCancellation"),
-      value: audioEchoCancellationLabel(
-        healthData?.audio?.duplex_capabilities?.echo_cancellation,
-        t,
-      ),
-      active:
-        healthData?.audio?.duplex_capabilities?.echo_cancellation != null &&
-        healthData?.audio?.duplex_capabilities?.echo_cancellation !== "none",
-    },
   ];
 
   const renderSummaryFieldValue = (
@@ -468,44 +446,83 @@ export function DevicePage() {
       sx={{
         display: "flex",
         flexDirection: "column",
-        bgcolor: "var(--card)",
-        borderRadius: "var(--radius-card)",
-        border: "1px solid color-mix(in srgb, var(--border) 40%, transparent)",
-        boxShadow: "var(--shadow-subtle)",
-        overflow: "hidden",
         height: "100%",
         position: "relative",
-        transition: "all 0.2s ease",
-        "&:hover": {
-          borderColor: "color-mix(in srgb, var(--border) 80%, transparent)",
-          boxShadow: "0 4px 20px color-mix(in srgb, var(--foreground) 4%, transparent)",
-        },
+        ...DASHBOARD_CARD_SURFACE_SX,
       }}
     >
-      {/* Technical Grid Background */}
-      <PcbDecorOverlay />
+      <PcbDecorOverlay tone="embed" />
 
-      {/* Top Header */}
-      <Box sx={{ p: 3, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 2.5, position: "relative", zIndex: 1 }}>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 2.5 }}>
+      <Box
+        sx={{
+          ...DASHBOARD_CARD_HEADER_ROW_SX,
+          position: "relative",
+          zIndex: 1,
+          gap: 1.5,
+        }}
+      >
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 2,
+            minWidth: 0,
+            flex: 1,
+          }}
+        >
           <Box
             sx={{
-              width: 64,
-              height: 64,
+              width: "var(--icon-container-lg)",
+              height: "var(--icon-container-lg)",
               borderRadius: "var(--radius-control)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               bgcolor: "color-mix(in srgb, var(--primary) 8%, transparent)",
-              border: "1px solid color-mix(in srgb, var(--primary) 20%, transparent)",
+              border:
+                "1px solid color-mix(in srgb, var(--primary) 20%, transparent)",
               color: "var(--primary)",
+              flexShrink: 0,
+              boxShadow:
+                "inset 0 0 0 1px color-mix(in srgb, var(--primary) 12%, transparent)",
             }}
           >
-            <BeetleIcon sx={{ width: 40, height: 40 }} />
+            <BeetleIcon
+              sx={{
+                width: "calc(var(--icon-container-lg) * 0.7)",
+                height: "calc(var(--icon-container-lg) * 0.7)",
+              }}
+            />
           </Box>
-          <Box>
-            <Typography variant="h5" sx={{ fontWeight: 700, color: "var(--foreground)", letterSpacing: "-0.02em", mb: 0.5 }}>
-              {(systemInfo?.product_name || "beetle").toUpperCase()} OS
+          <Box sx={{ minWidth: 0 }}>
+            <Typography
+              variant="h5"
+              sx={{
+                fontFamily: "var(--font-display)",
+                fontWeight: 700,
+                color: "var(--foreground)",
+                letterSpacing: "var(--letter-spacing-tight)",
+                mb: 0.5,
+                fontSize: "var(--font-size-h4)",
+                lineHeight: 1.2,
+                maxWidth: "min(100%, 17rem)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {(systemInfo?.product_name || "beetle").toUpperCase()}
+              <Box
+                component="span"
+                sx={{
+                  fontFamily: "var(--font-sans)",
+                  fontWeight: 600,
+                  opacity: 0.92,
+                  ml: 0.5,
+                }}
+              >
+                OS
+              </Box>
             </Typography>
             <Box
               sx={{
@@ -515,19 +532,47 @@ export function DevicePage() {
                 px: 1,
                 py: 0.25,
                 borderRadius: "var(--radius-sm)",
-                bgcolor: deviceConnected ? "color-mix(in srgb, var(--semantic-success) 10%, transparent)" : "color-mix(in srgb, var(--muted) 10%, transparent)",
-                border: deviceConnected ? "1px solid color-mix(in srgb, var(--semantic-success) 20%, transparent)" : "1px solid color-mix(in srgb, var(--muted) 20%, transparent)",
+                bgcolor: deviceConnected
+                  ? "color-mix(in srgb, var(--semantic-success) 10%, transparent)"
+                  : "color-mix(in srgb, var(--muted) 10%, transparent)",
+                border: deviceConnected
+                  ? "1px solid color-mix(in srgb, var(--semantic-success) 22%, transparent)"
+                  : "1px solid color-mix(in srgb, var(--muted) 22%, transparent)",
               }}
             >
-              <Box sx={{ width: 6, height: 6, borderRadius: "50%", bgcolor: deviceConnected ? "var(--semantic-success)" : "var(--muted)", boxShadow: deviceConnected ? "0 0 8px var(--semantic-success)" : "none" }} />
-              <Typography variant="caption" sx={{ color: deviceConnected ? "var(--semantic-success)" : "var(--muted)", fontWeight: 600, fontFamily: "var(--font-mono)", textTransform: "uppercase", fontSize: "0.65rem" }}>
-                {deviceConnected ? "SYS.ONLINE" : "SYS.OFFLINE"}
+              <Box
+                sx={{
+                  width: "var(--dot-size)",
+                  height: "var(--dot-size)",
+                  borderRadius: "50%",
+                  bgcolor: deviceConnected
+                    ? "var(--semantic-success)"
+                    : "var(--muted)",
+                  boxShadow: deviceConnected
+                    ? "0 0 6px color-mix(in srgb, var(--semantic-success) 55%, transparent)"
+                    : "none",
+                }}
+              />
+              <Typography
+                variant="caption"
+                sx={{
+                  color: deviceConnected
+                    ? "var(--semantic-success)"
+                    : "var(--muted)",
+                  fontWeight: 600,
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "0.7rem",
+                  letterSpacing: "0.04em",
+                }}
+              >
+                {deviceConnected
+                  ? t("device.sysStatusOnline")
+                  : t("device.sysStatusOffline")}
               </Typography>
             </Box>
           </Box>
         </Box>
 
-        {/* Refresh Button */}
         {deviceConnected && (
           <Button
             variant="outlined"
@@ -540,8 +585,9 @@ export function DevicePage() {
             disabled={healthLoading || channelLoading}
             sx={{
               borderRadius: "var(--radius-control)",
-              bgcolor: "color-mix(in srgb, var(--card) 60%, transparent)",
-              backdropFilter: "blur(8px)",
+              flexShrink: 0,
+              bgcolor: "color-mix(in srgb, var(--card) 72%, transparent)",
+              backdropFilter: "blur(10px)",
             }}
           >
             {t("device.channelRefresh")}
@@ -549,8 +595,18 @@ export function DevicePage() {
         )}
       </Box>
 
-      {/* Connection Form */}
-      <Box sx={{ px: 3, pb: 3, display: "flex", flexDirection: "column", gap: 2, position: "relative", zIndex: 1 }}>
+      <Box
+        sx={{
+          px: 2.5,
+          pb: 2.5,
+          pt: 2,
+          display: "flex",
+          flexDirection: "column",
+          gap: 2,
+          position: "relative",
+          zIndex: 1,
+        }}
+      >
         <TextField
           label={t("device.baseUrlLabel")}
           placeholder={t("device.baseUrlPlaceholder")}
@@ -620,7 +676,7 @@ export function DevicePage() {
           }}
         >
           <Box sx={{ bgcolor: "var(--card)", p: 2, display: "flex", flexDirection: "column", gap: 0.5 }}>
-            <Typography variant="caption" sx={{ color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.05em", fontSize: "0.65rem" }}>
+            <Typography variant="caption" component="div" sx={UI_LABEL_SECONDARY_SX}>
               {t("device.systemStatusWifiSta")}
             </Typography>
             <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -632,7 +688,7 @@ export function DevicePage() {
           </Box>
 
           <Box sx={{ bgcolor: "var(--card)", p: 2, display: "flex", flexDirection: "column", gap: 0.5 }}>
-            <Typography variant="caption" sx={{ color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.05em", fontSize: "0.65rem" }}>
+            <Typography variant="caption" component="div" sx={UI_LABEL_SECONDARY_SX}>
               {t("device.systemStatusDisplayAvailable")}
             </Typography>
             <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -644,7 +700,7 @@ export function DevicePage() {
           </Box>
 
           <Box sx={{ bgcolor: "var(--card)", p: 2, display: "flex", flexDirection: "column", gap: 0.5 }}>
-            <Typography variant="caption" sx={{ color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.05em", fontSize: "0.65rem" }}>
+            <Typography variant="caption" component="div" sx={UI_LABEL_SECONDARY_SX}>
               {t("device.systemStatusPressure")}
             </Typography>
             <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -656,7 +712,7 @@ export function DevicePage() {
           </Box>
 
           <Box sx={{ bgcolor: "var(--card)", p: 2, display: "flex", flexDirection: "column", gap: 0.5 }}>
-            <Typography variant="caption" sx={{ color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.05em", fontSize: "0.65rem" }}>
+            <Typography variant="caption" component="div" sx={UI_LABEL_SECONDARY_SX}>
               {t("device.deviceInfoAudio")}
             </Typography>
             <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -672,7 +728,7 @@ export function DevicePage() {
               key={item.label}
               sx={{ bgcolor: "var(--card)", p: 2, display: "flex", flexDirection: "column", gap: 0.5 }}
             >
-              <Typography variant="caption" sx={{ color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.05em", fontSize: "0.65rem" }}>
+              <Typography variant="caption" component="div" sx={UI_LABEL_SECONDARY_SX}>
                 {item.label}
               </Typography>
               <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -700,7 +756,7 @@ export function DevicePage() {
     <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
       {!deviceConnected ? (
         <Box sx={{ display: "flex", justifyContent: "center", pt: 8 }}>
-          <Box sx={{ width: "100%", maxWidth: 440, height: 500 }}>
+          <Box sx={{ width: "100%", maxWidth: 440, minHeight: 380 }}>
             {renderGatewayCard()}
           </Box>
         </Box>

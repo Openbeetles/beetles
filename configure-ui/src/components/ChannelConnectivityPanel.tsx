@@ -6,6 +6,7 @@ import ErrorOutlined from "@mui/icons-material/ErrorOutlined";
 import HubOutlined from "@mui/icons-material/HubOutlined";
 import LinkOffOutlined from "@mui/icons-material/LinkOffOutlined";
 import RefreshRounded from "@mui/icons-material/RefreshRounded";
+import WarningAmberRounded from "@mui/icons-material/WarningAmberRounded";
 import type { TFunction } from "i18next";
 import type { ChannelConnectivityItem } from "../api/endpoints/system";
 import { SectionLoadProgress } from "./SectionLoadProgress";
@@ -215,20 +216,61 @@ function ChannelRow({
           statusLabel={statusText}
         />
       </Box>
-      {message?.trim() ? (
-        <Typography
-          variant="caption"
+      {configured && message?.trim() ? (
+        <Box
           sx={{
-            mt: 0.75,
-            display: "block",
-            color: "var(--muted)",
-            fontFamily: "var(--font-mono)",
-            lineHeight: 1.5,
-            wordBreak: "break-word",
+            mt: 0.875,
+            display: "flex",
+            gap: 0.85,
+            alignItems: "flex-start",
+            ...(!ok
+              ? {
+                  pl: 1.125,
+                  pr: 1.125,
+                  py: 0.75,
+                  borderRadius: "var(--radius-chip)",
+                  borderLeft: "3px solid",
+                  borderLeftColor: "var(--semantic-danger)",
+                  bgcolor:
+                    "color-mix(in srgb, var(--semantic-danger) 9%, var(--card))",
+                  boxShadow:
+                    "inset 0 0 0 1px color-mix(in srgb, var(--semantic-danger) 18%, transparent)",
+                }
+              : {
+                  py: 0.125,
+                }),
           }}
         >
-          {isI18nKey(message) ? t(message) : message}
-        </Typography>
+          {!ok ? (
+            <ErrorOutlined
+              sx={{
+                fontSize: "1.05rem",
+                color: "var(--semantic-danger)",
+                mt: "0.1rem",
+                flexShrink: 0,
+              }}
+              aria-hidden
+            />
+          ) : null}
+          <Typography
+            variant="caption"
+            component="span"
+            sx={{
+              flex: 1,
+              minWidth: 0,
+              color: !ok
+                ? "color-mix(in srgb, var(--semantic-danger) 22%, var(--foreground))"
+                : "var(--foreground-soft)",
+              fontFamily: "var(--font-mono)",
+              fontWeight: !ok ? 500 : 400,
+              fontSize: "var(--font-size-caption)",
+              lineHeight: 1.55,
+              wordBreak: "break-word",
+            }}
+          >
+            {isI18nKey(message) ? t(message) : message}
+          </Typography>
+        </Box>
       ) : null}
     </Box>
   );
@@ -402,28 +444,39 @@ export function ChannelConnectivityPanel({
 
           {showStaleHint && (
             <Box
-              role="status"
+              role="alert"
               sx={{
                 display: "flex",
                 alignItems: "flex-start",
-                gap: 1,
+                gap: 1.125,
                 px: 1.5,
-                py: 1.25,
+                py: 1.35,
                 ...SECTION_PANEL_SX,
-                borderLeftWidth: "var(--accent-line-width)",
+                borderLeftWidth: "3px",
                 borderLeftStyle: "solid",
-                borderLeftColor:
-                  "color-mix(in srgb, var(--semantic-warning) 72%, var(--border-subtle))",
-                bgcolor: "var(--card)",
+                borderLeftColor: "var(--semantic-warning)",
+                bgcolor:
+                  "color-mix(in srgb, var(--semantic-warning) 10%, var(--card))",
+                boxShadow:
+                  "inset 0 0 0 1px color-mix(in srgb, var(--semantic-warning) 22%, transparent)",
               }}
             >
+              <WarningAmberRounded
+                sx={{
+                  fontSize: "var(--icon-size-md)",
+                  color: "var(--semantic-warning)",
+                  mt: "0.1rem",
+                  flexShrink: 0,
+                }}
+                aria-hidden
+              />
               <Typography
                 sx={{
                   flex: 1,
                   minWidth: 0,
-                  fontSize: "var(--font-size-caption)",
+                  fontSize: "var(--font-size-body-sm)",
                   color: "var(--foreground)",
-                  fontWeight: 400,
+                  fontWeight: 500,
                   lineHeight: "var(--line-height-normal)",
                 }}
               >
@@ -432,13 +485,13 @@ export function ChannelConnectivityPanel({
               <Button
                 size="small"
                 variant="outlined"
+                color="warning"
                 onClick={onRetry}
                 sx={{
                   flexShrink: 0,
                   minWidth: 0,
                   borderRadius: "var(--radius-control)",
-                  fontSize: "var(--font-size-overline)",
-                  fontWeight: 400,
+                  fontWeight: 600,
                 }}
               >
                 {t("common.retry")}

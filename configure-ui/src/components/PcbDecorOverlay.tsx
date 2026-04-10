@@ -3,14 +3,19 @@ import Box from "@mui/material/Box";
 
 const PIN_Y = [124, 136, 148, 160, 172, 184, 196] as const;
 
+export type PcbDecorTone = "default" | "embed";
+
 /**
  * 主内容区装饰：原理图走线 + QFP 封装（丝印框、Pin1、焊盘芯）+ 辅 SOIC，随主题色变化。
  * Schematic traces + QFP silk (courtyard, pin-1, die pad) + secondary SOIC; uses theme tokens only.
+ *
+ * @param tone `embed`：卡片内嵌时压低对比，避免与主表面 `MAIN_SURFACE_PCB` 叠成「双层 PCB」抢正文。
  */
-export function PcbDecorOverlay() {
+export function PcbDecorOverlay({ tone = "default" }: { tone?: PcbDecorTone }) {
   const uid = useId().replace(/:/g, "");
   const tracePat = `pcb-t-${uid}`;
   const chipPat = `pcb-c-${uid}`;
+  const embedDim = tone === "embed" ? 0.44 : 1;
 
   return (
     <Box
@@ -21,6 +26,7 @@ export function PcbDecorOverlay() {
         zIndex: 0,
         pointerEvents: "none",
         overflow: "hidden",
+        opacity: embedDim,
         "& svg": { display: "block" },
       }}
     >

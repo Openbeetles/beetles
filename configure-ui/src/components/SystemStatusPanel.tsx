@@ -6,6 +6,14 @@ import StorageRounded from "@mui/icons-material/StorageRounded";
 import MemoryRounded from "@mui/icons-material/MemoryRounded";
 import SwapVertRounded from "@mui/icons-material/SwapVertRounded";
 import WarningRounded from "@mui/icons-material/WarningRounded";
+import TuneRounded from "@mui/icons-material/TuneRounded";
+import ChatBubbleOutlineRounded from "@mui/icons-material/ChatBubbleOutlineRounded";
+import ExtensionRounded from "@mui/icons-material/ExtensionRounded";
+import SyncRounded from "@mui/icons-material/SyncRounded";
+import NotesRounded from "@mui/icons-material/NotesRounded";
+import ForumRounded from "@mui/icons-material/ForumRounded";
+import ArticleRounded from "@mui/icons-material/ArticleRounded";
+import TimerOutlined from "@mui/icons-material/TimerOutlined";
 import type {
   HealthData,
   MetricsSnapshotData,
@@ -17,6 +25,7 @@ import {
   buildFaultAndRecoveryMetrics,
   buildMemoryMetrics,
   pressureLabelKey,
+  buildRuntimeTelemetryFields,
   buildRuntimeStrategyView,
 } from "../pages/deviceHomeViewModel";
 
@@ -63,7 +72,7 @@ function CircularGauge({
             cx={size / 2}
             cy={size / 2}
             r={radius}
-            stroke="color-mix(in srgb, var(--border) 40%, transparent)"
+            stroke="var(--border-subtle)"
             strokeWidth={strokeWidth}
             fill="none"
           />
@@ -100,7 +109,16 @@ function CircularGauge({
         </Box>
       </Box>
       <Box sx={{ textAlign: "center" }}>
-        <Typography variant="subtitle2" sx={{ fontWeight: 600, color: "var(--muted)", letterSpacing: "0.1em", textTransform: "uppercase", fontSize: "0.7rem" }}>
+        <Typography
+          variant="subtitle2"
+          sx={{
+            fontWeight: 600,
+            color: "var(--foreground-soft)",
+            letterSpacing: "0.04em",
+            textTransform: "none",
+            fontSize: "0.7rem",
+          }}
+        >
           {label}
         </Typography>
         {subLabel && (
@@ -113,31 +131,304 @@ function CircularGauge({
   );
 }
 
-function DigitalCounter({ label, value, unit, color = "var(--foreground)", danger = false }: { label: string; value: string | number; unit?: string; color?: string; danger?: boolean }) {
+/** 运行策略压力等级：1–3 档，中心显示档位而非百分比，与存储/内存表盘风格一致 */
+function IntensityLevelRing({
+  intensity,
+  label,
+  subLabel,
+  color,
+  size = 100,
+  strokeWidth = 9,
+}: {
+  intensity: 1 | 2 | 3;
+  /** 省略时不展示表盘下文案（与标题/正文/细条档位避免重复） */
+  label?: string;
+  subLabel?: string;
+  color: string;
+  size?: number;
+  strokeWidth?: number;
+}) {
+  const max = 3;
+  const radius = (size - strokeWidth) / 2;
+  const circumference = radius * 2 * Math.PI;
+  const percent = max > 0 ? Math.min(Math.max(intensity / max, 0), 1) : 0;
+  const offset = circumference - percent * circumference;
+
+  return (
+    <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 1, flexShrink: 0 }}>
+      <Box sx={{ position: "relative", width: size, height: size }}>
+        <svg width={size} height={size} style={{ transform: "rotate(-90deg)", overflow: "visible" }}>
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            stroke="var(--border-subtle)"
+            strokeWidth={strokeWidth}
+            fill="none"
+          />
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            stroke={color}
+            strokeWidth={strokeWidth}
+            fill="none"
+            strokeDasharray={circumference}
+            strokeDashoffset={offset}
+            strokeLinecap="round"
+            style={{
+              transition: "stroke-dashoffset 0.8s cubic-bezier(0.4, 0, 0.2, 1)",
+            }}
+          />
+        </svg>
+        <Box
+          sx={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Typography variant="h4" sx={{ fontFamily: "var(--font-mono)", fontWeight: 700, lineHeight: 1, color: "var(--foreground)" }}>
+            {intensity}
+            <Typography component="span" variant="caption" sx={{ color: "var(--muted)", fontFamily: "var(--font-mono)", fontWeight: 500, ml: 0.25 }}>
+              /3
+            </Typography>
+          </Typography>
+        </Box>
+      </Box>
+      {(label || subLabel) && (
+        <Box sx={{ textAlign: "center", maxWidth: size + 24 }}>
+          {label ? (
+            <Typography
+              variant="subtitle2"
+              sx={{
+                fontWeight: 600,
+                color: "var(--foreground-soft)",
+                letterSpacing: "0.03em",
+                textTransform: "none",
+                fontSize: "0.7rem",
+              }}
+            >
+              {label}
+            </Typography>
+          ) : null}
+          {subLabel ? (
+            <Typography variant="caption" sx={{ color: "var(--muted)", mt: label ? 0.25 : 0, fontFamily: "var(--font-mono)", display: "block", fontSize: "0.65rem" }}>
+              {subLabel}
+            </Typography>
+          ) : null}
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+/** 细进度条 + 三档文案，避免大块色面与强阴影 */
+function StrategyPressureTrack({
+  intensity,
+  t,
+}: {
+  intensity: 1 | 2 | 3;
+  t: TFunction;
+}) {
+  const steps: { key: "Normal" | "Cautious" | "Critical"; level: 1 | 2 | 3 }[] = [
+    { key: "Normal", level: 1 },
+    { key: "Cautious", level: 2 },
+    { key: "Critical", level: 3 },
+  ];
+  const fillPct = (intensity / 3) * 100;
+  const accent = strategyAccentColor(intensity);
+
+  return (
+    <Box sx={{ width: "100%" }}>
+      <Box
+        sx={{
+          height: 3,
+          borderRadius: 999,
+          bgcolor: "var(--border-subtle)",
+          overflow: "hidden",
+        }}
+      >
+        <Box
+          sx={{
+            height: "100%",
+            width: `${fillPct}%`,
+            bgcolor: accent,
+            opacity: 0.38,
+            transition: "width 0.45s cubic-bezier(0.4, 0, 0.2, 1)",
+          }}
+        />
+      </Box>
+      <Box sx={{ display: "flex", justifyContent: "space-between", gap: 1, mt: 0.85 }}>
+        {steps.map((step) => {
+          const labelKey = pressureLabelKey(step.key) as string;
+          const isCurrent = intensity === step.level;
+          return (
+            <Typography
+              key={step.key}
+              variant="caption"
+              sx={{
+                flex: 1,
+                textAlign: "center",
+                fontSize: "0.68rem",
+                fontWeight: isCurrent ? 600 : 400,
+                color: isCurrent ? "var(--foreground)" : "var(--muted)",
+                letterSpacing: "0.02em",
+                textTransform: "none",
+                lineHeight: 1.35,
+              }}
+            >
+              {t(labelKey)}
+            </Typography>
+          );
+        })}
+      </Box>
+    </Box>
+  );
+}
+
+function strategyAccentColor(intensity: 1 | 2 | 3): string {
+  if (intensity === 3) return "var(--semantic-danger)";
+  if (intensity === 2) return "var(--semantic-warning)";
+  return "var(--semantic-success)";
+}
+
+function strategyBehaviorIcon(index: number): React.ReactNode {
+  const sx = { fontSize: "0.88rem" };
+  switch (index) {
+    case 0:
+      return <ChatBubbleOutlineRounded sx={sx} />;
+    case 1:
+      return <ExtensionRounded sx={sx} />;
+    case 2:
+      return <SyncRounded sx={sx} />;
+    default:
+      return null;
+  }
+}
+
+function strategyBudgetIcon(id: string): React.ReactNode {
+  const sx = { fontSize: "0.82rem", opacity: 0.75 };
+  switch (id) {
+    case "messages_max":
+      return <ForumRounded sx={sx} />;
+    case "system_prompt_max":
+      return <NotesRounded sx={sx} />;
+    case "response_body_max":
+      return <ArticleRounded sx={sx} />;
+    case "reconnect_backoff_secs":
+      return <TimerOutlined sx={sx} />;
+    default:
+      return null;
+  }
+}
+
+function DigitalCounter({
+  label,
+  value,
+  unit,
+  color = "var(--foreground)",
+  danger = false,
+  leadingIcon,
+  compact,
+}: {
+  label: string;
+  value: string | number;
+  unit?: string;
+  color?: string;
+  danger?: boolean;
+  leadingIcon?: React.ReactNode;
+  /** 运行策略预算等：更轻边框与图标槽，避免与其它仪表盘数字块抢戏 */
+  compact?: boolean;
+}) {
   const isDanger = danger && Number(value) > 0;
   const finalColor = isDanger ? "var(--semantic-danger)" : color;
-  
+
   return (
-    <Box sx={{
-      p: 1.5,
-      bgcolor: "color-mix(in srgb, var(--foreground) 2%, transparent)",
-      borderRadius: "var(--radius-chip)",
-      border: "1px solid",
-      borderColor: isDanger ? "color-mix(in srgb, var(--semantic-danger) 30%, transparent)" : "color-mix(in srgb, var(--border) 30%, transparent)",
-      display: "flex",
-      flexDirection: "column",
-      gap: 0.5,
-      boxShadow: isDanger ? "0 0 12px color-mix(in srgb, var(--semantic-danger) 20%, transparent)" : "none",
-      minWidth: 0,
-    }}>
-      <Typography variant="caption" sx={{ color: isDanger ? "var(--semantic-danger)" : "var(--muted)", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600, fontSize: "0.65rem", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-        {label}
-      </Typography>
-      <Box sx={{ display: "flex", alignItems: "baseline", gap: 0.5, overflow: "hidden" }}>
-        <Typography variant="h6" sx={{ fontFamily: "var(--font-mono)", fontWeight: 700, color: finalColor, textShadow: isDanger ? `0 0 8px ${finalColor}` : "none", lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+    <Box
+      sx={{
+        p: compact ? 1.15 : 1.5,
+        bgcolor: "color-mix(in srgb, var(--foreground) 2%, transparent)",
+        borderRadius: "var(--radius-chip)",
+        border: "1px solid",
+        borderColor: isDanger
+          ? "color-mix(in srgb, var(--semantic-danger) 22%, var(--border-subtle))"
+          : "var(--border-subtle)",
+        display: "flex",
+        flexDirection: "column",
+        gap: compact ? 0.35 : 0.5,
+        boxShadow: isDanger ? "0 0 12px color-mix(in srgb, var(--semantic-danger) 20%, transparent)" : "none",
+        minWidth: 0,
+      }}
+    >
+      <Box sx={{ display: "flex", alignItems: "center", gap: compact ? 0.65 : 0.75, minWidth: 0 }}>
+        {leadingIcon ? (
+          <Box
+            sx={{
+              flexShrink: 0,
+              width: compact ? 26 : undefined,
+              height: compact ? 26 : undefined,
+              borderRadius: compact ? "var(--radius-sm)" : 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              bgcolor: compact ? "color-mix(in srgb, var(--foreground) 5%, transparent)" : undefined,
+              color: "var(--foreground-soft)",
+            }}
+          >
+            {leadingIcon}
+          </Box>
+        ) : null}
+        <Typography
+          variant="caption"
+          component="span"
+          sx={{
+            color: isDanger ? "var(--semantic-danger)" : "var(--foreground-soft)",
+            textTransform: "none",
+            letterSpacing: "0.02em",
+            fontWeight: compact ? 500 : 600,
+            fontSize: compact ? "0.64rem" : "0.68rem",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {label}
+        </Typography>
+      </Box>
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "baseline",
+          gap: 0.45,
+          overflow: "hidden",
+          pl: leadingIcon && compact ? 0.25 : 0,
+        }}
+      >
+        <Typography
+          variant={compact ? "subtitle1" : "h6"}
+          sx={{
+            fontFamily: "var(--font-mono)",
+            fontWeight: 700,
+            fontSize: compact ? "0.95rem" : undefined,
+            color: finalColor,
+            textShadow: isDanger ? `0 0 8px ${finalColor}` : "none",
+            lineHeight: 1.2,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
           {value}
         </Typography>
-        {unit && <Typography variant="caption" sx={{ color: "var(--muted)", fontFamily: "var(--font-mono)" }}>{unit}</Typography>}
+        {unit && (
+          <Typography variant="caption" sx={{ color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: compact ? "0.65rem" : undefined }}>
+            {unit}
+          </Typography>
+        )}
       </Box>
     </Box>
   );
@@ -181,6 +472,7 @@ export function SystemStatusPanel({
   const memoryMetrics = buildMemoryMetrics(runtimeKind, res);
   const groupedFaults = buildFaultAndRecoveryMetrics(met);
   const strategy = buildRuntimeStrategyView(res);
+  const runtimeTelemetry = buildRuntimeTelemetryFields(runtimeKind, res, met);
 
   const storageUsed = res?.storage_used_kb || 0;
   const storageTotal = res?.storage_total_kb || 0;
@@ -223,121 +515,71 @@ export function SystemStatusPanel({
 
       {/* Runtime Strategy (Span 6 cols, 2 rows) */}
       <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 6" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
-        <DashboardCard title={t("device.systemStatusStrategy")} icon={<SwapVertRounded />}>
+        <DashboardCard title={t("device.systemStatusStrategy")} icon={<TuneRounded />}>
           {strategy ? (
-            <Box sx={{ display: "flex", flexDirection: "column", gap: 2, height: "100%" }}>
-              {/* Header: Pressure & Level Indicator */}
-              <Box sx={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 2 }}>
-                <Box sx={{ minWidth: 0 }}>
-                  <Typography variant="caption" sx={{ color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", display: "block", mb: 0.75 }}>
-                    {t("device.systemStatusPressure")}
-                  </Typography>
-                  <Typography variant="h5" sx={{ color: "var(--foreground)", fontWeight: 700, letterSpacing: "-0.03em", lineHeight: 1.05 }}>
+            <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, height: "100%" }}>
+              <Box
+                sx={{
+                  display: "flex",
+                  flexDirection: { xs: "column", sm: "row" },
+                  alignItems: { xs: "stretch", sm: "center" },
+                  gap: 1.75,
+                }}
+              >
+                <IntensityLevelRing intensity={strategy.intensity} color={strategyAccentColor(strategy.intensity)} />
+                <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography variant="h5" sx={{ color: "var(--foreground)", fontWeight: 600, letterSpacing: "-0.02em", lineHeight: 1.15, fontSize: { xs: "1.15rem", sm: "1.25rem" } }}>
                     {t(strategy.headlineKey)}
                   </Typography>
-                  <Typography variant="body2" sx={{ color: "var(--muted)", mt: 1, lineHeight: 1.6, maxWidth: 360 }}>
+                  <Typography variant="body2" sx={{ color: "var(--muted)", mt: 0.75, lineHeight: 1.55, fontSize: "0.8125rem" }}>
                     {t(strategy.summaryKey)}
-                  </Typography>
-                </Box>
-                <Box
-                  sx={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 0.5,
-                    pt: 0.5,
-                    px: 1.5,
-                    py: 0.5,
-                    borderRadius: "var(--radius-sm)",
-                    bgcolor: "color-mix(in srgb, var(--foreground) 2%, transparent)",
-                    border: "1px solid color-mix(in srgb, var(--border) 20%, transparent)",
-                  }}
-                >
-                  {[1, 2, 3].map((level) => {
-                    const active = level <= strategy.intensity;
-                    const dangerLevel = strategy.intensity === 3;
-                    const color = dangerLevel
-                      ? "var(--semantic-danger)"
-                      : strategy.intensity === 2
-                        ? "var(--semantic-warning)"
-                        : "var(--semantic-success)";
-                    return (
-                      <Box
-                        key={level}
-                        sx={{
-                          width: 8,
-                          height: 12,
-                          borderRadius: "2px",
-                          bgcolor: active ? color : "color-mix(in srgb, var(--border) 25%, transparent)",
-                          transition: "background-color 0.25s ease",
-                        }}
-                      />
-                    );
-                  })}
-                  <Typography
-                    variant="caption"
-                    sx={{
-                      ml: 0.5,
-                      fontFamily: "var(--font-mono)",
-                      fontWeight: 600,
-                      color: "var(--muted)",
-                      letterSpacing: "0.05em",
-                    }}
-                  >
-                    {strategy.level && pressureLabelKey(strategy.level)
-                      ? t(pressureLabelKey(strategy.level) as string)
-                      : `LVL.${strategy.intensity}`}
                   </Typography>
                 </Box>
               </Box>
 
-              {/* Behavior List */}
-              <Box
-                sx={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 0,
-                  bgcolor: "color-mix(in srgb, var(--foreground) 1%, transparent)",
-                  border: "1px solid color-mix(in srgb, var(--border) 15%, transparent)",
-                  borderRadius: "var(--radius-chip)",
-                  p: 1.5,
-                  fontFamily: "var(--font-mono)",
-                }}
-              >
-                {strategy.behaviorKeys.map((key) => (
+              <StrategyPressureTrack intensity={strategy.intensity} t={t} />
+
+              <Box component="ul" sx={{ listStyle: "none", m: 0, p: 0, display: "flex", flexDirection: "column", gap: 0 }}>
+                {strategy.behaviorKeys.map((key, index) => (
                   <Box
+                    component="li"
                     key={key}
                     sx={{
                       display: "flex",
                       alignItems: "flex-start",
-                      gap: 1.5,
-                      py: 0.75,
-                      borderBottom: "1px dashed color-mix(in srgb, var(--border) 15%, transparent)",
-                      "&:last-child": { borderBottom: "none" },
+                      gap: 1.1,
+                      py: 0.7,
+                      borderTop:
+                        index === 0
+                          ? "none"
+                          : "1px solid var(--border-subtle)",
                     }}
                   >
-                    <Typography
-                      component="span"
+                    <Box
+                      aria-hidden
                       sx={{
-                        color:
-                          strategy.intensity === 3
-                            ? "var(--semantic-danger)"
-                            : strategy.intensity === 2
-                              ? "var(--semantic-warning)"
-                              : "var(--semantic-success)",
-                        fontSize: "0.75rem",
-                        lineHeight: 1.6,
-                        userSelect: "none",
+                        width: 30,
+                        height: 30,
+                        flexShrink: 0,
+                        borderRadius: "var(--radius-sm)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        bgcolor: "color-mix(in srgb, var(--foreground) 4%, transparent)",
+                        color: "var(--foreground-soft)",
                       }}
                     >
-                      ▶
-                    </Typography>
+                      {strategyBehaviorIcon(index)}
+                    </Box>
                     <Typography
                       variant="body2"
+                      component="p"
                       sx={{
                         color: "var(--foreground)",
-                        lineHeight: 1.6,
-                        fontSize: "0.8rem",
-                        fontFamily: "inherit",
+                        lineHeight: 1.5,
+                        fontSize: "0.8125rem",
+                        m: 0,
+                        pt: 0.2,
                       }}
                     >
                       {t(key)}
@@ -346,7 +588,7 @@ export function SystemStatusPanel({
                 ))}
               </Box>
 
-              <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "repeat(3, 1fr)" }, gap: 1.5, mt: "auto" }}>
+              <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "repeat(3, 1fr)" }, gap: 1.15, mt: "auto" }}>
                 {strategy.budgetFields.map((item) => {
                   const formatted = formatStrategyBudgetValue(item.value, item.valueKind);
                   return (
@@ -356,6 +598,8 @@ export function SystemStatusPanel({
                       value={formatted.value}
                       unit={formatted.unit}
                       color="var(--primary)"
+                      leadingIcon={strategyBudgetIcon(item.id)}
+                      compact
                     />
                   );
                 })}
@@ -373,23 +617,33 @@ export function SystemStatusPanel({
       <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 12" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
         <DashboardCard title={t("device.systemStatusGroupRuntime")} icon={<SwapVertRounded />}>
           <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)", lg: "repeat(6, 1fr)" }, gap: 1.5, height: "100%", alignContent: "start" }}>
-            <DigitalCounter label={t("device.systemStatusActiveHttp")} value={res?.active_http_count ?? "—"} color="var(--primary)" />
-            <DigitalCounter label={t("device.systemStatusActiveWss")} value={res?.active_wss_count ?? "—"} color="var(--primary)" />
-            <DigitalCounter label={t("device.systemStatusActiveAgentTasks")} value={res?.active_agent_tasks ?? "—"} color="var(--primary)" />
-            <DigitalCounter label={t("device.systemStatusSessionCount")} value={res?.session_count ?? "—"} color="var(--primary)" />
-            <DigitalCounter label={t("device.systemStatusMessagesIn")} value={met?.messages_in ?? "—"} />
-            <DigitalCounter label={t("device.systemStatusMessagesOut")} value={met?.messages_out ?? "—"} />
-            <DigitalCounter label={t("device.systemStatusLlmCalls")} value={met?.llm_calls ?? "—"} />
-            <DigitalCounter label={t("device.systemStatusLlmLastMs")} value={met?.llm_last_ms ?? "—"} />
-            <DigitalCounter label={t("device.systemStatusToolCalls")} value={met?.tool_calls ?? "—"} />
-            <DigitalCounter label={t("device.systemStatusDispatchOk")} value={met?.dispatch_send_ok ?? "—"} />
-            <DigitalCounter label={t("device.systemStatusInboundDepth")} value={res?.inbound_depth ?? "—"} />
-            <DigitalCounter label={t("device.systemStatusOutboundDepth")} value={res?.outbound_depth ?? "—"} />
-            <DigitalCounter label={t("device.systemStatusWdtFeeds")} value={met?.wdt_feeds ?? "—"} />
-            <DigitalCounter label={t("device.systemStatusLastActiveAt")} value={formatEpochSeconds(met?.last_active_epoch_secs)} color="var(--semantic-warning)" />
-            <DigitalCounter label={t("device.systemStatusCpuUsage")} value={res?.cpu_usage_percent != null ? res.cpu_usage_percent.toFixed(1) : "—"} unit="%" color="var(--semantic-warning)" />
-            <DigitalCounter label={t("device.systemStatusProcessMemory")} value={res?.process_memory_kb ?? "—"} unit="KB" color="var(--semantic-warning)" />
-            <DigitalCounter label={t("device.systemStatusLoadAverage")} value={formatLoadAverage(res?.load_average)} color="var(--semantic-warning)" />
+            {runtimeTelemetry.map((item) => {
+              let value: string | number;
+              switch (item.valueKind) {
+                case "epoch_seconds":
+                  value = formatEpochSeconds(item.value as number);
+                  break;
+                case "float1":
+                  value = (item.value as number).toFixed(1);
+                  break;
+                case "load_average":
+                  value = formatLoadAverage(item.value as [number, number, number]);
+                  break;
+                case "number":
+                default:
+                  value = item.value as number;
+                  break;
+              }
+              return (
+                <DigitalCounter
+                  key={item.id}
+                  label={t(item.labelKey)}
+                  value={value}
+                  unit={item.unit}
+                  color={item.color}
+                />
+              );
+            })}
           </Box>
         </DashboardCard>
       </Box>

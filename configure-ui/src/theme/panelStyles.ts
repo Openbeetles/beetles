@@ -9,3 +9,41 @@ export const CONFIG_PANEL_SX = {
   /** 极轻顶边，白天模式下让白 card 与 surface 区分离更清晰 */
   boxShadow: "var(--shadow-subtle)",
 } as const
+
+/**
+ * 设备首页仪表盘卡片：略抬描边与主表面区分；hover 统一用 `--shadow-card-hover`。
+ * Gateway 卡与 `DashboardCard` 共用，避免双层 PCB 与卡片边框糊成一片。
+ */
+export const DASHBOARD_CARD_SURFACE_SX = {
+  bgcolor: "var(--card)",
+  borderRadius: "var(--radius-card)",
+  border: "1px solid color-mix(in srgb, var(--border) 48%, transparent)",
+  boxShadow: "var(--shadow-subtle)",
+  overflow: "hidden",
+  transition:
+    "border-color var(--transition-duration) var(--ease-out-smooth), box-shadow var(--transition-duration) var(--ease-out-smooth)",
+  "&:hover": {
+    borderColor: "color-mix(in srgb, var(--border) 78%, transparent)",
+    boxShadow: "var(--shadow-card-hover)",
+  },
+} as const
+
+/** 仪表盘卡片顶栏（与 Gateway 首行对齐） */
+export const DASHBOARD_CARD_HEADER_ROW_SX = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  px: 2.5,
+  py: 2,
+  borderBottom: "1px solid color-mix(in srgb, var(--border) 14%, transparent)",
+  bgcolor: "color-mix(in srgb, var(--foreground) 2%, transparent)",
+} as const
+
+/** 次级标签：降噪（相对全大写 caption），用于表盘下钻、LED 条等 */
+export const UI_LABEL_SECONDARY_SX = {
+  fontSize: "0.7rem",
+  fontWeight: 500,
+  letterSpacing: "0.02em",
+  textTransform: "none" as const,
+  color: "var(--foreground-soft)",
+} as const

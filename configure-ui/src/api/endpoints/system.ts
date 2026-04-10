@@ -65,9 +65,6 @@ export interface HealthDisplayData {
 export interface HealthAudioCapabilitiesData {
   microphone_input?: boolean
   speaker_output?: boolean
-  concurrent_capture_playback?: boolean
-  barge_in?: boolean
-  echo_cancellation?: string
 }
 
 export interface HealthAudioData {

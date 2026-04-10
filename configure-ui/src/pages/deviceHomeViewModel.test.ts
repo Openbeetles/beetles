@@ -11,6 +11,7 @@ import {
   buildDeviceSummaryFields,
   buildFaultAndRecoveryMetrics,
   buildMemoryMetrics,
+  buildRuntimeTelemetryFields,
   buildRuntimeStrategyView,
 } from "./deviceHomeViewModel.ts";
 
@@ -166,4 +167,96 @@ test("buildDeviceOperationalStatusKey derives homepage runtime state from health
   const key = buildDeviceOperationalStatusKey(health, resource);
 
   assert.equal(key, "device.runtimeSummaryCritical");
+});
+
+test("buildRuntimeTelemetryFields hides Linux-only runtime metrics on ESP", () => {
+  const resource: ResourceSnapshotData = {
+    active_http_count: 1,
+    active_wss_count: 2,
+    active_agent_tasks: 0,
+    session_count: 3,
+    inbound_depth: 4,
+    outbound_depth: 5,
+  };
+  const metrics: MetricsSnapshotData = {
+    messages_in: 10,
+    messages_out: 11,
+    llm_calls: 12,
+    llm_last_ms: 13,
+    tool_calls: 14,
+    dispatch_send_ok: 15,
+    wdt_feeds: 16,
+    last_active_epoch_secs: 1_775_792_000,
+  };
+
+  const fields = buildRuntimeTelemetryFields("esp", resource, metrics);
+
+  assert.deepEqual(
+    fields.map((item) => item.id),
+    [
+      "active_http_count",
+      "active_wss_count",
+      "active_agent_tasks",
+      "session_count",
+      "messages_in",
+      "messages_out",
+      "llm_calls",
+      "llm_last_ms",
+      "tool_calls",
+      "dispatch_send_ok",
+      "inbound_depth",
+      "outbound_depth",
+      "wdt_feeds",
+      "last_active_epoch_secs",
+    ],
+  );
+});
+
+test("buildRuntimeTelemetryFields keeps Linux-only runtime metrics on Linux", () => {
+  const resource: ResourceSnapshotData = {
+    active_http_count: 1,
+    active_wss_count: 2,
+    active_agent_tasks: 0,
+    session_count: 3,
+    inbound_depth: 4,
+    outbound_depth: 5,
+    cpu_usage_percent: 7.5,
+    process_memory_kb: 8192,
+    load_average: [0.1, 0.2, 0.3],
+  };
+  const metrics: MetricsSnapshotData = {
+    messages_in: 10,
+    messages_out: 11,
+    llm_calls: 12,
+    llm_last_ms: 13,
+    tool_calls: 14,
+    dispatch_send_ok: 15,
+    wdt_feeds: 16,
+    last_active_epoch_secs: 1_775_792_000,
+  };
+
+  const fields = buildRuntimeTelemetryFields("linux", resource, metrics);
+
+  assert.deepEqual(
+    fields.map((item) => item.id),
+    [
+      "active_http_count",
+      "active_wss_count",
+      "active_agent_tasks",
+      "session_count",
+      "messages_in",
+      "messages_out",
+      "llm_calls",
+      "llm_last_ms",
+      "tool_calls",
+      "dispatch_send_ok",
+      "inbound_depth",
+      "outbound_depth",
+      "wdt_feeds",
+      "last_active_epoch_secs",
+      "cpu_usage_percent",
+      "process_memory_kb",
+      "load_average",
+    ],
+  );
 });

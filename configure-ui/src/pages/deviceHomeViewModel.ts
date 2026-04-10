@@ -40,6 +40,32 @@ export interface RuntimeStrategyBudgetField extends HomeMetricField {
   valueKind: "bytes" | "seconds";
 }
 
+export interface RuntimeTelemetryField {
+  id:
+    | "active_http_count"
+    | "active_wss_count"
+    | "active_agent_tasks"
+    | "session_count"
+    | "messages_in"
+    | "messages_out"
+    | "llm_calls"
+    | "llm_last_ms"
+    | "tool_calls"
+    | "dispatch_send_ok"
+    | "inbound_depth"
+    | "outbound_depth"
+    | "wdt_feeds"
+    | "last_active_epoch_secs"
+    | "cpu_usage_percent"
+    | "process_memory_kb"
+    | "load_average";
+  labelKey: string;
+  value: number | [number, number, number];
+  valueKind: "number" | "epoch_seconds" | "float1" | "load_average";
+  unit?: string;
+  color?: string;
+}
+
 export interface RuntimeStrategyViewModel {
   headlineKey: string;
   summaryKey: string;
@@ -282,6 +308,97 @@ export function buildDeviceOperationalStatusKey(
     default:
       return "device.runtimeSummaryHealthy";
   }
+}
+
+export function buildRuntimeTelemetryFields(
+  runtimeKind: DeviceRuntimeKind,
+  resource: ResourceSnapshotData | null,
+  metrics: MetricsSnapshotData | null,
+): RuntimeTelemetryField[] {
+  const fields: RuntimeTelemetryField[] = [];
+  const pushNumber = (
+    id: RuntimeTelemetryField["id"],
+    labelKey: string,
+    value: number | undefined,
+    options?: Pick<RuntimeTelemetryField, "unit" | "color" | "valueKind">,
+  ) => {
+    if (value == null) return;
+    fields.push({
+      id,
+      labelKey,
+      value,
+      valueKind: options?.valueKind ?? "number",
+      unit: options?.unit,
+      color: options?.color,
+    });
+  };
+
+  pushNumber("active_http_count", "device.systemStatusActiveHttp", resource?.active_http_count, {
+    color: "var(--primary)",
+  });
+  pushNumber("active_wss_count", "device.systemStatusActiveWss", resource?.active_wss_count, {
+    color: "var(--primary)",
+  });
+  pushNumber(
+    "active_agent_tasks",
+    "device.systemStatusActiveAgentTasks",
+    resource?.active_agent_tasks,
+    { color: "var(--primary)" },
+  );
+  pushNumber("session_count", "device.systemStatusSessionCount", resource?.session_count, {
+    color: "var(--primary)",
+  });
+  pushNumber("messages_in", "device.systemStatusMessagesIn", metrics?.messages_in);
+  pushNumber("messages_out", "device.systemStatusMessagesOut", metrics?.messages_out);
+  pushNumber("llm_calls", "device.systemStatusLlmCalls", metrics?.llm_calls);
+  pushNumber("llm_last_ms", "device.systemStatusLlmLastMs", metrics?.llm_last_ms);
+  pushNumber("tool_calls", "device.systemStatusToolCalls", metrics?.tool_calls);
+  pushNumber("dispatch_send_ok", "device.systemStatusDispatchOk", metrics?.dispatch_send_ok);
+  pushNumber("inbound_depth", "device.systemStatusInboundDepth", resource?.inbound_depth);
+  pushNumber("outbound_depth", "device.systemStatusOutboundDepth", resource?.outbound_depth);
+  pushNumber("wdt_feeds", "device.systemStatusWdtFeeds", metrics?.wdt_feeds);
+  pushNumber(
+    "last_active_epoch_secs",
+    "device.systemStatusLastActiveAt",
+    metrics?.last_active_epoch_secs,
+    {
+      valueKind: "epoch_seconds",
+      color: "var(--semantic-warning)",
+    },
+  );
+
+  if (runtimeKind === "linux") {
+    pushNumber(
+      "cpu_usage_percent",
+      "device.systemStatusCpuUsage",
+      resource?.cpu_usage_percent,
+      {
+        valueKind: "float1",
+        unit: "%",
+        color: "var(--semantic-warning)",
+      },
+    );
+    pushNumber(
+      "process_memory_kb",
+      "device.systemStatusProcessMemory",
+      resource?.process_memory_kb,
+      {
+        unit: "KB",
+        color: "var(--semantic-warning)",
+      },
+    );
+    if (resource?.load_average) {
+      fields.push({
+        id: "load_average",
+        labelKey: "device.systemStatusLoadAverage",
+        value: resource.load_average,
+        valueKind: "load_average",
+        color: "var(--semantic-warning)",
+      });
+    }
+  }
+
+  return fields;
 }
 
 function buildRuntimeBudgetFields(
