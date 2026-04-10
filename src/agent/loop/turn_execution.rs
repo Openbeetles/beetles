@@ -280,31 +280,73 @@ pub(super) fn execute_turn(
                 any_tool_used && !primary_reply_already_delivered && !tool_visible_reply_sent,
                 &content,
             ) {
+                if any_tool_used {
+                    used_final_answer_recovery = true;
+                    let mut recovery_suffix =
+                        recovery_suffix_for_gate(&deliberation_gate).to_string();
+                    recovery_suffix.push_str("\n\n## EndTurn correction\n");
+                    recovery_suffix.push_str(followup);
+                    final_content = run_final_answer_recovery_round(
+                        worker_llm,
+                        &mut tool_ctx,
+                        &system,
+                        &messages,
+                        &content,
+                        recovery_suffix.as_str(),
+                        config.llm_stream,
+                        &mut latency,
+                        &mut system_scratch,
+                    )?;
+                    break;
+                }
                 enqueue_end_turn_followup(&mut messages, &mut progress_history, &content, followup);
                 continue;
             }
-            if let Some((followup, consume_single_use_budget)) =
-                resolve_end_turn_followup(EndTurnFollowupContext {
-                    request_plan: &request_plan,
-                    strategy: config.strategy,
-                    round,
-                    any_tool_used,
-                    end_turn_followup_used,
-                    recent_tool_round: &recent_tool_round,
-                    messages: &messages,
-                    content: &content,
-                })
-            {
-                enqueue_end_turn_followup(
-                    &mut messages,
-                    &mut progress_history,
-                    &content,
-                    &followup,
-                );
-                if consume_single_use_budget {
-                    end_turn_followup_used = true;
+            if let Some(action) = resolve_end_turn_followup(EndTurnFollowupContext {
+                request_plan: &request_plan,
+                strategy: config.strategy,
+                round,
+                any_tool_used,
+                end_turn_followup_used,
+                recent_tool_round: &recent_tool_round,
+                messages: &messages,
+                content: &content,
+            }) {
+                match action {
+                    EndTurnAction::EnqueueFollowup {
+                        followup,
+                        consume_single_use_budget,
+                    } => {
+                        enqueue_end_turn_followup(
+                            &mut messages,
+                            &mut progress_history,
+                            &content,
+                            &followup,
+                        );
+                        if consume_single_use_budget {
+                            end_turn_followup_used = true;
+                        }
+                        continue;
+                    }
+                    EndTurnAction::FinalRecovery { recovery_suffix } => {
+                        used_final_answer_recovery = true;
+                        let mut combined_suffix =
+                            recovery_suffix_for_gate(&deliberation_gate).to_string();
+                        combined_suffix.push_str(recovery_suffix.as_str());
+                        final_content = run_final_answer_recovery_round(
+                            worker_llm,
+                            &mut tool_ctx,
+                            &system,
+                            &messages,
+                            &content,
+                            combined_suffix.as_str(),
+                            config.llm_stream,
+                            &mut latency,
+                            &mut system_scratch,
+                        )?;
+                        break;
+                    }
                 }
-                continue;
             }
 
             mark_ttft_if_visible(&mut latency, worker_start, &content);
@@ -339,7 +381,6 @@ pub(super) fn execute_turn(
                 tool_result_user_content.reserve(cap - tool_result_user_content.capacity());
             }
             tool_result_user_content.push_str(TOOL_RESULTS_PREFIX);
-            let mut truncated = false;
             round_evidence_lines.clear();
             let tool_round_output = execute_tool_use_round(
                 tool_calls,
@@ -354,7 +395,6 @@ pub(super) fn execute_turn(
                 &mut tool_result_user_content,
                 &mut round_evidence_lines,
             );
-            truncated |= tool_round_output.truncated;
             if let Some(reply) = tool_round_output.delivered_current_chat_reply {
                 delivered_current_chat_reply = Some(reply);
             }
@@ -362,23 +402,6 @@ pub(super) fn execute_turn(
                 any_tool_used = true;
             }
             let round_failure_summary = tool_round_output.round_failure_summary;
-            if !round_evidence_lines.is_empty() {
-                if !tool_result_user_content.ends_with('\n') {
-                    let _ = push_bounded_utf8(
-                        &mut tool_result_user_content,
-                        "\n",
-                        MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
-                    );
-                }
-                if append_tool_evidence_summary_block(
-                    &mut tool_result_user_content,
-                    &round_evidence_lines,
-                    tool_round_output.omitted_evidence_count,
-                    MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
-                ) {
-                    truncated = true;
-                }
-            }
             let round_signature = tool_round_output.round_signature;
             external_content_used |=
                 round_used_external_content(&tool_round_output.round_observations);
@@ -412,22 +435,15 @@ pub(super) fn execute_turn(
                     ping_pong_detected,
                 )
             };
-            if let Some(guidance) = round_guidance {
-                if !tool_result_user_content.ends_with('\n') {
-                    let _ = push_bounded_utf8(
-                        &mut tool_result_user_content,
-                        "\n",
-                        MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
-                    );
-                }
-                if append_tool_round_guidance_block(
-                    &mut tool_result_user_content,
-                    &guidance,
-                    MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
-                ) {
-                    truncated = true;
-                }
-            }
+            let evidence_block = (!round_evidence_lines.is_empty()).then(|| {
+                render_tool_evidence_summary_block(
+                    &round_evidence_lines,
+                    tool_round_output.omitted_evidence_count,
+                )
+            });
+            let guidance_block = round_guidance
+                .as_deref()
+                .map(render_tool_round_guidance_block);
             if memory_grounding.is_none() {
                 if runtime_carry.long_term_memory_text.is_none()
                     && interactive_fast_path
@@ -459,32 +475,21 @@ pub(super) fn execute_turn(
                     runtime_carry.long_term_memory_text.as_deref(),
                 );
             }
-            if let Some(memory_grounding) = memory_grounding.as_deref() {
-                if !tool_result_user_content.ends_with('\n') {
-                    let _ = push_bounded_utf8(
-                        &mut tool_result_user_content,
-                        "\n",
-                        MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
-                    );
-                }
-                if append_memory_grounding_block(
-                    &mut tool_result_user_content,
-                    memory_grounding,
-                    MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
-                ) {
-                    truncated = true;
-                }
-            }
-            if truncated && tool_result_user_content.len() < MAX_TOOL_RESULTS_USER_MESSAGE_LEN {
-                let _ = push_bounded_utf8(
-                    &mut tool_result_user_content,
-                    "\n[truncated]",
-                    MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
-                );
-            }
+            let memory_block = memory_grounding
+                .as_deref()
+                .map(render_memory_grounding_block);
+            let raw_tool_results = std::mem::take(&mut tool_result_user_content);
+            let (assembled_tool_results, _assembled_truncated) = assemble_tool_round_user_message(
+                raw_tool_results.as_str(),
+                tool_round_output.truncated,
+                evidence_block.as_deref(),
+                guidance_block.as_deref(),
+                memory_block.as_deref(),
+                MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
+            );
             messages.push(Message {
                 role: Cow::Borrowed("user"),
-                content: std::mem::take(&mut tool_result_user_content),
+                content: assembled_tool_results,
             });
             progress_history[0] = progress_history[1];
             progress_history[1] = progress_history[2];
@@ -533,6 +538,7 @@ pub(super) fn execute_turn(
             &mut tool_ctx,
             &system,
             &messages,
+            final_content.as_str(),
             recovery_suffix_for_gate(&deliberation_gate),
             config.llm_stream,
             &mut latency,

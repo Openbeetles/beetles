@@ -231,31 +231,39 @@ pub(super) fn handle_admission_defer(
         );
         ctx.defer_tracker.remove(&msg_key);
         if msg.ingress == IngressKind::User {
-            let defer_out = PcMsg {
-                channel: msg.channel.clone(),
-                chat_id: msg.chat_id.clone(),
-                content: tr(UiMessage::LowMemoryUserDefer, ctx.loc),
-                req_id: Some(msg.req_id.as_deref().unwrap_or_default().to_owned()),
-                ingress: IngressKind::User,
-                enqueue_ts_ms: super::now_unix_ms(),
-                is_group: false,
-            };
-            let _ = super::try_send_outbound(ctx.outbound_tx, defer_out, "defer-limit");
+            match PcMsg::new_outbound_reply_to(&msg, tr(UiMessage::LowMemoryUserDefer, ctx.loc)) {
+                Ok(defer_out) => {
+                    let _ = super::try_send_outbound(ctx.outbound_tx, defer_out, "defer-limit");
+                }
+                Err(error) => {
+                    metrics::record_error_by_stage(error.metrics_stage());
+                    log::error!(
+                        "[agent] failed to build defer-limit reply channel={} chat_id={}: {}",
+                        msg.channel,
+                        msg.chat_id,
+                        error
+                    );
+                }
+            }
         }
         return;
     }
 
     if msg.ingress == IngressKind::User {
-        let defer_out = PcMsg {
-            channel: msg.channel.clone(),
-            chat_id: msg.chat_id.clone(),
-            content: tr(UiMessage::LowMemoryUserDefer, ctx.loc),
-            req_id: Some(msg.req_id.as_deref().unwrap_or_default().to_owned()),
-            ingress: IngressKind::User,
-            enqueue_ts_ms: super::now_unix_ms(),
-            is_group: false,
-        };
-        let _ = super::try_send_outbound(ctx.outbound_tx, defer_out, "defer");
+        match PcMsg::new_outbound_reply_to(&msg, tr(UiMessage::LowMemoryUserDefer, ctx.loc)) {
+            Ok(defer_out) => {
+                let _ = super::try_send_outbound(ctx.outbound_tx, defer_out, "defer");
+            }
+            Err(error) => {
+                metrics::record_error_by_stage(error.metrics_stage());
+                log::error!(
+                    "[agent] failed to build defer reply channel={} chat_id={}: {}",
+                    msg.channel,
+                    msg.chat_id,
+                    error
+                );
+            }
+        }
     }
     let chat_id = msg.chat_id.clone();
     msg.enqueue_ts_ms = super::now_unix_ms();

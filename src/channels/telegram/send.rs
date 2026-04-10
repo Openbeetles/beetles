@@ -5,9 +5,8 @@ use crate::error::{Error, Result};
 
 use super::super::connectivity;
 use super::super::send::{
-    ensure_sender_http, feed_sender_loop_wdt, log_sender_drop, record_outbound_http_failure,
-    record_outbound_http_success, recv_sender_loop_event, sleep_sender_retry_delay,
-    start_sender_loop, SenderLoopEvent, CHANNEL_SENDER_MAX_RETRIES,
+    ensure_sender_http, record_outbound_http_failure, record_outbound_http_success,
+    run_buffered_sender_loop,
 };
 
 const TELEGRAM_API_BASE: &str = "https://api.telegram.org/bot";
@@ -113,62 +112,33 @@ pub fn run_telegram_sender_loop<H, F>(
     F: FnMut() -> crate::error::Result<H>,
 {
     const TAG: &str = "telegram_sender";
-    start_sender_loop(TAG);
-
     let mut http: Option<H> = None;
-    loop {
-        let (chat_id, content, req_id) = match recv_sender_loop_event(&rx, TAG) {
-            SenderLoopEvent::Message(item) => item,
-            SenderLoopEvent::Timeout => continue,
-            SenderLoopEvent::Disconnected => break,
+    run_buffered_sender_loop(rx, TAG, |message, attempt| {
+        if !ensure_sender_http(&mut http, &mut create_http, TAG, attempt) {
+            return Err(Error::config(TAG, "create http failed"));
+        }
+        let Some(h) = http.as_mut() else {
+            return Err(Error::config(TAG, "sender http missing after ensure"));
         };
-        feed_sender_loop_wdt();
-        let mut sent = false;
-        for retry in 0..CHANNEL_SENDER_MAX_RETRIES {
-            if retry > 0 {
-                sleep_sender_retry_delay();
-            }
-            if !ensure_sender_http(&mut http, &mut create_http, TAG, retry + 1) {
-                continue;
-            }
-            let Some(h) = http.as_mut() else {
-                continue;
-            };
-            match send_one_telegram(h, token, &chat_id, &content) {
-                Ok(()) => record_outbound_http_success(),
-                Err(error) => {
-                    record_outbound_http_failure(&error);
-                    log::warn!(
-                        "[{}] send failed (attempt {}), chat_id={}: {}",
-                        TAG,
-                        retry + 1,
-                        chat_id,
-                        error
-                    );
-                    http = None;
-                    continue;
-                }
-            }
-            while let Ok((cid, cnt, _)) = rx.try_recv() {
-                if let Err(error) = send_one_telegram(h, token, &cid, &cnt) {
-                    record_outbound_http_failure(&error);
-                    log::warn!("[{}] drain send failed for chat_id={}: {}", TAG, cid, error);
-                    break;
-                }
+        match send_one_telegram(h, token, &message.0, &message.1) {
+            Ok(()) => {
                 record_outbound_http_success();
+                Ok(())
             }
-            sent = true;
-            break;
+            Err(error) => {
+                record_outbound_http_failure(&error);
+                log::warn!(
+                    "[{}] send failed (attempt {}), chat_id={}: {}",
+                    TAG,
+                    attempt,
+                    message.0,
+                    error
+                );
+                http = None;
+                Err(error)
+            }
         }
-        if !sent {
-            log_sender_drop(
-                TAG,
-                req_id.as_deref(),
-                Some(chat_id.as_str()),
-                CHANNEL_SENDER_MAX_RETRIES,
-            );
-        }
-    }
+    });
 }
 
 fn map_stage(e: Error, stage: &'static str) -> Error {

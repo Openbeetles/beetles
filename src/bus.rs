@@ -126,6 +126,47 @@ impl PcMsg {
             is_group,
         })
     }
+
+    /// 当前会话出站消息构造：保留 channel/chat_id/is_group，并显式设置 req_id。
+    pub fn new_outbound_for_chat(
+        channel: &Arc<str>,
+        chat_id: &Arc<str>,
+        content: impl Into<String>,
+        req_id: Option<String>,
+        is_group: bool,
+    ) -> Result<Self> {
+        let content = content.into();
+        if content.len() > MAX_CONTENT_LEN {
+            return Err(Error::config(
+                "PcMsg::new_outbound_for_chat",
+                format!(
+                    "content length {} exceeds max {}",
+                    content.len(),
+                    MAX_CONTENT_LEN
+                ),
+            ));
+        }
+        Ok(PcMsg {
+            channel: Arc::clone(channel),
+            chat_id: Arc::clone(chat_id),
+            content,
+            req_id,
+            ingress: IngressKind::User,
+            enqueue_ts_ms: current_unix_ms(),
+            is_group,
+        })
+    }
+
+    /// 基于当前入站消息构造回给同一会话的出站消息，保留群聊语义与 req_id。
+    pub fn new_outbound_reply_to(source: &PcMsg, content: impl Into<String>) -> Result<Self> {
+        Self::new_outbound_for_chat(
+            &source.channel,
+            &source.chat_id,
+            content,
+            source.req_id.clone(),
+            source.is_group,
+        )
+    }
 }
 
 /// 带深度计数的发送端，send/try_send 成功时递增，供 health 查询。
@@ -267,5 +308,44 @@ impl MessageBus {
                 depth: outbound_depth_rx,
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outbound_reply_to_preserves_chat_metadata() {
+        let mut inbound = PcMsg::new_inbound("qq_channel", "group:chat-1", "hello", true)
+            .expect("inbound message");
+        inbound.req_id = Some("req-1".to_string());
+
+        let outbound = PcMsg::new_outbound_reply_to(&inbound, "world").expect("outbound reply");
+
+        assert_eq!(outbound.channel.as_ref(), "qq_channel");
+        assert_eq!(outbound.chat_id.as_ref(), "group:chat-1");
+        assert_eq!(outbound.content, "world");
+        assert_eq!(outbound.req_id.as_deref(), Some("req-1"));
+        assert_eq!(outbound.ingress, IngressKind::User);
+        assert!(outbound.is_group);
+    }
+
+    #[test]
+    fn outbound_for_chat_validates_content_len() {
+        let channel: Arc<str> = Arc::from("telegram");
+        let chat_id: Arc<str> = Arc::from("chat-1");
+        let too_long = "x".repeat(MAX_CONTENT_LEN + 1);
+
+        let err = PcMsg::new_outbound_for_chat(
+            &channel,
+            &chat_id,
+            too_long,
+            Some("req-1".to_string()),
+            false,
+        )
+        .expect_err("should reject oversized outbound content");
+
+        assert_eq!(err.stage(), "PcMsg::new_outbound_for_chat");
     }
 }

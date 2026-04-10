@@ -3,6 +3,7 @@
 
 use super::ChannelHttpClient;
 use crate::error::Result;
+use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
 
@@ -101,6 +102,62 @@ pub(crate) fn sleep_sender_retry_delay() {
     feed_sender_loop_wdt();
 }
 
+fn drain_sender_pending(
+    rx: &Receiver<QueuedOutboundMessage>,
+    pending: &mut VecDeque<QueuedOutboundMessage>,
+) {
+    while let Ok(message) = rx.try_recv() {
+        pending.push_back(message);
+    }
+}
+
+pub(crate) fn run_buffered_sender_loop<SendOne>(
+    rx: Receiver<QueuedOutboundMessage>,
+    tag: &'static str,
+    mut send_one: SendOne,
+) where
+    SendOne: FnMut(&QueuedOutboundMessage, u8) -> crate::error::Result<()>,
+{
+    start_sender_loop(tag);
+
+    let mut pending = VecDeque::with_capacity(4);
+    loop {
+        if pending.is_empty() {
+            match recv_sender_loop_event(&rx, tag) {
+                SenderLoopEvent::Message(message) => pending.push_back(message),
+                SenderLoopEvent::Timeout => continue,
+                SenderLoopEvent::Disconnected => break,
+            }
+        }
+
+        drain_sender_pending(&rx, &mut pending);
+        let Some(message) = pending.pop_front() else {
+            continue;
+        };
+        feed_sender_loop_wdt();
+
+        let mut sent = false;
+        for retry in 0..CHANNEL_SENDER_MAX_RETRIES {
+            let attempt = retry + 1;
+            if retry > 0 {
+                sleep_sender_retry_delay();
+            }
+            if send_one(&message, attempt).is_ok() {
+                sent = true;
+                break;
+            }
+        }
+        if !sent {
+            log_sender_drop(
+                tag,
+                message.2.as_deref(),
+                Some(message.0.as_str()),
+                CHANNEL_SENDER_MAX_RETRIES,
+            );
+        }
+    }
+}
+
 pub(crate) fn ensure_sender_http<H, F>(
     http: &mut Option<H>,
     create_http: &mut F,
@@ -120,6 +177,7 @@ where
             true
         }
         Err(error) => {
+            record_outbound_http_failure(&error);
             log::warn!(
                 "[{}] create http failed (attempt {}): {}",
                 tag,
@@ -231,5 +289,36 @@ mod tests {
         let after = crate::metrics::snapshot();
         assert!(after.channel_http_fail >= before.channel_http_fail + 1);
         assert!(after.errors_tls_admission >= before.errors_tls_admission + 1);
+    }
+
+    #[test]
+    fn buffered_sender_loop_retries_failed_drained_message_instead_of_losing_it() {
+        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let (tx, rx) = std::sync::mpsc::sync_channel(8);
+        tx.send(("chat-a".to_string(), "first".to_string(), None))
+            .expect("send first");
+        tx.send(("chat-b".to_string(), "second".to_string(), None))
+            .expect("send second");
+        tx.send(("chat-c".to_string(), "third".to_string(), None))
+            .expect("send third");
+        drop(tx);
+
+        let seen = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen_clone = std::sync::Arc::clone(&seen);
+
+        run_buffered_sender_loop(rx, "test_sender", move |message, attempt| {
+            let mut guard = seen_clone.lock().unwrap_or_else(|e| e.into_inner());
+            guard.push(format!("{}:{}", message.1, attempt));
+            if message.1 == "second" && attempt == 1 {
+                return Err(Error::config("test_sender", "synthetic failure"));
+            }
+            Ok(())
+        });
+
+        let guard = seen.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(
+            guard.as_slice(),
+            ["first:1", "second:1", "second:2", "third:1"]
+        );
     }
 }

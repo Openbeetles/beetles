@@ -2,9 +2,8 @@
 //! 仅支持自定义机器人 Webhook（不加签）；单条按 4096 字符分片。Sink 统一为 dispatch::QueuedSink。
 
 use crate::channels::send::{
-    ensure_sender_http, feed_sender_loop_wdt, log_sender_drop, record_outbound_http_failure,
-    record_outbound_http_success, recv_sender_loop_event, sleep_sender_retry_delay,
-    start_sender_loop, SenderLoopEvent, CHANNEL_SENDER_MAX_RETRIES,
+    ensure_sender_http, record_outbound_http_failure, record_outbound_http_success,
+    run_buffered_sender_loop,
 };
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
@@ -110,49 +109,28 @@ pub fn run_dingtalk_sender_loop<H, F>(
     if webhook_url.is_empty() {
         return;
     }
-    start_sender_loop(TAG);
-
     let mut http: Option<H> = None;
-    loop {
-        let (_chat_id, content, req_id) = match recv_sender_loop_event(&rx, TAG) {
-            SenderLoopEvent::Message(item) => item,
-            SenderLoopEvent::Timeout => continue,
-            SenderLoopEvent::Disconnected => break,
+    run_buffered_sender_loop(rx, TAG, |message, attempt| {
+        if !ensure_sender_http(&mut http, &mut create_http, TAG, attempt) {
+            return Err(crate::error::Error::config(TAG, "create http failed"));
+        }
+        let Some(h) = http.as_mut() else {
+            return Err(crate::error::Error::config(
+                TAG,
+                "sender http missing after ensure",
+            ));
         };
-        feed_sender_loop_wdt();
-        let mut sent = false;
-        for retry in 0..CHANNEL_SENDER_MAX_RETRIES {
-            if retry > 0 {
-                sleep_sender_retry_delay();
-            }
-            if !ensure_sender_http(&mut http, &mut create_http, TAG, retry + 1) {
-                continue;
-            }
-            let Some(h) = http.as_mut() else {
-                continue;
-            };
-            match send_one_dingtalk(h, webhook_url, &content) {
-                Ok(()) => record_outbound_http_success(),
-                Err(error) => {
-                    record_outbound_http_failure(&error);
-                    log::warn!("[{}] send failed (attempt {}): {}", TAG, retry + 1, error);
-                    http = None;
-                    continue;
-                }
-            }
-            while let Ok((_, cnt, _)) = rx.try_recv() {
-                if let Err(error) = send_one_dingtalk(h, webhook_url, &cnt) {
-                    record_outbound_http_failure(&error);
-                    log::warn!("[{}] drain send failed: {}", TAG, error);
-                    break;
-                }
+        match send_one_dingtalk(h, webhook_url, &message.1) {
+            Ok(()) => {
                 record_outbound_http_success();
+                Ok(())
             }
-            sent = true;
-            break;
+            Err(error) => {
+                record_outbound_http_failure(&error);
+                log::warn!("[{}] send failed (attempt {}): {}", TAG, attempt, error);
+                http = None;
+                Err(error)
+            }
         }
-        if !sent {
-            log_sender_drop(TAG, req_id.as_deref(), None, CHANNEL_SENDER_MAX_RETRIES);
-        }
-    }
+    });
 }

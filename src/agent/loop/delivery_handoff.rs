@@ -21,14 +21,19 @@ pub(super) fn deliver_turn(
         crate::platform::task_wdt::feed_current_task();
         true
     } else if !finalized.streamed {
-        let out = PcMsg {
-            channel: msg.channel.clone(),
-            chat_id: msg.chat_id.clone(),
-            content: finalized.reply_content.clone(),
-            req_id: Some(msg.req_id.as_deref().unwrap_or_default().to_owned()),
-            ingress: IngressKind::User,
-            enqueue_ts_ms: super::now_unix_ms(),
-            is_group: false,
+        let out = match PcMsg::new_outbound_reply_to(msg, finalized.reply_content.clone()) {
+            Ok(out) => out,
+            Err(error) => {
+                metrics::record_error_by_stage(error.metrics_stage());
+                log::error!(
+                    "[agent_delivery] failed to build outbound reply channel={} chat_id={}: {}",
+                    msg.channel,
+                    msg.chat_id,
+                    error
+                );
+                crate::platform::task_wdt::feed_current_task();
+                return DeliveryHandoff::default();
+            }
         };
         crate::platform::task_wdt::feed_current_task();
         super::try_send_outbound(outbound_tx, out, "reply")

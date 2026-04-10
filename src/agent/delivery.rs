@@ -67,6 +67,7 @@ struct QueuedDelivery<'a> {
     outbound_tx: &'a OutboundTx,
     channel: &'a std::sync::Arc<str>,
     chat_id: &'a std::sync::Arc<str>,
+    is_group: bool,
     req_id: &'a str,
     lifecycle: DeliveryLifecycle,
     last_visible_text: String,
@@ -105,6 +106,7 @@ struct WaitingNoticeJob {
     outbound_tx: OutboundTx,
     channel: Arc<str>,
     chat_id: Arc<str>,
+    is_group: bool,
     req_id: String,
     waiting_notice: String,
     shared: Weak<QueuedDeliveryShared>,
@@ -155,6 +157,7 @@ impl<'a> DeliverySession<'a> {
                 outbound_tx,
                 channel: &msg.channel,
                 chat_id: &msg.chat_id,
+                is_group: msg.is_group,
                 req_id,
                 lifecycle: DeliveryLifecycle::Open,
                 last_visible_text: String::new(),
@@ -164,6 +167,7 @@ impl<'a> DeliverySession<'a> {
                         outbound_tx.clone(),
                         Arc::clone(&msg.channel),
                         Arc::clone(&msg.chat_id),
+                        msg.is_group,
                         req_id,
                         tr(UiMessage::AgentStillWorking, loc),
                     )
@@ -457,15 +461,18 @@ impl<'a> EditDelivery<'a> {
         if self.lifecycle == DeliveryLifecycle::Finalized {
             return self.report.finalize_streamed;
         }
+        let normalized = normalize_visible_update(final_content, crate::bus::MAX_CONTENT_LEN);
         if self.message_id.is_none() {
-            if final_content.trim().is_empty() {
+            if normalized.is_empty() {
                 return false;
             }
-            self.send_initial(final_content);
-        } else if !final_content.trim().is_empty() {
-            self.edit_existing(final_content);
+            self.send_initial(&normalized);
+        } else if !normalized.is_empty() {
+            self.edit_existing(&normalized);
         }
-        let streamed = self.message_id.is_some() && !self.edit_disabled;
+        let streamed = self.message_id.is_some()
+            && (!self.edit_disabled
+                || (!normalized.is_empty() && self.last_visible_text == normalized));
         self.lifecycle = DeliveryLifecycle::Finalized;
         self.report.finalize_streamed = streamed;
         streamed
@@ -483,7 +490,7 @@ impl<'a> EditDelivery<'a> {
         } else {
             self.edit_existing(content);
         }
-        if self.edit_disabled || self.last_visible_text != content {
+        if self.last_visible_text != content {
             return Err(crate::error::Error::config(
                 "current_chat_delivery",
                 "failed to deliver current-chat primary reply via stream editor",
@@ -505,13 +512,13 @@ impl<'a> EditDelivery<'a> {
             self.edit_existing(content);
         }
         if self.last_visible_text == before {
-            if self.edit_disabled {
-                return Err(crate::error::Error::config(
-                    "current_chat_delivery",
-                    "failed to deliver current-chat supplemental update via stream editor",
-                ));
-            }
             return Ok(false);
+        }
+        if self.last_visible_text != content {
+            return Err(crate::error::Error::config(
+                "current_chat_delivery",
+                "failed to deliver current-chat supplemental update via stream editor",
+            ));
         }
         Ok(true)
     }
@@ -607,6 +614,7 @@ impl<'a> QueuedDelivery<'a> {
             self.outbound_tx,
             self.channel,
             self.chat_id,
+            self.is_group,
             self.req_id,
             &normalized,
         ) {
@@ -635,6 +643,7 @@ impl<'a> QueuedDelivery<'a> {
             self.outbound_tx,
             self.channel,
             self.chat_id,
+            self.is_group,
             self.req_id,
             content,
         )
@@ -709,17 +718,27 @@ fn send_visible_update(
     outbound_tx: &OutboundTx,
     channel: &std::sync::Arc<str>,
     chat_id: &std::sync::Arc<str>,
+    is_group: bool,
     req_id: &str,
     content: &str,
 ) -> std::result::Result<(), ()> {
-    let msg = PcMsg {
-        channel: Arc::clone(channel),
-        chat_id: Arc::clone(chat_id),
-        content: content.to_string(),
-        req_id: Some(req_id.to_string()),
-        ingress: IngressKind::User,
-        enqueue_ts_ms: current_unix_ms(),
-        is_group: false,
+    let msg = match PcMsg::new_outbound_for_chat(
+        channel,
+        chat_id,
+        content,
+        Some(req_id.to_string()),
+        is_group,
+    ) {
+        Ok(msg) => msg,
+        Err(error) => {
+            log::error!(
+                "[agent_delivery] visible update rejected channel={} chat_id={}: {}",
+                channel,
+                chat_id,
+                error
+            );
+            return Err(());
+        }
     };
     match outbound_tx.try_send(msg) {
         Ok(()) => {
@@ -797,6 +816,7 @@ fn spawn_waiting_notice(
     outbound_tx: OutboundTx,
     channel: Arc<str>,
     chat_id: Arc<str>,
+    is_group: bool,
     req_id: &str,
     waiting_notice: String,
 ) -> Arc<QueuedDeliveryShared> {
@@ -810,6 +830,7 @@ fn spawn_waiting_notice(
         outbound_tx,
         channel,
         chat_id,
+        is_group,
         req_id: req_id.to_string(),
         waiting_notice,
         shared: Arc::downgrade(&shared),
@@ -843,6 +864,7 @@ fn fire_waiting_notice_job(job: WaitingNoticeJob) {
         &job.outbound_tx,
         &job.channel,
         &job.chat_id,
+        job.is_group,
         &job.req_id,
         &job.waiting_notice,
     )
@@ -893,13 +915,6 @@ fn waiting_notice_delay() -> std::time::Duration {
     Duration::from_millis(3000)
 }
 
-fn current_unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis().min(u64::MAX as u128) as u64)
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -934,8 +949,39 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct FailingEditEditor {
+        sends: Mutex<Vec<String>>,
+        edits: Mutex<Vec<String>>,
+    }
+
+    impl StreamEditor for FailingEditEditor {
+        fn send_initial(&self, _chat_id: &str, content: &str) -> Result<Option<String>> {
+            self.sends
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(content.to_string());
+            Ok(Some("msg-1".to_string()))
+        }
+
+        fn edit(&self, _chat_id: &str, _message_id: &str, content: &str) -> Result<()> {
+            self.edits
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(content.to_string());
+            Err(crate::error::Error::config(
+                "stream_edit",
+                "synthetic edit failure",
+            ))
+        }
+    }
+
     fn build_msg(channel: &str) -> PcMsg {
-        PcMsg::new_inbound(channel, "chat-1", "hello", false).expect("pcmsg")
+        build_msg_with_group(channel, false)
+    }
+
+    fn build_msg_with_group(channel: &str, is_group: bool) -> PcMsg {
+        PcMsg::new_inbound(channel, "chat-1", "hello", is_group).expect("pcmsg")
     }
 
     fn capability_entry(
@@ -1127,6 +1173,31 @@ mod tests {
     }
 
     #[test]
+    fn queued_delivery_current_primary_preserves_group_flag() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg_with_group("qq_channel", true);
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            UiLocale::Zh,
+        );
+
+        let delivered = delivery
+            .deliver_current_primary("群主答复")
+            .expect("primary current");
+
+        assert!(delivered);
+        let outbound = outbound_rx.try_recv().expect("primary reply");
+        assert!(outbound.is_group);
+        assert_eq!(outbound.content, "群主答复");
+    }
+
+    #[test]
     fn queued_delivery_accepts_current_supplemental_tool_intent() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
@@ -1278,11 +1349,46 @@ mod tests {
     }
 
     #[test]
+    fn edit_delivery_finalize_treats_already_visible_final_as_delivered_after_edit_disable() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, _outbound_rx, _) = new_inbound_channel(4);
+        let msg = build_msg("telegram");
+        let editor = FailingEditEditor::default();
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            Some(&editor),
+            Some(capability_entry("telegram", true, true, true)),
+            UiLocale::Zh,
+        );
+
+        delivery.emit_progress("已可见最终文本");
+        delivery.emit_progress("第一次失败");
+        delivery.emit_progress("第二次失败");
+        delivery.emit_progress("第三次失败");
+
+        let streamed = delivery.finalize("已可见最终文本");
+
+        assert!(streamed);
+        assert!(delivery.report().finalize_streamed);
+        assert_eq!(
+            editor
+                .sends
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_slice(),
+            ["已可见最终文本"]
+        );
+    }
+
+    #[test]
     fn queued_delivery_sends_waiting_notice_for_long_think() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
-        let msg = build_msg("qq_channel");
+        let msg = build_msg_with_group("qq_channel", true);
         let delivery = DeliverySession::new(
             &msg,
             "req-1",
@@ -1297,6 +1403,7 @@ mod tests {
 
         let first = outbound_rx.try_recv().expect("waiting notice");
         assert_eq!(first.content, "还在处理，请稍等 ⏳");
+        assert!(first.is_group);
         assert!(delivery.report().waiting_notice_sent);
     }
 

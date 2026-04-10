@@ -444,28 +444,48 @@ pub fn build_channel_sinks(
     (sinks, rx_set)
 }
 
+fn spawn_sender_thread<F>(
+    tag: &str,
+    started_label: &str,
+    stage: &'static str,
+    spawn: F,
+) -> Result<()>
+where
+    F: FnOnce() -> std::io::Result<crate::util::TaskHandle>,
+{
+    spawn().map_err(|error| crate::error::Error::io(stage, error))?;
+    log::info!("[{}] {}", tag, started_label);
+    Ok(())
+}
+
 /// 启动各通道的 sender 线程。rx_set 中有值的通道 `.take()` 后 spawn 线程。
 /// `create_http` 在每个线程内调用以创建独立 HTTP 客户端；使用 `Arc` 共享工厂，避免闭包需实现 `Clone`。
 pub fn spawn_sender_threads(
     rx_set: &mut ChannelRxSet,
     tg_token: &str,
     create_http: Arc<dyn Fn() -> crate::Result<Box<dyn PlatformHttpClient>> + Send + Sync>,
-) {
+) -> Result<()> {
     const TAG: &str = "beetle";
 
     if let Some(tg_rx) = rx_set.telegram.take() {
         let f = Arc::clone(&create_http);
         let tg_send_token = tg_token.to_string();
-        crate::util::spawn_guarded_with_profile(
-            "tg_sender",
-            STACK_CHANNEL_SENDER,
-            Some(crate::util::SpawnCore::Core0),
-            crate::util::HttpThreadRole::Io,
+        spawn_sender_thread(
+            TAG,
+            "Telegram sender thread started",
+            "telegram_sender_spawn",
             move || {
-                super::run_telegram_sender_loop(tg_rx, &tg_send_token, move || f());
+                crate::util::spawn_guarded_with_profile_handle(
+                    "tg_sender",
+                    STACK_CHANNEL_SENDER,
+                    Some(crate::util::SpawnCore::Core0),
+                    crate::util::HttpThreadRole::Io,
+                    move || {
+                        super::run_telegram_sender_loop(tg_rx, &tg_send_token, move || f());
+                    },
+                )
             },
-        );
-        log::info!("[{}] Telegram sender thread started", TAG);
+        )?;
     }
 
     if let Some(c) = rx_set.feishu.take() {
@@ -473,31 +493,43 @@ pub fn spawn_sender_threads(
         let fs_rx = c.rx;
         let fs_id = c.app_id;
         let fs_sec = c.app_secret;
-        crate::util::spawn_guarded_with_profile(
-            "fs_sender",
-            STACK_CHANNEL_SENDER,
-            Some(crate::util::SpawnCore::Core0),
-            crate::util::HttpThreadRole::Io,
+        spawn_sender_thread(
+            TAG,
+            "Feishu sender thread started",
+            "feishu_sender_spawn",
             move || {
-                super::run_feishu_sender_loop(fs_rx, &fs_id, &fs_sec, move || f());
+                crate::util::spawn_guarded_with_profile_handle(
+                    "fs_sender",
+                    STACK_CHANNEL_SENDER,
+                    Some(crate::util::SpawnCore::Core0),
+                    crate::util::HttpThreadRole::Io,
+                    move || {
+                        super::run_feishu_sender_loop(fs_rx, &fs_id, &fs_sec, move || f());
+                    },
+                )
             },
-        );
-        log::info!("[{}] Feishu sender thread started", TAG);
+        )?;
     }
     if let Some(c) = rx_set.dingtalk.take() {
         let f = Arc::clone(&create_http);
         let dt_rx = c.rx;
         let dt_url = c.webhook_url;
-        crate::util::spawn_guarded_with_profile(
-            "dt_sender",
-            STACK_CHANNEL_SENDER,
-            Some(crate::util::SpawnCore::Core0),
-            crate::util::HttpThreadRole::Io,
+        spawn_sender_thread(
+            TAG,
+            "DingTalk sender thread started",
+            "dingtalk_sender_spawn",
             move || {
-                super::run_dingtalk_sender_loop(dt_rx, &dt_url, move || f());
+                crate::util::spawn_guarded_with_profile_handle(
+                    "dt_sender",
+                    STACK_CHANNEL_SENDER,
+                    Some(crate::util::SpawnCore::Core0),
+                    crate::util::HttpThreadRole::Io,
+                    move || {
+                        super::run_dingtalk_sender_loop(dt_rx, &dt_url, move || f());
+                    },
+                )
             },
-        );
-        log::info!("[{}] DingTalk sender thread started", TAG);
+        )?;
     }
     if let Some(c) = rx_set.wecom.take() {
         let f = Arc::clone(&create_http);
@@ -506,23 +538,29 @@ pub fn spawn_sender_threads(
         let wc_sec = c.corp_secret;
         let wc_aid = c.agent_id;
         let wc_usr = c.default_touser;
-        crate::util::spawn_guarded_with_profile(
-            "wc_sender",
-            STACK_CHANNEL_SENDER,
-            Some(crate::util::SpawnCore::Core0),
-            crate::util::HttpThreadRole::Io,
+        spawn_sender_thread(
+            TAG,
+            "WeCom sender thread started",
+            "wecom_sender_spawn",
             move || {
-                super::run_wecom_sender_loop(
-                    wc_rx,
-                    &wc_cid,
-                    &wc_sec,
-                    &wc_aid,
-                    &wc_usr,
-                    move || f(),
-                );
+                crate::util::spawn_guarded_with_profile_handle(
+                    "wc_sender",
+                    STACK_CHANNEL_SENDER,
+                    Some(crate::util::SpawnCore::Core0),
+                    crate::util::HttpThreadRole::Io,
+                    move || {
+                        super::run_wecom_sender_loop(
+                            wc_rx,
+                            &wc_cid,
+                            &wc_sec,
+                            &wc_aid,
+                            &wc_usr,
+                            move || f(),
+                        );
+                    },
+                )
             },
-        );
-        log::info!("[{}] WeCom sender thread started", TAG);
+        )?;
     }
     if let Some(c) = rx_set.qq_channel.take() {
         let f = Arc::clone(&create_http);
@@ -530,23 +568,32 @@ pub fn spawn_sender_threads(
         let qq_id = c.app_id;
         let qq_sec = c.app_secret;
         let qq_cache = c.msg_id_cache;
-        crate::util::spawn_guarded_with_profile(
-            "qq_sender",
-            STACK_CHANNEL_SENDER,
-            Some(crate::util::SpawnCore::Core0),
-            crate::util::HttpThreadRole::Io,
+        spawn_sender_thread(
+            TAG,
+            "QQ Channel sender thread started",
+            "qq_sender_spawn",
             move || {
-                super::run_qq_sender_loop(qq_rx, &qq_id, &qq_sec, qq_cache, move || f());
+                crate::util::spawn_guarded_with_profile_handle(
+                    "qq_sender",
+                    STACK_CHANNEL_SENDER,
+                    Some(crate::util::SpawnCore::Core0),
+                    crate::util::HttpThreadRole::Io,
+                    move || {
+                        super::run_qq_sender_loop(qq_rx, &qq_id, &qq_sec, qq_cache, move || f());
+                    },
+                )
             },
-        );
-        log::info!("[{}] QQ Channel sender thread started", TAG);
+        )?;
     }
+
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::replay_cooldown_buffer_with;
     use super::replay_ready_messages_for_tick;
+    use super::spawn_sender_thread;
     use crate::bus::PcMsg;
     use std::collections::VecDeque;
 
@@ -616,5 +663,15 @@ mod tests {
 
         assert_eq!(replayed, vec!["deferred"]);
         assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn sender_thread_spawn_failure_is_propagated_with_stage() {
+        let error = spawn_sender_thread("beetle", "unused", "telegram_sender_spawn", || {
+            Err(std::io::Error::other("synthetic spawn failure"))
+        })
+        .expect_err("spawn should fail");
+
+        assert_eq!(error.stage(), "telegram_sender_spawn");
     }
 }

@@ -11,7 +11,7 @@ use beetle::constants::SOFTAP_DEFAULT_IPV4;
 use beetle::memory::{MemoryStore, SessionStore};
 #[cfg(feature = "feishu")]
 use beetle::run_feishu_ws_loop;
-use beetle::runtime::{execute_stream_http_op, spawn_planned, spawn_planned_handle, thread_plan};
+use beetle::runtime::{execute_stream_http_op, spawn_planned_handle, thread_plan};
 use beetle::util::STACK_VOICE_CONTROL;
 use beetle::util::{STACK_AGENT_LOOP, STACK_CHANNEL_SENDER, STACK_CHANNEL_WS, STACK_DISPATCH};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -51,6 +51,11 @@ struct VoiceEventChannel {
     speak_capable: bool,
     tx: std::sync::mpsc::SyncSender<beetle::audio::voice_session::VoiceEvent>,
     rx: std::sync::mpsc::Receiver<beetle::audio::voice_session::VoiceEvent>,
+}
+
+struct StartedVoiceSession {
+    speak_capable: bool,
+    tx: std::sync::mpsc::SyncSender<beetle::audio::voice_session::VoiceEvent>,
 }
 
 struct TelegramTypingNotifier {
@@ -303,21 +308,22 @@ fn spawn_voice_session_if_ready(
     baidu_token_cache: Option<&Arc<beetle::audio::baidu_token::BaiduTokenCache>>,
     user_inbound_tx: &beetle::bus::InboundTx,
     voice_event_tx_rx: &mut Option<VoiceEventChannel>,
-) {
+) -> beetle::Result<Option<StartedVoiceSession>> {
     let Some(VoiceEventChannel {
         wake_model_name,
+        speak_capable,
         tx: voice_tx,
         rx: voice_rx,
         ..
     }) = voice_event_tx_rx.take()
     else {
-        return;
+        return Ok(None);
+    };
+    let Some(audio_cfg) = config.audio.as_ref() else {
+        return Ok(None);
     };
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    let _ = (&wake_model_name, &voice_tx);
-    let Some(audio_cfg) = config.audio.as_ref() else {
-        return;
-    };
+    let _ = &wake_model_name;
     let vs_platform = Arc::clone(platform);
     let vs_audio = audio_cfg.clone();
     let vs_token = baidu_token_cache.cloned();
@@ -328,7 +334,7 @@ fn spawn_voice_session_if_ready(
     > = Arc::new(move || vs_pf.create_http_client(vs_cfg.as_ref()));
     let vs_inbound_tx = user_inbound_tx.clone();
     let vs_prompt = audio_cfg.wake_word.wake_prompt.clone();
-    let spawned = match spawn_planned_handle("voice_session", STACK_VOICE_CONTROL, move || {
+    spawn_planned_handle("voice_session", STACK_VOICE_CONTROL, move || {
         beetle::audio::voice_session::run_voice_session(
             beetle::audio::voice_session::VoiceSessionConfig {
                 platform: vs_platform,
@@ -340,29 +346,74 @@ fn spawn_voice_session_if_ready(
             },
             voice_rx,
         );
-    }) {
-        Ok(_) => true,
-        Err(error) => {
-            let error = beetle::Error::io("voice_session_spawn", error);
-            log::error!("[{}] voice_session spawn failed: {}", TAG, error);
-            beetle::state::set_last_error(&error);
-            false
-        }
-    };
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    let _ = spawned;
+    })
+    .map_err(|error| beetle::Error::io("voice_session_spawn", error))?;
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    if spawned {
-        if let Some(model_name) = wake_model_name.as_deref() {
-            platform.configure_wake_word(model_name, audio_cfg.microphone.sample_rate, voice_tx);
-        }
+    if let Some(model_name) = wake_model_name.as_deref() {
+        platform.configure_wake_word(
+            model_name,
+            audio_cfg.microphone.sample_rate,
+            voice_tx.clone(),
+        );
     }
+    Ok(Some(StartedVoiceSession {
+        speak_capable,
+        tx: voice_tx,
+    }))
+}
+
+fn voice_sink_sender(
+    started_voice_session: Option<&StartedVoiceSession>,
+) -> Option<std::sync::mpsc::SyncSender<beetle::audio::voice_session::VoiceEvent>> {
+    started_voice_session
+        .filter(|session| session.speak_capable)
+        .map(|session| session.tx.clone())
+}
+
+fn finalize_required_thread_start<F>(
+    tag: &str,
+    started_label: &str,
+    stage: &'static str,
+    spawn: F,
+) -> beetle::Result<()>
+where
+    F: FnOnce() -> std::io::Result<beetle::util::TaskHandle>,
+{
+    spawn().map_err(|error| beetle::Error::io(stage, error))?;
+    log::info!("[{}] {}", tag, started_label);
+    Ok(())
+}
+
+fn spawn_required_planned_thread<F>(
+    tag: &str,
+    name: &str,
+    stack_size: usize,
+    started_label: &str,
+    stage: &'static str,
+    f: F,
+) -> beetle::Result<()>
+where
+    F: FnOnce() + Send + 'static,
+{
+    finalize_required_thread_start(tag, started_label, stage, || {
+        spawn_planned_handle(name, stack_size, f)
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct VoiceRuntimeCapabilities {
     speak_capable: bool,
     wake_capable: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CommunicationPlaneStartup {
+    start_http_backed_ingress: bool,
+    start_poll_ingress: bool,
+    start_dispatch: bool,
+    start_senders: bool,
+    start_agent: bool,
+    start_voice_session: bool,
 }
 
 fn compute_voice_runtime_capabilities(
@@ -392,9 +443,26 @@ fn compute_voice_runtime_capabilities(
     }
 }
 
+fn communication_plane_startup(
+    http_client_ready: bool,
+    voice_runtime_ready: bool,
+) -> CommunicationPlaneStartup {
+    CommunicationPlaneStartup {
+        start_http_backed_ingress: http_client_ready,
+        start_poll_ingress: http_client_ready,
+        start_dispatch: http_client_ready,
+        start_senders: http_client_ready,
+        start_agent: http_client_ready,
+        start_voice_session: voice_runtime_ready,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::compute_voice_runtime_capabilities;
+    use super::{
+        communication_plane_startup, compute_voice_runtime_capabilities,
+        finalize_required_thread_start, voice_sink_sender, StartedVoiceSession,
+    };
     use beetle::config::default_disabled_audio_segment;
 
     #[test]
@@ -452,6 +520,52 @@ mod tests {
         );
         assert!(!caps.speak_capable);
         assert!(caps.wake_capable);
+    }
+
+    #[test]
+    fn communication_plane_startup_requires_http_client_for_all_http_backed_threads() {
+        let disabled = communication_plane_startup(false, true);
+        assert!(!disabled.start_http_backed_ingress);
+        assert!(!disabled.start_poll_ingress);
+        assert!(!disabled.start_dispatch);
+        assert!(!disabled.start_senders);
+        assert!(!disabled.start_agent);
+        assert!(disabled.start_voice_session);
+
+        let enabled = communication_plane_startup(true, false);
+        assert!(enabled.start_http_backed_ingress);
+        assert!(enabled.start_poll_ingress);
+        assert!(enabled.start_dispatch);
+        assert!(enabled.start_senders);
+        assert!(enabled.start_agent);
+        assert!(!enabled.start_voice_session);
+    }
+
+    #[test]
+    fn voice_sink_sender_requires_started_speaking_session() {
+        let (tx, _rx) = std::sync::mpsc::sync_channel(1);
+        let wake_only = StartedVoiceSession {
+            speak_capable: false,
+            tx: tx.clone(),
+        };
+        let speak_ready = StartedVoiceSession {
+            speak_capable: true,
+            tx,
+        };
+
+        assert!(voice_sink_sender(None).is_none());
+        assert!(voice_sink_sender(Some(&wake_only)).is_none());
+        assert!(voice_sink_sender(Some(&speak_ready)).is_some());
+    }
+
+    #[test]
+    fn required_planned_thread_spawn_failure_is_propagated_with_stage() {
+        let error = finalize_required_thread_start("beetle", "unused", "synthetic_spawn", || {
+            Err(std::io::Error::other("synthetic spawn failure"))
+        })
+        .expect_err("spawn should fail");
+
+        assert_eq!(error.stage(), "synthetic_spawn");
     }
 
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
@@ -1807,6 +1921,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     let sta_up = beetle::platform::is_wifi_sta_connected();
     let state_fs_ready = platform.spiffs_usage().is_some();
     let http_client_ready = platform.create_http_client(config.as_ref()).is_ok();
+    let communication_plane =
+        communication_plane_startup(http_client_ready, voice_event_tx_rx.is_some());
     let spiffs_info = platform
         .spiffs_usage()
         .map(|(total, used)| format!("{} free", total.saturating_sub(used)))
@@ -1937,20 +2053,6 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         let _ = platform.display_command(DisplayCommand::UpdateBootProgress { stage: 3 });
     }
 
-    // Register VoiceSink so dispatch routes channel="voice" replies to the voice session thread.
-    if let Some(VoiceEventChannel {
-        speak_capable: true,
-        tx: ref vtx,
-        ..
-    }) = voice_event_tx_rx.as_ref()
-    {
-        sinks.register(
-            beetle::constants::VOICE_CHANNEL_NAME,
-            Box::new(beetle::channels::VoiceSink::new(vtx.clone())),
-        );
-    }
-
-    let sinks = Arc::new(sinks);
     let enabled_channel = config.enabled_channel.as_str();
     log::info!(
         "[{}] enabled_channel='{}'",
@@ -1962,67 +2064,141 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         }
     );
 
-    #[cfg(feature = "feishu")]
-    if let Some(ref c) = channel_rx_set.feishu {
-        let tx = user_inbound_tx.clone();
-        let id = c.app_id.clone();
-        let sec = c.app_secret.clone();
-        let allowed = parse_allowed_chat_ids(&config.feishu_allowed_chat_ids);
-        let pending = Arc::clone(&pending_retry_store);
-        let pf = Arc::clone(&platform);
-        let cfg = Arc::clone(&config);
-        // WSS + JSON: 16KB on ESP; Linux uses `STACK_CHANNEL_WS` (64KB embedded-class, rustls).
-        spawn_planned("feishu_ws", STACK_CHANNEL_WS, move || {
-            run_feishu_ws_loop(
-                id,
-                sec,
-                allowed,
-                tx,
-                pending.as_ref(),
-                move || pf.create_http_client(cfg.as_ref()),
-                connect_wss,
-            )
-        });
-        log::info!("[{}] Feishu WS loop started", TAG);
-    } else if enabled_channel == "feishu" {
-        #[cfg(feature = "feishu")]
-        log::warn!(
-            "[{}] Feishu WS not started: app_id or app_secret empty (check channels config)",
-            TAG
+    let started_voice_session = if communication_plane.start_voice_session {
+        // Voice session is its own runtime plane: it may need HTTP/WSS during task execution,
+        // but startup should not be blocked by the communication-plane HTTP gate.
+        match spawn_voice_session_if_ready(
+            &platform,
+            &config,
+            baidu_token_cache.as_ref(),
+            &user_inbound_tx,
+            &mut voice_event_tx_rx,
+        ) {
+            Ok(started) => started,
+            Err(error) => {
+                log::error!("[{}] voice_session startup failed: {}", TAG, error);
+                beetle::state::set_last_error(&error);
+                beetle::runtime::request_restart_with_continuity_flush(
+                    Arc::clone(&platform),
+                    None,
+                    "voice_session_spawn_failed",
+                );
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(voice_tx) = voice_sink_sender(started_voice_session.as_ref()) {
+        sinks.register(
+            beetle::constants::VOICE_CHANNEL_NAME,
+            Box::new(beetle::channels::VoiceSink::new(voice_tx)),
         );
     }
 
-    if enabled_channel == "qq_channel" {
-        if let Some(ref c) = channel_rx_set.qq_channel {
-            if !c.app_id.trim().is_empty() && !c.app_secret.trim().is_empty() {
-                let qq_tx = user_inbound_tx.clone();
-                let qq_id = c.app_id.clone();
-                let qq_sec = c.app_secret.clone();
-                let qq_cache_ws = std::sync::Arc::clone(&qq_msg_id_cache);
-                let qq_pending = Arc::clone(&pending_retry_store);
-                let pf = Arc::clone(&platform);
-                let cfg = Arc::clone(&config);
-                // QQ WS: 16KB on ESP; Linux `STACK_CHANNEL_WS` (64KB) — 16KB overflows rustls.
-                spawn_planned("qq_ws", STACK_CHANNEL_WS, move || {
-                    beetle::run_qq_ws_loop(
-                        qq_id,
-                        qq_sec,
-                        qq_tx,
-                        qq_cache_ws,
-                        qq_pending.as_ref(),
+    let sinks = Arc::new(sinks);
+
+    if communication_plane.start_http_backed_ingress {
+        #[cfg(feature = "feishu")]
+        if let Some(ref c) = channel_rx_set.feishu {
+            let tx = user_inbound_tx.clone();
+            let id = c.app_id.clone();
+            let sec = c.app_secret.clone();
+            let allowed = parse_allowed_chat_ids(&config.feishu_allowed_chat_ids);
+            let pending = Arc::clone(&pending_retry_store);
+            let pf = Arc::clone(&platform);
+            let cfg = Arc::clone(&config);
+            // WSS + JSON: 16KB on ESP; Linux uses `STACK_CHANNEL_WS` (64KB embedded-class, rustls).
+            if let Err(error) = spawn_required_planned_thread(
+                TAG,
+                "feishu_ws",
+                STACK_CHANNEL_WS,
+                "Feishu WS loop started",
+                "feishu_ws_spawn",
+                move || {
+                    run_feishu_ws_loop(
+                        id,
+                        sec,
+                        allowed,
+                        tx,
+                        pending.as_ref(),
                         move || pf.create_http_client(cfg.as_ref()),
                         connect_wss,
                     )
-                });
-                log::info!("[{}] QQ WS loop started", TAG);
+                },
+            ) {
+                log::error!("[{}] Feishu WS spawn failed: {}", TAG, error);
+                beetle::state::set_last_error(&error);
+                beetle::runtime::request_restart_with_continuity_flush(
+                    Arc::clone(&platform),
+                    None,
+                    "feishu_ws_spawn_failed",
+                );
+                return;
+            }
+        } else if enabled_channel == "feishu" {
+            #[cfg(feature = "feishu")]
+            log::warn!(
+                "[{}] Feishu WS not started: app_id or app_secret empty (check channels config)",
+                TAG
+            );
+        }
+
+        if enabled_channel == "qq_channel" {
+            if let Some(ref c) = channel_rx_set.qq_channel {
+                if !c.app_id.trim().is_empty() && !c.app_secret.trim().is_empty() {
+                    let qq_tx = user_inbound_tx.clone();
+                    let qq_id = c.app_id.clone();
+                    let qq_sec = c.app_secret.clone();
+                    let qq_cache_ws = std::sync::Arc::clone(&qq_msg_id_cache);
+                    let qq_pending = Arc::clone(&pending_retry_store);
+                    let pf = Arc::clone(&platform);
+                    let cfg = Arc::clone(&config);
+                    // QQ WS: 16KB on ESP; Linux `STACK_CHANNEL_WS` (64KB) — 16KB overflows rustls.
+                    if let Err(error) = spawn_required_planned_thread(
+                        TAG,
+                        "qq_ws",
+                        STACK_CHANNEL_WS,
+                        "QQ WS loop started",
+                        "qq_ws_spawn",
+                        move || {
+                            beetle::run_qq_ws_loop(
+                                qq_id,
+                                qq_sec,
+                                qq_tx,
+                                qq_cache_ws,
+                                qq_pending.as_ref(),
+                                move || pf.create_http_client(cfg.as_ref()),
+                                connect_wss,
+                            )
+                        },
+                    ) {
+                        log::error!("[{}] QQ WS spawn failed: {}", TAG, error);
+                        beetle::state::set_last_error(&error);
+                        beetle::runtime::request_restart_with_continuity_flush(
+                            Arc::clone(&platform),
+                            None,
+                            "qq_ws_spawn_failed",
+                        );
+                        return;
+                    }
+                }
             }
         }
+    } else if enabled_channel == "feishu" || enabled_channel == "qq_channel" {
+        log::warn!(
+            "[{}] HTTP-backed ingress not started: create_http_client failed, so external WSS ingress stays offline with dispatch/sender/agent",
+            TAG
+        );
     }
 
     let mut agent_handle: Option<beetle::util::TaskHandle> = None;
 
     // Agent / flush 与各通道工厂均经 `create_http_client`，与代理配置一致。
-    if http_client_ready {
+    if communication_plane.start_dispatch
+        && communication_plane.start_senders
+        && communication_plane.start_agent
+    {
         let outbound_rx_for_dispatch = outbound_rx;
         let sinks_clone = Arc::clone(&sinks);
         if let Err(error) = spawn_planned_handle("dispatch", STACK_DISPATCH, move || {
@@ -2039,7 +2215,10 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             return;
         }
 
-        if enabled_channel == "telegram" && !config.tg_token.trim().is_empty() {
+        if communication_plane.start_poll_ingress
+            && enabled_channel == "telegram"
+            && !config.tg_token.trim().is_empty()
+        {
             let tg_token = config.tg_token.clone();
             let tg_allowed = parse_allowed_chat_ids(&config.tg_allowed_chat_ids);
             let tg_group_activation = config.tg_group_activation.clone();
@@ -2054,23 +2233,38 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             let pf = Arc::clone(&platform);
             let cfg = Arc::clone(&config);
             // tg_poll calls rustls on Linux; use same budget as other channel HTTPS threads.
-            spawn_planned("tg_poll", STACK_CHANNEL_SENDER, move || {
-                beetle::run_telegram_poll_loop(
-                    tg_token,
-                    tg_allowed,
-                    tg_group_activation,
-                    tg_inbound_tx,
-                    tg_pending,
-                    tg_outbound_tx,
-                    tg_session_store,
-                    tg_inbound_depth,
-                    tg_outbound_depth,
-                    tg_config_store,
-                    tg_resolve_locale,
-                    move || pf.create_http_client(cfg.as_ref()),
-                )
-            });
-            log::info!("[{}] Telegram poll loop started", TAG);
+            if let Err(error) = spawn_required_planned_thread(
+                TAG,
+                "tg_poll",
+                STACK_CHANNEL_SENDER,
+                "Telegram poll loop started",
+                "tg_poll_spawn",
+                move || {
+                    beetle::run_telegram_poll_loop(
+                        tg_token,
+                        tg_allowed,
+                        tg_group_activation,
+                        tg_inbound_tx,
+                        tg_pending,
+                        tg_outbound_tx,
+                        tg_session_store,
+                        tg_inbound_depth,
+                        tg_outbound_depth,
+                        tg_config_store,
+                        tg_resolve_locale,
+                        move || pf.create_http_client(cfg.as_ref()),
+                    )
+                },
+            ) {
+                log::error!("[{}] Telegram poll spawn failed: {}", TAG, error);
+                beetle::state::set_last_error(&error);
+                beetle::runtime::request_restart_with_continuity_flush(
+                    Arc::clone(&platform),
+                    None,
+                    "tg_poll_spawn_failed",
+                );
+                return;
+            }
         }
 
         if let Some(ref bus_cfg) = config.i2c_bus {
@@ -2085,15 +2279,6 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
 
         let worker_llm: Arc<dyn beetle::LlmClient + Send + Sync> = Arc::from(
             beetle::build_llm_clients(&config, Arc::clone(&resolve_locale_ui)),
-        );
-
-        // ── Voice session thread (speaker / wake runtime) ───────────────────
-        spawn_voice_session_if_ready(
-            &platform,
-            &config,
-            baidu_token_cache.as_ref(),
-            &user_inbound_tx,
-            &mut voice_event_tx_rx,
         );
 
         let get_skill_descriptions: Arc<dyn Fn() -> String + Send + Sync> =
@@ -2260,7 +2445,20 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             let cfg = Arc::clone(&config);
             move || pf.create_http_client(cfg.as_ref())
         });
-        beetle::channels::spawn_sender_threads(&mut channel_rx_set, &config.tg_token, create_http);
+        if let Err(error) = beetle::channels::spawn_sender_threads(
+            &mut channel_rx_set,
+            &config.tg_token,
+            create_http,
+        ) {
+            log::error!("[{}] sender thread startup failed: {}", TAG, error);
+            beetle::state::set_last_error(&error);
+            beetle::runtime::request_restart_with_continuity_flush(
+                Arc::clone(&platform),
+                None,
+                "sender_thread_spawn_failed",
+            );
+            return;
+        }
 
         // F8: 启动进度条 stage=4（agent 前）
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
@@ -2337,7 +2535,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         };
     } else {
         log::warn!(
-                "[{}] HTTP client not available (create_http_client failed): dispatch, agent, Telegram poll, and outbound sender threads were not started. On Linux, ensure ureq/rustls stack and network; see dev-docs/beetle-os-plan.md and dev-docs/architecture-and-code.md.",
+                "[{}] HTTP client not available (create_http_client failed): Feishu/QQ WSS ingress, dispatch, agent, Telegram poll, and outbound sender threads were not started. On Linux, ensure ureq/rustls stack and network; see dev-docs/beetle-os-plan.md and dev-docs/architecture-and-code.md.",
                 TAG
             );
     }

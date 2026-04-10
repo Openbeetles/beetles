@@ -151,6 +151,11 @@ const TOOL_RESULT_TAIL_CHARS: usize = 24;
 const TOOL_EVIDENCE_PREVIEW_CHARS: usize = 120;
 const TOOL_EVIDENCE_TAIL_CHARS: usize = 32;
 const MAX_TOOL_EVIDENCE_ITEMS: usize = 4;
+const TOOL_RESULT_RAW_MIN_BYTES: usize = 1536;
+const TOOL_EVIDENCE_RESERVED_BYTES: usize = 768;
+const TOOL_GUIDANCE_MAX_BYTES: usize = 448;
+const TOOL_MEMORY_GROUNDING_MAX_BYTES: usize = 384;
+const TOOL_RESULTS_TRUNCATED_MARKER: &str = "\n[truncated]";
 const ASSISTANT_COMPACT_PREVIEW_CHARS: usize = 160;
 const ASSISTANT_COMPACT_TAIL_CHARS: usize = 48;
 const POST_REPLY_MAINTENANCE_USER_PREVIEW_CHARS: usize = 512;
@@ -930,6 +935,12 @@ fn append_tool_round_guidance_block(dst: &mut String, guidance: &str, max_bytes:
         || push_bounded_utf8(dst, "\n</tool_round_guidance>", max_bytes)
 }
 
+fn render_tool_round_guidance_block(guidance: &str) -> String {
+    let mut out = String::with_capacity(guidance.len().saturating_add(64));
+    let _ = append_tool_round_guidance_block(&mut out, guidance, usize::MAX);
+    out
+}
+
 fn merge_tool_round_guidance(primary: Option<String>, extra: Option<String>) -> Option<String> {
     match (primary, extra) {
         (Some(mut primary), Some(extra)) => {
@@ -972,10 +983,109 @@ fn append_tool_evidence_summary_block(
     push_bounded_utf8(dst, "</tool_evidence_summary>", max_bytes)
 }
 
+fn render_tool_evidence_summary_block(evidence_lines: &[String], omitted_count: usize) -> String {
+    let estimated = evidence_lines.iter().map(String::len).sum::<usize>() + 96;
+    let mut out = String::with_capacity(estimated);
+    let _ = append_tool_evidence_summary_block(&mut out, evidence_lines, omitted_count, usize::MAX);
+    out
+}
+
 fn append_memory_grounding_block(dst: &mut String, grounding: &str, max_bytes: usize) -> bool {
     push_bounded_utf8(dst, "<memory_grounding>\n", max_bytes)
         || push_bounded_utf8(dst, grounding, max_bytes)
         || push_bounded_utf8(dst, "\n</memory_grounding>", max_bytes)
+}
+
+fn render_memory_grounding_block(grounding: &str) -> String {
+    let mut out = String::with_capacity(grounding.len().saturating_add(48));
+    let _ = append_memory_grounding_block(&mut out, grounding, usize::MAX);
+    out
+}
+
+fn clone_bounded_utf8(input: &str, max_bytes: usize) -> (String, bool) {
+    let mut out = String::with_capacity(input.len().min(max_bytes));
+    let truncated = push_bounded_utf8(&mut out, input, max_bytes);
+    (out, truncated)
+}
+
+fn append_rendered_tool_section(dst: &mut String, section: &str, max_bytes: usize) -> bool {
+    if section.is_empty() {
+        return false;
+    }
+    let mut truncated = false;
+    if !dst.ends_with('\n') {
+        truncated |= push_bounded_utf8(dst, "\n", max_bytes);
+    }
+    truncated || push_bounded_utf8(dst, section, max_bytes)
+}
+
+fn assemble_tool_round_user_message(
+    raw_results: &str,
+    raw_results_truncated: bool,
+    evidence_block: Option<&str>,
+    guidance_block: Option<&str>,
+    memory_block: Option<&str>,
+    max_bytes: usize,
+) -> (String, bool) {
+    let evidence_reserve = evidence_block
+        .map(|block| block.len().min(TOOL_EVIDENCE_RESERVED_BYTES))
+        .unwrap_or(0);
+    let (mut guidance, mut guidance_truncated) = guidance_block
+        .map(|block| clone_bounded_utf8(block, TOOL_GUIDANCE_MAX_BYTES))
+        .unwrap_or_else(|| (String::new(), false));
+    let (mut memory, mut memory_truncated) = memory_block
+        .map(|block| clone_bounded_utf8(block, TOOL_MEMORY_GROUNDING_MAX_BYTES))
+        .unwrap_or_else(|| (String::new(), false));
+
+    let mut raw_budget = max_bytes.saturating_sub(
+        evidence_reserve
+            .saturating_add(guidance.len())
+            .saturating_add(memory.len())
+            .saturating_add(TOOL_RESULTS_TRUNCATED_MARKER.len()),
+    );
+    if raw_budget < TOOL_RESULT_RAW_MIN_BYTES {
+        let mut needed = TOOL_RESULT_RAW_MIN_BYTES - raw_budget;
+        if !memory.is_empty() {
+            let shrink = needed.min(memory.len());
+            let target = memory.len().saturating_sub(shrink);
+            let (bounded, truncated) = clone_bounded_utf8(memory.as_str(), target);
+            memory = bounded;
+            memory_truncated |= truncated || shrink > 0;
+            needed = needed.saturating_sub(shrink);
+        }
+        if needed > 0 && !guidance.is_empty() {
+            let shrink = needed.min(guidance.len());
+            let target = guidance.len().saturating_sub(shrink);
+            let (bounded, truncated) = clone_bounded_utf8(guidance.as_str(), target);
+            guidance = bounded;
+            guidance_truncated |= truncated || shrink > 0;
+        }
+        raw_budget = max_bytes.saturating_sub(
+            evidence_reserve
+                .saturating_add(guidance.len())
+                .saturating_add(memory.len())
+                .saturating_add(TOOL_RESULTS_TRUNCATED_MARKER.len()),
+        );
+    }
+    raw_budget = raw_budget.max(TOOL_RESULTS_PREFIX.len());
+
+    let (mut out, raw_truncated) = clone_bounded_utf8(raw_results, raw_budget);
+    let mut truncated =
+        raw_results_truncated || raw_truncated || guidance_truncated || memory_truncated;
+
+    if let Some(block) = evidence_block {
+        truncated |= append_rendered_tool_section(&mut out, block, max_bytes);
+    }
+    if !guidance.is_empty() {
+        truncated |= append_rendered_tool_section(&mut out, guidance.as_str(), max_bytes);
+    }
+    if !memory.is_empty() {
+        truncated |= append_rendered_tool_section(&mut out, memory.as_str(), max_bytes);
+    }
+    if truncated && out.len() < max_bytes {
+        let _ = push_bounded_utf8(&mut out, TOOL_RESULTS_TRUNCATED_MARKER, max_bytes);
+    }
+    (out, truncated)
 }
 
 fn build_memory_grounding_text(
@@ -1372,16 +1482,20 @@ fn handle_llm_gate(
                 }
             } else {
                 log::info!("[agent] LLM degraded: {}", reason);
-                let out = PcMsg {
-                    channel: msg.channel.clone(),
-                    chat_id: msg.chat_id.clone(),
-                    content: tr(UiMessage::LowMemoryUserDefer, loc),
-                    req_id: Some(msg.req_id.as_deref().unwrap_or_default().to_owned()),
-                    ingress: IngressKind::User,
-                    enqueue_ts_ms: now_unix_ms(),
-                    is_group: false,
-                };
-                let _ = try_send_outbound(outbound_tx, out, "llm-degrade");
+                match PcMsg::new_outbound_reply_to(&msg, tr(UiMessage::LowMemoryUserDefer, loc)) {
+                    Ok(out) => {
+                        let _ = try_send_outbound(outbound_tx, out, "llm-degrade");
+                    }
+                    Err(error) => {
+                        metrics::record_error_by_stage(error.metrics_stage());
+                        log::error!(
+                            "[agent] failed to build llm-degrade reply channel={} chat_id={}: {}",
+                            msg.channel,
+                            msg.chat_id,
+                            error
+                        );
+                    }
+                }
             }
             GateResult::Skipped
         }
@@ -1528,16 +1642,20 @@ fn handle_worker_path_error(
         return;
     }
 
-    let reply = PcMsg {
-        channel: msg.channel.clone(),
-        chat_id: msg.chat_id.clone(),
-        content: tr(UiMessage::NodeMaintenance, loc),
-        req_id: Some(msg.req_id.as_deref().unwrap_or_default().to_owned()),
-        ingress: IngressKind::User,
-        enqueue_ts_ms: now_unix_ms(),
-        is_group: false,
-    };
-    let _ = try_send_outbound(outbound_tx, reply, "chat-failure");
+    match PcMsg::new_outbound_reply_to(msg, tr(UiMessage::NodeMaintenance, loc)) {
+        Ok(reply) => {
+            let _ = try_send_outbound(outbound_tx, reply, "chat-failure");
+        }
+        Err(build_error) => {
+            metrics::record_error_by_stage(build_error.metrics_stage());
+            log::error!(
+                "[agent] failed to build chat-failure reply channel={} chat_id={}: {}",
+                msg.channel,
+                msg.chat_id,
+                build_error
+            );
+        }
+    }
 }
 
 #[inline(never)]
@@ -2268,6 +2386,16 @@ struct EndTurnFollowupContext<'a> {
     content: &'a str,
 }
 
+enum EndTurnAction {
+    EnqueueFollowup {
+        followup: String,
+        consume_single_use_budget: bool,
+    },
+    FinalRecovery {
+        recovery_suffix: String,
+    },
+}
+
 /// Agent 循环的存储与运行参数，由 main 构建并传入 run_agent_loop，减少参数数量。
 pub struct AgentLoopConfig {
     pub memory_store: Arc<dyn MemoryStore + Send + Sync>,
@@ -2457,16 +2585,20 @@ fn run_agent_loop_main(
             .map(|(count, ts)| *count >= 3 && now_for_key.duration_since(*ts) < FAILURE_EXPIRY)
             .unwrap_or(false)
         {
-            let out = PcMsg {
-                channel: msg.channel.clone(),
-                chat_id: msg.chat_id.clone(),
-                content: tr(UiMessage::NodeMaintenance, loc),
-                req_id: Some(msg.req_id.as_deref().unwrap_or_default().to_owned()),
-                ingress: IngressKind::User,
-                enqueue_ts_ms: now_unix_ms(),
-                is_group: false,
-            };
-            let _ = try_send_outbound(&outbound_tx, out, "maintenance");
+            match PcMsg::new_outbound_reply_to(&msg, tr(UiMessage::NodeMaintenance, loc)) {
+                Ok(out) => {
+                    let _ = try_send_outbound(&outbound_tx, out, "maintenance");
+                }
+                Err(error) => {
+                    metrics::record_error_by_stage(error.metrics_stage());
+                    log::error!(
+                        "[agent] failed to build maintenance reply channel={} chat_id={}: {}",
+                        msg.channel,
+                        msg.chat_id,
+                        error
+                    );
+                }
+            }
             continue;
         }
 
@@ -2668,6 +2800,9 @@ mod tests {
     struct ObservedRecoveryRequest {
         system: String,
         tool_count: usize,
+        message_count: usize,
+        last_message_role: Option<String>,
+        last_message_content: Option<String>,
     }
 
     struct RecoveryStubLlm {
@@ -2684,16 +2819,20 @@ mod tests {
             &self,
             _http: &mut dyn LlmHttpClient,
             system: &str,
-            _messages: &[Message],
+            messages: &[Message],
             tools: Option<&[crate::llm::ToolSpec]>,
             _tool_choice: ToolChoicePolicy,
         ) -> Result<LlmResponse> {
+            let last_message = messages.last();
             self.observed
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push(ObservedRecoveryRequest {
                     system: system.to_string(),
                     tool_count: tools.map_or(0, |specs| specs.len()),
+                    message_count: messages.len(),
+                    last_message_role: last_message.map(|message| message.role.to_string()),
+                    last_message_content: last_message.map(|message| message.content.clone()),
                 });
             Ok(self.response.clone())
         }
@@ -3815,6 +3954,74 @@ mod tests {
     }
 
     #[test]
+    fn assemble_tool_round_user_message_reserves_space_for_evidence_before_guidance() {
+        let raw = format!(
+            "Tool results:\n<tool_result id=\"call_1\" tool=\"read_file\" status=\"ok\">\n{}\n</tool_result>",
+            "x".repeat(4300)
+        );
+        let evidence = render_tool_evidence_summary_block(
+            &[String::from(
+                "- [call_1] read_file: version=1.2.3 path=/tmp/build.log",
+            )],
+            0,
+        );
+        let guidance = render_tool_round_guidance_block(&format!(
+            "[SYSTEM] {}",
+            "Use the evidence above to answer directly and do not drift. ".repeat(24)
+        ));
+
+        let (assembled, truncated) = assemble_tool_round_user_message(
+            raw.as_str(),
+            false,
+            Some(evidence.as_str()),
+            Some(guidance.as_str()),
+            None,
+            MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
+        );
+
+        assert!(truncated);
+        assert!(assembled.contains("<tool_evidence_summary>"));
+        assert!(assembled.contains("version=1.2.3"));
+        assert!(assembled.contains("<tool_round_guidance>"));
+    }
+
+    #[test]
+    fn assemble_tool_round_user_message_shrinks_memory_before_evidence() {
+        let raw = format!(
+            "Tool results:\n<tool_result id=\"call_1\" tool=\"read_file\" status=\"ok\">\n{}\n</tool_result>",
+            "y".repeat(4200)
+        );
+        let evidence = render_tool_evidence_summary_block(
+            &[String::from(
+                "- [call_1] read_file: keep-this-evidence=/tmp/config.toml",
+            )],
+            0,
+        );
+        let guidance = render_tool_round_guidance_block(&format!(
+            "[SYSTEM] {}",
+            "Use completed evidence only. ".repeat(20)
+        ));
+        let memory = render_memory_grounding_block(&format!(
+            "[summary] 用户偏好直接回答 {}\n[long_term] - [project:current_project] {}",
+            "m".repeat(700),
+            "keep memory low ".repeat(18)
+        ));
+
+        let (assembled, truncated) = assemble_tool_round_user_message(
+            raw.as_str(),
+            false,
+            Some(evidence.as_str()),
+            Some(guidance.as_str()),
+            Some(memory.as_str()),
+            MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
+        );
+
+        assert!(truncated);
+        assert!(assembled.contains("keep-this-evidence=/tmp/config.toml"));
+        assert!(assembled.contains("<tool_round_guidance>"));
+    }
+
+    #[test]
     fn build_memory_grounding_text_keeps_summary_and_long_term_bullets() {
         let grounding = build_memory_grounding_text(
             Some("用户喜欢直接、技术化的回答。"),
@@ -3838,6 +4045,46 @@ mod tests {
         assert!(preview.contains("first line"));
         assert!(preview.contains("tail-marker-XYZ"));
         assert!(preview.contains(" ... "));
+    }
+
+    #[test]
+    fn resolve_end_turn_followup_prefers_final_recovery_after_tool_success() {
+        let worker_llm = RecoveryStubLlm {
+            observed: Arc::new(Mutex::new(Vec::new())),
+            response: LlmResponse {
+                content: String::new(),
+                stop_reason: StopReason::EndTurn,
+                tool_calls: None,
+            },
+        };
+        let msg = PcMsg::new_inbound("qq_channel", "chat-1", "请总结一下", false).expect("msg");
+        let registry = crate::tools::ToolRegistry::new();
+        let request_plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &worker_llm,
+            AgentRunStrategy::LinuxEnhanced,
+        );
+        let mut recent_tool_round = RecentToolRoundState::default();
+        recent_tool_round.record_round(1, true, 42, ToolFailureSummary::default());
+        let messages = vec![Message {
+            role: Cow::Borrowed("assistant"),
+            content: "我来总结一下当前情况。".to_string(),
+        }];
+
+        let action = resolve_end_turn_followup(EndTurnFollowupContext {
+            request_plan: &request_plan,
+            strategy: AgentRunStrategy::LinuxEnhanced,
+            round: 1,
+            any_tool_used: true,
+            end_turn_followup_used: false,
+            recent_tool_round: &recent_tool_round,
+            messages: &messages,
+            content: "我来总结一下当前情况。",
+        })
+        .expect("action");
+
+        assert!(matches!(action, EndTurnAction::FinalRecovery { .. }));
     }
 
     #[test]
@@ -3962,6 +4209,7 @@ mod tests {
             &mut tool_ctx,
             "base system",
             &messages,
+            "",
             recovery_suffix,
             false,
             &mut latency,
@@ -3974,8 +4222,65 @@ mod tests {
         let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(observed.len(), 1);
         assert_eq!(observed[0].tool_count, 0);
+        assert_eq!(observed[0].message_count, 1);
         assert!(observed[0].system.contains(FINAL_RECOVERY_SYSTEM_SUFFIX));
         assert!(observed[0].system.contains("## Deliberation recovery"));
+    }
+
+    #[test]
+    fn final_answer_recovery_round_carries_current_assistant_draft_into_context() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = RecoveryStubLlm {
+            observed: Arc::clone(&observed),
+            response: LlmResponse {
+                content: "修正后的最终答案".to_string(),
+                stop_reason: StopReason::EndTurn,
+                tool_calls: None,
+            },
+        };
+        let mut http = DummyPlatformHttp;
+        let config = test_agent_loop_config();
+        let mut tool_ctx = HttpClientToolContext {
+            http: &mut http,
+            chat_id: Some(Arc::from("chat-1")),
+            channel: Some(Arc::from("qq_channel")),
+            channel_capability_registry: Arc::clone(&config.channel_capability_registry),
+            supports_current_chat_outbound_message: false,
+            supports_current_chat_primary_reply: false,
+            supports_explicit_outbound_message: false,
+            outbound_message_budget: 0,
+            outbound_message_count: 0,
+            current_primary_message_delivered: false,
+            locale: UiLocale::Zh,
+        };
+        let messages = vec![Message {
+            role: Cow::Borrowed("user"),
+            content: "请直接给结论".to_string(),
+        }];
+        let mut latency = WorkerLatency::default();
+        let mut system_scratch = String::new();
+
+        let _ = run_final_answer_recovery_round(
+            &llm,
+            &mut tool_ctx,
+            "base system",
+            &messages,
+            "我来总结一下当前情况。",
+            "\n\n## EndTurn correction\n直接回答最终结论。",
+            false,
+            &mut latency,
+            &mut system_scratch,
+        )
+        .expect("recovery round should succeed");
+
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].message_count, 2);
+        assert_eq!(observed[0].last_message_role.as_deref(), Some("assistant"));
+        assert_eq!(
+            observed[0].last_message_content.as_deref(),
+            Some("我来总结一下当前情况。")
+        );
     }
 
     #[test]

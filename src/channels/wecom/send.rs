@@ -2,9 +2,8 @@
 //! 鉴权 GET gettoken，发送 POST message/send；text 按 2048 字节分片（官方限制）。Sink 统一为 dispatch::QueuedSink。
 
 use crate::channels::send::{
-    ensure_sender_http, feed_sender_loop_wdt, log_sender_drop, record_outbound_http_failure,
-    record_outbound_http_success, recv_sender_loop_event, sleep_sender_retry_delay,
-    start_sender_loop, SenderLoopEvent, CHANNEL_SENDER_MAX_RETRIES,
+    ensure_sender_http, record_outbound_http_failure, record_outbound_http_success,
+    run_buffered_sender_loop,
 };
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
@@ -147,7 +146,7 @@ fn acquire_wecom_token_with_expiry<H: ChannelHttpClient>(
     http: &mut H,
     corp_id: &str,
     corp_secret: &str,
-) -> Option<(String, u64)> {
+) -> crate::error::Result<(String, u64)> {
     const TAG: &str = "wecom_send";
     let url = format!(
         "{}?corpid={}&corpsecret={}",
@@ -156,19 +155,30 @@ fn acquire_wecom_token_with_expiry<H: ChannelHttpClient>(
     let (status, resp_body) = match http.http_get(&url) {
         Ok(r) => r,
         Err(e) => {
-            log::warn!("[{}] gettoken failed: {}", TAG, e);
-            return None;
+            let error = crate::error::Error::Other {
+                source: Box::new(e),
+                stage: "wecom_token",
+            };
+            record_outbound_http_failure(&error);
+            return Err(error);
         }
     };
     if status >= 400 {
-        log::warn!("[{}] gettoken status={}", TAG, status);
-        return None;
+        let error = crate::error::Error::Http {
+            status_code: status,
+            stage: "wecom_token",
+        };
+        record_outbound_http_failure(&error);
+        return Err(error);
     }
+    record_outbound_http_success();
     let token_resp: WecomTokenResponse = match serde_json::from_slice(resp_body.as_ref()) {
         Ok(t) => t,
         Err(e) => {
-            log::warn!("[{}] gettoken parse: {}", TAG, e);
-            return None;
+            return Err(crate::error::Error::Other {
+                source: Box::new(e),
+                stage: "wecom_token",
+            });
         }
     };
     if token_resp.errcode != 0 {
@@ -178,7 +188,13 @@ fn acquire_wecom_token_with_expiry<H: ChannelHttpClient>(
             token_resp.errcode,
             token_resp.errmsg
         );
-        return None;
+        return Err(crate::error::Error::config(
+            "wecom_token",
+            format!(
+                "errcode={} errmsg={}",
+                token_resp.errcode, token_resp.errmsg
+            ),
+        ));
     }
     match token_resp.access_token {
         Some(t) if !t.is_empty() => {
@@ -187,11 +203,14 @@ fn acquire_wecom_token_with_expiry<H: ChannelHttpClient>(
             } else {
                 token_resp.expires_in
             };
-            Some((t, exp_secs.max(60)))
+            Ok((t, exp_secs.max(60)))
         }
         _ => {
             log::warn!("[{}] gettoken empty access_token", TAG);
-            None
+            Err(crate::error::Error::config(
+                "wecom_token",
+                "empty access_token",
+            ))
         }
     }
 }
@@ -201,7 +220,9 @@ fn acquire_wecom_token<H: ChannelHttpClient>(
     corp_id: &str,
     corp_secret: &str,
 ) -> Option<String> {
-    acquire_wecom_token_with_expiry(http, corp_id, corp_secret).map(|(t, _)| t)
+    acquire_wecom_token_with_expiry(http, corp_id, corp_secret)
+        .ok()
+        .map(|(t, _)| t)
 }
 
 fn send_one_wecom<H: ChannelHttpClient>(
@@ -330,98 +351,86 @@ pub fn run_wecom_sender_loop<H, F>(
             return;
         }
     };
-    start_sender_loop(TAG);
-
     let mut http: Option<H> = None;
     let mut token_cache: Option<(String, std::time::Instant)> = None;
-    loop {
-        let (chat_id, content, req_id) = match recv_sender_loop_event(&rx, TAG) {
-            SenderLoopEvent::Message(item) => item,
-            SenderLoopEvent::Timeout => continue,
-            SenderLoopEvent::Disconnected => break,
-        };
-        feed_sender_loop_wdt();
-        let mut sent = false;
-        for retry in 0..CHANNEL_SENDER_MAX_RETRIES {
-            if retry > 0 {
-                sleep_sender_retry_delay();
-            }
-
-            let now = std::time::Instant::now();
-            let mut token_opt: Option<String> = token_cache
-                .as_ref()
-                .filter(|(_, exp)| now < *exp)
-                .map(|(t, _)| t.clone());
-            if token_opt.is_none() {
-                token_cache = None;
-                if !ensure_sender_http(&mut http, &mut create_http, TAG, retry + 1) {
-                    continue;
-                }
-                let Some(h) = http.as_mut() else {
-                    continue;
-                };
-                match acquire_wecom_token_with_expiry(h, corp_id, corp_secret) {
-                    Some((t, exp_secs)) => {
-                        let keep = exp_secs
-                            .saturating_sub(WECOM_TOKEN_CACHE_MARGIN_SECS)
-                            .max(30);
-                        token_cache = Some((t.clone(), now + std::time::Duration::from_secs(keep)));
-                        token_opt = Some(t);
-                    }
-                    None => {
-                        http = None;
-                        continue;
-                    }
-                }
-            }
-
-            let token = match token_opt {
-                Some(t) => t,
-                None => continue,
-            };
-
-            if !ensure_sender_http(&mut http, &mut create_http, TAG, retry + 1) {
-                continue;
-            }
+    run_buffered_sender_loop(rx, TAG, |message, attempt| {
+        if !ensure_sender_http(&mut http, &mut create_http, TAG, attempt) {
+            return Err(crate::error::Error::config(TAG, "create http failed"));
+        }
+        let now = std::time::Instant::now();
+        let mut token = token_cache
+            .as_ref()
+            .filter(|(_, exp)| now < *exp)
+            .map(|(token, _)| token.clone());
+        if token.is_none() {
+            token_cache = None;
             let Some(h) = http.as_mut() else {
-                continue;
+                return Err(crate::error::Error::config(
+                    TAG,
+                    "sender http missing after ensure",
+                ));
             };
-            match send_one_wecom(h, &token, agent_id_u32, &chat_id, default_touser, &content) {
-                Ok(()) => record_outbound_http_success(),
+            match acquire_wecom_token_with_expiry(h, corp_id, corp_secret) {
+                Ok((fresh_token, exp_secs)) => {
+                    let keep = exp_secs
+                        .saturating_sub(WECOM_TOKEN_CACHE_MARGIN_SECS)
+                        .max(30);
+                    token_cache = Some((
+                        fresh_token.clone(),
+                        now + std::time::Duration::from_secs(keep),
+                    ));
+                    token = Some(fresh_token);
+                }
                 Err(error) => {
-                    record_outbound_http_failure(&error);
                     log::warn!(
-                        "[{}] send failed (attempt {}), chat_id={}: {}",
+                        "[{}] acquire token failed (attempt {}): {}",
                         TAG,
-                        retry + 1,
-                        chat_id,
+                        attempt,
                         error
                     );
-                    token_cache = None;
                     http = None;
-                    continue;
+                    return Err(error);
                 }
             }
-            while let Ok((cid, cnt, _)) = rx.try_recv() {
-                if let Err(error) =
-                    send_one_wecom(h, &token, agent_id_u32, &cid, default_touser, &cnt)
-                {
-                    record_outbound_http_failure(&error);
-                    log::warn!("[{}] drain send failed for chat_id={}: {}", TAG, cid, error);
-                    break;
-                }
-                record_outbound_http_success();
-            }
-            sent = true;
-            break;
         }
-        if !sent {
-            log_sender_drop(
+
+        let Some(token) = token else {
+            return Err(crate::error::Error::config(
                 TAG,
-                req_id.as_deref(),
-                Some(chat_id.as_str()),
-                CHANNEL_SENDER_MAX_RETRIES,
-            );
+                "sender token missing after refresh",
+            ));
+        };
+        let Some(h) = http.as_mut() else {
+            return Err(crate::error::Error::config(
+                TAG,
+                "sender http missing after token refresh",
+            ));
+        };
+        match send_one_wecom(
+            h,
+            &token,
+            agent_id_u32,
+            &message.0,
+            default_touser,
+            &message.1,
+        ) {
+            Ok(()) => {
+                record_outbound_http_success();
+                Ok(())
+            }
+            Err(error) => {
+                record_outbound_http_failure(&error);
+                log::warn!(
+                    "[{}] send failed (attempt {}), chat_id={}: {}",
+                    TAG,
+                    attempt,
+                    message.0,
+                    error
+                );
+                token_cache = None;
+                http = None;
+                Err(error)
+            }
         }
-    }
+    });
 }

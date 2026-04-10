@@ -2,9 +2,8 @@
 
 use crate::bus::PcMsg;
 use crate::channels::send::{
-    ensure_sender_http, feed_sender_loop_wdt, log_sender_drop, record_outbound_http_failure,
-    record_outbound_http_success, recv_sender_loop_event, sleep_sender_retry_delay,
-    start_sender_loop, SenderLoopEvent, CHANNEL_SENDER_MAX_RETRIES,
+    ensure_sender_http, record_outbound_http_failure, record_outbound_http_success,
+    run_buffered_sender_loop,
 };
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
@@ -242,79 +241,52 @@ pub fn run_feishu_sender_loop<H, F>(
     F: FnMut() -> crate::error::Result<H>,
 {
     const TAG: &str = "feishu_sender";
-    start_sender_loop(TAG);
-
     let mut http: Option<H> = None;
     let mut token_cache = FeishuTokenCache::new();
-    loop {
-        let (chat_id, content, req_id) = match recv_sender_loop_event(&rx, TAG) {
-            SenderLoopEvent::Message(item) => item,
-            SenderLoopEvent::Timeout => continue,
-            SenderLoopEvent::Disconnected => break,
-        };
-        feed_sender_loop_wdt();
-
-        let mut sent = false;
-        for retry in 0..CHANNEL_SENDER_MAX_RETRIES {
-            if retry > 0 {
-                sleep_sender_retry_delay();
-            }
-            if !ensure_sender_http(&mut http, &mut create_http, TAG, retry + 1) {
-                continue;
-            }
-            let Some(h) = http.as_mut() else {
-                continue;
-            };
-            let token = match token_cache.ensure_token(h, app_id, app_secret, TAG) {
-                Ok(token) => token,
-                Err(error) => {
-                    log::warn!(
-                        "[{}] acquire token failed (attempt {}): {}",
-                        TAG,
-                        retry + 1,
-                        error
-                    );
-                    http = None;
-                    continue;
-                }
-            };
-            match send_feishu_message(h, token.as_str(), &chat_id, &content) {
-                Ok(()) => record_outbound_http_success(),
-                Err(error) => {
-                    record_outbound_http_failure(&error);
-                    log::warn!(
-                        "[{}] send failed (attempt {}), chat_id={}: {}",
-                        TAG,
-                        retry + 1,
-                        chat_id,
-                        error
-                    );
-                    token_cache.invalidate();
-                    http = None;
-                    continue;
-                }
-            }
-            while let Ok((cid, cnt, _)) = rx.try_recv() {
-                if let Err(error) = send_feishu_message(h, token.as_str(), &cid, &cnt) {
-                    record_outbound_http_failure(&error);
-                    log::warn!("[{}] drain send failed for chat_id={}: {}", TAG, cid, error);
-                    break;
-                }
-                record_outbound_http_success();
-            }
-            sent = true;
-            break;
+    run_buffered_sender_loop(rx, TAG, |message, attempt| {
+        if !ensure_sender_http(&mut http, &mut create_http, TAG, attempt) {
+            return Err(crate::error::Error::config(TAG, "create http failed"));
         }
-        if !sent {
-            log_sender_drop(
+        let Some(h) = http.as_mut() else {
+            return Err(crate::error::Error::config(
                 TAG,
-                req_id.as_deref(),
-                Some(chat_id.as_str()),
-                CHANNEL_SENDER_MAX_RETRIES,
-            );
-            token_cache.invalidate(); // 连续失败后清除缓存，下次强制刷新
+                "sender http missing after ensure",
+            ));
+        };
+        let token = match token_cache.ensure_token(h, app_id, app_secret, TAG) {
+            Ok(token) => token,
+            Err(error) => {
+                log::warn!(
+                    "[{}] acquire token failed (attempt {}): {}",
+                    TAG,
+                    attempt,
+                    error
+                );
+                token_cache.invalidate();
+                http = None;
+                return Err(error);
+            }
+        };
+        match send_feishu_message(h, token.as_str(), &message.0, &message.1) {
+            Ok(()) => {
+                record_outbound_http_success();
+                Ok(())
+            }
+            Err(error) => {
+                record_outbound_http_failure(&error);
+                log::warn!(
+                    "[{}] send failed (attempt {}), chat_id={}: {}",
+                    TAG,
+                    attempt,
+                    message.0,
+                    error
+                );
+                token_cache.invalidate();
+                http = None;
+                Err(error)
+            }
         }
-    }
+    });
 }
 
 /// 发送消息并返回平台侧 message_id（字符串形式）；供流式编辑使用。

@@ -1,4 +1,5 @@
 use super::*;
+use std::borrow::Cow;
 
 pub(super) fn enqueue_end_turn_followup(
     messages: &mut Vec<Message>,
@@ -73,12 +74,43 @@ pub(super) fn prepare_system_with_two_suffixes<'a>(
     scratch.as_str()
 }
 
-pub(super) fn resolve_end_turn_followup(ctx: EndTurnFollowupContext<'_>) -> Option<(String, bool)> {
+fn end_turn_recovery_suffix(followup: &str) -> String {
+    let mut out = String::with_capacity(followup.len().saturating_add(32));
+    out.push_str("\n\n## EndTurn correction\n");
+    out.push_str(followup.trim());
+    out
+}
+
+fn prepare_final_recovery_messages<'a>(
+    messages: &'a [Message],
+    draft_content: &str,
+) -> Cow<'a, [Message]> {
+    if draft_content.trim().is_empty() {
+        return Cow::Borrowed(messages);
+    }
+    if messages.last().is_some_and(|message| {
+        message.role.as_ref() == "assistant" && message.content.trim() == draft_content.trim()
+    }) {
+        return Cow::Borrowed(messages);
+    }
+    let mut recovery_messages = Vec::with_capacity(messages.len().saturating_add(1));
+    recovery_messages.extend_from_slice(messages);
+    recovery_messages.push(Message {
+        role: Cow::Borrowed("assistant"),
+        content: draft_content.to_string(),
+    });
+    Cow::Owned(recovery_messages)
+}
+
+pub(super) fn resolve_end_turn_followup(ctx: EndTurnFollowupContext<'_>) -> Option<EndTurnAction> {
     if let Some(followup) =
         ctx.request_plan
             .missing_tool_followup(ctx.round, ctx.any_tool_used, ctx.content)
     {
-        return Some((followup.to_string(), false));
+        return Some(EndTurnAction::EnqueueFollowup {
+            followup: followup.to_string(),
+            consume_single_use_budget: false,
+        });
     }
     if ctx.end_turn_followup_used {
         return None;
@@ -88,26 +120,49 @@ pub(super) fn resolve_end_turn_followup(ctx: EndTurnFollowupContext<'_>) -> Opti
         ctx.recent_tool_round.successful_round,
         ctx.content,
     ) {
-        return Some((followup, true));
+        return Some(EndTurnAction::FinalRecovery {
+            recovery_suffix: end_turn_recovery_suffix(&followup),
+        });
     }
     let mut recent_assistant_messages = Vec::with_capacity(3);
     collect_recent_assistant_messages(ctx.messages, 3, &mut recent_assistant_messages);
     if let Some(followup) =
         repeated_answer_followup(ctx.strategy, &recent_assistant_messages, ctx.content)
     {
-        return Some((followup.to_string(), true));
+        if ctx.any_tool_used {
+            return Some(EndTurnAction::FinalRecovery {
+                recovery_suffix: end_turn_recovery_suffix(followup),
+            });
+        }
+        return Some(EndTurnAction::EnqueueFollowup {
+            followup: followup.to_string(),
+            consume_single_use_budget: true,
+        });
     }
     if let Some(followup) =
         blocker_end_turn_followup(ctx.strategy, ctx.recent_tool_round.blocker, ctx.content)
     {
-        return Some((followup.to_string(), true));
+        return Some(EndTurnAction::FinalRecovery {
+            recovery_suffix: end_turn_recovery_suffix(followup),
+        });
     }
     stalled_end_turn_followup(
         ctx.strategy,
         ctx.recent_tool_round.consecutive_stalled_rounds,
         ctx.content,
     )
-    .map(|followup| (followup.to_string(), true))
+    .map(|followup| {
+        if ctx.any_tool_used {
+            EndTurnAction::FinalRecovery {
+                recovery_suffix: end_turn_recovery_suffix(followup),
+            }
+        } else {
+            EndTurnAction::EnqueueFollowup {
+                followup: followup.to_string(),
+                consume_single_use_budget: true,
+            }
+        }
+    })
 }
 
 pub(super) fn run_final_answer_recovery_round(
@@ -115,6 +170,7 @@ pub(super) fn run_final_answer_recovery_round(
     tool_ctx: &mut HttpClientToolContext<'_>,
     system: &str,
     messages: &[Message],
+    draft_content: &str,
     recovery_suffix: &str,
     llm_stream: bool,
     latency: &mut WorkerLatency,
@@ -126,6 +182,7 @@ pub(super) fn run_final_answer_recovery_round(
         recovery_suffix,
         system_scratch,
     );
+    let recovery_messages = prepare_final_recovery_messages(messages, draft_content);
     let t0 = metrics::record_llm_call_start();
     let llm_round_start = Instant::now();
     let response = if llm_stream {
@@ -135,7 +192,7 @@ pub(super) fn run_final_answer_recovery_round(
         worker_llm.chat_with_progress(
             tool_ctx,
             recovery_system,
-            messages,
+            recovery_messages.as_ref(),
             None,
             ToolChoicePolicy::Auto,
             &mut ignore_progress,
@@ -144,7 +201,7 @@ pub(super) fn run_final_answer_recovery_round(
         worker_llm.chat(
             tool_ctx,
             recovery_system,
-            messages,
+            recovery_messages.as_ref(),
             None,
             ToolChoicePolicy::Auto,
         )

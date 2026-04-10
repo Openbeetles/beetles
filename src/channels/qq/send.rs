@@ -5,9 +5,8 @@ use crate::config::AppConfig;
 use crate::error::{Error as BeetleError, Result as BeetleResult};
 
 use crate::channels::send::{
-    ensure_sender_http, feed_sender_loop_wdt, log_sender_drop, record_outbound_http_failure,
-    record_outbound_http_success, recv_sender_loop_event, start_sender_loop, SenderLoopEvent,
-    CHANNEL_SENDER_MAX_RETRIES,
+    ensure_sender_http, feed_sender_loop_wdt, record_outbound_http_failure,
+    record_outbound_http_success, run_buffered_sender_loop,
 };
 
 use super::msg_id::{pop_msg_id, QqMsgIdCache};
@@ -220,13 +219,14 @@ type QueuedQqMessage = (String, String, Option<String>);
 
 fn send_queued_qq_message<H, F>(
     message: &QueuedQqMessage,
+    attempt: u8,
     app_id: &str,
     secret: &str,
     cache: &QqMsgIdCache,
     http: &mut Option<H>,
     token_cache: &mut Option<CachedQqToken>,
     create_http: &mut F,
-) -> bool
+) -> crate::error::Result<()>
 where
     H: ChannelHttpClient,
     F: FnMut() -> crate::error::Result<H>,
@@ -236,93 +236,84 @@ where
     let msg_start = std::time::Instant::now();
     let mut token_wait_ms: u128 = 0;
 
-    for retry in 0..CHANNEL_SENDER_MAX_RETRIES {
-        if retry > 0 {
-            let delay_ms = if retry == 1 {
-                crate::constants::QQ_SEND_RETRY_DELAY_MS_STEP1
-            } else {
-                crate::constants::QQ_SEND_RETRY_DELAY_MS_STEP2
-            };
-            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-            feed_sender_loop_wdt();
+    if !ensure_sender_http(http, create_http, TAG, attempt) {
+        return Err(crate::error::Error::config(TAG, "create http failed"));
+    }
+    let Some(h) = http.as_mut() else {
+        return Err(crate::error::Error::config(
+            TAG,
+            "sender http missing after ensure",
+        ));
+    };
+    let had_cached_token = cached_qq_token_value(token_cache).is_some();
+    let token_start = std::time::Instant::now();
+    let token = match ensure_cached_qq_token(
+        h,
+        token_cache,
+        app_id,
+        secret,
+        "qq_send_token",
+        QQ_TOKEN_CACHE_MARGIN_SECS,
+    ) {
+        Ok(token) => {
+            if !had_cached_token {
+                token_wait_ms = token_wait_ms.saturating_add(token_start.elapsed().as_millis());
+            }
+            token
         }
-
-        if !ensure_sender_http(http, create_http, TAG, retry + 1) {
-            continue;
+        Err(error) => {
+            if !had_cached_token {
+                token_wait_ms = token_wait_ms.saturating_add(token_start.elapsed().as_millis());
+            }
+            log::warn!(
+                "[{}] acquire token failed (attempt {}): {} token_wait_ms={}",
+                TAG,
+                attempt,
+                error,
+                token_wait_ms
+            );
+            *http = None;
+            invalidate_cached_qq_token(token_cache);
+            return Err(error);
         }
-        let Some(h) = http.as_mut() else {
-            continue;
-        };
-        let had_cached_token = cached_qq_token_value(token_cache).is_some();
-        let token_start = std::time::Instant::now();
-        let token = match ensure_cached_qq_token(
-            h,
-            token_cache,
-            app_id,
-            secret,
-            "qq_send_token",
-            QQ_TOKEN_CACHE_MARGIN_SECS,
-        ) {
-            Ok(token) => {
-                if !had_cached_token {
-                    token_wait_ms = token_wait_ms.saturating_add(token_start.elapsed().as_millis());
-                }
-                token
-            }
-            Err(e) => {
-                if !had_cached_token {
-                    token_wait_ms = token_wait_ms.saturating_add(token_start.elapsed().as_millis());
-                }
-                log::warn!(
-                    "[{}] acquire token failed (attempt {}): {}",
-                    TAG,
-                    retry + 1,
-                    e
-                );
-                *http = None;
-                continue;
-            }
-        };
+    };
 
-        let msg_id = pop_msg_id(cache, chat_id);
-        let http_send_start = std::time::Instant::now();
-        match send_one_qq(h, &token, chat_id, content, msg_id.as_deref()) {
-            Ok(()) => {
-                crate::orchestrator::record_channel_result_pub("qq_channel", true);
-                record_outbound_http_success();
-                log::info!(
-                    "[latency][qq_sender] req_id={} chat_id={} attempt={} token_wait_ms={} http_send_ms={} total_ms={} status=ok",
-                    req_id.as_deref().unwrap_or("-"),
-                    chat_id,
-                    retry + 1,
-                    token_wait_ms,
-                    http_send_start.elapsed().as_millis(),
-                    msg_start.elapsed().as_millis()
-                );
-                return true;
-            }
-            Err(ref e) => {
-                crate::orchestrator::record_channel_result_pub("qq_channel", false);
-                record_outbound_http_failure(e);
-                log::warn!(
-                    "[{}] req_id={} send failed (attempt {}): {} chat_id={} token_wait_ms={} http_send_ms={} total_ms={}",
-                    TAG,
-                    req_id.as_deref().unwrap_or("-"),
-                    retry + 1,
-                    e,
-                    chat_id,
-                    token_wait_ms,
-                    http_send_start.elapsed().as_millis(),
-                    msg_start.elapsed().as_millis()
-                );
-                *http = None;
-                invalidate_cached_qq_token(token_cache);
-            }
+    let msg_id = pop_msg_id(cache, chat_id);
+    let http_send_start = std::time::Instant::now();
+    match send_one_qq(h, &token, chat_id, content, msg_id.as_deref()) {
+        Ok(()) => {
+            crate::orchestrator::record_channel_result_pub("qq_channel", true);
+            record_outbound_http_success();
+            log::info!(
+                "[latency][qq_sender] req_id={} chat_id={} attempt={} token_wait_ms={} http_send_ms={} total_ms={} status=ok",
+                req_id.as_deref().unwrap_or("-"),
+                chat_id,
+                attempt,
+                token_wait_ms,
+                http_send_start.elapsed().as_millis(),
+                msg_start.elapsed().as_millis()
+            );
+            Ok(())
+        }
+        Err(error) => {
+            crate::orchestrator::record_channel_result_pub("qq_channel", false);
+            record_outbound_http_failure(&error);
+            log::warn!(
+                "[{}] req_id={} send failed (attempt {}): {} chat_id={} token_wait_ms={} http_send_ms={} total_ms={}",
+                TAG,
+                req_id.as_deref().unwrap_or("-"),
+                attempt,
+                error,
+                chat_id,
+                token_wait_ms,
+                http_send_start.elapsed().as_millis(),
+                msg_start.elapsed().as_millis()
+            );
+            *http = None;
+            invalidate_cached_qq_token(token_cache);
+            Err(error)
         }
     }
-
-    crate::orchestrator::record_channel_result_pub("qq_channel", false);
-    false
 }
 
 /// 持续运行的 QQ 频道发送循环：本线程**复用**同一 HTTP 客户端（少占 lwIP socket，避免与 WSS 抢 fd），
@@ -341,42 +332,19 @@ pub fn run_qq_sender_loop<H, F>(
     if app_id.is_empty() || secret.is_empty() {
         return;
     }
-    start_sender_loop(TAG);
-
     let mut http: Option<H> = None;
     let mut token_cache: Option<CachedQqToken> = None;
-
-    loop {
-        let first = match recv_sender_loop_event(&rx, TAG) {
-            SenderLoopEvent::Message(item) => item,
-            SenderLoopEvent::Timeout => continue,
-            SenderLoopEvent::Disconnected => break,
-        };
+    run_buffered_sender_loop(rx, TAG, |message, attempt| {
         feed_sender_loop_wdt();
-        let mut batch = vec![first];
-        while let Ok(item) = rx.try_recv() {
-            batch.push(item);
-        }
-
-        for message in batch {
-            feed_sender_loop_wdt();
-            let sent = send_queued_qq_message(
-                &message,
-                app_id,
-                secret,
-                &cache,
-                &mut http,
-                &mut token_cache,
-                &mut create_http,
-            );
-            if !sent {
-                log_sender_drop(
-                    TAG,
-                    message.2.as_deref(),
-                    Some(message.0.as_str()),
-                    CHANNEL_SENDER_MAX_RETRIES,
-                );
-            }
-        }
-    }
+        send_queued_qq_message(
+            message,
+            attempt,
+            app_id,
+            secret,
+            &cache,
+            &mut http,
+            &mut token_cache,
+            &mut create_http,
+        )
+    });
 }
