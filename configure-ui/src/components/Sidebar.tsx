@@ -121,8 +121,7 @@ export function Sidebar({ drawer }: SidebarProps) {
         flexDirection: "column",
         ...SHELL_CHROME_SURFACE_SX,
         ...(!drawer && {
-          borderRight:
-            "1px solid color-mix(in srgb, var(--border) 38%, transparent)",
+          boxShadow: "var(--shadow-shell-rail)",
         }),
         transition:
           "width var(--transition-duration-emphasized) var(--ease-emphasized)",

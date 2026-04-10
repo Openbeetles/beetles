@@ -36,10 +36,11 @@ export function PageHeader({ title, description, variant = 'page' }: PageHeaderP
       <Typography
         component="h1"
         sx={{
-          fontFamily: 'var(--font-display)',
+          /** 顶栏：系统菜单栏式标题；独立页：保留品牌 Display 字重 */
+          fontFamily: inBar ? 'var(--font-sans)' : 'var(--font-display)',
           fontSize: inBar ? 'var(--font-size-body)' : { xs: 'var(--font-size-h4)', md: 'var(--font-size-h3)' },
-          fontWeight: 700,
-          letterSpacing: 'var(--letter-spacing-tight)',
+          fontWeight: inBar ? 600 : 700,
+          letterSpacing: inBar ? '-0.01em' : 'var(--letter-spacing-tight)',
           lineHeight: 'var(--line-height-tight)',
           color: 'var(--foreground)',
           margin: 0,

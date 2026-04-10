@@ -212,6 +212,26 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             '--shadow-subtle': tokens.shadowSubtle,
             '--shadow-card': tokens.shadowSubtle,
             '--shadow-card-hover': tokens.shadowCardHover,
+            /** 顶栏：标题栏式底影 + 顶边高光（壳层 OS 感） */
+            '--shadow-shell-titlebar':
+              mode === 'light'
+                ? '0 1px 0 color-mix(in srgb, var(--foreground) 7%, transparent), 0 10px 32px -6px color-mix(in srgb, var(--foreground) 5%, transparent)'
+                : '0 1px 0 color-mix(in srgb, var(--foreground) 14%, transparent), 0 12px 40px -8px rgba(0,0,0,0.55)',
+            /** 侧栏：向右投一点深度，与主「桌面」区分 */
+            '--shadow-shell-rail':
+              mode === 'light'
+                ? '4px 0 28px color-mix(in srgb, var(--foreground) 5%, transparent)'
+                : '6px 0 36px rgba(0,0,0,0.42)',
+            /** 主内容区顶缘：轻微内凹，承接顶栏 */
+            '--shell-main-inset-top':
+              mode === 'light'
+                ? 'inset 0 1px 0 color-mix(in srgb, var(--foreground) 5%, transparent)'
+                : 'inset 0 1px 0 color-mix(in srgb, var(--foreground) 10%, transparent)',
+            /** 浮动面板（设置抽屉等）外轮廓 */
+            '--shadow-shell-floating':
+              mode === 'light'
+                ? '-12px 0 40px color-mix(in srgb, var(--foreground) 6%, transparent)'
+                : '-16px 0 48px rgba(0,0,0,0.5)',
             '--font-mono': LAYOUT_TOKENS.fontMono,
             '--font-size-data-value': LAYOUT_TOKENS.fontSizeDataValue,
             '--badge-new': tokens.badgeNew,

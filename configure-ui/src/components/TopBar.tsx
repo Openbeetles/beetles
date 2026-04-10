@@ -105,9 +105,21 @@ export function TopBar({ onMenuClick, onOpenSettings }: TopBarProps) {
         alignItems: "center",
         justifyContent: "space-between",
         px: 2,
+        position: "relative",
         ...SHELL_CHROME_SURFACE_SX,
-        borderBottom:
-          "1px solid color-mix(in srgb, var(--border) 22%, transparent)",
+        boxShadow: "var(--shadow-shell-titlebar)",
+        "&::before": {
+          content: '""',
+          position: "absolute",
+          left: 0,
+          right: 0,
+          top: 0,
+          height: "1px",
+          background:
+            "linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--foreground) 14%, transparent) 50%, transparent 100%)",
+          opacity: 0.85,
+          pointerEvents: "none",
+        },
         gap: 2,
       }}
     >

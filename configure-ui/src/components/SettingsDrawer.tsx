@@ -73,7 +73,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
           borderLeft: "none",
           borderTopLeftRadius: "var(--radius-card)",
           borderBottomLeftRadius: "var(--radius-card)",
-          boxShadow: "none",
+          boxShadow: "var(--shadow-shell-floating)",
           backgroundColor: "var(--card)",
           transition:
             "border-color var(--transition-duration) ease, box-shadow var(--transition-duration) ease",

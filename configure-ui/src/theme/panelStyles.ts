@@ -6,8 +6,11 @@ export const CONFIG_PANEL_SX = {
   borderRadius: "var(--radius-card)",
   bgcolor: "var(--card)",
   border: "1px solid color-mix(in srgb, var(--border) 28%, transparent)",
-  /** 极轻顶边，白天模式下让白 card 与 surface 区分离更清晰 */
-  boxShadow: "var(--shadow-subtle)",
+  /** 极轻顶边 + 内顶高光，接近系统设置面板/窗口内嵌块 */
+  boxShadow: [
+    "var(--shadow-subtle)",
+    "inset 0 1px 0 color-mix(in srgb, var(--foreground) 5%, transparent)",
+  ].join(", "),
 } as const
 
 /**
@@ -18,13 +21,19 @@ export const DASHBOARD_CARD_SURFACE_SX = {
   bgcolor: "var(--card)",
   borderRadius: "var(--radius-card)",
   border: "1px solid color-mix(in srgb, var(--border) 48%, transparent)",
-  boxShadow: "var(--shadow-subtle)",
+  boxShadow: [
+    "var(--shadow-subtle)",
+    "inset 0 1px 0 color-mix(in srgb, var(--foreground) 6%, transparent)",
+  ].join(", "),
   overflow: "hidden",
   transition:
     "border-color var(--transition-duration) var(--ease-out-smooth), box-shadow var(--transition-duration) var(--ease-out-smooth)",
   "&:hover": {
     borderColor: "color-mix(in srgb, var(--border) 78%, transparent)",
-    boxShadow: "var(--shadow-card-hover)",
+    boxShadow: [
+      "var(--shadow-card-hover)",
+      "inset 0 1px 0 color-mix(in srgb, var(--foreground) 7%, transparent)",
+    ].join(", "),
   },
 } as const
 

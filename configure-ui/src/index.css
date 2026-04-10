@@ -1,8 +1,36 @@
-/* 科技感无衬线 UI、等宽数据/代码、Logo 用 Orbitron */
+/* 系统 UI 优先的无衬线栈（桌面壳层感）+ IBM Plex 回退；等宽数据/代码；品牌标题用 Orbitron */
 :root {
-  --font-sans: 'IBM Plex Sans', 'Helvetica Neue', Arial, sans-serif;
-  --font-mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
-  --font-display: 'Orbitron', 'IBM Plex Sans', sans-serif;
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    'IBM Plex Sans', 'Noto Sans', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Consolas, monospace;
+  --font-display: 'Orbitron', 'IBM Plex Sans', var(--font-sans);
+}
+
+/* 与系统滚动条协调的细滚动条（不影响布局宽度语义） */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--border) 55%, transparent) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  background-color: color-mix(in srgb, var(--foreground) 18%, transparent);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--foreground) 28%, transparent);
 }
 
 *,

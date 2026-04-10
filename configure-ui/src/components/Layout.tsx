@@ -57,6 +57,8 @@ function MainSurface({ children }: { children: ReactNode }) {
         /** 水平不设 padding：丝印底与顶栏同宽；内层与 TopBar/DeviceBanner 的 px:2 对齐 */
         px: 0,
         width: "100%",
+        /** 与顶栏接缝处内凹高光，强化「桌面工作区」层次 */
+        boxShadow: "var(--shell-main-inset-top)",
       }}
     >
       <PcbDecorOverlay />
