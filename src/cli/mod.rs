@@ -298,10 +298,6 @@ fn cmd_ops_status(ctx: &CliContext) -> String {
             config: &ctx.config,
             platform: ctx.platform.as_ref(),
             tool_registry: ctx.tool_registry.as_ref(),
-            capability_package_runtime_capabilities: ctx
-                .capability_package_runtime_capabilities
-                .as_ref(),
-            current_channel: ctx.config.enabled_channel.as_str(),
             inbound_depth,
             outbound_depth,
             version: env!("CARGO_PKG_VERSION"),

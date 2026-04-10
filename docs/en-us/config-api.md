@@ -257,9 +257,10 @@ Includes: `POST /api/config/wifi`, `/api/config/llm`, `/api/config/channels`, `/
 
 ### GET /api/memory/status
 
-- **Purpose**: Get byte counts for MEMORY, SOUL, USER (read-only).
+- **Purpose**: Return the memory operator surface: memory stores, personality continuity, continuity tooling, task learning / execution, and optional chat-scoped deep inspection.
 - **Auth**: Activated; GET does **not** need a pairing code in the request.
-- **Response**: 200, JSON `{"memory_len": number, "soul_len": number, "user_len": number}`.
+- **Response**: 200, JSON object with top-level fields including `memory_system_kind`, `memory_len`, `soul_len`, `user_len`, `long_term_count`, `continuity_capsule_count`, `stores`, `personality`, `continuity_tooling`, `continuity_capsules`, `task_execution`, `learning`, and optional `inspection`.
+- **Responsibility boundary**: this route no longer carries resource queue or session-directory duties; `inbound_depth` / `outbound_depth` belong to `GET /api/resource`, while session counts and directory/detail views belong to `GET /api/sessions`.
 
 ### GET /api/tools
 

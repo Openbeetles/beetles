@@ -17,7 +17,6 @@ use crate::task_execution::{
 };
 use crate::util::{current_unix_secs, percent_decode_query};
 use serde::Serialize;
-use std::sync::atomic::Ordering;
 
 const REL_DIR_MANUAL_CONTINUITY_SNAPSHOTS: &str = "memory/continuity_snapshots/manual";
 const MEMORY_STATUS_RECALL_SYSTEM_MAX_LEN: usize = 2_400;
@@ -25,7 +24,6 @@ const MEMORY_STATUS_RECENT_MESSAGES: usize = 24;
 
 #[derive(Debug, Serialize)]
 struct MemoryStoreStatus {
-    session_count: usize,
     runtime_skill_count: usize,
     memory_len: usize,
     soul_len: usize,
@@ -115,8 +113,6 @@ struct MemoryLearningStatus {
 #[derive(Debug, Serialize)]
 struct MemoryStatusBody {
     memory_system_kind: String,
-    inbound_depth: usize,
-    outbound_depth: usize,
     memory_len: usize,
     soul_len: usize,
     user_len: usize,
@@ -157,10 +153,6 @@ pub fn body(ctx: &HandlerContext, uri: &str) -> Result<String, std::io::Error> {
         ));
     }
     let subject_id = board_subject_scope_id();
-    let chat_ids = ctx
-        .session_store
-        .list_chat_ids()
-        .map_err(std::io::Error::other)?;
     let memory_len = ctx
         .memory_store
         .get_memory()
@@ -279,15 +271,12 @@ pub fn body(ctx: &HandlerContext, uri: &str) -> Result<String, std::io::Error> {
         .transpose()?;
     let payload = MemoryStatusBody {
         memory_system_kind: ctx.platform.memory_system_kind().as_str().to_string(),
-        inbound_depth: ctx.inbound_depth.load(Ordering::Relaxed),
-        outbound_depth: ctx.outbound_depth.load(Ordering::Relaxed),
         memory_len,
         soul_len,
         user_len,
         long_term_count,
         continuity_capsule_count,
         stores: MemoryStoreStatus {
-            session_count: chat_ids.len(),
             runtime_skill_count,
             memory_len,
             soul_len,
@@ -571,7 +560,10 @@ mod tests {
         let payload = body(&ctx, "/api/memory/status").unwrap();
         let parsed: Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(parsed["memory_system_kind"], "linux_full");
+        assert!(parsed.get("inbound_depth").is_none());
+        assert!(parsed.get("outbound_depth").is_none());
         assert!(parsed.get("stores").is_some());
+        assert!(parsed["stores"].get("session_count").is_none());
         assert!(parsed.get("personality").is_some());
         assert!(parsed.get("continuity_tooling").is_some());
         assert!(parsed.get("task_execution").is_some());

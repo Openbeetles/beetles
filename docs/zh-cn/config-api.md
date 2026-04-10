@@ -259,9 +259,10 @@
 
 ### GET /api/memory/status
 
-- **用途**：获取 MEMORY、SOUL、USER 的字节数（只读）。
+- **用途**：返回 memory operator 视图，聚合记忆存储、人格连续性、continuity tooling、task learning / execution，以及按会话下钻的 deep inspection。
 - **鉴权**：已激活；GET **不必**附带配对码。
-- **响应**：200，JSON `{"memory_len": number, "soul_len": number, "user_len": number}`。
+- **响应**：200，JSON 对象，顶层包含 `memory_system_kind`、`memory_len`、`soul_len`、`user_len`、`long_term_count`、`continuity_capsule_count`、`stores`、`personality`、`continuity_tooling`、`continuity_capsules`、`task_execution`、`learning`，以及可选的 `inspection`。
+- **职责边界**：该接口**不再**承载资源队列或会话目录职责；`inbound_depth` / `outbound_depth` 归 `GET /api/resource`，session 数量与目录明细归 `GET /api/sessions`。
 
 ### GET /api/tools
 

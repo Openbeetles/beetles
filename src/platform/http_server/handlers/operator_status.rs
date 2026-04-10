@@ -6,15 +6,10 @@ use std::sync::atomic::Ordering;
 
 pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let config = ctx.config();
-    let current_channel = config.enabled_channel.clone();
     let snapshot = build_operator_status(OperatorStatusInput {
         config: &config,
         platform: ctx.platform.as_ref(),
         tool_registry: ctx.tool_registry.as_ref(),
-        capability_package_runtime_capabilities: ctx
-            .capability_package_runtime_capabilities
-            .as_ref(),
-        current_channel: current_channel.as_str(),
         inbound_depth: ctx.inbound_depth.load(Ordering::Relaxed),
         outbound_depth: ctx.outbound_depth.load(Ordering::Relaxed),
         version: ctx.version.as_ref(),
@@ -49,6 +44,11 @@ mod tests {
         assert!(parsed.get("runtime_mode").is_some());
         assert!(parsed.get("soul_kernel").is_some());
         assert!(parsed.get("capability_planes").is_some());
+        assert!(parsed.get("continuity_tooling").is_none());
+        assert!(parsed.get("task_execution").is_none());
+        assert!(parsed.get("personality_governance").is_none());
+        assert!(parsed.get("capability_packages").is_none());
+        assert!(parsed.get("tools").is_none());
         assert!(parsed.get("metrics").is_none());
         assert!(parsed.get("resource").is_none());
         assert!(parsed.get("channels").is_none());

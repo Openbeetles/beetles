@@ -17,6 +17,7 @@ impl ControlPlaneRouteContract {
         inbound_webhooks_enabled: true,
     };
 
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     pub const SUPERVISOR_MINIMAL: Self = Self {
         inbound_webhooks_enabled: false,
     };

@@ -159,7 +159,6 @@ function ChannelRow({
   label,
   configured,
   ok,
-  message,
   t,
   isLast,
 }: {
@@ -173,9 +172,8 @@ function ChannelRow({
   const statusText = configured
     ? ok
       ? t("device.channelOk")
-      : (message ?? t("device.channelFail"))
+      : t("device.channelFail")
     : t("device.channelNotConfigured");
-  const showDetail = Boolean(configured && message?.trim());
 
   return (
     <Box
@@ -216,24 +214,6 @@ function ChannelRow({
           statusLabel={statusText}
         />
       </Box>
-      {showDetail && (
-        <Typography
-          variant="caption"
-          component="p"
-          sx={{
-            m: 0,
-            mt: 0.75,
-            pl: 0,
-            color: "var(--muted)",
-            fontFamily: "var(--font-mono)",
-            fontSize: "var(--font-size-overline)",
-            lineHeight: "var(--line-height-relaxed)",
-            wordBreak: "break-word",
-          }}
-        >
-          {message}
-        </Typography>
-      )}
     </Box>
   );
 }
