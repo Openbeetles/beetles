@@ -4,10 +4,6 @@ use crate::capability_package::{
     build_capability_package_operator_snapshot, render_capability_package_operator_text,
     CapabilityPackageOperatorSnapshot, CapabilityPackageRuntimeCapabilities,
 };
-use crate::channel_capability::{
-    build_channel_capability_snapshots_for_registry, ChannelCapabilityRegistry,
-    ChannelCapabilitySnapshot,
-};
 use crate::device_capability::{build_device_capability_snapshots, DeviceCapabilityPlaneSnapshot};
 use crate::memory::{
     board_subject_scope_id, compute_core_revision_governance_digest,
@@ -66,14 +62,12 @@ pub struct OperatorStatusInput<'a> {
     pub config: &'a crate::config::AppConfig,
     pub platform: &'a dyn Platform,
     pub tool_registry: &'a ToolRegistry,
-    pub channel_capability_registry: &'a ChannelCapabilityRegistry,
     pub capability_package_runtime_capabilities: &'a CapabilityPackageRuntimeCapabilities,
     pub current_channel: &'a str,
     pub inbound_depth: usize,
     pub outbound_depth: usize,
     pub version: &'a str,
     pub board_id: &'a str,
-    pub llm_stream_enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -114,8 +108,6 @@ pub struct OperatorStatusSnapshot {
     pub inbound_depth: usize,
     pub outbound_depth: usize,
     pub last_error: String,
-    pub metrics: crate::metrics::MetricsSnapshot,
-    pub resource: orchestrator::ResourceSnapshot,
     pub threads: runtime::ThreadRegistrySnapshot,
     pub os_closure: runtime::BeetleOsClosureReport,
     pub initiative: runtime::InitiativeSnapshot,
@@ -129,8 +121,6 @@ pub struct OperatorStatusSnapshot {
     pub capability_planes: Vec<DeviceCapabilityPlaneSnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime_capabilities: Vec<crate::orchestrator::RuntimeCapabilityState>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub channels: Vec<ChannelCapabilitySnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolCatalogEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -195,14 +185,6 @@ pub fn build_operator_status(
         input.current_channel,
     )?;
     let capability_planes = build_device_capability_snapshots(input.config, input.platform);
-    let channels = if compact_view {
-        Vec::new()
-    } else {
-        build_channel_capability_snapshots_for_registry(
-            input.channel_capability_registry,
-            input.llm_stream_enabled,
-        )
-    };
     let personality_governance = if compact_view {
         None
     } else {
@@ -250,8 +232,6 @@ pub fn build_operator_status(
         inbound_depth: input.inbound_depth,
         outbound_depth: input.outbound_depth,
         last_error: crate::state::get_current_error().unwrap_or_else(|| "none".to_string()),
-        metrics: crate::metrics::snapshot(),
-        resource: orchestrator::snapshot(),
         threads: runtime::thread_registry::snapshot(),
         os_closure,
         initiative,
@@ -273,7 +253,6 @@ pub fn build_operator_status(
         capability_packages,
         capability_planes,
         runtime_capabilities: orchestrator::runtime_capability_snapshot(),
-        channels,
         tools: if compact_view {
             Vec::new()
         } else {
@@ -325,7 +304,7 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
         ));
     }
     out.push_str(&format!(
-        "  inbound_depth: {}\n  outbound_depth: {}\n  last_error: {}\n  presence_state: {}\n  presence_headline: {}\n  presence_rationale: {}\n  initiative_action: {}\n  initiative_ready: {}\n  initiative_rationale: {}\n  runtime_mode: {}\n  soul_kernel_ready: {}\n  soul_kernel_safe_mode_readable: {}\n  soul_kernel_degraded: {}\n  soul_kernel_key_memory: {}\n  pressure: {:?}\n  continuity_saved_snapshots: {}\n",
+        "  inbound_depth: {}\n  outbound_depth: {}\n  last_error: {}\n  presence_state: {}\n  presence_headline: {}\n  presence_rationale: {}\n  initiative_action: {}\n  initiative_ready: {}\n  initiative_rationale: {}\n  runtime_mode: {}\n  soul_kernel_ready: {}\n  soul_kernel_safe_mode_readable: {}\n  soul_kernel_degraded: {}\n  soul_kernel_key_memory: {}\n  continuity_saved_snapshots: {}\n",
         snapshot.inbound_depth,
         snapshot.outbound_depth,
         snapshot.last_error,
@@ -340,7 +319,6 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
         snapshot.soul_kernel.safe_mode_minimum_readable,
         snapshot.soul_kernel.degraded,
         snapshot.soul_kernel.key_memory_count,
-        snapshot.resource.pressure,
         snapshot.continuity_tooling.saved_snapshot_count,
     ));
     let runtime_summary = orchestrator::runtime_capability_summary();
@@ -461,27 +439,6 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
     out.push_str(&render_capability_package_operator_text(
         &snapshot.capability_packages,
     ));
-    out.push_str("  channels:\n");
-    for channel in &snapshot.channels {
-        out.push_str(&format!(
-            "    - {} | configured={} enabled={} primary={} supplemental={} edit={} stream_edit={} explicit_target={} typing={} stream_edit_active={} degraded={}\n",
-            channel.id,
-            channel.configured,
-            channel.enabled,
-            channel.supports_primary_reply,
-            channel.supports_supplemental_reply,
-            channel.supports_edit,
-            channel.supports_stream_edit,
-            channel.supports_explicit_target,
-            channel.supports_typing_or_chat_action,
-            channel.stream_edit_active,
-            if channel.degraded_reasons.is_empty() {
-                "none".to_string()
-            } else {
-                channel.degraded_reasons.join(",")
-            }
-        ));
-    }
     out.push_str("  tools:\n");
     for tool in snapshot.tools.iter().take(12) {
         out.push_str(&format!(
@@ -990,14 +947,12 @@ mod tests {
             config: &config,
             platform: platform.as_ref(),
             tool_registry: &tool_registry,
-            channel_capability_registry: &channel_capability_registry,
             capability_package_runtime_capabilities: &capability_package_runtime_capabilities,
             current_channel: config.enabled_channel.as_str(),
             inbound_depth: 0,
             outbound_depth: 0,
             version: "0.0.0",
             board_id: "test-board",
-            llm_stream_enabled: false,
         })
         .expect("operator status");
 

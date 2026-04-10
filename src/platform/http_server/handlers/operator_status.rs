@@ -11,7 +11,6 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         config: &config,
         platform: ctx.platform.as_ref(),
         tool_registry: ctx.tool_registry.as_ref(),
-        channel_capability_registry: ctx.channel_capability_registry.as_ref(),
         capability_package_runtime_capabilities: ctx
             .capability_package_runtime_capabilities
             .as_ref(),
@@ -20,7 +19,6 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         outbound_depth: ctx.outbound_depth.load(Ordering::Relaxed),
         version: ctx.version.as_ref(),
         board_id: ctx.board_id.as_ref(),
-        llm_stream_enabled: ctx.llm_stream_enabled,
     })
     .map_err(std::io::Error::other)?;
     drop(config);
@@ -51,6 +49,9 @@ mod tests {
         assert!(parsed.get("runtime_mode").is_some());
         assert!(parsed.get("soul_kernel").is_some());
         assert!(parsed.get("capability_planes").is_some());
+        assert!(parsed.get("metrics").is_none());
+        assert!(parsed.get("resource").is_none());
+        assert!(parsed.get("channels").is_none());
     }
 
     #[test]

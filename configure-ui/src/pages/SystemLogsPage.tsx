@@ -9,7 +9,11 @@ import DescriptionOutlined from "@mui/icons-material/DescriptionOutlined";
 import { InlineAlert, SectionLoadingSkeleton } from "../components/form";
 import { SettingsSection } from "../components/SettingsSection";
 import { useDeviceApi } from "../hooks/useDeviceApi";
-import type { HealthData, DiagnoseItem } from "../api/endpoints/system";
+import type {
+  DiagnoseItem,
+  HealthData,
+  MetricsSnapshotData,
+} from "../api/endpoints/system";
 import { createAsyncState } from "../types/asyncState";
 
 function kvEntries(obj: object | null | undefined) {
@@ -44,8 +48,13 @@ export function SystemLogsPage() {
   const { t } = useTranslation();
   const { api, ready } = useDeviceApi();
   const [logsState, setLogsState] = useState(
-    createAsyncState<{ health: HealthData | null; diagnose: DiagnoseItem[] }>({
+    createAsyncState<{
+      health: HealthData | null;
+      metrics: MetricsSnapshotData | null;
+      diagnose: DiagnoseItem[];
+    }>({
       health: null,
+      metrics: null,
       diagnose: [],
     }),
   );
@@ -53,13 +62,24 @@ export function SystemLogsPage() {
   const loadLogs = useCallback(() => {
     if (!ready) return;
     setLogsState((prev) => ({ ...prev, loading: true, error: "" }));
-    Promise.all([api.system.health(), api.system.diagnose()])
-      .then(([healthRes, diagnoseRes]) => {
+    Promise.all([api.system.health(), api.system.metrics(), api.system.diagnose()])
+      .then(([healthRes, metricsRes, diagnoseRes]) => {
         const nextHealth = healthRes.ok && healthRes.data ? healthRes.data : null;
+        const nextMetrics = metricsRes.ok && metricsRes.data ? metricsRes.data : null;
         const nextDiagnose = diagnoseRes.ok && diagnoseRes.data ? diagnoseRes.data : [];
         const nextError =
-          !healthRes.ok ? (healthRes.error ?? "") : !diagnoseRes.ok ? (diagnoseRes.error ?? "") : "";
-        setLogsState({ loading: false, error: nextError, data: { health: nextHealth, diagnose: nextDiagnose } });
+          !healthRes.ok
+            ? (healthRes.error ?? "")
+            : !metricsRes.ok
+              ? (metricsRes.error ?? "")
+              : !diagnoseRes.ok
+                ? (diagnoseRes.error ?? "")
+                : "";
+        setLogsState({
+          loading: false,
+          error: nextError,
+          data: { health: nextHealth, metrics: nextMetrics, diagnose: nextDiagnose },
+        });
       })
       .catch(() =>
         setLogsState((prev) => ({ ...prev, loading: false, error: "config.errorNetwork" })),
@@ -69,7 +89,7 @@ export function SystemLogsPage() {
   useEffect(() => {
     if (!ready) {
       queueMicrotask(() => {
-        setLogsState(createAsyncState({ health: null, diagnose: [] }));
+        setLogsState(createAsyncState({ health: null, metrics: null, diagnose: [] }));
       });
       return;
     }
@@ -116,23 +136,15 @@ export function SystemLogsPage() {
                   <KvList
                     items={kvEntries({
                       wifi: logsState.data.health.wifi,
-                      inbound_depth: logsState.data.health.inbound_depth,
-                      outbound_depth: logsState.data.health.outbound_depth,
                       last_error: logsState.data.health.last_error ?? "none",
                     })}
                   />
                 </Box>
                 <Box sx={{ mt: 0.75 }}>
                   <Typography variant="caption" sx={{ color: "var(--muted)" }}>
-                    resource
-                  </Typography>
-                  <KvList items={kvEntries(logsState.data.health.resource)} />
-                </Box>
-                <Box sx={{ mt: 0.75 }}>
-                  <Typography variant="caption" sx={{ color: "var(--muted)" }}>
                     metrics
                   </Typography>
-                  <KvList items={kvEntries(logsState.data.health.metrics)} />
+                  <KvList items={kvEntries(logsState.data.metrics)} />
                 </Box>
               </Box>
             )}

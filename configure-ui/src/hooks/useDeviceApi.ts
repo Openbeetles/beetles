@@ -86,6 +86,8 @@ export function useDeviceApi() {
       },
       system: {
         health: () => systemApi.getHealth(baseUrl ?? ''),
+        resource: () => systemApi.getResource(baseUrl ?? ''),
+        metrics: () => systemApi.getMetrics(baseUrl ?? ''),
         diagnose: () => systemApi.getDiagnose(baseUrl ?? ''),
         wifiScan: () => systemApi.getWifiScan(baseUrl ?? ''),
         info: () => systemApi.getSystemInfo(baseUrl ?? '', pairingCode ?? undefined),

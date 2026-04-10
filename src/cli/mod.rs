@@ -298,7 +298,6 @@ fn cmd_ops_status(ctx: &CliContext) -> String {
             config: &ctx.config,
             platform: ctx.platform.as_ref(),
             tool_registry: ctx.tool_registry.as_ref(),
-            channel_capability_registry: ctx.channel_capability_registry.as_ref(),
             capability_package_runtime_capabilities: ctx
                 .capability_package_runtime_capabilities
                 .as_ref(),
@@ -307,7 +306,6 @@ fn cmd_ops_status(ctx: &CliContext) -> String {
             outbound_depth,
             version: env!("CARGO_PKG_VERSION"),
             board_id: &board_id,
-            llm_stream_enabled: ctx.llm_stream_enabled,
         },
     ) {
         Ok(snapshot) => crate::platform::operator_status::render_operator_status_text(&snapshot),

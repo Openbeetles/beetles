@@ -11,7 +11,12 @@ import type {
   MetricsSnapshotData,
   ResourceSnapshotData,
 } from "../api/endpoints/system";
+import type { DeviceRuntimeKind } from "../store/deviceStatusStore";
 import { DashboardCard } from "../pages/DevicePage";
+import {
+  buildFaultAndRecoveryMetrics,
+  buildMemoryMetrics,
+} from "../pages/deviceHomeViewModel";
 
 // Non-component exports removed to fix Fast Refresh lint error.
 // They are now defined in DevicePage.tsx or kept internal here.
@@ -140,6 +145,7 @@ export interface SystemStatusPanelProps {
   healthData: HealthData;
   resourceData: ResourceSnapshotData | null;
   metricsData: MetricsSnapshotData | null;
+  runtimeKind: DeviceRuntimeKind;
   t: TFunction;
 }
 
@@ -147,25 +153,20 @@ export function SystemStatusPanel({
   healthData,
   resourceData,
   metricsData,
+  runtimeKind,
   t,
 }: SystemStatusPanelProps) {
   const res = resourceData;
   const met = metricsData;
+  const memoryMetrics = buildMemoryMetrics(runtimeKind, res);
+  const groupedFaults = buildFaultAndRecoveryMetrics(met);
 
   const storageUsed = res?.storage_used_kb || 0;
   const storageTotal = res?.storage_total_kb || 0;
 
   const hasErrors = 
-    (met?.errors_agent_router ?? 0) > 0 ||
-    (met?.errors_agent_context ?? 0) > 0 ||
-    (met?.errors_tool_execute ?? 0) > 0 ||
-    (met?.errors_llm_request ?? 0) > 0 ||
-    (met?.errors_llm_parse ?? 0) > 0 ||
-    (met?.errors_channel_dispatch ?? 0) > 0 ||
-    (met?.errors_session_append ?? 0) > 0 ||
-    (met?.errors_agent_chat ?? 0) > 0 ||
-    (met?.wifi_reconnect_total ?? 0) > 0 ||
-    (met?.wifi_ap_restart_total ?? 0) > 0 ||
+    groupedFaults.faults.some((item) => item.value > 0) ||
+    groupedFaults.recovery.some((item) => item.value > 0) ||
     (healthData.last_error && healthData.last_error !== "none");
 
   return (
@@ -185,25 +186,32 @@ export function SystemStatusPanel({
 
       {/* RAM & Memory (Span 3 cols, 2 rows) */}
       <Box sx={{ gridColumn: { xs: "span 4", sm: "span 4", lg: "span 3" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
-        <DashboardCard title={t("device.systemStatusGroupResource")} icon={<MemoryRounded />}>
+        <DashboardCard title={t("device.systemStatusGroupMemory")} icon={<MemoryRounded />}>
           <Box sx={{ display: "grid", gridTemplateColumns: "1fr", gap: 1.5, height: "100%", alignContent: "start" }}>
-            <DigitalCounter label={t("device.systemStatusHeapInternal")} value={res?.heap_free_internal != null ? formatBytes(res.heap_free_internal) : "—"} color="var(--semantic-warning)" />
-            <DigitalCounter label={t("device.systemStatusHeapSpiram")} value={res?.heap_free_spiram != null ? formatBytes(res.heap_free_spiram) : "—"} color="var(--semantic-success)" />
-            <DigitalCounter label={t("device.systemStatusHeapLargest")} value={res?.heap_largest_block_internal != null ? formatBytes(res.heap_largest_block_internal) : "—"} />
+            {memoryMetrics.map((item) => (
+              <DigitalCounter
+                key={item.id}
+                label={t(item.labelKey)}
+                value={formatBytes(item.value)}
+                color={item.id === "heap_internal" ? "var(--semantic-warning)" : item.id === "heap_spiram" ? "var(--semantic-success)" : "var(--foreground)"}
+              />
+            ))}
           </Box>
         </DashboardCard>
       </Box>
 
       {/* Traffic & Ops (Span 6 cols, 2 rows) */}
       <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 6" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
-        <DashboardCard title={t("device.systemStatusGroupTraffic")} icon={<SwapVertRounded />}>
+        <DashboardCard title={t("device.systemStatusGroupRuntime")} icon={<SwapVertRounded />}>
           <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 1.5, height: "100%", alignContent: "start" }}>
             <DigitalCounter label={t("device.systemStatusActiveHttp")} value={res?.active_http_count ?? "—"} color="var(--primary)" />
             <DigitalCounter label={t("device.systemStatusSessionCount")} value={res?.session_count ?? "—"} color="var(--primary)" />
             <DigitalCounter label={t("device.systemStatusMessagesIn")} value={met?.messages_in ?? "—"} />
             <DigitalCounter label={t("device.systemStatusMessagesOut")} value={met?.messages_out ?? "—"} />
             <DigitalCounter label={t("device.systemStatusLlmCalls")} value={met?.llm_calls ?? "—"} />
+            <DigitalCounter label={t("device.systemStatusLlmLastMs")} value={met?.llm_last_ms ?? "—"} />
             <DigitalCounter label={t("device.systemStatusToolCalls")} value={met?.tool_calls ?? "—"} />
+            <DigitalCounter label={t("device.systemStatusDispatchOk")} value={met?.dispatch_send_ok ?? "—"} />
             <DigitalCounter label={t("device.systemStatusInboundDepth")} value={res?.inbound_depth ?? "—"} />
             <DigitalCounter label={t("device.systemStatusOutboundDepth")} value={res?.outbound_depth ?? "—"} />
             <DigitalCounter label={t("device.systemStatusWdtFeeds")} value={met?.wdt_feeds ?? "—"} />
@@ -214,25 +222,44 @@ export function SystemStatusPanel({
       {/* Error Telemetry (Span 12 cols, 1 or 2 rows depending on content) */}
       <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 12" }, gridRow: "auto" }}>
         <DashboardCard 
-          title={t("device.systemStatusGroupErrors")} 
+          title={t("device.systemStatusGroupFaults")} 
           icon={<WarningRounded />}
           sx={{
             borderColor: hasErrors ? "color-mix(in srgb, var(--semantic-danger) 40%, transparent)" : undefined,
             boxShadow: hasErrors ? "0 0 20px color-mix(in srgb, var(--semantic-danger) 10%, transparent)" : undefined,
           }}
         >
+          <Typography variant="caption" sx={{ color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", mb: 1, display: "block" }}>
+            {t("device.systemStatusSubsectionFaults")}
+          </Typography>
           <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)", lg: "repeat(5, 1fr)" }, gap: 1.5 }}>
-            <DigitalCounter label={t("device.systemStatusErrRouter")} value={met?.errors_agent_router ?? 0} danger />
-            <DigitalCounter label={t("device.systemStatusErrContext")} value={met?.errors_agent_context ?? 0} danger />
-            <DigitalCounter label={t("device.systemStatusErrToolExec")} value={met?.errors_tool_execute ?? 0} danger />
-            <DigitalCounter label={t("device.systemStatusErrLlmReq")} value={met?.errors_llm_request ?? 0} danger />
-            <DigitalCounter label={t("device.systemStatusErrLlmParse")} value={met?.errors_llm_parse ?? 0} danger />
-            <DigitalCounter label={t("device.systemStatusDispatchFail")} value={met?.dispatch_send_fail ?? 0} danger />
-            <DigitalCounter label={t("device.systemStatusErrSession")} value={met?.errors_session_append ?? 0} danger />
-            <DigitalCounter label={t("device.systemStatusChatErrors")} value={met?.errors_agent_chat ?? 0} danger />
-            <DigitalCounter label={t("device.systemStatusWifiReconnect")} value={met?.wifi_reconnect_total ?? 0} danger />
-            <DigitalCounter label={t("device.systemStatusWifiApRestart")} value={met?.wifi_ap_restart_total ?? 0} danger />
+            {groupedFaults.faults.map((item) => (
+              <DigitalCounter key={item.id} label={t(item.labelKey)} value={item.value} danger />
+            ))}
           </Box>
+          <Typography variant="caption" sx={{ color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", mt: 2, mb: 1, display: "block" }}>
+            {t("device.systemStatusSubsectionRecovery")}
+          </Typography>
+          <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)" }, gap: 1.5 }}>
+            {groupedFaults.recovery.map((item) => (
+              <DigitalCounter
+                key={item.id}
+                label={t(item.labelKey)}
+                value={item.value}
+                color="var(--semantic-warning)"
+              />
+            ))}
+          </Box>
+          {met?.wifi_last_failure_stage && met.wifi_last_failure_stage !== "none" && (
+            <Box sx={{ mt: 2, p: 2, bgcolor: "color-mix(in srgb, var(--semantic-warning) 10%, transparent)", borderRadius: "var(--radius-chip)", borderLeft: "4px solid var(--semantic-warning)" }}>
+              <Typography variant="caption" sx={{ color: "var(--semantic-warning)", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase" }}>
+                {t("device.systemStatusWifiLastFail")}
+              </Typography>
+              <Typography variant="body2" sx={{ fontFamily: "var(--font-mono)", color: "var(--foreground)", mt: 1, wordBreak: "break-all" }}>
+                {met.wifi_last_failure_stage}
+              </Typography>
+            </Box>
+          )}
           
           {/* Last Error Log */}
           {healthData.last_error && healthData.last_error !== "none" && (

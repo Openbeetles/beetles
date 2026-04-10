@@ -1,4 +1,4 @@
-//! GET /api/system_info：供系统信息页展示用，返回 product_name、system_status、current_time、firmware_version、locale、lan_ip。
+//! GET /api/system_info：供系统信息页展示用，返回设备摘要字段。
 //! `current_time`：Host 用系统时钟；ESP 在 SNTP 同步后由 `util::current_unix_secs()` 提供 UTC 字符串，未同步时返回 "—"。
 //! `lan_ip`：ESP 为 STA IPv4；Linux 为当前默认上行接口的 IPv4（点分十进制）；不可用时为 "—"。
 //! `board_id`：运行期拼装（ESP：`esp_chip_info`+Flash 与 manifest 档位对齐；Linux：`linux`）。`hardware_model`：ESP 为摘要句；Linux 为设备树/DMI 等（若有）。
@@ -93,14 +93,6 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let out = ctx.outbound_depth.load(Ordering::Relaxed);
     let sta_up = crate::state::wifi_sta_connected();
     let loc = locale_from_store(ctx.config_store.as_ref());
-    let presence = crate::runtime::inspect_platform_presence(
-        ctx.platform.as_ref(),
-        crate::util::current_unix_secs(),
-    );
-    let initiative = crate::runtime::inspect_platform_initiative(
-        ctx.platform.as_ref(),
-        crate::util::current_unix_secs(),
-    );
     let system_status = if sta_up && storage_ok && last_error.is_none() && inc <= 6 && out <= 6 {
         tr(Message::SystemStatusOk, loc)
     } else if !sta_up {
@@ -118,36 +110,17 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let ota_available = cfg!(feature = "ota");
     let locale = config::get_locale(ctx.config_store.as_ref());
     let lan_ip = ctx.platform.lan_ipv4().unwrap_or_else(|| "—".to_string());
-    let audio_caps = ctx.platform.audio_duplex_capabilities();
-    let runtime_mode = presence.runtime_mode;
-    let soul_kernel = presence.soul_kernel.clone();
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    let release = presence.release.clone();
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    let supervisor = presence.supervisor.clone();
     #[allow(unused_mut)]
     let mut json = serde_json::json!({
         "product_name": product_name,
         "system_status": system_status,
-        "initiative": initiative,
-        "presence": presence,
-        "runtime_mode": runtime_mode.current_mode,
-        "runtime_mode_snapshot": runtime_mode,
-        "soul_kernel": soul_kernel,
         "current_time": current_time,
         "firmware_version": firmware_version,
         "board_id": ctx.board_id.as_ref(),
         "ota_available": ota_available,
         "locale": locale,
         "lan_ip": lan_ip,
-        "audio_duplex_profile": audio_caps.profile(),
-        "audio_duplex_capabilities": audio_caps,
     });
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    if let Some(obj) = json.as_object_mut() {
-        obj.insert("release".to_string(), serde_json::json!(release));
-        obj.insert("supervisor".to_string(), serde_json::json!(supervisor));
-    }
 
     if let Some(obj) = json.as_object_mut() {
         match ctx.platform.storage_media() {
@@ -209,4 +182,92 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     }
 
     serde_json::to_string(&json).map_err(to_io)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::body;
+    use crate::config::AppConfig;
+    use crate::platform::Platform;
+    use serde_json::Value;
+    use std::sync::Arc;
+
+    #[test]
+    fn body_keeps_system_info_as_device_summary_contract() {
+        let ctx = build_test_context();
+
+        let payload = body(&ctx).unwrap();
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+
+        assert_eq!(parsed.get("product_name").and_then(Value::as_str), Some("beetle"));
+        assert!(parsed.get("system_status").is_some());
+        assert!(parsed.get("firmware_version").is_some());
+        assert!(parsed.get("board_id").is_some());
+        assert!(parsed.get("ota_available").is_some());
+        assert!(parsed.get("locale").is_some());
+        assert!(parsed.get("lan_ip").is_some());
+        assert!(parsed.get("initiative").is_none());
+        assert!(parsed.get("presence").is_none());
+        assert!(parsed.get("runtime_mode").is_none());
+        assert!(parsed.get("runtime_mode_snapshot").is_none());
+        assert!(parsed.get("soul_kernel").is_none());
+        assert!(parsed.get("audio_duplex_profile").is_none());
+        assert!(parsed.get("audio_duplex_capabilities").is_none());
+        assert!(parsed.get("supervisor").is_none());
+        assert!(parsed.get("release").is_none());
+    }
+
+    fn build_test_context() -> crate::platform::http_server::handlers::HandlerContext {
+        let config = AppConfig::load_from_env();
+        let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
+        let (registry, _) = crate::tools::build_default_registry(
+            &config,
+            crate::tools::DefaultRegistryDeps {
+                platform: Arc::clone(&platform),
+                remind_at_store: platform.remind_at_store(),
+                session_store: platform.session_store(),
+                memory_store: platform.memory_store(),
+                long_term_memory_store: platform.long_term_memory_store(),
+                turn_ledger_store: platform.turn_ledger_store(),
+                private_garden_store: platform.private_garden_store(),
+                config_store: platform.config_store(),
+            },
+        );
+        let channel_capability_registry =
+            Arc::new(crate::build_channel_capability_registry(&config, false));
+        let skill_storage = platform.skill_storage();
+        let skill_meta_store = platform.skill_meta_store();
+        let skill_prompt_cache = Arc::new(crate::skills::SkillPromptCache::new(
+            Arc::clone(&skill_meta_store),
+            Arc::clone(&skill_storage),
+            8192,
+        ));
+        crate::platform::http_server::handlers::HandlerContext {
+            config_store: platform.config_store(),
+            config_file_store: Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(
+                &platform,
+            ))),
+            platform: Arc::clone(&platform),
+            memory_store: platform.memory_store(),
+            session_store: platform.session_store(),
+            skill_storage,
+            skill_meta_store,
+            skill_prompt_cache,
+            tool_registry: Arc::new(registry),
+            channel_capability_registry: Arc::clone(&channel_capability_registry),
+            capability_package_runtime_capabilities: Arc::new(
+                crate::build_capability_package_runtime_capabilities(
+                    channel_capability_registry.as_ref(),
+                    false,
+                ),
+            ),
+            inbound_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            outbound_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            version: Arc::from("0.0.0"),
+            board_id: Arc::from("test-board"),
+            cached_config: Arc::new(std::sync::RwLock::new(config)),
+            llm_stream_enabled: false,
+            route_contract: crate::platform::http_server::handlers::ControlPlaneRouteContract::FULL,
+        }
+    }
 }

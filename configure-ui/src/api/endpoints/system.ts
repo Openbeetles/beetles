@@ -79,16 +79,25 @@ export interface HealthDisplayData {
   available?: boolean
 }
 
+export interface HealthAudioCapabilitiesData {
+  microphone_input?: boolean
+  speaker_output?: boolean
+  concurrent_capture_playback?: boolean
+  barge_in?: boolean
+  reference_capture?: string
+  echo_cancellation?: string
+}
+
+export interface HealthAudioData {
+  duplex_profile?: string
+  duplex_capabilities?: HealthAudioCapabilitiesData
+}
+
 export interface HealthData {
   wifi?: string
-  inbound_depth?: number
-  outbound_depth?: number
   last_error?: string
   display?: HealthDisplayData
-  /** 运行指标快照（与旧版仅扁平 metrics 键名不同：现为 `messages_in` 等）。 */
-  metrics?: MetricsSnapshotData
-  /** 编排器资源快照，与 `GET /api/resource` 一致。 */
-  resource?: ResourceSnapshotData
+  audio?: HealthAudioData
 }
 
 export interface DiagnoseItem {
@@ -101,6 +110,16 @@ export async function getHealth(baseUrl: string): Promise<ApiResult<HealthData>>
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   const res = await request<HealthData>(baseUrl, '/api/health')
   return res
+}
+
+export async function getResource(baseUrl: string): Promise<ApiResult<ResourceSnapshotData>> {
+  if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
+  return request<ResourceSnapshotData>(baseUrl, '/api/resource')
+}
+
+export async function getMetrics(baseUrl: string): Promise<ApiResult<MetricsSnapshotData>> {
+  if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
+  return request<MetricsSnapshotData>(baseUrl, '/api/metrics')
 }
 
 export async function getDiagnose(baseUrl: string): Promise<ApiResult<DiagnoseItem[]>> {

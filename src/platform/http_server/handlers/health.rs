@@ -1,12 +1,8 @@
-//! GET /api/health：仅生成响应体 JSON，配对与写响应在 mod.rs。含 metrics 与 orchestrator resource 快照。
-//! Health JSON includes metrics and orchestrator [`crate::orchestrator::ResourceSnapshot`] for UI/ops.
+//! GET /api/health：仅生成轻量响应体 JSON，配对与写响应在 mod.rs。
+//! Lightweight health JSON for UI status surfaces.
 
 use super::HandlerContext;
-use crate::metrics;
-use crate::orchestrator;
-use crate::runtime;
 use crate::state;
-use std::sync::atomic::Ordering;
 
 #[derive(serde::Serialize)]
 struct DisplayHealth {
@@ -22,33 +18,13 @@ struct AudioHealth {
 #[derive(serde::Serialize)]
 struct HealthBody {
     wifi: &'static str,
-    inbound_depth: usize,
-    outbound_depth: usize,
     last_error: String,
-    build_package: crate::BuildPackageSnapshot,
     display: DisplayHealth,
     audio: AudioHealth,
-    capability_planes: Vec<crate::DeviceCapabilityPlaneSnapshot>,
-    runtime_capabilities: Vec<crate::orchestrator::RuntimeCapabilityState>,
-    metrics: metrics::MetricsSnapshot,
-    resource: orchestrator::ResourceSnapshot,
-    threads: runtime::ThreadRegistrySnapshot,
-    os_closure: runtime::BeetleOsClosureReport,
-    initiative: runtime::InitiativeSnapshot,
-    presence: runtime::PresenceSnapshot,
-    runtime_mode: runtime::RuntimeModeSnapshot,
-    soul_kernel: runtime::SoulKernelStatus,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    supervisor: Option<crate::runtime::linux_supervisor::LinuxSupervisorStatusSnapshot>,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    release: Option<crate::runtime::LinuxReleaseStatus>,
 }
 
-/// 生成 health JSON body（含 metrics 与 resource 快照，无敏感信息）。
+/// 生成 health JSON body（轻量状态摘要，无敏感信息）。
 pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
-    let now_secs = crate::util::current_unix_secs();
     let wifi = if crate::state::wifi_sta_connected() {
         "connected"
     } else {
@@ -60,25 +36,9 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     } else {
         crate::platform::AudioDuplexCapabilities::unavailable()
     };
-    let capability_planes = {
-        let config = ctx.config();
-        crate::build_device_capability_snapshots(&config, ctx.platform.as_ref())
-    };
-    let presence = runtime::inspect_platform_presence(ctx.platform.as_ref(), now_secs);
-    let runtime_mode = presence.runtime_mode;
-    let soul_kernel = presence.soul_kernel.clone();
-    let initiative = runtime::inspect_platform_initiative(ctx.platform.as_ref(), now_secs);
-    let os_closure = runtime::inspect_beetle_os_closure(&presence, &initiative);
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    let supervisor = presence.supervisor.clone();
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    let release = presence.release.clone();
     let payload = HealthBody {
         wifi,
-        inbound_depth: ctx.inbound_depth.load(Ordering::Relaxed),
-        outbound_depth: ctx.outbound_depth.load(Ordering::Relaxed),
         last_error: last_err,
-        build_package: crate::current_build_package(),
         display: DisplayHealth {
             available: ctx.platform.display_available(),
         },
@@ -86,20 +46,6 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
             duplex_profile: audio_caps.profile(),
             duplex_capabilities: audio_caps,
         },
-        capability_planes,
-        runtime_capabilities: orchestrator::runtime_capability_snapshot(),
-        metrics: metrics::snapshot(),
-        resource: orchestrator::snapshot(),
-        threads: runtime::thread_registry::snapshot(),
-        os_closure,
-        initiative,
-        runtime_mode,
-        soul_kernel,
-        presence,
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        supervisor,
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        release,
     };
     serde_json::to_string(&payload).map_err(std::io::Error::other)
 }
@@ -119,42 +65,25 @@ mod tests {
         let payload = body(&ctx).unwrap();
         let parsed: Value = serde_json::from_str(&payload).unwrap();
 
-        assert!(parsed.get("metrics").is_some());
-        assert!(parsed.get("resource").is_some());
-        assert!(parsed.get("runtime_capabilities").is_some());
-        assert!(parsed.get("os_closure").is_some());
-        assert!(parsed.get("initiative").is_some());
-        assert!(parsed.get("runtime_mode").is_some());
-        assert!(parsed.get("presence").is_some());
-        assert!(parsed.get("soul_kernel").is_some());
-        assert!(parsed.get("capability_planes").is_some());
-        assert!(parsed.get("build_package").is_some());
-        assert!(parsed["build_package"].get("profile").is_some());
-        assert!(parsed["build_package"]["capabilities"]
-            .get("voice")
-            .is_some());
-    }
-
-    #[test]
-    fn body_keeps_os_closure_consistent_with_presence_and_runtime_mode() {
-        let ctx = build_test_context();
-
-        let payload = body(&ctx).unwrap();
-        let parsed: Value = serde_json::from_str(&payload).unwrap();
-
-        let os_closure = &parsed["os_closure"];
-        assert_eq!(
-            os_closure["current_mode"].as_str(),
-            parsed["runtime_mode"]["current_mode"].as_str()
-        );
-        assert_eq!(
-            os_closure["presence_state"].as_str(),
-            parsed["presence"]["state"].as_str()
-        );
-        assert_eq!(
-            parsed["soul_kernel"]["minimum_viable"].as_bool(),
-            parsed["presence"]["soul_kernel"]["minimum_viable"].as_bool()
-        );
+        assert_eq!(parsed.get("wifi").and_then(Value::as_str), Some("disconnected"));
+        assert!(parsed.get("last_error").is_some());
+        assert!(parsed.get("display").is_some());
+        assert!(parsed.get("audio").is_some());
+        assert!(parsed.get("metrics").is_none());
+        assert!(parsed.get("resource").is_none());
+        assert!(parsed.get("inbound_depth").is_none());
+        assert!(parsed.get("outbound_depth").is_none());
+        assert!(parsed.get("build_package").is_none());
+        assert!(parsed.get("capability_planes").is_none());
+        assert!(parsed.get("runtime_capabilities").is_none());
+        assert!(parsed.get("threads").is_none());
+        assert!(parsed.get("os_closure").is_none());
+        assert!(parsed.get("initiative").is_none());
+        assert!(parsed.get("presence").is_none());
+        assert!(parsed.get("runtime_mode").is_none());
+        assert!(parsed.get("soul_kernel").is_none());
+        assert!(parsed.get("supervisor").is_none());
+        assert!(parsed.get("release").is_none());
     }
 
     fn build_test_context() -> crate::platform::http_server::handlers::HandlerContext {
