@@ -377,6 +377,10 @@ Includes: `POST /api/config/wifi`, `/api/config/llm`, `/api/config/channels`, `/
 - **Purpose**: Orchestrator resource snapshot JSON for runtime pressure, queues, sessions, storage usage, and runtime budget.
 - **Auth**: Activated; GET does **not** need a pairing code in the request.
 - **Responsibility**: this route returns resources, pressure, queues, sessions, and runtime budget; live channel state is on `GET /api/channel_connectivity`.
+- **Key fields**:
+  - `pressure`: overall orchestrator pressure level.
+  - `tls_fragmentation_risk`: ESP-only outbound TLS fragmentation risk derived from the current largest internal free block. Expected values are `not_applicable`, `healthy`, `cautious`, and `critical`.
+  - `heap_largest_block_internal`: largest internal free block in bytes; on Linux this remains `0` (`N/A`).
 
 ### GET /api/system_info
 
@@ -388,6 +392,7 @@ Includes: `POST /api/config/wifi`, `/api/config/llm`, `/api/config/channels`, `/
 
 - **Purpose**: Channel connectivity probe JSON.
 - **Auth**: Activated; GET does **not** need a pairing code in the request.
+- **ESP behavior**: if WiFi STA is not yet settled, or orchestrator reports `tls_fragmentation_risk` as `cautious` / `critical`, the route returns a stale-unavailable snapshot instead of forcing a fresh outbound HTTP/TLS probe. This keeps diagnostics from consuming the same TLS admission budget as production traffic.
 
 ### GET /api/config/display
 

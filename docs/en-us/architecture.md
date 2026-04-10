@@ -27,7 +27,7 @@ At a high level, Beetle works like this:
 | `config` | Load and validate config from env, NVS, and SPIFFS |
 | `error` | Shared error type and stage-based error reporting |
 | `bus` | Inbound and outbound queues |
-| `orchestrator` | Runtime resource gating, pressure tracking, and health state |
+| `orchestrator` | Runtime resource gating, pressure tracking, TLS-fragmentation awareness, and health state |
 | `memory` | Session state, archive evidence, the shared factual plane, self continuity layers, and prompt context |
 | `platform` | Platform abstraction and platform-specific implementations |
 | `llm` | LLM clients and fallback routing |
@@ -52,6 +52,12 @@ More concretely:
 - exact factual retrieval prefers slot lookup / `factual_memory`, while archive retrieval stays evidence-only
 - session and memory state are updated, then post-reply maintenance and `self_runtime` may trigger boundary flush work
 - the final reply goes to outbound dispatch
+
+On ESP, the runtime resource path also treats the largest internal free block as a first-class signal:
+
+- TLS admission and runtime pressure both consult the same `heap_largest_block_internal` snapshot
+- `/api/resource` exposes the derived `tls_fragmentation_risk` so the operator surface and heartbeat share the same interpretation
+- control-plane diagnostics such as `GET /api/channel_connectivity` must degrade to stale snapshots instead of forcing fresh outbound TLS probes when WiFi is still settling or fragmentation risk is already elevated
 
 ## Memory Mainline
 

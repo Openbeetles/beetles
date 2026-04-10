@@ -29,7 +29,7 @@
 | `config` | 从环境变量、NVS、SPIFFS 加载并校验配置 |
 | `error` | 统一错误类型和 stage 归因 |
 | `bus` | 维护入站和出站消息队列 |
-| `orchestrator` | 负责资源压力、健康状态和限流决策 |
+| `orchestrator` | 负责资源压力、TLS 碎片风险、健康状态和限流决策 |
 | `memory` | 管理会话、archive evidence、shared factual plane、self continuity 和提示拼装 |
 | `platform` | 平台抽象和平台相关实现 |
 | `llm` | 各类大模型客户端和切换顺序 |
@@ -53,6 +53,12 @@ channel -> inbound queue -> agent -> tools / memory / llm -> outbound queue -> d
 - 主处理循环取到消息后，会先整理这次对话需要的上下文，其中共享事实、archive evidence、私有连续性层会分别装配
 - 处理过程中可能会查记忆、调工具、请求大模型；精确事实优先走 `factual_memory` / slot lookup，档案检索走 archive plane
 - 结果写回会话和记忆，再交给对应通道发送出去；回复后还会触发 post-reply maintenance，必要时由 `self_runtime` 触发 boundary flush
+
+在 ESP 上，运行态资源链路还把 internal heap 的最大连续空闲块当成一等公民信号：
+
+- TLS admission 和运行压力都读取同一份 `heap_largest_block_internal` 快照
+- `/api/resource` 会对外暴露推导后的 `tls_fragmentation_risk`，保证 operator 面、心跳日志和串口基线看到的是同一套口径
+- `GET /api/channel_connectivity` 这类控制面诊断，在 WiFi 尚未稳定或碎片风险升高时必须退化为 stale 快照，不能为了“探测”再主动制造新的出站 TLS 压力
 
 ## 记忆主线
 

@@ -379,6 +379,10 @@
 - **用途**：返回当前资源状态，聚焦运行压力、队列、会话、存储占用与运行预算。
 - **鉴权**：已激活；GET **不必**附带配对码。
 - **职责**：该接口返回资源、压力、队列、会话与运行预算；通道现场状态看 `GET /api/channel_connectivity`。
+- **关键字段**：
+  - `pressure`：编排器给出的整体压力等级。
+  - `tls_fragmentation_risk`：ESP 侧依据 internal heap 最大连续空闲块计算出的出站 TLS 碎片风险，取值为 `not_applicable`、`healthy`、`cautious`、`critical`。
+  - `heap_largest_block_internal`：internal heap 最大连续空闲块字节数；Linux 上固定为 `0`，表示 `N/A`。
 
 ### GET /api/system_info
 
@@ -390,6 +394,7 @@
 
 - **用途**：返回各聊天通道的连通性探测结果。
 - **鉴权**：已激活；GET **不必**附带配对码。
+- **ESP 行为**：当 WiFi STA 尚未稳定，或 orchestrator 判断 `tls_fragmentation_risk` 已到 `cautious` / `critical` 时，该接口返回一份 stale-unavailable 快照，而不是强行发起新的 HTTP/TLS live probe；这样诊断面不会和生产流量争抢同一份 TLS 准入预算。
 
 ### GET /api/config/display
 
