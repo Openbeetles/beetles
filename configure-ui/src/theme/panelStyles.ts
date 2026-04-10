@@ -20,21 +20,43 @@ export const CONFIG_PANEL_SX = {
 export const DASHBOARD_CARD_SURFACE_SX = {
   bgcolor: "var(--card)",
   borderRadius: "var(--radius-card)",
-  border: "1px solid color-mix(in srgb, var(--border) 48%, transparent)",
+  border: "none",
   boxShadow: [
     "var(--shadow-subtle)",
     "inset 0 1px 0 color-mix(in srgb, var(--foreground) 6%, transparent)",
   ].join(", "),
   overflow: "hidden",
-  transition:
-    "border-color var(--transition-duration) var(--ease-out-smooth), box-shadow var(--transition-duration) var(--ease-out-smooth)",
+  transition: "box-shadow var(--transition-duration) var(--ease-out-smooth)",
   "&:hover": {
-    borderColor: "color-mix(in srgb, var(--border) 78%, transparent)",
     boxShadow: [
       "var(--shadow-card-hover)",
       "inset 0 1px 0 color-mix(in srgb, var(--foreground) 7%, transparent)",
     ].join(", "),
   },
+} as const
+
+/**
+ * 仪表盘卡内「浅坑」中性底（数字块、运行策略行为三栏、通道状态 pill 等）— 统一 2% 混色，避免与 2.5% 等并排发花。
+ */
+export const DASHBOARD_INSET_WELL_BG =
+  "color-mix(in srgb, var(--foreground) 2%, transparent)" as const
+
+/** 设备首页主网格 gap（MUI spacing，与卡片正文 padding 同阶） */
+export const DASHBOARD_HOME_GRID_GAP = 2.5
+
+/** 卡片正文区内块间距（数字栅格、故障子栅格等） */
+export const DASHBOARD_BLOCK_GAP = 1.5
+
+/** 卡片内主要区块纵向间距（运行策略：表盘区 / 行为 / 预算） */
+export const DASHBOARD_SECTION_STACK_GAP = 2
+
+/** 卡片正文区：与顶栏左右 padding 对齐 */
+export const DASHBOARD_CARD_BODY_SX = {
+  p: 2.5,
+  flex: 1,
+  display: "flex",
+  flexDirection: "column",
+  minHeight: 0,
 } as const
 
 /** 仪表盘卡片顶栏（与 Gateway 首行对齐） */
@@ -44,8 +66,7 @@ export const DASHBOARD_CARD_HEADER_ROW_SX = {
   justifyContent: "space-between",
   px: 2.5,
   py: 2,
-  borderBottom: "1px solid color-mix(in srgb, var(--border) 14%, transparent)",
-  bgcolor: "color-mix(in srgb, var(--foreground) 2%, transparent)",
+  bgcolor: "color-mix(in srgb, var(--foreground) 2.5%, transparent)",
 } as const
 
 /** 次级标签：降噪（相对全大写 caption），用于表盘下钻、LED 条等 */

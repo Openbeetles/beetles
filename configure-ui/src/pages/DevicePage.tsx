@@ -5,9 +5,10 @@ import Button from "@mui/material/Button";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import type { SxProps, Theme } from "@mui/material/styles";
-import MemoryRounded from "@mui/icons-material/MemoryRounded";
+import DeveloperBoardOutlined from "@mui/icons-material/DeveloperBoardOutlined";
 import ChatRounded from "@mui/icons-material/ChatRounded";
 import RefreshRounded from "@mui/icons-material/RefreshRounded";
+import LinkRounded from "@mui/icons-material/LinkRounded";
 import { InlineAlert } from "../components/form";
 import { ChannelConnectivityPanel } from "../components/ChannelConnectivityPanel";
 import { PcbDecorOverlay } from "../components/PcbDecorOverlay";
@@ -41,8 +42,11 @@ import {
   pressureLabelKey,
 } from "./deviceHomeViewModel";
 import {
+  DASHBOARD_CARD_BODY_SX,
   DASHBOARD_CARD_HEADER_ROW_SX,
   DASHBOARD_CARD_SURFACE_SX,
+  DASHBOARD_HOME_GRID_GAP,
+  DASHBOARD_INSET_WELL_BG,
   UI_LABEL_SECONDARY_SX,
 } from "../theme/panelStyles";
 
@@ -112,15 +116,7 @@ export function DashboardCard({
         </Box>
         {action}
       </Box>
-      <Box
-        sx={{
-          p: 2.5,
-          flex: 1,
-          display: "flex",
-          flexDirection: "column",
-          minHeight: 0,
-        }}
-      >
+      <Box sx={DASHBOARD_CARD_BODY_SX}>
         {children}
       </Box>
     </Box>
@@ -135,9 +131,7 @@ export function StatRow({ label, value }: { label: string; value: string }) {
         justifyContent: "space-between",
         alignItems: "center",
         gap: 1.5,
-        py: 1,
-        borderBottom: "1px solid color-mix(in srgb, var(--border) 20%, transparent)",
-        "&:last-child": { borderBottom: "none" },
+        py: 1.1,
       }}
     >
       <Typography
@@ -441,7 +435,7 @@ export function DevicePage() {
     return String(value);
   };
 
-  const renderGatewayCard = () => (
+  const renderHeroCard = () => (
     <Box
       sx={{
         display: "flex",
@@ -449,164 +443,138 @@ export function DevicePage() {
         height: "100%",
         position: "relative",
         ...DASHBOARD_CARD_SURFACE_SX,
+        p: { xs: 3, md: 4 },
       }}
     >
       <PcbDecorOverlay tone="embed" />
-
-      <Box
-        sx={{
-          ...DASHBOARD_CARD_HEADER_ROW_SX,
-          position: "relative",
-          zIndex: 1,
-          gap: 1.5,
-        }}
-      >
-        <Box
-          sx={{
-            display: "flex",
-            alignItems: "center",
-            gap: 2,
-            minWidth: 0,
-            flex: 1,
-          }}
-        >
+      <Box sx={{ position: "relative", zIndex: 1, display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 2 }}>
+        <Box sx={{ display: "flex", gap: 3, alignItems: "center" }}>
           <Box
             sx={{
-              width: "var(--icon-container-lg)",
-              height: "var(--icon-container-lg)",
-              borderRadius: "var(--radius-control)",
+              width: 72,
+              height: 72,
+              borderRadius: 4,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              bgcolor: "color-mix(in srgb, var(--primary) 8%, transparent)",
-              border:
-                "1px solid color-mix(in srgb, var(--primary) 20%, transparent)",
+              bgcolor: "color-mix(in srgb, var(--primary) 12%, transparent)",
               color: "var(--primary)",
+              boxShadow: "0 8px 16px color-mix(in srgb, var(--primary) 10%, transparent)",
               flexShrink: 0,
-              boxShadow:
-                "inset 0 0 0 1px color-mix(in srgb, var(--primary) 12%, transparent)",
             }}
           >
-            <BeetleIcon
-              sx={{
-                width: "calc(var(--icon-container-lg) * 0.7)",
-                height: "calc(var(--icon-container-lg) * 0.7)",
-              }}
-            />
+            <BeetleIcon sx={{ width: 40, height: 40 }} />
           </Box>
           <Box sx={{ minWidth: 0 }}>
             <Typography
-              variant="h5"
+              variant="h3"
               sx={{
                 fontFamily: "var(--font-display)",
-                fontWeight: 700,
+                fontWeight: 800,
                 color: "var(--foreground)",
-                letterSpacing: "var(--letter-spacing-tight)",
-                mb: 0.5,
-                fontSize: "var(--font-size-h4)",
-                lineHeight: 1.2,
-                maxWidth: "min(100%, 17rem)",
+                letterSpacing: "-0.02em",
+                lineHeight: 1.1,
+                mb: 1.5,
+                whiteSpace: "nowrap",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
               }}
             >
               {(systemInfo?.product_name || "beetle").toUpperCase()}
-              <Box
-                component="span"
-                sx={{
-                  fontFamily: "var(--font-sans)",
-                  fontWeight: 600,
-                  opacity: 0.92,
-                  ml: 0.5,
-                }}
-              >
+              <Box component="span" sx={{ color: "var(--primary)", ml: 1.5, fontWeight: 700 }}>
                 OS
               </Box>
             </Typography>
-            <Box
-              sx={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 0.75,
-                px: 1,
-                py: 0.25,
-                borderRadius: "var(--radius-sm)",
-                bgcolor: deviceConnected
-                  ? "color-mix(in srgb, var(--semantic-success) 10%, transparent)"
-                  : "color-mix(in srgb, var(--muted) 10%, transparent)",
-                border: deviceConnected
-                  ? "1px solid color-mix(in srgb, var(--semantic-success) 22%, transparent)"
-                  : "1px solid color-mix(in srgb, var(--muted) 22%, transparent)",
-              }}
-            >
+            <Box sx={{ display: "flex", gap: 1.5, alignItems: "center", flexWrap: "wrap" }}>
               <Box
                 sx={{
-                  width: "var(--dot-size)",
-                  height: "var(--dot-size)",
-                  borderRadius: "50%",
-                  bgcolor: deviceConnected
-                    ? "var(--semantic-success)"
-                    : "var(--muted)",
-                  boxShadow: deviceConnected
-                    ? "0 0 6px color-mix(in srgb, var(--semantic-success) 55%, transparent)"
-                    : "none",
-                }}
-              />
-              <Typography
-                variant="caption"
-                sx={{
-                  color: deviceConnected
-                    ? "var(--semantic-success)"
-                    : "var(--muted)",
-                  fontWeight: 600,
-                  fontFamily: "var(--font-mono)",
-                  fontSize: "0.7rem",
-                  letterSpacing: "0.04em",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 0.75,
+                  px: 1.25,
+                  py: 0.5,
+                  borderRadius: "var(--radius-full)",
+                  bgcolor: "color-mix(in srgb, var(--semantic-success) 12%, transparent)",
                 }}
               >
-                {deviceConnected
-                  ? t("device.sysStatusOnline")
-                  : t("device.sysStatusOffline")}
-              </Typography>
+                <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "var(--semantic-success)", boxShadow: "0 0 8px var(--semantic-success)" }} />
+                <Typography variant="caption" sx={{ color: "var(--semantic-success)", fontWeight: 700, letterSpacing: "0.05em", lineHeight: 1 }}>
+                  {t("device.sysStatusOnline").toUpperCase()}
+                </Typography>
+              </Box>
+              {systemInfo?.lan_ip && (
+                <Typography variant="caption" sx={{ fontFamily: "var(--font-mono)", color: "var(--foreground-soft)", bgcolor: DASHBOARD_INSET_WELL_BG, px: 1.25, py: 0.5, borderRadius: "var(--radius-full)", fontWeight: 600, lineHeight: 1 }}>
+                  {systemInfo.lan_ip}
+                </Typography>
+              )}
+              {systemInfo?.firmware_version && (
+                <Typography variant="caption" sx={{ fontFamily: "var(--font-mono)", color: "var(--foreground-soft)", bgcolor: DASHBOARD_INSET_WELL_BG, px: 1.25, py: 0.5, borderRadius: "var(--radius-full)", fontWeight: 600, lineHeight: 1 }}>
+                  v{systemInfo.firmware_version}
+                </Typography>
+              )}
             </Box>
           </Box>
         </Box>
-
-        {deviceConnected && (
-          <Button
-            variant="outlined"
-            size="small"
-            startIcon={<RefreshRounded />}
-            onClick={() => {
-              reloadHealth();
-              reloadChannelConnectivity();
-            }}
-            disabled={healthLoading || channelLoading}
-            sx={{
-              borderRadius: "var(--radius-control)",
-              flexShrink: 0,
-              bgcolor: "color-mix(in srgb, var(--card) 72%, transparent)",
-              backdropFilter: "blur(10px)",
-            }}
-          >
-            {t("device.channelRefresh")}
-          </Button>
-        )}
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<RefreshRounded />}
+          onClick={() => {
+            reloadHealth();
+            reloadChannelConnectivity();
+          }}
+          disabled={healthLoading || channelLoading}
+          sx={{ borderRadius: "var(--radius-full)", bgcolor: "color-mix(in srgb, var(--card) 50%, transparent)", backdropFilter: "blur(10px)" }}
+        >
+          {t("device.channelRefresh")}
+        </Button>
       </Box>
 
-      <Box
-        sx={{
-          px: 2.5,
-          pb: 2.5,
-          pt: 2,
-          display: "flex",
-          flexDirection: "column",
-          gap: 2,
-          position: "relative",
-          zIndex: 1,
-        }}
-      >
+      <Box sx={{ flexGrow: 1, minHeight: { xs: 24, sm: 28 } }} />
+
+      {/* Hardware LEDs Strip */}
+      {healthData && resourceData && (
+        <Box sx={{ position: "relative", zIndex: 1, display: "flex", flexWrap: "wrap", gap: 1.25, mt: { xs: 3, md: 3.5 } }}>
+          {[
+            { label: t("device.systemStatusWifiSta"), value: wifiStaLabel(healthData.wifi, t), color: healthData.wifi === "connected" ? "var(--semantic-success)" : "var(--semantic-warning)", active: true },
+            { label: t("device.systemStatusDisplayAvailable"), value: yesNo(healthData.display?.available, t), color: healthData.display?.available ? "var(--semantic-success)" : "var(--muted)", active: healthData.display?.available },
+            { label: t("device.systemStatusPressure"), value: pressureLabel, color: pressureColor(resourceData.pressure), active: true },
+            { label: t("device.deviceInfoAudio"), value: audioProfileLabel, color: healthData.audio?.duplex_profile && healthData.audio.duplex_profile !== "unavailable" ? "var(--semantic-success)" : "var(--muted)", active: healthData.audio?.duplex_profile && healthData.audio.duplex_profile !== "unavailable" },
+            ...audioCapabilityRows.map(r => ({ label: r.label, value: r.value, color: r.active ? "var(--semantic-success)" : "var(--muted)", active: r.active }))
+          ].map((led, idx) => (
+            <Box
+              key={idx}
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                gap: 1.15,
+                px: 1.5,
+                py: 1.1,
+                borderRadius: "var(--radius-chip)",
+                bgcolor: DASHBOARD_INSET_WELL_BG,
+                flex: "1 1 148px",
+                minWidth: 132,
+              }}
+            >
+              <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: led.color, boxShadow: led.active ? `0 0 10px ${led.color}` : "none", flexShrink: 0 }} />
+              <Box sx={{ minWidth: 0 }}>
+                <Typography variant="caption" sx={{ display: "block", fontSize: "0.65rem", color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.06em", lineHeight: 1, mb: 0.45, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {led.label}
+                </Typography>
+                <Typography variant="body2" sx={{ fontFamily: "var(--font-mono)", fontSize: "var(--font-size-data-value)", fontWeight: 600, color: "var(--foreground)", lineHeight: 1.15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {led.value}
+                </Typography>
+              </Box>
+            </Box>
+          ))}
+        </Box>
+      )}
+    </Box>
+  );
+
+  const renderConnectionCard = () => (
+    <DashboardCard title={t("device.sectionConnection")} icon={<LinkRounded />} sx={{ height: "100%" }}>
+      <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5, height: "100%", justifyContent: "center" }}>
         <TextField
           label={t("device.baseUrlLabel")}
           placeholder={t("device.baseUrlPlaceholder")}
@@ -618,6 +586,7 @@ export function DevicePage() {
           slotProps={{
             htmlInput: { style: { fontFamily: "var(--font-mono)", fontSize: "0.875rem" } },
           }}
+          sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: "color-mix(in srgb, var(--border) 10%, transparent)" } }}
         />
         <TextField
           label={t("device.pairingCodeLabel")}
@@ -635,241 +604,132 @@ export function DevicePage() {
               ...pairingCodeReveal.inputProps,
             },
           }}
+          sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: "color-mix(in srgb, var(--border) 10%, transparent)" } }}
         />
-        <Box sx={{ display: "flex", gap: 1.5, mt: 1 }}>
-          <Button
-            variant="contained"
-            onClick={handleSave}
-            fullWidth
-            sx={{ borderRadius: "var(--radius-control)" }}
-          >
+        <Box sx={{ display: "flex", gap: 1.5, mt: "auto", pt: 1 }}>
+          <Button variant="contained" onClick={handleSave} fullWidth sx={{ borderRadius: "var(--radius-full)", py: 1, fontWeight: 600, boxShadow: "none", "&:hover": { boxShadow: "none" } }}>
             {t("device.save")}
           </Button>
-          <Button
-            variant="outlined"
-            onClick={handleProbe}
-            disabled={probeStatus === "checking"}
-            fullWidth
-            sx={{ borderRadius: "var(--radius-control)" }}
-          >
+          <Button variant="outlined" onClick={handleProbe} disabled={probeStatus === "checking"} fullWidth sx={{ borderRadius: "var(--radius-full)", py: 1, fontWeight: 600 }}>
             {probeStatus === "checking" ? t("device.probing") : t("device.probe")}
           </Button>
         </Box>
       </Box>
+    </DashboardCard>
+  );
 
-      <Box sx={{ flexGrow: 1 }} />
-
-      {/* Hardware Specs / LEDs (Only show if connected) */}
-      {deviceConnected && healthData && resourceData && (
-        <Box
-          sx={{
-            display: "grid",
-            gridTemplateColumns: {
-              xs: "1fr 1fr",
-              lg: "repeat(4, 1fr)",
-            },
-            gap: "1px",
-            bgcolor: "color-mix(in srgb, var(--border) 30%, transparent)",
-            borderTop: "1px solid color-mix(in srgb, var(--border) 30%, transparent)",
-            position: "relative",
-            zIndex: 1,
-          }}
-        >
-          <Box sx={{ bgcolor: "var(--card)", p: 2, display: "flex", flexDirection: "column", gap: 0.5 }}>
-            <Typography variant="caption" component="div" sx={UI_LABEL_SECONDARY_SX}>
-              {t("device.systemStatusWifiSta")}
-            </Typography>
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-              <Box sx={{ width: 6, height: 6, borderRadius: "50%", bgcolor: healthData.wifi === "connected" ? "var(--semantic-success)" : "var(--semantic-warning)", boxShadow: healthData.wifi === "connected" ? "0 0 8px var(--semantic-success)" : "none" }} />
-              <Typography variant="body2" sx={{ color: "var(--foreground)", fontFamily: "var(--font-mono)", fontSize: "0.8rem", fontWeight: 500 }}>
-                {wifiStaLabel(healthData.wifi, t)}
-              </Typography>
-            </Box>
-          </Box>
-
-          <Box sx={{ bgcolor: "var(--card)", p: 2, display: "flex", flexDirection: "column", gap: 0.5 }}>
-            <Typography variant="caption" component="div" sx={UI_LABEL_SECONDARY_SX}>
-              {t("device.systemStatusDisplayAvailable")}
-            </Typography>
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-              <Box sx={{ width: 6, height: 6, borderRadius: "50%", bgcolor: healthData.display?.available === true ? "var(--semantic-success)" : "var(--muted)", boxShadow: healthData.display?.available === true ? "0 0 8px var(--semantic-success)" : "none" }} />
-              <Typography variant="body2" sx={{ color: "var(--foreground)", fontFamily: "var(--font-mono)", fontSize: "0.8rem", fontWeight: 500 }}>
-                {yesNo(healthData.display?.available, t)}
-              </Typography>
-            </Box>
-          </Box>
-
-          <Box sx={{ bgcolor: "var(--card)", p: 2, display: "flex", flexDirection: "column", gap: 0.5 }}>
-            <Typography variant="caption" component="div" sx={UI_LABEL_SECONDARY_SX}>
-              {t("device.systemStatusPressure")}
-            </Typography>
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-              <Box sx={{ width: 6, height: 6, borderRadius: "50%", bgcolor: pressureColor(resourceData.pressure), boxShadow: `0 0 8px ${pressureColor(resourceData.pressure)}` }} />
-              <Typography variant="body2" sx={{ color: "var(--foreground)", fontFamily: "var(--font-mono)", fontSize: "0.8rem", fontWeight: 500 }}>
-                {pressureLabel}
-              </Typography>
-            </Box>
-          </Box>
-
-          <Box sx={{ bgcolor: "var(--card)", p: 2, display: "flex", flexDirection: "column", gap: 0.5 }}>
-            <Typography variant="caption" component="div" sx={UI_LABEL_SECONDARY_SX}>
-              {t("device.deviceInfoAudio")}
-            </Typography>
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-              <Box sx={{ width: 6, height: 6, borderRadius: "50%", bgcolor: healthData.audio?.duplex_profile && healthData.audio.duplex_profile !== "unavailable" ? "var(--semantic-success)" : "var(--muted)", boxShadow: healthData.audio?.duplex_profile && healthData.audio.duplex_profile !== "unavailable" ? "0 0 8px var(--semantic-success)" : "none" }} />
-              <Typography variant="body2" sx={{ color: "var(--foreground)", fontFamily: "var(--font-mono)", fontSize: "0.8rem", fontWeight: 500 }}>
-                {audioProfileLabel}
-              </Typography>
-            </Box>
-          </Box>
-
-          {audioCapabilityRows.map((item) => (
-            <Box
-              key={item.label}
-              sx={{ bgcolor: "var(--card)", p: 2, display: "flex", flexDirection: "column", gap: 0.5 }}
-            >
-              <Typography variant="caption" component="div" sx={UI_LABEL_SECONDARY_SX}>
-                {item.label}
-              </Typography>
-              <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                <Box
-                  sx={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: "50%",
-                    bgcolor: item.active ? "var(--semantic-success)" : "var(--muted)",
-                    boxShadow: item.active ? "0 0 8px var(--semantic-success)" : "none",
-                  }}
-                />
-                <Typography variant="body2" sx={{ color: "var(--foreground)", fontFamily: "var(--font-mono)", fontSize: "0.8rem", fontWeight: 500 }}>
-                  {item.value}
-                </Typography>
-              </Box>
-            </Box>
-          ))}
+  const renderSetupCard = () => (
+    <Box sx={{ width: "100%", maxWidth: 480, mx: "auto", mt: { xs: 4, md: 8 }, ...DASHBOARD_CARD_SURFACE_SX, p: { xs: 3, md: 5 }, position: "relative", display: "flex", flexDirection: "column", gap: 4 }}>
+      <PcbDecorOverlay tone="embed" />
+      <Box sx={{ position: "relative", zIndex: 1, textAlign: "center" }}>
+        <Box sx={{ width: 88, height: 88, mx: "auto", mb: 3, borderRadius: 5, bgcolor: "color-mix(in srgb, var(--primary) 10%, transparent)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--primary)", boxShadow: "0 12px 24px color-mix(in srgb, var(--primary) 10%, transparent)" }}>
+          <BeetleIcon sx={{ fontSize: 48 }} />
         </Box>
-      )}
+        <Typography variant="h4" sx={{ fontFamily: "var(--font-display)", fontWeight: 800, letterSpacing: "-0.02em", mb: 1.5 }}>
+          beetle <Box component="span" sx={{ color: "var(--primary)" }}>OS</Box>
+        </Typography>
+        <Typography variant="body2" sx={{ color: "var(--text-secondary)", lineHeight: 1.6, maxWidth: "80%", mx: "auto" }}>
+          {t("device.pageDesc")}
+        </Typography>
+      </Box>
+
+      <Box sx={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", gap: 2.5 }}>
+        <TextField
+          label={t("device.baseUrlLabel")}
+          placeholder={t("device.baseUrlPlaceholder")}
+          value={urlInput}
+          onChange={(e) => setUrlInput(e.target.value)}
+          variant="outlined"
+          fullWidth
+          slotProps={{ htmlInput: { style: { fontFamily: "var(--font-mono)" } } }}
+          sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: "color-mix(in srgb, var(--border) 10%, transparent)" } }}
+        />
+        <TextField
+          label={t("device.pairingCodeLabel")}
+          placeholder={t("device.pairingCodePlaceholder")}
+          value={codeInput}
+          type={pairingCodeReveal.type}
+          onChange={(e) => setCodeInput(e.target.value)}
+          variant="outlined"
+          fullWidth
+          slotProps={{
+            htmlInput: { maxLength: 6, style: { fontFamily: "var(--font-mono)", letterSpacing: "0.2em" }, ...pairingCodeReveal.inputProps }
+          }}
+          sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: "color-mix(in srgb, var(--border) 10%, transparent)" } }}
+        />
+        <Box sx={{ display: "flex", gap: 1.5, mt: 1 }}>
+          <Button variant="contained" onClick={handleSave} fullWidth size="large" sx={{ borderRadius: "var(--radius-full)", fontWeight: 600, boxShadow: "none", py: 1.25, "&:hover": { boxShadow: "none" } }}>
+            {t("device.save")}
+          </Button>
+          <Button variant="outlined" onClick={handleProbe} disabled={probeStatus === "checking"} fullWidth size="large" sx={{ borderRadius: "var(--radius-full)", fontWeight: 600, py: 1.25 }}>
+            {probeStatus === "checking" ? t("device.probing") : t("device.probe")}
+          </Button>
+        </Box>
+      </Box>
     </Box>
   );
 
   return (
-    <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
+    <Box sx={{ display: "flex", flexDirection: "column", gap: DASHBOARD_HOME_GRID_GAP }}>
       {!deviceConnected ? (
-        <Box sx={{ display: "flex", justifyContent: "center", pt: 8 }}>
-          <Box sx={{ width: "100%", maxWidth: 440, minHeight: 380 }}>
-            {renderGatewayCard()}
-          </Box>
-        </Box>
+        renderSetupCard()
       ) : (
-        <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
-          <SectionLoadProgress
-            loading={healthLoading}
-            idleHint={!healthData ? t("device.systemStatusLoading") : undefined}
-          />
-          {healthError && !healthData && !healthLoading && (
-            <InlineAlert
-              message={`${t("device.systemStatusLoadFail")}: ${healthError}`}
-              onRetry={reloadHealth}
-            />
-          )}
+        <Box sx={{ display: "flex", flexDirection: "column", gap: DASHBOARD_HOME_GRID_GAP }}>
+          <Box
+            sx={{
+              display: "grid",
+              gridTemplateColumns: {
+                xs: "repeat(4, 1fr)",
+                sm: "repeat(8, 1fr)",
+                lg: "repeat(12, 1fr)",
+              },
+              gridAutoRows: "minmax(120px, auto)",
+              gridAutoFlow: "row dense",
+              gap: DASHBOARD_HOME_GRID_GAP,
+              opacity: 1,
+              pointerEvents: "auto",
+            }}
+          >
+            {/* Row 1: Hero (8) + Connection (4) */}
+            <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 8" }, gridRow: { xs: "span 2", sm: "span 2", lg: "span 2" } }}>
+              {renderHeroCard()}
+            </Box>
 
-          {healthData && resourceData && metricsData && (
-            <Box
-              sx={{
-                display: "grid",
-                gridTemplateColumns: {
-                  xs: "repeat(4, 1fr)",
-                  sm: "repeat(8, 1fr)",
-                  lg: "repeat(12, 1fr)",
-                },
-                gridAutoRows: "minmax(120px, auto)",
-                gridAutoFlow: "row dense",
-                gap: 2.5,
-                opacity: 1,
-                pointerEvents: "auto",
-              }}
-            >
-              {/* Card 1: OS Namecard & Gateway (4 cols) */}
-              <Box
-                sx={{
-                  gridColumn: { xs: "span 4", sm: "span 4", lg: "span 4" },
-                  gridRow: { xs: "span 2", lg: "span 2" },
-                }}
-              >
-                {renderGatewayCard()}
+            <Box sx={{ gridColumn: { xs: "span 4", sm: "span 4", lg: "span 4" }, gridRow: { xs: "span 2", sm: "span 2", lg: "span 2" } }}>
+              {renderConnectionCard()}
+            </Box>
+
+            {/* If loading or error, show them in the remaining space */}
+            {(!healthData || !resourceData || !metricsData) ? (
+              <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 12" }, gridRow: { xs: "span 1", lg: "span 1" }, display: "flex", flexDirection: "column", gap: 2, justifyContent: "center" }}>
+                <SectionLoadProgress loading={healthLoading} idleHint={!healthData ? t("device.systemStatusLoading") : undefined} />
+                {healthError && !healthData && !healthLoading && (
+                  <InlineAlert message={`${t("device.systemStatusLoadFail")}: ${healthError}`} onRetry={reloadHealth} />
+                )}
               </Box>
-
-              {/* Card 2: Device Details (4 cols) */}
-              <Box
-                sx={{
-                  gridColumn: { xs: "span 4", sm: "span 4", lg: "span 4" },
-                  gridRow: { xs: "span 2", lg: "span 2" },
-                }}
-              >
-                <DashboardCard title={t("device.systemStatusGroupResource")} icon={<MemoryRounded />}>
-                  <Box
-                    sx={{
-                      display: "flex",
-                      flexDirection: "column",
-                      height: "100%",
-                    }}
-                  >
-                    {/* Device Summary Fields */}
-                    <Box
-                      sx={{
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 0.5,
-                      }}
-                    >
+            ) : (
+              <>
+                {/* Row 2: Device Details (4) + Channels (8) */}
+                <Box sx={{ gridColumn: { xs: "span 4", sm: "span 4", lg: "span 4" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
+                  <DashboardCard title={t("device.sectionDeviceInfo")} icon={<DeveloperBoardOutlined />}>
+                    <Box sx={{ display: "flex", flexDirection: "column", gap: 0 }}>
                       {deviceSummaryFields.map((field) => (
-                        <StatRow
-                          key={field.id}
-                          label={t(field.labelKey)}
-                          value={renderSummaryFieldValue(
-                            field.value,
-                            field.valueKind,
-                          )}
-                        />
+                        <StatRow key={field.id} label={t(field.labelKey)} value={renderSummaryFieldValue(field.value, field.valueKind)} />
                       ))}
                     </Box>
-                  </Box>
-                </DashboardCard>
-              </Box>
+                  </DashboardCard>
+                </Box>
 
-              {/* Channel Connectivity (4 cols) */}
-              <Box
-                sx={{
-                  gridColumn: { xs: "span 4", sm: "span 8", lg: "span 4" },
-                  gridRow: { xs: "span 2", lg: "span 2" },
-                }}
-              >
-                <DashboardCard
-                  title={t("device.sectionChannelConnectivity")}
-                  icon={<ChatRounded />}
-                >
-                  <ChannelConnectivityPanel
-                    channels={channelList}
-                    loading={channelLoading}
-                    error={channelError}
-                    onRetry={reloadChannelConnectivity}
-                    channelLabel={(id) =>
-                      t(`device.${channelNameKey[id] ?? id}`)
-                    }
-                    t={t}
-                  />
-                </DashboardCard>
-              </Box>
+                <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 8" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
+                  <DashboardCard title={t("device.sectionChannelConnectivity")} icon={<ChatRounded />}>
+                    <ChannelConnectivityPanel channels={channelList} loading={channelLoading} error={channelError} onRetry={reloadChannelConnectivity} channelLabel={(id) => t(`device.${channelNameKey[id] ?? id}`)} t={t} />
+                  </DashboardCard>
+                </Box>
 
-              <SystemStatusPanel
-                healthData={healthData}
-                resourceData={resourceData}
-                metricsData={metricsData}
-                runtimeKind={runtimeKind}
-                t={t}
-              />
-            </Box>
-          )}
+                <SystemStatusPanel healthData={healthData} resourceData={resourceData} metricsData={metricsData} runtimeKind={runtimeKind} t={t} />
+              </>
+            )}
+          </Box>
         </Box>
       )}
     </Box>

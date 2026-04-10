@@ -22,15 +22,23 @@ import type {
 import type { DeviceRuntimeKind } from "../store/deviceStatusStore";
 import { DashboardCard } from "../pages/DevicePage";
 import {
+  DASHBOARD_BLOCK_GAP,
+  DASHBOARD_INSET_WELL_BG,
+  DASHBOARD_SECTION_STACK_GAP,
+  UI_LABEL_SECONDARY_SX,
+} from "../theme/panelStyles";
+import {
   buildFaultAndRecoveryMetrics,
   buildMemoryMetrics,
-  pressureLabelKey,
   buildRuntimeTelemetryFields,
   buildRuntimeStrategyView,
 } from "../pages/deviceHomeViewModel";
 
 // Non-component exports removed to fix Fast Refresh lint error.
 // They are now defined in DevicePage.tsx or kept internal here.
+
+/** 运行策略「行为列表」与「预算」图标列同宽，保证与正文左缘对齐 */
+const STRATEGY_ALIGN_ICON_PX = 28;
 
 function formatBytes(value: number): string {
   if (!Number.isFinite(value) || value < 0) return String(value);
@@ -226,88 +234,90 @@ function IntensityLevelRing({
   );
 }
 
-/** 细进度条 + 三档文案，避免大块色面与强阴影 */
-function StrategyPressureTrack({
-  intensity,
-  t,
-}: {
-  intensity: 1 | 2 | 3;
-  t: TFunction;
-}) {
-  const steps: { key: "Normal" | "Cautious" | "Critical"; level: 1 | 2 | 3 }[] = [
-    { key: "Normal", level: 1 },
-    { key: "Cautious", level: 2 },
-    { key: "Critical", level: 3 },
-  ];
-  const fillPct = (intensity / 3) * 100;
-  const accent = strategyAccentColor(intensity);
-
-  return (
-    <Box sx={{ width: "100%" }}>
-      <Box
-        sx={{
-          height: 3,
-          borderRadius: 999,
-          bgcolor: "var(--border-subtle)",
-          overflow: "hidden",
-        }}
-      >
-        <Box
-          sx={{
-            height: "100%",
-            width: `${fillPct}%`,
-            bgcolor: accent,
-            opacity: 0.38,
-            transition: "width 0.45s cubic-bezier(0.4, 0, 0.2, 1)",
-          }}
-        />
-      </Box>
-      <Box sx={{ display: "flex", justifyContent: "space-between", gap: 1, mt: 0.85 }}>
-        {steps.map((step) => {
-          const labelKey = pressureLabelKey(step.key) as string;
-          const isCurrent = intensity === step.level;
-          return (
-            <Typography
-              key={step.key}
-              variant="caption"
-              sx={{
-                flex: 1,
-                textAlign: "center",
-                fontSize: "0.68rem",
-                fontWeight: isCurrent ? 600 : 400,
-                color: isCurrent ? "var(--foreground)" : "var(--muted)",
-                letterSpacing: "0.02em",
-                textTransform: "none",
-                lineHeight: 1.35,
-              }}
-            >
-              {t(labelKey)}
-            </Typography>
-          );
-        })}
-      </Box>
-    </Box>
-  );
-}
-
 function strategyAccentColor(intensity: 1 | 2 | 3): string {
   if (intensity === 3) return "var(--semantic-danger)";
   if (intensity === 2) return "var(--semantic-warning)";
   return "var(--semantic-success)";
 }
 
-function strategyBehaviorIcon(index: number): React.ReactNode {
-  const sx = { fontSize: "0.88rem" };
-  switch (index) {
-    case 0:
-      return <ChatBubbleOutlineRounded sx={sx} />;
-    case 1:
-      return <ExtensionRounded sx={sx} />;
-    case 2:
-      return <SyncRounded sx={sx} />;
-    default:
-      return null;
-  }
+/** 与 behaviorKeys 顺序一致：对话/工具/重连 */
+const STRATEGY_BEHAVIOR_DIM_KEYS = [
+  "device.systemStatusStrategyBehaviorDimReplies",
+  "device.systemStatusStrategyBehaviorDimTools",
+  "device.systemStatusStrategyBehaviorDimReconnect",
+] as const;
+
+const STRATEGY_BEHAVIOR_ICONS = [ChatBubbleOutlineRounded, ExtensionRounded, SyncRounded] as const;
+
+/**
+ * 行为说明：三行列表（无套层灰底，避免与卡底对比形成「描边」）；与下方 plain 预算数字区分层级。
+ */
+function StrategyBehaviorList({
+  behaviorKeys,
+  accent,
+  t,
+}: {
+  behaviorKeys: [string, string, string];
+  accent: string;
+  t: TFunction;
+}) {
+  return (
+    <Box
+      component="ul"
+      sx={{ listStyle: "none", m: 0, p: 0, display: "flex", flexDirection: "column", gap: 1.15 }}
+    >
+      {behaviorKeys.map((key, index) => {
+        const Icon = STRATEGY_BEHAVIOR_ICONS[index];
+        return (
+          <Box
+            component="li"
+            key={key}
+            sx={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 1,
+              minWidth: 0,
+            }}
+          >
+            <Box
+              sx={{
+                width: STRATEGY_ALIGN_ICON_PX,
+                minWidth: STRATEGY_ALIGN_ICON_PX,
+                flexShrink: 0,
+                color: accent,
+                mt: 0.1,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                opacity: 0.92,
+              }}
+              aria-hidden
+            >
+              <Icon sx={{ fontSize: "1.05rem" }} />
+            </Box>
+            <Typography
+              component="p"
+              sx={{
+                m: 0,
+                fontSize: "0.8125rem",
+                lineHeight: 1.5,
+                color: "var(--foreground)",
+                minWidth: 0,
+              }}
+            >
+              <Box component="span" sx={{ fontWeight: 600, color: "var(--foreground-soft)" }}>
+                {t(STRATEGY_BEHAVIOR_DIM_KEYS[index])}
+              </Box>
+              <Box component="span" sx={{ color: "var(--muted)", px: 0.45 }}>
+                ·
+              </Box>
+              {t(key)}
+            </Typography>
+          </Box>
+        );
+      })}
+    </Box>
+  );
 }
 
 function strategyBudgetIcon(id: string): React.ReactNode {
@@ -334,6 +344,7 @@ function DigitalCounter({
   danger = false,
   leadingIcon,
   compact,
+  plain,
 }: {
   label: string;
   value: string | number;
@@ -343,20 +354,117 @@ function DigitalCounter({
   leadingIcon?: React.ReactNode;
   /** 运行策略预算等：更轻边框与图标槽，避免与其它仪表盘数字块抢戏 */
   compact?: boolean;
+  /** 无灰底，仅作数字指标（与策略叙述块分层） */
+  plain?: boolean;
 }) {
   const isDanger = danger && Number(value) > 0;
   const finalColor = isDanger ? "var(--semantic-danger)" : color;
+  const plainSurface = plain === true;
+  const useCompactIconGrid = Boolean(compact && leadingIcon);
+
+  if (useCompactIconGrid) {
+    const padSx =
+      plainSurface
+        ? { px: 0, py: 0.5 }
+        : { p: 1.15 };
+    return (
+      <Box
+        sx={{
+          ...padSx,
+          bgcolor: plainSurface ? "transparent" : DASHBOARD_INSET_WELL_BG,
+          borderRadius: plainSurface ? 0 : "var(--radius-chip)",
+          display: "grid",
+          gridTemplateColumns: `${STRATEGY_ALIGN_ICON_PX}px minmax(0, 1fr)`,
+          columnGap: 1,
+          rowGap: 0.35,
+          alignItems: "start",
+          boxShadow: isDanger ? "0 0 12px color-mix(in srgb, var(--semantic-danger) 20%, transparent)" : "none",
+          minWidth: 0,
+        }}
+      >
+        <Box
+          sx={{
+            gridRow: 1,
+            gridColumn: 1,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: STRATEGY_ALIGN_ICON_PX,
+            minHeight: plainSurface ? 22 : 26,
+            alignSelf: "start",
+            pt: plainSurface ? 0.15 : 0,
+            borderRadius: plainSurface ? 0 : "var(--radius-sm)",
+            bgcolor:
+              plainSurface
+                ? undefined
+                : "color-mix(in srgb, var(--foreground) 5%, transparent)",
+            color: "var(--foreground-soft)",
+          }}
+        >
+          {leadingIcon}
+        </Box>
+        <Typography
+          variant="caption"
+          component="span"
+          sx={{
+            gridRow: 1,
+            gridColumn: 2,
+            color: isDanger ? "var(--semantic-danger)" : "var(--foreground-soft)",
+            textTransform: "none",
+            letterSpacing: "0.02em",
+            fontWeight: 500,
+            fontSize: "0.64rem",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            minWidth: 0,
+          }}
+        >
+          {label}
+        </Typography>
+        <Box
+          sx={{
+            gridRow: 2,
+            gridColumn: 2,
+            display: "flex",
+            alignItems: "baseline",
+            gap: 0.45,
+            overflow: "hidden",
+            minWidth: 0,
+          }}
+        >
+          <Typography
+            variant="subtitle1"
+            sx={{
+              fontFamily: "var(--font-mono)",
+              fontWeight: 700,
+              fontSize: "0.95rem",
+              color: finalColor,
+              textShadow: isDanger ? `0 0 8px ${finalColor}` : "none",
+              lineHeight: 1.2,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {value}
+          </Typography>
+          {unit && (
+            <Typography variant="caption" sx={{ color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: "0.65rem" }}>
+              {unit}
+            </Typography>
+          )}
+        </Box>
+      </Box>
+    );
+  }
 
   return (
     <Box
       sx={{
         p: compact ? 1.15 : 1.5,
-        bgcolor: "color-mix(in srgb, var(--foreground) 2%, transparent)",
+        bgcolor: DASHBOARD_INSET_WELL_BG,
         borderRadius: "var(--radius-chip)",
-        border: "1px solid",
-        borderColor: isDanger
-          ? "color-mix(in srgb, var(--semantic-danger) 22%, var(--border-subtle))"
-          : "var(--border-subtle)",
         display: "flex",
         flexDirection: "column",
         gap: compact ? 0.35 : 0.5,
@@ -484,8 +592,8 @@ export function SystemStatusPanel({
 
   return (
     <React.Fragment>
-      {/* Storage Gauge (Span 3 cols, 2 rows) */}
-      <Box sx={{ gridColumn: { xs: "span 4", sm: "span 4", lg: "span 3" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
+      {/* Storage Gauge (Span 4 cols, 2 rows) */}
+      <Box sx={{ gridColumn: { xs: "span 4", sm: "span 4", lg: "span 4" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
         <DashboardCard title={t("device.systemStatusStorage")} icon={<StorageRounded />}>
           <CircularGauge 
             value={storageUsed} 
@@ -497,10 +605,10 @@ export function SystemStatusPanel({
         </DashboardCard>
       </Box>
 
-      {/* RAM & Memory (Span 3 cols, 2 rows) */}
-      <Box sx={{ gridColumn: { xs: "span 4", sm: "span 4", lg: "span 3" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
+      {/* RAM & Memory (Span 4 cols, 2 rows) */}
+      <Box sx={{ gridColumn: { xs: "span 4", sm: "span 4", lg: "span 4" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
         <DashboardCard title={t("device.systemStatusGroupMemory")} icon={<MemoryRounded />}>
-          <Box sx={{ display: "grid", gridTemplateColumns: "1fr", gap: 1.5, height: "100%", alignContent: "start" }}>
+          <Box sx={{ display: "grid", gridTemplateColumns: "1fr", gap: DASHBOARD_BLOCK_GAP, height: "100%", alignContent: "start" }}>
             {memoryMetrics.map((item) => (
               <DigitalCounter
                 key={item.id}
@@ -513,22 +621,31 @@ export function SystemStatusPanel({
         </DashboardCard>
       </Box>
 
-      {/* Runtime Strategy (Span 6 cols, 2 rows) */}
-      <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 6" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
+      {/* Runtime Strategy (Span 4 cols, 2 rows) */}
+      <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 4" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
         <DashboardCard title={t("device.systemStatusStrategy")} icon={<TuneRounded />}>
           {strategy ? (
-            <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, height: "100%" }}>
+            <Box sx={{ display: "flex", flexDirection: "column", gap: DASHBOARD_SECTION_STACK_GAP, height: "100%" }}>
               <Box
                 sx={{
                   display: "flex",
                   flexDirection: { xs: "column", sm: "row" },
-                  alignItems: { xs: "stretch", sm: "center" },
-                  gap: 1.75,
+                  alignItems: { xs: "center", sm: "center" },
+                  gap: DASHBOARD_SECTION_STACK_GAP,
                 }}
               >
-                <IntensityLevelRing intensity={strategy.intensity} color={strategyAccentColor(strategy.intensity)} />
-                <Box sx={{ minWidth: 0, flex: 1 }}>
-                  <Typography variant="h5" sx={{ color: "var(--foreground)", fontWeight: 600, letterSpacing: "-0.02em", lineHeight: 1.15, fontSize: { xs: "1.15rem", sm: "1.25rem" } }}>
+                <IntensityLevelRing intensity={strategy.intensity} size={92} strokeWidth={8} color={strategyAccentColor(strategy.intensity)} />
+                <Box sx={{ minWidth: 0, flex: 1, textAlign: { xs: "center", sm: "left" } }}>
+                  <Typography
+                    variant="h5"
+                    sx={{
+                      color: "var(--foreground)",
+                      fontWeight: 600,
+                      letterSpacing: "-0.02em",
+                      lineHeight: 1.2,
+                      fontSize: { xs: "1.1rem", sm: "1.2rem" },
+                    }}
+                  >
                     {t(strategy.headlineKey)}
                   </Typography>
                   <Typography variant="body2" sx={{ color: "var(--muted)", mt: 0.75, lineHeight: 1.55, fontSize: "0.8125rem" }}>
@@ -537,58 +654,20 @@ export function SystemStatusPanel({
                 </Box>
               </Box>
 
-              <StrategyPressureTrack intensity={strategy.intensity} t={t} />
+              <StrategyBehaviorList
+                behaviorKeys={strategy.behaviorKeys}
+                accent={strategyAccentColor(strategy.intensity)}
+                t={t}
+              />
 
-              <Box component="ul" sx={{ listStyle: "none", m: 0, p: 0, display: "flex", flexDirection: "column", gap: 0 }}>
-                {strategy.behaviorKeys.map((key, index) => (
-                  <Box
-                    component="li"
-                    key={key}
-                    sx={{
-                      display: "flex",
-                      alignItems: "flex-start",
-                      gap: 1.1,
-                      py: 0.7,
-                      borderTop:
-                        index === 0
-                          ? "none"
-                          : "1px solid var(--border-subtle)",
-                    }}
-                  >
-                    <Box
-                      aria-hidden
-                      sx={{
-                        width: 30,
-                        height: 30,
-                        flexShrink: 0,
-                        borderRadius: "var(--radius-sm)",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        bgcolor: "color-mix(in srgb, var(--foreground) 4%, transparent)",
-                        color: "var(--foreground-soft)",
-                      }}
-                    >
-                      {strategyBehaviorIcon(index)}
-                    </Box>
-                    <Typography
-                      variant="body2"
-                      component="p"
-                      sx={{
-                        color: "var(--foreground)",
-                        lineHeight: 1.5,
-                        fontSize: "0.8125rem",
-                        m: 0,
-                        pt: 0.2,
-                      }}
-                    >
-                      {t(key)}
-                    </Typography>
-                  </Box>
-                ))}
-              </Box>
-
-              <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "repeat(3, 1fr)" }, gap: 1.15, mt: "auto" }}>
+              <Box
+                sx={{
+                  display: "grid",
+                  gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)" },
+                  gap: { xs: 1.25, sm: DASHBOARD_BLOCK_GAP },
+                  pt: 0.25,
+                }}
+              >
                 {strategy.budgetFields.map((item) => {
                   const formatted = formatStrategyBudgetValue(item.value, item.valueKind);
                   return (
@@ -600,6 +679,7 @@ export function SystemStatusPanel({
                       color="var(--primary)"
                       leadingIcon={strategyBudgetIcon(item.id)}
                       compact
+                      plain
                     />
                   );
                 })}
@@ -616,7 +696,7 @@ export function SystemStatusPanel({
       {/* Traffic & Ops (Span 12 cols, 2 rows) */}
       <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 12" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
         <DashboardCard title={t("device.systemStatusGroupRuntime")} icon={<SwapVertRounded />}>
-          <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)", lg: "repeat(6, 1fr)" }, gap: 1.5, height: "100%", alignContent: "start" }}>
+          <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)", lg: "repeat(6, 1fr)" }, gap: DASHBOARD_BLOCK_GAP, height: "100%", alignContent: "start" }}>
             {runtimeTelemetry.map((item) => {
               let value: string | number;
               switch (item.valueKind) {
@@ -653,23 +733,48 @@ export function SystemStatusPanel({
         <DashboardCard 
           title={t("device.systemStatusGroupFaults")} 
           icon={<WarningRounded />}
-          sx={{
-            borderColor: hasErrors ? "color-mix(in srgb, var(--semantic-danger) 40%, transparent)" : undefined,
-            boxShadow: hasErrors ? "0 0 20px color-mix(in srgb, var(--semantic-danger) 10%, transparent)" : undefined,
-          }}
+          sx={
+            hasErrors
+              ? {
+                  boxShadow:
+                    "0 0 20px color-mix(in srgb, var(--semantic-danger) 10%, transparent), var(--shadow-subtle), inset 0 1px 0 color-mix(in srgb, var(--foreground) 6%, transparent)",
+                }
+              : undefined
+          }
         >
-          <Typography variant="caption" sx={{ color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", mb: 1, display: "block" }}>
+          <Typography
+            variant="caption"
+            component="div"
+            sx={{
+              ...UI_LABEL_SECONDARY_SX,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              color: "var(--muted)",
+              mb: 1,
+            }}
+          >
             {t("device.systemStatusSubsectionFaults")}
           </Typography>
-          <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)", lg: "repeat(6, 1fr)" }, gap: 1.5 }}>
+          <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)", lg: "repeat(6, 1fr)" }, gap: DASHBOARD_BLOCK_GAP }}>
             {groupedFaults.faults.map((item) => (
               <DigitalCounter key={item.id} label={t(item.labelKey)} value={item.value} danger />
             ))}
           </Box>
-          <Typography variant="caption" sx={{ color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", mt: 2, mb: 1, display: "block" }}>
+          <Typography
+            variant="caption"
+            component="div"
+            sx={{
+              ...UI_LABEL_SECONDARY_SX,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              color: "var(--muted)",
+              mt: 2,
+              mb: 1,
+            }}
+          >
             {t("device.systemStatusSubsectionRecovery")}
           </Typography>
-          <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)", lg: "repeat(6, 1fr)" }, gap: 1.5 }}>
+          <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)", lg: "repeat(6, 1fr)" }, gap: DASHBOARD_BLOCK_GAP }}>
             {groupedFaults.recovery.map((item) => (
               <DigitalCounter
                 key={item.id}

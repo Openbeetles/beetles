@@ -10,6 +10,7 @@ import WarningAmberRounded from "@mui/icons-material/WarningAmberRounded";
 import type { TFunction } from "i18next";
 import type { ChannelConnectivityItem } from "../api/endpoints/system";
 import { SectionLoadProgress } from "./SectionLoadProgress";
+import { DASHBOARD_INSET_WELL_BG } from "../theme/panelStyles";
 
 /** 与 SystemStatusPanel 小节面板一致：中性底，不用 --surface 色块 */
 const SECTION_PANEL_SX = {
@@ -23,7 +24,7 @@ const SECTION_PANEL_SX = {
 const MICRO_CELL_SX = {
   borderRadius: "var(--radius-chip)",
   border: "none",
-  bgcolor: "color-mix(in srgb, var(--foreground) 2%, transparent)",
+  bgcolor: DASHBOARD_INSET_WELL_BG,
 } as const;
 
 const ROW_DIVIDER = "none";
