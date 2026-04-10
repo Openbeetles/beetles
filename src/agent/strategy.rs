@@ -205,11 +205,11 @@ pub(crate) fn final_answer_followup(
 }
 
 pub(crate) fn empty_final_answer_followup(
-    strategy: AgentRunStrategy,
+    _strategy: AgentRunStrategy,
     any_tool_used: bool,
     content: &str,
 ) -> Option<&'static str> {
-    if strategy != AgentRunStrategy::LinuxEnhanced || !any_tool_used || !content.trim().is_empty() {
+    if !any_tool_used || !content.trim().is_empty() {
         return None;
     }
     Some(
@@ -777,6 +777,13 @@ mod tests {
         let followup =
             empty_final_answer_followup(AgentRunStrategy::LinuxEnhanced, true, "").expect("text");
         assert!(followup.contains("Do not emit an empty reply"));
+    }
+
+    #[test]
+    fn empty_final_answer_followup_applies_to_embedded_after_tool_progress() {
+        let followup =
+            empty_final_answer_followup(AgentRunStrategy::Embedded, true, "").expect("text");
+        assert!(followup.contains("Provide a user-facing final answer"));
     }
 
     #[test]

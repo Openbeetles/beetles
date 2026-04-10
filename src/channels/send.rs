@@ -51,6 +51,24 @@ pub fn send_post_with_headers<H: ChannelHttpClient>(
     res
 }
 
+pub(crate) fn record_outbound_http_success() {
+    crate::metrics::record_channel_http_result(true);
+    crate::orchestrator::observe_runtime_capability_success(&[
+        crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
+    ]);
+}
+
+pub(crate) fn record_outbound_http_failure(error: &crate::error::Error) {
+    crate::metrics::record_channel_http_result(false);
+    crate::metrics::record_error_by_stage(error.stage());
+    if error.is_tls_admission() || error.is_connect_error() || error.is_retryable_upstream() {
+        crate::orchestrator::observe_runtime_capability_failure(
+            crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
+            crate::orchestrator::RuntimeCapabilityReason::UpstreamUnavailable,
+        );
+    }
+}
+
 pub(crate) fn start_sender_loop(tag: &str) {
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     crate::platform::task_wdt::register_current_task_to_task_wdt();
@@ -134,4 +152,67 @@ pub(crate) fn log_sender_drop(
         tag,
         req_id.unwrap_or("-")
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::Error;
+    use std::sync::Mutex;
+
+    static TEST_GUARD: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn outbound_http_failure_records_tls_admission_and_marks_capability_offline() {
+        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        crate::orchestrator::reset_runtime_capabilities_for_tests();
+        let before = crate::metrics::snapshot();
+        let err = Error::config("tls_admission", "permit timeout");
+
+        record_outbound_http_failure(&err);
+
+        let after = crate::metrics::snapshot();
+        let capability = crate::orchestrator::get_runtime_capability(
+            crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
+        )
+        .expect("capability");
+        assert!(after.channel_http_fail >= before.channel_http_fail + 1);
+        assert!(after.errors_tls_admission >= before.errors_tls_admission + 1);
+        assert_eq!(
+            capability.status,
+            crate::orchestrator::RuntimeCapabilityStatus::Offline
+        );
+        assert_eq!(
+            capability.reason,
+            crate::orchestrator::RuntimeCapabilityReason::UpstreamUnavailable
+        );
+    }
+
+    #[test]
+    fn outbound_http_success_restores_capability_online() {
+        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        crate::orchestrator::reset_runtime_capabilities_for_tests();
+        crate::orchestrator::observe_runtime_capability_failure(
+            crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
+            crate::orchestrator::RuntimeCapabilityReason::UpstreamUnavailable,
+        );
+        let before = crate::metrics::snapshot();
+
+        record_outbound_http_success();
+
+        let after = crate::metrics::snapshot();
+        let capability = crate::orchestrator::get_runtime_capability(
+            crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
+        )
+        .expect("capability");
+        assert!(after.channel_http_ok >= before.channel_http_ok + 1);
+        assert_eq!(
+            capability.status,
+            crate::orchestrator::RuntimeCapabilityStatus::Online
+        );
+        assert_eq!(
+            capability.reason,
+            crate::orchestrator::RuntimeCapabilityReason::Nominal
+        );
+    }
 }

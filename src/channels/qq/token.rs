@@ -1,6 +1,7 @@
 //! QQ access_token 获取与解析的共享实现。
 //! 供 sender / WSS / connectivity 共用，避免三处各自维护同一条 HTTP 链路。
 
+use crate::channels::send::{record_outbound_http_failure, record_outbound_http_success};
 use crate::channels::ChannelHttpClient;
 use crate::error::{Error, Result};
 
@@ -61,21 +62,23 @@ pub(crate) fn fetch_qq_token_response<H: ChannelHttpClient + ?Sized>(
     let (status, resp_body) = match http.http_post(QQ_GET_APP_ACCESS_TOKEN_URL, &body_bytes) {
         Ok(resp) => resp,
         Err(e) => {
-            crate::metrics::record_channel_http_result(false);
-            return Err(Error::Other {
+            let error = Error::Other {
                 source: Box::new(e),
                 stage,
-            });
+            };
+            record_outbound_http_failure(&error);
+            return Err(error);
         }
     };
     if status >= 400 {
-        crate::metrics::record_channel_http_result(false);
-        return Err(Error::Http {
+        let error = Error::Http {
             status_code: status,
             stage,
-        });
+        };
+        record_outbound_http_failure(&error);
+        return Err(error);
     }
-    crate::metrics::record_channel_http_result(true);
+    record_outbound_http_success();
     serde_json::from_slice(resp_body.as_ref()).map_err(|e| Error::Other {
         source: Box::new(e),
         stage,

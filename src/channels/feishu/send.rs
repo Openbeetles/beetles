@@ -2,8 +2,9 @@
 
 use crate::bus::PcMsg;
 use crate::channels::send::{
-    ensure_sender_http, feed_sender_loop_wdt, log_sender_drop, recv_sender_loop_event,
-    sleep_sender_retry_delay, start_sender_loop, SenderLoopEvent, CHANNEL_SENDER_MAX_RETRIES,
+    ensure_sender_http, feed_sender_loop_wdt, log_sender_drop, record_outbound_http_failure,
+    record_outbound_http_success, recv_sender_loop_event, sleep_sender_retry_delay,
+    start_sender_loop, SenderLoopEvent, CHANNEL_SENDER_MAX_RETRIES,
 };
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
@@ -200,11 +201,14 @@ pub fn flush_feishu_sends<H: ChannelHttpClient>(
     };
     while let Ok((chat_id, content, _req_id)) = rx.try_recv() {
         if let Err(error) = send_feishu_message(http, &token, &chat_id, &content) {
+            record_outbound_http_failure(&error);
             log::warn!(
                 "[feishu_flush] send failed for chat_id={}: {}",
                 chat_id,
                 error
             );
+        } else {
+            record_outbound_http_success();
         }
     }
 }
@@ -257,9 +261,9 @@ pub fn run_feishu_sender_loop<H, F>(
                 }
             };
             match send_feishu_message(h, token.as_str(), &chat_id, &content) {
-                Ok(()) => crate::metrics::record_channel_http_result(true),
+                Ok(()) => record_outbound_http_success(),
                 Err(error) => {
-                    crate::metrics::record_channel_http_result(false);
+                    record_outbound_http_failure(&error);
                     log::warn!(
                         "[{}] send failed (attempt {}), chat_id={}: {}",
                         TAG,
@@ -274,11 +278,11 @@ pub fn run_feishu_sender_loop<H, F>(
             }
             while let Ok((cid, cnt, _)) = rx.try_recv() {
                 if let Err(error) = send_feishu_message(h, token.as_str(), &cid, &cnt) {
-                    crate::metrics::record_channel_http_result(false);
+                    record_outbound_http_failure(&error);
                     log::warn!("[{}] drain send failed for chat_id={}: {}", TAG, cid, error);
                     break;
                 }
-                crate::metrics::record_channel_http_result(true);
+                record_outbound_http_success();
             }
             sent = true;
             break;

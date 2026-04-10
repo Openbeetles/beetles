@@ -5,8 +5,9 @@ use crate::config::AppConfig;
 use crate::error::{Error as BeetleError, Result as BeetleResult};
 
 use crate::channels::send::{
-    ensure_sender_http, feed_sender_loop_wdt, log_sender_drop, recv_sender_loop_event,
-    start_sender_loop, SenderLoopEvent, CHANNEL_SENDER_MAX_RETRIES,
+    ensure_sender_http, feed_sender_loop_wdt, log_sender_drop, record_outbound_http_failure,
+    record_outbound_http_success, recv_sender_loop_event, start_sender_loop, SenderLoopEvent,
+    CHANNEL_SENDER_MAX_RETRIES,
 };
 
 use super::msg_id::{pop_msg_id, QqMsgIdCache};
@@ -199,7 +200,7 @@ pub fn flush_qq_channel_sends<H: ChannelHttpClient>(
     while let Ok((chat_id, content, req_id)) = rx.try_recv() {
         let msg_id = pop_msg_id(&cache, &chat_id);
         if let Err(e) = send_one_qq(http, &token, &chat_id, &content, msg_id.as_deref()) {
-            crate::metrics::record_channel_http_result(false);
+            record_outbound_http_failure(&e);
             log::warn!(
                 "[qq_flush] req_id={} send failed for chat_id={}: {}",
                 req_id.as_deref().unwrap_or("-"),
@@ -207,7 +208,7 @@ pub fn flush_qq_channel_sends<H: ChannelHttpClient>(
                 e
             );
         } else {
-            crate::metrics::record_channel_http_result(true);
+            record_outbound_http_success();
         }
     }
 }
@@ -288,7 +289,7 @@ where
         match send_one_qq(h, &token, chat_id, content, msg_id.as_deref()) {
             Ok(()) => {
                 crate::orchestrator::record_channel_result_pub("qq_channel", true);
-                crate::metrics::record_channel_http_result(true);
+                record_outbound_http_success();
                 log::info!(
                     "[latency][qq_sender] req_id={} chat_id={} attempt={} token_wait_ms={} http_send_ms={} total_ms={} status=ok",
                     req_id.as_deref().unwrap_or("-"),
@@ -302,7 +303,7 @@ where
             }
             Err(ref e) => {
                 crate::orchestrator::record_channel_result_pub("qq_channel", false);
-                crate::metrics::record_channel_http_result(false);
+                record_outbound_http_failure(e);
                 log::warn!(
                     "[{}] req_id={} send failed (attempt {}): {} chat_id={} token_wait_ms={} http_send_ms={} total_ms={}",
                     TAG,

@@ -2,8 +2,9 @@
 //! 仅支持自定义机器人 Webhook（不加签）；单条按 4096 字符分片。Sink 统一为 dispatch::QueuedSink。
 
 use crate::channels::send::{
-    ensure_sender_http, feed_sender_loop_wdt, log_sender_drop, recv_sender_loop_event,
-    sleep_sender_retry_delay, start_sender_loop, SenderLoopEvent, CHANNEL_SENDER_MAX_RETRIES,
+    ensure_sender_http, feed_sender_loop_wdt, log_sender_drop, record_outbound_http_failure,
+    record_outbound_http_success, recv_sender_loop_event, sleep_sender_retry_delay,
+    start_sender_loop, SenderLoopEvent, CHANNEL_SENDER_MAX_RETRIES,
 };
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
@@ -88,7 +89,10 @@ pub fn flush_dingtalk_sends<H: ChannelHttpClient>(
     }
     while let Ok((_chat_id, content, _req_id)) = rx.try_recv() {
         if let Err(error) = send_one_dingtalk(http, webhook_url, &content) {
+            record_outbound_http_failure(&error);
             log::warn!("[dingtalk_flush] send failed: {}", error);
+        } else {
+            record_outbound_http_success();
         }
     }
 }
@@ -128,9 +132,9 @@ pub fn run_dingtalk_sender_loop<H, F>(
                 continue;
             };
             match send_one_dingtalk(h, webhook_url, &content) {
-                Ok(()) => crate::metrics::record_channel_http_result(true),
+                Ok(()) => record_outbound_http_success(),
                 Err(error) => {
-                    crate::metrics::record_channel_http_result(false);
+                    record_outbound_http_failure(&error);
                     log::warn!("[{}] send failed (attempt {}): {}", TAG, retry + 1, error);
                     http = None;
                     continue;
@@ -138,11 +142,11 @@ pub fn run_dingtalk_sender_loop<H, F>(
             }
             while let Ok((_, cnt, _)) = rx.try_recv() {
                 if let Err(error) = send_one_dingtalk(h, webhook_url, &cnt) {
-                    crate::metrics::record_channel_http_result(false);
+                    record_outbound_http_failure(&error);
                     log::warn!("[{}] drain send failed: {}", TAG, error);
                     break;
                 }
-                crate::metrics::record_channel_http_result(true);
+                record_outbound_http_success();
             }
             sent = true;
             break;

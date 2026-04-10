@@ -347,29 +347,15 @@ pub fn observe_runtime_capabilities_from_platform(
         observed_at_secs: now_secs,
         recovery_hint: None,
     });
-    let outbound_online = match platform.memory_system_kind() {
+    let outbound_transport_ready = match platform.memory_system_kind() {
         MemorySystemKind::LinuxFull => outbound_http_client_ready,
         MemorySystemKind::EspCompact => {
             outbound_http_client_ready && crate::state::wifi_sta_connected()
         }
     };
-    update_runtime_capability(RuntimeCapabilityUpdate {
-        id: RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
-        status: if outbound_online {
-            RuntimeCapabilityStatus::Online
-        } else {
-            RuntimeCapabilityStatus::Offline
-        },
-        reason: if outbound_online {
-            RuntimeCapabilityReason::Nominal
-        } else if outbound_http_client_ready {
-            RuntimeCapabilityReason::UpstreamUnavailable
-        } else {
-            RuntimeCapabilityReason::RuntimeNotInitialized
-        },
-        observed_at_secs: now_secs,
-        recovery_hint: None,
-    });
+    let mut outbound_update = resolve_outbound_http_capability_update(outbound_transport_ready);
+    outbound_update.observed_at_secs = now_secs;
+    update_runtime_capability(outbound_update);
     if let Some(storage_ready) = storage_state_fs_ready {
         update_runtime_capability(RuntimeCapabilityUpdate {
             id: RUNTIME_CAPABILITY_STORAGE_STATE_FS,
@@ -386,6 +372,38 @@ pub fn observe_runtime_capabilities_from_platform(
             observed_at_secs: now_secs,
             recovery_hint: None,
         });
+    }
+}
+
+fn resolve_outbound_http_capability_update(
+    outbound_transport_ready: bool,
+) -> RuntimeCapabilityUpdate {
+    let prior = get_runtime_capability(RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP);
+    let (status, reason) = if !outbound_transport_ready {
+        (
+            RuntimeCapabilityStatus::Offline,
+            RuntimeCapabilityReason::RuntimeNotInitialized,
+        )
+    } else if prior.is_some_and(|state| {
+        state.status == RuntimeCapabilityStatus::Offline
+            && state.reason == RuntimeCapabilityReason::UpstreamUnavailable
+    }) {
+        (
+            RuntimeCapabilityStatus::Offline,
+            RuntimeCapabilityReason::UpstreamUnavailable,
+        )
+    } else {
+        (
+            RuntimeCapabilityStatus::Online,
+            RuntimeCapabilityReason::Nominal,
+        )
+    };
+    RuntimeCapabilityUpdate {
+        id: RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
+        status,
+        reason,
+        observed_at_secs: 0,
+        recovery_hint: None,
     }
 }
 
@@ -476,5 +494,22 @@ mod tests {
         let third = get_runtime_capability(RUNTIME_CAPABILITY_AUDIO_OUTPUT).expect("state");
         assert_eq!(third.epoch, 2);
         assert_eq!(third.status, RuntimeCapabilityStatus::Online);
+    }
+
+    #[test]
+    fn outbound_http_platform_refresh_keeps_upstream_failure_until_real_success() {
+        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        reset_runtime_capabilities_for_tests();
+        update_runtime_capability(RuntimeCapabilityUpdate {
+            id: RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
+            status: RuntimeCapabilityStatus::Offline,
+            reason: RuntimeCapabilityReason::UpstreamUnavailable,
+            observed_at_secs: 10,
+            recovery_hint: None,
+        });
+
+        let next = resolve_outbound_http_capability_update(true);
+        assert_eq!(next.status, RuntimeCapabilityStatus::Offline);
+        assert_eq!(next.reason, RuntimeCapabilityReason::UpstreamUnavailable);
     }
 }

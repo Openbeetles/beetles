@@ -3,6 +3,7 @@
 //! 与 HTTP webhook 可并存，由 main 按配置决定是否 spawn。
 
 use crate::bus::PcMsg;
+use crate::channels::send::{record_outbound_http_failure, record_outbound_http_success};
 use crate::channels::wss_gateway::{
     run_wss_gateway_loop, WssConnection, WssGatewayDriver, WssRecvAction, WssSessionState,
 };
@@ -90,21 +91,23 @@ fn get_gateway_url<H: ChannelHttpClient + ?Sized>(http: &mut H, token: &str) -> 
     let (status, resp_body) = match http.http_get_with_headers(QQ_GATEWAY_URL, &headers) {
         Ok(resp) => resp,
         Err(e) => {
-            crate::metrics::record_channel_http_result(false);
-            return Err(Error::Other {
+            let error = Error::Other {
                 source: Box::new(e),
                 stage: "qq_ws_gateway",
-            });
+            };
+            record_outbound_http_failure(&error);
+            return Err(error);
         }
     };
     if status >= 400 {
-        crate::metrics::record_channel_http_result(false);
-        return Err(Error::Http {
+        let error = Error::Http {
             status_code: status,
             stage: "qq_ws_gateway",
-        });
+        };
+        record_outbound_http_failure(&error);
+        return Err(error);
     }
-    crate::metrics::record_channel_http_result(true);
+    record_outbound_http_success();
     #[derive(serde::Deserialize)]
     struct GatewayResp {
         url: Option<String>,

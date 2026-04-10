@@ -120,17 +120,13 @@ pub(crate) fn heartbeat_tick(
             .unwrap_or(0);
         let (s_used, s_total, state_fs_ready) = storage_usage_kb(platform);
         crate::orchestrator::update_session_storage(sess_count, s_used, s_total);
-        let outbound_ready = crate::orchestrator::get_runtime_capability(
-            crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
-        )
-        .is_some_and(|state| {
-            state.status != crate::orchestrator::RuntimeCapabilityStatus::Offline
-                || state.reason
-                    != crate::orchestrator::RuntimeCapabilityReason::RuntimeNotInitialized
-        });
+        let outbound_transport_ready = match platform.memory_system_kind() {
+            crate::memory::MemorySystemKind::LinuxFull => true,
+            crate::memory::MemorySystemKind::EspCompact => crate::state::wifi_sta_connected(),
+        };
         crate::orchestrator::observe_runtime_capabilities_from_platform(
             platform,
-            outbound_ready,
+            outbound_transport_ready,
             Some(state_fs_ready),
         );
     }

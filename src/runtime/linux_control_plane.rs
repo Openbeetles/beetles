@@ -311,21 +311,55 @@ fn linux_max_body_bytes(path: &str, method: &str) -> usize {
 mod tests {
     use super::{build_router_env, dispatch};
     use crate::config::AppConfig;
+    use crate::error::Result;
     use crate::platform::http_server::handlers::{ControlPlaneRouteContract, HandlerContext};
     use crate::platform::http_server::router::IncomingRequest;
-    use crate::platform::Platform;
+    use crate::platform::{ConfigStore, Platform};
     use serde_json::Value;
+    use std::collections::HashMap;
     use std::sync::atomic::AtomicUsize;
-    use std::sync::{Arc, RwLock};
+    use std::sync::{Arc, Mutex, RwLock};
+
+    #[derive(Default)]
+    struct TestConfigStore {
+        values: Mutex<HashMap<String, String>>,
+    }
+
+    impl ConfigStore for TestConfigStore {
+        fn read_string(&self, key: &str) -> Result<Option<String>> {
+            Ok(self
+                .values
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(key)
+                .cloned())
+        }
+
+        fn write_string(&self, key: &str, value: &str) -> Result<()> {
+            self.values
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(key.to_string(), value.to_string());
+            Ok(())
+        }
+
+        fn erase_keys(&self, keys: &[&str]) -> Result<()> {
+            let mut values = self
+                .values
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            for key in keys {
+                values.remove(*key);
+            }
+            Ok(())
+        }
+    }
 
     fn build_test_context() -> (HandlerContext, super::RouterEnv) {
         let config = AppConfig::load_from_env();
         let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
-        crate::platform::pairing::clear_code(platform.config_store().as_ref()).unwrap();
-        assert!(
-            crate::platform::pairing::set_code(platform.config_store().as_ref(), "123456",)
-                .unwrap()
-        );
+        let config_store: Arc<dyn ConfigStore + Send + Sync> = Arc::new(TestConfigStore::default());
+        assert!(crate::platform::pairing::set_code(config_store.as_ref(), "123456",).unwrap());
 
         let skill_storage = platform.skill_storage();
         let skill_meta_store = platform.skill_meta_store();
@@ -344,13 +378,13 @@ mod tests {
                 long_term_memory_store: platform.long_term_memory_store(),
                 turn_ledger_store: platform.turn_ledger_store(),
                 private_garden_store: platform.private_garden_store(),
-                config_store: platform.config_store(),
+                config_store: Arc::clone(&config_store),
             },
         );
         let channel_capability_registry =
             Arc::new(crate::build_channel_capability_registry(&config, false));
         let ctx = HandlerContext {
-            config_store: platform.config_store(),
+            config_store,
             config_file_store: Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(
                 &platform,
             ))),
@@ -419,6 +453,20 @@ mod tests {
 
         let skills = dispatch(&ctx, &router_env, request("GET", "/api/skills")).expect("skills");
         assert_eq!(skills.status, 200);
+    }
+
+    #[test]
+    fn build_test_context_keeps_activation_isolated_between_contexts() {
+        let (ctx_a, router_env_a) = build_test_context();
+        let (ctx_b, router_env_b) = build_test_context();
+
+        crate::platform::pairing::clear_code(ctx_a.config_store.as_ref()).unwrap();
+
+        let blocked = dispatch(&ctx_a, &router_env_a, request("GET", "/api/tools")).expect("ctx_a");
+        assert_eq!(blocked.status, 401);
+
+        let allowed = dispatch(&ctx_b, &router_env_b, request("GET", "/api/tools")).expect("ctx_b");
+        assert_eq!(allowed.status, 200);
     }
 
     #[test]

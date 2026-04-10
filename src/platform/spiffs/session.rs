@@ -83,6 +83,49 @@ struct SessionFileSnapshot {
     needs_repair: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct SessionAppendState {
+    message_count: usize,
+    has_data: bool,
+    ends_with_newline: bool,
+}
+
+impl SessionAppendState {
+    fn from_snapshot(snapshot: &SessionFileSnapshot, write_header: bool) -> Self {
+        if snapshot.needs_repair {
+            let has_data = write_header || snapshot.message_count > 0;
+            return Self {
+                message_count: snapshot.message_count,
+                has_data,
+                ends_with_newline: has_data,
+            };
+        }
+        Self {
+            message_count: snapshot.message_count,
+            has_data: snapshot.has_data,
+            ends_with_newline: snapshot.ends_with_newline,
+        }
+    }
+
+    fn from_rewritten_body(message_count: usize, body: &str) -> Self {
+        let has_data = !body.is_empty();
+        Self {
+            message_count,
+            has_data,
+            ends_with_newline: has_data,
+        }
+    }
+
+    fn after_appending(self, appended_messages: usize) -> Self {
+        let has_data = self.has_data || appended_messages > 0;
+        Self {
+            message_count: self.message_count.saturating_add(appended_messages),
+            has_data,
+            ends_with_newline: has_data,
+        }
+    }
+}
+
 fn parse_jsonl_line(line: &str) -> ParsedJsonlLine {
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') {
@@ -374,7 +417,7 @@ const RECENT_CACHE_CHAT_LIMIT: usize = 16;
 /// SessionStore 的 SPIFFS 实现；单会话最多 MAX_SESSION_ENTRIES 条，超限淘汰最旧。
 /// Counts are cached in-process so the hot append path only writes the JSONL body.
 pub struct SpiffsSessionStore {
-    counts: Mutex<HashMap<String, usize>>,
+    counts: Mutex<HashMap<String, SessionAppendState>>,
     chat_ids: Mutex<Option<Vec<String>>>,
     recent: Mutex<HashMap<String, VecDeque<SessionMessage>>>,
 }
@@ -502,16 +545,24 @@ impl SessionStore for SpiffsSessionStore {
             let mut recent_cache = self.recent.lock().unwrap_or_else(|e| e.into_inner());
             let (msg_count, existing_has_data, existing_ends_with_newline, existing_messages) =
                 match counts.get(chat_id).copied() {
-                    Some(count) => (count, false, true, None),
+                    Some(state) => (
+                        state.message_count,
+                        state.has_data,
+                        state.ends_with_newline,
+                        None,
+                    ),
                     None => {
                         let snapshot =
                             load_session_snapshot_unlocked(&path, chat_id, write_header)?;
-                        let count = snapshot.message_count;
-                        let has_data = snapshot.has_data;
-                        let ends_with_newline = snapshot.ends_with_newline || snapshot.needs_repair;
+                        let state = SessionAppendState::from_snapshot(&snapshot, write_header);
                         let messages = snapshot.messages;
-                        counts.insert(chat_id.to_string(), count);
-                        (count, has_data, ends_with_newline, Some(messages))
+                        counts.insert(chat_id.to_string(), state);
+                        (
+                            state.message_count,
+                            state.has_data,
+                            state.ends_with_newline,
+                            Some(messages),
+                        )
                     }
                 };
             if msg_count.saturating_add(new_messages.len()) <= MAX_SESSION_ENTRIES {
@@ -533,7 +584,12 @@ impl SessionStore for SpiffsSessionStore {
                 }
                 counts.insert(
                     chat_id.to_string(),
-                    msg_count.saturating_add(new_messages.len()),
+                    SessionAppendState {
+                        message_count: msg_count,
+                        has_data: existing_has_data,
+                        ends_with_newline: existing_ends_with_newline,
+                    }
+                    .after_appending(new_messages.len()),
                 );
                 drop(recent_cache);
                 drop(counts);
@@ -563,7 +619,10 @@ impl SessionStore for SpiffsSessionStore {
             let body = build_session_body(chat_id, write_header, messages.iter())?;
             write_session_body_unlocked(&path, body.as_bytes())?;
             Self::upsert_recent_cache(&mut recent_cache, chat_id, messages.clone());
-            counts.insert(chat_id.to_string(), messages.len());
+            counts.insert(
+                chat_id.to_string(),
+                SessionAppendState::from_rewritten_body(messages.len(), &body),
+            );
             drop(recent_cache);
             drop(counts);
             self.note_chat_id_present(chat_id);
@@ -622,12 +681,15 @@ impl SessionStore for SpiffsSessionStore {
             .get(chat_id)
             .copied()
         {
-            return Ok(count);
+            return Ok(count.message_count);
         }
         with_fs_lock(|| {
             let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
             let snapshot = load_session_snapshot_unlocked(&path, chat_id, write_header)?;
-            counts.insert(chat_id.to_string(), snapshot.message_count);
+            counts.insert(
+                chat_id.to_string(),
+                SessionAppendState::from_snapshot(&snapshot, write_header),
+            );
             Ok(snapshot.message_count)
         })
     }
@@ -645,7 +707,14 @@ impl SessionStore for SpiffsSessionStore {
         self.counts
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(chat_id.to_string(), 0);
+            .insert(
+                chat_id.to_string(),
+                SessionAppendState {
+                    message_count: 0,
+                    has_data: write_header,
+                    ends_with_newline: write_header,
+                },
+            );
         self.recent
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -733,7 +802,11 @@ impl SessionStore for SpiffsSessionStore {
 
 #[cfg(test)]
 mod tests {
-    use super::scan_session_file;
+    use super::{
+        scan_session_file, session_path, write_session_body_unlocked, SessionAppendState,
+        SpiffsSessionStore,
+    };
+    use crate::memory::{SessionMessage, SessionStore};
 
     #[test]
     fn counts_only_message_lines() {
@@ -754,5 +827,56 @@ mod tests {
         assert_eq!(snapshot.message_count, 1);
         assert!(snapshot.needs_repair);
         assert_eq!(snapshot.malformed_lines, 2);
+    }
+
+    #[test]
+    fn append_batch_preserves_newline_when_fast_path_cache_is_already_warm() {
+        let store = SpiffsSessionStore::new();
+        let chat_id = format!("append-cache-{}", std::process::id());
+        let (path, _) = session_path(&chat_id).expect("path");
+        let _ = std::fs::remove_file(&path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("sessions dir");
+        }
+
+        let first = SessionMessage {
+            role: "user".to_string(),
+            content: "hello".to_string(),
+        };
+        let second = SessionMessage {
+            role: "assistant".to_string(),
+            content: "world".to_string(),
+        };
+        let first_line = serde_json::to_string(&first).expect("line");
+        let second_line = serde_json::to_string(&second).expect("line");
+
+        write_session_body_unlocked(&path, first_line.as_bytes()).expect("seed file");
+        store
+            .counts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                chat_id.clone(),
+                SessionAppendState {
+                    message_count: 1,
+                    has_data: true,
+                    ends_with_newline: false,
+                },
+            );
+
+        store
+            .append_batch(&chat_id, std::slice::from_ref(&second))
+            .expect("append");
+
+        let raw = std::fs::read(&path).expect("read");
+        assert_eq!(
+            String::from_utf8_lossy(&raw),
+            format!("{first_line}\n{second_line}\n")
+        );
+        let snapshot = scan_session_file(&raw);
+        assert_eq!(snapshot.message_count, 2);
+        assert_eq!(snapshot.malformed_lines, 0);
+
+        let _ = std::fs::remove_file(&path);
     }
 }

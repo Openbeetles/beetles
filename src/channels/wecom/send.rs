@@ -2,8 +2,9 @@
 //! 鉴权 GET gettoken，发送 POST message/send；text 按 2048 字节分片（官方限制）。Sink 统一为 dispatch::QueuedSink。
 
 use crate::channels::send::{
-    ensure_sender_http, feed_sender_loop_wdt, log_sender_drop, recv_sender_loop_event,
-    sleep_sender_retry_delay, start_sender_loop, SenderLoopEvent, CHANNEL_SENDER_MAX_RETRIES,
+    ensure_sender_http, feed_sender_loop_wdt, log_sender_drop, record_outbound_http_failure,
+    record_outbound_http_success, recv_sender_loop_event, sleep_sender_retry_delay,
+    start_sender_loop, SenderLoopEvent, CHANNEL_SENDER_MAX_RETRIES,
 };
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
@@ -291,11 +292,14 @@ pub fn flush_wecom_sends<H: ChannelHttpClient>(
             default_touser,
             &content,
         ) {
+            record_outbound_http_failure(&error);
             log::warn!(
                 "[wecom_flush] send failed for chat_id={}: {}",
                 chat_id,
                 error
             );
+        } else {
+            record_outbound_http_success();
         }
     }
 }
@@ -383,9 +387,9 @@ pub fn run_wecom_sender_loop<H, F>(
                 continue;
             };
             match send_one_wecom(h, &token, agent_id_u32, &chat_id, default_touser, &content) {
-                Ok(()) => crate::metrics::record_channel_http_result(true),
+                Ok(()) => record_outbound_http_success(),
                 Err(error) => {
-                    crate::metrics::record_channel_http_result(false);
+                    record_outbound_http_failure(&error);
                     log::warn!(
                         "[{}] send failed (attempt {}), chat_id={}: {}",
                         TAG,
@@ -402,11 +406,11 @@ pub fn run_wecom_sender_loop<H, F>(
                 if let Err(error) =
                     send_one_wecom(h, &token, agent_id_u32, &cid, default_touser, &cnt)
                 {
-                    crate::metrics::record_channel_http_result(false);
+                    record_outbound_http_failure(&error);
                     log::warn!("[{}] drain send failed for chat_id={}: {}", TAG, cid, error);
                     break;
                 }
-                crate::metrics::record_channel_http_result(true);
+                record_outbound_http_success();
             }
             sent = true;
             break;

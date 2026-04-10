@@ -542,8 +542,9 @@ fn query_param_from_uri(uri: &str, key: &str) -> Option<String> {
 mod tests {
     use super::body;
     use crate::config::AppConfig;
+    use crate::error::{Error, Result};
     use crate::memory::{ExecutionState, ExecutionStatus, SelfAuthoredCore};
-    use crate::platform::Platform;
+    use crate::platform::{Platform, SkillStorage};
     use crate::task_execution::{
         build_task_run_record, TaskArtifact, TaskArtifactKind, TaskArtifactRecord,
         TaskExecutionLedgerEntry, TaskExecutionRoute, TaskLearningCandidateState, TaskLearningKind,
@@ -551,8 +552,52 @@ mod tests {
         TaskPlannerStepDraft, TaskRunStatus,
     };
     use serde_json::Value;
+    use std::collections::HashMap;
     use std::sync::Arc;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[derive(Default)]
+    struct TestSkillStorage {
+        files: Mutex<HashMap<String, Vec<u8>>>,
+    }
+
+    impl SkillStorage for TestSkillStorage {
+        fn list_names(&self) -> Result<Vec<String>> {
+            Ok(self
+                .files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .keys()
+                .cloned()
+                .collect())
+        }
+
+        fn read(&self, name: &str) -> Result<Vec<u8>> {
+            self.files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(name)
+                .cloned()
+                .ok_or_else(|| Error::config("skill", "missing"))
+        }
+
+        fn write(&self, name: &str, content: &[u8]) -> Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(name.to_string(), content.to_vec());
+            Ok(())
+        }
+
+        fn remove(&self, name: &str) -> Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(name);
+            Ok(())
+        }
+    }
 
     #[test]
     fn memory_status_api_returns_structured_operator_snapshot() {
@@ -915,7 +960,7 @@ mod tests {
     fn memory_status_api_includes_learning_summary_and_metrics() {
         let ctx = build_test_context();
         let unique = unique_suffix();
-        let now_secs = crate::util::current_unix_secs();
+        let now_secs: u64 = 4_102_444_800;
         let topic = format!("release_patch_flow_{unique}");
         let skill_name = format!("runtime_skill__{topic}");
 
@@ -994,6 +1039,28 @@ mod tests {
             .any(|item| item["name"] == skill_name
                 && item["validated_success_count"] == 1
                 && item["last_outcome_note"] == "final_answer"));
+    }
+
+    #[test]
+    fn build_test_context_uses_isolated_runtime_skill_storage() {
+        let ctx_a = build_test_context();
+        let ctx_b = build_test_context();
+        let unique = unique_suffix();
+        let skill_name = format!("runtime_skill__isolation_{unique}");
+
+        crate::skills::write_skill(
+            ctx_a.skill_storage.as_ref(),
+            &skill_name,
+            "## isolated\nonly visible in ctx_a",
+        )
+        .unwrap();
+
+        assert!(
+            crate::skills::get_skill_content(ctx_a.skill_storage.as_ref(), &skill_name).is_some()
+        );
+        assert!(
+            crate::skills::get_skill_content(ctx_b.skill_storage.as_ref(), &skill_name).is_none()
+        );
     }
 
     #[test]
@@ -1201,6 +1268,8 @@ mod tests {
     fn build_test_context() -> crate::platform::http_server::handlers::HandlerContext {
         let config = AppConfig::load_from_env();
         let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
+        let skill_storage: Arc<dyn SkillStorage + Send + Sync> =
+            Arc::new(TestSkillStorage::default());
         let (registry, _) = crate::tools::build_default_registry(
             &config,
             crate::tools::DefaultRegistryDeps {
@@ -1216,7 +1285,6 @@ mod tests {
         );
         let channel_capability_registry =
             Arc::new(crate::build_channel_capability_registry(&config, false));
-        let skill_storage = platform.skill_storage();
         let skill_meta_store = platform.skill_meta_store();
         let skill_prompt_cache = Arc::new(crate::skills::SkillPromptCache::new(
             Arc::clone(&skill_meta_store),
