@@ -12,27 +12,14 @@ pub struct OperatorStatusInput<'a> {
     pub config: &'a crate::config::AppConfig,
     pub platform: &'a dyn Platform,
     pub tool_registry: &'a ToolRegistry,
-    pub inbound_depth: usize,
-    pub outbound_depth: usize,
-    pub version: &'a str,
-    pub board_id: &'a str,
 }
 
 #[derive(Debug, Serialize)]
 pub struct OperatorPlatformContract {
-    pub board_id: String,
-    pub firmware_version: String,
     pub memory_system_kind: String,
-    pub wifi_connected: bool,
     pub config_plane_active: bool,
-    pub display_available: bool,
     pub wifi_scan_available: bool,
     pub hardware_discovery_available: bool,
-    pub ota_supported: bool,
-    pub audio_duplex_profile: String,
-    pub storage_media_count: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub storage_media_error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -40,9 +27,6 @@ pub struct OperatorStatusSnapshot {
     pub platform_contract: OperatorPlatformContract,
     pub build_package: crate::BuildPackageSnapshot,
     pub operator_surface: crate::platform::operator_surface::OperatorSurfaceBudget,
-    pub inbound_depth: usize,
-    pub outbound_depth: usize,
-    pub last_error: String,
     pub threads: runtime::ThreadRegistrySnapshot,
     pub os_closure: runtime::BeetleOsClosureReport,
     pub initiative: runtime::InitiativeSnapshot,
@@ -75,16 +59,6 @@ pub fn build_operator_status(
     } else {
         input.tool_registry.inspect_execution_governance()?
     };
-    let storage_media = input.platform.storage_media();
-    let (storage_media_count, storage_media_error) = match storage_media {
-        Ok(items) => (items.len(), None),
-        Err(error) => (0, Some(error.to_string())),
-    };
-    let audio_caps = if crate::compiled_voice_capability() {
-        input.platform.audio_duplex_capabilities()
-    } else {
-        crate::platform::AudioDuplexCapabilities::unavailable()
-    };
     let capability_planes = build_device_capability_snapshots(input.config, input.platform);
     let presence = runtime::inspect_platform_presence(input.platform, current_unix_secs());
     let initiative = runtime::inspect_platform_initiative(input.platform, current_unix_secs());
@@ -97,24 +71,13 @@ pub fn build_operator_status(
     let release = presence.release.clone();
     Ok(OperatorStatusSnapshot {
         platform_contract: OperatorPlatformContract {
-            board_id: input.board_id.to_string(),
-            firmware_version: input.version.to_string(),
             memory_system_kind: memory_system_kind.as_str().to_string(),
-            wifi_connected: crate::state::wifi_sta_connected(),
             config_plane_active: crate::state::config_plane_active(),
-            display_available: input.platform.display_available(),
             wifi_scan_available: input.platform.wifi_scan().is_some(),
             hardware_discovery_available: input.platform.hardware_discovery().is_some(),
-            ota_supported: cfg!(feature = "ota"),
-            audio_duplex_profile: audio_caps.profile().as_str().to_string(),
-            storage_media_count,
-            storage_media_error,
         },
         build_package: crate::current_build_package(),
         operator_surface,
-        inbound_depth: input.inbound_depth,
-        outbound_depth: input.outbound_depth,
-        last_error: crate::state::get_current_error().unwrap_or_else(|| "none".to_string()),
         threads: runtime::thread_registry::snapshot(),
         os_closure,
         initiative,
@@ -143,24 +106,14 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
         snapshot.build_package.capabilities.sensor,
     ));
     out.push_str(&format!(
-        "  board_id: {}\n  firmware_version: {}\n  memory_system_kind: {}\n  wifi_connected: {}\n  config_plane_active: {}\n  display_available: {}\n  wifi_scan_available: {}\n  hardware_discovery_available: {}\n  ota_supported: {}\n  audio_duplex_profile: {}\n  storage_media_count: {}\n  operator_surface_compact: {}\n  operator_window_required: {}\n",
-        snapshot.platform_contract.board_id,
-        snapshot.platform_contract.firmware_version,
+        "  memory_system_kind: {}\n  config_plane_active: {}\n  wifi_scan_available: {}\n  hardware_discovery_available: {}\n  operator_surface_compact: {}\n  operator_window_required: {}\n",
         snapshot.platform_contract.memory_system_kind,
-        snapshot.platform_contract.wifi_connected,
         snapshot.platform_contract.config_plane_active,
-        snapshot.platform_contract.display_available,
         snapshot.platform_contract.wifi_scan_available,
         snapshot.platform_contract.hardware_discovery_available,
-        snapshot.platform_contract.ota_supported,
-        snapshot.platform_contract.audio_duplex_profile,
-        snapshot.platform_contract.storage_media_count,
         snapshot.operator_surface.compact_view,
         snapshot.operator_surface.window_required_for_deep_routes,
     ));
-    if let Some(error) = snapshot.platform_contract.storage_media_error.as_deref() {
-        out.push_str(&format!("  storage_media_error: {}\n", error));
-    }
     if let Some(window) = snapshot.operator_surface.operator_window.as_ref() {
         out.push_str(&format!(
             "  operator_window_active: {}\n  operator_window_remaining_secs: {}\n",
@@ -168,10 +121,7 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
         ));
     }
     out.push_str(&format!(
-        "  inbound_depth: {}\n  outbound_depth: {}\n  last_error: {}\n  presence_state: {}\n  presence_headline: {}\n  presence_rationale: {}\n  initiative_action: {}\n  initiative_ready: {}\n  initiative_rationale: {}\n  runtime_mode: {}\n  soul_kernel_ready: {}\n  soul_kernel_safe_mode_readable: {}\n  soul_kernel_degraded: {}\n  soul_kernel_key_memory: {}\n",
-        snapshot.inbound_depth,
-        snapshot.outbound_depth,
-        snapshot.last_error,
+        "  presence_state: {}\n  presence_headline: {}\n  presence_rationale: {}\n  initiative_action: {}\n  initiative_ready: {}\n  initiative_rationale: {}\n  runtime_mode: {}\n  soul_kernel_ready: {}\n  soul_kernel_safe_mode_readable: {}\n  soul_kernel_degraded: {}\n  soul_kernel_key_memory: {}\n",
         snapshot.presence.state.as_str(),
         snapshot.presence.headline,
         snapshot.presence.rationale,
@@ -299,10 +249,6 @@ mod tests {
             config: &config,
             platform: platform.as_ref(),
             tool_registry: &tool_registry,
-            inbound_depth: 0,
-            outbound_depth: 0,
-            version: "0.0.0",
-            board_id: "test-board",
         })
         .expect("operator status");
 

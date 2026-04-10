@@ -262,7 +262,7 @@
 - **用途**：返回 memory operator 视图，聚合记忆存储、人格连续性、continuity tooling、task learning / execution，以及按会话下钻的 deep inspection。
 - **鉴权**：已激活；GET **不必**附带配对码。
 - **响应**：200，JSON 对象，顶层包含 `memory_system_kind`、`memory_len`、`soul_len`、`user_len`、`long_term_count`、`continuity_capsule_count`、`stores`、`personality`、`continuity_tooling`、`continuity_capsules`、`task_execution`、`learning`，以及可选的 `inspection`。
-- **职责边界**：该接口**不再**承载资源队列或会话目录职责；`inbound_depth` / `outbound_depth` 归 `GET /api/resource`，session 数量与目录明细归 `GET /api/sessions`。
+- **职责**：该接口返回内存与会话学习相关的 operator 视图；队列深度看 `GET /api/resource`，会话列表与明细看 `GET /api/sessions`。
 
 ### GET /api/tools
 
@@ -320,25 +320,29 @@
 
 ### GET /api/health
 
-- **用途**：返回一份完整的健康状态，和 CLI 的 `health` 命令看到的是同一类信息。
+- **用途**：返回轻量健康摘要，供首页与状态卡片直接读取。
 - **鉴权**：已激活；GET **不必**附带配对码。
-- **响应**：200，JSON 示例（字段与 serde 结构体一致；`metrics` 计数器字段名为 `messages_in` 等）：
+- **响应**：200，JSON 示例（字段与 serde 结构体一致）：
   ```json
   {
     "wifi": "connected",
-    "inbound_depth": 0,
-    "outbound_depth": 0,
     "last_error": "none",
-    "metrics": { "messages_in": 0, "messages_out": 0 },
-    "resource": { "pressure": "Normal", "heap_largest_block_internal": 12345 }
+    "display": { "available": true },
+    "audio": {
+      "duplex_profile": "FullDuplex",
+      "duplex_capabilities": {
+        "input_available": true,
+        "output_available": true,
+        "full_duplex_available": true
+      }
+    }
   }
   ```
   - `wifi`：`"connected"` 或 `"disconnected"`。这里指的是设备有没有真正连上上游网络；如果你只是连着设备自己的热点，也可能显示 `disconnected`。
-  - `inbound_depth` / `outbound_depth`：入站/出站队列深度（数字）。
   - `last_error`：最近一次错误摘要（仅 stage/message，无密钥）；无则为 `"none"`。
-  - `metrics`：消息吞吐、模型请求、工具调用、发送情况、错误计数等统计信息。在 Linux 构建下，还会带 `wifi_reconnect_total`、`wifi_ap_restart_total`、`wifi_last_failure_stage` 等字段。
-  - `resource`：当前资源状态，比如压力等级、堆情况、队列深度和通道健康。`pressure` 的取值是 `"Normal"`、`"Cautious"` 或 `"Critical"`。
-  - **迁移提醒**：如果旧脚本还在读扁平字段，比如 `msg_in`，现在要改成 `metrics.messages_in` 这种嵌套字段。
+  - `display.available`：显示子系统是否可用。
+  - `audio.duplex_profile` / `audio.duplex_capabilities`：音频收放能力摘要。
+  - **职责边界**：该接口只保留轻量健康摘要；统计计数归 `GET /api/metrics`，资源/队列/预算归 `GET /api/resource`，设备身份摘要归 `GET /api/system_info`。
 
 ### GET /api/diagnose
 
@@ -359,6 +363,12 @@
   - `category`：`"storage"` 表示存储，`"channel"` 表示消息通道，`"config"` 表示基础配置和网络状态。
   - `message`：人类可读说明；`last_error` 摘要截断至 200 字符。
 
+### GET /api/operator/status
+
+- **用途**：返回 operator 面的宿主状态，用于观察 OS/runtime/host 合同、系统闭环、presence / initiative、runtime mode、soul kernel、runtime capabilities，以及 Linux 上的 supervisor / release。
+- **鉴权**：已激活；GET **不必**附带配对码。
+- **职责**：该接口返回 operator 面的运行态与宿主面信息；队列深度看 `GET /api/resource`，错误摘要看 `GET /api/health`，设备身份与存储介质看 `GET /api/system_info`。
+
 ### GET /api/metrics
 
 - **用途**：导出统计快照。默认返回 JSON；如果带 query **`format=prometheus`**，就返回 Prometheus 文本格式。
@@ -366,13 +376,15 @@
 
 ### GET /api/resource
 
-- **用途**：返回当前资源状态，内容和 `GET /api/health` 里的 `resource` 来自同一份快照。
+- **用途**：返回当前资源状态，聚焦运行压力、队列、会话、存储占用与运行预算。
 - **鉴权**：已激活；GET **不必**附带配对码。
+- **职责**：该接口返回资源、压力、队列、会话与运行预算；通道现场状态看 `GET /api/channel_connectivity`。
 
 ### GET /api/system_info
 
-- **用途**：返回系统信息和构建信息。
+- **用途**：返回设备摘要与构建信息。
 - **鉴权**：已激活；GET **不必**附带配对码。
+- **职责**：该接口返回设备身份与设备摘要；`wifi` / `last_error` 看 `GET /api/health`，`pressure` / 队列看 `GET /api/resource`。
 
 ### GET /api/channel_connectivity
 

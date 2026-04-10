@@ -1,6 +1,7 @@
 import type {
   HealthData,
   MetricsSnapshotData,
+  ResourceBudgetData,
   ResourceSnapshotData,
   SystemInfoData,
 } from "../api/endpoints/system";
@@ -8,9 +9,16 @@ import type { DeviceRuntimeKind } from "../store/deviceStatusStore";
 
 export interface HomeSummaryField {
   id:
+    | "product_name"
     | "board_id"
     | "hardware_model"
+    | "os_type"
+    | "kernel_version"
+    | "cpu_model"
+    | "cpu_cores"
     | "lan_ip"
+    | "storage_media"
+    | "storage_media_error"
     | "firmware_version"
     | "system_status"
     | "audio_duplex_profile"
@@ -19,7 +27,7 @@ export interface HomeSummaryField {
     | "current_time";
   labelKey: string;
   value: string | boolean;
-  valueKind: "text" | "boolean" | "audio_profile";
+  valueKind: "text" | "boolean" | "audio_profile" | "status_key";
 }
 
 export interface HomeMetricField {
@@ -28,12 +36,35 @@ export interface HomeMetricField {
   value: number;
 }
 
+export interface RuntimeStrategyBudgetField extends HomeMetricField {
+  valueKind: "bytes" | "seconds";
+}
+
+export interface RuntimeStrategyViewModel {
+  headlineKey: string;
+  summaryKey: string;
+  behaviorKeys: [string, string, string];
+  intensity: 1 | 2 | 3;
+  level: string | null;
+  budgetFields: RuntimeStrategyBudgetField[];
+}
+
+function summarizeStorageMedia(systemInfo: SystemInfoData | null): string | null {
+  if (systemInfo?.storage_media_error) return systemInfo.storage_media_error;
+  if (!systemInfo?.storage_media?.length) return null;
+  return systemInfo.storage_media
+    .map((item) => item.label || item.id)
+    .filter(Boolean)
+    .join(", ");
+}
+
 const FAULT_METRIC_DEFS = [
   { id: "errors_agent_router", labelKey: "device.systemStatusErrRouter" },
   { id: "errors_agent_context", labelKey: "device.systemStatusErrContext" },
   { id: "errors_tool_execute", labelKey: "device.systemStatusErrToolExec" },
   { id: "errors_llm_request", labelKey: "device.systemStatusErrLlmReq" },
   { id: "errors_llm_parse", labelKey: "device.systemStatusErrLlmParse" },
+  { id: "errors_channel_dispatch", labelKey: "device.systemStatusErrChDispatch" },
   { id: "llm_errors", labelKey: "device.systemStatusLlmErrors" },
   { id: "tool_errors", labelKey: "device.systemStatusToolErrors" },
   { id: "dispatch_send_fail", labelKey: "device.systemStatusDispatchFail" },
@@ -83,8 +114,17 @@ export function buildMemoryMetrics(
 export function buildDeviceSummaryFields(
   systemInfo: SystemInfoData | null,
   health: HealthData | null,
+  runtimeStatusKey?: string | null,
 ): HomeSummaryField[] {
   const items: HomeSummaryField[] = [];
+  if (systemInfo?.product_name) {
+    items.push({
+      id: "product_name",
+      labelKey: "device.deviceInfoProduct",
+      value: systemInfo.product_name,
+      valueKind: "text",
+    });
+  }
   if (systemInfo?.board_id) {
     items.push({
       id: "board_id",
@@ -101,11 +141,54 @@ export function buildDeviceSummaryFields(
       valueKind: "text",
     });
   }
+  if (systemInfo?.os_type) {
+    items.push({
+      id: "os_type",
+      labelKey: "device.deviceInfoOsType",
+      value: systemInfo.os_type,
+      valueKind: "text",
+    });
+  }
+  if (systemInfo?.kernel_version) {
+    items.push({
+      id: "kernel_version",
+      labelKey: "device.deviceInfoKernelVersion",
+      value: systemInfo.kernel_version,
+      valueKind: "text",
+    });
+  }
+  if (systemInfo?.cpu_model) {
+    items.push({
+      id: "cpu_model",
+      labelKey: "device.deviceInfoCpuModel",
+      value: systemInfo.cpu_model,
+      valueKind: "text",
+    });
+  }
+  if (systemInfo?.cpu_cores != null) {
+    items.push({
+      id: "cpu_cores",
+      labelKey: "device.deviceInfoCpuCores",
+      value: String(systemInfo.cpu_cores),
+      valueKind: "text",
+    });
+  }
   if (systemInfo?.lan_ip) {
     items.push({
       id: "lan_ip",
       labelKey: "device.deviceInfoLanIp",
       value: systemInfo.lan_ip,
+      valueKind: "text",
+    });
+  }
+  const storageMediaSummary = summarizeStorageMedia(systemInfo);
+  if (storageMediaSummary) {
+    items.push({
+      id: systemInfo?.storage_media_error ? "storage_media_error" : "storage_media",
+      labelKey: systemInfo?.storage_media_error
+        ? "device.deviceInfoStorageMediaError"
+        : "device.deviceInfoStorageMedia",
+      value: storageMediaSummary,
       valueKind: "text",
     });
   }
@@ -117,12 +200,12 @@ export function buildDeviceSummaryFields(
       valueKind: "text",
     });
   }
-  if (systemInfo?.system_status) {
+  if (runtimeStatusKey) {
     items.push({
       id: "system_status",
       labelKey: "device.deviceInfoStatus",
-      value: systemInfo.system_status,
-      valueKind: "text",
+      value: runtimeStatusKey,
+      valueKind: "status_key",
     });
   }
   if (health?.audio?.duplex_profile) {
@@ -178,6 +261,115 @@ export function buildFaultAndRecoveryMetrics(
     value: Number(metrics?.[id as keyof MetricsSnapshotData] ?? 0),
   }));
   return { faults, recovery };
+}
+
+export function buildDeviceOperationalStatusKey(
+  health: HealthData | null,
+  resource: ResourceSnapshotData | null,
+): string | null {
+  if (!health && !resource) return null;
+  if (health?.wifi === "disconnected") return "device.runtimeSummaryWifiDisconnected";
+  if (health?.last_error && health.last_error !== "none") {
+    return "device.runtimeSummaryError";
+  }
+  switch (resource?.pressure) {
+    case "Critical":
+      return "device.runtimeSummaryCritical";
+    case "Cautious":
+      return "device.runtimeSummaryCautious";
+    case "Normal":
+      return "device.runtimeSummaryHealthy";
+    default:
+      return "device.runtimeSummaryHealthy";
+  }
+}
+
+function buildRuntimeBudgetFields(
+  budget: ResourceBudgetData | undefined,
+): RuntimeStrategyBudgetField[] {
+  if (!budget) return [];
+  const items: RuntimeStrategyBudgetField[] = [];
+  if (budget.system_prompt_max != null) {
+    items.push({
+      id: "system_prompt_max",
+      labelKey: "device.systemStatusStrategyBudgetSystemPrompt",
+      value: budget.system_prompt_max,
+      valueKind: "bytes",
+    });
+  }
+  if (budget.messages_max != null) {
+    items.push({
+      id: "messages_max",
+      labelKey: "device.systemStatusStrategyBudgetMessages",
+      value: budget.messages_max,
+      valueKind: "bytes",
+    });
+  }
+  if (budget.response_body_max != null) {
+    items.push({
+      id: "response_body_max",
+      labelKey: "device.systemStatusStrategyBudgetResponseBody",
+      value: budget.response_body_max,
+      valueKind: "bytes",
+    });
+  }
+  if (budget.reconnect_backoff_secs != null) {
+    items.push({
+      id: "reconnect_backoff_secs",
+      labelKey: "device.systemStatusStrategyBudgetReconnect",
+      value: budget.reconnect_backoff_secs,
+      valueKind: "seconds",
+    });
+  }
+  return items;
+}
+
+export function buildRuntimeStrategyView(
+  resource: ResourceSnapshotData | null,
+): RuntimeStrategyViewModel | null {
+  if (!resource?.pressure || !resource.budget) return null;
+  switch (resource.pressure) {
+    case "Critical":
+      return {
+        headlineKey: "device.systemStatusStrategyCritical",
+        summaryKey: "device.systemStatusStrategyHintCritical",
+        behaviorKeys: [
+          "device.systemStatusStrategyBehaviorCriticalReplies",
+          "device.systemStatusStrategyBehaviorCriticalTools",
+          "device.systemStatusStrategyBehaviorCriticalReconnect",
+        ],
+        intensity: 3,
+        level: resource.budget.level ?? resource.pressure,
+        budgetFields: buildRuntimeBudgetFields(resource.budget),
+      };
+    case "Cautious":
+      return {
+        headlineKey: "device.systemStatusStrategyCautious",
+        summaryKey: "device.systemStatusStrategyHintCautious",
+        behaviorKeys: [
+          "device.systemStatusStrategyBehaviorCautiousReplies",
+          "device.systemStatusStrategyBehaviorCautiousTools",
+          "device.systemStatusStrategyBehaviorCautiousReconnect",
+        ],
+        intensity: 2,
+        level: resource.budget.level ?? resource.pressure,
+        budgetFields: buildRuntimeBudgetFields(resource.budget),
+      };
+    case "Normal":
+    default:
+      return {
+        headlineKey: "device.systemStatusStrategyNormal",
+        summaryKey: "device.systemStatusStrategyHintNormal",
+        behaviorKeys: [
+          "device.systemStatusStrategyBehaviorNormalReplies",
+          "device.systemStatusStrategyBehaviorNormalTools",
+          "device.systemStatusStrategyBehaviorNormalReconnect",
+        ],
+        intensity: 1,
+        level: resource.budget.level ?? resource.pressure,
+        budgetFields: buildRuntimeBudgetFields(resource.budget),
+      };
+  }
 }
 
 export function pressureLabelKey(pressure: string | undefined): string | null {

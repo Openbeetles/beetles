@@ -282,26 +282,11 @@ fn cmd_baseline(_ctx: &CliContext) -> String {
 }
 
 fn cmd_ops_status(ctx: &CliContext) -> String {
-    let board_id = crate::platform::runtime_board::resolved_board_id();
-    let inbound_depth = ctx
-        .inbound_depth
-        .as_ref()
-        .map(|a| a.load(Ordering::Relaxed))
-        .unwrap_or(0);
-    let outbound_depth = ctx
-        .outbound_depth
-        .as_ref()
-        .map(|a| a.load(Ordering::Relaxed))
-        .unwrap_or(0);
     match crate::platform::operator_status::build_operator_status(
         crate::platform::operator_status::OperatorStatusInput {
             config: &ctx.config,
             platform: ctx.platform.as_ref(),
             tool_registry: ctx.tool_registry.as_ref(),
-            inbound_depth,
-            outbound_depth,
-            version: env!("CARGO_PKG_VERSION"),
-            board_id: &board_id,
         },
     ) {
         Ok(snapshot) => crate::platform::operator_status::render_operator_status_text(&snapshot),

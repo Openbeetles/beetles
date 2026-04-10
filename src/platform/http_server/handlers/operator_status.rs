@@ -2,7 +2,6 @@
 
 use super::HandlerContext;
 use crate::platform::operator_status::{build_operator_status, OperatorStatusInput};
-use std::sync::atomic::Ordering;
 
 pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let config = ctx.config();
@@ -10,10 +9,6 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         config: &config,
         platform: ctx.platform.as_ref(),
         tool_registry: ctx.tool_registry.as_ref(),
-        inbound_depth: ctx.inbound_depth.load(Ordering::Relaxed),
-        outbound_depth: ctx.outbound_depth.load(Ordering::Relaxed),
-        version: ctx.version.as_ref(),
-        board_id: ctx.board_id.as_ref(),
     })
     .map_err(std::io::Error::other)?;
     drop(config);
@@ -52,6 +47,23 @@ mod tests {
         assert!(parsed.get("metrics").is_none());
         assert!(parsed.get("resource").is_none());
         assert!(parsed.get("channels").is_none());
+        assert!(parsed.get("inbound_depth").is_none());
+        assert!(parsed.get("outbound_depth").is_none());
+        assert!(parsed.get("last_error").is_none());
+        assert!(parsed["platform_contract"].get("board_id").is_none());
+        assert!(parsed["platform_contract"].get("firmware_version").is_none());
+        assert!(parsed["platform_contract"].get("wifi_connected").is_none());
+        assert!(parsed["platform_contract"].get("display_available").is_none());
+        assert!(parsed["platform_contract"].get("ota_supported").is_none());
+        assert!(parsed["platform_contract"]
+            .get("audio_duplex_profile")
+            .is_none());
+        assert!(parsed["platform_contract"]
+            .get("storage_media_count")
+            .is_none());
+        assert!(parsed["platform_contract"]
+            .get("storage_media_error")
+            .is_none());
     }
 
     #[test]

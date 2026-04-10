@@ -26,26 +26,6 @@ export interface MetricsSnapshotData {
   wifi_reconnect_total?: number
   wifi_ap_restart_total?: number
   wifi_last_failure_stage?: string
-  audio_speaker_queue_depth_last_samples?: number
-  audio_speaker_queue_depth_min_samples?: number
-  audio_speaker_underrun_total?: number
-}
-
-/** 与固件 `orchestrator::ChannelHealthSnapshot` 一致。 */
-export interface ChannelHealthSnapshotData {
-  consecutive_failures?: number
-  total_failures?: number
-  total_successes?: number
-  healthy?: boolean
-}
-
-/** 与固件 `orchestrator::ChannelsHealthSnapshot` 一致（具名通道）。 */
-export interface ChannelsHealthSnapshotData {
-  telegram?: ChannelHealthSnapshotData
-  feishu?: ChannelHealthSnapshotData
-  dingtalk?: ChannelHealthSnapshotData
-  wecom?: ChannelHealthSnapshotData
-  qq_channel?: ChannelHealthSnapshotData
 }
 
 /** 与固件 `orchestrator::ResourceBudget` 一致（嵌套在 resource 内）。 */
@@ -55,7 +35,6 @@ export interface ResourceBudgetData {
   messages_max?: number
   response_body_max?: number
   reconnect_backoff_secs?: number
-  llm_hint?: string
 }
 
 /** 与固件 `orchestrator::ResourceSnapshot` 一致。 */
@@ -65,13 +44,17 @@ export interface ResourceSnapshotData {
   heap_free_spiram?: number
   heap_largest_block_internal?: number
   active_http_count?: number
+  active_wss_count?: number
+  active_agent_tasks?: number
   inbound_depth?: number
   outbound_depth?: number
   budget?: ResourceBudgetData
-  channels?: ChannelsHealthSnapshotData
   session_count?: number
   storage_used_kb?: number
   storage_total_kb?: number
+  cpu_usage_percent?: number
+  load_average?: [number, number, number]
+  process_memory_kb?: number
 }
 
 /** 与固件 `handlers/health.rs` 中 `DisplayHealth` 一致。 */
@@ -84,7 +67,6 @@ export interface HealthAudioCapabilitiesData {
   speaker_output?: boolean
   concurrent_capture_playback?: boolean
   barge_in?: boolean
-  reference_capture?: string
   echo_cancellation?: string
 }
 
@@ -145,7 +127,6 @@ export async function getWifiScan(baseUrl: string): Promise<ApiResult<WifiApEntr
 /** GET /api/system_info 返回；需已激活（配对码已设置）。 */
 export interface SystemInfoData {
   product_name: string
-  system_status: string
   current_time?: string
   firmware_version: string
   /** 运行期板型键（ESP：片型+Flash 档；Linux：`linux`），与 OTA manifest `boards` 键对齐。 */
@@ -156,6 +137,26 @@ export interface SystemInfoData {
   lan_ip?: string
   ota_available?: boolean
   locale?: string
+  os_type?: string
+  kernel_version?: string
+  cpu_model?: string
+  cpu_cores?: number
+  storage_media?: Array<{
+    id: string
+    kind: string
+    label: string
+    present: boolean
+    mounted: boolean
+    mount_path?: string | null
+    filesystem?: string | null
+    source?: string | null
+    removable: boolean
+    is_system_root: boolean
+    is_state_root: boolean
+    capacity_bytes?: number | null
+    free_bytes?: number | null
+  }>
+  storage_media_error?: string
 }
 
 export async function getSystemInfo(

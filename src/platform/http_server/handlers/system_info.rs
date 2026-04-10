@@ -5,10 +5,7 @@
 
 use super::HandlerContext;
 use crate::config;
-use crate::i18n::{locale_from_store, tr, Message};
 use crate::platform::http_server::common::to_io;
-use crate::state;
-use std::sync::atomic::Ordering;
 
 /// SNTP 未同步时系统时间多在 1970 附近；低于此阈值不在 API 中冒充墙钟。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -83,27 +80,8 @@ fn days_to_ymd(days: u64) -> (u32, u32, u32) {
     (y, mo, day)
 }
 
-/// 生成 system_info JSON：product_name, system_status, current_time, firmware_version, lan_ip 等。
+/// 生成 system_info JSON：product_name, current_time, firmware_version, lan_ip 等。
 pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
-    let memory_loaded = ctx.memory_store.get_memory().is_ok();
-    let soul_loaded = ctx.memory_store.get_soul().is_ok();
-    let storage_ok = memory_loaded || soul_loaded;
-    let last_error = state::get_current_error();
-    let inc = ctx.inbound_depth.load(Ordering::Relaxed);
-    let out = ctx.outbound_depth.load(Ordering::Relaxed);
-    let sta_up = crate::state::wifi_sta_connected();
-    let loc = locale_from_store(ctx.config_store.as_ref());
-    let system_status = if sta_up && storage_ok && last_error.is_none() && inc <= 6 && out <= 6 {
-        tr(Message::SystemStatusOk, loc)
-    } else if !sta_up {
-        tr(Message::SystemStatusWifiDisconnected, loc)
-    } else if !storage_ok {
-        tr(Message::SystemStatusStorage, loc)
-    } else if last_error.is_some() {
-        tr(Message::SystemStatusChannel, loc)
-    } else {
-        tr(Message::SystemStatusRunning, loc)
-    };
     let product_name = "beetle";
     let current_time = current_time_str();
     let firmware_version = ctx.version.as_ref();
@@ -113,7 +91,6 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     #[allow(unused_mut)]
     let mut json = serde_json::json!({
         "product_name": product_name,
-        "system_status": system_status,
         "current_time": current_time,
         "firmware_version": firmware_version,
         "board_id": ctx.board_id.as_ref(),
@@ -200,7 +177,7 @@ mod tests {
         let parsed: Value = serde_json::from_str(&payload).unwrap();
 
         assert_eq!(parsed.get("product_name").and_then(Value::as_str), Some("beetle"));
-        assert!(parsed.get("system_status").is_some());
+        assert!(parsed.get("system_status").is_none());
         assert!(parsed.get("firmware_version").is_some());
         assert!(parsed.get("board_id").is_some());
         assert!(parsed.get("ota_available").is_some());

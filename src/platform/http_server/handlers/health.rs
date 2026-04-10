@@ -12,7 +12,16 @@ struct DisplayHealth {
 #[derive(serde::Serialize)]
 struct AudioHealth {
     duplex_profile: crate::platform::AudioDuplexProfile,
-    duplex_capabilities: crate::platform::AudioDuplexCapabilities,
+    duplex_capabilities: AudioHealthCapabilities,
+}
+
+#[derive(serde::Serialize)]
+struct AudioHealthCapabilities {
+    microphone_input: bool,
+    speaker_output: bool,
+    concurrent_capture_playback: bool,
+    barge_in: bool,
+    echo_cancellation: crate::platform::AudioEchoCancellationCapability,
 }
 
 #[derive(serde::Serialize)]
@@ -44,7 +53,13 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         },
         audio: AudioHealth {
             duplex_profile: audio_caps.profile(),
-            duplex_capabilities: audio_caps,
+            duplex_capabilities: AudioHealthCapabilities {
+                microphone_input: audio_caps.microphone_input,
+                speaker_output: audio_caps.speaker_output,
+                concurrent_capture_playback: audio_caps.concurrent_capture_playback,
+                barge_in: audio_caps.barge_in,
+                echo_cancellation: audio_caps.echo_cancellation,
+            },
         },
     };
     serde_json::to_string(&payload).map_err(std::io::Error::other)
@@ -69,6 +84,9 @@ mod tests {
         assert!(parsed.get("last_error").is_some());
         assert!(parsed.get("display").is_some());
         assert!(parsed.get("audio").is_some());
+        assert!(parsed["audio"]["duplex_capabilities"]
+            .get("reference_capture")
+            .is_none());
         assert!(parsed.get("metrics").is_none());
         assert!(parsed.get("resource").is_none());
         assert!(parsed.get("inbound_depth").is_none());

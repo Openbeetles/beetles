@@ -123,7 +123,7 @@ Includes: `POST /api/config/wifi`, `/api/config/llm`, `/api/config/channels`, `/
 - **Purpose**: Get the current full config (real values for all fields, including secrets).
 - **Auth**: Activated; GET does **not** need a pairing code in the request.
 - **Response**: 200, JSON is `AppConfig` serialization; all fields are stored values.
-- **Multi-LLM**: `llm_sources` is an array; each item has `provider`, `api_key`, `model`, `api_url`, optional `max_tokens` (u32; null means clients use built-in default 1024). When empty, load builds a single source from legacy fields. Optional **`llm_router_source_index`** and **`llm_worker_source_index`** (`u32`, indices into `llm_sources`) reorder the worker’s [`FallbackLlmClient`](../../src/llm/fallback.rs) chain: if a valid `llm_router_source_index` is set, that source is tried **first**, then (if set and valid) `llm_worker_source_index`, then remaining valid sources; if neither is set, order follows valid sources in list order. Global streaming: top-level `llm_stream` in the LLM segment.
+- **Multi-LLM**: `llm_sources` is an array; each item has `provider`, `api_key`, `model`, `api_url`, optional `max_tokens` (u32; null means clients use built-in default 1024). Optional **`llm_router_source_index`** and **`llm_worker_source_index`** (`u32`, indices into `llm_sources`) reorder the worker’s [`FallbackLlmClient`](../../src/llm/fallback.rs) chain: if a valid `llm_router_source_index` is set, that source is tried **first**, then (if set and valid) `llm_worker_source_index`, then remaining valid sources; if neither is set, order follows valid sources in list order. Global streaming: top-level `llm_stream` in the LLM segment.
 
 ### POST /api/config/llm
 
@@ -260,7 +260,7 @@ Includes: `POST /api/config/wifi`, `/api/config/llm`, `/api/config/channels`, `/
 - **Purpose**: Return the memory operator surface: memory stores, personality continuity, continuity tooling, task learning / execution, and optional chat-scoped deep inspection.
 - **Auth**: Activated; GET does **not** need a pairing code in the request.
 - **Response**: 200, JSON object with top-level fields including `memory_system_kind`, `memory_len`, `soul_len`, `user_len`, `long_term_count`, `continuity_capsule_count`, `stores`, `personality`, `continuity_tooling`, `continuity_capsules`, `task_execution`, `learning`, and optional `inspection`.
-- **Responsibility boundary**: this route no longer carries resource queue or session-directory duties; `inbound_depth` / `outbound_depth` belong to `GET /api/resource`, while session counts and directory/detail views belong to `GET /api/sessions`.
+- **Responsibility**: this route returns the operator-facing memory and learning surface; queue depth is on `GET /api/resource`, while session lists and details are on `GET /api/sessions`.
 
 ### GET /api/tools
 
@@ -318,25 +318,29 @@ Includes: `POST /api/config/wifi`, `/api/config/llm`, `/api/config/channels`, `/
 
 ### GET /api/health
 
-- **Purpose**: Structured health info (same spirit as CLI `health`), including nested `metrics` and `resource` (same orchestrator snapshot as `GET /api/resource`).
+- **Purpose**: Lightweight health summary for homepage and status cards.
 - **Auth**: Activated; GET does **not** need a pairing code in the request.
-- **Response**: 200, JSON example (field names match serde structs; metric fields use `messages_in`, etc.):
+- **Response**: 200, JSON example (field names match serde structs):
   ```json
   {
     "wifi": "connected",
-    "inbound_depth": 0,
-    "outbound_depth": 0,
     "last_error": "none",
-    "metrics": { "messages_in": 0, "messages_out": 0 },
-    "resource": { "pressure": "Normal", "heap_largest_block_internal": 12345 }
+    "display": { "available": true },
+    "audio": {
+      "duplex_profile": "FullDuplex",
+      "duplex_capabilities": {
+        "input_available": true,
+        "output_available": true,
+        "full_duplex_available": true
+      }
+    }
   }
   ```
   - `wifi`: `"connected"` | `"disconnected"` (**STA associated with upstream AP / outbound path**; may still be `disconnected` when only the device SoftAP is used for provisioning).
-  - `inbound_depth` / `outbound_depth`: Queue depths (numbers).
   - `last_error`: Last error summary (stage/message only, no secrets); or `"none"`.
-  - `metrics`: `metrics::MetricsSnapshot` (throughput, LLM/tool, dispatch, per-stage error counts; on Linux embedded also `wifi_reconnect_total`, `wifi_ap_restart_total`, `wifi_last_failure_stage`).
-  - `resource`: `orchestrator::ResourceSnapshot` (pressure, heap, queue depths, channel health, etc.); `pressure` is `"Normal"` | `"Cautious"` | `"Critical"`.
-  - **Migration**: External scripts that parsed legacy flat keys such as `msg_in` should use `metrics.messages_in` instead.
+  - `display.available`: Whether the display subsystem is available.
+  - `audio.duplex_profile` / `audio.duplex_capabilities`: Audio input/output capability summary.
+- **Responsibility**: this route returns lightweight health summary; counters are on `GET /api/metrics`, resources/queues/budget are on `GET /api/resource`, and device identity/build summary is on `GET /api/system_info`.
 
 ### GET /api/diagnose
 
@@ -357,6 +361,12 @@ Includes: `POST /api/config/wifi`, `/api/config/llm`, `/api/config/channels`, `/
   - `category`: `"storage"` (readable, SPIFFS) | `"channel"` (queue depth, last_error) | `"config"` (NVS, WiFi).
   - `message`: Human-readable; `last_error` summary truncated to 200 chars.
 
+### GET /api/operator/status
+
+- **Purpose**: Return the operator-host surface for OS/runtime/host contracts, system closure, presence / initiative, runtime mode, soul kernel, runtime capabilities, and Linux supervisor / release state.
+- **Auth**: Activated; GET does **not** need a pairing code.
+- **Responsibility**: this route returns the operator-host runtime surface; queue depth is on `GET /api/resource`, error summary is on `GET /api/health`, and device identity plus storage media are on `GET /api/system_info`.
+
 ### GET /api/metrics
 
 - **Purpose**: Metrics snapshot JSON (fields per firmware `metrics` module). Optional query **`format=prometheus`** returns Prometheus text (`Content-Type: text/plain`).
@@ -364,13 +374,15 @@ Includes: `POST /api/config/wifi`, `/api/config/llm`, `/api/config/channels`, `/
 
 ### GET /api/resource
 
-- **Purpose**: Orchestrator resource snapshot JSON (same `resource` object as inside `GET /api/health`).
+- **Purpose**: Orchestrator resource snapshot JSON for runtime pressure, queues, sessions, storage usage, and runtime budget.
 - **Auth**: Activated; GET does **not** need a pairing code in the request.
+- **Responsibility**: this route returns resources, pressure, queues, sessions, and runtime budget; live channel state is on `GET /api/channel_connectivity`.
 
 ### GET /api/system_info
 
-- **Purpose**: System/build info JSON.
+- **Purpose**: Device-summary and build-info JSON.
 - **Auth**: Activated; GET does **not** need a pairing code in the request.
+- **Responsibility**: this route returns device identity and device summary fields. `wifi` / `last_error` are on `GET /api/health`, while `pressure` and queue state are on `GET /api/resource`.
 
 ### GET /api/channel_connectivity
 

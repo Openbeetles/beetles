@@ -12,6 +12,20 @@ export function yesNo(value: boolean | undefined, t: TFunction): string {
   return t("common.na");
 }
 
+export function audioEchoCancellationLabel(
+  value: string | undefined,
+  t: TFunction,
+): string {
+  switch (value) {
+    case "none":
+      return t("device.audioEchoCancellationNone");
+    case "platform":
+      return t("device.audioEchoCancellationPlatform");
+    default:
+      return value?.length ? value : t("common.na");
+  }
+}
+
 /** 与固件 `PressureLevel` 序列化字符串一致：Normal / Cautious / Critical */
 export function pressureColor(pressure: string | undefined): string {
   switch (pressure) {

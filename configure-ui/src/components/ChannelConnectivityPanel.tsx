@@ -159,6 +159,7 @@ function ChannelRow({
   label,
   configured,
   ok,
+  message,
   t,
   isLast,
 }: {
@@ -214,6 +215,21 @@ function ChannelRow({
           statusLabel={statusText}
         />
       </Box>
+      {message?.trim() ? (
+        <Typography
+          variant="caption"
+          sx={{
+            mt: 0.75,
+            display: "block",
+            color: "var(--muted)",
+            fontFamily: "var(--font-mono)",
+            lineHeight: 1.5,
+            wordBreak: "break-word",
+          }}
+        >
+          {isI18nKey(message) ? t(message) : message}
+        </Typography>
+      ) : null}
     </Box>
   );
 }

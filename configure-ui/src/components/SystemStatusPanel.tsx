@@ -16,6 +16,8 @@ import { DashboardCard } from "../pages/DevicePage";
 import {
   buildFaultAndRecoveryMetrics,
   buildMemoryMetrics,
+  pressureLabelKey,
+  buildRuntimeStrategyView,
 } from "../pages/deviceHomeViewModel";
 
 // Non-component exports removed to fix Fast Refresh lint error.
@@ -141,6 +143,24 @@ function DigitalCounter({ label, value, unit, color = "var(--foreground)", dange
   );
 }
 
+function formatStrategyBudgetValue(
+  value: number,
+  kind: "bytes" | "seconds",
+): { value: string; unit?: string } {
+  if (kind === "seconds") return { value: String(value), unit: "s" };
+  return { value: formatBytes(value) };
+}
+
+function formatLoadAverage(value: [number, number, number] | undefined): string {
+  if (!value) return "—";
+  return value.map((item) => item.toFixed(2)).join(" / ");
+}
+
+function formatEpochSeconds(value: number | undefined): string {
+  if (!value || value <= 0) return "—";
+  return new Date(value * 1000).toLocaleString();
+}
+
 export interface SystemStatusPanelProps {
   healthData: HealthData;
   resourceData: ResourceSnapshotData | null;
@@ -160,6 +180,7 @@ export function SystemStatusPanel({
   const met = metricsData;
   const memoryMetrics = buildMemoryMetrics(runtimeKind, res);
   const groupedFaults = buildFaultAndRecoveryMetrics(met);
+  const strategy = buildRuntimeStrategyView(res);
 
   const storageUsed = res?.storage_used_kb || 0;
   const storageTotal = res?.storage_total_kb || 0;
@@ -200,11 +221,161 @@ export function SystemStatusPanel({
         </DashboardCard>
       </Box>
 
-      {/* Traffic & Ops (Span 6 cols, 2 rows) */}
+      {/* Runtime Strategy (Span 6 cols, 2 rows) */}
       <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 6" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
+        <DashboardCard title={t("device.systemStatusStrategy")} icon={<SwapVertRounded />}>
+          {strategy ? (
+            <Box sx={{ display: "flex", flexDirection: "column", gap: 2, height: "100%" }}>
+              {/* Header: Pressure & Level Indicator */}
+              <Box sx={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 2 }}>
+                <Box sx={{ minWidth: 0 }}>
+                  <Typography variant="caption" sx={{ color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", display: "block", mb: 0.75 }}>
+                    {t("device.systemStatusPressure")}
+                  </Typography>
+                  <Typography variant="h5" sx={{ color: "var(--foreground)", fontWeight: 700, letterSpacing: "-0.03em", lineHeight: 1.05 }}>
+                    {t(strategy.headlineKey)}
+                  </Typography>
+                  <Typography variant="body2" sx={{ color: "var(--muted)", mt: 1, lineHeight: 1.6, maxWidth: 360 }}>
+                    {t(strategy.summaryKey)}
+                  </Typography>
+                </Box>
+                <Box
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 0.5,
+                    pt: 0.5,
+                    px: 1.5,
+                    py: 0.5,
+                    borderRadius: "var(--radius-sm)",
+                    bgcolor: "color-mix(in srgb, var(--foreground) 2%, transparent)",
+                    border: "1px solid color-mix(in srgb, var(--border) 20%, transparent)",
+                  }}
+                >
+                  {[1, 2, 3].map((level) => {
+                    const active = level <= strategy.intensity;
+                    const dangerLevel = strategy.intensity === 3;
+                    const color = dangerLevel
+                      ? "var(--semantic-danger)"
+                      : strategy.intensity === 2
+                        ? "var(--semantic-warning)"
+                        : "var(--semantic-success)";
+                    return (
+                      <Box
+                        key={level}
+                        sx={{
+                          width: 8,
+                          height: 12,
+                          borderRadius: "2px",
+                          bgcolor: active ? color : "color-mix(in srgb, var(--border) 25%, transparent)",
+                          transition: "background-color 0.25s ease",
+                        }}
+                      />
+                    );
+                  })}
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      ml: 0.5,
+                      fontFamily: "var(--font-mono)",
+                      fontWeight: 600,
+                      color: "var(--muted)",
+                      letterSpacing: "0.05em",
+                    }}
+                  >
+                    {strategy.level && pressureLabelKey(strategy.level)
+                      ? t(pressureLabelKey(strategy.level) as string)
+                      : `LVL.${strategy.intensity}`}
+                  </Typography>
+                </Box>
+              </Box>
+
+              {/* Behavior List */}
+              <Box
+                sx={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 0,
+                  bgcolor: "color-mix(in srgb, var(--foreground) 1%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--border) 15%, transparent)",
+                  borderRadius: "var(--radius-chip)",
+                  p: 1.5,
+                  fontFamily: "var(--font-mono)",
+                }}
+              >
+                {strategy.behaviorKeys.map((key) => (
+                  <Box
+                    key={key}
+                    sx={{
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: 1.5,
+                      py: 0.75,
+                      borderBottom: "1px dashed color-mix(in srgb, var(--border) 15%, transparent)",
+                      "&:last-child": { borderBottom: "none" },
+                    }}
+                  >
+                    <Typography
+                      component="span"
+                      sx={{
+                        color:
+                          strategy.intensity === 3
+                            ? "var(--semantic-danger)"
+                            : strategy.intensity === 2
+                              ? "var(--semantic-warning)"
+                              : "var(--semantic-success)",
+                        fontSize: "0.75rem",
+                        lineHeight: 1.6,
+                        userSelect: "none",
+                      }}
+                    >
+                      ▶
+                    </Typography>
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        color: "var(--foreground)",
+                        lineHeight: 1.6,
+                        fontSize: "0.8rem",
+                        fontFamily: "inherit",
+                      }}
+                    >
+                      {t(key)}
+                    </Typography>
+                  </Box>
+                ))}
+              </Box>
+
+              <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "repeat(3, 1fr)" }, gap: 1.5, mt: "auto" }}>
+                {strategy.budgetFields.map((item) => {
+                  const formatted = formatStrategyBudgetValue(item.value, item.valueKind);
+                  return (
+                    <DigitalCounter
+                      key={item.id}
+                      label={t(item.labelKey)}
+                      value={formatted.value}
+                      unit={formatted.unit}
+                      color="var(--primary)"
+                    />
+                  );
+                })}
+              </Box>
+            </Box>
+          ) : (
+            <Typography variant="body2" sx={{ color: "var(--muted)" }}>
+              {t("common.na")}
+            </Typography>
+          )}
+        </DashboardCard>
+      </Box>
+
+      {/* Traffic & Ops (Span 12 cols, 2 rows) */}
+      <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 12" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
         <DashboardCard title={t("device.systemStatusGroupRuntime")} icon={<SwapVertRounded />}>
-          <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 1.5, height: "100%", alignContent: "start" }}>
+          <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)", lg: "repeat(6, 1fr)" }, gap: 1.5, height: "100%", alignContent: "start" }}>
             <DigitalCounter label={t("device.systemStatusActiveHttp")} value={res?.active_http_count ?? "—"} color="var(--primary)" />
+            <DigitalCounter label={t("device.systemStatusActiveWss")} value={res?.active_wss_count ?? "—"} color="var(--primary)" />
+            <DigitalCounter label={t("device.systemStatusActiveAgentTasks")} value={res?.active_agent_tasks ?? "—"} color="var(--primary)" />
             <DigitalCounter label={t("device.systemStatusSessionCount")} value={res?.session_count ?? "—"} color="var(--primary)" />
             <DigitalCounter label={t("device.systemStatusMessagesIn")} value={met?.messages_in ?? "—"} />
             <DigitalCounter label={t("device.systemStatusMessagesOut")} value={met?.messages_out ?? "—"} />
@@ -215,12 +386,16 @@ export function SystemStatusPanel({
             <DigitalCounter label={t("device.systemStatusInboundDepth")} value={res?.inbound_depth ?? "—"} />
             <DigitalCounter label={t("device.systemStatusOutboundDepth")} value={res?.outbound_depth ?? "—"} />
             <DigitalCounter label={t("device.systemStatusWdtFeeds")} value={met?.wdt_feeds ?? "—"} />
+            <DigitalCounter label={t("device.systemStatusLastActiveAt")} value={formatEpochSeconds(met?.last_active_epoch_secs)} color="var(--semantic-warning)" />
+            <DigitalCounter label={t("device.systemStatusCpuUsage")} value={res?.cpu_usage_percent != null ? res.cpu_usage_percent.toFixed(1) : "—"} unit="%" color="var(--semantic-warning)" />
+            <DigitalCounter label={t("device.systemStatusProcessMemory")} value={res?.process_memory_kb ?? "—"} unit="KB" color="var(--semantic-warning)" />
+            <DigitalCounter label={t("device.systemStatusLoadAverage")} value={formatLoadAverage(res?.load_average)} color="var(--semantic-warning)" />
           </Box>
         </DashboardCard>
       </Box>
 
-      {/* Error Telemetry (Span 12 cols, 1 or 2 rows depending on content) */}
-      <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 12" }, gridRow: "auto" }}>
+      {/* Error Telemetry (Span 12 cols, 2 rows) */}
+      <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 12" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
         <DashboardCard 
           title={t("device.systemStatusGroupFaults")} 
           icon={<WarningRounded />}
@@ -232,7 +407,7 @@ export function SystemStatusPanel({
           <Typography variant="caption" sx={{ color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", mb: 1, display: "block" }}>
             {t("device.systemStatusSubsectionFaults")}
           </Typography>
-          <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)", lg: "repeat(5, 1fr)" }, gap: 1.5 }}>
+          <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)", lg: "repeat(6, 1fr)" }, gap: 1.5 }}>
             {groupedFaults.faults.map((item) => (
               <DigitalCounter key={item.id} label={t(item.labelKey)} value={item.value} danger />
             ))}
@@ -240,7 +415,7 @@ export function SystemStatusPanel({
           <Typography variant="caption" sx={{ color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", mt: 2, mb: 1, display: "block" }}>
             {t("device.systemStatusSubsectionRecovery")}
           </Typography>
-          <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)" }, gap: 1.5 }}>
+          <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)", lg: "repeat(6, 1fr)" }, gap: 1.5 }}>
             {groupedFaults.recovery.map((item) => (
               <DigitalCounter
                 key={item.id}
