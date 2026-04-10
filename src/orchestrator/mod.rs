@@ -45,8 +45,9 @@ static LAST_REFRESH_SECS: AtomicU32 = AtomicU32::new(0);
 /// refresh_heap_if_stale 使用的启动时刻基准。
 static REFRESH_START: OnceLock<std::time::Instant> = OnceLock::new();
 
-/// 装配期注入：`Platform::memory_snapshot` 闭包，由 `run_app` 注册一次。
-/// Injected at assembly: `Platform::memory_snapshot` closure, registered once from `run_app`.
+/// 装配期注入：`Platform::memory_snapshot` 闭包，由装配入口在 bootstrap 前注册一次。
+/// Injected at assembly: `Platform::memory_snapshot` closure, registered once from the
+/// assembly entry before bootstrap starts.
 static MEMORY_SNAPSHOT_PROVIDER: OnceLock<Arc<dyn Fn() -> MemorySnapshot + Send + Sync>> =
     OnceLock::new();
 

@@ -1715,6 +1715,11 @@ fn main() {
     log::info!("========================================");
     log::info!("  甲壳虫 beetle v{}", VERSION);
     log::info!("========================================");
+    beetle::orchestrator::register_memory_snapshot_provider(Arc::new({
+        let p = Arc::clone(&platform);
+        move || p.memory_snapshot()
+    }));
+    beetle::orchestrator::log_startup_memory_checkpoint("memory_provider_registered");
 
     startup_soul_kernel_recovery(Arc::clone(&platform));
     let (config, wifi_init_ok) = beetle::bootstrap::bootstrap_config_and_wifi(&platform);
@@ -1804,12 +1809,6 @@ fn startup_soul_kernel_recovery(platform: Arc<dyn Platform>) {
 /// 启动编排：存储与总线 → 自检 → 后台任务与通道 → agent 循环与 flush。与 main 解耦便于单文件内可读性。
 fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_init_ok: bool) {
     beetle::state::set_boot_phase_active(true);
-    beetle::orchestrator::register_memory_snapshot_provider(Arc::new({
-        let p = Arc::clone(&platform);
-        move || p.memory_snapshot()
-    }));
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    beetle::orchestrator::log_startup_memory_checkpoint("memory_provider_registered");
     let config_store = platform.config_store();
     let memory_system_kind = platform.memory_system_kind();
     let resolve_locale_ui: Arc<dyn Fn() -> beetle::i18n::Locale + Send + Sync> = Arc::new({

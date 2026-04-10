@@ -952,10 +952,11 @@ pub const STACK_CHANNEL_WS: usize = 16384;
 pub const STACK_CHANNEL_WS: usize = LINUX_RUSTLS_THREAD_STACK;
 
 /// `agent_loop`：统一 agent 主执行面，承接用户消息与自治/system 作业。
-/// 当前首轮 prompt 组装、治理链与回忆装配在 ESP 上已明显变重，
-/// 结构拆栈落地期间先把预算抬到 32KB 作为 guardrail；后续继续靠阶段收窄而不是长期堆栈换空间。
+/// 该线程本身不应长期靠“加栈兜底”吃 internal SRAM；
+/// 当前静态调用链未见大栈对象，板上 idle high-water 也长期留出明显余量，
+/// 因此 ESP 预算收回到 16KB，继续把问题留给结构治理而不是常驻栈占用。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub const STACK_AGENT_LOOP: usize = 32 * 1024;
+pub const STACK_AGENT_LOOP: usize = 16 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_AGENT_LOOP: usize = LINUX_RUSTLS_THREAD_STACK;
 
