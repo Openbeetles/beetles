@@ -271,6 +271,7 @@ pub fn request_http_permit(
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn check_internal_heap_for_tls(_state: &OrchestratorState) -> Result<()> {
     let snap = super::memory_snapshot_live();
+    super::apply_memory_snapshot(snap);
     let free = snap.heap_free_internal;
     let largest = snap.heap_largest_block;
     let spiram = snap.heap_free_spiram;

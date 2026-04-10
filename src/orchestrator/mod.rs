@@ -384,3 +384,66 @@ pub fn log_baseline() {
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub fn log_baseline() {}
+
+/// 生成启动阶段 internal heap / largest block / PSRAM 的统一观测行。
+/// Format a stable startup memory checkpoint line for ESP bring-up analysis.
+pub fn format_startup_memory_checkpoint_line(
+    stage: &str,
+    snap: crate::platform::MemorySnapshot,
+) -> String {
+    let probe_state = state::OrchestratorState::new();
+    probe_state.update_heap(
+        snap.heap_free_internal,
+        snap.heap_free_spiram,
+        snap.heap_largest_block,
+    );
+    let pressure = pressure::compute_pressure(&probe_state);
+    let tls_fragmentation =
+        pressure::tls_fragmentation_risk(snap.heap_largest_block, snap.heap_free_spiram);
+    format!(
+        "[orchestrator] startup memory checkpoint stage={} internal_free={} largest_block={} spiram_free={} pressure={:?} tls_fragmentation={:?}",
+        stage,
+        snap.heap_free_internal,
+        snap.heap_largest_block,
+        snap.heap_free_spiram,
+        pressure,
+        tls_fragmentation
+    )
+}
+
+/// 启动阶段实时打印当前内存观测点，并把快照回写到 orchestrator 单一权威状态。
+/// Log a live startup memory checkpoint and update orchestrator state from the same sample.
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub fn log_startup_memory_checkpoint(stage: &'static str) {
+    let snap = memory_snapshot_live();
+    apply_memory_snapshot(snap);
+    log::info!("{}", format_startup_memory_checkpoint_line(stage, snap));
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub fn log_startup_memory_checkpoint(_stage: &'static str) {}
+
+#[cfg(test)]
+mod tests {
+    use super::format_startup_memory_checkpoint_line;
+    use crate::platform::MemorySnapshot;
+
+    #[test]
+    fn startup_memory_checkpoint_line_reports_fragmentation_pressure() {
+        let line = format_startup_memory_checkpoint_line(
+            "after_voice_session_spawn",
+            MemorySnapshot {
+                heap_free_internal: 49_051,
+                heap_free_spiram: 7_258_468,
+                heap_largest_block: 20_480,
+            },
+        );
+
+        assert!(line.contains("stage=after_voice_session_spawn"));
+        assert!(line.contains("internal_free=49051"));
+        assert!(line.contains("largest_block=20480"));
+        assert!(line.contains("spiram_free=7258468"));
+        assert!(line.contains("pressure=Critical"));
+        assert!(line.contains("tls_fragmentation=Critical"));
+    }
+}

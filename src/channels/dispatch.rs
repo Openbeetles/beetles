@@ -455,6 +455,8 @@ where
 {
     spawn().map_err(|error| crate::error::Error::io(stage, error))?;
     log::info!("[{}] {}", tag, started_label);
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    crate::orchestrator::log_startup_memory_checkpoint(stage);
     Ok(())
 }
 

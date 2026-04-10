@@ -39,6 +39,8 @@ pub fn load_config(platform: &Arc<dyn Platform>) -> Arc<AppConfig> {
         !config.wifi_ssid.is_empty(),
         !config.proxy_url.is_empty()
     );
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    crate::orchestrator::log_startup_memory_checkpoint("config_loaded");
     config
 }
 
@@ -66,10 +68,14 @@ pub fn bootstrap_config_and_wifi(platform: &Arc<dyn Platform>) -> (Arc<AppConfig
             if platform.display_available() {
                 let _ = platform.display_command(DisplayCommand::UpdateBootProgress { stage: 2 });
             }
+            #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+            crate::orchestrator::log_startup_memory_checkpoint("wifi_stack_ready");
             true
         }
         Err(e) => {
             log::warn!("[{}] WiFi init failed: {}", TAG, e);
+            #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+            crate::orchestrator::log_startup_memory_checkpoint("wifi_stack_failed");
             false
         }
     };
@@ -79,6 +85,8 @@ pub fn bootstrap_config_and_wifi(platform: &Arc<dyn Platform>) -> (Arc<AppConfig
         log::error!("[{}] csrf init failed: {}", TAG, e);
         std::process::exit(1);
     }
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    crate::orchestrator::log_startup_memory_checkpoint("csrf_initialized");
 
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
     post_wifi_display_bootstrap(platform, &config, wifi_init_ok);
@@ -100,6 +108,8 @@ fn post_wifi_display_bootstrap(
                 log::warn!("[{}] display init failed (degraded): {}", TAG, e);
             } else {
                 log::info!("[{}] display initialized", TAG);
+                #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+                crate::orchestrator::log_startup_memory_checkpoint("display_initialized");
                 enforce_heap_checkpoint("heap_after_display_init");
                 let _ = platform.display_command(DisplayCommand::UpdateBootProgress { stage: 0 });
                 enforce_heap_checkpoint("heap_after_display_boot_stage0");
@@ -150,6 +160,8 @@ fn post_wifi_display_bootstrap(
                     llm_last_ms: 0,
                     error_flash: false,
                 });
+                #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+                crate::orchestrator::log_startup_memory_checkpoint("display_boot_dashboard");
                 enforce_heap_checkpoint("heap_after_display_boot_dashboard");
             }
         }
@@ -190,6 +202,8 @@ pub fn init_audio_if_enabled(platform: &Arc<dyn Platform>, config: &Arc<AppConfi
                 caps.reference_capture,
                 caps.echo_cancellation
             );
+            #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+            crate::orchestrator::log_startup_memory_checkpoint("audio_initialized");
         }
     }
 }

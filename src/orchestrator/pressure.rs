@@ -115,7 +115,8 @@ pub fn compute_pressure(state: &OrchestratorState) -> PressureLevel {
     let active_network = active_http.saturating_add(active_wss);
     let queue_total =
         state.inbound_depth.load(Ordering::Relaxed) + state.outbound_depth.load(Ordering::Relaxed);
-    let fragmentation_risk = tls_fragmentation_risk(largest, state.heap_free_spiram.load(Ordering::Relaxed));
+    let fragmentation_risk =
+        tls_fragmentation_risk(largest, state.heap_free_spiram.load(Ordering::Relaxed));
 
     if fragmentation_risk == TlsFragmentationRisk::Critical {
         return PressureLevel::Critical;
@@ -165,7 +166,10 @@ pub fn compute_pressure(state: &OrchestratorState) -> PressureLevel {
     PressureLevel::Normal
 }
 
-pub fn tls_fragmentation_risk(heap_largest_block: u32, heap_free_spiram: u32) -> TlsFragmentationRisk {
+pub fn tls_fragmentation_risk(
+    heap_largest_block: u32,
+    heap_free_spiram: u32,
+) -> TlsFragmentationRisk {
     if heap_free_spiram == 0 || heap_largest_block == 0 {
         return TlsFragmentationRisk::NotApplicable;
     }
@@ -189,7 +193,9 @@ mod tests {
     fn state_with_heap(internal: u32, spiram: u32, largest: u32) -> OrchestratorState {
         let state = OrchestratorState::new();
         state.heap_free_internal.store(internal, Ordering::Relaxed);
-        state.heap_baseline_internal.store(internal, Ordering::Relaxed);
+        state
+            .heap_baseline_internal
+            .store(internal, Ordering::Relaxed);
         state.heap_free_spiram.store(spiram, Ordering::Relaxed);
         state.heap_largest_block.store(largest, Ordering::Relaxed);
         state

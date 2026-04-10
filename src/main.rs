@@ -349,12 +349,15 @@ fn spawn_voice_session_if_ready(
     })
     .map_err(|error| beetle::Error::io("voice_session_spawn", error))?;
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    beetle::orchestrator::log_startup_memory_checkpoint("voice_session_spawn");
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     if let Some(model_name) = wake_model_name.as_deref() {
         platform.configure_wake_word(
             model_name,
             audio_cfg.microphone.sample_rate,
             voice_tx.clone(),
         );
+        beetle::orchestrator::log_startup_memory_checkpoint("wake_word_configured");
     }
     Ok(Some(StartedVoiceSession {
         speak_capable,
@@ -381,6 +384,8 @@ where
 {
     spawn().map_err(|error| beetle::Error::io(stage, error))?;
     log::info!("[{}] {}", tag, started_label);
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    beetle::orchestrator::log_startup_memory_checkpoint(stage);
     Ok(())
 }
 
@@ -1757,8 +1762,10 @@ fn startup_soul_kernel_recovery(platform: Arc<dyn Platform>) {
         Some(beetle::util::SpawnCore::Core1),
         beetle::util::HttpThreadRole::Background,
         move || {
-            let report =
-                beetle::runtime::ensure_platform_soul_kernel_recovery(worker_platform.as_ref(), now_secs);
+            let report = beetle::runtime::ensure_platform_soul_kernel_recovery(
+                worker_platform.as_ref(),
+                now_secs,
+            );
             let _ = tx.send(report);
         },
     ) {
@@ -1801,6 +1808,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         let p = Arc::clone(&platform);
         move || p.memory_snapshot()
     }));
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    beetle::orchestrator::log_startup_memory_checkpoint("memory_provider_registered");
     let config_store = platform.config_store();
     let memory_system_kind = platform.memory_system_kind();
     let resolve_locale_ui: Arc<dyn Fn() -> beetle::i18n::Locale + Send + Sync> = Arc::new({
@@ -1839,6 +1848,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     } else {
         log::warn!("[{}] user read failed", TAG);
     }
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    beetle::orchestrator::log_startup_memory_checkpoint("boot_memory_reads");
     enforce_heap_checkpoint("heap_after_boot_memory_reads");
 
     let session_store: Arc<dyn SessionStore + Send + Sync> = platform.session_store();
@@ -1931,9 +1942,13 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     );
     // ── Audio init + voice runtime preparation (after MessageBus) ──────────
     beetle::bootstrap::init_audio_if_enabled(&platform, &config);
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    beetle::orchestrator::log_startup_memory_checkpoint("audio_init_phase_done");
     enforce_heap_checkpoint("heap_after_audio_init");
     let mut voice_event_tx_rx =
         build_voice_event_channel(&platform, &config, baidu_token_cache.as_ref());
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    beetle::orchestrator::log_startup_memory_checkpoint("voice_event_channel_ready");
     let voice_channel_enabled = matches!(
         voice_event_tx_rx.as_ref(),
         Some(VoiceEventChannel {
@@ -1991,6 +2006,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     let sta_up = beetle::platform::is_wifi_sta_connected();
     let state_fs_ready = platform.spiffs_usage().is_some();
     let http_client_ready = platform.create_http_client(config.as_ref()).is_ok();
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    beetle::orchestrator::log_startup_memory_checkpoint("http_client_probe_done");
     let communication_plane =
         communication_plane_startup(http_client_ready, voice_event_tx_rx.is_some());
     let spiffs_info = platform
@@ -2010,7 +2027,10 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         Some(state_fs_ready),
     );
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    beetle::orchestrator::log_baseline();
+    {
+        beetle::orchestrator::log_baseline();
+        beetle::orchestrator::log_startup_memory_checkpoint("startup_self_check_ok");
+    }
 
     #[cfg(feature = "config_api")]
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -2040,11 +2060,14 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         }) {
             Ok(_) => {
                 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-                log::info!(
-                    "[{}] HTTP config API server started (ESP WiFi config API; bootstrap SoftAP at {})",
-                    TAG,
-                    SOFTAP_DEFAULT_IPV4
-                );
+                {
+                    log::info!(
+                        "[{}] HTTP config API server started (ESP WiFi config API; bootstrap SoftAP at {})",
+                        TAG,
+                        SOFTAP_DEFAULT_IPV4
+                    );
+                    beetle::orchestrator::log_startup_memory_checkpoint("config_api_started");
+                }
                 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
                 log::info!(
                     "[{}] HTTP config API server started (config API on LAN; BEETLE_CONFIG_HTTP_LISTEN, default 0.0.0.0:80)",
@@ -2092,6 +2115,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         remind_store: Arc::clone(&remind_at_store),
         task_store: Arc::clone(&task_store),
     });
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    beetle::orchestrator::log_startup_memory_checkpoint("bg_timer_started");
     // bg_timer: merged cron + heartbeat + remind into one thread (saves ~20KB SRAM).
 
     // 出站前等待 STA + 编排器初始化：须在 `create_http_client` 成功判定之前，以便 Linux 在 HTTP 桩返回 Err 时仍能 init orchestrator。
@@ -2099,6 +2124,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         beetle::platform::wait_for_network_ready();
     }
     beetle::orchestrator::init();
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    beetle::orchestrator::log_startup_memory_checkpoint("orchestrator_initialized");
 
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
     if platform.display_available() {
@@ -2112,6 +2139,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             plan.role,
             move || run_display_loop(display_platform, display_config),
         );
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        beetle::orchestrator::log_startup_memory_checkpoint("display_thread_spawned");
     }
 
     #[allow(unused_mut)]
@@ -2284,6 +2313,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             );
             return;
         }
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        beetle::orchestrator::log_startup_memory_checkpoint("dispatch_spawn");
 
         if communication_plane.start_poll_ingress
             && enabled_channel == "telegram"
@@ -2529,6 +2560,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             );
             return;
         }
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        beetle::orchestrator::log_startup_memory_checkpoint("sender_threads_spawned");
 
         // F8: 启动进度条 stage=4（agent 前）
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
@@ -2603,6 +2636,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                 return;
             }
         };
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        beetle::orchestrator::log_startup_memory_checkpoint("agent_loop_spawn");
     } else {
         log::warn!(
                 "[{}] HTTP client not available (create_http_client failed): Feishu/QQ WSS ingress, dispatch, agent, Telegram poll, and outbound sender threads were not started. On Linux, ensure ureq/rustls stack and network; see dev-docs/beetle-os-plan.md and dev-docs/architecture-and-code.md.",

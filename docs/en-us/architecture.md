@@ -57,6 +57,7 @@ On ESP, the runtime resource path also treats the largest internal free block as
 
 - TLS admission and runtime pressure both consult the same `heap_largest_block_internal` snapshot
 - `/api/resource` exposes the derived `tls_fragmentation_risk` so the operator surface and heartbeat share the same interpretation
+- ESP startup now emits `[orchestrator] startup memory checkpoint ...` lines around config, WiFi, audio, control-plane, sender, and agent bring-up so operators can locate the exact stage where the internal largest free block collapses
 - control-plane diagnostics such as `GET /api/channel_connectivity` must degrade to stale snapshots instead of forcing fresh outbound TLS probes when WiFi is still settling or fragmentation risk is already elevated
 - external WSS reconnect loops must also pause under critical pressure instead of retrying token / gateway fetches into a known TLS-admission failure window
 

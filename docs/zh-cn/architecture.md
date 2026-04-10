@@ -58,6 +58,7 @@ channel -> inbound queue -> agent -> tools / memory / llm -> outbound queue -> d
 
 - TLS admission 和运行压力都读取同一份 `heap_largest_block_internal` 快照
 - `/api/resource` 会对外暴露推导后的 `tls_fragmentation_risk`，保证 operator 面、心跳日志和串口基线看到的是同一套口径
+- ESP 启动链路现在会在配置、WiFi、音频、控制面、sender、agent 等边界打出统一的 `[orchestrator] startup memory checkpoint ...` 日志，用来定位 internal 最大连续空闲块究竟在哪一步掉下去
 - `GET /api/channel_connectivity` 这类控制面诊断，在 WiFi 尚未稳定或碎片风险升高时必须退化为 stale 快照，不能为了“探测”再主动制造新的出站 TLS 压力
 - external WSS 的重连循环在 `Critical` pressure 下也必须暂停，不能继续去取 token / gateway URL，把明知会失败的 TLS admission 窗口反复打穿
 

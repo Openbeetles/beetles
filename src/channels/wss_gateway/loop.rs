@@ -139,7 +139,7 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
             }
             continue;
         }
-        let pressure = crate::orchestrator::current_pressure();
+        let pressure = crate::orchestrator::refresh_heap_if_stale();
         if should_pause_external_wss_connect_for_pressure(pressure) {
             let sleep_secs = tls_admission_retry_sleep_secs_for_pressure(pressure);
             log::info!(
@@ -169,8 +169,9 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                 crate::metrics::record_error_by_stage(e.metrics_stage());
                 log::warn!("[{}] get_url failed: {}", tag, e);
                 if e.is_tls_admission() {
-                    let sleep_secs =
-                        tls_admission_retry_sleep_secs_for_pressure(crate::orchestrator::current_pressure());
+                    let sleep_secs = tls_admission_retry_sleep_secs_for_pressure(
+                        crate::orchestrator::refresh_heap_if_stale(),
+                    );
                     sleep_with_wdt(sleep_secs);
                 } else {
                     sleep_with_wdt(backoff_secs);

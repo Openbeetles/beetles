@@ -72,7 +72,7 @@ fn collect_esp() -> String {
         .unwrap_or((serde_json::Value::Null, 0.0));
 
     let out = esp_payload(
-        chip_model,
+        &chip_model,
         chip_revision,
         cores,
         &snap,
@@ -669,10 +669,7 @@ mod tests {
             payload["heap_largest_block_internal"].as_u64(),
             Some(18_432)
         );
-        assert_eq!(
-            payload["tls_fragmentation_risk"].as_str(),
-            Some("critical")
-        );
+        assert_eq!(payload["tls_fragmentation_risk"].as_str(), Some("critical"));
     }
 
     fn sample_resource_snapshot() -> ResourceSnapshot {

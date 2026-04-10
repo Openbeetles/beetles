@@ -87,6 +87,7 @@ impl EspRouteExecutor {
                     move || run_esp_route_executor(ctx, env, store, rx),
                 );
                 log::info!("[http_server] http_route_exec lazy-started on first request");
+                crate::orchestrator::log_startup_memory_checkpoint("http_route_exec_spawn");
                 EspRouteExecutorInner { submit_tx }
             }),
         }
