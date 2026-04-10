@@ -6,7 +6,6 @@ pub(super) struct AdmittedTurn {
     pub(super) msg_key: u64,
     pub(super) queue_wait_ms: u128,
     pub(super) admission_ms: u128,
-    pub(super) work_class: crate::runtime::system_work::SystemWorkClass,
     pub(super) _agent_task_guard: crate::orchestrator::AgentTaskGuard,
 }
 
@@ -29,7 +28,6 @@ pub(super) fn admit_turn(
         metrics::record_user_queue_wait_ms(queue_wait_ms);
     }
 
-    let work_class = classify_system_work(msg.channel.as_ref(), msg.ingress);
     let msg_key = {
         let mut hasher = DefaultHasher::new();
         msg.channel.hash(&mut hasher);
@@ -82,7 +80,6 @@ pub(super) fn admit_turn(
         msg_key,
         queue_wait_ms,
         admission_ms,
-        work_class,
         _agent_task_guard: crate::orchestrator::begin_agent_task(),
     })
 }

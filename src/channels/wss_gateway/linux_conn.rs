@@ -202,14 +202,6 @@ impl WssConnection for LinuxWssConnection {
     }
 }
 
-#[allow(dead_code)]
-pub fn connect_linux_wss_with_headers(
-    url: &str,
-    headers: &[(&str, &str)],
-) -> Result<LinuxWssConnection> {
-    connect_linux_wss_with_headers_and_profile(url, headers, WssConnectProfile::Gateway)
-}
-
 pub fn connect_linux_wss_with_profile(
     url: &str,
     profile: WssConnectProfile,

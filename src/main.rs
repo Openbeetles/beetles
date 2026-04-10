@@ -1548,22 +1548,6 @@ fn main() {
             log_start_banner(config_path.as_deref());
             run_linux_agent_entry(platform);
         }
-        Commands::Run {
-            config: config_path,
-        } => {
-            log::warn!(
-                "[{}] `beetle run` is deprecated; use `beetle supervise` instead",
-                TAG
-            );
-            log_start_banner(config_path.as_deref());
-            if let Err(error) = beetle::runtime::linux_supervisor::run_supervisor(
-                Arc::clone(&platform),
-                config_path,
-            ) {
-                eprintln!("[{}] supervisor failed: {}", TAG, error);
-                std::process::exit(1);
-            }
-        }
         Commands::Config { action } => {
             handle_config_command(&platform, action);
         }

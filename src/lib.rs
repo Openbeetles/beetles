@@ -114,13 +114,13 @@ pub use llm::{
 };
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub use platform::{
-    connect_wifi, init_nvs, init_spiffs, spiffs_base_string, spiffs_usage, state_mount_path,
-    Esp32Platform, EspHttpClient, SpiffsLongTermMemoryStore, SpiffsMemoryStore, SpiffsSessionStore,
+    connect_wifi, init_nvs, init_spiffs, spiffs_usage, state_mount_path, Esp32Platform,
+    EspHttpClient, SpiffsLongTermMemoryStore, SpiffsMemoryStore, SpiffsSessionStore,
 };
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use platform::{
-    connect_wifi, init_nvs, init_spiffs, spiffs_base_string, spiffs_usage, state_mount_path,
-    EspHttpClient, LinuxPlatform, SpiffsLongTermMemoryStore, SpiffsMemoryStore, SpiffsSessionStore,
+    connect_wifi, init_nvs, init_spiffs, spiffs_usage, state_mount_path, EspHttpClient,
+    LinuxPlatform, SpiffsLongTermMemoryStore, SpiffsMemoryStore, SpiffsSessionStore,
 };
 pub use platform::{
     AudioDuplexCapabilities, AudioDuplexProfile, AudioEchoCancellationCapability,

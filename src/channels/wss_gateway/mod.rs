@@ -27,8 +27,8 @@ pub use esp_conn::{
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 #[allow(unused_imports)]
 pub use linux_conn::{
-    connect_linux_wss, connect_linux_wss_with_headers, connect_linux_wss_with_headers_and_profile,
-    connect_linux_wss_with_profile, LinuxWssConnection,
+    connect_linux_wss, connect_linux_wss_with_headers_and_profile, connect_linux_wss_with_profile,
+    LinuxWssConnection,
 };
 
 /// 平台 WSS 建连：ESP 用 `esp-idf` websocket；Linux 用 `tungstenite`+rustls。供 `run_*_ws_loop` 注入。

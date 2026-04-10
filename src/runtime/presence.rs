@@ -156,18 +156,13 @@ pub fn inspect_platform_presence(platform: &dyn Platform, now_secs: u64) -> Pres
 
 fn derive_presence_state(
     runtime_mode: RuntimeModeSnapshot,
-    soul_kernel: &SoulKernelStatus,
+    _soul_kernel: &SoulKernelStatus,
     resource: &ResourceSnapshot,
     busy: bool,
 ) -> PresenceState {
-    let bootstrap_empty = soul_kernel.expected_bootstrap_empty;
-    if runtime_mode.recovery_safe_mode_active
-        || (!bootstrap_empty && !soul_kernel.safe_mode_minimum_readable)
-    {
+    if runtime_mode.recovery_safe_mode_active {
         PresenceState::Recovery
-    } else if resource.pressure == PressureLevel::Critical
-        || (!bootstrap_empty && !soul_kernel.minimum_viable)
-    {
+    } else if resource.pressure == PressureLevel::Critical {
         PresenceState::Fault
     } else if runtime_mode.current_mode == RuntimeMode::Booting {
         PresenceState::Booting
@@ -221,7 +216,7 @@ fn build_presence_copy(
         PresenceState::Fault => (
             "PROTECT",
             "resource pressure is critical",
-            "critical_pressure_or_kernel_not_viable",
+            "critical_pressure",
         ),
         PresenceState::NoWifi => ("NETWORK", "network link is not ready", "wifi_disconnected"),
         PresenceState::Idle => ("READY", "present and waiting", "idle"),
@@ -422,5 +417,39 @@ mod tests {
             false,
         );
         assert_eq!(state, PresenceState::NoWifi);
+    }
+
+    #[test]
+    fn non_bootstrap_kernel_gap_does_not_mask_live_idle_presence() {
+        let state = derive_presence_state(
+            runtime_mode(RuntimeMode::Normal),
+            &crate::runtime::SoulKernelStatus {
+                expected_bootstrap_empty: false,
+                minimum_viable: false,
+                safe_mode_minimum_readable: false,
+                ..crate::runtime::SoulKernelStatus::default()
+            },
+            &resource(),
+            false,
+        );
+        assert_eq!(state, PresenceState::Idle);
+    }
+
+    #[test]
+    fn non_bootstrap_kernel_gap_does_not_mask_live_busy_presence() {
+        let mut resource = resource();
+        resource.active_agent_tasks = 1;
+        let state = derive_presence_state(
+            runtime_mode(RuntimeMode::Normal),
+            &crate::runtime::SoulKernelStatus {
+                expected_bootstrap_empty: false,
+                minimum_viable: false,
+                safe_mode_minimum_readable: false,
+                ..crate::runtime::SoulKernelStatus::default()
+            },
+            &resource,
+            true,
+        );
+        assert_eq!(state, PresenceState::Busy);
     }
 }

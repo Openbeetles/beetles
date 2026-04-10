@@ -12,7 +12,6 @@ mod tool_round;
 mod turn_execution;
 mod turn_finalize;
 mod turn_prepare;
-mod worker_context;
 mod worker_context_stages;
 
 use super::delivery::{DeliveryReport, DeliverySession, ToolIntentDelivery};
@@ -127,7 +126,6 @@ use self::task_execution::try_run_task_execution;
 use self::tool_round::execute_tool_use_round;
 use self::turn_execution::execute_turn;
 use self::turn_finalize::persist_turn_ledger;
-use self::worker_context::prepare_worker_conversation;
 use super::deliberation::{
     compile_turn_deliberation_gate, recovery_suffix_for_gate, render_turn_deliberation_gate_block,
     TurnDeliberationGate, TurnDeliberationInput,
@@ -2507,7 +2505,6 @@ fn run_agent_loop_main(
             msg_key,
             queue_wait_ms,
             admission_ms,
-            work_class: _work_class,
             _agent_task_guard,
         } = admitted;
         let turn_started_at_ms = now_unix_ms();
@@ -2602,566 +2599,6 @@ fn run_agent_loop_main(
         );
     }
     Ok(())
-}
-
-/// 完整 context + worker LLM + ReAct 循环，返回 (WorkerOutcome, telemetry)。不写 session，由调用方写。
-/// telemetry.streamed=true 表示已通过流式编辑发送到通道，调用方应跳过 outbound_tx。
-#[allow(clippy::too_many_arguments)]
-fn run_worker_path(
-    http: &mut dyn PlatformHttpClient,
-    worker_llm: &(dyn LlmClient + Send + Sync),
-    msg: &crate::bus::PcMsg,
-    outbound_tx: &OutboundTx,
-    req_id: &str,
-    registry: &crate::tools::ToolRegistry,
-    config: &AgentLoopConfig,
-    tool_call_repeat: &mut HashMap<u64, u8>,
-    loc: UiLocale,
-) -> Result<(WorkerOutcome, WorkerRunTelemetry)> {
-    let mut latency = WorkerLatency::default();
-    let worker_start = Instant::now();
-    let request_plan = AgentRequestPlan::build(msg, registry, worker_llm, config.strategy);
-    let mut tool_ctx = HttpClientToolContext {
-        http,
-        chat_id: Some(msg.chat_id.clone()),
-        channel: Some(msg.channel.clone()),
-        channel_capability_registry: Arc::clone(&config.channel_capability_registry),
-        supports_current_chat_outbound_message: false,
-        supports_current_chat_primary_reply: false,
-        supports_explicit_outbound_message: false,
-        outbound_message_budget: 2,
-        outbound_message_count: 0,
-        current_primary_message_delivered: false,
-        locale: loc,
-    };
-    let channel_capability = config.channel_capability_registry.get(msg.channel.as_ref());
-    let editor = if config.llm_stream
-        && config.stream_editor_channel.as_deref() == Some(msg.channel.as_ref())
-        && channel_capability
-            .map(|entry| entry.enabled && entry.contract.supports_stream_edit)
-            .unwrap_or(false)
-    {
-        config.stream_editor.as_deref()
-    } else {
-        None
-    };
-    let current_channel_enabled = channel_capability
-        .map(|entry| entry.enabled)
-        .unwrap_or(false);
-    let current_user_visible = msg.ingress == IngressKind::User
-        && current_channel_enabled
-        && msg.channel.as_ref() != crate::CHANNEL_VOICE;
-    tool_ctx.supports_current_chat_outbound_message = current_user_visible
-        && channel_capability
-            .map(|entry| {
-                entry.contract.supports_primary_reply || entry.contract.supports_supplemental_reply
-            })
-            .unwrap_or(false);
-    tool_ctx.supports_current_chat_primary_reply = current_user_visible
-        && channel_capability
-            .map(|entry| entry.contract.supports_primary_reply)
-            .unwrap_or(false);
-    tool_ctx.supports_explicit_outbound_message =
-        msg.ingress == IngressKind::User && msg.channel.as_ref() != crate::CHANNEL_VOICE;
-    let mut delivery =
-        DeliverySession::new(msg, req_id, outbound_tx, editor, channel_capability, loc);
-    let PreparedWorkerConversation {
-        mut runtime_carry,
-        subject_state,
-        system,
-        mut messages,
-        mut system_scratch,
-        deliberation_gate,
-        interactive_fast_path,
-        allow_tool_round_recall_refill,
-        prompt_memory_system_budget,
-        pressure,
-        mental_privacy_adjudication,
-        persona_priority_adjudication,
-    } = prepare_worker_conversation(
-        worker_llm,
-        msg,
-        &request_plan,
-        config,
-        &mut tool_ctx,
-        &mut latency,
-    )?;
-    if let Some(task_execution_outcome) = try_run_task_execution(
-        worker_llm,
-        msg,
-        outbound_tx,
-        registry,
-        config,
-        &request_plan,
-        &mut tool_ctx,
-        loc,
-        &mut latency,
-        &system,
-        &messages,
-        &mut system_scratch,
-        pressure,
-        deliberation_gate.class,
-        subject_state.as_deref().cloned(),
-        mental_privacy_adjudication.as_deref().cloned(),
-        persona_priority_adjudication.as_deref().cloned(),
-    )? {
-        return Ok(task_execution_outcome);
-    }
-
-    // ReAct 追加消息起始下标；用于滑动窗口压缩早期轮次。
-    let initial_msg_count = messages.len();
-    // 跨请求复用容器，每次新请求清空；跨轮次仍保留本请求内状态。
-    tool_call_repeat.clear();
-    // 复用工具错误消息缓冲区，避免错误路径反复分配。
-    let mut final_content = String::with_capacity(4096);
-    let mut memory_grounding: Option<String> = None;
-    let mut tool_result_user_content = String::with_capacity(1024);
-    let mut round_evidence_lines = Vec::with_capacity(MAX_TOOL_EVIDENCE_ITEMS);
-    // P1 Enhancement 3: 进度跟踪（最近3轮），用于检测无效循环。
-    let mut progress_history: [Option<RoundProgress>; 3] = [None; 3];
-    let mut any_tool_used = false; // 本次请求是否使用过任何工具
-    let mut external_content_used = false;
-    let mut end_turn_followup_used = false;
-    let mut recent_tool_round = RecentToolRoundState::default();
-    let mut delivered_current_chat_reply: Option<String> = None;
-    let mut used_final_answer_recovery = false;
-
-    for round in 0..MAX_REACT_ROUNDS {
-        latency.react_rounds = round as u32 + 1;
-        // Inter-round pressure check: skip first round (already gated by caller).
-        // Use stale-refresh instead of unconditional resample so the runtime
-        // does not thrash the global snapshot between tightly packed rounds.
-        if round > 0 {
-            match crate::orchestrator::refresh_heap_if_stale() {
-                crate::orchestrator::PressureLevel::Normal => {}
-                crate::orchestrator::PressureLevel::Cautious
-                | crate::orchestrator::PressureLevel::Critical => {
-                    match crate::orchestrator::can_call_llm_pub() {
-                        LlmDecision::Proceed => {}
-                        LlmDecision::RetryLater { .. } | LlmDecision::Degrade { .. } => {
-                            if final_content.is_empty() {
-                                final_content = tr(UiMessage::LowMemoryUserDefer, loc);
-                            } else {
-                                final_content.push_str("\n\n");
-                                final_content.push_str(&tr(UiMessage::StreamLowMemoryOmitted, loc));
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        if round >= 2 {
-            compact_early_tool_rounds(&mut messages, initial_msg_count);
-        }
-        // P1 Enhancement 3: 检测连续3轮无进展，注入提示。
-        if round >= 3
-            && progress_history[0].is_some_and(|p| !p.new_info)
-            && progress_history[1].is_some_and(|p| !p.new_info)
-            && progress_history[2].is_some_and(|p| !p.new_info)
-        {
-            messages.push(Message {
-                role: Cow::Borrowed("user"),
-                content: "[SYSTEM] You've made no progress in the last 3 rounds. The current approach isn't working. Either try a fundamentally different strategy or explain the blocker to the user.".to_string(),
-            });
-        }
-        let t0 = metrics::record_llm_call_start();
-        let llm_round_start = Instant::now();
-        let mut first_token_marked = latency.ttft_ms.is_some();
-        let round_tools = request_plan.request_tools();
-        let response = if config.llm_stream {
-            let progress_base = worker_start;
-            let llm_tool_choice = request_plan.tool_choice(round, any_tool_used);
-            let mut progress_cb = |_delta: &str, accumulated: &str| {
-                crate::platform::task_wdt::feed_current_task();
-                if !first_token_marked && !accumulated.is_empty() {
-                    latency.ttft_ms = Some(progress_base.elapsed().as_millis());
-                    first_token_marked = true;
-                }
-                if matches!(
-                    crate::orchestrator::current_pressure(),
-                    crate::orchestrator::PressureLevel::Critical
-                ) {
-                    return;
-                }
-                delivery.on_stream_delta(accumulated);
-            };
-            worker_llm.chat_with_progress(
-                &mut tool_ctx,
-                &system,
-                &messages,
-                round_tools,
-                llm_tool_choice,
-                &mut progress_cb,
-            )
-        } else {
-            let llm_tool_choice = request_plan.tool_choice(round, any_tool_used);
-            worker_llm.chat(
-                &mut tool_ctx,
-                &system,
-                &messages,
-                round_tools,
-                llm_tool_choice,
-            )
-        };
-        let response = match response {
-            Ok(r) => {
-                metrics::record_llm_call_end(t0);
-                latency.llm_round_total_ms = latency
-                    .llm_round_total_ms
-                    .saturating_add(llm_round_start.elapsed().as_millis());
-                r
-            }
-            Err(e) => {
-                metrics::record_llm_call_end(t0);
-                metrics::record_llm_error();
-                metrics::record_error_by_stage("agent_chat");
-                return Err(e.with_stage("agent_chat"));
-            }
-        };
-        let response = request_plan.recover_response(response);
-        crate::platform::task_wdt::feed_current_task();
-        metrics::record_wdt_feed();
-
-        let tc_count = response.tool_calls.as_ref().map_or(0, |v| v.len());
-        if log::log_enabled!(log::Level::Debug) {
-            log::debug!(
-                "[agent] llm round={} stop_reason={:?} tool_calls={} content_len={}",
-                round,
-                response.stop_reason,
-                tc_count,
-                response.content.len()
-            );
-        }
-
-        if response.stop_reason == StopReason::MaxTokens {
-            let mut content = response.content;
-            if !content.is_empty() {
-                content.push_str("\n\n");
-                content.push_str(&tr(UiMessage::ReplyTruncated, loc));
-            }
-            mark_ttft_if_visible(&mut latency, worker_start, &content);
-            final_content = content;
-            break;
-        }
-
-        if response.stop_reason == StopReason::EndTurn {
-            let content = response.content;
-            if content.contains(AGENT_MARKER_STOP) {
-                let confirmation = strip_agent_stop_confirmation(&content);
-                mark_ttft_if_visible(&mut latency, worker_start, &confirmation);
-                let streamed = delivery.finalize(&confirmation);
-                let telemetry = WorkerRunTelemetry {
-                    streamed,
-                    latency,
-                    delivery: delivery.report(),
-                    any_tool_used,
-                    external_content_used,
-                    used_final_answer_recovery,
-                    task_execution_used: false,
-                    pressure,
-                    runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
-                    deliberation_class: deliberation_gate.class,
-                    tool_blocker: recent_tool_round.blocker,
-                    prompt_recall_intent: runtime_carry.prompt_recall_intent,
-                    runtime_skill_selected_ids: runtime_carry.runtime_skill_selected_ids.clone(),
-                    task_learning_selected_ids: runtime_carry.task_recall_selected_ids.clone(),
-                    subject_state: subject_state.as_deref().cloned(),
-                    mental_privacy_adjudication: mental_privacy_adjudication.as_deref().cloned(),
-                    persona_priority_adjudication: persona_priority_adjudication
-                        .as_deref()
-                        .cloned(),
-                };
-                return Ok((WorkerOutcome::Interrupt(confirmation), telemetry));
-            }
-            if let Some(followup) =
-                empty_final_answer_followup(config.strategy, any_tool_used, &content)
-            {
-                enqueue_end_turn_followup(&mut messages, &mut progress_history, &content, followup);
-                continue;
-            }
-            if let Some((followup, consume_single_use_budget)) =
-                resolve_end_turn_followup(EndTurnFollowupContext {
-                    request_plan: &request_plan,
-                    strategy: config.strategy,
-                    round,
-                    any_tool_used,
-                    end_turn_followup_used,
-                    recent_tool_round: &recent_tool_round,
-                    messages: &messages,
-                    content: &content,
-                })
-            {
-                enqueue_end_turn_followup(
-                    &mut messages,
-                    &mut progress_history,
-                    &content,
-                    &followup,
-                );
-                if consume_single_use_budget {
-                    end_turn_followup_used = true;
-                }
-                continue;
-            }
-
-            mark_ttft_if_visible(&mut latency, worker_start, &content);
-            final_content = content;
-            break;
-        }
-
-        if response.stop_reason == StopReason::ToolUse {
-            let tool_calls = response.tool_calls.as_deref().unwrap_or(&[]);
-            if tool_calls.is_empty() {
-                mark_ttft_if_visible(&mut latency, worker_start, &response.content);
-                final_content = response.content;
-                break;
-            }
-            if !response.content.trim().is_empty() && response.content.trim() != "[tool_use]" {
-                mark_ttft_if_visible(&mut latency, worker_start, &response.content);
-                delivery.emit_partial(&response.content);
-            }
-            messages.push(Message {
-                role: Cow::Borrowed("assistant"),
-                // Anthropic API 要求 tool_use 轮的 assistant content 非空；空时用占位符。
-                content: if response.content.is_empty() {
-                    "[tool_use]".to_string()
-                } else {
-                    response.content
-                },
-            });
-            let mut cap =
-                MAX_TOOL_RESULTS_USER_MESSAGE_LEN.min(tool_calls.len().saturating_mul(192));
-            cap = cap.max(TOOL_RESULTS_PREFIX.len());
-            tool_result_user_content.clear();
-            if tool_result_user_content.capacity() < cap {
-                tool_result_user_content.reserve(cap - tool_result_user_content.capacity());
-            }
-            tool_result_user_content.push_str(TOOL_RESULTS_PREFIX);
-            let mut truncated = false;
-            round_evidence_lines.clear();
-            let tool_round_output = execute_tool_use_round(
-                tool_calls,
-                loc,
-                &mut delivery,
-                &request_plan,
-                registry,
-                &mut tool_ctx,
-                config,
-                tool_call_repeat,
-                &mut latency,
-                &mut tool_result_user_content,
-                &mut round_evidence_lines,
-            );
-            truncated |= tool_round_output.truncated;
-            if let Some(reply) = tool_round_output.delivered_current_chat_reply {
-                delivered_current_chat_reply = Some(reply);
-            }
-            if tool_round_output.round_tool_success {
-                any_tool_used = true;
-            }
-            let round_failure_summary = tool_round_output.round_failure_summary;
-            if !round_evidence_lines.is_empty() {
-                if !tool_result_user_content.ends_with('\n') {
-                    let _ = push_bounded_utf8(
-                        &mut tool_result_user_content,
-                        "\n",
-                        MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
-                    );
-                }
-                if append_tool_evidence_summary_block(
-                    &mut tool_result_user_content,
-                    &round_evidence_lines,
-                    tool_round_output.omitted_evidence_count,
-                    MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
-                ) {
-                    truncated = true;
-                }
-            }
-            let round_signature = tool_round_output.round_signature;
-            external_content_used |=
-                round_used_external_content(&tool_round_output.round_observations);
-            recent_tool_round.record_round(
-                tool_calls.len(),
-                tool_round_output.round_tool_success,
-                round_signature,
-                round_failure_summary,
-            );
-            let ping_pong_detected = recent_tool_round.ping_pong_detected();
-            let round_guidance = if tool_round_output.round_tool_success {
-                merge_tool_round_guidance(
-                    build_success_tool_round_guidance(
-                        config.strategy,
-                        tool_calls.len(),
-                        round_failure_summary,
-                    ),
-                    build_success_tool_execution_guidance(
-                        config.strategy,
-                        &tool_round_output.round_observations,
-                    ),
-                )
-            } else {
-                build_tool_round_guidance(
-                    config.strategy,
-                    tool_round_output.round_tool_success,
-                    recent_tool_round.consecutive_stalled_rounds,
-                    tool_calls.len(),
-                    tool_round_output.round_repeat_count,
-                    round_failure_summary,
-                    ping_pong_detected,
-                )
-            };
-            if let Some(guidance) = round_guidance {
-                if !tool_result_user_content.ends_with('\n') {
-                    let _ = push_bounded_utf8(
-                        &mut tool_result_user_content,
-                        "\n",
-                        MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
-                    );
-                }
-                if append_tool_round_guidance_block(
-                    &mut tool_result_user_content,
-                    &guidance,
-                    MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
-                ) {
-                    truncated = true;
-                }
-            }
-            if memory_grounding.is_none() {
-                if runtime_carry.long_term_memory_text.is_none()
-                    && interactive_fast_path
-                    && allow_tool_round_recall_refill
-                    && prompt_memory_system_budget
-                        >= memory_policy(config.memory_system_kind)
-                            .long_term_recall
-                            .block_min_len
-                {
-                    let recall_recent_count = memory_policy(config.memory_system_kind)
-                        .long_term_recall
-                        .recent_grounding_message_count;
-                    let recent_start = runtime_carry
-                        .recent_messages
-                        .len()
-                        .saturating_sub(recall_recent_count);
-                    runtime_carry.long_term_memory_text = recall_long_term_memory_block(
-                        config.long_term_memory_store.as_ref(),
-                        &msg.chat_id,
-                        &msg.content,
-                        runtime_carry.summary_text.as_deref(),
-                        &runtime_carry.recent_messages[recent_start..],
-                        prompt_memory_system_budget,
-                        config.memory_system_kind.memory_profile(),
-                    );
-                }
-                memory_grounding = build_memory_grounding_text(
-                    runtime_carry.summary_text.as_deref(),
-                    runtime_carry.long_term_memory_text.as_deref(),
-                );
-            }
-            if let Some(memory_grounding) = memory_grounding.as_deref() {
-                if !tool_result_user_content.ends_with('\n') {
-                    let _ = push_bounded_utf8(
-                        &mut tool_result_user_content,
-                        "\n",
-                        MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
-                    );
-                }
-                if append_memory_grounding_block(
-                    &mut tool_result_user_content,
-                    memory_grounding,
-                    MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
-                ) {
-                    truncated = true;
-                }
-            }
-            if truncated && tool_result_user_content.len() < MAX_TOOL_RESULTS_USER_MESSAGE_LEN {
-                let _ = push_bounded_utf8(
-                    &mut tool_result_user_content,
-                    "\n[truncated]",
-                    MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
-                );
-            }
-            messages.push(Message {
-                role: Cow::Borrowed("user"),
-                content: std::mem::take(&mut tool_result_user_content),
-            });
-            // P1 Enhancement 3: 记录本轮进度（ToolUse 路径）。
-            progress_history[0] = progress_history[1];
-            progress_history[1] = progress_history[2];
-            progress_history[2] = Some(RoundProgress {
-                new_info: tool_round_output.round_tool_success,
-            });
-            continue;
-        }
-
-        let content = response.content;
-        if content.contains(AGENT_MARKER_STOP) {
-            let confirmation = strip_agent_stop_confirmation(&content);
-            let streamed = delivery.finalize(&confirmation);
-            let telemetry = WorkerRunTelemetry {
-                streamed,
-                latency,
-                delivery: delivery.report(),
-                any_tool_used,
-                external_content_used,
-                used_final_answer_recovery,
-                task_execution_used: false,
-                pressure,
-                runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
-                deliberation_class: deliberation_gate.class,
-                tool_blocker: recent_tool_round.blocker,
-                prompt_recall_intent: runtime_carry.prompt_recall_intent,
-                runtime_skill_selected_ids: runtime_carry.runtime_skill_selected_ids.clone(),
-                task_learning_selected_ids: runtime_carry.task_recall_selected_ids.clone(),
-                subject_state: subject_state.as_deref().cloned(),
-                mental_privacy_adjudication: mental_privacy_adjudication.as_deref().cloned(),
-                persona_priority_adjudication: persona_priority_adjudication.as_deref().cloned(),
-            };
-            return Ok((WorkerOutcome::Interrupt(confirmation), telemetry));
-        }
-        final_content = content;
-        break;
-    }
-    if final_content.trim().is_empty() && any_tool_used && delivered_current_chat_reply.is_none() {
-        used_final_answer_recovery = true;
-        final_content = run_final_answer_recovery_round(
-            worker_llm,
-            &mut tool_ctx,
-            &system,
-            &messages,
-            recovery_suffix_for_gate(&deliberation_gate),
-            config.llm_stream,
-            &mut latency,
-            &mut system_scratch,
-        )?;
-    }
-    let streamed = delivery.finalize(&final_content);
-    let outcome = if let Some(reply) = delivered_current_chat_reply {
-        WorkerOutcome::Delivered(reply)
-    } else {
-        WorkerOutcome::Content(final_content)
-    };
-    Ok((
-        outcome,
-        WorkerRunTelemetry {
-            streamed,
-            latency,
-            delivery: delivery.report(),
-            any_tool_used,
-            external_content_used,
-            used_final_answer_recovery,
-            task_execution_used: false,
-            pressure,
-            runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
-            deliberation_class: deliberation_gate.class,
-            tool_blocker: recent_tool_round.blocker,
-            prompt_recall_intent: runtime_carry.prompt_recall_intent,
-            runtime_skill_selected_ids: runtime_carry.runtime_skill_selected_ids,
-            task_learning_selected_ids: runtime_carry.task_recall_selected_ids,
-            subject_state: subject_state.map(|value| *value),
-            mental_privacy_adjudication: mental_privacy_adjudication.map(|value| *value),
-            persona_priority_adjudication: persona_priority_adjudication.map(|value| *value),
-        },
-    ))
 }
 
 #[cfg(test)]
@@ -4204,7 +3641,7 @@ mod tests {
         let config = test_agent_loop_config();
         let mut repeat = HashMap::new();
 
-        let (outcome, telemetry) = run_worker_path(
+        let turn_execution::ExecutedTurn { outcome, telemetry } = turn_execution::execute_turn(
             &mut http,
             &llm,
             &case.msg,
@@ -4215,7 +3652,7 @@ mod tests {
             &mut repeat,
             UiLocale::Zh,
         )
-        .expect("benchmark worker path");
+        .expect("benchmark execute turn");
         let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
         let final_recovery_used = observed
             .iter()
@@ -4542,7 +3979,7 @@ mod tests {
     }
 
     #[test]
-    fn run_worker_path_suppresses_final_reply_after_message_tool_primary_delivery() {
+    fn execute_turn_suppresses_final_reply_after_message_tool_primary_delivery() {
         let llm = SequenceStubLlm {
             responses: Mutex::new(vec![
                 LlmResponse {
@@ -4570,7 +4007,7 @@ mod tests {
             PcMsg::new_inbound("qq_channel", "chat-1", "测试多轮发送", false).expect("message");
         let mut repeat = HashMap::new();
 
-        let (outcome, telemetry) = run_worker_path(
+        let turn_execution::ExecutedTurn { outcome, telemetry } = turn_execution::execute_turn(
             &mut http,
             &llm,
             &msg,
@@ -4581,7 +4018,7 @@ mod tests {
             &mut repeat,
             UiLocale::Zh,
         )
-        .expect("worker path");
+        .expect("execute turn");
 
         assert!(matches!(outcome, WorkerOutcome::Delivered(ref text) if text == "工具主答复"));
         assert!(telemetry.streamed);
@@ -4631,7 +4068,10 @@ mod tests {
             PcMsg::new_inbound("qq_channel", "chat-1", "你现在在想什么？", false).expect("message");
         let mut repeat = HashMap::new();
 
-        let (outcome, _telemetry) = run_worker_path(
+        let turn_execution::ExecutedTurn {
+            outcome,
+            telemetry: _telemetry,
+        } = turn_execution::execute_turn(
             &mut http,
             &llm,
             &msg,
@@ -4642,7 +4082,7 @@ mod tests {
             &mut repeat,
             UiLocale::Zh,
         )
-        .expect("worker path");
+        .expect("execute turn");
 
         assert!(matches!(outcome, WorkerOutcome::Content(ref text) if text == "正常主回复"));
         let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
@@ -4727,7 +4167,10 @@ mod tests {
             PcMsg::new_inbound("qq_channel", "chat-1", "你现在在想什么？", false).expect("message");
         let mut repeat = HashMap::new();
 
-        let (_outcome, _telemetry) = run_worker_path(
+        let turn_execution::ExecutedTurn {
+            outcome: _outcome,
+            telemetry: _telemetry,
+        } = turn_execution::execute_turn(
             &mut http,
             &llm,
             &msg,
@@ -4738,7 +4181,7 @@ mod tests {
             &mut repeat,
             UiLocale::Zh,
         )
-        .expect("worker path");
+        .expect("execute turn");
 
         let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
         assert!(
@@ -4781,7 +4224,10 @@ mod tests {
         let msg = PcMsg::new_inbound("qq_channel", "chat-1", "继续回答", false).expect("message");
         let mut repeat = HashMap::new();
 
-        let (outcome, _telemetry) = run_worker_path(
+        let turn_execution::ExecutedTurn {
+            outcome,
+            telemetry: _telemetry,
+        } = turn_execution::execute_turn(
             &mut http,
             &llm,
             &msg,
@@ -4792,7 +4238,7 @@ mod tests {
             &mut repeat,
             UiLocale::Zh,
         )
-        .expect("worker path");
+        .expect("execute turn");
 
         assert!(matches!(
             outcome,
@@ -4851,7 +4297,10 @@ mod tests {
         let msg = PcMsg::new_inbound("qq_channel", "chat-1", "继续回答", false).expect("message");
         let mut repeat = HashMap::new();
 
-        let (_outcome, _telemetry) = run_worker_path(
+        let turn_execution::ExecutedTurn {
+            outcome: _outcome,
+            telemetry: _telemetry,
+        } = turn_execution::execute_turn(
             &mut http,
             &llm,
             &msg,
@@ -4862,7 +4311,7 @@ mod tests {
             &mut repeat,
             UiLocale::Zh,
         )
-        .expect("worker path");
+        .expect("execute turn");
 
         assert!(
             tracked_store.set_count() > 0,

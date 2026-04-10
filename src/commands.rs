@@ -26,14 +26,6 @@ pub enum Commands {
         config: Option<String>,
     },
 
-    /// Backward-compatible alias for `supervise`
-    #[command(hide = true)]
-    Run {
-        /// Optional config file path
-        #[arg(short, long)]
-        config: Option<String>,
-    },
-
     /// Manage configuration values
     Config {
         #[command(subcommand)]
@@ -100,4 +92,19 @@ pub enum ConfigAction {
 
     /// List all configuration values
     List,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Cli;
+    use clap::Parser;
+
+    #[test]
+    fn cli_rejects_deprecated_run_subcommand() {
+        let parsed = Cli::try_parse_from(["beetle", "run"]);
+        assert!(
+            parsed.is_err(),
+            "deprecated `run` alias should no longer be accepted"
+        );
+    }
 }

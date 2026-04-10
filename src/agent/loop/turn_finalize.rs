@@ -84,28 +84,3 @@ pub(super) fn build_turn_delivery_ledger(report: DeliveryReport) -> TurnDelivery
         visible_text_updates_sent: report.visible_text_updates_sent,
     }
 }
-
-#[allow(dead_code)]
-#[inline(never)]
-pub(super) fn finalize_lane_turn(
-    http: &mut dyn PlatformHttpClient,
-    worker_llm: &(dyn LlmClient + Send + Sync),
-    ctx: LaneTurnFinalizeContext<'_>,
-    llm_failure_count: &mut HashMap<u64, (u8, Instant)>,
-    defer_tracker: &mut HashMap<u64, (u8, Instant)>,
-    outcome: WorkerOutcome,
-    telemetry: WorkerRunTelemetry,
-) {
-    let finalized = super::reply_finalize::finalize_turn(
-        http,
-        worker_llm,
-        ctx.config,
-        &ctx.msg,
-        ctx.loc,
-        ctx.msg_start,
-        outcome,
-        telemetry,
-    );
-    let handoff = super::delivery_handoff::deliver_turn(ctx.outbound_tx, &ctx.msg, &finalized);
-    super::reply_finalize::complete_turn(ctx, llm_failure_count, defer_tracker, finalized, handoff);
-}

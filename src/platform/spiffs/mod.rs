@@ -19,12 +19,6 @@ use std::time::Instant;
 )]
 const ESP_SAFE_REL_PATH_LEN: usize = 31;
 
-/// 兼容旧名：状态根路径字符串。ESP 上为 `/spiffs`；host 上为 `state_mount_path()` 的运行时值。
-/// Legacy name for state root path string.
-pub fn spiffs_base_string() -> String {
-    state_mount_path().to_string_lossy().into_owned()
-}
-
 /// 与 `state_mount_path().join(rel)` 相同；供各 `Spiffs*` 存储拼接路径。
 pub(crate) fn state_path_join(rel: impl AsRef<Path>) -> PathBuf {
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]

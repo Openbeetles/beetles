@@ -1,6 +1,37 @@
 use super::*;
 
-pub(super) type PreparedTurn = PreparedWorkerConversation;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PreReplyGovernanceMode {
+    LinuxFull,
+    EspCompact,
+}
+
+impl PreReplyGovernanceMode {
+    pub(super) fn for_turn(
+        memory_system_kind: crate::memory::MemorySystemKind,
+        ingress: IngressKind,
+    ) -> Option<Self> {
+        if ingress != IngressKind::User {
+            return None;
+        }
+        Some(match memory_system_kind {
+            crate::memory::MemorySystemKind::LinuxFull => Self::LinuxFull,
+            crate::memory::MemorySystemKind::EspCompact => Self::EspCompact,
+        })
+    }
+
+    pub(super) fn allow_sync_disclosure_adjudication(self) -> bool {
+        matches!(self, Self::LinuxFull)
+    }
+
+    pub(super) fn allow_dynamic_persona_adjudication(self) -> bool {
+        matches!(self, Self::LinuxFull)
+    }
+
+    pub(super) fn allow_sync_relationship_constitution(self) -> bool {
+        matches!(self, Self::LinuxFull)
+    }
+}
 
 #[inline(never)]
 pub(super) fn prepare_turn<'a>(
@@ -10,7 +41,7 @@ pub(super) fn prepare_turn<'a>(
     config: &AgentLoopConfig,
     tool_ctx: &mut HttpClientToolContext<'_>,
     latency: &mut WorkerLatency,
-) -> Result<PreparedTurn> {
+) -> Result<PreparedWorkerConversation> {
     let mut session = Box::new(super::worker_context_stages::WorkerPrepareSession::new(
         Instant::now(),
     ));
