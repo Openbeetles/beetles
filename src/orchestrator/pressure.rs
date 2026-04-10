@@ -5,7 +5,8 @@ use crate::constants::{
     DEFAULT_MESSAGES_MAX_LEN, DEFAULT_SYSTEM_MAX_LEN, MAX_CONCURRENT_HTTP, MAX_RESPONSE_BODY_LEN,
     PRESSURE_CAUTIOUS_INTERNAL_MIN_BYTES, PRESSURE_CAUTIOUS_PSRAM_MIN_BYTES,
     PRESSURE_NORMAL_INTERNAL_MIN_BYTES, PRESSURE_NORMAL_PSRAM_MIN_BYTES,
-    PRESSURE_QUEUE_CONGESTION_THRESHOLD,
+    PRESSURE_QUEUE_CONGESTION_THRESHOLD, TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES,
+    TLS_FRAGMENTATION_CAUTION_HEADROOM_BYTES,
 };
 use std::sync::atomic::Ordering;
 
@@ -41,6 +42,21 @@ impl PressureLevel {
             1 => PressureLevel::Cautious,
             _ => PressureLevel::Critical,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TlsFragmentationRisk {
+    NotApplicable,
+    Healthy,
+    Cautious,
+    Critical,
+}
+
+impl TlsFragmentationRisk {
+    pub fn blocks_live_probe(self) -> bool {
+        matches!(self, Self::Cautious | Self::Critical)
     }
 }
 
@@ -92,12 +108,18 @@ pub fn budget_for_level(level: PressureLevel) -> ResourceBudget {
 pub fn compute_pressure(state: &OrchestratorState) -> PressureLevel {
     let internal = state.heap_free_internal.load(Ordering::Relaxed) as usize;
     let spiram = state.heap_free_spiram.load(Ordering::Relaxed) as usize;
+    let largest = state.heap_largest_block.load(Ordering::Relaxed);
     let baseline = state.heap_baseline_internal.load(Ordering::Relaxed) as usize;
     let active_http = state.active_http_count.load(Ordering::Relaxed);
     let active_wss = state.active_wss_count.load(Ordering::Relaxed);
     let active_network = active_http.saturating_add(active_wss);
     let queue_total =
         state.inbound_depth.load(Ordering::Relaxed) + state.outbound_depth.load(Ordering::Relaxed);
+    let fragmentation_risk = tls_fragmentation_risk(largest, state.heap_free_spiram.load(Ordering::Relaxed));
+
+    if fragmentation_risk == TlsFragmentationRisk::Critical {
+        return PressureLevel::Critical;
+    }
 
     // Critical: internal 低于 Cautious 阈值且 PSRAM 也低
     if internal < PRESSURE_CAUTIOUS_INTERNAL_MIN_BYTES
@@ -126,6 +148,10 @@ pub fn compute_pressure(state: &OrchestratorState) -> PressureLevel {
         return PressureLevel::Cautious;
     }
 
+    if fragmentation_risk == TlsFragmentationRisk::Cautious {
+        return PressureLevel::Cautious;
+    }
+
     // Cautious: 连接数过高
     if active_network >= MAX_CONCURRENT_HTTP as u32 {
         return PressureLevel::Cautious;
@@ -137,4 +163,55 @@ pub fn compute_pressure(state: &OrchestratorState) -> PressureLevel {
     }
 
     PressureLevel::Normal
+}
+
+pub fn tls_fragmentation_risk(heap_largest_block: u32, heap_free_spiram: u32) -> TlsFragmentationRisk {
+    if heap_free_spiram == 0 || heap_largest_block == 0 {
+        return TlsFragmentationRisk::NotApplicable;
+    }
+    let min = TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32;
+    let caution = min.saturating_add(TLS_FRAGMENTATION_CAUTION_HEADROOM_BYTES as u32);
+    if heap_largest_block < min {
+        TlsFragmentationRisk::Critical
+    } else if heap_largest_block < caution {
+        TlsFragmentationRisk::Cautious
+    } else {
+        TlsFragmentationRisk::Healthy
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::orchestrator::state::OrchestratorState;
+    use std::sync::atomic::Ordering;
+
+    fn state_with_heap(internal: u32, spiram: u32, largest: u32) -> OrchestratorState {
+        let state = OrchestratorState::new();
+        state.heap_free_internal.store(internal, Ordering::Relaxed);
+        state.heap_baseline_internal.store(internal, Ordering::Relaxed);
+        state.heap_free_spiram.store(spiram, Ordering::Relaxed);
+        state.heap_largest_block.store(largest, Ordering::Relaxed);
+        state
+    }
+
+    #[test]
+    fn fragmented_heap_escalates_pressure_even_with_internal_headroom() {
+        let state = state_with_heap(
+            64 * 1024,
+            8 * 1024 * 1024,
+            (TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32).saturating_sub(1024),
+        );
+        assert_ne!(compute_pressure(&state), PressureLevel::Normal);
+    }
+
+    #[test]
+    fn healthy_heap_keeps_pressure_normal_when_headroom_exists() {
+        let state = state_with_heap(
+            64 * 1024,
+            8 * 1024 * 1024,
+            (TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32) + 8 * 1024,
+        );
+        assert_eq!(compute_pressure(&state), PressureLevel::Normal);
+    }
 }

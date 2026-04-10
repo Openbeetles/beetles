@@ -20,7 +20,7 @@ use std::time::Duration;
 pub use admission::{AdmissionDecision, LlmDecision, ToolDecision};
 pub use channel_health::is_channel_healthy;
 pub use permit::{AgentTaskGuard, HttpPermitGuard, HttpThreadRole, Priority, WssSessionGuard};
-pub use pressure::{PressureLevel, ResourceBudget};
+pub use pressure::{PressureLevel, ResourceBudget, TlsFragmentationRisk};
 #[cfg(test)]
 pub use runtime_capability::reset_runtime_capabilities_for_tests;
 pub use runtime_capability::{
@@ -139,6 +139,11 @@ pub fn current_budget() -> ResourceBudget {
     pressure::budget_for_level(current_pressure())
 }
 
+pub fn current_tls_fragmentation_risk() -> TlsFragmentationRisk {
+    let snap = snapshot();
+    snap.tls_fragmentation_risk
+}
+
 /// 返回全局资源快照（无锁原子读取）。
 /// Return global resource snapshot (lock-free atomic reads).
 pub fn snapshot() -> ResourceSnapshot {
@@ -157,8 +162,9 @@ pub fn format_resource_baseline_line() -> String {
             s.heap_largest_block_internal.to_string()
         };
         return format!(
-            "resource pressure={:?} mem_available={} heap_spiram={} heap_largest={} active_http={} active_wss={} agent_tasks={} inbound={} outbound={}",
+            "resource pressure={:?} tls_fragmentation={:?} mem_available={} heap_spiram={} heap_largest={} active_http={} active_wss={} agent_tasks={} inbound={} outbound={}",
             s.pressure,
+            s.tls_fragmentation_risk,
             s.heap_free_internal,
             s.heap_free_spiram,
             largest,
@@ -171,8 +177,9 @@ pub fn format_resource_baseline_line() -> String {
     }
     #[cfg(not(target_os = "linux"))]
     format!(
-        "resource pressure={:?} heap_internal={} heap_spiram={} heap_largest={} active_http={} active_wss={} agent_tasks={} inbound={} outbound={}",
+        "resource pressure={:?} tls_fragmentation={:?} heap_internal={} heap_spiram={} heap_largest={} active_http={} active_wss={} agent_tasks={} inbound={} outbound={}",
         s.pressure,
+        s.tls_fragmentation_risk,
         s.heap_free_internal,
         s.heap_free_spiram,
         s.heap_largest_block_internal,

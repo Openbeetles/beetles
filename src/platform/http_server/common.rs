@@ -1,6 +1,5 @@
 //! HTTP 服务器公共常量与辅助函数，与架构无关。
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use embedded_io::Read;
 use std::fmt::Debug;
 
@@ -50,51 +49,56 @@ pub const REDIRECT_PAIRING_HEADERS: &[(&str, &str)] = &[
 
 /// 读 body 时的错误：读失败或非 UTF-8。
 #[derive(Debug)]
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub enum BodyReadError {
     ReadFailed,
     InvalidUtf8,
 }
 
 /// 无 Content-Length 时首次分配大小，避免小 POST 也占满 4KB。
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const BODY_READ_CHUNK_INITIAL: usize = 1024;
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const BODY_READ_CHUNK_SIZE: usize = 512;
 
 /// 从请求体读取 UTF-8 字符串，上限 max_len。有 content_len 时单次分配；无时按块读取，减少小 body 的分配。
 /// 使用 embedded_io::Read，与 ESP 的 Request 实现一致。
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub fn read_body_utf8_impl<R: Read>(
     r: &mut R,
     content_len: Option<u64>,
     max_len: usize,
 ) -> Result<String, BodyReadError> {
-    match content_len {
-        Some(l) => {
-            let len = l.min(max_len as u64) as usize;
-            let mut buf = vec![0u8; len];
-            let n = Read::read(r, &mut buf).map_err(|_| BodyReadError::ReadFailed)?;
-            buf.truncate(n);
-            String::from_utf8(buf).map_err(|_| BodyReadError::InvalidUtf8)
+    let target_len = content_len
+        .map(|l| (l.min(max_len as u64)) as usize)
+        .unwrap_or(BODY_READ_CHUNK_INITIAL.min(max_len));
+    let mut buf = Vec::with_capacity(target_len);
+    let mut chunk = [0u8; BODY_READ_CHUNK_SIZE];
+    loop {
+        let remain = max_len.saturating_sub(buf.len());
+        if remain == 0 {
+            break;
         }
-        None => {
-            let mut buf = Vec::with_capacity(BODY_READ_CHUNK_INITIAL);
-            let mut chunk = [0u8; BODY_READ_CHUNK_SIZE];
-            loop {
-                let n = Read::read(r, &mut chunk).map_err(|_| BodyReadError::ReadFailed)?;
-                if n == 0 {
-                    break;
-                }
-                let remain = max_len.saturating_sub(buf.len());
-                let take = n.min(remain);
-                buf.extend_from_slice(&chunk[..take]);
-                if buf.len() >= max_len || take < n {
-                    break;
-                }
-            }
-            String::from_utf8(buf).map_err(|_| BodyReadError::InvalidUtf8)
+        let n = Read::read(r, &mut chunk[..remain.min(BODY_READ_CHUNK_SIZE)])
+            .map_err(|_| BodyReadError::ReadFailed)?;
+        if n == 0 {
+            break;
         }
+        buf.extend_from_slice(&chunk[..n]);
+        if content_len.is_some() && buf.len() >= target_len {
+            break;
+        }
+    }
+    String::from_utf8(buf).map_err(|_| BodyReadError::InvalidUtf8)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_body_utf8_impl_respects_max_len_with_known_content_length() {
+        let payload = b"hello-world";
+        let mut cursor = payload.as_slice();
+        let body = read_body_utf8_impl(&mut cursor, Some(payload.len() as u64), 5)
+            .expect("read body");
+        assert_eq!(body, "hello");
     }
 }
 
@@ -209,7 +213,12 @@ pub struct ApiResponse {
 
 impl ApiResponse {
     fn json_error_body(msg: &str) -> Vec<u8> {
-        format!(r#"{{"error":"{}"}}"#, msg.replace('"', "\\\"")).into_bytes()
+        let escaped = msg.replace('"', "\\\"");
+        let mut body = Vec::with_capacity(escaped.len().saturating_add(12));
+        body.extend_from_slice(br#"{"error":""#);
+        body.extend_from_slice(escaped.as_bytes());
+        body.extend_from_slice(br#""}"#);
+        body
     }
 
     pub fn ok_200_json(json: &str) -> Self {

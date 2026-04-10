@@ -624,6 +624,7 @@ mod tests {
     fn resource() -> ResourceSnapshot {
         ResourceSnapshot {
             pressure: PressureLevel::Normal,
+            tls_fragmentation_risk: crate::orchestrator::TlsFragmentationRisk::NotApplicable,
             heap_free_internal: 0,
             heap_free_spiram: 0,
             heap_largest_block_internal: 0,

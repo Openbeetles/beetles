@@ -40,6 +40,8 @@ pub const DEFAULT_MESSAGES_MAX_LEN: usize = 128 * 1024;
 pub const TLS_ADMISSION_MIN_INTERNAL_BYTES: usize = 38 * 1024;
 /// TLS 准入：要求 internal 最大连续块不低于此值，避免碎片化导致 mbedTLS 分配失败。
 pub const TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES: usize = 24 * 1024;
+/// 在 TLS 最大连续块硬门槛之上保留一小段 headroom，便于 operator/config 面在碎片化前主动退让。
+pub const TLS_FRAGMENTATION_CAUTION_HEADROOM_BYTES: usize = 4 * 1024;
 /// TLS 准入：无 PSRAM 时 internal 堆空闲下限（字节），mbedTLS 全部走 internal 需更多空间。
 pub const TLS_ADMISSION_NO_PSRAM_MIN_BYTES: usize = 72 * 1024;
 

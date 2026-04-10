@@ -151,7 +151,21 @@ impl PromptMemoryContext {
 }
 
 fn compose_prompt_projection_body(parts: &[Option<&str>]) -> Option<String> {
-    let mut out = String::new();
+    let mut total_len = 0usize;
+    let mut non_empty = 0usize;
+    for part in parts.iter().flatten() {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        total_len = total_len.saturating_add(trimmed.len());
+        non_empty += 1;
+    }
+    if non_empty == 0 {
+        return None;
+    }
+    let mut out =
+        String::with_capacity(total_len.saturating_add((non_empty.saturating_sub(1)) * 2));
     for part in parts.iter().flatten() {
         let trimmed = part.trim();
         if trimmed.is_empty() {

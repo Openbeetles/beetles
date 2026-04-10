@@ -162,6 +162,7 @@ pub struct ChannelsHealthSnapshot {
 #[derive(serde::Serialize)]
 pub struct ResourceSnapshot {
     pub pressure: super::pressure::PressureLevel,
+    pub tls_fragmentation_risk: super::pressure::TlsFragmentationRisk,
     pub heap_free_internal: u32,
     pub heap_free_spiram: u32,
     /// internal 堆最大连续空闲块（字节）；ESP 上用于 TLS 碎片门禁。Linux 上为 **0（N/A）**，与 `MemAvailable` 映射的 `heap_free_internal` 分开表述。
@@ -218,6 +219,10 @@ impl ResourceSnapshot {
         };
         Self {
             pressure,
+            tls_fragmentation_risk: super::pressure::tls_fragmentation_risk(
+                state.heap_largest_block.load(Ordering::Relaxed),
+                state.heap_free_spiram.load(Ordering::Relaxed),
+            ),
             heap_free_internal: state.heap_free_internal.load(Ordering::Relaxed),
             heap_free_spiram: state.heap_free_spiram.load(Ordering::Relaxed),
             heap_largest_block_internal: state.heap_largest_block.load(Ordering::Relaxed),

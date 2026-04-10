@@ -127,6 +127,12 @@ impl SessionAppendState {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionRepairMode {
+    Deferred,
+    Immediate,
+}
+
 fn parse_jsonl_line(line: &str) -> ParsedJsonlLine {
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') {
@@ -380,20 +386,34 @@ fn load_session_snapshot_unlocked(
     path: &Path,
     chat_id: &str,
     write_header: bool,
+    repair_mode: SessionRepairMode,
 ) -> Result<SessionFileSnapshot> {
     let existing_buf =
         read_existing_file_unlocked(path).unwrap_or_else(|_| PsramVec::from(Vec::new()));
     let snapshot = scan_session_file(&existing_buf);
     if snapshot.needs_repair {
-        let body = build_session_body(chat_id, write_header, snapshot.messages.iter())?;
-        write_session_body_unlocked(path, body.as_bytes())?;
-        log::warn!(
-            "[{}] repaired session chat_id={} bad_lines={} kept_messages={}",
-            TAG,
-            chat_id,
-            snapshot.malformed_lines,
-            snapshot.messages.len()
-        );
+        match repair_mode {
+            SessionRepairMode::Deferred => {
+                log::warn!(
+                    "[{}] session needs repair chat_id={} bad_lines={} kept_messages={} repair=deferred",
+                    TAG,
+                    chat_id,
+                    snapshot.malformed_lines,
+                    snapshot.messages.len()
+                );
+            }
+            SessionRepairMode::Immediate => {
+                let body = build_session_body(chat_id, write_header, snapshot.messages.iter())?;
+                write_session_body_unlocked(path, body.as_bytes())?;
+                log::warn!(
+                    "[{}] repaired session chat_id={} bad_lines={} kept_messages={}",
+                    TAG,
+                    chat_id,
+                    snapshot.malformed_lines,
+                    snapshot.messages.len()
+                );
+            }
+        }
     }
     Ok(snapshot)
 }
@@ -564,7 +584,12 @@ impl SessionStore for SpiffsSessionStore {
                     ),
                     None => {
                         let snapshot =
-                            load_session_snapshot_unlocked(&path, chat_id, write_header)?;
+                            load_session_snapshot_unlocked(
+                                &path,
+                                chat_id,
+                                write_header,
+                                SessionRepairMode::Immediate,
+                            )?;
                         let state = SessionAppendState::from_snapshot(&snapshot, write_header);
                         let messages = snapshot.messages;
                         counts.insert(chat_id.to_string(), state);
@@ -615,7 +640,13 @@ impl SessionStore for SpiffsSessionStore {
                 let loaded = if let Some(messages) = existing_messages {
                     messages
                 } else {
-                    load_session_snapshot_unlocked(&path, chat_id, write_header)?.messages
+                    load_session_snapshot_unlocked(
+                        &path,
+                        chat_id,
+                        write_header,
+                        SessionRepairMode::Immediate,
+                    )?
+                    .messages
                 };
                 Self::upsert_recent_cache(&mut recent_cache, chat_id, loaded.clone());
                 loaded
@@ -658,7 +689,12 @@ impl SessionStore for SpiffsSessionStore {
             return Ok(recent.into_iter().skip(start).collect());
         }
         let recent = with_fs_lock(|| {
-            let snapshot = load_session_snapshot_unlocked(&path, chat_id, write_header)?;
+            let snapshot = load_session_snapshot_unlocked(
+                &path,
+                chat_id,
+                write_header,
+                SessionRepairMode::Deferred,
+            )?;
             let start = snapshot.messages.len().saturating_sub(cap);
             Ok(snapshot
                 .messages
@@ -696,7 +732,12 @@ impl SessionStore for SpiffsSessionStore {
         }
         with_fs_lock(|| {
             let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
-            let snapshot = load_session_snapshot_unlocked(&path, chat_id, write_header)?;
+            let snapshot = load_session_snapshot_unlocked(
+                &path,
+                chat_id,
+                write_header,
+                SessionRepairMode::Deferred,
+            )?;
             counts.insert(
                 chat_id.to_string(),
                 SessionAppendState::from_snapshot(&snapshot, write_header),
@@ -816,8 +857,8 @@ impl SessionStore for SpiffsSessionStore {
 #[cfg(test)]
 mod tests {
     use super::{
-        scan_session_file, session_path, write_session_body_unlocked, SessionAppendState,
-        SpiffsSessionStore,
+        load_session_snapshot_unlocked, scan_session_file, session_path,
+        write_session_body_unlocked, SessionAppendState, SessionRepairMode, SpiffsSessionStore,
     };
     use crate::memory::{SessionMessage, SessionStore};
 
@@ -889,6 +930,37 @@ mod tests {
         let snapshot = scan_session_file(&raw);
         assert_eq!(snapshot.message_count, 2);
         assert_eq!(snapshot.malformed_lines, 0);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_recent_repairs_malformed_session_without_rewriting_file() {
+        let store = SpiffsSessionStore::new();
+        let chat_id = format!("load-repair-{}", std::process::id());
+        let (path, write_header) = session_path(&chat_id).expect("path");
+        let _ = std::fs::remove_file(&path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("sessions dir");
+        }
+        let malformed =
+            b"{\"role\":\"user\",\"content\":\"ok\"}\nnot-json\n{\"role\":\"assistant\",\"content\":\"still-ok\"}\n";
+        write_session_body_unlocked(&path, malformed).expect("seed malformed file");
+
+        let recent = store.load_recent(&chat_id, 8).expect("load recent");
+        assert_eq!(recent.len(), 2);
+        let raw = std::fs::read(&path).expect("read after load");
+        assert_eq!(raw, malformed);
+
+        let snapshot =
+            load_session_snapshot_unlocked(
+                &path,
+                &chat_id,
+                write_header,
+                SessionRepairMode::Deferred,
+            )
+            .expect("snapshot");
+        assert!(snapshot.needs_repair);
 
         let _ = std::fs::remove_file(&path);
     }
