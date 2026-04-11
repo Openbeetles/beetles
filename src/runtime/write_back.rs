@@ -174,7 +174,7 @@ fn flush_map<T, V>(
 fn should_retry_write_back_error(error: &Error) -> bool {
     match error {
         Error::Config { .. } => false,
-        Error::Io { source, .. } => !matches!(source.raw_os_error(), Some(36 | 63 | 91)),
+        Error::Io { source, .. } => !matches!(source.raw_os_error(), Some(28 | 36 | 63 | 91)),
         _ => true,
     }
 }
@@ -1035,5 +1035,12 @@ mod tests {
         assert_eq!(recent.len(), 2);
         assert_eq!(recent[0].content, "hi");
         assert_eq!(recent[1].content, "hello");
+    }
+
+    #[test]
+    fn enospc_write_back_errors_are_not_retried() {
+        let error = Error::io("spiffs_write", std::io::Error::from_raw_os_error(28));
+
+        assert!(!should_retry_write_back_error(&error));
     }
 }

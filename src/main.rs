@@ -953,7 +953,9 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
     let mut loop_state = DisplayLoopState::default();
 
     loop {
+        beetle::platform::task_wdt::feed_current_task();
         std::thread::sleep(Duration::from_secs(loop_state.refresh_secs));
+        beetle::platform::task_wdt::feed_current_task();
         enforce_heap_checkpoint("heap_display_loop_before_presence");
         let snapshot = beetle::orchestrator::snapshot();
         let presence = beetle::runtime::inspect_platform_presence(
@@ -1147,6 +1149,7 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
             loop_state.backlight_off,
             &loop_state.last_activity_at,
         );
+        beetle::platform::task_wdt::feed_current_task();
     }
 }
 

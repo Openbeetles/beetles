@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 const TAG: &str = "bg_timer";
 const HEARTBEAT_INTERVAL_SECS: u64 = 30;
 const CRON_INTERVAL_SECS: u64 = 60;
+const WAIT_WDT_FEED_SLICE_SECS: u64 = 5;
 
 fn wake_state() -> &'static (Mutex<u64>, Condvar) {
     static STATE: OnceLock<(Mutex<u64>, Condvar)> = OnceLock::new();
@@ -34,16 +35,21 @@ pub fn notify_deadline_changed() {
 }
 
 fn wait_until_or_notified(deadline: Instant) {
-    let now = Instant::now();
-    if deadline <= now {
-        return;
-    }
-    let timeout = deadline.saturating_duration_since(now);
     let (lock, cv) = wake_state();
-    let generation = lock.lock().unwrap_or_else(|e| e.into_inner());
-    let _ = cv
-        .wait_timeout(generation, timeout)
-        .unwrap_or_else(|e| e.into_inner());
+    loop {
+        let now = Instant::now();
+        if deadline <= now {
+            return;
+        }
+        let timeout = deadline
+            .saturating_duration_since(now)
+            .min(Duration::from_secs(WAIT_WDT_FEED_SLICE_SECS));
+        let generation = lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = cv
+            .wait_timeout(generation, timeout)
+            .unwrap_or_else(|e| e.into_inner());
+        crate::platform::task_wdt::feed_current_task();
+    }
 }
 
 fn advance_periodic_deadline(deadline: &mut Instant, interval: Duration, now: Instant) {
@@ -111,6 +117,7 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
             let mut next_cron_at = Instant::now() + cron_interval;
 
             loop {
+                crate::platform::task_wdt::feed_current_task();
                 let now = Instant::now();
                 let now_unix_secs = crate::util::current_unix_secs();
                 let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
@@ -146,6 +153,7 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
                 .min()
                 .unwrap_or(now + heartbeat_interval);
                 wait_until_or_notified(next_wake_at);
+                crate::platform::task_wdt::feed_current_task();
                 crate::runtime::service_delayed_tasks();
 
                 let now = Instant::now();

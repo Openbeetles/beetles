@@ -279,6 +279,7 @@ fn run_scan_loop(
     let mut softap_enabled = true;
 
     loop {
+        crate::platform::task_wdt::feed_current_task();
         if has_sta && Instant::now() >= next_sta_poll {
             poll_sta_link(
                 wifi,
@@ -316,7 +317,9 @@ fn run_scan_loop(
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 if has_sta {
+                    crate::platform::task_wdt::feed_current_task();
                     std::thread::sleep(Duration::from_millis(200));
+                    crate::platform::task_wdt::feed_current_task();
                 } else {
                     break;
                 }

@@ -24,10 +24,11 @@ use crate::util::{
 use crate::Platform;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const TAG: &str = "voice_session";
 const WORKER_IDLE_POLL_MS: u64 = 100;
+const WORKER_SPAWN_FAILURE_COOLDOWN_MS: u64 = 5_000;
 const MAX_PENDING_SPEAK_CHARS: usize = 512;
 
 /// Events consumed by the voice session thread.
@@ -49,6 +50,26 @@ enum VoiceWorkerTask {
 struct PendingVoiceEvents {
     wake_requested: bool,
     pending_speak: Option<String>,
+}
+
+#[derive(Default)]
+struct VoiceWorkerRetryGate {
+    retry_after: Option<Instant>,
+}
+
+impl VoiceWorkerRetryGate {
+    fn can_retry(&self, now: Instant) -> bool {
+        self.retry_after
+            .is_none_or(|retry_after| retry_after <= now)
+    }
+
+    fn record_spawn_failure(&mut self, now: Instant) {
+        self.retry_after = Some(now + Duration::from_millis(WORKER_SPAWN_FAILURE_COOLDOWN_MS));
+    }
+
+    fn clear(&mut self) {
+        self.retry_after = None;
+    }
 }
 
 /// All dependencies for the voice session thread, injected by `main`.
@@ -74,20 +95,29 @@ pub fn run_voice_session(cfg: VoiceSessionConfig, rx: Receiver<VoiceEvent>) {
     let mut worker_busy = false;
     let mut worker_handle: Option<TaskHandle> = None;
     let mut pending = PendingVoiceEvents::default();
+    let mut retry_gate = VoiceWorkerRetryGate::default();
 
     loop {
         crate::platform::task_wdt::feed_current_task();
         drain_worker_done(&mut worker_handle, &done_rx, &mut worker_busy);
-        if !worker_busy {
+        let now = Instant::now();
+        if !worker_busy && retry_gate.can_retry(now) {
             if let Some(task) = take_pending_voice_task(&mut pending) {
                 match spawn_voice_session_worker(cfg.clone(), task.clone(), done_tx.clone()) {
                     Ok(handle) => {
+                        retry_gate.clear();
                         worker_handle = Some(handle);
                         worker_busy = true;
                         continue;
                     }
                     Err(error) => {
-                        log::error!("[{}] failed to start worker: {}", TAG, error);
+                        retry_gate.record_spawn_failure(now);
+                        log::error!(
+                            "[{}] failed to start worker: {}; retry suppressed for {}ms",
+                            TAG,
+                            error,
+                            WORKER_SPAWN_FAILURE_COOLDOWN_MS
+                        );
                         restore_pending_voice_task(&mut pending, task);
                     }
                 }
@@ -446,5 +476,26 @@ mod tests {
     #[test]
     fn normalize_speak_text_trims_whitespace() {
         assert_eq!(normalize_speak_text("  hello  "), "hello");
+    }
+
+    #[test]
+    fn worker_retry_gate_blocks_immediate_retry_after_spawn_failure() {
+        let mut gate = VoiceWorkerRetryGate::default();
+        let now = Instant::now();
+        assert!(gate.can_retry(now));
+
+        gate.record_spawn_failure(now);
+
+        assert!(!gate.can_retry(now + Duration::from_millis(100)));
+        assert!(gate.can_retry(now + Duration::from_millis(WORKER_SPAWN_FAILURE_COOLDOWN_MS + 1)));
+    }
+
+    #[test]
+    fn worker_retry_gate_clears_after_success() {
+        let mut gate = VoiceWorkerRetryGate::default();
+        gate.record_spawn_failure(Instant::now());
+        gate.clear();
+
+        assert!(gate.can_retry(Instant::now()));
     }
 }

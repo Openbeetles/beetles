@@ -59,7 +59,9 @@ pub fn run(
     loop {
         while !esp_config_plane_desired() {
             crate::state::set_config_plane_active(false);
+            crate::platform::task_wdt::feed_current_task();
             std::thread::sleep(Duration::from_millis(CONFIG_PLANE_POLL_MS));
+            crate::platform::task_wdt::feed_current_task();
         }
 
         let _active_guard = crate::runtime::ConfigPlaneGuard::enter();
@@ -106,7 +108,9 @@ pub fn run(
         log::info!("[http_server] ESP config API serving (WiFi LAN + recovery plane)");
 
         while esp_config_plane_desired() {
+            crate::platform::task_wdt::feed_current_task();
             std::thread::sleep(Duration::from_millis(CONFIG_PLANE_POLL_MS));
+            crate::platform::task_wdt::feed_current_task();
         }
         log::info!("[http_server] ESP config API suspended (STA steady-state)");
     }
