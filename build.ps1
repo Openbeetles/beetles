@@ -427,6 +427,87 @@ if ($env:OS -eq "Windows_NT" -and -not $env:CARGO_TARGET_DIR -and -not $env:PC_O
 }
 # 烧录时从此目录找二进制（与 CARGO_TARGET_DIR 一致）
 $effectiveTargetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $BuildRoot "target" }
+
+function Get-EspComponentGraphInputs {
+  $paths = @(
+    "Cargo.toml",
+    "build.rs",
+    "components_esp32s3.lock",
+    "components_esp32p4.lock",
+    "sdkconfig.defaults",
+    "sdkconfig.defaults.esp32s3",
+    "sdkconfig.defaults.esp32s3.8mb.board",
+    "sdkconfig.defaults.esp32s3.board",
+    "sdkconfig.defaults.esp32s3.32mb.board",
+    "sdkconfig.defaults.esp32p4",
+    "sdkconfig.defaults.esp32p4.board",
+    "third_party/esp-idf-sys/build/native/cargo_driver/config.rs"
+  )
+
+  foreach ($path in $paths) {
+    $fullPath = Join-Path $BuildRoot $path
+    if (Test-Path $fullPath -PathType Leaf) {
+      $fullPath
+    }
+  }
+
+  $componentsDir = Join-Path $BuildRoot "components"
+  if (Test-Path $componentsDir -PathType Container) {
+    Get-ChildItem -Path $componentsDir -File -Recurse |
+      Where-Object { $_.Name -ne ".DS_Store" } |
+      Sort-Object FullName |
+      ForEach-Object { $_.FullName }
+  }
+}
+
+function Get-EspComponentGraphHash {
+  $records = New-Object System.Collections.Generic.List[string]
+  foreach ($file in Get-EspComponentGraphInputs) {
+    $hash = (Get-FileHash -Algorithm SHA256 -Path $file).Hash.ToLowerInvariant()
+    $records.Add("$hash *$file")
+  }
+
+  $payload = [System.Text.Encoding]::UTF8.GetBytes(($records -join "`n"))
+  $sha256 = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    return ([System.BitConverter]::ToString($sha256.ComputeHash($payload))).Replace("-", "").ToLowerInvariant()
+  } finally {
+    $sha256.Dispose()
+  }
+}
+
+function Refresh-EspComponentGraphCache {
+  if ($buildTarget -like "*-unknown-linux*") {
+    return
+  }
+
+  $stampDir = Join-Path $effectiveTargetDir "$buildTarget\$buildProfile"
+  $stampFile = Join-Path $stampDir ".beetle-esp-component-graph.sha256"
+  $currentHash = Get-EspComponentGraphHash
+  $cachedHash = ""
+
+  if (Test-Path $stampFile -PathType Leaf) {
+    $cachedHash = (Get-Content $stampFile -Raw).Trim()
+  }
+
+  if ($currentHash -eq $cachedHash) {
+    return
+  }
+
+  if (-not (Test-Path $stampDir -PathType Container)) {
+    New-Item -ItemType Directory -Path $stampDir -Force | Out-Null
+  }
+
+  $buildDir = Join-Path $stampDir "build"
+  if (Test-Path $buildDir -PathType Container) {
+    Get-ChildItem -Path $buildDir -Directory -Filter "esp-idf-sys-*" | ForEach-Object {
+      Remove-Item -Recurse -Force $_.FullName
+    }
+  }
+
+  Set-Content -Path $stampFile -Value "$currentHash`n" -NoNewline
+}
+
 # 烧录时显式传入分区表与 bootloader。优先用本次构建生成的 partition-table.bin（与 bootloader 同源，含 spiffs），避免传 CSV 时解析/格式导致未写入正确表
 $releaseDir = Join-Path $effectiveTargetDir "$buildTarget\$buildProfile"
 $bootloaderBin = Join-Path $releaseDir "bootloader.bin"
@@ -741,6 +822,7 @@ if ($env:OS -eq "Windows_NT") {
         Write-Host ""
         Write-Host "========== Step: Building release (MSVC environment) ==========" -ForegroundColor Cyan
         Write-Host "  Target: $buildTarget  |  Root: $BuildRoot" -ForegroundColor Gray
+        Refresh-EspComponentGraphCache
         $argStr = ($releaseArgs | ForEach-Object { "`"$_`"" }) -join " "
         $libLine = if ($sdkLib) { "set `"LIB=$sdkLib;%LIB%`"" } else { "" }
         $cargoBuildCmd = if ($buildProfile -eq "release") { "cargo build --release $argStr" } else { "cargo build --profile $buildProfile $argStr" }
@@ -829,6 +911,7 @@ $env:ESP_IDF_SDKCONFIG_DEFAULTS = if ($boardSdkconfigOverlay) {
 Write-Host ""
 Write-Host "========== Step: Building release ==========" -ForegroundColor Cyan
 Write-Host "  Target: $buildTarget  |  Root: $BuildRoot" -ForegroundColor Gray
+Refresh-EspComponentGraphCache
 if ($buildProfile -eq "release") {
   cargo build --release @releaseArgs
 } else {

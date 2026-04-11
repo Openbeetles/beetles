@@ -123,12 +123,16 @@ list_serial_ports() {
 }
 
 choose_c6_port() {
+  local ports=()
+  local port
   if [[ -n "${ESP_HOSTED_C6_PORT:-}" ]]; then
     echo "$ESP_HOSTED_C6_PORT"
     return 0
   fi
 
-  mapfile -t ports < <(list_serial_ports)
+  while IFS= read -r port; do
+    [[ -n "$port" ]] && ports+=("$port")
+  done < <(list_serial_ports)
   if [[ ${#ports[@]} -eq 0 ]]; then
     echo "Error: no serial ports found. Set ESP_HOSTED_C6_PORT=/dev/tty..." >&2
     exit 1

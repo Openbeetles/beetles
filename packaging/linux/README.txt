@@ -25,6 +25,7 @@ systemd
 -------
 - Edit `beetle.service`: set `User=`/`Group=`; optional hardening: `ProtectSystem=` + `ReadWritePaths=` only if every listed path exists (missing paths cause systemd 226/NAMESPACE on start).
 - Install: copy unit to `/etc/systemd/system/`, optionally create `/etc/default/beetle`, then run `systemctl daemon-reload` and `systemctl enable --now beetle`. The unit starts Beetle with `ExecStart=/opt/beetle/current/beetle supervise`.
+- The bundle also ships `beetle.init` as a SysV example. It now carries Debian/LSB headers too, so `systemctl enable beetle` no longer trips over `update-rc.d` when that init script is installed alongside the unit.
 - **Startup order**: the unit uses `After=local-fs.target` and `Wants=network-pre.target` only — **not** `network-online.target`. Beetle manages `wpa_supplicant` / `hostapd` itself; waiting for “full internet” can deadlock with `NetworkManager-wait-online` on devices where the wlan is not yet up at that point.
 - **NetworkManager conflict**: if NetworkManager (or another manager) **owns the same wlan interface**, pick one — either disable NM for that iface or do not run Beetle’s Linux WiFi stack on it. Two controllers on one radio will race.
 

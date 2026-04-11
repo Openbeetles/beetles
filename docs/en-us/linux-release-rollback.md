@@ -23,6 +23,7 @@ Release tarballs include:
 
 - `README.txt`
 - a sample `beetle.service`
+- a sample `beetle.init` with Debian/LSB headers for SysV compatibility paths
 
 A common manual layout is:
 
@@ -37,6 +38,11 @@ Today, `./build.sh --deploy-linux` maintains this layout on the target:
 - `/opt/beetle/current` pointing to the active release
 - `/opt/beetle/beetle` as a compatibility shortcut to the active binary
 - `/var/lib/beetle` as the default state directory
+
+For non-root deploy accounts:
+
+- the default remote build directory lives under that user's home, for example `/home/beetle/beetle-build`
+- writing `/opt/beetle`, `/var/lib/beetle`, and `/etc/systemd/system` requires remote `sudo`
 
 ### Service entrypoint and release contract
 

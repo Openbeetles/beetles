@@ -220,11 +220,14 @@ list_flash_ports() {
 
 autodetect_flash_port() {
   local ports=()
+  local port
   if [[ -n "${ESPFLASH_PORT:-}" ]]; then
     printf '%s\n' "$ESPFLASH_PORT"
     return 0
   fi
-  mapfile -t ports < <(list_flash_ports)
+  while IFS= read -r port; do
+    [[ -n "$port" ]] && ports+=("$port")
+  done < <(list_flash_ports)
   if [[ ${#ports[@]} -eq 1 ]]; then
     printf '%s\n' "${ports[0]}"
     return 0
@@ -676,12 +679,23 @@ DEPLOY_STATE_DIR="/var/lib/beetle"
 DEPLOY_SERVICE_PATH="/etc/systemd/system/beetle.service"
 DEPLOY_INIT_PATH="/etc/init.d/beetle"
 DEPLOY_ENV_PATH="/etc/default/beetle"
+PRIVILEGED_PREFIX=""
+
+linux_remote_default_build_dir() {
+    local remote_user="${1:-root}"
+    if [ "$remote_user" = "root" ]; then
+        printf '%s\n' "/root/beetle-build"
+    else
+        printf '/home/%s/beetle-build\n' "$remote_user"
+    fi
+}
 
 linux_deploy_load_deploy_defaults() {
+    local saw_remote_build_dir=0
     DEFAULT_DEVICE_IP=""
     DEFAULT_DEVICE_USER="root"
     DEFAULT_SSH_PORT="22"
-    DEFAULT_REMOTE_BUILD_DIR="/root/beetle-build"
+    DEFAULT_REMOTE_BUILD_DIR="$(linux_remote_default_build_dir "$DEFAULT_DEVICE_USER")"
     if [ ! -f "$DEPLOY_DEFAULTS_FILE" ]; then
         return 0
     fi
@@ -693,9 +707,12 @@ linux_deploy_load_deploy_defaults() {
             DEVICE_IP=*) DEFAULT_DEVICE_IP="${line#DEVICE_IP=}" ;;
             DEVICE_USER=*) DEFAULT_DEVICE_USER="${line#DEVICE_USER=}" ;;
             SSH_PORT=*) DEFAULT_SSH_PORT="${line#SSH_PORT=}" ;;
-            REMOTE_BUILD_DIR=*) DEFAULT_REMOTE_BUILD_DIR="${line#REMOTE_BUILD_DIR=}" ;;
+            REMOTE_BUILD_DIR=*) DEFAULT_REMOTE_BUILD_DIR="${line#REMOTE_BUILD_DIR=}"; saw_remote_build_dir=1 ;;
         esac
     done <"$DEPLOY_DEFAULTS_FILE"
+    if [ "$saw_remote_build_dir" != "1" ]; then
+        DEFAULT_REMOTE_BUILD_DIR="$(linux_remote_default_build_dir "$DEFAULT_DEVICE_USER")"
+    fi
 }
 
 linux_deploy_save_deploy_defaults() {
@@ -718,6 +735,7 @@ linux_deploy_input_device_info() {
     echo "========== Target Host Information =========="
     echo ""
     linux_deploy_load_deploy_defaults
+    local default_remote_build_dir_saved="${DEFAULT_REMOTE_BUILD_DIR}"
 
     if [ -n "$DEFAULT_DEVICE_IP" ]; then
         echo -e "${GREEN}Saved host: ${DEFAULT_DEVICE_USER}@${DEFAULT_DEVICE_IP}:${DEFAULT_SSH_PORT}${NC}"
@@ -738,6 +756,9 @@ linux_deploy_input_device_info() {
 
     read -p "Username [${DEFAULT_DEVICE_USER}]: " DEVICE_USER
     DEVICE_USER=${DEVICE_USER:-$DEFAULT_DEVICE_USER}
+    if [ "$default_remote_build_dir_saved" = "$(linux_remote_default_build_dir "$DEFAULT_DEVICE_USER")" ]; then
+        DEFAULT_REMOTE_BUILD_DIR="$(linux_remote_default_build_dir "$DEVICE_USER")"
+    fi
 
     read -p "SSH port [${DEFAULT_SSH_PORT}]: " SSH_PORT
     SSH_PORT=${SSH_PORT:-$DEFAULT_SSH_PORT}
@@ -762,6 +783,49 @@ linux_prepare_remote_target() {
     linux_deploy_test_connection
     linux_deploy_detect_device_arch
     REMOTE_TARGET_PREPARED=1
+}
+
+linux_remote_prepare_privileged_prefix() {
+    if ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
+        'test "$(id -u)" -eq 0' >/dev/null 2>&1; then
+        PRIVILEGED_PREFIX=""
+        return 0
+    fi
+
+    if ! ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
+        'command -v sudo >/dev/null 2>&1' >/dev/null 2>&1; then
+        echo -e "${RED}Error: remote deploy needs root or sudo for /opt, /var/lib, and /etc/systemd/system${NC}" >&2
+        return 1
+    fi
+
+    if ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
+        'sudo -n true' >/dev/null 2>&1; then
+        PRIVILEGED_PREFIX="sudo"
+        return 0
+    fi
+
+    echo "========== Remote Privilege Check =========="
+    echo "Remote deploy needs sudo to write /opt/beetle, /var/lib/beetle, and service files."
+    echo "If prompted, enter the remote sudo password for ${DEVICE_USER}@${DEVICE_IP}."
+    echo ""
+    ssh -tt "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
+        'sudo -v' || {
+            echo -e "${RED}Error: sudo authentication failed on the remote host${NC}" >&2
+            return 1
+        }
+
+    PRIVILEGED_PREFIX="sudo"
+}
+
+linux_remote_run_script_with_optional_sudo() {
+    local remote_cmd="$1"
+    if [ -n "${PRIVILEGED_PREFIX:-}" ]; then
+        ssh -tt "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
+            "$PRIVILEGED_PREFIX $remote_cmd"
+    else
+        ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
+            "$remote_cmd"
+    fi
 }
 
 linux_remote_input_build_dir() {
@@ -931,7 +995,7 @@ linux_deploy_detect_device_arch() {
     echo "========== Detecting Device =========="
     echo ""
 
-    # One remote shell (mapfile needs bash 4+; keep portable for macOS /bin/bash)
+    # One remote shell; keep bash-3.2 portability for macOS /bin/bash.
     _uname_out=$(
         ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
             "uname -m; uname -s" 2>/dev/null || printf '%s\n' unknown unknown
@@ -1151,6 +1215,8 @@ linux_deploy_prompt_wifi_helpers_or_continue() {
 EMBED_DEPS_UPLOADED=0
 linux_deploy_upload_embed_deps() {
     local embed="$SCRIPT_ROOT/packaging/linux/embed-deps/$EMBED_DEPS_ARCH"
+    local remote_stage_dir=""
+    local remote_cmd=""
     EMBED_DEPS_UPLOADED=0
     if [ ! -d "$embed" ]; then
         return 0
@@ -1169,18 +1235,31 @@ linux_deploy_upload_embed_deps() {
         return 0
     fi
     echo "Uploading bundled WiFi tools → /opt/beetle/bin ..."
+    remote_stage_dir="/tmp/beetle-embed-deps-$EMBED_DEPS_ARCH"
     ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
-        "mkdir -p /opt/beetle/bin"
+        "rm -rf '$remote_stage_dir' && mkdir -p '$remote_stage_dir'" || return 1
     for f in "$embed"/*; do
         [ -f "$f" ] || continue
         case "$(basename "$f")" in
             README*|*.md|*.txt) continue ;;
         esac
         scp "${SSH_MUX_OPTS[@]}" -P "$SSH_PORT" "$f" \
-            "${DEVICE_USER}@${DEVICE_IP}:/opt/beetle/bin/"
+            "${DEVICE_USER}@${DEVICE_IP}:${remote_stage_dir}/" || return 1
     done
-    ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
-        'for f in /opt/beetle/bin/*; do [ -f "$f" ] && chmod a+x "$f"; done'
+    remote_cmd="env REMOTE_STAGE_DIR='$remote_stage_dir' sh -s"
+    linux_remote_run_script_with_optional_sudo "$remote_cmd" << 'REMOTE_EOF' || return 1
+set -eu
+
+mkdir -p /opt/beetle/bin
+for f in "$REMOTE_STAGE_DIR"/*; do
+    [ -f "$f" ] || continue
+    mv "$f" /opt/beetle/bin/
+done
+for f in /opt/beetle/bin/*; do
+    [ -f "$f" ] && chmod a+x "$f"
+done
+rm -rf "$REMOTE_STAGE_DIR"
+REMOTE_EOF
     EMBED_DEPS_UPLOADED=1
     echo -e "${GREEN}✓ Bundled tools uploaded (beetle prefers /opt/beetle/bin)${NC}"
 }
@@ -1198,7 +1277,7 @@ linux_deploy_upload_files() {
     REMOTE_TMP_README="/tmp/beetle-${DEPLOY_RELEASE_NAME}.README.txt"
     REMOTE_TMP_HWJSON="/tmp/beetle-${DEPLOY_RELEASE_NAME}.hardware.json"
 
-    linux_deploy_upload_embed_deps
+    linux_deploy_upload_embed_deps || return 1
 
     echo "Uploading release payload for ${DEPLOY_RELEASE_NAME} ..."
     if [ "${REMOTE_BUILD_ACTIVE:-0}" = "1" ] && [ "${REMOTE_BUILD_ROLE:-}" = "deploy" ] && [ -n "${REMOTE_BUILD_BIN:-}" ]; then
@@ -1272,8 +1351,8 @@ linux_deploy_install_payloads() {
     echo "========== Installing Payload =========="
     echo ""
 
-    ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
-        "DEPLOY_ROOT='$DEPLOY_ROOT' DEPLOY_RELEASES_DIR='$DEPLOY_RELEASES_DIR' DEPLOY_CURRENT_LINK='$DEPLOY_CURRENT_LINK' DEPLOY_ROLLBACK_LINK='$DEPLOY_ROLLBACK_LINK' DEPLOY_GLOBAL_BIN='$DEPLOY_GLOBAL_BIN' DEPLOY_STATE_DIR='$DEPLOY_STATE_DIR' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' DEPLOY_INIT_PATH='$DEPLOY_INIT_PATH' DEPLOY_ENV_PATH='$DEPLOY_ENV_PATH' DEPLOY_RELEASE_NAME='$DEPLOY_RELEASE_NAME' REMOTE_TMP_BIN='$REMOTE_TMP_BIN' REMOTE_TMP_SERVICE='$REMOTE_TMP_SERVICE' REMOTE_TMP_INIT='$REMOTE_TMP_INIT' REMOTE_TMP_ENV='$REMOTE_TMP_ENV' REMOTE_TMP_README='$REMOTE_TMP_README' REMOTE_TMP_HWJSON='$REMOTE_TMP_HWJSON' sh -s" << 'REMOTE_EOF'
+    local remote_cmd="env DEPLOY_ROOT='$DEPLOY_ROOT' DEPLOY_RELEASES_DIR='$DEPLOY_RELEASES_DIR' DEPLOY_CURRENT_LINK='$DEPLOY_CURRENT_LINK' DEPLOY_ROLLBACK_LINK='$DEPLOY_ROLLBACK_LINK' DEPLOY_GLOBAL_BIN='$DEPLOY_GLOBAL_BIN' DEPLOY_STATE_DIR='$DEPLOY_STATE_DIR' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' DEPLOY_INIT_PATH='$DEPLOY_INIT_PATH' DEPLOY_ENV_PATH='$DEPLOY_ENV_PATH' DEPLOY_RELEASE_NAME='$DEPLOY_RELEASE_NAME' REMOTE_TMP_BIN='$REMOTE_TMP_BIN' REMOTE_TMP_SERVICE='$REMOTE_TMP_SERVICE' REMOTE_TMP_INIT='$REMOTE_TMP_INIT' REMOTE_TMP_ENV='$REMOTE_TMP_ENV' REMOTE_TMP_README='$REMOTE_TMP_README' REMOTE_TMP_HWJSON='$REMOTE_TMP_HWJSON' sh -s"
+    linux_remote_run_script_with_optional_sudo "$remote_cmd" << 'REMOTE_EOF'
 set -eu
 
 release_dir="$DEPLOY_RELEASES_DIR/$DEPLOY_RELEASE_NAME"
@@ -1409,8 +1488,8 @@ linux_deploy_manage_service() {
         return 0
     fi
 
-    ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
-        "DEPLOY_MODE='$DEPLOY_MODE' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' DEPLOY_INIT_PATH='$DEPLOY_INIT_PATH' sh -s" << 'REMOTE_EOF'
+    local remote_cmd="env DEPLOY_MODE='$DEPLOY_MODE' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' DEPLOY_INIT_PATH='$DEPLOY_INIT_PATH' sh -s"
+    linux_remote_run_script_with_optional_sudo "$remote_cmd" << 'REMOTE_EOF'
 set -eu
 
 if command -v systemctl >/dev/null 2>&1; then
@@ -1456,9 +1535,12 @@ linux_deploy_verify_remote_install() {
     echo "========== Remote Verification =========="
     echo ""
 
+    local remote_cmd="env DEPLOY_MODE='$DEPLOY_MODE' DEPLOY_ROOT='$DEPLOY_ROOT' DEPLOY_CURRENT_LINK='$DEPLOY_CURRENT_LINK' DEPLOY_GLOBAL_BIN='$DEPLOY_GLOBAL_BIN' DEPLOY_STATE_DIR='$DEPLOY_STATE_DIR' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' sh -s"
     ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
-        "DEPLOY_ROOT='$DEPLOY_ROOT' DEPLOY_CURRENT_LINK='$DEPLOY_CURRENT_LINK' DEPLOY_GLOBAL_BIN='$DEPLOY_GLOBAL_BIN' DEPLOY_STATE_DIR='$DEPLOY_STATE_DIR' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' sh -s" << 'REMOTE_EOF'
+        "$remote_cmd" << 'REMOTE_EOF'
 set -eu
+
+missing=0
 
 echo "Paths:"
 if [ -L "$DEPLOY_CURRENT_LINK" ]; then
@@ -1466,17 +1548,25 @@ if [ -L "$DEPLOY_CURRENT_LINK" ]; then
     echo "  current -> ${target:-$DEPLOY_CURRENT_LINK}"
 else
     echo "  current -> (missing)"
+    missing=1
 fi
 if [ -e "$DEPLOY_GLOBAL_BIN" ]; then
     ls -l "$DEPLOY_GLOBAL_BIN"
 else
     echo "  global command -> missing"
+    missing=1
 fi
 if [ -e "$DEPLOY_SERVICE_PATH" ]; then
     echo "  service file -> $DEPLOY_SERVICE_PATH"
+elif [ "$DEPLOY_MODE" = "2" ]; then
+    echo "  service file -> missing"
+    missing=1
 fi
 if [ -d "$DEPLOY_STATE_DIR" ]; then
     echo "  state dir -> $DEPLOY_STATE_DIR"
+else
+    echo "  state dir -> missing"
+    missing=1
 fi
 echo ""
 
@@ -1509,6 +1599,8 @@ if command -v systemctl >/dev/null 2>&1 && [ -f "$DEPLOY_SERVICE_PATH" ]; then
         journalctl -u beetle -n 20 --no-pager 2>&1 || true
     fi
 fi
+
+[ "$missing" -eq 0 ] || exit 1
 REMOTE_EOF
 
     echo ""
@@ -1566,22 +1658,23 @@ linux_deploy_main() {
     echo "=========================================="
     echo ""
     linux_prepare_remote_target
+    linux_remote_prepare_privileged_prefix || return 1
     if [ "${REMOTE_BUILD_ACTIVE:-0}" = "1" ] && [ "${REMOTE_BUILD_ROLE:-}" = "deploy" ]; then
         echo "Using remote-built ${SELECTED_ARCH} artifact from ${REMOTE_BUILD_BIN}"
         echo ""
     else
         linux_deploy_select_arch
     fi
-    linux_deploy_fetch_embed_deps_from_url
-    linux_deploy_probe_remote_install_state
+    linux_deploy_fetch_embed_deps_from_url || return 1
+    linux_deploy_probe_remote_install_state || return 1
     linux_deploy_select_deploy_mode
-    linux_deploy_prompt_wifi_helpers_or_continue
-    linux_deploy_upload_files
-    linux_deploy_install_payloads
-    linux_deploy_manage_service
-    linux_deploy_report_wifi_tools_on_device
+    linux_deploy_prompt_wifi_helpers_or_continue || return 1
+    linux_deploy_upload_files || return 1
+    linux_deploy_install_payloads || return 1
+    linux_deploy_manage_service || return 1
+    linux_deploy_report_wifi_tools_on_device || return 1
+    linux_deploy_verify_remote_install || return 1
     linux_deploy_show_next_steps
-    linux_deploy_verify_remote_install
 }
 
 
@@ -2371,6 +2464,69 @@ valid_flash_port() {
   [[ -n "$1" ]] && [[ "$1" =~ ^/dev/[a-zA-Z0-9/_.-]+$ ]] && [[ "$1" != *".."* ]]
 }
 
+collect_esp_component_graph_inputs() {
+  local path
+  for path in \
+    Cargo.toml \
+    build.rs \
+    components_esp32s3.lock \
+    components_esp32p4.lock \
+    sdkconfig.defaults \
+    sdkconfig.defaults.esp32s3 \
+    sdkconfig.defaults.esp32s3.8mb.board \
+    sdkconfig.defaults.esp32s3.board \
+    sdkconfig.defaults.esp32s3.32mb.board \
+    sdkconfig.defaults.esp32p4 \
+    sdkconfig.defaults.esp32p4.board \
+    third_party/esp-idf-sys/build/native/cargo_driver/config.rs
+  do
+    [[ -f "$SCRIPT_ROOT/$path" ]] && printf '%s\n' "$SCRIPT_ROOT/$path"
+  done
+  if [[ -d "$SCRIPT_ROOT/components" ]]; then
+    find "$SCRIPT_ROOT/components" -type f ! -name '.DS_Store' | sort
+  fi
+}
+
+compute_esp_component_graph_hash() {
+  local hasher=()
+  local file
+
+  if command -v shasum >/dev/null 2>&1; then
+    hasher=(shasum -a 256)
+  elif command -v sha256sum >/dev/null 2>&1; then
+    hasher=(sha256sum)
+  else
+    echo "Error: need shasum or sha256sum to hash ESP component graph inputs" >&2
+    return 1
+  fi
+
+  while IFS= read -r file; do
+    [[ -n "$file" ]] || continue
+    "${hasher[@]}" "$file"
+  done < <(collect_esp_component_graph_inputs) | "${hasher[@]}" | awk '{print $1}'
+}
+
+refresh_esp_component_graph_cache() {
+  [[ "$BUILD_TARGET" =~ -unknown-linux ]] && return 0
+
+  local stamp_dir="$EFFECTIVE_TARGET_DIR/$BUILD_TARGET/$BUILD_PROFILE"
+  local stamp_file="$stamp_dir/.beetle-esp-component-graph.sha256"
+  local current_hash cached_hash=""
+
+  current_hash="$(compute_esp_component_graph_hash)" || return 1
+  [[ -f "$stamp_file" ]] && cached_hash="$(tr -d '[:space:]' < "$stamp_file")"
+
+  if [[ "$current_hash" == "$cached_hash" ]]; then
+    return 0
+  fi
+
+  mkdir -p "$stamp_dir"
+  if [[ -d "$stamp_dir/build" ]]; then
+    find "$stamp_dir/build" -maxdepth 1 -type d -name 'esp-idf-sys-*' -exec rm -rf {} +
+  fi
+  printf '%s\n' "$current_hash" > "$stamp_file"
+}
+
 # macOS/Linux: show who holds the serial device (common cause of espflash "Failed to open serial port").
 warn_serial_port_busy() {
   local p="$1"
@@ -2450,7 +2606,10 @@ get_flash_port() {
     return
   fi
   PORTS=()
-  mapfile -t PORTS < <(list_flash_ports)
+  local port
+  while IFS= read -r port; do
+    [[ -n "$port" ]] && PORTS+=("$port")
+  done < <(list_flash_ports)
   if [[ ${#PORTS[@]} -eq 0 ]]; then
     echo "No serial ports found. Plug in the board or set ESPFLASH_PORT=/dev/..." >&2
     exit 1
@@ -3021,6 +3180,10 @@ RELEASE_ARGS+=("${BUILD_ARGS[@]}")
 echo ""
 echo "========== Step: Building release =========="
 echo "  Target: $BUILD_TARGET  |  Root: $SCRIPT_ROOT"
+
+if [[ -z "${SKIP_ESP_TOOLCHAIN:-}" ]]; then
+  refresh_esp_component_graph_cache || exit 1
+fi
 
 # Linux 构建用 stable 工具链
 if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then

@@ -30,14 +30,6 @@ remote_component = { name = "espressif/esp-sr", version = "2.4.0" }
 remote_component = { name = "espressif/esp-dsp", version = "1.7.1", path = "../../../../../../../third_party/espressif__esp-dsp" }
 
 [[package.metadata.esp-idf-sys.extra_components]]
-# ESP32-P4 hosted wireless plane. Kept in the shared component set so P4 can
-# compile the same Platform/WiFi graph while S3 simply leaves it disabled.
-remote_component = { name = "espressif/esp_wifi_remote", version = "1.2.4" }
-
-[[package.metadata.esp-idf-sys.extra_components]]
-remote_component = { name = "espressif/esp_hosted", version = "2.12.3" }
-
-[[package.metadata.esp-idf-sys.extra_components]]
 # 唤醒词薄 C 封装层：暴露稳定 ABI 供 Rust FFI，内部依赖 esp-sr WakeNet。
 # Thin C wrapper exposing stable ABI for Rust FFI; depends on esp-sr WakeNet internally.
 component_dirs = ["components"]

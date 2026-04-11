@@ -3,6 +3,7 @@ use std::fmt::Write;
 use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
+use embuild::cargo;
 use cargo_metadata::{Metadata, Package};
 use embuild::cargo::IntoWarning;
 use embuild::espidf::parse_esp_idf_git_ref;
@@ -238,6 +239,7 @@ impl NativeConfig {
     /// Extend [`Self::extra_components`] with all [`ExtraComponent`]s
     /// specified in the root crate's and all direct dependencies' manifest.
     pub fn with_cargo_metadata(&mut self, root: &Package, metadata: &Metadata) -> Result<()> {
+        cargo::track_file(root.manifest_path.as_std_path());
         let EspIdfSys {
             v:
                 NativeConfig {
@@ -303,6 +305,7 @@ impl NativeConfig {
             .flat_map(|id| metadata.packages.iter().find(|p| p.id == *id));
 
         for dep_package in dependencies {
+            cargo::track_file(dep_package.manifest_path.as_std_path());
             let cfg = EspIdfSys::<NativeConfig>::deserialize(&dep_package.metadata)
                 .with_context(|| {
                     anyhow!(

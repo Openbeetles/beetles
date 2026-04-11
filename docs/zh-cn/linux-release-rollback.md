@@ -23,6 +23,7 @@
 
 - `README.txt`
 - `beetle.service` 示例
+- `beetle.init` 示例（带 Debian/LSB 头，兼容 SysV 路径）
 
 常见目录结构：
 
@@ -37,6 +38,11 @@
 - `/opt/beetle/current` 指向当前版本
 - `/opt/beetle/beetle` 作为当前二进制的兼容快捷路径
 - `/var/lib/beetle` 作为默认状态目录
+
+非 `root` 账号部署时：
+
+- 远程构建目录默认使用该账号 home 下路径，例如 `/home/beetle/beetle-build`
+- 写 `/opt/beetle`、`/var/lib/beetle`、`/etc/systemd/system` 时需要远端 `sudo`
 
 ### 服务入口与发布契约
 
