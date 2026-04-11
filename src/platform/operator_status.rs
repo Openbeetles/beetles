@@ -50,6 +50,7 @@ pub struct OperatorStatusSnapshot {
 pub fn build_operator_status(
     input: OperatorStatusInput<'_>,
 ) -> crate::error::Result<OperatorStatusSnapshot> {
+    crate::platform::refresh_runtime_state();
     let memory_system_kind = input.platform.memory_system_kind();
     let operator_surface =
         crate::platform::operator_surface::current_operator_surface_budget(memory_system_kind);

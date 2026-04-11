@@ -2411,6 +2411,18 @@ fn validate_pin_range(pin: i32, stage: &'static str) -> Result<()> {
 }
 
 fn collect_display_pins(cfg: &DisplayConfig) -> Vec<(String, i32)> {
+    #[cfg(target_os = "linux")]
+    if !is_framebuffer_config(cfg) {
+        let mut out = vec![("dc".to_string(), cfg.spi.dc)];
+        if let Some(v) = cfg.spi.rst {
+            out.push(("rst".to_string(), v));
+        }
+        if let Some(v) = cfg.spi.bl {
+            out.push(("bl".to_string(), v));
+        }
+        return out;
+    }
+
     let mut out = vec![
         ("sclk".to_string(), cfg.spi.sclk),
         ("mosi".to_string(), cfg.spi.mosi),

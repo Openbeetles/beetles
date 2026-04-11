@@ -67,6 +67,12 @@ pub fn wifi_sta_ip() -> Option<String> {
     crate::state::wifi_sta_ip()
 }
 
+pub fn refresh_runtime_state() {}
+
+pub fn passive_scan_handle() -> Option<WifiScanHandle> {
+    None
+}
+
 /// 阻塞直到出站网络就绪（STA 已连接）；轮询 2s 并喂狗。仅 ESP 生效，host 立即返回。
 /// 供 WSS、通道发送、Agent 等对外请求入口在发起请求前调用，避免无网时无意义请求与资源耗尽。
 ///

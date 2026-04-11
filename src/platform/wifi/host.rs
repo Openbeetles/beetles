@@ -21,6 +21,12 @@ pub fn lan_ipv4() -> Option<String> {
     wifi_sta_ip()
 }
 
+pub fn refresh_runtime_state() {}
+
+pub fn passive_scan_handle() -> Option<WifiScanHandle> {
+    None
+}
+
 /// 阻塞直到出站网络就绪；host 立即返回。
 pub fn wait_for_network_ready() {}
 

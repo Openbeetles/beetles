@@ -520,6 +520,11 @@ mod esp_backend {
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 use crate::platform::linux::display_fb::LinuxFramebufferBackend;
+#[cfg(all(
+    target_os = "linux",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+use crate::platform::linux::display_spi::LinuxSpiDisplayBackend;
 
 #[cfg(all(
     target_os = "linux",
@@ -531,6 +536,19 @@ impl FlushRgb565 for LinuxFramebufferBackend {
     }
     fn flush_rows(&mut self, offset_x: i16, offset_y: i16, ry: u16, rh: u16) -> Result<()> {
         LinuxFramebufferBackend::flush_rows(self, offset_x, offset_y, ry, rh)
+    }
+}
+
+#[cfg(all(
+    target_os = "linux",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl FlushRgb565 for LinuxSpiDisplayBackend {
+    fn flush(&mut self, offset_x: i16, offset_y: i16) -> Result<()> {
+        LinuxSpiDisplayBackend::flush(self, offset_x, offset_y)
+    }
+    fn flush_rows(&mut self, offset_x: i16, offset_y: i16, ry: u16, rh: u16) -> Result<()> {
+        LinuxSpiDisplayBackend::flush_rows(self, offset_x, offset_y, ry, rh)
     }
 }
 
@@ -703,6 +721,20 @@ where
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LinuxDisplayBackendKind {
+    Framebuffer,
+    Spi,
+}
+
+fn linux_display_backend_kind(config: &DisplayConfig) -> LinuxDisplayBackendKind {
+    if crate::display::is_framebuffer_config(config) {
+        LinuxDisplayBackendKind::Framebuffer
+    } else {
+        LinuxDisplayBackendKind::Spi
+    }
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  DisplayState
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -725,6 +757,11 @@ pub struct DisplayState {
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
     ))]
     backend_fb: Option<LinuxFramebufferBackend>,
+    #[cfg(all(
+        target_os = "linux",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    backend_spi: Option<LinuxSpiDisplayBackend>,
 }
 
 /// F1: LEDC PWM 背光常量。Channel 7 / Timer 3，不与 tool pwm_out 的 0-5 冲突。
@@ -754,6 +791,11 @@ impl DisplayState {
                     not(any(target_arch = "xtensa", target_arch = "riscv32"))
                 ))]
                 backend_fb: None,
+                #[cfg(all(
+                    target_os = "linux",
+                    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+                ))]
+                backend_spi: None,
             });
         }
 
@@ -781,31 +823,51 @@ impl DisplayState {
             not(any(target_arch = "xtensa", target_arch = "riscv32"))
         ))]
         {
-            if !is_framebuffer_config(config) {
-                return Err(crate::error::Error::config(
-                    "display_init",
-                    "Linux target only supports driver=framebuffer / bus=framebuffer",
-                ));
-            }
-            match LinuxFramebufferBackend::new(config) {
-                Ok(fb) => {
-                    return Ok(Self {
-                        config: config.clone(),
-                        layout,
-                        available: true,
-                        last_command_at: None,
-                        bl_pin,
-                        bl_ledc_initialized: false,
-                        backend_fb: Some(fb),
-                    });
+            match linux_display_backend_kind(config) {
+                LinuxDisplayBackendKind::Framebuffer => {
+                    match LinuxFramebufferBackend::new(config) {
+                        Ok(fb) => {
+                            return Ok(Self {
+                                config: config.clone(),
+                                layout,
+                                available: true,
+                                last_command_at: None,
+                                bl_pin,
+                                bl_ledc_initialized: false,
+                                backend_fb: Some(fb),
+                                backend_spi: None,
+                            });
+                        }
+                        Err(e) => {
+                            log::warn!("[display] framebuffer init failed: {}", e);
+                            return Err(Error::config(
+                                "display_init",
+                                format!("framebuffer init failed: {e}"),
+                            ));
+                        }
+                    }
                 }
-                Err(e) => {
-                    log::warn!("[display] framebuffer init failed: {}", e);
-                    return Err(Error::config(
-                        "display_init",
-                        format!("framebuffer init failed: {e}"),
-                    ));
-                }
+                LinuxDisplayBackendKind::Spi => match LinuxSpiDisplayBackend::new(config) {
+                    Ok(spi) => {
+                        return Ok(Self {
+                            config: config.clone(),
+                            layout,
+                            available: true,
+                            last_command_at: None,
+                            bl_pin,
+                            bl_ledc_initialized: false,
+                            backend_fb: None,
+                            backend_spi: Some(spi),
+                        });
+                    }
+                    Err(e) => {
+                        log::warn!("[display] linux spi init failed: {}", e);
+                        return Err(Error::config(
+                            "display_init",
+                            format!("linux spi init failed: {e}"),
+                        ));
+                    }
+                },
             }
         }
 
@@ -895,11 +957,13 @@ impl DisplayState {
             not(any(target_arch = "xtensa", target_arch = "riscv32"))
         ))]
         {
-            let backend = match self.backend_fb.as_mut() {
-                Some(b) => b,
-                None => return Ok(()),
-            };
-            dispatch_display_command(backend, &self.config, &self.layout, &cmd)?;
+            if let Some(backend) = self.backend_fb.as_mut() {
+                dispatch_display_command(backend, &self.config, &self.layout, &cmd)?;
+            } else if let Some(backend) = self.backend_spi.as_mut() {
+                dispatch_display_command(backend, &self.config, &self.layout, &cmd)?;
+            } else {
+                return Ok(());
+            }
             self.last_command_at = Some(Instant::now());
         }
 
@@ -922,7 +986,7 @@ impl DisplayState {
             target_os = "linux",
             not(any(target_arch = "xtensa", target_arch = "riscv32"))
         ))]
-        let result = self.config.backlight_sysfs.is_some();
+        let result = self.config.backlight_sysfs.is_some() || self.bl_pin.is_some();
         #[cfg(not(all(
             target_os = "linux",
             not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -972,6 +1036,8 @@ impl DisplayState {
         {
             if let Some(ref bl_path) = self.config.backlight_sysfs {
                 sysfs_write_brightness(bl_path, percent);
+            } else if let Some(backend) = self.backend_spi.as_ref() {
+                backend.set_backlight(percent > 0)?;
             }
         }
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux")))]
@@ -2800,7 +2866,7 @@ fn format_pct(val: u8, buf: &mut [u8; 5]) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::display::default_disabled_display_config;
+    use crate::display::{default_disabled_display_config, DisplayBus, DisplayDriver};
     use embedded_graphics_core::{
         draw_target::DrawTarget,
         geometry::{OriginDimensions, Size},
@@ -2867,5 +2933,29 @@ mod tests {
         assert_eq!(backend.flush_calls, 0);
         assert_eq!(backend.flush_rows_calls.len(), 1);
         assert_eq!(backend.flush_rows_calls[0].0, 0);
+    }
+
+    #[test]
+    fn linux_backend_kind_stays_framebuffer_for_framebuffer_configs() {
+        let mut config = default_disabled_display_config();
+        config.enabled = true;
+        config.driver = DisplayDriver::Framebuffer;
+        config.bus = DisplayBus::Framebuffer;
+        assert_eq!(
+            linux_display_backend_kind(&config),
+            LinuxDisplayBackendKind::Framebuffer
+        );
+    }
+
+    #[test]
+    fn linux_backend_kind_selects_spi_for_panel_configs() {
+        let mut config = default_disabled_display_config();
+        config.enabled = true;
+        config.driver = DisplayDriver::St7789;
+        config.bus = DisplayBus::Spi;
+        assert_eq!(
+            linux_display_backend_kind(&config),
+            LinuxDisplayBackendKind::Spi
+        );
     }
 }

@@ -320,7 +320,7 @@ export function buildRuntimeTelemetryFields(
     id: RuntimeTelemetryField["id"],
     labelKey: string,
     value: number | undefined,
-    options?: Pick<RuntimeTelemetryField, "unit" | "color" | "valueKind">,
+    options?: Partial<Pick<RuntimeTelemetryField, "unit" | "color" | "valueKind">>,
   ) => {
     if (value == null) return;
     fields.push({

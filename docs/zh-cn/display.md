@@ -54,6 +54,11 @@ ESP32-S3 上常见的接线方式如下：
 
 显示配置保存在设备里的 `config/display.json`。如果你在用配置页，也可以直接在 Display 页面修改。
 
+在 ESP 上，这套配置会直接驱动 SPI 总线和 GPIO。现在在 Linux 上，同一套配置模型也支持两种后端：
+
+- `driver=framebuffer`、`bus=framebuffer`：走 Linux framebuffer（`/dev/fbX`）
+- `driver=st7789` / `ili9341` / `st7735`、`bus=spi`：走 Linux 用户态 SPI（`/dev/spidevX.Y`）
+
 ### 完整配置示例
 
 ```json
@@ -117,7 +122,7 @@ ESP32-S3 上常见的接线方式如下：
 | `version` | u32 | 1 | 配置模式版本号，必须为 `1` |
 | `enabled` | bool | — | 启用/禁用显示。`false` 时不初始化任何 SPI 硬件 |
 | `driver` | string | — | `"st7789"`、`"ili9341"` 或 `"st7735"` |
-| `bus` | string | — | `"spi"`，当前只支持这一种总线 |
+| `bus` | string | — | `"spi"` 或 `"framebuffer"` |
 | `width` | u16 | — | 面板宽度（像素，1–480） |
 | `height` | u16 | — | 面板高度（像素，1–480） |
 | `rotation` | u16 | 0 | 显示旋转角度：`0`、`90`、`180` 或 `270` |
@@ -133,6 +138,8 @@ ESP32-S3 上常见的接线方式如下：
 | `spi.rst` | i32? | null | 复位 GPIO 引脚（可选） |
 | `spi.bl` | i32? | null | 背光 GPIO 引脚（可选） |
 | `spi.freq_hz` | u32 | 40000000 | SPI 时钟频率（1–80 MHz） |
+| `fb_device` | string | `"/dev/fb0"` | Linux 设备路径：framebuffer 模式填 `/dev/fbX`；Linux SPI 模式也可直接填 `/dev/spidevX.Y` |
+| `backlight_sysfs` | string? | null | 可选的 Linux sysfs 背光亮度路径；SPI 面板也可以直接用 `spi.bl` GPIO 控背光 |
 
 ---
 
@@ -235,6 +242,8 @@ ESP32-S3 上常见的接线方式如下：
 
 7. **显示任务栈**：当前渲染逻辑用 6 KB 栈已经够用。如果后面把画面做得更复杂，要记得重新评估栈空间。
 
-8. **非 ESP 构建**：在 Linux 或普通开发机上编译时，显示后端会返回 `available: false`，相关调用都会变成空操作。
+8. **Linux 运行态**：Linux 不再被强制限制成 framebuffer-only。配置成 `framebuffer` 时走 `/dev/fbX`；配置成 `st7789` / `ili9341` / `st7735` 且 `bus: "spi"` 时，走通用的用户态 SPI 后端。
 
-9. **旋转 (`rotation`)**：这个字段会在驱动层直接做方向变换。`width` 和 `height` 要按旋转后的实际可视区域来填。
+9. **Linux SPI 设备路径**：如果 `fb_device` 直接填了 `/dev/spidevX.Y`，Beetle 会优先打开这个节点；如果还保留默认 framebuffer 路径，则 Linux SPI 模式会回退到 `/dev/spidev{spi.host-1}.{spi.cs}`。
+
+10. **旋转 (`rotation`)**：这个字段会在驱动层直接做方向变换。`width` 和 `height` 要按旋转后的实际可视区域来填。

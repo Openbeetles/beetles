@@ -54,6 +54,11 @@ A typical SPI connection to ESP32-S3:
 
 Display configuration is stored in `config/display.json` on the SPIFFS partition. It can also be edited via the configuration web UI (Display section).
 
+On ESP, Beetle drives SPI panels directly from GPIO + SPI host config. On Linux, the same config model now supports both:
+
+- `driver=framebuffer`, `bus=framebuffer`: Linux framebuffer path (`/dev/fbX`)
+- `driver=st7789` / `ili9341` / `st7735`, `bus=spi`: Linux userspace SPI path (`/dev/spidevX.Y`)
+
 ### Full config example
 
 ```json
@@ -117,7 +122,7 @@ Display configuration is stored in `config/display.json` on the SPIFFS partition
 | `version` | u32 | 1 | Config schema version; must be `1` |
 | `enabled` | bool | — | Enable/disable display. When `false`, no SPI hardware is initialized |
 | `driver` | string | — | `"st7789"`, `"ili9341"`, or `"st7735"` |
-| `bus` | string | — | `"spi"` (only option currently) |
+| `bus` | string | — | `"spi"` or `"framebuffer"` |
 | `width` | u16 | — | Panel width in pixels (1–480) |
 | `height` | u16 | — | Panel height in pixels (1–480) |
 | `rotation` | u16 | 0 | Display rotation: `0`, `90`, `180`, or `270` |
@@ -133,6 +138,8 @@ Display configuration is stored in `config/display.json` on the SPIFFS partition
 | `spi.rst` | i32? | null | Reset GPIO pin (optional) |
 | `spi.bl` | i32? | null | Backlight GPIO pin (optional) |
 | `spi.freq_hz` | u32 | 40000000 | SPI clock frequency (1–80 MHz) |
+| `fb_device` | string | `"/dev/fb0"` | Linux device path: framebuffer mode uses `/dev/fbX`; Linux SPI mode can use `/dev/spidevX.Y` |
+| `backlight_sysfs` | string? | null | Optional Linux sysfs backlight path; SPI panels can also use `spi.bl` GPIO instead |
 
 ---
 
@@ -235,6 +242,8 @@ The display thread runs with a 6 KB stack and refreshes every 5 seconds from `or
 
 7. **Display thread stack** — The rendering thread uses 6 KB stack. This is sufficient for the current dashboard layout. If you add significantly more complex rendering, monitor for stack overflow.
 
-8. **Host compilation** — On non-ESP targets (`cargo check`, `cargo clippy`), the display backend returns `available: false` and all commands are no-ops. This ensures the codebase compiles cleanly on the host.
+8. **Linux runtime** — Linux no longer forces framebuffer-only mode. If the config stays on `framebuffer`, Beetle uses `/dev/fbX`; if the config uses `st7789` / `ili9341` / `st7735` with `bus: "spi"`, Beetle uses a generic userspace SPI backend.
 
-9. **Rotation** — The `rotation` field applies a MADCTL transform at the controller level. The framebuffer dimensions (`width` x `height`) should match the post-rotation visible area.
+9. **Linux SPI device path** — If `fb_device` is set to `/dev/spidevX.Y`, Beetle opens that exact node. If it is left on the framebuffer default, Beetle falls back to `/dev/spidev{spi.host-1}.{spi.cs}` on Linux SPI mode.
+
+10. **Rotation** — The `rotation` field applies a MADCTL transform at the controller level. The framebuffer dimensions (`width` x `height`) should match the post-rotation visible area.

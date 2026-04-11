@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import type { TFunction } from "i18next";
 import { yesNo } from "./deviceStatusBarHelpers.ts";
 
-const t = (key: string) => {
+const t = ((key: string) => {
   switch (key) {
     case "common.yes":
       return "Yes";
@@ -13,7 +14,7 @@ const t = (key: string) => {
     default:
       return key;
   }
-};
+}) as TFunction<"translation", undefined>;
 
 test("yesNo remains available for shared device status rendering", () => {
   assert.equal(yesNo(true, t), "Yes");

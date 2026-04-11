@@ -463,9 +463,11 @@ fn communication_plane_startup(
 mod tests {
     use super::{
         communication_plane_startup, compute_voice_runtime_capabilities,
-        finalize_required_thread_start, voice_sink_sender, StartedVoiceSession,
+        finalize_required_thread_start, register_process_memory_snapshot_provider,
+        voice_sink_sender, StartedVoiceSession,
     };
     use beetle::config::default_disabled_audio_segment;
+    use std::sync::Arc;
 
     #[test]
     fn voice_sink_requires_tts_token_even_if_speaker_ready() {
@@ -568,6 +570,21 @@ mod tests {
         .expect_err("spawn should fail");
 
         assert_eq!(error.stage(), "synthetic_spawn");
+    }
+
+    #[test]
+    fn process_memory_provider_registration_updates_orchestrator_snapshot() {
+        register_process_memory_snapshot_provider(Arc::new(|| beetle::platform::MemorySnapshot {
+            heap_free_internal: 123,
+            heap_free_spiram: 456,
+            heap_largest_block: 78,
+        }));
+        beetle::orchestrator::update_heap_state();
+        let snapshot = beetle::orchestrator::snapshot();
+
+        assert_eq!(snapshot.heap_free_internal, 123);
+        assert_eq!(snapshot.heap_free_spiram, 456);
+        assert_eq!(snapshot.heap_largest_block_internal, 78);
     }
 
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
@@ -1229,6 +1246,7 @@ fn handle_config_command(platform: &Arc<dyn Platform>, action: beetle::commands:
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn handle_status_command(platform: &Arc<dyn Platform>, json: bool, chat_id: Option<&str>) {
+    beetle::platform::refresh_runtime_state();
     let config = beetle::bootstrap::load_config(platform);
     let recent_turn = chat_id.and_then(|id| {
         platform
@@ -1697,8 +1715,23 @@ fn log_start_banner(config_path: Option<&str>) {
     }
 }
 
+fn register_process_memory_snapshot_provider(
+    provider: Arc<dyn Fn() -> beetle::platform::MemorySnapshot + Send + Sync>,
+) {
+    beetle::orchestrator::register_memory_snapshot_provider(provider);
+    beetle::orchestrator::log_startup_memory_checkpoint("memory_provider_registered");
+}
+
+fn register_platform_memory_snapshot_provider(platform: &Arc<dyn Platform>) {
+    register_process_memory_snapshot_provider(Arc::new({
+        let platform = Arc::clone(platform);
+        move || platform.memory_snapshot()
+    }));
+}
+
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn run_linux_agent_entry(platform: Arc<dyn Platform>) {
+    register_platform_memory_snapshot_provider(&platform);
     startup_soul_kernel_recovery(Arc::clone(&platform));
     let (config, wifi_init_ok) = beetle::bootstrap::bootstrap_config_and_wifi(&platform);
     run_app(platform, config, wifi_init_ok);
@@ -1779,11 +1812,7 @@ fn main() {
     log::info!("========================================");
     log::info!("  甲壳虫 beetle v{}", VERSION);
     log::info!("========================================");
-    beetle::orchestrator::register_memory_snapshot_provider(Arc::new({
-        let p = Arc::clone(&platform);
-        move || p.memory_snapshot()
-    }));
-    beetle::orchestrator::log_startup_memory_checkpoint("memory_provider_registered");
+    register_platform_memory_snapshot_provider(&platform);
 
     startup_soul_kernel_recovery(Arc::clone(&platform));
     let (config, wifi_init_ok) = beetle::bootstrap::bootstrap_config_and_wifi(&platform);

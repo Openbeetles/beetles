@@ -75,6 +75,6 @@ pub use spiffs::{
 };
 pub use state_root::state_mount_path;
 pub use wifi::{
-    connect as connect_wifi, is_wifi_sta_connected, wait_for_network_ready, WifiApEntry, WifiScan,
-    WifiScanHandle,
+    connect as connect_wifi, is_wifi_sta_connected, passive_scan_handle, refresh_runtime_state,
+    wait_for_network_ready, WifiApEntry, WifiScan, WifiScanHandle,
 };

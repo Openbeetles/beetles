@@ -4,6 +4,8 @@
 mod audio;
 #[cfg(target_os = "linux")]
 pub(crate) mod display_fb;
+#[cfg(target_os = "linux")]
+pub(crate) mod display_spi;
 mod hardware_discovery;
 mod storage_media;
 
@@ -284,10 +286,17 @@ impl Platform for LinuxPlatform {
     }
 
     fn wifi_scan(&self) -> Option<Arc<dyn crate::platform::WifiScan + Send + Sync>> {
-        self.wifi_scan_handle
+        let mut guard = self
+            .wifi_scan_handle
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+            .unwrap_or_else(|e| e.into_inner());
+        if guard.is_none() {
+            if let Some(handle) = crate::platform::passive_scan_handle() {
+                let arc_dyn: Arc<dyn crate::platform::WifiScan + Send + Sync> = Arc::new(handle);
+                *guard = Some(arc_dyn);
+            }
+        }
+        guard.clone()
     }
 
     fn hardware_discovery(

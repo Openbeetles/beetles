@@ -88,8 +88,8 @@ pub struct DisplayConfig {
     #[serde(default)]
     pub offset_y: i16,
     pub spi: DisplaySpiConfig,
-    /// Linux framebuffer 设备路径（仅 driver/bus == Framebuffer 时生效）。
-    /// Linux framebuffer device path (only used when driver/bus == Framebuffer).
+    /// Linux 设备路径：framebuffer 模式下为 `/dev/fbX`，SPI 模式下可填 `/dev/spidevX.Y`。
+    /// Linux device path: `/dev/fbX` for framebuffer mode, `/dev/spidevX.Y` for SPI mode.
     #[serde(default = "default_fb_device")]
     pub fb_device: String,
     /// Linux sysfs 背光亮度文件路径，如 /sys/class/backlight/backlight0/brightness。
@@ -355,19 +355,19 @@ pub fn validate_display_config_core(cfg: &DisplayConfig) -> Result<()> {
             "DISPLAY_CONFIG_INVALID_DIMENSION: width/height must be 1..=480",
         ));
     }
+    #[cfg(target_os = "linux")]
+    if cfg.fb_device.is_empty() || cfg.fb_device.bytes().any(|b| b == 0 || b < 0x20) {
+        return Err(Error::config(
+            "display",
+            "DISPLAY_CONFIG_INVALID_DEVICE_PATH: fb_device must be non-empty and contain no control characters",
+        ));
+    }
     // Framebuffer 首版仅支持 rotation=0；MADCTL 软件旋转留 TODO。
     if is_framebuffer_config(cfg) {
         if cfg.rotation != 0 {
             return Err(Error::config(
                 "display",
                 "DISPLAY_CONFIG_FRAMEBUFFER_ROTATION: framebuffer mode only supports rotation=0 in this version",
-            ));
-        }
-        // fb_device 路径安全检查：非空、无 NUL 字节与控制字符。
-        if cfg.fb_device.is_empty() || cfg.fb_device.bytes().any(|b| b == 0 || b < 0x20) {
-            return Err(Error::config(
-                "display",
-                "DISPLAY_CONFIG_INVALID_FB_DEVICE: fb_device path must be non-empty and contain no control characters",
             ));
         }
         // backlight_sysfs 路径安全检查（若有）。

@@ -103,37 +103,57 @@ function validateLinuxFb(
   return null;
 }
 
+function validateLinuxSpi(
+  form: DisplayConfig,
+  t: (k: string) => string,
+): string | null {
+  if (!form.enabled) return null;
+  const dimOk =
+    form.width >= DIM_MIN &&
+    form.width <= DIM_MAX &&
+    form.height >= DIM_MIN &&
+    form.height <= DIM_MAX;
+  if (!dimOk) return t("displayConfig.validation.dimension");
+  if (![0, 90, 180, 270].includes(form.rotation))
+    return t("displayConfig.validation.rotation");
+  const offsetOk =
+    form.offset_x >= OFFSET_MIN &&
+    form.offset_x <= OFFSET_MAX &&
+    form.offset_y >= OFFSET_MIN &&
+    form.offset_y <= OFFSET_MAX;
+  if (!offsetOk) return t("displayConfig.validation.offset");
+  if (form.spi.freq_hz < FREQ_MIN || form.spi.freq_hz > FREQ_MAX) {
+    return t("displayConfig.validation.freq");
+  }
+  const gpioPins = [form.spi.dc, form.spi.rst, form.spi.bl].filter(
+    (pin): pin is number => pin != null,
+  );
+  if (gpioPins.some((p) => p < PIN_MIN || p > PIN_MAX))
+    return t("displayConfig.validation.pin");
+  const devicePath = form.fb_device.trim();
+  if (devicePath && !pathNoControlChars(devicePath))
+    return t("displayConfig.validation.pathInvalid");
+  return null;
+}
+
 function validateForRuntime(
   form: DisplayConfig,
   kind: DeviceRuntimeKind,
   t: (k: string) => string,
 ): string | null {
-  if (kind === "linux") return validateLinuxFb(form, t);
+  if (kind === "linux") {
+    if (form.driver === "framebuffer" || form.bus === "framebuffer") {
+      return validateLinuxFb(form, t);
+    }
+    return validateLinuxSpi(form, t);
+  }
   return validateEsp(form, t);
-}
-
-/** Linux 保存时强制与固件约定一致（framebuffer、rotation=0）。 */
-function buildSavePayload(
-  form: DisplayConfig,
-  kind: DeviceRuntimeKind,
-): DisplayConfig {
-  if (kind !== "linux") return form;
-  const bl = form.backlight_sysfs?.trim() || null;
-  return {
-    ...form,
-    driver: "framebuffer",
-    bus: "framebuffer",
-    rotation: 0,
-    fb_device: form.fb_device.trim(),
-    backlight_sysfs: bl,
-  };
 }
 
 /** 设备配置 →「显示」Tab 内容（路由子页） */
 export function DisplayConfigPanel() {
   const { t } = useTranslation();
   const runtimeKind = useDeviceRuntimeKind();
-  const showLinuxFramebuffer = runtimeKind === "linux";
   const {
     displayConfig,
     displayLoading,
@@ -146,11 +166,15 @@ export function DisplayConfigPanel() {
   const [draft, setDraft] = useState<DisplayConfig | null>(null);
   const [saveRestartRequired, setSaveRestartRequired] = useState(false);
   const form = draft ?? displayConfig ?? defaultDisplayConfig();
+  const isLinuxRuntime = runtimeKind === "linux";
+  const showLinuxFramebuffer =
+    isLinuxRuntime &&
+    (form.driver === "framebuffer" || form.bus === "framebuffer");
 
   const sectionDesc = useMemo(() => {
-    if (showLinuxFramebuffer) return t("displayConfig.sectionMainDescLinux");
+    if (isLinuxRuntime) return t("displayConfig.sectionMainDescLinux");
     return t("displayConfig.sectionMainDesc");
-  }, [showLinuxFramebuffer, t]);
+  }, [isLinuxRuntime, t]);
 
   useEffect(() => {
     void loadDisplayConfig();
@@ -184,7 +208,11 @@ export function DisplayConfigPanel() {
     }
     saveFeedback.begin();
     setSaveRestartRequired(false);
-    const body = buildSavePayload(form, runtimeKind);
+    const body = {
+      ...form,
+      fb_device: form.fb_device.trim(),
+      backlight_sysfs: form.backlight_sysfs?.trim() || null,
+    };
     const result = await saveDisplayConfig(body);
     saveFeedback.finishFromResult(result);
     if (result.ok) {
@@ -255,14 +283,31 @@ export function DisplayConfigPanel() {
               label={t("displayConfig.enabled")}
             />
             <Box sx={fieldGridSx}>
-              {showLinuxFramebuffer ? (
+              {isLinuxRuntime ? (
                 <TextField
+                  select
                   size="small"
                   fullWidth
-                  disabled
+                  disabled={!form.enabled}
+                  value={form.driver}
                   label={t("displayConfig.driver")}
-                  value={t("displayConfig.driverFramebuffer")}
-                />
+                  onChange={(e) =>
+                    setField(
+                      "driver",
+                      e.target.value as DisplayConfig["driver"],
+                    )
+                  }
+                  slotProps={{ select: { native: true } }}
+                >
+                  <option value="st7789">ST7789</option>
+                  <option value="ili9341">ILI9341</option>
+                  <option value="st7735">
+                    ST7735 (1.8&quot; / 1.44&quot; / 0.96&quot;)
+                  </option>
+                  <option value="framebuffer">
+                    {t("displayConfig.driverFramebuffer")}
+                  </option>
+                </TextField>
               ) : (
                 <TextField
                   select
@@ -407,7 +452,7 @@ export function DisplayConfigPanel() {
             </Box>
           </FormSectionSub>
 
-          {showLinuxFramebuffer ? (
+          {isLinuxRuntime ? (
             <FormSectionSub title={t("displayConfig.sectionFramebuffer")}>
               <Box sx={fieldGridSx}>
                 <TextField
@@ -433,7 +478,9 @@ export function DisplayConfigPanel() {
                 />
               </Box>
             </FormSectionSub>
-          ) : (
+          ) : null}
+
+          {!showLinuxFramebuffer ? (
             <FormSectionSub title={t("displayConfig.sectionSpi")}>
               <Box sx={fieldGridSx}>
                 <TextField
@@ -504,7 +551,7 @@ export function DisplayConfigPanel() {
                 />
               </Box>
             </FormSectionSub>
-          )}
+          ) : null}
 
           <FormSectionSub title={t("displayConfig.sleepTimeoutSecs")}>
             <TextField
@@ -512,7 +559,7 @@ export function DisplayConfigPanel() {
               size="small"
               label={t("displayConfig.sleepTimeoutSecs")}
               helperText={
-                showLinuxFramebuffer
+                isLinuxRuntime
                   ? t("displayConfig.sleepTimeoutSecsHelpLinux")
                   : t("displayConfig.sleepTimeoutSecsHelp")
               }

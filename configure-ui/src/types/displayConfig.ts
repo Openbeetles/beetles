@@ -26,7 +26,7 @@ export interface DisplayConfig {
   offset_x: number
   offset_y: number
   spi: DisplaySpiConfig
-  /** Linux fbdev 设备路径，默认 /dev/fb0 */
+  /** Linux 设备路径：framebuffer 模式为 /dev/fb0，SPI 模式可填 /dev/spidev0.0 */
   fb_device: string
   /** sysfs 背光亮度文件路径，如 /sys/class/backlight/xxx/brightness；空则关闭背光控制 */
   backlight_sysfs: string | null

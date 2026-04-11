@@ -11,7 +11,9 @@ use crate::platform::wifi::linux_ctrl::{
     capability::{self, PhyCapabilities},
     hostapd, iw_scan, net, process, wpa,
 };
-use crate::platform::wifi::linux_startup_policy::{classify_linux_wifi_startup, LinuxWifiStartup};
+use crate::platform::wifi::linux_startup_policy::{
+    effective_wifi_runtime_state, EffectiveWifiRuntimeState, LinuxWifiStartup,
+};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -67,15 +69,34 @@ impl WifiScan for WifiScanHandle {
 }
 
 pub fn is_wifi_sta_connected() -> bool {
+    refresh_runtime_state();
     crate::state::wifi_sta_connected()
 }
 
 pub fn wifi_sta_ip() -> Option<String> {
+    refresh_runtime_state();
     crate::state::wifi_sta_ip()
 }
 
 pub fn lan_ipv4() -> Option<String> {
+    refresh_runtime_state();
     net::read_primary_lan_ipv4().ok().flatten()
+}
+
+pub fn refresh_runtime_state() {
+    let Some(iface) = cached_or_detect_iface() else {
+        clear_sta_state();
+        return;
+    };
+    apply_runtime_state(&iface, probe_effective_wifi_state(&iface));
+}
+
+pub fn passive_scan_handle() -> Option<WifiScanHandle> {
+    let iface = cached_or_detect_iface()?;
+    Some(WifiScanHandle {
+        iface,
+        scan_via_iw: true,
+    })
 }
 
 /// Linux 启动后不阻塞全局启动流程；连接状态由后台与 API 查询。
@@ -195,6 +216,16 @@ fn log_phy_caps(caps: &PhyCapabilities) {
 }
 
 fn existing_effective_wifi_startup(iface: &str) -> LinuxWifiStartup {
+    match probe_effective_wifi_state(iface) {
+        Some(runtime) => LinuxWifiStartup::Inherit {
+            ip: runtime.ip.unwrap_or_default(),
+            scan_via_iw: runtime.scan_via_iw,
+        },
+        None => LinuxWifiStartup::Fallback,
+    }
+}
+
+fn probe_effective_wifi_state(iface: &str) -> Option<EffectiveWifiRuntimeState> {
     let associated = match net::wifi_associated(iface) {
         Ok(v) => v,
         Err(e) => {
@@ -204,29 +235,30 @@ fn existing_effective_wifi_startup(iface: &str) -> LinuxWifiStartup {
                 iface,
                 e
             );
-            return LinuxWifiStartup::Fallback;
+            return None;
         }
     };
     let sta_ip = match net::read_sta_ip(iface) {
         Ok(v) => v,
         Err(e) => {
             log::warn!("[{}] WiFi IPv4 probe failed on '{}': {}", TAG, iface, e);
-            return LinuxWifiStartup::Fallback;
+            return None;
         }
     };
     let default_route_iface = match net::default_route_iface_name() {
         Ok(v) => v,
         Err(e) => {
             log::warn!("[{}] default-route probe failed: {}", TAG, e);
-            return LinuxWifiStartup::Fallback;
+            return None;
         }
     };
-    classify_linux_wifi_startup(
+    let runtime = effective_wifi_runtime_state(
         associated,
         sta_ip.as_deref(),
         default_route_iface.as_deref(),
         iface,
-    )
+    );
+    runtime.connected.then_some(runtime)
 }
 
 pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
@@ -540,12 +572,16 @@ fn start_sta_probe_thread(iface: String) {
 
 fn probe_loop(iface: &str) {
     loop {
-        let ip = net::read_sta_ip(iface).ok().flatten();
-        match ip {
-            Some(v) => crate::state::set_wifi_sta_state(true, Some(v)),
-            None => crate::state::clear_wifi_sta_state(),
-        }
+        apply_runtime_state(iface, probe_effective_wifi_state(iface));
         std::thread::sleep(Duration::from_secs(WIFI_RETRY_BACKOFF_SECS[0]));
+    }
+}
+
+fn apply_runtime_state(iface: &str, runtime: Option<EffectiveWifiRuntimeState>) {
+    set_iface(iface);
+    match runtime.and_then(|state| state.ip) {
+        Some(ip) => set_sta_state(Some(ip)),
+        None => clear_sta_state(),
     }
 }
 
@@ -560,5 +596,23 @@ fn clear_sta_state() {
 fn set_iface(iface: &str) {
     if let Ok(mut g) = WIFI_IFACE.get_or_init(|| Mutex::new(None)).lock() {
         *g = Some(iface.to_string());
+    }
+}
+
+fn cached_or_detect_iface() -> Option<String> {
+    if let Ok(g) = WIFI_IFACE.get_or_init(|| Mutex::new(None)).lock() {
+        if let Some(iface) = g.as_ref() {
+            return Some(iface.clone());
+        }
+    }
+    match capability::detect_wifi_iface() {
+        Ok(iface) => {
+            set_iface(&iface);
+            Some(iface)
+        }
+        Err(e) => {
+            log::warn!("[{}] detect WiFi iface failed: {}", TAG, e);
+            None
+        }
     }
 }
