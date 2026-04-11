@@ -5,11 +5,6 @@
     allow(dead_code)
 )]
 
-#[cfg(all(
-    target_os = "linux",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-use crate::display::is_framebuffer_config;
 use crate::display::{
     compute_layout, DisplayChannelStatus, DisplayCommand, DisplayConfig, DisplayLayout,
     DisplayPressureLevel, DisplaySystemState, DISPLAY_LAYOUT_REF_PX,

@@ -7,6 +7,7 @@ use embedded_graphics_core::{
     draw_target::DrawTarget,
     geometry::{OriginDimensions, Size},
     pixelcolor::{raw::RawU16, Rgb565},
+    prelude::RawData,
     Pixel,
 };
 use spidev::{SpiModeFlags, Spidev, SpidevOptions};
@@ -123,10 +124,6 @@ impl LinuxSpiDisplayBackend {
         Ok(())
     }
 
-    pub fn backlight_available(&self) -> bool {
-        self.bl.is_some()
-    }
-
     pub fn flush(&mut self, offset_x: i16, offset_y: i16) -> Result<()> {
         self.flush_rows(offset_x, offset_y, 0, self.height)
     }
@@ -153,12 +150,15 @@ impl LinuxSpiDisplayBackend {
         self.send_data(&[(y0 >> 8) as u8, y0 as u8, (y1 >> 8) as u8, y1 as u8])?;
 
         self.send_cmd(0x2C)?;
+        self.dc.write(true)?;
 
         let row_bytes = self.width as usize * 2;
         let start = ry as usize * row_bytes;
         let end = start + rh as usize * row_bytes;
+        let spi = &mut self.spi;
         for chunk in self.framebuf[start..end].chunks(self.max_transfer_sz) {
-            self.send_data(chunk)?;
+            spi.write_all(chunk)
+                .map_err(|e| Error::io("display_spi_write", e))?;
         }
         Ok(())
     }
