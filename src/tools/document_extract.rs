@@ -509,4 +509,26 @@ mod tests {
         assert_eq!(parsed["value"], "fast");
         assert_eq!(parsed["resolved_pointer"], "/llm/routing/0/name");
     }
+
+    #[test]
+    fn extracts_redacted_sensitive_json_field_from_config_file() {
+        let fs = Arc::new(MockStateFs::default());
+        fs.write(
+            "config/llm.json",
+            br#"{"api_key":"sk-live-secret","model":"gpt-5"}"#,
+        )
+        .unwrap();
+        let tool = DocumentExtractTool::new(fs);
+        let result = tool
+            .execute(
+                r#"{"source":"config/llm.json","mode":"json_field","json_path":"api_key"}"#,
+                &mut MockToolContext,
+            )
+            .unwrap();
+        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let value = parsed["value"].as_str().unwrap();
+
+        assert!(value.contains("[REDACTED]"));
+        assert!(!value.contains("sk-live-secret"));
+    }
 }

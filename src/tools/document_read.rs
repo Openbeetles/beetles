@@ -6,6 +6,7 @@ use crate::orchestrator::ToolDecision;
 use crate::tools::pdf_read::{
     extract_pdf_text, looks_like_pdf as bytes_look_like_pdf, normalize_pdf_text,
 };
+use crate::tools::state_file_guard::sanitize_state_file_read;
 use crate::tools::web_fetch::{
     format_json_text, html_to_text, looks_like_html, looks_like_json, normalize_text,
     parse_max_chars, truncate_chars, WebFetchTool,
@@ -123,8 +124,9 @@ pub(crate) fn read_document_source(
     if raw.len() > MAX_LOCAL_RAW_BYTES {
         return Err(Error::config(stage, "file too large"));
     }
+    let sanitized = sanitize_state_file_read(&rel, &raw, stage)?;
 
-    let document = build_local_document(source, &raw, max_chars, stage)?;
+    let document = build_local_document(source, sanitized.as_ref(), max_chars, stage)?;
     log::info!(
         "[{}] read path={} kind={} raw_bytes={} content_chars={}",
         TAG,
@@ -395,6 +397,36 @@ mod tests {
         let parsed: Value = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed["kind"], "text");
         assert!(parsed["content"].as_str().unwrap().contains("hello beetle"));
+    }
+
+    #[test]
+    fn execute_redacts_sensitive_values_in_config_file() {
+        let state_fs = Arc::new(MockStateFs::default());
+        state_fs
+            .write(
+                "config/channels.json",
+                br#"{"tg_token":"123456:live-secret","wecom_corp_secret":"corp-secret","enabled_channel":"telegram"}"#,
+            )
+            .unwrap();
+        let tool = DocumentReadTool::new(state_fs);
+        let mut ctx = MockToolContext {
+            status: 200,
+            body: Vec::new(),
+        };
+
+        let result = tool
+            .execute(
+                r#"{"source":"config/channels.json","max_chars":400}"#,
+                &mut ctx,
+            )
+            .unwrap();
+        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let content = parsed["content"].as_str().unwrap();
+
+        assert!(content.contains("[REDACTED]"));
+        assert!(content.contains("\"enabled_channel\": \"telegram\""));
+        assert!(!content.contains("123456:live-secret"));
+        assert!(!content.contains("corp-secret"));
     }
 
     #[test]

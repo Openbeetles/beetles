@@ -507,6 +507,7 @@ pub fn record_error_by_stage(stage: &str) {
         STAGE_AGENT_CHAT => &ERRORS_AGENT_CHAT,
         STAGE_AGENT_CONTEXT => &ERRORS_AGENT_CONTEXT,
         STAGE_TOOL_EXECUTE => &ERRORS_TOOL_EXECUTE,
+        _ if stage.starts_with("tool_") => &ERRORS_TOOL_EXECUTE,
         STAGE_LLM_REQUEST => &ERRORS_LLM_REQUEST,
         STAGE_LLM_PARSE => &ERRORS_LLM_PARSE,
         STAGE_CHANNEL_DISPATCH => &ERRORS_CHANNEL_DISPATCH,
@@ -630,6 +631,21 @@ pub fn snapshot() -> MetricsSnapshot {
         stream_http_creates: STREAM_HTTP_CREATES.load(Ordering::Relaxed) as u64,
         stream_http_resets: STREAM_HTTP_RESETS.load(Ordering::Relaxed) as u64,
         stream_http_invalidates: STREAM_HTTP_INVALIDATES.load(Ordering::Relaxed) as u64,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_prefixed_stages_count_as_tool_errors() {
+        let before = snapshot();
+        record_error_by_stage("tool_files");
+        let after = snapshot();
+
+        assert_eq!(after.errors_tool_execute, before.errors_tool_execute + 1);
+        assert_eq!(after.errors_other, before.errors_other);
     }
 }
 

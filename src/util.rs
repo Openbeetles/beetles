@@ -3,6 +3,7 @@
 
 use crate::constants::AGENT_MARKER_STOP;
 use std::path::Path;
+use std::sync::OnceLock;
 
 /// 按字符边界截断内容至最多 max 个字符；不截断时零分配返回借用。
 /// Truncate to at most `max` chars; returns `Cow::Borrowed` (zero alloc) when no truncation needed.
@@ -575,6 +576,35 @@ pub fn scrub_credentials(input: &str) -> String {
     out
 }
 
+/// 对配置文本中的敏感 JSON 字符串字段做正则脱敏，确保进入 LLM 前不暴露真实秘钥。
+/// Regex-based redaction for sensitive JSON string fields in config text before LLM exposure.
+pub fn redact_sensitive_config_text(input: &str) -> String {
+    sensitive_json_string_field_regex()
+        .replace_all(input, |caps: &regex::Captures<'_>| {
+            let key = caps.name("key").map(|m| m.as_str()).unwrap_or_default();
+            if !is_sensitive_config_key_regex(key) {
+                return caps
+                    .get(0)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
+            }
+            let value = caps.name("value").map(|m| m.as_str()).unwrap_or_default();
+            if value.is_empty() {
+                return caps
+                    .get(0)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
+            }
+            let decoded = decode_json_string_fragment(value);
+            let redacted = redact_config_secret_value(&decoded);
+            let encoded =
+                serde_json::to_string(&redacted).unwrap_or_else(|_| "\"[REDACTED]\"".into());
+            let prefix = caps.name("prefix").map(|m| m.as_str()).unwrap_or_default();
+            format!("{prefix}{encoded}")
+        })
+        .into_owned()
+}
+
 fn line_has_sensitive_kv(line: &str) -> bool {
     let Some(pos) = find_kv_separator(line) else {
         return false;
@@ -640,6 +670,52 @@ fn is_sensitive_key(raw_key: &str) -> bool {
             || key.eq_ignore_ascii_case("refresh_token")
             || key.eq_ignore_ascii_case("private_key")
     )
+}
+
+fn sensitive_json_string_field_regex() -> &'static regex::Regex {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(
+            r#"(?P<prefix>"(?P<key>(?:\\.|[^"\\])*)"[[:space:]]*:[[:space:]]*)(?P<quoted>"(?P<value>(?:\\.|[^"\\])*)")"#,
+        )
+        .expect("valid sensitive json string regex")
+    })
+}
+
+fn sensitive_config_key_regex() -> &'static regex::Regex {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?:^|_)(?:token|api_key|apikey|api_secret|client_secret|app_secret|corp_secret|password|passwd|secret|secret_key|credential|authorization|cookie|access_key|access_token|refresh_token|private_key|search_key)(?:$|_)",
+        )
+        .expect("valid sensitive key regex")
+    })
+}
+
+fn is_sensitive_config_key_regex(raw_key: &str) -> bool {
+    let normalized = raw_key
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    sensitive_config_key_regex().is_match(&normalized)
+}
+
+fn decode_json_string_fragment(value: &str) -> String {
+    serde_json::from_str::<String>(&format!("\"{value}\"")).unwrap_or_else(|_| value.to_string())
+}
+
+fn redact_config_secret_value(value: &str) -> String {
+    if value.is_empty() {
+        String::new()
+    } else {
+        format!("{}…[REDACTED]", secret_prefix(value))
+    }
 }
 
 fn redact_value_fragment(fragment: &str) -> Option<String> {
@@ -1220,6 +1296,26 @@ mod scrub_credentials_tests {
     fn does_not_redact_plain_error_text_with_sensitive_words() {
         let s = scrub_credentials("error: authorization header missing");
         assert_eq!(s, "error: authorization header missing");
+    }
+
+    #[test]
+    fn redact_sensitive_config_text_masks_multiple_secret_fields() {
+        let input = r#"{"tg_token":"123456:live-secret","feishu_app_secret":"fs-secret","enabled":"telegram"}"#;
+        let s = redact_sensitive_config_text(input);
+        assert!(s.contains("[REDACTED]"));
+        assert!(s.contains(r#""enabled":"telegram""#));
+        assert!(!s.contains("123456:live-secret"));
+        assert!(!s.contains("fs-secret"));
+    }
+
+    #[test]
+    fn redact_sensitive_config_text_masks_nested_secret_fields() {
+        let input = r#"{"audio":{"speech":{"api_secret":"baidu-secret","api_key":"baidu-key"}},"model":"x"}"#;
+        let s = redact_sensitive_config_text(input);
+        assert!(s.contains("[REDACTED]"));
+        assert!(s.contains(r#""model":"x""#));
+        assert!(!s.contains("baidu-secret"));
+        assert!(!s.contains("baidu-key"));
     }
 
     #[test]

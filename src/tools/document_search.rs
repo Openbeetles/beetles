@@ -5,6 +5,7 @@ use crate::error::{Error, Result};
 use crate::tools::pdf_read::{
     extract_pdf_text, looks_like_pdf as bytes_look_like_pdf, normalize_pdf_text,
 };
+use crate::tools::state_file_guard::sanitize_state_file_read;
 use crate::tools::web_fetch::{format_json_text, html_to_text, looks_like_html, looks_like_json};
 use crate::tools::{parse_tool_args, Tool, ToolContext};
 use crate::util::normalize_state_rel_path;
@@ -64,12 +65,13 @@ impl Tool for DocumentSearchTool {
         let response = if scope.is_empty() || self.state_fs.list_dir(&scope).is_ok() {
             self.search_directory(query, scope_arg, &scope, limit, case_sensitive)?
         } else if let Some(raw) = self.state_fs.read(&scope)? {
+            let sanitized = sanitize_state_file_read(&scope, &raw, "tool_document_search")?;
             let stats = SearchStats {
                 scanned_files: 1,
                 scanned_raw_bytes: raw.len().min(MAX_TOTAL_RAW_BYTES),
                 ..SearchStats::default()
             };
-            let matches = search_file(&scope, &raw, query, case_sensitive)
+            let matches = search_file(&scope, sanitized.as_ref(), query, case_sensitive)
                 .into_iter()
                 .take(limit)
                 .collect::<Vec<_>>();
@@ -115,12 +117,13 @@ impl DocumentSearchTool {
                 let Some(raw) = self.state_fs.read(&child)? else {
                     continue;
                 };
+                let sanitized = sanitize_state_file_read(&child, &raw, "tool_document_search")?;
                 stats.scanned_files = stats.scanned_files.saturating_add(1);
                 stats.scanned_raw_bytes = stats
                     .scanned_raw_bytes
                     .saturating_add(raw.len())
                     .min(MAX_TOTAL_RAW_BYTES);
-                if let Some(hit) = search_file(&child, &raw, query, case_sensitive) {
+                if let Some(hit) = search_file(&child, sanitized.as_ref(), query, case_sensitive) {
                     matches.push(hit);
                     if matches.len() >= limit {
                         stats.truncated = true;
@@ -577,5 +580,29 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("not readable text"));
+    }
+
+    #[test]
+    fn search_redacts_sensitive_config_snippets() {
+        let fs = Arc::new(MockStateFs::default());
+        fs.write(
+            "config/channels.json",
+            br#"{"tg_token":"123456:live-secret","enabled_channel":"telegram"}"#,
+        )
+        .unwrap();
+
+        let tool = DocumentSearchTool::new(fs);
+        let result = tool
+            .execute(
+                r#"{"query":"tg_token","path":"config"}"#,
+                &mut MockToolContext,
+            )
+            .unwrap();
+        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let matches = parsed["matches"].as_array().unwrap();
+        let snippet = matches[0]["snippet"].as_str().unwrap();
+
+        assert!(snippet.contains("[REDACTED]"));
+        assert!(!snippet.contains("123456:live-secret"));
     }
 }

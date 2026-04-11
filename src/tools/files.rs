@@ -2,7 +2,9 @@
 //! files tool: list, read, or delete under state root; no `..` in path.
 
 use crate::error::{Error, Result};
-use crate::tools::state_file_guard::{ensure_state_path_mutable, normalize_state_tool_path};
+use crate::tools::state_file_guard::{
+    ensure_state_path_mutable, normalize_state_tool_path, sanitize_state_file_read,
+};
 use crate::tools::{
     parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolCapabilityContract,
     ToolContext, ToolEffectClass, ToolExecutionShape, ToolMetadata, ToolRiskLevel,
@@ -53,7 +55,7 @@ impl Tool for FilesTool {
         "files"
     }
     fn description(&self) -> &'static str {
-        "List, read, or delete files under storage. Args: path (string), mode (optional: 'list', 'read', or 'delete', default 'read'). Read returns content truncated to limit; list returns entry names, max 256; delete removes the file."
+        "List, read, or delete files under storage. Args: path (string), mode (optional: 'list', 'read', or 'delete', default 'read'). Read returns content truncated to limit; when path is a directory, read falls back to list. Sensitive config values are automatically redacted in read output."
     }
     fn schema(&self) -> &str {
         r#"{"type":"object","properties":{"path":{"type":"string","description":"Path under storage root, e.g. skills/foo.md"},"mode":{"type":"string","description":"list, read, or delete (default read)"}},"required":["path"]}"#
@@ -115,7 +117,8 @@ impl Tool for FilesTool {
                 if raw.len() > MAX_READ_RAW_BYTES {
                     return Err(Error::config("tool_files", "file too large"));
                 }
-                let content = std::str::from_utf8(&raw)
+                let sanitized = sanitize_state_file_read(&rel, &raw, "tool_files")?;
+                let content = std::str::from_utf8(sanitized.as_ref())
                     .map_err(|_| Error::config("tool_files", "file is not valid UTF-8"))?
                     .to_string();
                 let (content, truncated) = if content.len() > MAX_TOOL_RESULT_LEN {
@@ -139,10 +142,21 @@ impl Tool for FilesTool {
                 )
             }
             None => match self.state_fs.list_dir(&rel) {
-                Ok(_) => Err(Error::config(
-                    "tool_files",
-                    "path is a directory, use list mode",
-                )),
+                Ok(mut entries) => {
+                    let truncated = entries.len() > MAX_LIST_ENTRIES;
+                    if truncated {
+                        entries.truncate(MAX_LIST_ENTRIES);
+                    }
+                    serialize_tool_output(
+                        "tool_files",
+                        &FilesListResponse {
+                            mode: "list",
+                            path: path_arg,
+                            entries,
+                            truncated,
+                        },
+                    )
+                }
                 Err(e) => Err(e),
             },
         }
@@ -198,15 +212,17 @@ mod tests {
     use crate::platform::{ResponseBody, StateFs};
     use crate::tools::{Tool, ToolContext};
     use serde_json::Value;
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     struct MockStateFs {
-        entries: Vec<String>,
+        files: HashMap<String, Vec<u8>>,
+        dirs: HashMap<String, Vec<String>>,
     }
 
     impl StateFs for MockStateFs {
-        fn read(&self, _rel_path: &str) -> Result<Option<Vec<u8>>> {
-            Ok(None)
+        fn read(&self, rel_path: &str) -> Result<Option<Vec<u8>>> {
+            Ok(self.files.get(rel_path).cloned())
         }
 
         fn write(&self, _rel_path: &str, _data: &[u8]) -> Result<()> {
@@ -217,8 +233,13 @@ mod tests {
             unreachable!()
         }
 
-        fn list_dir(&self, _rel_path: &str) -> Result<Vec<String>> {
-            Ok(self.entries.clone())
+        fn list_dir(&self, rel_path: &str) -> Result<Vec<String>> {
+            self.dirs.get(rel_path).cloned().ok_or_else(|| {
+                crate::Error::io(
+                    "mock_state_fs",
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "missing directory"),
+                )
+            })
         }
     }
 
@@ -250,7 +271,10 @@ mod tests {
     #[test]
     fn list_mode_truncates_to_declared_limit() {
         let entries = (0..300).map(|i| format!("entry-{i:03}.txt")).collect();
-        let tool = FilesTool::new(Arc::new(MockStateFs { entries }));
+        let tool = FilesTool::new(Arc::new(MockStateFs {
+            files: HashMap::new(),
+            dirs: HashMap::from([("notes".to_string(), entries)]),
+        }));
 
         let result = tool
             .execute(r#"{"path":"notes","mode":"list"}"#, &mut MockToolContext)
@@ -262,5 +286,51 @@ mod tests {
         assert_eq!(items[0].as_str(), Some("entry-000.txt"));
         assert_eq!(items[255].as_str(), Some("entry-255.txt"));
         assert_eq!(value["truncated"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn read_mode_falls_back_to_directory_listing() {
+        let tool = FilesTool::new(Arc::new(MockStateFs {
+            files: HashMap::new(),
+            dirs: HashMap::from([(
+                "skills".to_string(),
+                vec!["a.md".to_string(), "b.md".to_string()],
+            )]),
+        }));
+
+        let result = tool
+            .execute(r#"{"path":"skills","mode":"read"}"#, &mut MockToolContext)
+            .unwrap();
+        let value: Value = serde_json::from_str(&result).unwrap();
+
+        assert_eq!(value["mode"].as_str(), Some("list"));
+        assert_eq!(value["path"].as_str(), Some("skills"));
+        assert_eq!(value["entries"][0].as_str(), Some("a.md"));
+        assert_eq!(value["entries"][1].as_str(), Some("b.md"));
+    }
+
+    #[test]
+    fn read_mode_redacts_sensitive_config_values() {
+        let tool = FilesTool::new(Arc::new(MockStateFs {
+            files: HashMap::from([(
+                "config/channels.json".to_string(),
+                br#"{"tg_token":"123456:live-secret","feishu_app_secret":"fs-secret-value","enabled_channel":"telegram"}"#.to_vec(),
+            )]),
+            dirs: HashMap::new(),
+        }));
+
+        let result = tool
+            .execute(
+                r#"{"path":"config/channels.json","mode":"read"}"#,
+                &mut MockToolContext,
+            )
+            .unwrap();
+        let value: Value = serde_json::from_str(&result).unwrap();
+        let content = value["content"].as_str().unwrap();
+
+        assert!(content.contains("[REDACTED]"));
+        assert!(content.contains("\"enabled_channel\":\"telegram\""));
+        assert!(!content.contains("123456:live-secret"));
+        assert!(!content.contains("fs-secret-value"));
     }
 }
