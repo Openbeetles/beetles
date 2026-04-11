@@ -995,7 +995,7 @@ pub fn is_private_url(url: &str) -> bool {
 // | Thread(s)                             | Constant               | ESP   | Linux |
 // |---------------------------------------|------------------------|-------|-------|
 // | http_config_worker_*                  | DEFAULT_GUARD_STACK_SIZE (spawn_guarded) | 8 KB | 64 KB |
-// | qq_ws, feishu_ws                      | STACK_CHANNEL_WS       | 16 KB | 64 KB |
+// | qq_ws, feishu_ws                      | STACK_CHANNEL_WS       | 12 KB | 64 KB |
 // | agent_loop                            | STACK_AGENT_LOOP       | 32 KB | 64 KB |
 // | tg_sender, qq_sender, fs/dt/wc_sender | STACK_CHANNEL_SENDER   | 8 KB  | 64 KB |
 // | tg_poll                               | STACK_CHANNEL_SENDER   | 8 KB  | 64 KB |
@@ -1023,8 +1023,12 @@ const DEFAULT_GUARD_STACK_SIZE: usize = 8192;
 const DEFAULT_GUARD_STACK_SIZE: usize = LINUX_RUSTLS_THREAD_STACK;
 
 /// `qq_ws` / `feishu_ws`：WSS 握手 + 帧处理。
+/// 2026-04-11 实机日志显示 `qq_ws` 在 16KB 预算下仍保留 ~11KB 余量，
+/// 而 `voice_realtime` 创建失败时 `heap_largest` 只有 31744 字节，刚好卡在 32KB 之下。
+/// 这里继续保持“同类通道共用一个预算栈”，但把 ESP 共享预算收紧到 12KB，
+/// 优先回收常驻 internal SRAM，帮助 transient realtime worker 拿到足够连续块。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub const STACK_CHANNEL_WS: usize = 16384;
+pub const STACK_CHANNEL_WS: usize = 12 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_CHANNEL_WS: usize = LINUX_RUSTLS_THREAD_STACK;
 

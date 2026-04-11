@@ -665,6 +665,22 @@ mod tests {
     }
 
     #[test]
+    fn channel_ws_stack_budget_is_trimmed_on_esp() {
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        {
+            assert!(
+                beetle::util::STACK_CHANNEL_WS == 12 * 1024,
+                "ESP WSS stack budget should stay at the validated 12KB shared budget"
+            );
+        }
+
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        {
+            assert_eq!(beetle::util::STACK_CHANNEL_WS, 64 * 1024);
+        }
+    }
+
+    #[test]
     fn steady_state_state_change_uses_header_only_refresh() {
         use beetle::DisplaySystemState;
 
