@@ -4,6 +4,8 @@
 
 This page describes how Beetle Agent OS is installed, packaged, and rolled back on Linux.
 
+This page is for Linux deployment, packaging, and rollback work, not for first-time setup.
+
 It is relevant if you are:
 
 - running Beetle on Linux

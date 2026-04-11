@@ -25,30 +25,21 @@ The Linux Agent OS is stable.
 - channels, memory, tools, and the config/API surface are part of that stable path
 - it is the better fit for fuller Agent OS capabilities, deployment, and integration work
 
-## Resource and Runtime Behavior
+## Choosing a platform
 
-- Large allocations prefer PSRAM.
-- The orchestrator gates work based on runtime pressure.
-- HTTP, LLM, and tool activity can be limited when memory is tight.
-- Long HTTP or LLM operations must coexist with the task watchdog.
-- The lazy ESP config-plane route worker (`http_route_exec`) stays on the standard Rust thread surface. Do not move that worker onto the raw native-task path.
-- Task watchdog registration and status checks must use the explicit current task handle. Do not rely on `NULL` status probes as a shortcut for "already subscribed".
-
-## Build Profiles
-
-- `cargo build --release` uses `opt-level = 2`
-- `cargo build --profile release-size` is the size-focused profile
+- Choose ESP32-S3 when local hardware control is the main goal.
+- Choose Linux when you want fuller Beetle capability and easier integration.
+- Choose ESP32-P4 when you need a higher-end ESP setup.
 
 ## Common Status Checks
 
 | Where | What you learn |
 |-------|----------------|
-| `GET /api/health` | Overall status and health snapshot |
-| `GET /api/resource` | Runtime resource snapshot |
+| Config UI | Best first stop for normal users |
+| `GET /api/health` | Overall device status |
 | serial logs | Boot info, heartbeat, and warnings |
-| `cli` feature | Extra serial inspection commands such as `heap_info` |
 
-Exact HTTP field shapes are documented in [config-api.md](config-api.md).
+If you need exact field definitions, read [config-api.md](config-api.md).
 
 ## Hardware Device Config
 
@@ -61,3 +52,5 @@ If you want the agent to control LEDs, relays, buzzers, sensors, or PWM devices,
 
 - `spiffs partition could not be found`
   Use the project's board preset and partition table.
+- Linux is online but Beetle looks unreachable
+  Make sure you are opening the device's current LAN address.

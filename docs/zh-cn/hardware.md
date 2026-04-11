@@ -25,30 +25,21 @@ Linux 版已经可以稳定运行。
 - 聊天、工具、记忆、配置页面和接口都可以正常使用
 - 更适合承载更完整的 Agent OS 能力、安装和扩展
 
-## 资源与程序行为
+## 选择建议
 
-- 大块分配优先走 PSRAM
-- 程序会根据当前资源压力决定是否继续放行请求
-- 内存紧张时，接口请求、大模型请求和工具调用可能被限流
-- 较长的接口请求和大模型请求需要和任务看门狗共存
-- 惰性拉起的 ESP 配置面路由 worker（`http_route_exec`）必须继续留在标准 Rust 线程执行面，不能再塞回 raw native task 路径。
-- 任务看门狗的注册和状态检查必须使用显式当前 task handle，不能再把 `NULL` status probe 当成“已经订阅”的捷径。
-
-## 构建配置
-
-- `cargo build --release` 使用 `opt-level = 2`
-- `cargo build --profile release-size` 是更偏体积的构建配置
+- 主要接外设、做本地硬件联动：优先选 ESP32-S3
+- 想跑更完整的 Beetle、做更复杂的集成：优先选 Linux
+- 需要更高配的 ESP 方案：看 ESP32-P4
 
 ## 状态检查入口
 
 | 入口 | 能看到什么 |
 |------|------------|
-| `GET /api/health` | 整体健康状态 |
-| `GET /api/resource` | 资源占用情况 |
+| 配置页 | 最适合普通用户先看 |
+| `GET /api/health` | 设备整体状态 |
 | 串口日志 | 启动日志、heartbeat、警告信息 |
-| `cli` 编译选项 | 例如 `heap_info` 这类额外串口命令 |
 
-接口字段说明请看 [config-api.md](config-api.md)。
+如果你需要精确字段说明，再去看 [config-api.md](config-api.md)。
 
 ## 硬件设备配置
 
@@ -61,3 +52,5 @@ Linux 版已经可以稳定运行。
 
 - `spiffs partition could not be found`
   基本就是没有用项目里的板型预设或分区表。
+- Linux 能联网但 Beetle 看起来不在线
+  先确认你访问的是设备当前的局域网地址。

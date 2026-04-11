@@ -4,17 +4,12 @@
 
 ## What is this?
 
-**Beetle Configure UI** is the config web app for **Beetle** (甲壳虫) firmware. It is a standalone frontend that talks to the device over HTTP: you open it in a browser, connect to the device (via its hotspot or same LAN), then set WiFi, LLM, channels, and other options. The UI is **not** shipped inside the firmware; it is either served by the device (built-in copy) or loaded from the online build (GitHub Pages), so the firmware stays small and the config experience can be updated without flashing.
+**Beetle Configure UI** is the browser-based setup page for Beetle devices.
+Open it from the device address or the online page, connect to your Beetle, then configure WiFi, LLM, channels, and other options.
 
-## Why does this repo exist?
+## What you can do here
 
-- **Keep firmware lean**: No large config UI bundle in flash; device can serve a minimal copy or you use the online version.
-- **Single codebase**: One React app for both “open from device” and “open from web”; same features and i18n (zh-CN / en-US).
-- **Easier updates**: Config UI can be improved and redeployed (e.g. GitHub Pages) without rebuilding or OTA’ing the firmware.
-
-## What is it for?
-
-After you connect to a Beetle device, this UI lets you:
+After you connect to a Beetle device, this page lets you:
 
 - Set or change the **pairing code** (required for saving config).
 - Configure **WiFi** (scan and connect).
@@ -24,6 +19,11 @@ After you connect to a Beetle device, this UI lets you:
 - View **system info**, **restart**, **OTA** (if enabled), **factory reset**.
 
 All write operations require the correct pairing code; the UI sends it for you.
+
+## Who should read this page
+
+- **End users**: read the next section for the fastest way to open the config page and set up a device.
+- **Developers**: skip to [For developers: local work and release](#for-developers-local-work-and-release).
 
 ---
 
@@ -40,7 +40,7 @@ You must have both of the following:
    - **First use / not yet on your WiFi:** The device will open a **WiFi hotspot** with SSID **Beetle** (no password). Your phone or PC must **connect to this hotspot**; then open **http://192.168.4.1** (usually this address, in some cases may be a different address like 172.16.42.1).
    - **After WiFi is configured:** The device joins your router. Your phone or PC must be on the **same LAN** as the device; use the router-assigned device IP.
 
-**Important:** Whether you open the config page from the device URL or from the GitHub Pages URL, your browser must be on the same network as the device (Beetle hotspot or same LAN). Otherwise the page cannot talk to the device.
+**Important:** Whether you open the config page from the device URL or an online URL, your browser must be on the same network as the device (Beetle hotspot or same LAN). Otherwise the page cannot talk to the device.
 
 ---
 
@@ -64,11 +64,11 @@ Only the device is on that hotspot.
 
 ---
 
-### Option B – Open the config page from the GitHub (online) URL
+### Option B – Open the config page from the online URL
 
-You open the **same UI** from the internet (e.g. **https://ai-orangeoracle.github.io/beetle/**). To **actually configure a device**, you still need a flashed device and your browser must be able to reach it (same network as above). The online page does **not** remove the need to flash the firmware or connect to the device’s network.
+You open the same setup page from the internet (for example **https://ai-orangeoracle.github.io/beetle/**). To actually configure a device, your browser still needs to reach that device on the same network.
 
-**Step-by-step when using the Git (GitHub Pages) address:**
+**Step-by-step when using the online address:**
 
 1. **Prepare the device**  
    - Flash Beetle firmware to your hardware (see parent repo docs if needed).  
@@ -80,7 +80,6 @@ You open the **same UI** from the internet (e.g. **https://ai-orangeoracle.githu
 
 3. **Open the online config page**  
    - In the browser go to: **https://ai-orangeoracle.github.io/beetle/**  
-   - (Or the repo’s custom domain if one is configured.)
 
 4. **Enter the device address in the page**
    - In the config UI, find the **”Device URL”** (设备地址) field.
@@ -93,7 +92,7 @@ You open the **same UI** from the internet (e.g. **https://ai-orangeoracle.githu
 
 **If the page says it cannot reach the device:** Check that (1) the device is powered on, (2) you are connected to the **Beetle** hotspot or the **same LAN** as the device, and (3) the device address you entered is correct—usually use **http://192.168.4.1** when on the hotspot (in some cases may be a different address like http://172.16.42.1 if the first doesn’t work), or the device’s LAN IP when on the same LAN.
 
-**Using the online URL only to preview:** You can open the GitHub Pages URL without a device to see the UI; to actually read or change config, you must have a device and be on its network as above.
+**Using the online URL only to preview:** You can open the online page without a device to view the interface. To read or change config, you still need a device on the same network.
 
 ---
 
@@ -102,11 +101,11 @@ You open the **same UI** from the internet (e.g. **https://ai-orangeoracle.githu
 - **First access:** Set a **6-digit pairing code** on the config page. It protects save/restart/OTA/factory reset; secrets are stored on the device only.
 - **Forgot the code:** Use **Factory reset** from the config page (you must still be able to open the page and run the action).
 
-More detail (config keys, health API, provisioning): see the parent repo’s **docs** directory (e.g. `docs/en-us/configuration.md`).
+More detail: see the parent repo’s docs, especially `docs/en-us/configuration.md` and `docs/en-us/config-api.md`.
 
 ---
 
-## For developers: how to use
+## For developers: local work and release
 
 ### Prerequisites
 
@@ -131,7 +130,7 @@ npm ci
 npm run dev
 ```
 
-Dev server runs with base path `/`; the app will call the device API at the host you use (e.g. after connecting to the device hotspot, use that machine’s browser so the same host is the device). For production (e.g. GitHub Pages), build uses `VITE_BASE_PATH=/<repo>/` so assets load correctly.
+During local development, open the page in a browser that can reach the target Beetle device.
 
 ### Design and style
 
@@ -140,4 +139,5 @@ Dev server runs with base path `/`; the app will call the device API at the host
 
 ### Deployment
 
-A built version is published to GitHub Pages on push to `main` when `configure-ui/**` or the Pages workflow changes. One-time setup: in the repo **Settings → Pages**, set **Source** to **GitHub Actions**. To use a custom domain, set it in **Settings → Pages → Custom domain** and add the required DNS record (CNAME to `<owner>.github.io` for a subdomain, or A records for apex).
+A built version can be published to GitHub Pages.
+If you maintain the web release, use the repository Pages settings and workflow for that deployment.

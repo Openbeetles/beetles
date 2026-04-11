@@ -12,6 +12,8 @@ Use it when you need:
 
 If you only want to bring up a device and use the built-in configuration flow, read [configuration.md](configuration.md) first.
 
+This is a technical reference, not a first-time user guide.
+
 ## Network and access
 
 - **ESP SoftAP**: ESP firmware starts a hotspot named **Beetle** (no password) on first boot. When connected to that hotspot, use **http://192.168.4.1**.

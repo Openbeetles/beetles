@@ -4,6 +4,8 @@
 
 This page explains how `config/hardware.json` becomes the `device_control` tool.
 
+This page is mainly for people wiring hardware, writing config, or building integrations.
+
 The flow is simple:
 
 - you describe devices in JSON

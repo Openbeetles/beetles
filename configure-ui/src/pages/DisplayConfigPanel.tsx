@@ -142,12 +142,18 @@ function validateForRuntime(
   t: (k: string) => string,
 ): string | null {
   if (kind === "linux") {
-    if (form.driver === "framebuffer" || form.bus === "framebuffer") {
+    if (form.driver === "framebuffer") {
       return validateLinuxFb(form, t);
     }
     return validateLinuxSpi(form, t);
   }
   return validateEsp(form, t);
+}
+
+function linuxBusForDriver(
+  driver: DisplayConfig["driver"],
+): DisplayConfig["bus"] {
+  return driver === "framebuffer" ? "framebuffer" : "spi";
 }
 
 /** 设备配置 →「显示」Tab 内容（路由子页） */
@@ -167,9 +173,7 @@ export function DisplayConfigPanel() {
   const [saveRestartRequired, setSaveRestartRequired] = useState(false);
   const form = draft ?? displayConfig ?? defaultDisplayConfig();
   const isLinuxRuntime = runtimeKind === "linux";
-  const showLinuxFramebuffer =
-    isLinuxRuntime &&
-    (form.driver === "framebuffer" || form.bus === "framebuffer");
+  const showLinuxFramebuffer = isLinuxRuntime && form.driver === "framebuffer";
 
   const sectionDesc = useMemo(() => {
     if (isLinuxRuntime) return t("displayConfig.sectionMainDescLinux");
@@ -210,6 +214,7 @@ export function DisplayConfigPanel() {
     setSaveRestartRequired(false);
     const body = {
       ...form,
+      ...(isLinuxRuntime ? { bus: linuxBusForDriver(form.driver) } : {}),
       fb_device: form.fb_device.trim(),
       backlight_sysfs: form.backlight_sysfs?.trim() || null,
     };
@@ -291,12 +296,15 @@ export function DisplayConfigPanel() {
                   disabled={!form.enabled}
                   value={form.driver}
                   label={t("displayConfig.driver")}
-                  onChange={(e) =>
-                    setField(
-                      "driver",
-                      e.target.value as DisplayConfig["driver"],
-                    )
-                  }
+                  onChange={(e) => {
+                    const driver = e.target.value as DisplayConfig["driver"];
+                    setDirty(true);
+                    setDraft((prev) => ({
+                      ...(prev ?? form),
+                      driver,
+                      bus: linuxBusForDriver(driver),
+                    }));
+                  }}
                   slotProps={{ select: { native: true } }}
                 >
                   <option value="st7789">ST7789</option>

@@ -11,19 +11,15 @@ If you only need the shortest path:
 3. choose the right `driver`, `width`, `height`, and SPI pins
 4. reboot and check the dashboard
 
-The display module renders a real-time status dashboard with no bitmap assets or external fonts.
-
----
-
 ## Supported controllers
 
 | Controller | Typical resolution | Notes |
 |------------|-------------------|-------|
-| **ST7789** | 240x240, 240x320 | Default; color inversion ON by default (panel-native) |
-| **ILI9341** | 240x320 | Color inversion OFF by default |
-| **ST7735** | 128x160, 128x128, 80x160, etc. | ST7735 / ST7735R / ST7735S family (register-compatible); inversion OFF by default; uses frame-rate, power, and gamma init |
+| **ST7789** | 240x240, 240x320 | Default choice |
+| **ILI9341** | 240x320 | Common on 240x320 panels |
+| **ST7735** | 128x160, 128x128, 80x160, etc. | Common on small displays such as 1.8-inch panels |
 
-ST7789 and ILI9341 share a short init (SWRESET → SLPOUT → COLMOD `0x55` → MADCTL → INV → NORON → DISPON). **ST7735** sends frame-rate, power, and gamma registers after SLPOUT, uses COLMOD `0x05`, then MADCTL → INV → NORON → DISPON. The `invert_colors` flag flips each driver's default inversion behavior.
+Use `invert_colors` when the panel looks like a photo negative.
 
 If you are not sure which panel you have:
 
@@ -46,18 +42,16 @@ A typical SPI connection to ESP32-S3:
 | RST | Hardware reset (pulse low→high on init) | Optional |
 | BL | Backlight enable (set high on init) | Optional |
 
-> All pin numbers are ESP32-S3 GPIO numbers. `spi.host`: **1** = `SPI2_HOST`, **2** = `SPI3_HOST` (ESP-IDF `spi_host_device_t`).
+> All pin numbers are ESP32-S3 GPIO numbers. For `spi.host`, use `1` or `2`.
 
 ---
 
 ## Configuration
 
-Display configuration is stored in `config/display.json` on the SPIFFS partition. It can also be edited via the configuration web UI (Display section).
+You can edit display settings directly in the config UI. If you prefer file-based config, use `config/display.json`.
 
-On ESP, Beetle drives SPI panels directly from GPIO + SPI host config. On Linux, the same config model now supports both:
-
-- `driver=framebuffer`, `bus=framebuffer`: Linux framebuffer path (`/dev/fbX`)
-- `driver=st7789` / `ili9341` / `st7735`, `bus=spi`: Linux userspace SPI path (`/dev/spidevX.Y`)
+On ESP, Beetle drives SPI panels directly from the configured pins.
+On Linux, use `framebuffer` when the system already exposes a display device, or `st7789` / `ili9341` / `st7735` when you want Beetle to drive an SPI panel directly.
 
 ### Full config example
 
@@ -130,7 +124,7 @@ On ESP, Beetle drives SPI panels directly from GPIO + SPI host config. On Linux,
 | `invert_colors` | bool | false | Flip the driver's default color inversion |
 | `offset_x` | i16 | 0 | Horizontal pixel offset for the display window (-480 to 480) |
 | `offset_y` | i16 | 0 | Vertical pixel offset for the display window (-480 to 480) |
-| `spi.host` | u8 | 1 | SPI host: `1` = SPI2_HOST, `2` = SPI3_HOST (same as ESP-IDF `spi_host_device_t`) |
+| `spi.host` | u8 | 1 | SPI host: `1` or `2` |
 | `spi.sclk` | i32 | — | SPI clock GPIO pin |
 | `spi.mosi` | i32 | — | SPI MOSI GPIO pin |
 | `spi.cs` | i32 | — | Chip select GPIO pin |
@@ -138,112 +132,39 @@ On ESP, Beetle drives SPI panels directly from GPIO + SPI host config. On Linux,
 | `spi.rst` | i32? | null | Reset GPIO pin (optional) |
 | `spi.bl` | i32? | null | Backlight GPIO pin (optional) |
 | `spi.freq_hz` | u32 | 40000000 | SPI clock frequency (1–80 MHz) |
-| `fb_device` | string | `"/dev/fb0"` | Linux device path: framebuffer mode uses `/dev/fbX`; Linux SPI mode can use `/dev/spidevX.Y` |
-| `backlight_sysfs` | string? | null | Optional Linux sysfs backlight path; SPI panels can also use `spi.bl` GPIO instead |
+| `fb_device` | string | `"/dev/fb0"` | Linux device path: framebuffer mode uses `/dev/fbX`; SPI mode can use `/dev/spidevX.Y`, or be left empty |
+| `backlight_sysfs` | string? | null | Linux backlight path; SPI panels can also use `spi.bl` GPIO instead |
 
 ---
 
-## Dashboard layout
+## What appears on screen
 
-The dashboard uses a dark base fill (`DISPLAY_BG`), then three full-width **panel cards** (header, channel block, footer) with a slightly lighter fill (`PANEL_BG`) and a thin border. A **3px** top bar uses the state accent color. **Divider lines** sit a few pixels above the channel and footer bands (`middle_top` / `footer_top` from `display::compute_layout`). The title row has a narrow **title strip** behind the text; a **status pill** (same label as the main state title) sits above the title line.
+By default, the screen shows:
 
-**Subtitle (non-Booting):** IP address. If panel width **≥ 200px** and uptime is non-zero, **IP** and **`Up:`** runtime (e.g. `Up:1d2h`) are on **two lines** so the uptime is not clipped. On narrower panels, a **single line** combines truncated IP and ` Up:…` (stack buffer limit).
+- the current device state, such as booting, idle, busy, or fault
+- current network information, such as hotspot address or LAN IP
+- a simple summary of enabled channels
+- a few basic runtime details
 
-**Channel block:** Five channels appear as small row tiles. Labels are **abbreviated**: **TG** (telegram), **FS** (feishu), **DT** (dingtalk), **WC** (wecom), **QQ** (qq_channel). Layout is **2 columns** when width is **below 200px**, **3 columns** when **≥ 200px**. Each row shows a status dot (green / red / gray), the short label, and a token on the right: **OK**, **OFF**, **xN** (consecutive failures), or **DOWN**.
-
-```
-┌──────────────────────────────────┐ y=0
-│▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│ State-color top bar (3px)
-│ ┌──────┐ ┌──────┐  STATE_NAME   │ Status pill + title (bold, state color)
-│ │beetle│        │  192.168.x.x  │ IP (line 1); or one line on narrow
-│ │ ~64  │        │  Up:1d2h      │ Uptime line 2 when width ≥200 & uptime>0
-│ └──────┘                        │
-├──────────────────────────────────┤ y≈middle_top (e.g. 104 @ 240×240)
-│  ● TG  OK    ● FS  OK   ● DT OFF │ 2 or 3 columns by width
-│  ● WC  OK    ● QQ  x2            │
-├──────────────────────────────────┤ y≈footer_top
-│  NORMAL  ████████░░░░ 62%        │ Pressure badge + heap bar + %
-│  In:12 Out:8 L:1.2s 14:30         │ Message stats + last activity time
-└──────────────────────────────────┘ y=height
-```
-
-Vertical positions (`header_top`, `subtitle_top`, `middle_top`, `footer_top`, `margin_x`) come from `compute_layout` (240×240 reference grid, aspect buckets).
-
-### Beetle icon states
-
-The beetle is drawn entirely with `embedded-graphics` primitives (circles, lines) — no bitmap or PNG resources.
-
-| State | Beetle color | Visual cues |
-|-------|-------------|-------------|
-| **Booting** | Amber gold | Loading dots on body; dashed WiFi arcs above head; subtitle shows firmware version |
-| **NoWifi** | Blue-gray | Solid WiFi arcs above head, crossed out with red X |
-| **Idle** | Neon green | White checkmark on body |
-| **Busy** | Cyan-blue | Membrane wings spread from under elytra; alternating white dots on body (breathing animation) |
-| **Fault** | Bright red | Flipped upside-down; X eyes; exclamation mark on body |
-
-### Channel status indicators
-
-| Visual | Meaning |
-|--------|---------|
-| Filled green dot + normal text | Enabled channel, healthy |
-| Filled red dot + normal text | Enabled channel, unhealthy |
-| Hollow gray circle + dimmed text | Disabled channel |
-| Right-side token **OK** / **OFF** / **xN** / **DOWN** | Healthy, disabled, failure count, or unhealthy with no count |
-
-### Footer
-
-- Pressure label: **NORMAL** (green) / **CAUTIOUS** (yellow) / **CRITICAL** (red); on **error flash** the badge fills with the accent color for one frame.
-- Heap usage progress bar with percentage to the right of the bar.
-- **Stats line:** `In:` / `Out:` message counts, optional **`L:`** LLM latency when available, and last-activity clock **`HH:MM`** (local time on ESP when SNTP is configured).
-
----
-
-## Partial updates
-
-To reduce SPI traffic, partial updates are used for frequently changing regions:
-
-| Command | What updates | Rows flushed |
-|---------|-------------|-------------|
-| `UpdateIp` | IP subtitle (and on wide panels, second-line `Up:` when uptime &gt; 0) | ~16 rows, or ~30 rows when width ≥ 200px and uptime is shown |
-| `UpdateChannels` | Channel block only | From `middle_top` to footer |
-| `UpdatePressure` | Footer pressure bar, heap bar, and stats line | ~72 rows (footer band) |
-| `RefreshDashboard` | Full screen | All rows |
-
-Partial row flush reduces SPI data by ~85% compared to full-screen refresh.
-
----
-
-## Memory impact
-
-| Item | Size | Location |
-|------|------|----------|
-| Framebuffer (240x240 RGB565) | 115,200 bytes | PSRAM |
-| `SpiDisplayBackend` struct | ~64 bytes | Heap (internal) |
-| Rendering stack usage | ~200 bytes | Stack |
-| **Net internal DRAM impact** | **~0** | PSRAM absorbs the framebuffer |
-
-The display thread runs with a 6 KB stack and refreshes every 5 seconds from `orchestrator::snapshot()`.
+You do not need to understand the internal drawing layout. What matters is whether the screen is readable and whether the displayed information looks correct.
 
 ---
 
 ## Caveats and tips
 
-1. **`enabled: false` means zero hardware init** — no SPI bus, no GPIO, no PSRAM allocation. Safe to leave in config even without a display connected.
+1. **Get it working first, then fine-tune** — start with the correct `driver`, resolution, and pins. Only then adjust `rotation`, `offset_x`, and `offset_y`.
 
-2. **Offset values** — Some panels (notably 240x240 ST7789 on 240x320 glass) need `offset_x` or `offset_y` to shift the visible window. Common: `offset_y: 80` for 240x240 on a 240x320 panel.
+2. **Wrong colors** — if red and blue are swapped, switch `color_order` between `"rgb"` and `"bgr"`.
 
-3. **Color order** — If colors appear inverted (red↔blue), toggle `color_order` between `"rgb"` and `"bgr"`.
+3. **Photo-negative look** — toggle `invert_colors`.
 
-4. **`invert_colors`** — If the display looks like a photo negative, toggle this flag. ST7789 panels typically need inversion ON (the default), while ILI9341 panels need it OFF.
+4. **Shifted or cropped image** — adjust `offset_x` / `offset_y`. A 240x240 ST7789 module often needs `offset_y: 80`.
 
-5. **SPI frequency** — 40 MHz works for most ST7789/ILI9341 panels. If you see visual artifacts or corruption, try lowering to 20 MHz or 10 MHz. Maximum supported is 80 MHz. **ST7735** is best at ≤15 MHz (e.g. `15_000_000`); higher speeds often cause corruption.
+5. **Artifacts or unstable image** — lower `spi.freq_hz` from `40000000` to `20000000`, then to `10000000` if needed.
 
-6. **ST7735 (1.8" 128×160, etc.)** — Many modules use 132×162 glass; set `offset_x: 2`, `offset_y: 1` with `width`/`height` 128/160. Some “black tab” variants use `0`/`0`—tune to your module. `color_order` is often `bgr`; try `rgb` if red and blue are swapped.
+6. **Linux path**:
+   - use `/dev/fbX` for `framebuffer`
+   - use `/dev/spidevX.Y` for SPI panels if you want to set it explicitly
+   - leaving the SPI path empty is also fine
 
-7. **Display thread stack** — The rendering thread uses 6 KB stack. This is sufficient for the current dashboard layout. If you add significantly more complex rendering, monitor for stack overflow.
-
-8. **Linux runtime** — Linux no longer forces framebuffer-only mode. If the config stays on `framebuffer`, Beetle uses `/dev/fbX`; if the config uses `st7789` / `ili9341` / `st7735` with `bus: "spi"`, Beetle uses a generic userspace SPI backend.
-
-9. **Linux SPI device path** — If `fb_device` is set to `/dev/spidevX.Y`, Beetle opens that exact node. If it is left on the framebuffer default, Beetle falls back to `/dev/spidev{spi.host-1}.{spi.cs}` on Linux SPI mode.
-
-10. **Rotation** — The `rotation` field applies a MADCTL transform at the controller level. The framebuffer dimensions (`width` x `height`) should match the post-rotation visible area.
+7. **No screen attached** — set `enabled` to `false`.

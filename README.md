@@ -35,7 +35,7 @@ Recommended use by platform:
 | Target | Best suited for |
 |--------|-----------------|
 | ESP32-S3 | hardware control, peripherals, and always-on device agents |
-| ESP32-P4 + on-board C6 | heavier ESP workloads with hosted Wi-Fi on the co-processor |
+| ESP32-P4 + on-board C6 | heavier ESP workloads |
 | Linux | fuller Agent OS capabilities, longer tasks, and complex integrations |
 
 This README is the quick start.
@@ -55,9 +55,9 @@ For the full documentation map, go to [docs/README.md](docs/README.md).
 
 Current supported targets:
 
-- **ESP32-S3 with PSRAM**: best for hardware-facing deployments
-- **ESP32-P4 + board-mounted ESP32-C6**: best for higher-end ESP deployments that still need Beetle on bare metal
-- **Linux**: best for fuller Agent OS capabilities, integration, and deployment
+- **ESP32-S3**
+- **ESP32-P4**
+- **Linux**
 
 Supported board presets:
 
@@ -66,8 +66,8 @@ Supported board presets:
 - `esp32-s3-32mb`
 - `esp32-p4-nano-16mb`
 
-Linux already runs the full Agent OS stack stably, including tools, memory, config surfaces, and channel logic.
-ESP focuses more on hardware and peripherals.
+Choose ESP when hardware control is the priority.
+Choose Linux when you want easier deployment, longer tasks, and broader integration.
 
 ## Capabilities
 
@@ -207,7 +207,7 @@ Important:
 | Hardware | Config-driven `device_control` for GPIO, PWM, ADC, buzzer, and related device types |
 | Config | Built-in browser flow plus a full HTTP config API |
 | Display | SPI TFT status dashboard |
-| Health | Metrics, resource snapshots, diagnostics, and restart/reset operations |
+| Health | Diagnostics plus restart/reset operations |
 
 ## Where To Read Next
 
@@ -220,7 +220,7 @@ Important:
 | Configure LLM providers | [docs/en-us/llm-providers.md](docs/en-us/llm-providers.md) |
 | Configure an SPI display | [docs/en-us/display.md](docs/en-us/display.md) |
 | Configure hardware devices | [docs/en-us/hardware-device-config.md](docs/en-us/hardware-device-config.md) |
-| Check board limits and troubleshooting | [docs/en-us/hardware.md](docs/en-us/hardware.md) |
+| Check supported boards and common hardware issues | [docs/en-us/hardware.md](docs/en-us/hardware.md) |
 | See the full docs map | [docs/README.md](docs/README.md) |
 
 ## Troubleshooting

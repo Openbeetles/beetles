@@ -4,6 +4,8 @@
 
 This page is a quick architecture guide for developers extending Beetle.
 
+This is a developer document, not a first-time user guide.
+
 It covers:
 
 - the main modules

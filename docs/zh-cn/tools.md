@@ -8,7 +8,7 @@
 
 - 普通聊天里，用户不需要手动输入工具名
 - 模型会在需要时自动调用这些工具
-- 实际可见的工具列表会受平台、编译选项、配置和策略影响
+- 实际可见的工具列表会受平台、功能开关和配置影响
 
 ## 基础工具
 
@@ -19,18 +19,18 @@
 | `message` | 发送一条由程序接管的消息 |
 | `task` | 持久任务管理 |
 | `calendar` | 持久日历事件 |
-| `files` | 列出或读取状态根下的文件 |
-| `file_edit` | 对状态根中的文本文件做局部修改 |
+| `files` | 列出或读取设备存储中的文件 |
+| `file_edit` | 对设备存储中的文本文件做局部修改 |
 | `remind_at` | 创建提醒 |
 | `remind_list` | 列出当前对话的提醒 |
-| `board_info` | 查看芯片、internal heap、总可用内存、PSRAM、最大连续 internal 空闲块、TLS 碎片风险、运行时间、WiFi 和存储信息 |
+| `board_info` | 查看设备型号、运行时间、WiFi 和存储等基础信息 |
 | `kv_store` | 持久键值存储 |
 | `private_garden` | 当前对话的私有空间 |
 | `memory_search` | 搜索聊天记录、每日记录、回合记录中的档案内容 |
 | `memory_get` | 读取一条档案记录 |
-| `factual_memory` | 读取 canonical shared factual plane，支持精确 slot 查询和证据态返回 |
-| `continuity_snapshot` | 导出、保存、列出或导入连续性快照 |
-| `file_write` | 向允许写入的状态根文件写内容 |
+| `factual_memory` | 读取设备保存的稳定事实 |
+| `continuity_snapshot` | 导出、保存、列出或导入连续性数据 |
+| `file_write` | 向允许写入的设备文件写内容 |
 
 ## `tools_network_extra` 工具
 
@@ -50,7 +50,7 @@
 |------|------|
 | `document_search` | 搜索已保存的文档 |
 | `document_read` | 读取公网链接或本地文档 |
-| `document_extract` | 提取行、章节或 JSON 字段 |
+| `document_extract` | 提取指定行、章节或字段 |
 | `web_fetch` | 把公网网页抓成可读文本 |
 | `pdf_read` | 读取公网 PDF 文档 |
 
@@ -96,11 +96,10 @@
 
 - `files` 只读；`file_write` 和 `file_edit` 只能操作允许写入的路径。
 - `private_garden` 按当前对话隔离，不会和别的会话混在一起。
-- `memory_search` 和 `memory_get` 返回的是档案记录，不是最终结论。
-- `factual_memory` 读取的是 canonical shared factual plane。精确事实、稳定槽位、项目/任务/约束优先走它；结果会带 evidence posture、provenance，以及 miss 时的 nearby candidates。
-- `continuity_snapshot` 支持 `export`、`import`、`list_saved`；`export` 可带 `save_name` 落盘，`import` 既可直接吃 JSON，也可按 `save_name` 从状态根加载。
+- `memory_search` 和 `memory_get` 返回的是历史内容，未必等于最终结论。
+- `factual_memory` 更适合查“已经确认过”的稳定信息。
+- `continuity_snapshot` 主要用于备份、迁移和恢复。
 - `http_request`、`web_fetch`、`pdf_read` 会拒绝内网和本机目标。
-- `GET /api/tools` 可能不会列出全部工具；完整列表以注册表为准。
 
 相关文档：
 

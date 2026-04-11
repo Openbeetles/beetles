@@ -355,15 +355,15 @@ pub fn validate_display_config_core(cfg: &DisplayConfig) -> Result<()> {
             "DISPLAY_CONFIG_INVALID_DIMENSION: width/height must be 1..=480",
         ));
     }
-    #[cfg(target_os = "linux")]
-    if cfg.fb_device.is_empty() || cfg.fb_device.bytes().any(|b| b == 0 || b < 0x20) {
-        return Err(Error::config(
-            "display",
-            "DISPLAY_CONFIG_INVALID_DEVICE_PATH: fb_device must be non-empty and contain no control characters",
-        ));
-    }
     // Framebuffer 首版仅支持 rotation=0；MADCTL 软件旋转留 TODO。
     if is_framebuffer_config(cfg) {
+        #[cfg(target_os = "linux")]
+        if cfg.fb_device.is_empty() || cfg.fb_device.bytes().any(|b| b == 0 || b < 0x20) {
+            return Err(Error::config(
+                "display",
+                "DISPLAY_CONFIG_INVALID_DEVICE_PATH: fb_device must be non-empty and contain no control characters",
+            ));
+        }
         if cfg.rotation != 0 {
             return Err(Error::config(
                 "display",
@@ -407,6 +407,13 @@ pub fn validate_display_config_core(cfg: &DisplayConfig) -> Result<()> {
         return Err(Error::config(
             "display",
             "DISPLAY_CONFIG_INVALID_TIMING: spi.freq_hz must be 1_000_000..=80_000_000",
+        ));
+    }
+    #[cfg(target_os = "linux")]
+    if !cfg.fb_device.is_empty() && cfg.fb_device.bytes().any(|b| b == 0 || b < 0x20) {
+        return Err(Error::config(
+            "display",
+            "DISPLAY_CONFIG_INVALID_DEVICE_PATH: fb_device must contain no control characters",
         ));
     }
     Ok(())
@@ -472,5 +479,15 @@ mod tests {
         let layout = compute_layout(120, 120);
         assert!(layout.icon_size >= 16);
         assert!(layout.footer_top >= layout.middle_top);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_spi_validation_allows_empty_device_path() {
+        let mut cfg = default_disabled_display_config();
+        cfg.enabled = true;
+        cfg.fb_device.clear();
+
+        assert!(validate_display_config_core(&cfg).is_ok());
     }
 }

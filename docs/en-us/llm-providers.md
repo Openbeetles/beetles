@@ -8,14 +8,14 @@ It focuses on three questions:
 
 1. Which `provider` values are supported?
 2. When can `api_url` be empty?
-3. In what order are multiple sources tried?
+3. How are primary and backup sources chosen?
 
 ## Quick Summary
 
 - Beetle supports multiple LLM sources.
-- Sources are configured in `config/llm.json`.
+- You can edit them in the config UI or in `config/llm.json`.
 - Some providers are handled as OpenAI-compatible clients.
-- If you configure multiple sources, Beetle tries them in an ordered fallback chain.
+- You can configure a primary source and one or more backups.
 
 ## Supported Provider IDs
 
@@ -53,20 +53,18 @@ These provider IDs may use an empty `api_url`:
 
 For `anthropic`, a non-empty `api_url` is treated as the full Messages endpoint URL.
 
-## Fallback Order
+## How multiple sources are picked
 
-When more than one source is configured, Beetle builds one ordered fallback chain.
+When more than one source is configured, Beetle first tries your preferred source. If that source is unavailable, it moves on to the next one.
 
-The order is:
+The practical rule is:
 
-1. `llm_router_source_index`, if set and valid
-2. `llm_worker_source_index`, if set, valid, and different from the router source
-3. the remaining usable sources in list order
+1. try the source you marked as highest priority
+2. if you set a second preferred source, try that next
+3. then continue through the remaining usable sources in list order
 
-Behavior:
-
-- first successful response wins
-- if every source fails, the last error is returned
+You do not need to switch sources manually during normal use.
+Just set the order you want.
 
 ## Minimal Examples
 
@@ -117,13 +115,5 @@ Behavior:
 - Use `provider: "ollama"`
 - `api_url` is usually `http://<host>:11434/v1`
 - `api_key` can be any non-empty placeholder if the server ignores it
-
-## Where The Rules Come From
-
-Implementation references:
-
-- client build logic: [`src/llm/mod.rs`](../../src/llm/mod.rs)
-- fallback chain: [`src/llm/fallback.rs`](../../src/llm/fallback.rs)
-- Anthropic client behavior: [`src/llm/anthropic.rs`](../../src/llm/anthropic.rs)
 
 Vendor model names change over time. Treat model names in examples as examples, not guarantees.

@@ -4,6 +4,8 @@
 
 这页说明 Linux 版 Beetle Agent OS 的安装、打包和回滚。
 
+这页给 Linux 部署、打包和运维用，不是普通用户的首次上手文档。
+
 适用场景：
 
 - 直接在 Linux 上运行 Beetle 的人

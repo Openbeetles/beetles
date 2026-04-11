@@ -20,7 +20,7 @@ Beetle 是一套能跑在 **ESP32-S3**、**ESP32-P4** 和 **Linux** 上的 `Agen
 | 目标 | 更适合做什么 |
 |------|------------|
 | ESP32-S3 | 接硬件、控外设、做常驻设备助理 |
-| ESP32-P4 + 板载 C6 | 更高配的 ESP 裸机形态，主控跑 Beetle，板载 C6 提供 hosted WiFi |
+| ESP32-P4 + 板载 C6 | 更高配的 ESP 方案，适合更重的本地负载 |
 | Linux | 适合运行更完整的 Agent OS 能力、长任务和复杂集成 |
 
 本页用于快速上手。完整文档目录见 [docs/README.md](docs/README.md)。
@@ -39,9 +39,9 @@ Beetle 是一套能跑在 **ESP32-S3**、**ESP32-P4** 和 **Linux** 上的 `Agen
 
 当前支持的平台：
 
-- **带 PSRAM 的 ESP32-S3**：适合硬件控制和设备接入
-- **ESP32-P4 + 板载 ESP32-C6**：适合更高配的 ESP 部署，同时保留 hosted 无线能力
-- **Linux**：适合运行更完整的 Agent OS 能力和长任务
+- **ESP32-S3**
+- **ESP32-P4**
+- **Linux**
 
 现有板型预设：
 
@@ -50,8 +50,8 @@ Beetle 是一套能跑在 **ESP32-S3**、**ESP32-P4** 和 **Linux** 上的 `Agen
 - `esp32-s3-32mb`
 - `esp32-p4-nano-16mb`
 
-Linux 已经可以稳定运行完整的 Agent OS 能力，包括工具、记忆、配置页面和聊天通道。
-ESP 更强调硬件接入、设备联动和外设控制。
+如果你主要做硬件接入，优先选 ESP。
+如果你更看重长任务、集成和部署便利，优先选 Linux。
 
 ## 使用场景
 
@@ -191,7 +191,7 @@ cargo build --release --features telegram,ota
 | 硬件   | 基于配置生成 `device_control`，统一控制外设  |
 | 配置   | 内置浏览器流程 + 完整配置接口                |
 | 显示   | SPI TFT 仪表板                     |
-| 健康状态 | 指标、资源快照、诊断、重启与恢复操作              |
+| 健康状态 | 诊断、重启与恢复操作              |
 
 
 ## 接下来该看哪篇
@@ -206,7 +206,7 @@ cargo build --release --features telegram,ota
 | 配置大模型服务商       | [docs/zh-cn/llm-providers.md](docs/zh-cn/llm-providers.md)                   |
 | 配置 SPI 屏幕      | [docs/zh-cn/display.md](docs/zh-cn/display.md)                               |
 | 配置硬件设备         | [docs/zh-cn/hardware-device-config.md](docs/zh-cn/hardware-device-config.md) |
-| 看板型限制和排错       | [docs/zh-cn/hardware.md](docs/zh-cn/hardware.md)                             |
+| 看支持板型和常见硬件问题 | [docs/zh-cn/hardware.md](docs/zh-cn/hardware.md)                             |
 | 看完整文档地图        | [docs/README.md](docs/README.md)                                             |
 
 

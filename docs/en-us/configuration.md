@@ -41,8 +41,8 @@ The pairing code protects write operations such as:
 Notes:
 
 - Set it the first time you open the config page.
-- Secrets written through the config UI go to NVS.
-- Secrets are not supposed to be logged or written to SPIFFS.
+- Keep it somewhere safe.
+- You will need it later for saving config, restarting, and factory reset.
 
 ### Step 3: configure WiFi
 
@@ -83,7 +83,7 @@ You still need:
 | Area | What it controls |
 |------|------------------|
 | WiFi | Router SSID and password |
-| LLM | Provider, model, API key, API URL, fallback order |
+| LLM | Provider, model, API key, API URL, backup sources |
 | Channels | Credentials and channel-specific settings |
 | Proxy / search | Proxy URL and search-related keys |
 | Hardware | `hardware.json`-driven devices for `device_control` |
@@ -105,28 +105,23 @@ These names show up in files and API payloads:
 | Proxy | `PROXY_URL` | Outbound HTTP proxy |
 | Search | `SEARCH_KEY`, `TAVILY_KEY` | Search service keys |
 
-LLM settings are mainly stored in `config/llm.json`. Read [llm-providers.md](llm-providers.md) for supported provider IDs and fallback behavior.
+Read [llm-providers.md](llm-providers.md) for supported provider IDs, `api_url` rules, and multi-source setup.
 
 ## Pairing Code and Activation
 
-After the device has been paired once:
-
-- read-only APIs usually require the device to be activated
-- write APIs require pairing code plus CSRF
-
-The built-in config UI handles that for you. If you are calling APIs manually, read [config-api.md](config-api.md).
+The built-in config UI handles pairing-code and security checks for you.
+Only read [config-api.md](config-api.md) if you are building your own frontend or script.
 
 ## Useful Checks
 
-- `GET /api/health`: quick status snapshot
-- `GET /api/resource`: resource snapshot
-- serial logs: heartbeat and boot diagnostics
-
-See [config-api.md](config-api.md) for exact response formats.
+- If the config page opens, the device is basically online.
+- If saving works, the pairing code and current connection are fine.
+- If channels fail, check model settings, channel credentials, and allowed chat IDs first.
+- If you still need details, read [config-api.md](config-api.md) or check serial logs.
 
 ## Common Problems
 
 - Cannot open the device: on Linux SBC builds, first confirm whether Beetle inherited an existing system WiFi connection; if not, reconnect to hotspot **Beetle** and retry `http://192.168.4.1`
-- Cannot save config: pairing code or CSRF is missing/expired
+- Cannot save config: reopen the config page and try again; if you are using your own frontend or script, then check pairing code and security headers
 - Device is online but channels do not work: check credentials and allowed chat IDs
 - Device booted but hardware control is missing: check `hardware.json` and whether `device_control` was registered

@@ -8,7 +8,7 @@ Keep three things in mind:
 
 - users do not manually type tool names in normal chat
 - the model may call these tools automatically
-- the visible tool set depends on target, features, config, and policy
+- the visible tool set depends on target, enabled features, and config
 
 ## Base Tools
 
@@ -19,18 +19,18 @@ Keep three things in mind:
 | `message` | send an outbound message managed by Beetle |
 | `task` | persistent task management |
 | `calendar` | persistent calendar events |
-| `files` | list or read files under the state root |
-| `file_edit` | patch an existing text file under the state root |
+| `files` | list or read files in device storage |
+| `file_edit` | patch an existing text file in device storage |
 | `remind_at` | create a reminder |
 | `remind_list` | list reminders in the current chat |
-| `board_info` | chip, internal heap, total free memory, PSRAM, largest internal free block, TLS fragmentation risk, uptime, WiFi, SPIFFS |
+| `board_info` | device model, uptime, WiFi, storage, and other basic device info |
 | `kv_store` | persistent key-value storage |
 | `private_garden` | current-chat private workspace |
 | `memory_search` | search archive evidence from transcripts, daily notes, and turn logs |
 | `memory_get` | fetch one archive evidence record |
-| `factual_memory` | read the canonical shared factual plane with exact slot lookup and evidence posture |
-| `continuity_snapshot` | export, save, list, or import continuity snapshots |
-| `file_write` | write or append to allowed files under the state root |
+| `factual_memory` | read stable facts saved on the device |
+| `continuity_snapshot` | export, save, list, or import continuity data |
+| `file_write` | write or append to allowed device files |
 
 ## Tools Behind `tools_network_extra`
 
@@ -50,7 +50,7 @@ These appear only on non-ESP builds:
 |------|----------------|
 | `document_search` | search stored documents |
 | `document_read` | read a public URL or stored document |
-| `document_extract` | extract lines, sections, or JSON fields |
+| `document_extract` | extract lines, sections, or specific fields |
 | `web_fetch` | fetch a public web page as readable text |
 | `pdf_read` | fetch and read a public PDF |
 
@@ -96,11 +96,10 @@ These are available only on non-ESP builds:
 
 - `files` is read-only; `file_write` and `file_edit` are limited to allowed mutable paths.
 - `private_garden` is scoped to the current chat.
-- `memory_search` and `memory_get` return archive evidence, not canonical memory truth.
-- `factual_memory` reads the canonical shared factual plane. Prefer `slot_query` for exact slot-shaped facts; results include evidence posture, provenance, and nearby canonical candidates on misses.
-- `continuity_snapshot` supports `export`, `import`, and `list_saved`. `export` may persist a named snapshot under the state root, and `import` may restore from inline JSON or from a saved snapshot name.
+- `memory_search` and `memory_get` return historical material, not necessarily the final answer.
+- `factual_memory` is better for stable, already-confirmed information.
+- `continuity_snapshot` is mainly for backup, migration, and restore.
 - `http_request`, `web_fetch`, and `pdf_read` reject private/internal targets.
-- `GET /api/tools` may not show every loaded tool; use the tool registry as the final reference.
 
 Related docs:
 
