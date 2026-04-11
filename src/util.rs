@@ -920,17 +920,17 @@ pub fn is_private_url(url: &str) -> bool {
 // |---------------------------------------|------------------------|-------|-------|
 // | http_config_worker_*                  | DEFAULT_GUARD_STACK_SIZE (spawn_guarded) | 8 KB | 64 KB |
 // | qq_ws, feishu_ws                      | STACK_CHANNEL_WS       | 16 KB | 64 KB |
-// | agent_loop                            | STACK_AGENT_LOOP       | 16 KB | 64 KB |
+// | agent_loop                            | STACK_AGENT_LOOP       | 32 KB | 64 KB |
 // | tg_sender, qq_sender, fs/dt/wc_sender | STACK_CHANNEL_SENDER   | 8 KB  | 64 KB |
 // | tg_poll                               | STACK_CHANNEL_SENDER   | 8 KB  | 64 KB |
 // | display                               | STACK_DISPLAY          | 12 KB | 12 KB | ← no TLS, but dashboard/render path + SPI flush no longer fits the old 6 KB budget
 // | audio_io_worker                       | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS, I2S + WakeNet NN
-// | http_server                           | (inline 6144)          | 6 KB  | 6 KB  | ← wrapper thread only; IDF httpd has its own task
+// | http_server                           | (inline 4096)          | 4 KB  | 4 KB  | ← wrapper thread only; IDF httpd has its own task
 // | http_route_exec                       | STACK_HTTP_ROUTE_WORKER| 32 KB | 32 KB | ← operator/memory surface + continuity inspection now run here
-// | dispatch                              | STACK_DISPATCH         | 8 KB  | 8 KB  | ← outbound admission + retry/cooldown replay only; delayed-task execution stays off this thread
+// | dispatch                              | STACK_DISPATCH         | 6 KB  | 6 KB  | ← 常驻逻辑只做 admission/retry/cooldown，不承接重执行链
 // | bg_timer                              | STACK_BG_TIMER         | 16 KB | 16 KB | ← heartbeat + thread/runtime snapshots + cron/self-runtime
 // | heartbeat, cli_repl                  | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS
-// | voice_session                         | STACK_VOICE_CONTROL    | 16 KB | 8 KB  | ← realtime voice now runs inline here on ESP
+// | voice_session                         | STACK_VOICE_CONTROL    | 8 KB  | 8 KB  | ← 常驻调度线程仅 intake/coalesce；重活已下沉到 inline realtime 或 worker
 // | voice_session_worker                  | STACK_VOICE_SESSION    | 16 KB | 64 KB | ← STT + TTS HTTPS
 // ---------------------------------------------------------------------------
 
@@ -952,11 +952,10 @@ pub const STACK_CHANNEL_WS: usize = 16384;
 pub const STACK_CHANNEL_WS: usize = LINUX_RUSTLS_THREAD_STACK;
 
 /// `agent_loop`：统一 agent 主执行面，承接用户消息与自治/system 作业。
-/// 该线程本身不应长期靠“加栈兜底”吃 internal SRAM；
-/// 当前静态调用链未见大栈对象，板上 idle high-water 也长期留出明显余量，
-/// 因此 ESP 预算收回到 16KB，继续把问题留给结构治理而不是常驻栈占用。
+/// 2026-04-11 实机确认：24KB 仍不足以覆盖首条真实消息路径；
+/// 当前先恢复到 32KB 作为稳定基线，把 internal SRAM 回收转移到其他常驻面。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub const STACK_AGENT_LOOP: usize = 16 * 1024;
+pub const STACK_AGENT_LOOP: usize = 32 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_AGENT_LOOP: usize = LINUX_RUSTLS_THREAD_STACK;
 
@@ -969,8 +968,8 @@ pub const STACK_CHANNEL_SENDER: usize = LINUX_RUSTLS_THREAD_STACK;
 
 /// `dispatch`：出站调度线程。
 /// 仅承接 outbound admission、cooldown replay 与 send retry；
-/// delayed-task 执行已收口到其他执行面，避免低栈 dispatch 偷跑持久化/后台作业。
-pub const STACK_DISPATCH: usize = 8192;
+/// delayed-task 执行已收口到其他执行面，ESP 预算继续收回到 6KB。
+pub const STACK_DISPATCH: usize = 6 * 1024;
 
 /// `display`：显示刷新线程。
 /// 早期 6KB 预算在启动页仍可工作，但当前 steady-state 会走完整 dashboard 渲染、
@@ -979,10 +978,10 @@ pub const STACK_DISPATCH: usize = 8192;
 pub const STACK_DISPLAY: usize = 12 * 1024;
 
 /// `voice_session`：语音会话调度线程。
-/// ESP 上 realtime 会在此线程内直跑；Linux 仅保留调度，TLS 重活放到
-/// `voice_session_worker`，因此 Linux 维持 8KB 即可。
+/// 常驻线程只做事件 intake / 合并 / worker 拉起；ESP realtime 直跑时也不再额外常驻
+/// 第二条 worker stack，因此预算收回到 8KB。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub const STACK_VOICE_CONTROL: usize = 16 * 1024;
+pub const STACK_VOICE_CONTROL: usize = 8 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_VOICE_CONTROL: usize = 8192;
 

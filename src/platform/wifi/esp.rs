@@ -22,8 +22,10 @@ const TAG: &str = "platform::wifi";
 const SCAN_RESP_TIMEOUT: Duration = Duration::from_secs(WIFI_SCAN_TIMEOUT_SECS);
 const SCAN_RETRY: u32 = 3;
 const SCAN_RETRY_DELAY: Duration = Duration::from_millis(400);
-/// WiFi worker 负责 ESP WiFi 驱动 + 扫描 + STA 保活；给 Core0 略多栈余量，避免把驱动 wait/scan 路径挤到过窄栈上。
-const WIFI_WORKER_STACK_BYTES: usize = 12_288;
+/// WiFi worker 负责 ESP WiFi 驱动 + 扫描 + STA 保活。
+/// 当前路径已去掉阻塞式 `BlockingWifi::connect()`；常驻循环只做 poll/scan/重连驱动，
+/// 继续收回到 8KB internal SRAM。
+const WIFI_WORKER_STACK_BYTES: usize = 8 * 1024;
 /// STA 状态轮询间隔（毫秒）。
 const STA_POLL_INTERVAL_MS: u64 = 5_000;
 /// 发起 connect() 后的冷却期（毫秒）：给 WiFi 驱动足够时间完成 auth/assoc/DHCP，

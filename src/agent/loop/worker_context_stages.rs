@@ -7,7 +7,7 @@ pub(super) struct PrepareRuntimeStage {
     pub runtime_mode: crate::runtime::RuntimeModeSnapshot,
     pub runtime: RuntimeContext,
     pub interactive_fast_path: bool,
-    pub skill_descriptions: String,
+    pub skill_descriptions_len: usize,
     pub has_tools: bool,
     pub prompt_memory_system_budget: usize,
     pub participation_plan: crate::memory::PromptParticipationPlan,
@@ -65,7 +65,7 @@ impl WorkerPrepareSession {
 
 fn log_prepare_stage(prepare_trace_enabled: bool, msg: &crate::bus::PcMsg, stage: &str) {
     if prepare_trace_enabled {
-        log::info!(
+        log::debug!(
             "[agent_prepare] stage={} channel={} chat_id={}",
             stage,
             msg.channel,
@@ -122,14 +122,17 @@ pub(super) fn compute_prepare_runtime<'a>(
         process_memory_kb: snapshot.process_memory_kb,
     };
     log_prepare_stage(prepare_trace_enabled, msg, "runtime_snapshot_ready");
-    log_prepare_stage(prepare_trace_enabled, msg, "skill_descriptions_start");
-    let skill_descriptions = (config.get_skill_descriptions)();
-    log_prepare_stage(prepare_trace_enabled, msg, "skill_descriptions_ready");
     let has_tools = request_plan.has_tools();
+    log_prepare_stage(prepare_trace_enabled, msg, "skill_descriptions_start");
+    let skill_descriptions_len = {
+        let skill_descriptions = (config.get_skill_descriptions)();
+        skill_descriptions.len()
+    };
+    log_prepare_stage(prepare_trace_enabled, msg, "skill_descriptions_ready");
     log_prepare_stage(prepare_trace_enabled, msg, "post_memory_budget_start");
     let post_memory_tail_len = estimate_post_memory_system_tail_len(PostMemoryTailParams {
         has_tools,
-        skill_descriptions: &skill_descriptions,
+        skill_descriptions_len,
         is_group: msg.is_group,
         group_activation: config.tg_group_activation.as_ref(),
         emotion_signal_suffix,
@@ -160,7 +163,7 @@ pub(super) fn compute_prepare_runtime<'a>(
         })
         .flatten();
     if prepare_trace_enabled {
-        log::info!(
+        log::debug!(
             "[agent_prepare] stage=capability_package_ready channel={} chat_id={} has_text={}",
             msg.channel,
             msg.chat_id,
@@ -176,7 +179,7 @@ pub(super) fn compute_prepare_runtime<'a>(
         runtime_mode,
         runtime,
         interactive_fast_path,
-        skill_descriptions,
+        skill_descriptions_len,
         has_tools,
         prompt_memory_system_budget,
         participation_plan,
@@ -240,7 +243,7 @@ pub(super) fn run_prepare_mental_privacy(
         (None, false)
     };
     if runtime_stage.prepare_trace_enabled {
-        log::info!(
+        log::debug!(
             "[agent_prepare] stage=mental_privacy_ready channel={} chat_id={} adjudication={} failed={}",
             msg.channel,
             msg.chat_id,
@@ -311,7 +314,7 @@ pub(super) fn load_prepare_prompt_memory(
     if runtime_stage.prepare_trace_enabled {
         let (recent_messages, has_summary, has_message_summary, has_self_model_text) =
             prompt_memory.trace_summary();
-        log::info!(
+        log::debug!(
             "[agent_prepare] stage=prompt_memory_ready channel={} chat_id={} recent_messages={} has_summary={} has_message_summary={} has_self_model_text={}",
             msg.channel,
             msg.chat_id,
@@ -424,7 +427,7 @@ pub(super) fn enrich_prepare_governance(
         }
     }
     if runtime_stage.prepare_trace_enabled {
-        log::info!(
+        log::debug!(
             "[agent_prepare] stage=relationship_constitution_ready channel={} chat_id={} has_constitution={}",
             msg.channel,
             msg.chat_id,
@@ -474,7 +477,7 @@ pub(super) fn enrich_prepare_governance(
                 .flatten()
         });
     if runtime_stage.prepare_trace_enabled {
-        log::info!(
+        log::debug!(
             "[agent_prepare] stage=governance_ready channel={} chat_id={} conservative_reply={}",
             msg.channel,
             msg.chat_id,
@@ -667,10 +670,18 @@ pub(super) fn finalize_prepare_context<'a>(
         .take()
         .expect("prepare governance stage must exist during finalize");
     let PreparePromptStage {
-        prompt_memory,
+        mut prompt_memory,
         allow_tool_round_recall_refill,
         ..
     } = prompt_stage;
+    if matches!(
+        config.memory_system_kind,
+        crate::memory::MemorySystemKind::EspCompact
+    ) {
+        // ESP compact path should not keep pre-joined projection caches alive and then
+        // clone them again inside `build_context`; build the final joined sections once.
+        prompt_memory.drop_projection_group_caches();
+    }
     let subject_state_text = governance_stage
         .subject_state
         .as_ref()
@@ -684,7 +695,7 @@ pub(super) fn finalize_prepare_context<'a>(
         session: config.session_store.as_ref(),
         important_message_store: config.important_message_store.as_ref(),
         has_tools: runtime_stage.has_tools,
-        skill_descriptions: &runtime_stage.skill_descriptions,
+        skill_descriptions: "",
         system_max_len: runtime_stage.budget.system_prompt_max,
         messages_max_len: runtime_stage.budget.messages_max,
         session_max_messages: config.session_max_messages,
@@ -727,6 +738,17 @@ pub(super) fn finalize_prepare_context<'a>(
         llm_hint: runtime_stage.budget.llm_hint,
     })
     .map_err(|e| e.with_stage("agent_context"))?;
+    if runtime_stage.skill_descriptions_len > 0 {
+        let skill_descriptions = (config.get_skill_descriptions)();
+        if !skill_descriptions.is_empty() {
+            let _ = crate::agent::context::append_capped_section(
+                &mut system,
+                "\n\n## Skills\n",
+                &skill_descriptions,
+                runtime_stage.budget.system_prompt_max,
+            );
+        }
+    }
     latency.context_ms = session.context_start.elapsed().as_millis();
     request_plan.apply_system_prompt(&mut system, runtime_stage.budget.system_prompt_max);
     let system_scratch = String::with_capacity(

@@ -15,6 +15,7 @@ mod webhook;
 mod ws;
 
 pub use msg_id::QqMsgIdCache;
+pub use token::{new_shared_qq_token_cache, SharedQqTokenCache};
 pub use send::{check_connectivity, flush_qq_channel_sends, run_qq_sender_loop};
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use webhook::{handle_webhook, QqHandlerResult, QQ_WEBHOOK_BODY_MAX};

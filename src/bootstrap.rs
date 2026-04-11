@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 const TAG: &str = "bootstrap";
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
 fn enforce_heap_checkpoint(stage: &'static str) {
     if let Err(error) = crate::platform::debug_heap_checkpoint(stage) {
         log::error!("[{}] {}", TAG, error);

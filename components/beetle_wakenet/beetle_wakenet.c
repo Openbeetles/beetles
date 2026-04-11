@@ -99,8 +99,13 @@ beetle_wn_err_t beetle_wakenet_init(const char *model_name, int input_sample_rat
         return BEETLE_WN_ERR_MODEL;
     }
 
-    /* create the model instance: DET_MODE_90 = 90 % confidence threshold */
-    model_iface_data_t *model_data = wakenet->create(wn_name, DET_MODE_90);
+    /*
+     * WakeNet detection mode:
+     * - DET_MODE_95 is the more aggressive trigger mode in ESP-SR.
+     * - Board logs showed the engine was fed continuously but never triggered,
+     *   so keep the device on the easier wake path instead of the conservative one.
+     */
+    model_iface_data_t *model_data = wakenet->create(wn_name, DET_MODE_95);
     if (model_data == NULL) {
         return BEETLE_WN_ERR_NOMEM;
     }

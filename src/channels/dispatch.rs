@@ -215,7 +215,7 @@ fn dispatch_via_sink(
         }
         match sink.send_with_req(&msg.chat_id, content, msg.req_id.as_deref()) {
             Ok(()) => {
-                log::info!(
+                log::debug!(
                     "[latency][dispatch] req_id={} channel={} attempt={} status=ok",
                     msg.req_id.as_deref().unwrap_or("-"),
                     msg.channel,
@@ -339,6 +339,7 @@ pub struct QqChannelRxConfig {
     pub app_id: String,
     pub app_secret: String,
     pub msg_id_cache: super::QqMsgIdCache,
+    pub token_cache: super::SharedQqTokenCache,
 }
 
 /// Sender 二级队列深度。ESP 受内存限制为 8，Linux 有充足内存用 32。
@@ -351,6 +352,7 @@ const SENDER_QUEUE_DEPTH: usize = 32;
 pub fn build_channel_sinks(
     config: &AppConfig,
     qq_msg_id_cache: &super::QqMsgIdCache,
+    qq_token_cache: &super::SharedQqTokenCache,
 ) -> (ChannelSinks, ChannelRxSet) {
     let mut sinks = ChannelSinks::new();
     let enabled = config.enabled_channel.as_str();
@@ -427,6 +429,7 @@ pub fn build_channel_sinks(
             app_id: config.qq_channel_app_id.clone(),
             app_secret: config.qq_channel_secret.clone(),
             msg_id_cache: Arc::clone(qq_msg_id_cache),
+            token_cache: qq_token_cache.clone(),
         })
     } else {
         None
@@ -570,6 +573,7 @@ pub fn spawn_sender_threads(
         let qq_id = c.app_id;
         let qq_sec = c.app_secret;
         let qq_cache = c.msg_id_cache;
+        let qq_token_cache = c.token_cache;
         spawn_sender_thread(
             TAG,
             "QQ Channel sender thread started",
@@ -581,7 +585,14 @@ pub fn spawn_sender_threads(
                     Some(crate::util::SpawnCore::Core0),
                     crate::util::HttpThreadRole::Io,
                     move || {
-                        super::run_qq_sender_loop(qq_rx, &qq_id, &qq_sec, qq_cache, move || f());
+                        super::run_qq_sender_loop(
+                            qq_rx,
+                            &qq_id,
+                            &qq_sec,
+                            qq_cache,
+                            qq_token_cache,
+                            move || f(),
+                        );
                     },
                 )
             },

@@ -12,8 +12,9 @@ use crate::memory::PendingRetryStore;
 
 use super::msg_id::{cache_msg_id, QqMsgIdCache};
 use super::token::{
-    cached_qq_token_value, ensure_cached_qq_token, fetch_and_cache_qq_token,
-    invalidate_cached_qq_token, CachedQqToken,
+    cached_qq_token_value, clear_shared_cached_qq_token, ensure_cached_qq_token,
+    fetch_and_cache_qq_token, invalidate_cached_qq_token, load_shared_cached_qq_token,
+    sync_shared_cached_qq_token, CachedQqToken, SharedQqTokenCache,
 };
 
 const TAG: &str = "qq_ws";
@@ -131,16 +132,23 @@ struct QqWssDriver {
     app_id: String,
     client_secret: String,
     cached_token: Option<CachedQqToken>,
+    shared_token_cache: SharedQqTokenCache,
     last_seq: Option<u64>,
     msg_id_cache: QqMsgIdCache,
 }
 
 impl QqWssDriver {
-    fn new(app_id: String, client_secret: String, msg_id_cache: QqMsgIdCache) -> Self {
+    fn new(
+        app_id: String,
+        client_secret: String,
+        msg_id_cache: QqMsgIdCache,
+        shared_token_cache: SharedQqTokenCache,
+    ) -> Self {
         Self {
             app_id,
             client_secret,
             cached_token: None,
+            shared_token_cache,
             last_seq: None,
             msg_id_cache,
         }
@@ -156,6 +164,9 @@ impl QqWssDriver {
 
 impl WssGatewayDriver for QqWssDriver {
     fn get_url(&mut self, http: &mut dyn ChannelHttpClient) -> Result<String> {
+        if self.cached_token.is_none() {
+            self.cached_token = load_shared_cached_qq_token(&self.shared_token_cache);
+        }
         let token = ensure_cached_qq_token(
             http,
             &mut self.cached_token,
@@ -164,12 +175,14 @@ impl WssGatewayDriver for QqWssDriver {
             "qq_ws_token",
             QQ_TOKEN_REFRESH_SKEW_SECS,
         )?;
+        sync_shared_cached_qq_token(&self.shared_token_cache, &self.cached_token);
         log::debug!("[{}] token obtained", TAG);
         let url = match get_gateway_url(http, &token) {
             Ok(url) => url,
             Err(e) if e.http_status_code() == Some(401) => {
                 log::warn!("[{}] gateway rejected cached token, refreshing once", TAG);
                 invalidate_cached_qq_token(&mut self.cached_token);
+                clear_shared_cached_qq_token(&self.shared_token_cache);
                 let refreshed = fetch_and_cache_qq_token(
                     http,
                     &mut self.cached_token,
@@ -178,6 +191,7 @@ impl WssGatewayDriver for QqWssDriver {
                     "qq_ws_token",
                     QQ_TOKEN_REFRESH_SKEW_SECS,
                 )?;
+                sync_shared_cached_qq_token(&self.shared_token_cache, &self.cached_token);
                 get_gateway_url(http, &refreshed)?
             }
             Err(e) => return Err(e),
@@ -303,6 +317,7 @@ impl WssGatewayDriver for QqWssDriver {
             QQ_OP_INVALID_SESSION => {
                 log::warn!("[{}] invalid session", TAG);
                 invalidate_cached_qq_token(&mut self.cached_token);
+                clear_shared_cached_qq_token(&self.shared_token_cache);
                 Ok(WssRecvAction::Disconnect)
             }
             _ => Ok(WssRecvAction::Ignore),
@@ -323,6 +338,7 @@ pub fn run_qq_ws_loop<H, C, CreateHttp, Conn>(
     client_secret: String,
     inbound_tx: crate::bus::InboundTx,
     msg_id_cache: QqMsgIdCache,
+    shared_token_cache: SharedQqTokenCache,
     pending_retry: &dyn PendingRetryStore,
     create_http: CreateHttp,
     connect: Conn,
@@ -332,7 +348,7 @@ pub fn run_qq_ws_loop<H, C, CreateHttp, Conn>(
     CreateHttp: FnMut() -> Result<H>,
     Conn: FnMut(&str) -> Result<C>,
 {
-    let driver = QqWssDriver::new(app_id, client_secret, msg_id_cache);
+    let driver = QqWssDriver::new(app_id, client_secret, msg_id_cache, shared_token_cache);
     run_wss_gateway_loop(TAG, driver, inbound_tx, pending_retry, create_http, connect);
 }
 
@@ -345,7 +361,12 @@ mod tests {
     #[test]
     fn group_dispatch_message_is_marked_as_group() {
         let cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
-        let mut driver = QqWssDriver::new("app".to_string(), "secret".to_string(), cache);
+        let mut driver = QqWssDriver::new(
+            "app".to_string(),
+            "secret".to_string(),
+            cache,
+            crate::channels::qq::new_shared_qq_token_cache(),
+        );
         let payload = serde_json::json!({
             "op": 0,
             "t": "GROUP_AT_MESSAGE_CREATE",

@@ -1,7 +1,9 @@
 //! ESP 堆查询与 PSRAM 大块分配：供 orchestrator、HTTP 响应体与可观测性复用。
 //! Heap query and PSRAM allocation for ESP.
 
-use crate::error::{Error, Result};
+use crate::error::Result;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use crate::error::Error;
 
 /// 返回当前内部堆空闲字节数。仅 ESP 目标有效；非 ESP 返回 u32::MAX（视为充足）。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]

@@ -81,7 +81,8 @@ pub fn run(
         let server_config = Configuration {
             max_open_sockets: MAX_OPEN_SOCKETS,
             max_uri_handlers: 96,
-            stack_size: 16 * 1024,
+            // Route heavy work is offloaded to `http_route_exec`; keep the IDF callback task lean.
+            stack_size: 12 * 1024,
             ..Default::default()
         };
 

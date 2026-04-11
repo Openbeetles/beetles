@@ -62,26 +62,33 @@ impl Tool for VoiceOutputTool {
                 ));
             }
             let text = parse_voice_output_text(args)?;
-            if text.len() > AUDIO_TTS_MAX_TEXT_LEN {
-                return Err(Error::config(
-                    "tool_voice_output",
-                    format!("text too long (max {})", AUDIO_TTS_MAX_TEXT_LEN),
-                ));
+            let segments = split_voice_output_segments(&text, AUDIO_TTS_MAX_TEXT_LEN);
+            if segments.is_empty() {
+                return Err(Error::config("tool_voice_output", "text must not be empty"));
             }
             let mut http = ToolContextHttpClient::new(ctx);
-            let playback = speak_text(
-                self.platform.as_ref(),
-                &self.audio_cfg,
-                self.baidu_token.as_ref(),
-                &mut http,
-                text.as_str(),
-            )?;
-            crate::metrics::record_voice_output_tts_http_ms(playback.tts_http_ms);
-            crate::metrics::record_voice_output_play_ms(playback.play_ms);
+            let mut played_samples = 0usize;
+            let mut tts_http_ms = 0u128;
+            let mut play_ms = 0u128;
+            for segment in &segments {
+                let playback = speak_text(
+                    self.platform.as_ref(),
+                    &self.audio_cfg,
+                    self.baidu_token.as_ref(),
+                    &mut http,
+                    segment.as_str(),
+                )?;
+                played_samples = played_samples.saturating_add(playback.played_samples);
+                tts_http_ms = tts_http_ms.saturating_add(playback.tts_http_ms);
+                play_ms = play_ms.saturating_add(playback.play_ms);
+            }
+            crate::metrics::record_voice_output_tts_http_ms(tts_http_ms);
+            crate::metrics::record_voice_output_play_ms(play_ms);
             log_audio_resource_snapshot("voice_output_done");
             Ok(json!({
                 "ok": true,
-                "played_samples": playback.played_samples
+                "played_samples": played_samples,
+                "segments": segments.len()
             })
             .to_string())
         })();
@@ -208,9 +215,58 @@ fn log_audio_resource_snapshot(stage: &str) {
     );
 }
 
+fn split_voice_output_segments(text: &str, max_bytes: usize) -> Vec<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || max_bytes == 0 {
+        return Vec::new();
+    }
+
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut last_soft_break: Option<usize> = None;
+
+    for ch in trimmed.chars() {
+        let ch_len = ch.len_utf8();
+        if !current.is_empty() && current.len().saturating_add(ch_len) > max_bytes {
+            if let Some(idx) = last_soft_break.take() {
+                let tail = current[idx..].trim().to_string();
+                current.truncate(idx);
+                let head = current.trim().to_string();
+                if !head.is_empty() {
+                    segments.push(head);
+                }
+                current.clear();
+                if !tail.is_empty() {
+                    current.push_str(&tail);
+                }
+            } else {
+                let head = current.trim().to_string();
+                if !head.is_empty() {
+                    segments.push(head);
+                }
+                current.clear();
+            }
+        }
+
+        if !current.is_empty() || !ch.is_whitespace() {
+            current.push(ch);
+            if matches!(ch, '，' | '。' | '！' | '？' | ',' | '.' | '!' | '?' | ';' | '；' | '\n') {
+                last_soft_break = Some(current.len());
+            }
+        }
+    }
+
+    let tail = current.trim();
+    if !tail.is_empty() {
+        segments.push(tail.to_string());
+    }
+    segments
+}
+
 #[cfg(test)]
 mod parse_tests {
-    use super::parse_voice_output_text;
+    use super::{parse_voice_output_text, split_voice_output_segments};
+    use crate::constants::AUDIO_TTS_MAX_TEXT_LEN;
 
     #[test]
     fn accepts_strict_json() {
@@ -241,5 +297,24 @@ mod parse_tests {
     fn accepts_bare_text_fallback() {
         let t = parse_voice_output_text("你好世界").expect("ok");
         assert_eq!(t, "你好世界");
+    }
+
+    #[test]
+    fn splits_long_voice_output_text_into_tts_sized_segments() {
+        let text = "第一句很长，需要分段朗读。第二句也很长，需要继续分段朗读。第三句还是很长，需要继续分段朗读。";
+        let segments = split_voice_output_segments(text, 24);
+
+        assert!(segments.len() > 1);
+        assert!(segments.iter().all(|segment| !segment.trim().is_empty()));
+        assert!(segments.iter().all(|segment| segment.len() <= 24));
+        assert_eq!(segments.concat(), text);
+    }
+
+    #[test]
+    fn keeps_short_voice_output_text_as_single_segment() {
+        let text = "你好世界";
+        let segments = split_voice_output_segments(text, AUDIO_TTS_MAX_TEXT_LEN);
+
+        assert_eq!(segments, vec!["你好世界".to_string()]);
     }
 }

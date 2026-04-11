@@ -275,7 +275,8 @@ fn compute_refresh_secs(
 fn spawn_http_config_server(
     ctx: HttpServerSpawnContext,
 ) -> std::io::Result<beetle::util::TaskHandle> {
-    spawn_planned_handle("config_plane_watch", 6144, move || {
+    // Wrapper thread only drives the control-plane loop; IDF httpd owns its own task stack.
+    spawn_planned_handle("config_plane_watch", 4096, move || {
         if let Err(e) = beetle::platform::http_server::run(
             ctx.platform,
             ctx.tool_registry,
@@ -1925,6 +1926,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         &system_inbound_tx,
     );
     let qq_msg_id_cache: beetle::channels::QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
+    let qq_token_cache = beetle::channels::new_shared_qq_token_cache();
     #[allow(unused_variables)]
     let (mut registry, baidu_token_cache) = beetle::build_default_registry(
         &config,
@@ -2143,8 +2145,11 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     }
 
     #[allow(unused_mut)]
-    let (mut sinks, mut channel_rx_set) =
-        beetle::channels::build_channel_sinks(config.as_ref(), &qq_msg_id_cache);
+    let (mut sinks, mut channel_rx_set) = beetle::channels::build_channel_sinks(
+        config.as_ref(),
+        &qq_msg_id_cache,
+        &qq_token_cache,
+    );
     // F8: 启动进度条 stage=3（channel sinks 后）
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
     if platform.display_available() {
@@ -2249,6 +2254,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                     let qq_id = c.app_id.clone();
                     let qq_sec = c.app_secret.clone();
                     let qq_cache_ws = std::sync::Arc::clone(&qq_msg_id_cache);
+                    let qq_token_cache_ws = qq_token_cache.clone();
                     let qq_pending = Arc::clone(&pending_retry_store);
                     let pf = Arc::clone(&platform);
                     let cfg = Arc::clone(&config);
@@ -2265,6 +2271,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                                 qq_sec,
                                 qq_tx,
                                 qq_cache_ws,
+                                qq_token_cache_ws,
                                 qq_pending.as_ref(),
                                 move || pf.create_http_client(cfg.as_ref()),
                                 connect_wss,
@@ -2585,20 +2592,25 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             move || {
                 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
                 beetle::platform::task_wdt::register_current_task_to_task_wdt();
-                let mut agent_http =
-                    match agent_platform.create_http_client(agent_config_for_thread.as_ref()) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            log::error!("[{}] agent_loop create_http_client failed: {}", tag, e);
-                            beetle::state::set_last_error(&e);
-                            beetle::runtime::request_restart_with_continuity_flush(
-                                Arc::clone(&agent_platform),
-                                None,
-                                "agent_loop_http_init_failed",
-                            );
-                            return;
-                        }
-                    };
+                let mut agent_http = match agent_platform
+                    .create_interactive_http_client(agent_config_for_thread.as_ref())
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        log::error!(
+                            "[{}] agent_loop create_interactive_http_client failed: {}",
+                            tag,
+                            e
+                        );
+                        beetle::state::set_last_error(&e);
+                        beetle::runtime::request_restart_with_continuity_flush(
+                            Arc::clone(&agent_platform),
+                            None,
+                            "agent_loop_http_init_failed",
+                        );
+                        return;
+                    }
+                };
                 log::info!("[{}] agent_loop running on Core1 thread", tag);
                 if let Err(e) = run_agent_loop(
                     agent_http.as_mut(),

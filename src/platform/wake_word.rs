@@ -220,7 +220,7 @@ mod imp {
         if feed_diag_counter % WAKE_FEED_DIAG_INTERVAL == 0 {
             let sum_sq: f64 = frame.iter().map(|&s| (s as f64) * (s as f64)).sum();
             let rms = (sum_sq / frame.len().max(1) as f64).sqrt();
-            log::info!(
+            log::debug!(
                 "[wake_word] diag feed_count={} rms={:.1} samples={}",
                 feed_diag_counter,
                 rms,

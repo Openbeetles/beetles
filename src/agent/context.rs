@@ -118,7 +118,7 @@ pub struct ContextParams<'a> {
 
 pub struct PostMemoryTailParams<'a> {
     pub has_tools: bool,
-    pub skill_descriptions: &'a str,
+    pub skill_descriptions_len: usize,
     pub is_group: bool,
     pub group_activation: &'a str,
     pub emotion_signal_suffix: Option<&'a str>,
@@ -153,7 +153,12 @@ fn push_char_boundary_truncated(out: &mut String, input: &str, max_len: usize) -
     false
 }
 
-fn append_capped_section(system: &mut String, prefix: &str, content: &str, max_len: usize) -> bool {
+pub(crate) fn append_capped_section(
+    system: &mut String,
+    prefix: &str,
+    content: &str,
+    max_len: usize,
+) -> bool {
     if content.is_empty() {
         return false;
     }
@@ -356,10 +361,10 @@ fn estimate_runtime_context_len(runtime: Option<RuntimeContext>) -> usize {
 
 pub fn estimate_post_memory_system_tail_len(params: PostMemoryTailParams<'_>) -> usize {
     let mut reserve = 0usize;
-    if !params.skill_descriptions.is_empty() {
+    if params.skill_descriptions_len > 0 {
         reserve = reserve
             .saturating_add("\n\n## Skills\n".len())
-            .saturating_add(params.skill_descriptions.len());
+            .saturating_add(params.skill_descriptions_len);
     }
     if params.has_tools {
         reserve = reserve.saturating_add(TOOL_BEHAVIOR_CONSTRAINT.len());
@@ -447,7 +452,7 @@ fn build_context_inner(
     });
     let post_memory_tail_len = estimate_post_memory_system_tail_len(PostMemoryTailParams {
         has_tools: p.has_tools,
-        skill_descriptions: p.skill_descriptions,
+        skill_descriptions_len: p.skill_descriptions.len(),
         is_group: p.msg.is_group,
         group_activation: p.group_activation,
         emotion_signal_suffix: p.emotion_signal_suffix,
@@ -812,7 +817,7 @@ mod tests {
     fn post_memory_tail_reserve_covers_dynamic_sections() {
         let reserve = estimate_post_memory_system_tail_len(PostMemoryTailParams {
             has_tools: true,
-            skill_descriptions: "shell\nweb_search",
+            skill_descriptions_len: "shell\nweb_search".len(),
             is_group: true,
             group_activation: "mention",
             emotion_signal_suffix: Some("用户可能需安慰"),

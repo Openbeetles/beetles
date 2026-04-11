@@ -148,6 +148,13 @@ impl PromptMemoryContext {
             self.mental_privacy_text.as_deref(),
         ]);
     }
+
+    pub fn drop_projection_group_caches(&mut self) {
+        self.constitutional_stack_text = None;
+        self.active_task_context_text = None;
+        self.governed_memory_evidence_text = None;
+        self.background_governance_text = None;
+    }
 }
 
 fn compose_prompt_projection_body(parts: &[Option<&str>]) -> Option<String> {

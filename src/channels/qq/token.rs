@@ -4,6 +4,8 @@
 use crate::channels::send::{record_outbound_http_failure, record_outbound_http_success};
 use crate::channels::ChannelHttpClient;
 use crate::error::{Error, Result};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 pub const QQ_GET_APP_ACCESS_TOKEN_URL: &str = "https://bots.qq.com/app/getAppAccessToken";
 
@@ -22,9 +24,21 @@ pub struct QqTokenResponse {
     pub expires_in: u64,
 }
 
+#[derive(Clone)]
 pub(crate) struct CachedQqToken {
     value: String,
-    refresh_after_unix_secs: u64,
+    refresh_after: Instant,
+}
+
+#[derive(Clone)]
+pub struct SharedQqTokenCache {
+    inner: Arc<Mutex<Option<CachedQqToken>>>,
+}
+
+pub fn new_shared_qq_token_cache() -> SharedQqTokenCache {
+    SharedQqTokenCache {
+        inner: Arc::new(Mutex::new(None)),
+    }
 }
 
 /// QQ API 的 expires_in 可能返回数字或字符串，兼容两种格式。
@@ -108,15 +122,48 @@ pub(crate) fn fetch_qq_access_token<H: ChannelHttpClient + ?Sized>(
 }
 
 pub(crate) fn cached_qq_token_value(cached_token: &Option<CachedQqToken>) -> Option<&str> {
-    let now = crate::util::current_unix_secs();
+    cached_qq_token_value_at(cached_token, Instant::now())
+}
+
+fn cached_qq_token_value_at(
+    cached_token: &Option<CachedQqToken>,
+    now: Instant,
+) -> Option<&str> {
     cached_token
         .as_ref()
-        .filter(|token| now < token.refresh_after_unix_secs)
+        .filter(|token| now < token.refresh_after)
         .map(|token| token.value.as_str())
 }
 
 pub(crate) fn invalidate_cached_qq_token(cached_token: &mut Option<CachedQqToken>) {
     *cached_token = None;
+}
+
+pub(crate) fn load_shared_cached_qq_token(
+    shared_cache: &SharedQqTokenCache,
+) -> Option<CachedQqToken> {
+    shared_cache
+        .inner
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+pub(crate) fn sync_shared_cached_qq_token(
+    shared_cache: &SharedQqTokenCache,
+    cached_token: &Option<CachedQqToken>,
+) {
+    *shared_cache
+        .inner
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = cached_token.clone();
+}
+
+pub(crate) fn clear_shared_cached_qq_token(shared_cache: &SharedQqTokenCache) {
+    *shared_cache
+        .inner
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 pub(crate) fn fetch_and_cache_qq_token<H: ChannelHttpClient + ?Sized>(
@@ -129,11 +176,10 @@ pub(crate) fn fetch_and_cache_qq_token<H: ChannelHttpClient + ?Sized>(
 ) -> Result<String> {
     let (token, expires_in_secs) =
         fetch_qq_access_token_with_expiry(http, app_id, client_secret, stage)?;
-    let now = crate::util::current_unix_secs();
     let usable_for_secs = expires_in_secs.saturating_sub(refresh_skew_secs).max(1);
     *cached_token = Some(CachedQqToken {
         value: token.clone(),
-        refresh_after_unix_secs: now.saturating_add(usable_for_secs),
+        refresh_after: Instant::now() + Duration::from_secs(usable_for_secs),
     });
     Ok(token)
 }
@@ -157,4 +203,31 @@ pub(crate) fn ensure_cached_qq_token<H: ChannelHttpClient + ?Sized>(
         stage,
         refresh_skew_secs,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cached_token_uses_monotonic_deadline() {
+        let now = Instant::now();
+        let cached = Some(CachedQqToken {
+            value: "qq-token".to_string(),
+            refresh_after: now + Duration::from_secs(90),
+        });
+
+        assert_eq!(
+            cached_qq_token_value_at(&cached, now + Duration::from_secs(30)),
+            Some("qq-token")
+        );
+        assert_eq!(
+            cached_qq_token_value_at(&cached, now + Duration::from_secs(89)),
+            Some("qq-token")
+        );
+        assert_eq!(
+            cached_qq_token_value_at(&cached, now + Duration::from_secs(90)),
+            None
+        );
+    }
 }

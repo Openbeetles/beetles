@@ -11,8 +11,9 @@ use crate::channels::send::{
 
 use super::msg_id::{pop_msg_id, QqMsgIdCache};
 use super::token::{
-    cached_qq_token_value, ensure_cached_qq_token, fetch_qq_access_token,
-    invalidate_cached_qq_token, CachedQqToken,
+    cached_qq_token_value, clear_shared_cached_qq_token, ensure_cached_qq_token,
+    fetch_qq_access_token, invalidate_cached_qq_token, load_shared_cached_qq_token,
+    sync_shared_cached_qq_token, CachedQqToken, SharedQqTokenCache,
 };
 
 /// 单条消息最大字符数，与现有通道对齐。
@@ -169,7 +170,7 @@ fn send_one_qq<H: ChannelHttpClient>(
             _ => {}
         }
     }
-    log::info!(
+    log::debug!(
         "[latency][qq_http] chat_id={} chunks={} total_ms={}",
         chat_id,
         chunks.len(),
@@ -223,6 +224,7 @@ fn send_queued_qq_message<H, F>(
     app_id: &str,
     secret: &str,
     cache: &QqMsgIdCache,
+    shared_token_cache: &SharedQqTokenCache,
     http: &mut Option<H>,
     token_cache: &mut Option<CachedQqToken>,
     create_http: &mut F,
@@ -245,6 +247,9 @@ where
             "sender http missing after ensure",
         ));
     };
+    if token_cache.is_none() {
+        *token_cache = load_shared_cached_qq_token(shared_token_cache);
+    }
     let had_cached_token = cached_qq_token_value(token_cache).is_some();
     let token_start = std::time::Instant::now();
     let token = match ensure_cached_qq_token(
@@ -259,6 +264,7 @@ where
             if !had_cached_token {
                 token_wait_ms = token_wait_ms.saturating_add(token_start.elapsed().as_millis());
             }
+            sync_shared_cached_qq_token(shared_token_cache, token_cache);
             token
         }
         Err(error) => {
@@ -274,6 +280,7 @@ where
             );
             *http = None;
             invalidate_cached_qq_token(token_cache);
+            clear_shared_cached_qq_token(shared_token_cache);
             return Err(error);
         }
     };
@@ -284,7 +291,7 @@ where
         Ok(()) => {
             crate::orchestrator::record_channel_result_pub("qq_channel", true);
             record_outbound_http_success();
-            log::info!(
+            log::debug!(
                 "[latency][qq_sender] req_id={} chat_id={} attempt={} token_wait_ms={} http_send_ms={} total_ms={} status=ok",
                 req_id.as_deref().unwrap_or("-"),
                 chat_id,
@@ -311,6 +318,7 @@ where
             );
             *http = None;
             invalidate_cached_qq_token(token_cache);
+            clear_shared_cached_qq_token(shared_token_cache);
             Err(error)
         }
     }
@@ -323,6 +331,7 @@ pub fn run_qq_sender_loop<H, F>(
     app_id: &str,
     secret: &str,
     cache: QqMsgIdCache,
+    shared_token_cache: SharedQqTokenCache,
     mut create_http: F,
 ) where
     H: ChannelHttpClient,
@@ -342,6 +351,7 @@ pub fn run_qq_sender_loop<H, F>(
             app_id,
             secret,
             &cache,
+            &shared_token_cache,
             &mut http,
             &mut token_cache,
             &mut create_http,

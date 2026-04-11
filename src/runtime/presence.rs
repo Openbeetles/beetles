@@ -69,6 +69,13 @@ pub struct PresenceSnapshot {
 
 impl PresenceSnapshot {
     pub fn display_projection(&self, network_hint: Option<&str>) -> PresenceDisplayProjection {
+        // Operator APIs still expose `fault` for critical resource pressure, but the display
+        // should not show a hard FAULT state for a transient admission squeeze.
+        let display_state = if self.state == PresenceState::Fault && self.critical_pressure {
+            DisplaySystemState::Busy
+        } else {
+            self.display_state
+        };
         let subtitle_override = match self.state {
             PresenceState::Booting | PresenceState::Recovery | PresenceState::Fault => {
                 Some(self.subtitle.clone())
@@ -89,7 +96,7 @@ impl PresenceSnapshot {
             | PresenceState::Speaking => None,
         };
         PresenceDisplayProjection {
-            state: self.display_state,
+            state: display_state,
             subtitle_override,
         }
     }
