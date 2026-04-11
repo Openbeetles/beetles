@@ -11,15 +11,17 @@
 
 use crate::audio::baidu_token::BaiduTokenCache;
 use crate::audio::pipeline::{capture_and_transcribe, speak_text};
-use crate::audio::realtime::run_realtime_session;
+use crate::audio::realtime::{
+    connect_realtime_session, run_connected_realtime_session, ConnectedRealtimeSession,
+};
 use crate::bus::{PcMsg, TrackedSender};
 use crate::config::{audio_realtime_enabled, AudioSegment};
 use crate::constants::{AUDIO_CAPTURE_MAX_MS, VOICE_CHANNEL_NAME, VOICE_DEVICE_CHAT_ID};
 use crate::network::{HttpClientClass, NetworkGovernor, VoiceExclusiveTransportGuard};
 use crate::platform::PlatformHttpClient;
 use crate::util::{
-    spawn_guarded_with_profile_handle, HttpThreadRole, SpawnCore, TaskHandle, STACK_VOICE_REALTIME,
-    STACK_VOICE_SESSION,
+    spawn_guarded_with_profile_handle, HttpThreadRole, SpawnCore, TaskHandle, STACK_CHANNEL_WS,
+    STACK_VOICE_REALTIME, STACK_VOICE_SESSION,
 };
 use crate::Platform;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -203,6 +205,36 @@ fn run_voice_task(cfg: &VoiceSessionConfig, task: VoiceWorkerTask) {
     }
 }
 
+fn connect_realtime_session_via_worker(
+    cfg: &VoiceSessionConfig,
+) -> crate::Result<ConnectedRealtimeSession> {
+    let (result_tx, result_rx) = mpsc::sync_channel(1);
+    let platform = Arc::clone(&cfg.platform);
+    let audio_cfg = cfg.audio_cfg.clone();
+    let handle = spawn_guarded_with_profile_handle(
+        "voice_realtime_connect",
+        STACK_CHANNEL_WS,
+        Some(SpawnCore::Core1),
+        HttpThreadRole::Background,
+        move || {
+            let result = connect_realtime_session(platform.as_ref(), &audio_cfg, TAG);
+            if result_tx.send(result).is_err() {
+                log::warn!("[{}] realtime connect result receiver dropped", TAG);
+            }
+        },
+    )
+    .map_err(|error| crate::Error::io("voice_realtime_connect_spawn", error))?;
+
+    let result = result_rx.recv().map_err(|error| {
+        crate::Error::io(
+            "voice_realtime_connect_recv",
+            std::io::Error::other(error.to_string()),
+        )
+    })?;
+    let _ = handle.join();
+    result
+}
+
 fn handle_wake_interaction<F>(
     cfg: &VoiceSessionConfig,
     http: &mut Option<Box<dyn PlatformHttpClient>>,
@@ -227,7 +259,9 @@ fn handle_wake_interaction<F>(
             return;
         }
         let _voice_transport = VoiceExclusiveTransportGuard::enter(cfg.platform.as_ref(), TAG);
-        match run_realtime_session(cfg.platform.as_ref(), &cfg.audio_cfg, TAG) {
+        match connect_realtime_session_via_worker(cfg).and_then(|connected| {
+            run_connected_realtime_session(cfg.platform.as_ref(), &cfg.audio_cfg, connected)
+        }) {
             Ok(session) => {
                 log::info!(
                     "[{}] realtime session finished turns={} input_ms={} output_ms={} duration_ms={}",

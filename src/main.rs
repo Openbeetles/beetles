@@ -654,7 +654,7 @@ mod tests {
     #[test]
     fn voice_realtime_worker_stack_budget_is_large_enough_for_realtime_wss_path() {
         let min_stack = if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
-            32 * 1024
+            16 * 1024
         } else {
             64 * 1024
         };
@@ -2250,7 +2250,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             let allowed = parse_allowed_chat_ids(&config.feishu_allowed_chat_ids);
             let pending = Arc::clone(&pending_retry_store);
             let http_factory = network_governor.http_factory(HttpClientClass::Background);
-            // WSS + JSON: 16KB on ESP; Linux uses `STACK_CHANNEL_WS` (64KB embedded-class, rustls).
+            // WSS + JSON connect path: ESP uses the shared `STACK_CHANNEL_WS` budget; Linux keeps 64KB rustls headroom.
             if let Err(error) = spawn_required_planned_thread(
                 TAG,
                 "feishu_ws",
@@ -2296,7 +2296,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                     let qq_token_cache_ws = qq_token_cache.clone();
                     let qq_pending = Arc::clone(&pending_retry_store);
                     let http_factory = network_governor.http_factory(HttpClientClass::Background);
-                    // QQ WS: 16KB on ESP; Linux `STACK_CHANNEL_WS` (64KB) — 16KB overflows rustls.
+                    // QQ WS: ESP uses the shared `STACK_CHANNEL_WS` budget; Linux keeps 64KB because rustls overflows smaller stacks.
                     if let Err(error) = spawn_required_planned_thread(
                         TAG,
                         "qq_ws",

@@ -498,14 +498,16 @@ fn thread_profile(name: &str) -> ThreadProfile {
             wss_capable: false,
             mode_sensitive: true,
         },
-        "voice_session" | "voice_session_worker" | "voice_realtime" => ThreadProfile {
-            execution_class: ThreadExecutionClass::Voice,
-            risk_class: ThreadRiskClass::Critical,
-            tls_capable: true,
-            http_capable: true,
-            wss_capable: true,
-            mode_sensitive: true,
-        },
+        "voice_session" | "voice_session_worker" | "voice_realtime" | "voice_realtime_connect" => {
+            ThreadProfile {
+                execution_class: ThreadExecutionClass::Voice,
+                risk_class: ThreadRiskClass::Critical,
+                tls_capable: true,
+                http_capable: true,
+                wss_capable: true,
+                mode_sensitive: true,
+            }
+        }
         "qq_ws" | "feishu_ws" => ThreadProfile {
             execution_class: ThreadExecutionClass::Channel,
             risk_class: ThreadRiskClass::Critical,

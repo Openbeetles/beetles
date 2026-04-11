@@ -99,7 +99,7 @@ pub enum WssEvent {
 }
 
 /// 带超时收一条事件：有数据返回 Some(ev)，超时返回 None；连接断开等错误返回 Err。
-pub trait WssConnection {
+pub trait WssConnection: Send {
     fn send_binary(&mut self, data: &[u8]) -> Result<()>;
     /// 发送 UTF-8 文本帧；默认退化为按字节发送。
     fn send_text(&mut self, text: &str) -> Result<()> {
@@ -129,5 +129,17 @@ impl WssConnection for Box<dyn WssConnection> {
 
     fn recv_timeout(&mut self, timeout: Duration) -> Result<Option<WssEvent>> {
         (**self).recv_timeout(timeout)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_send<T: Send>() {}
+
+    #[test]
+    fn boxed_wss_connection_can_cross_threads() {
+        assert_send::<Box<dyn WssConnection>>();
     }
 }

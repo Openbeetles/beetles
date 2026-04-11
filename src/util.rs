@@ -1008,7 +1008,8 @@ pub fn is_private_url(url: &str) -> bool {
 // | heartbeat, cli_repl                  | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS
 // | voice_session                         | STACK_VOICE_CONTROL    | 8 KB  | 8 KB  | ← scheduler only; realtime WSS moved off this always-on thread
 // | voice_session_worker                  | STACK_VOICE_SESSION    | 16 KB | 64 KB | ← STT + TTS HTTPS
-// | voice_realtime                        | STACK_VOICE_REALTIME   | 32 KB | 64 KB | ← transient realtime WSS/TLS + voice-exclusive session owner
+// | voice_realtime_connect                | STACK_CHANNEL_WS       | 12 KB | 64 KB | ← shared WSS/TLS connect budget
+// | voice_realtime                        | STACK_VOICE_REALTIME   | 16 KB | 64 KB | ← steady-state realtime session owner after connect handoff
 // ---------------------------------------------------------------------------
 
 /// Linux（含嵌入式）：TLS 栈远大于 ESP 的 16KB，但不必拉到桌面级上百 KB；
@@ -1070,9 +1071,11 @@ pub const STACK_VOICE_SESSION: usize = 16 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_VOICE_SESSION: usize = LINUX_RUSTLS_THREAD_STACK;
 
-/// `voice_realtime`：transient realtime voice worker，承接 voice-exclusive 模式切换和 realtime WSS/TLS。
+/// `voice_realtime`：transient realtime voice worker，承接 voice-exclusive 模式与 steady-state session loop。
+/// realtime WSS/TLS connect 峰值改由 `voice_realtime_connect` 复用共享 `STACK_CHANNEL_WS` 预算承接，
+/// 避免把 connect 峰值和整段 session loop 永久绑在同一栈预算上。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub const STACK_VOICE_REALTIME: usize = 32 * 1024;
+pub const STACK_VOICE_REALTIME: usize = 16 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_VOICE_REALTIME: usize = LINUX_RUSTLS_THREAD_STACK;
 

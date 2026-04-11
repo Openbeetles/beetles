@@ -100,6 +100,14 @@ pub struct RealtimeSessionResult {
     pub session_ms: u128,
 }
 
+pub(crate) struct ConnectedRealtimeSession {
+    conn: Box<dyn WssConnection>,
+    provider: RealtimeProvider,
+    duplex_caps: AudioDuplexCapabilities,
+    session_start: Instant,
+    session_ready_at: Instant,
+}
+
 enum RealtimeExitReason {
     NoSpeech,
     ResponseWait,
@@ -405,15 +413,22 @@ pub fn run_realtime_session(
     audio_cfg: &AudioSegment,
     log_tag: &'static str,
 ) -> Result<RealtimeSessionResult> {
+    let connected = connect_realtime_session(platform, audio_cfg, log_tag)?;
+    run_connected_realtime_session(platform, audio_cfg, connected)
+}
+
+pub(crate) fn connect_realtime_session(
+    platform: &dyn Platform,
+    audio_cfg: &AudioSegment,
+    log_tag: &'static str,
+) -> Result<ConnectedRealtimeSession> {
     if !audio_realtime_enabled(audio_cfg) {
         return Err(Error::config(
             REALTIME_TAG,
-            "run_realtime_session called without realtime config",
+            "connect_realtime_session called without realtime config",
         ));
     }
 
-    let _recording_guard = AudioRecordingGuard::new();
-    let _cleanup = RealtimeSessionCleanup::new(platform);
     let session_start = Instant::now();
     let duplex_caps = platform.audio_duplex_capabilities().normalized();
     if !duplex_caps.can_run_realtime_session() {
@@ -444,6 +459,48 @@ pub fn run_realtime_session(
     let mut conn =
         crate::network::connect_realtime_wss_with_retry(platform, ws_url.as_str(), &header_refs)?;
     let mut state = RealtimeLoopState::new(duplex_caps);
+
+    send_text_retry(
+        conn.as_mut(),
+        build_session_update(provider, audio_cfg).as_str(),
+        REALTIME_INITIAL_SEND_RETRY_MAX,
+    )?;
+    await_session_ready(
+        conn.as_mut(),
+        platform,
+        &mut state,
+        provider,
+        audio_cfg,
+        Duration::from_millis(REALTIME_SESSION_READY_TIMEOUT_MS),
+    )?;
+    let session_ready_at = Instant::now();
+    log::info!("[{}] realtime session connected", log_tag);
+
+    Ok(ConnectedRealtimeSession {
+        conn,
+        provider,
+        duplex_caps,
+        session_start,
+        session_ready_at,
+    })
+}
+
+pub(crate) fn run_connected_realtime_session(
+    platform: &dyn Platform,
+    audio_cfg: &AudioSegment,
+    connected: ConnectedRealtimeSession,
+) -> Result<RealtimeSessionResult> {
+    let _recording_guard = AudioRecordingGuard::new();
+    let _cleanup = RealtimeSessionCleanup::new(platform);
+    let ConnectedRealtimeSession {
+        mut conn,
+        provider,
+        duplex_caps,
+        session_start,
+        session_ready_at,
+    } = connected;
+    let mut state = RealtimeLoopState::new(duplex_caps);
+    state.mark_session_ready(session_ready_at);
     let mut mic_frame = [0i16; AUDIO_CAPTURE_FRAME_SAMPLES];
     let mut reference_frame = [0i16; AUDIO_CAPTURE_FRAME_SAMPLES];
     let mut upload_encoder = RealtimeUploadEncoder::new();
@@ -464,21 +521,6 @@ pub fn run_realtime_session(
     }
     let mut endpoint = EndpointState::new();
     let mut local_speech_active = false;
-
-    send_text_retry(
-        conn.as_mut(),
-        build_session_update(provider, audio_cfg).as_str(),
-        REALTIME_INITIAL_SEND_RETRY_MAX,
-    )?;
-    await_session_ready(
-        conn.as_mut(),
-        platform,
-        &mut state,
-        provider,
-        audio_cfg,
-        Duration::from_millis(REALTIME_SESSION_READY_TIMEOUT_MS),
-    )?;
-    log::info!("[{}] realtime session connected", log_tag);
 
     loop {
         crate::platform::task_wdt::feed_current_task();
@@ -899,15 +941,27 @@ fn await_session_ready(
     ))
 }
 
+#[cfg(test)]
 fn server_message_marks_session_ready(provider: RealtimeProvider, payload: &[u8]) -> Result<bool> {
-    let value: serde_json::Value = serde_json::from_slice(payload)
-        .map_err(|e| Error::config("realtime_voice_parse", e.to_string()))?;
+    let value = parse_server_message(payload)?;
+    Ok(server_message_value_marks_session_ready(provider, &value))
+}
+
+fn parse_server_message(payload: &[u8]) -> Result<serde_json::Value> {
+    serde_json::from_slice(payload)
+        .map_err(|e| Error::config("realtime_voice_parse", e.to_string()))
+}
+
+fn server_message_value_marks_session_ready(
+    provider: RealtimeProvider,
+    value: &serde_json::Value,
+) -> bool {
     let event_type = value
         .get("type")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
-    Ok(event_type == "session.updated"
-        || (provider.session_created_is_ready() && event_type == "session.created"))
+    event_type == "session.updated"
+        || (provider.session_created_is_ready() && event_type == "session.created")
 }
 
 fn process_server_frame(
@@ -919,8 +973,9 @@ fn process_server_frame(
     payload: &[u8],
 ) -> Result<bool> {
     let _ = conn;
-    let ready = server_message_marks_session_ready(provider, payload)?;
-    handle_json_server_message(platform, state, provider, audio_cfg, payload)?;
+    let value = parse_server_message(payload)?;
+    let ready = server_message_value_marks_session_ready(provider, &value);
+    handle_json_server_message(platform, state, provider, audio_cfg, &value)?;
     Ok(ready)
 }
 
@@ -929,10 +984,8 @@ fn handle_json_server_message(
     state: &mut RealtimeLoopState,
     provider: RealtimeProvider,
     audio_cfg: &AudioSegment,
-    payload: &[u8],
+    value: &serde_json::Value,
 ) -> Result<()> {
-    let value: serde_json::Value = serde_json::from_slice(payload)
-        .map_err(|e| Error::config("realtime_voice_parse", e.to_string()))?;
     let event_type = value
         .get("type")
         .and_then(|v| v.as_str())

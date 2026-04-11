@@ -125,6 +125,8 @@ mod imp {
                 | "display"
                 | "heartbeat"
                 | "restart_defer"
+                | "voice_realtime"
+                | "voice_realtime_connect"
                 | "voice_session"
                 | "voice_session_worker"
                 | "wifi_worker"
@@ -310,4 +312,36 @@ pub use imp::TaskHandle;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub fn current_task_handle_key() -> usize {
     imp::current_task_handle_key()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn realtime_voice_tasks_use_expected_spawn_surface() {
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        {
+            assert_eq!(
+                planned_spawn_surface("voice_realtime"),
+                TaskSpawnSurface::EspNativeTask
+            );
+            assert_eq!(
+                planned_spawn_surface("voice_realtime_connect"),
+                TaskSpawnSurface::EspNativeTask
+            );
+        }
+
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        {
+            assert_eq!(
+                planned_spawn_surface("voice_realtime"),
+                TaskSpawnSurface::StdThread
+            );
+            assert_eq!(
+                planned_spawn_surface("voice_realtime_connect"),
+                TaskSpawnSurface::StdThread
+            );
+        }
+    }
 }
