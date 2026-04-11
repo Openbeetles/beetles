@@ -1,5 +1,5 @@
 //! Linux SPI display backend.
-//! 使用 `/dev/spidevX.Y` + sysfs GPIO 实现用户态面板驱动，复用既有 dashboard 渲染链路。
+//! 使用 `/dev/spidevX.Y` + GPIO 字符设备（sysfs 兜底）实现用户态面板驱动，复用既有 dashboard 渲染链路。
 
 use crate::display::{DisplayColorOrder, DisplayConfig, DisplayDriver};
 use crate::error::{Error, Result};
@@ -10,12 +10,67 @@ use embedded_graphics_core::{
     prelude::RawData,
     Pixel,
 };
+use gpio_cdev::{Chip, LineHandle, LineRequestFlags};
 use spidev::{SpiModeFlags, Spidev, SpidevOptions};
 use std::convert::Infallible;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 const SYSFS_GPIO_ROOT: &str = "/sys/class/gpio";
+
+struct LinuxCdevGpio {
+    handle: LineHandle,
+}
+
+impl LinuxCdevGpio {
+    fn new_output(pin: i32, initial_high: bool) -> Result<Self> {
+        let mut chips = gpiochip_paths()?;
+        chips.sort();
+        let value = if initial_high { 1 } else { 0 };
+        let mut last_err: Option<Error> = None;
+        for chip_path in chips {
+            let mut chip = match Chip::new(&chip_path) {
+                Ok(chip) => chip,
+                Err(e) => {
+                    last_err = Some(Error::config("display_gpiochip_open", e.to_string()));
+                    continue;
+                }
+            };
+            let line = match chip.get_line(pin as u32) {
+                Ok(line) => line,
+                Err(e) => {
+                    last_err = Some(Error::config("display_gpiochip_line", e.to_string()));
+                    continue;
+                }
+            };
+            match line.request(LineRequestFlags::OUTPUT, value, "beetle-display") {
+                Ok(handle) => {
+                    log::info!(
+                        "[display_spi] gpio pin {} via {} (cdev)",
+                        pin,
+                        chip_path.display()
+                    );
+                    return Ok(Self { handle });
+                }
+                Err(e) => {
+                    last_err = Some(Error::config("display_gpio_request", e.to_string()));
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| {
+            Error::config(
+                "display_gpio_request",
+                format!("no usable gpiochip found for pin {}", pin),
+            )
+        }))
+    }
+
+    fn write(&self, high: bool) -> Result<()> {
+        self.handle
+            .set_value(if high { 1 } else { 0 })
+            .map_err(|e| Error::config("display_gpio_write", e.to_string()))
+    }
+}
 
 struct LinuxSysfsGpio {
     value_path: PathBuf,
@@ -54,11 +109,52 @@ fn ignore_busy_gpio_export(error: std::io::Error) -> std::io::Result<()> {
     Err(error)
 }
 
+enum LinuxOutputGpio {
+    Cdev(LinuxCdevGpio),
+    Sysfs(LinuxSysfsGpio),
+}
+
+impl LinuxOutputGpio {
+    fn new_output(pin: i32, initial_high: bool) -> Result<Self> {
+        match LinuxCdevGpio::new_output(pin, initial_high) {
+            Ok(gpio) => Ok(Self::Cdev(gpio)),
+            Err(cdev_err) => {
+                log::warn!(
+                    "[display_spi] gpio-cdev unavailable for pin {}: {}; falling back to sysfs",
+                    pin,
+                    cdev_err
+                );
+                LinuxSysfsGpio::new_output(pin, initial_high).map(Self::Sysfs)
+            }
+        }
+    }
+
+    fn write(&self, high: bool) -> Result<()> {
+        match self {
+            Self::Cdev(gpio) => gpio.write(high),
+            Self::Sysfs(gpio) => gpio.write(high),
+        }
+    }
+}
+
+fn gpiochip_paths() -> Result<Vec<PathBuf>> {
+    let mut chips = Vec::new();
+    let entries = std::fs::read_dir("/dev").map_err(|e| Error::io("display_gpiochip_scan", e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| Error::io("display_gpiochip_scan", e))?;
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with("gpiochip") {
+            chips.push(entry.path());
+        }
+    }
+    Ok(chips)
+}
+
 pub struct LinuxSpiDisplayBackend {
     spi: Spidev,
-    dc: LinuxSysfsGpio,
-    rst: Option<LinuxSysfsGpio>,
-    bl: Option<LinuxSysfsGpio>,
+    dc: LinuxOutputGpio,
+    rst: Option<LinuxOutputGpio>,
+    bl: Option<LinuxOutputGpio>,
     width: u16,
     height: u16,
     framebuf: Vec<u8>,
@@ -85,13 +181,13 @@ impl LinuxSpiDisplayBackend {
         spi.configure(&options)
             .map_err(|e| Error::io("display_spi_configure", e))?;
 
-        let dc = LinuxSysfsGpio::new_output(config.spi.dc, false)?;
+        let dc = LinuxOutputGpio::new_output(config.spi.dc, false)?;
         let rst = match config.spi.rst {
-            Some(pin) => Some(LinuxSysfsGpio::new_output(pin, true)?),
+            Some(pin) => Some(LinuxOutputGpio::new_output(pin, true)?),
             None => None,
         };
         let bl = match config.spi.bl {
-            Some(pin) => Some(LinuxSysfsGpio::new_output(pin, true)?),
+            Some(pin) => Some(LinuxOutputGpio::new_output(pin, true)?),
             None => None,
         };
 

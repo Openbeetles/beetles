@@ -66,7 +66,7 @@ Only the device is on that hotspot.
 
 ### Option B – Open the config page from the online URL
 
-You open the same setup page from the internet (for example **https://ai-orangeoracle.github.io/beetle/**). To actually configure a device, your browser still needs to reach that device on the same network.
+You open the same setup page from the internet (for example **https://openbeetles.github.io/beetles/**). To actually configure a device, your browser still needs to reach that device on the same network.
 
 **Step-by-step when using the online address:**
 
@@ -79,7 +79,7 @@ You open the same setup page from the internet (for example **https://ai-orangeo
    - **Already on WiFi:** Ensure your phone/PC and the device are on the same LAN (e.g. same home/office router).
 
 3. **Open the online config page**  
-   - In the browser go to: **https://ai-orangeoracle.github.io/beetle/**  
+   - In the browser go to: **https://openbeetles.github.io/beetles/**
 
 4. **Enter the device address in the page**
    - In the config UI, find the **”Device URL”** (设备地址) field.

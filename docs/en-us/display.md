@@ -168,3 +168,5 @@ You do not need to understand the internal drawing layout. What matters is wheth
    - leaving the SPI path empty is also fine
 
 7. **No screen attached** — set `enabled` to `false`.
+
+8. **Backlight turns on but no picture on Linux** — check that the OS has SPI enabled and that the configured GPIO pins are actually available to the application.

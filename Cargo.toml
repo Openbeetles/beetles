@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Beetle Team"]
 description = "甲壳虫 (beetle) - ESP32-S3 AI Agent firmware"
 license = "MIT OR Apache-2.0"
-repository = ""
+repository = "https://github.com/Openbeetles/beetles"
 
 [package.metadata.esp-idf-sys]
 # Keep metadata at the common entry only. esp-idf-sys will auto-discover
@@ -85,6 +85,7 @@ futures = "0.3"
 rusqlite = { version = "0.37", features = ["bundled"] }
 alsa = "0.9"
 udev = "0.9"
+gpio-cdev = "0.6"
 # Linux framebuffer 显示：内存 DrawTarget + mmap 回写
 embedded-graphics-framebuf = "0.5.0"
 spidev = "0.6"
