@@ -464,7 +464,7 @@ mod tests {
     use super::{
         communication_plane_startup, compute_voice_runtime_capabilities,
         finalize_required_thread_start, register_process_memory_snapshot_provider,
-        voice_sink_sender, DisplayLoopCacheUpdate, StartedVoiceSession,
+        voice_sink_sender, StartedVoiceSession,
     };
     use beetle::config::default_disabled_audio_segment;
     use std::sync::Arc;
@@ -590,7 +590,7 @@ mod tests {
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
     #[test]
     fn update_display_loop_cache_syncs_owned_dashboard_fields() {
-        use super::{update_display_loop_cache, DisplayLoopState};
+        use super::{update_display_loop_cache, DisplayLoopCacheUpdate, DisplayLoopState};
         use beetle::{DisplayChannelStatus, DisplayPressureLevel};
 
         let mut state = DisplayLoopState::default();

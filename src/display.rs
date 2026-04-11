@@ -83,6 +83,10 @@ pub struct DisplayConfig {
     pub color_order: DisplayColorOrder,
     #[serde(default)]
     pub invert_colors: bool,
+    /// Linux SPI only: swap the two bytes of each RGB565 pixel before sending over SPI.
+    /// 仅 Linux SPI 使用：发送前交换每个 RGB565 像素的高低字节。
+    #[serde(default)]
+    pub linux_spi_swap_bytes: bool,
     #[serde(default)]
     pub offset_x: i16,
     #[serde(default)]
@@ -307,6 +311,7 @@ pub fn default_disabled_display_config() -> DisplayConfig {
         rotation: 0,
         color_order: DisplayColorOrder::Rgb,
         invert_colors: false,
+        linux_spi_swap_bytes: false,
         offset_x: 0,
         offset_y: 0,
         spi: DisplaySpiConfig {
@@ -422,6 +427,12 @@ pub fn validate_display_config_core(cfg: &DisplayConfig) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_display_config_keeps_linux_spi_swap_disabled() {
+        let cfg = default_disabled_display_config();
+        assert!(!cfg.linux_spi_swap_bytes);
+    }
 
     #[test]
     fn compute_layout_square_240_legacy_markers() {

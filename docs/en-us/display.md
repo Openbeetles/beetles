@@ -20,6 +20,7 @@ If you only need the shortest path:
 | **ST7735** | 128x160, 128x128, 80x160, etc. | Common on small displays such as 1.8-inch panels |
 
 Use `invert_colors` when the panel looks like a photo negative.
+If a Linux SPI panel still has wrong colors after trying `color_order` and `invert_colors`, enable `linux_spi_swap_bytes`.
 
 If you are not sure which panel you have:
 
@@ -67,6 +68,7 @@ For Linux SPI panels, Beetle prefers `gpio-cdev`, falls back to sysfs GPIO when 
   "rotation": 0,
   "color_order": "rgb",
   "invert_colors": false,
+  "linux_spi_swap_bytes": false,
   "offset_x": 0,
   "offset_y": 0,
   "spi": {
@@ -95,6 +97,7 @@ For Linux SPI panels, Beetle prefers `gpio-cdev`, falls back to sysfs GPIO when 
   "rotation": 0,
   "color_order": "bgr",
   "invert_colors": false,
+  "linux_spi_swap_bytes": false,
   "offset_x": 2,
   "offset_y": 1,
   "spi": {
@@ -123,6 +126,7 @@ For Linux SPI panels, Beetle prefers `gpio-cdev`, falls back to sysfs GPIO when 
 | `rotation` | u16 | 0 | Display rotation: `0`, `90`, `180`, or `270` |
 | `color_order` | string | `"rgb"` | `"rgb"` or `"bgr"` |
 | `invert_colors` | bool | false | Flip the driver's default color inversion |
+| `linux_spi_swap_bytes` | bool | false | Linux SPI only: swap RGB565 high/low bytes before transmission; use only when color order and invert do not fix colors |
 | `offset_x` | i16 | 0 | Horizontal pixel offset for the display window (-480 to 480) |
 | `offset_y` | i16 | 0 | Vertical pixel offset for the display window (-480 to 480) |
 | `spi.host` | u8 | 1 | SPI host: `1` or `2` |
@@ -159,15 +163,17 @@ You do not need to understand the internal drawing layout. What matters is wheth
 
 3. **Photo-negative look** — toggle `invert_colors`.
 
-4. **Shifted or cropped image** — adjust `offset_x` / `offset_y`. A 240x240 ST7789 module often needs `offset_y: 80`.
+4. **Linux SPI colors still wrong after both steps above** — enable `linux_spi_swap_bytes`. This is a Linux SPI-only fallback for panels that expect swapped RGB565 byte order.
 
-5. **Artifacts or unstable image** — lower `spi.freq_hz` from `40000000` to `20000000`, then to `10000000` if needed.
+5. **Shifted or cropped image** — adjust `offset_x` / `offset_y`. A 240x240 ST7789 module often needs `offset_y: 80`.
 
-6. **Linux path**:
+6. **Artifacts or unstable image** — lower `spi.freq_hz` from `40000000` to `20000000`, then to `10000000` if needed.
+
+7. **Linux path**:
    - use `/dev/fbX` for `framebuffer`
    - use `/dev/spidevX.Y` for SPI panels if you want to set it explicitly
    - leaving the SPI path empty is also fine
 
-7. **No screen attached** — set `enabled` to `false`.
+8. **No screen attached** — set `enabled` to `false`.
 
-8. **Backlight turns on but no picture on Linux** — check that the OS has SPI enabled and that the configured GPIO pins are actually available to the application.
+9. **Backlight turns on but no picture on Linux** — check that the OS has SPI enabled and that the configured GPIO pins are actually available to the application.

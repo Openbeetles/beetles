@@ -5,6 +5,7 @@ import Button from "@mui/material/Button";
 import FormControlLabel from "@mui/material/FormControlLabel";
 import Switch from "@mui/material/Switch";
 import TextField from "@mui/material/TextField";
+import Typography from "@mui/material/Typography";
 import SaveRounded from "@mui/icons-material/SaveRounded";
 import MonitorOutlined from "@mui/icons-material/MonitorOutlined";
 import {
@@ -174,6 +175,7 @@ export function DisplayConfigPanel() {
   const form = draft ?? displayConfig ?? defaultDisplayConfig();
   const isLinuxRuntime = runtimeKind === "linux";
   const showLinuxFramebuffer = isLinuxRuntime && form.driver === "framebuffer";
+  const showLinuxSpiByteSwap = isLinuxRuntime && !showLinuxFramebuffer;
 
   const sectionDesc = useMemo(() => {
     if (isLinuxRuntime) return t("displayConfig.sectionMainDescLinux");
@@ -402,6 +404,28 @@ export function DisplayConfigPanel() {
                     }
                     label={t("displayConfig.invertColors")}
                   />
+                  {showLinuxSpiByteSwap ? (
+                    <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
+                      <FormControlLabel
+                        control={
+                          <Switch
+                            checked={form.linux_spi_swap_bytes}
+                            onChange={(_, checked) =>
+                              setField("linux_spi_swap_bytes", checked)
+                            }
+                            disabled={!form.enabled}
+                          />
+                        }
+                        label={t("displayConfig.linuxSpiSwapBytes")}
+                      />
+                      <Typography
+                        variant="body2"
+                        sx={{ color: "var(--muted)", pr: 1 }}
+                      >
+                        {t("displayConfig.linuxSpiSwapBytesHelp")}
+                      </Typography>
+                    </Box>
+                  ) : null}
                 </>
               ) : null}
             </Box>

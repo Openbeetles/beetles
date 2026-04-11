@@ -23,6 +23,7 @@ export interface DisplayConfig {
   rotation: 0 | 90 | 180 | 270
   color_order: DisplayColorOrder
   invert_colors: boolean
+  linux_spi_swap_bytes: boolean
   offset_x: number
   offset_y: number
   spi: DisplaySpiConfig
@@ -44,6 +45,7 @@ export function defaultDisplayConfig(): DisplayConfig {
     rotation: 0,
     color_order: 'rgb',
     invert_colors: false,
+    linux_spi_swap_bytes: false,
     offset_x: 0,
     offset_y: 0,
     spi: {
@@ -103,6 +105,7 @@ export function normalizeDisplayConfig(
         ? input.color_order
         : d.color_order,
     invert_colors: Boolean(input.invert_colors),
+    linux_spi_swap_bytes: Boolean(input.linux_spi_swap_bytes),
     offset_x: typeof input.offset_x === 'number' ? input.offset_x : d.offset_x,
     offset_y: typeof input.offset_y === 'number' ? input.offset_y : d.offset_y,
     spi: {

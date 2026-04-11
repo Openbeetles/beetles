@@ -595,6 +595,9 @@ export const zhCN = {
       rotation: '旋转角度',
       colorOrder: '颜色顺序',
       invertColors: '反相颜色',
+      linuxSpiSwapBytes: '交换 RGB565 字节序',
+      linuxSpiSwapBytesHelp:
+        '屏幕颜色明显偏色时再试这个开关。只有在开启后颜色看起来更自然时，才保留它。',
       width: '宽度',
       height: '高度',
       offsetX: 'X 偏移',

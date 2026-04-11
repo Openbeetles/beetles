@@ -20,6 +20,7 @@
 | **ST7735** | 128x160、128x128、80x160 等 | 常见于 1.8 寸等小屏 |
 
 `invert_colors` 用来切换常见的反色问题。
+如果 Linux SPI 屏幕在切换 `color_order` 和 `invert_colors` 后颜色仍然不对，再启用 `linux_spi_swap_bytes`。
 
 如果无法确认屏幕控制器，可先按下列经验判断：
 
@@ -67,6 +68,7 @@ Linux 直驱 SPI 小屏时，Beetle 会优先走 `gpio-cdev`，必要时回退�
   "rotation": 0,
   "color_order": "rgb",
   "invert_colors": false,
+  "linux_spi_swap_bytes": false,
   "offset_x": 0,
   "offset_y": 0,
   "spi": {
@@ -95,6 +97,7 @@ Linux 直驱 SPI 小屏时，Beetle 会优先走 `gpio-cdev`，必要时回退�
   "rotation": 0,
   "color_order": "bgr",
   "invert_colors": false,
+  "linux_spi_swap_bytes": false,
   "offset_x": 2,
   "offset_y": 1,
   "spi": {
@@ -123,6 +126,7 @@ Linux 直驱 SPI 小屏时，Beetle 会优先走 `gpio-cdev`，必要时回退�
 | `rotation` | u16 | 0 | 显示旋转角度：`0`、`90`、`180` 或 `270` |
 | `color_order` | string | `"rgb"` | `"rgb"` 或 `"bgr"` |
 | `invert_colors` | bool | false | 翻转驱动器默认的色彩反转行为 |
+| `linux_spi_swap_bytes` | bool | false | 仅 Linux SPI 使用：发送前交换 RGB565 高低字节；只有在颜色顺序和反相都无效时才开启 |
 | `offset_x` | i16 | 0 | 显示窗口水平偏移（-480 到 480） |
 | `offset_y` | i16 | 0 | 显示窗口垂直偏移（-480 到 480） |
 | `spi.host` | u8 | 1 | SPI 主机：`1` 或 `2` |
@@ -159,15 +163,17 @@ Linux 直驱 SPI 小屏时，Beetle 会优先走 `gpio-cdev`，必要时回退�
 
 3. **像负片**：如果整屏像反色，切换 `invert_colors`。
 
-4. **画面偏了**：如果内容被裁边或没居中，调 `offset_x` / `offset_y`。240x240 的 ST7789 模块常见需要 `offset_y: 80`。
+4. **Linux SPI 颜色还是不对**：如果前两步都试过仍然不对，再打开 `linux_spi_swap_bytes`。这是只给 Linux SPI 面板用的 RGB565 字节序兜底。
 
-5. **花屏或不稳定**：先把 `spi.freq_hz` 从 `40000000` 降到 `20000000`，不行再降到 `10000000`。
+5. **画面偏了**：如果内容被裁边或没居中，调 `offset_x` / `offset_y`。240x240 的 ST7789 模块常见需要 `offset_y: 80`。
 
-6. **Linux 路径怎么填**：
+6. **花屏或不稳定**：先把 `spi.freq_hz` 从 `40000000` 降到 `20000000`，不行再降到 `10000000`。
+
+7. **Linux 路径怎么填**：
    - `framebuffer` 模式填 `/dev/fbX`
    - SPI 模式可以填 `/dev/spidevX.Y`
    - SPI 模式也可以留空，让程序按 `spi.host` 和 `spi.cs` 推导
 
-7. **不用屏幕时**：把 `enabled` 设为 `false` 即可。
+8. **不用屏幕时**：把 `enabled` 设为 `false` 即可。
 
-8. **Linux 下背光亮了但没画面**：先确认系统已经启用 SPI，并且你填写的 GPIO 引脚当前对应用程序可用。
+9. **Linux 下背光亮了但没画面**：先确认系统已经启用 SPI，并且你填写的 GPIO 引脚当前对应用程序可用。

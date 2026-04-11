@@ -159,6 +159,7 @@ pub struct LinuxSpiDisplayBackend {
     height: u16,
     framebuf: Vec<u8>,
     max_transfer_sz: usize,
+    swap_bytes: bool,
 }
 
 unsafe impl Send for LinuxSpiDisplayBackend {}
@@ -202,6 +203,7 @@ impl LinuxSpiDisplayBackend {
             height,
             framebuf: vec![0; framebuf_len],
             max_transfer_sz,
+            swap_bytes: config.linux_spi_swap_bytes,
         };
         backend.reset_panel()?;
         backend.init_display_controller(config)?;
@@ -374,10 +376,19 @@ impl LinuxSpiDisplayBackend {
     fn set_pixel(&mut self, x: u16, y: u16, color: Rgb565) {
         if x < self.width && y < self.height {
             let offset = (y as usize * self.width as usize + x as usize) * 2;
-            let raw = RawU16::from(color).into_inner().to_be();
-            self.framebuf[offset] = (raw >> 8) as u8;
-            self.framebuf[offset + 1] = raw as u8;
+            let [hi, lo] = encode_rgb565_bytes(color, self.swap_bytes);
+            self.framebuf[offset] = hi;
+            self.framebuf[offset + 1] = lo;
         }
+    }
+}
+
+fn encode_rgb565_bytes(color: Rgb565, swap_bytes: bool) -> [u8; 2] {
+    let raw = RawU16::from(color).into_inner().to_be_bytes();
+    if swap_bytes {
+        [raw[1], raw[0]]
+    } else {
+        raw
     }
 }
 
@@ -464,7 +475,10 @@ fn compute_madctl(rotation: u16, color_order: &DisplayColorOrder) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{desired_linux_spi_transfer_size, effective_linux_spi_transfer_size};
+    use super::{
+        desired_linux_spi_transfer_size, effective_linux_spi_transfer_size, encode_rgb565_bytes,
+    };
+    use embedded_graphics_core::pixelcolor::Rgb565;
 
     #[test]
     fn linux_spi_transfer_size_respects_spidev_bufsiz_limit() {
@@ -476,5 +490,12 @@ mod tests {
     fn linux_spi_transfer_size_keeps_small_panels_unchanged() {
         assert_eq!(desired_linux_spi_transfer_size(128, 160), 5_120);
         assert_eq!(effective_linux_spi_transfer_size(128, 160, 8_192), 5_120);
+    }
+
+    #[test]
+    fn linux_spi_rgb565_byte_order_can_be_swapped() {
+        let red = Rgb565::new(31, 0, 0);
+        assert_eq!(encode_rgb565_bytes(red, false), [0xF8, 0x00]);
+        assert_eq!(encode_rgb565_bytes(red, true), [0x00, 0xF8]);
     }
 }

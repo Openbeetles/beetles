@@ -598,6 +598,9 @@ export const enUS = {
       rotation: 'Rotation',
       colorOrder: 'Color order',
       invertColors: 'Invert colors',
+      linuxSpiSwapBytes: 'Swap RGB565 byte order',
+      linuxSpiSwapBytesHelp:
+        'Turn this on when the panel still shows obvious color cast. Keep it enabled only if the colors look more natural afterward.',
       width: 'Width',
       height: 'Height',
       offsetX: 'Offset X',
