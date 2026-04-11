@@ -52,6 +52,7 @@ ESP32-S3 上常见的接线方式如下：
 
 在 ESP 上，这套配置会直接驱动 SPI 总线和 GPIO。
 在 Linux 上，`framebuffer` 适合系统已经提供显示设备的场景，`st7789` / `ili9341` / `st7735` 适合直接驱动 SPI 小屏。
+Linux 直驱 SPI 小屏时，Beetle 会优先走 `gpio-cdev`，必要时回退到 sysfs GPIO，并且会按内核 `spidev` 缓冲上限自动分块发送 SPI 数据。
 
 ### 完整配置示例
 

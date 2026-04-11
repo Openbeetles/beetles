@@ -202,7 +202,12 @@ pub(crate) fn decide_prompt_recall_route(
 
     let factual_signal = factual_support_signal(&factual_rerank)
         .saturating_add(u32::from(input.shared_factual_report.query.exact_lookup.is_some()) * 48);
-    let continuity_signal = continuity_support_signal(&continuity_rerank)
+    let continuity_signal = continuity_support_signal(
+        &continuity_rerank,
+        input.has_active_task,
+        input.has_execution_state,
+        query_is_weak,
+    )
         .saturating_add(u32::from(input.has_active_task) * 8)
         .saturating_add(u32::from(input.has_execution_state) * 4)
         .saturating_add(u32::from(query_is_weak) * 8);
@@ -291,8 +296,19 @@ fn procedural_support_signal(result: &super::CrossPlaneRerankResult) -> u32 {
         .saturating_add(plane_signal_score(result, RecallPlane::ContinuityCapsule) / 3)
 }
 
-fn continuity_support_signal(result: &super::CrossPlaneRerankResult) -> u32 {
-    plane_signal_score(result, RecallPlane::ContinuityCapsule)
+fn continuity_support_signal(
+    result: &super::CrossPlaneRerankResult,
+    has_active_task: bool,
+    has_execution_state: bool,
+    query_is_weak: bool,
+) -> u32 {
+    let continuity_capsule_signal = plane_signal_score(result, RecallPlane::ContinuityCapsule);
+    let continuity_capsule_weighted = if has_active_task || has_execution_state || query_is_weak {
+        continuity_capsule_signal
+    } else {
+        continuity_capsule_signal / 2
+    };
+    continuity_capsule_weighted
         .saturating_add(plane_signal_score(result, RecallPlane::TaskRecall) / 2)
         .saturating_add(plane_signal_score(result, RecallPlane::Archive) / 4)
         .saturating_add(plane_signal_score(result, RecallPlane::SharedFactual) / 5)
@@ -369,6 +385,21 @@ mod tests {
     }
 
     #[test]
+    fn weak_query_without_live_task_still_routes_to_continuity_when_capsule_matches() {
+        let decision = decide_prompt_recall_route(PromptRecallRouterInput {
+            user_query: "继续",
+            has_execution_state: false,
+            has_active_task: false,
+            shared_factual_report: &report(RecallPlane::SharedFactual, 8, true),
+            continuity_capsule_report: &report(RecallPlane::ContinuityCapsule, 28, true),
+            archive_report: &report(RecallPlane::Archive, 6, true),
+            runtime_skill_report: &report(RecallPlane::RuntimeSkill, 0, false),
+            task_recall_report: None,
+        });
+        assert_eq!(decision.intent, PromptRecallIntent::Continuity);
+    }
+
+    #[test]
     fn runtime_skill_dominance_routes_to_procedural() {
         let decision = decide_prompt_recall_route(PromptRecallRouterInput {
             user_query: "按之前那套流程发布",
@@ -391,6 +422,21 @@ mod tests {
             has_active_task: false,
             shared_factual_report: &report(RecallPlane::SharedFactual, 8, true),
             continuity_capsule_report: &report(RecallPlane::ContinuityCapsule, 0, false),
+            archive_report: &report(RecallPlane::Archive, 22, true),
+            runtime_skill_report: &report(RecallPlane::RuntimeSkill, 0, false),
+            task_recall_report: None,
+        });
+        assert_eq!(decision.intent, PromptRecallIntent::Evidence);
+    }
+
+    #[test]
+    fn archive_queries_without_live_task_do_not_let_capsules_override_evidence() {
+        let decision = decide_prompt_recall_route(PromptRecallRouterInput {
+            user_query: "把那次 network outage 的原始记录翻出来",
+            has_execution_state: false,
+            has_active_task: false,
+            shared_factual_report: &report(RecallPlane::SharedFactual, 12, true),
+            continuity_capsule_report: &report(RecallPlane::ContinuityCapsule, 24, true),
             archive_report: &report(RecallPlane::Archive, 22, true),
             runtime_skill_report: &report(RecallPlane::RuntimeSkill, 0, false),
             task_recall_report: None,

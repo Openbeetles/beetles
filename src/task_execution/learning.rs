@@ -2447,7 +2447,12 @@ mod tests {
         let inspection =
             inspect_task_learning(&store, "telegram", "chat-1", "Need the release fix path");
 
-        assert_eq!(inspection.backend, "task_learning_heuristic");
+        let expected_backend = if cfg!(target_os = "linux") {
+            "task_learning_sqlite_fts_hybrid"
+        } else {
+            "task_learning_heuristic"
+        };
+        assert_eq!(inspection.backend, expected_backend);
         assert_eq!(inspection.route_counts.runtime_skill, 1);
         assert_eq!(inspection.route_counts.canonical_factual, 1);
         assert_eq!(inspection.route_counts.archived_evidence, 1);

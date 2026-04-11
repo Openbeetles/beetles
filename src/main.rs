@@ -464,7 +464,7 @@ mod tests {
     use super::{
         communication_plane_startup, compute_voice_runtime_capabilities,
         finalize_required_thread_start, register_process_memory_snapshot_provider,
-        voice_sink_sender, StartedVoiceSession,
+        voice_sink_sender, DisplayLoopCacheUpdate, StartedVoiceSession,
     };
     use beetle::config::default_disabled_audio_segment;
     use std::sync::Arc;

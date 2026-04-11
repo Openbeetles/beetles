@@ -168,7 +168,9 @@ impl LinuxSpiDisplayBackend {
         let width = config.width;
         let height = config.height;
         let framebuf_len = width as usize * height as usize * 2;
-        let max_transfer_sz = (width as usize * 20 * 2).min(framebuf_len.max(1));
+        let desired_transfer_sz = desired_linux_spi_transfer_size(width, height);
+        let max_transfer_sz =
+            effective_linux_spi_transfer_size(width, height, read_linux_spidev_bufsiz());
         let path = linux_spi_device_path(config)?;
 
         let mut spi =
@@ -204,11 +206,13 @@ impl LinuxSpiDisplayBackend {
         backend.reset_panel()?;
         backend.init_display_controller(config)?;
         log::info!(
-            "[display_spi] {} {}x{} driver={:?}",
+            "[display_spi] {} {}x{} driver={:?} transfer={}B desired={}B",
             path,
             width,
             height,
-            config.driver
+            config.driver,
+            max_transfer_sz,
+            desired_transfer_sz
         );
         Ok(backend)
     }
@@ -404,6 +408,31 @@ impl OriginDimensions for LinuxSpiDisplayBackend {
     }
 }
 
+fn desired_linux_spi_transfer_size(width: u16, height: u16) -> usize {
+    let framebuf_len = width as usize * height as usize * 2;
+    (width as usize * 20 * 2).min(framebuf_len.max(1))
+}
+
+fn effective_linux_spi_transfer_size(width: u16, height: u16, spidev_bufsiz: usize) -> usize {
+    desired_linux_spi_transfer_size(width, height)
+        .min(spidev_bufsiz.max(1))
+        .max(1)
+}
+
+#[cfg(target_os = "linux")]
+fn read_linux_spidev_bufsiz() -> usize {
+    const DEFAULT_SPI_BUF_SIZE: usize = 4096;
+    match std::fs::read_to_string("/sys/module/spidev/parameters/bufsiz") {
+        Ok(raw) => raw
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|v| *v > 0)
+            .unwrap_or(DEFAULT_SPI_BUF_SIZE),
+        Err(_) => DEFAULT_SPI_BUF_SIZE,
+    }
+}
+
 fn linux_spi_device_path(config: &DisplayConfig) -> Result<String> {
     let configured = config.fb_device.trim();
     if configured.starts_with("/dev/spidev") {
@@ -431,4 +460,21 @@ fn compute_madctl(rotation: u16, color_order: &DisplayColorOrder) -> u8 {
         _ => 0x00,
     };
     rot_bits | color_bit
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{desired_linux_spi_transfer_size, effective_linux_spi_transfer_size};
+
+    #[test]
+    fn linux_spi_transfer_size_respects_spidev_bufsiz_limit() {
+        assert_eq!(desired_linux_spi_transfer_size(240, 240), 9_600);
+        assert_eq!(effective_linux_spi_transfer_size(240, 240, 4_096), 4_096);
+    }
+
+    #[test]
+    fn linux_spi_transfer_size_keeps_small_panels_unchanged() {
+        assert_eq!(desired_linux_spi_transfer_size(128, 160), 5_120);
+        assert_eq!(effective_linux_spi_transfer_size(128, 160, 8_192), 5_120);
+    }
 }

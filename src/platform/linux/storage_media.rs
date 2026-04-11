@@ -380,9 +380,10 @@ mod imp {
         if let Some(prefix) = trim_partition_suffix(device_name, "nvme", 'p') {
             return prefix;
         }
-        let trimmed = device_name.trim_end_matches(|c: char| c.is_ascii_digit());
-        if trimmed != device_name {
-            return trimmed.to_string();
+        for prefix in ["sd", "hd", "vd", "xvd"] {
+            if let Some(base_name) = trim_lettered_disk_partition_suffix(device_name, prefix) {
+                return base_name;
+            }
         }
         device_name.to_string()
     }
@@ -395,6 +396,22 @@ mod imp {
         let suffix = &device_name[marker_pos + 1..];
         if !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit()) {
             return Some(device_name[..marker_pos].to_string());
+        }
+        None
+    }
+
+    fn trim_lettered_disk_partition_suffix(device_name: &str, prefix: &str) -> Option<String> {
+        let suffix = device_name.strip_prefix(prefix)?;
+        let letter_len = suffix
+            .chars()
+            .take_while(|ch| ch.is_ascii_lowercase())
+            .count();
+        if letter_len == 0 || letter_len == suffix.len() {
+            return None;
+        }
+        let partition = &suffix[letter_len..];
+        if partition.chars().all(|ch| ch.is_ascii_digit()) {
+            return Some(device_name[..prefix.len() + letter_len].to_string());
         }
         None
     }
@@ -433,6 +450,13 @@ mod imp {
         #[test]
         fn strips_nvme_partition_suffix() {
             assert_eq!(base_block_name("nvme0n1p3"), "nvme0n1");
+        }
+
+        #[test]
+        fn strips_lettered_disk_partition_suffix() {
+            assert_eq!(base_block_name("sda1"), "sda");
+            assert_eq!(base_block_name("xvda3"), "xvda");
+            assert_eq!(base_block_name("loop0"), "loop0");
         }
 
         #[test]

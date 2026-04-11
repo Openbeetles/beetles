@@ -52,6 +52,7 @@ You can edit display settings directly in the config UI. If you prefer file-base
 
 On ESP, Beetle drives SPI panels directly from the configured pins.
 On Linux, use `framebuffer` when the system already exposes a display device, or `st7789` / `ili9341` / `st7735` when you want Beetle to drive an SPI panel directly.
+For Linux SPI panels, Beetle prefers `gpio-cdev`, falls back to sysfs GPIO when needed, and automatically chunks SPI writes to the kernel `spidev` buffer limit.
 
 ### Full config example
 

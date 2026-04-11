@@ -924,10 +924,12 @@ mod tests {
         assert_eq!(inspection["recall"]["chat_id"], chat_id);
         assert_eq!(inspection["hygiene"]["current_chat_id"], chat_id);
         assert_eq!(inspection["task_workspace"]["run_id"], run_id);
-        assert_eq!(
-            inspection["task_learning"]["backend"],
+        let expected_backend = if cfg!(target_os = "linux") {
+            "task_learning_sqlite_fts_hybrid"
+        } else {
             "task_learning_heuristic"
-        );
+        };
+        assert_eq!(inspection["task_learning"]["backend"], expected_backend);
         assert_eq!(
             inspection["task_learning"]["route_counts"]["runtime_skill"],
             1
