@@ -18,21 +18,6 @@ use std::sync::{Arc, Mutex, RwLock};
 
 const LINUX_HTTP_WORKERS: usize = 4;
 
-struct ConfigPlaneActiveGuard;
-
-impl ConfigPlaneActiveGuard {
-    fn enter() -> Self {
-        crate::state::set_config_plane_active(true);
-        Self
-    }
-}
-
-impl Drop for ConfigPlaneActiveGuard {
-    fn drop(&mut self) {
-        crate::state::set_config_plane_active(false);
-    }
-}
-
 pub fn spawn(platform: Arc<dyn Platform>) -> Result<crate::util::TaskHandle> {
     crate::util::spawn_guarded_with_profile_handle(
         "linux_control_plane",
@@ -137,7 +122,7 @@ fn run(platform: Arc<dyn Platform>) -> Result<()> {
         source: Box::new(std::io::Error::other(e.to_string())),
         stage: "linux_control_plane_listen",
     })?);
-    let _active_guard = ConfigPlaneActiveGuard::enter();
+    let _active_guard = crate::runtime::ConfigPlaneGuard::enter();
     log::info!(
         "[linux_control_plane] listening on {} (supervisor-owned control plane)",
         listen

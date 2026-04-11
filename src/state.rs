@@ -24,18 +24,18 @@ static WIFI_STA_CONNECTED_SINCE_SECS: AtomicU32 = AtomicU32::new(0);
 static WIFI_STA_IP: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 /// 当前是否处于语音独占窗口；ESP 上对外 WSS 通道在该窗口内主动让路。
 static VOICE_EXCLUSIVE_ACTIVE: AtomicBool = AtomicBool::new(false);
-/// 当前是否存在受统一模式切换管理的外部 WSS 通道。
-static EXTERNAL_WSS_MANAGED_PRESENT: AtomicBool = AtomicBool::new(false);
-/// 当前是否请求外部 WSS 进入 suspended 模式。
-static EXTERNAL_WSS_SUSPEND_REQUESTED: AtomicBool = AtomicBool::new(false);
-/// 外部 WSS 是否已完成 suspended 模式切换。
-static EXTERNAL_WSS_SUSPENDED: AtomicBool = AtomicBool::new(false);
 /// 当前是否有后台自治/维护作业在 agent 执行面运行。
 static BACKGROUND_MAINTENANCE_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// 当前 config plane 是否真正处于 active serving 状态。
 static CONFIG_PLANE_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// 当前进程是否仍处于启动引导阶段；steady-state 建立后显式清除。
 static BOOT_PHASE_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// runtime mode source 是否已掌握 pairing 要求状态。
+static PAIRING_STATE_KNOWN: AtomicBool = AtomicBool::new(false);
+/// 当前是否仍要求 pairing。
+static PAIRING_REQUIRED: AtomicBool = AtomicBool::new(false);
+/// 当前是否处于 recovery safe mode。
+static RECOVERY_SAFE_MODE_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// ESP operator / deep-inspection window expiry timestamp.
 static ESP_OPERATOR_WINDOW_UNTIL_SECS: AtomicU32 = AtomicU32::new(0);
 
@@ -176,46 +176,6 @@ pub fn voice_exclusive_active() -> bool {
     VOICE_EXCLUSIVE_ACTIVE.load(Ordering::Relaxed)
 }
 
-/// 声明当前运行态存在受统一模式切换管理的外部 WSS 通道。
-pub fn set_external_wss_managed_present(active: bool) {
-    EXTERNAL_WSS_MANAGED_PRESENT.store(active, Ordering::Relaxed);
-    if !active {
-        EXTERNAL_WSS_SUSPEND_REQUESTED.store(false, Ordering::Relaxed);
-        EXTERNAL_WSS_SUSPENDED.store(false, Ordering::Relaxed);
-    }
-}
-
-/// 当前是否存在受控 external WSS。
-pub fn external_wss_managed_present() -> bool {
-    EXTERNAL_WSS_MANAGED_PRESENT.load(Ordering::Relaxed)
-}
-
-/// 请求 external WSS 进入 suspended 模式。
-pub fn request_external_wss_suspend() {
-    EXTERNAL_WSS_SUSPEND_REQUESTED.store(true, Ordering::Relaxed);
-}
-
-/// 请求 external WSS 恢复 normal running 模式。
-pub fn request_external_wss_resume() {
-    EXTERNAL_WSS_SUSPEND_REQUESTED.store(false, Ordering::Relaxed);
-    EXTERNAL_WSS_SUSPENDED.store(false, Ordering::Relaxed);
-}
-
-/// 当前是否请求 external WSS 保持 suspended。
-pub fn external_wss_suspend_requested() -> bool {
-    EXTERNAL_WSS_SUSPEND_REQUESTED.load(Ordering::Relaxed)
-}
-
-/// 标记 external WSS 是否已经完成 suspended 模式切换。
-pub fn set_external_wss_suspended(active: bool) {
-    EXTERNAL_WSS_SUSPENDED.store(active, Ordering::Relaxed);
-}
-
-/// external WSS 当前是否已经处于 suspended 模式。
-pub fn external_wss_suspended() -> bool {
-    EXTERNAL_WSS_SUSPENDED.load(Ordering::Relaxed)
-}
-
 /// 设置后台自治/维护作业活动态。
 pub fn set_background_maintenance_active(active: bool) {
     BACKGROUND_MAINTENANCE_ACTIVE.store(active, Ordering::Relaxed);
@@ -244,6 +204,30 @@ pub fn set_boot_phase_active(active: bool) {
 /// 当前进程是否仍在启动引导阶段。
 pub fn boot_phase_active() -> bool {
     BOOT_PHASE_ACTIVE.load(Ordering::Relaxed)
+}
+
+pub(crate) fn set_pairing_state_known(known: bool) {
+    PAIRING_STATE_KNOWN.store(known, Ordering::Relaxed);
+}
+
+pub fn pairing_state_known() -> bool {
+    PAIRING_STATE_KNOWN.load(Ordering::Relaxed)
+}
+
+pub(crate) fn set_pairing_required(required: bool) {
+    PAIRING_REQUIRED.store(required, Ordering::Relaxed);
+}
+
+pub fn pairing_required() -> bool {
+    PAIRING_REQUIRED.load(Ordering::Relaxed)
+}
+
+pub(crate) fn set_recovery_safe_mode_active(active: bool) {
+    RECOVERY_SAFE_MODE_ACTIVE.store(active, Ordering::Relaxed);
+}
+
+pub fn recovery_safe_mode_active() -> bool {
+    RECOVERY_SAFE_MODE_ACTIVE.load(Ordering::Relaxed)
 }
 
 /// 打开 ESP operator window，返回过期时间。
@@ -330,21 +314,6 @@ mod tests {
     }
 
     #[test]
-    fn external_wss_mode_round_trips() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
-        set_external_wss_managed_present(true);
-        request_external_wss_suspend();
-        assert!(external_wss_suspend_requested());
-        set_external_wss_suspended(true);
-        assert!(external_wss_suspended());
-        request_external_wss_resume();
-        assert!(!external_wss_suspend_requested());
-        assert!(!external_wss_suspended());
-        set_external_wss_managed_present(false);
-        assert!(!external_wss_managed_present());
-    }
-
-    #[test]
     fn background_maintenance_flag_round_trips() {
         let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
         set_background_maintenance_active(true);
@@ -369,6 +338,26 @@ mod tests {
         assert!(boot_phase_active());
         set_boot_phase_active(false);
         assert!(!boot_phase_active());
+    }
+
+    #[test]
+    fn pairing_flags_round_trip() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        set_pairing_state_known(true);
+        set_pairing_required(true);
+        assert!(pairing_state_known());
+        assert!(pairing_required());
+        set_pairing_required(false);
+        assert!(!pairing_required());
+    }
+
+    #[test]
+    fn recovery_safe_mode_flag_round_trips() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        set_recovery_safe_mode_active(true);
+        assert!(recovery_safe_mode_active());
+        set_recovery_safe_mode_active(false);
+        assert!(!recovery_safe_mode_active());
     }
 
     #[test]

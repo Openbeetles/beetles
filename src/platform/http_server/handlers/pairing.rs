@@ -37,6 +37,7 @@ pub fn post_body(ctx: &HandlerContext, body_json: &str) -> ApiResponse {
     }
     match pairing::set_code(ctx.config_store.as_ref(), code) {
         Ok(true) => {
+            crate::runtime::sync_pairing_state_from_store(ctx.config_store.as_ref());
             // 首次激活时顺带创建空 SOUL/USER 文件，避免后续 get_soul/get_user 报 No such file
             let _ = ctx
                 .platform

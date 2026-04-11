@@ -7,6 +7,7 @@ use crate::orchestrator;
 struct ResourceBody {
     pressure: orchestrator::pressure::PressureLevel,
     tls_fragmentation_risk: orchestrator::pressure::TlsFragmentationRisk,
+    storage_contention_risk: orchestrator::StorageContentionRisk,
     heap_free_internal: u32,
     heap_free_spiram: u32,
     heap_largest_block_internal: u32,
@@ -42,6 +43,7 @@ pub fn body(_ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let payload = ResourceBody {
         pressure: snap.pressure,
         tls_fragmentation_risk: snap.tls_fragmentation_risk,
+        storage_contention_risk: snap.storage_contention_risk,
         heap_free_internal: snap.heap_free_internal,
         heap_free_spiram: snap.heap_free_spiram,
         heap_largest_block_internal: snap.heap_largest_block_internal,

@@ -3,6 +3,7 @@
 
 use serde_json::json;
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 fn esp_payload(
     chip_model: &str,
     chip_revision: u32,
@@ -676,6 +677,7 @@ mod tests {
         ResourceSnapshot {
             pressure: PressureLevel::Cautious,
             tls_fragmentation_risk: TlsFragmentationRisk::Critical,
+            storage_contention_risk: crate::orchestrator::StorageContentionRisk::Healthy,
             heap_free_internal: 90_700,
             heap_free_spiram: 7_690_000,
             heap_largest_block_internal: 18_432,

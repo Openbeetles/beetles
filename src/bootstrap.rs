@@ -28,6 +28,7 @@ pub fn load_config(platform: &Arc<dyn Platform>) -> Arc<AppConfig> {
         config_store.as_ref(),
         Some(&config_file_store),
     ));
+    crate::runtime::sync_pairing_state_from_store(config_store.as_ref());
     if let Err(e) = config.validate_proxy() {
         log::warn!("[{}] config validate_proxy: {}", TAG, e);
     }

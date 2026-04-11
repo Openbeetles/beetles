@@ -85,8 +85,8 @@ static SPIFFS_LOCK_WAIT_TOTAL_US: AtomicU32 = AtomicU32::new(0);
 static SPIFFS_LOCK_HOLD_LAST_US: AtomicU32 = AtomicU32::new(0);
 static SPIFFS_LOCK_HOLD_TOTAL_US: AtomicU32 = AtomicU32::new(0);
 
-/// Stream HTTP 连接槽位统计：由 `runtime::stream_http` 写入，metrics 快照统一暴露。
-/// stream_http connection slot stats, written by `runtime::stream_http`.
+/// Stream HTTP 连接槽位统计：由 `network` 治理面写入，metrics 快照统一暴露。
+/// stream_http connection slot stats, written by the unified `network` governor.
 static STREAM_HTTP_REUSE_HITS: AtomicU32 = AtomicU32::new(0);
 static STREAM_HTTP_CREATES: AtomicU32 = AtomicU32::new(0);
 static STREAM_HTTP_RESETS: AtomicU32 = AtomicU32::new(0);

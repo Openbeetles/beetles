@@ -926,7 +926,6 @@ impl AudioPipelineState {
             worker_plan.core,
             worker_plan.role,
             move || {
-                crate::platform::task_wdt::register_current_task_to_task_wdt();
                 let mut mic_frame = vec![0i16; AUDIO_MIC_FRAME_SAMPLES];
                 let mut speaker_frame = vec![0i16; AUDIO_SPEAKER_FRAME_SAMPLES];
                 let speaker_min_samples = AUDIO_SPEAKER_WRITE_MIN_SAMPLES.min(speaker_frame.len());

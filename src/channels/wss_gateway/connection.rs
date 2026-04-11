@@ -113,3 +113,21 @@ pub trait WssConnection {
     /// 阻塞最多 timeout，返回收到的事件或 None 表示超时。
     fn recv_timeout(&mut self, timeout: Duration) -> Result<Option<WssEvent>>;
 }
+
+impl WssConnection for Box<dyn WssConnection> {
+    fn send_binary(&mut self, data: &[u8]) -> Result<()> {
+        (**self).send_binary(data)
+    }
+
+    fn send_text(&mut self, text: &str) -> Result<()> {
+        (**self).send_text(text)
+    }
+
+    fn send_binary_owned(&mut self, data: Vec<u8>) -> Result<()> {
+        (**self).send_binary_owned(data)
+    }
+
+    fn recv_timeout(&mut self, timeout: Duration) -> Result<Option<WssEvent>> {
+        (**self).recv_timeout(timeout)
+    }
+}

@@ -930,8 +930,9 @@ pub fn is_private_url(url: &str) -> bool {
 // | dispatch                              | STACK_DISPATCH         | 6 KB  | 6 KB  | ← 常驻逻辑只做 admission/retry/cooldown，不承接重执行链
 // | bg_timer                              | STACK_BG_TIMER         | 16 KB | 16 KB | ← heartbeat + thread/runtime snapshots + cron/self-runtime
 // | heartbeat, cli_repl                  | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS
-// | voice_session                         | STACK_VOICE_CONTROL    | 12 KB | 8 KB  | ← ESP realtime 唤醒链路 inline 跑 WSS/voice-exclusive，8KB 已实机溢出
+// | voice_session                         | STACK_VOICE_CONTROL    | 8 KB  | 8 KB  | ← scheduler only; realtime WSS moved off this always-on thread
 // | voice_session_worker                  | STACK_VOICE_SESSION    | 16 KB | 64 KB | ← STT + TTS HTTPS
+// | voice_realtime                        | STACK_VOICE_REALTIME   | 32 KB | 64 KB | ← transient realtime WSS/TLS + voice-exclusive session owner
 // ---------------------------------------------------------------------------
 
 /// Linux（含嵌入式）：TLS 栈远大于 ESP 的 16KB，但不必拉到桌面级上百 KB；
@@ -977,10 +978,9 @@ pub const STACK_DISPATCH: usize = 6 * 1024;
 pub const STACK_DISPLAY: usize = 8 * 1024;
 
 /// `voice_session`：语音会话调度线程。
-/// 常驻线程主要做事件 intake / 合并 / worker 拉起；但 ESP realtime 唤醒链路会 inline
-/// 执行 external WSS suspend + realtime WSS connect，8KB 已在实机上触发 stack overflow。
+/// 常驻线程只做事件 intake / 合并 / worker 拉起；realtime WSS 已迁移到独立 transient worker。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub const STACK_VOICE_CONTROL: usize = 12 * 1024;
+pub const STACK_VOICE_CONTROL: usize = 8 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_VOICE_CONTROL: usize = 8192;
 
@@ -989,6 +989,12 @@ pub const STACK_VOICE_CONTROL: usize = 8192;
 pub const STACK_VOICE_SESSION: usize = 16 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_VOICE_SESSION: usize = LINUX_RUSTLS_THREAD_STACK;
+
+/// `voice_realtime`：transient realtime voice worker，承接 voice-exclusive 模式切换和 realtime WSS/TLS。
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub const STACK_VOICE_REALTIME: usize = 32 * 1024;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub const STACK_VOICE_REALTIME: usize = LINUX_RUSTLS_THREAD_STACK;
 
 /// `http_route_exec`：ESP HTTP 配置/状态路由执行线程。
 /// 该线程承接 SPIFFS/NVS/serde、operator surface 与 continuity inspection 等重活，
@@ -1081,6 +1087,7 @@ where
     let spawn_surface = crate::platform::task_affinity::planned_spawn_surface(name);
     let wrapped = move || {
         crate::orchestrator::set_current_http_thread_role(role);
+        crate::platform::task_wdt::register_current_task_to_task_wdt();
         crate::runtime::thread_registry::register_thread(
             &tag,
             stack_size,

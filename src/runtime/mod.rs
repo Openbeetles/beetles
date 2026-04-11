@@ -4,6 +4,7 @@
 pub mod acceptance;
 pub mod continuity_flush;
 pub mod delayed_task;
+pub mod governance;
 pub mod initiative;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod linux_control_plane;
@@ -14,7 +15,6 @@ pub mod linux_supervisor;
 pub mod mode;
 pub mod presence;
 pub mod soul_kernel;
-pub mod stream_http;
 pub mod system_work;
 pub mod thread_registry;
 pub mod thread_util;
@@ -28,6 +28,10 @@ pub use continuity_flush::{flush_reboot_continuity_bundle, request_restart_with_
 pub use delayed_task::{
     next_delayed_task_wait, schedule_critical_delayed_task, schedule_delayed_task,
     service_delayed_tasks,
+};
+pub use governance::{
+    set_recovery_safe_mode_active, sync_pairing_state_from_store, BackgroundMaintenanceGuard,
+    ConfigPlaneGuard,
 };
 pub use initiative::{
     initiative_tick, inspect_platform_initiative, InitiativeAction, InitiativeSignalSnapshot,
@@ -49,6 +53,5 @@ pub use soul_kernel::{
     ensure_platform_soul_kernel_recovery, inspect_platform_soul_kernel, SoulKernelPromptProjection,
     SoulKernelRecoveryAction, SoulKernelRecoveryReport, SoulKernelStatus,
 };
-pub use stream_http::{execute_stream_http_op, invalidate_stream_http_slot};
 pub use thread_registry::ThreadRegistrySnapshot;
 pub use thread_util::{spawn_planned, spawn_planned_handle, thread_plan, ThreadPlan};

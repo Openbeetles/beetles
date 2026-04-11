@@ -462,6 +462,8 @@ fn idle_self_runtime_block_reason() -> Option<&'static str> {
         && snap.heap_largest_block_internal < TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32;
     if pressure != PressureLevel::Normal {
         Some("resource_pressure")
+    } else if snap.storage_contention_risk != crate::orchestrator::StorageContentionRisk::Healthy {
+        Some("storage_contention")
     } else if fragmented {
         Some("internal_heap_fragmented")
     } else if snap.heap_free_internal < min_internal {

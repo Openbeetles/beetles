@@ -202,7 +202,7 @@ pub(super) fn run_background_job_with_accounting(
     };
 
     let _agent_task_guard = crate::orchestrator::begin_agent_task();
-    let _maintenance_scope = BackgroundMaintenanceScope::enter();
+    let _maintenance_scope = crate::runtime::BackgroundMaintenanceGuard::enter();
     let _ = try_run_lane_background_job(http, worker_llm, config, system_inbound_tx, &msg);
     metrics::record_system_message_done(false);
 }

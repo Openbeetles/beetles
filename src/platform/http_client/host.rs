@@ -149,7 +149,7 @@ impl EspHttpClient {
     where
         F: FnOnce(&ureq::Agent) -> Result<T>,
     {
-        let role = crate::orchestrator::permit::current_http_thread_role();
+        let role = crate::orchestrator::current_http_thread_role();
         let admission_timeout_secs = match role {
             crate::orchestrator::HttpThreadRole::Interactive => TLS_ADMISSION_TIMEOUT_SECS,
             crate::orchestrator::HttpThreadRole::Io => TLS_ADMISSION_TIMEOUT_SECS,
@@ -264,7 +264,7 @@ impl EspHttpClient {
         max_response_bytes: Option<usize>,
         on_chunk: &mut dyn FnMut(&[u8]) -> Result<()>,
     ) -> Result<u16> {
-        let role = crate::orchestrator::permit::current_http_thread_role();
+        let role = crate::orchestrator::current_http_thread_role();
         let admission_timeout_secs = match role {
             crate::orchestrator::HttpThreadRole::Interactive => TLS_ADMISSION_TIMEOUT_SECS,
             crate::orchestrator::HttpThreadRole::Io => TLS_ADMISSION_TIMEOUT_SECS,

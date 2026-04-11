@@ -83,30 +83,6 @@ fn wait_for_wifi(_tag: &str) -> bool {
     true
 }
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-fn wait_for_external_wss_resume(tag: &str) {
-    let mut logged = false;
-    while crate::state::external_wss_suspend_requested() {
-        if !logged {
-            log::info!(
-                "[{}] external WSS suspended for realtime voice mode switch",
-                tag
-            );
-            logged = true;
-        }
-        crate::state::set_external_wss_suspended(true);
-        crate::platform::task_wdt::feed_current_task();
-        std::thread::sleep(Duration::from_millis(VOICE_EXCLUSIVE_WAIT_MS));
-    }
-    if logged {
-        crate::state::set_external_wss_suspended(false);
-        log::info!("[{}] external WSS resume after realtime voice session", tag);
-    }
-}
-
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-fn wait_for_external_wss_resume(_tag: &str) {}
-
 /// 各通道在 main 中独立线程调用，泛型 `D`/`H`/`C` 为不同实现；有意保留多组单态以隔离 TLS/HTTP 与重连语义，
 /// 而非合并为 enum（体积换可维护性；若前序优化仍不足再评估）。
 pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
@@ -125,15 +101,14 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
 {
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     {
-        crate::platform::task_wdt::register_current_task_to_task_wdt();
-        crate::state::set_external_wss_managed_present(true);
+        crate::network::set_external_wss_managed_present(true);
     }
     let mut backoff_secs = crate::orchestrator::current_budget().reconnect_backoff_secs;
     loop {
         let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
         if !runtime_mode.action_budget.allow_external_wss_connect {
             if runtime_mode.action_budget.require_external_wss_suspended {
-                wait_for_external_wss_resume(tag);
+                crate::network::wait_for_external_wss_resume(tag);
             } else {
                 sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
             }
@@ -151,7 +126,7 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
             sleep_with_wdt(sleep_secs);
             continue;
         }
-        wait_for_external_wss_resume(tag);
+        crate::network::wait_for_external_wss_resume(tag);
         wait_for_wifi(tag);
 
         let mut http = match create_http() {
@@ -452,12 +427,12 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
         );
         drop(conn);
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        if crate::state::external_wss_suspend_requested() {
-            crate::state::set_external_wss_suspended(true);
+        if crate::network::external_wss_suspend_requested() {
+            crate::network::set_external_wss_suspended(true);
             continue;
         }
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        crate::state::set_external_wss_suspended(false);
+        crate::network::set_external_wss_suspended(false);
         backoff_secs = crate::orchestrator::current_budget().reconnect_backoff_secs;
         log::info!(
             "[{}] will reconnect after WiFi check + {}s backoff",

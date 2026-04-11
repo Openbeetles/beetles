@@ -257,8 +257,6 @@ const DISPATCH_POLL_MAX_WAIT_MS: u64 = 200;
 pub fn run_dispatch(outbound_rx: OutboundRx, sinks: Arc<ChannelSinks>) {
     const TAG: &str = "channel_dispatch";
     let mut cooldown_buffer: VecDeque<crate::bus::PcMsg> = VecDeque::new();
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    crate::platform::task_wdt::register_current_task_to_task_wdt();
 
     loop {
         crate::platform::task_wdt::feed_current_task();

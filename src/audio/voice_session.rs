@@ -5,11 +5,8 @@
 //! - `wake_word::feed_pcm_i16` pushes `WakeDetected`
 //! - `VoiceSink` pushes `Speak(text)`
 //! - `run_voice_session` coalesces events and dispatches one task at a time
-//! - Realtime wake interactions run inline on the always-on `voice_session`
-//!   thread on ESP to avoid an extra 16KB worker stack at the TLS peak
-//! - Linux keeps realtime wake interactions on `voice_session_worker`, so the
-//!   always-on scheduler thread remains responsive and does not inherit ESP's
-//!   voice-exclusive runtime-mode switch
+//! - Realtime wake interactions run on a dedicated transient `voice_realtime`
+//!   worker so the always-on scheduler thread stays shallow and stable
 //! - Non-realtime STT/TTS fallback still uses `voice_session_worker`
 
 use crate::audio::baidu_token::BaiduTokenCache;
@@ -18,14 +15,11 @@ use crate::audio::realtime::run_realtime_session;
 use crate::bus::{PcMsg, TrackedSender};
 use crate::config::{audio_realtime_enabled, AudioSegment};
 use crate::constants::{AUDIO_CAPTURE_MAX_MS, VOICE_CHANNEL_NAME, VOICE_DEVICE_CHAT_ID};
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-use crate::constants::{
-    TLS_ADMISSION_MIN_INTERNAL_BYTES, TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES,
-    TLS_ADMISSION_NO_PSRAM_MIN_BYTES,
-};
+use crate::network::{HttpClientClass, NetworkGovernor, VoiceExclusiveTransportGuard};
 use crate::platform::PlatformHttpClient;
 use crate::util::{
-    spawn_guarded_with_profile_handle, HttpThreadRole, SpawnCore, TaskHandle, STACK_VOICE_SESSION,
+    spawn_guarded_with_profile_handle, HttpThreadRole, SpawnCore, TaskHandle, STACK_VOICE_REALTIME,
+    STACK_VOICE_SESSION,
 };
 use crate::Platform;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -35,72 +29,6 @@ use std::time::Duration;
 const TAG: &str = "voice_session";
 const WORKER_IDLE_POLL_MS: u64 = 100;
 const MAX_PENDING_SPEAK_CHARS: usize = 512;
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-const REALTIME_WSS_DRAIN_WAIT_MS: u64 = 2_500;
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-const REALTIME_WSS_DRAIN_POLL_MS: u64 = 50;
-
-struct VoiceExclusiveGuard;
-
-impl VoiceExclusiveGuard {
-    fn enter() -> Self {
-        crate::state::set_voice_exclusive_active(true);
-        Self
-    }
-}
-
-impl Drop for VoiceExclusiveGuard {
-    fn drop(&mut self) {
-        crate::state::set_voice_exclusive_active(false);
-    }
-}
-
-struct ExternalWssSuspendGuard;
-
-impl ExternalWssSuspendGuard {
-    fn enter() -> Self {
-        crate::state::request_external_wss_suspend();
-        Self
-    }
-}
-
-impl Drop for ExternalWssSuspendGuard {
-    fn drop(&mut self) {
-        crate::state::request_external_wss_resume();
-    }
-}
-
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-fn wait_for_external_wss_to_suspend_and_drain(platform: &dyn Platform) {
-    let deadline = std::time::Instant::now() + Duration::from_millis(REALTIME_WSS_DRAIN_WAIT_MS);
-    while std::time::Instant::now() < deadline {
-        crate::platform::task_wdt::feed_current_task();
-        let active_wss = crate::orchestrator::snapshot().active_wss_count;
-        let mode_switched = !crate::state::external_wss_managed_present()
-            || crate::state::external_wss_suspended()
-            || (crate::state::external_wss_suspend_requested() && active_wss == 0);
-        let snap = platform.memory_snapshot();
-        let min_free = if snap.heap_free_spiram > 0 {
-            TLS_ADMISSION_MIN_INTERNAL_BYTES as u32
-        } else {
-            TLS_ADMISSION_NO_PSRAM_MIN_BYTES as u32
-        };
-        let enough_free = snap.heap_free_internal >= min_free;
-        let enough_largest = snap.heap_free_spiram == 0
-            || snap.heap_largest_block >= TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32;
-        if mode_switched && active_wss == 0 && enough_free && enough_largest {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(REALTIME_WSS_DRAIN_POLL_MS));
-    }
-    log::warn!(
-        "[{}] timed out waiting for external WSS suspend/resources before realtime connect",
-        TAG,
-    );
-}
-
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-fn wait_for_external_wss_to_suspend_and_drain(_platform: &dyn Platform) {}
 
 /// Events consumed by the voice session thread.
 #[derive(Debug)]
@@ -127,16 +55,15 @@ struct PendingVoiceEvents {
 #[derive(Clone)]
 pub struct VoiceSessionConfig {
     pub platform: Arc<dyn Platform>,
+    pub network: Arc<NetworkGovernor>,
     pub audio_cfg: AudioSegment,
     pub baidu_token: Option<Arc<BaiduTokenCache>>,
-    pub make_http: Arc<dyn Fn() -> crate::error::Result<Box<dyn PlatformHttpClient>> + Send + Sync>,
     pub inbound_tx: TrackedSender<PcMsg>,
     pub wake_prompt: String,
 }
 
 /// Entry point for the voice session scheduler thread. Blocks on `rx` until the channel closes.
 pub fn run_voice_session(cfg: VoiceSessionConfig, rx: Receiver<VoiceEvent>) {
-    crate::platform::task_wdt::register_current_task_to_task_wdt();
     log::info!(
         "[{}] started realtime_enabled={}",
         TAG,
@@ -153,10 +80,6 @@ pub fn run_voice_session(cfg: VoiceSessionConfig, rx: Receiver<VoiceEvent>) {
         drain_worker_done(&mut worker_handle, &done_rx, &mut worker_busy);
         if !worker_busy {
             if let Some(task) = take_pending_voice_task(&mut pending) {
-                if should_run_voice_task_inline(&cfg, &task) {
-                    run_voice_task(&cfg, task);
-                    continue;
-                }
                 match spawn_voice_session_worker(cfg.clone(), task.clone(), done_tx.clone()) {
                     Ok(handle) => {
                         worker_handle = Some(handle);
@@ -194,13 +117,25 @@ fn spawn_voice_session_worker(
     task: VoiceWorkerTask,
     done_tx: mpsc::Sender<()>,
 ) -> std::io::Result<TaskHandle> {
+    let (name, stack_size) = voice_worker_spawn_profile(&cfg, &task);
     spawn_guarded_with_profile_handle(
-        "voice_session_worker",
-        STACK_VOICE_SESSION,
+        name,
+        stack_size,
         Some(SpawnCore::Core1),
         HttpThreadRole::Background,
         move || run_voice_session_worker(cfg, task, done_tx),
     )
+}
+
+fn voice_worker_spawn_profile(
+    cfg: &VoiceSessionConfig,
+    task: &VoiceWorkerTask,
+) -> (&'static str, usize) {
+    if matches!(task, VoiceWorkerTask::WakeInteraction) && audio_realtime_enabled(&cfg.audio_cfg) {
+        ("voice_realtime", STACK_VOICE_REALTIME)
+    } else {
+        ("voice_session_worker", STACK_VOICE_SESSION)
+    }
 }
 
 fn run_voice_session_worker(
@@ -216,18 +151,17 @@ fn run_voice_session_worker(
 fn run_voice_task(cfg: &VoiceSessionConfig, task: VoiceWorkerTask) {
     let mut http: Option<Box<dyn PlatformHttpClient>> = None;
 
-    let ensure_http = |h: &mut Option<Box<dyn PlatformHttpClient>>,
-                       make: &(dyn Fn() -> crate::error::Result<Box<dyn PlatformHttpClient>>
-                             + Send
-                             + Sync)| {
-        if h.is_none() {
-            match make() {
-                Ok(client) => *h = Some(client),
-                Err(error) => log::error!("[{}] create_http_client failed: {}", TAG, error),
+    let ensure_http =
+        |h: &mut Option<Box<dyn PlatformHttpClient>>,
+         make: &dyn Fn() -> crate::error::Result<Box<dyn PlatformHttpClient>>| {
+            if h.is_none() {
+                match make() {
+                    Ok(client) => *h = Some(client),
+                    Err(error) => log::error!("[{}] create_http_client failed: {}", TAG, error),
+                }
             }
-        }
-        h.is_some()
-    };
+            h.is_some()
+        };
 
     match task {
         VoiceWorkerTask::WakeInteraction => {
@@ -239,12 +173,6 @@ fn run_voice_task(cfg: &VoiceSessionConfig, task: VoiceWorkerTask) {
     }
 }
 
-fn should_run_voice_task_inline(cfg: &VoiceSessionConfig, task: &VoiceWorkerTask) -> bool {
-    cfg!(any(target_arch = "xtensa", target_arch = "riscv32"))
-        && matches!(task, VoiceWorkerTask::WakeInteraction)
-        && audio_realtime_enabled(&cfg.audio_cfg)
-}
-
 fn handle_wake_interaction<F>(
     cfg: &VoiceSessionConfig,
     http: &mut Option<Box<dyn PlatformHttpClient>>,
@@ -252,7 +180,7 @@ fn handle_wake_interaction<F>(
 ) where
     F: Fn(
         &mut Option<Box<dyn PlatformHttpClient>>,
-        &(dyn Fn() -> crate::error::Result<Box<dyn PlatformHttpClient>> + Send + Sync),
+        &dyn Fn() -> crate::error::Result<Box<dyn PlatformHttpClient>>,
     ) -> bool,
 {
     log::info!("[{}] wake detected, starting voice interaction", TAG);
@@ -268,66 +196,33 @@ fn handle_wake_interaction<F>(
             );
             return;
         }
-        if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
-            let _external_wss_suspend = ExternalWssSuspendGuard::enter();
-            log::info!(
-                "[{}] realtime session switching runtime mode (external WSS suspended)",
-                TAG
-            );
-            wait_for_external_wss_to_suspend_and_drain(cfg.platform.as_ref());
-            let _voice_exclusive = VoiceExclusiveGuard::enter();
-            log::info!("[{}] realtime session entering voice-exclusive mode", TAG);
-            match run_realtime_session(cfg.platform.as_ref(), &cfg.audio_cfg, TAG) {
-                Ok(session) => {
-                    log::info!(
-                        "[{}] realtime session finished turns={} input_ms={} output_ms={} duration_ms={}",
-                        TAG,
-                        session.turns_completed,
-                        session.input_audio_ms,
-                        session.output_audio_ms,
-                        session.session_ms
-                    );
-                    if session.output_audio_ms > 0 {
-                        crate::metrics::record_voice_output_play_ms(session.output_audio_ms);
-                    }
-                }
-                Err(error) => {
-                    log::warn!("[{}] realtime voice session failed: {}", TAG, error);
-                    crate::metrics::record_voice_tool_failure("voice_session_realtime");
+        let _voice_transport = VoiceExclusiveTransportGuard::enter(cfg.platform.as_ref(), TAG);
+        match run_realtime_session(cfg.platform.as_ref(), &cfg.audio_cfg, TAG) {
+            Ok(session) => {
+                log::info!(
+                    "[{}] realtime session finished turns={} input_ms={} output_ms={} duration_ms={}",
+                    TAG,
+                    session.turns_completed,
+                    session.input_audio_ms,
+                    session.output_audio_ms,
+                    session.session_ms
+                );
+                if session.output_audio_ms > 0 {
+                    crate::metrics::record_voice_output_play_ms(session.output_audio_ms);
                 }
             }
-            #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-            crate::platform::wake_word::reset_after_session();
-            log::info!("[{}] realtime session left voice-exclusive mode", TAG);
-        } else {
-            log::info!(
-                "[{}] realtime session running on dedicated worker thread (Linux mode)",
-                TAG
-            );
-            match run_realtime_session(cfg.platform.as_ref(), &cfg.audio_cfg, TAG) {
-                Ok(session) => {
-                    log::info!(
-                        "[{}] realtime session finished turns={} input_ms={} output_ms={} duration_ms={}",
-                        TAG,
-                        session.turns_completed,
-                        session.input_audio_ms,
-                        session.output_audio_ms,
-                        session.session_ms
-                    );
-                    if session.output_audio_ms > 0 {
-                        crate::metrics::record_voice_output_play_ms(session.output_audio_ms);
-                    }
-                }
-                Err(error) => {
-                    log::warn!("[{}] realtime voice session failed: {}", TAG, error);
-                    crate::metrics::record_voice_tool_failure("voice_session_realtime");
-                }
+            Err(error) => {
+                log::warn!("[{}] realtime voice session failed: {}", TAG, error);
+                crate::metrics::record_voice_tool_failure("voice_session_realtime");
             }
         }
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        crate::platform::wake_word::reset_after_session();
         return;
     }
 
-    if !ensure_http(http, cfg.make_http.as_ref()) {
+    let make_http = || cfg.network.open_http_client(HttpClientClass::Background);
+    if !ensure_http(http, &make_http) {
         return;
     }
     let client = match http.as_mut() {
@@ -414,7 +309,7 @@ fn handle_speak<F>(
 ) where
     F: Fn(
         &mut Option<Box<dyn PlatformHttpClient>>,
-        &(dyn Fn() -> crate::error::Result<Box<dyn PlatformHttpClient>> + Send + Sync),
+        &dyn Fn() -> crate::error::Result<Box<dyn PlatformHttpClient>>,
     ) -> bool,
 {
     log::info!("[{}] speaking agent reply ({} chars)", TAG, text.len());
@@ -428,7 +323,8 @@ fn handle_speak<F>(
         );
         return;
     }
-    if !ensure_http(http, cfg.make_http.as_ref()) {
+    let make_http = || cfg.network.open_http_client(HttpClientClass::Background);
+    if !ensure_http(http, &make_http) {
         return;
     }
     let client = match http.as_mut() {

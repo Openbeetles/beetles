@@ -33,7 +33,7 @@ pub use runtime_capability::{
     RUNTIME_CAPABILITY_AUDIO_OUTPUT, RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
     RUNTIME_CAPABILITY_STORAGE_STATE_FS,
 };
-pub use state::ResourceSnapshot;
+pub use state::{ResourceSnapshot, StorageContentionRisk};
 
 /// 全局单例 orchestrator 状态。
 /// Global singleton orchestrator state.
@@ -145,6 +145,10 @@ pub fn current_tls_fragmentation_risk() -> TlsFragmentationRisk {
     snap.tls_fragmentation_risk
 }
 
+pub fn current_storage_contention_risk() -> StorageContentionRisk {
+    snapshot().storage_contention_risk
+}
+
 /// 返回全局资源快照（无锁原子读取）。
 /// Return global resource snapshot (lock-free atomic reads).
 pub fn snapshot() -> ResourceSnapshot {
@@ -163,9 +167,10 @@ pub fn format_resource_baseline_line() -> String {
             s.heap_largest_block_internal.to_string()
         };
         return format!(
-            "resource pressure={:?} tls_fragmentation={:?} mem_available={} heap_spiram={} heap_largest={} active_http={} active_wss={} agent_tasks={} inbound={} outbound={}",
+            "resource pressure={:?} tls_fragmentation={:?} storage_contention={:?} mem_available={} heap_spiram={} heap_largest={} active_http={} active_wss={} agent_tasks={} inbound={} outbound={}",
             s.pressure,
             s.tls_fragmentation_risk,
+            s.storage_contention_risk,
             s.heap_free_internal,
             s.heap_free_spiram,
             largest,
@@ -178,9 +183,10 @@ pub fn format_resource_baseline_line() -> String {
     }
     #[cfg(not(target_os = "linux"))]
     format!(
-        "resource pressure={:?} tls_fragmentation={:?} heap_internal={} heap_spiram={} heap_largest={} active_http={} active_wss={} agent_tasks={} inbound={} outbound={}",
+        "resource pressure={:?} tls_fragmentation={:?} storage_contention={:?} heap_internal={} heap_spiram={} heap_largest={} active_http={} active_wss={} agent_tasks={} inbound={} outbound={}",
         s.pressure,
         s.tls_fragmentation_risk,
+        s.storage_contention_risk,
         s.heap_free_internal,
         s.heap_free_spiram,
         s.heap_largest_block_internal,
@@ -203,6 +209,11 @@ pub fn set_current_http_thread_role(role: HttpThreadRole) {
     permit::set_current_http_thread_role(role);
 }
 
+/// 读取当前线程在 transport/TLS 准入中的角色。
+pub fn current_http_thread_role() -> HttpThreadRole {
+    permit::current_http_thread_role()
+}
+
 /// 开始一个 agent 任务：返回 RAII guard，Drop 时自动递减计数。
 /// Begin an agent task: returns an RAII guard that decrements the counter on drop.
 /// 应在准入通过后、开始处理消息前立即调用，确保整个任务生命周期内 `active_agent_tasks > 0`。
@@ -212,7 +223,7 @@ pub fn begin_agent_task() -> AgentTaskGuard {
 
 /// 标记一个已建立的 WSS 会话开始存活；返回 RAII guard，Drop 时自动递减。
 pub fn begin_wss_session() -> WssSessionGuard {
-    WssSessionGuard::new(&STATE)
+    crate::network::begin_wss_session()
 }
 
 /// 记录通道发送结果（成功/失败）。

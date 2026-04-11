@@ -3,7 +3,7 @@
 
 use crate::display::DisplaySystemState;
 use crate::orchestrator::{self, PressureLevel, ResourceSnapshot};
-use crate::platform::{pairing, Platform};
+use crate::platform::Platform;
 use crate::runtime::{self, RuntimeMode, RuntimeModeSnapshot, SoulKernelStatus};
 use serde::Serialize;
 
@@ -114,19 +114,15 @@ pub fn inspect_platform_presence(platform: &dyn Platform, now_secs: u64) -> Pres
         platform, now_secs,
     ));
 
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     let mut runtime_mode_source = crate::runtime::thread_registry::runtime_mode_source();
-    runtime_mode_source.pairing_state_known = true;
-    runtime_mode_source.pairing_required = !pairing::code_set(platform.config_store().as_ref());
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    let runtime_mode_source = crate::runtime::thread_registry::runtime_mode_source();
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     if let Some(snapshot) = supervisor.as_ref() {
         runtime_mode_source.supervisor_present = true;
         runtime_mode_source.supervisor_alive = snapshot.supervisor_alive;
         runtime_mode_source.supervisor_agent_alive = snapshot.agent_alive;
-        runtime_mode_source.recovery_safe_mode_active = snapshot
-            .state
-            .safe_mode_reason
-            .as_deref()
-            .is_some_and(|reason| !reason.trim().is_empty());
     }
     let runtime_mode = crate::runtime::mode::snapshot_from_source(runtime_mode_source);
     let busy = resource.active_agent_tasks > 0
@@ -306,6 +302,7 @@ mod tests {
         ResourceSnapshot {
             pressure: PressureLevel::Normal,
             tls_fragmentation_risk: crate::orchestrator::TlsFragmentationRisk::NotApplicable,
+            storage_contention_risk: crate::orchestrator::StorageContentionRisk::Healthy,
             heap_free_internal: 0,
             heap_free_spiram: 0,
             heap_largest_block_internal: 0,

@@ -2296,21 +2296,6 @@ fn run_self_runtime_job(
     }
 }
 
-struct BackgroundMaintenanceScope;
-
-impl BackgroundMaintenanceScope {
-    fn enter() -> Self {
-        crate::state::set_background_maintenance_active(true);
-        Self
-    }
-}
-
-impl Drop for BackgroundMaintenanceScope {
-    fn drop(&mut self) {
-        crate::state::set_background_maintenance_active(false);
-    }
-}
-
 struct AdmissionDeferContext<'a> {
     loc: UiLocale,
     user_inbound_tx: &'a UserInboundTx,

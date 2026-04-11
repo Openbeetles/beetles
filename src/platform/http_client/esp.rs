@@ -156,7 +156,7 @@ impl EspHttpClient {
     where
         F: FnOnce(&mut EspHttpConnection) -> Result<T>,
     {
-        let role = crate::orchestrator::permit::current_http_thread_role();
+        let role = crate::orchestrator::current_http_thread_role();
         let admission_timeout_secs = match role {
             crate::orchestrator::HttpThreadRole::Interactive => TLS_ADMISSION_TIMEOUT_SECS,
             crate::orchestrator::HttpThreadRole::Io => TLS_ADMISSION_TIMEOUT_SECS,

@@ -8,6 +8,7 @@ pub mod channel_capability;
 pub mod constants;
 pub mod device_capability;
 pub mod metrics;
+pub mod network;
 pub mod util;
 
 pub use build_info::ota_manifest_url;
@@ -84,11 +85,9 @@ pub use agent::{
     DEFAULT_MESSAGES_MAX_LEN, DEFAULT_SYSTEM_MAX_LEN, SESSION_RECENT_N,
 };
 pub use bus::{MessageBus, PcMsg, DEFAULT_CAPACITY, MAX_CONTENT_LEN};
-pub use channels::connect_wss;
 #[cfg(feature = "feishu")]
 pub use channels::run_feishu_ws_loop;
 pub use channels::run_qq_ws_loop;
-pub use channels::{connect_wss_with_headers, connect_wss_with_headers_and_profile};
 pub use channels::{
     feishu_acquire_token, feishu_edit_message, feishu_send_and_get_id, flush_dingtalk_sends,
     flush_feishu_sends, flush_qq_channel_sends, flush_telegram_sends, flush_wecom_sends,
@@ -112,6 +111,7 @@ pub use llm::{
     build_llm_clients, AnthropicClient, FallbackLlmClient, LlmClient, LlmHttpClient, LlmResponse,
     Message, OpenAiCompatibleClient,
 };
+pub use network::{HttpClientClass, NetworkGovernor, VoiceExclusiveTransportGuard};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub use platform::{
     connect_wifi, init_nvs, init_spiffs, spiffs_usage, state_mount_path, Esp32Platform,

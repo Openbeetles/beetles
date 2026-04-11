@@ -198,11 +198,12 @@ pub fn runtime_mode_snapshot() -> RuntimeModeSnapshot {
 /// 应在此基础上补齐对应 source 字段，再交给 `snapshot_from_source(...)` 收口。
 pub fn runtime_mode_source() -> crate::runtime::mode::RuntimeModeSource {
     let plane = runtime_plane_flags();
+    let ext_wss = crate::network::external_wss_runtime_snapshot();
     crate::runtime::mode::RuntimeModeSource {
         wifi_sta_connected: crate::state::wifi_sta_connected(),
         boot_phase_active: crate::state::boot_phase_active(),
-        pairing_required: false,
-        pairing_state_known: false,
+        pairing_required: crate::state::pairing_required(),
+        pairing_state_known: crate::state::pairing_state_known(),
         voice_exclusive_active: crate::state::voice_exclusive_active(),
         background_maintenance_active: crate::state::background_maintenance_active(),
         config_plane_alive: crate::state::config_plane_active(),
@@ -212,13 +213,13 @@ pub fn runtime_mode_source() -> crate::runtime::mode::RuntimeModeSource {
         user_agent_lane_alive: plane.user_agent_lane_alive,
         system_agent_lane_alive: plane.system_agent_lane_alive,
         dual_agent_lanes_alive: plane.dual_agent_lanes_alive,
-        external_wss_managed_present: crate::state::external_wss_managed_present(),
-        external_wss_suspend_requested: crate::state::external_wss_suspend_requested(),
-        external_wss_suspended: crate::state::external_wss_suspended(),
+        external_wss_managed_present: ext_wss.managed_present,
+        external_wss_suspend_requested: ext_wss.suspend_requested,
+        external_wss_suspended: ext_wss.suspended,
         supervisor_present: false,
         supervisor_alive: false,
         supervisor_agent_alive: false,
-        recovery_safe_mode_active: false,
+        recovery_safe_mode_active: crate::state::recovery_safe_mode_active(),
     }
 }
 
@@ -497,7 +498,7 @@ fn thread_profile(name: &str) -> ThreadProfile {
             wss_capable: false,
             mode_sensitive: true,
         },
-        "voice_session" | "voice_session_worker" => ThreadProfile {
+        "voice_session" | "voice_session_worker" | "voice_realtime" => ThreadProfile {
             execution_class: ThreadExecutionClass::Voice,
             risk_class: ThreadRiskClass::Critical,
             tls_capable: true,
@@ -668,5 +669,32 @@ mod tests {
     fn normalize_stack_high_water_caps_impossible_samples() {
         assert_eq!(normalize_stack_high_water_free_bytes(8192, 4096), 4096);
         assert_eq!(normalize_stack_high_water_free_bytes(8192, 32768), 8192);
+    }
+
+    #[test]
+    fn runtime_mode_snapshot_reads_global_runtime_flags() {
+        reset_for_tests();
+        crate::state::set_boot_phase_active(false);
+        crate::state::set_pairing_state_known(true);
+        crate::state::set_pairing_required(true);
+        crate::state::set_recovery_safe_mode_active(false);
+
+        let mode = runtime_mode_snapshot();
+        assert!(mode.pairing_state_known);
+        assert!(mode.pairing_required);
+        assert_eq!(mode.current_mode, crate::runtime::RuntimeMode::Pairing);
+
+        crate::state::set_pairing_required(false);
+        crate::state::set_recovery_safe_mode_active(true);
+        let recovery_mode = runtime_mode_snapshot();
+        assert!(recovery_mode.recovery_safe_mode_active);
+        assert_eq!(
+            recovery_mode.current_mode,
+            crate::runtime::RuntimeMode::RecoverySafeMode
+        );
+
+        crate::state::set_recovery_safe_mode_active(false);
+        crate::state::set_pairing_state_known(false);
+        reset_for_tests();
     }
 }

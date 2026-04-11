@@ -157,12 +157,35 @@ pub struct ChannelsHealthSnapshot {
     pub qq_channel: ChannelHealthSnapshot,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageContentionRisk {
+    Healthy,
+    Cautious,
+    Critical,
+}
+
+fn storage_contention_risk_from_metrics(
+    metrics: &crate::metrics::MetricsSnapshot,
+) -> StorageContentionRisk {
+    if metrics.spiffs_lock_hold_last_us >= 1_000_000 || metrics.spiffs_lock_wait_last_us >= 50_000 {
+        StorageContentionRisk::Critical
+    } else if metrics.spiffs_lock_hold_last_us >= 200_000
+        || metrics.spiffs_lock_wait_last_us >= 5_000
+    {
+        StorageContentionRisk::Cautious
+    } else {
+        StorageContentionRisk::Healthy
+    }
+}
+
 /// 全局资源快照（无锁原子读取）。
 /// Global resource snapshot (lock-free atomic reads).
 #[derive(serde::Serialize)]
 pub struct ResourceSnapshot {
     pub pressure: super::pressure::PressureLevel,
     pub tls_fragmentation_risk: super::pressure::TlsFragmentationRisk,
+    pub storage_contention_risk: StorageContentionRisk,
     pub heap_free_internal: u32,
     pub heap_free_spiram: u32,
     /// internal 堆最大连续空闲块（字节）；ESP 上用于 TLS 碎片门禁。Linux 上为 **0（N/A）**，与 `MemAvailable` 映射的 `heap_free_internal` 分开表述。
@@ -201,6 +224,7 @@ impl ResourceSnapshot {
     pub fn from_state(state: &OrchestratorState) -> Self {
         let pressure =
             super::pressure::PressureLevel::from_byte(state.pressure_level.load(Ordering::Relaxed));
+        let metrics = crate::metrics::snapshot();
         let channels = ChannelsHealthSnapshot {
             telegram: super::channel_health::snapshot_by_index(
                 state,
@@ -223,11 +247,12 @@ impl ResourceSnapshot {
                 state.heap_largest_block.load(Ordering::Relaxed),
                 state.heap_free_spiram.load(Ordering::Relaxed),
             ),
+            storage_contention_risk: storage_contention_risk_from_metrics(&metrics),
             heap_free_internal: state.heap_free_internal.load(Ordering::Relaxed),
             heap_free_spiram: state.heap_free_spiram.load(Ordering::Relaxed),
             heap_largest_block_internal: state.heap_largest_block.load(Ordering::Relaxed),
-            active_http_count: state.active_http_count.load(Ordering::Relaxed),
-            active_wss_count: state.active_wss_count.load(Ordering::Relaxed),
+            active_http_count: crate::network::active_http_count(),
+            active_wss_count: crate::network::active_wss_count(),
             active_agent_tasks: state.active_agent_tasks.load(Ordering::Relaxed),
             inbound_depth: state.inbound_depth.load(Ordering::Relaxed),
             outbound_depth: state.outbound_depth.load(Ordering::Relaxed),
@@ -247,6 +272,34 @@ impl ResourceSnapshot {
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             process_memory_kb: get_process_memory_kb(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storage_contention_risk_thresholds_round_trip() {
+        let mut metrics = crate::metrics::snapshot();
+        metrics.spiffs_lock_wait_last_us = 0;
+        metrics.spiffs_lock_hold_last_us = 0;
+        assert_eq!(
+            storage_contention_risk_from_metrics(&metrics),
+            StorageContentionRisk::Healthy
+        );
+
+        metrics.spiffs_lock_wait_last_us = 7_500;
+        assert_eq!(
+            storage_contention_risk_from_metrics(&metrics),
+            StorageContentionRisk::Cautious
+        );
+
+        metrics.spiffs_lock_wait_last_us = 60_000;
+        assert_eq!(
+            storage_contention_risk_from_metrics(&metrics),
+            StorageContentionRisk::Critical
+        );
     }
 }
 

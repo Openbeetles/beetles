@@ -67,7 +67,11 @@ impl HandlerContext {
 
     pub fn fetch_url(&self, url: &str, max_len: usize) -> crate::error::Result<Vec<u8>> {
         let cfg = self.config();
-        let mut client = self.platform.create_http_client(&cfg)?;
+        let mut client = crate::network::create_http_client_with_config(
+            self.platform.as_ref(),
+            &cfg,
+            crate::network::HttpClientClass::Background,
+        )?;
         drop(cfg);
         fetch_url_with_client(client.as_mut(), url, max_len)
     }

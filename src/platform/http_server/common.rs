@@ -1,5 +1,6 @@
 //! HTTP 服务器公共常量与辅助函数，与架构无关。
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 use embedded_io::Read;
 use std::fmt::Debug;
 
@@ -48,6 +49,7 @@ pub const REDIRECT_PAIRING_HEADERS: &[(&str, &str)] = &[
 ];
 
 /// 读 body 时的错误：读失败或非 UTF-8。
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 #[derive(Debug)]
 pub enum BodyReadError {
     ReadFailed,
@@ -55,11 +57,14 @@ pub enum BodyReadError {
 }
 
 /// 无 Content-Length 时首次分配大小，避免小 POST 也占满 4KB。
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 const BODY_READ_CHUNK_INITIAL: usize = 1024;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 const BODY_READ_CHUNK_SIZE: usize = 512;
 
 /// 从请求体读取 UTF-8 字符串，上限 max_len。有 content_len 时单次分配；无时按块读取，减少小 body 的分配。
 /// 使用 embedded_io::Read，与 ESP 的 Request 实现一致。
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 pub fn read_body_utf8_impl<R: Read>(
     r: &mut R,
     content_len: Option<u64>,

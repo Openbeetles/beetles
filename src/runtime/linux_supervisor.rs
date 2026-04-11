@@ -130,6 +130,7 @@ pub fn run_supervisor(
     config_path: Option<String>,
 ) -> Result<()> {
     crate::state::set_boot_phase_active(true);
+    crate::runtime::set_recovery_safe_mode_active(false);
     let _lock = try_acquire_supervisor_lock()?;
 
     clear_control_requests()?;
@@ -471,6 +472,7 @@ fn clear_failure_burst(state: &mut LinuxSupervisorState) {
 fn clear_safe_mode(state: &mut LinuxSupervisorState) {
     state.safe_mode_entered_at = None;
     state.safe_mode_reason = None;
+    crate::runtime::set_recovery_safe_mode_active(false);
 }
 
 fn auto_release_rollback_eligible(platform: &dyn crate::platform::Platform, now_secs: u64) -> bool {
@@ -525,6 +527,7 @@ fn record_quick_failure(state: &mut LinuxSupervisorState, now_secs: u64, reason:
     if state.failure_burst_count >= SUPERVISOR_SAFE_MODE_THRESHOLD {
         state.safe_mode_entered_at = Some(now_secs);
         state.safe_mode_reason = Some(reason.trim().to_string());
+        crate::runtime::set_recovery_safe_mode_active(true);
         state.agent.state = "safe_mode".to_string();
         return true;
     }

@@ -19,21 +19,6 @@ pub(crate) mod handlers;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const CONFIG_PLANE_POLL_MS: u64 = 500;
 
-struct ConfigPlaneActiveGuard;
-
-impl ConfigPlaneActiveGuard {
-    fn enter() -> Self {
-        crate::state::set_config_plane_active(true);
-        Self
-    }
-}
-
-impl Drop for ConfigPlaneActiveGuard {
-    fn drop(&mut self) {
-        crate::state::set_config_plane_active(false);
-    }
-}
-
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn esp_config_plane_desired() -> bool {
     // User-facing recovery/config access must remain reachable after STA joins.
@@ -77,7 +62,7 @@ pub fn run(
             std::thread::sleep(Duration::from_millis(CONFIG_PLANE_POLL_MS));
         }
 
-        let _active_guard = ConfigPlaneActiveGuard::enter();
+        let _active_guard = crate::runtime::ConfigPlaneGuard::enter();
         let server_config = Configuration {
             max_open_sockets: MAX_OPEN_SOCKETS,
             max_uri_handlers: 96,
@@ -296,7 +281,7 @@ pub fn run(
         source: Box::new(std::io::Error::other(e.to_string())),
         stage: "http_config_listen",
     })?);
-    let _active_guard = ConfigPlaneActiveGuard::enter();
+    let _active_guard = crate::runtime::ConfigPlaneGuard::enter();
     log::info!(
         "beetle HTTP config API listening on {} (override with BEETLE_CONFIG_HTTP_LISTEN)",
         listen

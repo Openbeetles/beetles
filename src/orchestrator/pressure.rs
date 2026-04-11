@@ -110,8 +110,8 @@ pub fn compute_pressure(state: &OrchestratorState) -> PressureLevel {
     let spiram = state.heap_free_spiram.load(Ordering::Relaxed) as usize;
     let largest = state.heap_largest_block.load(Ordering::Relaxed);
     let baseline = state.heap_baseline_internal.load(Ordering::Relaxed) as usize;
-    let active_http = state.active_http_count.load(Ordering::Relaxed);
-    let active_wss = state.active_wss_count.load(Ordering::Relaxed);
+    let active_http = crate::network::active_http_count();
+    let active_wss = crate::network::active_wss_count();
     let active_network = active_http.saturating_add(active_wss);
     let queue_total =
         state.inbound_depth.load(Ordering::Relaxed) + state.outbound_depth.load(Ordering::Relaxed);

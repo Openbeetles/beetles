@@ -317,9 +317,6 @@ pub fn run_telegram_poll_loop<H, F>(
 {
     const TAG_TG: &str = "telegram_poll";
 
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    crate::platform::task_wdt::register_current_task_to_task_wdt();
-
     let cmd_ctx = TelegramCommandCtx {
         outbound_tx,
         session_store,

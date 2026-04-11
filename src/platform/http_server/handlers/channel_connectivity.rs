@@ -3,6 +3,7 @@
 use super::HandlerContext;
 use crate::i18n::locale_from_store;
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 fn should_use_stale_snapshot(
     wifi_settled: bool,
     fragmentation_risk: crate::orchestrator::TlsFragmentationRisk,
@@ -28,10 +29,12 @@ pub fn body(ctx: &HandlerContext) -> Result<String, String> {
             return serde_json::to_string(&snapshot).map_err(|e| e.to_string());
         }
     }
-    let mut http = ctx
-        .platform
-        .create_http_client(&config)
-        .map_err(|e| e.to_string())?;
+    let mut http = crate::network::create_http_client_with_config(
+        ctx.platform.as_ref(),
+        &config,
+        crate::network::HttpClientClass::Background,
+    )
+    .map_err(|e| e.to_string())?;
     let snapshot = crate::channels::build_snapshot(&config, http.as_mut(), loc);
     serde_json::to_string(&snapshot).map_err(|e| e.to_string())
 }

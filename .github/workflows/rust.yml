@@ -33,6 +33,10 @@ jobs:
         run: bash scripts/check_platform_isolation.sh
       - name: Check thread stack literals (Linux TLS threads)
         run: bash scripts/check_thread_stack.sh
+      - name: Check network governance
+        run: bash scripts/check_network_governance.sh
+      - name: Check runtime governance
+        run: bash scripts/check_runtime_governance.sh
 
   linux-musl-check:
     # Zig + cargo-zigbuild: ring/rustls need a cross C compiler for musl targets (same strategy as scripts/check_linux_musl.sh fallback).

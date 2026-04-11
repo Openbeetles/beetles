@@ -611,8 +611,11 @@ pub trait Platform: Send + Sync {
     fn turn_ledger_store(&self) -> Arc<dyn TurnLedgerStore + Send + Sync>;
     fn skill_storage(&self) -> Arc<dyn SkillStorage + Send + Sync>;
     fn skill_meta_store(&self) -> Arc<dyn SkillMetaStore + Send + Sync>;
+    /// 原始 transport primitive：仅 `crate::network` / platform 实现层可直接调用。
+    /// 业务域必须走统一治理面，门禁由 `scripts/check_network_governance.sh` 强制执行。
     fn create_http_client(&self, config: &AppConfig) -> Result<Box<dyn PlatformHttpClient>>;
     /// 创建面向用户可见交付面的 HTTP client（如流式编辑/状态更新）。
+    /// 原始 transport primitive；业务域同样禁止直接调用，必须通过 `crate::network`。
     /// 默认沿用普通 client；资源更紧的平台可覆写为更高优先级。
     fn create_interactive_http_client(
         &self,

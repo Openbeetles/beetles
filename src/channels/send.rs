@@ -71,8 +71,6 @@ pub(crate) fn record_outbound_http_failure(error: &crate::error::Error) {
 }
 
 pub(crate) fn start_sender_loop(tag: &str) {
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    crate::platform::task_wdt::register_current_task_to_task_wdt();
     log::info!("[{}] sender loop started", tag);
 }
 

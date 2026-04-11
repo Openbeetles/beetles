@@ -5,13 +5,13 @@
 #![allow(clippy::items_after_test_module)]
 
 use beetle::bus::IngressKind;
-use beetle::channels::connect_wss;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
 use beetle::constants::SOFTAP_DEFAULT_IPV4;
 use beetle::memory::{MemoryStore, SessionStore};
+use beetle::network::{execute_stream_http_op, HttpClientClass, HttpFactory, NetworkGovernor};
 #[cfg(feature = "feishu")]
 use beetle::run_feishu_ws_loop;
-use beetle::runtime::{execute_stream_http_op, spawn_planned_handle, thread_plan};
+use beetle::runtime::{spawn_planned_handle, thread_plan};
 use beetle::util::STACK_VOICE_CONTROL;
 use beetle::util::{STACK_AGENT_LOOP, STACK_CHANNEL_SENDER, STACK_CHANNEL_WS, STACK_DISPATCH};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -19,7 +19,6 @@ use beetle::Esp32Platform;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use beetle::LinuxPlatform;
 use beetle::Platform;
-use beetle::PlatformHttpClient;
 use beetle::{
     parse_allowed_chat_ids, run_agent_loop, run_dispatch, send_chat_action, AppConfig, MessageBus,
     DEFAULT_CAPACITY,
@@ -45,7 +44,6 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 type CapabilityPackageTextProvider = Arc<dyn Fn(&str, usize) -> Option<String> + Send + Sync>;
 
-type HttpFactory = beetle::runtime::stream_http::HttpFactory;
 struct VoiceEventChannel {
     wake_model_name: Option<String>,
     speak_capable: bool,
@@ -306,6 +304,7 @@ fn spawn_http_config_server(
 
 fn spawn_voice_session_if_ready(
     platform: &Arc<dyn Platform>,
+    network: &Arc<NetworkGovernor>,
     config: &Arc<AppConfig>,
     baidu_token_cache: Option<&Arc<beetle::audio::baidu_token::BaiduTokenCache>>,
     user_inbound_tx: &beetle::bus::InboundTx,
@@ -327,22 +326,18 @@ fn spawn_voice_session_if_ready(
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     let _ = &wake_model_name;
     let vs_platform = Arc::clone(platform);
+    let vs_network = Arc::clone(network);
     let vs_audio = audio_cfg.clone();
     let vs_token = baidu_token_cache.cloned();
-    let vs_pf = Arc::clone(platform);
-    let vs_cfg = Arc::clone(config);
-    let vs_make_http: Arc<
-        dyn Fn() -> beetle::error::Result<Box<dyn beetle::PlatformHttpClient>> + Send + Sync,
-    > = Arc::new(move || vs_pf.create_http_client(vs_cfg.as_ref()));
     let vs_inbound_tx = user_inbound_tx.clone();
     let vs_prompt = audio_cfg.wake_word.wake_prompt.clone();
     spawn_planned_handle("voice_session", STACK_VOICE_CONTROL, move || {
         beetle::audio::voice_session::run_voice_session(
             beetle::audio::voice_session::VoiceSessionConfig {
                 platform: vs_platform,
+                network: vs_network,
                 audio_cfg: vs_audio,
                 baidu_token: vs_token,
-                make_http: vs_make_http,
                 inbound_tx: vs_inbound_tx,
                 wake_prompt: vs_prompt,
             },
@@ -649,15 +644,23 @@ mod tests {
     }
 
     #[test]
-    fn voice_session_stack_budget_is_large_enough_for_realtime_wss_path() {
+    fn voice_session_scheduler_stack_budget_stays_shallow_after_realtime_offload() {
+        assert!(
+            beetle::util::STACK_VOICE_CONTROL >= 8 * 1024,
+            "voice_session scheduler stack regressed below the current 8KB floor",
+        );
+    }
+
+    #[test]
+    fn voice_realtime_worker_stack_budget_is_large_enough_for_realtime_wss_path() {
         let min_stack = if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
-            12 * 1024
+            32 * 1024
         } else {
-            8 * 1024
+            64 * 1024
         };
         assert!(
-            beetle::util::STACK_VOICE_CONTROL >= min_stack,
-            "voice_session stack budget regressed below the current realtime floor",
+            beetle::util::STACK_VOICE_REALTIME >= min_stack,
+            "voice_realtime stack budget regressed below the current realtime floor",
         );
     }
 
@@ -2009,6 +2012,10 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         }
     }));
     let registry = Arc::new(registry);
+    let network_governor = Arc::new(NetworkGovernor::new(
+        Arc::clone(&platform),
+        Arc::clone(&config),
+    ));
 
     if !startup_self_check(memory_store.as_ref()) {
         log::error!(
@@ -2020,7 +2027,9 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     let wifi_init_status = if wifi_init_ok { "ok" } else { "failed" };
     let sta_up = beetle::platform::is_wifi_sta_connected();
     let state_fs_ready = platform.spiffs_usage().is_some();
-    let http_client_ready = platform.create_http_client(config.as_ref()).is_ok();
+    let http_client_ready = network_governor
+        .open_http_client(HttpClientClass::Background)
+        .is_ok();
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("http_client_probe_done");
     let communication_plane =
@@ -2183,6 +2192,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         // but startup should not be blocked by the communication-plane HTTP gate.
         match spawn_voice_session_if_ready(
             &platform,
+            &network_governor,
             &config,
             baidu_token_cache.as_ref(),
             &user_inbound_tx,
@@ -2220,8 +2230,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             let sec = c.app_secret.clone();
             let allowed = parse_allowed_chat_ids(&config.feishu_allowed_chat_ids);
             let pending = Arc::clone(&pending_retry_store);
-            let pf = Arc::clone(&platform);
-            let cfg = Arc::clone(&config);
+            let http_factory = network_governor.http_factory(HttpClientClass::Background);
             // WSS + JSON: 16KB on ESP; Linux uses `STACK_CHANNEL_WS` (64KB embedded-class, rustls).
             if let Err(error) = spawn_required_planned_thread(
                 TAG,
@@ -2236,8 +2245,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                         allowed,
                         tx,
                         pending.as_ref(),
-                        move || pf.create_http_client(cfg.as_ref()),
-                        connect_wss,
+                        move || http_factory(),
+                        beetle::network::connect_external_wss,
                     )
                 },
             ) {
@@ -2267,8 +2276,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                     let qq_cache_ws = std::sync::Arc::clone(&qq_msg_id_cache);
                     let qq_token_cache_ws = qq_token_cache.clone();
                     let qq_pending = Arc::clone(&pending_retry_store);
-                    let pf = Arc::clone(&platform);
-                    let cfg = Arc::clone(&config);
+                    let http_factory = network_governor.http_factory(HttpClientClass::Background);
                     // QQ WS: 16KB on ESP; Linux `STACK_CHANNEL_WS` (64KB) — 16KB overflows rustls.
                     if let Err(error) = spawn_required_planned_thread(
                         TAG,
@@ -2284,8 +2292,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                                 qq_cache_ws,
                                 qq_token_cache_ws,
                                 qq_pending.as_ref(),
-                                move || pf.create_http_client(cfg.as_ref()),
-                                connect_wss,
+                                move || http_factory(),
+                                beetle::network::connect_external_wss,
                             )
                         },
                     ) {
@@ -2348,8 +2356,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             let tg_outbound_depth = Arc::clone(&outbound_depth);
             let tg_config_store = Arc::clone(&config_store);
             let tg_resolve_locale = Arc::clone(&resolve_locale_ui);
-            let pf = Arc::clone(&platform);
-            let cfg = Arc::clone(&config);
+            let http_factory = network_governor.http_factory(HttpClientClass::Background);
             // tg_poll calls rustls on Linux; use same budget as other channel HTTPS threads.
             if let Err(error) = spawn_required_planned_thread(
                 TAG,
@@ -2370,7 +2377,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                         tg_outbound_depth,
                         tg_config_store,
                         tg_resolve_locale,
-                        move || pf.create_http_client(cfg.as_ref()),
+                        move || http_factory(),
                     )
                 },
             ) {
@@ -2451,11 +2458,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                 .map(|entry| entry.enabled && entry.contract.supports_stream_edit)
                 .unwrap_or(false)
         {
-            let pf = Arc::clone(&platform);
-            let cfg = Arc::clone(&config);
-            let make_http: Arc<
-                dyn Fn() -> beetle::Result<Box<dyn beetle::PlatformHttpClient>> + Send + Sync,
-            > = Arc::new(move || pf.create_interactive_http_client(cfg.as_ref()));
+            let make_http = network_governor.http_factory(HttpClientClass::Interactive);
             match config.enabled_channel.as_str() {
                 beetle::CHANNEL_TELEGRAM if !config.tg_token.trim().is_empty() => {
                     Some(Arc::new(TelegramStreamEditor {
@@ -2556,13 +2559,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             log::info!("[{}] CLI REPL started (stdin)", TAG);
         }
 
-        let create_http: Arc<
-            dyn Fn() -> beetle::Result<Box<dyn PlatformHttpClient>> + Send + Sync,
-        > = Arc::new({
-            let pf = Arc::clone(&platform);
-            let cfg = Arc::clone(&config);
-            move || pf.create_http_client(cfg.as_ref())
-        });
+        let create_http = network_governor.http_factory(HttpClientClass::Background);
         if let Err(error) = beetle::channels::spawn_sender_threads(
             &mut channel_rx_set,
             &config.tg_token,
@@ -2591,7 +2588,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         let agent_registry = Arc::clone(&registry);
         let agent_worker_llm = Arc::clone(&worker_llm);
         let agent_platform = Arc::clone(&platform);
-        let agent_config_for_thread = Arc::clone(&config);
+        let agent_network = Arc::clone(&network_governor);
         let agent_loop_config = Arc::clone(&agent_config);
         let worker_system_inbound_tx = agent_system_inbound_tx.clone();
         let worker_outbound_tx = outbound_tx.clone();
@@ -2601,27 +2598,24 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             agent_plan.core,
             agent_plan.role,
             move || {
-                #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-                beetle::platform::task_wdt::register_current_task_to_task_wdt();
-                let mut agent_http = match agent_platform
-                    .create_interactive_http_client(agent_config_for_thread.as_ref())
-                {
-                    Ok(c) => c,
-                    Err(e) => {
-                        log::error!(
-                            "[{}] agent_loop create_interactive_http_client failed: {}",
-                            tag,
-                            e
-                        );
-                        beetle::state::set_last_error(&e);
-                        beetle::runtime::request_restart_with_continuity_flush(
-                            Arc::clone(&agent_platform),
-                            None,
-                            "agent_loop_http_init_failed",
-                        );
-                        return;
-                    }
-                };
+                let mut agent_http =
+                    match agent_network.open_http_client(HttpClientClass::Interactive) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            log::error!(
+                                "[{}] agent_loop open interactive HTTP client failed: {}",
+                                tag,
+                                e
+                            );
+                            beetle::state::set_last_error(&e);
+                            beetle::runtime::request_restart_with_continuity_flush(
+                                Arc::clone(&agent_platform),
+                                None,
+                                "agent_loop_http_init_failed",
+                            );
+                            return;
+                        }
+                    };
                 log::info!("[{}] agent_loop running on Core1 thread", tag);
                 if let Err(e) = run_agent_loop(
                     agent_http.as_mut(),

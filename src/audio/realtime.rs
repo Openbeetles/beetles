@@ -3,19 +3,12 @@
 
 use crate::audio::capture::AudioRecordingGuard;
 use crate::audio::energy::{normalized_rms, EndpointConfig, EndpointEvent, EndpointState};
-use crate::channels::{
-    connect_wss_with_headers_and_profile, WssCloseInfo, WssConnectProfile, WssConnection, WssEvent,
-};
+use crate::channels::{WssCloseInfo, WssConnection, WssEvent};
 use crate::config::{
     audio_realtime_enabled, AudioSegment, AUDIO_REALTIME_PROVIDER_DOUBAO,
     AUDIO_REALTIME_PROVIDER_OPENAI_COMPATIBLE, AUDIO_REALTIME_PROVIDER_QWEN,
 };
 use crate::constants::{AUDIO_CAPTURE_FRAME_SAMPLES, AUDIO_TTS_WRITE_CHUNK_SAMPLES};
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-use crate::constants::{
-    TLS_ADMISSION_MIN_INTERNAL_BYTES, TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES,
-    TLS_ADMISSION_NO_PSRAM_MIN_BYTES,
-};
 use crate::error::{Error, Result};
 use crate::platform::AudioDuplexCapabilities;
 use crate::Platform;
@@ -49,8 +42,6 @@ const REALTIME_INTERRUPT_REFERENCE_ACTIVE_MIN: f32 = 0.06;
 const REALTIME_INTERRUPT_REFERENCE_SUBTRACT_SCALE: f32 = 0.65;
 const REALTIME_LOCAL_SPEECH_COMMIT_MIN_MS: u32 = 160;
 const REALTIME_LOCAL_SPEECH_WINDOW_MAX_MS: u32 = 12_000;
-const REALTIME_TLS_ADMISSION_RETRY_MAX: usize = 12;
-const REALTIME_TLS_ADMISSION_RETRY_MS: u64 = 150;
 static REALTIME_EVENT_COUNTER: AtomicU32 = AtomicU32::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -414,7 +405,6 @@ pub fn run_realtime_session(
     audio_cfg: &AudioSegment,
     log_tag: &'static str,
 ) -> Result<RealtimeSessionResult> {
-    crate::platform::task_wdt::register_current_task_to_task_wdt();
     if !audio_realtime_enabled(audio_cfg) {
         return Err(Error::config(
             REALTIME_TAG,
@@ -451,7 +441,8 @@ pub fn run_realtime_session(
         .iter()
         .map(|(name, value)| (*name, value.as_str()))
         .collect();
-    let mut conn = connect_realtime_wss_with_retry(platform, ws_url.as_str(), &header_refs)?;
+    let mut conn =
+        crate::network::connect_realtime_wss_with_retry(platform, ws_url.as_str(), &header_refs)?;
     let mut state = RealtimeLoopState::new(duplex_caps);
     let mut mic_frame = [0i16; AUDIO_CAPTURE_FRAME_SAMPLES];
     let mut reference_frame = [0i16; AUDIO_CAPTURE_FRAME_SAMPLES];
@@ -648,76 +639,6 @@ pub fn run_realtime_session(
         session_ms: session_start.elapsed().as_millis(),
     })
 }
-
-fn connect_realtime_wss(url: &str, headers: &[(&str, &str)]) -> Result<Box<dyn WssConnection>> {
-    Ok(Box::new(connect_wss_with_headers_and_profile(
-        url,
-        headers,
-        WssConnectProfile::Realtime,
-    )?))
-}
-
-fn connect_realtime_wss_with_retry(
-    platform: &dyn Platform,
-    url: &str,
-    headers: &[(&str, &str)],
-) -> Result<Box<dyn WssConnection>> {
-    let mut last_err: Option<Error> = None;
-    for attempt in 0..REALTIME_TLS_ADMISSION_RETRY_MAX {
-        crate::platform::task_wdt::feed_current_task();
-        wait_for_realtime_admission_window(platform);
-        match connect_realtime_wss(url, headers) {
-            Ok(conn) => return Ok(conn),
-            Err(err)
-                if err.is_tls_admission() && attempt + 1 < REALTIME_TLS_ADMISSION_RETRY_MAX =>
-            {
-                let snap = platform.memory_snapshot();
-                log::warn!(
-                    "[{}] realtime tls admission retry {}/{} internal_free={} largest={} spiram={}",
-                    REALTIME_TAG,
-                    attempt + 1,
-                    REALTIME_TLS_ADMISSION_RETRY_MAX,
-                    snap.heap_free_internal,
-                    snap.heap_largest_block,
-                    snap.heap_free_spiram
-                );
-                last_err = Some(err);
-                crate::platform::task_wdt::feed_current_task();
-                thread::sleep(Duration::from_millis(REALTIME_TLS_ADMISSION_RETRY_MS));
-            }
-            Err(err) => return Err(err),
-        }
-    }
-    Err(last_err.unwrap_or_else(|| Error::config(REALTIME_TAG, "realtime wss connect failed")))
-}
-
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-fn wait_for_realtime_admission_window(platform: &dyn Platform) {
-    let deadline = Instant::now()
-        + Duration::from_millis(
-            (REALTIME_TLS_ADMISSION_RETRY_MAX as u64) * REALTIME_TLS_ADMISSION_RETRY_MS,
-        );
-    while Instant::now() < deadline {
-        crate::platform::task_wdt::feed_current_task();
-        let snap = platform.memory_snapshot();
-        let min_free = if snap.heap_free_spiram > 0 {
-            TLS_ADMISSION_MIN_INTERNAL_BYTES as u32
-        } else {
-            TLS_ADMISSION_NO_PSRAM_MIN_BYTES as u32
-        };
-        let enough_free = snap.heap_free_internal >= min_free;
-        let enough_largest = snap.heap_free_spiram == 0
-            || snap.heap_largest_block >= TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32;
-        let no_external_wss = crate::orchestrator::snapshot().active_wss_count == 0;
-        if enough_free && enough_largest && no_external_wss {
-            return;
-        }
-        thread::sleep(Duration::from_millis(REALTIME_TLS_ADMISSION_RETRY_MS));
-    }
-}
-
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-fn wait_for_realtime_admission_window(_platform: &dyn Platform) {}
 
 fn build_realtime_headers(
     provider: RealtimeProvider,
