@@ -16,9 +16,17 @@ show_help() {
 Usage:
   ./build.sh [--flash | --flash-update] [--no-monitor] [--no-deploy] [--deploy-linux]
              [--package-profile <name>] [cargo build args...]
+  ./build.sh build-c6
+  ./build.sh flash-c6
+  ./build.sh flash-all [P4 build args...]
 
 Linux SSH deploy only (no compile; needs an existing target/*/release/beetle):
   ./build.sh --deploy-linux
+
+Hosted coprocessor firmware:
+  ./build.sh build-c6
+  ./build.sh flash-c6
+  ./build.sh flash-all
 
 Default (interactive TTY): after a successful build, asks whether to deploy:
   - Linux targets → SSH upload (same flow as --deploy-linux)
@@ -57,6 +65,12 @@ for arg in "$@"; do
     -h|--help) show_help; exit 0 ;;
   esac
 done
+
+case "${1:-}" in
+  build-c6|flash-c6|flash-all)
+    exec "$SCRIPT_ROOT/scripts/esp_hosted_c6.sh" "$@"
+    ;;
+esac
 
 MSG_TITLE="Beetle Build Script"
 MSG_SELECT_PLATFORM="Select build platform:"
@@ -1540,15 +1554,15 @@ run_linux_docker_build() {
   echo ""
   echo "========== $MSG_BUILD_IN_DOCKER =========="
   if [[ "$target" == "x86_64-unknown-linux-musl" ]]; then
-    docker run --rm -v "$SCRIPT_ROOT":/workspace -w /workspace \
+    docker run --rm -e RUSTUP_TOOLCHAIN=stable -v "$SCRIPT_ROOT":/workspace -w /workspace \
       rust:latest \
       bash -c "rustup target add x86_64-unknown-linux-musl && cargo build --release --target x86_64-unknown-linux-musl"
   elif [[ "$target" == "armv7-unknown-linux-musleabihf" ]]; then
-    docker run --rm -v "$SCRIPT_ROOT":/home/rust/src -w /home/rust/src \
+    docker run --rm -e RUSTUP_TOOLCHAIN=stable -v "$SCRIPT_ROOT":/home/rust/src -w /home/rust/src \
       messense/rust-musl-cross:armv7-musleabihf \
       cargo build --release --target armv7-unknown-linux-musleabihf
   elif [[ "$target" == "aarch64-unknown-linux-musl" ]]; then
-    docker run --rm -v "$SCRIPT_ROOT":/home/rust/src -w /home/rust/src \
+    docker run --rm -e RUSTUP_TOOLCHAIN=stable -v "$SCRIPT_ROOT":/home/rust/src -w /home/rust/src \
       messense/rust-musl-cross:aarch64-musl \
       cargo build --release --target aarch64-unknown-linux-musl
   else

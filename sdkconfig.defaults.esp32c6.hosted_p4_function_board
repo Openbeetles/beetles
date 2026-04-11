@@ -1,0 +1,8 @@
+# beetle - ESP32-C6 hosted slave defaults for ESP32-P4-NANO / P4 Function Board wiring
+#
+# This file is consumed by the vendored esp-hosted-mcu slave project, not by Beetle's
+# main P4 firmware. It keeps Beetle's board-specific coprocessor choice explicit while
+# leaving upstream defaults and transport implementation intact.
+
+CONFIG_ESP_HOST_DEV_BOARD_P4_FUNC_BOARD=y
+CONFIG_ESP_SDIO_HOST_INTERFACE=y

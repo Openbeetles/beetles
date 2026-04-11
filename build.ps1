@@ -4,6 +4,9 @@
 #        .\build.ps1 clean           清理项目根与短路径 D:\pc_b 的 target（路径过长时只需跑一次）
 #        .\build.ps1 --flash          构建后烧录（数字菜单，默认 1=仅更新；与 build.sh Linux 部署菜单风格一致）
 #        .\build.ps1 --flash-update   构建后烧录且不擦除（跳过菜单）
+#        .\build.ps1 build-c6         构建 vendored ESP32-C6 hosted slave firmware
+#        .\build.ps1 flash-c6         烧录板载 ESP32-C6 hosted slave firmware
+#        .\build.ps1 flash-all        先烧 C6，再烧 P4 主固件
 #        $env:ESPFLASH_PORT="COM3"; .\build.ps1 --flash  跳过端口选择，直接烧录到 COM3
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -11,6 +14,12 @@ $ErrorActionPreference = "Stop"
 $OutputEncoding = [System.Text.Encoding]::UTF8
 try { cmd /c chcp 65001 *>$null } catch {}
 Set-Location $PSScriptRoot
+
+if ($args.Count -gt 0 -and @("build-c6", "flash-c6", "flash-all") -contains $args[0]) {
+  & (Join-Path $PSScriptRoot "scripts\esp_hosted_c6.ps1") @args
+  exit $LASTEXITCODE
+}
+
 $env:CARGO_TARGET_DIR = Join-Path $PSScriptRoot "target"
 # ESP-IDF / kconfgen 读 sdkconfig 时若用系统默认编码（中文 Windows 为 GBK）会报 UnicodeDecodeError，强制 Python 使用 UTF-8
 if ($env:OS -eq "Windows_NT") { $env:PYTHONUTF8 = "1" }

@@ -5,7 +5,7 @@
 <h1 align="center">Beetle</h1>
 
 <p align="center">
-  <strong>Agent OS for ESP32-S3 and Linux</strong><br/>
+  <strong>Agent OS for ESP32-S3, ESP32-P4, and Linux</strong><br/>
   Rust · ReAct · Tools · Memory · Hardware control
 </p>
 
@@ -16,11 +16,11 @@
 <p align="center">
   <a href="docs/README.md"><img alt="Docs" src="https://img.shields.io/badge/Docs-index-1f6feb" /></a>
   <a href="#quick-start"><img alt="Quick Start" src="https://img.shields.io/badge/Quick%20Start-5%20minutes-2ea043" /></a>
-  <a href="#supported-boards"><img alt="Boards" src="https://img.shields.io/badge/Boards-ESP32--S3-orange" /></a>
+  <a href="#supported-boards"><img alt="Boards" src="https://img.shields.io/badge/Boards-ESP32--S3%20%7C%20ESP32--P4-orange" /></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg" /></a>
 </p>
 
-Beetle is an `Agent OS` for **ESP32-S3** and **Linux**. It can connect chat channels, call tools, store memory, and control hardware.
+Beetle is an `Agent OS` for **ESP32-S3**, **ESP32-P4**, and **Linux**. It can connect chat channels, call tools, store memory, and control hardware.
 
 Main capabilities:
 
@@ -35,6 +35,7 @@ Recommended use by platform:
 | Target | Best suited for |
 |--------|-----------------|
 | ESP32-S3 | hardware control, peripherals, and always-on device agents |
+| ESP32-P4 + on-board C6 | heavier ESP workloads with hosted Wi-Fi on the co-processor |
 | Linux | fuller Agent OS capabilities, longer tasks, and complex integrations |
 
 This README is the quick start.
@@ -55,6 +56,7 @@ For the full documentation map, go to [docs/README.md](docs/README.md).
 Current supported targets:
 
 - **ESP32-S3 with PSRAM**: best for hardware-facing deployments
+- **ESP32-P4 + board-mounted ESP32-C6**: best for higher-end ESP deployments that still need Beetle on bare metal
 - **Linux**: best for fuller Agent OS capabilities, integration, and deployment
 
 Supported board presets:
@@ -62,6 +64,7 @@ Supported board presets:
 - `esp32-s3-8mb`
 - `esp32-s3-16mb`
 - `esp32-s3-32mb`
+- `esp32-p4-nano-16mb`
 
 Linux already runs the full Agent OS stack stably, including tools, memory, config surfaces, and channel logic.
 ESP focuses more on hardware and peripherals.
@@ -93,7 +96,12 @@ macOS / Linux:
 ./build.sh
 ./build.sh --flash
 BOARD=esp32-s3-16mb ./build.sh --flash
+BOARD=esp32-p4-nano-16mb ./build.sh --flash
+./build.sh build-c6
+./build.sh flash-c6
+./build.sh flash-all
 ESPFLASH_PORT=/dev/cu.usbserial-xxx ./build.sh --flash
+ESP_HOSTED_C6_PORT=/dev/cu.usbserial-c6 ESPFLASH_PORT=/dev/cu.usbserial-p4 ./build.sh flash-all
 ```
 
 Windows:
@@ -102,8 +110,22 @@ Windows:
 .\build.ps1
 .\build.ps1 --flash
 $env:BOARD="esp32-s3-16mb"; .\build.ps1 --flash
+$env:BOARD="esp32-p4-nano-16mb"; .\build.ps1 --flash
+.\build.ps1 build-c6
+.\build.ps1 flash-c6
+.\build.ps1 flash-all
 $env:ESPFLASH_PORT="COM3"; .\build.ps1 --flash
+$env:ESP_HOSTED_C6_PORT="COM6"; $env:ESPFLASH_PORT="COM3"; .\build.ps1 flash-all
 ```
+
+For `ESP32-P4-NANO`, the board is only product-complete after both chips are flashed:
+
+1. `flash-c6` flashes the board-mounted `ESP32-C6` hosted slave firmware
+2. `BOARD=esp32-p4-nano-16mb ./build.sh --flash` flashes the Beetle main firmware on `ESP32-P4`
+3. `flash-all` runs the full sequence in order
+
+When flashing the on-board `ESP32-C6`, put the `ESP32-P4` into bootloader mode first so it does not interfere with the shared on-board wiring.
+`build-c6` / `flash-c6` auto-detect both `espup` exports and standard official ESP-IDF installs (`IDF_PATH`, `~/.espressif/...`, `~/esp/...`) before invoking `idf.py`.
 
 ### 3. Open the config page
 
@@ -148,10 +170,12 @@ Board selection is controlled by `BOARD`. The build scripts read `board_presets.
 | `esp32-s3-8mb` | 8MB | 8MB | N8R8 |
 | `esp32-s3-16mb` | 16MB | 8MB | Default preset |
 | `esp32-s3-32mb` | 32MB | 16MB | N32R16 |
+| `esp32-p4-nano-16mb` | 16MB | 32MB | Beetle runs on P4; hosted Wi-Fi runs on the board-mounted C6 |
 
 Important:
 
 - Use the project's partition table.
+- `esp32-p4-nano-16mb` is a dual-chip board. Flash both the C6 hosted slave firmware and the P4 main firmware.
 - If you see `spiffs partition could not be found`, the board preset or partition setup is wrong.
 
 ## Main Capabilities
@@ -183,6 +207,7 @@ Important:
 ## Troubleshooting
 
 - Flash fails: check the USB cable, port, and `ESPFLASH_PORT`.
+- `flash-c6` fails: check the `PROG_C6` UART wiring, set `ESP_HOSTED_C6_PORT`, and put the P4 into bootloader mode first.
 - Device is not reachable: reconnect to hotspot `Beetle` and open `http://192.168.4.1`.
 - `spiffs partition could not be found`: use the project board preset and partition table.
 - Need exact API behavior: see [docs/en-us/config-api.md](docs/en-us/config-api.md).

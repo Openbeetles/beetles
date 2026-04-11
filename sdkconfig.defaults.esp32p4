@@ -18,7 +18,6 @@ CONFIG_SPIRAM_MEMTEST=n
 # This keeps the same upper-layer WiFi contract (scan + SoftAP + STA) without making
 # Beetle itself run on the C6.
 CONFIG_ESP_WIFI_REMOTE_LIBRARY_HOSTED=y
-CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
 
 CONFIG_LWIP_MAX_SOCKETS=16
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y

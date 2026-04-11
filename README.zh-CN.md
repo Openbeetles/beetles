@@ -1,11 +1,11 @@
 # Beetle（甲壳虫）
 
-**面向 ESP32-S3 与 Linux 的 Agent OS**<br/>
+**面向 ESP32-S3、ESP32-P4 与 Linux 的 Agent OS**<br/>
 Rust · ReAct · 工具调用 · 记忆 · 硬件控制
 
 [English](README.md) · **中文**
 
-Beetle 是一套能跑在 **ESP32-S3** 和 **Linux** 上的 `Agent OS`，支持聊天通道接入、工具调用、记忆保存和硬件控制。
+Beetle 是一套能跑在 **ESP32-S3**、**ESP32-P4** 和 **Linux** 上的 `Agent OS`，支持聊天通道接入、工具调用、记忆保存和硬件控制。
 
 你可以用它来：
 
@@ -20,6 +20,7 @@ Beetle 是一套能跑在 **ESP32-S3** 和 **Linux** 上的 `Agent OS`，支持�
 | 目标 | 更适合做什么 |
 |------|------------|
 | ESP32-S3 | 接硬件、控外设、做常驻设备助理 |
+| ESP32-P4 + 板载 C6 | 更高配的 ESP 裸机形态，主控跑 Beetle，板载 C6 提供 hosted WiFi |
 | Linux | 适合运行更完整的 Agent OS 能力、长任务和复杂集成 |
 
 本页用于快速上手。完整文档目录见 [docs/README.md](docs/README.md)。
@@ -39,6 +40,7 @@ Beetle 是一套能跑在 **ESP32-S3** 和 **Linux** 上的 `Agent OS`，支持�
 当前支持的平台：
 
 - **带 PSRAM 的 ESP32-S3**：适合硬件控制和设备接入
+- **ESP32-P4 + 板载 ESP32-C6**：适合更高配的 ESP 部署，同时保留 hosted 无线能力
 - **Linux**：适合运行更完整的 Agent OS 能力和长任务
 
 现有板型预设：
@@ -46,6 +48,7 @@ Beetle 是一套能跑在 **ESP32-S3** 和 **Linux** 上的 `Agent OS`，支持�
 - `esp32-s3-8mb`
 - `esp32-s3-16mb`
 - `esp32-s3-32mb`
+- `esp32-p4-nano-16mb`
 
 Linux 已经可以稳定运行完整的 Agent OS 能力，包括工具、记忆、配置页面和聊天通道。
 ESP 更强调硬件接入、设备联动和外设控制。
@@ -77,7 +80,12 @@ macOS / Linux：
 ./build.sh
 ./build.sh --flash
 BOARD=esp32-s3-16mb ./build.sh --flash
+BOARD=esp32-p4-nano-16mb ./build.sh --flash
+./build.sh build-c6
+./build.sh flash-c6
+./build.sh flash-all
 ESPFLASH_PORT=/dev/cu.usbserial-xxx ./build.sh --flash
+ESP_HOSTED_C6_PORT=/dev/cu.usbserial-c6 ESPFLASH_PORT=/dev/cu.usbserial-p4 ./build.sh flash-all
 ```
 
 Windows：
@@ -86,8 +94,22 @@ Windows：
 .\build.ps1
 .\build.ps1 --flash
 $env:BOARD="esp32-s3-16mb"; .\build.ps1 --flash
+$env:BOARD="esp32-p4-nano-16mb"; .\build.ps1 --flash
+.\build.ps1 build-c6
+.\build.ps1 flash-c6
+.\build.ps1 flash-all
 $env:ESPFLASH_PORT="COM3"; .\build.ps1 --flash
+$env:ESP_HOSTED_C6_PORT="COM6"; $env:ESPFLASH_PORT="COM3"; .\build.ps1 flash-all
 ```
+
+如果你用的是 `ESP32-P4-NANO`，必须把双芯片都烧好才算完整：
+
+1. `flash-c6` 烧板载 `ESP32-C6` 的 hosted slave firmware
+2. `BOARD=esp32-p4-nano-16mb ./build.sh --flash` 烧 `ESP32-P4` 上的 Beetle 主固件
+3. `flash-all` 按正确顺序一次性全烧
+
+烧板载 `ESP32-C6` 前，先把 `ESP32-P4` 置于 bootloader 模式，避免共享板级连线互相干扰。
+`build-c6` / `flash-c6` 会自动查找 `espup` 导出的环境，以及官方 ESP-IDF 的标准安装路径（`IDF_PATH`、`~/.espressif/...`、`~/esp/...`），再调用 `idf.py`。
 
 ### 3. 打开配置页
 
@@ -133,11 +155,13 @@ cargo build --release --features telegram,ota
 | `esp32-s3-8mb`  | 8MB   | 8MB   | N8R8   |
 | `esp32-s3-16mb` | 16MB  | 8MB   | 默认板型   |
 | `esp32-s3-32mb` | 32MB  | 16MB  | N32R16 |
+| `esp32-p4-nano-16mb` | 16MB | 32MB | Beetle 跑在 P4；板载 C6 提供 hosted WiFi |
 
 
 这里最容易出错的地方有两个：
 
 - 必须使用项目自带的分区表
+- `esp32-p4-nano-16mb` 是双芯片板，C6 和 P4 都要烧
 - 如果报 `spiffs partition could not be found`，通常是板型预设或分区表没用对
 
 ## 主要能力
@@ -173,6 +197,7 @@ cargo build --release --features telegram,ota
 ## 常见问题
 
 - 烧录失败：先检查 USB 线、串口，以及 `ESPFLASH_PORT`
+- `flash-c6` 失败：先检查 `PROG_C6` 串口接线，设置 `ESP_HOSTED_C6_PORT`，并先让 P4 进入 bootloader 模式
 - 设备打不开：先重新连接热点 `Beetle`，再打开 `http://192.168.4.1`
 - `spiffs partition could not be found`：基本就是板型预设或分区表没用对
 - 需要精确接口行为：看 [docs/zh-cn/config-api.md](docs/zh-cn/config-api.md)
