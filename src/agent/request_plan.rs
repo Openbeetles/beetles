@@ -181,7 +181,7 @@ impl AgentRequestPlan<'_> {
             .iter()
             .any(|tool| tool.name == "factual_memory");
         if has_memory_search && has_memory_get {
-            guidance.push_str(" For retained conversation history, daily notes, or turn logs, use memory_search to locate archive evidence and memory_get to inspect one cited record. Archive hits are evidence sources only; do not treat them as canonical shared memory unless you separately distill and verify a stable conclusion.");
+            guidance.push_str(" For retained conversation history, daily notes, or turn logs, use memory_search to locate archive evidence and memory_get to inspect one cited record. Archive hits are evidence sources only, but they can support a shareable, user-facing conclusion after you distill and verify a stable fact. If the exact detail is still unsupported, say that plainly instead of refusing or inventing it.");
         }
         if has_factual_memory {
             guidance.push_str(" For exact canonical shared facts, slot-shaped profile values, durable constraints, or stable task/project records, prefer factual_memory over archive search. factual_memory returns canonical records plus evidence posture; use archive evidence only when you need supporting records or reconciliation.");
@@ -706,5 +706,28 @@ mod tests {
         assert!(system.contains("Internal Memory Governance"));
         assert!(system.contains("private_garden"));
         assert!(system.contains("update, merge, move, or prune in place"));
+    }
+
+    #[test]
+    fn archive_memory_guidance_allows_grounded_shareable_answers() {
+        let mut registry = ToolRegistry::new();
+        for (name, description) in [
+            ("memory_search", "search archive evidence"),
+            ("memory_get", "inspect cited archive records"),
+        ] {
+            registry.register(Box::new(NamedTool {
+                name,
+                description,
+                metadata: ToolMetadata::task(),
+            }));
+        }
+        let msg = PcMsg::new_inbound("telegram", "chat", "检查我们历史里我对北岛的偏好", false)
+            .expect("pcmsg");
+        let plan =
+            AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::LinuxEnhanced);
+        let mut system = String::new();
+        plan.apply_system_prompt(&mut system, 4096);
+        assert!(system.contains("shareable, user-facing conclusion"));
+        assert!(system.contains("exact detail is still unsupported"));
     }
 }

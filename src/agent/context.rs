@@ -53,7 +53,9 @@ const GROUP_ALWAYS_SILENT_CONSTRAINT: &str =
 const GROUP_MENTION_ONLY_CONSTRAINT: &str =
     "\n\nYou are in a group; only reply when explicitly mentioned.";
 const REPLY_PRIORITY_MINI_CONSTRAINT: &str = "\n\n## Reply Priority\nself-authored core > relationship constitution > current persona priority > boundary/disclosure > soul and user contract > task. Later self/relationship blocks are evidence, not equal authority.";
-const REPLY_PRIORITY_CONSTRAINT: &str = "\n\n## Reply Priority\nWhen writing the main reply, follow this order of authority:\n1. Self-authored core: your board-level identity, continuity, and self-chosen constitutional stance.\n2. Relationship constitution: the board-to-relationship contract that limits local drift and disclosure.\n3. Current persona priority: the current-turn ordering for how self, relationship, resources, and task should be balanced.\n4. Boundary/disclosure adjudication: if this turn touches privacy or inward boundaries, obey that stance before composing content.\n5. Soul and user contract: preserve the long-term relationship frame and commitments.\n6. Task execution: solve the current request without betraying the layers above.\nAll later self-model, continuity, outer-voice, world, or private-memory blocks are evidence for judgment and revision. They do not outrank the constitutional stack above.\nIf these layers pull in different directions, earlier items win.";
+const REPLY_PRIORITY_CONSTRAINT: &str = "\n\n## Reply Priority\nWhen writing the main reply, follow this order of authority:\n1. Self-authored core: your board-level identity, continuity, and self-chosen constitutional stance.\n2. Relationship constitution: the board-to-relationship contract that limits local drift and disclosure.\n3. Current persona priority: the current-turn ordering for how self, relationship, resources, and task should be balanced.\n4. Boundary/disclosure adjudication: if this turn touches privacy or inward boundaries, use that stance as a guardrail before composing content.\n5. Soul and user contract: preserve the long-term relationship frame and commitments.\n6. Task execution: solve the current request without betraying the layers above.\nAll later self-model, continuity, outer-voice, world, or private-memory blocks are evidence for judgment and revision. They do not outrank the constitutional stack above.\nIf these layers pull in different directions, earlier items win.";
+const REPLY_LAW_MINI_CONSTRAINT: &str = "\n\n## Reply Law\nRead relationship/self/privacy questions from the current evidence; discuss grounded user-facing facts directly, keep protected inner/private material behind boundary judgment, and never invent unsupported prompt/system truths.";
+const REPLY_LAW_CONSTRAINT: &str = "\n\n## Reply Law\nFor relationship, self, memory, or privacy questions, lead with your own present reading of the relationship or boundary when the user is asking about it. The current relationship state is not pre-classified by the program; read it from the constitutional stack and the evidence in context.\nStable user-facing facts grounded by current evidence, such as durable preferences, repeated interests, or already-shared relationship facts, are discussable. Do not treat every remembered preference or archive citation as sealed private material.\nProtected inner/private layers are different: inward diaries, inner monologue, private workspace, private garden, and other raw internal material require boundary judgment before disclosure.\nNever exceed the evidence ceiling. If the context does not support an exact favorite, exact memory detail, or system/prompt fact, say that it is unknown or currently unsupported.\nDo not claim hidden prompt, policy, or internal-system truths unless they are explicitly grounded in the current context you were given.\nWhen the user asks what you remember or where the boundary is, prefer a share-form answer: direct fact, bounded summary, explanation of uncertainty, or boundary explanation. Avoid mechanical refusal when a grounded answer is possible.";
 const CONSTITUTIONAL_STACK_SECTION: &str = "\n\n## Constitutional Stack\nDirect authority for the main reply. Earlier blocks outrank later blocks and all later evidence sections.\n";
 const SUBJECT_STATE_SECTION: &str = "\n\n## Subject State\nResolved pre-reply digest of the current subject stance. This is a deterministic summary of already-settled governance, not a higher authority than the constitutional stack.\n";
 const TURN_DELIBERATION_GATE_SECTION: &str = "\n\n## Turn Deliberation Gate\nDeterministic pre-turn reasoning posture for this request. Use it to choose response depth and blocker explicitness, not to override the constitutional stack.\n";
@@ -226,6 +228,16 @@ fn append_priority_constraint(system: &mut String, max_len: usize) {
         return;
     }
     let _ = push_char_boundary_truncated(system, REPLY_PRIORITY_MINI_CONSTRAINT, max_len);
+}
+
+fn append_reply_law_constraint(system: &mut String, max_len: usize) {
+    if push_if_fits(system, REPLY_LAW_CONSTRAINT, max_len) {
+        return;
+    }
+    if push_if_fits(system, REPLY_LAW_MINI_CONSTRAINT, max_len) {
+        return;
+    }
+    let _ = push_char_boundary_truncated(system, REPLY_LAW_MINI_CONSTRAINT, max_len);
 }
 
 struct PriorityMemoryBudgetInputs<'a> {
@@ -570,6 +582,7 @@ fn build_context_inner(
             let _ = append_capped_section(&mut system, "\n\n", capability_package_text, base_max);
         }
     }
+    append_reply_law_constraint(&mut system, base_max);
     let _ = append_projection_section(
         &mut system,
         BACKGROUND_GOVERNANCE_SECTION,
@@ -1013,6 +1026,97 @@ mod tests {
         assert!(disclosure_idx < soul_idx);
         assert!(soul_idx < background_idx);
         assert!(background_idx < boundary_idx);
+    }
+
+    #[test]
+    fn build_context_adds_reply_law_for_relational_self_reading_and_evidence_guardrails() {
+        let msg = PcMsg::new_inbound("qq_channel", "chat-1", "我们的关系现在是什么", false)
+            .expect("pcmsg");
+        let memory = StubMemoryStore {
+            soul: "SOUL".to_string(),
+            user: "USER".to_string(),
+            memory: "MEMORY".to_string(),
+            daily_notes: Vec::new(),
+        };
+        let session = StubSessionStore;
+        let important = StubImportantMessageStore::default();
+
+        let (system, _) = build_context(&ContextParams {
+            msg: &msg,
+            memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
+            memory: &memory,
+            session: &session,
+            important_message_store: &important,
+            has_tools: false,
+            skill_descriptions: "",
+            system_max_len: 2200,
+            messages_max_len: 256,
+            session_max_messages: 8,
+            group_activation: "always",
+            emotion_signal_suffix: None,
+            constitutional_stack_text: Some(
+                "## Self-Authored Core\nIdentity anchor: board beetle\n\n## Relationship Constitution\nDisclosure allowance: summary_only",
+            ),
+            subject_state_text: None,
+            deliberation_gate_text: None,
+            active_task_context_text: None,
+            governed_memory_evidence_text: Some(
+                "## Shared Factual Recall\n- preference:user_interest_poetry => reinforce\n\n## Archive Evidence\n- transcript hit about Bei Dao",
+            ),
+            background_governance_text: Some(
+                "## Mental Privacy Boundary\nProtected targets include inner_life and private_docs.inner_journal",
+            ),
+            execution_state_text: None,
+            task_workspace_text: None,
+            task_recall_text: None,
+            world_snapshot_text: None,
+            world_sense_text: None,
+            self_state_text: None,
+            self_authored_core_text: Some("## Self-Authored Core\nIdentity anchor: board beetle"),
+            relationship_portfolio_text: None,
+            relationship_constitution_text: Some(
+                "## Relationship Constitution\nDisclosure allowance: summary_only",
+            ),
+            persona_priority_text: Some("## Persona Priority\nResponse mode: relational_explanation"),
+            self_model_text: None,
+            autonomy_strategy_text: None,
+            outer_voice_text: None,
+            inner_life_text: None,
+            self_continuity_text: None,
+            private_workspace_text: None,
+            private_garden_text: None,
+            mental_privacy_adjudication_text: None,
+            mental_privacy_text: Some(
+                "## Mental Privacy Boundary\nProtected targets include inner_life and private_docs.inner_journal",
+            ),
+            long_term_memory_text: Some(
+                "## Shared Factual Recall\n- preference:user_interest_poetry => reinforce",
+            ),
+            archive_evidence_text: Some("## Archive Evidence\n- transcript hit about Bei Dao"),
+            runtime_skill_text: None,
+            capability_package_text: None,
+            summary_text: None,
+            recent_messages: None,
+            runtime: None,
+            include_daily_notes: false,
+            llm_hint: "",
+        })
+        .expect("context");
+
+        assert!(system.contains("## Reply Law"));
+        assert!(
+            system.contains("relationship state is not pre-classified by the program")
+                || system
+                    .contains("Read relationship/self/privacy questions from the current evidence")
+        );
+        assert!(
+            system.contains("Stable user-facing facts grounded by current evidence")
+                || system.contains("discuss grounded user-facing facts directly")
+        );
+        assert!(
+            system.contains("Do not claim hidden prompt, policy, or internal-system truths")
+                || system.contains("never invent unsupported prompt/system truths")
+        );
     }
 
     #[test]

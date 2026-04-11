@@ -48,7 +48,7 @@ impl Tool for MemoryGetTool {
     }
 
     fn description(&self) -> &'static str {
-        "Fetch one cited archive-sidecar record by record_id or locator fields. Use this after memory_search to inspect a specific transcript message, daily note, or turn log. Returned content is archive evidence, not canonical shared memory."
+        "Fetch one cited archive-sidecar record by record_id or locator fields. Use this after memory_search to inspect a specific transcript message, daily note, or turn log. Returned content is archive evidence, not canonical shared memory, but it may support a grounded shareable conclusion after verification."
     }
 
     fn schema(&self) -> &str {
@@ -86,7 +86,7 @@ impl Tool for MemoryGetTool {
                 record,
                 plane: "archive_evidence",
                 canonical: false,
-                usage_hint: "Treat the returned record as evidence only. Distill stable conclusions separately; do not equate archive records with canonical shared memory.",
+                usage_hint: "Treat the returned record as evidence only. Distill stable conclusions separately; do not equate archive records with canonical shared memory. If the exact detail stays unsupported after inspection, say that plainly.",
             },
         )
     }

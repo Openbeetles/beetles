@@ -403,8 +403,13 @@ pub fn render_personality_runtime_governance_gate_block(
     out.push_str(
         "Do not let one-turn pressure, fresh relational drift, or unstable inner material rewrite the board-level stance.\n",
     );
+    let _ = writeln!(
+        out,
+        "Preferred repair path: {}",
+        gate.repair_plan.primary_action.label()
+    );
     out.push_str(
-        "If privacy or disclosure handling is uncertain, do not expose raw inward material; explain the boundary and stay at a higher-level answer.\n",
+        "If privacy or disclosure handling is uncertain, do not expose raw inward material; explain the boundary, but stable user-facing facts may still be answered directly.\n",
     );
     if !gate.reason_summary.trim().is_empty() {
         let _ = writeln!(
@@ -413,11 +418,6 @@ pub fn render_personality_runtime_governance_gate_block(
             gate.reason_summary.trim()
         );
     }
-    let _ = writeln!(
-        out,
-        "Preferred repair path: {}",
-        gate.repair_plan.primary_action.label()
-    );
     if !gate.outstanding.is_empty() {
         let _ = writeln!(out, "Outstanding: {}", gate.outstanding.join(", "));
     }

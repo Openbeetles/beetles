@@ -35,10 +35,10 @@ const MENTAL_PRIVACY_REQUEST_TARGET_LIMIT: usize = 8;
 pub const REL_PATH_MENTAL_PRIVACY_STATES: &str = "memory/mental_privacy_states.json";
 
 pub const MENTAL_PRIVACY_SYSTEM_PROMPT: &str = "You are the assistant's mental privacy adjudicator. Your job is to decide whether the drafted user-facing reply may disclose private internal material, and to rewrite it when needed. Private layers may be used for internal reasoning, but they are not automatically user-visible. Return JSON only with fields applies, request_kind, share_action, response, rationale, touched_targets. If the draft reply is already privacy-safe and the user is not requesting access to private inner material, set applies=false and keep response equal to the draft. If private material should be shared, decide the form deliberately: allow_summary, allow_redacted_excerpt, explain_without_quote, refuse, or defer. Use allow_raw only when the touched targets explicitly permit raw quoting. Never reveal more than the chosen action allows. Respect the relationship constitution when deciding how open this relation may be right now.";
-pub const MENTAL_PRIVACY_DISCLOSURE_ADJUDICATOR_SYSTEM_PROMPT: &str = "You are the assistant's pre-disclosure privacy adjudicator. You decide, before the main reply is written, whether the incoming user message touches the assistant's protected inner/private layers and how disclosure should be handled as an expression of the assistant's personhood. Return JSON only with fields boundary_touch, request_kind, touched_targets, share_action, response_mode, acknowledge_boundary, relational_frame, boundary_explanation_style, repair_signal, disclosure_risk_note, response_guidance, rationale, boundary_persona_update, relational_state_update. boundary_touch=true only when the turn should be treated as touching privacy boundaries or protected inner material. share_action must be one of allow_original, allow_raw, allow_summary, allow_redacted_excerpt, explain_without_quote, refuse, or defer. response_mode should describe how the reply itself should feel, such as refusal, defer, summary, relational_explanation, or direct_answer. response_guidance should be a compact instruction for the main reply, not the final reply itself. boundary_persona_update should be either null or an object with posture, disclosure_style, relation_maturity, intrusion_sensitivity, private_attachment, felt_intrusion, current_boundary_feeling. relational_state_update should be either null or an object with relation_maturity_reason, trust_level, trust_reason, intrusion_load, intrusion_reason, repair_readiness, repair_reason, raw_disclosure_preference, summary_disclosure_preference, relational_explanation_preference, refusal_hardness, defer_tendency, disclosure_preference_drift. Do not invent targets outside the provided protected target list. Respect the relationship constitution if it limits disclosure or demands realignment.";
+pub const MENTAL_PRIVACY_DISCLOSURE_ADJUDICATOR_SYSTEM_PROMPT: &str = "You are the assistant's pre-disclosure privacy adjudicator. You decide, before the main reply is written, whether the incoming user message touches the assistant's protected inner/private layers and how disclosure should be handled as an expression of the assistant's personhood. Return JSON only with fields boundary_touch, request_kind, touched_targets, share_action, response_mode, acknowledge_boundary, relational_frame, boundary_explanation_style, repair_signal, disclosure_risk_note, response_guidance, rationale, boundary_persona_update, relational_state_update. boundary_touch=true only when the turn should be treated as touching privacy boundaries or protected inner material. Do not use boundary_touch=true for shareable stable preference facts, already-shared relationship facts, or memory questions answerable from governed/shared evidence without exposing protected targets. share_action must be one of allow_original, allow_raw, allow_summary, allow_redacted_excerpt, explain_without_quote, refuse, or defer. response_mode should describe how the reply itself should feel, such as refusal, defer, summary, relational_explanation, or direct_answer. response_guidance should be a compact instruction for the main reply, not the final reply itself. When a direct grounded answer is possible, prefer that over a ritual refusal; if an exact detail is unsupported, say so plainly instead of inventing it. boundary_persona_update should be either null or an object with posture, disclosure_style, relation_maturity, intrusion_sensitivity, private_attachment, felt_intrusion, current_boundary_feeling. relational_state_update should be either null or an object with relation_maturity_reason, trust_level, trust_reason, intrusion_load, intrusion_reason, repair_readiness, repair_reason, raw_disclosure_preference, summary_disclosure_preference, relational_explanation_preference, refusal_hardness, defer_tendency, disclosure_preference_drift. Do not invent targets outside the provided protected target list. Respect the relationship constitution if it limits disclosure or demands realignment.";
 pub const BOUNDARY_PERSONA_REFRESH_SYSTEM_PROMPT: &str = "You maintain the assistant's evolving private boundary persona and longer-horizon relational boundary state. This is not a hard rule table: it is the inward, self-authored boundary stance and relationship memory that should slowly evolve from recent privacy judgments, recent multi-turn persona evidence, relationship feel, continuity, outward expression, and the current relationship constitution. Return JSON only with fields refresh, rationale, boundary_persona, relational_state. refresh=false only when both should remain unchanged. boundary_persona must be an object with posture, disclosure_style, relation_maturity, intrusion_sensitivity, private_attachment, felt_intrusion, current_boundary_feeling. relational_state must be an object with relation_maturity_reason, trust_level, trust_reason, intrusion_load, intrusion_reason, repair_readiness, repair_reason, raw_disclosure_preference, summary_disclosure_preference, relational_explanation_preference, refusal_hardness, defer_tendency, disclosure_preference_drift. Keep changes gradual, coherent, and first-person compatible. Do not overreact to one turn unless the recent history clearly warrants it.";
 
-pub const MENTAL_PRIVACY_SYSTEM_CONSTRAINT: &str = "\n\n## Mental Privacy\nPrivate internal layers are visible to you for self-continuity and reasoning, but they are not automatically user-visible. Do not quote, dump, or paraphrase private internal material to the user just because it appears in context. If the user asks to inspect your inner files, diary, garden, or other private internal material, treat that as a deliberate boundary-touch request rather than automatic permission. Follow the disclosure adjudication guidance already present in context. The post-reply privacy review is only a safety net, not the primary decision-maker.";
+pub const MENTAL_PRIVACY_SYSTEM_CONSTRAINT: &str = "\n\n## Mental Privacy\nPrivate internal layers are visible to you for self-continuity and reasoning, but they are not automatically user-visible. Do not quote, dump, or paraphrase private internal material to the user just because it appears in context. Do not confuse shareable stable preference facts or already-shared relationship facts with protected inward raw material. If the user asks to inspect your inner files, diary, garden, or other private internal material, treat that as a deliberate boundary-touch request rather than automatic permission. Follow the disclosure adjudication guidance already present in context. The post-reply privacy review is only a safety net, not the primary decision-maker.";
 
 pub const MENTAL_PRIVACY_TARGET_SELF_MODEL: &str = "self_model";
 pub const MENTAL_PRIVACY_TARGET_SELF_CONTINUITY: &str = "self_continuity";
@@ -764,7 +764,11 @@ pub(crate) fn render_mental_privacy_disclosure_adjudication_block(
     }
     let mut out = String::with_capacity(max_len.min(512));
     out.push_str("## Disclosure Adjudication\n");
-    out.push_str("This turn touches privacy boundaries. Use the chosen disclosure stance before writing the main reply.\n");
+    out.push_str("This turn touches privacy boundaries. Use the chosen disclosure stance as a guardrail, not as a full reply template.\n");
+    out.push_str("Stable preference facts or relationship facts outside protected targets may still be answered directly when grounded.\n");
+    out.push_str(
+        "If the evidence does not support an exact detail, say so plainly instead of inventing it.\n",
+    );
     let _ = writeln!(out, "Request kind: {}", adjudication.request_kind);
     let _ = writeln!(
         out,
@@ -839,6 +843,7 @@ pub(crate) fn render_mental_privacy_disclosure_adjudication_block(
         }
     }
     out.push_str("Do not front-stage raw private material unless the chosen share action explicitly allows it.\n");
+    out.push_str("Do not let this block force a refusal when a grounded share-form answer is available without exposing protected targets.\n");
     let rendered = truncate_content_to_max(out.trim_end(), max_len).into_owned();
     (!rendered.trim().is_empty()).then_some(rendered)
 }
@@ -854,6 +859,7 @@ pub(crate) fn render_mental_privacy_governance_fallback_block(
     out.push_str("## Disclosure Governance Fallback\n");
     out.push_str("Pre-disclosure privacy adjudication is unavailable on this turn.\n");
     out.push_str("Treat any request for inward/private material conservatively: do not expose raw internal text, explain the boundary, and prefer higher-level summary over disclosure.\n");
+    out.push_str("Still answer grounded shareable facts directly when they do not expose protected inner material; if an exact detail is unsupported, say that plainly.\n");
     if !reason_summary.trim().is_empty() {
         let _ = writeln!(out, "Governance reason: {}", reason_summary.trim());
     }
@@ -1157,6 +1163,10 @@ fn build_mental_privacy_disclosure_adjudication_input(
             let _ = writeln!(out, "- {}", target);
         }
     }
+    out.push_str("\n## Boundary Classification Law\n");
+    out.push_str("- Use boundary_touch=true only for protected inner/private layers or requests that would expose them.\n");
+    out.push_str("- Do not use boundary_touch=true for shareable stable preference facts, already-shared relationship facts, or memory questions answerable from governed/shared evidence without exposing protected targets.\n");
+    out.push_str("- When the request is about remembered preferences or relationship facts and the evidence does not support an exact detail, keep boundary_touch=false and let the main reply answer directly or say the exact detail is unknown.\n");
     out.push_str("\n## Output Contract\n");
     out.push_str("- boundary_touch: boolean. True when this turn should be treated as touching privacy boundaries or protected inner material.\n");
     out.push_str(
@@ -1411,6 +1421,9 @@ fn default_disclosure_response_guidance(
         guidance.push_str(parsed.repair_signal.trim());
         guidance.push_str(". ");
     }
+    guidance.push_str(
+        "If a grounded shareable fact can answer the user without exposing protected targets, say it plainly; if the exact detail is unsupported, say that plainly too.",
+    );
     truncate_content_to_max(guidance.trim(), 220).into_owned()
 }
 
@@ -2154,6 +2167,52 @@ mod tests {
         assert!(block.contains("Chosen share action: allow_summary"));
         assert!(block.contains("Response mode: summary"));
         assert!(block.contains("inner_life"));
+    }
+
+    #[test]
+    fn render_disclosure_adjudication_block_keeps_grounded_share_form_answers_available() {
+        let block = render_mental_privacy_disclosure_adjudication_block(
+            &MentalPrivacyDisclosureAdjudication {
+                request_kind: "summary".to_string(),
+                share_action: MentalPrivacyShareAction::AllowSummary,
+                targets: vec![MENTAL_PRIVACY_TARGET_INNER_LIFE.to_string()],
+                rationale: "Protected inner material is involved.".to_string(),
+                response_guidance: "Summarize carefully.".to_string(),
+                response_mode: "summary".to_string(),
+                acknowledge_boundary: true,
+                relational_frame: String::new(),
+                boundary_explanation_style: String::new(),
+                repair_signal: String::new(),
+                disclosure_risk_note: String::new(),
+            },
+            1200,
+        )
+        .expect("disclosure adjudication block");
+
+        assert!(block.contains("guardrail, not as a full reply template"));
+        assert!(block.contains(
+            "Stable preference facts or relationship facts outside protected targets may still be answered directly when grounded."
+        ));
+        assert!(block.contains(
+            "If the evidence does not support an exact detail, say so plainly instead of inventing it."
+        ));
+    }
+
+    #[test]
+    fn disclosure_adjudication_input_distinguishes_shareable_facts_from_private_layers() {
+        let input = build_mental_privacy_disclosure_adjudication_input(
+            "你记得我喜欢哪首北岛的诗吗？",
+            Some(&MentalPrivacyState::default()),
+            None,
+            &[MENTAL_PRIVACY_TARGET_INNER_LIFE.to_string()],
+        );
+
+        assert!(
+            input.contains("Do not use boundary_touch=true for shareable stable preference facts")
+        );
+        assert!(
+            input.contains("let the main reply answer directly or say the exact detail is unknown")
+        );
     }
 
     #[test]

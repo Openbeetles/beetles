@@ -50,7 +50,7 @@ impl Tool for MemorySearchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Search the archive sidecar across retained transcripts, daily notes, and turn logs. Returns citation-ready evidence hits with record_id and locator. These hits are archive evidence only, not canonical shared memory."
+        "Search the archive sidecar across retained transcripts, daily notes, and turn logs. Returns citation-ready evidence hits with record_id and locator. These hits are archive evidence, not canonical shared memory, but they can support grounded shareable conclusions after distillation."
     }
 
     fn schema(&self) -> &str {
@@ -100,7 +100,7 @@ impl Tool for MemorySearchTool {
                 plane: "archive_evidence",
                 canonical: false,
                 traceability: "Each hit includes retrieval_trace with backend, matched_terms, score breakdown, and ranking/source/recency/selector reasons when available.",
-                usage_hint: "Use memory_get with record_id or locator to inspect one cited archive record before concluding.",
+                usage_hint: "Use memory_get with record_id or locator to inspect one cited archive record before concluding. Distill a grounded stable conclusion separately; if an exact detail is still unsupported, say so plainly.",
             },
         )
     }
