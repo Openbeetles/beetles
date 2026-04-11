@@ -10,24 +10,54 @@ const ESP_ERR_INVALID_STATE: i32 = 0x103;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const ESP_ERR_NOT_FOUND: i32 = 0x105;
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TaskWdtSubscriptionState {
+    Subscribed,
+    NotSubscribed,
+    Uninitialized,
+    Unknown(i32),
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+fn classify_subscription_status(status: i32) -> TaskWdtSubscriptionState {
+    match status {
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        ESP_OK => TaskWdtSubscriptionState::Subscribed,
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        ESP_ERR_NOT_FOUND => TaskWdtSubscriptionState::NotSubscribed,
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        ESP_ERR_INVALID_STATE => TaskWdtSubscriptionState::Uninitialized,
+        other => TaskWdtSubscriptionState::Unknown(other),
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn current_task_handle() -> esp_idf_svc::sys::TaskHandle_t {
+    unsafe { esp_idf_svc::sys::xTaskGetCurrentTaskHandle() }
+}
+
 /// 将当前任务加入任务看门狗。在运行 agent 循环（会发起长时间 HTTP）的线程中调用一次即可。
 /// 幂等：同一任务多次调用安全。IDF 5+ 先查 `esp_task_wdt_status`，已订阅则不再 `add`，避免 IDF 侧
 /// `task is already subscribed`（`esp_task_wdt_add` 返回 `ESP_ERR_INVALID_ARG` / 258）。IDF 4 无 status API
 /// 时仅调用 `add`，并对 `INVALID_ARG`、`INVALID_STATE` 静默。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub fn register_current_task_to_task_wdt() {
+    let current = current_task_handle();
+    if current.is_null() {
+        return;
+    }
+
     #[cfg(not(esp_idf_version_major = "4"))]
-    {
-        let st = unsafe { esp_idf_svc::sys::esp_task_wdt_status(core::ptr::null_mut()) };
-        if st == ESP_OK {
-            return;
-        }
-        if st != ESP_ERR_NOT_FOUND && st != ESP_ERR_INVALID_STATE {
-            log::warn!("[platform::task_wdt] esp_task_wdt_status failed: {}", st);
+    match classify_subscription_status(unsafe { esp_idf_svc::sys::esp_task_wdt_status(current) }) {
+        TaskWdtSubscriptionState::Subscribed => return,
+        TaskWdtSubscriptionState::NotSubscribed | TaskWdtSubscriptionState::Uninitialized => {}
+        TaskWdtSubscriptionState::Unknown(code) => {
+            log::warn!("[platform::task_wdt] esp_task_wdt_status failed: {}", code);
         }
     }
 
-    let ret = unsafe { esp_idf_svc::sys::esp_task_wdt_add(core::ptr::null_mut()) };
+    let ret = unsafe { esp_idf_svc::sys::esp_task_wdt_add(current) };
     if ret == ESP_OK || ret == ESP_ERR_INVALID_ARG {
         return;
     }
@@ -42,22 +72,27 @@ pub fn register_current_task_to_task_wdt() {}
 /// 当前任务退出前从 TWDT 取消订阅，避免短生命周期 pthread 残留在看门狗里。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub fn unregister_current_task_from_task_wdt() {
+    let current = current_task_handle();
+    if current.is_null() {
+        return;
+    }
+
     #[cfg(not(esp_idf_version_major = "4"))]
-    {
-        let st = unsafe { esp_idf_svc::sys::esp_task_wdt_status(core::ptr::null_mut()) };
-        if st == ESP_ERR_NOT_FOUND || st == ESP_ERR_INVALID_STATE {
+    match classify_subscription_status(unsafe { esp_idf_svc::sys::esp_task_wdt_status(current) }) {
+        TaskWdtSubscriptionState::Subscribed => {}
+        TaskWdtSubscriptionState::NotSubscribed | TaskWdtSubscriptionState::Uninitialized => {
             return;
         }
-        if st != ESP_OK {
+        TaskWdtSubscriptionState::Unknown(code) => {
             log::warn!(
                 "[platform::task_wdt] esp_task_wdt_status failed before delete: {}",
-                st
+                code
             );
             return;
         }
     }
 
-    let ret = unsafe { esp_idf_svc::sys::esp_task_wdt_delete(core::ptr::null_mut()) };
+    let ret = unsafe { esp_idf_svc::sys::esp_task_wdt_delete(current) };
     if ret != ESP_OK && ret != ESP_ERR_INVALID_ARG && ret != ESP_ERR_INVALID_STATE {
         log::warn!("[platform::task_wdt] esp_task_wdt_delete failed: {}", ret);
     }
@@ -82,17 +117,25 @@ pub fn feed_current_task() {
     not(esp_idf_version_major = "4")
 ))]
 pub fn feed_current_task() {
-    let st = unsafe { esp_idf_svc::sys::esp_task_wdt_status(core::ptr::null_mut()) };
-    if st == ESP_ERR_NOT_FOUND || st == ESP_ERR_INVALID_STATE {
+    let current = current_task_handle();
+    if current.is_null() {
         return;
     }
-    if st != ESP_OK {
-        log::warn!(
-            "[platform::task_wdt] esp_task_wdt_status failed before reset: {}",
-            st
-        );
-        return;
+
+    match classify_subscription_status(unsafe { esp_idf_svc::sys::esp_task_wdt_status(current) }) {
+        TaskWdtSubscriptionState::Subscribed => {}
+        TaskWdtSubscriptionState::NotSubscribed | TaskWdtSubscriptionState::Uninitialized => {
+            return;
+        }
+        TaskWdtSubscriptionState::Unknown(code) => {
+            log::warn!(
+                "[platform::task_wdt] esp_task_wdt_status failed before reset: {}",
+                code
+            );
+            return;
+        }
     }
+
     unsafe {
         let ret = esp_idf_svc::sys::esp_task_wdt_reset();
         if ret != ESP_OK && ret != ESP_ERR_NOT_FOUND {
@@ -103,3 +146,42 @@ pub fn feed_current_task() {
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub fn feed_current_task() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_subscription_status_maps_core_states() {
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        {
+            assert_eq!(
+                classify_subscription_status(ESP_OK),
+                TaskWdtSubscriptionState::Subscribed
+            );
+            assert_eq!(
+                classify_subscription_status(ESP_ERR_NOT_FOUND),
+                TaskWdtSubscriptionState::NotSubscribed
+            );
+            assert_eq!(
+                classify_subscription_status(ESP_ERR_INVALID_STATE),
+                TaskWdtSubscriptionState::Uninitialized
+            );
+        }
+    }
+
+    #[test]
+    fn classify_subscription_status_preserves_unknown_errors() {
+        assert_eq!(
+            classify_subscription_status(-77),
+            TaskWdtSubscriptionState::Unknown(-77)
+        );
+    }
+
+    #[test]
+    fn subscription_state_variants_are_exercised_in_unit_tests() {
+        let _ = TaskWdtSubscriptionState::Subscribed;
+        let _ = TaskWdtSubscriptionState::NotSubscribed;
+        let _ = TaskWdtSubscriptionState::Uninitialized;
+    }
+}

@@ -12,6 +12,7 @@ use crate::task_execution::{
     TaskLearningMaintenanceContext, TaskLearningMaintenanceInput, TaskLearningMaintenanceOutcome,
     TaskLearningStore, TaskRunStore,
 };
+use super::continuity_capsule::PostReplyContinuityInput;
 
 use super::{
     build_post_reply_continuity_drafts, evaluate_long_term_memory_extraction_turn,
@@ -502,16 +503,16 @@ fn run_continuity_capsule_maintenance(
     } else {
         (Vec::new(), Vec::new())
     };
-    let drafts = build_post_reply_continuity_drafts(
-        selected_run.as_ref(),
-        execution_state.as_ref(),
-        input.chat_id,
-        input.channel,
-        input.now_secs,
-        &artifacts,
-        &learning_records,
+    let drafts = build_post_reply_continuity_drafts(PostReplyContinuityInput {
+        run: selected_run.as_ref(),
+        execution_state: execution_state.as_ref(),
+        chat_id: input.chat_id,
+        channel: input.channel,
+        now_secs: input.now_secs,
+        artifacts: &artifacts,
+        learning_records: &learning_records,
         summary_text,
-    );
+    });
     if drafts.is_empty() {
         return Ok(ContinuityCapsuleMaintenanceOutcome::default());
     }
@@ -1902,14 +1903,14 @@ mod tests {
                 }],
             },
         };
-        let drafts = build_post_reply_continuity_drafts(
-            Some(&run),
-            None,
-            "chat-1",
-            "qq_channel",
-            30,
-            &[],
-            &[
+        let drafts = build_post_reply_continuity_drafts(PostReplyContinuityInput {
+            run: Some(&run),
+            execution_state: None,
+            chat_id: "chat-1",
+            channel: "qq_channel",
+            now_secs: 30,
+            artifacts: &[],
+            learning_records: &[
                 crate::task_execution::TaskLearningRecord {
                     learning_id: "tl-runtime".to_string(),
                     source_channel: "qq_channel".to_string(),
@@ -1961,8 +1962,8 @@ mod tests {
                     observed_at: 20,
                 },
             ],
-            None,
-        );
+            summary_text: None,
+        });
         assert_eq!(drafts.len(), 1);
         assert_eq!(drafts[0].decisions.len(), 1);
         assert!(drafts[0].decisions[0].contains("governed runtime-skill path"));
@@ -2216,11 +2217,6 @@ mod tests {
 
         let record =
             crate::skills::get_skill_content(&skill_storage, "runtime_skill__release_patch_flow")
-                .and_then(|content| {
-                    let name = "runtime_skill__release_patch_flow";
-                    let _ = name;
-                    Some(content)
-                })
                 .expect("runtime skill content");
         assert!(record.contains("Validated success count: 1"));
         assert!(record.contains("Mismatch count: 1"));

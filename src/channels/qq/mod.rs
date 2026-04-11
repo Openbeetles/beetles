@@ -20,7 +20,7 @@ pub use token::{new_shared_qq_token_cache, SharedQqTokenCache};
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use webhook::{handle_webhook, QqHandlerResult, QQ_WEBHOOK_BODY_MAX};
 
-pub use ws::run_qq_ws_loop;
+pub use ws::{run_qq_ws_loop, QqWsLoopConfig};
 
 pub(crate) fn build_inbound_message(chat_id: &str, content: &str) -> Result<PcMsg> {
     PcMsg::new_inbound(

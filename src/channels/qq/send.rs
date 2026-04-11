@@ -22,6 +22,16 @@ const QQ_MAX_MESSAGE_LEN: usize = 4096;
 const QQ_MESSAGES_BASE: &str = "https://api.sgroup.qq.com/channels";
 const QQ_V2_BASE: &str = "https://api.sgroup.qq.com/v2";
 
+struct QqSendRuntime<'a, H, F> {
+    app_id: &'a str,
+    secret: &'a str,
+    cache: &'a QqMsgIdCache,
+    shared_token_cache: &'a SharedQqTokenCache,
+    http: &'a mut Option<H>,
+    token_cache: &'a mut Option<CachedQqToken>,
+    create_http: &'a mut F,
+}
+
 /// 连通性检查：供 GET /api/channel_connectivity 使用。
 pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
     config: &AppConfig,
@@ -221,13 +231,7 @@ type QueuedQqMessage = (String, String, Option<String>);
 fn send_queued_qq_message<H, F>(
     message: &QueuedQqMessage,
     attempt: u8,
-    app_id: &str,
-    secret: &str,
-    cache: &QqMsgIdCache,
-    shared_token_cache: &SharedQqTokenCache,
-    http: &mut Option<H>,
-    token_cache: &mut Option<CachedQqToken>,
-    create_http: &mut F,
+    runtime: &mut QqSendRuntime<'_, H, F>,
 ) -> crate::error::Result<()>
 where
     H: ChannelHttpClient,
@@ -238,25 +242,25 @@ where
     let msg_start = std::time::Instant::now();
     let mut token_wait_ms: u128 = 0;
 
-    if !ensure_sender_http(http, create_http, TAG, attempt) {
+    if !ensure_sender_http(runtime.http, runtime.create_http, TAG, attempt) {
         return Err(crate::error::Error::config(TAG, "create http failed"));
     }
-    let Some(h) = http.as_mut() else {
+    let Some(h) = runtime.http.as_mut() else {
         return Err(crate::error::Error::config(
             TAG,
             "sender http missing after ensure",
         ));
     };
-    if token_cache.is_none() {
-        *token_cache = load_shared_cached_qq_token(shared_token_cache);
+    if runtime.token_cache.is_none() {
+        *runtime.token_cache = load_shared_cached_qq_token(runtime.shared_token_cache);
     }
-    let had_cached_token = cached_qq_token_value(token_cache).is_some();
+    let had_cached_token = cached_qq_token_value(runtime.token_cache).is_some();
     let token_start = std::time::Instant::now();
     let token = match ensure_cached_qq_token(
         h,
-        token_cache,
-        app_id,
-        secret,
+        runtime.token_cache,
+        runtime.app_id,
+        runtime.secret,
         "qq_send_token",
         QQ_TOKEN_CACHE_MARGIN_SECS,
     ) {
@@ -264,7 +268,7 @@ where
             if !had_cached_token {
                 token_wait_ms = token_wait_ms.saturating_add(token_start.elapsed().as_millis());
             }
-            sync_shared_cached_qq_token(shared_token_cache, token_cache);
+            sync_shared_cached_qq_token(runtime.shared_token_cache, runtime.token_cache);
             token
         }
         Err(error) => {
@@ -278,14 +282,14 @@ where
                 error,
                 token_wait_ms
             );
-            *http = None;
-            invalidate_cached_qq_token(token_cache);
-            clear_shared_cached_qq_token(shared_token_cache);
+            *runtime.http = None;
+            invalidate_cached_qq_token(runtime.token_cache);
+            clear_shared_cached_qq_token(runtime.shared_token_cache);
             return Err(error);
         }
     };
 
-    let msg_id = pop_msg_id(cache, chat_id);
+    let msg_id = pop_msg_id(runtime.cache, chat_id);
     let http_send_start = std::time::Instant::now();
     match send_one_qq(h, &token, chat_id, content, msg_id.as_deref()) {
         Ok(()) => {
@@ -316,9 +320,9 @@ where
                 http_send_start.elapsed().as_millis(),
                 msg_start.elapsed().as_millis()
             );
-            *http = None;
-            invalidate_cached_qq_token(token_cache);
-            clear_shared_cached_qq_token(shared_token_cache);
+            *runtime.http = None;
+            invalidate_cached_qq_token(runtime.token_cache);
+            clear_shared_cached_qq_token(runtime.shared_token_cache);
             Err(error)
         }
     }
@@ -343,18 +347,17 @@ pub fn run_qq_sender_loop<H, F>(
     }
     let mut http: Option<H> = None;
     let mut token_cache: Option<CachedQqToken> = None;
+    let mut runtime = QqSendRuntime {
+        app_id,
+        secret,
+        cache: &cache,
+        shared_token_cache: &shared_token_cache,
+        http: &mut http,
+        token_cache: &mut token_cache,
+        create_http: &mut create_http,
+    };
     run_buffered_sender_loop(rx, TAG, |message, attempt| {
         feed_sender_loop_wdt();
-        send_queued_qq_message(
-            message,
-            attempt,
-            app_id,
-            secret,
-            &cache,
-            &shared_token_cache,
-            &mut http,
-            &mut token_cache,
-            &mut create_http,
-        )
+        send_queued_qq_message(message, attempt, &mut runtime)
     });
 }

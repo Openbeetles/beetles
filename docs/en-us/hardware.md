@@ -31,6 +31,8 @@ The Linux Agent OS is stable.
 - The orchestrator gates work based on runtime pressure.
 - HTTP, LLM, and tool activity can be limited when memory is tight.
 - Long HTTP or LLM operations must coexist with the task watchdog.
+- The lazy ESP config-plane route worker (`http_route_exec`) stays on the standard Rust thread surface. Do not move that worker onto the raw native-task path.
+- Task watchdog registration and status checks must use the explicit current task handle. Do not rely on `NULL` status probes as a shortcut for "already subscribed".
 
 ## Build Profiles
 

@@ -1468,7 +1468,7 @@ mod tests {
         let mut cfg = default_disabled_audio_segment();
         cfg.realtime.provider = "qwen".to_string();
         cfg.realtime.model = "qwen3.5-omni-plus-realtime".to_string();
-        cfg.realtime.voice = "Cherry".to_string();
+        cfg.realtime.voice = "Tina".to_string();
         cfg.realtime.api_key = "token".to_string();
         cfg.realtime.ws_url = "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime".to_string();
         let payload = build_session_update(RealtimeProvider::Qwen, &cfg);

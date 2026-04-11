@@ -616,6 +616,6 @@ mod tests {
 
         let after = crate::metrics::snapshot();
         assert_eq!(message_id.as_deref(), Some("om_123"));
-        assert!(after.channel_http_ok >= before.channel_http_ok + 1);
+        assert!(after.channel_http_ok > before.channel_http_ok);
     }
 }

@@ -414,7 +414,7 @@ mod tests {
 
         let after = crate::metrics::snapshot();
         assert_eq!(message_id.as_deref(), Some("42"));
-        assert!(after.channel_http_ok >= before.channel_http_ok + 1);
+        assert!(after.channel_http_ok > before.channel_http_ok);
     }
 
     #[test]
@@ -432,7 +432,7 @@ mod tests {
             crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
         )
         .expect("capability");
-        assert!(after.channel_http_fail >= before.channel_http_fail + 1);
+        assert!(after.channel_http_fail > before.channel_http_fail);
         assert_eq!(
             capability.status,
             crate::orchestrator::RuntimeCapabilityStatus::Offline

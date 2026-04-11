@@ -35,6 +35,13 @@ const PUBLIC_GUILD_MESSAGES_INTENT: u64 = 1 << 30;
 const GROUP_AND_C2C_INTENT: u64 = 1 << 25;
 const QQ_TOKEN_REFRESH_SKEW_SECS: u64 = 60;
 
+pub struct QqWsLoopConfig {
+    pub app_id: String,
+    pub client_secret: String,
+    pub msg_id_cache: QqMsgIdCache,
+    pub shared_token_cache: SharedQqTokenCache,
+}
+
 #[derive(serde::Deserialize)]
 struct QqGatewayEnvelope {
     op: u64,
@@ -334,11 +341,8 @@ impl WssGatewayDriver for QqWssDriver {
 /// 长连接循环：委托 run_wss_gateway_loop，使用 QqWssDriver。
 /// create_http 与 connect 由调用方（main）注入，本模块不依赖具体平台类型。
 pub fn run_qq_ws_loop<H, C, CreateHttp, Conn>(
-    app_id: String,
-    client_secret: String,
+    config: QqWsLoopConfig,
     inbound_tx: crate::bus::InboundTx,
-    msg_id_cache: QqMsgIdCache,
-    shared_token_cache: SharedQqTokenCache,
     pending_retry: &dyn PendingRetryStore,
     create_http: CreateHttp,
     connect: Conn,
@@ -348,7 +352,12 @@ pub fn run_qq_ws_loop<H, C, CreateHttp, Conn>(
     CreateHttp: FnMut() -> Result<H>,
     Conn: FnMut(&str) -> Result<C>,
 {
-    let driver = QqWssDriver::new(app_id, client_secret, msg_id_cache, shared_token_cache);
+    let driver = QqWssDriver::new(
+        config.app_id,
+        config.client_secret,
+        config.msg_id_cache,
+        config.shared_token_cache,
+    );
     run_wss_gateway_loop(TAG, driver, inbound_tx, pending_retry, create_http, connect);
 }
 

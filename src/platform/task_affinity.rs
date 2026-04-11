@@ -15,9 +15,37 @@ pub enum TaskSpawnSurface {
     EspNativeTask,
 }
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+fn native_task_name_policy(name: &str) -> bool {
+    matches!(
+        name,
+        "agent_loop"
+            | "audio_io_worker"
+            | "bg_timer"
+            | "dispatch"
+            | "display"
+            | "heartbeat"
+            | "restart_defer"
+            | "voice_realtime"
+            | "voice_realtime_connect"
+            | "voice_session"
+            | "voice_session_worker"
+            | "wifi_worker"
+            | "qq_ws"
+            | "feishu_ws"
+            | "tg_poll"
+            | "tg_sender"
+            | "fs_sender"
+            | "dt_sender"
+            | "wc_sender"
+            | "qq_sender"
+            | "http_server"
+    )
+}
+
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 mod imp {
-    use super::{TaskCore, TaskSpawnSurface};
+    use super::{native_task_name_policy, TaskCore, TaskSpawnSurface};
     use core::ffi::c_void;
     use esp_idf_hal::cpu::Core;
     use esp_idf_hal::task;
@@ -116,31 +144,7 @@ mod imp {
     }
 
     fn should_use_native_task(name: &str) -> bool {
-        matches!(
-            name,
-            "agent_loop"
-                | "audio_io_worker"
-                | "bg_timer"
-                | "dispatch"
-                | "display"
-                | "heartbeat"
-                | "restart_defer"
-                | "voice_realtime"
-                | "voice_realtime_connect"
-                | "voice_session"
-                | "voice_session_worker"
-                | "wifi_worker"
-                | "qq_ws"
-                | "feishu_ws"
-                | "tg_poll"
-                | "tg_sender"
-                | "fs_sender"
-                | "dt_sender"
-                | "wc_sender"
-                | "qq_sender"
-                | "http_server"
-                | "http_route_exec"
-        )
+        native_task_name_policy(name)
     }
 
     fn spawn_std_thread<F>(
@@ -343,5 +347,10 @@ mod tests {
                 TaskSpawnSurface::StdThread
             );
         }
+    }
+
+    #[test]
+    fn http_route_exec_does_not_request_native_task_surface() {
+        assert!(!native_task_name_policy("http_route_exec"));
     }
 }

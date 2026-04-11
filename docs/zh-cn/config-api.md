@@ -211,6 +211,7 @@
   - 当启用唤醒词链路且未配置 realtime voice 时，当前回退语音服务商若为 `baidu`，则 `speech.api_key` 与 `speech.api_secret` 必填
   - realtime voice 的 `realtime.provider` 当前仅支持 `openai_compatible`、`qwen`、`doubao`
   - realtime voice 启用时，`realtime.api_key`、`realtime.model`、`realtime.voice`、`realtime.ws_url` 必填，且麦克风/喇叭采样率都必须为 `24000`
+  - 固件只校验字段存在性和基础格式，不会把服务商音色目录硬编码成保存拦截；后续若厂商调整可用音色，应通过前端默认值或用户配置覆盖
   - `vad.threshold` 需在 [0,1]；`silence_duration_ms` 需在 1～60000
   - `ambient_listening.sound_events` 最多 16 项，每项 1～32 字符；`check_interval_seconds` 需在 1～86400
 - **响应**：成功 200，`{"ok": true, "restart_required": true}`；校验失败 400。

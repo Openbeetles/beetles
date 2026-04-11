@@ -621,10 +621,12 @@ where
             render_state_header_partial(
                 backend,
                 *state,
-                presence_subtitle.as_deref(),
-                ip_address.as_deref(),
-                *uptime_secs,
-                *busy_phase,
+                StateHeaderSnapshot {
+                    presence_subtitle: presence_subtitle.as_deref(),
+                    ip_address: ip_address.as_deref(),
+                    uptime_secs: *uptime_secs,
+                    busy_phase: *busy_phase,
+                },
                 config.width,
                 layout,
             );
@@ -2330,13 +2332,17 @@ fn render_ip_partial<D: DrawTarget<Color = Rgb565>>(
 }
 
 /// Partial update: repaint only the state header region used by steady-state status flips.
+struct StateHeaderSnapshot<'a> {
+    presence_subtitle: Option<&'a str>,
+    ip_address: Option<&'a str>,
+    uptime_secs: u64,
+    busy_phase: bool,
+}
+
 fn render_state_header_partial<D: DrawTarget<Color = Rgb565>>(
     target: &mut D,
     state: DisplaySystemState,
-    presence_subtitle: Option<&str>,
-    ip_address: Option<&str>,
-    uptime_secs: u64,
-    busy_phase: bool,
+    snapshot: StateHeaderSnapshot<'_>,
     width: u16,
     layout: &DisplayLayout,
 ) {
@@ -2376,11 +2382,11 @@ fn render_state_header_partial<D: DrawTarget<Color = Rgb565>>(
         &StateHeaderParams {
             layout,
             state,
-            presence_subtitle,
-            ip_address,
+            presence_subtitle: snapshot.presence_subtitle,
+            ip_address: snapshot.ip_address,
             width,
-            uptime_secs,
-            busy_phase,
+            uptime_secs: snapshot.uptime_secs,
+            busy_phase: snapshot.busy_phase,
         },
     );
 }
@@ -2460,79 +2466,6 @@ fn render_pressure_partial<D: DrawTarget<Color = Rgb565>>(
         fp.llm_last_ms,
         fp.error_flash,
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::display::default_disabled_display_config;
-    use embedded_graphics_core::{
-        draw_target::DrawTarget,
-        geometry::{OriginDimensions, Size},
-        pixelcolor::Rgb565,
-        Pixel,
-    };
-
-    #[derive(Default)]
-    struct FakeBackend {
-        flush_calls: usize,
-        flush_rows_calls: Vec<(u16, u16)>,
-    }
-
-    impl OriginDimensions for FakeBackend {
-        fn size(&self) -> Size {
-            Size::new(240, 240)
-        }
-    }
-
-    impl DrawTarget for FakeBackend {
-        type Color = Rgb565;
-        type Error = Infallible;
-
-        fn draw_iter<I>(&mut self, _pixels: I) -> core::result::Result<(), Self::Error>
-        where
-            I: IntoIterator<Item = Pixel<Self::Color>>,
-        {
-            Ok(())
-        }
-    }
-
-    impl FlushRgb565 for FakeBackend {
-        fn flush(&mut self, _offset_x: i16, _offset_y: i16) -> Result<()> {
-            self.flush_calls += 1;
-            Ok(())
-        }
-
-        fn flush_rows(&mut self, _offset_x: i16, _offset_y: i16, ry: u16, rh: u16) -> Result<()> {
-            self.flush_rows_calls.push((ry, rh));
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn state_header_update_uses_partial_flush_instead_of_full_dashboard_flush() {
-        let config = default_disabled_display_config();
-        let layout = compute_layout(config.width, config.height);
-        let mut backend = FakeBackend::default();
-
-        dispatch_display_command(
-            &mut backend,
-            &config,
-            &layout,
-            &DisplayCommand::UpdateStateHeader {
-                state: DisplaySystemState::Busy,
-                presence_subtitle: None,
-                ip_address: Some("192.168.2.101".to_string()),
-                uptime_secs: 42,
-                busy_phase: true,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(backend.flush_calls, 0);
-        assert_eq!(backend.flush_rows_calls.len(), 1);
-        assert_eq!(backend.flush_rows_calls[0].0, 0);
-    }
 }
 
 /// Shared footer rendering: pressure label + progress bar + percentage text + message stats.
@@ -2859,4 +2792,77 @@ fn format_pct(val: u8, buf: &mut [u8; 5]) -> &str {
     buf[pos] = b'%';
     pos += 1;
     core::str::from_utf8(&buf[..pos]).unwrap_or("?%")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::display::default_disabled_display_config;
+    use embedded_graphics_core::{
+        draw_target::DrawTarget,
+        geometry::{OriginDimensions, Size},
+        pixelcolor::Rgb565,
+        Pixel,
+    };
+
+    #[derive(Default)]
+    struct FakeBackend {
+        flush_calls: usize,
+        flush_rows_calls: Vec<(u16, u16)>,
+    }
+
+    impl OriginDimensions for FakeBackend {
+        fn size(&self) -> Size {
+            Size::new(240, 240)
+        }
+    }
+
+    impl DrawTarget for FakeBackend {
+        type Color = Rgb565;
+        type Error = Infallible;
+
+        fn draw_iter<I>(&mut self, _pixels: I) -> core::result::Result<(), Self::Error>
+        where
+            I: IntoIterator<Item = Pixel<Self::Color>>,
+        {
+            Ok(())
+        }
+    }
+
+    impl FlushRgb565 for FakeBackend {
+        fn flush(&mut self, _offset_x: i16, _offset_y: i16) -> Result<()> {
+            self.flush_calls += 1;
+            Ok(())
+        }
+
+        fn flush_rows(&mut self, _offset_x: i16, _offset_y: i16, ry: u16, rh: u16) -> Result<()> {
+            self.flush_rows_calls.push((ry, rh));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn state_header_update_uses_partial_flush_instead_of_full_dashboard_flush() {
+        let config = default_disabled_display_config();
+        let layout = compute_layout(config.width, config.height);
+        let mut backend = FakeBackend::default();
+
+        dispatch_display_command(
+            &mut backend,
+            &config,
+            &layout,
+            &DisplayCommand::UpdateStateHeader {
+                state: DisplaySystemState::Busy,
+                presence_subtitle: None,
+                ip_address: Some("192.168.2.101".to_string()),
+                uptime_secs: 42,
+                busy_phase: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(backend.flush_calls, 0);
+        assert_eq!(backend.flush_rows_calls.len(), 1);
+        assert_eq!(backend.flush_rows_calls[0].0, 0);
+    }
 }

@@ -232,8 +232,8 @@ mod tests {
             crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
         )
         .expect("capability");
-        assert!(after.channel_http_fail >= before.channel_http_fail + 1);
-        assert!(after.errors_tls_admission >= before.errors_tls_admission + 1);
+        assert!(after.channel_http_fail > before.channel_http_fail);
+        assert!(after.errors_tls_admission > before.errors_tls_admission);
         assert_eq!(
             capability.status,
             crate::orchestrator::RuntimeCapabilityStatus::Offline
@@ -261,7 +261,7 @@ mod tests {
             crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
         )
         .expect("capability");
-        assert!(after.channel_http_ok >= before.channel_http_ok + 1);
+        assert!(after.channel_http_ok > before.channel_http_ok);
         assert_eq!(
             capability.status,
             crate::orchestrator::RuntimeCapabilityStatus::Online
@@ -285,8 +285,8 @@ mod tests {
         record_outbound_http_failure(&err);
 
         let after = crate::metrics::snapshot();
-        assert!(after.channel_http_fail >= before.channel_http_fail + 1);
-        assert!(after.errors_tls_admission >= before.errors_tls_admission + 1);
+        assert!(after.channel_http_fail > before.channel_http_fail);
+        assert!(after.errors_tls_admission > before.errors_tls_admission);
     }
 
     #[test]

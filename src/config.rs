@@ -1302,7 +1302,7 @@ fn audio_realtime_default_model(provider: &str) -> &'static str {
 
 fn audio_realtime_default_voice(provider: &str) -> &'static str {
     match provider {
-        AUDIO_REALTIME_PROVIDER_QWEN => "Cherry",
+        AUDIO_REALTIME_PROVIDER_QWEN => "Tina",
         AUDIO_REALTIME_PROVIDER_DOUBAO => "",
         _ => "alloy",
     }
@@ -2679,6 +2679,18 @@ mod tests {
         seg.speaker.sample_rate = AUDIO_REALTIME_PCM16_SAMPLE_RATE;
 
         assert!(validate_audio_segment(&seg).is_ok());
+    }
+
+    #[test]
+    fn qwen_default_voice_matches_qwen35_default_model() {
+        assert_eq!(
+            audio_realtime_default_model(AUDIO_REALTIME_PROVIDER_QWEN),
+            "qwen3.5-omni-plus-realtime"
+        );
+        assert_eq!(
+            audio_realtime_default_voice(AUDIO_REALTIME_PROVIDER_QWEN),
+            "Tina"
+        );
     }
 
     #[test]

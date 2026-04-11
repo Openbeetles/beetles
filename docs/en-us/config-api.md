@@ -209,6 +209,7 @@ Includes: `POST /api/config/wifi`, `/api/config/llm`, `/api/config/channels`, `/
   - When the wake-word path is enabled but realtime voice is not configured, the current fallback speech provider still requires its credentials; for `baidu`, both `speech.api_key` and `speech.api_secret` are required
   - `realtime.provider` currently supports only `openai_compatible`, `qwen`, and `doubao`
   - When realtime voice is enabled, `realtime.api_key`, `realtime.model`, `realtime.voice`, and `realtime.ws_url` are required, and both microphone/speaker sample rates must be `24000`
+  - The firmware validates presence/shape only; provider-specific voice catalogs are not hard-blocked in firmware and should be adjusted through frontend defaults or user config when vendors change their supported voices
   - `vad.threshold` must be in [0,1], `silence_duration_ms` in 1–60000
   - `ambient_listening.sound_events` max 16 items, each 1–32 chars; `check_interval_seconds` in 1–86400
 - **Response**: Success 200 `{"ok": true, "restart_required": true}`; validation failure 400.

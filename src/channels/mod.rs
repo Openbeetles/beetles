@@ -30,7 +30,7 @@ pub use feishu::{
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use feishu::{handle_http_event, FeishuEventResponse};
 pub use http_client::ChannelHttpClient;
-pub use qq::run_qq_ws_loop;
+pub use qq::{run_qq_ws_loop, QqWsLoopConfig};
 pub use qq::{
     flush_qq_channel_sends, new_shared_qq_token_cache, run_qq_sender_loop, QqMsgIdCache,
     SharedQqTokenCache,

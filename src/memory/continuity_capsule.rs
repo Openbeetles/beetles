@@ -42,6 +42,17 @@ const REL_PATH_CONTINUITY_CAPSULE_INDEX: &str = "memory/continuity_capsule_index
 #[cfg(target_os = "linux")]
 const CONTINUITY_CAPSULE_INDEX_CANDIDATE_LIMIT: usize = 24;
 
+pub(crate) struct PostReplyContinuityInput<'a> {
+    pub run: Option<&'a TaskRunRecord>,
+    pub execution_state: Option<&'a ExecutionState>,
+    pub chat_id: &'a str,
+    pub channel: &'a str,
+    pub now_secs: u64,
+    pub artifacts: &'a [TaskArtifactRecord],
+    pub learning_records: &'a [TaskLearningRecord],
+    pub summary_text: Option<&'a str>,
+}
+
 #[cfg(target_os = "linux")]
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 struct ContinuityCapsuleIndexSignature {
@@ -352,34 +363,28 @@ pub(crate) fn apply_continuity_capsule_drafts(
 }
 
 pub(crate) fn build_post_reply_continuity_drafts(
-    run: Option<&TaskRunRecord>,
-    execution_state: Option<&ExecutionState>,
-    chat_id: &str,
-    channel: &str,
-    now_secs: u64,
-    artifacts: &[TaskArtifactRecord],
-    learning_records: &[TaskLearningRecord],
-    summary_text: Option<&str>,
+    input: PostReplyContinuityInput<'_>,
 ) -> Vec<ContinuityCapsuleDraft> {
-    if let Some(run) = run {
+    if let Some(run) = input.run {
         return build_task_continuity_capsule_drafts(
             run,
-            execution_state,
-            chat_id,
-            channel,
-            now_secs,
-            artifacts,
-            learning_records,
+            input.execution_state,
+            input.chat_id,
+            input.channel,
+            input.now_secs,
+            input.artifacts,
+            input.learning_records,
         );
     }
-    execution_state
+    input
+        .execution_state
         .and_then(|state| {
             build_execution_continuity_capsule_draft(
                 state,
-                chat_id,
-                channel,
-                now_secs,
-                summary_text,
+                input.chat_id,
+                input.channel,
+                input.now_secs,
+                input.summary_text,
             )
         })
         .into_iter()

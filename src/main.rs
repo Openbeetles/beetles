@@ -637,16 +637,18 @@ mod tests {
 
     #[test]
     fn display_thread_stack_budget_is_large_enough_for_dashboard_render_path() {
+        let stack_budget = std::hint::black_box(beetle::util::STACK_DISPLAY);
         assert!(
-            beetle::util::STACK_DISPLAY >= 8 * 1024,
+            stack_budget >= 8 * 1024,
             "display stack budget regressed below the current 8KB floor",
         );
     }
 
     #[test]
     fn voice_session_scheduler_stack_budget_stays_shallow_after_realtime_offload() {
+        let stack_budget = std::hint::black_box(beetle::util::STACK_VOICE_CONTROL);
         assert!(
-            beetle::util::STACK_VOICE_CONTROL >= 8 * 1024,
+            stack_budget >= 8 * 1024,
             "voice_session scheduler stack regressed below the current 8KB floor",
         );
     }
@@ -2305,11 +2307,13 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                         "qq_ws_spawn",
                         move || {
                             beetle::run_qq_ws_loop(
-                                qq_id,
-                                qq_sec,
+                                beetle::QqWsLoopConfig {
+                                    app_id: qq_id,
+                                    client_secret: qq_sec,
+                                    msg_id_cache: qq_cache_ws,
+                                    shared_token_cache: qq_token_cache_ws,
+                                },
                                 qq_tx,
-                                qq_cache_ws,
-                                qq_token_cache_ws,
                                 qq_pending.as_ref(),
                                 move || http_factory(),
                                 beetle::network::connect_external_wss,

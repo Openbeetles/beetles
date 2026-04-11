@@ -275,34 +275,6 @@ impl ResourceSnapshot {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn storage_contention_risk_thresholds_round_trip() {
-        let mut metrics = crate::metrics::snapshot();
-        metrics.spiffs_lock_wait_last_us = 0;
-        metrics.spiffs_lock_hold_last_us = 0;
-        assert_eq!(
-            storage_contention_risk_from_metrics(&metrics),
-            StorageContentionRisk::Healthy
-        );
-
-        metrics.spiffs_lock_wait_last_us = 7_500;
-        assert_eq!(
-            storage_contention_risk_from_metrics(&metrics),
-            StorageContentionRisk::Cautious
-        );
-
-        metrics.spiffs_lock_wait_last_us = 60_000;
-        assert_eq!(
-            storage_contention_risk_from_metrics(&metrics),
-            StorageContentionRisk::Critical
-        );
-    }
-}
-
 /// 上次 /proc/stat 采样的总 tick 数与 idle tick 数（Linux delta CPU 采样）。
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 struct CpuSample {
@@ -416,4 +388,32 @@ fn get_process_memory_kb() -> u32 {
         }
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storage_contention_risk_thresholds_round_trip() {
+        let mut metrics = crate::metrics::snapshot();
+        metrics.spiffs_lock_wait_last_us = 0;
+        metrics.spiffs_lock_hold_last_us = 0;
+        assert_eq!(
+            storage_contention_risk_from_metrics(&metrics),
+            StorageContentionRisk::Healthy
+        );
+
+        metrics.spiffs_lock_wait_last_us = 7_500;
+        assert_eq!(
+            storage_contention_risk_from_metrics(&metrics),
+            StorageContentionRisk::Cautious
+        );
+
+        metrics.spiffs_lock_wait_last_us = 60_000;
+        assert_eq!(
+            storage_contention_risk_from_metrics(&metrics),
+            StorageContentionRisk::Critical
+        );
+    }
 }

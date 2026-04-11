@@ -4,43 +4,46 @@
 use serde_json::json;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
-fn esp_payload(
-    chip_model: &str,
+struct EspPayloadInput<'a> {
+    chip_model: &'a str,
     chip_revision: u32,
     cores: u32,
-    snap: &crate::orchestrator::ResourceSnapshot,
+    snap: &'a crate::orchestrator::ResourceSnapshot,
     heap_min_free: u64,
     uptime_secs: u64,
-    idf_version: &str,
+    idf_version: &'a str,
     wifi_sta_connected: bool,
     spiffs: serde_json::Value,
     spiffs_usage_pct: f32,
-) -> serde_json::Value {
-    let heap_internal = u64::from(snap.heap_free_internal);
-    let psram_free = u64::from(snap.heap_free_spiram);
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+fn esp_payload(input: EspPayloadInput<'_>) -> serde_json::Value {
+    let heap_internal = u64::from(input.snap.heap_free_internal);
+    let psram_free = u64::from(input.snap.heap_free_spiram);
     let heap_total = heap_internal.saturating_add(psram_free);
     json!({
         "platform": "esp32",
-        "chip_model": chip_model,
-        "chip_revision": chip_revision,
-        "cores": cores,
+        "chip_model": input.chip_model,
+        "chip_revision": input.chip_revision,
+        "cores": input.cores,
         // heap_free now matches the actual internal heap free bytes used by pressure/TLS checks.
         // Keep heap_free_total for whole-device free memory across internal SRAM + PSRAM.
         "heap_free": heap_internal,
         "heap_free_internal": heap_internal,
         "heap_free_total": heap_total,
         "psram_free": psram_free,
-        "heap_min_free": heap_min_free,
-        "heap_largest_block_internal": snap.heap_largest_block_internal,
-        "tls_fragmentation_risk": snap.tls_fragmentation_risk,
-        "uptime_secs": uptime_secs,
-        "idf_version": idf_version,
-        "pressure_level": format!("{:?}", snap.pressure),
-        "hint": snap.budget.llm_hint,
+        "heap_min_free": input.heap_min_free,
+        "heap_largest_block_internal": input.snap.heap_largest_block_internal,
+        "tls_fragmentation_risk": input.snap.tls_fragmentation_risk,
+        "uptime_secs": input.uptime_secs,
+        "idf_version": input.idf_version,
+        "pressure_level": format!("{:?}", input.snap.pressure),
+        "hint": input.snap.budget.llm_hint,
         "runtime_capabilities": crate::orchestrator::runtime_capability_summary(),
-        "wifi_sta_connected": wifi_sta_connected,
-        "spiffs": spiffs,
-        "spiffs_usage_percent": spiffs_usage_pct,
+        "wifi_sta_connected": input.wifi_sta_connected,
+        "spiffs": input.spiffs,
+        "spiffs_usage_percent": input.spiffs_usage_pct,
     })
 }
 
@@ -72,18 +75,18 @@ fn collect_esp() -> String {
         })
         .unwrap_or((serde_json::Value::Null, 0.0));
 
-    let out = esp_payload(
-        &chip_model,
+    let out = esp_payload(EspPayloadInput {
+        chip_model: &chip_model,
         chip_revision,
         cores,
-        &snap,
+        snap: &snap,
         heap_min_free,
         uptime_secs,
         idf_version,
         wifi_sta_connected,
         spiffs,
         spiffs_usage_pct,
-    );
+    });
     out.to_string()
 }
 
@@ -639,7 +642,7 @@ pub fn board_info_json_string() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::esp_payload;
+    use super::{esp_payload, EspPayloadInput};
     use crate::orchestrator::{
         pressure::{budget_for_level, PressureLevel},
         ResourceSnapshot, TlsFragmentationRisk,
@@ -649,18 +652,18 @@ mod tests {
     #[test]
     fn esp_payload_uses_heap_free_for_internal_heap_only() {
         let snap = sample_resource_snapshot();
-        let payload = esp_payload(
-            "esp32s3",
-            2,
-            2,
-            &snap,
-            69_800,
-            84,
-            "v6.0",
-            true,
-            json!({"total_bytes": 100, "used_bytes": 2, "free_bytes": 98}),
-            2.0,
-        );
+        let payload = esp_payload(EspPayloadInput {
+            chip_model: "esp32s3",
+            chip_revision: 2,
+            cores: 2,
+            snap: &snap,
+            heap_min_free: 69_800,
+            uptime_secs: 84,
+            idf_version: "v6.0",
+            wifi_sta_connected: true,
+            spiffs: json!({"total_bytes": 100, "used_bytes": 2, "free_bytes": 98}),
+            spiffs_usage_pct: 2.0,
+        });
 
         assert_eq!(payload["heap_free"].as_u64(), Some(90_700));
         assert_eq!(payload["heap_free_internal"].as_u64(), Some(90_700));
