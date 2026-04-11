@@ -88,6 +88,17 @@ ESPFLASH_PORT=/dev/cu.usbserial-xxx ./build.sh --flash
 ESP_HOSTED_C6_PORT=/dev/cu.usbserial-c6 ESPFLASH_PORT=/dev/cu.usbserial-p4 ./build.sh flash-all
 ```
 
+如果你没有设置 `BOARD` 或 `--target`，ESP 构建脚本会先在唯一检测到的串口上
+执行 `espflash board-info`（如果设置了 `ESPFLASH_PORT`，就用它），并自动识别为
+下面这些受支持的板型之一：
+
+- `esp32-s3-8mb`
+- `esp32-s3-16mb`
+- `esp32-s3-32mb`
+- `esp32-p4-nano-16mb`
+
+如果识别不到受支持板型，或者当前有多个串口，还是需要你手动设置 `BOARD`。
+
 Windows：
 
 ```powershell
@@ -101,6 +112,9 @@ $env:BOARD="esp32-p4-nano-16mb"; .\build.ps1 --flash
 $env:ESPFLASH_PORT="COM3"; .\build.ps1 --flash
 $env:ESP_HOSTED_C6_PORT="COM6"; $env:ESPFLASH_PORT="COM3"; .\build.ps1 flash-all
 ```
+
+Windows 下规则相同：如果 `BOARD` 和 `--target` 都没给，脚本会对唯一检测到的
+COM 口执行 `espflash board-info`，或者直接使用你显式设置的 `ESPFLASH_PORT`。
 
 如果你用的是 `ESP32-P4-NANO`，必须把双芯片都烧好才算完整：
 
@@ -146,6 +160,8 @@ cargo build --release --features telegram,ota
 ```
 
 板型选择由 `BOARD` 控制。构建脚本会读取 `board_presets.toml`，自动选对 target、分区表和 Flash 大小。
+如果是 ESP 构建且没有提供 `BOARD` / `--target`，`build.sh` / `build.ps1` 会先尝试
+用 `espflash board-info` 自动识别当前连接板型；识别结果不明确或不受支持时，再回到手动 `BOARD` 选择。
 
 ## 支持板型
 

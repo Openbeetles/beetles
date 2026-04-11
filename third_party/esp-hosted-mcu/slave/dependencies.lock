@@ -1,0 +1,75 @@
+dependencies:
+  cmd_system:
+    dependencies: []
+    source:
+      path: components/cmd_system
+      type: local
+    version: '*'
+  esp-qa/ping-cmd:
+    component_hash: fe97de564088c2152234a27135e04b1db0b6a1f2075a684369f4a1f537502005
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.3'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.0.0
+  esp-qa/wifi-cmd:
+    component_hash: c44a506cafc66c65c92824636ee1e851871a36315914a4eac2aa8b99b39946c2
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.3'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 0.2.11
+  espressif/iperf:
+    component_hash: f4c2beaae50478a626995130d2611c628b7a568cd0799022758c05658928410c
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.3'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 0.1.4
+  espressif/iperf-cmd:
+    component_hash: 1bb639fa395a34c72a1dacf53342c798c4c7d56731b370c5efc75063e831bf32
+    dependencies:
+    - name: espressif/iperf
+      registry_url: https://components.espressif.com
+      require: private
+      version: =0.1.4
+    - name: idf
+      require: private
+      version: '>=4.3'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 0.1.4
+  espressif/mqtt:
+    component_hash: ffdad5659706b4dc14bc63f8eb73ef765efa015bf7e9adf71c813d52a2dc9342
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.3'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.0.0
+  idf:
+    source:
+      type: idf
+    version: 6.0.0
+direct_dependencies:
+- cmd_system
+- esp-qa/ping-cmd
+- esp-qa/wifi-cmd
+- espressif/iperf
+- espressif/iperf-cmd
+- espressif/mqtt
+manifest_hash: 36c5f8f3cdf98949ee2d48f58cc7c037ab9fb6de1226962635b93fe7dcee70b9
+target: esp32c6
+version: 3.0.0

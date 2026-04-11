@@ -3,6 +3,8 @@
 set -e
 SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_ROOT"
+# shellcheck source=/dev/null
+source "$SCRIPT_ROOT/scripts/build_board_detect.sh"
 
 # Colors (build + Linux SSH deploy)
 RED='\033[0;31m'
@@ -59,18 +61,18 @@ Notes:
 EOF
 }
 
+case "${1:-}" in
+  build-c6|flash-c6|flash-all)
+    exec "$SCRIPT_ROOT/scripts/esp_hosted_c6.sh" "$@"
+    ;;
+esac
+
 # Fast-path help.
 for arg in "$@"; do
   case "$arg" in
     -h|--help) show_help; exit 0 ;;
   esac
 done
-
-case "${1:-}" in
-  build-c6|flash-c6|flash-all)
-    exec "$SCRIPT_ROOT/scripts/esp_hosted_c6.sh" "$@"
-    ;;
-esac
 
 MSG_TITLE="Beetle Build Script"
 MSG_SELECT_PLATFORM="Select build platform:"
@@ -203,6 +205,46 @@ default_sdkconfig_overlay_for_target() {
     riscv32imafc-esp-espidf) printf '%s\n' 'sdkconfig.defaults.esp32p4.board' ;;
     *) return 1 ;;
   esac
+}
+
+list_flash_ports() {
+  local ports=()
+  local f
+  if [[ "$(uname -s)" = "Linux" ]]; then
+    for f in /dev/ttyUSB* /dev/ttyACM*; do [[ -e "$f" ]] && ports+=("$f"); done
+  else
+    for f in /dev/cu.usbmodem* /dev/cu.usbserial* /dev/cu.SLAB* /dev/cu.wchusbserial* /dev/cu.UART*; do [[ -e "$f" ]] && ports+=("$f"); done
+  fi
+  printf '%s\n' "${ports[@]}"
+}
+
+autodetect_flash_port() {
+  local ports=()
+  if [[ -n "${ESPFLASH_PORT:-}" ]]; then
+    printf '%s\n' "$ESPFLASH_PORT"
+    return 0
+  fi
+  mapfile -t ports < <(list_flash_ports)
+  if [[ ${#ports[@]} -eq 1 ]]; then
+    printf '%s\n' "${ports[0]}"
+    return 0
+  fi
+  return 1
+}
+
+detect_board_from_connected_device() {
+  local port output parsed chip flash_size board
+  command -v espflash >/dev/null 2>&1 || return 1
+  port="$(autodetect_flash_port)" || return 1
+  output="$(espflash board-info --port "$port" --non-interactive 2>/dev/null)" || return 1
+  parsed="$(beetle_parse_board_info "$output")" || return 1
+  IFS=$'\t' read -r chip flash_size <<< "$parsed"
+  board="$(beetle_map_board_from_chip_flash "$chip" "$flash_size")" || return 1
+  AUTO_DETECTED_BOARD="$board"
+  AUTO_DETECTED_FLASH_PORT="$port"
+  AUTO_DETECTED_CHIP="$chip"
+  AUTO_DETECTED_FLASH_SIZE="$flash_size"
+  printf '%s\n' "$board"
 }
 
 linux_detect_pkg_manager() {
@@ -2120,6 +2162,27 @@ else
   BUILD_FEATURES=""
   BUILD_PROFILE="release-size"
 fi
+CLI_BUILD_TARGET=""
+for (( i=0; i < ${#BUILD_ARGS[@]}; i++ )); do
+  case "${BUILD_ARGS[$i]}" in
+    --target)
+      if (( i + 1 < ${#BUILD_ARGS[@]} )); then
+        CLI_BUILD_TARGET="${BUILD_ARGS[$i+1]}"
+        break
+      fi
+      ;;
+    --target=*)
+      CLI_BUILD_TARGET="${BUILD_ARGS[$i]#--target=}"
+      break
+      ;;
+  esac
+done
+if [[ -z "${BOARD:-}" && -z "$CLI_BUILD_TARGET" && "${BUILD_TARGET:-}" == "xtensa-esp32s3-espidf" ]]; then
+  DETECTED_BOARD="$(detect_board_from_connected_device || true)"
+  if [[ -n "$DETECTED_BOARD" ]]; then
+    BOARD="$DETECTED_BOARD"
+  fi
+fi
 if [[ -n "${BOARD:-}" ]]; then
   if [[ ! "$BOARD" =~ ^[a-z0-9-]+$ ]]; then
     echo "Error: BOARD must contain only [a-z0-9-]. Got: $BOARD" >&2
@@ -2160,20 +2223,9 @@ else
   BOARD_SDKCONFIG_OVERLAY=""
 fi
 # Command-line --target overrides BOARD (same as build.ps1)
-for (( i=0; i < ${#BUILD_ARGS[@]}; i++ )); do
-  case "${BUILD_ARGS[$i]}" in
-    --target)
-      if (( i + 1 < ${#BUILD_ARGS[@]} )); then
-        BUILD_TARGET="${BUILD_ARGS[$i+1]}"
-        break
-      fi
-      ;;
-    --target=*)
-      BUILD_TARGET="${BUILD_ARGS[$i]#--target=}"
-      break
-      ;;
-  esac
-done
+if [[ -n "$CLI_BUILD_TARGET" ]]; then
+  BUILD_TARGET="$CLI_BUILD_TARGET"
+fi
 # Sanitize target (no path chars)
 if [[ ! "$BUILD_TARGET" =~ ^[a-zA-Z0-9_-]+$ ]]; then
   echo "Error: Invalid --target (no path chars): $BUILD_TARGET" >&2
@@ -2216,6 +2268,9 @@ echo "  Partition table:   $PARTITION_TABLE"
 echo "  Target MCU:        ${TARGET_MCU:-(N/A)}"
 echo "  SDKCONFIG overlay: ${BOARD_SDKCONFIG_OVERLAY:-(none)}"
 echo "  Chip (for flash):  ${FLASH_CHIP:-(N/A)}"
+if [[ -n "${AUTO_DETECTED_BOARD:-}" ]]; then
+  echo "  Auto-detected:     $AUTO_DETECTED_BOARD via ${AUTO_DETECTED_CHIP:-unknown}/${AUTO_DETECTED_FLASH_SIZE:-unknown} on ${AUTO_DETECTED_FLASH_PORT:-unknown}"
+fi
 echo "  Package profile:   ${PACKAGE_PROFILE:-(none)}"
 echo "  Features:          ${BUILD_FEATURES:-(none)}"
 echo "  Profile:           $BUILD_PROFILE"
@@ -2395,11 +2450,7 @@ get_flash_port() {
     return
   fi
   PORTS=()
-  if [[ "$(uname -s)" = "Linux" ]]; then
-    for f in /dev/ttyUSB* /dev/ttyACM*; do [[ -e "$f" ]] && PORTS+=("$f"); done
-  else
-    for f in /dev/cu.usbmodem* /dev/cu.usbserial* /dev/cu.SLAB* /dev/cu.wchusbserial* /dev/cu.UART*; do [[ -e "$f" ]] && PORTS+=("$f"); done
-  fi
+  mapfile -t PORTS < <(list_flash_ports)
   if [[ ${#PORTS[@]} -eq 0 ]]; then
     echo "No serial ports found. Plug in the board or set ESPFLASH_PORT=/dev/..." >&2
     exit 1

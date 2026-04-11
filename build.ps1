@@ -54,10 +54,112 @@ function Get-DefaultSdkconfigOverlayForTarget {
   }
 }
 
+function Normalize-FlashSize {
+  param([string]$FlashSize)
+  $value = if ($null -eq $FlashSize) { "" } else { $FlashSize }
+  $value = ($value -replace '\s+', '').ToUpperInvariant()
+  switch ($value) {
+    "8MB" { return "8MB" }
+    "16MB" { return "16MB" }
+    "32MB" { return "32MB" }
+    default { return $null }
+  }
+}
+
+function Get-BoardFromChipFlash {
+  param(
+    [string]$Chip,
+    [string]$FlashSize
+  )
+  $normalized = Normalize-FlashSize -FlashSize $FlashSize
+  if (-not $normalized) { return $null }
+  switch ($Chip) {
+    "esp32p4" {
+      if ($normalized -eq "16MB") { return "esp32-p4-nano-16mb" }
+      return $null
+    }
+    "esp32s3" {
+      switch ($normalized) {
+        "8MB" { return "esp32-s3-8mb" }
+        "16MB" { return "esp32-s3-16mb" }
+        "32MB" { return "esp32-s3-32mb" }
+        default { return $null }
+      }
+    }
+    default { return $null }
+  }
+}
+
+function Get-AutodetectFlashPort {
+  if ($env:ESPFLASH_PORT) {
+    return $env:ESPFLASH_PORT
+  }
+  $ports = @([System.IO.Ports.SerialPort]::GetPortNames() | Sort-Object)
+  if ($ports.Count -eq 1) {
+    return $ports[0]
+  }
+  return $null
+}
+
+function Get-DetectedEspBoard {
+  if (-not (Get-Command espflash -ErrorAction SilentlyContinue)) {
+    return $null
+  }
+  $port = Get-AutodetectFlashPort
+  if (-not $port) {
+    return $null
+  }
+  $output = & espflash board-info --port $port --non-interactive 2>$null
+  if ($LASTEXITCODE -ne 0) {
+    return $null
+  }
+  $chip = $null
+  $flashSize = $null
+  foreach ($line in ($output | Out-String).Split([Environment]::NewLine, [StringSplitOptions]::RemoveEmptyEntries)) {
+    if (-not $chip -and $line -match '^Chip type:\s*([a-z0-9]+)') {
+      $chip = $Matches[1]
+    }
+    if (-not $flashSize -and $line -match '^Flash size:\s*([0-9]+MB)') {
+      $flashSize = $Matches[1]
+    }
+  }
+  if (-not $chip -or -not $flashSize) {
+    return $null
+  }
+  $board = Get-BoardFromChipFlash -Chip $chip -FlashSize $flashSize
+  if (-not $board) {
+    return $null
+  }
+  return [pscustomobject]@{
+    Board = $board
+    Port = $port
+    Chip = $chip
+    FlashSize = (Normalize-FlashSize -FlashSize $flashSize)
+  }
+}
+
 $buildTarget = "xtensa-esp32s3-espidf"
 $buildProfile = "release-size"
 $buildFeatures = ""
 $boardSdkconfigOverlay = $null
+$autoDetectedBoard = $null
+$cliBuildTarget = $null
+for ($i = 0; $i -lt $buildArgs.Count; $i++) {
+  if ($buildArgs[$i] -eq "--target" -and ($i + 1) -lt $buildArgs.Count) {
+    $cliBuildTarget = $buildArgs[$i + 1]
+    break
+  }
+  if ($buildArgs[$i] -like "--target=*") {
+    $cliBuildTarget = $buildArgs[$i].Substring("--target=".Length)
+    break
+  }
+}
+if (-not $env:BOARD -and -not $cliBuildTarget) {
+  $autoDetectedBoard = Get-DetectedEspBoard
+  if ($autoDetectedBoard) {
+    $env:BOARD = $autoDetectedBoard.Board
+  }
+}
 if ($env:BOARD) {
   if ($env:BOARD -notmatch '^[a-z0-9-]+$') {
     Write-Error "BOARD must contain only [a-z0-9-]. Got: $env:BOARD"
@@ -90,15 +192,8 @@ if ($env:BOARD) {
   $partitionTable = "partitions.csv"
 }
 # 若命令行已传 --target，以命令行为准
-for ($i = 0; $i -lt $buildArgs.Count; $i++) {
-  if ($buildArgs[$i] -eq "--target" -and ($i + 1) -lt $buildArgs.Count) {
-    $buildTarget = $buildArgs[$i + 1]
-    break
-  }
-  if ($buildArgs[$i] -like "--target=*") {
-    $buildTarget = $buildArgs[$i].Substring("--target=".Length)
-    break
-  }
+if ($cliBuildTarget) {
+  $buildTarget = $cliBuildTarget
 }
 # 防止路径穿越：target 仅允许字母数字、连字符、下划线
 if ($buildTarget -notmatch '^[a-zA-Z0-9_-]+$') {
@@ -138,6 +233,9 @@ function Write-BuildStatus {
   Write-Host "  Chip (for flash): $(if ($flashChipDerived) { $flashChipDerived } else { '(N/A)' })"
   Write-Host "  Partition table:   $partitionTable"
   Write-Host "  SDKCONFIG overlay: $(if ($boardSdkconfigOverlay) { $boardSdkconfigOverlay } else { '(none)' })"
+  if ($autoDetectedBoard) {
+    Write-Host "  Auto-detected:     $($autoDetectedBoard.Board) via $($autoDetectedBoard.Chip)/$($autoDetectedBoard.FlashSize) on $($autoDetectedBoard.Port)"
+  }
   Write-Host "  Features:          $(if ($buildFeatures) { $buildFeatures } else { '(none)' })"
   Write-Host "  Profile:           $buildProfile"
   if ($BeforeFlash -and $ChosenPort) {

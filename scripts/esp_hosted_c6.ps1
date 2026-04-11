@@ -166,9 +166,18 @@ switch ($command) {
   "flash-all" {
     & $PSCommandPath flash-c6
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    $env:BOARD = "esp32-p4-nano-16mb"
-    & (Join-Path $RootDir "build.ps1") --flash @rest
-    exit $LASTEXITCODE
+    $savedBoard = $env:BOARD
+    try {
+      $env:BOARD = "esp32-p4-nano-16mb"
+      & (Join-Path $RootDir "build.ps1") --flash @rest
+      exit $LASTEXITCODE
+    } finally {
+      if ($null -eq $savedBoard) {
+        Remove-Item Env:BOARD -ErrorAction SilentlyContinue
+      } else {
+        $env:BOARD = $savedBoard
+      }
+    }
   }
   default {
     throw "Unknown C6 hosted subcommand: $command"

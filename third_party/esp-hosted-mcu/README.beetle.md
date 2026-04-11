@@ -26,7 +26,8 @@ Beetle-specific integration lives outside the upstream codepath as much as possi
 
 Build reproducibility note:
 
-- `slave/dependencies.lock` is generated on the first local `idf.py build` and speeds up
-  subsequent local rebuilds
-- it is intentionally not committed because the resolved `cmd_system` dependency expands
-  `${IDF_PATH}` into a host-local path inside the lock file
+- Beetle vendors `slave/components/cmd_system` so the hosted slave manifest no longer
+  depends on `${IDF_PATH}` for that local component
+- `slave/dependencies.lock` is committed and expected to stay machine-independent
+- the remaining service dependencies are pinned by that lock file after the first verified
+  Beetle-owned build

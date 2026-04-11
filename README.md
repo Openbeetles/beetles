@@ -104,6 +104,18 @@ ESPFLASH_PORT=/dev/cu.usbserial-xxx ./build.sh --flash
 ESP_HOSTED_C6_PORT=/dev/cu.usbserial-c6 ESPFLASH_PORT=/dev/cu.usbserial-p4 ./build.sh flash-all
 ```
 
+If you do not set `BOARD` or `--target`, the ESP build scripts try `espflash board-info`
+on the only detected serial port (or on `ESPFLASH_PORT` when it is set) and auto-select
+one of these supported presets:
+
+- `esp32-s3-8mb`
+- `esp32-s3-16mb`
+- `esp32-s3-32mb`
+- `esp32-p4-nano-16mb`
+
+If no supported board can be identified, or if multiple serial ports are present, set
+`BOARD` manually.
+
 Windows:
 
 ```powershell
@@ -117,6 +129,10 @@ $env:BOARD="esp32-p4-nano-16mb"; .\build.ps1 --flash
 $env:ESPFLASH_PORT="COM3"; .\build.ps1 --flash
 $env:ESP_HOSTED_C6_PORT="COM6"; $env:ESPFLASH_PORT="COM3"; .\build.ps1 flash-all
 ```
+
+The same auto-detect rule applies on Windows: if `BOARD` and `--target` are both absent,
+the script uses `espflash board-info` on the only detected COM port, or on
+`ESPFLASH_PORT` if you set it explicitly.
 
 For `ESP32-P4-NANO`, the board is only product-complete after both chips are flashed:
 
@@ -162,6 +178,9 @@ cargo build --release --features telegram,ota
 ```
 
 Board selection is controlled by `BOARD`. The build scripts read `board_presets.toml` and choose the right target, partition table, and flash size.
+If `BOARD` and `--target` are both omitted for an ESP build, `build.sh` / `build.ps1`
+first try `espflash board-info` auto-detection on the connected board and then fall back
+to manual `BOARD` selection when the result is ambiguous or unsupported.
 
 ## Supported Boards
 
