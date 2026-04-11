@@ -125,10 +125,7 @@ pub(crate) fn cached_qq_token_value(cached_token: &Option<CachedQqToken>) -> Opt
     cached_qq_token_value_at(cached_token, Instant::now())
 }
 
-fn cached_qq_token_value_at(
-    cached_token: &Option<CachedQqToken>,
-    now: Instant,
-) -> Option<&str> {
+fn cached_qq_token_value_at(cached_token: &Option<CachedQqToken>, now: Instant) -> Option<&str> {
     cached_token
         .as_ref()
         .filter(|token| now < token.refresh_after)
@@ -153,17 +150,11 @@ pub(crate) fn sync_shared_cached_qq_token(
     shared_cache: &SharedQqTokenCache,
     cached_token: &Option<CachedQqToken>,
 ) {
-    *shared_cache
-        .inner
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = cached_token.clone();
+    *shared_cache.inner.lock().unwrap_or_else(|e| e.into_inner()) = cached_token.clone();
 }
 
 pub(crate) fn clear_shared_cached_qq_token(shared_cache: &SharedQqTokenCache) {
-    *shared_cache
-        .inner
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = None;
+    *shared_cache.inner.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 pub(crate) fn fetch_and_cache_qq_token<H: ChannelHttpClient + ?Sized>(

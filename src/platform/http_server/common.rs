@@ -96,8 +96,8 @@ mod tests {
     fn read_body_utf8_impl_respects_max_len_with_known_content_length() {
         let payload = b"hello-world";
         let mut cursor = payload.as_slice();
-        let body = read_body_utf8_impl(&mut cursor, Some(payload.len() as u64), 5)
-            .expect("read body");
+        let body =
+            read_body_utf8_impl(&mut cursor, Some(payload.len() as u64), 5).expect("read body");
         assert_eq!(body, "hello");
     }
 }

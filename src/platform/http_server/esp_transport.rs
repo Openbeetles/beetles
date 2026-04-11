@@ -609,7 +609,14 @@ fn register_observability_routes(
     config_store: &Arc<dyn ConfigStore + Send + Sync>,
     executor: &EspRouteExecutor,
 ) -> Result<()> {
-    register_esp_route_specs(server, ctx, env, config_store, executor, OBSERVABILITY_ROUTES)
+    register_esp_route_specs(
+        server,
+        ctx,
+        env,
+        config_store,
+        executor,
+        OBSERVABILITY_ROUTES,
+    )
 }
 
 #[cold]
@@ -701,12 +708,12 @@ pub(super) fn register_all_esp_routes(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "ota")]
+    use super::OTA_ROUTES;
     use super::{
         EspRouteDispatchMode, EspRouteSpec, ACTION_ROUTES, MEMORY_AND_SKILL_ROUTES,
         OBSERVABILITY_ROUTES, PAIRING_AND_CONFIG_ROUTES, STATIC_PAGE_ROUTES,
     };
-    #[cfg(feature = "ota")]
-    use super::OTA_ROUTES;
     use embedded_svc::http::Method;
 
     fn dispatch_mode_for(path: &str, method: Method) -> Option<EspRouteDispatchMode> {

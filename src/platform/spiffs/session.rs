@@ -583,13 +583,12 @@ impl SessionStore for SpiffsSessionStore {
                         None,
                     ),
                     None => {
-                        let snapshot =
-                            load_session_snapshot_unlocked(
-                                &path,
-                                chat_id,
-                                write_header,
-                                SessionRepairMode::Immediate,
-                            )?;
+                        let snapshot = load_session_snapshot_unlocked(
+                            &path,
+                            chat_id,
+                            write_header,
+                            SessionRepairMode::Immediate,
+                        )?;
                         let state = SessionAppendState::from_snapshot(&snapshot, write_header);
                         let messages = snapshot.messages;
                         counts.insert(chat_id.to_string(), state);
@@ -952,14 +951,13 @@ mod tests {
         let raw = std::fs::read(&path).expect("read after load");
         assert_eq!(raw, malformed);
 
-        let snapshot =
-            load_session_snapshot_unlocked(
-                &path,
-                &chat_id,
-                write_header,
-                SessionRepairMode::Deferred,
-            )
-            .expect("snapshot");
+        let snapshot = load_session_snapshot_unlocked(
+            &path,
+            &chat_id,
+            write_header,
+            SessionRepairMode::Deferred,
+        )
+        .expect("snapshot");
         assert!(snapshot.needs_repair);
 
         let _ = std::fs::remove_file(&path);

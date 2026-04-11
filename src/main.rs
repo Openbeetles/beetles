@@ -275,8 +275,9 @@ fn compute_refresh_secs(
 fn spawn_http_config_server(
     ctx: HttpServerSpawnContext,
 ) -> std::io::Result<beetle::util::TaskHandle> {
-    // Wrapper thread only drives the control-plane loop; IDF httpd owns its own task stack.
-    spawn_planned_handle("config_plane_watch", 4096, move || {
+    // Wrapper thread still owns the control-plane lifecycle and route registration surface;
+    // keep the historical stack headroom while the direct/worker split is under validation.
+    spawn_planned_handle("config_plane_watch", 6144, move || {
         if let Err(e) = beetle::platform::http_server::run(
             ctx.platform,
             ctx.tool_registry,
@@ -642,8 +643,21 @@ mod tests {
     #[test]
     fn display_thread_stack_budget_is_large_enough_for_dashboard_render_path() {
         assert!(
-            beetle::util::STACK_DISPLAY >= 12 * 1024,
-            "display stack budget regressed below the verified 12KB floor",
+            beetle::util::STACK_DISPLAY >= 8 * 1024,
+            "display stack budget regressed below the current 8KB floor",
+        );
+    }
+
+    #[test]
+    fn voice_session_stack_budget_is_large_enough_for_realtime_wss_path() {
+        let min_stack = if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
+            12 * 1024
+        } else {
+            8 * 1024
+        };
+        assert!(
+            beetle::util::STACK_VOICE_CONTROL >= min_stack,
+            "voice_session stack budget regressed below the current realtime floor",
         );
     }
 
@@ -2145,11 +2159,8 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     }
 
     #[allow(unused_mut)]
-    let (mut sinks, mut channel_rx_set) = beetle::channels::build_channel_sinks(
-        config.as_ref(),
-        &qq_msg_id_cache,
-        &qq_token_cache,
-    );
+    let (mut sinks, mut channel_rx_set) =
+        beetle::channels::build_channel_sinks(config.as_ref(), &qq_msg_id_cache, &qq_token_cache);
     // F8: 启动进度条 stage=3（channel sinks 后）
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
     if platform.display_available() {

@@ -88,6 +88,19 @@ fn check_esp(stage: &'static str, ret: i32) -> Result<()> {
     Ok(())
 }
 
+/// Convert a raw 32-bit I2S microphone sample into the 16-bit PCM amplitude
+/// expected by the rest of the voice pipeline.
+///
+/// INMP441-style microphones deliver left-justified PCM inside 32-bit I2S
+/// frames on ESP32-S3. The xiaozhi reference path shifts by 12 bits before
+/// saturating into i16; matching that gain avoids starving WakeNet with a
+/// needlessly attenuated signal.
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn mic_i2s_sample_to_pcm16(raw: i32) -> i16 {
+    let value = raw >> 12;
+    value.clamp(-(i16::MAX as i32), i16::MAX as i32) as i16
+}
+
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn read_mic_i2s_pcm16(mic: &mut MicState, out: &mut [i16]) -> Result<usize> {
     if out.is_empty() {
@@ -120,7 +133,7 @@ fn read_mic_i2s_pcm16(mic: &mut MicState, out: &mut [i16]) -> Result<usize> {
     })?;
     let samples_read = bytes_read / 4;
     for i in 0..samples_read {
-        out[i] = (buf32[i] >> 16) as i16;
+        out[i] = mic_i2s_sample_to_pcm16(buf32[i]);
     }
     crate::platform::task_wdt::feed_current_task();
     Ok(samples_read)
@@ -216,6 +229,9 @@ fn init_mic_channel(seg: &AudioSegment) -> Result<MicState> {
         ws_width: i2s_data_bit_width_t_I2S_DATA_BIT_WIDTH_32BIT,
         ws_pol: false,
         bit_shift: true, // Philips standard
+        left_align: true,
+        big_endian: false,
+        bit_order_lsb: false,
         ..unsafe { core::mem::zeroed() }
     };
 
@@ -336,6 +352,9 @@ fn init_speaker_channel(seg: &AudioSegment) -> Result<SpeakerState> {
         ws_width: i2s_data_bit_width_t_I2S_DATA_BIT_WIDTH_32BIT,
         ws_pol: false,
         bit_shift: true,
+        left_align: true,
+        big_endian: false,
+        bit_order_lsb: false,
         ..unsafe { core::mem::zeroed() }
     };
 
@@ -1295,8 +1314,9 @@ impl Drop for AudioPipelineState {
 #[cfg(test)]
 mod tests {
     use super::{
-        should_read_mic_frame, AUDIO_MIC_FRAME_SAMPLES, AUDIO_MIC_I2S_STAGING_SAMPLES,
-        AUDIO_SPEAKER_FRAME_SAMPLES, AUDIO_SPEAKER_I2S_STAGING_SAMPLES,
+        mic_i2s_sample_to_pcm16, should_read_mic_frame, AUDIO_MIC_FRAME_SAMPLES,
+        AUDIO_MIC_I2S_STAGING_SAMPLES, AUDIO_SPEAKER_FRAME_SAMPLES,
+        AUDIO_SPEAKER_I2S_STAGING_SAMPLES,
     };
 
     #[test]
@@ -1320,5 +1340,16 @@ mod tests {
     fn i2s_staging_buffers_cover_worker_frame_sizes() {
         assert!(AUDIO_MIC_I2S_STAGING_SAMPLES >= AUDIO_MIC_FRAME_SAMPLES);
         assert!(AUDIO_SPEAKER_I2S_STAGING_SAMPLES >= AUDIO_SPEAKER_FRAME_SAMPLES);
+    }
+
+    #[test]
+    fn mic_i2s_left_justified_24bit_sample_preserves_expected_gain() {
+        assert_eq!(mic_i2s_sample_to_pcm16(1024 << 12), 1024);
+        assert_eq!(mic_i2s_sample_to_pcm16(0x07ff_f000), i16::MAX);
+    }
+
+    #[test]
+    fn mic_i2s_conversion_saturates_negative_peak_like_reference() {
+        assert_eq!(mic_i2s_sample_to_pcm16((-50_000i32) << 12), -i16::MAX);
     }
 }

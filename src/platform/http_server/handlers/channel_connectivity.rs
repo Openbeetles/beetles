@@ -43,9 +43,21 @@ mod tests {
 
     #[test]
     fn live_probe_guard_activates_for_unsettled_wifi_or_fragmentation() {
-        assert!(should_use_stale_snapshot(false, TlsFragmentationRisk::Healthy));
-        assert!(should_use_stale_snapshot(true, TlsFragmentationRisk::Critical));
-        assert!(should_use_stale_snapshot(true, TlsFragmentationRisk::Cautious));
-        assert!(!should_use_stale_snapshot(true, TlsFragmentationRisk::Healthy));
+        assert!(should_use_stale_snapshot(
+            false,
+            TlsFragmentationRisk::Healthy
+        ));
+        assert!(should_use_stale_snapshot(
+            true,
+            TlsFragmentationRisk::Critical
+        ));
+        assert!(should_use_stale_snapshot(
+            true,
+            TlsFragmentationRisk::Cautious
+        ));
+        assert!(!should_use_stale_snapshot(
+            true,
+            TlsFragmentationRisk::Healthy
+        ));
     }
 }

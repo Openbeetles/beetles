@@ -81,8 +81,10 @@ pub fn run(
         let server_config = Configuration {
             max_open_sockets: MAX_OPEN_SOCKETS,
             max_uri_handlers: 96,
-            // Route heavy work is offloaded to `http_route_exec`; keep the IDF callback task lean.
-            stack_size: 12 * 1024,
+            // Direct-dispatch config/status routes still execute on the IDF callback task.
+            // Keep the HTTPD stack at the pre-regression budget until the control-plane split
+            // is revalidated on hardware.
+            stack_size: 16 * 1024,
             ..Default::default()
         };
 

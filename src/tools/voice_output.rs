@@ -250,7 +250,10 @@ fn split_voice_output_segments(text: &str, max_bytes: usize) -> Vec<String> {
 
         if !current.is_empty() || !ch.is_whitespace() {
             current.push(ch);
-            if matches!(ch, '，' | '。' | '！' | '？' | ',' | '.' | '!' | '?' | ';' | '；' | '\n') {
+            if matches!(
+                ch,
+                '，' | '。' | '！' | '？' | ',' | '.' | '!' | '?' | ';' | '；' | '\n'
+            ) {
                 last_soft_break = Some(current.len());
             }
         }

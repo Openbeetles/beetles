@@ -5,7 +5,7 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 
-# PSRAM 8MB Octal；ALWAYSINTERNAL=32（仅更小对象优先走 internal）+ RESERVE_INTERNAL=96KB。
+# PSRAM 8MB Octal；ALWAYSINTERNAL=32（仅最小对象优先走 internal）+ RESERVE_INTERNAL=96KB。
 # P1/P2 已收窄常驻执行面并把关键 TLS/WSS 线程收回到受控任务面，
 # 但 Beetle 在启动峰值仍可能出现 agent + voice + ws + sender + config bootstrap 并存，
 # 因此这里只做保守回收。

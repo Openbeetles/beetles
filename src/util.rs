@@ -923,14 +923,14 @@ pub fn is_private_url(url: &str) -> bool {
 // | agent_loop                            | STACK_AGENT_LOOP       | 32 KB | 64 KB |
 // | tg_sender, qq_sender, fs/dt/wc_sender | STACK_CHANNEL_SENDER   | 8 KB  | 64 KB |
 // | tg_poll                               | STACK_CHANNEL_SENDER   | 8 KB  | 64 KB |
-// | display                               | STACK_DISPLAY          | 12 KB | 12 KB | ← no TLS, but dashboard/render path + SPI flush no longer fits the old 6 KB budget
+// | display                               | STACK_DISPLAY          | 8 KB  | 8 KB  | ← no TLS; recover 4KB internal SRAM while keeping a safer floor above the old 6 KB budget
 // | audio_io_worker                       | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS, I2S + WakeNet NN
-// | http_server                           | (inline 4096)          | 4 KB  | 4 KB  | ← wrapper thread only; IDF httpd has its own task
+// | http_server                           | (inline 6144)          | 6 KB  | 6 KB  | ← wrapper thread owns config-plane lifecycle; keep pre-regression headroom
 // | http_route_exec                       | STACK_HTTP_ROUTE_WORKER| 32 KB | 32 KB | ← operator/memory surface + continuity inspection now run here
 // | dispatch                              | STACK_DISPATCH         | 6 KB  | 6 KB  | ← 常驻逻辑只做 admission/retry/cooldown，不承接重执行链
 // | bg_timer                              | STACK_BG_TIMER         | 16 KB | 16 KB | ← heartbeat + thread/runtime snapshots + cron/self-runtime
 // | heartbeat, cli_repl                  | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS
-// | voice_session                         | STACK_VOICE_CONTROL    | 8 KB  | 8 KB  | ← 常驻调度线程仅 intake/coalesce；重活已下沉到 inline realtime 或 worker
+// | voice_session                         | STACK_VOICE_CONTROL    | 12 KB | 8 KB  | ← ESP realtime 唤醒链路 inline 跑 WSS/voice-exclusive，8KB 已实机溢出
 // | voice_session_worker                  | STACK_VOICE_SESSION    | 16 KB | 64 KB | ← STT + TTS HTTPS
 // ---------------------------------------------------------------------------
 
@@ -972,16 +972,15 @@ pub const STACK_CHANNEL_SENDER: usize = LINUX_RUSTLS_THREAD_STACK;
 pub const STACK_DISPATCH: usize = 6 * 1024;
 
 /// `display`：显示刷新线程。
-/// 早期 6KB 预算在启动页仍可工作，但当前 steady-state 会走完整 dashboard 渲染、
-/// busy/recovery 态切换、footer/channel partial update 和 SPI flush 链，ESP 实测已溢出。
-/// 这里统一收口为常量，避免再次写回过期 inline 数字。
-pub const STACK_DISPLAY: usize = 12 * 1024;
+/// 6KB 已在 steady-state dashboard/render/SPI flush 路径上溢出；
+/// 当前先收口到 8KB，优先回收 4KB internal SRAM 给 TLS/WSS，同时保留高于旧 6KB 的安全边际。
+pub const STACK_DISPLAY: usize = 8 * 1024;
 
 /// `voice_session`：语音会话调度线程。
-/// 常驻线程只做事件 intake / 合并 / worker 拉起；ESP realtime 直跑时也不再额外常驻
-/// 第二条 worker stack，因此预算收回到 8KB。
+/// 常驻线程主要做事件 intake / 合并 / worker 拉起；但 ESP realtime 唤醒链路会 inline
+/// 执行 external WSS suspend + realtime WSS connect，8KB 已在实机上触发 stack overflow。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub const STACK_VOICE_CONTROL: usize = 8 * 1024;
+pub const STACK_VOICE_CONTROL: usize = 12 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_VOICE_CONTROL: usize = 8192;
 
