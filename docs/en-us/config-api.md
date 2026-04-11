@@ -14,8 +14,9 @@ If you only want to bring up a device and use the built-in configuration flow, r
 
 ## Network and access
 
-- **SoftAP**: After power-on the device starts a hotspot; SSID is fixed as **Beetle** (no password). When connected to this hotspot, use **http://192.168.4.1** (matches firmware).
-- **STA**: If WiFi is configured and the device is connected to the user’s router, the same HTTP service is reachable on the STA network; use the LAN address assigned by the router.
+- **ESP SoftAP**: ESP firmware starts a hotspot named **Beetle** (no password) on first boot. When connected to that hotspot, use **http://192.168.4.1**.
+- **Linux inherited WiFi**: If the Linux SBC already has a valid system WiFi connection, Beetle inherits it and the same HTTP service is reachable on the device's current LAN IP.
+- **Linux fallback provisioning**: Beetle starts its own hotspot/provisioning fallback on Linux only when the system does not currently have a valid WiFi connection.
 - **CORS**: All responses for `/api/*` and `GET /` must include `Access-Control-Allow-Origin: *`. OPTIONS returns 200 with `Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS` and `Access-Control-Allow-Headers: Content-Type, X-Pairing-Code, X-CSRF-Token` (case-insensitive matches apply in practice), so the external config UI can call the API cross-origin.
 
 ## Pairing code and auth

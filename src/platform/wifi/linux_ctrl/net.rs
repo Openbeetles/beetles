@@ -4,6 +4,7 @@
 use crate::error::{Error, Result};
 use std::ffi::CString;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 pub fn setup_ap_address(iface: &str, cidr: &str) -> Result<()> {
@@ -16,6 +17,10 @@ pub fn read_sta_ip(iface: &str) -> Result<Option<String>> {
 
 pub fn read_primary_lan_ipv4() -> Result<Option<String>> {
     super::net_rt::read_primary_lan_ipv4()
+}
+
+pub fn default_route_iface_name() -> Result<Option<String>> {
+    super::net_rt::default_route_iface_name()
 }
 
 pub fn ensure_root_or_cap_net_admin() -> Result<()> {
@@ -64,6 +69,17 @@ pub fn wait_iface_kernel_ready(name: &str, stage: &'static str) -> Result<()> {
 /// 无信道信息（未关联/驱动未上报）时返回 `Ok(None)`。
 pub fn read_wifi_channel(iface: &str) -> Result<Option<u8>> {
     super::nl80211::get_interface_channel(iface)
+}
+
+/// 判断 WiFi 接口当前是否存在有效链路。Linux SBC 上以 sysfs `carrier` 为准，
+/// 避免为只读继承路径拉起 Beetle 自己的网络守护进程。
+pub fn wifi_associated(iface: &str) -> Result<bool> {
+    let path: PathBuf = Path::new("/sys/class/net").join(iface).join("carrier");
+    let raw = std::fs::read_to_string(&path).map_err(|e| Error::Other {
+        source: Box::new(e),
+        stage: "wifi_assoc_state",
+    })?;
+    Ok(raw.trim() == "1")
 }
 
 /// 删除虚拟接口（nl80211 DEL_INTERFACE）；best-effort，接口不存在时忽略错误。

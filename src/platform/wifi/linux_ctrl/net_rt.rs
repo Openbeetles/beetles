@@ -72,6 +72,15 @@ pub fn read_primary_lan_ipv4() -> Result<Option<String>> {
     read_sta_ip(&iface).map_err(|e| e.with_stage("lan_ip"))
 }
 
+/// 返回当前默认路由出口接口名；用于判断当前有效上行是否正走 WiFi 接口。
+pub fn default_route_iface_name() -> Result<Option<String>> {
+    let raw = std::fs::read_to_string("/proc/net/route").map_err(|e| Error::Other {
+        source: Box::new(e),
+        stage: "default_route_iface",
+    })?;
+    Ok(default_route_iface(&raw))
+}
+
 async fn read_sta_ip_async(iface: &str) -> Result<Option<String>> {
     let (connection, handle, _) = new_connection().map_err(|e| Error::io("wifi_sta_ip", e))?;
     tokio::spawn(connection);

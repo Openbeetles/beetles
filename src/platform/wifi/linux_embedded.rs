@@ -11,6 +11,7 @@ use crate::platform::wifi::linux_ctrl::{
     capability::{self, PhyCapabilities},
     hostapd, iw_scan, net, process, wpa,
 };
+use crate::platform::wifi::linux_startup_policy::{classify_linux_wifi_startup, LinuxWifiStartup};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -36,7 +37,7 @@ pub trait WifiScan: Send + Sync {
 #[derive(Clone)]
 pub struct WifiScanHandle {
     iface: String,
-    /// 无并发 STA 时不用 `wpa_cli`，改用 `iw dev … scan`。
+    /// 继承系统 WiFi 或无并发 STA 时不用 `wpa_cli`，改用 `iw dev … scan`。
     scan_via_iw: bool,
 }
 
@@ -193,10 +194,63 @@ fn log_phy_caps(caps: &PhyCapabilities) {
     );
 }
 
+fn existing_effective_wifi_startup(iface: &str) -> LinuxWifiStartup {
+    let associated = match net::wifi_associated(iface) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!(
+                "[{}] WiFi link-state probe failed on '{}': {}",
+                TAG,
+                iface,
+                e
+            );
+            return LinuxWifiStartup::Fallback;
+        }
+    };
+    let sta_ip = match net::read_sta_ip(iface) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("[{}] WiFi IPv4 probe failed on '{}': {}", TAG, iface, e);
+            return LinuxWifiStartup::Fallback;
+        }
+    };
+    let default_route_iface = match net::default_route_iface_name() {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("[{}] default-route probe failed: {}", TAG, e);
+            return LinuxWifiStartup::Fallback;
+        }
+    };
+    classify_linux_wifi_startup(
+        associated,
+        sta_ip.as_deref(),
+        default_route_iface.as_deref(),
+        iface,
+    )
+}
+
 pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
-    net::ensure_root_or_cap_net_admin()?;
     let iface = capability::detect_wifi_iface()?;
     set_iface(&iface);
+
+    if let LinuxWifiStartup::Inherit { ip, scan_via_iw } = existing_effective_wifi_startup(&iface) {
+        log::info!(
+            "[{}] inheriting existing effective WiFi on '{}' with IPv4 {}",
+            TAG,
+            iface,
+            ip
+        );
+        set_sta_state(Some(ip));
+        start_sta_probe_thread(iface.clone());
+        return Ok(Some(WifiScanHandle { iface, scan_via_iw }));
+    }
+
+    net::ensure_root_or_cap_net_admin()?;
+    log::info!(
+        "[{}] no effective system WiFi on '{}'; entering Beetle-managed provisioning path",
+        TAG,
+        iface
+    );
 
     let caps = capability::probe_phy(&iface)?;
     log_phy_caps(&caps);

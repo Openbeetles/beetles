@@ -61,6 +61,12 @@ pub fn bootstrap_config_and_wifi(platform: &Arc<dyn Platform>) -> (Arc<AppConfig
     }
     let wifi_init_ok = match platform.connect_wifi(config.as_ref()) {
         Ok(()) => {
+            #[cfg(target_os = "linux")]
+            log::info!(
+                "[{}] WiFi stack ready (Linux inherited valid WiFi or provisioning fallback is ready)",
+                TAG
+            );
+            #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
             log::info!(
                 "[{}] WiFi stack ready (SoftAP + scan; STA may still be negotiating)",
                 TAG

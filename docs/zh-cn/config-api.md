@@ -14,8 +14,9 @@
 
 ## 网络与访问
 
-- 首次上电后，设备会开一个名为 **Beetle** 的热点，不设密码。连上后用 **http://192.168.4.1** 访问。
-- 如果设备已经连上你自己的路由器，也可以直接用局域网 IP 访问同一套接口。
+- ESP 固件首次上电后会开一个名为 **Beetle** 的热点，不设密码。连上后用 **http://192.168.4.1** 访问。
+- Linux 小板如果系统当前已经连上一个有效的 WiFi，Beetle 会直接继承这条连接；这时请直接使用设备当前的局域网 IP。
+- Linux 小板只有在当前没有有效 WiFi 连接时，才会进入 Beetle 自带热点 / 配网兜底路径。
 - 接口支持浏览器跨域调用。`/api/*` 和 `GET /` 会带 `Access-Control-Allow-Origin: *`；`OPTIONS` 预检返回 200，并带 `Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS`、`Access-Control-Allow-Headers: Content-Type, X-Pairing-Code, X-CSRF-Token` 等头，方便外部配置页直接访问。
 
 ## 配对码和访问规则

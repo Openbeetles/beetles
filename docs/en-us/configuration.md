@@ -15,6 +15,12 @@ If you are building your own frontend or script, read [config-api.md](config-api
 
 ## First-Time Setup
 
+Linux SBC builds differ slightly from ESP:
+
+- If the Linux system already has a valid WiFi connection, Beetle inherits that connection and you should use the device's current LAN IP.
+- Beetle enters its own hotspot/provisioning fallback only when Linux does not currently have a valid WiFi connection.
+- ESP firmware still follows the default hotspot-first flow.
+
 ### Step 1: connect to the hotspot
 
 On first boot, the device opens a hotspot named **Beetle**.
@@ -60,6 +66,7 @@ You have two common options:
 
 - While connected to the hotspot: use **http://192.168.4.1**
 - While on the same LAN: use the device's router-assigned IP
+- On Linux SBC builds that inherited system WiFi at boot, the LAN IP is the primary address; `192.168.4.1` is not guaranteed to exist
 
 ### Option B: use the external web UI
 
@@ -119,7 +126,7 @@ See [config-api.md](config-api.md) for exact response formats.
 
 ## Common Problems
 
-- Cannot open the device: reconnect to hotspot **Beetle** and retry `http://192.168.4.1`
+- Cannot open the device: on Linux SBC builds, first confirm whether Beetle inherited an existing system WiFi connection; if not, reconnect to hotspot **Beetle** and retry `http://192.168.4.1`
 - Cannot save config: pairing code or CSRF is missing/expired
 - Device is online but channels do not work: check credentials and allowed chat IDs
 - Device booted but hardware control is missing: check `hardware.json` and whether `device_control` was registered
