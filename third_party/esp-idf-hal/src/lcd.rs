@@ -151,10 +151,10 @@ pub mod config {
             let color_format: lcd_color_format_t = pixel_format.to_color_format();
             let esp_timing: esp_lcd_video_timing_t = video_timing.into();
 
+            #[allow(unused_mut)]
             let mut dpi_config = esp_lcd_dpi_panel_config_t {
                 virtual_channel: 0,
                 dpi_clk_src: soc_periph_mipi_dsi_dpi_clk_src_t_MIPI_DSI_DPI_CLK_SRC_DEFAULT,
-                pixel_format: pixel_format.to_rgb_pixel_format(),
                 in_color_format: color_format,
                 out_color_format: color_format,
                 num_fbs: 1,
@@ -162,7 +162,11 @@ pub mod config {
                 dpi_clock_freq_mhz: dpi_clock_freq_mhz as _,
                 ..unsafe { core::mem::zeroed() }
             };
-            dpi_config.flags.set_use_dma2d(1);
+            #[cfg(not(esp32p4))]
+            {
+                dpi_config.pixel_format = pixel_format.to_rgb_pixel_format();
+                dpi_config.flags.set_use_dma2d(1);
+            }
 
             Self {
                 bus_config,
@@ -228,9 +232,23 @@ pub mod config {
 
         /// Enable or disable DMA2D for pixel data transfer (default: enabled)
         #[must_use]
-        pub fn use_dma2d(mut self, use_dma2d: bool) -> Self {
-            self.dpi_config.flags.set_use_dma2d(use_dma2d as u32);
-            self
+        pub fn use_dma2d(self, use_dma2d: bool) -> Self {
+            #[cfg(not(esp32p4))]
+            let mut this = self;
+            #[cfg(not(esp32p4))]
+            {
+                this.dpi_config.flags.set_use_dma2d(use_dma2d as u32);
+            }
+            #[cfg(esp32p4)]
+            let _ = use_dma2d;
+            #[cfg(not(esp32p4))]
+            {
+                this
+            }
+            #[cfg(esp32p4)]
+            {
+                self
+            }
         }
 
         // Accessor methods
@@ -288,7 +306,7 @@ pub mod config {
             let mut panel_config: esp_lcd_panel_dev_config_t = unsafe { core::mem::zeroed() };
 
             panel_config.bits_per_pixel = bits_per_pixel;
-            panel_config.__bindgen_anon_1.rgb_ele_order = rgb_order.into();
+            panel_config.rgb_ele_order = rgb_order.into();
 
             panel_config
         }
@@ -428,6 +446,7 @@ pub mod config {
             }
         }
 
+        #[cfg(not(esp32p4))]
         /// Convert to `lcd_color_rgb_pixel_format_t`
         pub fn to_rgb_pixel_format(&self) -> lcd_color_rgb_pixel_format_t {
             match self {
@@ -452,9 +471,7 @@ pub mod config {
                 PixelFormat::Rgb565 | PixelFormat::Bgr565 => {
                     lcd_color_format_t_LCD_COLOR_FMT_RGB565
                 }
-                PixelFormat::Rgb666 | PixelFormat::Bgr666 => {
-                    lcd_color_format_t_LCD_COLOR_FMT_RGB666
-                }
+                PixelFormat::Rgb666 | PixelFormat::Bgr666 => lcd_color_format_t_LCD_COLOR_FMT_RGB888,
             }
         }
     }
@@ -821,7 +838,7 @@ impl<'d, S: DpiPanelState> LcdDriver<'d, S> {
     /// Requires that `set_control_panel()` has been called first.
     pub fn set_display_off(&self, off: bool) -> Result<(), EspError> {
         let panel = self.require_control_panel()?;
-        unsafe { esp!(esp_lcd_panel_disp_off(panel, off)) }
+        unsafe { esp!(esp_lcd_panel_disp_on_off(panel, !off)) }
     }
 
     /// Enter or exit sleep mode (low power mode)

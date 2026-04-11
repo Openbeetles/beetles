@@ -338,19 +338,17 @@ fn esp_dispatch_route<C: Connection>(
     store: &Arc<dyn ConfigStore + Send + Sync>,
     executor: &EspRouteExecutor,
     mut req: Request<C>,
-    method: Method,
-    body_mode: EspBodyMode,
     spec: EspRouteSpec,
 ) -> HandlerResult {
     let uri = req.uri().to_string();
     let restart_reason = uri.clone();
     let headers = collect_headers(&req);
-    let body = match read_body_esp(&mut req, store.as_ref(), body_mode) {
+    let body = match read_body_esp(&mut req, store.as_ref(), spec.body_mode) {
         Ok(b) => b,
         Err(r) => return write_api_resp(req, r),
     };
     let incoming = IncomingRequest {
-        method: method_as_str(method).to_string(),
+        method: method_as_str(spec.method).to_string(),
         uri,
         headers,
         body,
@@ -378,16 +376,7 @@ fn register_esp_route(
     let executor = executor.clone();
     server
         .fn_handler(spec.path, spec.method, move |req| -> HandlerResult {
-            esp_dispatch_route(
-                &ctx,
-                &env,
-                &store,
-                &executor,
-                req,
-                spec.method,
-                spec.body_mode,
-                spec,
-            )
+            esp_dispatch_route(&ctx, &env, &store, &executor, req, spec)
         })
         .map_err(|e| crate::error::Error::Other {
             source: Box::new(e),

@@ -232,7 +232,6 @@ fn init_mic_channel(seg: &AudioSegment) -> Result<MicState> {
         left_align: true,
         big_endian: false,
         bit_order_lsb: false,
-        ..unsafe { core::mem::zeroed() }
     };
 
     let gpio_cfg = i2s_std_gpio_config_t {
@@ -304,6 +303,7 @@ fn init_speaker_channel(seg: &AudioSegment) -> Result<SpeakerState> {
                 pull_up_en: gpio_pullup_t_GPIO_PULLUP_DISABLE,
                 pull_down_en: gpio_pulldown_t_GPIO_PULLDOWN_DISABLE,
                 intr_type: gpio_int_type_t_GPIO_INTR_DISABLE,
+                ..core::mem::zeroed()
             };
             check_esp("i2s_spk_sd_gpio_config", gpio_config(&conf))?;
             check_esp("i2s_spk_sd_gpio_set", gpio_set_level(pin as gpio_num_t, 1))?;
@@ -355,7 +355,6 @@ fn init_speaker_channel(seg: &AudioSegment) -> Result<SpeakerState> {
         left_align: true,
         big_endian: false,
         bit_order_lsb: false,
-        ..unsafe { core::mem::zeroed() }
     };
 
     let gpio_cfg = i2s_std_gpio_config_t {
@@ -484,6 +483,7 @@ impl Drop for I2sStdBackend {
 /// `heap_caps_malloc(MALLOC_CAP_SPIRAM)`, freeing ~128KB of internal SRAM.
 /// On riscv32 or when PSRAM is unavailable, falls back to standard heap.
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+#[derive(Default)]
 struct AudioRingBuffer {
     buf: *mut i16,
     cap: usize,
@@ -495,19 +495,6 @@ struct AudioRingBuffer {
 // SAFETY: The buffer pointer is exclusively owned and only accessed behind Mutex.
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 unsafe impl Send for AudioRingBuffer {}
-
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-impl Default for AudioRingBuffer {
-    fn default() -> Self {
-        Self {
-            buf: core::ptr::null_mut(),
-            cap: 0,
-            head: 0,
-            len: 0,
-            spiram: false,
-        }
-    }
-}
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 impl AudioRingBuffer {
@@ -538,8 +525,7 @@ impl AudioRingBuffer {
         }
 
         // Fallback: standard heap (riscv32 or PSRAM unavailable)
-        let mut v = Vec::<i16>::with_capacity(cap);
-        v.resize(cap, 0);
+        let mut v = vec![0; cap];
         let ptr = v.as_mut_ptr();
         core::mem::forget(v); // ownership transferred to raw pointer
         log::info!(
@@ -607,8 +593,8 @@ impl AudioRingBuffer {
 
     fn pop_into(&mut self, out: &mut [i16]) -> usize {
         let n = out.len().min(self.len);
-        for i in 0..n {
-            unsafe { out[i] = *self.buf.add(self.head) };
+        for slot in out.iter_mut().take(n) {
+            unsafe { *slot = *self.buf.add(self.head) };
             self.head += 1;
             if self.head == self.cap {
                 self.head = 0;

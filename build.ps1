@@ -23,9 +23,32 @@ $buildArgs = $args | Where-Object {
   $_ -ne "--flash" -and $_ -ne "--no-monitor" -and $_ -ne "--flash-update"
 }
 
+function Get-TargetMcuFromTriple {
+  param([string]$TargetTriple)
+  switch ($TargetTriple) {
+    "xtensa-esp32-espidf" { return "esp32" }
+    "xtensa-esp32s2-espidf" { return "esp32s2" }
+    "xtensa-esp32s3-espidf" { return "esp32s3" }
+    "riscv32imc-esp-espidf" { return "esp32c3" }
+    "riscv32imac-esp-espidf" { return "esp32c6" }
+    "riscv32imafc-esp-espidf" { return "esp32p4" }
+    default { return $null }
+  }
+}
+
+function Get-DefaultSdkconfigOverlayForTarget {
+  param([string]$TargetTriple)
+  switch ($TargetTriple) {
+    "xtensa-esp32s3-espidf" { return "sdkconfig.defaults.esp32s3.board" }
+    "riscv32imafc-esp-espidf" { return "sdkconfig.defaults.esp32p4.board" }
+    default { return $null }
+  }
+}
+
 $buildTarget = "xtensa-esp32s3-espidf"
 $buildProfile = "release-size"
 $buildFeatures = ""
+$boardSdkconfigOverlay = $null
 if ($env:BOARD) {
   if ($env:BOARD -notmatch '^[a-z0-9-]+$') {
     Write-Error "BOARD must contain only [a-z0-9-]. Got: $env:BOARD"
@@ -44,6 +67,7 @@ if ($env:BOARD) {
     } elseif ($inSection) {
       if ($line -match 'target\s*=\s*"([^"]+)"') { $buildTarget = $matches[1] }
       if ($line -match 'partition_table\s*=\s*"([^"]+)"') { $partitionTable = $matches[1] }
+      if ($line -match 'sdkconfig_overlay\s*=\s*"([^"]+)"') { $boardSdkconfigOverlay = $matches[1] }
     }
   }
   if (-not $partitionTable) {
@@ -62,15 +86,31 @@ for ($i = 0; $i -lt $buildArgs.Count; $i++) {
     $buildTarget = $buildArgs[$i + 1]
     break
   }
+  if ($buildArgs[$i] -like "--target=*") {
+    $buildTarget = $buildArgs[$i].Substring("--target=".Length)
+    break
+  }
 }
 # 防止路径穿越：target 仅允许字母数字、连字符、下划线
 if ($buildTarget -notmatch '^[a-zA-Z0-9_-]+$') {
   Write-Error "Invalid --target (no path chars): $buildTarget"
   exit 1
 }
+$targetMcu = Get-TargetMcuFromTriple -TargetTriple $buildTarget
+if (-not $targetMcu) {
+  Write-Error "Unsupported ESP target triple: $buildTarget"
+  exit 1
+}
+if (-not $boardSdkconfigOverlay) {
+  $boardSdkconfigOverlay = Get-DefaultSdkconfigOverlayForTarget -TargetTriple $buildTarget
+}
+if ($boardSdkconfigOverlay -and -not (Test-Path (Join-Path $PSScriptRoot $boardSdkconfigOverlay))) {
+  Write-Error "sdkconfig overlay not found: $boardSdkconfigOverlay"
+  exit 1
+}
 
 # 从 buildTarget 推断 espflash --chip（用于后续打印与烧录）
-$flashChipDerived = if ($buildTarget -match "(esp32[a-z0-9]+)") { $Matches[1] } else { $null }
+$flashChipDerived = $targetMcu
 
 # Print detected hardware and current build config (English)
 function Write-BuildStatus {
@@ -85,8 +125,10 @@ function Write-BuildStatus {
   Write-Host "  Project root:      $BuildRoot"
   Write-Host "  Build target:      $buildTarget"
   Write-Host "  BOARD (optional):  $(if ($env:BOARD) { $env:BOARD } else { '(not set)' })"
+  Write-Host "  Target MCU:        $(if ($targetMcu) { $targetMcu } else { '(N/A)' })"
   Write-Host "  Chip (for flash): $(if ($flashChipDerived) { $flashChipDerived } else { '(N/A)' })"
   Write-Host "  Partition table:   $partitionTable"
+  Write-Host "  SDKCONFIG overlay: $(if ($boardSdkconfigOverlay) { $boardSdkconfigOverlay } else { '(none)' })"
   Write-Host "  Features:          $(if ($buildFeatures) { $buildFeatures } else { '(none)' })"
   Write-Host "  Profile:           $buildProfile"
   if ($BeforeFlash -and $ChosenPort) {
@@ -422,8 +464,11 @@ function Set-EspPath {
   }
   $espBase = "$env:USERPROFILE\.rustup\toolchains\esp"
   if (Test-Path $espBase) {
-    $gccDir = Get-ChildItem -Path $espBase -Filter "xtensa-esp-elf" -Recurse -Directory -ErrorAction SilentlyContinue |
-      Where-Object { Test-Path (Join-Path $_.FullName "bin\xtensa-esp32s3-elf-gcc.exe") } |
+    $gccDir = Get-ChildItem -Path $espBase -Recurse -Directory -ErrorAction SilentlyContinue |
+      Where-Object {
+        (Test-Path (Join-Path $_.FullName "bin\xtensa-esp32s3-elf-gcc.exe")) -or
+        (Test-Path (Join-Path $_.FullName "bin\riscv32-esp-elf-gcc.exe"))
+      } |
       Select-Object -First 1
     if ($gccDir) {
       $env:PATH = (Join-Path $gccDir.FullName "bin") + ";" + $env:PATH
@@ -514,11 +559,11 @@ function Get-StableToolchainForInstall {
   exit 1
 }
 
-# Install ESP toolchain if xtensa-esp32s3-elf-gcc is missing
-if (-not (Get-Command xtensa-esp32s3-elf-gcc -ErrorAction SilentlyContinue)) {
+# Install ESP toolchain if ESP GCC is missing
+if (-not (Get-Command xtensa-esp32s3-elf-gcc -ErrorAction SilentlyContinue) -and -not (Get-Command riscv32-esp-elf-gcc -ErrorAction SilentlyContinue)) {
   Write-Host ""
   Write-Host "========== Step: Installing ESP Rust toolchain (espup) ==========" -ForegroundColor Cyan
-  Write-Host "  xtensa-esp32s3-elf-gcc not found. Running espup install." -ForegroundColor Gray
+  Write-Host "  ESP GCC toolchains not found. Running espup install." -ForegroundColor Gray
   if (-not (Get-Command espup -ErrorAction SilentlyContinue)) {
     if ($env:OS -eq "Windows_NT") {
       if (-not (Get-EspupWindows)) {
@@ -537,8 +582,8 @@ if (-not (Get-Command xtensa-esp32s3-elf-gcc -ErrorAction SilentlyContinue)) {
   }
   espup install
   Set-EspPath
-  if (-not (Get-Command xtensa-esp32s3-elf-gcc -ErrorAction SilentlyContinue)) {
-    Write-Error "xtensa-esp32s3-elf-gcc still not found after espup install"
+  if (-not (Get-Command xtensa-esp32s3-elf-gcc -ErrorAction SilentlyContinue) -and -not (Get-Command riscv32-esp-elf-gcc -ErrorAction SilentlyContinue)) {
+    Write-Error "ESP GCC toolchains still not found after espup install"
     exit 1
   }
 }
@@ -668,18 +713,10 @@ $cargoBuildCmd
   }
 }
 
-# Write sdkconfig board overlay so esp-idf-sys uses correct partition table and flash size
-$boardSdkconfig = Join-Path $BuildRoot "sdkconfig.defaults.esp32s3.board"
-switch ($partitionTable) {
-  "partitions_8mb.csv"  {
-    @('CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y', '# CONFIG_ESPTOOLPY_FLASHSIZE_16MB is not set', 'CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../../../../../partitions_8mb.csv"') | Set-Content -Path $boardSdkconfig -Encoding UTF8
-  }
-  "partitions_32mb.csv" {
-    @('CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y', '# CONFIG_ESPTOOLPY_FLASHSIZE_16MB is not set', 'CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../../../../../partitions_32mb.csv"') | Set-Content -Path $boardSdkconfig -Encoding UTF8
-  }
-  default {
-    @('CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y', 'CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../../../../../partitions.csv"') | Set-Content -Path $boardSdkconfig -Encoding UTF8
-  }
+$env:ESP_IDF_SDKCONFIG_DEFAULTS = if ($boardSdkconfigOverlay) {
+  "sdkconfig.defaults;sdkconfig.defaults.$targetMcu;$boardSdkconfigOverlay"
+} else {
+  "sdkconfig.defaults;sdkconfig.defaults.$targetMcu"
 }
 
 Write-Host ""

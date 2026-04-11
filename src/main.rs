@@ -614,14 +614,16 @@ mod tests {
 
         update_display_loop_cache(
             &mut state,
-            &subtitle,
-            &ip,
-            &channels,
-            Some(DisplayPressureLevel::Cautious),
-            Some(42),
-            Some(7),
-            Some(9),
-            Some(88),
+            DisplayLoopCacheUpdate {
+                presence_subtitle: &subtitle,
+                ip: &ip,
+                channels: &channels,
+                pressure: Some(DisplayPressureLevel::Cautious),
+                heap_percent: Some(42),
+                msg_in: Some(7),
+                msg_out: Some(9),
+                llm_ms: Some(88),
+            },
         );
 
         assert_eq!(state.last_presence_subtitle, subtitle);
@@ -820,17 +822,32 @@ fn enforce_heap_checkpoint(stage: &'static str) {
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
-fn update_display_loop_cache(
-    loop_state: &mut DisplayLoopState,
-    presence_subtitle: &Option<String>,
-    ip: &String,
-    channels: &[DisplayChannelStatus; 5],
+struct DisplayLoopCacheUpdate<'a> {
+    presence_subtitle: &'a Option<String>,
+    ip: &'a String,
+    channels: &'a [DisplayChannelStatus; 5],
     pressure: Option<DisplayPressureLevel>,
     heap_percent: Option<u8>,
     msg_in: Option<u32>,
     msg_out: Option<u32>,
     llm_ms: Option<u32>,
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
+fn update_display_loop_cache(
+    loop_state: &mut DisplayLoopState,
+    update: DisplayLoopCacheUpdate<'_>,
 ) {
+    let DisplayLoopCacheUpdate {
+        presence_subtitle,
+        ip,
+        channels,
+        pressure,
+        heap_percent,
+        msg_in,
+        msg_out,
+        llm_ms,
+    } = update;
     loop_state
         .last_presence_subtitle
         .clone_from(presence_subtitle);
@@ -1085,14 +1102,16 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
             loop_state.last_state = Some(state);
             update_display_loop_cache(
                 &mut loop_state,
-                &display_projection.subtitle_override,
-                &ip_owned,
-                &channels,
-                Some(pressure),
-                Some(heap_percent),
-                Some(msg_in),
-                Some(msg_out),
-                Some(llm_ms),
+                DisplayLoopCacheUpdate {
+                    presence_subtitle: &display_projection.subtitle_override,
+                    ip: &ip_owned,
+                    channels: &channels,
+                    pressure: Some(pressure),
+                    heap_percent: Some(heap_percent),
+                    msg_in: Some(msg_in),
+                    msg_out: Some(msg_out),
+                    llm_ms: Some(llm_ms),
+                },
             );
             loop_state.refresh_secs = compute_refresh_secs(
                 state,
@@ -1112,14 +1131,16 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
             });
             update_display_loop_cache(
                 &mut loop_state,
-                &display_projection.subtitle_override,
-                &ip_owned,
-                &channels,
-                None,
-                None,
-                None,
-                None,
-                None,
+                DisplayLoopCacheUpdate {
+                    presence_subtitle: &display_projection.subtitle_override,
+                    ip: &ip_owned,
+                    channels: &channels,
+                    pressure: None,
+                    heap_percent: None,
+                    msg_in: None,
+                    msg_out: None,
+                    llm_ms: None,
+                },
             );
         }
         if channels_changed {
@@ -1128,14 +1149,16 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
             let _ = platform.display_command(DisplayCommand::UpdateChannels { channels });
             update_display_loop_cache(
                 &mut loop_state,
-                &last_presence_subtitle,
-                &last_ip,
-                &channels,
-                None,
-                None,
-                None,
-                None,
-                None,
+                DisplayLoopCacheUpdate {
+                    presence_subtitle: &last_presence_subtitle,
+                    ip: &last_ip,
+                    channels: &channels,
+                    pressure: None,
+                    heap_percent: None,
+                    msg_in: None,
+                    msg_out: None,
+                    llm_ms: None,
+                },
             );
         }
         if pressure_changed || heap_changed || msg_changed || llm_changed || show_flash {
@@ -1152,14 +1175,16 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
             });
             update_display_loop_cache(
                 &mut loop_state,
-                &last_presence_subtitle,
-                &last_ip,
-                &channels,
-                Some(pressure),
-                Some(heap_percent),
-                Some(msg_in),
-                Some(msg_out),
-                Some(llm_ms),
+                DisplayLoopCacheUpdate {
+                    presence_subtitle: &last_presence_subtitle,
+                    ip: &last_ip,
+                    channels: &channels,
+                    pressure: Some(pressure),
+                    heap_percent: Some(heap_percent),
+                    msg_in: Some(msg_in),
+                    msg_out: Some(msg_out),
+                    llm_ms: Some(llm_ms),
+                },
             );
         }
         loop_state.refresh_secs = compute_refresh_secs(

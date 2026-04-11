@@ -1,6 +1,7 @@
 //! 对话回复后的共享记忆维护编排。
 //! Shared post-reply memory maintenance orchestration.
 
+use super::continuity_capsule::PostReplyContinuityInput;
 use crate::bus::IngressKind;
 use crate::error::Result;
 use crate::llm::{LlmClient, LlmHttpClient};
@@ -12,7 +13,6 @@ use crate::task_execution::{
     TaskLearningMaintenanceContext, TaskLearningMaintenanceInput, TaskLearningMaintenanceOutcome,
     TaskLearningStore, TaskRunStore,
 };
-use super::continuity_capsule::PostReplyContinuityInput;
 
 use super::{
     build_post_reply_continuity_drafts, evaluate_long_term_memory_extraction_turn,

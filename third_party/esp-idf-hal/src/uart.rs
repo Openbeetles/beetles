@@ -254,6 +254,7 @@ pub mod config {
             esp_idf_soc_uart_support_pll_f40m_clk,
             esp_idf_soc_uart_support_pll_f80m_clk,
             esp_idf_soc_uart_support_ref_tick,
+            esp32p4,
             esp_idf_version_major = "4"
         )))]
         PLL_F48M,
@@ -290,6 +291,7 @@ pub mod config {
                     esp_idf_soc_uart_support_pll_f40m_clk,
                     esp_idf_soc_uart_support_pll_f80m_clk,
                     esp_idf_soc_uart_support_ref_tick,
+                    esp32p4,
                     esp_idf_version_major = "4"
                 )))]
                 PLL_F48M_SCLK => SourceClock::PLL_F48M,
@@ -344,7 +346,8 @@ pub mod config {
             esp_idf_soc_uart_support_apb_clk,
             esp_idf_soc_uart_support_pll_f40m_clk,
             esp_idf_soc_uart_support_pll_f80m_clk,
-            esp_idf_soc_uart_support_ref_tick
+            esp_idf_soc_uart_support_ref_tick,
+            esp32p4
         ))
     ))]
     const PLL_F48M_SCLK: uart_sclk_t = soc_periph_uart_clk_src_legacy_t_UART_SCLK_PLL_F48M;
@@ -380,6 +383,7 @@ pub mod config {
                     esp_idf_soc_uart_support_pll_f40m_clk,
                     esp_idf_soc_uart_support_pll_f80m_clk,
                     esp_idf_soc_uart_support_ref_tick,
+                    esp32p4,
                     esp_idf_version_major = "4"
                 )))]
                 SourceClock::PLL_F48M => PLL_F48M_SCLK,

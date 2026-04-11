@@ -19,6 +19,11 @@ linker = "ldproxy"
 runner = "espflash flash --monitor"
 rustflags = ["-A", "unnecessary_transmutes"]
 
+[target.riscv32imafc-esp-espidf]
+linker = "ldproxy"
+runner = "espflash flash --monitor"
+rustflags = ["-A", "unnecessary_transmutes"]
+
 [unstable]
 build-std = ["std", "panic_abort"]
 

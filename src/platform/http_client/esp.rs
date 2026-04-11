@@ -4,6 +4,7 @@
 use crate::config::{parse_proxy_url_to_host_port, AppConfig};
 use crate::error::{Error, Result};
 use crate::orchestrator::Priority;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::platform::heap::alloc_spiram_buffer;
 use crate::platform::http_client::response_buffer::{
     choose_response_body_read_plan, ResponseBodyReadPlan,
@@ -394,11 +395,11 @@ where
     let plan = choose_response_body_read_plan(
         max_len,
         content_length_hint,
-        cfg!(target_arch = "xtensa"),
+        cfg!(any(target_arch = "xtensa", target_arch = "riscv32")),
         INITIAL_RESPONSE_BODY_CAP,
         PSRAM_RESPONSE_PREALLOC_THRESHOLD,
     );
-    #[cfg(target_arch = "xtensa")]
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     match plan {
         ResponseBodyReadPlan::PsramExact { cap } => {
             if let Some(psram_ptr) = alloc_spiram_buffer(cap) {
@@ -408,7 +409,7 @@ where
         ResponseBodyReadPlan::Heap { .. } => {}
     }
 
-    #[cfg(not(target_arch = "xtensa"))]
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     let _ = plan;
     let initial_cap = match plan {
         ResponseBodyReadPlan::Heap { initial_cap } => initial_cap,
@@ -447,9 +448,9 @@ where
     Ok(ResponseBody::Heap(out))
 }
 
-/// 将响应体读入 PSRAM 块，返回 ResponseBody（Drop 时 free），不 to_vec。仅 xtensa。
+/// 将响应体读入 PSRAM 块，返回 ResponseBody（Drop 时 free），不 to_vec。仅嵌入式 ESP。
 /// 读取失败时释放 PSRAM 缓冲区，防止泄漏。
-#[cfg(target_arch = "xtensa")]
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn read_response_body_into_psram<R: Read>(
     ptr: *mut u8,
     buf_cap: usize,

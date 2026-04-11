@@ -202,6 +202,7 @@ pub fn drive_gpio_out(pins: &PinConfig, params: &Value) -> Result<String> {
             pull_up_en: gpio_pullup_t_GPIO_PULLUP_DISABLE,
             pull_down_en: gpio_pulldown_t_GPIO_PULLDOWN_DISABLE,
             intr_type: gpio_int_type_t_GPIO_INTR_DISABLE,
+            ..core::mem::zeroed()
         };
         let ret = esp_idf_svc::sys::gpio_config(&conf);
         if ret != ESP_OK {
@@ -268,6 +269,7 @@ pub fn drive_gpio_in(pins: &PinConfig, _params: &Value, options: &Value) -> Resu
             pull_up_en: pull_up,
             pull_down_en: pull_down,
             intr_type: gpio_int_type_t_GPIO_INTR_DISABLE,
+            ..core::mem::zeroed()
         };
         let ret = esp_idf_svc::sys::gpio_config(&conf);
         if ret != ESP_OK {
@@ -509,6 +511,7 @@ pub fn drive_buzzer(pins: &PinConfig, params: &Value) -> Result<String> {
             pull_up_en: gpio_pullup_t_GPIO_PULLUP_DISABLE,
             pull_down_en: gpio_pulldown_t_GPIO_PULLDOWN_DISABLE,
             intr_type: gpio_int_type_t_GPIO_INTR_DISABLE,
+            ..core::mem::zeroed()
         };
         let ret = esp_idf_svc::sys::gpio_config(&conf);
         if ret != ESP_OK {
@@ -719,6 +722,7 @@ pub fn drive_dht(pins: &PinConfig, _params: &Value, options: &Value) -> Result<S
                 pull_up_en: pull_up,
                 pull_down_en: pull_down,
                 intr_type: gpio_int_type_t_GPIO_INTR_DISABLE,
+                ..core::mem::zeroed()
             };
             let ret = gpio_config(&conf_out);
             if ret != ESP_OK {
@@ -742,6 +746,7 @@ pub fn drive_dht(pins: &PinConfig, _params: &Value, options: &Value) -> Result<S
                 pull_up_en: pull_up,
                 pull_down_en: pull_down,
                 intr_type: gpio_int_type_t_GPIO_INTR_DISABLE,
+                ..core::mem::zeroed()
             };
             let ret = gpio_config(&conf_in);
             if ret != ESP_OK {
@@ -769,7 +774,7 @@ pub fn drive_dht(pins: &PinConfig, _params: &Value, options: &Value) -> Result<S
             .wrapping_add(data[1])
             .wrapping_add(data[2])
             .wrapping_add(data[3]);
-        if (sum & 0xFF) != data[4] {
+        if sum != data[4] {
             log::warn!(
                 "[drive_dht] checksum mismatch: [{:#04x},{:#04x},{:#04x},{:#04x},{:#04x}] sum={:#04x} attempt={}",
                 data[0],
@@ -777,7 +782,7 @@ pub fn drive_dht(pins: &PinConfig, _params: &Value, options: &Value) -> Result<S
                 data[2],
                 data[3],
                 data[4],
-                sum & 0xFF,
+                sum,
                 attempt
             );
             last_err = Some(Error::config("drive_dht", "checksum mismatch"));

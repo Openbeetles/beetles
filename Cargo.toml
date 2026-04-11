@@ -8,8 +8,10 @@ license = "MIT OR Apache-2.0"
 repository = ""
 
 [package.metadata.esp-idf-sys]
-# Board overlay (last) is written by build.sh/build.ps1 from BOARD; default 16MB in repo.
-esp_idf_sdkconfig_defaults = ["sdkconfig.defaults", "sdkconfig.defaults.esp32s3", "sdkconfig.defaults.esp32s3.board"]
+# Keep metadata at the common entry only. esp-idf-sys will auto-discover
+# `sdkconfig.defaults.<mcu>`, while build.sh/build.ps1 can override with an
+# explicit board overlay via `ESP_IDF_SDKCONFIG_DEFAULTS`.
+esp_idf_sdkconfig_defaults = ["sdkconfig.defaults"]
 # esp-idf-sys 默认 v5.2.3；升级到 6.0 以匹配当前 ESP 平台栈与本地组件集成。
 esp_idf_version = "v6.0"
 
@@ -26,6 +28,14 @@ remote_component = { name = "espressif/esp-sr", version = "2.4.0" }
 
 [[package.metadata.esp-idf-sys.extra_components]]
 remote_component = { name = "espressif/esp-dsp", version = "1.7.1", path = "../../../../../../../third_party/espressif__esp-dsp" }
+
+[[package.metadata.esp-idf-sys.extra_components]]
+# ESP32-P4 hosted wireless plane. Kept in the shared component set so P4 can
+# compile the same Platform/WiFi graph while S3 simply leaves it disabled.
+remote_component = { name = "espressif/esp_wifi_remote", version = "1.2.4" }
+
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "espressif/esp_hosted", version = "2.12.3" }
 
 [[package.metadata.esp-idf-sys.extra_components]]
 # 唤醒词薄 C 封装层：暴露稳定 ABI 供 Rust FFI，内部依赖 esp-sr WakeNet。
@@ -123,6 +133,7 @@ panic = "abort"
 
 # ESP32 固件构建：优化大小而非速度（Flash 受限）
 # 使用: cargo build --profile release-size --target xtensa-esp32s3-espidf
+#      cargo build --profile release-size --target riscv32imafc-esp-espidf
 [profile.release-size]
 inherits = "release"
 opt-level = "z"

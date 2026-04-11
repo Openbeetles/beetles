@@ -6,13 +6,22 @@
 target = "xtensa-esp32s3-espidf"
 partition_table = "partitions_8mb.csv"
 flash_size = "8MB"
+sdkconfig_overlay = "sdkconfig.defaults.esp32s3.8mb.board"
 
 [boards.esp32-s3-16mb]
 target = "xtensa-esp32s3-espidf"
 partition_table = "partitions.csv"
 flash_size = "16MB"
+sdkconfig_overlay = "sdkconfig.defaults.esp32s3.board"
 
 [boards.esp32-s3-32mb]
 target = "xtensa-esp32s3-espidf"
 partition_table = "partitions_32mb.csv"
 flash_size = "32MB"
+sdkconfig_overlay = "sdkconfig.defaults.esp32s3.32mb.board"
+
+[boards.esp32-p4-nano-16mb]
+target = "riscv32imafc-esp-espidf"
+partition_table = "partitions_p4_16mb.csv"
+flash_size = "16MB"
+sdkconfig_overlay = "sdkconfig.defaults.esp32p4.board"

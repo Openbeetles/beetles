@@ -87,7 +87,6 @@ pub use agent::{
 pub use bus::{MessageBus, PcMsg, DEFAULT_CAPACITY, MAX_CONTENT_LEN};
 #[cfg(feature = "feishu")]
 pub use channels::run_feishu_ws_loop;
-pub use channels::{run_qq_ws_loop, QqWsLoopConfig};
 pub use channels::{
     feishu_acquire_token, feishu_edit_message, feishu_send_and_get_id, flush_dingtalk_sends,
     flush_feishu_sends, flush_qq_channel_sends, flush_telegram_sends, flush_wecom_sends,
@@ -97,6 +96,7 @@ pub use channels::{
     ChannelHttpClient, ChannelSinks, FeishuTokenCache, LogSink, MessageSink, QueuedSink,
     WebSocketSink, WssConnectProfile,
 };
+pub use channels::{run_qq_ws_loop, QqWsLoopConfig};
 pub use config::{
     parse_allowed_chat_ids, save_hardware_segment, AppConfig, DeviceEntry, HardwareSegment,
     I2cBusConfig, I2cDeviceEntry, I2cSensorEntry, LlmSource, PinConfig,

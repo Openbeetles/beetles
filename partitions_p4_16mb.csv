@@ -1,0 +1,9 @@
+# Name,    Type, SubType, Offset,   Size   (16MB Flash, ESP32-P4 host)
+nvs,       data, nvs,     0x9000,   0x10000
+otadata,   data, ota,     0x19000,  0x2000
+phy_init,  data, phy,     0x1B000,  0x1000
+ota_0,     app,  ota_0,   0x20000,  0x580000
+ota_1,     app,  ota_1,   0x5A0000, 0x580000
+spiffs,    data, spiffs,  0xB20000, 0x450000
+model,     data, spiffs,  0xF70000, 0x080000
+coredump,  data, coredump,0xFF0000, 0x10000

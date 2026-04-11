@@ -1,14 +1,14 @@
 //! HTTP 响应体句柄：PSRAM 路径不 to_vec，仅持 (ptr,len) 并在 Drop 时释放，消除双缓冲。
 //! Response body handle: PSRAM path holds (ptr, len) and frees on Drop; no heap copy.
 
-#[cfg(target_arch = "xtensa")]
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::platform::heap::free_spiram_buffer;
 
 /// 响应体：Heap 为堆上 Vec；PSRAM 仅 xtensa 存在，Drop 时释放 PSRAM。
 #[derive(Debug)]
 pub enum ResponseBody {
     Heap(Vec<u8>),
-    #[cfg(target_arch = "xtensa")]
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     PSRAM {
         ptr: Option<*mut u8>,
         len: usize,
@@ -19,7 +19,7 @@ impl ResponseBody {
     pub fn as_slice(&self) -> &[u8] {
         match self {
             ResponseBody::Heap(v) => v.as_ref(),
-            #[cfg(target_arch = "xtensa")]
+            #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
             ResponseBody::PSRAM { ptr, len } => match ptr {
                 Some(p) if !p.is_null() && *len > 0 => unsafe {
                     std::slice::from_raw_parts(*p, *len)
@@ -33,7 +33,7 @@ impl ResponseBody {
     pub fn into_vec(&mut self) -> Vec<u8> {
         match self {
             ResponseBody::Heap(v) => std::mem::take(v),
-            #[cfg(target_arch = "xtensa")]
+            #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
             ResponseBody::PSRAM { ptr, len } => {
                 let p = ptr.take();
                 let len = *len;
@@ -60,7 +60,7 @@ impl AsRef<[u8]> for ResponseBody {
     }
 }
 
-#[cfg(target_arch = "xtensa")]
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 impl Drop for ResponseBody {
     fn drop(&mut self) {
         if let ResponseBody::PSRAM { ptr, .. } = self {

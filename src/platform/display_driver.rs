@@ -106,6 +106,7 @@ mod esp_backend {
                     pull_up_en: gpio_pullup_t_GPIO_PULLUP_DISABLE,
                     pull_down_en: gpio_pulldown_t_GPIO_PULLDOWN_DISABLE,
                     intr_type: gpio_int_type_t_GPIO_INTR_DISABLE,
+                    ..core::mem::zeroed()
                 };
                 let ret = gpio_config(&dc_conf);
                 if ret != ESP_OK {
@@ -126,6 +127,7 @@ mod esp_backend {
                         pull_up_en: gpio_pullup_t_GPIO_PULLUP_DISABLE,
                         pull_down_en: gpio_pulldown_t_GPIO_PULLDOWN_DISABLE,
                         intr_type: gpio_int_type_t_GPIO_INTR_DISABLE,
+                        ..core::mem::zeroed()
                     };
                     let ret = gpio_config(&rst_conf);
                     if ret != ESP_OK {
@@ -151,6 +153,7 @@ mod esp_backend {
                         pull_up_en: gpio_pullup_t_GPIO_PULLUP_DISABLE,
                         pull_down_en: gpio_pulldown_t_GPIO_PULLDOWN_DISABLE,
                         intr_type: gpio_int_type_t_GPIO_INTR_DISABLE,
+                        ..core::mem::zeroed()
                     };
                     let ret = gpio_config(&bl_conf);
                     if ret != ESP_OK {

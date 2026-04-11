@@ -169,6 +169,28 @@ default_package_profile_for_target() {
   fi
 }
 
+target_mcu_from_triple() {
+  local target="$1"
+  case "$target" in
+    xtensa-esp32-espidf) printf '%s\n' 'esp32' ;;
+    xtensa-esp32s2-espidf) printf '%s\n' 'esp32s2' ;;
+    xtensa-esp32s3-espidf) printf '%s\n' 'esp32s3' ;;
+    riscv32imc-esp-espidf) printf '%s\n' 'esp32c3' ;;
+    riscv32imac-esp-espidf) printf '%s\n' 'esp32c6' ;;
+    riscv32imafc-esp-espidf) printf '%s\n' 'esp32p4' ;;
+    *) return 1 ;;
+  esac
+}
+
+default_sdkconfig_overlay_for_target() {
+  local target="$1"
+  case "$target" in
+    xtensa-esp32s3-espidf) printf '%s\n' 'sdkconfig.defaults.esp32s3.board' ;;
+    riscv32imafc-esp-espidf) printf '%s\n' 'sdkconfig.defaults.esp32p4.board' ;;
+    *) return 1 ;;
+  esac
+}
+
 linux_detect_pkg_manager() {
     local pm
     for pm in apt-get dnf yum pacman zypper apk; do
@@ -1555,9 +1577,14 @@ linux_remote_sync_entries() {
     partitions.csv \
     partitions_8mb.csv \
     partitions_32mb.csv \
+    partitions_p4_16mb.csv \
     sdkconfig.defaults \
     sdkconfig.defaults.esp32s3 \
+    sdkconfig.defaults.esp32s3.8mb.board \
     sdkconfig.defaults.esp32s3.board \
+    sdkconfig.defaults.esp32s3.32mb.board \
+    sdkconfig.defaults.esp32p4 \
+    sdkconfig.defaults.esp32p4.board \
     src \
     third_party/esp-idf-hal \
     third_party/esp-idf-svc \
@@ -1866,6 +1893,38 @@ select_linux_build_method() {
       ;;
   esac
 }
+
+build_target_override_from_args() {
+  local i arg
+  for (( i=0; i < ${#BUILD_ARGS[@]}; i++ )); do
+    arg="${BUILD_ARGS[$i]}"
+    case "$arg" in
+      --target)
+        if (( i + 1 < ${#BUILD_ARGS[@]} )); then
+          printf '%s\n' "${BUILD_ARGS[$((i + 1))]}"
+          return 0
+        fi
+        ;;
+      --target=*)
+        printf '%s\n' "${arg#--target=}"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+platform_choice_from_target() {
+  local target="$1"
+  case "$target" in
+    xtensa-*-espidf|riscv32*-esp-espidf) printf '%s\n' '1' ;;
+    x86_64-unknown-linux-*) printf '%s\n' '2' ;;
+    armv7-unknown-linux-*) printf '%s\n' '3' ;;
+    aarch64-unknown-linux-*) printf '%s\n' '4' ;;
+    *) return 1 ;;
+  esac
+}
+
 select_build_platform() {
   # If TARGET env is set, skip interactive prompt.
   if [[ -n "${TARGET:-}" ]]; then
@@ -1876,6 +1935,21 @@ select_build_platform() {
       linux-aarch64|aarch64) PLATFORM_CHOICE=4; return 0 ;;
       *) echo "Error: Unknown TARGET=$TARGET. Use 'esp', 'linux', 'linux-armv7', or 'linux-aarch64'" >&2; exit 1 ;;
     esac
+  fi
+
+  if [[ -n "${BOARD:-}" ]]; then
+    PLATFORM_CHOICE=1
+    return 0
+  fi
+
+  local build_target_override=""
+  build_target_override="$(build_target_override_from_args || true)"
+  if [[ -n "$build_target_override" ]]; then
+    PLATFORM_CHOICE="$(platform_choice_from_target "$build_target_override")" || {
+      echo "Error: unsupported --target for platform auto-selection: $build_target_override" >&2
+      exit 1
+    }
+    return 0
   fi
 
   # If --flash / --flash-update is set, default to ESP32.
@@ -2056,6 +2130,7 @@ if [[ -n "${BOARD:-}" ]]; then
   BUILD_TARGET=$(echo "$block" | grep -E '^target\s*=' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
   [[ -z "$BUILD_TARGET" ]] && { echo "Error: board $BOARD has no 'target' in board_presets.toml" >&2; exit 1; }
   PARTITION_TABLE=$(echo "$block" | grep -E '^partition_table\s*=' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+  BOARD_SDKCONFIG_OVERLAY=$(echo "$block" | grep -E '^sdkconfig_overlay\s*=' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
   if [[ -z "$PACKAGE_PROFILE" ]]; then
     PACKAGE_PROFILE=$(echo "$block" | grep -E '^package_profile\s*=' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
   fi
@@ -2068,17 +2143,39 @@ if [[ -n "${BOARD:-}" ]]; then
   fi
 else
   PARTITION_TABLE=partitions.csv
+  BOARD_SDKCONFIG_OVERLAY=""
 fi
 # Command-line --target overrides BOARD (same as build.ps1)
 for (( i=0; i < ${#BUILD_ARGS[@]}; i++ )); do
-  if [[ "${BUILD_ARGS[$i]}" == "--target" ]] && (( i+1 < ${#BUILD_ARGS[@]} )); then
-    BUILD_TARGET="${BUILD_ARGS[$i+1]}"
-    break
-  fi
+  case "${BUILD_ARGS[$i]}" in
+    --target)
+      if (( i + 1 < ${#BUILD_ARGS[@]} )); then
+        BUILD_TARGET="${BUILD_ARGS[$i+1]}"
+        break
+      fi
+      ;;
+    --target=*)
+      BUILD_TARGET="${BUILD_ARGS[$i]#--target=}"
+      break
+      ;;
+  esac
 done
 # Sanitize target (no path chars)
 if [[ ! "$BUILD_TARGET" =~ ^[a-zA-Z0-9_-]+$ ]]; then
   echo "Error: Invalid --target (no path chars): $BUILD_TARGET" >&2
+  exit 1
+fi
+
+TARGET_MCU="$(target_mcu_from_triple "$BUILD_TARGET" || true)"
+if [[ -z "$TARGET_MCU" && ! "$BUILD_TARGET" =~ -unknown-linux ]]; then
+  echo "Error: unsupported ESP target triple: $BUILD_TARGET" >&2
+  exit 1
+fi
+if [[ -z "${BOARD_SDKCONFIG_OVERLAY:-}" && ! "$BUILD_TARGET" =~ -unknown-linux ]]; then
+  BOARD_SDKCONFIG_OVERLAY="$(default_sdkconfig_overlay_for_target "$BUILD_TARGET" || true)"
+fi
+if [[ -n "${BOARD_SDKCONFIG_OVERLAY:-}" && ! -f "$SCRIPT_ROOT/$BOARD_SDKCONFIG_OVERLAY" ]]; then
+  echo "Error: sdkconfig overlay not found: $BOARD_SDKCONFIG_OVERLAY" >&2
   exit 1
 fi
 
@@ -2093,10 +2190,7 @@ BUILD_FEATURES="$(package_profile_features "$PACKAGE_PROFILE")"
 export BEETLE_PACKAGE_PROFILE="$PACKAGE_PROFILE"
 
 # Derive chip from target for flash (same as build.ps1)
-FLASH_CHIP=""
-if [[ "$BUILD_TARGET" =~ (esp32[a-z0-9]+) ]]; then
-  FLASH_CHIP="${BASH_REMATCH[1]}"
-fi
+FLASH_CHIP="${TARGET_MCU:-}"
 
 # Print detected hardware / build config (same as build.ps1 Write-BuildStatus)
 echo ""
@@ -2105,6 +2199,8 @@ echo "  Project root:      $SCRIPT_ROOT"
 echo "  Build target:      $BUILD_TARGET"
 echo "  BOARD (optional):  ${BOARD:-(not set)}"
 echo "  Partition table:   $PARTITION_TABLE"
+echo "  Target MCU:        ${TARGET_MCU:-(N/A)}"
+echo "  SDKCONFIG overlay: ${BOARD_SDKCONFIG_OVERLAY:-(none)}"
 echo "  Chip (for flash):  ${FLASH_CHIP:-(N/A)}"
 echo "  Package profile:   ${PACKAGE_PROFILE:-(none)}"
 echo "  Features:          ${BUILD_FEATURES:-(none)}"
@@ -2798,8 +2894,11 @@ else
     for f in "$HOME/export-esp.sh" "$HOME/.espup/export-esp.sh" "$HOME/.local/share/esp-rs/export-esp.sh"; do
       [[ -f "$f" ]] && { source "$f"; return; }
     done
-    for d in "$HOME/.rustup/toolchains/esp/xtensa-esp-elf/"*/xtensa-esp-elf/bin; do
-      [[ -x "${d}/xtensa-esp32s3-elf-gcc" ]] 2>/dev/null && { export PATH="$d:$PATH"; return; }
+    for d in "$HOME/.rustup/toolchains/esp/"*/bin "$HOME/.rustup/toolchains/esp/xtensa-esp-elf/"*/xtensa-esp-elf/bin; do
+      if [[ -x "${d}/xtensa-esp32s3-elf-gcc" || -x "${d}/riscv32-esp-elf-gcc" ]]; then
+        export PATH="$d:$PATH"
+        return
+      fi
     done
   }
   set_esp_path
@@ -2808,7 +2907,7 @@ else
   if ! command -v xtensa-esp32s3-elf-gcc &>/dev/null && ! command -v riscv32-esp-elf-gcc &>/dev/null; then
     echo ""
     echo "========== Step: Installing ESP Rust toolchain (espup) =========="
-    echo "  xtensa-esp32s3-elf-gcc not found. Running espup install."
+    echo "  ESP GCC toolchains not found. Running espup install."
     if ! command -v espup &>/dev/null; then
       echo ">>> Installing espup (using stable)..."
       RUSTUP_TOOLCHAIN=stable cargo install espup
@@ -2817,7 +2916,7 @@ else
     espup install
     set_esp_path
     command -v xtensa-esp32s3-elf-gcc &>/dev/null || command -v riscv32-esp-elf-gcc &>/dev/null || {
-      echo "Error: xtensa-esp32s3-elf-gcc still not found after espup install" >&2
+      echo "Error: ESP GCC toolchains still not found after espup install" >&2
       exit 1
     }
   fi
@@ -2832,21 +2931,17 @@ else
   fi
 fi
 
-# --- Write sdkconfig board overlay (仅 ESP 目标) ---
+# --- Select sdkconfig defaults chain for ESP builds ---
 if [[ -z "${SKIP_ESP_TOOLCHAIN:-}" ]]; then
-  BOARD_SDKCONFIG="$SCRIPT_ROOT/sdkconfig.defaults.esp32s3.board"
-  # 与 sdkconfig.defaults.esp32s3 一致：CMake 工程根为 esp-idf-sys 的 out/，分区表路径需相对 out/ 指向仓库根 CSV。
-  case "$PARTITION_TABLE" in
-    partitions_8mb.csv)
-      printf '%s\n' 'CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y' '# CONFIG_ESPTOOLPY_FLASHSIZE_16MB is not set' 'CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../../../../../partitions_8mb.csv"' > "$BOARD_SDKCONFIG"
-      ;;
-    partitions_32mb.csv)
-      printf '%s\n' 'CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y' '# CONFIG_ESPTOOLPY_FLASHSIZE_16MB is not set' 'CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../../../../../partitions_32mb.csv"' > "$BOARD_SDKCONFIG"
-      ;;
-    *)
-      printf '%s\n' 'CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y' 'CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../../../../../partitions.csv"' > "$BOARD_SDKCONFIG"
-      ;;
-  esac
+  SDKCONFIG_DEFAULTS_CHAIN=("sdkconfig.defaults")
+  if [[ -n "${TARGET_MCU:-}" ]]; then
+    SDKCONFIG_DEFAULTS_CHAIN+=("sdkconfig.defaults.${TARGET_MCU}")
+  fi
+  if [[ -n "${BOARD_SDKCONFIG_OVERLAY:-}" ]]; then
+    SDKCONFIG_DEFAULTS_CHAIN+=("${BOARD_SDKCONFIG_OVERLAY}")
+  fi
+  ESP_IDF_SDKCONFIG_DEFAULTS="$(IFS=';'; printf '%s' "${SDKCONFIG_DEFAULTS_CHAIN[*]}")"
+  export ESP_IDF_SDKCONFIG_DEFAULTS
 fi
 
 # --- Build args: inject default ESP --target when missing (same as build.ps1); no longer rely on .cargo [build] target ---
