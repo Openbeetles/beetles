@@ -10,6 +10,8 @@ use crate::runtime::{
 use serde::{Deserialize, Serialize};
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use std::path::PathBuf;
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
 
 pub const CHANNEL_OPERATOR_MAINTENANCE: &str = "_operator_maintenance";
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -278,21 +280,21 @@ fn sanitize_request_id(value: &str) -> String {
 }
 
 #[cfg(test)]
+pub fn operator_maintenance_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::bus::new_inbound_channel;
-    use std::sync::{Mutex, OnceLock};
-
-    fn test_guard() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-    }
 
     #[test]
     fn direct_submission_enqueues_operator_maintenance_message() {
-        let _guard = test_guard();
+        let _guard = operator_maintenance_test_guard();
         let (tx, rx, _depth) = new_inbound_channel(crate::constants::DEFAULT_CAPACITY);
         let request = OperatorMaintenanceRequest::new(
             OperatorMaintenanceAction::RunRepairPlan,
@@ -317,7 +319,7 @@ mod tests {
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     #[test]
     fn persisted_requests_can_be_drained_back_into_system_queue() {
-        let _guard = test_guard();
+        let _guard = operator_maintenance_test_guard();
         let request_dir = operator_request_dir();
         let _ = std::fs::remove_dir_all(&request_dir);
         let request = OperatorMaintenanceRequest::new(

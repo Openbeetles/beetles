@@ -53,6 +53,8 @@ pub use operator_maintenance::{
     OperatorMaintenanceAction, OperatorMaintenanceRequest, OperatorMaintenanceSubmission,
     CHANNEL_OPERATOR_MAINTENANCE,
 };
+#[cfg(test)]
+pub use operator_maintenance::operator_maintenance_test_guard;
 pub use presence::{
     inspect_platform_presence, PresenceDisplayProjection, PresenceSnapshot, PresenceState,
 };

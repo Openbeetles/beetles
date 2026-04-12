@@ -341,6 +341,7 @@ mod tests {
 
     #[test]
     fn supervisor_control_plane_persists_operator_maintenance_requests() {
+        let _guard = crate::runtime::operator_maintenance_test_guard();
         let (ctx, router_env) = build_test_context();
         let state_root = crate::platform::state_mount_path();
         if state_root.is_file() {

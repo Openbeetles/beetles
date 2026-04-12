@@ -33,6 +33,7 @@ pub struct OperatorStatusSnapshot {
     pub operator_surface: crate::platform::operator_surface::OperatorSurfaceBudget,
     pub memory_operator_surface: MemoryOperatorSurfaceSummary,
     pub workflow: runtime::WorkflowAuditSnapshot,
+    pub programmable_reasoning: crate::ProgrammableReasoningOperatorSnapshot,
     pub threads: runtime::ThreadRegistrySnapshot,
     pub os_closure: runtime::BeetleOsClosureReport,
     pub initiative: runtime::InitiativeSnapshot,
@@ -89,6 +90,7 @@ pub fn build_operator_status(
         operator_surface,
         memory_operator_surface,
         workflow: runtime::workflow_audit_snapshot(8),
+        programmable_reasoning: crate::programmable_reasoning_operator_snapshot(),
         threads: runtime::thread_registry::snapshot(),
         os_closure,
         initiative,
@@ -144,6 +146,21 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
         snapshot.soul_kernel.safe_mode_minimum_readable,
         snapshot.soul_kernel.degraded,
         snapshot.soul_kernel.key_memory_count,
+    ));
+    out.push_str(&format!(
+        "  programmable_reasoning_stage: {}\n  programmable_reasoning_execution_enabled: {}\n  programmable_reasoning_backend: {}\n  programmable_reasoning_operator_summary: {}\n",
+        match snapshot.programmable_reasoning.stage {
+            crate::ProgrammableReasoningStage::ConstitutionOnly => "constitution_only",
+            crate::ProgrammableReasoningStage::TaskScriptingBaseline => "task_scripting_baseline",
+            crate::ProgrammableReasoningStage::MemoryQueryPlane => "memory_query_plane",
+            crate::ProgrammableReasoningStage::IdleMemoryForge => "idle_memory_forge",
+        },
+        snapshot.programmable_reasoning.runtime_contract.execution_enabled,
+        match snapshot.programmable_reasoning.runtime_contract.execution_backend {
+            crate::ProgrammableReasoningExecutionBackend::None => "none",
+            crate::ProgrammableReasoningExecutionBackend::LuaSandbox => "lua_sandbox",
+        },
+        snapshot.programmable_reasoning.operator_summary,
     ));
     out.push_str(&format!(
         "  workflow_recent_records: {}\n  workflow_executed: {}\n  workflow_deferred: {}\n  workflow_suppressed: {}\n  workflow_no_trigger: {}\n  workflow_failed: {}\n",

@@ -32,8 +32,17 @@ mod tests {
         assert!(parsed.get("operator_surface").is_some());
         assert!(parsed.get("memory_operator_surface").is_some());
         assert!(parsed.get("workflow").is_some());
+        assert!(parsed.get("programmable_reasoning").is_some());
         assert!(parsed["workflow"].get("summary").is_some());
         assert!(parsed["workflow"].get("recent_records").is_some());
+        assert_eq!(
+            parsed["programmable_reasoning"]["stage"].as_str(),
+            Some("constitution_only")
+        );
+        assert_eq!(
+            parsed["programmable_reasoning"]["runtime_contract"]["execution_enabled"].as_bool(),
+            Some(false)
+        );
         assert!(parsed["memory_operator_surface"].get("inspect").is_some());
         assert!(parsed["memory_operator_surface"].get("trace").is_some());
         assert!(parsed["memory_operator_surface"].get("diff").is_some());

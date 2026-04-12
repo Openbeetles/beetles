@@ -62,6 +62,7 @@ pub mod error;
 pub mod llm;
 pub mod memory;
 pub mod platform;
+pub mod reasoning;
 pub mod state;
 pub mod task;
 pub mod task_execution;
@@ -113,6 +114,15 @@ pub use llm::{
     Message, OpenAiCompatibleClient,
 };
 pub use network::{HttpClientClass, NetworkGovernor, VoiceExclusiveTransportGuard};
+pub use reasoning::{
+    programmable_reasoning_operator_snapshot, programmable_reasoning_runtime_contract,
+    programmable_reasoning_system_info_summary, ProgrammableReasoningCapabilityContract,
+    ProgrammableReasoningCapabilityKind, ProgrammableReasoningExecutionBackend,
+    ProgrammableReasoningOperatorSnapshot, ProgrammableReasoningProposal,
+    ProgrammableReasoningProposalKind, ProgrammableReasoningProposalScope,
+    ProgrammableReasoningRuntimeContract, ProgrammableReasoningStage,
+    ProgrammableReasoningSystemInfoSummary,
+};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub use platform::{
     connect_wifi, init_nvs, init_spiffs, spiffs_usage, state_mount_path, Esp32Platform,
