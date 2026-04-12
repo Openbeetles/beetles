@@ -5,10 +5,13 @@ use crate::tools::{
     parse_tool_args, Tool, ToolContext, ToolEffectClass, ToolMetadata, ToolRiskLevel,
 };
 use serde_json::{json, Value};
-#[cfg(any(target_os = "linux", test))]
-use std::net::Ipv4Addr;
 use std::net::ToSocketAddrs;
 use std::time::Instant;
+
+#[cfg(target_os = "linux")]
+use crate::host_observability::{
+    list_linux_network_interfaces, read_linux_default_route, read_linux_dns_config,
+};
 
 #[cfg(target_os = "linux")]
 use std::process::Command;
@@ -107,6 +110,15 @@ impl Tool for NetworkTool {
         true
     }
 
+    fn requires_network_for(&self, args: &str) -> Result<bool> {
+        let obj = parse_tool_args(args, "network_tool")?;
+        let op = obj
+            .get("op")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| Error::config("network_tool", "missing op"))?;
+        Ok(matches!(op, "resolve" | "ping" | "http_probe"))
+    }
+
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::task()
             .with_system_ingress(false)
@@ -117,40 +129,10 @@ impl Tool for NetworkTool {
 
 #[cfg(target_os = "linux")]
 fn list_interfaces_linux() -> Result<Vec<Value>> {
-    let entries = std::fs::read_dir("/sys/class/net").map_err(|e| Error::Other {
-        source: Box::new(e),
-        stage: "network_interfaces",
-    })?;
-    let mut interfaces = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name == "lo" {
-            continue;
-        }
-        let base = format!("/sys/class/net/{name}");
-        let mac = read_trimmed(format!("{base}/address")).unwrap_or_default();
-        let operstate = read_trimmed(format!("{base}/operstate")).unwrap_or_default();
-        let mtu = read_trimmed(format!("{base}/mtu"))
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(0);
-        let carrier = read_trimmed(format!("{base}/carrier"))
-            .map(|s| s == "1")
-            .unwrap_or(false);
-        interfaces.push(json!({
-            "name": name,
-            "mac": mac,
-            "operstate": operstate,
-            "mtu": mtu,
-            "carrier": carrier,
-        }));
-    }
-    interfaces.sort_by(|a, b| {
-        a["name"]
-            .as_str()
-            .unwrap_or_default()
-            .cmp(b["name"].as_str().unwrap_or_default())
-    });
-    Ok(interfaces)
+    Ok(list_linux_network_interfaces()
+        .into_iter()
+        .map(|iface| serde_json::to_value(iface).unwrap_or(Value::Null))
+        .collect())
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -163,16 +145,8 @@ fn list_interfaces_linux() -> Result<Vec<Value>> {
 
 #[cfg(target_os = "linux")]
 fn read_dns_config_linux() -> Result<Value> {
-    let raw = std::fs::read_to_string("/etc/resolv.conf").map_err(|e| Error::Other {
-        source: Box::new(e),
-        stage: "network_dns",
-    })?;
-    let (nameservers, search, options) = parse_resolv_conf(&raw);
-    Ok(json!({
-        "nameservers": nameservers,
-        "search": search,
-        "options": options,
-    }))
+    serde_json::to_value(read_linux_dns_config())
+        .map_err(|e| Error::config("network_dns", e.to_string()))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -185,11 +159,8 @@ fn read_dns_config_linux() -> Result<Value> {
 
 #[cfg(target_os = "linux")]
 fn read_default_route_linux() -> Result<Value> {
-    let raw = std::fs::read_to_string("/proc/net/route").map_err(|e| Error::Other {
-        source: Box::new(e),
-        stage: "network_route",
-    })?;
-    Ok(parse_default_route(&raw).unwrap_or(Value::Null))
+    serde_json::to_value(read_linux_default_route())
+        .map_err(|e| Error::config("network_route", e.to_string()))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -273,70 +244,6 @@ fn http_probe(url: &str, ctx: &mut dyn ToolContext) -> Result<String> {
     }
 }
 
-#[cfg(target_os = "linux")]
-fn read_trimmed(path: String) -> Option<String> {
-    std::fs::read_to_string(path)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-#[cfg(any(target_os = "linux", test))]
-fn parse_resolv_conf(raw: &str) -> (Vec<String>, Vec<String>, Vec<String>) {
-    let mut nameservers = Vec::new();
-    let mut search = Vec::new();
-    let mut options = Vec::new();
-    for line in raw.lines() {
-        let line = line.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
-        let mut parts = line.split_whitespace();
-        let Some(kind) = parts.next() else {
-            continue;
-        };
-        match kind {
-            "nameserver" => {
-                if let Some(value) = parts.next() {
-                    nameservers.push(value.to_string());
-                }
-            }
-            "search" => search.extend(parts.map(str::to_string)),
-            "options" => options.extend(parts.map(str::to_string)),
-            _ => {}
-        }
-    }
-    (nameservers, search, options)
-}
-
-#[cfg(any(target_os = "linux", test))]
-fn parse_default_route(raw: &str) -> Option<Value> {
-    for line in raw.lines().skip(1) {
-        let columns: Vec<&str> = line.split_whitespace().collect();
-        if columns.len() < 8 {
-            continue;
-        }
-        if columns[1] != "00000000" {
-            continue;
-        }
-        let iface = columns[0];
-        let gateway = decode_ipv4_hex_le(columns[2])?;
-        let mask = decode_ipv4_hex_le(columns[7]).unwrap_or_else(|| "0.0.0.0".to_string());
-        return Some(json!({
-            "interface": iface,
-            "gateway": gateway,
-            "mask": mask,
-        }));
-    }
-    None
-}
-
-#[cfg(any(target_os = "linux", test))]
-fn decode_ipv4_hex_le(raw: &str) -> Option<String> {
-    let value = u32::from_str_radix(raw, 16).ok()?;
-    Some(Ipv4Addr::from(value.to_le_bytes()).to_string())
-}
-
 #[cfg(any(target_os = "linux", test))]
 fn parse_ping_summary(stdout: &str) -> Value {
     let mut transmitted = None;
@@ -396,10 +303,9 @@ fn extract_numbers(raw: &str) -> Vec<f64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        http_probe, parse_default_route, parse_ping_summary, parse_resolv_conf, NetworkTool,
-    };
+    use super::{http_probe, parse_ping_summary, NetworkTool};
     use crate::error::Result;
+    use crate::host_observability::{parse_default_route, parse_resolv_conf};
     use crate::i18n::Locale;
     use crate::platform::ResponseBody;
     use crate::tools::{Tool, ToolContext};
@@ -439,10 +345,10 @@ nameserver 1.1.1.1\n\
 nameserver 8.8.8.8\n\
 search lan local\n\
 options timeout:2 attempts:3\n";
-        let (servers, search, options) = parse_resolv_conf(raw);
-        assert_eq!(servers, vec!["1.1.1.1", "8.8.8.8"]);
-        assert_eq!(search, vec!["lan", "local"]);
-        assert_eq!(options, vec!["timeout:2", "attempts:3"]);
+        let parsed = parse_resolv_conf(raw);
+        assert_eq!(parsed.nameservers, vec!["1.1.1.1", "8.8.8.8"]);
+        assert_eq!(parsed.search, vec!["lan", "local"]);
+        assert_eq!(parsed.options, vec!["timeout:2", "attempts:3"]);
     }
 
     #[test]
@@ -451,8 +357,8 @@ options timeout:2 attempts:3\n";
 Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n\
 eth0\t00000000\t0101A8C0\t0003\t0\t0\t0\t00000000\n";
         let route = parse_default_route(raw).unwrap();
-        assert_eq!(route["interface"], "eth0");
-        assert_eq!(route["gateway"], "192.168.1.1");
+        assert_eq!(route.interface, "eth0");
+        assert_eq!(route.gateway, "192.168.1.1");
     }
 
     #[test]
@@ -495,5 +401,23 @@ rtt min/avg/max/mdev = 22.631/24.087/25.515/1.181 ms\n",
             )
             .unwrap();
         assert!(payload.contains("\"op\":\"http_probe\""));
+    }
+
+    #[test]
+    fn dynamic_network_requirement_only_marks_remote_ops() {
+        let tool = NetworkTool;
+
+        assert!(!tool.requires_network_for(r#"{"op":"interfaces"}"#).unwrap());
+        assert!(!tool.requires_network_for(r#"{"op":"dns"}"#).unwrap());
+        assert!(!tool.requires_network_for(r#"{"op":"route"}"#).unwrap());
+        assert!(tool
+            .requires_network_for(r#"{"op":"resolve","host":"example.com"}"#)
+            .unwrap());
+        assert!(tool
+            .requires_network_for(r#"{"op":"ping","host":"example.com"}"#)
+            .unwrap());
+        assert!(tool
+            .requires_network_for(r#"{"op":"http_probe","url":"https://example.com"}"#)
+            .unwrap());
     }
 }

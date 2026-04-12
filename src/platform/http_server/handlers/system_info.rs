@@ -118,20 +118,21 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     // Linux 特有字段——统一从 board_info 共享函数取值，避免重复解析 /proc。
     #[cfg(target_os = "linux")]
     {
-        use crate::platform::board_info::{
-            cpu_core_count, linux_kernel_release, parse_proc_cpu_model,
-        };
+        let host = crate::host_observability::collect_linux_host_observability(
+            &crate::orchestrator::snapshot(),
+        );
         if let Some(obj) = json.as_object_mut() {
             obj.insert("os_type".to_string(), serde_json::json!("Linux"));
-            let kernel = linux_kernel_release();
-            if !kernel.is_empty() {
-                obj.insert("kernel_version".to_string(), serde_json::json!(kernel));
+            if !host.kernel_release.is_empty() {
+                obj.insert(
+                    "kernel_version".to_string(),
+                    serde_json::json!(host.kernel_release),
+                );
             }
-            let cpu = parse_proc_cpu_model();
-            if !cpu.is_empty() {
-                obj.insert("cpu_model".to_string(), serde_json::json!(cpu));
+            if !host.cpu_model.is_empty() {
+                obj.insert("cpu_model".to_string(), serde_json::json!(host.cpu_model));
             }
-            obj.insert("cpu_cores".to_string(), serde_json::json!(cpu_core_count()));
+            obj.insert("cpu_cores".to_string(), serde_json::json!(host.cpu_cores));
         }
     }
 
@@ -149,7 +150,7 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         target_os = "linux"
     ))]
     {
-        if let Some(hw) = crate::platform::board_info::linux_machine_display_name() {
+        if let Some(hw) = crate::host_observability::linux_machine_display_name() {
             if hw != ctx.board_id.as_ref() {
                 if let Some(obj) = json.as_object_mut() {
                     obj.insert("hardware_model".to_string(), serde_json::json!(hw));

@@ -415,6 +415,11 @@ pub trait Tool: Send + Sync {
     fn requires_network(&self) -> bool {
         false
     }
+    /// 单次执行是否真的会走网络；默认回退到静态 `requires_network`。
+    /// Dynamic per-call network admission hook. Defaults to static `requires_network`.
+    fn requires_network_for(&self, _args: &str) -> Result<bool> {
+        Ok(self.requires_network())
+    }
     /// 运行态能力合同：由 ToolRegistry 在 LLM 暴露与执行前统一裁决，不由工具体自行零散判断。
     fn capability_contract(&self) -> ToolCapabilityContract {
         ToolCapabilityContract::default()

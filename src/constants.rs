@@ -55,8 +55,6 @@ pub const MAX_DEFER_RETRIES: u8 = 3;
 /// 工具结果拼成一条 user 消息时，user_content 部分的字节数上限（4 KiB）。
 pub const MAX_TOOL_RESULTS_USER_MESSAGE_LEN: usize = 4 * 1024;
 
-/// Agent 结构化输出：模型回复含此时视为用户要求停止，固件终止当轮并只回确认。
-pub const AGENT_MARKER_STOP: &str = "[STOP]";
 /// Agent 结构化输出：固件将当轮 user 消息标为截断时优先保留。
 pub const AGENT_MARKER_MARK_IMPORTANT: &str = "[MARK_IMPORTANT]";
 /// Agent 结构化输出：固件在下轮 build_context 时注入情绪提示，随后清除。

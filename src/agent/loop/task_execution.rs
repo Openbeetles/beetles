@@ -2,9 +2,7 @@ use super::*;
 
 pub(super) fn extract_worker_outcome_text(outcome: WorkerOutcome) -> String {
     match outcome {
-        WorkerOutcome::Interrupt(text)
-        | WorkerOutcome::Content(text)
-        | WorkerOutcome::Delivered(text) => text,
+        WorkerOutcome::Content(text) | WorkerOutcome::Delivered(text) => text,
     }
 }
 

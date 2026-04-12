@@ -44,8 +44,8 @@ use crate::bus::{
     MAX_CONTENT_LEN,
 };
 use crate::constants::{
-    AGENT_MARKER_MARK_IMPORTANT, AGENT_MARKER_SIGNAL_COMFORT, AGENT_MARKER_STOP,
-    AGENT_RETRY_BASE_MS, AGENT_RETRY_MAX_MS, INBOUND_RECV_TIMEOUT_SECS, MAX_DEFER_RETRIES,
+    AGENT_MARKER_MARK_IMPORTANT, AGENT_MARKER_SIGNAL_COMFORT, AGENT_RETRY_BASE_MS,
+    AGENT_RETRY_MAX_MS, INBOUND_RECV_TIMEOUT_SECS, MAX_DEFER_RETRIES,
     MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
 };
 use crate::error::Result;
@@ -97,8 +97,8 @@ use crate::task_execution::{
 use crate::tools::http_bridge::HttpClientToolContext;
 use crate::tools::{ToolOutboundDeliveryKind, ToolOutboundIntent, ToolOutboundTarget};
 use crate::util::{
-    push_json_string_escaped, remove_substrings_all_trim, strip_agent_stop_confirmation,
-    truncate_content_to_max, usize_to_decimal_buf,
+    is_public_operational_observability_request, push_json_string_escaped,
+    remove_substrings_all_trim, truncate_content_to_max, usize_to_decimal_buf,
 };
 use crate::PlatformHttpClient;
 use serde::{Deserialize, Serialize};
@@ -1675,6 +1675,14 @@ fn maybe_apply_mental_privacy_review(
             touched_targets: Vec::new(),
         };
     }
+    if is_public_operational_observability_request(&msg.content) {
+        return MentalPrivacyReviewOutcome {
+            reply_content,
+            action: crate::memory::MentalPrivacyShareAction::AllowOriginal,
+            applied: false,
+            touched_targets: Vec::new(),
+        };
+    }
 
     let t0 = metrics::record_llm_call_start();
     let mut privacy_http = HttpClientToolContext {
@@ -2306,11 +2314,10 @@ struct AdmissionDeferContext<'a> {
     low_mem_defer_log: &'a mut Option<(Arc<str>, Instant)>,
 }
 
-/// run_worker_path 返回：正常内容或用户要求停止时的确认文案。
+/// run_worker_path 返回：正常内容或已交付的主回复文案。
 pub enum WorkerOutcome {
     Content(String),
     Delivered(String),
-    Interrupt(String),
 }
 
 /// 单轮进度指标，用于检测 agent 是否陷入无效循环。
@@ -3782,9 +3789,7 @@ mod tests {
             .iter()
             .any(|request| request.system.contains(FINAL_RECOVERY_SYSTEM_SUFFIX));
         let outcome_text = match outcome {
-            WorkerOutcome::Interrupt(text)
-            | WorkerOutcome::Content(text)
-            | WorkerOutcome::Delivered(text) => text,
+            WorkerOutcome::Content(text) | WorkerOutcome::Delivered(text) => text,
         };
         let llm_calls = observed.len();
         let outcome_fragment_present = outcome_text.contains(case.expected_outcome_fragment);
@@ -4484,6 +4489,70 @@ mod tests {
     }
 
     #[test]
+    fn linux_full_public_ops_request_skips_sync_disclosure_adjudication() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![LlmResponse {
+                content: r#"{"boundary_touch":false,"request_kind":"none","touched_targets":[],"share_action":"allow_original","response_mode":"direct_answer","acknowledge_boundary":false,"relational_frame":"","boundary_explanation_style":"","repair_signal":"","disclosure_risk_note":"","response_guidance":"","rationale":"","boundary_persona_update":null,"relational_state_update":null}"#.to_string(),
+                stop_reason: StopReason::EndTurn,
+                tool_calls: None,
+            }]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let registry = crate::tools::ToolRegistry::new();
+        let mut config = test_agent_loop_config();
+        config.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
+        config.inner_life_store = Arc::new(LoadedInnerLifeStore {
+            value: crate::memory::InnerLife {
+                private_journal: "这是存在中的内在余波。".to_string(),
+                ..crate::memory::InnerLife::default()
+            },
+        });
+        let msg =
+            PcMsg::new_inbound("qq_channel", "chat-ops", "查看系统状态", false).expect("message");
+        let request_plan =
+            AgentRequestPlan::build(&msg, &registry, &llm, AgentRunStrategy::LinuxEnhanced);
+
+        let mut session = Box::new(self::worker_context_stages::WorkerPrepareSession::new(
+            Instant::now(),
+        ));
+        self::worker_context_stages::compute_prepare_runtime(
+            &mut session,
+            &msg,
+            &config,
+            &request_plan,
+        );
+        let mut tool_ctx = HttpClientToolContext {
+            http: &mut http,
+            chat_id: Some(msg.chat_id.clone()),
+            channel: Some(msg.channel.clone()),
+            channel_capability_registry: Arc::clone(&config.channel_capability_registry),
+            supports_current_chat_outbound_message: false,
+            supports_current_chat_primary_reply: false,
+            supports_explicit_outbound_message: false,
+            outbound_message_budget: 0,
+            outbound_message_count: 0,
+            current_primary_message_delivered: false,
+            locale: UiLocale::Zh,
+        };
+
+        self::worker_context_stages::run_prepare_mental_privacy(
+            &mut session,
+            &llm,
+            &msg,
+            &config,
+            &mut tool_ctx,
+        );
+
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            observed.is_empty(),
+            "public operational observability requests should not invoke disclosure adjudication"
+        );
+    }
+
+    #[test]
     fn esp_compact_first_turn_does_not_sync_relationship_constitution_store() {
         let observed = Arc::new(Mutex::new(Vec::new()));
         let llm = ObservedSequenceStubLlm {
@@ -4608,6 +4677,135 @@ mod tests {
             "linux full should keep syncing relationship constitution on the hot path"
         );
         assert_eq!(tracked_store.clear_count(), 0);
+    }
+
+    #[test]
+    fn finalize_turn_skips_mental_privacy_review_for_public_ops_reply() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![LlmResponse {
+                content: r#"{"applies":true,"request_kind":"share_any","share_action":"refuse","response":"系统信息属于内部运行机制，不对外公开。","rationale":"bad rewrite","touched_targets":["inner_life"]}"#.to_string(),
+                stop_reason: StopReason::EndTurn,
+                tool_calls: None,
+            }]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let mut config = test_agent_loop_config();
+        config.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
+        config.inner_life_store = Arc::new(LoadedInnerLifeStore {
+            value: crate::memory::InnerLife {
+                private_journal: "这是存在中的内在余波。".to_string(),
+                ..crate::memory::InnerLife::default()
+            },
+        });
+        let msg =
+            PcMsg::new_inbound("qq_channel", "chat-ops", "查看系统信息", false).expect("message");
+        let reply = "系统状态正常，CPU 12%，内存可用 128MB。".to_string();
+        let telemetry = WorkerRunTelemetry {
+            streamed: false,
+            latency: WorkerLatency::default(),
+            delivery: DeliveryReport::default(),
+            any_tool_used: true,
+            external_content_used: false,
+            used_final_answer_recovery: false,
+            task_execution_used: false,
+            pressure: crate::orchestrator::PressureLevel::Normal,
+            runtime_mode: crate::runtime::RuntimeModeSnapshot {
+                current_mode: crate::runtime::RuntimeMode::Normal,
+                wifi_sta_connected: true,
+                boot_phase_active: false,
+                pairing_required: false,
+                pairing_state_known: false,
+                voice_exclusive_active: false,
+                background_maintenance_active: false,
+                config_plane_alive: false,
+                channel_plane_alive: true,
+                voice_plane_alive: false,
+                agent_plane_alive: true,
+                user_agent_lane_alive: true,
+                system_agent_lane_alive: false,
+                dual_agent_lanes_alive: false,
+                external_wss_managed_present: false,
+                external_wss_suspend_requested: false,
+                external_wss_suspended: false,
+                supervisor_present: false,
+                supervisor_alive: false,
+                supervisor_agent_alive: false,
+                recovery_safe_mode_active: false,
+                action_budget: crate::runtime::RuntimeModeActionBudget {
+                    allow_periodic_maintenance: true,
+                    allow_due_user_timers: true,
+                    allow_heartbeat_injection: true,
+                    allow_best_effort_delayed_tasks: true,
+                    allow_idle_self_runtime: true,
+                    allow_non_voice_outbound: true,
+                    allow_external_wss_connect: true,
+                    require_external_wss_suspended: false,
+                },
+            },
+            deliberation_class: crate::memory::TurnDeliberationClass::Standard,
+            tool_blocker: None,
+            prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
+            runtime_skill_selected_ids: Vec::new(),
+            task_learning_selected_ids: Vec::new(),
+            subject_state: None,
+            mental_privacy_adjudication: None,
+            persona_priority_adjudication: None,
+        };
+
+        let finalized = self::reply_finalize::finalize_turn(
+            &mut http,
+            &llm,
+            &config,
+            &msg,
+            UiLocale::Zh,
+            Instant::now(),
+            WorkerOutcome::Content(reply.clone()),
+            telemetry,
+        );
+
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            observed.is_empty(),
+            "public operational observability replies should bypass mental privacy review"
+        );
+        assert_eq!(finalized.reply_content, reply);
+        assert!(!finalized.mental_privacy_review.applied);
+    }
+
+    #[test]
+    fn execute_turn_treats_stop_marker_as_plain_text_after_stop_semantics_removal() {
+        let llm = SequenceStubLlm {
+            responses: Mutex::new(vec![LlmResponse {
+                content: "[STOP] 好的，已停止。".to_string(),
+                stop_reason: StopReason::EndTurn,
+                tool_calls: None,
+            }]),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let registry = crate::tools::ToolRegistry::new();
+        let config = test_agent_loop_config();
+        let msg = PcMsg::new_inbound("qq_channel", "chat-1", "停止一下", false).expect("message");
+        let mut repeat = HashMap::new();
+
+        let turn_execution::ExecutedTurn { outcome, .. } = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-stop-text",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        assert!(
+            matches!(outcome, WorkerOutcome::Content(ref text) if text == "[STOP] 好的，已停止。")
+        );
     }
 
     #[test]

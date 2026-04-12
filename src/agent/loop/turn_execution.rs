@@ -242,39 +242,6 @@ pub(super) fn execute_turn(
             let delivery_report = delivery.report();
             let primary_reply_already_delivered = delivery_report.current_primary_delivered;
             let tool_visible_reply_sent = delivery_report.tool_visible_updates_sent > 0;
-            if content.contains(AGENT_MARKER_STOP) {
-                let confirmation = strip_agent_stop_confirmation(&content);
-                mark_ttft_if_visible(&mut latency, worker_start, &confirmation);
-                let streamed = delivery.finalize(&confirmation);
-                return Ok(ExecutedTurn {
-                    outcome: WorkerOutcome::Interrupt(confirmation),
-                    telemetry: WorkerRunTelemetry {
-                        streamed,
-                        latency,
-                        delivery: delivery.report(),
-                        any_tool_used,
-                        external_content_used,
-                        used_final_answer_recovery,
-                        task_execution_used: false,
-                        pressure,
-                        runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
-                        deliberation_class: deliberation_gate.class,
-                        tool_blocker: recent_tool_round.blocker,
-                        prompt_recall_intent: runtime_carry.prompt_recall_intent,
-                        runtime_skill_selected_ids: runtime_carry
-                            .runtime_skill_selected_ids
-                            .clone(),
-                        task_learning_selected_ids: runtime_carry.task_recall_selected_ids.clone(),
-                        subject_state: subject_state.as_deref().cloned(),
-                        mental_privacy_adjudication: mental_privacy_adjudication
-                            .as_deref()
-                            .cloned(),
-                        persona_priority_adjudication: persona_priority_adjudication
-                            .as_deref()
-                            .cloned(),
-                    },
-                });
-            }
             if let Some(followup) = empty_final_answer_followup(
                 config.strategy,
                 any_tool_used && !primary_reply_already_delivered && !tool_visible_reply_sent,
@@ -500,34 +467,6 @@ pub(super) fn execute_turn(
         }
 
         let content = response.content;
-        if content.contains(AGENT_MARKER_STOP) {
-            let confirmation = strip_agent_stop_confirmation(&content);
-            let streamed = delivery.finalize(&confirmation);
-            return Ok(ExecutedTurn {
-                outcome: WorkerOutcome::Interrupt(confirmation),
-                telemetry: WorkerRunTelemetry {
-                    streamed,
-                    latency,
-                    delivery: delivery.report(),
-                    any_tool_used,
-                    external_content_used,
-                    used_final_answer_recovery,
-                    task_execution_used: false,
-                    pressure,
-                    runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
-                    deliberation_class: deliberation_gate.class,
-                    tool_blocker: recent_tool_round.blocker,
-                    prompt_recall_intent: runtime_carry.prompt_recall_intent,
-                    runtime_skill_selected_ids: runtime_carry.runtime_skill_selected_ids.clone(),
-                    task_learning_selected_ids: runtime_carry.task_recall_selected_ids.clone(),
-                    subject_state: subject_state.as_deref().cloned(),
-                    mental_privacy_adjudication: mental_privacy_adjudication.as_deref().cloned(),
-                    persona_priority_adjudication: persona_priority_adjudication
-                        .as_deref()
-                        .cloned(),
-                },
-            });
-        }
         final_content = content;
         break;
     }

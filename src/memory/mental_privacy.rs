@@ -1166,6 +1166,7 @@ fn build_mental_privacy_disclosure_adjudication_input(
     out.push_str("\n## Boundary Classification Law\n");
     out.push_str("- Use boundary_touch=true only for protected inner/private layers or requests that would expose them.\n");
     out.push_str("- Do not use boundary_touch=true for shareable stable preference facts, already-shared relationship facts, or memory questions answerable from governed/shared evidence without exposing protected targets.\n");
+    out.push_str("- Do not use boundary_touch=true for public operational observability requests about device or host status, board_info-style runtime telemetry, uptime, resources, storage, network, temperature, or similar system inspection facts.\n");
     out.push_str("- When the request is about remembered preferences or relationship facts and the evidence does not support an exact detail, keep boundary_touch=false and let the main reply answer directly or say the exact detail is unknown.\n");
     out.push_str("\n## Output Contract\n");
     out.push_str("- boundary_touch: boolean. True when this turn should be treated as touching privacy boundaries or protected inner material.\n");
@@ -1551,6 +1552,9 @@ pub fn run_mental_privacy_disclosure_adjudication(
     input: MentalPrivacyDisclosureAdjudicationInput<'_>,
 ) -> Result<Option<MentalPrivacyDisclosureAdjudication>> {
     if input.user_content.trim().is_empty() {
+        return Ok(None);
+    }
+    if crate::util::is_public_operational_observability_request(input.user_content) {
         return Ok(None);
     }
     let subject_id = board_subject_scope_id();
@@ -2210,6 +2214,7 @@ mod tests {
         assert!(
             input.contains("Do not use boundary_touch=true for shareable stable preference facts")
         );
+        assert!(input.contains("public operational observability requests"));
         assert!(
             input.contains("let the main reply answer directly or say the exact detail is unknown")
         );

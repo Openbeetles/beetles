@@ -33,12 +33,9 @@ pub struct RuntimeContext {
     pub process_memory_kb: u32,
 }
 
-/// 预构建的 structured output 指令块（三个 marker 均为编译期常量）。
+/// 预构建的 structured output 指令块（两个 marker 均为编译期常量）。
 const STRUCTURED_BLOCK: &str = concat!(
     "\n\n## Structured output\n",
-    "When the user clearly asks to stop or cancel the current task, reply with ",
-    "[STOP]",
-    " then a short confirmation. ",
     "When you want to mark the current user message as important for context truncation, include ",
     "[MARK_IMPORTANT]",
     " in your reply. ",

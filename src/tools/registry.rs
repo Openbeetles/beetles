@@ -226,6 +226,7 @@ impl ToolRegistry {
             });
         };
         let shape = entry.tool.execution_shape(args)?;
+        let requires_network = entry.tool.requires_network_for(args)?;
         let Some(governance) = self.execution_governance.as_ref() else {
             return Ok(ToolExecutionGateDecision::Allow(ToolExecutionPermit {
                 tool_name: name.to_string(),
@@ -233,7 +234,7 @@ impl ToolRegistry {
                 channel: policy.channel.to_string(),
                 metadata: entry.metadata,
                 shape,
-                requires_network: entry.requires_network,
+                requires_network,
             }));
         };
         governance.assess(ToolExecutionRequest {
@@ -242,7 +243,7 @@ impl ToolRegistry {
             channel: policy.channel.to_string(),
             metadata: entry.metadata,
             shape,
-            requires_network: entry.requires_network,
+            requires_network,
         })
     }
 
@@ -809,6 +810,7 @@ mod tests {
     struct UserOnlyTaskTool;
     struct OutcomeTool;
     struct CapabilityBoundTool;
+    struct ConditionalNetworkTool;
     struct StubToolContext;
 
     impl Tool for VisibleTool {
@@ -944,6 +946,36 @@ mod tests {
         }
     }
 
+    impl Tool for ConditionalNetworkTool {
+        fn name(&self) -> &'static str {
+            "conditional_network"
+        }
+
+        fn description(&self) -> &str {
+            "tool with per-call network requirements"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object","properties":{"op":{"type":"string"}}}"#
+        }
+
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn requires_network(&self) -> bool {
+            true
+        }
+
+        fn requires_network_for(&self, args: &str) -> Result<bool> {
+            let obj = crate::tools::parse_tool_args(args, "conditional_network_tool")?;
+            Ok(matches!(
+                obj.get("op").and_then(|value| value.as_str()),
+                Some("remote")
+            ))
+        }
+    }
+
     impl crate::tools::ToolContext for StubToolContext {
         fn get_with_headers(
             &mut self,
@@ -1012,6 +1044,32 @@ mod tests {
                 content: "tool delivered reply".to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn assess_llm_execution_uses_dynamic_network_requirement() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(ConditionalNetworkTool));
+        let policy = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
+
+        let local = registry
+            .assess_llm_execution("conditional_network", r#"{"op":"local"}"#, &policy)
+            .expect("assess local");
+        let remote = registry
+            .assess_llm_execution("conditional_network", r#"{"op":"remote"}"#, &policy)
+            .expect("assess remote");
+
+        let local_requires_network = match local {
+            crate::tools::ToolExecutionGateDecision::Allow(permit) => permit.requires_network(),
+            other => panic!("expected allow for local op, got {other:?}"),
+        };
+        let remote_requires_network = match remote {
+            crate::tools::ToolExecutionGateDecision::Allow(permit) => permit.requires_network(),
+            other => panic!("expected allow for remote op, got {other:?}"),
+        };
+
+        assert!(!local_requires_network);
+        assert!(remote_requires_network);
     }
 
     #[test]

@@ -208,9 +208,9 @@ pub(crate) fn decide_prompt_recall_route(
         input.has_execution_state,
         query_is_weak,
     )
-        .saturating_add(u32::from(input.has_active_task) * 8)
-        .saturating_add(u32::from(input.has_execution_state) * 4)
-        .saturating_add(u32::from(query_is_weak) * 8);
+    .saturating_add(u32::from(input.has_active_task) * 8)
+    .saturating_add(u32::from(input.has_execution_state) * 4)
+    .saturating_add(u32::from(query_is_weak) * 8);
     let procedural_signal = procedural_support_signal(&procedural_rerank)
         .saturating_add(u32::from(input.has_active_task) * 4);
     let evidence_signal = evidence_support_signal(&evidence_rerank);

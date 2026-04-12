@@ -39,20 +39,14 @@ pub(super) fn finalize_turn(
     outcome: WorkerOutcome,
     telemetry: WorkerRunTelemetry,
 ) -> FinalizedTurn {
-    let final_outcome = if matches!(outcome, WorkerOutcome::Interrupt(_)) {
-        "interrupt"
-    } else if telemetry.delivery.current_primary_delivered {
+    let final_outcome = if telemetry.delivery.current_primary_delivered {
         "current_primary"
     } else if telemetry.used_final_answer_recovery {
         "final_recovery"
     } else {
         "final_answer"
     };
-    let turn_observation = build_turn_observation_ledger(
-        final_outcome,
-        matches!(outcome, WorkerOutcome::Interrupt(_)),
-        &telemetry,
-    );
+    let turn_observation = build_turn_observation_ledger(final_outcome, false, &telemetry);
     let WorkerRunTelemetry {
         streamed,
         latency: mut worker_latency,
@@ -77,15 +71,6 @@ pub(super) fn finalize_turn(
     // Delivery only transports the already-finalized reply afterwards.
     let (mut reply_content, is_interrupt, reply_already_delivered, apply_finalizer) = match outcome
     {
-        WorkerOutcome::Interrupt(confirm) => {
-            let cow = truncate_content_to_max(&confirm, MAX_CONTENT_LEN);
-            let s = if let Cow::Borrowed(_) = &cow {
-                confirm
-            } else {
-                cow.into_owned()
-            };
-            (s, true, false, false)
-        }
         WorkerOutcome::Content(s) => {
             let cow = truncate_content_to_max(&s, MAX_CONTENT_LEN);
             let s = if let Cow::Borrowed(_) = &cow {

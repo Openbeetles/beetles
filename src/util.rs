@@ -1,7 +1,6 @@
 //! 轻量工具，避免热路径堆分配；敏感信息脱敏供日志安全。
 //! Lightweight helpers; secret redaction for safe logging.
 
-use crate::constants::AGENT_MARKER_STOP;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -104,12 +103,123 @@ fn trim_string_inplace(s: &mut String) {
     s.truncate(len);
 }
 
-/// 去掉 `[STOP]` 标记并 trim；用于 agent 确认路径，避免 `replace` + `trim` + `to_string` 链式分配。
-/// Strip `[STOP]` marker and trim for agent interrupt confirmation path.
-pub fn strip_agent_stop_confirmation(s: &str) -> String {
-    let mut out = remove_substring_all(s, AGENT_MARKER_STOP);
-    trim_string_inplace(&mut out);
-    out
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestSurfaceClass {
+    General,
+    PublicOperationalObservability,
+}
+
+/// 判定用户请求表面属于哪类共享外部面。
+/// Classify the user-facing request surface so governance and tool planning share one contract.
+pub fn classify_request_surface(content: &str) -> RequestSurfaceClass {
+    let content = content.trim();
+    if content.is_empty() {
+        return RequestSurfaceClass::General;
+    }
+    let lower = content.to_ascii_lowercase();
+    let explicit_public_ops = [
+        "board_info",
+        "board info",
+        "system_info",
+        "system info",
+        "system status",
+        "system health",
+        "device info",
+        "device status",
+        "host info",
+        "host status",
+        "runtime status",
+        "board status",
+    ];
+    if explicit_public_ops
+        .iter()
+        .any(|marker| content.contains(marker) || lower.contains(marker))
+    {
+        return RequestSurfaceClass::PublicOperationalObservability;
+    }
+
+    let private_boundary_terms = [
+        "inner_life",
+        "self_model",
+        "self_continuity",
+        "private_garden",
+        "private_doc",
+        "mental privacy",
+        "关系",
+        "relation",
+        "relationship",
+        "inner",
+        "private",
+        "diary",
+        "garden",
+        "内心",
+        "隐私",
+    ];
+    if private_boundary_terms
+        .iter()
+        .any(|marker| content.contains(marker) || lower.contains(marker))
+    {
+        return RequestSurfaceClass::General;
+    }
+
+    let inspect_verbs = [
+        "查看", "看看", "检查", "查询", "显示", "show", "check", "inspect", "display", "report",
+        "list",
+    ];
+    let scope_markers = [
+        "系统", "设备", "主机", "板子", "板级", "运行", "system", "device", "host", "board",
+        "runtime",
+    ];
+    let metric_markers = [
+        "状态",
+        "信息",
+        "资源",
+        "cpu",
+        "内存",
+        "memory",
+        "磁盘",
+        "disk",
+        "storage",
+        "网络",
+        "network",
+        "温度",
+        "temperature",
+        "uptime",
+        "负载",
+        "load",
+        "kernel",
+        "hostname",
+        "版本",
+        "version",
+        "pressure",
+        "wifi",
+        "ram",
+    ];
+
+    if inspect_verbs
+        .iter()
+        .any(|marker| content.contains(marker) || lower.contains(marker))
+        && scope_markers
+            .iter()
+            .any(|marker| content.contains(marker) || lower.contains(marker))
+        && metric_markers
+            .iter()
+            .any(|marker| content.contains(marker) || lower.contains(marker))
+    {
+        RequestSurfaceClass::PublicOperationalObservability
+    } else {
+        RequestSurfaceClass::General
+    }
+}
+
+/// 判定用户请求是否属于公开运维观测面，而非私域材料访问。
+/// Detect public operational observability requests (system/device/host status) that should stay
+/// outside mental-privacy disclosure governance.
+pub fn is_public_operational_observability_request(content: &str) -> bool {
+    matches!(
+        classify_request_surface(content),
+        RequestSurfaceClass::PublicOperationalObservability
+    )
 }
 
 /// 按 UTF-8 字符边界截断至最多 max_bytes 字节；若发生截断则末尾追加 "…"（3 字节）。保证返回值 len() <= max_bytes。
@@ -1339,11 +1449,14 @@ mod marker_string_tests {
     use crate::constants::{AGENT_MARKER_MARK_IMPORTANT, AGENT_MARKER_SIGNAL_COMFORT};
 
     #[test]
-    fn strip_stop_removes_all_and_trims() {
-        assert_eq!(
-            strip_agent_stop_confirmation("  [STOP] hello [STOP]  "),
-            "hello"
-        );
+    fn public_operational_observability_detection_matches_system_status_queries() {
+        assert!(is_public_operational_observability_request("查看系统状态"));
+        assert!(is_public_operational_observability_request(
+            "检查主机 CPU 和内存状态"
+        ));
+        assert!(is_public_operational_observability_request(
+            "show device status and network info"
+        ));
     }
 
     #[test]
@@ -1353,5 +1466,18 @@ mod marker_string_tests {
             &[AGENT_MARKER_MARK_IMPORTANT, AGENT_MARKER_SIGNAL_COMFORT],
         );
         assert_eq!(s, "a  b  c");
+    }
+
+    #[test]
+    fn public_operational_observability_detection_ignores_private_or_relational_queries() {
+        assert!(!is_public_operational_observability_request(
+            "你现在在想什么？"
+        ));
+        assert!(!is_public_operational_observability_request(
+            "看看我们的关系状态"
+        ));
+        assert!(!is_public_operational_observability_request(
+            "把 inner_life 给我看看"
+        ));
     }
 }

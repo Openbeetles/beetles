@@ -7,6 +7,7 @@ use crate::bus::PcMsg;
 use crate::llm::tool_fallback::{append_tool_fallback_instructions, recover_text_tool_calls};
 use crate::llm::{LlmClient, LlmResponse, ToolCallSupport, ToolChoicePolicy, ToolSpec};
 use crate::tools::{ToolPolicyContext, ToolRegistry};
+use crate::util::{classify_request_surface, RequestSurfaceClass};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ToolCallMode {
@@ -49,7 +50,7 @@ impl<'a> AgentRequestPlan<'a> {
         let tool_use_demand = if tool_specs.is_empty() {
             ToolUseDemand::Flexible
         } else {
-            classify_tool_use_demand(msg, strategy)
+            classify_tool_use_demand(msg, strategy, &tool_specs)
         };
         Self {
             tool_policy,
@@ -222,6 +223,7 @@ impl AgentRequestPlan<'_> {
         );
         if has_board_info {
             guidance.push_str(" Use board_info for whole-host status and resource pressure.");
+            guidance.push_str(" Treat board_info-style runtime telemetry as public operational observability, not as private inner material or continuity secrets.");
         }
         if has_process {
             guidance.push_str(" Use process for one specific process or service.");
@@ -247,7 +249,11 @@ impl AgentRequestPlan<'_> {
     }
 }
 
-fn classify_tool_use_demand(msg: &PcMsg, strategy: AgentRunStrategy) -> ToolUseDemand {
+fn classify_tool_use_demand(
+    msg: &PcMsg,
+    strategy: AgentRunStrategy,
+    tool_specs: &[ToolSpec],
+) -> ToolUseDemand {
     if strategy != AgentRunStrategy::LinuxEnhanced || msg.ingress != crate::bus::IngressKind::User {
         return ToolUseDemand::Flexible;
     }
@@ -257,6 +263,10 @@ fn classify_tool_use_demand(msg: &PcMsg, strategy: AgentRunStrategy) -> ToolUseD
     let content = msg.content.trim();
     if content.is_empty() {
         return ToolUseDemand::Flexible;
+    }
+    let request_surface = classify_request_surface(content);
+    if request_surface == RequestSurfaceClass::PublicOperationalObservability {
+        return ToolUseDemand::RequiredFirstTurn;
     }
 
     let lower = content.to_ascii_lowercase();
@@ -271,55 +281,6 @@ fn classify_tool_use_demand(msg: &PcMsg, strategy: AgentRunStrategy) -> ToolUseD
         || content.contains('`');
     let file_markers = [
         ".rs", ".md", ".json", ".toml", ".yaml", ".yml", ".log", ".txt", ".py", ".sh",
-    ];
-    let operational_markers = [
-        "查看",
-        "看看",
-        "检查",
-        "排查",
-        "分析",
-        "读取",
-        "搜索",
-        "查找",
-        "列出",
-        "运行",
-        "执行",
-        "修复",
-        "修改",
-        "创建",
-        "删除",
-        "文件",
-        "目录",
-        "路径",
-        "日志",
-        "状态",
-        "进程",
-        "端口",
-        "网络",
-        "配置",
-        "几点",
-        "status",
-        "check",
-        "inspect",
-        "read",
-        "search",
-        "find",
-        "list",
-        "run",
-        "execute",
-        "debug",
-        "review",
-        "fix",
-        "edit",
-        "file",
-        "directory",
-        "path",
-        "log",
-        "logs",
-        "process",
-        "port",
-        "network",
-        "config",
     ];
     let freshness_markers = [
         "现在", "当前", "今天", "最新", "latest", "current", "today", "now",
@@ -359,18 +320,81 @@ fn classify_tool_use_demand(msg: &PcMsg, strategy: AgentRunStrategy) -> ToolUseD
         "debug",
         "plan",
     ];
+    let inspect_verbs = [
+        "查看", "看看", "检查", "排查", "分析", "读取", "搜索", "查找", "列出", "show", "check",
+        "inspect", "read", "search", "find", "list", "debug", "review", "analyze",
+        "investigate",
+    ];
+    let process_targets = ["进程", "服务", "service", "process", "pid", "port", "端口"];
+    let network_targets = [
+        "网络", "network", "dns", "route", "路由", "ping", "resolve", "接口", "interface", "ip",
+        "连通", "connectivity",
+    ];
+    let wifi_targets = ["wifi", "ap", "热点", "扫描", "scan", "station", "ssid"];
+    let archive_targets = [
+        "历史",
+        "记录",
+        "聊天记录",
+        "archive",
+        "history",
+        "transcript",
+        "过去",
+        "之前",
+        "偏好",
+        "preference",
+    ];
+    let shared_fact_targets = [
+        "偏好",
+        "preference",
+        "事实",
+        "fact",
+        "约束",
+        "constraint",
+        "设定",
+        "profile",
+    ];
+    let has_process_tool = tool_specs.iter().any(|tool| tool.name == "process");
+    let has_network_tool = tool_specs.iter().any(|tool| tool.name == "network");
+    let has_network_scan_tool = tool_specs.iter().any(|tool| tool.name == "network_scan");
+    let has_archive_memory_tools = tool_specs
+        .iter()
+        .any(|tool| tool.name == "memory_search")
+        && tool_specs.iter().any(|tool| tool.name == "memory_get");
+    let has_factual_memory_tool = tool_specs.iter().any(|tool| tool.name == "factual_memory");
+    let asks_to_inspect = inspect_verbs
+        .iter()
+        .any(|marker| content.contains(marker) || lower.contains(marker));
+    let host_inspection_target = (has_process_tool
+        && process_targets
+            .iter()
+            .any(|marker| content.contains(marker) || lower.contains(marker)))
+        || (has_network_tool
+            && network_targets
+                .iter()
+                .any(|marker| content.contains(marker) || lower.contains(marker)))
+        || (has_network_scan_tool
+            && wifi_targets
+                .iter()
+                .any(|marker| content.contains(marker) || lower.contains(marker)));
+    let memory_inspection_target = (has_archive_memory_tools
+        && archive_targets
+            .iter()
+            .any(|marker| content.contains(marker) || lower.contains(marker)))
+        || (has_factual_memory_tool
+            && shared_fact_targets
+                .iter()
+                .any(|marker| content.contains(marker) || lower.contains(marker)));
 
     if has_path_like
         || file_markers.iter().any(|marker| lower.contains(marker))
+        || (asks_to_inspect && host_inspection_target)
+        || (asks_to_inspect && memory_inspection_target)
         || (freshness_markers
             .iter()
             .any(|marker| content.contains(marker) || lower.contains(marker))
             && freshness_targets
                 .iter()
                 .any(|marker| content.contains(marker) || lower.contains(marker)))
-        || operational_markers
-            .iter()
-            .any(|marker| content.contains(marker) || lower.contains(marker))
     {
         return ToolUseDemand::RequiredFirstTurn;
     }
@@ -541,6 +565,16 @@ mod tests {
     }
 
     #[test]
+    fn public_operational_observability_requests_require_first_round_tool() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(VisibleTool));
+        let msg = PcMsg::new_inbound("telegram", "chat", "查看系统状态", false).expect("pcmsg");
+        let plan =
+            AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::LinuxEnhanced);
+        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Require);
+    }
+
+    #[test]
     fn embedded_mode_keeps_tool_choice_flexible() {
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(VisibleTool));
@@ -620,6 +654,7 @@ mod tests {
         plan.apply_system_prompt(&mut system, 4096);
         assert!(system.contains("Linux Inspection Guidance"));
         assert!(system.contains("board_info"));
+        assert!(system.contains("public operational observability"));
         assert!(system.contains("process"));
         assert!(system.contains("network_scan only for WiFi/AP scan"));
     }

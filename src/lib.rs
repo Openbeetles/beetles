@@ -3,6 +3,7 @@
 
 mod build_info;
 mod build_package;
+mod host_observability;
 pub mod capability_package;
 pub mod channel_capability;
 pub mod constants;

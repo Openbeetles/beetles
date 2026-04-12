@@ -5,14 +5,14 @@ use crate::channel_capability::build_channel_capability_registry;
 use crate::channels::QqMsgIdCache;
 use crate::config::AppConfig;
 use crate::error::{Error, Result};
-use crate::platform::http_server::common::{self, CORS_HEADERS};
+use crate::platform::http_server::common::CORS_HEADERS;
 use crate::platform::http_server::handlers::{ControlPlaneRouteContract, HandlerContext};
+use crate::platform::http_server::linux_runtime::{self, LinuxHttpServerSpec};
 use crate::platform::http_server::router::{
     self, IncomingRequest, OutgoingResponse, RestartAction, RouterEnv,
 };
 use crate::platform::Platform;
 use std::collections::HashMap;
-use std::io::Read as _;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -116,110 +116,51 @@ fn run(platform: Arc<dyn Platform>) -> Result<()> {
         route_contract: ControlPlaneRouteContract::SUPERVISOR_MINIMAL,
     });
     let router_env = Arc::new(build_router_env(config.as_ref()));
+    let _active_guard = crate::runtime::ConfigPlaneGuard::enter();
     let listen =
         std::env::var("BEETLE_CONFIG_HTTP_LISTEN").unwrap_or_else(|_| "0.0.0.0:80".to_string());
-    let server = Arc::new(tiny_http::Server::http(&listen).map_err(|e| Error::Other {
-        source: Box::new(std::io::Error::other(e.to_string())),
-        stage: "linux_control_plane_listen",
-    })?);
-    let _active_guard = crate::runtime::ConfigPlaneGuard::enter();
-    log::info!(
-        "[linux_control_plane] listening on {} (supervisor-owned control plane)",
-        listen
-    );
-    for index in 0..LINUX_HTTP_WORKERS {
-        let worker_name = format!("linux_control_plane_worker_{}", index);
-        let server = Arc::clone(&server);
-        let ctx = Arc::clone(&ctx);
-        let router_env = Arc::clone(&router_env);
-        crate::util::spawn_guarded_with_profile(
-            &worker_name,
-            crate::util::STACK_CHANNEL_SENDER,
-            Some(crate::util::SpawnCore::Core0),
-            crate::util::HttpThreadRole::Background,
-            move || loop {
-                match server.recv() {
-                    Ok(request) => handle_request(&ctx, router_env.as_ref(), request),
-                    Err(error) => {
-                        log::warn!("[linux_control_plane] recv failed: {}", error);
-                        break;
+    linux_runtime::run_linux_http_server(
+        LinuxHttpServerSpec {
+            log_tag: "linux_control_plane",
+            listen_stage: "linux_control_plane_listen",
+            listen_log: format!(
+                "[linux_control_plane] listening on {} (supervisor-owned control plane)",
+                listen
+            ),
+            listen_addr: listen,
+            worker_name_prefix: "linux_control_plane_worker_",
+            worker_count: LINUX_HTTP_WORKERS,
+        },
+        move |incoming| dispatch(&ctx, router_env.as_ref(), incoming).unwrap_or_else(|error| {
+            log::warn!("[linux_control_plane] dispatch failed: {}", error);
+            OutgoingResponse::json(
+                500,
+                "Internal Server Error",
+                CORS_HEADERS,
+                br#"{"error":"internal error"}"#.to_vec(),
+            )
+        }),
+        move |_path, restart| {
+            if restart != RestartAction::After300Ms {
+                return;
+            }
+            crate::util::spawn_guarded_with_profile(
+                "linux_control_plane_restart_defer",
+                crate::util::STACK_RESTART_DEFER,
+                Some(crate::util::SpawnCore::Core0),
+                crate::util::HttpThreadRole::Background,
+                move || {
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    if let Err(error) = crate::runtime::linux_supervisor::request_restart() {
+                        log::warn!(
+                            "[linux_control_plane] failed to request restart after response: {}",
+                            error
+                        );
                     }
-                }
-            },
-        );
-    }
-    loop {
-        std::thread::sleep(std::time::Duration::from_secs(3600));
-    }
-}
-
-fn handle_request(
-    ctx: &Arc<HandlerContext>,
-    router_env: &RouterEnv,
-    mut request: tiny_http::Request,
-) {
-    let method = request.method().as_str().to_string();
-    let uri = request.url().to_string();
-    let path = uri.split('?').next().unwrap_or("/").to_string();
-    let mut headers = Vec::new();
-    for header in request.headers() {
-        headers.push((header.field.to_string(), header.value.as_str().to_string()));
-    }
-    let max_body = linux_max_body_bytes(&path, &method);
-    let mut body = Vec::new();
-    if max_body > 0 {
-        if let Err(error) = request
-            .as_reader()
-            .take(max_body as u64)
-            .read_to_end(&mut body)
-        {
-            log::warn!("[linux_control_plane] body read failed: {}", error);
-            respond(
-                request,
-                OutgoingResponse::json(
-                    500,
-                    "Internal Server Error",
-                    CORS_HEADERS,
-                    br#"{"error":"internal error"}"#.to_vec(),
-                ),
+                },
             );
-            return;
-        }
-    }
-    let incoming = IncomingRequest {
-        method,
-        uri,
-        headers,
-        body,
-    };
-    let response = dispatch(ctx, router_env, incoming).unwrap_or_else(|error| {
-        log::warn!("[linux_control_plane] dispatch failed: {}", error);
-        OutgoingResponse::json(
-            500,
-            "Internal Server Error",
-            CORS_HEADERS,
-            br#"{"error":"internal error"}"#.to_vec(),
-        )
-    });
-    let restart = response.restart;
-    respond(request, response);
-    if restart == RestartAction::After300Ms {
-        crate::util::spawn_guarded_with_profile(
-            "linux_control_plane_restart_defer",
-            crate::util::STACK_RESTART_DEFER,
-            Some(crate::util::SpawnCore::Core0),
-            crate::util::HttpThreadRole::Background,
-            move || {
-                std::thread::sleep(std::time::Duration::from_millis(300));
-                if let Err(error) = crate::runtime::linux_supervisor::request_restart() {
-                    log::warn!(
-                        "[linux_control_plane] failed to request restart after response: {}",
-                        error
-                    );
-                }
-            },
-        );
-    }
+        },
+    )
 }
 
 fn dispatch(
@@ -261,35 +202,6 @@ fn supervisor_blocks_webhook_route(path: &str) -> bool {
             | "/api/wecom/webhook"
             | "/api/webhook/qq"
     )
-}
-
-fn respond(request: tiny_http::Request, outgoing: OutgoingResponse) {
-    let mut response = tiny_http::Response::from_data(outgoing.body)
-        .with_status_code(tiny_http::StatusCode(outgoing.status));
-    for (key, value) in outgoing.headers {
-        if let Ok(header) = tiny_http::Header::from_bytes(*key, *value) {
-            response.add_header(header);
-        }
-    }
-    if let Err(error) = request.respond(response) {
-        log::warn!("[linux_control_plane] respond failed: {}", error);
-    }
-}
-
-fn linux_max_body_bytes(path: &str, method: &str) -> usize {
-    let method = method.to_ascii_uppercase();
-    if matches!(method.as_str(), "GET" | "OPTIONS" | "HEAD" | "DELETE") {
-        return 0;
-    }
-    match path {
-        "/api/soul" | "/api/user" => crate::memory::MAX_SOUL_USER_LEN,
-        "/api/capability_packages" => {
-            crate::capability_package::MAX_CAPABILITY_PACKAGE_HTTP_BODY_LEN
-        }
-        "/api/feishu/event" => 64 * 1024,
-        "/api/webhook/qq" => crate::channels::QQ_WEBHOOK_BODY_MAX,
-        _ => common::POST_BODY_MAX_LEN,
-    }
 }
 
 #[cfg(test)]
