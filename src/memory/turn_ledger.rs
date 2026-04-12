@@ -320,7 +320,8 @@ impl TurnLedgerStatus {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TurnDeliveryLedger {
     #[serde(default)]
-    pub waiting_notice_sent: bool,
+    #[serde(alias = "waiting_notice_sent")]
+    pub presence_pulses_sent: u8,
     #[serde(default)]
     pub progress_updates_sent: u8,
     #[serde(default)]

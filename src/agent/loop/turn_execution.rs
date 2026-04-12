@@ -88,7 +88,15 @@ pub(super) fn execute_turn(
     tool_ctx.supports_explicit_outbound_message =
         msg.ingress == IngressKind::User && msg.channel.as_ref() != crate::CHANNEL_VOICE;
     let mut delivery =
-        DeliverySession::new(msg, req_id, outbound_tx, editor, channel_capability, loc);
+        DeliverySession::new(
+            msg,
+            req_id,
+            outbound_tx,
+            editor,
+            channel_capability,
+            config.memory_system_kind,
+            loc,
+        );
     let PreparedWorkerConversation {
         mut runtime_carry,
         subject_state,
@@ -361,7 +369,6 @@ pub(super) fn execute_turn(
             round_evidence_lines.clear();
             let tool_round_output = execute_tool_use_round(
                 tool_calls,
-                loc,
                 &mut delivery,
                 &request_plan,
                 registry,

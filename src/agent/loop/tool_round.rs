@@ -236,7 +236,6 @@ fn execute_tool_call(
 #[inline(never)]
 pub(super) fn execute_tool_use_round(
     tool_calls: &[crate::llm::ToolCall],
-    loc: UiLocale,
     delivery: &mut DeliverySession,
     request_plan: &AgentRequestPlan,
     registry: &crate::tools::ToolRegistry,
@@ -257,24 +256,7 @@ pub(super) fn execute_tool_use_round(
     latency.tool_calls = latency.tool_calls.saturating_add(tool_calls.len() as u32);
 
     for (i, tc) in tool_calls.iter().enumerate() {
-        let progress = if tool_calls.len() == 1 {
-            tr(
-                UiMessage::ToolProgressSingle {
-                    name: tc.name.clone(),
-                },
-                loc,
-            )
-        } else {
-            tr(
-                UiMessage::ToolProgress {
-                    name: tc.name.clone(),
-                    index: i,
-                    total: tool_calls.len(),
-                },
-                loc,
-            )
-        };
-        delivery.emit_progress(&progress);
+        delivery.emit_tool_progress(&tc.name, i, tool_calls.len());
 
         let execution = execute_tool_call(tc, registry, request_plan, delivery, tool_ctx, latency);
         if let Some(reply) = execution.delivered_reply {

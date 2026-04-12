@@ -72,7 +72,7 @@ pub(super) fn sync_user_turn_relationship_topology(
 
 pub(super) fn build_turn_delivery_ledger(report: DeliveryReport) -> TurnDeliveryLedger {
     TurnDeliveryLedger {
-        waiting_notice_sent: report.waiting_notice_sent,
+        presence_pulses_sent: report.presence_pulses_sent,
         progress_updates_sent: report.progress_updates_sent,
         partial_updates_sent: report.partial_updates_sent,
         tool_outbound_intents_seen: report.tool_outbound_intents_seen,

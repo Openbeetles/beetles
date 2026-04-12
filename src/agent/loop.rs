@@ -3760,7 +3760,7 @@ mod tests {
         let first = outbound_rx.try_recv().expect("visible update");
         let second = outbound_rx.try_recv().expect("primary reply");
         let contents = [first.content.as_str(), second.content.as_str()];
-        assert!(contents.contains(&"正在执行 message…"));
+        assert!(contents.contains(&"〔甲壳虫〕正在执行 message，继续推进 🪲"));
         assert!(contents.contains(&"工具主答复"));
         assert!(outbound_rx.try_recv().is_err());
     }

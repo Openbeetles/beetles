@@ -1,6 +1,7 @@
 use crate::bus::{IngressKind, OutboundTx, PcMsg};
 use crate::error::Result;
-use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
+use crate::i18n::Locale as UiLocale;
+use crate::memory::MemorySystemKind;
 use crate::metrics;
 use crate::tools::{ToolOutboundDeliveryKind, ToolOutboundIntent, ToolOutboundTarget};
 use crate::util::truncate_content_to_max;
@@ -15,6 +16,15 @@ const MIN_PARTIAL_VISIBLE_CHARS: usize = 8;
 const MAX_QUEUED_PROGRESS_CHARS: usize = 120;
 const MAX_QUEUED_PARTIAL_CHARS: usize = 240;
 
+#[cfg(test)]
+const COMPACT_PRESENCE_PULSE_SCHEDULE_MS: [u64; 1] = [20];
+#[cfg(test)]
+const RICH_PRESENCE_PULSE_SCHEDULE_MS: [u64; 2] = [20, 60];
+#[cfg(not(test))]
+const COMPACT_PRESENCE_PULSE_SCHEDULE_MS: [u64; 1] = [3000];
+#[cfg(not(test))]
+const RICH_PRESENCE_PULSE_SCHEDULE_MS: [u64; 2] = [3000, 9000];
+
 /// 流式编辑器：LLM 流式输出期间，发送占位消息并逐步编辑内容。
 /// 实现方内部自行创建/管理 HTTP 连接，不占用 agent 的 LLM HTTP 连接。
 pub trait StreamEditor {
@@ -26,7 +36,7 @@ pub trait StreamEditor {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DeliveryReport {
-    pub waiting_notice_sent: bool,
+    pub presence_pulses_sent: u8,
     pub progress_updates_sent: u8,
     pub partial_updates_sent: u8,
     pub tool_outbound_intents_seen: u8,
@@ -43,6 +53,7 @@ pub(crate) struct DeliverySession<'a> {
     outbound_tx: &'a OutboundTx,
     req_id: &'a str,
     policy: DeliveryPolicy,
+    presence_contract: PresencePulseContract,
 }
 
 enum DeliveryMode<'a> {
@@ -97,19 +108,32 @@ pub(crate) enum ToolIntentDelivery {
 
 struct QueuedDeliveryShared {
     visible_updates_sent: AtomicU8,
-    waiting_notice_canceled: AtomicBool,
-    waiting_notice_sent: AtomicBool,
+    presence_pulses_canceled: AtomicBool,
+    presence_pulses_sent: AtomicU8,
 }
 
-struct WaitingNoticeJob {
+struct PresencePulseJob {
+    stage_idx: u8,
     due_at: Instant,
     outbound_tx: OutboundTx,
     channel: Arc<str>,
     chat_id: Arc<str>,
     is_group: bool,
     req_id: String,
-    waiting_notice: String,
+    content: String,
     shared: Weak<QueuedDeliveryShared>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PresencePulseProfile {
+    Compact,
+    Rich,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PresencePulseContract {
+    loc: UiLocale,
+    profile: PresencePulseProfile,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -125,8 +149,10 @@ impl<'a> DeliverySession<'a> {
         outbound_tx: &'a OutboundTx,
         editor: Option<&'a (dyn StreamEditor + Send + Sync)>,
         channel_capability: Option<crate::ChannelCapabilityEntry>,
+        memory_system_kind: MemorySystemKind,
         loc: UiLocale,
     ) -> Self {
+        let presence_contract = PresencePulseContract::new(memory_system_kind, loc);
         let policy = channel_capability
             .filter(|entry| entry.enabled && msg.ingress == IngressKind::User)
             .map(|entry| DeliveryPolicy {
@@ -163,19 +189,19 @@ impl<'a> DeliverySession<'a> {
                 last_visible_text: String::new(),
                 report: DeliveryReport::default(),
                 shared: if policy.supports_current_supplemental {
-                    spawn_waiting_notice(
+                    spawn_presence_pulses(
                         outbound_tx.clone(),
                         Arc::clone(&msg.channel),
                         Arc::clone(&msg.chat_id),
                         msg.is_group,
                         req_id,
-                        tr(UiMessage::AgentStillWorking, loc),
+                        presence_contract,
                     )
                 } else {
                     Arc::new(QueuedDeliveryShared {
                         visible_updates_sent: AtomicU8::new(0),
-                        waiting_notice_canceled: AtomicBool::new(true),
-                        waiting_notice_sent: AtomicBool::new(false),
+                        presence_pulses_canceled: AtomicBool::new(true),
+                        presence_pulses_sent: AtomicU8::new(0),
                     })
                 },
             })
@@ -185,6 +211,7 @@ impl<'a> DeliverySession<'a> {
             outbound_tx,
             req_id,
             policy,
+            presence_contract,
         }
     }
 
@@ -203,11 +230,32 @@ impl<'a> DeliverySession<'a> {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn emit_progress(&mut self, content: &str) {
         if !self.policy.supports_current_supplemental {
             return;
         }
         let text = normalize_visible_update(content, MAX_QUEUED_PROGRESS_CHARS);
+        if text.is_empty() {
+            return;
+        }
+        match self.mode {
+            DeliveryMode::Edit(ref mut delivery) => {
+                delivery.force_visible_update(&text, true, false)
+            }
+            DeliveryMode::Queued(ref mut delivery) => delivery.emit(&text, true, false),
+            DeliveryMode::Silent => {}
+        }
+    }
+
+    pub(crate) fn emit_tool_progress(&mut self, name: &str, index: usize, total: usize) {
+        if !self.policy.supports_current_supplemental {
+            return;
+        }
+        let text = normalize_visible_update(
+            &self.presence_contract.tool_progress(name, index, total),
+            MAX_QUEUED_PROGRESS_CHARS,
+        );
         if text.is_empty() {
             return;
         }
@@ -234,7 +282,7 @@ impl<'a> DeliverySession<'a> {
             }
             // Non-edit channels cannot revise previously sent text, so exposing ToolUse-time
             // assistant drafts here tends to leak unfinished step plans to the user.
-            // Keep queued delivery runtime-controlled: waiting notice + tool progress + final answer.
+            // Keep queued delivery runtime-controlled: presence pulses + tool progress + final answer.
             DeliveryMode::Queued(_) => {}
             DeliveryMode::Silent => {}
         }
@@ -244,7 +292,7 @@ impl<'a> DeliverySession<'a> {
     pub(crate) fn finalize(&mut self, _final_content: &str) -> bool {
         if !self.policy.supports_current_primary {
             if let DeliveryMode::Queued(ref mut delivery) = self.mode {
-                delivery.cancel_waiting_notice();
+                delivery.cancel_presence_pulses();
                 delivery.finalize();
             }
             return false;
@@ -252,7 +300,7 @@ impl<'a> DeliverySession<'a> {
         match self.mode {
             DeliveryMode::Edit(ref mut delivery) => delivery.finalize(_final_content),
             DeliveryMode::Queued(ref mut delivery) => {
-                delivery.cancel_waiting_notice();
+                delivery.cancel_presence_pulses();
                 delivery.finalize()
             }
             DeliveryMode::Silent => false,
@@ -417,7 +465,7 @@ impl<'a> DeliverySession<'a> {
 impl Drop for DeliverySession<'_> {
     fn drop(&mut self) {
         if let DeliveryMode::Queued(ref delivery) = self.mode {
-            delivery.cancel_waiting_notice();
+            delivery.cancel_presence_pulses();
         }
     }
 }
@@ -586,9 +634,9 @@ impl<'a> EditDelivery<'a> {
 }
 
 impl<'a> QueuedDelivery<'a> {
-    fn cancel_waiting_notice(&self) {
+    fn cancel_presence_pulses(&self) {
         self.shared
-            .waiting_notice_canceled
+            .presence_pulses_canceled
             .store(true, Ordering::Relaxed);
     }
 
@@ -606,7 +654,6 @@ impl<'a> QueuedDelivery<'a> {
         if is_partial {
             self.report.partial_updates_sent = self.report.partial_updates_sent.saturating_add(1);
         }
-        self.cancel_waiting_notice();
         if !self.try_claim_visible_slot() {
             return;
         }
@@ -638,7 +685,7 @@ impl<'a> QueuedDelivery<'a> {
         if self.lifecycle == DeliveryLifecycle::Finalized {
             return Ok(false);
         }
-        self.cancel_waiting_notice();
+        self.cancel_presence_pulses();
         send_visible_update(
             self.outbound_tx,
             self.channel,
@@ -703,8 +750,63 @@ impl<'a> QueuedDelivery<'a> {
 
     fn report(&self) -> DeliveryReport {
         let mut report = self.report;
-        report.waiting_notice_sent = self.shared.waiting_notice_sent.load(Ordering::Relaxed);
+        report.presence_pulses_sent = self.shared.presence_pulses_sent.load(Ordering::Relaxed);
         report
+    }
+}
+
+impl PresencePulseProfile {
+    fn for_memory_system_kind(memory_system_kind: MemorySystemKind) -> Self {
+        match memory_system_kind {
+            MemorySystemKind::EspCompact => Self::Compact,
+            MemorySystemKind::LinuxFull => Self::Rich,
+        }
+    }
+}
+
+impl PresencePulseContract {
+    fn new(memory_system_kind: MemorySystemKind, loc: UiLocale) -> Self {
+        Self {
+            loc,
+            profile: PresencePulseProfile::for_memory_system_kind(memory_system_kind),
+        }
+    }
+
+    fn scheduled_text(self, stage_idx: u8) -> Option<String> {
+        match (self.loc, self.profile, stage_idx) {
+            (UiLocale::Zh, PresencePulseProfile::Rich, 0) => {
+                Some("〔甲壳虫〕已接到，继续处理中 🪲".to_string())
+            }
+            (UiLocale::Zh, PresencePulseProfile::Rich, 1) => {
+                Some("〔甲壳虫〕这轮还在整理，结果马上接上 (｀･ω･´)ゞ".to_string())
+            }
+            (UiLocale::Zh, PresencePulseProfile::Compact, 0) => {
+                Some("〔甲壳虫〕继续处理中，马上接上 🪲".to_string())
+            }
+            (UiLocale::En, PresencePulseProfile::Rich, 0) => {
+                Some("[Beetle] Turn received, still working 🪲".to_string())
+            }
+            (UiLocale::En, PresencePulseProfile::Rich, 1) => {
+                Some("[Beetle] Still organizing this turn, reply coming up (｀･ω･´)ゞ".to_string())
+            }
+            (UiLocale::En, PresencePulseProfile::Compact, 0) => {
+                Some("[Beetle] Still working, reply coming up 🪲".to_string())
+            }
+            _ => None,
+        }
+    }
+
+    fn tool_progress(self, name: &str, index: usize, total: usize) -> String {
+        match self.loc {
+            UiLocale::Zh if total > 1 => {
+                format!("〔甲壳虫〕正在执行 {}（{}/{}），继续推进 🪲", name, index + 1, total)
+            }
+            UiLocale::Zh => format!("〔甲壳虫〕正在执行 {}，继续推进 🪲", name),
+            UiLocale::En if total > 1 => {
+                format!("[Beetle] Running {} ({}/{}), still moving 🪲", name, index + 1, total)
+            }
+            UiLocale::En => format!("[Beetle] Running {}, still moving 🪲", name),
+        }
     }
 }
 
@@ -812,52 +914,66 @@ fn send_visible_update_explicit(
     }
 }
 
-fn spawn_waiting_notice(
+fn spawn_presence_pulses(
     outbound_tx: OutboundTx,
     channel: Arc<str>,
     chat_id: Arc<str>,
     is_group: bool,
     req_id: &str,
-    waiting_notice: String,
+    presence_contract: PresencePulseContract,
 ) -> Arc<QueuedDeliveryShared> {
     let shared = Arc::new(QueuedDeliveryShared {
         visible_updates_sent: AtomicU8::new(0),
-        waiting_notice_canceled: AtomicBool::new(false),
-        waiting_notice_sent: AtomicBool::new(false),
+        presence_pulses_canceled: AtomicBool::new(false),
+        presence_pulses_sent: AtomicU8::new(0),
     });
-    let job = WaitingNoticeJob {
-        due_at: Instant::now() + waiting_notice_delay(),
-        outbound_tx,
-        channel,
-        chat_id,
-        is_group,
-        req_id: req_id.to_string(),
-        waiting_notice,
-        shared: Arc::downgrade(&shared),
-    };
-    if !crate::runtime::schedule_delayed_task(
-        job.due_at,
-        Box::new(move || fire_waiting_notice_job(job)),
-    ) {
-        shared
-            .waiting_notice_canceled
-            .store(true, Ordering::Relaxed);
-        log::warn!("[agent_delivery] waiting notice skipped: delayed task queue full");
+    for (stage_idx, delay_ms) in presence_pulse_schedule_ms(presence_contract.profile)
+        .iter()
+        .copied()
+        .enumerate()
+    {
+        let Some(content) = presence_contract.scheduled_text(stage_idx as u8) else {
+            continue;
+        };
+        let job = PresencePulseJob {
+            stage_idx: stage_idx as u8,
+            due_at: Instant::now() + Duration::from_millis(delay_ms),
+            outbound_tx: outbound_tx.clone(),
+            channel: Arc::clone(&channel),
+            chat_id: Arc::clone(&chat_id),
+            is_group,
+            req_id: req_id.to_string(),
+            content,
+            shared: Arc::downgrade(&shared),
+        };
+        if !crate::runtime::schedule_delayed_task(
+            job.due_at,
+            Box::new(move || fire_presence_pulse_job(job)),
+        ) {
+            log::warn!(
+                "[agent_delivery] presence pulse skipped stage={} queue full",
+                stage_idx
+            );
+            break;
+        }
     }
     shared
 }
 
-fn fire_waiting_notice_job(job: WaitingNoticeJob) {
+fn fire_presence_pulse_job(job: PresencePulseJob) {
     let Some(shared) = job.shared.upgrade() else {
         return;
     };
-    if shared.waiting_notice_canceled.load(Ordering::Relaxed) {
+    if shared.presence_pulses_canceled.load(Ordering::Relaxed) {
+        return;
+    }
+    if job.stage_idx == 0 && shared.visible_updates_sent.load(Ordering::Relaxed) > 0 {
         return;
     }
     if !try_claim_shared_visible_slot(&shared) {
         return;
     }
-    if !should_send_waiting_notice_after_claim(&shared) {
+    if !should_send_presence_pulse_after_claim(&shared) {
         return;
     }
     if send_visible_update(
@@ -866,13 +982,13 @@ fn fire_waiting_notice_job(job: WaitingNoticeJob) {
         &job.chat_id,
         job.is_group,
         &job.req_id,
-        &job.waiting_notice,
+        &job.content,
     )
     .is_err()
     {
         shared.visible_updates_sent.fetch_sub(1, Ordering::Relaxed);
     } else {
-        shared.waiting_notice_sent.store(true, Ordering::Relaxed);
+        shared.presence_pulses_sent.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -897,8 +1013,8 @@ fn try_claim_shared_visible_slot(shared: &QueuedDeliveryShared) -> bool {
     }
 }
 
-fn should_send_waiting_notice_after_claim(shared: &QueuedDeliveryShared) -> bool {
-    if shared.waiting_notice_canceled.load(Ordering::Relaxed) {
+fn should_send_presence_pulse_after_claim(shared: &QueuedDeliveryShared) -> bool {
+    if shared.presence_pulses_canceled.load(Ordering::Relaxed) {
         shared.visible_updates_sent.fetch_sub(1, Ordering::Relaxed);
         return false;
     }
@@ -906,13 +1022,20 @@ fn should_send_waiting_notice_after_claim(shared: &QueuedDeliveryShared) -> bool
 }
 
 #[cfg(test)]
-fn waiting_notice_delay() -> std::time::Duration {
-    Duration::from_millis(20)
+fn presence_pulse_initial_delay() -> std::time::Duration {
+    Duration::from_millis(RICH_PRESENCE_PULSE_SCHEDULE_MS[0])
 }
 
-#[cfg(not(test))]
-fn waiting_notice_delay() -> std::time::Duration {
-    Duration::from_millis(3000)
+#[cfg(test)]
+fn presence_pulse_followup_delay() -> std::time::Duration {
+    Duration::from_millis(RICH_PRESENCE_PULSE_SCHEDULE_MS[1])
+}
+
+fn presence_pulse_schedule_ms(profile: PresencePulseProfile) -> &'static [u64] {
+    match profile {
+        PresencePulseProfile::Compact => &COMPACT_PRESENCE_PULSE_SCHEDULE_MS,
+        PresencePulseProfile::Rich => &RICH_PRESENCE_PULSE_SCHEDULE_MS,
+    }
 }
 
 #[cfg(test)]
@@ -1032,6 +1155,7 @@ mod tests {
             &outbound_tx,
             None,
             Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
             UiLocale::Zh,
         );
 
@@ -1061,6 +1185,7 @@ mod tests {
             &outbound_tx,
             None,
             Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
             UiLocale::Zh,
         );
 
@@ -1070,7 +1195,7 @@ mod tests {
     }
 
     #[test]
-    fn queued_delivery_without_supplemental_contract_suppresses_progress_and_waiting_notice() {
+    fn queued_delivery_without_supplemental_contract_suppresses_progress_and_presence_pulse() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
@@ -1081,15 +1206,16 @@ mod tests {
             &outbound_tx,
             None,
             Some(capability_entry("qq_channel", true, false, false)),
+            MemorySystemKind::LinuxFull,
             UiLocale::Zh,
         );
 
         delivery.emit_progress("处理中");
-        std::thread::sleep(waiting_notice_delay() + std::time::Duration::from_millis(20));
+        std::thread::sleep(presence_pulse_initial_delay() + std::time::Duration::from_millis(20));
         crate::runtime::service_delayed_tasks();
 
         assert!(outbound_rx.try_recv().is_err());
-        assert!(!delivery.report().waiting_notice_sent);
+        assert_eq!(delivery.report().presence_pulses_sent, 0);
     }
 
     #[test]
@@ -1105,6 +1231,7 @@ mod tests {
             &outbound_tx,
             Some(&editor),
             Some(capability_entry("telegram", true, true, true)),
+            MemorySystemKind::LinuxFull,
             UiLocale::Zh,
         );
 
@@ -1151,6 +1278,7 @@ mod tests {
             &outbound_tx,
             None,
             Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
             UiLocale::Zh,
         );
 
@@ -1184,6 +1312,7 @@ mod tests {
             &outbound_tx,
             None,
             Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
             UiLocale::Zh,
         );
 
@@ -1209,6 +1338,7 @@ mod tests {
             &outbound_tx,
             None,
             Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
             UiLocale::Zh,
         );
 
@@ -1240,6 +1370,7 @@ mod tests {
             &outbound_tx,
             None,
             Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
             UiLocale::Zh,
         );
 
@@ -1283,6 +1414,7 @@ mod tests {
             &outbound_tx,
             None,
             Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
             UiLocale::Zh,
         );
 
@@ -1320,6 +1452,7 @@ mod tests {
             &outbound_tx,
             Some(&editor),
             Some(capability_entry("telegram", true, true, true)),
+            MemorySystemKind::LinuxFull,
             UiLocale::Zh,
         );
 
@@ -1361,6 +1494,7 @@ mod tests {
             &outbound_tx,
             Some(&editor),
             Some(capability_entry("telegram", true, true, true)),
+            MemorySystemKind::LinuxFull,
             UiLocale::Zh,
         );
 
@@ -1384,7 +1518,7 @@ mod tests {
     }
 
     #[test]
-    fn queued_delivery_sends_waiting_notice_for_long_think() {
+    fn queued_delivery_sends_staged_presence_pulses_for_long_turn() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
@@ -1395,20 +1529,26 @@ mod tests {
             &outbound_tx,
             None,
             Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
             UiLocale::Zh,
         );
 
-        std::thread::sleep(waiting_notice_delay() + std::time::Duration::from_millis(20));
+        std::thread::sleep(presence_pulse_initial_delay() + std::time::Duration::from_millis(20));
+        crate::runtime::service_delayed_tasks();
+        std::thread::sleep(presence_pulse_followup_delay() + std::time::Duration::from_millis(20));
         crate::runtime::service_delayed_tasks();
 
-        let first = outbound_rx.try_recv().expect("waiting notice");
-        assert_eq!(first.content, "还在处理，请稍等 ⏳");
+        let first = outbound_rx.try_recv().expect("first pulse");
+        let second = outbound_rx.try_recv().expect("second pulse");
+        assert_eq!(first.content, "〔甲壳虫〕已接到，继续处理中 🪲");
+        assert_eq!(second.content, "〔甲壳虫〕这轮还在整理，结果马上接上 (｀･ω･´)ゞ");
         assert!(first.is_group);
-        assert!(delivery.report().waiting_notice_sent);
+        assert!(second.is_group);
+        assert_eq!(delivery.report().presence_pulses_sent, 2);
     }
 
     #[test]
-    fn queued_delivery_finalize_cancels_waiting_notice() {
+    fn queued_delivery_tool_progress_uses_presence_copy() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
@@ -1419,19 +1559,99 @@ mod tests {
             &outbound_tx,
             None,
             Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        delivery.emit_tool_progress("board_info", 0, 1);
+
+        let outbound = outbound_rx.try_recv().expect("tool pulse");
+        assert_eq!(outbound.content, "〔甲壳虫〕正在执行 board_info，继续推进 🪲");
+    }
+
+    #[test]
+    fn compact_profile_sends_single_presence_pulse() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg("qq_channel");
+        let delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::EspCompact,
+            UiLocale::Zh,
+        );
+
+        std::thread::sleep(presence_pulse_initial_delay() + std::time::Duration::from_millis(20));
+        crate::runtime::service_delayed_tasks();
+        std::thread::sleep(presence_pulse_followup_delay() + std::time::Duration::from_millis(20));
+        crate::runtime::service_delayed_tasks();
+
+        let first = outbound_rx.try_recv().expect("compact pulse");
+        assert_eq!(first.content, "〔甲壳虫〕继续处理中，马上接上 🪲");
+        assert!(outbound_rx.try_recv().is_err());
+        assert_eq!(delivery.report().presence_pulses_sent, 1);
+    }
+
+    #[test]
+    fn tool_progress_suppresses_initial_presence_pulse_but_keeps_followup() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg("qq_channel");
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        delivery.emit_tool_progress("board_info", 0, 1);
+        std::thread::sleep(presence_pulse_initial_delay() + std::time::Duration::from_millis(20));
+        crate::runtime::service_delayed_tasks();
+        std::thread::sleep(presence_pulse_followup_delay() + std::time::Duration::from_millis(20));
+        crate::runtime::service_delayed_tasks();
+
+        let first = outbound_rx.try_recv().expect("tool progress");
+        let second = outbound_rx.try_recv().expect("followup pulse");
+        assert_eq!(first.content, "〔甲壳虫〕正在执行 board_info，继续推进 🪲");
+        assert_eq!(second.content, "〔甲壳虫〕这轮还在整理，结果马上接上 (｀･ω･´)ゞ");
+        assert!(outbound_rx.try_recv().is_err());
+        assert_eq!(delivery.report().presence_pulses_sent, 1);
+    }
+
+    #[test]
+    fn queued_delivery_finalize_cancels_presence_pulses() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg("qq_channel");
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
             UiLocale::Zh,
         );
 
         let streamed = delivery.finalize("最终答案");
         assert!(!streamed);
-        std::thread::sleep(waiting_notice_delay() + std::time::Duration::from_millis(20));
+        std::thread::sleep(presence_pulse_initial_delay() + std::time::Duration::from_millis(20));
         crate::runtime::service_delayed_tasks();
 
         assert!(outbound_rx.try_recv().is_err());
     }
 
     #[test]
-    fn queued_delivery_drop_cancels_waiting_notice() {
+    fn queued_delivery_drop_cancels_presence_pulses() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
@@ -1443,32 +1663,33 @@ mod tests {
                 &outbound_tx,
                 None,
                 Some(capability_entry("qq_channel", true, true, false)),
+                MemorySystemKind::LinuxFull,
                 UiLocale::Zh,
             );
         }
 
-        std::thread::sleep(waiting_notice_delay() + std::time::Duration::from_millis(20));
+        std::thread::sleep(presence_pulse_initial_delay() + std::time::Duration::from_millis(20));
         crate::runtime::service_delayed_tasks();
 
         assert!(outbound_rx.try_recv().is_err());
     }
 
     #[test]
-    fn waiting_notice_rechecks_cancel_after_claim() {
+    fn presence_pulse_rechecks_cancel_after_claim() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let shared = Arc::new(QueuedDeliveryShared {
             visible_updates_sent: AtomicU8::new(0),
-            waiting_notice_canceled: AtomicBool::new(false),
-            waiting_notice_sent: AtomicBool::new(false),
+            presence_pulses_canceled: AtomicBool::new(false),
+            presence_pulses_sent: AtomicU8::new(0),
         });
 
         assert!(try_claim_shared_visible_slot(&shared));
         shared
-            .waiting_notice_canceled
+            .presence_pulses_canceled
             .store(true, Ordering::Relaxed);
 
-        assert!(!should_send_waiting_notice_after_claim(&shared));
+        assert!(!should_send_presence_pulse_after_claim(&shared));
         assert_eq!(shared.visible_updates_sent.load(Ordering::Relaxed), 0);
     }
 }

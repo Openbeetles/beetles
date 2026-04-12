@@ -70,7 +70,6 @@ pub enum Message {
     NodeMaintenance,
     ReplyTruncated,
     StreamLowMemoryOmitted,
-    AgentStillWorking,
     RemindPrefix,
     TaskDue {
         title: String,
@@ -81,14 +80,6 @@ pub enum Message {
     InitiativeResumeTaskCheckIn {
         idle_minutes: u64,
         high_priority: bool,
-    },
-    ToolProgress {
-        name: String,
-        index: usize,
-        total: usize,
-    },
-    ToolProgressSingle {
-        name: String,
     },
     // --- 阶段 5：Telegram / 工具 ---
     TgActivationMention,
@@ -193,7 +184,6 @@ pub fn tr(msg: Message, loc: Locale) -> String {
             Message::NodeMaintenance => zh("节点正在维护，请稍后..."),
             Message::ReplyTruncated => zh("（回复因长度限制被截断）"),
             Message::StreamLowMemoryOmitted => zh("（因设备内存不足，后续步骤已省略）"),
-            Message::AgentStillWorking => zh("还在处理，请稍等 ⏳"),
             Message::RemindPrefix => zh("提醒："),
             Message::TaskDue { ref title } => format!("任务到期：{}", title),
             Message::InitiativeUpcomingReminder { minutes } => format!(
@@ -216,12 +206,6 @@ pub fn tr(msg: Message, loc: Locale) -> String {
                     )
                 }
             }
-            Message::ToolProgress {
-                ref name,
-                index,
-                total,
-            } => format!("正在执行 {} ({}/{})…", name, index + 1, total),
-            Message::ToolProgressSingle { ref name } => format!("正在执行 {}…", name),
             Message::TgActivationMention => zh("已切换为 mention"),
             Message::TgActivationAlways => zh("已切换为 always"),
             Message::TgSessionCleared => zh("会话已清空"),
@@ -341,7 +325,6 @@ pub fn tr(msg: Message, loc: Locale) -> String {
             Message::StreamLowMemoryOmitted => {
                 en("(Following steps omitted due to low device memory)")
             }
-            Message::AgentStillWorking => en("Still working, please wait ⏳"),
             Message::RemindPrefix => en("Reminder: "),
             Message::TaskDue { ref title } => format!("Task due: {}", title),
             Message::InitiativeUpcomingReminder { minutes } => format!(
@@ -364,12 +347,6 @@ pub fn tr(msg: Message, loc: Locale) -> String {
                     )
                 }
             }
-            Message::ToolProgress {
-                ref name,
-                index,
-                total,
-            } => format!("Running {} ({}/{})…", name, index.saturating_add(1), total),
-            Message::ToolProgressSingle { ref name } => format!("Running {}…", name),
             Message::TgActivationMention => en("Switched to mention"),
             Message::TgActivationAlways => en("Switched to always"),
             Message::TgSessionCleared => en("Session cleared"),

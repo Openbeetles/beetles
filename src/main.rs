@@ -1314,8 +1314,8 @@ fn handle_status_command(platform: &Arc<dyn Platform>, json: bool, chat_id: Opti
                     println!("Recent turn total_ms: {}", ledger.total_ms);
                     println!("Recent turn tool_calls: {}", ledger.tool_calls);
                     println!(
-                        "Recent turn delivery: waiting_notice_sent={} progress_updates_sent={} partial_updates_sent={} tool_outbound_intents_seen={} tool_visible_updates_sent={} explicit_outbound_sent={} tool_outbound_suppressed={} current_primary_delivered={} finalize_streamed={}",
-                        ledger.delivery.waiting_notice_sent,
+                        "Recent turn delivery: presence_pulses_sent={} progress_updates_sent={} partial_updates_sent={} tool_outbound_intents_seen={} tool_visible_updates_sent={} explicit_outbound_sent={} tool_outbound_suppressed={} current_primary_delivered={} finalize_streamed={}",
+                        ledger.delivery.presence_pulses_sent,
                         ledger.delivery.progress_updates_sent,
                         ledger.delivery.partial_updates_sent,
                         ledger.delivery.tool_outbound_intents_seen,
