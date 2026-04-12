@@ -52,6 +52,8 @@ pub mod i2c_sensor;
 pub mod kv_store;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod lua_query;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub mod lua_memory_query;
 pub mod memory_get;
 #[cfg(feature = "tools_diagnostics")]
 pub mod memory_manage;
@@ -141,6 +143,8 @@ pub use i2c_sensor::I2cSensorTool;
 pub use kv_store::KvStoreTool;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use lua_query::LuaQueryTool;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use lua_memory_query::LuaMemoryQueryTool;
 pub use memory_get::MemoryGetTool;
 #[cfg(feature = "tools_diagnostics")]
 pub use memory_manage::MemoryManageTool;

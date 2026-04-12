@@ -733,12 +733,24 @@ fn register_audio_tools(
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 #[cold]
 #[inline(never)]
-fn register_host_only_tools(registry: &mut ToolRegistry) {
+fn register_host_only_tools(
+    registry: &mut ToolRegistry,
+    #[cfg(target_os = "linux")]
+    long_term_memory_store: &Arc<dyn crate::memory::LongTermMemoryStore + Send + Sync>,
+    #[cfg(target_os = "linux")]
+    continuity_capsule_store: &Arc<dyn crate::memory::ContinuityCapsuleStore + Send + Sync>,
+) {
     registry.register(Box::new(super::ShellTool));
     registry.register(Box::new(super::ProcessTool));
     registry.register(Box::new(super::NetworkTool));
     #[cfg(target_os = "linux")]
     registry.register(Box::new(super::LuaQueryTool::default()));
+    #[cfg(target_os = "linux")]
+    registry.register(Box::new(super::LuaMemoryQueryTool::new(
+        Arc::new(crate::CurrentExecutableLuaSandboxExecutor),
+        Arc::clone(long_term_memory_store),
+        Arc::clone(continuity_capsule_store),
+    )));
 }
 
 pub fn build_default_registry(
@@ -792,7 +804,19 @@ pub fn build_default_registry(
         &device_capability_registry,
         &platform,
     );
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[cfg(all(
+        not(any(target_arch = "xtensa", target_arch = "riscv32")),
+        target_os = "linux"
+    ))]
+    register_host_only_tools(
+        &mut registry,
+        &long_term_memory_store,
+        &platform.continuity_capsule_store(),
+    );
+    #[cfg(all(
+        not(any(target_arch = "xtensa", target_arch = "riscv32")),
+        not(target_os = "linux")
+    ))]
     register_host_only_tools(&mut registry);
     (registry, shared_baidu_token)
 }

@@ -115,6 +115,10 @@ pub use llm::{
 };
 pub use network::{HttpClientClass, NetworkGovernor, VoiceExclusiveTransportGuard};
 pub use reasoning::{
+    default_lua_memory_query_capabilities, validate_memory_query_result,
+    MemoryQueryCandidate, MemoryQueryCandidateKind, MemoryQueryContinuityRecord,
+    MemoryQueryContinuityScope, MemoryQueryGroup, MemoryQueryLongTermRecord, MemoryQueryResult,
+    MemoryQuerySelection, MemoryQuerySnapshot, MemoryQuerySnapshotCounts,
     programmable_reasoning_operator_snapshot, programmable_reasoning_runtime_contract,
     programmable_reasoning_system_info_summary, ProgrammableReasoningCapabilityContract,
     ProgrammableReasoningCapabilityKind, ProgrammableReasoningExecutionBackend,
@@ -144,6 +148,8 @@ pub use tools::{
     ToolCapabilityContract, ToolContext, ToolExposure, ToolMetadata, ToolPolicyContext,
     ToolRegistry, VoiceInputTool, VoiceOutputTool,
 };
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use tools::LuaMemoryQueryTool;
 #[cfg(feature = "tools_diagnostics")]
 pub use tools::{
     CronManageTool, DeviceControlTool, I2cDeviceTool, I2cSensorTool, MemoryManageTool,
