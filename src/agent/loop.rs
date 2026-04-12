@@ -19,18 +19,12 @@ use super::final_reply::finalize_user_visible_reply;
 use super::request_plan::AgentRequestPlan;
 use super::request_semantics::RequestSemantics;
 use super::strategy::{
-    blocker_end_turn_followup, build_success_tool_round_guidance, build_tool_round_guidance,
-    detect_ping_pong_tool_rounds, empty_final_answer_followup, final_answer_followup,
-    repeated_answer_followup, stalled_end_turn_followup, AgentRunStrategy,
-    SuccessfulToolRoundSummary,
+    empty_final_answer_followup, final_answer_followup, repeated_answer_followup,
+    AgentRunStrategy, SuccessfulToolRoundSummary,
 };
 use super::subject_state::{
     build_turn_subject_state_ledger, compile_subject_state, render_subject_state_block,
     SubjectState, SubjectStateCompileInput,
-};
-use super::tool_guidance::{
-    build_success_tool_execution_guidance, record_successful_tool_result,
-    round_used_external_content, SuccessfulToolRoundObservations,
 };
 use super::tool_outcome::{
     classify_tool_error, denied_tool_assessment, summarize_tool_blocker,
@@ -118,8 +112,8 @@ use self::background_jobs::{
 };
 use self::delivery_handoff::deliver_turn;
 use self::driver::{
-    enqueue_end_turn_followup, prepare_system_with_suffix, recv_next_agent_msg,
-    resolve_end_turn_followup, run_final_answer_recovery_round,
+    prepare_system_with_suffix, recv_next_agent_msg, resolve_end_turn_followup,
+    run_final_answer_recovery_round,
 };
 use self::ingress_admission::admit_turn;
 use self::reply_finalize::{complete_turn, finalize_turn};
@@ -154,7 +148,6 @@ const TOOL_EVIDENCE_TAIL_CHARS: usize = 32;
 const MAX_TOOL_EVIDENCE_ITEMS: usize = 4;
 const TOOL_RESULT_RAW_MIN_BYTES: usize = 1536;
 const TOOL_EVIDENCE_RESERVED_BYTES: usize = 768;
-const TOOL_GUIDANCE_MAX_BYTES: usize = 448;
 const TOOL_MEMORY_GROUNDING_MAX_BYTES: usize = 384;
 const TOOL_RESULTS_TRUNCATED_MARKER: &str = "\n[truncated]";
 const ASSISTANT_COMPACT_PREVIEW_CHARS: usize = 160;
@@ -480,10 +473,8 @@ struct ToolCallExecutionResult {
 struct ToolUseRoundExecutionOutput {
     truncated: bool,
     round_tool_success: bool,
-    round_repeat_count: usize,
     round_failure_summary: ToolFailureSummary,
-    round_signature: u64,
-    round_observations: SuccessfulToolRoundObservations,
+    used_external_content: bool,
     omitted_evidence_count: usize,
     delivered_current_chat_reply: Option<String>,
 }
@@ -861,15 +852,6 @@ fn hash_tool_call(name: &str, args: &str) -> u64 {
     h.finish()
 }
 
-fn hash_tool_round(call_keys: &[u64]) -> u64 {
-    let mut h = DefaultHasher::new();
-    call_keys.len().hash(&mut h);
-    for key in call_keys {
-        key.hash(&mut h);
-    }
-    h.finish()
-}
-
 fn tool_result_status_attr(call_failed: bool) -> &'static str {
     if call_failed {
         "error"
@@ -930,33 +912,6 @@ fn append_tool_result_block(
     push_bounded_utf8(dst, "\">\n", max_bytes)
         || push_bounded_utf8(dst, block.content, max_bytes)
         || push_bounded_utf8(dst, "\n</tool_result>", max_bytes)
-}
-
-fn append_tool_round_guidance_block(dst: &mut String, guidance: &str, max_bytes: usize) -> bool {
-    push_bounded_utf8(dst, "<tool_round_guidance>\n", max_bytes)
-        || push_bounded_utf8(dst, guidance, max_bytes)
-        || push_bounded_utf8(dst, "\n</tool_round_guidance>", max_bytes)
-}
-
-fn render_tool_round_guidance_block(guidance: &str) -> String {
-    let mut out = String::with_capacity(guidance.len().saturating_add(64));
-    let _ = append_tool_round_guidance_block(&mut out, guidance, usize::MAX);
-    out
-}
-
-fn merge_tool_round_guidance(primary: Option<String>, extra: Option<String>) -> Option<String> {
-    match (primary, extra) {
-        (Some(mut primary), Some(extra)) => {
-            if !primary.ends_with('\n') {
-                primary.push('\n');
-            }
-            primary.push_str(extra.trim());
-            Some(primary)
-        }
-        (Some(primary), None) => Some(primary),
-        (None, Some(extra)) => Some(extra),
-        (None, None) => None,
-    }
 }
 
 fn append_tool_evidence_summary_block(
@@ -1026,46 +981,31 @@ fn assemble_tool_round_user_message(
     raw_results: &str,
     raw_results_truncated: bool,
     evidence_block: Option<&str>,
-    guidance_block: Option<&str>,
     memory_block: Option<&str>,
     max_bytes: usize,
 ) -> (String, bool) {
     let evidence_reserve = evidence_block
         .map(|block| block.len().min(TOOL_EVIDENCE_RESERVED_BYTES))
         .unwrap_or(0);
-    let (mut guidance, mut guidance_truncated) = guidance_block
-        .map(|block| clone_bounded_utf8(block, TOOL_GUIDANCE_MAX_BYTES))
-        .unwrap_or_else(|| (String::new(), false));
     let (mut memory, mut memory_truncated) = memory_block
         .map(|block| clone_bounded_utf8(block, TOOL_MEMORY_GROUNDING_MAX_BYTES))
         .unwrap_or_else(|| (String::new(), false));
 
     let mut raw_budget = max_bytes.saturating_sub(
         evidence_reserve
-            .saturating_add(guidance.len())
             .saturating_add(memory.len())
             .saturating_add(TOOL_RESULTS_TRUNCATED_MARKER.len()),
     );
     if raw_budget < TOOL_RESULT_RAW_MIN_BYTES {
-        let mut needed = TOOL_RESULT_RAW_MIN_BYTES - raw_budget;
         if !memory.is_empty() {
-            let shrink = needed.min(memory.len());
+            let shrink = (TOOL_RESULT_RAW_MIN_BYTES - raw_budget).min(memory.len());
             let target = memory.len().saturating_sub(shrink);
             let (bounded, truncated) = clone_bounded_utf8(memory.as_str(), target);
             memory = bounded;
             memory_truncated |= truncated || shrink > 0;
-            needed = needed.saturating_sub(shrink);
-        }
-        if needed > 0 && !guidance.is_empty() {
-            let shrink = needed.min(guidance.len());
-            let target = guidance.len().saturating_sub(shrink);
-            let (bounded, truncated) = clone_bounded_utf8(guidance.as_str(), target);
-            guidance = bounded;
-            guidance_truncated |= truncated || shrink > 0;
         }
         raw_budget = max_bytes.saturating_sub(
             evidence_reserve
-                .saturating_add(guidance.len())
                 .saturating_add(memory.len())
                 .saturating_add(TOOL_RESULTS_TRUNCATED_MARKER.len()),
         );
@@ -1073,14 +1013,10 @@ fn assemble_tool_round_user_message(
     raw_budget = raw_budget.max(TOOL_RESULTS_PREFIX.len());
 
     let (mut out, raw_truncated) = clone_bounded_utf8(raw_results, raw_budget);
-    let mut truncated =
-        raw_results_truncated || raw_truncated || guidance_truncated || memory_truncated;
+    let mut truncated = raw_results_truncated || raw_truncated || memory_truncated;
 
     if let Some(block) = evidence_block {
         truncated |= append_rendered_tool_section(&mut out, block, max_bytes);
-    }
-    if !guidance.is_empty() {
-        truncated |= append_rendered_tool_section(&mut out, guidance.as_str(), max_bytes);
     }
     if !memory.is_empty() {
         truncated |= append_rendered_tool_section(&mut out, memory.as_str(), max_bytes);
@@ -1224,22 +1160,11 @@ fn summarize_tool_results(content: &str) -> String {
             continue;
         }
         if line == "<tool_round_guidance>" {
-            let mut guidance = String::new();
             for next in lines.by_ref() {
                 if next == "</tool_round_guidance>" {
                     break;
                 }
-                if !guidance.is_empty() {
-                    guidance.push('\n');
-                }
-                guidance.push_str(next);
             }
-            let _ = writeln!(
-                out,
-                "[guidance] {}",
-                truncate_content_to_max(&guidance, 140).as_ref()
-            );
-            wrote_any = true;
             continue;
         }
         if line == "<tool_evidence_summary>" {
@@ -1868,18 +1793,8 @@ pub enum WorkerOutcome {
     Delivered(String),
 }
 
-/// 单轮进度指标，用于检测 agent 是否陷入无效循环。
-#[derive(Clone, Copy)]
-struct RoundProgress {
-    /// 本轮是否产生新信息（工具成功或内容长度显著增加）
-    new_info: bool,
-}
-
 #[derive(Default)]
 struct RecentToolRoundState {
-    consecutive_stalled_rounds: u8,
-    stalled_signatures: [Option<u64>; 4],
-    blocker: Option<ToolBlockerSummary>,
     successful_round: Option<SuccessfulToolRoundSummary>,
 }
 
@@ -1888,50 +1803,25 @@ impl RecentToolRoundState {
         &mut self,
         total_calls: usize,
         round_had_success: bool,
-        round_signature: u64,
         failure_summary: ToolFailureSummary,
     ) {
         if round_had_success {
-            self.consecutive_stalled_rounds = 0;
-            self.stalled_signatures = [None; 4];
-            self.blocker = None;
             self.successful_round = Some(SuccessfulToolRoundSummary {
                 total_calls,
                 successful_calls: total_calls.saturating_sub(failure_summary.failed_calls),
             });
             return;
         }
-        self.consecutive_stalled_rounds = self.consecutive_stalled_rounds.saturating_add(1);
-        self.stalled_signatures[0] = self.stalled_signatures[1];
-        self.stalled_signatures[1] = self.stalled_signatures[2];
-        self.stalled_signatures[2] = self.stalled_signatures[3];
-        self.stalled_signatures[3] = Some(round_signature);
-        self.blocker = summarize_tool_blocker(total_calls, failure_summary);
         self.successful_round = None;
-    }
-
-    fn ping_pong_detected(&self) -> bool {
-        detect_ping_pong_tool_rounds(&self.stalled_signatures)
     }
 }
 
 struct EndTurnFollowupContext<'a> {
     strategy: AgentRunStrategy,
     any_tool_used: bool,
-    end_turn_followup_used: bool,
     recent_tool_round: &'a RecentToolRoundState,
     messages: &'a [Message],
     content: &'a str,
-}
-
-enum EndTurnAction {
-    EnqueueFollowup {
-        followup: String,
-        consume_single_use_budget: bool,
-    },
-    FinalRecovery {
-        recovery_suffix: String,
-    },
 }
 
 /// Agent 循环的存储与运行参数，由 main 构建并传入 run_agent_loop，减少参数数量。
@@ -3423,7 +3313,7 @@ mod tests {
     }
 
     #[test]
-    fn summarize_tool_results_keeps_round_guidance_summary() {
+    fn summarize_tool_results_drops_round_guidance_block() {
         let input = concat!(
             "Tool results:\n",
             "<tool_round_guidance>\n",
@@ -3431,8 +3321,8 @@ mod tests {
             "</tool_round_guidance>\n",
         );
         let summary = summarize_tool_results(input);
-        assert!(summary.contains("[guidance]"));
-        assert!(summary.contains("Explain the blocker clearly"));
+        assert!(!summary.contains("[guidance]"));
+        assert!(!summary.contains("Explain the blocker clearly"));
     }
 
     #[test]
@@ -3474,9 +3364,6 @@ mod tests {
             "<tool_evidence_summary>\n",
             "- [call_1] read_file: version = 1.2.3\n",
             "</tool_evidence_summary>\n",
-            "<tool_round_guidance>\n",
-            "[SYSTEM] Use the evidence above to answer directly.\n",
-            "</tool_round_guidance>\n",
             "<memory_grounding>\n",
             "[summary] 用户偏好直接回答\n",
             "[long_term] - [project:current_project] 继续收口长期记忆\n",
@@ -3485,12 +3372,11 @@ mod tests {
         let summary = summarize_tool_results(input);
         assert!(summary.contains("[call_1] read_file status=ok: version = 1.2.3"));
         assert!(summary.contains("[evidence] - [call_1] read_file: version = 1.2.3"));
-        assert!(summary.contains("[guidance] [SYSTEM] Use the evidence above to answer directly."));
         assert!(summary.contains("[memory] [summary] 用户偏好直接回答"));
     }
 
     #[test]
-    fn assemble_tool_round_user_message_reserves_space_for_evidence_before_guidance() {
+    fn assemble_tool_round_user_message_reserves_space_for_evidence_before_memory() {
         let raw = format!(
             "Tool results:\n<tool_result id=\"call_1\" tool=\"read_file\" status=\"ok\">\n{}\n</tool_result>",
             "x".repeat(4300)
@@ -3501,16 +3387,11 @@ mod tests {
             )],
             0,
         );
-        let guidance = render_tool_round_guidance_block(&format!(
-            "[SYSTEM] {}",
-            "Use the evidence above to answer directly and do not drift. ".repeat(24)
-        ));
 
         let (assembled, truncated) = assemble_tool_round_user_message(
             raw.as_str(),
             false,
             Some(evidence.as_str()),
-            Some(guidance.as_str()),
             None,
             MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
         );
@@ -3518,7 +3399,6 @@ mod tests {
         assert!(truncated);
         assert!(assembled.contains("<tool_evidence_summary>"));
         assert!(assembled.contains("version=1.2.3"));
-        assert!(assembled.contains("<tool_round_guidance>"));
     }
 
     #[test]
@@ -3533,10 +3413,6 @@ mod tests {
             )],
             0,
         );
-        let guidance = render_tool_round_guidance_block(&format!(
-            "[SYSTEM] {}",
-            "Use completed evidence only. ".repeat(20)
-        ));
         let memory = render_memory_grounding_block(&format!(
             "[summary] 用户偏好直接回答 {}\n[long_term] - [project:current_project] {}",
             "m".repeat(700),
@@ -3547,14 +3423,12 @@ mod tests {
             raw.as_str(),
             false,
             Some(evidence.as_str()),
-            Some(guidance.as_str()),
             Some(memory.as_str()),
             MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
         );
 
         assert!(truncated);
         assert!(assembled.contains("keep-this-evidence=/tmp/config.toml"));
-        assert!(assembled.contains("<tool_round_guidance>"));
     }
 
     #[test]
@@ -3603,23 +3477,22 @@ mod tests {
             RequestSemantics::conservative_default(),
         );
         let mut recent_tool_round = RecentToolRoundState::default();
-        recent_tool_round.record_round(1, true, 42, ToolFailureSummary::default());
+        recent_tool_round.record_round(1, true, ToolFailureSummary::default());
         let messages = vec![Message {
             role: Cow::Borrowed("assistant"),
-            content: "我来总结一下当前情况。".to_string(),
+            content: "当前结论是查看 /tmp/result.json，然后按 phase_b 继续执行。".to_string(),
         }];
 
-        let action = resolve_end_turn_followup(EndTurnFollowupContext {
+        let recovery_suffix = resolve_end_turn_followup(EndTurnFollowupContext {
             strategy: AgentRunStrategy::LinuxEnhanced,
             any_tool_used: true,
-            end_turn_followup_used: false,
             recent_tool_round: &recent_tool_round,
             messages: &messages,
-            content: "我来总结一下当前情况。",
+            content: "当前结论是查看 /tmp/result.json，然后按 phase_b 继续执行。",
         })
-        .expect("action");
+        .expect("recovery suffix");
 
-        assert!(matches!(action, EndTurnAction::FinalRecovery { .. }));
+        assert!(recovery_suffix.contains("EndTurn correction"));
     }
 
     #[test]

@@ -249,11 +249,9 @@ pub(super) fn execute_tool_use_round(
 ) -> ToolUseRoundExecutionOutput {
     let mut truncated = false;
     let mut round_tool_success = false;
-    let mut round_repeat_count = 0usize;
-    let mut round_call_keys = Vec::with_capacity(tool_calls.len());
     let mut round_failure_summary = ToolFailureSummary::default();
     let mut omitted_evidence_count = 0usize;
-    let mut round_observations = SuccessfulToolRoundObservations::default();
+    let mut used_external_content = false;
     let mut delivered_current_chat_reply = None;
 
     latency.tool_calls = latency.tool_calls.saturating_add(tool_calls.len() as u32);
@@ -286,7 +284,7 @@ pub(super) fn execute_tool_use_round(
         if let Some(kind) = execution.failure_kind {
             round_failure_summary.record(kind);
         } else if config.strategy == AgentRunStrategy::LinuxEnhanced {
-            record_successful_tool_result(&mut round_observations, &tc.name, result_view);
+            used_external_content |= tool_result_uses_external_content(&tc.name, result_view);
             if round_evidence_lines.len() < MAX_TOOL_EVIDENCE_ITEMS {
                 if let Some(line) = build_tool_evidence_line(&tc.id, &tc.name, result_view) {
                     round_evidence_lines.push(line);
@@ -300,13 +298,9 @@ pub(super) fn execute_tool_use_round(
         }
 
         let call_key = hash_tool_call(&tc.name, &tc.input);
-        round_call_keys.push(call_key);
         let n = tool_call_repeat.entry(call_key).or_insert(0);
         *n = (*n).saturating_add(1);
         let repeat_count = *n as usize;
-        if *n >= 2 {
-            round_repeat_count = round_repeat_count.saturating_add(1);
-        }
         crate::platform::task_wdt::feed_current_task();
         if i > 0
             && push_bounded_utf8(
@@ -335,18 +329,39 @@ pub(super) fn execute_tool_use_round(
         }
     }
 
-    let round_signature = hash_tool_round(&round_call_keys);
-
     ToolUseRoundExecutionOutput {
         truncated,
         round_tool_success,
-        round_repeat_count,
         round_failure_summary,
-        round_signature,
-        round_observations,
+        used_external_content,
         omitted_evidence_count,
         delivered_current_chat_reply,
     }
+}
+
+fn tool_result_uses_external_content(tool_name: &str, result: &str) -> bool {
+    match tool_name {
+        "web_fetch" | "pdf_read" | "web_search" => true,
+        "document_read" | "document_extract" => json_field_is_external_url(result, &["source"]),
+        "memory_get" => json_field_is_external_url(result, &["record", "citation"]),
+        _ => false,
+    }
+}
+
+fn json_field_is_external_url(result: &str, path: &[&str]) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(result) else {
+        return false;
+    };
+    let mut current = &value;
+    for segment in path {
+        let Some(next) = current.get(*segment) else {
+            return false;
+        };
+        current = next;
+    }
+    current
+        .as_str()
+        .is_some_and(|text| text.starts_with("http://") || text.starts_with("https://"))
 }
 
 fn tool_intent_target_attr(intent: &ToolOutboundIntent) -> &'static str {

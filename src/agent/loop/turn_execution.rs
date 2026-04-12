@@ -142,10 +142,8 @@ pub(super) fn execute_turn(
     let mut memory_grounding: Option<String> = None;
     let mut tool_result_user_content = String::with_capacity(1024);
     let mut round_evidence_lines = Vec::with_capacity(MAX_TOOL_EVIDENCE_ITEMS);
-    let mut progress_history: [Option<RoundProgress>; 3] = [None; 3];
     let mut any_tool_used = false;
     let mut external_content_used = false;
-    let mut end_turn_followup_used = false;
     let mut recent_tool_round = RecentToolRoundState::default();
     let mut delivered_current_chat_reply: Option<String> = None;
     let mut used_final_answer_recovery = false;
@@ -174,16 +172,6 @@ pub(super) fn execute_turn(
         }
         if round >= 2 {
             compact_early_tool_rounds(&mut messages, initial_msg_count);
-        }
-        if round >= 3
-            && progress_history[0].is_some_and(|p| !p.new_info)
-            && progress_history[1].is_some_and(|p| !p.new_info)
-            && progress_history[2].is_some_and(|p| !p.new_info)
-        {
-            messages.push(Message {
-                role: Cow::Borrowed("user"),
-                content: "[SYSTEM] You've made no progress in the last 3 rounds. The current approach isn't working. Either try a fundamentally different strategy or explain the blocker to the user.".to_string(),
-            });
         }
         let t0 = metrics::record_llm_call_start();
         let llm_round_start = Instant::now();
@@ -292,52 +280,29 @@ pub(super) fn execute_turn(
                     )?;
                     break;
                 }
-                enqueue_end_turn_followup(&mut messages, &mut progress_history, &content, followup);
-                continue;
             }
-            if let Some(action) = resolve_end_turn_followup(EndTurnFollowupContext {
+            if let Some(recovery_suffix) = resolve_end_turn_followup(EndTurnFollowupContext {
                 strategy: config.strategy,
                 any_tool_used,
-                end_turn_followup_used,
                 recent_tool_round: &recent_tool_round,
                 messages: &messages,
                 content: &content,
             }) {
-                match action {
-                    EndTurnAction::EnqueueFollowup {
-                        followup,
-                        consume_single_use_budget,
-                    } => {
-                        enqueue_end_turn_followup(
-                            &mut messages,
-                            &mut progress_history,
-                            &content,
-                            &followup,
-                        );
-                        if consume_single_use_budget {
-                            end_turn_followup_used = true;
-                        }
-                        continue;
-                    }
-                    EndTurnAction::FinalRecovery { recovery_suffix } => {
-                        used_final_answer_recovery = true;
-                        let mut combined_suffix =
-                            recovery_suffix_for_gate(&deliberation_gate).to_string();
-                        combined_suffix.push_str(recovery_suffix.as_str());
-                        final_content = run_final_answer_recovery_round(
-                            worker_llm,
-                            &mut tool_ctx,
-                            &system,
-                            &messages,
-                            &content,
-                            combined_suffix.as_str(),
-                            config.llm_stream,
-                            &mut latency,
-                            &mut system_scratch,
-                        )?;
-                        break;
-                    }
-                }
+                used_final_answer_recovery = true;
+                let mut combined_suffix = recovery_suffix_for_gate(&deliberation_gate).to_string();
+                combined_suffix.push_str(recovery_suffix.as_str());
+                final_content = run_final_answer_recovery_round(
+                    worker_llm,
+                    &mut tool_ctx,
+                    &system,
+                    &messages,
+                    &content,
+                    combined_suffix.as_str(),
+                    config.llm_stream,
+                    &mut latency,
+                    &mut system_scratch,
+                )?;
+                break;
             }
 
             mark_ttft_if_visible(&mut latency, worker_start, &content);
@@ -393,48 +358,18 @@ pub(super) fn execute_turn(
                 any_tool_used = true;
             }
             let round_failure_summary = tool_round_output.round_failure_summary;
-            let round_signature = tool_round_output.round_signature;
-            external_content_used |=
-                round_used_external_content(&tool_round_output.round_observations);
+            external_content_used |= tool_round_output.used_external_content;
             recent_tool_round.record_round(
                 tool_calls.len(),
                 tool_round_output.round_tool_success,
-                round_signature,
                 round_failure_summary,
             );
-            let ping_pong_detected = recent_tool_round.ping_pong_detected();
-            let round_guidance = if tool_round_output.round_tool_success {
-                merge_tool_round_guidance(
-                    build_success_tool_round_guidance(
-                        config.strategy,
-                        tool_calls.len(),
-                        round_failure_summary,
-                    ),
-                    build_success_tool_execution_guidance(
-                        config.strategy,
-                        &tool_round_output.round_observations,
-                    ),
-                )
-            } else {
-                build_tool_round_guidance(
-                    config.strategy,
-                    tool_round_output.round_tool_success,
-                    recent_tool_round.consecutive_stalled_rounds,
-                    tool_calls.len(),
-                    tool_round_output.round_repeat_count,
-                    round_failure_summary,
-                    ping_pong_detected,
-                )
-            };
             let evidence_block = (!round_evidence_lines.is_empty()).then(|| {
                 render_tool_evidence_summary_block(
                     &round_evidence_lines,
                     tool_round_output.omitted_evidence_count,
                 )
             });
-            let guidance_block = round_guidance
-                .as_deref()
-                .map(render_tool_round_guidance_block);
             if memory_grounding.is_none() {
                 if runtime_carry.long_term_memory_text.is_none()
                     && interactive_fast_path
@@ -474,18 +409,12 @@ pub(super) fn execute_turn(
                 raw_tool_results.as_str(),
                 tool_round_output.truncated,
                 evidence_block.as_deref(),
-                guidance_block.as_deref(),
                 memory_block.as_deref(),
                 MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
             );
             messages.push(Message {
                 role: Cow::Borrowed("user"),
                 content: assembled_tool_results,
-            });
-            progress_history[0] = progress_history[1];
-            progress_history[1] = progress_history[2];
-            progress_history[2] = Some(RoundProgress {
-                new_info: tool_round_output.round_tool_success,
             });
             continue;
         }
@@ -528,7 +457,7 @@ pub(super) fn execute_turn(
             runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
             deliberation_class: deliberation_gate.class,
             request_semantics,
-            tool_blocker: recent_tool_round.blocker,
+            tool_blocker: None,
             prompt_recall_intent: runtime_carry.prompt_recall_intent,
             runtime_skill_selected_ids: runtime_carry.runtime_skill_selected_ids,
             task_learning_selected_ids: runtime_carry.task_recall_selected_ids,

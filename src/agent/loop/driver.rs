@@ -1,27 +1,6 @@
 use super::*;
 use std::borrow::Cow;
 
-pub(super) fn enqueue_end_turn_followup(
-    messages: &mut Vec<Message>,
-    progress_history: &mut [Option<RoundProgress>; 3],
-    content: &str,
-    followup: &str,
-) {
-    if !content.trim().is_empty() {
-        messages.push(Message {
-            role: Cow::Borrowed("assistant"),
-            content: content.to_string(),
-        });
-    }
-    messages.push(Message {
-        role: Cow::Borrowed("user"),
-        content: followup.to_string(),
-    });
-    progress_history[0] = progress_history[1];
-    progress_history[1] = progress_history[2];
-    progress_history[2] = Some(RoundProgress { new_info: false });
-}
-
 fn collect_recent_assistant_messages<'a>(
     messages: &'a [Message],
     limit: usize,
@@ -102,58 +81,24 @@ fn prepare_final_recovery_messages<'a>(
     Cow::Owned(recovery_messages)
 }
 
-pub(super) fn resolve_end_turn_followup(ctx: EndTurnFollowupContext<'_>) -> Option<EndTurnAction> {
-    if ctx.end_turn_followup_used {
-        return None;
-    }
+pub(super) fn resolve_end_turn_followup(ctx: EndTurnFollowupContext<'_>) -> Option<String> {
     if let Some(followup) = final_answer_followup(
         ctx.strategy,
         ctx.recent_tool_round.successful_round,
         ctx.content,
     ) {
-        return Some(EndTurnAction::FinalRecovery {
-            recovery_suffix: end_turn_recovery_suffix(&followup),
-        });
+        return Some(end_turn_recovery_suffix(&followup));
     }
     let mut recent_assistant_messages = Vec::with_capacity(3);
     collect_recent_assistant_messages(ctx.messages, 3, &mut recent_assistant_messages);
-    if let Some(followup) =
-        repeated_answer_followup(ctx.strategy, &recent_assistant_messages, ctx.content)
-    {
-        if ctx.any_tool_used {
-            return Some(EndTurnAction::FinalRecovery {
-                recovery_suffix: end_turn_recovery_suffix(followup),
-            });
+    if ctx.any_tool_used {
+        if let Some(followup) =
+            repeated_answer_followup(ctx.strategy, &recent_assistant_messages, ctx.content)
+        {
+            return Some(end_turn_recovery_suffix(followup));
         }
-        return Some(EndTurnAction::EnqueueFollowup {
-            followup: followup.to_string(),
-            consume_single_use_budget: true,
-        });
     }
-    if let Some(followup) =
-        blocker_end_turn_followup(ctx.strategy, ctx.recent_tool_round.blocker, ctx.content)
-    {
-        return Some(EndTurnAction::FinalRecovery {
-            recovery_suffix: end_turn_recovery_suffix(followup),
-        });
-    }
-    stalled_end_turn_followup(
-        ctx.strategy,
-        ctx.recent_tool_round.consecutive_stalled_rounds,
-        ctx.content,
-    )
-    .map(|followup| {
-        if ctx.any_tool_used {
-            EndTurnAction::FinalRecovery {
-                recovery_suffix: end_turn_recovery_suffix(followup),
-            }
-        } else {
-            EndTurnAction::EnqueueFollowup {
-                followup: followup.to_string(),
-                consume_single_use_budget: true,
-            }
-        }
-    })
+    None
 }
 
 pub(super) fn run_final_answer_recovery_round(

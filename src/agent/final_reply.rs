@@ -58,8 +58,6 @@ fn strip_internal_reply_artifacts(content: &str) -> String {
 fn internal_block_end_tag(line: &str) -> Option<&'static str> {
     if line.starts_with("<tool_result ") {
         Some("</tool_result>")
-    } else if line == "<tool_round_guidance>" {
-        Some("</tool_round_guidance>")
     } else if line == "<tool_evidence_summary>" {
         Some("</tool_evidence_summary>")
     } else if line == "<memory_grounding>" {
