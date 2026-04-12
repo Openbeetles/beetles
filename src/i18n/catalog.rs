@@ -71,7 +71,6 @@ pub enum Message {
     ReplyTruncated,
     StreamLowMemoryOmitted,
     AgentStillWorking,
-    AgentNoFinalReply,
     RemindPrefix,
     TaskDue {
         title: String,
@@ -195,7 +194,6 @@ pub fn tr(msg: Message, loc: Locale) -> String {
             Message::ReplyTruncated => zh("（回复因长度限制被截断）"),
             Message::StreamLowMemoryOmitted => zh("（因设备内存不足，后续步骤已省略）"),
             Message::AgentStillWorking => zh("还在处理，请稍等 ⏳"),
-            Message::AgentNoFinalReply => zh("这轮执行已完成，但没有生成最终答复，请重试。"),
             Message::RemindPrefix => zh("提醒："),
             Message::TaskDue { ref title } => format!("任务到期：{}", title),
             Message::InitiativeUpcomingReminder { minutes } => format!(
@@ -344,9 +342,6 @@ pub fn tr(msg: Message, loc: Locale) -> String {
                 en("(Following steps omitted due to low device memory)")
             }
             Message::AgentStillWorking => en("Still working, please wait ⏳"),
-            Message::AgentNoFinalReply => {
-                en("Execution finished, but no final answer was produced. Please retry.")
-            }
             Message::RemindPrefix => en("Reminder: "),
             Message::TaskDue { ref title } => format!("Task due: {}", title),
             Message::InitiativeUpcomingReminder { minutes } => format!(

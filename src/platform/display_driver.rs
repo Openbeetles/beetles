@@ -718,7 +718,10 @@ where
 
 #[cfg(any(
     test,
-    all(target_os = "linux", not(any(target_arch = "xtensa", target_arch = "riscv32")))
+    all(
+        target_os = "linux",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    )
 ))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LinuxDisplayBackendKind {
@@ -728,7 +731,10 @@ enum LinuxDisplayBackendKind {
 
 #[cfg(any(
     test,
-    all(target_os = "linux", not(any(target_arch = "xtensa", target_arch = "riscv32")))
+    all(
+        target_os = "linux",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    )
 ))]
 fn linux_display_backend_kind(config: &DisplayConfig) -> LinuxDisplayBackendKind {
     if crate::display::is_framebuffer_config(config) {

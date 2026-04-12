@@ -655,6 +655,9 @@ eth0\t00000000\t0101A8C0\t0003\t0\t0\t0\t00000000\n";
 
     #[test]
     fn decode_ipv4_hex_le_handles_route_encoding() {
-        assert_eq!(decode_ipv4_hex_le("0101A8C0"), Some("192.168.1.1".to_string()));
+        assert_eq!(
+            decode_ipv4_hex_le("0101A8C0"),
+            Some("192.168.1.1".to_string())
+        );
     }
 }

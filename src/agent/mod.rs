@@ -6,6 +6,7 @@ mod deliberation;
 mod delivery;
 mod final_reply;
 mod r#loop;
+mod reply_surface;
 mod request_plan;
 mod request_semantics;
 mod strategy;

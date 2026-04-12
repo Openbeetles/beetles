@@ -16,19 +16,19 @@ mod worker_context_stages;
 
 use super::delivery::{DeliveryReport, DeliverySession, ToolIntentDelivery};
 use super::final_reply::finalize_user_visible_reply;
+use super::reply_surface::ReplySurface;
 use super::request_plan::AgentRequestPlan;
 use super::request_semantics::RequestSemantics;
 use super::strategy::{
-    empty_final_answer_followup, final_answer_followup, repeated_answer_followup,
-    AgentRunStrategy, SuccessfulToolRoundSummary,
+    empty_final_answer_followup, final_answer_followup, repeated_answer_followup, AgentRunStrategy,
+    SuccessfulToolRoundSummary,
 };
 use super::subject_state::{
     build_turn_subject_state_ledger, compile_subject_state, render_subject_state_block,
     SubjectState, SubjectStateCompileInput,
 };
 use super::tool_outcome::{
-    classify_tool_error, denied_tool_assessment, unavailable_tool_assessment,
-    ToolFailureSummary,
+    classify_tool_error, denied_tool_assessment, unavailable_tool_assessment, ToolFailureSummary,
 };
 use super::StreamEditor;
 use crate::agent::context::{
@@ -67,9 +67,9 @@ use crate::memory::{
     PrivateGardenStore, PromptMemoryContext, PromptMemoryContextParams, PromptRuntimeCarry,
     RelationshipTopologyStore, RemindAtStore, SelfContinuityStore, SelfModelStore,
     SelfRuntimeContext, SessionMessage, SessionStore, SessionSummaryRefreshOutcome,
-    SessionSummaryStore, TurnDeliveryLedger, TurnExecutionClass, TurnLedger,
-    TurnLedgerStatus, TurnLedgerStore, TurnModeSnapshotLedger, TurnObservationLedger,
-    TurnPersonaLedger, TurnPersonaReviewLedger, TurnToolPathLedger, WorldSenseStore,
+    SessionSummaryStore, TurnDeliveryLedger, TurnExecutionClass, TurnLedger, TurnLedgerStatus,
+    TurnLedgerStore, TurnModeSnapshotLedger, TurnObservationLedger, TurnPersonaLedger,
+    TurnPersonaReviewLedger, TurnToolPathLedger, WorldSenseStore,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{LlmDecision, ToolDecision};
@@ -113,7 +113,7 @@ use self::background_jobs::{
 use self::delivery_handoff::deliver_turn;
 use self::driver::{
     prepare_system_with_suffix, recv_next_agent_msg, resolve_end_turn_followup,
-    run_final_answer_recovery_round,
+    run_final_answer_recovery_round, run_surface_finalization_round,
 };
 use self::ingress_admission::admit_turn;
 use self::reply_finalize::{complete_turn, finalize_turn};
@@ -367,12 +367,14 @@ struct WorkerRunTelemetry {
     delivery: DeliveryReport,
     any_tool_used: bool,
     external_content_used: bool,
+    used_surface_finalization: bool,
     used_final_answer_recovery: bool,
     task_execution_used: bool,
     pressure: crate::orchestrator::PressureLevel,
     runtime_mode: crate::runtime::RuntimeModeSnapshot,
     deliberation_class: crate::memory::TurnDeliberationClass,
     request_semantics: RequestSemantics,
+    reply_surface: ReplySurface,
     prompt_recall_intent: crate::memory::PromptRecallIntent,
     runtime_skill_selected_ids: Vec<String>,
     task_learning_selected_ids: Vec<String>,
@@ -398,7 +400,9 @@ fn build_turn_observation_ledger(
     let tool_path = if telemetry.task_execution_used {
         "task_execution"
     } else if telemetry.any_tool_used {
-        if telemetry.used_final_answer_recovery {
+        if telemetry.used_surface_finalization {
+            "surface_finalization"
+        } else if telemetry.used_final_answer_recovery {
             "tool_recovery"
         } else if telemetry.delivery.current_primary_delivered {
             "tool_primary_delivery"
@@ -3086,6 +3090,35 @@ mod tests {
         }
     }
 
+    struct StubBoardInfoTool;
+
+    impl crate::tools::Tool for StubBoardInfoTool {
+        fn name(&self) -> &'static str {
+            "board_info"
+        }
+
+        fn description(&self) -> &str {
+            "return stub board info"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object","properties":{}}"#
+        }
+
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok(serde_json::json!({
+                "platform": "linux",
+                "hostname": "beetle",
+                "pressure_level": "Normal",
+                "wifi_sta_connected": true,
+                "cpu_model": "Stub CPU",
+                "cpu_cores": 4,
+                "mem_available_bytes": 268435456u64
+            })
+            .to_string())
+        }
+    }
+
     fn test_agent_loop_config() -> AgentLoopConfig {
         let mut config = crate::AppConfig::load_from_env();
         config.enabled_channel = crate::CHANNEL_QQ_CHANNEL.to_string();
@@ -4125,6 +4158,7 @@ mod tests {
             delivery: DeliveryReport::default(),
             any_tool_used: true,
             external_content_used: false,
+            used_surface_finalization: false,
             used_final_answer_recovery: false,
             task_execution_used: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
@@ -4163,6 +4197,7 @@ mod tests {
             },
             deliberation_class: crate::memory::TurnDeliberationClass::Standard,
             request_semantics: RequestSemantics::public_tool_first(),
+            reply_surface: ReplySurface::PublicRuntime,
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
@@ -4226,6 +4261,126 @@ mod tests {
     }
 
     #[test]
+    fn execute_turn_public_runtime_rewrites_generic_greeting_into_structured_final_answer() {
+        let llm = SequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: r#"{"request_kind":"ops_observability","evidence_need":"public_runtime","disclosure_surface":"public","execution_preference":"tool_first","confidence":100}"#.to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: "[tool_use]".to_string(),
+                    stop_reason: StopReason::ToolUse,
+                    tool_calls: Some(vec![crate::llm::ToolCall {
+                        id: "call_1".to_string(),
+                        name: "board_info".to_string(),
+                        input: "{}".to_string(),
+                    }]),
+                },
+                LlmResponse {
+                    content: "你好！很高兴见到你。有什么我可以帮你的吗？".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: r#"{"surface":"public_runtime","reply":"系统状态正常：主机 beetle 在线，WiFi 已连接，当前资源压力为 Normal。"}"#.to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = crate::tools::ToolRegistry::new();
+        registry.register(Box::new(StubBoardInfoTool));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        let msg =
+            PcMsg::new_inbound("qq_channel", "chat-ops", "查看系统状态", false).expect("message");
+        let mut repeat = HashMap::new();
+
+        let turn_execution::ExecutedTurn { outcome, .. } = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-public-runtime-greeting-drift",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        assert!(matches!(
+            outcome,
+            WorkerOutcome::Content(ref text) | WorkerOutcome::Delivered(ref text)
+                if text == "系统状态正常：主机 beetle 在线，WiFi 已连接，当前资源压力为 Normal。"
+        ));
+    }
+
+    #[test]
+    fn execute_turn_public_runtime_parses_structured_finalization_after_empty_draft() {
+        let llm = SequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: r#"{"request_kind":"ops_observability","evidence_need":"public_runtime","disclosure_surface":"public","execution_preference":"tool_first","confidence":100}"#.to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: "[tool_use]".to_string(),
+                    stop_reason: StopReason::ToolUse,
+                    tool_calls: Some(vec![crate::llm::ToolCall {
+                        id: "call_1".to_string(),
+                        name: "board_info".to_string(),
+                        input: "{}".to_string(),
+                    }]),
+                },
+                LlmResponse {
+                    content: String::new(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: r#"{"surface":"public_runtime","reply":"系统信息如下：主机 beetle 运行正常，CPU 为 Stub CPU，4 核，内存可用 256 MB。"}"#.to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = crate::tools::ToolRegistry::new();
+        registry.register(Box::new(StubBoardInfoTool));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        let msg =
+            PcMsg::new_inbound("qq_channel", "chat-ops", "查看系统信息", false).expect("message");
+        let mut repeat = HashMap::new();
+
+        let turn_execution::ExecutedTurn { outcome, .. } = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-public-runtime-empty-draft",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        assert!(matches!(
+            outcome,
+            WorkerOutcome::Content(ref text) | WorkerOutcome::Delivered(ref text)
+                if text == "系统信息如下：主机 beetle 运行正常，CPU 为 Stub CPU，4 核，内存可用 256 MB。"
+        ));
+    }
+
+    #[test]
     fn prepared_worker_conversation_size_stays_within_compact_budget() {
         let size = std::mem::size_of::<PreparedWorkerConversation>();
         assert!(
@@ -4249,6 +4404,7 @@ mod tests {
             },
             any_tool_used: true,
             external_content_used: false,
+            used_surface_finalization: false,
             used_final_answer_recovery: true,
             task_execution_used: false,
             pressure: crate::orchestrator::PressureLevel::Cautious,
@@ -4287,6 +4443,7 @@ mod tests {
             },
             deliberation_class: crate::memory::TurnDeliberationClass::HardReasoning,
             request_semantics: RequestSemantics::conservative_default(),
+            reply_surface: ReplySurface::GovernedConversation,
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),

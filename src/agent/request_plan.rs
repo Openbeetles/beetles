@@ -127,9 +127,7 @@ fn classify_tool_use_demand(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::request_semantics::{
-        DisclosureSurface, RequestKind, RequestSemantics,
-    };
+    use crate::agent::request_semantics::{DisclosureSurface, RequestKind, RequestSemantics};
     use crate::llm::{LlmHttpClient, LlmModelCompat, Message, StopReason, ToolChoicePolicy};
     use crate::tools::{Tool, ToolMetadata};
     use crate::Result;
@@ -328,7 +326,10 @@ mod tests {
             &registry,
             &NativeLlm,
             AgentRunStrategy::LinuxEnhanced,
-            semantics(EvidenceNeed::ArchiveMemory, ExecutionPreference::MemoryFirst),
+            semantics(
+                EvidenceNeed::ArchiveMemory,
+                ExecutionPreference::MemoryFirst,
+            ),
         );
         assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Require);
     }
@@ -487,7 +488,10 @@ mod tests {
             &registry,
             &NativeLlm,
             AgentRunStrategy::LinuxEnhanced,
-            semantics(EvidenceNeed::ArchiveMemory, ExecutionPreference::MemoryFirst),
+            semantics(
+                EvidenceNeed::ArchiveMemory,
+                ExecutionPreference::MemoryFirst,
+            ),
         );
         let mut system = String::new();
         plan.apply_system_prompt(&mut system, 4096);
@@ -535,7 +539,10 @@ mod tests {
             &registry,
             &NativeLlm,
             AgentRunStrategy::LinuxEnhanced,
-            semantics(EvidenceNeed::ArchiveMemory, ExecutionPreference::MemoryFirst),
+            semantics(
+                EvidenceNeed::ArchiveMemory,
+                ExecutionPreference::MemoryFirst,
+            ),
         );
         let mut system = String::new();
         plan.apply_system_prompt(&mut system, 4096);

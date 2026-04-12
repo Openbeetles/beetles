@@ -3,8 +3,8 @@
 use crate::memory::{
     board_subject_scope_id, derive_personality_runtime_governance_gate_from_inspection,
     inspect_personality_governance, select_active_continuity_snapshot_chat_ids,
-    select_personality_governance_targets, ContinuitySnapshotManifest,
-    CrossPlaneRerankResult, IntelligenceReplayInspection, PersonalityGovernanceInspection,
+    select_personality_governance_targets, ContinuitySnapshotManifest, CrossPlaneRerankResult,
+    IntelligenceReplayInspection, PersonalityGovernanceInspection,
     PersonalityGovernanceInspectionInput, PersonalityRuntimeGovernanceGate, PromptRecallIntent,
     RecallSelectionReport,
 };
@@ -156,10 +156,16 @@ pub fn build_memory_operator_surface(
                 .count()
         })
         .unwrap_or_default();
-    let long_term_count = platform.long_term_memory_store().count().unwrap_or_default();
-    let continuity_capsule_count = platform.continuity_capsule_store().count().unwrap_or_default();
-    let continuity_snapshot_supported = tool_registry
-        .is_some_and(|registry| registry.get("continuity_snapshot").is_some());
+    let long_term_count = platform
+        .long_term_memory_store()
+        .count()
+        .unwrap_or_default();
+    let continuity_capsule_count = platform
+        .continuity_capsule_store()
+        .count()
+        .unwrap_or_default();
+    let continuity_snapshot_supported =
+        tool_registry.is_some_and(|registry| registry.get("continuity_snapshot").is_some());
     let saved_snapshot_count = platform
         .state_fs()
         .list_dir("memory/continuity_snapshots/manual")
@@ -202,7 +208,12 @@ pub fn build_memory_operator_surface(
     });
     let outer_voice_updated_at = policy_target
         .as_ref()
-        .and_then(|target| platform.outer_voice_store().get(target.scope_id.as_str()).ok())
+        .and_then(|target| {
+            platform
+                .outer_voice_store()
+                .get(target.scope_id.as_str())
+                .ok()
+        })
         .flatten()
         .map(|outer_voice| outer_voice.updated_at)
         .unwrap_or_else(|| {
@@ -246,7 +257,10 @@ pub fn build_memory_operator_surface(
             recall: trace_input.map(|trace| trace.recall.clone()),
         },
         diff: MemoryOperatorDiffView {
-            board_revision: self_authored_core.as_ref().map(|core| core.revision).unwrap_or(0),
+            board_revision: self_authored_core
+                .as_ref()
+                .map(|core| core.revision)
+                .unwrap_or(0),
             board_review_due: personality_governance.core_revision_governance.review_due,
             board_conservative_mode: personality_governance
                 .core_revision_governance
@@ -254,7 +268,10 @@ pub fn build_memory_operator_surface(
             board_observation_active: personality_governance
                 .core_revision_governance
                 .observation_active,
-            self_model_updated_at: self_model.as_ref().map(|value| value.updated_at).unwrap_or(0),
+            self_model_updated_at: self_model
+                .as_ref()
+                .map(|value| value.updated_at)
+                .unwrap_or(0),
             self_authored_core_updated_at: self_authored_core
                 .as_ref()
                 .map(|value| value.updated_at)
@@ -289,7 +306,11 @@ pub fn build_memory_operator_surface(
         },
         repair: MemoryOperatorRepairView {
             repair_needed: personality_governance.repair_plan.repair_needed,
-            primary_action: personality_governance.repair_plan.primary_action.label().to_string(),
+            primary_action: personality_governance
+                .repair_plan
+                .primary_action
+                .label()
+                .to_string(),
             continuity_snapshot_supported,
             reasons: personality_governance.repair_plan.reasons.clone(),
             continuity_snapshot_targets: select_active_continuity_snapshot_chat_ids(
@@ -357,7 +378,9 @@ fn build_policy_view(
         let gate = derive_personality_runtime_governance_gate_from_inspection(&inspection);
         return Ok((None, inspection, gate, None));
     };
-    let self_authored_core = platform.self_authored_core_store().get(board_subject_scope_id())?;
+    let self_authored_core = platform
+        .self_authored_core_store()
+        .get(board_subject_scope_id())?;
     let core_revision_ledger = platform
         .core_revision_ledger_store()
         .get(board_subject_scope_id())?;
@@ -367,9 +390,9 @@ fn build_policy_view(
     let relationship_topology = platform
         .relationship_topology_store()
         .get(board_subject_scope_id())?;
-    let recent_persona_evidence = platform.turn_ledger_store().recent_persona_evidence(
-        target.chat_id.as_str(),
-    )?;
+    let recent_persona_evidence = platform
+        .turn_ledger_store()
+        .recent_persona_evidence(target.chat_id.as_str())?;
     let inspection = inspect_personality_governance(PersonalityGovernanceInspectionInput {
         channel: target.channel.as_str(),
         chat_id: target.chat_id.as_str(),

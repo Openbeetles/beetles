@@ -10,16 +10,16 @@ use crate::memory::{
     MemoryHygieneInspection, MemorySystemKind, WorkingRecallInspection,
     WorkingRecallInspectionInput,
 };
+use crate::platform::memory_operator_surface::{
+    build_memory_operator_surface, MemoryOperatorInspectionTarget, MemoryOperatorRecallTrace,
+    MemoryOperatorSurfaceSummary, MemoryOperatorTraceInput,
+};
 use crate::skills::{build_runtime_skill_operator_summary, is_runtime_skill_name};
 use crate::task_execution::{
     build_task_execution_operator_snapshot, inspect_task_learning, inspect_task_workspace,
     TaskExecutionOperatorSnapshot, TaskLearningInspection, TaskWorkspaceInspection,
 };
 use crate::util::{current_unix_secs, percent_decode_query};
-use crate::platform::memory_operator_surface::{
-    build_memory_operator_surface, MemoryOperatorInspectionTarget, MemoryOperatorRecallTrace,
-    MemoryOperatorSurfaceSummary, MemoryOperatorTraceInput,
-};
 use serde::Serialize;
 
 const REL_DIR_MANUAL_CONTINUITY_SNAPSHOTS: &str = "memory/continuity_snapshots/manual";

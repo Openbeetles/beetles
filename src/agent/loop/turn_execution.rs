@@ -112,6 +112,7 @@ pub(super) fn execute_turn(
         &mut tool_ctx,
         &mut latency,
     )?;
+    let reply_surface = ReplySurface::for_turn(msg.ingress, request_semantics);
     if let Some(task_execution_outcome) = try_run_task_execution(
         worker_llm,
         msg,
@@ -146,6 +147,7 @@ pub(super) fn execute_turn(
     let mut external_content_used = false;
     let mut recent_tool_round = RecentToolRoundState::default();
     let mut delivered_current_chat_reply: Option<String> = None;
+    let mut used_surface_finalization = false;
     let mut used_final_answer_recovery = false;
 
     for round in 0..MAX_REACT_ROUNDS {
@@ -256,6 +258,25 @@ pub(super) fn execute_turn(
             let delivery_report = delivery.report();
             let primary_reply_already_delivered = delivery_report.current_primary_delivered;
             let tool_visible_reply_sent = delivery_report.tool_visible_updates_sent > 0;
+            if any_tool_used
+                && delivered_current_chat_reply.is_none()
+                && reply_surface.requires_structured_finalization_after_tool_success()
+            {
+                used_surface_finalization = true;
+                final_content = run_surface_finalization_round(
+                    worker_llm,
+                    &mut tool_ctx,
+                    &system,
+                    &messages,
+                    reply_surface,
+                    &content,
+                    recovery_suffix_for_gate(&deliberation_gate),
+                    config.llm_stream,
+                    &mut latency,
+                    &mut system_scratch,
+                )?;
+                break;
+            }
             if let Some(followup) = empty_final_answer_followup(
                 config.strategy,
                 any_tool_used && !primary_reply_already_delivered && !tool_visible_reply_sent,
@@ -424,18 +445,50 @@ pub(super) fn execute_turn(
         break;
     }
     if final_content.trim().is_empty() && any_tool_used && delivered_current_chat_reply.is_none() {
-        used_final_answer_recovery = true;
-        final_content = run_final_answer_recovery_round(
-            worker_llm,
-            &mut tool_ctx,
-            &system,
-            &messages,
-            final_content.as_str(),
-            recovery_suffix_for_gate(&deliberation_gate),
-            config.llm_stream,
-            &mut latency,
-            &mut system_scratch,
-        )?;
+        if reply_surface.requires_structured_finalization_after_tool_success() {
+            used_surface_finalization = true;
+            final_content = run_surface_finalization_round(
+                worker_llm,
+                &mut tool_ctx,
+                &system,
+                &messages,
+                reply_surface,
+                final_content.as_str(),
+                recovery_suffix_for_gate(&deliberation_gate),
+                config.llm_stream,
+                &mut latency,
+                &mut system_scratch,
+            )?;
+        } else {
+            used_final_answer_recovery = true;
+            final_content = run_final_answer_recovery_round(
+                worker_llm,
+                &mut tool_ctx,
+                &system,
+                &messages,
+                final_content.as_str(),
+                recovery_suffix_for_gate(&deliberation_gate),
+                config.llm_stream,
+                &mut latency,
+                &mut system_scratch,
+            )?;
+        }
+    }
+    if delivered_current_chat_reply.is_none()
+        && final_content.trim().is_empty()
+        && msg.ingress == IngressKind::User
+        && msg.channel.as_ref() != CHANNEL_CRON
+    {
+        return Err(crate::error::Error::config(
+            "final_reply_empty",
+            format!(
+                "reply_surface={} any_tool_used={} used_surface_finalization={} used_final_answer_recovery={}",
+                reply_surface.as_str(),
+                any_tool_used,
+                used_surface_finalization,
+                used_final_answer_recovery
+            ),
+        ));
     }
     let streamed = delivery.finalize(&final_content);
     let outcome = if let Some(reply) = delivered_current_chat_reply {
@@ -451,12 +504,14 @@ pub(super) fn execute_turn(
             delivery: delivery.report(),
             any_tool_used,
             external_content_used,
+            used_surface_finalization,
             used_final_answer_recovery,
             task_execution_used: false,
             pressure,
             runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
             deliberation_class: deliberation_gate.class,
             request_semantics,
+            reply_surface,
             prompt_recall_intent: runtime_carry.prompt_recall_intent,
             runtime_skill_selected_ids: runtime_carry.runtime_skill_selected_ids,
             task_learning_selected_ids: runtime_carry.task_recall_selected_ids,

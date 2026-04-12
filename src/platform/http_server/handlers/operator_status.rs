@@ -35,7 +35,9 @@ mod tests {
         assert!(parsed["memory_operator_surface"].get("trace").is_some());
         assert!(parsed["memory_operator_surface"].get("diff").is_some());
         assert!(parsed["memory_operator_surface"].get("repair").is_some());
-        assert!(parsed["memory_operator_surface"].get("policy_view").is_some());
+        assert!(parsed["memory_operator_surface"]
+            .get("policy_view")
+            .is_some());
         assert!(parsed.get("os_closure").is_some());
         assert!(parsed.get("initiative").is_some());
         assert!(parsed.get("presence").is_some());

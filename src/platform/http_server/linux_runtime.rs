@@ -40,12 +40,13 @@ where
     H: Fn(IncomingRequest) -> OutgoingResponse + Send + Sync + 'static,
     A: Fn(&str, RestartAction) + Send + Sync + 'static,
 {
-    let server = Arc::new(
-        tiny_http::Server::http(&spec.listen_addr).map_err(|e| Error::Other {
-            source: Box::new(std::io::Error::other(e.to_string())),
-            stage: spec.listen_stage,
-        })?,
-    );
+    let server =
+        Arc::new(
+            tiny_http::Server::http(&spec.listen_addr).map_err(|e| Error::Other {
+                source: Box::new(std::io::Error::other(e.to_string())),
+                stage: spec.listen_stage,
+            })?,
+        );
     log::info!("{}", spec.listen_log);
 
     let handler = Arc::new(handler);

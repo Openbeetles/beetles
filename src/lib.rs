@@ -3,11 +3,11 @@
 
 mod build_info;
 mod build_package;
-mod host_observability;
 pub mod capability_package;
 pub mod channel_capability;
 pub mod constants;
 pub mod device_capability;
+mod host_observability;
 pub mod metrics;
 pub mod network;
 pub mod util;

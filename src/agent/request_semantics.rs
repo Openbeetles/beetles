@@ -81,9 +81,10 @@ impl RequestSemantics {
         match self.evidence_need {
             EvidenceNeed::None => false,
             EvidenceNeed::PublicRuntime => has_any_tool(tool_specs, &["board_info"]),
-            EvidenceNeed::HostTool => {
-                has_any_tool(tool_specs, &["process", "network", "network_scan", "board_info"])
-            }
+            EvidenceNeed::HostTool => has_any_tool(
+                tool_specs,
+                &["process", "network", "network_scan", "board_info"],
+            ),
             EvidenceNeed::ArchiveMemory => {
                 has_any_tool(tool_specs, &["memory_search"])
                     && has_any_tool(tool_specs, &["memory_get"])
@@ -198,9 +199,7 @@ fn parse_request_semantics_response(raw: &str) -> Option<RequestSemantics> {
         execution_preference: parse_execution_preference(
             get_object_text(&object, "execution_preference").as_str(),
         ),
-        confidence: get_object_u64(&object, "confidence")
-            .unwrap_or(0)
-            .min(100) as u8,
+        confidence: get_object_u64(&object, "confidence").unwrap_or(0).min(100) as u8,
     })
 }
 
@@ -273,7 +272,10 @@ mod tests {
         assert_eq!(parsed.request_kind, RequestKind::General);
         assert_eq!(parsed.evidence_need, EvidenceNeed::None);
         assert_eq!(parsed.disclosure_surface, DisclosureSurface::Governed);
-        assert_eq!(parsed.execution_preference, ExecutionPreference::AnswerDirect);
+        assert_eq!(
+            parsed.execution_preference,
+            ExecutionPreference::AnswerDirect
+        );
         assert_eq!(parsed.confidence, 100);
     }
 }

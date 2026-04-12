@@ -15,6 +15,7 @@ pub(super) struct FinalizedTurn {
     pub(super) worker_latency: WorkerLatency,
     pub(super) any_tool_used: bool,
     pub(super) external_content_used: bool,
+    pub(super) used_surface_finalization: bool,
     pub(super) used_final_answer_recovery: bool,
     pub(super) pressure: crate::orchestrator::PressureLevel,
     pub(super) prompt_recall_intent: crate::memory::PromptRecallIntent,
@@ -39,6 +40,8 @@ pub(super) fn finalize_turn(
 ) -> FinalizedTurn {
     let final_outcome = if telemetry.delivery.current_primary_delivered {
         "current_primary"
+    } else if telemetry.used_surface_finalization {
+        "surface_finalization"
     } else if telemetry.used_final_answer_recovery {
         "final_recovery"
     } else {
@@ -51,12 +54,14 @@ pub(super) fn finalize_turn(
         delivery,
         any_tool_used,
         external_content_used,
+        used_surface_finalization,
         used_final_answer_recovery,
         task_execution_used: _task_execution_used,
         pressure,
         runtime_mode: _runtime_mode,
         deliberation_class: _deliberation_class,
         request_semantics,
+        reply_surface,
         prompt_recall_intent,
         runtime_skill_selected_ids,
         task_learning_selected_ids,
@@ -116,7 +121,13 @@ pub(super) fn finalize_turn(
         && msg.ingress == IngressKind::User
         && msg.channel.as_ref() != CHANNEL_CRON
     {
-        reply_content = tr(UiMessage::AgentNoFinalReply, loc);
+        log::warn!(
+            "[reply_surface] empty finalized reply surface={} channel={} chat_id={}",
+            reply_surface.as_str(),
+            msg.channel,
+            msg.chat_id
+        );
+        reply_content = tr(UiMessage::NodeMaintenance, loc);
     }
     let mark_important = !is_interrupt && reply_content.contains(AGENT_MARKER_MARK_IMPORTANT);
     let signal_comfort = !is_interrupt && reply_content.contains(AGENT_MARKER_SIGNAL_COMFORT);
@@ -150,6 +161,7 @@ pub(super) fn finalize_turn(
         worker_latency: std::mem::take(&mut worker_latency),
         any_tool_used,
         external_content_used,
+        used_surface_finalization,
         used_final_answer_recovery,
         pressure,
         prompt_recall_intent,
@@ -197,6 +209,7 @@ pub(super) fn complete_turn(
         mut worker_latency,
         any_tool_used,
         external_content_used,
+        used_surface_finalization,
         used_final_answer_recovery,
         pressure,
         prompt_recall_intent,
@@ -280,7 +293,9 @@ pub(super) fn complete_turn(
     } else {
         crate::skills::RuntimeSkillReuseOutcome::Succeeded
     };
-    let reuse_outcome_note = if used_final_answer_recovery {
+    let reuse_outcome_note = if used_surface_finalization {
+        "surface_finalization"
+    } else if used_final_answer_recovery {
         "final_recovery"
     } else if reply_already_delivered || delivery.current_primary_delivered {
         "current_primary"
@@ -339,6 +354,8 @@ pub(super) fn complete_turn(
         "interrupt"
     } else if reply_already_delivered || delivery.current_primary_delivered {
         "current_primary"
+    } else if used_surface_finalization {
+        "surface_finalization"
     } else if used_final_answer_recovery {
         "final_recovery"
     } else {
