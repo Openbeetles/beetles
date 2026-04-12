@@ -97,6 +97,7 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         "ota_available": ota_available,
         "locale": locale,
         "lan_ip": lan_ip,
+        "workflow": crate::runtime::workflow_audit_snapshot(8).summary,
     });
 
     if let Some(obj) = json.as_object_mut() {
@@ -184,6 +185,8 @@ mod tests {
         assert!(parsed.get("ota_available").is_some());
         assert!(parsed.get("locale").is_some());
         assert!(parsed.get("lan_ip").is_some());
+        assert!(parsed.get("workflow").is_some());
+        assert!(parsed["workflow"].get("executed").is_some());
         assert!(parsed.get("initiative").is_none());
         assert!(parsed.get("presence").is_none());
         assert!(parsed.get("runtime_mode").is_none());

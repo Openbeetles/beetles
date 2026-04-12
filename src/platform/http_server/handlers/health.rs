@@ -27,6 +27,7 @@ struct HealthBody {
     last_error: String,
     display: DisplayHealth,
     audio: AudioHealth,
+    workflow: crate::runtime::WorkflowAuditSummary,
 }
 
 /// 生成 health JSON body（轻量状态摘要，无敏感信息）。
@@ -56,6 +57,7 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
                 speaker_output: audio_caps.speaker_output,
             },
         },
+        workflow: crate::runtime::workflow_audit_snapshot(8).summary,
     };
     serde_json::to_string(&payload).map_err(std::io::Error::other)
 }
@@ -79,6 +81,8 @@ mod tests {
         assert!(parsed.get("last_error").is_some());
         assert!(parsed.get("display").is_some());
         assert!(parsed.get("audio").is_some());
+        assert!(parsed.get("workflow").is_some());
+        assert!(parsed["workflow"].get("executed").is_some());
         assert!(parsed["audio"]["duplex_capabilities"]
             .get("reference_capture")
             .is_none());

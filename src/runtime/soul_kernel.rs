@@ -38,6 +38,27 @@ static SOUL_KERNEL_STATUS_CACHE: OnceLock<Mutex<Option<CachedSoulKernelStatus>>>
 static RUNTIME_BUNDLE_STATUS_CACHE: OnceLock<Mutex<Option<SoulKernelRuntimeBundleStatus>>> =
     OnceLock::new();
 
+fn append_reboot_recovery_workflow_audit(
+    disposition: crate::runtime::WorkflowDisposition,
+    rationale: &str,
+    effect: crate::runtime::WorkflowEffect,
+    recovery_policy: crate::runtime::WorkflowRecoveryPolicy,
+    primary_chat_id: Option<&str>,
+) {
+    crate::runtime::append_workflow_audit(
+        crate::runtime::WorkflowAuditRecord::new(
+            crate::runtime::WorkflowKind::RebootRecovery,
+            crate::runtime::WorkflowTrigger::BootRecovery,
+            disposition,
+            effect,
+            recovery_policy,
+            rationale,
+            crate::util::current_unix_secs(),
+        )
+        .with_target(None, None, primary_chat_id),
+    );
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SoulKernelPromptProjection {
     pub personality_governance_gate_text: Option<String>,
@@ -376,6 +397,13 @@ pub fn ensure_soul_kernel_recovery(
     if status_before.expected_bootstrap_empty
         || (status_before.minimum_viable && !status_before.degraded)
     {
+        append_reboot_recovery_workflow_audit(
+            crate::runtime::WorkflowDisposition::NoTrigger,
+            "soul_kernel_recovery_not_needed",
+            crate::runtime::WorkflowEffect::Noop,
+            crate::runtime::WorkflowRecoveryPolicy::ReplayAfterBoot,
+            None,
+        );
         return SoulKernelRecoveryReport {
             action: SoulKernelRecoveryAction::NotNeeded,
             restore_attempted: false,
@@ -390,6 +418,13 @@ pub fn ensure_soul_kernel_recovery(
     let bundle = match runtime_bundle_load {
         Ok(Some(bundle)) => bundle,
         Ok(None) => {
+            append_reboot_recovery_workflow_audit(
+                crate::runtime::WorkflowDisposition::NoTrigger,
+                "runtime_bundle_unavailable",
+                crate::runtime::WorkflowEffect::Noop,
+                crate::runtime::WorkflowRecoveryPolicy::ReplayAfterBoot,
+                None,
+            );
             return SoulKernelRecoveryReport {
                 action: SoulKernelRecoveryAction::NoBundleAvailable,
                 restore_attempted: false,
@@ -401,6 +436,13 @@ pub fn ensure_soul_kernel_recovery(
             };
         }
         Err(error) => {
+            append_reboot_recovery_workflow_audit(
+                crate::runtime::WorkflowDisposition::ExecuteFailed,
+                "runtime_bundle_unreadable",
+                crate::runtime::WorkflowEffect::Noop,
+                crate::runtime::WorkflowRecoveryPolicy::OperatorAckRequired,
+                None,
+            );
             return SoulKernelRecoveryReport {
                 action: SoulKernelRecoveryAction::BundleUnreadable,
                 restore_attempted: false,
@@ -520,6 +562,22 @@ pub fn ensure_soul_kernel_recovery(
     } else {
         SoulKernelRecoveryAction::RestoreAttemptedNoChange
     };
+
+    append_reboot_recovery_workflow_audit(
+        crate::runtime::WorkflowDisposition::ExecuteNow,
+        match action {
+            SoulKernelRecoveryAction::RestoredFromRuntimeBundle => "soul_kernel_recovery_restored",
+            SoulKernelRecoveryAction::RestoreAttemptedNoChange => {
+                "soul_kernel_recovery_attempted_no_change"
+            }
+            SoulKernelRecoveryAction::NotNeeded
+            | SoulKernelRecoveryAction::NoBundleAvailable
+            | SoulKernelRecoveryAction::BundleUnreadable => "soul_kernel_recovery_completed",
+        },
+        crate::runtime::WorkflowEffect::RunRepairPass,
+        crate::runtime::WorkflowRecoveryPolicy::ReplayAfterBoot,
+        bundle.primary_chat_id.as_deref(),
+    );
 
     SoulKernelRecoveryReport {
         action,
@@ -756,6 +814,7 @@ mod tests {
         SelfModelStore, SessionMessage, SessionSummaryStore,
     };
     use crate::platform::StateFs;
+    use crate::runtime::workflow::{reset_workflow_audit_for_tests, workflow_audit_snapshot};
     use std::collections::{BTreeMap, BTreeSet, HashMap};
     use std::sync::Mutex;
 
@@ -1331,6 +1390,7 @@ mod tests {
 
     #[test]
     fn restore_runtime_bundle_repairs_missing_core_and_continuity() {
+        reset_workflow_audit_for_tests();
         let state_fs = MemoryStateFs::default();
         let session_store = TestSessionStore::default();
         session_store
@@ -1473,6 +1533,56 @@ mod tests {
         assert!(self_model_store.get(&subject_id).unwrap().is_some());
         assert!(self_authored_core_store.get(&subject_id).unwrap().is_some());
         assert!(self_continuity_store.get(&subject_id).unwrap().is_some());
+        let audit = workflow_audit_snapshot(4);
+        assert_eq!(audit.summary.executed, 1);
+        assert_eq!(audit.recent_records[0].workflow, crate::runtime::WorkflowKind::RebootRecovery);
+    }
+
+    #[test]
+    fn recovery_without_runtime_bundle_records_no_trigger_workflow_audit() {
+        reset_workflow_audit_for_tests();
+        let state_fs = MemoryStateFs::default();
+        let session_store = TestSessionStore::default();
+        session_store
+            .chat_ids
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push("chat-a".to_string());
+        let long_term_store = TestLongTermStore::default();
+        let self_model_store = TestSelfModelStore::default();
+        let self_authored_core_store = TestSelfAuthoredCoreStore::default();
+        let core_revision_ledger_store = TestCoreRevisionLedgerStore::default();
+        let self_continuity_store = TestSelfContinuityStore::default();
+        let relationship_portfolio_store = TestRelationshipPortfolioStore::default();
+        let relationship_topology_store = TestRelationshipTopologyStore::default();
+        let session_summary_store = TestSessionSummaryStore::default();
+        let execution_state_store = TestExecutionStateStore::default();
+        let relationship_constitution_store = TestRelationshipConstitutionStore::default();
+
+        let report = ensure_soul_kernel_recovery(
+            SoulKernelRecoveryContext {
+                inspect: inspect_ctx(TestInspectStores {
+                    state_fs: &state_fs,
+                    session_store: &session_store,
+                    long_term_store: &long_term_store,
+                    self_model_store: &self_model_store,
+                    self_authored_core_store: &self_authored_core_store,
+                    core_revision_ledger_store: &core_revision_ledger_store,
+                    self_continuity_store: &self_continuity_store,
+                    relationship_portfolio_store: &relationship_portfolio_store,
+                    relationship_topology_store: &relationship_topology_store,
+                }),
+                session_summary_store: &session_summary_store,
+                execution_state_store: &execution_state_store,
+                relationship_constitution_store: &relationship_constitution_store,
+            },
+            120,
+        );
+
+        assert_eq!(report.action, SoulKernelRecoveryAction::NoBundleAvailable);
+        let audit = workflow_audit_snapshot(4);
+        assert_eq!(audit.summary.no_trigger, 1);
+        assert_eq!(audit.recent_records[0].workflow, crate::runtime::WorkflowKind::RebootRecovery);
     }
 
     #[test]

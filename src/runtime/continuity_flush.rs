@@ -29,6 +29,26 @@ pub struct ContinuitySnapshotBundle {
     pub snapshots: Vec<ContinuitySnapshot>,
 }
 
+fn append_reboot_request_workflow_audit(
+    disposition: crate::runtime::WorkflowDisposition,
+    rationale: &str,
+    effect: crate::runtime::WorkflowEffect,
+    primary_chat_id: Option<&str>,
+) {
+    crate::runtime::append_workflow_audit(
+        crate::runtime::WorkflowAuditRecord::new(
+            crate::runtime::WorkflowKind::RebootRecovery,
+            crate::runtime::WorkflowTrigger::ModeTransition,
+            disposition,
+            effect,
+            crate::runtime::WorkflowRecoveryPolicy::ReplayAfterBoot,
+            rationale,
+            crate::util::current_unix_secs(),
+        )
+        .with_target(None, None, primary_chat_id),
+    );
+}
+
 pub fn flush_reboot_continuity_bundle(
     platform: &dyn Platform,
     preferred_chat_id: Option<&str>,
@@ -133,29 +153,54 @@ pub fn request_restart_with_continuity_flush(
     reason: &str,
 ) {
     let now_secs = crate::util::current_unix_secs();
+    let normalized_reason = normalize_reason(reason);
     match flush_reboot_continuity_bundle(platform.as_ref(), preferred_chat_id, reason, now_secs) {
         Ok(count) => {
             if count > 0 {
                 log::info!(
                     "[continuity_flush] reboot bundle flushed reason={} snapshots={}",
-                    normalize_reason(reason),
+                    normalized_reason,
                     count
+                );
+                append_reboot_request_workflow_audit(
+                    crate::runtime::WorkflowDisposition::ExecuteNow,
+                    "reboot_bundle_flushed",
+                    crate::runtime::WorkflowEffect::PersistRecoveryIntent,
+                    preferred_chat_id,
                 );
             } else {
                 log::info!(
                     "[continuity_flush] reboot requested reason={} snapshots=0",
-                    normalize_reason(reason)
+                    normalized_reason
+                );
+                append_reboot_request_workflow_audit(
+                    crate::runtime::WorkflowDisposition::NoTrigger,
+                    "reboot_bundle_empty",
+                    crate::runtime::WorkflowEffect::Noop,
+                    preferred_chat_id,
                 );
             }
         }
         Err(error) => {
             log::warn!(
                 "[continuity_flush] reboot flush failed reason={}: {}",
-                normalize_reason(reason),
+                normalized_reason,
                 error
+            );
+            append_reboot_request_workflow_audit(
+                crate::runtime::WorkflowDisposition::ExecuteFailed,
+                "reboot_bundle_flush_failed",
+                crate::runtime::WorkflowEffect::Noop,
+                preferred_chat_id,
             );
         }
     }
+    append_reboot_request_workflow_audit(
+        crate::runtime::WorkflowDisposition::ExecuteNow,
+        normalized_reason.as_str(),
+        crate::runtime::WorkflowEffect::RequestRestart,
+        preferred_chat_id,
+    );
     platform.request_restart();
 }
 

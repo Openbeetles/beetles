@@ -2,6 +2,92 @@ use super::*;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
+fn workflow_kind_for_self_runtime_trigger(trigger: SelfRuntimeTrigger) -> crate::runtime::WorkflowKind {
+    match trigger {
+        SelfRuntimeTrigger::PostReply => crate::runtime::WorkflowKind::SelfRuntimePostReply,
+        SelfRuntimeTrigger::IdleTick => crate::runtime::WorkflowKind::SelfRuntimeIdleTick,
+    }
+}
+
+fn workflow_trigger_for_self_runtime_trigger(
+    trigger: SelfRuntimeTrigger,
+) -> crate::runtime::WorkflowTrigger {
+    match trigger {
+        SelfRuntimeTrigger::PostReply => crate::runtime::WorkflowTrigger::PostReply,
+        SelfRuntimeTrigger::IdleTick => crate::runtime::WorkflowTrigger::CronTick,
+    }
+}
+
+fn append_self_runtime_workflow_audit(
+    trigger: SelfRuntimeTrigger,
+    disposition: crate::runtime::WorkflowDisposition,
+    rationale: &str,
+    effect: crate::runtime::WorkflowEffect,
+    chat_id: Option<&str>,
+    source_channel: Option<&str>,
+) {
+    let channel = source_channel.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    });
+    crate::runtime::append_workflow_audit(
+        crate::runtime::WorkflowAuditRecord::new(
+            workflow_kind_for_self_runtime_trigger(trigger),
+            workflow_trigger_for_self_runtime_trigger(trigger),
+            disposition,
+            effect,
+            crate::runtime::WorkflowRecoveryPolicy::DropOnModeExit,
+            rationale,
+            crate::util::current_unix_secs(),
+        )
+        .with_target(None, channel, chat_id)
+        .with_suppression_reason(
+            matches!(disposition, crate::runtime::WorkflowDisposition::Suppress)
+                .then_some(rationale),
+        ),
+    );
+}
+
+fn self_runtime_post_reply_no_trigger_reason(
+    continuity: Option<&crate::memory::SelfContinuity>,
+    strategy: Option<&crate::memory::AutonomyStrategy>,
+    has_self_authored_core: bool,
+    source_channel: &str,
+    tool_calls: u32,
+    external_content_used: bool,
+    now_secs: u64,
+    profile: MemoryProfile,
+) -> Option<&'static str> {
+    if tool_calls > 0 || external_content_used {
+        return None;
+    }
+    if !has_self_authored_core || strategy.is_none() {
+        return None;
+    }
+    let current_channel = source_channel.trim();
+    let previous_channel = continuity
+        .map(|state| state.last_user_channel.trim())
+        .unwrap_or_default();
+    if !current_channel.is_empty()
+        && !previous_channel.is_empty()
+        && current_channel != previous_channel
+    {
+        return None;
+    }
+    let Some(idle_interval_secs) = autonomy_idle_interval_secs(strategy, profile) else {
+        return Some("post_reply_autonomy_disabled");
+    };
+    let last_autonomy_run_at = continuity
+        .map(|state| state.last_autonomy_run_at)
+        .unwrap_or(0);
+    if last_autonomy_run_at == 0
+        || now_secs.saturating_sub(last_autonomy_run_at) >= idle_interval_secs
+    {
+        return None;
+    }
+    Some("post_reply_runtime_recently_ran")
+}
+
 pub fn enqueue_self_runtime_post_reply(
     system_inbound_tx: &SystemInboundTx,
     self_continuity_store: &dyn SelfContinuityStore,
@@ -24,7 +110,7 @@ pub fn enqueue_self_runtime_post_reply(
         .ok()
         .flatten()
         .is_some();
-    if !should_enqueue_self_runtime_post_reply_with_state(
+    if let Some(reason) = self_runtime_post_reply_no_trigger_reason(
         continuity.as_ref(),
         strategy.as_ref(),
         has_self_authored_core,
@@ -34,6 +120,14 @@ pub fn enqueue_self_runtime_post_reply(
         now_secs,
         profile,
     ) {
+        append_self_runtime_workflow_audit(
+            SelfRuntimeTrigger::PostReply,
+            crate::runtime::WorkflowDisposition::NoTrigger,
+            reason,
+            crate::runtime::WorkflowEffect::Noop,
+            Some(chat_id),
+            Some(source_channel),
+        );
         return false;
     }
     schedule_self_runtime_job(
@@ -63,29 +157,17 @@ pub(super) fn should_enqueue_self_runtime_post_reply_with_state(
     now_secs: u64,
     profile: MemoryProfile,
 ) -> bool {
-    if tool_calls > 0 || external_content_used {
-        return true;
-    }
-    if !has_self_authored_core || strategy.is_none() {
-        return true;
-    }
-    let current_channel = source_channel.trim();
-    let previous_channel = continuity
-        .map(|state| state.last_user_channel.trim())
-        .unwrap_or_default();
-    if !current_channel.is_empty()
-        && !previous_channel.is_empty()
-        && current_channel != previous_channel
-    {
-        return true;
-    }
-    let Some(idle_interval_secs) = autonomy_idle_interval_secs(strategy, profile) else {
-        return false;
-    };
-    let last_autonomy_run_at = continuity
-        .map(|state| state.last_autonomy_run_at)
-        .unwrap_or(0);
-    last_autonomy_run_at == 0 || now_secs.saturating_sub(last_autonomy_run_at) >= idle_interval_secs
+    self_runtime_post_reply_no_trigger_reason(
+        continuity,
+        strategy,
+        has_self_authored_core,
+        source_channel,
+        tool_calls,
+        external_content_used,
+        now_secs,
+        profile,
+    )
+    .is_none()
 }
 
 pub fn enqueue_self_runtime_idle_tick(system_inbound_tx: &SystemInboundTx, chat_id: &str) -> bool {
@@ -121,6 +203,9 @@ fn schedule_self_runtime_job(
 ) -> bool {
     let system_inbound_tx = system_inbound_tx.clone();
     let chat_id = chat_id.to_string();
+    let audit_chat_id = chat_id.clone();
+    let audit_channel = payload.source_channel.clone();
+    let trigger = payload.trigger;
     let delayed_chat_id = chat_id.clone();
     let scheduled = crate::runtime::schedule_delayed_task(
         Instant::now() + Duration::from_millis(delay_ms),
@@ -131,6 +216,14 @@ fn schedule_self_runtime_job(
                     reason,
                     delayed_chat_id
                 );
+                append_self_runtime_workflow_audit(
+                    payload.trigger,
+                    crate::runtime::WorkflowDisposition::Suppress,
+                    reason,
+                    crate::runtime::WorkflowEffect::Noop,
+                    Some(delayed_chat_id.as_str()),
+                    Some(payload.source_channel.as_str()),
+                );
                 return;
             }
             let _ = enqueue_self_runtime_job_now(&system_inbound_tx, &delayed_chat_id, payload);
@@ -140,6 +233,23 @@ fn schedule_self_runtime_job(
         log::debug!(
             "[self_runtime] delayed queue full, skip schedule chat_id={}",
             chat_id
+        );
+        append_self_runtime_workflow_audit(
+            trigger,
+            crate::runtime::WorkflowDisposition::ExecuteFailed,
+            "self_runtime_schedule_failed",
+            crate::runtime::WorkflowEffect::Noop,
+            Some(audit_chat_id.as_str()),
+            Some(audit_channel.as_str()),
+        );
+    } else {
+        append_self_runtime_workflow_audit(
+            trigger,
+            crate::runtime::WorkflowDisposition::DeferUntil,
+            "self_runtime_scheduled",
+            crate::runtime::WorkflowEffect::EnqueueSystemJob,
+            Some(audit_chat_id.as_str()),
+            Some(audit_channel.as_str()),
         );
     }
     scheduled
@@ -158,6 +268,14 @@ fn enqueue_self_runtime_job_now(
                 chat_id,
                 error
             );
+            append_self_runtime_workflow_audit(
+                payload.trigger,
+                crate::runtime::WorkflowDisposition::ExecuteFailed,
+                "self_runtime_serialize_failed",
+                crate::runtime::WorkflowEffect::Noop,
+                Some(chat_id),
+                Some(payload.source_channel.as_str()),
+            );
             return false;
         }
     };
@@ -169,20 +287,54 @@ fn enqueue_self_runtime_job_now(
                 chat_id,
                 error
             );
+            append_self_runtime_workflow_audit(
+                payload.trigger,
+                crate::runtime::WorkflowDisposition::ExecuteFailed,
+                "self_runtime_build_failed",
+                crate::runtime::WorkflowEffect::Noop,
+                Some(chat_id),
+                Some(payload.source_channel.as_str()),
+            );
             return false;
         }
     };
     match system_inbound_tx.try_send(job) {
-        Ok(()) => true,
+        Ok(()) => {
+            append_self_runtime_workflow_audit(
+                payload.trigger,
+                crate::runtime::WorkflowDisposition::ExecuteNow,
+                "self_runtime_enqueued",
+                crate::runtime::WorkflowEffect::EnqueueSystemJob,
+                Some(chat_id),
+                Some(payload.source_channel.as_str()),
+            );
+            true
+        }
         Err(std::sync::mpsc::TrySendError::Full(_)) => {
             log::debug!(
                 "[self_runtime] skip enqueue because system queue is full chat_id={}",
                 chat_id
             );
+            append_self_runtime_workflow_audit(
+                payload.trigger,
+                crate::runtime::WorkflowDisposition::ExecuteFailed,
+                "self_runtime_queue_full",
+                crate::runtime::WorkflowEffect::Noop,
+                Some(chat_id),
+                Some(payload.source_channel.as_str()),
+            );
             false
         }
         Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
             log::warn!("[self_runtime] enqueue failed: system queue disconnected");
+            append_self_runtime_workflow_audit(
+                payload.trigger,
+                crate::runtime::WorkflowDisposition::ExecuteFailed,
+                "self_runtime_queue_disconnected",
+                crate::runtime::WorkflowEffect::Noop,
+                Some(chat_id),
+                Some(payload.source_channel.as_str()),
+            );
             false
         }
     }
@@ -219,6 +371,14 @@ pub fn self_runtime_tick(
 ) {
     if let Some(reason) = idle_self_runtime_block_reason() {
         log::debug!("[self_runtime] skip idle tick enqueue because {}", reason);
+        append_self_runtime_workflow_audit(
+            SelfRuntimeTrigger::IdleTick,
+            crate::runtime::WorkflowDisposition::Suppress,
+            reason,
+            crate::runtime::WorkflowEffect::Noop,
+            None,
+            None,
+        );
         return;
     }
 
@@ -233,6 +393,14 @@ pub fn self_runtime_tick(
             log::warn!(
                 "[self_runtime] failed to read subject continuity: {}",
                 error
+            );
+            append_self_runtime_workflow_audit(
+                SelfRuntimeTrigger::IdleTick,
+                crate::runtime::WorkflowDisposition::ExecuteFailed,
+                "self_runtime_continuity_read_failed",
+                crate::runtime::WorkflowEffect::Noop,
+                None,
+                None,
             );
             return;
         }
@@ -254,6 +422,14 @@ pub fn self_runtime_tick(
     if last_user_turn_at > 0
         && now_secs.saturating_sub(last_user_turn_at) > policy.active_chat_window_secs
     {
+        append_self_runtime_workflow_audit(
+            SelfRuntimeTrigger::IdleTick,
+            crate::runtime::WorkflowDisposition::NoTrigger,
+            "idle_active_chat_window_expired",
+            crate::runtime::WorkflowEffect::Noop,
+            None,
+            None,
+        );
         return;
     }
     let last_autonomy = continuity
@@ -270,7 +446,17 @@ pub fn self_runtime_tick(
         .filter(|value| !value.is_empty());
     let idle_interval_secs = match autonomy_idle_interval_secs(strategy.as_ref(), profile) {
         Some(interval) => interval,
-        None if strategy.is_some() => return,
+        None if strategy.is_some() => {
+            append_self_runtime_workflow_audit(
+                SelfRuntimeTrigger::IdleTick,
+                crate::runtime::WorkflowDisposition::NoTrigger,
+                "idle_autonomy_disabled",
+                crate::runtime::WorkflowEffect::Noop,
+                None,
+                None,
+            );
+            return;
+        }
         None => policy.idle_tick_interval_secs,
     };
     if !idle_self_runtime_due(
@@ -280,6 +466,14 @@ pub fn self_runtime_tick(
         last_autonomy,
         idle_interval_secs,
     ) {
+        append_self_runtime_workflow_audit(
+            SelfRuntimeTrigger::IdleTick,
+            crate::runtime::WorkflowDisposition::NoTrigger,
+            "idle_self_runtime_not_due",
+            crate::runtime::WorkflowEffect::Noop,
+            None,
+            None,
+        );
         return;
     }
 
@@ -362,6 +556,14 @@ pub fn self_runtime_tick(
         Ok(chat_ids) => chat_ids,
         Err(error) => {
             log::warn!("[self_runtime] failed to list chat ids: {}", error);
+            append_self_runtime_workflow_audit(
+                SelfRuntimeTrigger::IdleTick,
+                crate::runtime::WorkflowDisposition::ExecuteFailed,
+                "self_runtime_session_list_failed",
+                crate::runtime::WorkflowEffect::Noop,
+                None,
+                None,
+            );
             return;
         }
     };
@@ -388,6 +590,17 @@ pub fn self_runtime_tick(
         ) {
             enqueued += 1;
         }
+    }
+
+    if enqueued == 0 {
+        append_self_runtime_workflow_audit(
+            SelfRuntimeTrigger::IdleTick,
+            crate::runtime::WorkflowDisposition::NoTrigger,
+            "no_idle_self_runtime_targets",
+            crate::runtime::WorkflowEffect::Noop,
+            None,
+            None,
+        );
     }
 }
 
@@ -497,6 +710,7 @@ mod tests {
         SelfAuthoredCore, SelfAuthoredCoreStore, SelfContinuity, SelfContinuityStore,
         SessionMessage, SessionStore,
     };
+    use crate::runtime::workflow::{reset_workflow_audit_for_tests, workflow_audit_snapshot};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Mutex, OnceLock};
 
@@ -640,6 +854,8 @@ mod tests {
 
     #[test]
     fn self_runtime_tick_skips_session_enumeration_when_idle_runtime_is_not_due() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        reset_workflow_audit_for_tests();
         let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
         let session_store = CountingSessionStore::default();
         let now_secs = 10_000;
@@ -677,11 +893,18 @@ mod tests {
             0,
             "session enumeration should stay behind idle due gates"
         );
+        let audit = workflow_audit_snapshot(4);
+        assert_eq!(audit.summary.no_trigger, 1);
+        assert_eq!(
+            audit.recent_records[0].workflow,
+            crate::runtime::WorkflowKind::SelfRuntimeIdleTick
+        );
     }
 
     #[test]
     fn self_runtime_tick_skips_session_enumeration_when_voice_exclusive_is_active() {
         let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        reset_workflow_audit_for_tests();
         crate::state::set_voice_exclusive_active(true);
 
         let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
@@ -722,6 +945,72 @@ mod tests {
             session_store.list_calls.load(Ordering::SeqCst),
             0,
             "voice-exclusive mode should block session enumeration before idle fan-out"
+        );
+        let audit = workflow_audit_snapshot(4);
+        assert_eq!(audit.summary.suppressed, 1);
+        assert_eq!(
+            audit.recent_records[0].workflow,
+            crate::runtime::WorkflowKind::SelfRuntimeIdleTick
+        );
+    }
+
+    #[test]
+    fn enqueue_self_runtime_post_reply_records_deferred_workflow_audit() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        reset_workflow_audit_for_tests();
+        let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
+
+        let scheduled = enqueue_self_runtime_post_reply(
+            &system_inbound_tx,
+            &StubSelfContinuityStore::default(),
+            &StubAutonomyStrategyStore::default(),
+            &StubSelfAuthoredCoreStore,
+            MemoryProfile::Standard,
+            "chat-a",
+            "qq_channel",
+            "user",
+            "reply",
+            0,
+            false,
+        );
+
+        assert!(scheduled);
+        let audit = workflow_audit_snapshot(4);
+        assert_eq!(audit.summary.deferred, 1);
+        assert_eq!(
+            audit.recent_records[0].workflow,
+            crate::runtime::WorkflowKind::SelfRuntimePostReply
+        );
+    }
+
+    #[test]
+    fn enqueue_self_runtime_job_now_records_execute_now_workflow_audit() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        reset_workflow_audit_for_tests();
+        let (system_inbound_tx, system_inbound_rx, _depth) = new_inbound_channel(4);
+
+        let enqueued = enqueue_self_runtime_job_now(
+            &system_inbound_tx,
+            "chat-a",
+            SelfRuntimeJobPayload {
+                trigger: SelfRuntimeTrigger::IdleTick,
+                source_channel: "qq_channel".to_string(),
+                user_content: String::new(),
+                reply_content: String::new(),
+                tool_calls: 0,
+                external_content_used: false,
+                now_secs: 42,
+            },
+        );
+
+        assert!(enqueued);
+        let job = system_inbound_rx.try_recv().expect("self runtime job should enqueue");
+        assert_eq!(job.chat_id.as_ref(), "chat-a");
+        let audit = workflow_audit_snapshot(4);
+        assert_eq!(audit.summary.executed, 1);
+        assert_eq!(
+            audit.recent_records[0].workflow,
+            crate::runtime::WorkflowKind::SelfRuntimeIdleTick
         );
     }
 }

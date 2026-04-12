@@ -239,6 +239,26 @@ fn background_enqueue_block_reason() -> Option<&'static str> {
 
 const IDLE_SELF_RUNTIME_RETRY_DELAY_MS: u64 = 5_000;
 
+fn append_background_defer_workflow_audit(
+    msg: &PcMsg,
+    trigger: crate::runtime::WorkflowTrigger,
+    workflow: crate::runtime::WorkflowKind,
+    rationale: &str,
+) {
+    crate::runtime::append_workflow_audit(
+        crate::runtime::WorkflowAuditRecord::new(
+            workflow,
+            trigger,
+            crate::runtime::WorkflowDisposition::DeferUntil,
+            crate::runtime::WorkflowEffect::EnqueueSystemJob,
+            crate::runtime::WorkflowRecoveryPolicy::DropOnModeExit,
+            rationale,
+            crate::util::current_unix_secs(),
+        )
+        .with_target(None, Some(msg.channel.as_ref()), Some(msg.chat_id.as_ref())),
+    );
+}
+
 fn should_defer_background_job(msg: &PcMsg) -> Option<(&'static str, u64)> {
     let post_reply_quiet_delay_ms = || {
         crate::runtime::system_work::post_reply_quiet_window_remaining_ms(
@@ -248,6 +268,12 @@ fn should_defer_background_job(msg: &PcMsg) -> Option<(&'static str, u64)> {
     };
     if is_post_reply_maintenance_job(msg) {
         if let Some(delay_ms) = post_reply_quiet_delay_ms() {
+            append_background_defer_workflow_audit(
+                msg,
+                crate::runtime::WorkflowTrigger::PostReply,
+                crate::runtime::WorkflowKind::PostReplyMaintenance,
+                "post_reply_quiet_window",
+            );
             return Some(("post_reply_quiet_window", delay_ms));
         }
         return None;
@@ -257,16 +283,36 @@ fn should_defer_background_job(msg: &PcMsg) -> Option<(&'static str, u64)> {
     }
     let payload: crate::memory::SelfRuntimeJobPayload = serde_json::from_str(&msg.content).ok()?;
     if payload.trigger == crate::memory::SelfRuntimeTrigger::PostReply {
-        return post_reply_quiet_delay_ms().map(|delay_ms| ("post_reply_quiet_window", delay_ms));
+        return post_reply_quiet_delay_ms().map(|delay_ms| {
+            append_background_defer_workflow_audit(
+                msg,
+                crate::runtime::WorkflowTrigger::PostReply,
+                crate::runtime::WorkflowKind::SelfRuntimePostReply,
+                "post_reply_quiet_window",
+            );
+            ("post_reply_quiet_window", delay_ms)
+        });
     }
     if payload.trigger != crate::memory::SelfRuntimeTrigger::IdleTick {
         return None;
     }
     let snap = crate::orchestrator::snapshot();
     if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) && snap.active_wss_count > 0 {
+        append_background_defer_workflow_audit(
+            msg,
+            crate::runtime::WorkflowTrigger::CronTick,
+            crate::runtime::WorkflowKind::SelfRuntimeIdleTick,
+            "external_wss_active",
+        );
         return Some(("external_wss_active", IDLE_SELF_RUNTIME_RETRY_DELAY_MS));
     }
     if snap.inbound_depth > 0 || snap.outbound_depth > 0 {
+        append_background_defer_workflow_audit(
+            msg,
+            crate::runtime::WorkflowTrigger::CronTick,
+            crate::runtime::WorkflowKind::SelfRuntimeIdleTick,
+            "message_queues_busy",
+        );
         return Some(("message_queues_busy", 1_000));
     }
     None
@@ -2167,6 +2213,7 @@ mod tests {
         TurnLedgerStore,
     };
     use crate::platform::{PlatformHttpClient, ResponseBody};
+    use crate::runtime::workflow::{reset_workflow_audit_for_tests, workflow_audit_snapshot};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
@@ -2189,6 +2236,7 @@ mod tests {
 
     #[test]
     fn post_reply_maintenance_defers_inside_quiet_window() {
+        reset_workflow_audit_for_tests();
         metrics::record_message_out();
         let msg = PcMsg::new_system(CHANNEL_POST_REPLY_MAINTENANCE, "chat-1", "{}")
             .expect("build maintenance message");
@@ -2196,6 +2244,12 @@ mod tests {
             should_defer_background_job(&msg).expect("post-reply maintenance should defer");
         assert_eq!(reason, "post_reply_quiet_window");
         assert!(delay_ms > 0);
+        let audit = workflow_audit_snapshot(4);
+        assert_eq!(audit.summary.deferred, 1);
+        assert_eq!(
+            audit.recent_records[0].workflow,
+            crate::runtime::WorkflowKind::PostReplyMaintenance
+        );
     }
 
     #[derive(Default)]
