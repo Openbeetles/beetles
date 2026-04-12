@@ -27,8 +27,8 @@ use super::subject_state::{
     SubjectState, SubjectStateCompileInput,
 };
 use super::tool_outcome::{
-    classify_tool_error, denied_tool_assessment, summarize_tool_blocker,
-    unavailable_tool_assessment, ToolBlockerSummary, ToolFailureSummary,
+    classify_tool_error, denied_tool_assessment, unavailable_tool_assessment,
+    ToolFailureSummary,
 };
 use super::StreamEditor;
 use crate::agent::context::{
@@ -67,7 +67,7 @@ use crate::memory::{
     PrivateGardenStore, PromptMemoryContext, PromptMemoryContextParams, PromptRuntimeCarry,
     RelationshipTopologyStore, RemindAtStore, SelfContinuityStore, SelfModelStore,
     SelfRuntimeContext, SessionMessage, SessionStore, SessionSummaryRefreshOutcome,
-    SessionSummaryStore, TurnBlockerLedger, TurnDeliveryLedger, TurnExecutionClass, TurnLedger,
+    SessionSummaryStore, TurnDeliveryLedger, TurnExecutionClass, TurnLedger,
     TurnLedgerStatus, TurnLedgerStore, TurnModeSnapshotLedger, TurnObservationLedger,
     TurnPersonaLedger, TurnPersonaReviewLedger, TurnToolPathLedger, WorldSenseStore,
 };
@@ -373,7 +373,6 @@ struct WorkerRunTelemetry {
     runtime_mode: crate::runtime::RuntimeModeSnapshot,
     deliberation_class: crate::memory::TurnDeliberationClass,
     request_semantics: RequestSemantics,
-    tool_blocker: Option<ToolBlockerSummary>,
     prompt_recall_intent: crate::memory::PromptRecallIntent,
     runtime_skill_selected_ids: Vec<String>,
     task_learning_selected_ids: Vec<String>,
@@ -391,7 +390,7 @@ fn build_turn_observation_ledger(
         TurnExecutionClass::Interrupted
     } else if telemetry.task_execution_used {
         TurnExecutionClass::TaskExecution
-    } else if telemetry.any_tool_used || telemetry.tool_blocker.is_some() {
+    } else if telemetry.any_tool_used {
         TurnExecutionClass::ToolAssisted
     } else {
         TurnExecutionClass::DirectReply
@@ -411,17 +410,6 @@ fn build_turn_observation_ledger(
     } else {
         ""
     };
-    let blocker = telemetry.tool_blocker.map(|blocker| TurnBlockerLedger {
-        kind: match blocker.kind {
-            crate::agent::tool_outcome::ToolBlockerKind::Retryable => "retryable",
-            crate::agent::tool_outcome::ToolBlockerKind::Permanent => "permanent",
-            crate::agent::tool_outcome::ToolBlockerKind::Capability => "capability",
-            crate::agent::tool_outcome::ToolBlockerKind::Mixed => "mixed",
-        }
-        .to_string(),
-        failed_calls: blocker.failed_calls.min(u32::MAX as usize) as u32,
-        total_calls: blocker.total_calls.min(u32::MAX as usize) as u32,
-    });
     let observation = TurnObservationLedger {
         execution_class,
         deliberation_class: telemetry.deliberation_class,
@@ -442,7 +430,7 @@ fn build_turn_observation_ledger(
             current_primary_delivered: telemetry.delivery.current_primary_delivered,
             final_answer_recovered: telemetry.used_final_answer_recovery,
         },
-        blocker,
+        blocker: None,
     };
     observation.is_meaningful().then_some(observation)
 }
@@ -4175,7 +4163,6 @@ mod tests {
             },
             deliberation_class: crate::memory::TurnDeliberationClass::Standard,
             request_semantics: RequestSemantics::public_tool_first(),
-            tool_blocker: None,
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
@@ -4300,14 +4287,6 @@ mod tests {
             },
             deliberation_class: crate::memory::TurnDeliberationClass::HardReasoning,
             request_semantics: RequestSemantics::conservative_default(),
-            tool_blocker: summarize_tool_blocker(
-                2,
-                ToolFailureSummary {
-                    failed_calls: 2,
-                    retryable_failures: 2,
-                    ..ToolFailureSummary::default()
-                },
-            ),
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
@@ -4340,14 +4319,7 @@ mod tests {
         assert_eq!(observation.tool_path.react_rounds, 3);
         assert!(observation.tool_path.current_primary_delivered);
         assert!(observation.tool_path.final_answer_recovered);
-        assert_eq!(
-            observation.blocker,
-            Some(TurnBlockerLedger {
-                kind: "retryable".to_string(),
-                failed_calls: 2,
-                total_calls: 2,
-            })
-        );
+        assert!(observation.blocker.is_none());
     }
 
     #[test]

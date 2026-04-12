@@ -8,6 +8,8 @@ mod esp_transport;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 mod lazy_executor;
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use crate::error::Error;
 use crate::error::Result;
 use std::sync::Arc;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]

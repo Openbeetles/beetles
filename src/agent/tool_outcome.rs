@@ -11,24 +11,9 @@ pub(crate) enum ToolFailureKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ToolBlockerKind {
-    Retryable,
-    Permanent,
-    Capability,
-    Mixed,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ToolFailureAssessment {
     pub(crate) kind: ToolFailureKind,
     pub(crate) hint: &'static str,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ToolBlockerSummary {
-    pub(crate) kind: ToolBlockerKind,
-    pub(crate) failed_calls: usize,
-    pub(crate) total_calls: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -54,29 +39,6 @@ impl ToolFailureSummary {
             }
         }
     }
-}
-
-pub(crate) fn summarize_tool_blocker(
-    total_calls: usize,
-    summary: ToolFailureSummary,
-) -> Option<ToolBlockerSummary> {
-    if total_calls == 0 || summary.failed_calls != total_calls {
-        return None;
-    }
-    let kind = if summary.capability_failures == summary.failed_calls {
-        ToolBlockerKind::Capability
-    } else if summary.permanent_failures == summary.failed_calls {
-        ToolBlockerKind::Permanent
-    } else if summary.retryable_failures == summary.failed_calls {
-        ToolBlockerKind::Retryable
-    } else {
-        ToolBlockerKind::Mixed
-    };
-    Some(ToolBlockerSummary {
-        kind,
-        failed_calls: summary.failed_calls,
-        total_calls,
-    })
 }
 
 pub(crate) fn unavailable_tool_assessment() -> ToolFailureAssessment {
@@ -312,48 +274,6 @@ mod tests {
     fn denied_reason_distinguishes_retryable_pressure() {
         let assessment = denied_tool_assessment("critical_no_network_tools");
         assert_eq!(assessment.kind, ToolFailureKind::Retryable);
-    }
-
-    #[test]
-    fn summarize_tool_blocker_requires_full_round_failure() {
-        let blocker = summarize_tool_blocker(
-            2,
-            ToolFailureSummary {
-                failed_calls: 1,
-                permanent_failures: 1,
-                ..ToolFailureSummary::default()
-            },
-        );
-        assert!(blocker.is_none());
-    }
-
-    #[test]
-    fn summarize_tool_blocker_classifies_capability_rounds() {
-        let blocker = summarize_tool_blocker(
-            2,
-            ToolFailureSummary {
-                failed_calls: 2,
-                capability_failures: 2,
-                ..ToolFailureSummary::default()
-            },
-        )
-        .expect("blocker");
-        assert_eq!(blocker.kind, ToolBlockerKind::Capability);
-    }
-
-    #[test]
-    fn summarize_tool_blocker_marks_mixed_rounds() {
-        let blocker = summarize_tool_blocker(
-            2,
-            ToolFailureSummary {
-                failed_calls: 2,
-                retryable_failures: 1,
-                permanent_failures: 1,
-                ..ToolFailureSummary::default()
-            },
-        )
-        .expect("blocker");
-        assert_eq!(blocker.kind, ToolBlockerKind::Mixed);
     }
 
     #[test]

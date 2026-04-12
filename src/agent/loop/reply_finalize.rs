@@ -1,5 +1,4 @@
 use super::*;
-use crate::agent::tool_outcome::ToolBlockerKind;
 
 pub(super) struct FinalizedTurn {
     pub(super) delivery: DeliveryReport,
@@ -18,7 +17,6 @@ pub(super) struct FinalizedTurn {
     pub(super) external_content_used: bool,
     pub(super) used_final_answer_recovery: bool,
     pub(super) pressure: crate::orchestrator::PressureLevel,
-    pub(super) tool_blocker: Option<ToolBlockerSummary>,
     pub(super) prompt_recall_intent: crate::memory::PromptRecallIntent,
     pub(super) runtime_skill_selected_ids: Vec<String>,
     pub(super) task_learning_selected_ids: Vec<String>,
@@ -59,7 +57,6 @@ pub(super) fn finalize_turn(
         runtime_mode: _runtime_mode,
         deliberation_class: _deliberation_class,
         request_semantics,
-        tool_blocker,
         prompt_recall_intent,
         runtime_skill_selected_ids,
         task_learning_selected_ids,
@@ -155,7 +152,6 @@ pub(super) fn finalize_turn(
         external_content_used,
         used_final_answer_recovery,
         pressure,
-        tool_blocker,
         prompt_recall_intent,
         runtime_skill_selected_ids,
         task_learning_selected_ids,
@@ -203,7 +199,6 @@ pub(super) fn complete_turn(
         external_content_used,
         used_final_answer_recovery,
         pressure,
-        tool_blocker,
         prompt_recall_intent,
         runtime_skill_selected_ids,
         task_learning_selected_ids,
@@ -280,24 +275,13 @@ pub(super) fn complete_turn(
         || (runtime_skill_selected_ids.is_empty() && task_learning_selected_ids.is_empty())
     {
         crate::skills::RuntimeSkillReuseOutcome::Neutral
-    } else if used_final_answer_recovery
-        || tool_blocker
-            .as_ref()
-            .is_some_and(|blocker| !matches!(blocker.kind, ToolBlockerKind::Retryable))
-    {
+    } else if used_final_answer_recovery {
         crate::skills::RuntimeSkillReuseOutcome::Mismatch
     } else {
         crate::skills::RuntimeSkillReuseOutcome::Succeeded
     };
     let reuse_outcome_note = if used_final_answer_recovery {
         "final_recovery"
-    } else if let Some(blocker) = tool_blocker.as_ref() {
-        match blocker.kind {
-            ToolBlockerKind::Retryable => "retryable",
-            ToolBlockerKind::Permanent => "permanent",
-            ToolBlockerKind::Capability => "capability",
-            ToolBlockerKind::Mixed => "mixed",
-        }
     } else if reply_already_delivered || delivery.current_primary_delivered {
         "current_primary"
     } else {

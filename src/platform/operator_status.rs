@@ -2,6 +2,10 @@
 
 use crate::device_capability::{build_device_capability_snapshots, DeviceCapabilityPlaneSnapshot};
 use crate::orchestrator;
+use crate::platform::memory_operator_surface::{
+    build_memory_operator_surface, render_memory_operator_surface_text,
+    MemoryOperatorSurfaceSummary,
+};
 use crate::runtime;
 use crate::tools::{ToolExecutionGovernanceState, ToolRegistry};
 use crate::util::current_unix_secs;
@@ -27,6 +31,7 @@ pub struct OperatorStatusSnapshot {
     pub platform_contract: OperatorPlatformContract,
     pub build_package: crate::BuildPackageSnapshot,
     pub operator_surface: crate::platform::operator_surface::OperatorSurfaceBudget,
+    pub memory_operator_surface: MemoryOperatorSurfaceSummary,
     pub threads: runtime::ThreadRegistrySnapshot,
     pub os_closure: runtime::BeetleOsClosureReport,
     pub initiative: runtime::InitiativeSnapshot,
@@ -66,6 +71,8 @@ pub fn build_operator_status(
     let os_closure = runtime::inspect_beetle_os_closure(&presence, &initiative);
     let runtime_mode = presence.runtime_mode;
     let soul_kernel = presence.soul_kernel.clone();
+    let memory_operator_surface =
+        build_memory_operator_surface(input.platform, Some(input.tool_registry), None)?;
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     let supervisor = presence.supervisor.clone();
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -79,6 +86,7 @@ pub fn build_operator_status(
         },
         build_package: crate::current_build_package(),
         operator_surface,
+        memory_operator_surface,
         threads: runtime::thread_registry::snapshot(),
         os_closure,
         initiative,
@@ -220,6 +228,9 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
             governance.recent_records.len(),
         ));
     }
+    out.push_str(&render_memory_operator_surface_text(
+        &snapshot.memory_operator_surface,
+    ));
     out
 }
 

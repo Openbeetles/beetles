@@ -16,6 +16,10 @@ use crate::task_execution::{
     TaskExecutionOperatorSnapshot, TaskLearningInspection, TaskWorkspaceInspection,
 };
 use crate::util::{current_unix_secs, percent_decode_query};
+use crate::platform::memory_operator_surface::{
+    build_memory_operator_surface, MemoryOperatorInspectionTarget, MemoryOperatorRecallTrace,
+    MemoryOperatorSurfaceSummary, MemoryOperatorTraceInput,
+};
 use serde::Serialize;
 
 const REL_DIR_MANUAL_CONTINUITY_SNAPSHOTS: &str = "memory/continuity_snapshots/manual";
@@ -124,6 +128,7 @@ struct MemoryStatusBody {
     continuity_capsules: ContinuityCapsuleOperatorSummary,
     task_execution: TaskExecutionOperatorSnapshot,
     learning: MemoryLearningStatus,
+    operator_surface: MemoryOperatorSurfaceSummary,
     #[serde(skip_serializing_if = "Option::is_none")]
     inspection: Option<MemoryDeepInspection>,
 }
@@ -269,6 +274,12 @@ pub fn body(ctx: &HandlerContext, uri: &str) -> Result<String, std::io::Error> {
         .flatten()
         .map(|chat_id| build_deep_inspection(ctx, &request, chat_id))
         .transpose()?;
+    let operator_surface = build_memory_operator_surface(
+        ctx.platform.as_ref(),
+        Some(ctx.tool_registry.as_ref()),
+        inspection.as_ref().map(build_trace_input).as_ref(),
+    )
+    .map_err(std::io::Error::other)?;
     let payload = MemoryStatusBody {
         memory_system_kind: ctx.platform.memory_system_kind().as_str().to_string(),
         memory_len,
@@ -325,9 +336,38 @@ pub fn body(ctx: &HandlerContext, uri: &str) -> Result<String, std::io::Error> {
         continuity_capsules,
         task_execution,
         learning,
+        operator_surface,
         inspection,
     };
     serde_json::to_string(&payload).map_err(std::io::Error::other)
+}
+
+fn build_trace_input(inspection: &MemoryDeepInspection) -> MemoryOperatorTraceInput {
+    MemoryOperatorTraceInput {
+        inspection_target: MemoryOperatorInspectionTarget {
+            chat_id: inspection.target.chat_id.clone(),
+            channel: inspection.target.channel.clone(),
+            query: inspection.target.query.clone(),
+            memory_system_kind: inspection.target.memory_system_kind.clone(),
+            run_id: inspection.target.run_id.clone(),
+            message_count: inspection.target.message_count,
+            recent_message_count: inspection.target.recent_message_count,
+            summary_present: inspection.target.summary_present,
+            summary_message_count: inspection.target.summary_message_count,
+            execution_state_present: inspection.target.execution_state_present,
+        },
+        snapshot_manifest: inspection.snapshot_preview.manifest.clone(),
+        intelligence_replay: inspection.intelligence_replay.clone(),
+        recall: MemoryOperatorRecallTrace {
+            prompt_recall_intent: inspection.recall.prompt_recall_intent.clone(),
+            shared_factual_report: inspection.recall.shared_factual_report.clone(),
+            continuity_capsule_report: inspection.recall.continuity_capsule_report.clone(),
+            runtime_skill_report: inspection.recall.runtime_skill_report.clone(),
+            archive_recall_report: inspection.recall.archive_recall_report.clone(),
+            task_recall_report: inspection.recall.task_recall_report.clone(),
+            cross_plane_rerank: inspection.recall.cross_plane_rerank.clone(),
+        },
+    }
 }
 
 fn build_deep_inspection(
@@ -623,6 +663,11 @@ mod tests {
         assert!(parsed["task_execution"]["learning"]
             .get("candidate_rejected")
             .is_some());
+        assert!(parsed["operator_surface"].get("inspect").is_some());
+        assert!(parsed["operator_surface"].get("trace").is_some());
+        assert!(parsed["operator_surface"].get("diff").is_some());
+        assert!(parsed["operator_surface"].get("repair").is_some());
+        assert!(parsed["operator_surface"].get("policy_view").is_some());
     }
 
     #[test]
@@ -1168,6 +1213,13 @@ mod tests {
             targeted_parsed["inspection"]["target"]["summary_present"],
             Value::Bool(true)
         );
+        assert_eq!(
+            targeted_parsed["operator_surface"]["trace"]["inspection_target"]["chat_id"],
+            chat_id
+        );
+        assert!(targeted_parsed["operator_surface"]["trace"]
+            .get("recall")
+            .is_some());
     }
 
     #[test]

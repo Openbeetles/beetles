@@ -1248,6 +1248,30 @@ fn handle_config_command(platform: &Arc<dyn Platform>, action: beetle::commands:
 fn handle_status_command(platform: &Arc<dyn Platform>, json: bool, chat_id: Option<&str>) {
     beetle::platform::refresh_runtime_state();
     let config = beetle::bootstrap::load_config(platform);
+    let (tool_registry, _) = beetle::tools::build_default_registry(
+        &config,
+        beetle::tools::DefaultRegistryDeps {
+            platform: Arc::clone(platform),
+            remind_at_store: platform.remind_at_store(),
+            session_store: platform.session_store(),
+            memory_store: platform.memory_store(),
+            long_term_memory_store: platform.long_term_memory_store(),
+            turn_ledger_store: platform.turn_ledger_store(),
+            private_garden_store: platform.private_garden_store(),
+            config_store: platform.config_store(),
+        },
+    );
+    let operator_status = beetle::platform::operator_status::build_operator_status(
+        beetle::platform::operator_status::OperatorStatusInput {
+            config: &config,
+            platform: platform.as_ref(),
+            tool_registry: &tool_registry,
+        },
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("Error building operator status: {}", e);
+        std::process::exit(1);
+    });
     let recent_turn = chat_id.and_then(|id| {
         platform
             .turn_ledger_store()
@@ -1259,33 +1283,14 @@ fn handle_status_command(platform: &Arc<dyn Platform>, json: bool, chat_id: Opti
             .ok()
             .flatten()
     });
-    let presence = beetle::runtime::inspect_platform_presence(
-        platform.as_ref(),
-        beetle::util::current_unix_secs(),
-    );
-    let initiative = beetle::runtime::inspect_platform_initiative(
-        platform.as_ref(),
-        beetle::util::current_unix_secs(),
-    );
-    let os_closure = beetle::runtime::inspect_beetle_os_closure(&presence, &initiative);
-    let runtime_mode = presence.runtime_mode;
-    let soul_kernel = presence.soul_kernel.clone();
-    let supervisor = presence.supervisor.clone();
-    let release = presence.release.clone();
 
     if json {
         let payload = serde_json::json!({
             "version": VERSION,
             "enabled_channel": config.enabled_channel,
             "chat_id": chat_id,
+            "operator_status": operator_status,
             "recent_turn": recent_turn,
-            "initiative": initiative,
-            "os_closure": os_closure,
-            "presence": presence,
-            "runtime_mode": runtime_mode,
-            "soul_kernel": soul_kernel,
-            "supervisor": supervisor,
-            "release": release,
         });
         println!(
             "{}",
@@ -1294,103 +1299,10 @@ fn handle_status_command(platform: &Arc<dyn Platform>, json: bool, chat_id: Opti
     } else {
         println!("beetle v{}", VERSION);
         println!("Enabled channel: {}", config.enabled_channel);
-        println!(
-            "Presence: {} ({})",
-            presence.state.as_str(),
-            presence.rationale
+        print!(
+            "{}",
+            beetle::platform::operator_status::render_operator_status_text(&operator_status)
         );
-        println!(
-            "Initiative: action={} ready={} rationale={}",
-            initiative.action.as_str(),
-            initiative.ready,
-            initiative.rationale
-        );
-        println!(
-            "OS closure: ready={} planes={}/{} summary={}",
-            os_closure.ready, os_closure.ready_planes, os_closure.plane_count, os_closure.summary
-        );
-        if !os_closure.outstanding.is_empty() {
-            println!(
-                "OS closure outstanding: {}",
-                os_closure.outstanding.join(", ")
-            );
-        }
-        if let Some(reason) = initiative.suppression_reason {
-            println!("Initiative suppressed by: {}", reason.as_str());
-        }
-        println!("Runtime mode: {}", runtime_mode.current_mode.as_str());
-        println!(
-            "Soul kernel: ready={} safe_mode_readable={} degraded={} key_memory={}",
-            soul_kernel.minimum_viable,
-            soul_kernel.safe_mode_minimum_readable,
-            soul_kernel.degraded,
-            soul_kernel.key_memory_count
-        );
-        if let Some(release) = release.as_ref() {
-            println!(
-                "Release: managed={} rollout_state={} rollback_available={} current={} rollback={}",
-                release.managed,
-                release.rollout_state_label(),
-                release.rollback_available,
-                release
-                    .current
-                    .as_ref()
-                    .map(|pointer| pointer.name.as_str())
-                    .unwrap_or("none"),
-                release
-                    .rollback
-                    .as_ref()
-                    .map(|pointer| pointer.name.as_str())
-                    .unwrap_or("none")
-            );
-        } else {
-            println!("Release: none");
-        }
-        if !soul_kernel.degradation_reasons.is_empty() {
-            println!(
-                "Soul kernel degradation: {}",
-                soul_kernel.degradation_reasons.join(", ")
-            );
-        }
-        if let Some(snapshot) = supervisor {
-            println!(
-                "Supervisor: pid={} alive={} state={} restarts={}",
-                snapshot.state.supervisor_pid,
-                snapshot.supervisor_alive,
-                snapshot.state.current_state,
-                snapshot.state.restart_count
-            );
-            println!(
-                "Agent: pid={} alive={} state={}",
-                snapshot
-                    .state
-                    .agent
-                    .pid
-                    .map(|pid| pid.to_string())
-                    .unwrap_or_else(|| "none".to_string()),
-                snapshot.agent_alive,
-                snapshot.state.agent.state
-            );
-            if let Some(reason) = snapshot.state.safe_mode_reason.as_deref() {
-                println!("Safe mode: true ({})", reason);
-            } else {
-                println!("Safe mode: false");
-            }
-            if let Some(code) = snapshot.state.agent.last_exit_code {
-                println!("Agent last exit code: {}", code);
-            }
-            if let Some(signal) = snapshot.state.agent.last_exit_signal {
-                println!("Agent last exit signal: {}", signal);
-            }
-            if !snapshot.state.agent.last_exit_reason.trim().is_empty() {
-                println!(
-                    "Agent last exit reason: {}",
-                    snapshot.state.agent.last_exit_reason
-                );
-            }
-        } else {
-            println!("Supervisor: none");
-        }
         if let Some(id) = chat_id {
             println!("Chat ID: {}", id);
             match recent_turn {

@@ -90,11 +90,6 @@ fn disk_usage_for_path(path: &std::path::Path) -> Option<HostStorageSnapshot> {
     })
 }
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub fn host_state_root_usage() -> Option<(u64, u64)> {
-    None
-}
-
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub fn host_state_root_usage() -> Option<(u64, u64)> {
     #[cfg(unix)]
@@ -111,11 +106,6 @@ pub fn host_state_root_usage() -> Option<(u64, u64)> {
 #[cfg(all(not(any(target_arch = "xtensa", target_arch = "riscv32")), unix))]
 pub fn host_storage_for_state_root() -> Option<HostStorageSnapshot> {
     disk_usage_for_path(&crate::platform::state_mount_path())
-}
-
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub fn host_storage_for_state_root() -> Option<HostStorageSnapshot> {
-    None
 }
 
 #[cfg(all(not(any(target_arch = "xtensa", target_arch = "riscv32")), unix))]

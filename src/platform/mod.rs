@@ -21,6 +21,7 @@ pub mod http_server;
 pub mod linux;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod memory_linux;
+pub mod memory_operator_surface;
 pub mod nvs;
 pub mod operator_status;
 pub mod operator_surface;

@@ -62,6 +62,7 @@ impl RequestSemantics {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn public_tool_first() -> Self {
         Self {
             request_kind: RequestKind::OpsObservability,

@@ -652,7 +652,6 @@ pub(super) fn try_run_task_execution(
             runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
             deliberation_class,
             request_semantics,
-            tool_blocker: None,
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
