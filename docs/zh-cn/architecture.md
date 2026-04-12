@@ -55,6 +55,7 @@ channel -> inbound queue -> agent -> tools / memory / llm -> outbound queue -> d
 - 主处理循环取到消息后，会先整理这次对话需要的上下文，其中共享事实、archive evidence、私有连续性层会分别装配
 - 处理过程中可能会查记忆、调工具、请求大模型；精确事实优先走 `factual_memory` / slot lookup，档案检索走 archive plane
 - 结果写回会话和记忆，再交给对应通道发送出去；回复后还会触发 post-reply maintenance，必要时由 `self_runtime` 触发 boundary flush
+- 只属于后台的 LLM 作业，例如 post-reply maintenance、long-term memory refresh 和 `self_runtime`，统一从 `agent/loop/background_jobs.rs` 进入，避免前台轮次和系统作业各自维护一套链路
 
 在 ESP 上，运行态资源链路还把 internal heap 的最大连续空闲块当成一等公民信号：
 
@@ -122,6 +123,7 @@ channel -> inbound queue -> agent -> tools / memory / llm -> outbound queue -> d
 - 像 `runtime_bundle` 这类仅在恢复/重启边界变化的持久化状态，在 ESP 运行态必须走显式失效缓存；禁止把 bundle 文件读取留在 display/presence 轮询路径里。
 - ESP 启动顺序里，`soul_kernel recovery` 必须先于 WiFi bring-up；不要让重启恢复期的 SPIFFS 读取与 WiFi 异步启动窗口重叠。
 - ESP 启动恢复不能直接压在 `main task` 上跑；`soul_kernel recovery` 必须在独立的 startup recovery 执行面内同步完成，再进入配置加载与 WiFi bring-up，避免把 continuity import / serde / SPIFFS 链路压进 `CONFIG_ESP_MAIN_TASK_STACK_SIZE`。
+- Linux 上，配置 HTTP 面和 supervisor 自带 control plane 必须共用同一套 `HandlerContext` 装配；暴露哪些路由由 `ControlPlaneRouteContract` 决定，不能复制一套 handler wiring 再各改各的。
 
 ## 相关文档
 

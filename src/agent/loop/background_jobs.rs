@@ -117,24 +117,445 @@ pub(super) fn maybe_yield_background_job_to_pending_user(
     }
 }
 
-pub(super) fn run_post_reply_maintenance_job(
-    http: &mut dyn PlatformHttpClient,
-    worker_llm: &(dyn LlmClient + Send + Sync),
+fn build_system_llm_ctx<'a>(
+    http: &'a mut dyn PlatformHttpClient,
     config: &AgentLoopConfig,
-    system_inbound_tx: &SystemInboundTx,
-    msg: &PcMsg,
-) {
-    super::run_post_reply_maintenance_job(http, worker_llm, config, system_inbound_tx, msg);
+    chat_id: &str,
+    locale: UiLocale,
+) -> HttpClientToolContext<'a> {
+    HttpClientToolContext {
+        http,
+        chat_id: Some(Arc::from(chat_id)),
+        channel: Some(Arc::from("system")),
+        channel_capability_registry: Arc::clone(&config.channel_capability_registry),
+        supports_current_chat_outbound_message: false,
+        supports_current_chat_primary_reply: false,
+        supports_explicit_outbound_message: false,
+        outbound_message_budget: 0,
+        outbound_message_count: 0,
+        current_primary_message_delivered: false,
+        locale,
+    }
 }
 
-pub(super) fn run_self_runtime_job(
+fn run_long_term_memory_refresh_job(
+    http: &mut dyn PlatformHttpClient,
+    worker_llm: &(dyn LlmClient + Send + Sync),
+    config: &AgentLoopConfig,
+    msg: &PcMsg,
+) {
+    let locale = (config.resolve_locale)();
+    let mut llm_ctx = build_system_llm_ctx(http, config, &msg.chat_id, locale);
+    let outcome = run_long_term_memory_refresh(
+        &mut llm_ctx,
+        worker_llm,
+        LongTermMemoryRefreshContext {
+            memory_store: config.memory_store.as_ref(),
+            session_store: config.session_store.as_ref(),
+            session_summary_store: config.session_summary_store.as_ref(),
+            long_term_memory_store: config.long_term_memory_store.as_ref(),
+            extraction_state_store: config.long_term_memory_extraction_state_store.as_ref(),
+            turn_ledger_store: config.turn_ledger_store.as_ref(),
+            skill_storage: config.skill_storage.as_ref(),
+        },
+        &msg.chat_id,
+        crate::orchestrator::snapshot().pressure,
+        config.memory_system_kind.memory_profile(),
+    );
+    outcome.persist(
+        config.long_term_memory_extraction_state_store.as_ref(),
+        &msg.chat_id,
+    );
+    match outcome {
+        LongTermMemoryRefreshOutcome::Processed { changed_count, .. } => {
+            if changed_count > 0 {
+                log::info!(
+                    "[agent_memory] long-term memory refreshed for {} (count={})",
+                    msg.chat_id,
+                    changed_count
+                );
+            }
+        }
+        LongTermMemoryRefreshOutcome::Failed { error, .. } => {
+            log::warn!("[agent_memory] refresh failed: {}", error);
+        }
+        LongTermMemoryRefreshOutcome::Deferred { .. } => {}
+    }
+}
+
+fn run_post_reply_maintenance_job(
     http: &mut dyn PlatformHttpClient,
     worker_llm: &(dyn LlmClient + Send + Sync),
     config: &AgentLoopConfig,
     system_inbound_tx: &SystemInboundTx,
     msg: &PcMsg,
 ) {
-    super::run_self_runtime_job(http, worker_llm, config, system_inbound_tx, msg);
+    let payload: PostReplyMaintenanceJobPayload = match serde_json::from_str(&msg.content) {
+        Ok(payload) => payload,
+        Err(error) => {
+            log::warn!(
+                "[agent_memory] maintenance job decode failed chat_id={}: {}",
+                msg.chat_id,
+                error
+            );
+            return;
+        }
+    };
+    let locale = (config.resolve_locale)();
+    let mut llm_ctx = build_system_llm_ctx(http, config, &msg.chat_id, locale);
+    let maintenance_outcome = run_post_reply_memory_maintenance(
+        &mut llm_ctx,
+        worker_llm,
+        PostReplyMemoryMaintenanceContext {
+            session_store: config.session_store.as_ref(),
+            memory_store: config.memory_store.as_ref(),
+            session_summary_store: config.session_summary_store.as_ref(),
+            execution_state_store: config.execution_state_store.as_ref(),
+            long_term_memory_store: config.long_term_memory_store.as_ref(),
+            continuity_capsule_store: config.continuity_capsule_store.as_ref(),
+            extraction_state_store: config.long_term_memory_extraction_state_store.as_ref(),
+            turn_ledger_store: config.turn_ledger_store.as_ref(),
+            skill_storage: config.skill_storage.as_ref(),
+            task_run_store: config.task_run_store.as_ref(),
+            task_artifact_store: config.task_artifact_store.as_ref(),
+            task_learning_store: config.task_learning_store.as_ref(),
+        },
+        PostReplyMemoryMaintenanceInput {
+            chat_id: &msg.chat_id,
+            ingress: payload.ingress,
+            channel: &payload.source_channel,
+            user_content: &payload.user_content,
+            reply_content: &payload.reply_content,
+            pressure: crate::orchestrator::snapshot().pressure,
+            memory_profile: config.memory_system_kind.memory_profile(),
+            tool_calls: payload.tool_calls,
+            external_content_used: payload.external_content_used,
+            prompt_recall_intent: payload.prompt_recall_intent,
+            runtime_skill_selected_ids: payload.runtime_skill_selected_ids,
+            task_learning_selected_ids: payload.task_learning_selected_ids,
+            reuse_outcome: payload.reuse_outcome,
+            reuse_outcome_note: &payload.reuse_outcome_note,
+            now_secs: payload.now_secs,
+        },
+        || match PcMsg::new_system(CHANNEL_LONG_TERM_MEMORY_REFRESH, msg.chat_id.as_ref(), "") {
+            Ok(job) => match system_inbound_tx.try_send(job) {
+                Ok(()) => true,
+                Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                    log::debug!(
+                        "[agent_memory] skip refresh enqueue because system queue is full chat_id={}",
+                        msg.chat_id
+                    );
+                    false
+                }
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    log::warn!("[agent_memory] refresh enqueue failed: system queue disconnected");
+                    false
+                }
+            },
+            Err(error) => {
+                log::warn!("[agent_memory] refresh job build failed: {}", error);
+                false
+            }
+        },
+    );
+    match maintenance_outcome.summary_result {
+        Ok(SessionSummaryRefreshOutcome::Updated { used_fallback }) => {
+            if used_fallback {
+                log::info!("[agent_summary] updated for {} (fallback)", msg.chat_id);
+            } else {
+                log::info!("[agent_summary] updated for {}", msg.chat_id);
+            }
+        }
+        Ok(SessionSummaryRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_summary] failed: {}", error),
+    }
+    match maintenance_outcome.execution_state_result {
+        Ok(crate::memory::ExecutionStateRefreshOutcome::Updated) => {
+            log::info!("[agent_execution_state] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::ExecutionStateRefreshOutcome::Cleared) => {
+            log::info!("[agent_execution_state] cleared for {}", msg.chat_id);
+        }
+        Ok(crate::memory::ExecutionStateRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_execution_state] failed: {}", error),
+    }
+    if let Some(summary) = maintenance_outcome.factual_coordination_summary.as_deref() {
+        log::info!(
+            "[agent_shared_factual_plane] {} suggested_refresh={} summary={}",
+            msg.chat_id,
+            maintenance_outcome.factual_refresh_suggested,
+            summary
+        );
+    }
+    if maintenance_outcome.extraction_request_outcome
+        == LongTermMemoryRefreshRequestOutcome::RequestFailed
+    {
+        log::debug!(
+            "[agent_memory] refresh request was eligible but not enqueued chat_id={}",
+            msg.chat_id
+        );
+    }
+    match maintenance_outcome.continuity_capsule_outcome {
+        Ok(ref outcome) if outcome.upserted > 0 => {
+            log::info!(
+                "[agent_continuity_capsule] updated chat_id={} drafted={} upserted={} superseded={}",
+                msg.chat_id,
+                outcome.drafted,
+                outcome.upserted,
+                outcome.superseded
+            );
+        }
+        Ok(_) => {}
+        Err(ref error) => log::warn!("[agent_continuity_capsule] failed: {}", error),
+    }
+}
+
+fn run_self_runtime_job(
+    http: &mut dyn PlatformHttpClient,
+    worker_llm: &(dyn LlmClient + Send + Sync),
+    config: &AgentLoopConfig,
+    system_inbound_tx: &SystemInboundTx,
+    msg: &PcMsg,
+) {
+    let payload: crate::memory::SelfRuntimeJobPayload = match serde_json::from_str(&msg.content) {
+        Ok(payload) => payload,
+        Err(error) => {
+            log::warn!(
+                "[self_runtime] decode failed chat_id={}: {}",
+                msg.chat_id,
+                error
+            );
+            return;
+        }
+    };
+    let locale = (config.resolve_locale)();
+    let mut llm_ctx = build_system_llm_ctx(http, config, &msg.chat_id, locale);
+    let outcome = run_self_runtime(
+        &mut llm_ctx,
+        worker_llm,
+        SelfRuntimeContext {
+            memory_system_kind: config.memory_system_kind,
+            session_store: config.session_store.as_ref(),
+            memory_store: config.memory_store.as_ref(),
+            session_summary_store: config.session_summary_store.as_ref(),
+            execution_state_store: config.execution_state_store.as_ref(),
+            long_term_memory_store: config.long_term_memory_store.as_ref(),
+            continuity_capsule_store: config.continuity_capsule_store.as_ref(),
+            self_model_store: config.self_model_store.as_ref(),
+            self_authored_core_store: config.self_authored_core_store.as_ref(),
+            core_revision_ledger_store: config.core_revision_ledger_store.as_ref(),
+            relationship_constitution_store: config.relationship_constitution_store.as_ref(),
+            relationship_portfolio_store: config.relationship_portfolio_store.as_ref(),
+            relationship_topology_store: config.relationship_topology_store.as_ref(),
+            world_sense_store: config.world_sense_store.as_ref(),
+            autonomy_strategy_store: config.autonomy_strategy_store.as_ref(),
+            outer_voice_store: config.outer_voice_store.as_ref(),
+            private_doc_store: config.private_doc_store.as_ref(),
+            private_garden_store: config.private_garden_store.as_ref(),
+            inner_life_store: config.inner_life_store.as_ref(),
+            self_continuity_store: config.self_continuity_store.as_ref(),
+            mental_privacy_store: config.mental_privacy_store.as_ref(),
+            remind_store: config.remind_store.as_ref(),
+            task_store: config.task_store.as_ref(),
+            task_run_store: config.task_run_store.as_ref(),
+            task_artifact_store: config.task_artifact_store.as_ref(),
+            task_learning_store: config.task_learning_store.as_ref(),
+            turn_ledger_store: config.turn_ledger_store.as_ref(),
+            skill_storage: config.skill_storage.as_ref(),
+        },
+        &msg.chat_id,
+        &payload,
+    );
+    let crate::memory::SelfRuntimeOutcome {
+        decision,
+        world_sense_result,
+        autonomy_strategy_result,
+        inner_life_result,
+        private_doc_result,
+        self_model_result,
+        self_authored_core_result,
+        self_continuity_result,
+        task_learning_result,
+        private_garden_result,
+        boundary_persona_result,
+        outer_voice_result,
+    } = *outcome;
+    if let Some(decision) = decision.as_ref() {
+        log::info!(
+            "[self_runtime] {} trigger={:?} inner_life={} private_docs={} private_docs_action={} self_model={} self_authored_core={} self_continuity={} private_garden={} private_garden_action={} boundary_persona={} outer_voice={} boundary_flush={} boundary_reason={:?} factual_refresh={} factual_action={} inner_life_intent={:?} private_docs_intent={:?} self_model_intent={:?} self_authored_core_intent={:?} self_continuity_intent={:?} private_garden_intent={:?} boundary_persona_intent={:?} outer_voice_intent={:?} factual_reconcile_intent={:?}",
+            msg.chat_id,
+            payload.trigger,
+            decision.refresh_inner_life,
+            decision.refresh_private_docs,
+            decision.private_docs_action.label(),
+            decision.refresh_self_model,
+            decision.refresh_self_authored_core,
+            decision.refresh_self_continuity,
+            decision.refresh_private_garden,
+            decision.private_garden_action.label(),
+            decision.refresh_boundary_persona,
+            decision.refresh_outer_voice,
+            decision.boundary_flush,
+            (!decision.boundary_flush_reason.trim().is_empty())
+                .then_some(decision.boundary_flush_reason.as_str()),
+            decision.request_factual_refresh,
+            decision.factual_reconcile_action.label(),
+            (!decision.inner_life_intent.trim().is_empty())
+                .then_some(decision.inner_life_intent.as_str()),
+            (!decision.private_docs_intent.trim().is_empty())
+                .then_some(decision.private_docs_intent.as_str()),
+            (!decision.self_model_intent.trim().is_empty())
+                .then_some(decision.self_model_intent.as_str()),
+            (!decision.self_authored_core_intent.trim().is_empty())
+                .then_some(decision.self_authored_core_intent.as_str()),
+            (!decision.self_continuity_intent.trim().is_empty())
+                .then_some(decision.self_continuity_intent.as_str()),
+            (!decision.private_garden_intent.trim().is_empty())
+                .then_some(decision.private_garden_intent.as_str()),
+            (!decision.boundary_persona_intent.trim().is_empty())
+                .then_some(decision.boundary_persona_intent.as_str()),
+            (!decision.outer_voice_intent.trim().is_empty())
+                .then_some(decision.outer_voice_intent.as_str()),
+            (!decision.factual_reconcile_intent.trim().is_empty())
+                .then_some(decision.factual_reconcile_intent.as_str()),
+        );
+        if decision.request_factual_refresh {
+            match PcMsg::new_system(CHANNEL_LONG_TERM_MEMORY_REFRESH, msg.chat_id.as_ref(), "") {
+                Ok(job) => match system_inbound_tx.try_send(job) {
+                    Ok(()) => {}
+                    Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                        log::debug!(
+                            "[self_runtime] skip factual refresh enqueue because system queue is full chat_id={}",
+                            msg.chat_id
+                        );
+                    }
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                        log::warn!(
+                            "[self_runtime] factual refresh enqueue failed: system queue disconnected"
+                        );
+                    }
+                },
+                Err(error) => {
+                    log::warn!("[self_runtime] factual refresh job build failed: {}", error);
+                }
+            }
+        }
+    }
+    match world_sense_result {
+        Ok(crate::memory::WorldSenseRefreshOutcome::Updated) => {
+            log::info!("[agent_world_sense] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::WorldSenseRefreshOutcome::Cleared) => {
+            log::info!("[agent_world_sense] cleared for {}", msg.chat_id);
+        }
+        Ok(crate::memory::WorldSenseRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_world_sense] failed: {}", error),
+    }
+    match autonomy_strategy_result {
+        Ok(crate::memory::AutonomyStrategyRefreshOutcome::Updated) => {
+            log::info!("[agent_autonomy_strategy] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::AutonomyStrategyRefreshOutcome::Cleared) => {
+            log::info!("[agent_autonomy_strategy] cleared for {}", msg.chat_id);
+        }
+        Ok(crate::memory::AutonomyStrategyRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_autonomy_strategy] failed: {}", error),
+    }
+    match outer_voice_result {
+        Ok(crate::memory::OuterVoiceRefreshOutcome::Updated) => {
+            log::info!("[agent_outer_voice] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::OuterVoiceRefreshOutcome::Cleared) => {
+            log::info!("[agent_outer_voice] cleared for {}", msg.chat_id);
+        }
+        Ok(crate::memory::OuterVoiceRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_outer_voice] failed: {}", error),
+    }
+    match inner_life_result {
+        Ok(crate::memory::InnerLifeRefreshOutcome::Updated) => {
+            log::info!("[agent_inner_life] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::InnerLifeRefreshOutcome::Cleared) => {
+            log::info!("[agent_inner_life] cleared for {}", msg.chat_id);
+        }
+        Ok(crate::memory::InnerLifeRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_inner_life] failed: {}", error),
+    }
+    match private_doc_result {
+        Ok(crate::memory::PrivateDocWorkspaceRefreshOutcome::Updated) => {
+            log::info!("[self_runtime_private_docs] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::PrivateDocWorkspaceRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[self_runtime_private_docs] failed: {}", error),
+    }
+    match self_model_result {
+        Ok(crate::memory::SelfModelRefreshOutcome::Updated) => {
+            log::info!("[agent_self_model] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::SelfModelRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_self_model] failed: {}", error),
+    }
+    match self_authored_core_result {
+        Ok(crate::memory::SelfAuthoredCoreRefreshOutcome::Updated) => {
+            log::info!("[agent_self_authored_core] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::SelfAuthoredCoreRefreshOutcome::ReviewedRejected) => {
+            log::info!(
+                "[agent_self_authored_core] reviewed and rejected for {}",
+                msg.chat_id
+            );
+        }
+        Ok(crate::memory::SelfAuthoredCoreRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_self_authored_core] failed: {}", error),
+    }
+    match self_continuity_result {
+        Ok(crate::memory::SelfContinuityRefreshOutcome::Updated) => {
+            log::info!("[agent_self_continuity] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::SelfContinuityRefreshOutcome::Cleared) => {
+            log::info!("[agent_self_continuity] cleared for {}", msg.chat_id);
+        }
+        Ok(crate::memory::SelfContinuityRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_self_continuity] failed: {}", error),
+    }
+    match task_learning_result {
+        Ok(ref outcome) if outcome.considered > 0 => log::info!(
+            "[self_runtime] method_distillation chat_id={} considered={} canonical={} runtime_skill={} archived={} pruned={} rejected={}",
+            msg.chat_id,
+            outcome.considered,
+            outcome.canonical_writes,
+            outcome.runtime_skill_promotions,
+            outcome.archived_records,
+            outcome.pruned_artifacts,
+            outcome.rejected
+        ),
+        Ok(_) => {}
+        Err(error) => log::warn!("[self_runtime] method_distillation failed: {}", error),
+    }
+    match private_garden_result {
+        Ok(crate::memory::PrivateGardenGovernanceOutcome::Updated {
+            writes,
+            moves,
+            deletes,
+        }) => {
+            log::info!(
+                "[self_runtime_private_garden] updated for {} (writes={}, moves={}, deletes={})",
+                msg.chat_id,
+                writes,
+                moves,
+                deletes
+            );
+        }
+        Ok(crate::memory::PrivateGardenGovernanceOutcome::Skipped) => {}
+        Err(error) => log::warn!("[self_runtime_private_garden] failed: {}", error),
+    }
+    match boundary_persona_result {
+        Ok(crate::memory::BoundaryPersonaRefreshOutcome::Updated) => {
+            log::info!("[agent_boundary_persona] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::BoundaryPersonaRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_boundary_persona] failed: {}", error),
+    }
 }
 
 #[cold]
@@ -147,7 +568,7 @@ pub(super) fn try_run_lane_background_job(
     msg: &PcMsg,
 ) -> bool {
     if super::is_long_term_memory_refresh_job(msg) {
-        super::run_long_term_memory_refresh_job(http, worker_llm, config, msg);
+        run_long_term_memory_refresh_job(http, worker_llm, config, msg);
         return true;
     }
     if super::is_post_reply_maintenance_job(msg) {

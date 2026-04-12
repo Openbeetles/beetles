@@ -53,6 +53,7 @@ More concretely:
 - the agent pulls one message, builds context, and runs the LLM/tool loop; shared facts, archive evidence, and private continuity layers are assembled separately
 - exact factual retrieval prefers slot lookup / `factual_memory`, while archive retrieval stays evidence-only
 - session and memory state are updated, then post-reply maintenance and `self_runtime` may trigger boundary flush work
+- background-only LLM jobs such as post-reply maintenance, long-term memory refresh, and `self_runtime` are routed through `agent/loop/background_jobs.rs` so the foreground turn loop and system jobs stay on one execution path
 - the final reply goes to outbound dispatch
 
 On ESP, the runtime resource path also treats the largest internal free block as a first-class signal:
@@ -114,6 +115,7 @@ There are two additional ESP persistence rules worth keeping explicit:
 - Persistent artifacts such as the reboot `runtime_bundle`, which only change on recovery/restart boundaries, must use invalidation-driven caching on ESP. Do not leave bundle file reads in display/presence polling paths.
 - On ESP startup, `soul_kernel recovery` must complete before WiFi bring-up starts. Do not overlap reboot-recovery SPIFFS reads with the asynchronous WiFi startup window.
 - ESP startup recovery must not run inline on `main task`. Run `soul_kernel recovery` on a dedicated startup-recovery execution plane, wait for it to finish, and only then continue into config load and WiFi bring-up so continuity import / serde / SPIFFS work does not consume `CONFIG_ESP_MAIN_TASK_STACK_SIZE`.
+- On Linux, the config HTTP plane and the supervisor-owned control plane must share the same `HandlerContext` assembly. Differences in exposed routes belong in `ControlPlaneRouteContract`, not in duplicated handler wiring.
 
 ## Related Docs
 

@@ -77,6 +77,131 @@ impl HandlerContext {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn build_runtime_handler_context(
+    platform: Arc<dyn Platform>,
+    tool_registry: Arc<crate::tools::ToolRegistry>,
+    channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
+    inbound_depth: Arc<AtomicUsize>,
+    outbound_depth: Arc<AtomicUsize>,
+    memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
+    session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
+    skill_prompt_cache: Arc<crate::skills::SkillPromptCache>,
+    cached_config: Arc<RwLock<AppConfig>>,
+    llm_stream_enabled: bool,
+    route_contract: ControlPlaneRouteContract,
+) -> HandlerContext {
+    let config_store = platform.config_store();
+    let config_file_store = Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(
+        &platform,
+    )));
+    let skill_storage = platform.skill_storage();
+    let skill_meta_store = platform.skill_meta_store();
+    let capability_package_runtime_capabilities =
+        Arc::new(crate::build_capability_package_runtime_capabilities(
+            channel_capability_registry.as_ref(),
+            llm_stream_enabled,
+        ));
+
+    HandlerContext {
+        config_store,
+        config_file_store,
+        platform,
+        memory_store,
+        session_store,
+        skill_storage,
+        skill_meta_store,
+        skill_prompt_cache,
+        tool_registry,
+        channel_capability_registry,
+        capability_package_runtime_capabilities,
+        inbound_depth,
+        outbound_depth,
+        version: Arc::from(env!("CARGO_PKG_VERSION")),
+        board_id: Arc::from(crate::platform::runtime_board::resolved_board_id()),
+        cached_config,
+        llm_stream_enabled,
+        route_contract,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn build_default_test_handler_context() -> HandlerContext {
+    let config = AppConfig::load_from_env();
+    let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
+    let config_store = platform.config_store();
+    let skill_storage = platform.skill_storage();
+    build_test_handler_context(
+        config,
+        platform,
+        config_store,
+        skill_storage,
+        ControlPlaneRouteContract::FULL,
+        "test-board",
+    )
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_test_handler_context(
+    config: AppConfig,
+    platform: Arc<dyn Platform>,
+    config_store: Arc<dyn ConfigStore + Send + Sync>,
+    skill_storage: Arc<dyn SkillStorage + Send + Sync>,
+    route_contract: ControlPlaneRouteContract,
+    board_id: &'static str,
+) -> HandlerContext {
+    let skill_meta_store = platform.skill_meta_store();
+    let skill_prompt_cache = Arc::new(crate::skills::SkillPromptCache::new(
+        Arc::clone(&skill_meta_store),
+        Arc::clone(&skill_storage),
+        8192,
+    ));
+    let (tool_registry, _) = crate::build_default_registry(
+        &config,
+        crate::DefaultRegistryDeps {
+            platform: Arc::clone(&platform),
+            remind_at_store: platform.remind_at_store(),
+            session_store: platform.session_store(),
+            memory_store: platform.memory_store(),
+            long_term_memory_store: platform.long_term_memory_store(),
+            turn_ledger_store: platform.turn_ledger_store(),
+            private_garden_store: platform.private_garden_store(),
+            config_store: Arc::clone(&config_store),
+        },
+    );
+    let channel_capability_registry =
+        Arc::new(crate::build_channel_capability_registry(&config, false));
+
+    HandlerContext {
+        config_store,
+        config_file_store: Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(
+            &platform,
+        ))),
+        platform: Arc::clone(&platform),
+        memory_store: platform.memory_store(),
+        session_store: platform.session_store(),
+        skill_storage,
+        skill_meta_store,
+        skill_prompt_cache,
+        tool_registry: Arc::new(tool_registry),
+        channel_capability_registry: Arc::clone(&channel_capability_registry),
+        capability_package_runtime_capabilities: Arc::new(
+            crate::build_capability_package_runtime_capabilities(
+                channel_capability_registry.as_ref(),
+                false,
+            ),
+        ),
+        inbound_depth: Arc::new(AtomicUsize::new(0)),
+        outbound_depth: Arc::new(AtomicUsize::new(0)),
+        version: Arc::from("0.0.0"),
+        board_id: Arc::from(board_id),
+        cached_config: Arc::new(RwLock::new(config)),
+        llm_stream_enabled: false,
+        route_contract,
+    }
+}
+
 pub mod capability_packages;
 pub mod channel_connectivity;
 pub mod config;

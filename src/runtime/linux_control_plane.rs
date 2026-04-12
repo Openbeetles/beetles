@@ -88,33 +88,21 @@ fn run(platform: Arc<dyn Platform>) -> Result<()> {
     let tool_registry = Arc::new(tool_registry);
     let channel_capability_registry =
         Arc::new(build_channel_capability_registry(config.as_ref(), false));
-    let capability_package_runtime_capabilities =
-        Arc::new(crate::build_capability_package_runtime_capabilities(
-            channel_capability_registry.as_ref(),
+    let ctx = Arc::new(
+        crate::platform::http_server::handlers::build_runtime_handler_context(
+            Arc::clone(&platform),
+            tool_registry,
+            channel_capability_registry,
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+            platform.memory_store(),
+            platform.session_store(),
+            skill_prompt_cache,
+            Arc::new(RwLock::new((*config).clone())),
             config.llm_stream,
-        ));
-    let ctx = Arc::new(HandlerContext {
-        config_store: platform.config_store(),
-        config_file_store: Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(
-            &platform,
-        ))),
-        platform: Arc::clone(&platform),
-        memory_store: platform.memory_store(),
-        session_store: platform.session_store(),
-        skill_storage,
-        skill_meta_store,
-        skill_prompt_cache,
-        tool_registry,
-        channel_capability_registry,
-        capability_package_runtime_capabilities,
-        inbound_depth: Arc::new(AtomicUsize::new(0)),
-        outbound_depth: Arc::new(AtomicUsize::new(0)),
-        version: Arc::from(env!("CARGO_PKG_VERSION")),
-        board_id: Arc::from(crate::platform::runtime_board::resolved_board_id()),
-        cached_config: Arc::new(RwLock::new((*config).clone())),
-        llm_stream_enabled: config.llm_stream,
-        route_contract: ControlPlaneRouteContract::SUPERVISOR_MINIMAL,
-    });
+            ControlPlaneRouteContract::SUPERVISOR_MINIMAL,
+        ),
+    );
     let router_env = Arc::new(build_router_env(config.as_ref()));
     let _active_guard = crate::runtime::ConfigPlaneGuard::enter();
     let listen =
@@ -131,15 +119,17 @@ fn run(platform: Arc<dyn Platform>) -> Result<()> {
             worker_name_prefix: "linux_control_plane_worker_",
             worker_count: LINUX_HTTP_WORKERS,
         },
-        move |incoming| dispatch(&ctx, router_env.as_ref(), incoming).unwrap_or_else(|error| {
-            log::warn!("[linux_control_plane] dispatch failed: {}", error);
-            OutgoingResponse::json(
-                500,
-                "Internal Server Error",
-                CORS_HEADERS,
-                br#"{"error":"internal error"}"#.to_vec(),
-            )
-        }),
+        move |incoming| {
+            dispatch(&ctx, router_env.as_ref(), incoming).unwrap_or_else(|error| {
+                log::warn!("[linux_control_plane] dispatch failed: {}", error);
+                OutgoingResponse::json(
+                    500,
+                    "Internal Server Error",
+                    CORS_HEADERS,
+                    br#"{"error":"internal error"}"#.to_vec(),
+                )
+            })
+        },
         move |_path, restart| {
             if restart != RestartAction::After300Ms {
                 return;
@@ -214,8 +204,7 @@ mod tests {
     use crate::platform::{ConfigStore, Platform};
     use serde_json::Value;
     use std::collections::HashMap;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::{Arc, Mutex, RwLock};
+    use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
     struct TestConfigStore {
@@ -256,57 +245,17 @@ mod tests {
         let config = AppConfig::load_from_env();
         let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
         let config_store: Arc<dyn ConfigStore + Send + Sync> = Arc::new(TestConfigStore::default());
+        let skill_storage = platform.skill_storage();
         assert!(crate::platform::pairing::set_code(config_store.as_ref(), "123456",).unwrap());
 
-        let skill_storage = platform.skill_storage();
-        let skill_meta_store = platform.skill_meta_store();
-        let skill_prompt_cache = Arc::new(crate::skills::SkillPromptCache::new(
-            Arc::clone(&skill_meta_store),
-            Arc::clone(&skill_storage),
-            8192,
-        ));
-        let (tool_registry, _) = crate::build_default_registry(
-            &config,
-            crate::DefaultRegistryDeps {
-                platform: Arc::clone(&platform),
-                remind_at_store: platform.remind_at_store(),
-                session_store: platform.session_store(),
-                memory_store: platform.memory_store(),
-                long_term_memory_store: platform.long_term_memory_store(),
-                turn_ledger_store: platform.turn_ledger_store(),
-                private_garden_store: platform.private_garden_store(),
-                config_store: Arc::clone(&config_store),
-            },
-        );
-        let channel_capability_registry =
-            Arc::new(crate::build_channel_capability_registry(&config, false));
-        let ctx = HandlerContext {
+        let ctx = crate::platform::http_server::handlers::build_test_handler_context(
+            config.clone(),
+            platform,
             config_store,
-            config_file_store: Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(
-                &platform,
-            ))),
-            platform: Arc::clone(&platform),
-            memory_store: platform.memory_store(),
-            session_store: platform.session_store(),
             skill_storage,
-            skill_meta_store,
-            skill_prompt_cache,
-            tool_registry: Arc::new(tool_registry),
-            channel_capability_registry: Arc::clone(&channel_capability_registry),
-            capability_package_runtime_capabilities: Arc::new(
-                crate::build_capability_package_runtime_capabilities(
-                    channel_capability_registry.as_ref(),
-                    false,
-                ),
-            ),
-            inbound_depth: Arc::new(AtomicUsize::new(0)),
-            outbound_depth: Arc::new(AtomicUsize::new(0)),
-            version: Arc::from("0.0.0"),
-            board_id: Arc::from("linux"),
-            cached_config: Arc::new(RwLock::new(config.clone())),
-            llm_stream_enabled: false,
-            route_contract: ControlPlaneRouteContract::SUPERVISOR_MINIMAL,
-        };
+            ControlPlaneRouteContract::SUPERVISOR_MINIMAL,
+            "linux",
+        );
         let router_env = build_router_env(&config);
         (ctx, router_env)
     }

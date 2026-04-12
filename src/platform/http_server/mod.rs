@@ -44,18 +44,6 @@ pub fn run(
     shared_config: Arc<std::sync::RwLock<crate::config::AppConfig>>,
     llm_stream_enabled: bool,
 ) -> Result<()> {
-    let config_store = platform.config_store();
-    let config_file_store: std::sync::Arc<dyn crate::config::ConfigFileStore + Send + Sync> =
-        std::sync::Arc::new(crate::config::PlatformConfigFileStore(
-            std::sync::Arc::clone(&platform),
-        ));
-    let skill_storage = platform.skill_storage();
-    let skill_meta_store = platform.skill_meta_store();
-    let capability_package_runtime_capabilities =
-        Arc::new(crate::build_capability_package_runtime_capabilities(
-            channel_capability_registry.as_ref(),
-            llm_stream_enabled,
-        ));
     use crate::platform::http_server::common::MAX_OPEN_SOCKETS;
     use esp_idf_svc::http::server::{Configuration, EspHttpServer};
     loop {
@@ -82,30 +70,22 @@ pub fn run(
             stage: "http_server_new",
         })?;
 
-        let ctx = Arc::new(handlers::HandlerContext {
-            config_store: Arc::clone(&config_store),
-            config_file_store: Arc::clone(&config_file_store),
-            platform: Arc::clone(&platform),
-            memory_store: Arc::clone(&memory_store),
-            session_store: Arc::clone(&session_store),
-            skill_storage: Arc::clone(&skill_storage),
-            skill_meta_store: Arc::clone(&skill_meta_store),
-            skill_prompt_cache: Arc::clone(&skill_prompt_cache),
-            tool_registry: Arc::clone(&tool_registry),
-            channel_capability_registry: Arc::clone(&channel_capability_registry),
-            capability_package_runtime_capabilities: Arc::clone(
-                &capability_package_runtime_capabilities,
-            ),
-            inbound_depth: Arc::clone(&inbound_depth),
-            outbound_depth: Arc::clone(&outbound_depth),
-            version: Arc::from(env!("CARGO_PKG_VERSION")),
-            board_id: Arc::from(crate::platform::runtime_board::resolved_board_id()),
-            cached_config: Arc::clone(&shared_config),
+        let ctx = Arc::new(handlers::build_runtime_handler_context(
+            Arc::clone(&platform),
+            Arc::clone(&tool_registry),
+            Arc::clone(&channel_capability_registry),
+            Arc::clone(&inbound_depth),
+            Arc::clone(&outbound_depth),
+            Arc::clone(&memory_store),
+            Arc::clone(&session_store),
+            Arc::clone(&skill_prompt_cache),
+            Arc::clone(&shared_config),
             llm_stream_enabled,
-            route_contract: handlers::ControlPlaneRouteContract::FULL,
-        });
+            handlers::ControlPlaneRouteContract::FULL,
+        ));
 
         let router_env = router::RouterEnv::new(inbound_tx.clone());
+        let config_store = Arc::clone(&ctx.config_store);
         esp_transport::register_all_esp_routes(&mut server, &ctx, &router_env, &config_store)?;
         log::info!("[http_server] ESP config API serving (WiFi LAN + recovery plane)");
 
@@ -140,38 +120,19 @@ pub fn run(
     shared_config: Arc<std::sync::RwLock<crate::config::AppConfig>>,
     llm_stream_enabled: bool,
 ) -> Result<()> {
-    let config_store = platform.config_store();
-    let config_file_store: std::sync::Arc<dyn crate::config::ConfigFileStore + Send + Sync> =
-        std::sync::Arc::new(crate::config::PlatformConfigFileStore(
-            std::sync::Arc::clone(&platform),
-        ));
-    let skill_storage = platform.skill_storage();
-    let skill_meta_store = platform.skill_meta_store();
-    let capability_package_runtime_capabilities =
-        Arc::new(crate::build_capability_package_runtime_capabilities(
-            channel_capability_registry.as_ref(),
-            llm_stream_enabled,
-        ));
-    let ctx = Arc::new(handlers::HandlerContext {
-        config_store: Arc::clone(&config_store),
-        config_file_store: Arc::clone(&config_file_store),
-        platform: Arc::clone(&platform),
-        memory_store: Arc::clone(&memory_store),
-        session_store: Arc::clone(&session_store),
-        skill_storage: Arc::clone(&skill_storage),
-        skill_meta_store: Arc::clone(&skill_meta_store),
-        skill_prompt_cache,
+    let ctx = Arc::new(handlers::build_runtime_handler_context(
+        Arc::clone(&platform),
         tool_registry,
         channel_capability_registry,
-        capability_package_runtime_capabilities,
-        inbound_depth: Arc::clone(&inbound_depth),
-        outbound_depth: Arc::clone(&outbound_depth),
-        version: Arc::from(env!("CARGO_PKG_VERSION")),
-        board_id: Arc::from(crate::platform::runtime_board::resolved_board_id()),
-        cached_config: shared_config,
+        Arc::clone(&inbound_depth),
+        Arc::clone(&outbound_depth),
+        memory_store,
+        session_store,
+        skill_prompt_cache,
+        shared_config,
         llm_stream_enabled,
-        route_contract: handlers::ControlPlaneRouteContract::FULL,
-    });
+        handlers::ControlPlaneRouteContract::FULL,
+    ));
     let router_env = router::RouterEnv::new(
         inbound_tx.clone(),
         msg_id_cache.clone(),
@@ -198,16 +159,17 @@ pub fn run(
             worker_count: LINUX_HTTP_WORKERS,
         },
         move |incoming| {
-            router::dispatch(dispatch_ctx.as_ref(), &dispatch_router_env, incoming)
-                .unwrap_or_else(|error| {
-                log::warn!("[http_config] dispatch failed: {}", error);
-                router::OutgoingResponse::json(
-                    500,
-                    "Internal Server Error",
-                    common::CORS_HEADERS,
-                    br#"{"error":"internal error"}"#.to_vec(),
-                )
-            })
+            router::dispatch(dispatch_ctx.as_ref(), &dispatch_router_env, incoming).unwrap_or_else(
+                |error| {
+                    log::warn!("[http_config] dispatch failed: {}", error);
+                    router::OutgoingResponse::json(
+                        500,
+                        "Internal Server Error",
+                        common::CORS_HEADERS,
+                        br#"{"error":"internal error"}"#.to_vec(),
+                    )
+                },
+            )
         },
         move |path, restart| {
             if restart != router::RestartAction::After300Ms {
