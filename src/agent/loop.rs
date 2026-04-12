@@ -17,6 +17,7 @@ mod worker_context_stages;
 use super::delivery::{DeliveryReport, DeliverySession, ToolIntentDelivery};
 use super::final_reply::finalize_user_visible_reply;
 use super::request_plan::AgentRequestPlan;
+use super::request_semantics::RequestSemantics;
 use super::strategy::{
     blocker_end_turn_followup, build_success_tool_round_guidance, build_tool_round_guidance,
     detect_ping_pong_tool_rounds, empty_final_answer_followup, final_answer_followup,
@@ -97,8 +98,8 @@ use crate::task_execution::{
 use crate::tools::http_bridge::HttpClientToolContext;
 use crate::tools::{ToolOutboundDeliveryKind, ToolOutboundIntent, ToolOutboundTarget};
 use crate::util::{
-    is_public_operational_observability_request, push_json_string_escaped,
-    remove_substrings_all_trim, truncate_content_to_max, usize_to_decimal_buf,
+    push_json_string_escaped, remove_substrings_all_trim, truncate_content_to_max,
+    usize_to_decimal_buf,
 };
 use crate::PlatformHttpClient;
 use serde::{Deserialize, Serialize};
@@ -378,6 +379,7 @@ struct WorkerRunTelemetry {
     pressure: crate::orchestrator::PressureLevel,
     runtime_mode: crate::runtime::RuntimeModeSnapshot,
     deliberation_class: crate::memory::TurnDeliberationClass,
+    request_semantics: RequestSemantics,
     tool_blocker: Option<ToolBlockerSummary>,
     prompt_recall_intent: crate::memory::PromptRecallIntent,
     runtime_skill_selected_ids: Vec<String>,
@@ -463,6 +465,7 @@ struct PreparedWorkerConversation {
     allow_tool_round_recall_refill: bool,
     prompt_memory_system_budget: usize,
     pressure: crate::orchestrator::PressureLevel,
+    request_semantics: RequestSemantics,
     mental_privacy_adjudication: Option<Box<crate::memory::MentalPrivacyDisclosureAdjudication>>,
     persona_priority_adjudication: Option<Box<PersonaPriorityAdjudication>>,
 }
@@ -1665,6 +1668,7 @@ fn maybe_apply_mental_privacy_review(
     config: &AgentLoopConfig,
     msg: &PcMsg,
     loc: UiLocale,
+    request_semantics: RequestSemantics,
     reply_content: String,
 ) -> MentalPrivacyReviewOutcome {
     if msg.ingress != IngressKind::User || reply_content.trim().is_empty() {
@@ -1675,7 +1679,7 @@ fn maybe_apply_mental_privacy_review(
             touched_targets: Vec::new(),
         };
     }
-    if is_public_operational_observability_request(&msg.content) {
+    if request_semantics.is_public_surface() {
         return MentalPrivacyReviewOutcome {
             reply_content,
             action: crate::memory::MentalPrivacyShareAction::AllowOriginal,
@@ -2368,9 +2372,7 @@ impl RecentToolRoundState {
 }
 
 struct EndTurnFollowupContext<'a> {
-    request_plan: &'a AgentRequestPlan<'a>,
     strategy: AgentRunStrategy,
-    round: usize,
     any_tool_used: bool,
     end_turn_followup_used: bool,
     recent_tool_round: &'a RecentToolRoundState,
@@ -4049,11 +4051,12 @@ mod tests {
         };
         let msg = PcMsg::new_inbound("qq_channel", "chat-1", "请总结一下", false).expect("msg");
         let registry = crate::tools::ToolRegistry::new();
-        let request_plan = AgentRequestPlan::build(
+        let _request_plan = AgentRequestPlan::build(
             &msg,
             &registry,
             &worker_llm,
             AgentRunStrategy::LinuxEnhanced,
+            RequestSemantics::conservative_default(),
         );
         let mut recent_tool_round = RecentToolRoundState::default();
         recent_tool_round.record_round(1, true, 42, ToolFailureSummary::default());
@@ -4063,9 +4066,7 @@ mod tests {
         }];
 
         let action = resolve_end_turn_followup(EndTurnFollowupContext {
-            request_plan: &request_plan,
             strategy: AgentRunStrategy::LinuxEnhanced,
-            round: 1,
             any_tool_used: true,
             end_turn_followup_used: false,
             recent_tool_round: &recent_tool_round,
@@ -4404,7 +4405,13 @@ mod tests {
             responses: Mutex::new(Vec::new()),
         };
         let request_plan =
-            AgentRequestPlan::build(&msg, &registry, &llm, AgentRunStrategy::Embedded);
+            AgentRequestPlan::build(
+                &msg,
+                &registry,
+                &llm,
+                AgentRunStrategy::Embedded,
+                RequestSemantics::conservative_default(),
+            );
 
         let mut session = Box::new(self::worker_context_stages::WorkerPrepareSession::new(
             Instant::now(),
@@ -4512,7 +4519,13 @@ mod tests {
         let msg =
             PcMsg::new_inbound("qq_channel", "chat-ops", "查看系统状态", false).expect("message");
         let request_plan =
-            AgentRequestPlan::build(&msg, &registry, &llm, AgentRunStrategy::LinuxEnhanced);
+            AgentRequestPlan::build(
+                &msg,
+                &registry,
+                &llm,
+                AgentRunStrategy::LinuxEnhanced,
+                RequestSemantics::public_tool_first(),
+            );
 
         let mut session = Box::new(self::worker_context_stages::WorkerPrepareSession::new(
             Instant::now(),
@@ -4541,6 +4554,7 @@ mod tests {
             &mut session,
             &llm,
             &msg,
+            RequestSemantics::public_tool_first(),
             &config,
             &mut tool_ctx,
         );
@@ -4745,6 +4759,7 @@ mod tests {
                 },
             },
             deliberation_class: crate::memory::TurnDeliberationClass::Standard,
+            request_semantics: RequestSemantics::public_tool_first(),
             tool_blocker: None,
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
@@ -4869,6 +4884,7 @@ mod tests {
                 },
             },
             deliberation_class: crate::memory::TurnDeliberationClass::HardReasoning,
+            request_semantics: RequestSemantics::conservative_default(),
             tool_blocker: summarize_tool_blocker(
                 2,
                 ToolFailureSummary {

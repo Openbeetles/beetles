@@ -7,6 +7,7 @@ mod delivery;
 mod final_reply;
 mod r#loop;
 mod request_plan;
+mod request_semantics;
 mod strategy;
 mod subject_state;
 mod tool_guidance;

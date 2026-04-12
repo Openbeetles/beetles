@@ -417,6 +417,7 @@ pub struct MentalPrivacyDisclosureAdjudicationInput<'a> {
     pub channel: &'a str,
     pub chat_id: &'a str,
     pub user_content: &'a str,
+    pub public_disclosure_surface: bool,
     pub now_secs: u64,
 }
 
@@ -1554,7 +1555,7 @@ pub fn run_mental_privacy_disclosure_adjudication(
     if input.user_content.trim().is_empty() {
         return Ok(None);
     }
-    if crate::util::is_public_operational_observability_request(input.user_content) {
+    if input.public_disclosure_surface {
         return Ok(None);
     }
     let subject_id = board_subject_scope_id();

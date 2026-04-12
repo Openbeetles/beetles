@@ -58,6 +58,7 @@ pub(super) fn finalize_turn(
         pressure,
         runtime_mode: _runtime_mode,
         deliberation_class: _deliberation_class,
+        request_semantics,
         tool_blocker,
         prompt_recall_intent,
         runtime_skill_selected_ids,
@@ -108,6 +109,7 @@ pub(super) fn finalize_turn(
             config,
             msg,
             loc,
+            request_semantics,
             reply_content,
         );
         reply_content = mental_privacy_review.reply_content.clone();

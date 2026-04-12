@@ -21,7 +21,6 @@ pub(super) fn execute_turn(
 ) -> Result<ExecutedTurn> {
     let mut latency = WorkerLatency::default();
     let worker_start = Instant::now();
-    let request_plan = AgentRequestPlan::build(msg, registry, worker_llm, config.strategy);
     let mut tool_ctx = HttpClientToolContext {
         http,
         chat_id: Some(msg.chat_id.clone()),
@@ -35,6 +34,30 @@ pub(super) fn execute_turn(
         current_primary_message_delivered: false,
         locale: loc,
     };
+    let compiler_tool_policy =
+        crate::tools::ToolPolicyContext::new(msg.ingress, msg.channel.as_ref());
+    let compiler_tool_specs = registry.tool_specs_for_llm(&compiler_tool_policy);
+    let request_semantics = super::super::request_semantics::compile_request_semantics(
+        &mut tool_ctx,
+        worker_llm,
+        super::super::request_semantics::RequestSemanticCompilerInput {
+            strategy: config.strategy,
+            ingress: msg.ingress,
+            channel: msg.channel.as_ref(),
+            is_group: msg.is_group,
+            content: &msg.content,
+            pressure: crate::orchestrator::current_pressure(),
+            runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
+            tool_specs: &compiler_tool_specs,
+        },
+    );
+    let request_plan = AgentRequestPlan::build(
+        msg,
+        registry,
+        worker_llm,
+        config.strategy,
+        request_semantics,
+    );
     let channel_capability = config.channel_capability_registry.get(msg.channel.as_ref());
     let editor = if config.llm_stream
         && config.stream_editor_channel.as_deref() == Some(msg.channel.as_ref())
@@ -77,12 +100,14 @@ pub(super) fn execute_turn(
         allow_tool_round_recall_refill,
         prompt_memory_system_budget,
         pressure,
+        request_semantics,
         mental_privacy_adjudication,
         persona_priority_adjudication,
     } = super::turn_prepare::prepare_turn(
         worker_llm,
         msg,
         &request_plan,
+        request_semantics,
         config,
         &mut tool_ctx,
         &mut latency,
@@ -102,6 +127,7 @@ pub(super) fn execute_turn(
         &mut system_scratch,
         pressure,
         deliberation_gate.class,
+        request_semantics,
         subject_state.as_deref().cloned(),
         mental_privacy_adjudication.as_deref().cloned(),
         persona_priority_adjudication.as_deref().cloned(),
@@ -270,9 +296,7 @@ pub(super) fn execute_turn(
                 continue;
             }
             if let Some(action) = resolve_end_turn_followup(EndTurnFollowupContext {
-                request_plan: &request_plan,
                 strategy: config.strategy,
-                round,
                 any_tool_used,
                 end_turn_followup_used,
                 recent_tool_round: &recent_tool_round,
@@ -503,6 +527,7 @@ pub(super) fn execute_turn(
             pressure,
             runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
             deliberation_class: deliberation_gate.class,
+            request_semantics,
             tool_blocker: recent_tool_round.blocker,
             prompt_recall_intent: runtime_carry.prompt_recall_intent,
             runtime_skill_selected_ids: runtime_carry.runtime_skill_selected_ids,

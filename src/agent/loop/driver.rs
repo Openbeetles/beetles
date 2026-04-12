@@ -103,15 +103,6 @@ fn prepare_final_recovery_messages<'a>(
 }
 
 pub(super) fn resolve_end_turn_followup(ctx: EndTurnFollowupContext<'_>) -> Option<EndTurnAction> {
-    if let Some(followup) =
-        ctx.request_plan
-            .missing_tool_followup(ctx.round, ctx.any_tool_used, ctx.content)
-    {
-        return Some(EndTurnAction::EnqueueFollowup {
-            followup: followup.to_string(),
-            consume_single_use_budget: false,
-        });
-    }
     if ctx.end_turn_followup_used {
         return None;
     }

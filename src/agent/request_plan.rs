@@ -1,13 +1,13 @@
 //! Per-request tool exposure and invocation plan.
-//! Centralizes runtime tool visibility, native/prompt-guided mode selection,
-//! and request/response assembly helpers so agent loop stays thin.
+//! Centralizes runtime tool visibility plus typed tool-demand mapping so the
+//! agent loop stays thin and request understanding stays outside prompt hacks.
 
+use super::request_semantics::{EvidenceNeed, ExecutionPreference, RequestSemantics};
 use super::strategy::AgentRunStrategy;
 use crate::bus::PcMsg;
 use crate::llm::tool_fallback::{append_tool_fallback_instructions, recover_text_tool_calls};
 use crate::llm::{LlmClient, LlmResponse, ToolCallSupport, ToolChoicePolicy, ToolSpec};
 use crate::tools::{ToolPolicyContext, ToolRegistry};
-use crate::util::{classify_request_surface, RequestSurfaceClass};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ToolCallMode {
@@ -36,6 +36,7 @@ impl<'a> AgentRequestPlan<'a> {
         registry: &ToolRegistry,
         worker_llm: &(dyn LlmClient + Send + Sync),
         strategy: AgentRunStrategy,
+        semantics: RequestSemantics,
     ) -> Self {
         let tool_policy = ToolPolicyContext::new(msg.ingress, msg.channel.as_ref());
         let tool_specs = registry.tool_specs_for_llm(&tool_policy);
@@ -47,11 +48,7 @@ impl<'a> AgentRequestPlan<'a> {
                 ToolCallSupport::PromptGuided => ToolCallMode::PromptGuided,
             }
         };
-        let tool_use_demand = if tool_specs.is_empty() {
-            ToolUseDemand::Flexible
-        } else {
-            classify_tool_use_demand(msg, strategy, &tool_specs)
-        };
+        let tool_use_demand = classify_tool_use_demand(strategy, semantics, &tool_specs);
         Self {
             tool_policy,
             tool_specs,
@@ -91,39 +88,6 @@ impl<'a> AgentRequestPlan<'a> {
         if matches!(self.tool_call_mode, ToolCallMode::PromptGuided) {
             append_tool_fallback_instructions(system, max_len, &self.tool_specs);
         }
-        let guidance = match self.tool_use_demand {
-            ToolUseDemand::Flexible => None,
-            ToolUseDemand::Preferred => Some(
-                "\n\n## Tool Guidance\nFor this request, prefer gathering concrete data or taking the needed action with tools before giving the final answer. Avoid guessing when a tool can materially improve correctness.",
-            ),
-            ToolUseDemand::RequiredFirstTurn => Some(
-                "\n\n## Tool Guidance\nThis request likely requires checking current state or performing an action. On the first pass, use the provided tool invocation mechanism before giving a final answer unless the available tools clearly cannot satisfy the request.",
-            ),
-        };
-        if let Some(guidance) = guidance {
-            let remain = max_len.saturating_sub(system.len());
-            if guidance.len() <= remain {
-                system.push_str(guidance);
-            }
-        }
-        if let Some(guidance) = self.iterative_retrieval_guidance() {
-            let remain = max_len.saturating_sub(system.len());
-            if guidance.len() <= remain {
-                system.push_str(&guidance);
-            }
-        }
-        if let Some(guidance) = self.linux_inspection_guidance() {
-            let remain = max_len.saturating_sub(system.len());
-            if guidance.len() <= remain {
-                system.push_str(&guidance);
-            }
-        }
-        if let Some(guidance) = self.internal_memory_governance_guidance() {
-            let remain = max_len.saturating_sub(system.len());
-            if guidance.len() <= remain {
-                system.push_str(guidance);
-            }
-        }
     }
 
     pub(crate) fn recover_response(&self, response: LlmResponse) -> LlmResponse {
@@ -133,310 +97,43 @@ impl<'a> AgentRequestPlan<'a> {
             response
         }
     }
-
-    pub(crate) fn missing_tool_followup(
-        &self,
-        round: usize,
-        any_tool_used: bool,
-        content: &str,
-    ) -> Option<&'static str> {
-        if any_tool_used || self.tool_call_mode == ToolCallMode::Disabled {
-            return None;
-        }
-        if looks_like_explicit_limitation(content) {
-            return None;
-        }
-        match self.tool_use_demand {
-            ToolUseDemand::Flexible => None,
-            ToolUseDemand::Preferred if round == 0 && content.chars().count() < 96 => Some(
-                "[SYSTEM] This request would be stronger with concrete data or an actual action. If an available tool can materially improve the answer, use it now instead of replying from guesswork.",
-            ),
-            ToolUseDemand::RequiredFirstTurn if round == 0 => Some(
-                "[SYSTEM] This request requires checking current state or performing an action. Do not answer from memory or guesswork. Use the available tool invocation mechanism now, then answer from the result. If no available tool can satisfy the request, explain that limitation explicitly.",
-            ),
-            ToolUseDemand::RequiredFirstTurn if round == 1 && content.chars().count() < 240 => {
-                Some(
-                    "[SYSTEM] You still have not used a tool for a request that needs one. Either call an available tool now or clearly explain why the available tools cannot complete the task.",
-                )
-            }
-            _ => None,
-        }
-    }
-}
-
-impl AgentRequestPlan<'_> {
-    fn iterative_retrieval_guidance(&self) -> Option<String> {
-        if self.tool_use_demand == ToolUseDemand::Flexible {
-            return None;
-        }
-        let mut guidance = String::from(
-            "\n\n## Retrieval Discipline\nUse tools iteratively: search or list first only to locate concrete targets, then read one specific source, then answer. After you already have readable content, synthesize from it or extract one narrower section instead of repeating the same search or read unchanged. Treat web or URL-derived content as turn-local evidence, not durable user memory.",
-        );
-        let has_memory_search = self
-            .tool_specs
-            .iter()
-            .any(|tool| tool.name == "memory_search");
-        let has_memory_get = self.tool_specs.iter().any(|tool| tool.name == "memory_get");
-        let has_factual_memory = self
-            .tool_specs
-            .iter()
-            .any(|tool| tool.name == "factual_memory");
-        if has_memory_search && has_memory_get {
-            guidance.push_str(" For retained conversation history, daily notes, or turn logs, use memory_search to locate archive evidence and memory_get to inspect one cited record. Archive hits are evidence sources only, but they can support a shareable, user-facing conclusion after you distill and verify a stable fact. If the exact detail is still unsupported, say that plainly instead of refusing or inventing it.");
-        }
-        if has_factual_memory {
-            guidance.push_str(" For exact canonical shared facts, slot-shaped profile values, durable constraints, or stable task/project records, prefer factual_memory over archive search. factual_memory returns canonical records plus evidence posture; use archive evidence only when you need supporting records or reconciliation.");
-        }
-        Some(guidance)
-    }
-
-    fn linux_inspection_guidance(&self) -> Option<String> {
-        if self.tool_use_demand == ToolUseDemand::Flexible {
-            return None;
-        }
-        let has_board_info = self.tool_specs.iter().any(|tool| tool.name == "board_info");
-        let has_process = self.tool_specs.iter().any(|tool| tool.name == "process");
-        let has_network = self.tool_specs.iter().any(|tool| tool.name == "network");
-        let has_network_scan = self
-            .tool_specs
-            .iter()
-            .any(|tool| tool.name == "network_scan");
-        if !has_process && !has_network {
-            return None;
-        }
-        if !has_board_info && !has_network_scan {
-            let mut guidance = String::from(
-                "\n\n## Linux Inspection Guidance\nWhen diagnosing a Linux host, prefer the most specific available tool instead of overloading a general snapshot.",
-            );
-            if has_process {
-                guidance.push_str(" Use process for one specific process or service.");
-            }
-            if has_network {
-                guidance.push_str(
-                    " Use network for interfaces, DNS, routes, resolve, ping, and HTTP reachability.",
-                );
-            }
-            return Some(guidance);
-        }
-        let mut guidance = String::from(
-            "\n\n## Linux Inspection Guidance\nWhen diagnosing a Linux host, prefer the most specific available tool instead of overloading the general snapshot.",
-        );
-        if has_board_info {
-            guidance.push_str(" Use board_info for whole-host status and resource pressure.");
-            guidance.push_str(" Treat board_info-style runtime telemetry as public operational observability, not as private inner material or continuity secrets.");
-        }
-        if has_process {
-            guidance.push_str(" Use process for one specific process or service.");
-        }
-        if has_network {
-            guidance.push_str(
-                " Use network for interfaces, DNS, routes, resolve, ping, and HTTP reachability.",
-            );
-        }
-        if has_network_scan {
-            guidance.push_str(" Use network_scan only for WiFi/AP scan or WiFi station checks.");
-        }
-        Some(guidance)
-    }
-
-    fn internal_memory_governance_guidance(&self) -> Option<&'static str> {
-        self.tool_specs
-            .iter()
-            .any(|tool| tool.name == "private_garden")
-            .then_some(
-                "\n\n## Internal Memory Governance\nYour internal memory has layers with different roles. Keep kernel-facing private memory compact, stable, and repeatedly useful. Use `private_garden` for exploratory drafts, temporary organization, and self-owned working material. Before writing new private content, prefer reading, listing, or inspecting the current garden shape so you can update, merge, move, or prune in place instead of appending a history trail. When self-state reports Cautious or Tight pressure, consolidate or prune before creating more. If a garden insight becomes stable and load-bearing, distill it into the governed kernel later rather than duplicating the same material across both layers.",
-            )
-    }
 }
 
 fn classify_tool_use_demand(
-    msg: &PcMsg,
     strategy: AgentRunStrategy,
+    semantics: RequestSemantics,
     tool_specs: &[ToolSpec],
 ) -> ToolUseDemand {
-    if strategy != AgentRunStrategy::LinuxEnhanced || msg.ingress != crate::bus::IngressKind::User {
+    if strategy != AgentRunStrategy::LinuxEnhanced || tool_specs.is_empty() {
         return ToolUseDemand::Flexible;
     }
-    if msg.is_group {
+    if !semantics.supported_by_tools(tool_specs) {
         return ToolUseDemand::Flexible;
     }
-    let content = msg.content.trim();
-    if content.is_empty() {
-        return ToolUseDemand::Flexible;
+    match semantics.execution_preference {
+        ExecutionPreference::ToolFirst | ExecutionPreference::MemoryFirst => {
+            ToolUseDemand::RequiredFirstTurn
+        }
+        ExecutionPreference::AnswerDirect => match semantics.evidence_need {
+            EvidenceNeed::None => ToolUseDemand::Flexible,
+            EvidenceNeed::PublicRuntime
+            | EvidenceNeed::HostTool
+            | EvidenceNeed::ArchiveMemory
+            | EvidenceNeed::CanonicalMemory => ToolUseDemand::Preferred,
+        },
     }
-    let request_surface = classify_request_surface(content);
-    if request_surface == RequestSurfaceClass::PublicOperationalObservability {
-        return ToolUseDemand::RequiredFirstTurn;
-    }
-
-    let lower = content.to_ascii_lowercase();
-    let char_count = content.chars().count();
-    let separators = ['\n', ',', '，', '.', '。', '?', '？', ';', '；', ':', '：'];
-    let separator_count = content.chars().filter(|ch| separators.contains(ch)).count();
-
-    let has_path_like = content.contains('/')
-        || content.contains('\\')
-        || content.contains("://")
-        || content.contains("~/")
-        || content.contains('`');
-    let file_markers = [
-        ".rs", ".md", ".json", ".toml", ".yaml", ".yml", ".log", ".txt", ".py", ".sh",
-    ];
-    let freshness_markers = [
-        "现在", "当前", "今天", "最新", "latest", "current", "today", "now",
-    ];
-    let freshness_targets = [
-        "几点",
-        "时间",
-        "天气",
-        "温度",
-        "状态",
-        "日志",
-        "版本",
-        "价格",
-        "time",
-        "weather",
-        "temperature",
-        "status",
-        "log",
-        "logs",
-        "version",
-        "price",
-        "news",
-    ];
-    let analysis_markers = [
-        "先",
-        "再",
-        "并且",
-        "同时",
-        "分别",
-        "步骤",
-        "排查",
-        "分析",
-        "review",
-        "analyze",
-        "compare",
-        "investigate",
-        "debug",
-        "plan",
-    ];
-    let inspect_verbs = [
-        "查看", "看看", "检查", "排查", "分析", "读取", "搜索", "查找", "列出", "show", "check",
-        "inspect", "read", "search", "find", "list", "debug", "review", "analyze",
-        "investigate",
-    ];
-    let process_targets = ["进程", "服务", "service", "process", "pid", "port", "端口"];
-    let network_targets = [
-        "网络", "network", "dns", "route", "路由", "ping", "resolve", "接口", "interface", "ip",
-        "连通", "connectivity",
-    ];
-    let wifi_targets = ["wifi", "ap", "热点", "扫描", "scan", "station", "ssid"];
-    let archive_targets = [
-        "历史",
-        "记录",
-        "聊天记录",
-        "archive",
-        "history",
-        "transcript",
-        "过去",
-        "之前",
-        "偏好",
-        "preference",
-    ];
-    let shared_fact_targets = [
-        "偏好",
-        "preference",
-        "事实",
-        "fact",
-        "约束",
-        "constraint",
-        "设定",
-        "profile",
-    ];
-    let has_process_tool = tool_specs.iter().any(|tool| tool.name == "process");
-    let has_network_tool = tool_specs.iter().any(|tool| tool.name == "network");
-    let has_network_scan_tool = tool_specs.iter().any(|tool| tool.name == "network_scan");
-    let has_archive_memory_tools = tool_specs
-        .iter()
-        .any(|tool| tool.name == "memory_search")
-        && tool_specs.iter().any(|tool| tool.name == "memory_get");
-    let has_factual_memory_tool = tool_specs.iter().any(|tool| tool.name == "factual_memory");
-    let asks_to_inspect = inspect_verbs
-        .iter()
-        .any(|marker| content.contains(marker) || lower.contains(marker));
-    let host_inspection_target = (has_process_tool
-        && process_targets
-            .iter()
-            .any(|marker| content.contains(marker) || lower.contains(marker)))
-        || (has_network_tool
-            && network_targets
-                .iter()
-                .any(|marker| content.contains(marker) || lower.contains(marker)))
-        || (has_network_scan_tool
-            && wifi_targets
-                .iter()
-                .any(|marker| content.contains(marker) || lower.contains(marker)));
-    let memory_inspection_target = (has_archive_memory_tools
-        && archive_targets
-            .iter()
-            .any(|marker| content.contains(marker) || lower.contains(marker)))
-        || (has_factual_memory_tool
-            && shared_fact_targets
-                .iter()
-                .any(|marker| content.contains(marker) || lower.contains(marker)));
-
-    if has_path_like
-        || file_markers.iter().any(|marker| lower.contains(marker))
-        || (asks_to_inspect && host_inspection_target)
-        || (asks_to_inspect && memory_inspection_target)
-        || (freshness_markers
-            .iter()
-            .any(|marker| content.contains(marker) || lower.contains(marker))
-            && freshness_targets
-                .iter()
-                .any(|marker| content.contains(marker) || lower.contains(marker)))
-    {
-        return ToolUseDemand::RequiredFirstTurn;
-    }
-
-    let analysis_hits = analysis_markers
-        .iter()
-        .filter(|marker| content.contains(**marker) || lower.contains(**marker))
-        .count();
-    if separator_count >= 2 || analysis_hits >= 2 || char_count >= 120 {
-        ToolUseDemand::Preferred
-    } else {
-        ToolUseDemand::Flexible
-    }
-}
-
-fn looks_like_explicit_limitation(content: &str) -> bool {
-    let lower = content.to_ascii_lowercase();
-    let markers = [
-        "无法",
-        "不能",
-        "没法",
-        "没有",
-        "不支持",
-        "做不到",
-        "can't",
-        "cannot",
-        "unable",
-        "not available",
-        "do not have access",
-        "don't have access",
-    ];
-    markers
-        .iter()
-        .any(|marker| content.contains(marker) || lower.contains(marker))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::request_semantics::{
+        DisclosureSurface, RequestKind, RequestSemantics,
+    };
     use crate::llm::{LlmHttpClient, LlmModelCompat, Message, StopReason, ToolChoicePolicy};
     use crate::tools::{Tool, ToolMetadata};
     use crate::Result;
+
     struct VisibleTool;
     struct NamedTool {
         name: &'static str,
@@ -445,6 +142,19 @@ mod tests {
     }
     struct NativeLlm;
     struct PromptGuidedLlm;
+
+    fn semantics(
+        evidence_need: EvidenceNeed,
+        execution_preference: ExecutionPreference,
+    ) -> RequestSemantics {
+        RequestSemantics {
+            request_kind: RequestKind::General,
+            evidence_need,
+            disclosure_surface: DisclosureSurface::Governed,
+            execution_preference,
+            confidence: 90,
+        }
+    }
 
     impl Tool for VisibleTool {
         fn name(&self) -> &'static str {
@@ -529,8 +239,13 @@ mod tests {
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(VisibleTool));
         let msg = PcMsg::new_inbound("telegram", "chat", "hi", false).expect("pcmsg");
-        let plan =
-            AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::LinuxEnhanced);
+        let plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &NativeLlm,
+            AgentRunStrategy::LinuxEnhanced,
+            RequestSemantics::conservative_default(),
+        );
         assert!(plan.has_tools());
         assert!(plan.uses_native_tools());
         assert_eq!(plan.request_tools().map(|specs| specs.len()), Some(1));
@@ -546,6 +261,7 @@ mod tests {
             &registry,
             &PromptGuidedLlm,
             AgentRunStrategy::LinuxEnhanced,
+            RequestSemantics::conservative_default(),
         );
         assert!(plan.has_tools());
         assert!(!plan.uses_native_tools());
@@ -555,11 +271,20 @@ mod tests {
     #[test]
     fn operational_requests_require_first_round_tool_for_linux_native_mode() {
         let mut registry = ToolRegistry::new();
-        registry.register(Box::new(VisibleTool));
+        registry.register(Box::new(NamedTool {
+            name: "process",
+            description: "process inspection",
+            metadata: ToolMetadata::task(),
+        }));
         let msg = PcMsg::new_inbound("telegram", "chat", "查看 /tmp/app.log 最近错误", false)
             .expect("pcmsg");
-        let plan =
-            AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::LinuxEnhanced);
+        let plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &NativeLlm,
+            AgentRunStrategy::LinuxEnhanced,
+            semantics(EvidenceNeed::HostTool, ExecutionPreference::ToolFirst),
+        );
         assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Require);
         assert_eq!(plan.tool_choice(1, false), ToolChoicePolicy::Require);
     }
@@ -567,55 +292,80 @@ mod tests {
     #[test]
     fn public_operational_observability_requests_require_first_round_tool() {
         let mut registry = ToolRegistry::new();
+        registry.register(Box::new(NamedTool {
+            name: "board_info",
+            description: "whole host status",
+            metadata: ToolMetadata::task(),
+        }));
+        let msg = PcMsg::new_inbound("telegram", "chat", "查看系统状态", false).expect("pcmsg");
+        let plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &NativeLlm,
+            AgentRunStrategy::LinuxEnhanced,
+            semantics(EvidenceNeed::PublicRuntime, ExecutionPreference::ToolFirst),
+        );
+        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Require);
+    }
+
+    #[test]
+    fn memory_evidence_requests_require_first_round_tool() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(NamedTool {
+            name: "memory_search",
+            description: "search archive evidence",
+            metadata: ToolMetadata::task(),
+        }));
+        registry.register(Box::new(NamedTool {
+            name: "memory_get",
+            description: "read archive evidence",
+            metadata: ToolMetadata::task(),
+        }));
+        let msg = PcMsg::new_inbound("telegram", "chat", "检查我们历史里我对北岛的偏好", false)
+            .expect("pcmsg");
+        let plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &NativeLlm,
+            AgentRunStrategy::LinuxEnhanced,
+            semantics(EvidenceNeed::ArchiveMemory, ExecutionPreference::MemoryFirst),
+        );
+        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Require);
+    }
+
+    #[test]
+    fn unsupported_semantics_do_not_force_tools() {
+        let mut registry = ToolRegistry::new();
         registry.register(Box::new(VisibleTool));
         let msg = PcMsg::new_inbound("telegram", "chat", "查看系统状态", false).expect("pcmsg");
-        let plan =
-            AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::LinuxEnhanced);
-        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Require);
+        let plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &NativeLlm,
+            AgentRunStrategy::LinuxEnhanced,
+            semantics(EvidenceNeed::PublicRuntime, ExecutionPreference::ToolFirst),
+        );
+        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Auto);
     }
 
     #[test]
     fn embedded_mode_keeps_tool_choice_flexible() {
         let mut registry = ToolRegistry::new();
-        registry.register(Box::new(VisibleTool));
+        registry.register(Box::new(NamedTool {
+            name: "process",
+            description: "process inspection",
+            metadata: ToolMetadata::task(),
+        }));
         let msg = PcMsg::new_inbound("telegram", "chat", "查看 /tmp/app.log 最近错误", false)
             .expect("pcmsg");
-        let plan = AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::Embedded);
+        let plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &NativeLlm,
+            AgentRunStrategy::Embedded,
+            semantics(EvidenceNeed::HostTool, ExecutionPreference::ToolFirst),
+        );
         assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Auto);
-    }
-
-    #[test]
-    fn request_plan_emits_missing_tool_followup_for_required_requests() {
-        let mut registry = ToolRegistry::new();
-        registry.register(Box::new(VisibleTool));
-        let msg = PcMsg::new_inbound("telegram", "chat", "查看 /tmp/app.log 最近错误", false)
-            .expect("pcmsg");
-        let plan = AgentRequestPlan::build(
-            &msg,
-            &registry,
-            &PromptGuidedLlm,
-            AgentRunStrategy::LinuxEnhanced,
-        );
-        assert!(plan
-            .missing_tool_followup(0, false, "我来总结一下当前情况。")
-            .is_some());
-    }
-
-    #[test]
-    fn explicit_limitation_skips_missing_tool_followup() {
-        let mut registry = ToolRegistry::new();
-        registry.register(Box::new(VisibleTool));
-        let msg = PcMsg::new_inbound("telegram", "chat", "查看 /tmp/app.log 最近错误", false)
-            .expect("pcmsg");
-        let plan = AgentRequestPlan::build(
-            &msg,
-            &registry,
-            &PromptGuidedLlm,
-            AgentRunStrategy::LinuxEnhanced,
-        );
-        assert!(plan
-            .missing_tool_followup(0, false, "我无法访问该日志，当前可用工具也不能读取它。")
-            .is_none());
     }
 
     #[test]
@@ -623,16 +373,18 @@ mod tests {
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(VisibleTool));
         let msg = PcMsg::new_inbound("telegram", "chat", "1+1 等于多少", false).expect("pcmsg");
-        let plan =
-            AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::LinuxEnhanced);
+        let plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &NativeLlm,
+            AgentRunStrategy::LinuxEnhanced,
+            RequestSemantics::conservative_default(),
+        );
         assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Auto);
-        assert!(plan
-            .missing_tool_followup(0, false, "1+1 等于 2。")
-            .is_none());
     }
 
     #[test]
-    fn linux_inspection_tools_add_specialized_guidance() {
+    fn request_plan_does_not_add_linux_inspection_guidance() {
         let mut registry = ToolRegistry::new();
         for (name, description) in [
             ("board_info", "whole host status"),
@@ -648,19 +400,20 @@ mod tests {
         }
         let msg = PcMsg::new_inbound("telegram", "chat", "查看系统状态并排查网络问题", false)
             .expect("pcmsg");
-        let plan =
-            AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::LinuxEnhanced);
+        let plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &NativeLlm,
+            AgentRunStrategy::LinuxEnhanced,
+            semantics(EvidenceNeed::PublicRuntime, ExecutionPreference::ToolFirst),
+        );
         let mut system = String::new();
         plan.apply_system_prompt(&mut system, 4096);
-        assert!(system.contains("Linux Inspection Guidance"));
-        assert!(system.contains("board_info"));
-        assert!(system.contains("public operational observability"));
-        assert!(system.contains("process"));
-        assert!(system.contains("network_scan only for WiFi/AP scan"));
+        assert!(system.is_empty());
     }
 
     #[test]
-    fn linux_inspection_guidance_works_with_only_process_and_network() {
+    fn request_plan_does_not_add_request_specific_guidance_for_process_or_network() {
         let mut registry = ToolRegistry::new();
         for (name, description) in [
             ("process", "process inspection"),
@@ -674,21 +427,20 @@ mod tests {
         }
         let msg =
             PcMsg::new_inbound("telegram", "chat", "检查当前服务和网络状态", false).expect("pcmsg");
-        let plan =
-            AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::LinuxEnhanced);
+        let plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &NativeLlm,
+            AgentRunStrategy::LinuxEnhanced,
+            semantics(EvidenceNeed::HostTool, ExecutionPreference::ToolFirst),
+        );
         let mut system = String::new();
         plan.apply_system_prompt(&mut system, 4096);
-        assert!(system.contains("Linux Inspection Guidance"));
-        assert!(system.contains("Use process for one specific process or service."));
-        assert!(system.contains(
-            "Use network for interfaces, DNS, routes, resolve, ping, and HTTP reachability."
-        ));
-        assert!(!system.contains("board_info"));
-        assert!(!system.contains("network_scan"));
+        assert!(system.is_empty());
     }
 
     #[test]
-    fn linux_inspection_guidance_skips_general_conversation() {
+    fn request_plan_keeps_general_conversation_without_guidance() {
         let mut registry = ToolRegistry::new();
         for (name, description) in [
             ("board_info", "whole host status"),
@@ -703,30 +455,47 @@ mod tests {
             }));
         }
         let msg = PcMsg::new_inbound("telegram", "chat", "今天过得怎么样", false).expect("pcmsg");
-        let plan =
-            AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::LinuxEnhanced);
+        let plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &NativeLlm,
+            AgentRunStrategy::LinuxEnhanced,
+            RequestSemantics::conservative_default(),
+        );
         let mut system = String::new();
         plan.apply_system_prompt(&mut system, 4096);
-        assert!(!system.contains("Linux Inspection Guidance"));
+        assert!(system.is_empty());
     }
 
     #[test]
-    fn required_requests_add_retrieval_discipline_guidance() {
+    fn request_plan_does_not_add_retrieval_guidance() {
         let mut registry = ToolRegistry::new();
-        registry.register(Box::new(VisibleTool));
-        let msg = PcMsg::new_inbound("telegram", "chat", "查看 /tmp/app.log 最近错误", false)
+        registry.register(Box::new(NamedTool {
+            name: "memory_search",
+            description: "search archive evidence",
+            metadata: ToolMetadata::task(),
+        }));
+        registry.register(Box::new(NamedTool {
+            name: "memory_get",
+            description: "inspect cited archive records",
+            metadata: ToolMetadata::task(),
+        }));
+        let msg = PcMsg::new_inbound("telegram", "chat", "检查我们历史里我对北岛的偏好", false)
             .expect("pcmsg");
-        let plan =
-            AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::LinuxEnhanced);
+        let plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &NativeLlm,
+            AgentRunStrategy::LinuxEnhanced,
+            semantics(EvidenceNeed::ArchiveMemory, ExecutionPreference::MemoryFirst),
+        );
         let mut system = String::new();
         plan.apply_system_prompt(&mut system, 4096);
-        assert!(system.contains("Retrieval Discipline"));
-        assert!(system.contains("search or list first only to locate concrete targets"));
-        assert!(system.contains("turn-local evidence"));
+        assert!(system.is_empty());
     }
 
     #[test]
-    fn private_garden_adds_internal_memory_governance_guidance() {
+    fn request_plan_does_not_add_private_garden_guidance() {
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(NamedTool {
             name: "private_garden",
@@ -734,17 +503,20 @@ mod tests {
             metadata: ToolMetadata::task(),
         }));
         let msg = PcMsg::new_inbound("telegram", "chat", "我们继续聊", false).expect("pcmsg");
-        let plan =
-            AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::LinuxEnhanced);
+        let plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &NativeLlm,
+            AgentRunStrategy::LinuxEnhanced,
+            RequestSemantics::conservative_default(),
+        );
         let mut system = String::new();
         plan.apply_system_prompt(&mut system, 4096);
-        assert!(system.contains("Internal Memory Governance"));
-        assert!(system.contains("private_garden"));
-        assert!(system.contains("update, merge, move, or prune in place"));
+        assert!(system.is_empty());
     }
 
     #[test]
-    fn archive_memory_guidance_allows_grounded_shareable_answers() {
+    fn request_plan_does_not_add_archive_memory_guidance() {
         let mut registry = ToolRegistry::new();
         for (name, description) in [
             ("memory_search", "search archive evidence"),
@@ -758,11 +530,15 @@ mod tests {
         }
         let msg = PcMsg::new_inbound("telegram", "chat", "检查我们历史里我对北岛的偏好", false)
             .expect("pcmsg");
-        let plan =
-            AgentRequestPlan::build(&msg, &registry, &NativeLlm, AgentRunStrategy::LinuxEnhanced);
+        let plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &NativeLlm,
+            AgentRunStrategy::LinuxEnhanced,
+            semantics(EvidenceNeed::ArchiveMemory, ExecutionPreference::MemoryFirst),
+        );
         let mut system = String::new();
         plan.apply_system_prompt(&mut system, 4096);
-        assert!(system.contains("shareable, user-facing conclusion"));
-        assert!(system.contains("exact detail is still unsupported"));
+        assert!(system.is_empty());
     }
 }

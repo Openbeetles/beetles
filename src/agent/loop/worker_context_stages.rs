@@ -198,6 +198,7 @@ pub(super) fn run_prepare_mental_privacy(
     session: &mut WorkerPrepareSession,
     worker_llm: &(dyn LlmClient + Send + Sync),
     msg: &crate::bus::PcMsg,
+    request_semantics: crate::agent::request_semantics::RequestSemantics,
     config: &AgentLoopConfig,
     tool_ctx: &mut HttpClientToolContext<'_>,
 ) {
@@ -230,6 +231,7 @@ pub(super) fn run_prepare_mental_privacy(
                 channel: &msg.channel,
                 chat_id: &msg.chat_id,
                 user_content: &msg.content,
+                public_disclosure_surface: request_semantics.is_public_surface(),
                 now_secs: runtime_stage.runtime.now_secs,
             },
         ) {
@@ -654,6 +656,7 @@ pub(super) fn finalize_prepare_context<'a>(
     msg: &'a crate::bus::PcMsg,
     config: &AgentLoopConfig,
     request_plan: &AgentRequestPlan<'a>,
+    request_semantics: crate::agent::request_semantics::RequestSemantics,
     mut session: Box<WorkerPrepareSession>,
     latency: &mut WorkerLatency,
 ) -> Result<PreparedWorkerConversation> {
@@ -769,6 +772,7 @@ pub(super) fn finalize_prepare_context<'a>(
         allow_tool_round_recall_refill,
         prompt_memory_system_budget: runtime_stage.prompt_memory_system_budget,
         pressure: runtime_stage.runtime.pressure,
+        request_semantics,
         mental_privacy_adjudication: governance_stage.mental_privacy_adjudication.map(Box::new),
         persona_priority_adjudication: governance_stage.persona_priority_adjudication.map(Box::new),
     })

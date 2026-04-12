@@ -38,6 +38,7 @@ pub(super) fn prepare_turn<'a>(
     worker_llm: &(dyn LlmClient + Send + Sync),
     msg: &'a crate::bus::PcMsg,
     request_plan: &AgentRequestPlan<'a>,
+    request_semantics: crate::agent::request_semantics::RequestSemantics,
     config: &AgentLoopConfig,
     tool_ctx: &mut HttpClientToolContext<'_>,
     latency: &mut WorkerLatency,
@@ -50,6 +51,7 @@ pub(super) fn prepare_turn<'a>(
         &mut session,
         worker_llm,
         msg,
+        request_semantics,
         config,
         tool_ctx,
     );
@@ -65,6 +67,7 @@ pub(super) fn prepare_turn<'a>(
         msg,
         config,
         request_plan,
+        request_semantics,
         session,
         latency,
     )
