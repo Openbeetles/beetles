@@ -80,6 +80,7 @@ struct HttpServerSpawnContext {
     outbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     memory_store: Arc<dyn beetle::memory::MemoryStore + Send + Sync>,
     session_store: Arc<dyn beetle::memory::SessionStore + Send + Sync>,
+    system_inbound_tx: beetle::bus::SystemInboundTx,
     skill_prompt_cache: Arc<beetle::skills::SkillPromptCache>,
     inbound_tx: beetle::bus::InboundTx,
     shared_config: Arc<RwLock<AppConfig>>,
@@ -284,6 +285,7 @@ fn spawn_http_config_server(
             ctx.outbound_depth,
             ctx.memory_store,
             ctx.session_store,
+            ctx.system_inbound_tx,
             ctx.skill_prompt_cache,
             ctx.inbound_tx,
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -2055,6 +2057,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             outbound_depth: Arc::clone(&outbound_depth),
             memory_store: Arc::clone(&memory_store),
             session_store: Arc::clone(&session_store),
+            system_inbound_tx: system_inbound_tx.clone(),
             skill_prompt_cache: Arc::clone(&skill_prompt_cache),
             inbound_tx: user_inbound_tx.clone(),
             shared_config: Arc::clone(&shared_runtime_config),
@@ -2479,6 +2482,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             beetle::agent::AgentRunStrategy::LinuxEnhanced
         };
         let agent_config = Arc::new(beetle::AgentLoopConfig {
+            platform: Arc::clone(&platform),
             memory_store: Arc::clone(&memory_store),
             long_term_memory_store: Arc::clone(&long_term_memory_store),
             continuity_capsule_store: Arc::clone(&continuity_capsule_store),

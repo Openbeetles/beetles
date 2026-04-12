@@ -13,6 +13,7 @@ pub mod linux_release;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod linux_supervisor;
 pub mod mode;
+pub mod operator_maintenance;
 pub mod presence;
 pub mod soul_kernel;
 pub mod system_work;
@@ -47,6 +48,11 @@ pub use linux_release::{
     REL_PATH_STATE_SCHEMA_STATUS,
 };
 pub use mode::{RuntimeMode, RuntimeModeActionBudget, RuntimeModeSnapshot};
+pub use operator_maintenance::{
+    drain_persisted_operator_maintenance_requests, submit_operator_maintenance_request,
+    OperatorMaintenanceAction, OperatorMaintenanceRequest, OperatorMaintenanceSubmission,
+    CHANNEL_OPERATOR_MAINTENANCE,
+};
 pub use presence::{
     inspect_platform_presence, PresenceDisplayProjection, PresenceSnapshot, PresenceState,
 };
@@ -62,3 +68,5 @@ pub use workflow::{
     WorkflowAuditSummary, WorkflowDisposition, WorkflowEffect, WorkflowKind,
     WorkflowRecoveryPolicy, WorkflowTrigger,
 };
+#[cfg(test)]
+pub use workflow::workflow_audit_test_guard;

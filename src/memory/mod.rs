@@ -352,9 +352,10 @@ pub use self_model::{
     SELF_MODEL_TOTAL_CHAR_LIMIT,
 };
 pub use self_runtime::{
-    enqueue_self_runtime_idle_tick, enqueue_self_runtime_post_reply, run_self_runtime,
-    self_runtime_tick, SelfRuntimeContext, SelfRuntimeDecision, SelfRuntimeJobPayload,
-    SelfRuntimeOutcome, SelfRuntimeTrigger, SELF_RUNTIME_CHANNEL, SELF_RUNTIME_SYSTEM_PROMPT,
+    enqueue_self_runtime_idle_tick, enqueue_self_runtime_operator_request,
+    enqueue_self_runtime_post_reply, run_self_runtime, self_runtime_tick, SelfRuntimeContext,
+    SelfRuntimeDecision, SelfRuntimeJobPayload, SelfRuntimeOutcome, SelfRuntimeTrigger,
+    SELF_RUNTIME_CHANNEL, SELF_RUNTIME_SYSTEM_PROMPT,
 };
 pub use self_scope::{board_subject_scope_id, relationship_scope_id, BOARD_SUBJECT_SCOPE_ID};
 pub use self_state::{

@@ -61,6 +61,8 @@ pub enum WorkflowEffect {
     SendOutboundNudge,
     RunRepairPass,
     PersistRecoveryIntent,
+    ReplayRecovery,
+    RollbackRelease,
     RequestRestart,
 }
 

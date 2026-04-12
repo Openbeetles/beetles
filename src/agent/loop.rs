@@ -75,7 +75,7 @@ use crate::metrics;
 use crate::orchestrator::admission::{LlmDecision, ToolDecision};
 use crate::runtime::system_work::{
     classify_system_work, CHANNEL_CRON, CHANNEL_LONG_TERM_MEMORY_REFRESH,
-    CHANNEL_POST_REPLY_MAINTENANCE, CHANNEL_SELF_RUNTIME,
+    CHANNEL_OPERATOR_MAINTENANCE, CHANNEL_POST_REPLY_MAINTENANCE, CHANNEL_SELF_RUNTIME,
 };
 use crate::state;
 use crate::task_execution::{
@@ -214,10 +214,15 @@ fn is_self_runtime_job(msg: &PcMsg) -> bool {
     msg.ingress == IngressKind::System && msg.channel.as_ref() == CHANNEL_SELF_RUNTIME
 }
 
+fn is_operator_maintenance_job(msg: &PcMsg) -> bool {
+    msg.ingress == IngressKind::System && msg.channel.as_ref() == CHANNEL_OPERATOR_MAINTENANCE
+}
+
 fn is_lane_background_job(msg: &PcMsg) -> bool {
     is_long_term_memory_refresh_job(msg)
         || is_post_reply_maintenance_job(msg)
         || is_self_runtime_job(msg)
+        || is_operator_maintenance_job(msg)
 }
 
 fn background_enqueue_block_reason() -> Option<&'static str> {
@@ -277,6 +282,15 @@ fn should_defer_background_job(msg: &PcMsg) -> Option<(&'static str, u64)> {
             return Some(("post_reply_quiet_window", delay_ms));
         }
         return None;
+    }
+    if is_operator_maintenance_job(msg) {
+        append_background_defer_workflow_audit(
+            msg,
+            crate::runtime::WorkflowTrigger::OperatorRequested,
+            crate::runtime::WorkflowKind::OperatorMaintenance,
+            "message_queues_busy",
+        );
+        return Some(("message_queues_busy", 1_000));
     }
     if !is_self_runtime_job(msg) {
         return None;
@@ -1864,6 +1878,7 @@ struct EndTurnFollowupContext<'a> {
 
 /// Agent 循环的存储与运行参数，由 main 构建并传入 run_agent_loop，减少参数数量。
 pub struct AgentLoopConfig {
+    pub platform: Arc<dyn crate::Platform>,
     pub memory_store: Arc<dyn MemoryStore + Send + Sync>,
     pub long_term_memory_store: Arc<dyn LongTermMemoryStore + Send + Sync>,
     pub continuity_capsule_store: Arc<dyn crate::memory::ContinuityCapsuleStore + Send + Sync>,
@@ -1990,11 +2005,28 @@ fn run_agent_loop_main(
     let recv_timeout = Duration::from_secs(INBOUND_RECV_TIMEOUT_SECS);
     loop {
         let prefer_system_once = consecutive_user_msgs >= MAX_CONSECUTIVE_USER_MSGS;
+        let mut before_poll = || {
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            {
+                if let Err(error) =
+                    crate::runtime::drain_persisted_operator_maintenance_requests(
+                        &system_inbound_tx,
+                        4,
+                    )
+                {
+                    log::warn!(
+                        "[operator_maintenance] failed to drain persisted requests: {}",
+                        error
+                    );
+                }
+            }
+        };
         let mut msg = match recv_next_agent_msg(
             &user_inbound_rx,
             &system_inbound_rx,
             recv_timeout,
             prefer_system_once,
+            &mut before_poll,
         ) {
             AgentRecvStatus::Message(m) => m,
             AgentRecvStatus::Timeout => {
@@ -2236,6 +2268,7 @@ mod tests {
 
     #[test]
     fn post_reply_maintenance_defers_inside_quiet_window() {
+        let _guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
         metrics::record_message_out();
         let msg = PcMsg::new_system(CHANNEL_POST_REPLY_MAINTENANCE, "chat-1", "{}")
@@ -3179,6 +3212,7 @@ mod tests {
         config.qq_channel_app_id = "qq-app".to_string();
         config.qq_channel_secret = "qq-secret".to_string();
         AgentLoopConfig {
+            platform: Arc::new(crate::platform::LinuxPlatform::new()),
             memory_store: Arc::new(EmptyMemoryStore),
             long_term_memory_store: Arc::new(StubLongTermMemoryStore),
             continuity_capsule_store: Arc::new(StubContinuityCapsuleStore),

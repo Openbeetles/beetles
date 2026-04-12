@@ -666,6 +666,14 @@ pub fn dispatch(
                 body.into_bytes(),
             ))
         }
+        ("POST", "/api/memory/maintenance") => {
+            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
+                return Ok(o);
+            }
+            let body_str = utf8_body(&incoming.body)?;
+            let r = handlers::memory_maintenance::post(ctx, body_str);
+            Ok(api_to_out(r))
+        }
         ("GET", "/api/capability_packages") => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
@@ -964,5 +972,78 @@ fn dispatch_ota(
             Ok(Some(out))
         }
         _ => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dispatch;
+    use crate::bus::new_inbound_channel;
+    use crate::platform::http_server::handlers::{
+        build_default_test_handler_context, HandlerContext,
+    };
+    use crate::platform::http_server::router::{IncomingRequest, RouterEnv};
+    use crate::runtime::{OperatorMaintenanceAction, OperatorMaintenanceRequest};
+    use serde_json::Value;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    fn build_router_env() -> RouterEnv {
+        let (inbound_tx, _inbound_rx, _inbound_depth) =
+            new_inbound_channel(crate::constants::DEFAULT_CAPACITY);
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        {
+            let qq_msg_id_cache = Arc::new(Mutex::new(HashMap::new()));
+            RouterEnv::new(inbound_tx, qq_msg_id_cache, false, String::new(), String::new())
+        }
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        {
+            RouterEnv::new(inbound_tx)
+        }
+    }
+
+    fn build_authed_ctx() -> HandlerContext {
+        let ctx = build_default_test_handler_context();
+        crate::platform::pairing::set_code(ctx.config_store.as_ref(), "123456")
+            .expect("set pairing code");
+        crate::platform::csrf::init().expect("init csrf");
+        ctx
+    }
+
+    #[test]
+    fn operator_maintenance_route_accepts_structured_runtime_request() {
+        let (system_inbound_tx, system_inbound_rx, _system_inbound_depth) =
+            new_inbound_channel(crate::constants::DEFAULT_CAPACITY);
+        let mut ctx = build_authed_ctx();
+        ctx.system_inbound_tx = Some(system_inbound_tx);
+        let env = build_router_env();
+        let csrf = crate::platform::csrf::get_token().expect("csrf token");
+        let request = IncomingRequest {
+            method: "POST".to_string(),
+            uri: "/api/memory/maintenance".to_string(),
+            headers: vec![
+                ("X-Pairing-Code".to_string(), "123456".to_string()),
+                ("X-CSRF-Token".to_string(), csrf),
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ],
+            body: br#"{"action":"run_repair_plan"}"#.to_vec(),
+        };
+
+        let response = dispatch(&ctx, &env, request).expect("dispatch maintenance route");
+        assert_eq!(response.status, 202);
+
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        assert_eq!(parsed["accepted"], true);
+        assert_eq!(parsed["action"], "run_repair_plan");
+        assert_eq!(parsed["delivery"], "in_memory");
+
+        let queued = system_inbound_rx.try_recv().expect("queued maintenance request");
+        assert_eq!(
+            queued.channel.as_ref(),
+            crate::runtime::CHANNEL_OPERATOR_MAINTENANCE
+        );
+        let request: OperatorMaintenanceRequest =
+            serde_json::from_str(&queued.content).expect("decode queued request");
+        assert_eq!(request.action, OperatorMaintenanceAction::RunRepairPlan);
     }
 }

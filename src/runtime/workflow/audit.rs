@@ -86,23 +86,23 @@ pub fn reset_workflow_audit_for_tests() {
 }
 
 #[cfg(test)]
+pub fn workflow_audit_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::runtime::workflow::{
         WorkflowEffect, WorkflowKind, WorkflowRecoveryPolicy, WorkflowTrigger,
     };
-    use std::sync::{Mutex, OnceLock};
-
-    fn test_guard() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-    }
 
     #[test]
     fn workflow_audit_snapshot_counts_dispositions() {
-        let _guard = test_guard();
+        let _guard = workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
         append_workflow_audit(WorkflowAuditRecord::new(
             WorkflowKind::UpcomingReminderNudge,
@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn workflow_audit_keeps_recent_records_bounded() {
-        let _guard = test_guard();
+        let _guard = workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
         for idx in 0..(WORKFLOW_AUDIT_CAPACITY + 4) {
             append_workflow_audit(WorkflowAuditRecord::new(

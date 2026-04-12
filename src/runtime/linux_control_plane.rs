@@ -97,6 +97,7 @@ fn run(platform: Arc<dyn Platform>) -> Result<()> {
             Arc::new(AtomicUsize::new(0)),
             platform.memory_store(),
             platform.session_store(),
+            None,
             skill_prompt_cache,
             Arc::new(RwLock::new((*config).clone())),
             config.llm_stream,
@@ -269,6 +270,21 @@ mod tests {
         }
     }
 
+    fn authed_request(method: &str, uri: &str, body: &str) -> IncomingRequest {
+        crate::platform::csrf::init().expect("init csrf");
+        let csrf = crate::platform::csrf::get_token().expect("csrf token");
+        IncomingRequest {
+            method: method.to_string(),
+            uri: uri.to_string(),
+            headers: vec![
+                ("X-Pairing-Code".to_string(), "123456".to_string()),
+                ("X-CSRF-Token".to_string(), csrf),
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ],
+            body: body.as_bytes().to_vec(),
+        }
+    }
+
     #[test]
     fn supervisor_root_inventory_exposes_shared_tools_and_skills_routes() {
         let (ctx, router_env) = build_test_context();
@@ -321,5 +337,33 @@ mod tests {
         let out =
             dispatch(&ctx, &router_env, request("POST", "/api/webhook")).expect("webhook dispatch");
         assert_eq!(out.status, 404);
+    }
+
+    #[test]
+    fn supervisor_control_plane_persists_operator_maintenance_requests() {
+        let (ctx, router_env) = build_test_context();
+        let state_root = crate::platform::state_mount_path();
+        if state_root.is_file() {
+            let _ = std::fs::remove_file(&state_root);
+        }
+        std::fs::create_dir_all(&state_root).expect("create state root");
+        let maintenance_root = state_root.join("runtime/operator_maintenance");
+        let _ = std::fs::remove_dir_all(&maintenance_root);
+        let out = dispatch(
+            &ctx,
+            &router_env,
+            authed_request(
+                "POST",
+                "/api/memory/maintenance",
+                r#"{"action":"replay_recovery"}"#,
+            ),
+        )
+        .expect("maintenance dispatch");
+        assert_eq!(out.status, 202);
+
+        let parsed: Value = serde_json::from_slice(&out.body).expect("response json");
+        assert_eq!(parsed["accepted"], true);
+        assert_eq!(parsed["delivery"], "persisted_bridge");
+        let _ = std::fs::remove_dir_all(maintenance_root);
     }
 }

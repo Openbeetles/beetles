@@ -10,6 +10,8 @@ pub use audit::{
 };
 #[cfg(test)]
 pub use audit::reset_workflow_audit_for_tests;
+#[cfg(test)]
+pub use audit::workflow_audit_test_guard;
 pub use types::{
     WorkflowAdmissionSnapshot, WorkflowAuditRecord, WorkflowDisposition, WorkflowEffect,
     WorkflowKind, WorkflowRecoveryPolicy, WorkflowTrigger,

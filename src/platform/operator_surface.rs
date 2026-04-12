@@ -41,6 +41,7 @@ const ESP_WINDOWED_ENDPOINTS: &[&str] = &[
     "GET /api/sessions",
     "DELETE /api/sessions",
     "GET /api/memory/status",
+    "POST /api/memory/maintenance",
     "GET /api/capability_packages",
     "POST /api/capability_packages",
     "GET /api/skills",
@@ -139,6 +140,7 @@ pub fn control_plane_inventory(
             "POST /api/user",
             "GET /api/sessions",
             "GET /api/memory/status",
+            "POST /api/memory/maintenance",
             "GET /api/capability_packages",
             "POST /api/capability_packages",
             "GET /api/skills",
@@ -198,6 +200,7 @@ pub fn route_requires_operator_window(memory_system_kind: MemorySystemKind, path
                 | "/api/channel_connectivity"
                 | "/api/sessions"
                 | "/api/memory/status"
+                | "/api/memory/maintenance"
                 | "/api/capability_packages"
                 | "/api/skills"
                 | "/api/skills/import"

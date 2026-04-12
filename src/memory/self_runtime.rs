@@ -40,7 +40,8 @@ use self::governance::{
 use self::llm::decide_self_runtime;
 use self::scheduler::idle_memory_hygiene_budget_allows_run;
 pub use self::scheduler::{
-    enqueue_self_runtime_idle_tick, enqueue_self_runtime_post_reply, self_runtime_tick,
+    enqueue_self_runtime_idle_tick, enqueue_self_runtime_operator_request,
+    enqueue_self_runtime_post_reply, self_runtime_tick,
 };
 #[cfg(test)]
 use self::scheduler::{idle_self_runtime_due, should_enqueue_self_runtime_post_reply_with_state};
@@ -119,6 +120,7 @@ pub(super) fn self_runtime_private_garden_doc_limit(profile: MemoryProfile) -> u
 pub enum SelfRuntimeTrigger {
     PostReply,
     IdleTick,
+    OperatorRequested,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -322,6 +324,7 @@ fn self_runtime_ingress(trigger: SelfRuntimeTrigger) -> IngressKind {
     match trigger {
         SelfRuntimeTrigger::PostReply => IngressKind::User,
         SelfRuntimeTrigger::IdleTick => IngressKind::System,
+        SelfRuntimeTrigger::OperatorRequested => IngressKind::System,
     }
 }
 
@@ -1047,6 +1050,7 @@ fn execute_self_runtime_actions(
         let trigger = match payload.trigger {
             SelfRuntimeTrigger::PostReply => "post_reply",
             SelfRuntimeTrigger::IdleTick => "idle_tick",
+            SelfRuntimeTrigger::OperatorRequested => "operator_requested",
         };
         crate::platform::task_wdt::feed_current_task();
         run_boundary_persona_refresh_with_state(

@@ -936,6 +936,7 @@ mod tests {
     #[test]
     fn initiative_audit_marks_no_useful_trigger_as_no_trigger() {
         let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _audit_guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
         let snapshot = InitiativeSnapshot {
             action: InitiativeAction::Hold,
@@ -964,6 +965,7 @@ mod tests {
     #[test]
     fn initiative_audit_marks_presence_block_as_suppress() {
         let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _audit_guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
         let snapshot = InitiativeSnapshot {
             action: InitiativeAction::Hold,
@@ -995,6 +997,7 @@ mod tests {
     #[test]
     fn initiative_audit_marks_ready_enqueue_as_execute_now() {
         let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _audit_guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
         let snapshot = InitiativeSnapshot {
             action: InitiativeAction::UpcomingReminderNudge,

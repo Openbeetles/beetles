@@ -6,6 +6,7 @@ fn workflow_kind_for_self_runtime_trigger(trigger: SelfRuntimeTrigger) -> crate:
     match trigger {
         SelfRuntimeTrigger::PostReply => crate::runtime::WorkflowKind::SelfRuntimePostReply,
         SelfRuntimeTrigger::IdleTick => crate::runtime::WorkflowKind::SelfRuntimeIdleTick,
+        SelfRuntimeTrigger::OperatorRequested => crate::runtime::WorkflowKind::OperatorMaintenance,
     }
 }
 
@@ -15,6 +16,7 @@ fn workflow_trigger_for_self_runtime_trigger(
     match trigger {
         SelfRuntimeTrigger::PostReply => crate::runtime::WorkflowTrigger::PostReply,
         SelfRuntimeTrigger::IdleTick => crate::runtime::WorkflowTrigger::CronTick,
+        SelfRuntimeTrigger::OperatorRequested => crate::runtime::WorkflowTrigger::OperatorRequested,
     }
 }
 
@@ -172,6 +174,26 @@ pub(super) fn should_enqueue_self_runtime_post_reply_with_state(
 
 pub fn enqueue_self_runtime_idle_tick(system_inbound_tx: &SystemInboundTx, chat_id: &str) -> bool {
     enqueue_self_runtime_idle_tick_for_relation(system_inbound_tx, chat_id, "self_runtime_idle")
+}
+
+pub fn enqueue_self_runtime_operator_request(
+    system_inbound_tx: &SystemInboundTx,
+    chat_id: &str,
+    source_channel: &str,
+) -> bool {
+    enqueue_self_runtime_job_now(
+        system_inbound_tx,
+        chat_id,
+        SelfRuntimeJobPayload {
+            trigger: SelfRuntimeTrigger::OperatorRequested,
+            source_channel: source_channel.trim().to_string(),
+            user_content: String::new(),
+            reply_content: String::new(),
+            tool_calls: 0,
+            external_content_used: false,
+            now_secs: current_unix_secs(),
+        },
+    )
 }
 
 fn enqueue_self_runtime_idle_tick_for_relation(
@@ -855,6 +877,7 @@ mod tests {
     #[test]
     fn self_runtime_tick_skips_session_enumeration_when_idle_runtime_is_not_due() {
         let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _audit_guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
         let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
         let session_store = CountingSessionStore::default();
@@ -904,6 +927,7 @@ mod tests {
     #[test]
     fn self_runtime_tick_skips_session_enumeration_when_voice_exclusive_is_active() {
         let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _audit_guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
         crate::state::set_voice_exclusive_active(true);
 
@@ -957,6 +981,7 @@ mod tests {
     #[test]
     fn enqueue_self_runtime_post_reply_records_deferred_workflow_audit() {
         let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _audit_guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
         let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
 
@@ -986,6 +1011,7 @@ mod tests {
     #[test]
     fn enqueue_self_runtime_job_now_records_execute_now_workflow_audit() {
         let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _audit_guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
         let (system_inbound_tx, system_inbound_rx, _depth) = new_inbound_channel(4);
 

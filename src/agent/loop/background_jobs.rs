@@ -638,6 +638,271 @@ fn run_self_runtime_job(
     }
 }
 
+fn append_operator_maintenance_workflow_audit(
+    request: &crate::runtime::OperatorMaintenanceRequest,
+    disposition: crate::runtime::WorkflowDisposition,
+    rationale: &str,
+    effect: crate::runtime::WorkflowEffect,
+) {
+    crate::runtime::append_workflow_audit(
+        crate::runtime::WorkflowAuditRecord::new(
+            crate::runtime::WorkflowKind::OperatorMaintenance,
+            crate::runtime::WorkflowTrigger::OperatorRequested,
+            disposition,
+            effect,
+            crate::runtime::WorkflowRecoveryPolicy::RetryAfterModeResume,
+            rationale,
+            crate::util::current_unix_secs(),
+        )
+        .with_target(None, request.channel.as_deref(), request.chat_id.as_deref()),
+    );
+}
+
+fn resolve_operator_maintenance_target(
+    config: &AgentLoopConfig,
+    request: &crate::runtime::OperatorMaintenanceRequest,
+    now_secs: u64,
+) -> Option<(String, String)> {
+    if let Some(chat_id) = request
+        .chat_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let channel = request
+            .channel
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("operator_maintenance");
+        return Some((chat_id.to_string(), channel.to_string()));
+    }
+    let subject_id = crate::memory::board_subject_scope_id();
+    let self_continuity = config.self_continuity_store.get(subject_id).ok().flatten();
+    let relationship_portfolio = config
+        .relationship_portfolio_store
+        .get(subject_id)
+        .ok()
+        .flatten();
+    let relationship_topology = config
+        .relationship_topology_store
+        .get(subject_id)
+        .ok()
+        .flatten();
+    crate::memory::select_personality_governance_targets(
+        self_continuity.as_ref(),
+        relationship_portfolio.as_ref(),
+        relationship_topology.as_ref(),
+        now_secs,
+        1,
+    )
+    .into_iter()
+    .next()
+    .map(|target| (target.chat_id, target.channel))
+}
+
+fn rebuild_operator_continuity_snapshots(
+    config: &AgentLoopConfig,
+    request: &crate::runtime::OperatorMaintenanceRequest,
+    now_secs: u64,
+) -> crate::error::Result<usize> {
+    let mut target_chat_ids = if let Some(chat_id) = request
+        .chat_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        vec![chat_id.to_string()]
+    } else {
+        crate::memory::select_active_continuity_snapshot_chat_ids(
+            config.session_store.as_ref(),
+            config.self_continuity_store.as_ref(),
+            config.relationship_portfolio_store.as_ref(),
+            config.relationship_topology_store.as_ref(),
+            None,
+            now_secs,
+            7 * 86_400,
+            4,
+        )
+    };
+    target_chat_ids.sort();
+    target_chat_ids.dedup();
+    let mut exported = 0usize;
+    for chat_id in target_chat_ids {
+        let snapshot = crate::memory::export_continuity_snapshot(
+            crate::memory::ContinuitySnapshotExportContext {
+                long_term_memory_store: config.long_term_memory_store.as_ref(),
+                session_summary_store: config.session_summary_store.as_ref(),
+                execution_state_store: config.execution_state_store.as_ref(),
+                self_model_store: config.self_model_store.as_ref(),
+                self_authored_core_store: config.self_authored_core_store.as_ref(),
+                core_revision_ledger_store: config.core_revision_ledger_store.as_ref(),
+                self_continuity_store: config.self_continuity_store.as_ref(),
+                relationship_constitution_store: config.relationship_constitution_store.as_ref(),
+                relationship_portfolio_store: config.relationship_portfolio_store.as_ref(),
+                relationship_topology_store: config.relationship_topology_store.as_ref(),
+            },
+            chat_id.as_str(),
+            crate::memory::ContinuitySnapshotMode::FullRestore,
+            now_secs,
+        )?;
+        let sanitized = chat_id
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        let rel_path = format!(
+            "memory/continuity_snapshots/manual/operator_{}_{}.json",
+            sanitized.trim_matches('_'),
+            now_secs
+        );
+        let payload = serde_json::to_vec_pretty(&snapshot).map_err(|error| {
+            crate::error::Error::config("operator_maintenance_snapshot", error.to_string())
+        })?;
+        config.platform.state_fs().write(rel_path.as_str(), &payload)?;
+        exported = exported.saturating_add(1);
+    }
+    Ok(exported)
+}
+
+fn run_operator_maintenance_job(config: &AgentLoopConfig, system_inbound_tx: &SystemInboundTx, msg: &PcMsg) {
+    let request: crate::runtime::OperatorMaintenanceRequest = match serde_json::from_str(&msg.content)
+    {
+        Ok(request) => request,
+        Err(error) => {
+            log::warn!(
+                "[operator_maintenance] decode failed chat_id={}: {}",
+                msg.chat_id,
+                error
+            );
+            return;
+        }
+    };
+    let now_secs = crate::util::current_unix_secs();
+    match request.action {
+        crate::runtime::OperatorMaintenanceAction::RunRepairPlan
+        | crate::runtime::OperatorMaintenanceAction::ReconcileRelationshipGovernance => {
+            let Some((chat_id, source_channel)) =
+                resolve_operator_maintenance_target(config, &request, now_secs)
+            else {
+                append_operator_maintenance_workflow_audit(
+                    &request,
+                    crate::runtime::WorkflowDisposition::NoTrigger,
+                    "operator_target_unavailable",
+                    crate::runtime::WorkflowEffect::Noop,
+                );
+                return;
+            };
+            if crate::memory::enqueue_self_runtime_operator_request(
+                system_inbound_tx,
+                chat_id.as_str(),
+                source_channel.as_str(),
+            ) {
+                append_operator_maintenance_workflow_audit(
+                    &request,
+                    crate::runtime::WorkflowDisposition::ExecuteNow,
+                    "operator_repair_dispatched",
+                    crate::runtime::WorkflowEffect::RunRepairPass,
+                );
+            } else {
+                append_operator_maintenance_workflow_audit(
+                    &request,
+                    crate::runtime::WorkflowDisposition::ExecuteFailed,
+                    "operator_repair_enqueue_failed",
+                    crate::runtime::WorkflowEffect::Noop,
+                );
+            }
+        }
+        crate::runtime::OperatorMaintenanceAction::RebuildContinuitySnapshot => {
+            match rebuild_operator_continuity_snapshots(config, &request, now_secs) {
+                Ok(0) => append_operator_maintenance_workflow_audit(
+                    &request,
+                    crate::runtime::WorkflowDisposition::NoTrigger,
+                    "operator_snapshot_target_unavailable",
+                    crate::runtime::WorkflowEffect::Noop,
+                ),
+                Ok(count) => {
+                    log::info!(
+                        "[operator_maintenance] continuity snapshots rebuilt count={}",
+                        count
+                    );
+                    append_operator_maintenance_workflow_audit(
+                        &request,
+                        crate::runtime::WorkflowDisposition::ExecuteNow,
+                        "operator_snapshot_rebuilt",
+                        crate::runtime::WorkflowEffect::PersistRecoveryIntent,
+                    );
+                }
+                Err(error) => {
+                    log::warn!("[operator_maintenance] snapshot rebuild failed: {}", error);
+                    append_operator_maintenance_workflow_audit(
+                        &request,
+                        crate::runtime::WorkflowDisposition::ExecuteFailed,
+                        "operator_snapshot_rebuild_failed",
+                        crate::runtime::WorkflowEffect::Noop,
+                    );
+                }
+            }
+        }
+        crate::runtime::OperatorMaintenanceAction::ReplayRecovery => {
+            let report = crate::runtime::ensure_platform_soul_kernel_recovery(
+                config.platform.as_ref(),
+                now_secs,
+            );
+            if report.restore_attempted {
+                append_operator_maintenance_workflow_audit(
+                    &request,
+                    crate::runtime::WorkflowDisposition::ExecuteNow,
+                    "operator_recovery_replayed",
+                    crate::runtime::WorkflowEffect::ReplayRecovery,
+                );
+            } else {
+                append_operator_maintenance_workflow_audit(
+                    &request,
+                    crate::runtime::WorkflowDisposition::NoTrigger,
+                    "operator_recovery_already_steady",
+                    crate::runtime::WorkflowEffect::Noop,
+                );
+            }
+        }
+        crate::runtime::OperatorMaintenanceAction::RefreshOperatorDigest => {
+            match crate::platform::memory_operator_surface::build_memory_operator_surface(
+                config.platform.as_ref(),
+                None,
+                None,
+            ) {
+                Ok(surface) => {
+                    log::info!(
+                        "[operator_maintenance] operator digest refreshed repair_needed={} primary_action={}",
+                        surface.repair.repair_needed,
+                        surface.repair.primary_action
+                    );
+                    append_operator_maintenance_workflow_audit(
+                        &request,
+                        crate::runtime::WorkflowDisposition::ExecuteNow,
+                        "operator_digest_refreshed",
+                        crate::runtime::WorkflowEffect::Noop,
+                    );
+                }
+                Err(error) => {
+                    log::warn!("[operator_maintenance] digest refresh failed: {}", error);
+                    append_operator_maintenance_workflow_audit(
+                        &request,
+                        crate::runtime::WorkflowDisposition::ExecuteFailed,
+                        "operator_digest_refresh_failed",
+                        crate::runtime::WorkflowEffect::Noop,
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[cold]
 #[inline(never)]
 pub(super) fn try_run_lane_background_job(
@@ -657,6 +922,10 @@ pub(super) fn try_run_lane_background_job(
     }
     if super::is_self_runtime_job(msg) {
         run_self_runtime_job(http, worker_llm, config, system_inbound_tx, msg);
+        return true;
+    }
+    if super::is_operator_maintenance_job(msg) {
+        run_operator_maintenance_job(config, system_inbound_tx, msg);
         return true;
     }
     false

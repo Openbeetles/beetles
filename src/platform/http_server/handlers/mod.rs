@@ -40,6 +40,7 @@ pub struct HandlerContext {
     pub capability_package_runtime_capabilities: Arc<CapabilityPackageRuntimeCapabilities>,
     pub inbound_depth: Arc<AtomicUsize>,
     pub outbound_depth: Arc<AtomicUsize>,
+    pub system_inbound_tx: Option<crate::bus::SystemInboundTx>,
     pub version: Arc<str>,
     pub board_id: Arc<str>,
     pub cached_config: Arc<RwLock<AppConfig>>,
@@ -86,6 +87,7 @@ pub fn build_runtime_handler_context(
     outbound_depth: Arc<AtomicUsize>,
     memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
     session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
+    system_inbound_tx: Option<crate::bus::SystemInboundTx>,
     skill_prompt_cache: Arc<crate::skills::SkillPromptCache>,
     cached_config: Arc<RwLock<AppConfig>>,
     llm_stream_enabled: bool,
@@ -117,6 +119,7 @@ pub fn build_runtime_handler_context(
         capability_package_runtime_capabilities,
         inbound_depth,
         outbound_depth,
+        system_inbound_tx,
         version: Arc::from(env!("CARGO_PKG_VERSION")),
         board_id: Arc::from(crate::platform::runtime_board::resolved_board_id()),
         cached_config,
@@ -194,6 +197,7 @@ pub(crate) fn build_test_handler_context(
         ),
         inbound_depth: Arc::new(AtomicUsize::new(0)),
         outbound_depth: Arc::new(AtomicUsize::new(0)),
+        system_inbound_tx: None,
         version: Arc::from("0.0.0"),
         board_id: Arc::from(board_id),
         cached_config: Arc::new(RwLock::new(config)),
@@ -212,6 +216,7 @@ pub mod diagnose;
 pub mod hardware_discovery;
 pub mod health;
 pub mod memory;
+pub mod memory_maintenance;
 pub mod metrics;
 pub mod operator_status;
 pub mod operator_window;

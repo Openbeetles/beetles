@@ -274,6 +274,7 @@ pub(super) fn recv_next_agent_msg(
     system_inbound_rx: &InboundRx,
     recv_timeout: Duration,
     prefer_system_once: bool,
+    before_poll: &mut dyn FnMut(),
 ) -> AgentRecvStatus {
     let poll_slice = recv_timeout.min(Duration::from_millis(INBOUND_POLL_SLICE_MS));
     let deadline = Instant::now() + recv_timeout;
@@ -281,6 +282,7 @@ pub(super) fn recv_next_agent_msg(
     let mut system_disconnected = false;
 
     loop {
+        before_poll();
         if prefer_system_once && !system_disconnected {
             match system_inbound_rx.try_recv() {
                 Ok(msg) => return AgentRecvStatus::Message(msg),
@@ -315,6 +317,7 @@ pub(super) fn recv_next_agent_msg(
         let wait = deadline
             .saturating_duration_since(Instant::now())
             .min(poll_slice);
+        before_poll();
         if !user_disconnected {
             match user_inbound_rx.recv_timeout(wait) {
                 Ok(msg) => return AgentRecvStatus::Message(msg),

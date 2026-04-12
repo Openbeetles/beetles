@@ -201,6 +201,13 @@ pub fn next_delayed_task_wait(max_wait: Duration) -> Duration {
 
 #[cfg(test)]
 pub fn reset_delayed_tasks_for_tests() {
+    crate::state::set_voice_exclusive_active(false);
+    crate::state::set_background_maintenance_active(false);
+    crate::state::set_config_plane_active(false);
+    crate::state::set_boot_phase_active(false);
+    crate::state::set_pairing_state_known(false);
+    crate::state::set_pairing_required(false);
+    crate::state::set_recovery_safe_mode_active(false);
     state()
         .pending
         .lock()

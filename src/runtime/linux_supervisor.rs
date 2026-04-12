@@ -125,6 +125,41 @@ impl LinuxSupervisorState {
     }
 }
 
+fn append_supervisor_workflow_audit(
+    disposition: crate::runtime::WorkflowDisposition,
+    rationale: &str,
+    effect: crate::runtime::WorkflowEffect,
+    recovery_policy: crate::runtime::WorkflowRecoveryPolicy,
+    happened_at: u64,
+) {
+    crate::runtime::append_workflow_audit(
+        crate::runtime::WorkflowAuditRecord::new(
+            crate::runtime::WorkflowKind::RebootRecovery,
+            crate::runtime::WorkflowTrigger::ModeTransition,
+            disposition,
+            effect,
+            recovery_policy,
+            format!("linux_supervisor:{}", rationale.trim()),
+            happened_at,
+        ),
+    );
+}
+
+fn append_supervisor_backoff_workflow_audit(rationale: &str, happened_at: u64, backoff_secs: u64) {
+    crate::runtime::append_workflow_audit(
+        crate::runtime::WorkflowAuditRecord::new(
+            crate::runtime::WorkflowKind::RebootRecovery,
+            crate::runtime::WorkflowTrigger::ModeTransition,
+            crate::runtime::WorkflowDisposition::DeferUntil,
+            crate::runtime::WorkflowEffect::RequestRestart,
+            crate::runtime::WorkflowRecoveryPolicy::ReplayAfterBoot,
+            format!("linux_supervisor:{}", rationale.trim()),
+            happened_at,
+        )
+        .with_next_allowed_at(Some(happened_at.saturating_add(backoff_secs))),
+    );
+}
+
 pub fn run_supervisor(
     platform: Arc<dyn crate::platform::Platform>,
     config_path: Option<String>,
@@ -154,6 +189,7 @@ pub fn run_supervisor(
         if let Some(action) = consume_control_request()? {
             match action {
                 SupervisorControlAction::Restart => {
+                    let now_secs = crate::util::current_unix_secs();
                     state.last_event = "restart_requested".to_string();
                     state.last_error = None;
                     clear_failure_burst(&mut state);
@@ -163,7 +199,7 @@ pub fn run_supervisor(
                         record_child_exit(
                             &mut state,
                             exit,
-                            crate::util::current_unix_secs(),
+                            now_secs,
                             "restart_requested",
                         );
                     }
@@ -171,13 +207,25 @@ pub fn run_supervisor(
                     release_validation_recorded = false;
                     state.restart_count = state.restart_count.saturating_add(1);
                     state.current_state = "backoff".to_string();
+                    let backoff_secs = restart_backoff_secs(state.restart_count);
+                    append_supervisor_workflow_audit(
+                        crate::runtime::WorkflowDisposition::ExecuteNow,
+                        "restart_requested",
+                        crate::runtime::WorkflowEffect::RequestRestart,
+                        crate::runtime::WorkflowRecoveryPolicy::ReplayAfterBoot,
+                        now_secs,
+                    );
+                    append_supervisor_backoff_workflow_audit(
+                        "restart_backoff",
+                        now_secs,
+                        backoff_secs,
+                    );
                     write_state(&state)?;
-                    std::thread::sleep(Duration::from_secs(restart_backoff_secs(
-                        state.restart_count,
-                    )));
+                    std::thread::sleep(Duration::from_secs(backoff_secs));
                     continue;
                 }
                 SupervisorControlAction::Stop => {
+                    let now_secs = crate::util::current_unix_secs();
                     state.last_event = "stop_requested".to_string();
                     state.current_state = "stopping".to_string();
                     clear_failure_burst(&mut state);
@@ -187,10 +235,17 @@ pub fn run_supervisor(
                         record_child_exit(
                             &mut state,
                             exit,
-                            crate::util::current_unix_secs(),
+                            now_secs,
                             "stop_requested",
                         );
                     }
+                    append_supervisor_workflow_audit(
+                        crate::runtime::WorkflowDisposition::Cancel,
+                        "stop_requested",
+                        crate::runtime::WorkflowEffect::Noop,
+                        crate::runtime::WorkflowRecoveryPolicy::DropOnModeExit,
+                        now_secs,
+                    );
                     state.current_state = "stopped".to_string();
                     state.agent.pid = None;
                     state.agent.state = "stopped".to_string();
@@ -214,6 +269,13 @@ pub fn run_supervisor(
                     state.last_event = "release_rollback_unavailable".to_string();
                     state.last_error =
                         Some("rollback pointer unavailable for current Linux release".to_string());
+                    append_supervisor_workflow_audit(
+                        crate::runtime::WorkflowDisposition::ExecuteFailed,
+                        "release_rollback_unavailable",
+                        crate::runtime::WorkflowEffect::Noop,
+                        crate::runtime::WorkflowRecoveryPolicy::OperatorAckRequired,
+                        crate::util::current_unix_secs(),
+                    );
                     if child.is_some() {
                         state.current_state = "running".to_string();
                     }
@@ -265,15 +327,26 @@ pub fn run_supervisor(
                     ) {
                         state.current_state = "safe_mode".to_string();
                         state.last_event = "entered_safe_mode".to_string();
+                        append_supervisor_workflow_audit(
+                            crate::runtime::WorkflowDisposition::ExecuteFailed,
+                            "entered_safe_mode",
+                            crate::runtime::WorkflowEffect::Noop,
+                            crate::runtime::WorkflowRecoveryPolicy::OperatorAckRequired,
+                            crate::util::current_unix_secs(),
+                        );
                         write_state(&state)?;
                         continue;
                     }
                     state.restart_count = state.restart_count.saturating_add(1);
                     state.current_state = "backoff".to_string();
+                    let backoff_secs = restart_backoff_secs(state.restart_count);
+                    append_supervisor_backoff_workflow_audit(
+                        "spawn_backoff",
+                        crate::util::current_unix_secs(),
+                        backoff_secs,
+                    );
                     write_state(&state)?;
-                    std::thread::sleep(Duration::from_secs(restart_backoff_secs(
-                        state.restart_count,
-                    )));
+                    std::thread::sleep(Duration::from_secs(backoff_secs));
                     continue;
                 }
             }
@@ -322,6 +395,13 @@ pub fn run_supervisor(
                         }
                         state.current_state = "safe_mode".to_string();
                         state.last_event = "entered_safe_mode".to_string();
+                        append_supervisor_workflow_audit(
+                            crate::runtime::WorkflowDisposition::ExecuteFailed,
+                            "entered_safe_mode",
+                            crate::runtime::WorkflowEffect::Noop,
+                            crate::runtime::WorkflowRecoveryPolicy::OperatorAckRequired,
+                            now_secs,
+                        );
                         write_state(&state)?;
                         continue;
                     }
@@ -330,6 +410,8 @@ pub fn run_supervisor(
                 }
                 state.restart_count = state.restart_count.saturating_add(1);
                 state.current_state = "backoff".to_string();
+                let backoff_secs = restart_backoff_secs(state.restart_count);
+                append_supervisor_backoff_workflow_audit("child_exit_backoff", now_secs, backoff_secs);
                 write_state(&state)?;
                 restart_needed = true;
             }
@@ -503,6 +585,13 @@ fn trigger_release_rollback(
     if !crate::runtime::rollback_current_release(platform, reason, now_secs)? {
         return Ok(false);
     }
+    append_supervisor_workflow_audit(
+        crate::runtime::WorkflowDisposition::ExecuteNow,
+        reason,
+        crate::runtime::WorkflowEffect::RollbackRelease,
+        crate::runtime::WorkflowRecoveryPolicy::OperatorAckRequired,
+        now_secs,
+    );
     state.current_state = "rollback_triggered".to_string();
     state.last_event = "release_rollback_triggered".to_string();
     state.agent.pid = None;
@@ -692,9 +781,15 @@ fn is_pid_alive(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
+        append_supervisor_backoff_workflow_audit, append_supervisor_workflow_audit,
         clear_failure_burst, clear_safe_mode, parse_exit_status, record_quick_failure,
         restart_backoff_secs, safe_mode_active, try_acquire_supervisor_lock_at,
         LinuxSupervisorState, SUPERVISOR_FAILURE_BURST_WINDOW_SECS,
+    };
+    use crate::runtime::workflow::{reset_workflow_audit_for_tests, workflow_audit_snapshot};
+    use crate::runtime::{
+        WorkflowDisposition, WorkflowEffect, WorkflowKind, WorkflowRecoveryPolicy,
+        WorkflowTrigger,
     };
     use std::os::unix::process::ExitStatusExt;
 
@@ -751,6 +846,62 @@ mod tests {
         assert_eq!(state.failure_burst_count, 0);
         assert!(state.failure_burst_started_at.is_none());
         assert!(state.safe_mode_reason.is_none());
+    }
+
+    #[test]
+    fn supervisor_restart_audit_uses_reboot_recovery_contract() {
+        let _guard = crate::runtime::workflow_audit_test_guard();
+        reset_workflow_audit_for_tests();
+
+        append_supervisor_workflow_audit(
+            WorkflowDisposition::ExecuteNow,
+            "restart_requested",
+            WorkflowEffect::RequestRestart,
+            WorkflowRecoveryPolicy::ReplayAfterBoot,
+            1_234,
+        );
+
+        let audit = workflow_audit_snapshot(4);
+        assert_eq!(audit.summary.executed, 1);
+        assert_eq!(audit.recent_records.len(), 1);
+        assert_eq!(audit.recent_records[0].workflow, WorkflowKind::RebootRecovery);
+        assert_eq!(
+            audit.recent_records[0].trigger,
+            WorkflowTrigger::ModeTransition
+        );
+        assert_eq!(
+            audit.recent_records[0].rationale,
+            "linux_supervisor:restart_requested"
+        );
+        assert_eq!(
+            audit.recent_records[0].recovery_policy,
+            WorkflowRecoveryPolicy::ReplayAfterBoot
+        );
+    }
+
+    #[test]
+    fn supervisor_backoff_audit_records_next_allowed_at() {
+        let _guard = crate::runtime::workflow_audit_test_guard();
+        reset_workflow_audit_for_tests();
+
+        append_supervisor_backoff_workflow_audit("child_exit_backoff", 2_000, 7);
+
+        let audit = workflow_audit_snapshot(4);
+        assert_eq!(audit.summary.deferred, 1);
+        assert_eq!(audit.recent_records.len(), 1);
+        assert_eq!(
+            audit.recent_records[0].disposition,
+            WorkflowDisposition::DeferUntil
+        );
+        assert_eq!(
+            audit.recent_records[0].workflow,
+            WorkflowKind::RebootRecovery
+        );
+        assert_eq!(audit.recent_records[0].next_allowed_at, Some(2_007));
+        assert_eq!(
+            audit.recent_records[0].rationale,
+            "linux_supervisor:child_exit_backoff"
+        );
     }
 
     #[test]

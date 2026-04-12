@@ -1143,6 +1143,17 @@ mod tests {
         crate::runtime::delayed_task::delayed_task_test_guard()
     }
 
+    fn service_delayed_tasks_in_normal_mode() {
+        crate::state::set_voice_exclusive_active(false);
+        crate::state::set_background_maintenance_active(false);
+        crate::state::set_config_plane_active(false);
+        crate::state::set_boot_phase_active(false);
+        crate::state::set_pairing_state_known(false);
+        crate::state::set_pairing_required(false);
+        crate::state::set_recovery_safe_mode_active(false);
+        crate::runtime::service_delayed_tasks();
+    }
+
     #[test]
     fn queued_delivery_emits_distinct_updates_with_cap() {
         let _guard = delayed_task_test_lock();
@@ -1212,7 +1223,7 @@ mod tests {
 
         delivery.emit_progress("处理中");
         std::thread::sleep(presence_pulse_initial_delay() + std::time::Duration::from_millis(20));
-        crate::runtime::service_delayed_tasks();
+        service_delayed_tasks_in_normal_mode();
 
         assert!(outbound_rx.try_recv().is_err());
         assert_eq!(delivery.report().presence_pulses_sent, 0);
@@ -1534,9 +1545,9 @@ mod tests {
         );
 
         std::thread::sleep(presence_pulse_initial_delay() + std::time::Duration::from_millis(20));
-        crate::runtime::service_delayed_tasks();
+        service_delayed_tasks_in_normal_mode();
         std::thread::sleep(presence_pulse_followup_delay() + std::time::Duration::from_millis(20));
-        crate::runtime::service_delayed_tasks();
+        service_delayed_tasks_in_normal_mode();
 
         let first = outbound_rx.try_recv().expect("first pulse");
         let second = outbound_rx.try_recv().expect("second pulse");
@@ -1586,9 +1597,9 @@ mod tests {
         );
 
         std::thread::sleep(presence_pulse_initial_delay() + std::time::Duration::from_millis(20));
-        crate::runtime::service_delayed_tasks();
+        service_delayed_tasks_in_normal_mode();
         std::thread::sleep(presence_pulse_followup_delay() + std::time::Duration::from_millis(20));
-        crate::runtime::service_delayed_tasks();
+        service_delayed_tasks_in_normal_mode();
 
         let first = outbound_rx.try_recv().expect("compact pulse");
         assert_eq!(first.content, "〔甲壳虫〕继续处理中，马上接上 🪲");
@@ -1614,9 +1625,9 @@ mod tests {
 
         delivery.emit_tool_progress("board_info", 0, 1);
         std::thread::sleep(presence_pulse_initial_delay() + std::time::Duration::from_millis(20));
-        crate::runtime::service_delayed_tasks();
+        service_delayed_tasks_in_normal_mode();
         std::thread::sleep(presence_pulse_followup_delay() + std::time::Duration::from_millis(20));
-        crate::runtime::service_delayed_tasks();
+        service_delayed_tasks_in_normal_mode();
 
         let first = outbound_rx.try_recv().expect("tool progress");
         let second = outbound_rx.try_recv().expect("followup pulse");
@@ -1645,7 +1656,7 @@ mod tests {
         let streamed = delivery.finalize("最终答案");
         assert!(!streamed);
         std::thread::sleep(presence_pulse_initial_delay() + std::time::Duration::from_millis(20));
-        crate::runtime::service_delayed_tasks();
+        service_delayed_tasks_in_normal_mode();
 
         assert!(outbound_rx.try_recv().is_err());
     }
@@ -1669,7 +1680,7 @@ mod tests {
         }
 
         std::thread::sleep(presence_pulse_initial_delay() + std::time::Duration::from_millis(20));
-        crate::runtime::service_delayed_tasks();
+        service_delayed_tasks_in_normal_mode();
 
         assert!(outbound_rx.try_recv().is_err());
     }
