@@ -2,6 +2,27 @@
 
 use super::*;
 
+fn append_post_reply_workflow_audit(
+    disposition: crate::runtime::WorkflowDisposition,
+    rationale: &str,
+    effect: crate::runtime::WorkflowEffect,
+    channel: &str,
+    chat_id: &str,
+) {
+    crate::runtime::append_workflow_audit(
+        crate::runtime::WorkflowAuditRecord::new(
+            crate::runtime::WorkflowKind::PostReplyMaintenance,
+            crate::runtime::WorkflowTrigger::PostReply,
+            disposition,
+            effect,
+            crate::runtime::WorkflowRecoveryPolicy::DropOnModeExit,
+            rationale,
+            crate::util::current_unix_secs(),
+        )
+        .with_target(None, Some(channel), Some(chat_id)),
+    );
+}
+
 pub(super) fn enqueue_post_reply_maintenance_job(
     system_inbound_tx: &SystemInboundTx,
     msg: &PcMsg,
@@ -33,11 +54,19 @@ pub(super) fn enqueue_post_reply_maintenance_job(
                 msg.chat_id,
                 error
             );
+            append_post_reply_workflow_audit(
+                crate::runtime::WorkflowDisposition::ExecuteFailed,
+                "post_reply_maintenance_serialize_failed",
+                crate::runtime::WorkflowEffect::Noop,
+                msg.channel.as_ref(),
+                msg.chat_id.as_ref(),
+            );
             return false;
         }
     };
     let system_inbound_tx = system_inbound_tx.clone();
     let chat_id = msg.chat_id.to_string();
+    let source_channel = msg.channel.to_string();
     let scheduled = crate::runtime::schedule_delayed_task(
         Instant::now() + Duration::from_millis(POST_REPLY_MAINTENANCE_DELAY_MS),
         Box::new(move || {
@@ -46,6 +75,13 @@ pub(super) fn enqueue_post_reply_maintenance_job(
                     "[agent_memory] skip delayed maintenance enqueue because {} chat_id={}",
                     reason,
                     chat_id
+                );
+                append_post_reply_workflow_audit(
+                    crate::runtime::WorkflowDisposition::Suppress,
+                    reason,
+                    crate::runtime::WorkflowEffect::Noop,
+                    source_channel.as_str(),
+                    chat_id.as_str(),
                 );
                 return;
             }
@@ -57,20 +93,49 @@ pub(super) fn enqueue_post_reply_maintenance_job(
                         chat_id,
                         error
                     );
+                    append_post_reply_workflow_audit(
+                        crate::runtime::WorkflowDisposition::ExecuteFailed,
+                        "post_reply_maintenance_build_failed",
+                        crate::runtime::WorkflowEffect::Noop,
+                        source_channel.as_str(),
+                        chat_id.as_str(),
+                    );
                     return;
                 }
             };
             match system_inbound_tx.try_send(job) {
-                Ok(()) => {}
+                Ok(()) => {
+                    append_post_reply_workflow_audit(
+                        crate::runtime::WorkflowDisposition::ExecuteNow,
+                        "post_reply_maintenance_enqueued",
+                        crate::runtime::WorkflowEffect::EnqueueSystemJob,
+                        source_channel.as_str(),
+                        chat_id.as_str(),
+                    );
+                }
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {
                     log::debug!(
                         "[agent_memory] skip maintenance enqueue because system queue is full chat_id={}",
                         chat_id
                     );
+                    append_post_reply_workflow_audit(
+                        crate::runtime::WorkflowDisposition::ExecuteFailed,
+                        "post_reply_maintenance_queue_full",
+                        crate::runtime::WorkflowEffect::Noop,
+                        source_channel.as_str(),
+                        chat_id.as_str(),
+                    );
                 }
                 Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
                     log::warn!(
                         "[agent_memory] maintenance enqueue failed: system queue disconnected"
+                    );
+                    append_post_reply_workflow_audit(
+                        crate::runtime::WorkflowDisposition::ExecuteFailed,
+                        "post_reply_maintenance_queue_disconnected",
+                        crate::runtime::WorkflowEffect::Noop,
+                        source_channel.as_str(),
+                        chat_id.as_str(),
                     );
                 }
             }
@@ -80,6 +145,21 @@ pub(super) fn enqueue_post_reply_maintenance_job(
         log::debug!(
             "[agent_memory] delayed queue full, skip maintenance schedule chat_id={}",
             msg.chat_id
+        );
+        append_post_reply_workflow_audit(
+            crate::runtime::WorkflowDisposition::ExecuteFailed,
+            "post_reply_maintenance_schedule_failed",
+            crate::runtime::WorkflowEffect::Noop,
+            msg.channel.as_ref(),
+            msg.chat_id.as_ref(),
+        );
+    } else {
+        append_post_reply_workflow_audit(
+            crate::runtime::WorkflowDisposition::DeferUntil,
+            "post_reply_maintenance_scheduled",
+            crate::runtime::WorkflowEffect::EnqueueSystemJob,
+            msg.channel.as_ref(),
+            msg.chat_id.as_ref(),
         );
     }
     scheduled

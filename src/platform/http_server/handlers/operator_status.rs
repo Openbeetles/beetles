@@ -31,6 +31,9 @@ mod tests {
         assert!(parsed.get("build_package").is_some());
         assert!(parsed.get("operator_surface").is_some());
         assert!(parsed.get("memory_operator_surface").is_some());
+        assert!(parsed.get("workflow").is_some());
+        assert!(parsed["workflow"].get("summary").is_some());
+        assert!(parsed["workflow"].get("recent_records").is_some());
         assert!(parsed["memory_operator_surface"].get("inspect").is_some());
         assert!(parsed["memory_operator_surface"].get("trace").is_some());
         assert!(parsed["memory_operator_surface"].get("diff").is_some());

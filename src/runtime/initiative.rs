@@ -11,6 +11,10 @@ use crate::memory::{
 use crate::orchestrator::{self, PressureLevel, ResourceSnapshot};
 use crate::platform::Platform;
 use crate::runtime::{inspect_platform_presence, PresenceState, RuntimeModeSnapshot};
+use crate::runtime::workflow::{
+    append_workflow_audit, WorkflowAuditRecord, WorkflowDisposition, WorkflowEffect, WorkflowKind,
+    WorkflowRecoveryPolicy, WorkflowTrigger,
+};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -133,6 +137,15 @@ struct InitiativeDecision {
     suppression_reason: Option<InitiativeSuppressionReason>,
     last_triggered_at: Option<u64>,
     next_allowed_at: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InitiativeEnqueueResult {
+    NotAttempted,
+    Enqueued,
+    QueueFull,
+    Disconnected,
+    BuildRejected,
 }
 
 fn initiative_runtime_state() -> &'static Mutex<HashMap<String, u64>> {
@@ -426,6 +439,73 @@ fn build_message_preview(
     }
 }
 
+fn workflow_kind_for_snapshot(snapshot: &InitiativeSnapshot) -> WorkflowKind {
+    match snapshot.action {
+        InitiativeAction::UpcomingReminderNudge => WorkflowKind::UpcomingReminderNudge,
+        InitiativeAction::ResumeTaskCheckIn => WorkflowKind::ResumeTaskCheckIn,
+        InitiativeAction::Hold => WorkflowKind::InitiativeTick,
+    }
+}
+
+fn workflow_disposition_for_snapshot(
+    snapshot: &InitiativeSnapshot,
+    enqueue_result: InitiativeEnqueueResult,
+) -> WorkflowDisposition {
+    match enqueue_result {
+        InitiativeEnqueueResult::Enqueued => WorkflowDisposition::ExecuteNow,
+        InitiativeEnqueueResult::QueueFull
+        | InitiativeEnqueueResult::Disconnected
+        | InitiativeEnqueueResult::BuildRejected => WorkflowDisposition::ExecuteFailed,
+        InitiativeEnqueueResult::NotAttempted => match snapshot.suppression_reason {
+            Some(InitiativeSuppressionReason::NoUsefulTrigger) => WorkflowDisposition::NoTrigger,
+            Some(_) => WorkflowDisposition::Suppress,
+            None if snapshot.ready => WorkflowDisposition::ExecuteFailed,
+            None => WorkflowDisposition::Cancel,
+        },
+    }
+}
+
+fn append_initiative_workflow_audit(
+    snapshot: &InitiativeSnapshot,
+    enqueue_result: InitiativeEnqueueResult,
+    now_secs: u64,
+) {
+    let effect = match enqueue_result {
+        InitiativeEnqueueResult::Enqueued => WorkflowEffect::EnqueueSystemJob,
+        InitiativeEnqueueResult::NotAttempted
+        | InitiativeEnqueueResult::QueueFull
+        | InitiativeEnqueueResult::Disconnected
+        | InitiativeEnqueueResult::BuildRejected => WorkflowEffect::Noop,
+    };
+    let rationale = match enqueue_result {
+        InitiativeEnqueueResult::QueueFull => "system_queue_full",
+        InitiativeEnqueueResult::Disconnected => "system_queue_disconnected",
+        InitiativeEnqueueResult::BuildRejected => "initiative_message_build_rejected",
+        InitiativeEnqueueResult::Enqueued | InitiativeEnqueueResult::NotAttempted => {
+            snapshot.rationale.as_str()
+        }
+    };
+    let target = snapshot.target.as_ref();
+    append_workflow_audit(
+        WorkflowAuditRecord::new(
+            workflow_kind_for_snapshot(snapshot),
+            WorkflowTrigger::CronTick,
+            workflow_disposition_for_snapshot(snapshot, enqueue_result),
+            effect,
+            WorkflowRecoveryPolicy::DropOnModeExit,
+            rationale,
+            now_secs,
+        )
+        .with_target(
+            target.map(|item| item.scope_id.as_str()),
+            target.map(|item| item.channel.as_str()),
+            target.map(|item| item.chat_id.as_str()),
+        )
+        .with_suppression_reason(snapshot.suppression_reason.map(|reason| reason.as_str()))
+        .with_next_allowed_at(snapshot.next_allowed_at),
+    );
+}
+
 pub fn inspect_platform_initiative(platform: &dyn Platform, now_secs: u64) -> InitiativeSnapshot {
     let presence = inspect_platform_presence(platform, now_secs);
     let resource = orchestrator::snapshot();
@@ -514,12 +594,15 @@ pub fn initiative_tick(
 ) -> bool {
     let snapshot = inspect_platform_initiative(platform, now_secs);
     if !snapshot.ready {
+        append_initiative_workflow_audit(&snapshot, InitiativeEnqueueResult::NotAttempted, now_secs);
         return false;
     }
     let Some(target) = snapshot.target.as_ref() else {
+        append_initiative_workflow_audit(&snapshot, InitiativeEnqueueResult::NotAttempted, now_secs);
         return false;
     };
     let Some(message_preview) = snapshot.message_preview.as_ref() else {
+        append_initiative_workflow_audit(&snapshot, InitiativeEnqueueResult::NotAttempted, now_secs);
         return false;
     };
     let msg = match PcMsg::new_inbound_with_ingress(
@@ -535,6 +618,11 @@ pub fn initiative_tick(
                 "[initiative] failed to build proactive message scope_id={}: {}",
                 target.scope_id,
                 error
+            );
+            append_initiative_workflow_audit(
+                &snapshot,
+                InitiativeEnqueueResult::BuildRejected,
+                now_secs,
             );
             return false;
         }
@@ -553,14 +641,25 @@ pub fn initiative_tick(
                 target.scope_id,
                 snapshot.rationale
             );
+            append_initiative_workflow_audit(&snapshot, InitiativeEnqueueResult::Enqueued, now_secs);
             true
         }
         Err(std::sync::mpsc::TrySendError::Full(_)) => {
             log::debug!("[initiative] skip proactive message because system queue is full");
+            append_initiative_workflow_audit(
+                &snapshot,
+                InitiativeEnqueueResult::QueueFull,
+                now_secs,
+            );
             false
         }
         Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
             log::warn!("[initiative] system queue disconnected");
+            append_initiative_workflow_audit(
+                &snapshot,
+                InitiativeEnqueueResult::Disconnected,
+                now_secs,
+            );
             false
         }
     }
@@ -578,6 +677,7 @@ pub fn reset_initiative_runtime_for_tests() {
 mod tests {
     use super::*;
     use crate::runtime::{RuntimeMode, RuntimeModeActionBudget};
+    use crate::runtime::workflow::{reset_workflow_audit_for_tests, workflow_audit_snapshot};
     use std::sync::{Mutex, OnceLock};
 
     fn test_lock() -> &'static Mutex<()> {
@@ -830,6 +930,100 @@ mod tests {
         assert_eq!(
             decision.suppression_reason,
             Some(InitiativeSuppressionReason::RuntimeModeBlocked)
+        );
+    }
+
+    #[test]
+    fn initiative_audit_marks_no_useful_trigger_as_no_trigger() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        reset_workflow_audit_for_tests();
+        let snapshot = InitiativeSnapshot {
+            action: InitiativeAction::Hold,
+            ready: false,
+            presence_state: PresenceState::Idle,
+            runtime_mode: runtime_mode(),
+            rationale: "no_boundary_safe_trigger".to_string(),
+            suppression_reason: Some(InitiativeSuppressionReason::NoUsefulTrigger),
+            target: Some(target()),
+            signal: Some(signal()),
+            strategy_mode: String::new(),
+            strategy_focus: String::new(),
+            idle_enabled: true,
+            message_preview: None,
+            last_triggered_at: None,
+            next_allowed_at: None,
+        };
+
+        append_initiative_workflow_audit(&snapshot, InitiativeEnqueueResult::NotAttempted, 42);
+
+        let audit = workflow_audit_snapshot(4);
+        assert_eq!(audit.summary.no_trigger, 1);
+        assert_eq!(audit.recent_records[0].workflow, WorkflowKind::InitiativeTick);
+    }
+
+    #[test]
+    fn initiative_audit_marks_presence_block_as_suppress() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        reset_workflow_audit_for_tests();
+        let snapshot = InitiativeSnapshot {
+            action: InitiativeAction::Hold,
+            ready: false,
+            presence_state: PresenceState::Busy,
+            runtime_mode: runtime_mode(),
+            rationale: "device_presence_not_idle".to_string(),
+            suppression_reason: Some(InitiativeSuppressionReason::PresenceNotIdle),
+            target: Some(target()),
+            signal: None,
+            strategy_mode: String::new(),
+            strategy_focus: String::new(),
+            idle_enabled: true,
+            message_preview: None,
+            last_triggered_at: None,
+            next_allowed_at: None,
+        };
+
+        append_initiative_workflow_audit(&snapshot, InitiativeEnqueueResult::NotAttempted, 43);
+
+        let audit = workflow_audit_snapshot(4);
+        assert_eq!(audit.summary.suppressed, 1);
+        assert_eq!(
+            audit.recent_records[0].suppression_reason.as_deref(),
+            Some("presence_not_idle")
+        );
+    }
+
+    #[test]
+    fn initiative_audit_marks_ready_enqueue_as_execute_now() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        reset_workflow_audit_for_tests();
+        let snapshot = InitiativeSnapshot {
+            action: InitiativeAction::UpcomingReminderNudge,
+            ready: true,
+            presence_state: PresenceState::Idle,
+            runtime_mode: runtime_mode(),
+            rationale: "reminder_due_soon_with_active_user_context".to_string(),
+            suppression_reason: None,
+            target: Some(target()),
+            signal: Some(signal()),
+            strategy_mode: String::new(),
+            strategy_focus: String::new(),
+            idle_enabled: true,
+            message_preview: Some("reminder".to_string()),
+            last_triggered_at: None,
+            next_allowed_at: None,
+        };
+
+        append_initiative_workflow_audit(&snapshot, InitiativeEnqueueResult::Enqueued, 44);
+
+        let audit = workflow_audit_snapshot(4);
+        assert_eq!(audit.summary.executed, 1);
+        assert_eq!(
+            audit.recent_records[0].workflow,
+            WorkflowKind::UpcomingReminderNudge
+        );
+        assert_eq!(
+            audit.recent_records[0].disposition,
+            WorkflowDisposition::ExecuteNow
         );
     }
 }

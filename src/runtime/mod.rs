@@ -18,6 +18,7 @@ pub mod soul_kernel;
 pub mod system_work;
 pub mod thread_registry;
 pub mod thread_util;
+pub mod workflow;
 pub mod write_back;
 
 pub use acceptance::{
@@ -55,3 +56,9 @@ pub use soul_kernel::{
 };
 pub use thread_registry::ThreadRegistrySnapshot;
 pub use thread_util::{spawn_planned, spawn_planned_handle, thread_plan, ThreadPlan};
+pub use workflow::{
+    append_workflow_audit, recent_workflow_audits, workflow_audit_snapshot,
+    WorkflowAdmissionSnapshot, WorkflowAuditRecord, WorkflowAuditSnapshot,
+    WorkflowAuditSummary, WorkflowDisposition, WorkflowEffect, WorkflowKind,
+    WorkflowRecoveryPolicy, WorkflowTrigger,
+};

@@ -32,6 +32,7 @@ pub struct OperatorStatusSnapshot {
     pub build_package: crate::BuildPackageSnapshot,
     pub operator_surface: crate::platform::operator_surface::OperatorSurfaceBudget,
     pub memory_operator_surface: MemoryOperatorSurfaceSummary,
+    pub workflow: runtime::WorkflowAuditSnapshot,
     pub threads: runtime::ThreadRegistrySnapshot,
     pub os_closure: runtime::BeetleOsClosureReport,
     pub initiative: runtime::InitiativeSnapshot,
@@ -87,6 +88,7 @@ pub fn build_operator_status(
         build_package: crate::current_build_package(),
         operator_surface,
         memory_operator_surface,
+        workflow: runtime::workflow_audit_snapshot(8),
         threads: runtime::thread_registry::snapshot(),
         os_closure,
         initiative,
@@ -142,6 +144,15 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
         snapshot.soul_kernel.safe_mode_minimum_readable,
         snapshot.soul_kernel.degraded,
         snapshot.soul_kernel.key_memory_count,
+    ));
+    out.push_str(&format!(
+        "  workflow_recent_records: {}\n  workflow_executed: {}\n  workflow_deferred: {}\n  workflow_suppressed: {}\n  workflow_no_trigger: {}\n  workflow_failed: {}\n",
+        snapshot.workflow.summary.total_retained,
+        snapshot.workflow.summary.executed,
+        snapshot.workflow.summary.deferred,
+        snapshot.workflow.summary.suppressed,
+        snapshot.workflow.summary.no_trigger,
+        snapshot.workflow.summary.failed,
     ));
     let runtime_summary = orchestrator::runtime_capability_summary();
     out.push_str(&format!(
@@ -282,6 +293,8 @@ mod tests {
         assert!(payload["build_package"]["capabilities"]
             .get("voice")
             .is_some());
+        assert!(payload.get("workflow").is_some());
+        assert!(payload["workflow"].get("summary").is_some());
     }
 
     #[test]
