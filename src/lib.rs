@@ -121,7 +121,7 @@ pub use reasoning::{
     ProgrammableReasoningOperatorSnapshot, ProgrammableReasoningProposal,
     ProgrammableReasoningProposalKind, ProgrammableReasoningProposalScope,
     ProgrammableReasoningRuntimeContract, ProgrammableReasoningStage,
-    ProgrammableReasoningSystemInfoSummary,
+    ProgrammableReasoningSystemInfoSummary, run_reasoning_runner_stdio,
 };
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub use platform::{

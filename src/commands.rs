@@ -59,6 +59,10 @@ pub enum Commands {
 
     /// Print version information
     Version,
+
+    /// Internal programmable reasoning runner entry
+    #[command(hide = true)]
+    ReasoningRunner,
 }
 
 #[derive(Subcommand)]

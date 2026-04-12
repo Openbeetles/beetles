@@ -48,11 +48,16 @@ pub struct ProgrammableReasoningRuntimeContract {
 }
 
 pub fn programmable_reasoning_runtime_contract() -> ProgrammableReasoningRuntimeContract {
+    let execution_enabled = cfg!(target_os = "linux");
     ProgrammableReasoningRuntimeContract {
-        stage: ProgrammableReasoningStage::ConstitutionOnly,
+        stage: ProgrammableReasoningStage::TaskScriptingBaseline,
         linux_only: true,
-        execution_backend: ProgrammableReasoningExecutionBackend::None,
-        execution_enabled: false,
+        execution_backend: if execution_enabled {
+            ProgrammableReasoningExecutionBackend::LuaSandbox
+        } else {
+            ProgrammableReasoningExecutionBackend::None
+        },
+        execution_enabled,
         proposal_only_persistence: true,
         operator_visible_contract: true,
         user_authored_scripts: false,
@@ -72,7 +77,7 @@ pub fn programmable_reasoning_capability_taxonomy(
     .map(|kind| ProgrammableReasoningCapabilityContract {
         kind,
         linux_only: true,
-        execution_enabled: false,
+        execution_enabled: cfg!(target_os = "linux"),
         proposal_only_persistence: true,
     })
     .collect()
@@ -83,11 +88,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn runtime_contract_stays_constitution_only_in_p0() {
+    fn runtime_contract_moves_to_p1_task_scripting_baseline() {
         let contract = programmable_reasoning_runtime_contract();
-        assert_eq!(contract.stage, ProgrammableReasoningStage::ConstitutionOnly);
+        assert_eq!(
+            contract.stage,
+            ProgrammableReasoningStage::TaskScriptingBaseline
+        );
         assert!(contract.linux_only);
-        assert!(!contract.execution_enabled);
+        assert_eq!(contract.execution_enabled, cfg!(target_os = "linux"));
         assert!(contract.proposal_only_persistence);
         assert!(contract.second_execution_plane_forbidden);
         assert!(!contract.user_authored_scripts);
@@ -99,7 +107,9 @@ mod tests {
         let taxonomy = programmable_reasoning_capability_taxonomy();
         assert_eq!(taxonomy.len(), 3);
         assert!(taxonomy.iter().all(|entry| entry.linux_only));
-        assert!(taxonomy.iter().all(|entry| !entry.execution_enabled));
+        assert!(taxonomy
+            .iter()
+            .all(|entry| entry.execution_enabled == cfg!(target_os = "linux")));
         assert!(taxonomy
             .iter()
             .all(|entry| entry.proposal_only_persistence));

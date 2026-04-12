@@ -191,11 +191,11 @@ mod tests {
         assert!(parsed["workflow"].get("executed").is_some());
         assert_eq!(
             parsed["programmable_reasoning"]["stage"].as_str(),
-            Some("constitution_only")
+            Some("task_scripting_baseline")
         );
         assert_eq!(
             parsed["programmable_reasoning"]["execution_enabled"].as_bool(),
-            Some(false)
+            Some(cfg!(target_os = "linux"))
         );
         assert!(parsed.get("initiative").is_none());
         assert!(parsed.get("presence").is_none());

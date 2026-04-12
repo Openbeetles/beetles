@@ -1711,6 +1711,12 @@ fn main() {
         Commands::Version => {
             println!("beetle v{}", VERSION);
         }
+        Commands::ReasoningRunner => {
+            if let Err(error) = beetle::run_reasoning_runner_stdio() {
+                eprintln!("[{}] reasoning runner failed: {}", TAG, error);
+                std::process::exit(1);
+            }
+        }
     }
 }
 

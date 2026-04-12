@@ -37,11 +37,11 @@ mod tests {
         assert!(parsed["workflow"].get("recent_records").is_some());
         assert_eq!(
             parsed["programmable_reasoning"]["stage"].as_str(),
-            Some("constitution_only")
+            Some("task_scripting_baseline")
         );
         assert_eq!(
             parsed["programmable_reasoning"]["runtime_contract"]["execution_enabled"].as_bool(),
-            Some(false)
+            Some(cfg!(target_os = "linux"))
         );
         assert!(parsed["memory_operator_surface"].get("inspect").is_some());
         assert!(parsed["memory_operator_surface"].get("trace").is_some());

@@ -737,6 +737,8 @@ fn register_host_only_tools(registry: &mut ToolRegistry) {
     registry.register(Box::new(super::ShellTool));
     registry.register(Box::new(super::ProcessTool));
     registry.register(Box::new(super::NetworkTool));
+    #[cfg(target_os = "linux")]
+    registry.register(Box::new(super::LuaQueryTool::default()));
 }
 
 pub fn build_default_registry(

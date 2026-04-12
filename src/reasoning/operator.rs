@@ -36,7 +36,8 @@ pub fn programmable_reasoning_operator_snapshot() -> ProgrammableReasoningOperat
         capabilities: programmable_reasoning_capability_taxonomy(),
         proposal_kinds: programmable_reasoning_proposal_kinds(),
         operator_summary:
-            "constitution_only: linux-only, proposal-only, no execution backend yet".to_string(),
+            "task_scripting_baseline: single-turn lua sandbox, no host bridge, no persistence write"
+                .to_string(),
     }
 }
 
@@ -56,19 +57,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn operator_snapshot_reports_constitution_only_contract() {
+    fn operator_snapshot_reports_p1_contract() {
         let snapshot = programmable_reasoning_operator_snapshot();
-        assert_eq!(snapshot.stage, ProgrammableReasoningStage::ConstitutionOnly);
+        assert_eq!(snapshot.stage, ProgrammableReasoningStage::TaskScriptingBaseline);
         assert_eq!(snapshot.capabilities.len(), 3);
         assert_eq!(snapshot.proposal_kinds.len(), 4);
-        assert!(!snapshot.runtime_contract.execution_enabled);
+        assert_eq!(
+            snapshot.runtime_contract.execution_enabled,
+            cfg!(target_os = "linux")
+        );
     }
 
     #[test]
     fn system_info_summary_stays_compact() {
         let summary = programmable_reasoning_system_info_summary();
-        assert_eq!(summary.stage, ProgrammableReasoningStage::ConstitutionOnly);
-        assert!(!summary.execution_enabled);
+        assert_eq!(summary.stage, ProgrammableReasoningStage::TaskScriptingBaseline);
+        assert_eq!(summary.execution_enabled, cfg!(target_os = "linux"));
         assert!(summary.linux_only);
         assert!(summary.proposal_only_persistence);
     }
