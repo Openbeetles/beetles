@@ -8,6 +8,7 @@ mod memory_query;
 mod operator;
 mod proposal;
 mod runtime;
+mod tool_request;
 
 pub use constitution::{
     programmable_reasoning_capability_taxonomy, programmable_reasoning_runtime_contract,
@@ -50,5 +51,8 @@ pub use runtime::{
     default_lua_query_capabilities, CurrentExecutableLuaSandboxExecutor,
     DirectLuaSandboxExecutor, LuaQueryBudget, LuaQueryRequest, LuaQueryResponse,
     ReasoningExecutor, SubprocessLuaSandboxExecutor,
+};
+pub use tool_request::{
+    validate_tool_request_result, ToolRequestProposal, ToolRequestResult,
 };
 pub(crate) use idle_forge::{enqueue_idle_memory_forge_tick, run_idle_memory_forge_background_job};

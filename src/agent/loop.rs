@@ -1627,7 +1627,9 @@ fn maybe_apply_mental_privacy_review(
     let mut privacy_http = HttpClientToolContext {
         http,
         chat_id: Some(msg.chat_id.clone()),
+        ingress: msg.ingress,
         channel: Some(msg.channel.clone()),
+        tool_registry: None,
         channel_capability_registry: Arc::clone(&config.channel_capability_registry),
         supports_current_chat_outbound_message: false,
         supports_current_chat_primary_reply: false,
@@ -3707,7 +3709,9 @@ mod tests {
         let mut tool_ctx = HttpClientToolContext {
             http: &mut http,
             chat_id: Some(Arc::from("chat-1")),
+            ingress: crate::bus::IngressKind::User,
             channel: Some(Arc::from("qq_channel")),
+            tool_registry: None,
             channel_capability_registry: Arc::clone(&config.channel_capability_registry),
             supports_current_chat_outbound_message: false,
             supports_current_chat_primary_reply: false,
@@ -3775,7 +3779,9 @@ mod tests {
         let mut tool_ctx = HttpClientToolContext {
             http: &mut http,
             chat_id: Some(Arc::from("chat-1")),
+            ingress: crate::bus::IngressKind::User,
             channel: Some(Arc::from("qq_channel")),
+            tool_registry: None,
             channel_capability_registry: Arc::clone(&config.channel_capability_registry),
             supports_current_chat_outbound_message: false,
             supports_current_chat_primary_reply: false,
@@ -4078,7 +4084,9 @@ mod tests {
         let mut tool_ctx = HttpClientToolContext {
             http: &mut http,
             chat_id: Some(msg.chat_id.clone()),
+            ingress: msg.ingress,
             channel: Some(msg.channel.clone()),
+            tool_registry: None,
             channel_capability_registry: Arc::clone(&config.channel_capability_registry),
             supports_current_chat_outbound_message: false,
             supports_current_chat_primary_reply: false,

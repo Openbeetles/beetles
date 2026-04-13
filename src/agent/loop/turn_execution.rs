@@ -24,7 +24,9 @@ pub(super) fn execute_turn(
     let mut tool_ctx = HttpClientToolContext {
         http,
         chat_id: Some(msg.chat_id.clone()),
+        ingress: msg.ingress,
         channel: Some(msg.channel.clone()),
+        tool_registry: Some(registry),
         channel_capability_registry: Arc::clone(&config.channel_capability_registry),
         supports_current_chat_outbound_message: false,
         supports_current_chat_primary_reply: false,

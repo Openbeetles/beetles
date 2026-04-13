@@ -10,6 +10,7 @@ pub enum ProgrammableReasoningStage {
     MemoryQueryPlane,
     IdleMemoryForge,
     MemoryAttackDistillation,
+    CapabilityBridgeExpansion,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -19,6 +20,7 @@ pub enum ProgrammableReasoningCapabilityKind {
     MemoryQuery,
     IdleMaintenance,
     MemoryAttackDistillation,
+    CapabilityBridgeExpansion,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -52,7 +54,7 @@ pub struct ProgrammableReasoningRuntimeContract {
 pub fn programmable_reasoning_runtime_contract() -> ProgrammableReasoningRuntimeContract {
     let execution_enabled = cfg!(target_os = "linux");
     ProgrammableReasoningRuntimeContract {
-        stage: ProgrammableReasoningStage::MemoryAttackDistillation,
+        stage: ProgrammableReasoningStage::CapabilityBridgeExpansion,
         linux_only: true,
         execution_backend: if execution_enabled {
             ProgrammableReasoningExecutionBackend::LuaSandbox
@@ -75,6 +77,7 @@ pub fn programmable_reasoning_capability_taxonomy(
         ProgrammableReasoningCapabilityKind::MemoryQuery,
         ProgrammableReasoningCapabilityKind::IdleMaintenance,
         ProgrammableReasoningCapabilityKind::MemoryAttackDistillation,
+        ProgrammableReasoningCapabilityKind::CapabilityBridgeExpansion,
     ]
     .into_iter()
     .map(|kind| ProgrammableReasoningCapabilityContract {
@@ -91,9 +94,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn runtime_contract_moves_to_p4_memory_attack_distillation() {
+    fn runtime_contract_moves_to_p5_capability_bridge_expansion() {
         let contract = programmable_reasoning_runtime_contract();
-        assert_eq!(contract.stage, ProgrammableReasoningStage::MemoryAttackDistillation);
+        assert_eq!(contract.stage, ProgrammableReasoningStage::CapabilityBridgeExpansion);
         assert!(contract.linux_only);
         assert_eq!(contract.execution_enabled, cfg!(target_os = "linux"));
         assert!(contract.proposal_only_persistence);
@@ -105,7 +108,7 @@ mod tests {
     #[test]
     fn capability_taxonomy_is_linux_only_and_non_executable() {
         let taxonomy = programmable_reasoning_capability_taxonomy();
-        assert_eq!(taxonomy.len(), 4);
+        assert_eq!(taxonomy.len(), 5);
         assert!(taxonomy.iter().all(|entry| entry.linux_only));
         assert!(taxonomy
             .iter()

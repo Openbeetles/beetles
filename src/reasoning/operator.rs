@@ -35,7 +35,7 @@ pub fn programmable_reasoning_operator_snapshot() -> ProgrammableReasoningOperat
         runtime_contract: runtime_contract.clone(),
         capabilities: programmable_reasoning_capability_taxonomy(),
         proposal_kinds: programmable_reasoning_proposal_kinds(),
-        operator_summary: "memory_attack_distillation: idle memory forge now questions canonical memory, weighs evidence, emits distillation proposals, and still never writes canonical memory directly".to_string(),
+        operator_summary: "capability_bridge_expansion: programmable reasoning can now emit adjudication-required tool request proposals against a governed tool catalog, without direct host execution".to_string(),
     }
 }
 
@@ -55,10 +55,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn operator_snapshot_reports_p4_contract() {
+    fn operator_snapshot_reports_p5_contract() {
         let snapshot = programmable_reasoning_operator_snapshot();
-        assert_eq!(snapshot.stage, ProgrammableReasoningStage::MemoryAttackDistillation);
-        assert_eq!(snapshot.capabilities.len(), 4);
+        assert_eq!(snapshot.stage, ProgrammableReasoningStage::CapabilityBridgeExpansion);
+        assert_eq!(snapshot.capabilities.len(), 5);
         assert_eq!(snapshot.proposal_kinds.len(), 4);
         assert_eq!(
             snapshot.runtime_contract.execution_enabled,
@@ -69,7 +69,7 @@ mod tests {
     #[test]
     fn system_info_summary_stays_compact() {
         let summary = programmable_reasoning_system_info_summary();
-        assert_eq!(summary.stage, ProgrammableReasoningStage::MemoryAttackDistillation);
+        assert_eq!(summary.stage, ProgrammableReasoningStage::CapabilityBridgeExpansion);
         assert_eq!(summary.execution_enabled, cfg!(target_os = "linux"));
         assert!(summary.linux_only);
         assert!(summary.proposal_only_persistence);

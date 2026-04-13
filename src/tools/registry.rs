@@ -6,9 +6,11 @@ use crate::config::AppConfig;
 use crate::error::{Error, Result};
 use crate::llm::ToolSpec as LlmToolSpec;
 use crate::tools::{
-    Tool, ToolCapabilityContract, ToolExecutionGateDecision, ToolExecutionGovernance,
-    ToolExecutionGovernanceState, ToolExecutionOutcome, ToolExecutionPermit, ToolExecutionRecord,
-    ToolExecutionRequest, ToolMetadata, ToolPolicyContext, MAX_TOOL_ARGS_LEN, MAX_TOOL_RESULT_LEN,
+    Tool, ToolApprovalMode, ToolCapabilityContract, ToolEffectClass,
+    ToolExecutionGateDecision, ToolExecutionGovernance, ToolExecutionGovernanceState,
+    ToolExecutionOutcome, ToolExecutionPermit, ToolExecutionRecord, ToolExecutionRequest,
+    ToolMetadata, ToolPolicyContext, ToolRiskLevel, ToolRollbackKind, MAX_TOOL_ARGS_LEN,
+    MAX_TOOL_RESULT_LEN,
 };
 use crate::util::truncate_to_byte_len;
 use indexmap::IndexMap;
@@ -51,6 +53,42 @@ pub struct ToolCatalogEntry {
     pub governance_last_status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub governance_last_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ToolBridgeCatalogEntry {
+    pub name: String,
+    pub description: String,
+    pub parameters_json: String,
+    pub effect_class: ToolEffectClass,
+    pub risk_level: ToolRiskLevel,
+    pub approval_mode: ToolApprovalMode,
+    pub rollback_kind: ToolRollbackKind,
+    pub requires_network: bool,
+    pub required_runtime_capabilities: Vec<String>,
+    pub allow_when_degraded: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolBridgeProposalDecision {
+    Allowed,
+    Denied,
+    UnknownTool,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ToolBridgeProposalAssessment {
+    pub tool_name: String,
+    pub decision: ToolBridgeProposalDecision,
+    pub summary: String,
+    pub effect_class: ToolEffectClass,
+    pub risk_level: ToolRiskLevel,
+    pub approval_mode: ToolApprovalMode,
+    pub rollback_kind: ToolRollbackKind,
+    pub requires_network: bool,
+    pub required_runtime_capabilities: Vec<String>,
+    pub allow_when_degraded: bool,
 }
 
 /// 按 name 注册与派发工具；可生成带总长度上界的 tool specs。IndexMap 保证工具顺序稳定。
@@ -363,6 +401,156 @@ impl ToolRegistry {
             });
         }
         Ok(out)
+    }
+
+    pub fn tool_bridge_catalog_for_policy(
+        &self,
+        policy: &ToolPolicyContext<'_>,
+    ) -> Vec<ToolBridgeCatalogEntry> {
+        let overlay_set = self.llm_visibility_overlay_set(policy);
+        let mut out = Vec::new();
+        for (name, entry) in &self.tools {
+            if !self.is_entry_llm_visible(entry, name, policy, overlay_set.as_ref()) {
+                continue;
+            }
+            let shape = entry.metadata.default_execution_shape(name);
+            out.push(ToolBridgeCatalogEntry {
+                name: (*name).to_string(),
+                description: entry.llm_spec.description.to_string(),
+                parameters_json: entry.llm_spec.parameters_json.to_string(),
+                effect_class: shape.effect_class,
+                risk_level: shape.risk_level,
+                approval_mode: shape.approval_mode,
+                rollback_kind: shape.rollback_kind,
+                requires_network: entry.requires_network,
+                required_runtime_capabilities: entry
+                    .capability_contract
+                    .required
+                    .iter()
+                    .map(|value| (*value).to_string())
+                    .collect(),
+                allow_when_degraded: entry.capability_contract.allow_when_degraded,
+            });
+        }
+        out
+    }
+
+    pub fn assess_tool_request_proposal(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+        policy: &ToolPolicyContext<'_>,
+    ) -> ToolBridgeProposalAssessment {
+        let Some(entry) = self.tools.get(name) else {
+            return ToolBridgeProposalAssessment {
+                tool_name: name.to_string(),
+                decision: ToolBridgeProposalDecision::UnknownTool,
+                summary: format!("tool '{name}' is not registered"),
+                effect_class: ToolEffectClass::ReadOnly,
+                risk_level: ToolRiskLevel::Low,
+                approval_mode: ToolApprovalMode::OperatorOnly,
+                rollback_kind: ToolRollbackKind::None,
+                requires_network: false,
+                required_runtime_capabilities: Vec::new(),
+                allow_when_degraded: false,
+            };
+        };
+        let default_shape = entry.metadata.default_execution_shape(name);
+        if !self.is_llm_tool_visible(name, policy) {
+            return ToolBridgeProposalAssessment {
+                tool_name: name.to_string(),
+                decision: ToolBridgeProposalDecision::Denied,
+                summary: format!("tool '{name}' is not visible in the current policy"),
+                effect_class: default_shape.effect_class,
+                risk_level: default_shape.risk_level,
+                approval_mode: default_shape.approval_mode,
+                rollback_kind: default_shape.rollback_kind,
+                requires_network: entry.requires_network,
+                required_runtime_capabilities: entry
+                    .capability_contract
+                    .required
+                    .iter()
+                    .map(|value| (*value).to_string())
+                    .collect(),
+                allow_when_degraded: entry.capability_contract.allow_when_degraded,
+            };
+        }
+        let args_json = match serde_json::to_string(args) {
+            Ok(value) => value,
+            Err(error) => {
+                return ToolBridgeProposalAssessment {
+                    tool_name: name.to_string(),
+                    decision: ToolBridgeProposalDecision::Denied,
+                    summary: format!("tool args serialization failed: {error}"),
+                    effect_class: default_shape.effect_class,
+                    risk_level: default_shape.risk_level,
+                    approval_mode: default_shape.approval_mode,
+                    rollback_kind: default_shape.rollback_kind,
+                    requires_network: entry.requires_network,
+                    required_runtime_capabilities: entry
+                        .capability_contract
+                        .required
+                        .iter()
+                        .map(|value| (*value).to_string())
+                        .collect(),
+                    allow_when_degraded: entry.capability_contract.allow_when_degraded,
+                };
+            }
+        };
+        let decision = match self.assess_llm_execution(name, &args_json, policy) {
+            Ok(ToolExecutionGateDecision::Allow(permit)) => ToolBridgeProposalAssessment {
+                tool_name: name.to_string(),
+                decision: ToolBridgeProposalDecision::Allowed,
+                summary: "proposal matches current tool governance contract".to_string(),
+                effect_class: permit.shape().effect_class,
+                risk_level: permit.shape().risk_level,
+                approval_mode: permit.shape().approval_mode,
+                rollback_kind: permit.shape().rollback_kind,
+                requires_network: permit.requires_network(),
+                required_runtime_capabilities: entry
+                    .capability_contract
+                    .required
+                    .iter()
+                    .map(|value| (*value).to_string())
+                    .collect(),
+                allow_when_degraded: entry.capability_contract.allow_when_degraded,
+            },
+            Ok(ToolExecutionGateDecision::Deny { reason }) => ToolBridgeProposalAssessment {
+                tool_name: name.to_string(),
+                decision: ToolBridgeProposalDecision::Denied,
+                summary: reason,
+                effect_class: default_shape.effect_class,
+                risk_level: default_shape.risk_level,
+                approval_mode: default_shape.approval_mode,
+                rollback_kind: default_shape.rollback_kind,
+                requires_network: entry.requires_network,
+                required_runtime_capabilities: entry
+                    .capability_contract
+                    .required
+                    .iter()
+                    .map(|value| (*value).to_string())
+                    .collect(),
+                allow_when_degraded: entry.capability_contract.allow_when_degraded,
+            },
+            Err(error) => ToolBridgeProposalAssessment {
+                tool_name: name.to_string(),
+                decision: ToolBridgeProposalDecision::Denied,
+                summary: error.to_string(),
+                effect_class: default_shape.effect_class,
+                risk_level: default_shape.risk_level,
+                approval_mode: default_shape.approval_mode,
+                rollback_kind: default_shape.rollback_kind,
+                requires_network: entry.requires_network,
+                required_runtime_capabilities: entry
+                    .capability_contract
+                    .required
+                    .iter()
+                    .map(|value| (*value).to_string())
+                    .collect(),
+                allow_when_degraded: entry.capability_contract.allow_when_degraded,
+            },
+        };
+        decision
     }
 
     fn llm_visibility_overlay_set(
@@ -751,6 +939,8 @@ fn register_host_only_tools(
         Arc::clone(long_term_memory_store),
         Arc::clone(continuity_capsule_store),
     )));
+    #[cfg(target_os = "linux")]
+    registry.register(Box::new(super::LuaToolBridgeTool::default()));
 }
 
 pub fn build_default_registry(
@@ -1002,6 +1192,87 @@ mod tests {
         }
     }
 
+    struct ExplicitIntentTool;
+
+    impl Tool for ExplicitIntentTool {
+        fn name(&self) -> &'static str {
+            "explicit_tool"
+        }
+
+        fn description(&self) -> &str {
+            "needs explicit intent"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object"}"#
+        }
+
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn metadata(&self) -> ToolMetadata {
+            ToolMetadata::task().with_approval_mode(ToolApprovalMode::ExplicitIntent)
+        }
+    }
+
+    #[derive(Default)]
+    struct MemoryStateFs {
+        files: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>,
+    }
+
+    impl crate::platform::StateFs for MemoryStateFs {
+        fn read(&self, rel_path: &str) -> Result<Option<Vec<u8>>> {
+            Ok(self
+                .files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(rel_path)
+                .cloned())
+        }
+
+        fn write(&self, rel_path: &str, data: &[u8]) -> Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(rel_path.to_string(), data.to_vec());
+            Ok(())
+        }
+
+        fn remove(&self, rel_path: &str) -> Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(rel_path);
+            Ok(())
+        }
+
+        fn list_dir(&self, rel_path: &str) -> Result<Vec<String>> {
+            let prefix = if rel_path.is_empty() {
+                String::new()
+            } else {
+                format!("{}/", rel_path.trim_end_matches('/'))
+            };
+            let files = self.files.lock().unwrap_or_else(|error| error.into_inner());
+            let mut names = std::collections::BTreeSet::new();
+            for key in files.keys() {
+                if !key.starts_with(&prefix) {
+                    continue;
+                }
+                let tail = &key[prefix.len()..];
+                if tail.is_empty() {
+                    continue;
+                }
+                if let Some((dir, _)) = tail.split_once('/') {
+                    names.insert(format!("{dir}/"));
+                } else {
+                    names.insert(tail.to_string());
+                }
+            }
+            Ok(names.into_iter().collect())
+        }
+    }
+
     impl crate::tools::ToolContext for StubToolContext {
         fn get_with_headers(
             &mut self,
@@ -1096,6 +1367,51 @@ mod tests {
 
         assert!(!local_requires_network);
         assert!(remote_requires_network);
+    }
+
+    #[test]
+    fn tool_bridge_catalog_respects_llm_visibility_policy() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(VisibleTool));
+        registry.register(Box::new(AdminTool));
+        registry.register(Box::new(UserOnlyTaskTool));
+
+        let user = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
+        let user_names = registry
+            .tool_bridge_catalog_for_policy(&user)
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect::<Vec<_>>();
+        assert_eq!(user_names, vec!["visible".to_string(), "user_only_task".to_string()]);
+
+        let system = ToolPolicyContext::new(crate::bus::IngressKind::System, "telegram");
+        let system_names = registry
+            .tool_bridge_catalog_for_policy(&system)
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect::<Vec<_>>();
+        assert_eq!(system_names, vec!["visible".to_string()]);
+    }
+
+    #[test]
+    fn tool_bridge_assessment_denies_unknown_and_explicit_intent_tool() {
+        let mut registry = ToolRegistry::new().with_execution_governance(Arc::new(
+            ToolExecutionGovernance::new(Arc::new(MemoryStateFs::default())),
+        ));
+        registry.register(Box::new(ExplicitIntentTool));
+        let policy = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
+
+        let unknown =
+            registry.assess_tool_request_proposal("missing", &serde_json::json!({}), &policy);
+        assert_eq!(unknown.decision, ToolBridgeProposalDecision::UnknownTool);
+
+        let denied = registry.assess_tool_request_proposal(
+            "explicit_tool",
+            &serde_json::json!({}),
+            &policy,
+        );
+        assert_eq!(denied.decision, ToolBridgeProposalDecision::Denied);
+        assert!(denied.summary.contains("explicit_intent_required"));
     }
 
     #[test]

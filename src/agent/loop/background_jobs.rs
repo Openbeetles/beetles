@@ -206,7 +206,9 @@ fn build_system_llm_ctx<'a>(
     HttpClientToolContext {
         http,
         chat_id: Some(Arc::from(chat_id)),
+        ingress: crate::bus::IngressKind::System,
         channel: Some(Arc::from("system")),
+        tool_registry: None,
         channel_capability_registry: Arc::clone(&config.channel_capability_registry),
         supports_current_chat_outbound_message: false,
         supports_current_chat_primary_reply: false,

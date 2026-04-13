@@ -54,6 +54,8 @@ pub mod kv_store;
 pub mod lua_query;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod lua_memory_query;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub mod lua_tool_bridge;
 pub mod memory_get;
 #[cfg(feature = "tools_diagnostics")]
 pub mod memory_manage;
@@ -145,6 +147,8 @@ pub use kv_store::KvStoreTool;
 pub use lua_query::LuaQueryTool;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use lua_memory_query::LuaMemoryQueryTool;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use lua_tool_bridge::LuaToolBridgeTool;
 pub use memory_get::MemoryGetTool;
 #[cfg(feature = "tools_diagnostics")]
 pub use memory_manage::MemoryManageTool;
@@ -170,7 +174,10 @@ pub use private_garden::PrivateGardenTool;
 pub use process::ProcessTool;
 #[cfg(feature = "tools_network_extra")]
 pub use proxy_config::ProxyConfigTool;
-pub use registry::{build_default_registry, DefaultRegistryDeps, ToolCatalogEntry, ToolRegistry};
+pub use registry::{
+    build_default_registry, DefaultRegistryDeps, ToolBridgeCatalogEntry,
+    ToolBridgeProposalAssessment, ToolBridgeProposalDecision, ToolCatalogEntry, ToolRegistry,
+};
 pub use remind_at::{RemindAtTool, RemindListTool};
 pub use sensor_watch::SensorWatchTool;
 #[cfg(feature = "tools_diagnostics")]
@@ -363,6 +370,10 @@ pub trait ToolContext {
     fn current_channel(&self) -> Option<&str> {
         None
     }
+    /// 当前入站消息的 ingress；默认 None。
+    fn current_ingress(&self) -> Option<crate::bus::IngressKind> {
+        None
+    }
     /// 查询某个通道在当前运行时的能力合同；默认不可用。
     fn channel_capability(
         &self,
@@ -391,6 +402,24 @@ pub trait ToolContext {
         _primary: bool,
     ) -> Result<()> {
         Ok(())
+    }
+    /// 返回当前 policy 下允许脚本观察的工具目录；默认不可用。
+    fn tool_bridge_catalog(&self) -> Result<Vec<ToolBridgeCatalogEntry>> {
+        Err(Error::config(
+            "tool_bridge_catalog",
+            "tool bridge catalog unavailable in this runtime context",
+        ))
+    }
+    /// 对脚本提出的 tool request proposal 做治理评估；默认不可用。
+    fn assess_tool_request_proposal(
+        &self,
+        _tool_name: &str,
+        _args: &Value,
+    ) -> Result<ToolBridgeProposalAssessment> {
+        Err(Error::config(
+            "tool_bridge_assess",
+            "tool bridge assessment unavailable in this runtime context",
+        ))
     }
     /// 当前用户界面语言（来自设备 NVS），供工具返回人话时使用。
     fn user_locale(&self) -> crate::i18n::Locale;

@@ -11,7 +11,7 @@
 use crate::error::Result;
 use crate::i18n::Locale;
 use crate::platform::{PlatformHttpClient, ResponseBody};
-use crate::tools::ToolContext;
+use crate::tools::{ToolContext, ToolPolicyContext};
 use std::sync::Arc;
 
 /// 正向适配器：`PlatformHttpClient + 会话元数据` → `PlatformHttpClient + ToolContext`。
@@ -26,8 +26,12 @@ pub(crate) struct HttpClientToolContext<'a> {
     /// 正常对话路径为 `Some(Arc::from(chat_id))`，摘要生成路径为 `Some(Arc::from(chat_id))`，
     /// 系统内部路径为 `Some(Arc::from("system"))`。
     pub(crate) chat_id: Option<Arc<str>>,
+    /// 当前入站消息的 ingress。
+    pub(crate) ingress: crate::bus::IngressKind,
     /// 当前入站消息的通道名称（如 `"telegram"`）；系统内部路径为 `None`。
     pub(crate) channel: Option<Arc<str>>,
+    /// 当前注册表；供 capability-scoped tool bridge 做 catalog/assessment。
+    pub(crate) tool_registry: Option<&'a crate::tools::ToolRegistry>,
     /// 当前运行时的通道能力合同表。
     pub(crate) channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
     /// 当前运行时是否允许工具向当前聊天提交用户可见消息意图。
@@ -141,6 +145,10 @@ impl ToolContext for HttpClientToolContext<'_> {
         self.channel.as_deref()
     }
 
+    fn current_ingress(&self) -> Option<crate::bus::IngressKind> {
+        Some(self.ingress)
+    }
+
     fn channel_capability(
         &self,
         channel: &str,
@@ -188,6 +196,39 @@ impl ToolContext for HttpClientToolContext<'_> {
         }
         self.outbound_message_count = self.outbound_message_count.saturating_add(1);
         Ok(())
+    }
+
+    fn tool_bridge_catalog(&self) -> Result<Vec<crate::tools::ToolBridgeCatalogEntry>> {
+        let registry = self.tool_registry.ok_or_else(|| {
+            crate::error::Error::config(
+                "tool_bridge_catalog",
+                "tool registry unavailable in this runtime context",
+            )
+        })?;
+        let channel = self.channel.as_deref().unwrap_or("system");
+        Ok(registry.tool_bridge_catalog_for_policy(&ToolPolicyContext::new(
+            self.ingress,
+            channel,
+        )))
+    }
+
+    fn assess_tool_request_proposal(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> Result<crate::tools::ToolBridgeProposalAssessment> {
+        let registry = self.tool_registry.ok_or_else(|| {
+            crate::error::Error::config(
+                "tool_bridge_assess",
+                "tool registry unavailable in this runtime context",
+            )
+        })?;
+        let channel = self.channel.as_deref().unwrap_or("system");
+        Ok(registry.assess_tool_request_proposal(
+            tool_name,
+            args,
+            &ToolPolicyContext::new(self.ingress, channel),
+        ))
     }
 
     fn user_locale(&self) -> Locale {

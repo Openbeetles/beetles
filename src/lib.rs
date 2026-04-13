@@ -116,6 +116,7 @@ pub use llm::{
 pub use network::{HttpClientClass, NetworkGovernor, VoiceExclusiveTransportGuard};
 pub use reasoning::{
     default_lua_memory_query_capabilities, validate_memory_query_result,
+    validate_tool_request_result,
     idle_memory_forge_job_contracts, load_idle_memory_forge_operator_summary,
     persist_idle_memory_forge_run, should_run_idle_memory_forge, IdleMemoryForgeAdmissionSnapshot,
     IdleMemoryForgeAdjudicationState, IdleMemoryForgeJobContract, IdleMemoryForgeJobKind,
@@ -125,6 +126,7 @@ pub use reasoning::{
     memory_attack_job_contracts, validate_memory_attack_result, MemoryAttackFinding,
     MemoryAttackFindingKind, MemoryAttackJobContract, MemoryAttackJobKind, MemoryAttackJobReport,
     MemoryAttackJobStatus, MemoryAttackResult, MemoryDistillationCandidate,
+    ToolRequestProposal, ToolRequestResult,
     MemoryQueryCandidate, MemoryQueryCandidateKind, MemoryQueryContinuityRecord,
     MemoryQueryContinuityScope, MemoryQueryGroup, MemoryQueryLongTermRecord, MemoryQueryResult,
     MemoryQuerySelection, MemoryQuerySnapshot, MemoryQuerySnapshotCounts,
@@ -154,11 +156,14 @@ pub use platform::{
 pub use tools::{
     build_default_registry, CalendarTool, DefaultRegistryDeps, FileEditTool, FileWriteTool,
     FilesTool, GetTimeTool, KvStoreTool, PrivateGardenTool, RemindAtTool, TaskTool, Tool,
+    ToolBridgeCatalogEntry, ToolBridgeProposalAssessment, ToolBridgeProposalDecision,
     ToolCapabilityContract, ToolContext, ToolExposure, ToolMetadata, ToolPolicyContext,
     ToolRegistry, VoiceInputTool, VoiceOutputTool,
 };
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use tools::LuaMemoryQueryTool;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use tools::LuaToolBridgeTool;
 #[cfg(feature = "tools_diagnostics")]
 pub use tools::{
     CronManageTool, DeviceControlTool, I2cDeviceTool, I2cSensorTool, MemoryManageTool,
