@@ -717,10 +717,16 @@ fn register_core_tools(
         Arc::new(crate::mail::OfficeBackedMailProviderCredentialStore::new(
             office_service.clone(),
         ));
+    let documents_credential_store: Arc<
+        dyn crate::documents::DocumentsProviderCredentialStore + Send + Sync,
+    > = Arc::new(crate::documents::OfficeBackedDocumentsProviderCredentialStore::new(
+        office_service.clone(),
+    ));
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    let office_config_service = office_config_service.with_probe_adapters(vec![Arc::new(
-            crate::mail::providers::imap_smtp::ImapSmtpOfficeProbeAdapter,
-    )]);
+    let office_config_service = office_config_service.with_probe_adapters(vec![
+        Arc::new(crate::mail::providers::imap_smtp::ImapSmtpOfficeProbeAdapter),
+        Arc::new(crate::documents::providers::webdav::WebDavOfficeProbeAdapter),
+    ]);
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     let office_config_service = office_config_service;
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -731,6 +737,14 @@ fn register_core_tools(
     };
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     let mail_providers = crate::mail::MailProviderRegistry::new();
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    let documents_providers = {
+        let mut providers = crate::documents::DocumentsProviderRegistry::new();
+        providers.register(Arc::new(crate::documents::providers::webdav::WebDavProvider));
+        providers
+    };
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    let documents_providers = crate::documents::DocumentsProviderRegistry::new();
     registry.register(Box::new(super::GetTimeTool));
     registry.register(Box::new(super::EnvTool));
     registry.register(Box::new(super::MessageTool));
@@ -748,6 +762,11 @@ fn register_core_tools(
     registry.register(Box::new(super::MailTool::with_office_service(
         Arc::clone(&mail_credential_store),
         mail_providers,
+        office_service.clone(),
+    )));
+    registry.register(Box::new(super::DocumentsTool::with_office_service(
+        Arc::clone(&documents_credential_store),
+        documents_providers,
         office_service.clone(),
     )));
     registry.register(Box::new(super::OfficeConfigTool::new(
@@ -1462,6 +1481,12 @@ mod tests {
     fn default_registry_registers_diagnose_voice_path_tool() {
         let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
         assert!(ctx.tool_registry.get("diagnose_voice_path").is_some());
+    }
+
+    #[test]
+    fn default_registry_registers_documents_tool() {
+        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+        assert!(ctx.tool_registry.get("documents").is_some());
     }
 
     #[test]

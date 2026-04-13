@@ -20,6 +20,7 @@
 | `task` | 持久任务管理 |
 | `calendar` | 持久日历事件 |
 | `mail` | 通过共享 office 账户权威读取、查看和发送邮件 |
+| `documents` | 通过共享 office 账户权威查看远端文档库状态、目录、正文和搜索结果 |
 | `office_config` | 以结构化操作检查、草拟、校验、提交和撤销 office 配置 |
 | `office_status` | 查看 office 账户、默认绑定、凭证存在性和运行态探测状态 |
 | `files` | 列出或读取设备存储中的文件 |
@@ -65,6 +66,27 @@
   - Linux / 非 ESP 构建会注册真实 IMAP/SMTP provider
   - ESP 保留同一 capability/tool 合同，但不编入重型 IMAP/SMTP 传输栈
 
+### `documents`
+
+- `documents` 是共享 office authority 上的 documents capability，不是本地 `document_read` / `document_search` 的替代品。
+- 当前支持的操作包括：
+  - `provider_status`
+  - `list`
+  - `read`
+  - `search`
+- `provider` 可以省略，但前提是：
+  - office 已经把 `documents` capability 绑定到默认账户，或
+  - 当前只存在一个已配置 documents provider
+- `provider_status` 会返回：
+  - 已注册的远端 documents provider
+  - 已配置 documents 账户状态
+  - 可选的 `default_documents_account_key`
+  - 可选的 `office_runtime_statuses`
+- 当前第一阶段远端 provider 为 `webdav`：
+  - Linux / 非 ESP 构建会注册真实 WebDAV provider，并支持真实目录探测、文件读取和内容搜索
+  - ESP 保留同一 capability/tool 合同，但不编入重型远端文档传输栈
+- `documents` 读取的是“办公文档库/文件库”能力；本地设备存储里的文件检索仍然继续使用 `document_search`、`document_read`、`document_extract`
+
 ### `office_config`
 
 - 这是 office 域的 Agent-native 配置工具，不是某个 provider 的私有控制面。
@@ -95,6 +117,7 @@
   - `config/office_credentials.json` 的凭证存在性
   - `runtime/office_runtime_status.json` 的探测结果和上次错误
 - 可选传 `capability`，只看某一个 capability，例如 `calendar` 或 `mail`。
+  现在也支持 `documents`。
 
 ## `tools_network_extra` 工具
 

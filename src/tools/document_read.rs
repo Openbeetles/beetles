@@ -2,15 +2,10 @@
 //! document_read tool: read a public URL or state-root document path and return LLM-friendly text.
 
 use crate::error::{Error, Result};
+use crate::documents::{decode_readable_document, DecodedReadableDocument};
 use crate::orchestrator::ToolDecision;
-use crate::tools::pdf_read::{
-    extract_pdf_text, looks_like_pdf as bytes_look_like_pdf, normalize_pdf_text,
-};
 use crate::tools::state_file_guard::sanitize_state_file_read;
-use crate::tools::web_fetch::{
-    format_json_text, html_to_text, looks_like_html, looks_like_json, normalize_text,
-    parse_max_chars, truncate_chars, WebFetchTool,
-};
+use crate::tools::web_fetch::{parse_max_chars, WebFetchTool};
 use crate::tools::{parse_tool_args, PdfReadTool, Tool, ToolContext};
 use crate::util::normalize_state_rel_path;
 use serde_json::{json, Value};
@@ -19,7 +14,6 @@ use std::sync::Arc;
 const TAG: &str = "tools::document_read";
 pub(crate) const DEFAULT_DOCUMENT_MAX_CHARS: usize = 16_000;
 const MAX_LOCAL_RAW_BYTES: usize = 512 * 1024;
-const EMPTY_DOCUMENT_WARNING: &str = "document is empty or contains no readable text";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReadableDocument {
@@ -216,62 +210,27 @@ fn build_local_document(
     max_chars: usize,
     stage: &'static str,
 ) -> Result<ReadableDocument> {
-    if bytes_look_like_pdf(raw) {
-        let normalized = normalize_pdf_text(
-            &extract_pdf_text(raw)
-                .map_err(|err| Error::config(stage, format!("PDF extraction failed: {err}")))?,
-        );
-        let (content, truncated) = truncate_chars(&normalized, max_chars);
-        return Ok(ReadableDocument {
-            source: source.to_string(),
-            kind: "pdf".to_string(),
-            title: None,
-            content,
-            truncated,
-            raw_bytes: raw.len(),
-            warning: if normalized.is_empty() {
-                Some(
-                    "PDF contains no extractable text (may be image-only or encrypted)".to_string(),
-                )
-            } else {
-                None
-            },
-        });
-    }
-
-    let decoded =
-        std::str::from_utf8(raw).map_err(|_| Error::config(stage, "file is not valid UTF-8"))?;
-    let trimmed = decoded.trim();
-    let (kind, content) = if looks_like_json(source, trimmed) {
-        (
-            "json",
-            format_json_text(trimmed).unwrap_or_else(|| trimmed.to_string()),
-        )
-    } else if looks_like_html(source, trimmed) {
-        ("html", html_to_text(trimmed))
-    } else {
-        ("text", trimmed.to_string())
-    };
-
-    let normalized = normalize_text(&content);
-    let warning = normalized
-        .is_empty()
-        .then(|| EMPTY_DOCUMENT_WARNING.to_string());
-    let (content, truncated) = truncate_chars(&normalized, max_chars);
+    let DecodedReadableDocument {
+        kind,
+        content,
+        truncated,
+        raw_bytes,
+        warning,
+    } = decode_readable_document(source, raw, max_chars, stage)?;
     Ok(ReadableDocument {
         source: source.to_string(),
-        kind: kind.to_string(),
+        kind,
         title: None,
         content,
         truncated,
-        raw_bytes: raw.len(),
+        raw_bytes,
         warning,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{build_local_document, DocumentReadTool, EMPTY_DOCUMENT_WARNING};
+    use super::{build_local_document, DocumentReadTool};
     use crate::error::Result;
     use crate::i18n::Locale;
     use crate::platform::{ResponseBody, StateFs};
@@ -375,7 +334,10 @@ mod tests {
             build_local_document("config/SOUL.md", b"  \n\t", 1_000, "tool_document_read").unwrap();
         assert_eq!(payload.kind, "text");
         assert!(payload.content.is_empty());
-        assert_eq!(payload.warning.as_deref(), Some(EMPTY_DOCUMENT_WARNING));
+        assert_eq!(
+            payload.warning.as_deref(),
+            Some(crate::documents::EMPTY_DOCUMENT_WARNING)
+        );
         assert!(!payload.truncated);
     }
 

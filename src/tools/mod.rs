@@ -21,6 +21,7 @@ pub mod diagnose_memory_runtime;
 pub mod diagnose_network_path;
 pub mod diagnose_system;
 pub mod diagnose_voice_path;
+pub mod documents;
 #[cfg(all(
     feature = "tools_network_extra",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -118,6 +119,7 @@ pub use diagnose_memory_runtime::DiagnoseMemoryRuntimeTool;
 pub use diagnose_network_path::DiagnoseNetworkPathTool;
 pub use diagnose_system::DiagnoseSystemTool;
 pub use diagnose_voice_path::DiagnoseVoicePathTool;
+pub use documents::DocumentsTool;
 #[cfg(all(
     feature = "tools_network_extra",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))

@@ -202,8 +202,12 @@
     - `mail_smtp_tls`
     - `mail_from_address`
     - `mail_from_name`
+    - `documents_username`
+    - `documents_base_url`
+    - `documents_root_path`
 - **说明**：这是 office 域共享凭证层，不再由 `calendar` 私有维护自己的 credential 真相。
-- **补充**：`mail` 与 `calendar` 都消费这层共享凭证；`mail` 当前首个远端 provider 为 `imap_smtp`，其连接参数全部来自 `metadata`，而不是独立私有配置文件。
+- **补充**：`mail`、`calendar`、`documents` 都消费这层共享凭证；`mail` 当前首个远端 provider 为 `imap_smtp`，其连接参数全部来自 `metadata`，而不是独立私有配置文件。
+- **补充**：`documents` 当前首个远端 provider 为 `webdav`；其账号用户名、根 URL、可选根目录映射同样来自 `metadata`，不会再单独裂出一份私有 documents 配置文件。
 - **补充**：运行态 probe/错误状态不在这个接口里，运行派生真相由 `runtime/office_runtime_status.json` 承载，并通过 `office_status` / `office_config probe` 这类上层能力消费。
 
 ### POST /api/config/office_credentials

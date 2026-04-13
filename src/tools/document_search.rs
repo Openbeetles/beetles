@@ -2,11 +2,11 @@
 //! document_search tool: recursively search document names and readable content under storage.
 
 use crate::error::{Error, Result};
-use crate::tools::pdf_read::{
-    extract_pdf_text, looks_like_pdf as bytes_look_like_pdf, normalize_pdf_text,
+use crate::documents::{
+    build_search_snippet, contains_query_text, decode_searchable_document_text,
+    detect_document_kind,
 };
 use crate::tools::state_file_guard::sanitize_state_file_read;
-use crate::tools::web_fetch::{format_json_text, html_to_text, looks_like_html, looks_like_json};
 use crate::tools::{parse_tool_args, Tool, ToolContext};
 use crate::util::normalize_state_rel_path;
 use serde_json::{json, Value};
@@ -20,7 +20,6 @@ const MAX_LIMIT: usize = 12;
 const MAX_SCAN_FILES: usize = 128;
 const MAX_TOTAL_RAW_BYTES: usize = 1024 * 1024;
 const MAX_FILE_RAW_BYTES: usize = 256 * 1024;
-const SNIPPET_RADIUS_CHARS: usize = 80;
 
 pub struct DocumentSearchTool {
     state_fs: Arc<dyn crate::StateFs + Send + Sync>,
@@ -202,8 +201,8 @@ fn join_rel_path(parent: &str, child: &str) -> String {
 }
 
 fn search_file(path: &str, raw: &[u8], query: &str, case_sensitive: bool) -> Option<Value> {
-    let path_hit = contains_query(path, query, case_sensitive);
-    let kind = detect_kind(path, raw);
+    let path_hit = contains_query_text(path, query, case_sensitive);
+    let kind = detect_document_kind(path, raw);
 
     if raw.len() > MAX_FILE_RAW_BYTES {
         return path_hit.then(|| {
@@ -219,7 +218,7 @@ fn search_file(path: &str, raw: &[u8], query: &str, case_sensitive: bool) -> Opt
         });
     }
 
-    let Some(text) = decode_searchable_text(path, raw) else {
+    let Some(text) = decode_searchable_document_text(path, raw) else {
         return path_hit.then(|| {
             json!({
                 "path": path,
@@ -233,7 +232,7 @@ fn search_file(path: &str, raw: &[u8], query: &str, case_sensitive: bool) -> Opt
         });
     };
 
-    let content_hit = contains_query(&text, query, case_sensitive);
+    let content_hit = contains_query_text(&text, query, case_sensitive);
     if !path_hit && !content_hit {
         return None;
     }
@@ -250,7 +249,7 @@ fn search_file(path: &str, raw: &[u8], query: &str, case_sensitive: bool) -> Opt
         _ => 1,
     };
     let snippet = if content_hit {
-        Value::String(build_snippet(&text, query, case_sensitive))
+        Value::String(build_search_snippet(&text, query, case_sensitive))
     } else {
         Value::Null
     };
@@ -264,167 +263,6 @@ fn search_file(path: &str, raw: &[u8], query: &str, case_sensitive: bool) -> Opt
         "raw_bytes": raw.len(),
         "score": score,
     }))
-}
-
-fn detect_kind(path: &str, raw: &[u8]) -> &'static str {
-    if bytes_look_like_pdf(raw) {
-        "pdf"
-    } else if std::str::from_utf8(raw)
-        .ok()
-        .is_some_and(|decoded| looks_like_json(path, decoded.trim()))
-    {
-        "json"
-    } else if std::str::from_utf8(raw)
-        .ok()
-        .is_some_and(|decoded| looks_like_html(path, decoded.trim()))
-    {
-        "html"
-    } else if std::str::from_utf8(raw).is_ok() {
-        "text"
-    } else {
-        "binary"
-    }
-}
-
-fn decode_searchable_text(path: &str, raw: &[u8]) -> Option<String> {
-    if bytes_look_like_pdf(raw) {
-        let text = extract_pdf_text(raw).ok()?;
-        let normalized = normalize_pdf_text(&text);
-        return (!normalized.is_empty()).then_some(normalized);
-    }
-
-    let decoded = std::str::from_utf8(raw).ok()?;
-    let trimmed = decoded.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let content = if looks_like_json(path, trimmed) {
-        format_json_text(trimmed).unwrap_or_else(|| trimmed.to_string())
-    } else if looks_like_html(path, trimmed) {
-        html_to_text(trimmed)
-    } else {
-        trimmed.to_string()
-    };
-    let normalized = normalize_search_text(&content);
-    (!normalized.is_empty()).then_some(normalized)
-}
-
-fn normalize_search_text(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut pending_space = false;
-    let mut pending_newlines = 0usize;
-    for ch in input.chars() {
-        match ch {
-            '\r' => {}
-            '\n' => {
-                pending_space = false;
-                pending_newlines = pending_newlines.saturating_add(1).min(2);
-            }
-            ch if ch.is_whitespace() => {
-                if !out.is_empty() {
-                    pending_space = true;
-                }
-            }
-            ch => {
-                if pending_newlines > 0 {
-                    if !out.is_empty() {
-                        for _ in 0..pending_newlines {
-                            out.push('\n');
-                        }
-                    }
-                    pending_newlines = 0;
-                } else if pending_space && !out.ends_with(' ') && !out.ends_with('\n') {
-                    out.push(' ');
-                }
-                pending_space = false;
-                out.push(ch);
-            }
-        }
-    }
-    out.trim().to_string()
-}
-
-fn contains_query(haystack: &str, needle: &str, case_sensitive: bool) -> bool {
-    if case_sensitive {
-        haystack.contains(needle)
-    } else {
-        haystack.to_lowercase().contains(&needle.to_lowercase())
-    }
-}
-
-fn build_snippet(text: &str, query: &str, case_sensitive: bool) -> String {
-    if text.is_empty() {
-        return String::new();
-    }
-
-    if let Some(start) = text.find(query) {
-        let (snippet, clipped_left, clipped_right) = char_window(text, start, start + query.len());
-        let mut out = String::new();
-        if clipped_left {
-            out.push_str("...");
-        }
-        out.push_str(snippet.trim());
-        if clipped_right {
-            out.push_str("...");
-        }
-        return out;
-    }
-
-    if case_sensitive {
-        return source_head(text);
-    }
-
-    let lowered = text.to_lowercase();
-    let lowered_query = query.to_lowercase();
-    let Some(start) = lowered.find(&lowered_query) else {
-        return source_head(text);
-    };
-    let (snippet, clipped_left, clipped_right) =
-        char_window(&lowered, start, start + lowered_query.len());
-    let mut out = String::new();
-    if clipped_left {
-        out.push_str("...");
-    }
-    out.push_str(snippet.trim());
-    if clipped_right {
-        out.push_str("...");
-    }
-    out
-}
-
-fn source_head(text: &str) -> String {
-    let char_count = text.chars().count();
-    if char_count <= SNIPPET_RADIUS_CHARS * 2 {
-        text.to_string()
-    } else {
-        let end = byte_index_at_char(text, SNIPPET_RADIUS_CHARS * 2);
-        format!("{}...", text[..end].trim())
-    }
-}
-
-fn char_window(text: &str, match_start: usize, match_end: usize) -> (&str, bool, bool) {
-    let start_char = text[..match_start].chars().count();
-    let end_char = text[..match_end.min(text.len())].chars().count();
-    let snippet_start_char = start_char.saturating_sub(SNIPPET_RADIUS_CHARS);
-    let snippet_end_char = (end_char + SNIPPET_RADIUS_CHARS).min(text.chars().count());
-    let snippet_start = byte_index_at_char(text, snippet_start_char);
-    let snippet_end = byte_index_at_char(text, snippet_end_char);
-    (
-        &text[snippet_start..snippet_end],
-        snippet_start_char > 0,
-        snippet_end_char < text.chars().count(),
-    )
-}
-
-fn byte_index_at_char(text: &str, char_idx: usize) -> usize {
-    if char_idx == 0 {
-        return 0;
-    }
-    text.char_indices()
-        .nth(char_idx)
-        .map(|(idx, _)| idx)
-        .unwrap_or(text.len())
 }
 
 #[cfg(test)]
