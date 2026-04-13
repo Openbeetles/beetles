@@ -687,6 +687,7 @@ fn register_core_tools(
     registry: &mut ToolRegistry,
     config: &AppConfig,
     platform: &Arc<dyn crate::Platform>,
+    config_store: &Arc<dyn crate::platform::ConfigStore + Send + Sync>,
     tool_execution_governance: &Arc<ToolExecutionGovernance>,
     remind_at_store: &Arc<dyn crate::memory::RemindAtStore + Send + Sync>,
     session_store: &Arc<dyn crate::memory::SessionStore + Send + Sync>,
@@ -759,6 +760,10 @@ fn register_core_tools(
         Arc::clone(platform),
         config.enabled_channel.clone(),
     )));
+    registry.register(Box::new(super::DiagnoseNetworkPathTool::new(
+        Arc::clone(platform),
+        Arc::clone(config_store),
+    )));
     registry.register(Box::new(super::KvStoreTool::new(platform.state_fs())));
     registry.register(Box::new(super::PrivateGardenTool::new(Arc::clone(
         private_garden_store,
@@ -803,6 +808,10 @@ fn register_core_tools(
     registry.register(Box::new(super::DiagnoseMemoryRuntimeTool::new(
         Arc::clone(platform),
         continuity_snapshot_supported,
+    )));
+    registry.register(Box::new(super::DiagnoseVoicePathTool::new(
+        Arc::clone(platform),
+        Arc::clone(&config_store),
     )));
     #[cfg(feature = "tools_diagnostics")]
     if !config.hardware_devices.is_empty() {
@@ -982,6 +991,7 @@ pub fn build_default_registry(
         &mut registry,
         config,
         &platform,
+        &config_store,
         &tool_execution_governance,
         &remind_at_store,
         &session_store,
@@ -1375,6 +1385,52 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
 
         assert_eq!(parsed["kind"].as_str(), Some("memory_runtime"));
+        assert!(parsed.get("summary").is_some());
+        assert!(parsed.get("suspected_root_causes").is_some());
+    }
+
+    #[test]
+    fn default_registry_registers_diagnose_network_path_tool() {
+        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+        assert!(ctx.tool_registry.get("diagnose_network_path").is_some());
+    }
+
+    #[test]
+    fn diagnose_network_path_tool_returns_structured_diagnosis_json() {
+        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+        let tool = ctx
+            .tool_registry
+            .get("diagnose_network_path")
+            .expect("diagnose_network_path registered");
+        let mut tool_ctx = StubToolContext;
+
+        let result = tool.execute("{}", &mut tool_ctx).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+
+        assert_eq!(parsed["kind"].as_str(), Some("network_path"));
+        assert!(parsed.get("summary").is_some());
+        assert!(parsed.get("suspected_root_causes").is_some());
+    }
+
+    #[test]
+    fn default_registry_registers_diagnose_voice_path_tool() {
+        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+        assert!(ctx.tool_registry.get("diagnose_voice_path").is_some());
+    }
+
+    #[test]
+    fn diagnose_voice_path_tool_returns_structured_diagnosis_json() {
+        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+        let tool = ctx
+            .tool_registry
+            .get("diagnose_voice_path")
+            .expect("diagnose_voice_path registered");
+        let mut tool_ctx = StubToolContext;
+
+        let result = tool.execute("{}", &mut tool_ctx).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+
+        assert_eq!(parsed["kind"].as_str(), Some("voice_path"));
         assert!(parsed.get("summary").is_some());
         assert!(parsed.get("suspected_root_causes").is_some());
     }

@@ -6,6 +6,8 @@ pub enum DiagnosisKind {
     Delivery,
     System,
     MemoryRuntime,
+    NetworkPath,
+    VoicePath,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

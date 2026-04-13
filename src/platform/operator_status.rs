@@ -3,6 +3,7 @@
 use crate::device_capability::{build_device_capability_snapshots, DeviceCapabilityPlaneSnapshot};
 use crate::diagnosis::{
     build_delivery_diagnosis, build_memory_runtime_diagnosis, build_system_diagnosis,
+    build_network_path_diagnosis_from_runtime, build_voice_path_diagnosis_from_runtime,
     DeliveryDiagnosisInput, DiagnosisResult, SystemDiagnosisInput,
 };
 use crate::orchestrator;
@@ -39,6 +40,8 @@ pub struct OperatorStatusSnapshot {
     pub delivery_diagnosis: DiagnosisResult,
     pub system_diagnosis: DiagnosisResult,
     pub memory_runtime_diagnosis: DiagnosisResult,
+    pub network_path_diagnosis: DiagnosisResult,
+    pub voice_path_diagnosis: DiagnosisResult,
     pub memory_operator_surface: MemoryOperatorSurfaceSummary,
     pub workflow: runtime::WorkflowAuditSnapshot,
     pub programmable_reasoning: crate::ProgrammableReasoningOperatorSnapshot,
@@ -151,6 +154,13 @@ pub fn build_operator_status(
         None,
     )?;
     let memory_runtime_diagnosis = build_memory_runtime_diagnosis(&memory_operator_surface);
+    let network_path_diagnosis = build_network_path_diagnosis_from_runtime(
+        input.platform,
+        input.config,
+        crate::i18n::locale_from_store(input.platform.config_store().as_ref()),
+    );
+    let voice_path_diagnosis =
+        build_voice_path_diagnosis_from_runtime(input.platform, input.config);
     let runtime_mode = presence.runtime_mode;
     let soul_kernel = presence.soul_kernel.clone();
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -170,6 +180,8 @@ pub fn build_operator_status(
         delivery_diagnosis,
         system_diagnosis,
         memory_runtime_diagnosis,
+        network_path_diagnosis,
+        voice_path_diagnosis,
         memory_operator_surface,
         workflow: runtime::workflow_audit_snapshot(8),
         programmable_reasoning: crate::programmable_reasoning_operator_snapshot(),
@@ -234,6 +246,16 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
         "  memory_runtime_diagnosis_summary: {}\n  memory_runtime_diagnosis_confidence: {:?}\n",
         snapshot.memory_runtime_diagnosis.summary,
         snapshot.memory_runtime_diagnosis.confidence,
+    ));
+    out.push_str(&format!(
+        "  network_path_diagnosis_summary: {}\n  network_path_diagnosis_confidence: {:?}\n",
+        snapshot.network_path_diagnosis.summary,
+        snapshot.network_path_diagnosis.confidence,
+    ));
+    out.push_str(&format!(
+        "  voice_path_diagnosis_summary: {}\n  voice_path_diagnosis_confidence: {:?}\n",
+        snapshot.voice_path_diagnosis.summary,
+        snapshot.voice_path_diagnosis.confidence,
     ));
     if let Some(window) = snapshot.operator_surface.operator_window.as_ref() {
         out.push_str(&format!(
