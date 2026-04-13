@@ -32,6 +32,7 @@ mod tests {
         assert!(parsed.get("operator_surface").is_some());
         assert!(parsed.get("reply_pipeline").is_some());
         assert!(parsed.get("delivery_diagnosis").is_some());
+        assert!(parsed.get("system_diagnosis").is_some());
         assert!(parsed.get("memory_operator_surface").is_some());
         assert!(parsed.get("workflow").is_some());
         assert!(parsed.get("programmable_reasoning").is_some());
@@ -45,6 +46,8 @@ mod tests {
             Some("delivery")
         );
         assert!(parsed["delivery_diagnosis"].get("summary").is_some());
+        assert_eq!(parsed["system_diagnosis"]["kind"].as_str(), Some("system"));
+        assert!(parsed["system_diagnosis"].get("summary").is_some());
         assert!(parsed["workflow"].get("summary").is_some());
         assert!(parsed["workflow"].get("recent_records").is_some());
         assert_eq!(

@@ -755,6 +755,10 @@ fn register_core_tools(
     registry.register(Box::new(super::DiagnoseDeliveryTool::new(
         config.enabled_channel.clone(),
     )));
+    registry.register(Box::new(super::DiagnoseSystemTool::new(
+        Arc::clone(platform),
+        config.enabled_channel.clone(),
+    )));
     registry.register(Box::new(super::KvStoreTool::new(platform.state_fs())));
     registry.register(Box::new(super::PrivateGardenTool::new(Arc::clone(
         private_garden_store,

@@ -1,7 +1,10 @@
 //! Unified operator-facing status contract for HTTP and CLI.
 
 use crate::device_capability::{build_device_capability_snapshots, DeviceCapabilityPlaneSnapshot};
-use crate::diagnosis::{build_delivery_diagnosis, DeliveryDiagnosisInput, DiagnosisResult};
+use crate::diagnosis::{
+    build_delivery_diagnosis, build_system_diagnosis, DeliveryDiagnosisInput, DiagnosisResult,
+    SystemDiagnosisInput,
+};
 use crate::orchestrator;
 use crate::platform::memory_operator_surface::{
     build_memory_operator_surface, render_memory_operator_surface_text,
@@ -34,6 +37,7 @@ pub struct OperatorStatusSnapshot {
     pub operator_surface: crate::platform::operator_surface::OperatorSurfaceBudget,
     pub reply_pipeline: ReplyPipelineOperatorSummary,
     pub delivery_diagnosis: DiagnosisResult,
+    pub system_diagnosis: DiagnosisResult,
     pub memory_operator_surface: MemoryOperatorSurfaceSummary,
     pub workflow: runtime::WorkflowAuditSnapshot,
     pub programmable_reasoning: crate::ProgrammableReasoningOperatorSnapshot,
@@ -129,6 +133,16 @@ pub fn build_operator_status(
     let presence = runtime::inspect_platform_presence(input.platform, current_unix_secs());
     let initiative = runtime::inspect_platform_initiative(input.platform, current_unix_secs());
     let os_closure = runtime::inspect_beetle_os_closure(&presence, &initiative);
+    let system_diagnosis = build_system_diagnosis(SystemDiagnosisInput {
+        enabled_channel: Some(input.config.enabled_channel.as_str()),
+        resource: orchestrator::snapshot(),
+        metrics: crate::metrics::snapshot(),
+        runtime_capabilities: runtime_capabilities.clone(),
+        presence_state: presence.state.as_str(),
+        runtime_mode: presence.runtime_mode.current_mode.as_str(),
+        os_closure_ready: os_closure.ready,
+        wifi_connected: presence.wifi_connected,
+    });
     let runtime_mode = presence.runtime_mode;
     let soul_kernel = presence.soul_kernel.clone();
     let memory_operator_surface =
@@ -148,6 +162,7 @@ pub fn build_operator_status(
         operator_surface,
         reply_pipeline,
         delivery_diagnosis,
+        system_diagnosis,
         memory_operator_surface,
         workflow: runtime::workflow_audit_snapshot(8),
         programmable_reasoning: crate::programmable_reasoning_operator_snapshot(),
@@ -202,6 +217,11 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
         "  delivery_diagnosis_summary: {}\n  delivery_diagnosis_confidence: {:?}\n",
         snapshot.delivery_diagnosis.summary,
         snapshot.delivery_diagnosis.confidence,
+    ));
+    out.push_str(&format!(
+        "  system_diagnosis_summary: {}\n  system_diagnosis_confidence: {:?}\n",
+        snapshot.system_diagnosis.summary,
+        snapshot.system_diagnosis.confidence,
     ));
     if let Some(window) = snapshot.operator_surface.operator_window.as_ref() {
         out.push_str(&format!(
