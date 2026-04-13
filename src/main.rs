@@ -1598,26 +1598,22 @@ fn handle_doctor_command(platform: &Arc<dyn Platform>) {
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn handle_restart_command() {
-    if std::path::Path::new("/etc/systemd/system/beetle.service").exists() {
-        match std::process::Command::new("systemctl")
-            .args(["restart", "beetle"])
-            .status()
-        {
-            Ok(status) if status.success() => {
-                println!("beetle service restart requested.");
-                return;
-            }
-            Ok(status) => {
-                eprintln!(
-                    "systemctl restart beetle failed with exit status: {}",
-                    status
-                );
-                std::process::exit(status.code().unwrap_or(1));
-            }
-            Err(e) => {
-                eprintln!("failed to run systemctl restart beetle: {}", e);
-                std::process::exit(1);
-            }
+    match beetle::runtime::linux_systemd::run_beetle_systemd_action("restart") {
+        Ok(Some(status)) if status.success() => {
+            println!("beetle service restart requested.");
+            return;
+        }
+        Ok(Some(status)) => {
+            eprintln!(
+                "systemctl restart beetle failed with exit status: {}",
+                status
+            );
+            std::process::exit(status.code().unwrap_or(1));
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("failed to run systemctl restart beetle: {}", error);
+            std::process::exit(1);
         }
     }
 
@@ -1640,23 +1636,19 @@ fn handle_restart_command() {
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn handle_stop_command() {
-    if std::path::Path::new("/etc/systemd/system/beetle.service").exists() {
-        match std::process::Command::new("systemctl")
-            .args(["stop", "beetle"])
-            .status()
-        {
-            Ok(status) if status.success() => {
-                println!("beetle service stop requested.");
-                return;
-            }
-            Ok(status) => {
-                eprintln!("systemctl stop beetle failed with exit status: {}", status);
-                std::process::exit(status.code().unwrap_or(1));
-            }
-            Err(e) => {
-                eprintln!("failed to run systemctl stop beetle: {}", e);
-                std::process::exit(1);
-            }
+    match beetle::runtime::linux_systemd::run_beetle_systemd_action("stop") {
+        Ok(Some(status)) if status.success() => {
+            println!("beetle service stop requested.");
+            return;
+        }
+        Ok(Some(status)) => {
+            eprintln!("systemctl stop beetle failed with exit status: {}", status);
+            std::process::exit(status.code().unwrap_or(1));
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("failed to run systemctl stop beetle: {}", error);
+            std::process::exit(1);
         }
     }
 

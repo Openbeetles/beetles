@@ -589,7 +589,7 @@ fn collect_live_archive_candidates(
     candidates
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(test)))]
 fn search_archive_records_from_sqlite_detailed(
     session_store: &dyn SessionStore,
     memory_store: &dyn MemoryStore,
@@ -803,7 +803,7 @@ fn archive_sqlite_rebuild(
         .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(test)))]
 fn query_archive_candidates_sqlite(
     conn: &Connection,
     query: PreparedArchiveSearchQuery<'_>,
@@ -863,7 +863,7 @@ fn query_archive_candidates_sqlite(
     Ok(out.into_values().collect())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(test)))]
 fn map_archive_sqlite_candidate_row(
     row: &rusqlite::Row<'_>,
     preferred_chat_id: Option<&str>,
@@ -917,7 +917,7 @@ fn map_archive_sqlite_candidate_row(
     ))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(test)))]
 fn upsert_archive_candidate(
     slot: std::collections::hash_map::Entry<'_, String, ArchiveSearchCandidate>,
     candidate: ArchiveSearchCandidate,
@@ -934,7 +934,7 @@ fn upsert_archive_candidate(
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(test)))]
 fn archive_candidate_matches_query(
     candidate: &ArchiveSearchCandidate,
     query: ArchiveSearchQuery<'_>,
@@ -947,7 +947,7 @@ fn archive_candidate_matches_query(
     query.sources.is_empty() || query.sources.contains(&candidate.source)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(test)))]
 fn archive_sqlite_match_expression(terms: &[String]) -> Option<String> {
     let mut parts = Vec::new();
     for term in terms {

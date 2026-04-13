@@ -11,6 +11,8 @@ pub mod linux_control_plane;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod linux_release;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub mod linux_systemd;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod linux_supervisor;
 pub mod mode;
 pub mod operator_maintenance;

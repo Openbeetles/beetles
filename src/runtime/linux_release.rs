@@ -344,13 +344,7 @@ fn read_release_pointer_symlink(link_path: &Path) -> Option<LinuxReleasePointer>
 }
 
 fn inspect_systemd_unit_consistency() -> Option<bool> {
-    let path = Path::new("/etc/systemd/system/beetle.service");
-    let content = std::fs::read_to_string(path).ok()?;
-    Some(
-        content
-            .lines()
-            .any(|line| line.trim() == "ExecStart=/opt/beetle/current/beetle supervise"),
-    )
+    crate::runtime::linux_systemd::inspect_beetle_systemd_unit_consistency()
 }
 
 fn inspect_init_script_consistency() -> Option<bool> {
