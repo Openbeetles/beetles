@@ -70,9 +70,9 @@ impl SpiffsOfficeRuntimeStatusStore {
         if guard.is_none() {
             *guard = Some(Self::load_from_disk()?);
         }
-        let map = guard.as_mut().ok_or_else(|| {
-            Error::config("office_runtime_status_cache", "cache not initialized")
-        })?;
+        let map = guard
+            .as_mut()
+            .ok_or_else(|| Error::config("office_runtime_status_cache", "cache not initialized"))?;
         f(map)
     }
 
@@ -150,6 +150,9 @@ mod tests {
                 probe_ok: false,
                 last_error: "token_expired".to_string(),
                 last_probe_at_unix_secs: 12,
+                last_activity_kind: String::new(),
+                last_activity_ok: false,
+                last_activity_at_unix_secs: 0,
                 updated_at: 34,
             })
             .expect("set runtime status");

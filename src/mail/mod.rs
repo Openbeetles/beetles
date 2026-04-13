@@ -9,17 +9,17 @@ use serde::{Deserialize, Serialize};
 
 pub use credentials::{
     MailProviderCredential, MailProviderCredentialStatus, MailProviderCredentialStore,
-    OfficeBackedMailProviderCredentialStore, OFFICE_METADATA_MAIL_FROM_ADDRESS,
-    OFFICE_METADATA_MAIL_FROM_NAME, OFFICE_METADATA_MAIL_IMAP_HOST,
-    OFFICE_METADATA_MAIL_IMAP_MAILBOX, OFFICE_METADATA_MAIL_IMAP_PORT,
-    OFFICE_METADATA_MAIL_IMAP_TLS, OFFICE_METADATA_MAIL_SMTP_HOST,
-    OFFICE_METADATA_MAIL_SMTP_PORT, OFFICE_METADATA_MAIL_SMTP_TLS,
-    OFFICE_METADATA_MAIL_USERNAME,
+    OfficeBackedMailProviderCredentialStore, OFFICE_METADATA_MAIL_DRAFT_MAILBOX,
+    OFFICE_METADATA_MAIL_FROM_ADDRESS, OFFICE_METADATA_MAIL_FROM_NAME,
+    OFFICE_METADATA_MAIL_IMAP_HOST, OFFICE_METADATA_MAIL_IMAP_MAILBOX,
+    OFFICE_METADATA_MAIL_IMAP_PORT, OFFICE_METADATA_MAIL_IMAP_TLS, OFFICE_METADATA_MAIL_SMTP_HOST,
+    OFFICE_METADATA_MAIL_SMTP_PORT, OFFICE_METADATA_MAIL_SMTP_TLS, OFFICE_METADATA_MAIL_USERNAME,
 };
 pub use provider::{MailOperation, MailProvider, MailProviderRegistry};
 pub use service::MailService;
 
 pub const DEFAULT_MAILBOX: &str = "INBOX";
+pub const DEFAULT_DRAFT_MAILBOX: &str = "Drafts";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MailMessageSummary {
@@ -44,6 +44,12 @@ pub struct MailMessage {
     pub summary: MailMessageSummary,
     #[serde(default)]
     pub text_body: String,
+    #[serde(default)]
+    pub message_id: String,
+    #[serde(default)]
+    pub reply_to: Vec<String>,
+    #[serde(default)]
+    pub references: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -67,4 +73,8 @@ pub struct MailSendRequest {
     pub cc: Vec<String>,
     #[serde(default)]
     pub bcc: Vec<String>,
+    #[serde(default)]
+    pub in_reply_to: String,
+    #[serde(default)]
+    pub references: String,
 }

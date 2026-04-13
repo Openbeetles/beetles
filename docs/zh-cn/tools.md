@@ -54,10 +54,13 @@
   - `list`
   - `get`
   - `send`
+  - `draft`
+  - `reply`
+  - `forward`
 - 如果已经配置默认邮件账户，或当前只有一个可用账户，可以省略 `provider` / `account_key`。
-- `send` 属于显式对外发送动作，要求 `confirm=true`。
-- `send` 既支持直接邮箱数组 `to` / `cc` / `bcc`，也支持通过 `contacts_directory` 解析的联系人查询数组 `to_lookup` / `cc_lookup` / `bcc_lookup`。
-- `provider_status` 返回的是当前可用邮件能力、已配置账户状态，以及默认账户和运行状态摘要。
+- `send`、`draft`、`reply`、`forward` 都属于显式远端变更动作，要求 `confirm=true`。
+- `send`、`draft`、`forward` 既支持直接邮箱数组 `to` / `cc` / `bcc`，也支持通过 `contacts_directory` 解析的联系人查询数组 `to_lookup` / `cc_lookup` / `bcc_lookup`；`reply` 会保留原消息发送者作为基础收件人，并允许继续合并额外收件人。
+- `provider_status` 现在不仅返回已配置账户，还会返回每个邮件账户的发送可用性和最近运行态活动证据。
 
 ### `documents`
 

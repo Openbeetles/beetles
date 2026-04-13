@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::mail::DEFAULT_MAILBOX;
+use crate::mail::{DEFAULT_DRAFT_MAILBOX, DEFAULT_MAILBOX};
 use crate::office::{OfficeCapability, OfficeCredential, OfficeService};
 use serde::{Deserialize, Serialize};
 
@@ -7,6 +7,7 @@ pub const OFFICE_METADATA_MAIL_USERNAME: &str = "mail_username";
 pub const OFFICE_METADATA_MAIL_IMAP_HOST: &str = "mail_imap_host";
 pub const OFFICE_METADATA_MAIL_IMAP_PORT: &str = "mail_imap_port";
 pub const OFFICE_METADATA_MAIL_IMAP_MAILBOX: &str = "mail_imap_mailbox";
+pub const OFFICE_METADATA_MAIL_DRAFT_MAILBOX: &str = "mail_draft_mailbox";
 pub const OFFICE_METADATA_MAIL_IMAP_TLS: &str = "mail_imap_tls";
 pub const OFFICE_METADATA_MAIL_SMTP_HOST: &str = "mail_smtp_host";
 pub const OFFICE_METADATA_MAIL_SMTP_PORT: &str = "mail_smtp_port";
@@ -32,6 +33,8 @@ pub struct MailProviderCredential {
     pub imap_port: u16,
     #[serde(default)]
     pub imap_mailbox: String,
+    #[serde(default)]
+    pub draft_mailbox: String,
     #[serde(default)]
     pub imap_tls: bool,
     #[serde(default)]
@@ -101,7 +104,10 @@ impl MailProviderCredentialStore for OfficeBackedMailProviderCredentialStore {
         let Some(account) = self.office.account(account_key) else {
             return Ok(None);
         };
-        if !account.enabled_capabilities.contains(&OfficeCapability::Mail) {
+        if !account
+            .enabled_capabilities
+            .contains(&OfficeCapability::Mail)
+        {
             return Ok(None);
         }
         let Some(credential) = self.office.credential(account_key)? else {
@@ -150,8 +156,11 @@ pub(crate) fn mail_credential_from_office(
         993,
         "mail_provider_credential",
     )?;
-    let imap_mailbox = mailbox_or_default(
-        credential.metadata_value(OFFICE_METADATA_MAIL_IMAP_MAILBOX),
+    let imap_mailbox =
+        mailbox_or_default(credential.metadata_value(OFFICE_METADATA_MAIL_IMAP_MAILBOX));
+    let draft_mailbox = mailbox_or_fallback(
+        credential.metadata_value(OFFICE_METADATA_MAIL_DRAFT_MAILBOX),
+        DEFAULT_DRAFT_MAILBOX,
     );
     let imap_tls = parse_mail_bool(
         credential.metadata_value(OFFICE_METADATA_MAIL_IMAP_TLS),
@@ -201,6 +210,7 @@ pub(crate) fn mail_credential_from_office(
         imap_host,
         imap_port,
         imap_mailbox,
+        draft_mailbox,
         imap_tls,
         smtp_host,
         smtp_port,
@@ -229,10 +239,14 @@ fn parse_mail_bool(raw: Option<&str>, default_value: bool) -> bool {
 }
 
 fn mailbox_or_default(value: Option<&str>) -> String {
+    mailbox_or_fallback(value, DEFAULT_MAILBOX)
+}
+
+fn mailbox_or_fallback(value: Option<&str>, default_mailbox: &str) -> String {
     value
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or(DEFAULT_MAILBOX)
+        .unwrap_or(default_mailbox)
         .to_string()
 }
 
@@ -255,11 +269,22 @@ mod tests {
 
     impl OfficeCredentialStore for StubCredentialStore {
         fn get(&self, account_key: &str) -> Result<Option<OfficeCredential>> {
-            Ok(self.items.lock().unwrap_or_else(|e| e.into_inner()).get(account_key).cloned())
+            Ok(self
+                .items
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(account_key)
+                .cloned())
         }
 
         fn list(&self) -> Result<Vec<OfficeCredential>> {
-            Ok(self.items.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect())
+            Ok(self
+                .items
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .cloned()
+                .collect())
         }
 
         fn set(&self, credential: &OfficeCredential) -> Result<()> {
@@ -271,7 +296,10 @@ mod tests {
         }
 
         fn clear(&self, account_key: &str) -> Result<()> {
-            self.items.lock().unwrap_or_else(|e| e.into_inner()).remove(account_key);
+            self.items
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(account_key);
             Ok(())
         }
     }
@@ -280,7 +308,10 @@ mod tests {
     struct StubRuntimeStatusStore;
 
     impl OfficeRuntimeStatusStore for StubRuntimeStatusStore {
-        fn get(&self, _account_key: &str) -> Result<Option<crate::office::OfficeAccountRuntimeStatus>> {
+        fn get(
+            &self,
+            _account_key: &str,
+        ) -> Result<Option<crate::office::OfficeAccountRuntimeStatus>> {
             Ok(None)
         }
         fn list(&self) -> Result<Vec<crate::office::OfficeAccountRuntimeStatus>> {
@@ -322,13 +353,34 @@ mod tests {
                 expires_at_unix_secs: 0,
                 updated_at: 10,
                 metadata: HashMap::from([
-                    (OFFICE_METADATA_MAIL_USERNAME.to_string(), "work@example.com".to_string()),
-                    (OFFICE_METADATA_MAIL_IMAP_HOST.to_string(), "imap.example.com".to_string()),
-                    (OFFICE_METADATA_MAIL_IMAP_PORT.to_string(), "993".to_string()),
-                    (OFFICE_METADATA_MAIL_IMAP_MAILBOX.to_string(), "INBOX".to_string()),
-                    (OFFICE_METADATA_MAIL_SMTP_HOST.to_string(), "smtp.example.com".to_string()),
-                    (OFFICE_METADATA_MAIL_SMTP_PORT.to_string(), "465".to_string()),
-                    (OFFICE_METADATA_MAIL_FROM_ADDRESS.to_string(), "work@example.com".to_string()),
+                    (
+                        OFFICE_METADATA_MAIL_USERNAME.to_string(),
+                        "work@example.com".to_string(),
+                    ),
+                    (
+                        OFFICE_METADATA_MAIL_IMAP_HOST.to_string(),
+                        "imap.example.com".to_string(),
+                    ),
+                    (
+                        OFFICE_METADATA_MAIL_IMAP_PORT.to_string(),
+                        "993".to_string(),
+                    ),
+                    (
+                        OFFICE_METADATA_MAIL_IMAP_MAILBOX.to_string(),
+                        "INBOX".to_string(),
+                    ),
+                    (
+                        OFFICE_METADATA_MAIL_SMTP_HOST.to_string(),
+                        "smtp.example.com".to_string(),
+                    ),
+                    (
+                        OFFICE_METADATA_MAIL_SMTP_PORT.to_string(),
+                        "465".to_string(),
+                    ),
+                    (
+                        OFFICE_METADATA_MAIL_FROM_ADDRESS.to_string(),
+                        "work@example.com".to_string(),
+                    ),
                 ])
                 .into_iter()
                 .collect(),

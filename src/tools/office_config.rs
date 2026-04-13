@@ -6,8 +6,8 @@ use crate::office::{
     OfficeResolveRequest,
 };
 use crate::tools::{
-    parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolContext,
-    ToolEffectClass, ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
+    parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolContext, ToolEffectClass,
+    ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -70,10 +70,10 @@ impl Tool for OfficeConfigTool {
                 },
             ),
             "resolve_account" => {
-                let capability = parse_capability_value(
-                    obj.get("capability")
-                        .ok_or_else(|| Error::config("tool_office_config", "missing capability"))?,
-                )?;
+                let capability =
+                    parse_capability_value(obj.get("capability").ok_or_else(|| {
+                        Error::config("tool_office_config", "missing capability")
+                    })?)?;
                 let preferred_identity_class = obj
                     .get("preferred_identity_class")
                     .map(parse_identity_class_value)
@@ -501,7 +501,10 @@ mod tests {
     fn inspect_returns_snapshot() {
         let fixture = build_fixture();
         let mut ctx = DummyCtx;
-        let payload = fixture.tool.execute(r#"{"op":"inspect"}"#, &mut ctx).unwrap();
+        let payload = fixture
+            .tool
+            .execute(r#"{"op":"inspect"}"#, &mut ctx)
+            .unwrap();
         let payload: Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(payload["op"], "inspect");
         assert!(payload["payload"]["summary"]["accounts"].is_array());
@@ -511,8 +514,10 @@ mod tests {
     fn draft_accounts_returns_preview_segment() {
         let fixture = build_fixture();
         let mut ctx = DummyCtx;
-        let payload = fixture.tool.execute(
-            r#"{
+        let payload = fixture
+            .tool
+            .execute(
+                r#"{
                 "op":"draft_accounts",
                 "account":{
                     "account_key":"mail-work",
@@ -524,8 +529,9 @@ mod tests {
                 },
                 "set_defaults":["mail"]
             }"#,
-            &mut ctx,
-        ).unwrap();
+                &mut ctx,
+            )
+            .unwrap();
         let payload: Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(
             payload["payload"]["binding"]["capability_defaults"]["mail"],
@@ -576,17 +582,17 @@ mod tests {
                 "binding":{"capability_defaults":{"mail":"mail-work"}},
                 "policy":{}
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         let tool = OfficeConfigTool::new(OfficeConfigManagementService::new(
             config_file_store,
             Arc::new(MemoryCredentialStore::default()),
             Arc::new(MemoryRuntimeStatusStore::default()),
         ));
         let mut ctx = DummyCtx;
-        let payload = tool.execute(
-            r#"{"op":"resolve_account","capability":"mail"}"#,
-            &mut ctx,
-        ).unwrap();
+        let payload = tool
+            .execute(r#"{"op":"resolve_account","capability":"mail"}"#, &mut ctx)
+            .unwrap();
         let payload: Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(payload["payload"]["selected"]["account_key"], "mail-work");
     }
@@ -630,7 +636,10 @@ mod tests {
         let stored = crate::config::get_office_accounts_segment(fixture.config_file_store.as_ref())
             .expect("stored accounts");
         let stored: Value = serde_json::from_str(&stored).expect("stored json");
-        assert_eq!(stored["binding"]["capability_defaults"]["mail"], "mail-work");
+        assert_eq!(
+            stored["binding"]["capability_defaults"]["mail"],
+            "mail-work"
+        );
 
         let payload = fixture
             .tool
@@ -666,6 +675,9 @@ mod tests {
                 probe_ok: false,
                 last_error: "auth_failed".to_string(),
                 last_probe_at_unix_secs: 1,
+                last_activity_kind: String::new(),
+                last_activity_ok: false,
+                last_activity_at_unix_secs: 0,
                 updated_at: 1,
             })
             .expect("seed runtime status");

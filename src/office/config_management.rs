@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use crate::office::{
     OfficeAccount, OfficeAccountIdentityClass, OfficeAuthoritySummary, OfficeCapability,
     OfficeCredential, OfficeCredentialStore, OfficeCredentialsSegment, OfficeResolveRequest,
-    OfficeResolveResult, OfficeRuntimeStatusStore, OfficeService, OfficeSelectionPolicy,
+    OfficeResolveResult, OfficeRuntimeStatusStore, OfficeSelectionPolicy, OfficeService,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -65,7 +65,11 @@ pub struct OfficeProbeResult {
 
 pub trait OfficeProbeAdapter: Send + Sync {
     fn provider_kind(&self) -> &'static str;
-    fn probe(&self, account: &OfficeAccount, credential: &OfficeCredential) -> Result<OfficeProbeResult>;
+    fn probe(
+        &self,
+        account: &OfficeAccount,
+        credential: &OfficeCredential,
+    ) -> Result<OfficeProbeResult>;
 }
 
 #[derive(Clone)]
@@ -114,7 +118,10 @@ impl OfficeConfigManagementService {
         Ok(self.build_office_service(&accounts)?.resolve(request))
     }
 
-    pub fn draft_accounts(&self, request: &OfficeAccountDraftRequest) -> Result<OfficeAccountsSegment> {
+    pub fn draft_accounts(
+        &self,
+        request: &OfficeAccountDraftRequest,
+    ) -> Result<OfficeAccountsSegment> {
         let mut segment = self.load_accounts_segment()?;
         segment.registry.insert(request.account.clone());
         for capability in &request.set_defaults {
@@ -145,7 +152,9 @@ impl OfficeConfigManagementService {
             .items
             .retain(|item| item.account_key != request.credential.account_key);
         segment.items.push(request.credential.clone());
-        segment.items.sort_by(|left, right| left.account_key.cmp(&right.account_key));
+        segment
+            .items
+            .sort_by(|left, right| left.account_key.cmp(&right.account_key));
         self.validate_credentials(&segment)?;
         Ok(segment)
     }
@@ -227,7 +236,8 @@ impl OfficeConfigManagementService {
 
     fn load_accounts_segment(&self) -> Result<OfficeAccountsSegment> {
         let json = config::get_office_accounts_segment(self.config_file_store.as_ref())?;
-        serde_json::from_str(&json).map_err(|error| Error::config("office_config_load_accounts", error.to_string()))
+        serde_json::from_str(&json)
+            .map_err(|error| Error::config("office_config_load_accounts", error.to_string()))
     }
 
     fn load_credentials_segment(&self) -> Result<OfficeCredentialsSegment> {
@@ -495,6 +505,9 @@ mod tests {
                 probe_ok: false,
                 last_error: "auth_failed".to_string(),
                 last_probe_at_unix_secs: 1,
+                last_activity_kind: String::new(),
+                last_activity_ok: false,
+                last_activity_at_unix_secs: 0,
                 updated_at: 1,
             })
             .expect("seed runtime status");

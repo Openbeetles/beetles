@@ -2,14 +2,14 @@
 
 use crate::error::{Error, Result};
 use crate::mail::{
-    credentials::mail_credential_from_office,
-    MailMessage, MailMessageSummary, MailOperation, MailProvider, MailProviderCredential,
-    MailQuery, MailSendRequest,
+    credentials::mail_credential_from_office, MailMessage, MailMessageSummary, MailOperation,
+    MailProvider, MailProviderCredential, MailQuery, MailSendRequest,
 };
 use crate::office::{OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult};
 use crate::util::{current_unix_secs, truncate_content_to_max};
 use async_imap::types::Fetch;
 use futures::TryStreamExt;
+use lettre::message::header;
 use lettre::message::{Mailbox, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
@@ -45,8 +45,7 @@ impl MailProvider for ImapSmtpProvider {
         query: MailQuery,
     ) -> Result<Vec<MailMessageSummary>> {
         validate_imap_smtp_credential(credential)?;
-        build_mail_runtime()?
-            .block_on(async_list_messages(credential, query))
+        build_mail_runtime()?.block_on(async_list_messages(credential, query))
     }
 
     fn get_message(
@@ -55,8 +54,7 @@ impl MailProvider for ImapSmtpProvider {
         id: &str,
     ) -> Result<Option<MailMessage>> {
         validate_imap_smtp_credential(credential)?;
-        build_mail_runtime()?
-            .block_on(async_get_message(credential, id))
+        build_mail_runtime()?.block_on(async_get_message(credential, id))
     }
 
     fn send_message(
@@ -66,6 +64,15 @@ impl MailProvider for ImapSmtpProvider {
     ) -> Result<MailMessageSummary> {
         validate_imap_smtp_credential(credential)?;
         send_via_smtp(credential, request)
+    }
+
+    fn draft_message(
+        &self,
+        credential: &MailProviderCredential,
+        request: &MailSendRequest,
+    ) -> Result<MailMessageSummary> {
+        validate_imap_smtp_credential(credential)?;
+        build_mail_runtime()?.block_on(save_draft_via_imap(credential, request))
     }
 }
 
@@ -115,16 +122,28 @@ impl OfficeProbeAdapter for ImapSmtpOfficeProbeAdapter {
 
 fn validate_imap_smtp_credential(credential: &MailProviderCredential) -> Result<()> {
     if credential.username.trim().is_empty() {
-        return Err(Error::config("imap_smtp_provider", "username must not be empty"));
+        return Err(Error::config(
+            "imap_smtp_provider",
+            "username must not be empty",
+        ));
     }
     if credential.secret.trim().is_empty() {
-        return Err(Error::config("imap_smtp_provider", "secret must not be empty"));
+        return Err(Error::config(
+            "imap_smtp_provider",
+            "secret must not be empty",
+        ));
     }
     if credential.imap_host.trim().is_empty() {
-        return Err(Error::config("imap_smtp_provider", "imap_host must not be empty"));
+        return Err(Error::config(
+            "imap_smtp_provider",
+            "imap_host must not be empty",
+        ));
     }
     if credential.smtp_host.trim().is_empty() {
-        return Err(Error::config("imap_smtp_provider", "smtp_host must not be empty"));
+        return Err(Error::config(
+            "imap_smtp_provider",
+            "smtp_host must not be empty",
+        ));
     }
     if credential.imap_port == 0 {
         return Err(Error::config("imap_smtp_provider", "imap_port must be > 0"));
@@ -142,8 +161,7 @@ fn validate_imap_smtp_credential(credential: &MailProviderCredential) -> Result<
 }
 
 fn render_mail_preview(text: &str) -> String {
-    truncate_content_to_max(&text.split_whitespace().collect::<Vec<_>>().join(" "), 160)
-        .to_string()
+    truncate_content_to_max(&text.split_whitespace().collect::<Vec<_>>().join(" "), 160).to_string()
 }
 
 fn build_mail_runtime() -> Result<tokio::runtime::Runtime> {
@@ -215,7 +233,9 @@ async fn async_list_messages(
         .map(|fetch| summarize_fetch(credential, mailbox, fetch))
         .collect::<Result<Vec<_>>>()?;
     if let Some(received_after) = query.received_after_unix_secs {
-        items.retain(|item| item.received_at_unix_secs == 0 || item.received_at_unix_secs >= received_after);
+        items.retain(|item| {
+            item.received_at_unix_secs == 0 || item.received_at_unix_secs >= received_after
+        });
     }
     items.sort_by(|left, right| {
         right
@@ -230,7 +250,10 @@ async fn async_list_messages(
     Ok(items)
 }
 
-async fn async_get_message(credential: &MailProviderCredential, id: &str) -> Result<Option<MailMessage>> {
+async fn async_get_message(
+    credential: &MailProviderCredential,
+    id: &str,
+) -> Result<Option<MailMessage>> {
     let mut session = connect_imap(credential).await?;
     session
         .select(&credential.imap_mailbox)
@@ -245,7 +268,11 @@ async fn async_get_message(credential: &MailProviderCredential, id: &str) -> Res
         .await
         .map_err(|error| Error::config("imap_smtp_fetch", error.to_string()))?;
     let result = if let Some(fetch) = fetches.into_iter().next() {
-        Some(message_from_fetch(credential, &credential.imap_mailbox, fetch)?)
+        Some(message_from_fetch(
+            credential,
+            &credential.imap_mailbox,
+            fetch,
+        )?)
     } else {
         None
     };
@@ -254,6 +281,39 @@ async fn async_get_message(credential: &MailProviderCredential, id: &str) -> Res
         .await
         .map_err(|error| Error::config("imap_smtp_logout", error.to_string()))?;
     Ok(result)
+}
+
+async fn save_draft_via_imap(
+    credential: &MailProviderCredential,
+    request: &MailSendRequest,
+) -> Result<MailMessageSummary> {
+    let message = build_rfc822_message(credential, request)?;
+    let mut session = connect_imap(credential).await?;
+    session
+        .append(
+            &credential.draft_mailbox,
+            Some(r"(\Draft)"),
+            None,
+            message.formatted(),
+        )
+        .await
+        .map_err(|error| Error::config("imap_smtp_append_draft", error.to_string()))?;
+    session
+        .logout()
+        .await
+        .map_err(|error| Error::config("imap_smtp_logout", error.to_string()))?;
+    Ok(MailMessageSummary {
+        id: format!("draft-{}", current_unix_secs()),
+        provider: credential.provider.clone(),
+        account_key: credential.account_key.clone(),
+        mailbox: credential.draft_mailbox.clone(),
+        subject: request.subject.clone(),
+        from: credential.from_address.clone(),
+        to: request.to.clone(),
+        preview: render_mail_preview(&request.text_body),
+        unread: false,
+        received_at_unix_secs: current_unix_secs(),
+    })
 }
 
 async fn connect_imap(credential: &MailProviderCredential) -> Result<ImapSession> {
@@ -318,6 +378,13 @@ fn message_from_fetch(
             received_at_unix_secs: 0,
         },
         text_body,
+        message_id: parsed.message_id().unwrap_or_default().to_string(),
+        reply_to: extract_addresses(parsed.reply_to()),
+        references: parsed
+            .references()
+            .as_text()
+            .unwrap_or_default()
+            .to_string(),
     })
 }
 
@@ -367,20 +434,7 @@ fn send_via_smtp(
     credential: &MailProviderCredential,
     request: &MailSendRequest,
 ) -> Result<MailMessageSummary> {
-    let from = parse_mailbox(&credential.from_address, Some(&credential.from_name))?;
-    let mut builder = Message::builder().from(from).subject(request.subject.clone());
-    for address in &request.to {
-        builder = builder.to(parse_mailbox(address, None)?);
-    }
-    for address in &request.cc {
-        builder = builder.cc(parse_mailbox(address, None)?);
-    }
-    for address in &request.bcc {
-        builder = builder.bcc(parse_mailbox(address, None)?);
-    }
-    let message = builder
-        .singlepart(SinglePart::plain(request.text_body.clone()))
-        .map_err(|error| Error::config("imap_smtp_smtp_message", error.to_string()))?;
+    let message = build_rfc822_message(credential, request)?;
     let credentials = Credentials::new(credential.username.clone(), credential.secret.clone());
     let builder = if credential.smtp_tls {
         if credential.smtp_port == 587 {
@@ -414,8 +468,39 @@ fn send_via_smtp(
     })
 }
 
+fn build_rfc822_message(
+    credential: &MailProviderCredential,
+    request: &MailSendRequest,
+) -> Result<Message> {
+    let from = parse_mailbox(&credential.from_address, Some(&credential.from_name))?;
+    let mut builder = Message::builder()
+        .from(from)
+        .subject(request.subject.clone());
+    for address in &request.to {
+        builder = builder.to(parse_mailbox(address, None)?);
+    }
+    for address in &request.cc {
+        builder = builder.cc(parse_mailbox(address, None)?);
+    }
+    for address in &request.bcc {
+        builder = builder.bcc(parse_mailbox(address, None)?);
+    }
+    if !request.in_reply_to.trim().is_empty() {
+        builder = builder.header(header::InReplyTo::from(request.in_reply_to.clone()));
+    }
+    if !request.references.trim().is_empty() {
+        builder = builder.header(header::References::from(request.references.clone()));
+    }
+    builder
+        .singlepart(SinglePart::plain(request.text_body.clone()))
+        .map_err(|error| Error::config("imap_smtp_smtp_message", error.to_string()))
+}
+
 fn parse_mailbox(address: &str, display_name: Option<&str>) -> Result<Mailbox> {
-    let value = match display_name.map(str::trim).filter(|value| !value.is_empty()) {
+    let value = match display_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         Some(name) => format!("{name} <{}>", address.trim()),
         None => address.trim().to_string(),
     };
@@ -439,6 +524,7 @@ mod tests {
             imap_host: "imap.example.com".to_string(),
             imap_port: 993,
             imap_mailbox: "INBOX".to_string(),
+            draft_mailbox: "Drafts".to_string(),
             imap_tls: true,
             smtp_host: "smtp.example.com".to_string(),
             smtp_port: 465,
@@ -463,7 +549,10 @@ mod tests {
 
     #[test]
     fn render_mail_preview_collapses_whitespace() {
-        assert_eq!(render_mail_preview("hello\n\nworld   beetle"), "hello world beetle");
+        assert_eq!(
+            render_mail_preview("hello\n\nworld   beetle"),
+            "hello world beetle"
+        );
     }
 
     #[test]
@@ -494,7 +583,10 @@ mod tests {
                 &credential,
             )
             .expect("probe result");
-        assert_eq!(result.disposition, OfficeProbeDisposition::MissingCredential);
+        assert_eq!(
+            result.disposition,
+            OfficeProbeDisposition::MissingCredential
+        );
         assert_eq!(result.reason, "mail_transport_config_missing");
     }
 }

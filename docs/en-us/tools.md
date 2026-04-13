@@ -54,10 +54,13 @@ Keep three things in mind:
   - `list`
   - `get`
   - `send`
+  - `draft`
+  - `reply`
+  - `forward`
 - If a default mail account is configured, or only one mail account is available, you can omit `provider` / `account_key`.
-- `send` is an explicit outbound action and requires `confirm=true`.
-- `send` can use direct email arrays (`to` / `cc` / `bcc`) and contact-query arrays (`to_lookup` / `cc_lookup` / `bcc_lookup`) resolved through `contacts_directory`.
-- `provider_status` returns the current mail capability view, configured account status, and default-account/runtime summary.
+- `send`, `draft`, `reply`, and `forward` are explicit remote mutations and require `confirm=true`.
+- `send`, `draft`, and `forward` can use direct email arrays (`to` / `cc` / `bcc`) and contact-query arrays (`to_lookup` / `cc_lookup` / `bcc_lookup`) resolved through `contacts_directory`; `reply` keeps the original message sender as the base recipient and can still merge extra recipients.
+- `provider_status` now includes per-account mail readiness and latest runtime activity evidence, not just configured-provider rows.
 
 ### `documents`
 

@@ -29,6 +29,7 @@ struct MailProviderStatusResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     default_mail_account_key: Option<String>,
     configured_providers: Vec<MailProviderCredentialStatus>,
+    account_statuses: Vec<MailAccountStatus>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     office_runtime_statuses: Vec<OfficeAccountRuntimeStatus>,
 }
@@ -49,13 +50,29 @@ struct MailGetResponse {
 }
 
 #[derive(Serialize)]
-struct MailSendResponse {
+struct MailMutationResponse {
     op: &'static str,
     ok: bool,
     provider: String,
     message: MailMessageSummary,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     resolved_contacts: Vec<MailResolvedContact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    office_runtime_status: Option<OfficeAccountRuntimeStatus>,
+}
+
+#[derive(Serialize)]
+struct MailAccountStatus {
+    account_key: String,
+    provider: String,
+    configured: bool,
+    send_supported: bool,
+    draft_supported: bool,
+    send_ready: bool,
+    last_error: String,
+    last_activity_kind: String,
+    last_activity_ok: bool,
+    last_activity_at_unix_secs: u64,
 }
 
 #[derive(Serialize)]
@@ -122,11 +139,11 @@ impl Tool for MailTool {
     }
 
     fn description(&self) -> &'static str {
-        "Access office mail through shared account authority. Ops: provider_status, list, get, send. Provider can be omitted when office mail defaults or a single configured provider make routing unambiguous."
+        "Access office mail through shared account authority. Ops: provider_status, list, get, send, draft, reply, forward. Provider can be omitted when office mail defaults or a single configured provider make routing unambiguous."
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: provider_status|list|get|send"},"provider":{"type":"string","description":"Optional mail provider. Omit only when office defaults or a single configured provider make routing unambiguous."},"account_key":{"type":"string","description":"Optional explicit office mail account key."},"mailbox":{"type":"string","description":"Mailbox to query for list. Defaults to provider mailbox."},"unread_only":{"type":"boolean","description":"Whether list should only include unread mail."},"received_after_unix_secs":{"type":"integer","description":"Optional lower bound for received time."},"limit":{"type":"integer","description":"List limit, default 10, max 50."},"id":{"type":"string","description":"Message ID or provider UID for get."},"subject":{"type":"string","description":"Mail subject for send."},"text_body":{"type":"string","description":"Mail body for send."},"to":{"type":"array","items":{"type":"string"},"description":"Primary recipient email addresses for send."},"cc":{"type":"array","items":{"type":"string"},"description":"CC recipient email addresses for send."},"bcc":{"type":"array","items":{"type":"string"},"description":"BCC recipient email addresses for send."},"to_lookup":{"type":"array","items":{"type":"string"},"description":"Primary recipient contact queries resolved through contacts_directory."},"cc_lookup":{"type":"array","items":{"type":"string"},"description":"CC recipient contact queries resolved through contacts_directory."},"bcc_lookup":{"type":"array","items":{"type":"string"},"description":"BCC recipient contact queries resolved through contacts_directory."},"confirm":{"type":"boolean","description":"Must be true for send."}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: provider_status|list|get|send|draft|reply|forward"},"provider":{"type":"string","description":"Optional mail provider. Omit only when office defaults or a single configured provider make routing unambiguous."},"account_key":{"type":"string","description":"Optional explicit office mail account key."},"mailbox":{"type":"string","description":"Mailbox to query for list. Defaults to provider mailbox."},"unread_only":{"type":"boolean","description":"Whether list should only include unread mail."},"received_after_unix_secs":{"type":"integer","description":"Optional lower bound for received time."},"limit":{"type":"integer","description":"List limit, default 10, max 50."},"id":{"type":"string","description":"Message ID or provider UID for get, reply, or forward."},"subject":{"type":"string","description":"Mail subject for send, draft, or optional override on reply/forward."},"text_body":{"type":"string","description":"Mail body or note body for send, draft, reply, or forward."},"to":{"type":"array","items":{"type":"string"},"description":"Primary recipient email addresses."},"cc":{"type":"array","items":{"type":"string"},"description":"CC recipient email addresses."},"bcc":{"type":"array","items":{"type":"string"},"description":"BCC recipient email addresses."},"to_lookup":{"type":"array","items":{"type":"string"},"description":"Primary recipient contact queries resolved through contacts_directory."},"cc_lookup":{"type":"array","items":{"type":"string"},"description":"CC recipient contact queries resolved through contacts_directory."},"bcc_lookup":{"type":"array","items":{"type":"string"},"description":"BCC recipient contact queries resolved through contacts_directory."},"confirm":{"type":"boolean","description":"Must be true for send, draft, reply, and forward."}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
@@ -144,14 +161,20 @@ impl Tool for MailTool {
                     .map(str::to_string)
                     .collect::<Vec<_>>();
                 let configured_providers = self.service.list_provider_statuses()?;
+                let office_runtime_statuses = self.service.office_runtime_statuses()?;
                 serialize_tool_output(
                     "tool_mail",
                     &MailProviderStatusResponse {
                         op: "provider_status",
                         registered_remote_providers,
                         default_mail_account_key: self.service.office_default_account_key(),
+                        account_statuses: build_mail_account_statuses(
+                            &self.service,
+                            &configured_providers,
+                            &office_runtime_statuses,
+                        ),
                         configured_providers,
-                        office_runtime_statuses: self.service.office_runtime_statuses()?,
+                        office_runtime_statuses,
                     },
                 )
             }
@@ -233,11 +256,15 @@ impl Tool for MailTool {
                         to,
                         cc,
                         bcc,
+                        in_reply_to: String::new(),
+                        references: String::new(),
                     },
                 )?;
+                let office_runtime_status =
+                    self.service.office_runtime_status(&message.account_key)?;
                 serialize_tool_output(
                     "tool_mail",
-                    &MailSendResponse {
+                    &MailMutationResponse {
                         op: "send",
                         ok: true,
                         provider,
@@ -250,6 +277,114 @@ impl Tool for MailTool {
                         .into_iter()
                         .flatten()
                         .collect(),
+                        office_runtime_status,
+                    },
+                )
+            }
+            "draft" => {
+                require_confirm(&obj, "draft")?;
+                let provider = self
+                    .service
+                    .resolve_provider_name(parse_provider(&obj).as_deref())?;
+                let (to, cc, bcc, resolved_contacts) = self.resolve_compose_recipients(&obj)?;
+                let message = self.service.draft(
+                    &provider,
+                    parse_account_key(&obj).as_deref(),
+                    &MailSendRequest {
+                        subject: optional_str(&obj, "subject"),
+                        text_body: optional_str(&obj, "text_body"),
+                        to,
+                        cc,
+                        bcc,
+                        in_reply_to: String::new(),
+                        references: String::new(),
+                    },
+                )?;
+                let office_runtime_status =
+                    self.service.office_runtime_status(&message.account_key)?;
+                serialize_tool_output(
+                    "tool_mail",
+                    &MailMutationResponse {
+                        op: "draft",
+                        ok: true,
+                        provider,
+                        message,
+                        resolved_contacts,
+                        office_runtime_status,
+                    },
+                )
+            }
+            "reply" => {
+                require_confirm(&obj, "reply")?;
+                let provider = self
+                    .service
+                    .resolve_provider_name(parse_provider(&obj).as_deref())?;
+                let (to, cc, bcc, resolved_contacts) = self.resolve_compose_recipients(&obj)?;
+                let message = self.service.reply(
+                    &provider,
+                    parse_account_key(&obj).as_deref(),
+                    required_str(&obj, "id")?,
+                    &MailSendRequest {
+                        subject: optional_str(&obj, "subject"),
+                        text_body: required_str(&obj, "text_body")?.to_string(),
+                        to,
+                        cc,
+                        bcc,
+                        in_reply_to: String::new(),
+                        references: String::new(),
+                    },
+                )?;
+                let office_runtime_status =
+                    self.service.office_runtime_status(&message.account_key)?;
+                serialize_tool_output(
+                    "tool_mail",
+                    &MailMutationResponse {
+                        op: "reply",
+                        ok: true,
+                        provider,
+                        message,
+                        resolved_contacts,
+                        office_runtime_status,
+                    },
+                )
+            }
+            "forward" => {
+                require_confirm(&obj, "forward")?;
+                let provider = self
+                    .service
+                    .resolve_provider_name(parse_provider(&obj).as_deref())?;
+                let (to, cc, bcc, resolved_contacts) = self.resolve_compose_recipients(&obj)?;
+                if to.is_empty() && cc.is_empty() && bcc.is_empty() {
+                    return Err(Error::config(
+                        "tool_mail",
+                        "forward requires at least one recipient in to, cc, bcc, or *_lookup",
+                    ));
+                }
+                let message = self.service.forward(
+                    &provider,
+                    parse_account_key(&obj).as_deref(),
+                    required_str(&obj, "id")?,
+                    &MailSendRequest {
+                        subject: optional_str(&obj, "subject"),
+                        text_body: optional_str(&obj, "text_body"),
+                        to,
+                        cc,
+                        bcc,
+                        in_reply_to: String::new(),
+                        references: String::new(),
+                    },
+                )?;
+                let office_runtime_status =
+                    self.service.office_runtime_status(&message.account_key)?;
+                serialize_tool_output(
+                    "tool_mail",
+                    &MailMutationResponse {
+                        op: "forward",
+                        ok: true,
+                        provider,
+                        message,
+                        resolved_contacts,
+                        office_runtime_status,
                     },
                 )
             }
@@ -273,9 +408,14 @@ impl Tool for MailTool {
             .unwrap_or("provider_status");
         let confirm = obj.get("confirm").and_then(Value::as_bool).unwrap_or(false);
         Ok(match op {
-            "send" => self
+            "send" | "draft" | "reply" | "forward" => self
                 .metadata()
-                .default_execution_shape("mail_send")
+                .default_execution_shape(match op {
+                    "send" => "mail_send",
+                    "draft" => "mail_draft",
+                    "reply" => "mail_reply",
+                    _ => "mail_forward",
+                })
                 .with_approval_granted(confirm),
             "provider_status" | "list" | "get" => self
                 .metadata()
@@ -295,11 +435,40 @@ impl Tool for MailTool {
             .get("op")
             .and_then(Value::as_str)
             .unwrap_or("provider_status");
-        Ok(matches!(op, "list" | "get" | "send"))
+        Ok(matches!(
+            op,
+            "list" | "get" | "send" | "draft" | "reply" | "forward"
+        ))
     }
 }
 
 impl MailTool {
+    fn resolve_compose_recipients(
+        &self,
+        obj: &serde_json::Map<String, Value>,
+    ) -> Result<(
+        Vec<String>,
+        Vec<String>,
+        Vec<String>,
+        Vec<MailResolvedContact>,
+    )> {
+        let (to_lookup, to_lookup_resolved) =
+            self.resolve_recipient_queries(obj, "to_lookup", "to")?;
+        let (cc_lookup, cc_lookup_resolved) =
+            self.resolve_recipient_queries(obj, "cc_lookup", "cc")?;
+        let (bcc_lookup, bcc_lookup_resolved) =
+            self.resolve_recipient_queries(obj, "bcc_lookup", "bcc")?;
+        Ok((
+            merge_recipients(parse_recipients(obj, "to")?, to_lookup),
+            merge_recipients(parse_recipients(obj, "cc")?, cc_lookup),
+            merge_recipients(parse_recipients(obj, "bcc")?, bcc_lookup),
+            [to_lookup_resolved, cc_lookup_resolved, bcc_lookup_resolved]
+                .into_iter()
+                .flatten()
+                .collect(),
+        ))
+    }
+
     fn resolve_recipient_queries(
         &self,
         obj: &serde_json::Map<String, Value>,
@@ -325,6 +494,54 @@ impl MailTool {
         }
         Ok((emails, resolved))
     }
+}
+
+fn build_mail_account_statuses(
+    service: &MailService,
+    configured_providers: &[MailProviderCredentialStatus],
+    office_runtime_statuses: &[OfficeAccountRuntimeStatus],
+) -> Vec<MailAccountStatus> {
+    let runtime_by_account = office_runtime_statuses
+        .iter()
+        .map(|status| (status.account_key.as_str(), status))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    configured_providers
+        .iter()
+        .map(|status| {
+            let runtime = runtime_by_account.get(status.account_key.as_str()).copied();
+            let send_supported =
+                service.provider_supports(&status.provider, crate::mail::MailOperation::Send);
+            let draft_supported =
+                service.provider_supports(&status.provider, crate::mail::MailOperation::Draft);
+            let activity_supports_send = runtime.is_some_and(|runtime| {
+                runtime.last_activity_ok
+                    && matches!(
+                        runtime.last_activity_kind.as_str(),
+                        "mail_send" | "mail_reply" | "mail_forward"
+                    )
+            });
+            MailAccountStatus {
+                account_key: status.account_key.clone(),
+                provider: status.provider.clone(),
+                configured: status.configured,
+                send_supported,
+                draft_supported,
+                send_ready: status.configured
+                    && send_supported
+                    && runtime.is_some_and(|runtime| runtime.probe_ok || activity_supports_send),
+                last_error: runtime
+                    .map(|item| item.last_error.clone())
+                    .unwrap_or_default(),
+                last_activity_kind: runtime
+                    .map(|item| item.last_activity_kind.clone())
+                    .unwrap_or_default(),
+                last_activity_ok: runtime.is_some_and(|item| item.last_activity_ok),
+                last_activity_at_unix_secs: runtime
+                    .map(|item| item.last_activity_at_unix_secs)
+                    .unwrap_or(0),
+            }
+        })
+        .collect()
 }
 
 trait MailQueryExt {
@@ -517,28 +734,43 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct StubRuntimeStatusStore;
+    struct StubRuntimeStatusStore {
+        items: Mutex<HashMap<String, OfficeAccountRuntimeStatus>>,
+    }
 
     impl OfficeRuntimeStatusStore for StubRuntimeStatusStore {
-        fn get(&self, _account_key: &str) -> Result<Option<OfficeAccountRuntimeStatus>> {
-            Ok(None)
+        fn get(&self, account_key: &str) -> Result<Option<OfficeAccountRuntimeStatus>> {
+            Ok(self
+                .items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(account_key)
+                .cloned())
         }
 
         fn list(&self) -> Result<Vec<OfficeAccountRuntimeStatus>> {
-            Ok(vec![OfficeAccountRuntimeStatus {
-                account_key: "mail-work".to_string(),
-                probe_ok: true,
-                last_error: String::new(),
-                last_probe_at_unix_secs: 7,
-                updated_at: 8,
-            }])
+            Ok(self
+                .items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .values()
+                .cloned()
+                .collect())
         }
 
-        fn set(&self, _status: &OfficeAccountRuntimeStatus) -> Result<()> {
+        fn set(&self, status: &OfficeAccountRuntimeStatus) -> Result<()> {
+            self.items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(status.account_key.clone(), status.clone());
             Ok(())
         }
 
-        fn clear(&self, _account_key: &str) -> Result<()> {
+        fn clear(&self, account_key: &str) -> Result<()> {
+            self.items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(account_key);
             Ok(())
         }
     }
@@ -597,7 +829,11 @@ mod tests {
         }
     }
 
-    struct StubProvider;
+    #[derive(Default)]
+    struct StubProvider {
+        sent_requests: Mutex<Vec<MailSendRequest>>,
+        drafted_requests: Mutex<Vec<MailSendRequest>>,
+    }
 
     impl MailProvider for StubProvider {
         fn provider_name(&self) -> &'static str {
@@ -654,6 +890,9 @@ mod tests {
                     received_at_unix_secs: 2,
                 },
                 text_body: "body".to_string(),
+                message_id: "<msg-1@example.com>".to_string(),
+                reply_to: vec!["reply@example.com".to_string()],
+                references: "<root@example.com>".to_string(),
             }))
         }
 
@@ -662,6 +901,10 @@ mod tests {
             credential: &MailProviderCredential,
             request: &MailSendRequest,
         ) -> Result<MailMessageSummary> {
+            self.sent_requests
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(request.clone());
             Ok(MailMessageSummary {
                 id: "sent-1".to_string(),
                 provider: credential.provider.clone(),
@@ -675,9 +918,32 @@ mod tests {
                 received_at_unix_secs: 3,
             })
         }
+
+        fn draft_message(
+            &self,
+            credential: &MailProviderCredential,
+            request: &MailSendRequest,
+        ) -> Result<MailMessageSummary> {
+            self.drafted_requests
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(request.clone());
+            Ok(MailMessageSummary {
+                id: "draft-1".to_string(),
+                provider: credential.provider.clone(),
+                account_key: credential.account_key.clone(),
+                mailbox: credential.draft_mailbox.clone(),
+                subject: request.subject.clone(),
+                from: credential.from_address.clone(),
+                to: request.to.clone(),
+                preview: request.text_body.clone(),
+                unread: false,
+                received_at_unix_secs: 3,
+            })
+        }
     }
 
-    fn build_tool() -> MailTool {
+    fn build_tool() -> (MailTool, Arc<StubProvider>, Arc<StubRuntimeStatusStore>) {
         let credential_store = Arc::new(StubCredentialStore::default());
         for (account_key, label, account_id) in [
             ("mail-work", "Work", "work@example.com"),
@@ -699,6 +965,7 @@ mod tests {
                         imap_host: "imap.example.com".to_string(),
                         imap_port: 993,
                         imap_mailbox: "INBOX".to_string(),
+                        draft_mailbox: "Drafts".to_string(),
                         imap_tls: true,
                         smtp_host: "smtp.example.com".to_string(),
                         smtp_port: 465,
@@ -709,8 +976,9 @@ mod tests {
                 );
         }
 
+        let provider = Arc::new(StubProvider::default());
         let mut providers = MailProviderRegistry::new();
-        providers.register(Arc::new(StubProvider));
+        providers.register(provider.clone());
 
         let mut registry = OfficeAccountRegistry::new();
         registry.insert(OfficeAccount {
@@ -731,12 +999,25 @@ mod tests {
         });
         let mut binding = OfficeCapabilityBinding::default();
         binding.set_default_account(OfficeCapability::Mail, "mail-work".to_string());
+        let runtime_store = Arc::new(StubRuntimeStatusStore::default());
+        runtime_store
+            .set(&OfficeAccountRuntimeStatus {
+                account_key: "mail-work".to_string(),
+                probe_ok: true,
+                last_error: String::new(),
+                last_probe_at_unix_secs: 7,
+                last_activity_kind: String::new(),
+                last_activity_ok: false,
+                last_activity_at_unix_secs: 0,
+                updated_at: 8,
+            })
+            .expect("seed runtime status");
         let office_service = OfficeService::new(
             registry,
             binding,
             OfficeSelectionPolicy::default(),
             Arc::new(StubOfficeCredentialStore),
-            Arc::new(StubRuntimeStatusStore),
+            runtime_store.clone(),
         );
 
         let contacts_store = Arc::new(StateFsContactsDirectoryStore::new(Arc::new(
@@ -754,17 +1035,21 @@ mod tests {
             })
             .expect("seed contacts directory");
 
-        MailTool::with_office_service_and_contacts(
-            credential_store,
-            providers,
-            office_service,
-            contacts_store,
+        (
+            MailTool::with_office_service_and_contacts(
+                credential_store,
+                providers,
+                office_service,
+                contacts_store,
+            ),
+            provider,
+            runtime_store,
         )
     }
 
     #[test]
     fn mail_tool_provider_status_reports_defaults_and_runtime() {
-        let tool = build_tool();
+        let (tool, _provider, _runtime_store) = build_tool();
         let mut ctx = DummyCtx;
         let payload = tool
             .execute(r#"{"op":"provider_status"}"#, &mut ctx)
@@ -774,11 +1059,19 @@ mod tests {
         assert_eq!(payload["default_mail_account_key"], "mail-work");
         assert_eq!(payload["configured_providers"][0]["provider"], "imap_smtp");
         assert_eq!(payload["office_runtime_statuses"][0]["probe_ok"], true);
+        let account_statuses = payload["account_statuses"]
+            .as_array()
+            .expect("account statuses array");
+        let work_status = account_statuses
+            .iter()
+            .find(|item| item["account_key"] == "mail-work")
+            .expect("mail-work status");
+        assert_eq!(work_status["send_ready"], true);
     }
 
     #[test]
     fn mail_tool_list_routes_via_office_default_when_provider_is_omitted() {
-        let tool = build_tool();
+        let (tool, _provider, _runtime_store) = build_tool();
         let mut ctx = DummyCtx;
         let payload = tool
             .execute(r#"{"op":"list"}"#, &mut ctx)
@@ -790,7 +1083,7 @@ mod tests {
 
     #[test]
     fn mail_tool_get_returns_message_body() {
-        let tool = build_tool();
+        let (tool, _provider, _runtime_store) = build_tool();
         let mut ctx = DummyCtx;
         let payload = tool
             .execute(r#"{"op":"get","provider":"imap_smtp","id":"42"}"#, &mut ctx)
@@ -802,7 +1095,7 @@ mod tests {
 
     #[test]
     fn mail_tool_send_requires_confirm_and_returns_summary() {
-        let tool = build_tool();
+        let (tool, _provider, _runtime_store) = build_tool();
         let mut ctx = DummyCtx;
         let error = tool
             .execute(
@@ -826,7 +1119,7 @@ mod tests {
 
     #[test]
     fn mail_tool_send_resolves_lookup_recipients_via_contacts_directory() {
-        let tool = build_tool();
+        let (tool, _provider, _runtime_store) = build_tool();
         let mut ctx = DummyCtx;
 
         let payload = tool
@@ -839,5 +1132,73 @@ mod tests {
         assert_eq!(payload["message"]["to"][0], "alice@example.com");
         assert_eq!(payload["resolved_contacts"][0]["field"], "to");
         assert_eq!(payload["resolved_contacts"][0]["contact_id"], "alice-zhang");
+    }
+
+    #[test]
+    fn mail_tool_reply_uses_original_message_and_updates_runtime_status() {
+        let (tool, provider, _runtime_store) = build_tool();
+        let mut ctx = DummyCtx;
+        let payload = tool
+            .execute(
+                r#"{"op":"reply","id":"42","text_body":"Thanks for the update.","confirm":true}"#,
+                &mut ctx,
+            )
+            .expect("reply mail");
+        let payload: Value = serde_json::from_str(&payload).expect("valid json");
+        assert_eq!(payload["message"]["subject"], "Re: hello");
+        assert_eq!(
+            payload["office_runtime_status"]["last_activity_kind"],
+            "mail_reply"
+        );
+        let requests = provider
+            .sent_requests
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].to, vec!["reply@example.com".to_string()]);
+        assert_eq!(requests[0].in_reply_to, "<msg-1@example.com>");
+        assert!(requests[0].text_body.contains("Thanks for the update."));
+        assert!(requests[0].text_body.contains("body"));
+    }
+
+    #[test]
+    fn mail_tool_forward_resolves_lookup_recipients() {
+        let (tool, provider, _runtime_store) = build_tool();
+        let mut ctx = DummyCtx;
+        let payload = tool
+            .execute(
+                r#"{"op":"forward","id":"42","text_body":"FYI","to_lookup":["Alice Zhang"],"confirm":true}"#,
+                &mut ctx,
+            )
+            .expect("forward mail");
+        let payload: Value = serde_json::from_str(&payload).expect("valid json");
+        assert_eq!(payload["message"]["subject"], "Fwd: hello");
+        assert_eq!(payload["message"]["to"][0], "alice@example.com");
+        assert_eq!(payload["resolved_contacts"][0]["field"], "to");
+        let requests = provider
+            .sent_requests
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].text_body.contains("FYI"));
+        assert!(requests[0].text_body.contains("body"));
+    }
+
+    #[test]
+    fn mail_tool_draft_returns_remote_draft_summary() {
+        let (tool, _provider, _runtime_store) = build_tool();
+        let mut ctx = DummyCtx;
+        let payload = tool
+            .execute(
+                r#"{"op":"draft","subject":"Draft note","text_body":"Work in progress","confirm":true}"#,
+                &mut ctx,
+            )
+            .expect("save draft");
+        let payload: Value = serde_json::from_str(&payload).expect("valid json");
+        assert_eq!(payload["message"]["mailbox"], "Drafts");
+        assert_eq!(
+            payload["office_runtime_status"]["last_activity_kind"],
+            "mail_draft"
+        );
     }
 }

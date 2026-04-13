@@ -1,5 +1,7 @@
 use crate::error::Result;
-use crate::mail::{MailMessage, MailMessageSummary, MailProviderCredential, MailQuery, MailSendRequest};
+use crate::mail::{
+    MailMessage, MailMessageSummary, MailProviderCredential, MailQuery, MailSendRequest,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -8,6 +10,7 @@ pub enum MailOperation {
     List,
     Get,
     Send,
+    Draft,
 }
 
 pub trait MailProvider: Send + Sync {
@@ -19,8 +22,17 @@ pub trait MailProvider: Send + Sync {
         credential: &MailProviderCredential,
         query: MailQuery,
     ) -> Result<Vec<MailMessageSummary>>;
-    fn get_message(&self, credential: &MailProviderCredential, id: &str) -> Result<Option<MailMessage>>;
+    fn get_message(
+        &self,
+        credential: &MailProviderCredential,
+        id: &str,
+    ) -> Result<Option<MailMessage>>;
     fn send_message(
+        &self,
+        credential: &MailProviderCredential,
+        request: &MailSendRequest,
+    ) -> Result<MailMessageSummary>;
+    fn draft_message(
         &self,
         credential: &MailProviderCredential,
         request: &MailSendRequest,
@@ -34,7 +46,9 @@ pub struct MailProviderRegistry {
 
 impl MailProviderRegistry {
     pub fn new() -> Self {
-        Self { providers: HashMap::new() }
+        Self {
+            providers: HashMap::new(),
+        }
     }
 
     pub fn register(&mut self, provider: Arc<dyn MailProvider>) {

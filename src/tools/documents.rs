@@ -8,8 +8,8 @@ use crate::documents::{
 use crate::error::{Error, Result};
 use crate::office::{OfficeAccountRuntimeStatus, OfficeService};
 use crate::tools::{
-    parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolContext,
-    ToolEffectClass, ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
+    parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolContext, ToolEffectClass,
+    ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -60,9 +60,7 @@ struct DocumentsSearchResponse {
 }
 
 impl DocumentsTool {
-    pub fn new(
-        credential_store: Arc<dyn DocumentsProviderCredentialStore + Send + Sync>,
-    ) -> Self {
+    pub fn new(credential_store: Arc<dyn DocumentsProviderCredentialStore + Send + Sync>) -> Self {
         Self::with_runtime(credential_store, DocumentsProviderRegistry::new(), None)
     }
 
@@ -300,7 +298,10 @@ fn parse_max_read_bytes(value: Option<&Value>) -> Result<usize> {
             .as_u64()
             .map(|value| value.max(1) as usize)
             .ok_or_else(|| {
-                Error::config("tool_documents", "max_read_bytes must be a positive integer")
+                Error::config(
+                    "tool_documents",
+                    "max_read_bytes must be a positive integer",
+                )
             }),
         Some(_) => Err(Error::config(
             "tool_documents",
@@ -313,9 +314,7 @@ fn parse_max_read_bytes(value: Option<&Value>) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::documents::{
-        DocumentsOperation, DocumentsProvider, DocumentsProviderCredential,
-    };
+    use crate::documents::{DocumentsOperation, DocumentsProvider, DocumentsProviderCredential};
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
         OfficeCapabilityBinding, OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore,
@@ -397,6 +396,9 @@ mod tests {
                 probe_ok: true,
                 last_error: String::new(),
                 last_probe_at_unix_secs: 11,
+                last_activity_kind: String::new(),
+                last_activity_ok: false,
+                last_activity_at_unix_secs: 0,
                 updated_at: 12,
             }])
         }

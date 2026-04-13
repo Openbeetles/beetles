@@ -12,6 +12,12 @@ pub struct OfficeAccountRuntimeStatus {
     #[serde(default)]
     pub last_probe_at_unix_secs: u64,
     #[serde(default)]
+    pub last_activity_kind: String,
+    #[serde(default)]
+    pub last_activity_ok: bool,
+    #[serde(default)]
+    pub last_activity_at_unix_secs: u64,
+    #[serde(default)]
     pub updated_at: u64,
 }
 

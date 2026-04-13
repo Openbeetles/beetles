@@ -331,6 +331,9 @@ mod tests {
                 probe_ok: true,
                 last_error: String::new(),
                 last_probe_at_unix_secs: 77,
+                last_activity_kind: String::new(),
+                last_activity_ok: false,
+                last_activity_at_unix_secs: 0,
                 updated_at: 77,
             })
             .expect("set runtime status");
@@ -385,6 +388,9 @@ mod tests {
             Arc::new(StubRuntimeStatusStore::default()),
         );
 
-        assert_eq!(service.default_account_key(OfficeCapability::Calendar), None);
+        assert_eq!(
+            service.default_account_key(OfficeCapability::Calendar),
+            None
+        );
     }
 }
