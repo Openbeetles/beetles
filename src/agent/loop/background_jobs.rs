@@ -211,11 +211,9 @@ fn build_system_llm_ctx<'a>(
         tool_registry: None,
         channel_capability_registry: Arc::clone(&config.channel_capability_registry),
         supports_current_chat_outbound_message: false,
-        supports_current_chat_primary_reply: false,
         supports_explicit_outbound_message: false,
         outbound_message_budget: 0,
         outbound_message_count: 0,
-        current_primary_message_delivered: false,
         locale,
     }
 }

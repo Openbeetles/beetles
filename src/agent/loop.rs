@@ -1684,11 +1684,9 @@ fn maybe_apply_mental_privacy_review(
         tool_registry: None,
         channel_capability_registry: Arc::clone(&config.channel_capability_registry),
         supports_current_chat_outbound_message: false,
-        supports_current_chat_primary_reply: false,
         supports_explicit_outbound_message: false,
         outbound_message_budget: 0,
         outbound_message_count: 0,
-        current_primary_message_delivered: false,
         locale: loc,
     };
     match run_mental_privacy_review(
@@ -3829,11 +3827,9 @@ mod tests {
             tool_registry: None,
             channel_capability_registry: Arc::clone(&config.channel_capability_registry),
             supports_current_chat_outbound_message: false,
-            supports_current_chat_primary_reply: false,
             supports_explicit_outbound_message: false,
             outbound_message_budget: 0,
             outbound_message_count: 0,
-            current_primary_message_delivered: false,
             locale: UiLocale::Zh,
         };
         let messages = vec![Message {
@@ -3899,11 +3895,9 @@ mod tests {
             tool_registry: None,
             channel_capability_registry: Arc::clone(&config.channel_capability_registry),
             supports_current_chat_outbound_message: false,
-            supports_current_chat_primary_reply: false,
             supports_explicit_outbound_message: false,
             outbound_message_budget: 0,
             outbound_message_count: 0,
-            current_primary_message_delivered: false,
             locale: UiLocale::Zh,
         };
         let messages = vec![Message {
@@ -3937,7 +3931,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_turn_suppresses_final_reply_after_message_tool_primary_delivery() {
+    fn execute_turn_keeps_canonical_reply_when_message_tool_requests_current_primary() {
         let llm = SequenceStubLlm {
             responses: Mutex::new(vec![
                 LlmResponse {
@@ -3950,7 +3944,7 @@ mod tests {
                     }]),
                 },
                 LlmResponse {
-                    content: String::new(),
+                    content: "规范主回复".to_string(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: None,
                 },
@@ -3978,14 +3972,12 @@ mod tests {
         )
         .expect("execute turn");
 
-        assert!(matches!(outcome, WorkerOutcome::Delivered(ref text) if text == "工具主答复"));
-        assert!(telemetry.streamed);
-        assert!(telemetry.delivery.current_primary_delivered);
-        let first = outbound_rx.try_recv().expect("visible update");
-        let second = outbound_rx.try_recv().expect("primary reply");
-        let contents = [first.content.as_str(), second.content.as_str()];
-        assert!(contents.contains(&"〔甲壳虫〕正在执行 message，继续推进 🪲"));
-        assert!(contents.contains(&"工具主答复"));
+        assert!(matches!(outcome, WorkerOutcome::Content(ref text) if text == "规范主回复"));
+        assert!(!telemetry.streamed);
+        assert!(!telemetry.delivery.current_primary_delivered);
+        assert_eq!(telemetry.delivery.tool_outbound_suppressed, 0);
+        let outbound = outbound_rx.try_recv().expect("visible update");
+        assert_eq!(outbound.content, "〔甲壳虫〕正在执行 message，继续推进 🪲");
         assert!(outbound_rx.try_recv().is_err());
     }
 
@@ -4204,11 +4196,9 @@ mod tests {
             tool_registry: None,
             channel_capability_registry: Arc::clone(&config.channel_capability_registry),
             supports_current_chat_outbound_message: false,
-            supports_current_chat_primary_reply: false,
             supports_explicit_outbound_message: false,
             outbound_message_budget: 0,
             outbound_message_count: 0,
-            current_primary_message_delivered: false,
             locale: UiLocale::Zh,
         };
 
@@ -5303,7 +5293,7 @@ mod tests {
                 expect_final_recovery: false,
             },
             AgentTurnBenchmarkCase {
-                name: "message primary delivery avoids extra recovery",
+                name: "message primary request stays on canonical reply path",
                 msg: PcMsg::new_inbound("qq_channel", "chat-1", "测试多轮发送", false)
                     .expect("message"),
                 registry_mode: BenchmarkRegistryMode::MessagePrimary,
@@ -5319,7 +5309,7 @@ mod tests {
                         }]),
                     },
                     LlmResponse {
-                        content: String::new(),
+                        content: "规范主回复".to_string(),
                         stop_reason: StopReason::EndTurn,
                         tool_calls: None,
                     },
@@ -5327,9 +5317,9 @@ mod tests {
                 expected_llm_calls: 2,
                 expected_react_rounds: 2,
                 expected_tool_calls: 1,
-                expected_streamed: true,
-                expected_current_primary_delivered: true,
-                expected_outcome_fragment: "工具主答复",
+                expected_streamed: false,
+                expected_current_primary_delivered: false,
+                expected_outcome_fragment: "规范主回复",
                 expect_final_recovery: false,
             },
             AgentTurnBenchmarkCase {

@@ -27,11 +27,11 @@ impl Tool for MessageTool {
     }
 
     fn description(&self) -> &str {
-        "Send a user-visible message through the runtime outbound pipeline. Use target=current for the active chat, or target=explicit with channel and chat_id."
+        "Send a user-visible message through the runtime outbound pipeline. Use target=current for the active chat, or target=explicit with channel and chat_id. Current-chat messages are supplemental only; the canonical finalizer owns the active chat's final main reply."
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"content":{"type":"string","description":"Message body to send."},"target":{"type":"string","enum":["current","explicit"],"description":"current = active chat; explicit = use channel + chat_id.","default":"current"},"channel":{"type":"string","description":"Required when target=explicit."},"chat_id":{"type":"string","description":"Required when target=explicit."},"delivery_kind":{"type":"string","enum":["supplemental","primary"],"description":"primary means this tool message is the main reply for the current chat.","default":"supplemental"}},"required":["content"]}"#
+        r#"{"type":"object","properties":{"content":{"type":"string","description":"Message body to send."},"target":{"type":"string","enum":["current","explicit"],"description":"current = active chat; explicit = use channel + chat_id.","default":"current"},"channel":{"type":"string","description":"Required when target=explicit."},"chat_id":{"type":"string","description":"Required when target=explicit."},"delivery_kind":{"type":"string","enum":["supplemental","primary"],"description":"supplemental = visible update; primary is only allowed for explicit outbound targets, never for the active chat.","default":"supplemental"}},"required":["content"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
@@ -108,6 +108,12 @@ impl Tool for MessageTool {
                 ));
             }
         };
+        if primary && current_target {
+            return Err(Error::config(
+                "tool_message",
+                "current-chat primary reply is reserved for the canonical finalizer",
+            ));
+        }
         let capability = ctx.channel_capability(&channel).ok_or_else(|| {
             Error::config(
                 "tool_message",
@@ -142,12 +148,6 @@ impl Tool for MessageTool {
             return Err(Error::config(
                 "tool_message",
                 "current-chat outbound delivery is not supported in this runtime context",
-            ));
-        }
-        if primary && current_target && !ctx.supports_current_chat_primary_reply() {
-            return Err(Error::config(
-                "tool_message",
-                "primary current-chat delivery is not supported in this runtime context",
             ));
         }
         if !current_target && !ctx.supports_explicit_outbound_message() {
@@ -248,11 +248,9 @@ mod tests {
         current_chat_id: Option<String>,
         channel_capabilities: HashMap<String, ChannelCapabilityEntry>,
         supports_current_chat_outbound_message: bool,
-        supports_current_chat_primary_reply: bool,
         supports_explicit_outbound_message: bool,
         outbound_message_budget: u8,
         outbound_message_count: u8,
-        current_primary_message_delivered: bool,
     }
 
     impl ToolContext for StubToolContext {
@@ -292,10 +290,6 @@ mod tests {
             self.supports_current_chat_outbound_message
         }
 
-        fn supports_current_chat_primary_reply(&self) -> bool {
-            self.supports_current_chat_primary_reply
-        }
-
         fn supports_explicit_outbound_message(&self) -> bool {
             self.supports_explicit_outbound_message
         }
@@ -312,13 +306,10 @@ mod tests {
                 ));
             }
             if primary && target_is_current {
-                if self.current_primary_message_delivered {
-                    return Err(Error::config(
-                        "tool_message",
-                        "current primary already claimed",
-                    ));
-                }
-                self.current_primary_message_delivered = true;
+                return Err(Error::config(
+                    "tool_message",
+                    "current-chat primary reply is reserved for the canonical finalizer",
+                ));
             }
             if self.outbound_message_count >= self.outbound_message_budget {
                 return Err(Error::config(
@@ -371,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_current_message_marks_current_chat_reply() {
+    fn primary_current_message_is_rejected_for_current_chat() {
         let mut ctx = StubToolContext {
             current_channel: Some("qq_channel".to_string()),
             current_chat_id: Some("chat-1".to_string()),
@@ -383,25 +374,17 @@ mod tests {
                 true,
             )]),
             supports_current_chat_outbound_message: true,
-            supports_current_chat_primary_reply: true,
             supports_explicit_outbound_message: false,
             outbound_message_budget: 2,
             outbound_message_count: 0,
-            current_primary_message_delivered: false,
         };
         let tool = MessageTool;
-        let outcome = tool
+        let err = tool
             .execute_outcome(r#"{"content":"done","delivery_kind":"primary"}"#, &mut ctx)
-            .expect("message tool");
+            .expect_err("current-chat primary should be rejected");
 
-        assert_eq!(
-            outcome.outbound_intents.as_slice(),
-            &[ToolOutboundIntent {
-                target: ToolOutboundTarget::CurrentChat,
-                delivery_kind: ToolOutboundDeliveryKind::Primary,
-                content: "done".to_string(),
-            }]
-        );
+        assert_eq!(err.stage(), "tool_message");
+        assert_eq!(ctx.outbound_message_count, 0);
     }
 
     #[test]
@@ -414,11 +397,9 @@ mod tests {
                 capability_entry("telegram", true, true, true, true),
             ]),
             supports_current_chat_outbound_message: true,
-            supports_current_chat_primary_reply: false,
             supports_explicit_outbound_message: true,
             outbound_message_budget: 2,
             outbound_message_count: 0,
-            current_primary_message_delivered: false,
         };
         let tool = MessageTool;
         let outcome = tool
@@ -442,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_current_message_rejects_unsupported_runtime() {
+    fn primary_current_message_rejects_even_when_runtime_disallows_primary() {
         let mut ctx = StubToolContext {
             current_channel: Some("qq_channel".to_string()),
             current_chat_id: Some("chat-1".to_string()),
@@ -454,11 +435,9 @@ mod tests {
                 true,
             )]),
             supports_current_chat_outbound_message: true,
-            supports_current_chat_primary_reply: false,
             supports_explicit_outbound_message: false,
             outbound_message_budget: 2,
             outbound_message_count: 0,
-            current_primary_message_delivered: false,
         };
         let tool = MessageTool;
         let err = tool
@@ -477,11 +456,9 @@ mod tests {
                 capability_entry("telegram", true, true, true, true),
             ]),
             supports_current_chat_outbound_message: false,
-            supports_current_chat_primary_reply: false,
             supports_explicit_outbound_message: false,
             outbound_message_budget: 2,
             outbound_message_count: 0,
-            current_primary_message_delivered: false,
         };
         let tool = MessageTool;
         let err = tool
@@ -503,15 +480,16 @@ mod tests {
                 capability_entry("telegram", true, true, true, true),
             ]),
             supports_current_chat_outbound_message: true,
-            supports_current_chat_primary_reply: true,
             supports_explicit_outbound_message: true,
             outbound_message_budget: 1,
             outbound_message_count: 0,
-            current_primary_message_delivered: false,
         };
         let tool = MessageTool;
 
-        tool.execute_outcome(r#"{"content":"first","delivery_kind":"primary"}"#, &mut ctx)
+        tool.execute_outcome(
+            r#"{"content":"first","target":"explicit","channel":"telegram","chat_id":"chat-2","delivery_kind":"primary"}"#,
+            &mut ctx,
+        )
             .expect("first message");
         let err = tool
             .execute_outcome(
@@ -536,11 +514,9 @@ mod tests {
                 true,
             )]),
             supports_current_chat_outbound_message: false,
-            supports_current_chat_primary_reply: false,
             supports_explicit_outbound_message: false,
             outbound_message_budget: 2,
             outbound_message_count: 0,
-            current_primary_message_delivered: false,
         };
         let tool = MessageTool;
         let err = tool
@@ -563,11 +539,9 @@ mod tests {
                 capability_entry("dingtalk", true, true, true, false),
             ]),
             supports_current_chat_outbound_message: true,
-            supports_current_chat_primary_reply: true,
             supports_explicit_outbound_message: true,
             outbound_message_budget: 2,
             outbound_message_count: 0,
-            current_primary_message_delivered: false,
         };
         let tool = MessageTool;
         let err = tool

@@ -89,7 +89,6 @@ struct QueuedDelivery<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DeliveryLifecycle {
     Open,
-    CurrentPrimaryDelivered,
     Finalized,
 }
 
@@ -103,7 +102,6 @@ impl DeliveryLifecycle {
 pub(crate) enum ToolIntentDelivery {
     Suppressed,
     VisibleUpdate,
-    CurrentPrimary,
 }
 
 struct QueuedDeliveryShared {
@@ -307,22 +305,6 @@ impl<'a> DeliverySession<'a> {
         }
     }
 
-    /// 直接向当前聊天交付主答复，并进入“本轮已交付”状态，后续 progress/finalize 不再重复发。
-    pub(crate) fn deliver_current_primary(&mut self, content: &str) -> Result<bool> {
-        if !self.policy.supports_current_primary {
-            return Ok(false);
-        }
-        let text = normalize_visible_update(content, crate::bus::MAX_CONTENT_LEN);
-        if text.is_empty() {
-            return Ok(false);
-        }
-        match self.mode {
-            DeliveryMode::Edit(ref mut delivery) => delivery.deliver_current_primary(&text),
-            DeliveryMode::Queued(ref mut delivery) => delivery.deliver_current_primary(&text),
-            DeliveryMode::Silent => Ok(false),
-        }
-    }
-
     pub(crate) fn deliver_tool_outbound_intent(
         &mut self,
         intent: &ToolOutboundIntent,
@@ -336,17 +318,8 @@ impl<'a> DeliverySession<'a> {
         match &intent.target {
             ToolOutboundTarget::CurrentChat => match intent.delivery_kind {
                 ToolOutboundDeliveryKind::Primary => {
-                    if !self.policy.supports_current_primary {
-                        self.bump_tool_intent_suppressed();
-                        return Ok(ToolIntentDelivery::Suppressed);
-                    }
-                    if self.deliver_current_primary(&text)? {
-                        self.bump_tool_visible_update(false);
-                        Ok(ToolIntentDelivery::CurrentPrimary)
-                    } else {
-                        self.bump_tool_intent_suppressed();
-                        Ok(ToolIntentDelivery::Suppressed)
-                    }
+                    self.bump_tool_intent_suppressed();
+                    Ok(ToolIntentDelivery::Suppressed)
                 }
                 ToolOutboundDeliveryKind::Supplemental => {
                     if !self.policy.supports_current_supplemental {
@@ -503,9 +476,6 @@ impl<'a> EditDelivery<'a> {
     }
 
     fn finalize(&mut self, final_content: &str) -> bool {
-        if self.lifecycle == DeliveryLifecycle::CurrentPrimaryDelivered {
-            return true;
-        }
         if self.lifecycle == DeliveryLifecycle::Finalized {
             return self.report.finalize_streamed;
         }
@@ -524,29 +494,6 @@ impl<'a> EditDelivery<'a> {
         self.lifecycle = DeliveryLifecycle::Finalized;
         self.report.finalize_streamed = streamed;
         streamed
-    }
-
-    fn deliver_current_primary(&mut self, content: &str) -> Result<bool> {
-        if self.lifecycle == DeliveryLifecycle::CurrentPrimaryDelivered {
-            return Ok(true);
-        }
-        if self.lifecycle == DeliveryLifecycle::Finalized {
-            return Ok(false);
-        }
-        if self.message_id.is_none() {
-            self.send_initial(content);
-        } else {
-            self.edit_existing(content);
-        }
-        if self.last_visible_text != content {
-            return Err(crate::error::Error::config(
-                "current_chat_delivery",
-                "failed to deliver current-chat primary reply via stream editor",
-            ));
-        }
-        self.lifecycle = DeliveryLifecycle::CurrentPrimaryDelivered;
-        self.report.current_primary_delivered = true;
-        Ok(true)
     }
 
     fn deliver_current_supplemental(&mut self, content: &str) -> Result<bool> {
@@ -678,34 +625,6 @@ impl<'a> QueuedDelivery<'a> {
         }
     }
 
-    fn deliver_current_primary(&mut self, content: &str) -> Result<bool> {
-        if self.lifecycle == DeliveryLifecycle::CurrentPrimaryDelivered {
-            return Ok(true);
-        }
-        if self.lifecycle == DeliveryLifecycle::Finalized {
-            return Ok(false);
-        }
-        self.cancel_presence_pulses();
-        send_visible_update(
-            self.outbound_tx,
-            self.channel,
-            self.chat_id,
-            self.is_group,
-            self.req_id,
-            content,
-        )
-        .map_err(|()| {
-            crate::error::Error::config(
-                "current_chat_delivery",
-                "failed to enqueue current-chat primary reply",
-            )
-        })?;
-        self.last_visible_text = content.to_string();
-        self.lifecycle = DeliveryLifecycle::CurrentPrimaryDelivered;
-        self.report.current_primary_delivered = true;
-        Ok(true)
-    }
-
     fn deliver_current_supplemental(&mut self, content: &str) -> bool {
         if self.lifecycle.is_closed() {
             return false;
@@ -717,7 +636,6 @@ impl<'a> QueuedDelivery<'a> {
 
     fn finalize(&mut self) -> bool {
         match self.lifecycle {
-            DeliveryLifecycle::CurrentPrimaryDelivered => true,
             DeliveryLifecycle::Finalized => false,
             DeliveryLifecycle::Open => {
                 self.lifecycle = DeliveryLifecycle::Finalized;
@@ -1288,66 +1206,6 @@ mod tests {
     }
 
     #[test]
-    fn queued_delivery_primary_current_suppresses_followup_finalize() {
-        let _guard = delayed_task_test_lock();
-        reset_delayed_tasks();
-        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
-        let msg = build_msg("qq_channel");
-        let mut delivery = DeliverySession::new(
-            &msg,
-            "req-1",
-            &outbound_tx,
-            None,
-            Some(capability_entry("qq_channel", true, true, false)),
-            MemorySystemKind::LinuxFull,
-            UiLocale::Zh,
-        );
-
-        let delivered = delivery
-            .deliver_current_primary("主答复")
-            .expect("primary current");
-        assert!(delivered);
-        assert!(delivery.finalize("最终答案"));
-        assert_eq!(
-            delivery.report(),
-            DeliveryReport {
-                current_primary_delivered: true,
-                ..DeliveryReport::default()
-            }
-        );
-
-        let first = outbound_rx.try_recv().expect("primary reply");
-        assert_eq!(first.content, "主答复");
-        assert!(outbound_rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn queued_delivery_current_primary_preserves_group_flag() {
-        let _guard = delayed_task_test_lock();
-        reset_delayed_tasks();
-        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
-        let msg = build_msg_with_group("qq_channel", true);
-        let mut delivery = DeliverySession::new(
-            &msg,
-            "req-1",
-            &outbound_tx,
-            None,
-            Some(capability_entry("qq_channel", true, true, false)),
-            MemorySystemKind::LinuxFull,
-            UiLocale::Zh,
-        );
-
-        let delivered = delivery
-            .deliver_current_primary("群主答复")
-            .expect("primary current");
-
-        assert!(delivered);
-        let outbound = outbound_rx.try_recv().expect("primary reply");
-        assert!(outbound.is_group);
-        assert_eq!(outbound.content, "群主答复");
-    }
-
-    #[test]
     fn queued_delivery_accepts_current_supplemental_tool_intent() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
@@ -1380,7 +1238,7 @@ mod tests {
     }
 
     #[test]
-    fn queued_delivery_suppresses_tool_intents_after_primary_close() {
+    fn queued_delivery_suppresses_current_primary_tool_intent() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
@@ -1401,7 +1259,7 @@ mod tests {
                 delivery_kind: ToolOutboundDeliveryKind::Primary,
                 content: "主答复".to_string(),
             })
-            .expect("primary intent");
+            .expect("suppressed primary intent");
         let second = delivery
             .deliver_tool_outbound_intent(&ToolOutboundIntent {
                 target: ToolOutboundTarget::Explicit {
@@ -1413,14 +1271,17 @@ mod tests {
             })
             .expect("suppressed explicit intent");
 
-        assert_eq!(first, ToolIntentDelivery::CurrentPrimary);
-        assert_eq!(second, ToolIntentDelivery::Suppressed);
-        let outbound = outbound_rx.try_recv().expect("primary reply");
-        assert_eq!(outbound.content, "主答复");
+        assert_eq!(first, ToolIntentDelivery::Suppressed);
+        assert_eq!(second, ToolIntentDelivery::VisibleUpdate);
+        let outbound = outbound_rx.try_recv().expect("explicit outbound");
+        assert_eq!(outbound.channel.as_ref(), "telegram");
+        assert_eq!(outbound.chat_id.as_ref(), "chat-2");
+        assert_eq!(outbound.content, "不应再发送");
         assert!(outbound_rx.try_recv().is_err());
         assert_eq!(delivery.report().tool_outbound_intents_seen, 2);
         assert_eq!(delivery.report().tool_visible_updates_sent, 1);
         assert_eq!(delivery.report().tool_outbound_suppressed, 1);
+        assert!(!delivery.report().current_primary_delivered);
     }
 
     #[test]
@@ -1461,7 +1322,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_delivery_primary_current_reuses_edit_lane() {
+    fn edit_delivery_finalize_reuses_edit_lane_after_progress() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, _outbound_rx, _) = new_inbound_channel(4);
@@ -1478,11 +1339,7 @@ mod tests {
         );
 
         delivery.emit_progress("处理中");
-        let delivered = delivery
-            .deliver_current_primary("主答复")
-            .expect("primary current");
-        assert!(delivered);
-        assert!(delivery.finalize("不应重复"));
+        assert!(delivery.finalize("主答复"));
 
         assert_eq!(
             editor

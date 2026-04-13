@@ -36,16 +36,12 @@ pub(crate) struct HttpClientToolContext<'a> {
     pub(crate) channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
     /// 当前运行时是否允许工具向当前聊天提交用户可见消息意图。
     pub(crate) supports_current_chat_outbound_message: bool,
-    /// 当前运行时是否允许工具声明“当前聊天主答复已由工具交付”。
-    pub(crate) supports_current_chat_primary_reply: bool,
     /// 当前运行时是否允许工具向显式指定的其他聊天发消息。
     pub(crate) supports_explicit_outbound_message: bool,
     /// 单轮工具外发消息总额度；用于抑制模型刷屏。
     pub(crate) outbound_message_budget: u8,
     /// 当前轮已占用的工具外发消息额度。
     pub(crate) outbound_message_count: u8,
-    /// 当前轮是否已经声明过一次 current+primary 主答复。
-    pub(crate) current_primary_message_delivered: bool,
     /// 当前用户界面语言；来自设备 NVS，不硬编码。
     pub(crate) locale: Locale,
 }
@@ -180,10 +176,6 @@ impl ToolContext for HttpClientToolContext<'_> {
         self.supports_current_chat_outbound_message
     }
 
-    fn supports_current_chat_primary_reply(&self) -> bool {
-        self.supports_current_chat_primary_reply
-    }
-
     fn supports_explicit_outbound_message(&self) -> bool {
         self.supports_explicit_outbound_message
     }
@@ -200,13 +192,10 @@ impl ToolContext for HttpClientToolContext<'_> {
             ));
         }
         if primary && target_is_current {
-            if self.current_primary_message_delivered {
-                return Err(crate::error::Error::config(
-                    "tool_message",
-                    "current-chat primary reply has already been claimed in this turn",
-                ));
-            }
-            self.current_primary_message_delivered = true;
+            return Err(crate::error::Error::config(
+                "tool_message",
+                "current-chat primary reply is reserved for the canonical finalizer",
+            ));
         }
         if self.outbound_message_count >= self.outbound_message_budget {
             return Err(crate::error::Error::config(

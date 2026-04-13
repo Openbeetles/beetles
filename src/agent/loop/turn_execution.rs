@@ -29,11 +29,9 @@ pub(super) fn execute_turn(
         tool_registry: Some(registry),
         channel_capability_registry: Arc::clone(&config.channel_capability_registry),
         supports_current_chat_outbound_message: false,
-        supports_current_chat_primary_reply: false,
         supports_explicit_outbound_message: false,
         outbound_message_budget: 2,
         outbound_message_count: 0,
-        current_primary_message_delivered: false,
         locale: loc,
     };
     let compiler_tool_policy =
@@ -81,13 +79,7 @@ pub(super) fn execute_turn(
         && msg.channel.as_ref() != crate::CHANNEL_VOICE;
     tool_ctx.supports_current_chat_outbound_message = current_user_visible
         && channel_capability
-            .map(|entry| {
-                entry.contract.supports_primary_reply || entry.contract.supports_supplemental_reply
-            })
-            .unwrap_or(false);
-    tool_ctx.supports_current_chat_primary_reply = current_user_visible
-        && channel_capability
-            .map(|entry| entry.contract.supports_primary_reply)
+            .map(|entry| entry.contract.supports_supplemental_reply)
             .unwrap_or(false);
     tool_ctx.supports_explicit_outbound_message =
         msg.ingress == IngressKind::User && msg.channel.as_ref() != crate::CHANNEL_VOICE;

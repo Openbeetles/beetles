@@ -473,11 +473,6 @@ pub trait ToolContext {
     fn supports_current_chat_outbound_message(&self) -> bool {
         false
     }
-    /// 当前运行时是否允许工具声明“当前聊天主答复已由工具交付”。
-    /// 目前仅在不会与编辑型交付通道冲突的运行时开启。
-    fn supports_current_chat_primary_reply(&self) -> bool {
-        false
-    }
     /// 当前运行时是否允许工具把消息发往非当前聊天的显式目标。
     fn supports_explicit_outbound_message(&self) -> bool {
         false

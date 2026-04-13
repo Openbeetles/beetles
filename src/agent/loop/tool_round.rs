@@ -173,17 +173,8 @@ fn execute_tool_call(
                     latency.tool_exec_ms = latency
                         .tool_exec_ms
                         .saturating_add(tool_exec_start.elapsed().as_millis());
-                    let mut delivered_reply = None;
                     for intent in &outcome.outbound_intents {
                         match delivery.deliver_tool_outbound_intent(intent) {
-                            Ok(ToolIntentDelivery::CurrentPrimary) => {
-                                log_tool_intent_result(
-                                    &tc.name,
-                                    intent,
-                                    ToolIntentDelivery::CurrentPrimary,
-                                );
-                                delivered_reply = Some(intent.content.clone());
-                            }
                             Ok(ToolIntentDelivery::VisibleUpdate) => {
                                 log_tool_intent_result(
                                     &tc.name,
@@ -208,7 +199,7 @@ fn execute_tool_call(
                     ToolCallExecutionResult {
                         result_owned: crate::util::scrub_credentials(&outcome.content),
                         failure_kind: None,
-                        delivered_reply,
+                        delivered_reply: None,
                         call_succeeded: true,
                     }
                 }
@@ -370,14 +361,6 @@ pub(super) fn log_tool_intent_result(
     let target = tool_intent_target_attr(intent);
     let delivery_kind = tool_intent_delivery_attr(intent);
     match result {
-        ToolIntentDelivery::CurrentPrimary => {
-            log::info!(
-                "[agent_tool] {} outbound intent delivered target={} delivery={}",
-                tool_name,
-                target,
-                delivery_kind
-            );
-        }
         ToolIntentDelivery::VisibleUpdate => {
             log::info!(
                 "[agent_tool] {} outbound update delivered target={} delivery={}",
