@@ -17,6 +17,7 @@ pub mod continuity_snapshot;
 pub mod cron;
 pub mod cron_manage;
 pub mod diagnose_delivery;
+pub mod diagnose_memory_runtime;
 pub mod diagnose_system;
 #[cfg(all(
     feature = "tools_network_extra",
@@ -108,6 +109,7 @@ pub use calendar::CalendarTool;
 pub use continuity_snapshot::ContinuitySnapshotTool;
 pub use cron_manage::CronManageTool;
 pub use diagnose_delivery::DiagnoseDeliveryTool;
+pub use diagnose_memory_runtime::DiagnoseMemoryRuntimeTool;
 pub use diagnose_system::DiagnoseSystemTool;
 #[cfg(all(
     feature = "tools_network_extra",

@@ -48,6 +48,11 @@ mod tests {
         assert!(parsed["delivery_diagnosis"].get("summary").is_some());
         assert_eq!(parsed["system_diagnosis"]["kind"].as_str(), Some("system"));
         assert!(parsed["system_diagnosis"].get("summary").is_some());
+        assert_eq!(
+            parsed["memory_runtime_diagnosis"]["kind"].as_str(),
+            Some("memory_runtime")
+        );
+        assert!(parsed["memory_runtime_diagnosis"].get("summary").is_some());
         assert!(parsed["workflow"].get("summary").is_some());
         assert!(parsed["workflow"].get("recent_records").is_some());
         assert_eq!(

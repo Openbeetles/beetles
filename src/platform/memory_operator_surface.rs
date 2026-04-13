@@ -159,6 +159,18 @@ pub fn build_memory_operator_surface(
     tool_registry: Option<&ToolRegistry>,
     trace_input: Option<&MemoryOperatorTraceInput>,
 ) -> crate::error::Result<MemoryOperatorSurfaceSummary> {
+    build_memory_operator_surface_with_capabilities(
+        platform,
+        tool_registry.is_some_and(|registry| registry.get("continuity_snapshot").is_some()),
+        trace_input,
+    )
+}
+
+pub fn build_memory_operator_surface_with_capabilities(
+    platform: &dyn Platform,
+    continuity_snapshot_supported: bool,
+    trace_input: Option<&MemoryOperatorTraceInput>,
+) -> crate::error::Result<MemoryOperatorSurfaceSummary> {
     let subject_id = board_subject_scope_id();
     let now_secs = crate::util::current_unix_secs();
     let memory_system_kind = platform.memory_system_kind();
@@ -180,8 +192,6 @@ pub fn build_memory_operator_surface(
         .continuity_capsule_store()
         .count()
         .unwrap_or_default();
-    let continuity_snapshot_supported =
-        tool_registry.is_some_and(|registry| registry.get("continuity_snapshot").is_some());
     let saved_snapshot_count = platform
         .state_fs()
         .list_dir("memory/continuity_snapshots/manual")

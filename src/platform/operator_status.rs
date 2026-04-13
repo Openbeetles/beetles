@@ -2,12 +2,12 @@
 
 use crate::device_capability::{build_device_capability_snapshots, DeviceCapabilityPlaneSnapshot};
 use crate::diagnosis::{
-    build_delivery_diagnosis, build_system_diagnosis, DeliveryDiagnosisInput, DiagnosisResult,
-    SystemDiagnosisInput,
+    build_delivery_diagnosis, build_memory_runtime_diagnosis, build_system_diagnosis,
+    DeliveryDiagnosisInput, DiagnosisResult, SystemDiagnosisInput,
 };
 use crate::orchestrator;
 use crate::platform::memory_operator_surface::{
-    build_memory_operator_surface, render_memory_operator_surface_text,
+    build_memory_operator_surface_with_capabilities, render_memory_operator_surface_text,
     MemoryOperatorSurfaceSummary,
 };
 use crate::runtime;
@@ -38,6 +38,7 @@ pub struct OperatorStatusSnapshot {
     pub reply_pipeline: ReplyPipelineOperatorSummary,
     pub delivery_diagnosis: DiagnosisResult,
     pub system_diagnosis: DiagnosisResult,
+    pub memory_runtime_diagnosis: DiagnosisResult,
     pub memory_operator_surface: MemoryOperatorSurfaceSummary,
     pub workflow: runtime::WorkflowAuditSnapshot,
     pub programmable_reasoning: crate::ProgrammableReasoningOperatorSnapshot,
@@ -143,10 +144,15 @@ pub fn build_operator_status(
         os_closure_ready: os_closure.ready,
         wifi_connected: presence.wifi_connected,
     });
+    let continuity_snapshot_supported = input.tool_registry.get("continuity_snapshot").is_some();
+    let memory_operator_surface = build_memory_operator_surface_with_capabilities(
+        input.platform,
+        continuity_snapshot_supported,
+        None,
+    )?;
+    let memory_runtime_diagnosis = build_memory_runtime_diagnosis(&memory_operator_surface);
     let runtime_mode = presence.runtime_mode;
     let soul_kernel = presence.soul_kernel.clone();
-    let memory_operator_surface =
-        build_memory_operator_surface(input.platform, Some(input.tool_registry), None)?;
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     let supervisor = presence.supervisor.clone();
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -163,6 +169,7 @@ pub fn build_operator_status(
         reply_pipeline,
         delivery_diagnosis,
         system_diagnosis,
+        memory_runtime_diagnosis,
         memory_operator_surface,
         workflow: runtime::workflow_audit_snapshot(8),
         programmable_reasoning: crate::programmable_reasoning_operator_snapshot(),
@@ -222,6 +229,11 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
         "  system_diagnosis_summary: {}\n  system_diagnosis_confidence: {:?}\n",
         snapshot.system_diagnosis.summary,
         snapshot.system_diagnosis.confidence,
+    ));
+    out.push_str(&format!(
+        "  memory_runtime_diagnosis_summary: {}\n  memory_runtime_diagnosis_confidence: {:?}\n",
+        snapshot.memory_runtime_diagnosis.summary,
+        snapshot.memory_runtime_diagnosis.confidence,
     ));
     if let Some(window) = snapshot.operator_surface.operator_window.as_ref() {
         out.push_str(&format!(

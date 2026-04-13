@@ -799,6 +799,11 @@ fn register_core_tools(
         platform.skill_storage(),
         Arc::clone(tool_execution_governance),
     )));
+    let continuity_snapshot_supported = registry.get("continuity_snapshot").is_some();
+    registry.register(Box::new(super::DiagnoseMemoryRuntimeTool::new(
+        Arc::clone(platform),
+        continuity_snapshot_supported,
+    )));
     #[cfg(feature = "tools_diagnostics")]
     if !config.hardware_devices.is_empty() {
         registry.register(Box::new(super::DeviceControlTool::new(
@@ -1349,6 +1354,29 @@ mod tests {
                 content: "tool delivered reply".to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn default_registry_registers_diagnose_memory_runtime_tool() {
+        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+        assert!(ctx.tool_registry.get("diagnose_memory_runtime").is_some());
+    }
+
+    #[test]
+    fn diagnose_memory_runtime_tool_returns_structured_diagnosis_json() {
+        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+        let tool = ctx
+            .tool_registry
+            .get("diagnose_memory_runtime")
+            .expect("diagnose_memory_runtime registered");
+        let mut tool_ctx = StubToolContext;
+
+        let result = tool.execute("{}", &mut tool_ctx).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+
+        assert_eq!(parsed["kind"].as_str(), Some("memory_runtime"));
+        assert!(parsed.get("summary").is_some());
+        assert!(parsed.get("suspected_root_causes").is_some());
     }
 
     #[test]

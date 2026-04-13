@@ -1,6 +1,7 @@
 //! GET /api/memory/status: operator-facing memory snapshot and optional deep inspection.
 
 use super::HandlerContext;
+use crate::diagnosis::build_memory_runtime_diagnosis;
 use crate::memory::{
     board_subject_scope_id, build_continuity_capsule_operator_summary,
     compute_core_revision_governance_digest, export_continuity_snapshot,
@@ -130,6 +131,7 @@ struct MemoryStatusBody {
     continuity_capsules: ContinuityCapsuleOperatorSummary,
     task_execution: TaskExecutionOperatorSnapshot,
     learning: MemoryLearningStatus,
+    diagnosis: crate::diagnosis::DiagnosisResult,
     operator_surface: MemoryOperatorSurfaceSummary,
     #[serde(skip_serializing_if = "Option::is_none")]
     inspection: Option<MemoryDeepInspection>,
@@ -286,6 +288,7 @@ pub fn body(ctx: &HandlerContext, uri: &str) -> Result<String, std::io::Error> {
         inspection.as_ref().map(build_trace_input).as_ref(),
     )
     .map_err(std::io::Error::other)?;
+    let diagnosis = build_memory_runtime_diagnosis(&operator_surface);
     let payload = MemoryStatusBody {
         memory_system_kind: ctx.platform.memory_system_kind().as_str().to_string(),
         memory_len,
@@ -342,6 +345,7 @@ pub fn body(ctx: &HandlerContext, uri: &str) -> Result<String, std::io::Error> {
         continuity_capsules,
         task_execution,
         learning,
+        diagnosis,
         operator_surface,
         inspection,
     };
@@ -674,6 +678,8 @@ mod tests {
         assert!(parsed["operator_surface"].get("diff").is_some());
         assert!(parsed["operator_surface"].get("repair").is_some());
         assert!(parsed["operator_surface"].get("policy_view").is_some());
+        assert_eq!(parsed["diagnosis"]["kind"].as_str(), Some("memory_runtime"));
+        assert!(parsed["diagnosis"].get("summary").is_some());
     }
 
     #[test]
