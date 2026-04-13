@@ -56,6 +56,7 @@ Keep three things in mind:
   - `send`
 - If a default mail account is configured, or only one mail account is available, you can omit `provider` / `account_key`.
 - `send` is an explicit outbound action and requires `confirm=true`.
+- `send` can use direct email arrays (`to` / `cc` / `bcc`) and contact-query arrays (`to_lookup` / `cc_lookup` / `bcc_lookup`) resolved through `contacts_directory`.
 - `provider_status` returns the current mail capability view, configured account status, and default-account/runtime summary.
 
 ### `documents`
@@ -79,7 +80,7 @@ Keep three things in mind:
   - `upsert`
   - `delete`
 - Use it to persist stable person data such as names, emails, aliases, organizations, and short notes.
-- Later `mail` / `calendar` flows should consume this shared people lookup instead of each capability inventing a separate contact model.
+- `mail send` already consumes this shared people lookup through `*_lookup` recipient fields; later calendar attendee routing should reuse the same layer instead of inventing a separate contact model.
 
 ### `office_config`
 

@@ -696,6 +696,11 @@ fn register_core_tools(
     turn_ledger_store: &Arc<dyn crate::memory::TurnLedgerStore + Send + Sync>,
     private_garden_store: &Arc<dyn crate::memory::PrivateGardenStore + Send + Sync>,
 ) {
+    let contacts_directory_store: Arc<
+        dyn crate::contacts_directory::ContactsDirectoryStore + Send + Sync,
+    > = Arc::new(crate::contacts_directory::StateFsContactsDirectoryStore::new(
+        platform.state_fs(),
+    ));
     let office_config_service = crate::office::OfficeConfigManagementService::new(
         Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(platform))),
         platform.office_credential_store(),
@@ -772,19 +777,20 @@ fn register_core_tools(
         calendar_providers,
         office_service.clone(),
     )));
-    registry.register(Box::new(super::MailTool::with_office_service(
+    registry.register(Box::new(super::MailTool::with_office_service_and_contacts(
         Arc::clone(&mail_credential_store),
         mail_providers,
         office_service.clone(),
+        Arc::clone(&contacts_directory_store),
     )));
+    registry.register(Box::new(super::ContactsDirectoryTool::new(Arc::clone(
+        &contacts_directory_store,
+    ))));
     registry.register(Box::new(super::DocumentsTool::with_office_service(
         Arc::clone(&documents_credential_store),
         documents_providers,
         office_service.clone(),
     )));
-    registry.register(Box::new(super::ContactsDirectoryTool::new(Arc::new(
-        crate::contacts_directory::StateFsContactsDirectoryStore::new(platform.state_fs()),
-    ))));
     registry.register(Box::new(super::OfficeConfigTool::new(
         office_config_service,
     )));

@@ -56,6 +56,7 @@
   - `send`
 - 如果已经配置默认邮件账户，或当前只有一个可用账户，可以省略 `provider` / `account_key`。
 - `send` 属于显式对外发送动作，要求 `confirm=true`。
+- `send` 既支持直接邮箱数组 `to` / `cc` / `bcc`，也支持通过 `contacts_directory` 解析的联系人查询数组 `to_lookup` / `cc_lookup` / `bcc_lookup`。
 - `provider_status` 返回的是当前可用邮件能力、已配置账户状态，以及默认账户和运行状态摘要。
 
 ### `documents`
@@ -80,7 +81,7 @@
   - `upsert`
   - `delete`
 - 它的目标是把“人”的稳定资料沉淀下来，比如姓名、邮箱、别名、组织和备注。
-- 后续 `mail` / `calendar` 会优先消费这里的 people lookup 结果，而不是各自重复维护一套联系人逻辑。
+- 现在 `mail send` 已经会消费这里的 people lookup；后续 `calendar` 的参会人路由也应该继续复用这一层，而不是再造一套联系人逻辑。
 
 ### `office_config`
 

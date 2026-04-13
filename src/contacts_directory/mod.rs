@@ -54,6 +54,16 @@ pub struct ContactsDirectoryLookupHit {
     pub score: u32,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContactsDirectoryEmailResolution {
+    pub query: String,
+    pub contact_id: String,
+    pub display_name: String,
+    pub email: String,
+    pub match_reason: String,
+    pub score: u32,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContactsDirectoryStatus {
     pub total_contacts: usize,

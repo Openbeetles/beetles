@@ -1,5 +1,8 @@
 //! Mail tool: provider-backed office mail access over shared office authority.
 
+use crate::contacts_directory::{
+    ContactsDirectoryEmailResolution, ContactsDirectoryService, ContactsDirectoryStore,
+};
 use crate::error::{Error, Result};
 use crate::mail::{
     MailMessage, MailMessageSummary, MailProviderCredentialStatus, MailProviderCredentialStore,
@@ -16,6 +19,7 @@ use std::sync::Arc;
 
 pub struct MailTool {
     service: MailService,
+    contacts_directory: Option<ContactsDirectoryService>,
 }
 
 #[derive(Serialize)]
@@ -50,18 +54,31 @@ struct MailSendResponse {
     ok: bool,
     provider: String,
     message: MailMessageSummary,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    resolved_contacts: Vec<MailResolvedContact>,
+}
+
+#[derive(Serialize)]
+struct MailResolvedContact {
+    field: &'static str,
+    query: String,
+    contact_id: String,
+    display_name: String,
+    email: String,
+    match_reason: String,
+    score: u32,
 }
 
 impl MailTool {
     pub fn new(credential_store: Arc<dyn MailProviderCredentialStore + Send + Sync>) -> Self {
-        Self::with_runtime(credential_store, MailProviderRegistry::new(), None)
+        Self::with_runtime(credential_store, MailProviderRegistry::new(), None, None)
     }
 
     pub fn with_providers(
         credential_store: Arc<dyn MailProviderCredentialStore + Send + Sync>,
         providers: MailProviderRegistry,
     ) -> Self {
-        Self::with_runtime(credential_store, providers, None)
+        Self::with_runtime(credential_store, providers, None, None)
     }
 
     pub fn with_office_service(
@@ -69,16 +86,32 @@ impl MailTool {
         providers: MailProviderRegistry,
         office_service: OfficeService,
     ) -> Self {
-        Self::with_runtime(credential_store, providers, Some(office_service))
+        Self::with_runtime(credential_store, providers, Some(office_service), None)
+    }
+
+    pub fn with_office_service_and_contacts(
+        credential_store: Arc<dyn MailProviderCredentialStore + Send + Sync>,
+        providers: MailProviderRegistry,
+        office_service: OfficeService,
+        contacts_store: Arc<dyn ContactsDirectoryStore + Send + Sync>,
+    ) -> Self {
+        Self::with_runtime(
+            credential_store,
+            providers,
+            Some(office_service),
+            Some(ContactsDirectoryService::new(contacts_store)),
+        )
     }
 
     fn with_runtime(
         credential_store: Arc<dyn MailProviderCredentialStore + Send + Sync>,
         providers: MailProviderRegistry,
         office_service: Option<OfficeService>,
+        contacts_directory: Option<ContactsDirectoryService>,
     ) -> Self {
         Self {
             service: MailService::with_office_service(credential_store, providers, office_service),
+            contacts_directory,
         }
     }
 }
@@ -93,7 +126,7 @@ impl Tool for MailTool {
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: provider_status|list|get|send"},"provider":{"type":"string","description":"Optional mail provider. Omit only when office defaults or a single configured provider make routing unambiguous."},"account_key":{"type":"string","description":"Optional explicit office mail account key."},"mailbox":{"type":"string","description":"Mailbox to query for list. Defaults to provider mailbox."},"unread_only":{"type":"boolean","description":"Whether list should only include unread mail."},"received_after_unix_secs":{"type":"integer","description":"Optional lower bound for received time."},"limit":{"type":"integer","description":"List limit, default 10, max 50."},"id":{"type":"string","description":"Message ID or provider UID for get."},"subject":{"type":"string","description":"Mail subject for send."},"text_body":{"type":"string","description":"Mail body for send."},"to":{"type":"array","items":{"type":"string"},"description":"Primary recipients for send."},"cc":{"type":"array","items":{"type":"string"},"description":"CC recipients for send."},"bcc":{"type":"array","items":{"type":"string"},"description":"BCC recipients for send."},"confirm":{"type":"boolean","description":"Must be true for send."}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: provider_status|list|get|send"},"provider":{"type":"string","description":"Optional mail provider. Omit only when office defaults or a single configured provider make routing unambiguous."},"account_key":{"type":"string","description":"Optional explicit office mail account key."},"mailbox":{"type":"string","description":"Mailbox to query for list. Defaults to provider mailbox."},"unread_only":{"type":"boolean","description":"Whether list should only include unread mail."},"received_after_unix_secs":{"type":"integer","description":"Optional lower bound for received time."},"limit":{"type":"integer","description":"List limit, default 10, max 50."},"id":{"type":"string","description":"Message ID or provider UID for get."},"subject":{"type":"string","description":"Mail subject for send."},"text_body":{"type":"string","description":"Mail body for send."},"to":{"type":"array","items":{"type":"string"},"description":"Primary recipient email addresses for send."},"cc":{"type":"array","items":{"type":"string"},"description":"CC recipient email addresses for send."},"bcc":{"type":"array","items":{"type":"string"},"description":"BCC recipient email addresses for send."},"to_lookup":{"type":"array","items":{"type":"string"},"description":"Primary recipient contact queries resolved through contacts_directory."},"cc_lookup":{"type":"array","items":{"type":"string"},"description":"CC recipient contact queries resolved through contacts_directory."},"bcc_lookup":{"type":"array","items":{"type":"string"},"description":"BCC recipient contact queries resolved through contacts_directory."},"confirm":{"type":"boolean","description":"Must be true for send."}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
@@ -176,13 +209,19 @@ impl Tool for MailTool {
                 let provider = self
                     .service
                     .resolve_provider_name(parse_provider(&obj).as_deref())?;
-                let to = parse_recipients(&obj, "to")?;
-                let cc = parse_recipients(&obj, "cc")?;
-                let bcc = parse_recipients(&obj, "bcc")?;
+                let (to_lookup, to_lookup_resolved) =
+                    self.resolve_recipient_queries(&obj, "to_lookup", "to")?;
+                let (cc_lookup, cc_lookup_resolved) =
+                    self.resolve_recipient_queries(&obj, "cc_lookup", "cc")?;
+                let (bcc_lookup, bcc_lookup_resolved) =
+                    self.resolve_recipient_queries(&obj, "bcc_lookup", "bcc")?;
+                let to = merge_recipients(parse_recipients(&obj, "to")?, to_lookup);
+                let cc = merge_recipients(parse_recipients(&obj, "cc")?, cc_lookup);
+                let bcc = merge_recipients(parse_recipients(&obj, "bcc")?, bcc_lookup);
                 if to.is_empty() && cc.is_empty() && bcc.is_empty() {
                     return Err(Error::config(
                         "tool_mail",
-                        "send requires at least one recipient in to, cc, or bcc",
+                        "send requires at least one recipient in to, cc, bcc, or *_lookup",
                     ));
                 }
                 let message = self.service.send(
@@ -203,6 +242,14 @@ impl Tool for MailTool {
                         ok: true,
                         provider,
                         message,
+                        resolved_contacts: [
+                            to_lookup_resolved,
+                            cc_lookup_resolved,
+                            bcc_lookup_resolved,
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .collect(),
                     },
                 )
             }
@@ -249,6 +296,34 @@ impl Tool for MailTool {
             .and_then(Value::as_str)
             .unwrap_or("provider_status");
         Ok(matches!(op, "list" | "get" | "send"))
+    }
+}
+
+impl MailTool {
+    fn resolve_recipient_queries(
+        &self,
+        obj: &serde_json::Map<String, Value>,
+        field: &str,
+        surface: &'static str,
+    ) -> Result<(Vec<String>, Vec<MailResolvedContact>)> {
+        let queries = parse_recipients(obj, field)?;
+        if queries.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let Some(directory) = self.contacts_directory.as_ref() else {
+            return Err(Error::config(
+                "tool_mail",
+                format!("{field} requires contacts_directory support"),
+            ));
+        };
+        let mut emails = Vec::with_capacity(queries.len());
+        let mut resolved = Vec::with_capacity(queries.len());
+        for query in queries {
+            let resolution = directory.resolve_primary_email(&query)?;
+            emails.push(resolution.email.clone());
+            resolved.push(mail_resolved_contact(surface, resolution));
+        }
+        Ok((emails, resolved))
     }
 }
 
@@ -334,6 +409,30 @@ fn parse_recipients(obj: &serde_json::Map<String, Value>, field: &str) -> Result
         .collect()
 }
 
+fn merge_recipients(mut direct: Vec<String>, resolved: Vec<String>) -> Vec<String> {
+    for email in resolved {
+        if !direct.iter().any(|item| item.eq_ignore_ascii_case(&email)) {
+            direct.push(email);
+        }
+    }
+    direct
+}
+
+fn mail_resolved_contact(
+    field: &'static str,
+    resolution: ContactsDirectoryEmailResolution,
+) -> MailResolvedContact {
+    MailResolvedContact {
+        field,
+        query: resolution.query,
+        contact_id: resolution.contact_id,
+        display_name: resolution.display_name,
+        email: resolution.email,
+        match_reason: resolution.match_reason,
+        score: resolution.score,
+    }
+}
+
 fn require_confirm(obj: &serde_json::Map<String, Value>, op: &str) -> Result<()> {
     if obj.get("confirm").and_then(Value::as_bool).unwrap_or(false) {
         Ok(())
@@ -348,14 +447,16 @@ fn require_confirm(obj: &serde_json::Map<String, Value>, op: &str) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contacts_directory::{ContactsDirectoryStore, StateFsContactsDirectoryStore};
     use crate::mail::{MailOperation, MailProvider, MailProviderCredential};
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
         OfficeCapabilityBinding, OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore,
         OfficeSelectionPolicy,
     };
+    use crate::platform::StateFs;
     use std::collections::HashMap;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
     struct StubCredentialStore {
@@ -465,6 +566,34 @@ mod tests {
 
         fn user_locale(&self) -> crate::i18n::Locale {
             crate::i18n::Locale::Zh
+        }
+    }
+
+    #[derive(Default)]
+    struct MemoryStateFs {
+        files: Mutex<HashMap<String, Vec<u8>>>,
+    }
+
+    impl StateFs for MemoryStateFs {
+        fn read(&self, rel_path: &str) -> Result<Option<Vec<u8>>> {
+            Ok(self.files.lock().unwrap().get(rel_path).cloned())
+        }
+
+        fn write(&self, rel_path: &str, data: &[u8]) -> Result<()> {
+            self.files
+                .lock()
+                .unwrap()
+                .insert(rel_path.to_string(), data.to_vec());
+            Ok(())
+        }
+
+        fn remove(&self, rel_path: &str) -> Result<()> {
+            self.files.lock().unwrap().remove(rel_path);
+            Ok(())
+        }
+
+        fn list_dir(&self, _rel_path: &str) -> Result<Vec<String>> {
+            Ok(Vec::new())
         }
     }
 
@@ -610,7 +739,27 @@ mod tests {
             Arc::new(StubRuntimeStatusStore),
         );
 
-        MailTool::with_office_service(credential_store, providers, office_service)
+        let contacts_store = Arc::new(StateFsContactsDirectoryStore::new(Arc::new(
+            MemoryStateFs::default(),
+        )));
+        contacts_store
+            .upsert(&crate::contacts_directory::ContactEntry {
+                id: "alice-zhang".to_string(),
+                display_name: "Alice Zhang".to_string(),
+                emails: vec!["alice@example.com".to_string()],
+                aliases: vec!["阿丽丝".to_string()],
+                organization: "Beetle".to_string(),
+                updated_at_unix_secs: 1,
+                notes: String::new(),
+            })
+            .expect("seed contacts directory");
+
+        MailTool::with_office_service_and_contacts(
+            credential_store,
+            providers,
+            office_service,
+            contacts_store,
+        )
     }
 
     #[test]
@@ -673,5 +822,22 @@ mod tests {
         assert_eq!(payload["ok"], true);
         assert_eq!(payload["message"]["mailbox"], "Sent");
         assert_eq!(payload["message"]["subject"], "Hi");
+    }
+
+    #[test]
+    fn mail_tool_send_resolves_lookup_recipients_via_contacts_directory() {
+        let tool = build_tool();
+        let mut ctx = DummyCtx;
+
+        let payload = tool
+            .execute(
+                r#"{"op":"send","subject":"Hi","text_body":"Body","to_lookup":["Alice Zhang"],"confirm":true}"#,
+                &mut ctx,
+            )
+            .expect("send mail with lookup");
+        let payload: Value = serde_json::from_str(&payload).expect("valid json");
+        assert_eq!(payload["message"]["to"][0], "alice@example.com");
+        assert_eq!(payload["resolved_contacts"][0]["field"], "to");
+        assert_eq!(payload["resolved_contacts"][0]["contact_id"], "alice-zhang");
     }
 }

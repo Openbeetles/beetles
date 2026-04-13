@@ -1,7 +1,7 @@
 use crate::contacts_directory::{
     clamp_contacts_directory_limit, normalize_contact_entry, normalize_match_key,
-    slugify_contact_id, ContactEntry, ContactsDirectoryLookupHit, ContactsDirectoryStatus,
-    ContactsDirectoryStore, ContactsDirectoryUpsertResult,
+    slugify_contact_id, ContactEntry, ContactsDirectoryEmailResolution, ContactsDirectoryLookupHit,
+    ContactsDirectoryStatus, ContactsDirectoryStore, ContactsDirectoryUpsertResult,
 };
 use crate::error::{Error, Result};
 use std::cmp::Reverse;
@@ -74,6 +74,38 @@ impl ContactsDirectoryService {
         });
         hits.truncate(limit);
         Ok(hits)
+    }
+
+    pub fn resolve_primary_email(&self, query: &str) -> Result<ContactsDirectoryEmailResolution> {
+        let mut hits = self
+            .lookup(query, Some(5))?
+            .into_iter()
+            .filter(|hit| !hit.contact.emails.is_empty())
+            .collect::<Vec<_>>();
+        if hits.is_empty() {
+            return Err(Error::config(
+                "contacts_directory_email_resolve",
+                format!("no contact with email matches query '{query}'"),
+            ));
+        }
+        let best = hits.remove(0);
+        if hits
+            .first()
+            .is_some_and(|candidate| candidate.score == best.score)
+        {
+            return Err(Error::config(
+                "contacts_directory_email_resolve",
+                format!("contact query '{query}' is ambiguous"),
+            ));
+        }
+        Ok(ContactsDirectoryEmailResolution {
+            query: query.to_string(),
+            contact_id: best.contact.id,
+            display_name: best.contact.display_name,
+            email: best.contact.emails.into_iter().next().unwrap_or_default(),
+            match_reason: best.match_reason,
+            score: best.score,
+        })
     }
 
     pub fn upsert(&self, mut contact: ContactEntry) -> Result<ContactsDirectoryUpsertResult> {
@@ -340,6 +372,17 @@ mod tests {
 
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].contact.display_name, "Alice Zhang");
+    }
+
+    #[test]
+    fn resolve_primary_email_returns_best_unique_match() {
+        let service = build_service();
+        let resolution = service
+            .resolve_primary_email("alice@example.com")
+            .expect("resolve email");
+
+        assert_eq!(resolution.contact_id, "alice-zhang");
+        assert_eq!(resolution.email, "alice@example.com");
     }
 
     #[test]
