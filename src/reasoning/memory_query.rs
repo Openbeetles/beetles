@@ -56,7 +56,10 @@ impl MemoryQuerySelection {
                 .long_term_limit
                 .max(1)
                 .min(MEMORY_QUERY_MAX_LONG_TERM_LIMIT),
-            continuity_scope: self.continuity_scope.as_ref().and_then(|scope| scope.normalized()),
+            continuity_scope: self
+                .continuity_scope
+                .as_ref()
+                .and_then(|scope| scope.normalized()),
             continuity_limit: self
                 .continuity_limit
                 .max(1)
@@ -250,8 +253,8 @@ pub fn validate_memory_query_result(value: Value) -> Result<MemoryQueryResult> {
 }
 
 fn normalize_memory_query_result(result: MemoryQueryResult) -> Result<MemoryQueryResult> {
-    let summary = truncate_content_to_max(result.summary.trim(), MEMORY_QUERY_MAX_SUMMARY_CHARS)
-        .into_owned();
+    let summary =
+        truncate_content_to_max(result.summary.trim(), MEMORY_QUERY_MAX_SUMMARY_CHARS).into_owned();
     if summary.is_empty() {
         return Err(Error::config(
             "memory_query_result_validate",
@@ -309,10 +312,14 @@ fn normalize_memory_query_group(group: MemoryQueryGroup) -> Result<MemoryQueryGr
     })
 }
 
-fn normalize_memory_query_candidate(candidate: MemoryQueryCandidate) -> Result<MemoryQueryCandidate> {
-    let summary =
-        truncate_content_to_max(candidate.summary.trim(), MEMORY_QUERY_MAX_CANDIDATE_SUMMARY_CHARS)
-            .into_owned();
+fn normalize_memory_query_candidate(
+    candidate: MemoryQueryCandidate,
+) -> Result<MemoryQueryCandidate> {
+    let summary = truncate_content_to_max(
+        candidate.summary.trim(),
+        MEMORY_QUERY_MAX_CANDIDATE_SUMMARY_CHARS,
+    )
+    .into_owned();
     let rationale = truncate_content_to_max(
         candidate.rationale.trim(),
         MEMORY_QUERY_MAX_CANDIDATE_RATIONALE_CHARS,
@@ -437,10 +444,16 @@ mod tests {
             vec![sample_continuity_capsule()],
         );
 
-        assert_eq!(snapshot.schema_version, MEMORY_QUERY_SNAPSHOT_SCHEMA_VERSION);
+        assert_eq!(
+            snapshot.schema_version,
+            MEMORY_QUERY_SNAPSHOT_SCHEMA_VERSION
+        );
         assert_eq!(snapshot.counts.long_term_entries, 1);
         assert_eq!(snapshot.counts.continuity_capsules, 1);
-        assert_eq!(snapshot.long_term_entries[0].record_ref, "ltm:fact:device_info");
+        assert_eq!(
+            snapshot.long_term_entries[0].record_ref,
+            "ltm:fact:device_info"
+        );
         assert_eq!(
             snapshot.continuity_capsules[0].record_ref,
             "capsule:capsule:device_status"
@@ -487,14 +500,20 @@ mod tests {
         }))
         .expect_err("candidate should be rejected");
 
-        assert!(error.to_string().contains("candidate must require adjudication"));
+        assert!(error
+            .to_string()
+            .contains("candidate must require adjudication"));
     }
 
     #[test]
     fn build_snapshot_rejects_empty_plane_selection() {
         struct EmptyLongTermStore;
         impl LongTermMemoryStore for EmptyLongTermStore {
-            fn upsert_many(&self, _drafts: &[LongTermMemoryDraft], _now_secs: u64) -> Result<usize> {
+            fn upsert_many(
+                &self,
+                _drafts: &[LongTermMemoryDraft],
+                _now_secs: u64,
+            ) -> Result<usize> {
                 Ok(0)
             }
             fn recall(

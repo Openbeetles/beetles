@@ -157,10 +157,9 @@ impl ReasoningExecutor for SubprocessLuaSandboxExecutor {
             .map_err(|error| crate::error::Error::io("lua_query_spawn", error))?;
         {
             use std::io::Write;
-            let stdin = child
-                .stdin
-                .as_mut()
-                .ok_or_else(|| crate::error::Error::config("lua_query_spawn", "missing child stdin"))?;
+            let stdin = child.stdin.as_mut().ok_or_else(|| {
+                crate::error::Error::config("lua_query_spawn", "missing child stdin")
+            })?;
             stdin
                 .write_all(&request_json)
                 .map_err(|error| crate::error::Error::io("lua_query_request_write", error))?;

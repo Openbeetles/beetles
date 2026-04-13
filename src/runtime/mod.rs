@@ -48,13 +48,13 @@ pub use linux_release::{
     REL_PATH_STATE_SCHEMA_STATUS,
 };
 pub use mode::{RuntimeMode, RuntimeModeActionBudget, RuntimeModeSnapshot};
+#[cfg(test)]
+pub use operator_maintenance::operator_maintenance_test_guard;
 pub use operator_maintenance::{
     drain_persisted_operator_maintenance_requests, submit_operator_maintenance_request,
     OperatorMaintenanceAction, OperatorMaintenanceRequest, OperatorMaintenanceSubmission,
     CHANNEL_OPERATOR_MAINTENANCE,
 };
-#[cfg(test)]
-pub use operator_maintenance::operator_maintenance_test_guard;
 pub use presence::{
     inspect_platform_presence, PresenceDisplayProjection, PresenceSnapshot, PresenceState,
 };
@@ -64,11 +64,10 @@ pub use soul_kernel::{
 };
 pub use thread_registry::ThreadRegistrySnapshot;
 pub use thread_util::{spawn_planned, spawn_planned_handle, thread_plan, ThreadPlan};
-pub use workflow::{
-    append_workflow_audit, recent_workflow_audits, workflow_audit_snapshot,
-    WorkflowAdmissionSnapshot, WorkflowAuditRecord, WorkflowAuditSnapshot,
-    WorkflowAuditSummary, WorkflowDisposition, WorkflowEffect, WorkflowKind,
-    WorkflowRecoveryPolicy, WorkflowTrigger,
-};
 #[cfg(test)]
 pub use workflow::workflow_audit_test_guard;
+pub use workflow::{
+    append_workflow_audit, recent_workflow_audits, workflow_audit_snapshot,
+    WorkflowAdmissionSnapshot, WorkflowAuditRecord, WorkflowAuditSnapshot, WorkflowAuditSummary,
+    WorkflowDisposition, WorkflowEffect, WorkflowKind, WorkflowRecoveryPolicy, WorkflowTrigger,
+};

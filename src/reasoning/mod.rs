@@ -1,6 +1,7 @@
 //! Linux programmable reasoning constitution and operator-visible contracts.
 
 mod constitution;
+mod experience_crystal;
 mod idle_forge;
 mod lua_runner;
 mod memory_attack;
@@ -16,12 +17,18 @@ pub use constitution::{
     ProgrammableReasoningExecutionBackend, ProgrammableReasoningRuntimeContract,
     ProgrammableReasoningStage,
 };
+pub use experience_crystal::{
+    build_experience_crystal_operator_summary, promote_skill_crystal_candidates,
+    skill_crystal_candidate_to_runtime_skill_write, validate_skill_crystal_result,
+    ExperienceCrystalOperatorSummary, SkillCrystalCandidate, SkillCrystalResult,
+};
+pub(crate) use idle_forge::{enqueue_idle_memory_forge_tick, run_idle_memory_forge_background_job};
 pub use idle_forge::{
     idle_memory_forge_job_contracts, load_idle_memory_forge_operator_summary,
-    persist_idle_memory_forge_run, should_run_idle_memory_forge, IdleMemoryForgeAdmissionSnapshot,
-    IdleMemoryForgeAdjudicationState, IdleMemoryForgeJobContract, IdleMemoryForgeJobKind,
-    IdleMemoryForgeJobReport, IdleMemoryForgeJobStatus, IdleMemoryForgeOperatorSummary,
-    IdleMemoryForgeAttackBatch, IdleMemoryForgeProposalBatch, IdleMemoryForgeRunLedger,
+    persist_idle_memory_forge_run, should_run_idle_memory_forge, IdleMemoryForgeAdjudicationState,
+    IdleMemoryForgeAdmissionSnapshot, IdleMemoryForgeAttackBatch, IdleMemoryForgeJobContract,
+    IdleMemoryForgeJobKind, IdleMemoryForgeJobReport, IdleMemoryForgeJobStatus,
+    IdleMemoryForgeOperatorSummary, IdleMemoryForgeProposalBatch, IdleMemoryForgeRunLedger,
     IdleMemoryForgeTrigger,
 };
 pub use lua_runner::{execute_lua_query, run_reasoning_runner_stdio};
@@ -35,9 +42,9 @@ pub use memory_query::{
     validate_memory_query_result, MemoryQueryCandidate, MemoryQueryCandidateKind,
     MemoryQueryContinuityRecord, MemoryQueryContinuityScope, MemoryQueryGroup,
     MemoryQueryLongTermRecord, MemoryQueryResult, MemoryQuerySelection, MemoryQuerySnapshot,
-    MemoryQuerySnapshotCounts,
-    MEMORY_QUERY_DEFAULT_CONTINUITY_LIMIT, MEMORY_QUERY_DEFAULT_LONG_TERM_LIMIT,
-    MEMORY_QUERY_MAX_CONTINUITY_LIMIT, MEMORY_QUERY_MAX_LONG_TERM_LIMIT,
+    MemoryQuerySnapshotCounts, MEMORY_QUERY_DEFAULT_CONTINUITY_LIMIT,
+    MEMORY_QUERY_DEFAULT_LONG_TERM_LIMIT, MEMORY_QUERY_MAX_CONTINUITY_LIMIT,
+    MEMORY_QUERY_MAX_LONG_TERM_LIMIT,
 };
 pub use operator::{
     programmable_reasoning_operator_snapshot, programmable_reasoning_system_info_summary,
@@ -48,11 +55,8 @@ pub use proposal::{
     ProgrammableReasoningProposalKind, ProgrammableReasoningProposalScope,
 };
 pub use runtime::{
-    default_lua_query_capabilities, CurrentExecutableLuaSandboxExecutor,
-    DirectLuaSandboxExecutor, LuaQueryBudget, LuaQueryRequest, LuaQueryResponse,
-    ReasoningExecutor, SubprocessLuaSandboxExecutor,
+    default_lua_query_capabilities, CurrentExecutableLuaSandboxExecutor, DirectLuaSandboxExecutor,
+    LuaQueryBudget, LuaQueryRequest, LuaQueryResponse, ReasoningExecutor,
+    SubprocessLuaSandboxExecutor,
 };
-pub use tool_request::{
-    validate_tool_request_result, ToolRequestProposal, ToolRequestResult,
-};
-pub(crate) use idle_forge::{enqueue_idle_memory_forge_tick, run_idle_memory_forge_background_job};
+pub use tool_request::{validate_tool_request_result, ToolRequestProposal, ToolRequestResult};

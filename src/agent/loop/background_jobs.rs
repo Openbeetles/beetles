@@ -281,7 +281,10 @@ fn run_idle_memory_forge_job(config: &AgentLoopConfig, msg: &PcMsg) {
                     summary.primary_finding.unwrap_or_default()
                 );
             } else {
-                log::info!("[idle_memory_forge] completed for {} (no candidates)", msg.chat_id);
+                log::info!(
+                    "[idle_memory_forge] completed for {} (no candidates)",
+                    msg.chat_id
+                );
             }
         }
         Err(error) => log::warn!("[idle_memory_forge] failed for {}: {}", msg.chat_id, error),
@@ -789,25 +792,32 @@ fn rebuild_operator_continuity_snapshots(
         let payload = serde_json::to_vec_pretty(&snapshot).map_err(|error| {
             crate::error::Error::config("operator_maintenance_snapshot", error.to_string())
         })?;
-        config.platform.state_fs().write(rel_path.as_str(), &payload)?;
+        config
+            .platform
+            .state_fs()
+            .write(rel_path.as_str(), &payload)?;
         exported = exported.saturating_add(1);
     }
     Ok(exported)
 }
 
-fn run_operator_maintenance_job(config: &AgentLoopConfig, system_inbound_tx: &SystemInboundTx, msg: &PcMsg) {
-    let request: crate::runtime::OperatorMaintenanceRequest = match serde_json::from_str(&msg.content)
-    {
-        Ok(request) => request,
-        Err(error) => {
-            log::warn!(
-                "[operator_maintenance] decode failed chat_id={}: {}",
-                msg.chat_id,
-                error
-            );
-            return;
-        }
-    };
+fn run_operator_maintenance_job(
+    config: &AgentLoopConfig,
+    system_inbound_tx: &SystemInboundTx,
+    msg: &PcMsg,
+) {
+    let request: crate::runtime::OperatorMaintenanceRequest =
+        match serde_json::from_str(&msg.content) {
+            Ok(request) => request,
+            Err(error) => {
+                log::warn!(
+                    "[operator_maintenance] decode failed chat_id={}: {}",
+                    msg.chat_id,
+                    error
+                );
+                return;
+            }
+        };
     let now_secs = crate::util::current_unix_secs();
     match request.action {
         crate::runtime::OperatorMaintenanceAction::RunRepairPlan

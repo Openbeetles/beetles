@@ -102,6 +102,7 @@ struct MemoryDeepInspection {
 struct MemoryLearningMetrics {
     validated_runtime_skills: usize,
     revision_pending_runtime_skills: usize,
+    garbage_collectable_experience_crystals: usize,
     promoted_task_candidates: usize,
     observed_task_candidates: usize,
     rejected_task_candidates: usize,
@@ -111,6 +112,7 @@ struct MemoryLearningMetrics {
 struct MemoryLearningStatus {
     task_candidates: crate::task_execution::TaskLearningOperatorSnapshot,
     runtime_skills: crate::skills::RuntimeSkillOperatorSummary,
+    experience_crystals: crate::ExperienceCrystalOperatorSummary,
     metrics: MemoryLearningMetrics,
 }
 
@@ -257,12 +259,16 @@ pub fn body(ctx: &HandlerContext, uri: &str) -> Result<String, std::io::Error> {
     )
     .map_err(std::io::Error::other)?;
     let runtime_skill_learning = build_runtime_skill_operator_summary(ctx.skill_storage.as_ref());
+    let experience_crystals =
+        crate::build_experience_crystal_operator_summary(&runtime_skill_learning);
     let learning = MemoryLearningStatus {
         task_candidates: task_execution.learning.clone(),
         runtime_skills: runtime_skill_learning.clone(),
+        experience_crystals: experience_crystals.clone(),
         metrics: MemoryLearningMetrics {
             validated_runtime_skills: runtime_skill_learning.validated,
             revision_pending_runtime_skills: runtime_skill_learning.revision_pending,
+            garbage_collectable_experience_crystals: experience_crystals.garbage_collectable,
             promoted_task_candidates: task_execution.learning.candidate_promoted,
             observed_task_candidates: task_execution.learning.candidate_observed,
             rejected_task_candidates: task_execution.learning.candidate_rejected,
@@ -1072,6 +1078,10 @@ mod tests {
         assert_eq!(
             parsed["learning"]["metrics"]["validated_runtime_skills"],
             parsed["learning"]["runtime_skills"]["validated"]
+        );
+        assert_eq!(
+            parsed["learning"]["metrics"]["garbage_collectable_experience_crystals"],
+            parsed["learning"]["experience_crystals"]["garbage_collectable"]
         );
         assert!(
             parsed["learning"]["task_candidates"]["candidate_promoted"]

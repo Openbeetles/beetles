@@ -114,30 +114,6 @@ pub use llm::{
     Message, OpenAiCompatibleClient,
 };
 pub use network::{HttpClientClass, NetworkGovernor, VoiceExclusiveTransportGuard};
-pub use reasoning::{
-    default_lua_memory_query_capabilities, validate_memory_query_result,
-    validate_tool_request_result,
-    idle_memory_forge_job_contracts, load_idle_memory_forge_operator_summary,
-    persist_idle_memory_forge_run, should_run_idle_memory_forge, IdleMemoryForgeAdmissionSnapshot,
-    IdleMemoryForgeAdjudicationState, IdleMemoryForgeJobContract, IdleMemoryForgeJobKind,
-    IdleMemoryForgeJobReport, IdleMemoryForgeJobStatus, IdleMemoryForgeOperatorSummary,
-    IdleMemoryForgeAttackBatch, IdleMemoryForgeProposalBatch, IdleMemoryForgeRunLedger,
-    IdleMemoryForgeTrigger,
-    memory_attack_job_contracts, validate_memory_attack_result, MemoryAttackFinding,
-    MemoryAttackFindingKind, MemoryAttackJobContract, MemoryAttackJobKind, MemoryAttackJobReport,
-    MemoryAttackJobStatus, MemoryAttackResult, MemoryDistillationCandidate,
-    ToolRequestProposal, ToolRequestResult,
-    MemoryQueryCandidate, MemoryQueryCandidateKind, MemoryQueryContinuityRecord,
-    MemoryQueryContinuityScope, MemoryQueryGroup, MemoryQueryLongTermRecord, MemoryQueryResult,
-    MemoryQuerySelection, MemoryQuerySnapshot, MemoryQuerySnapshotCounts,
-    programmable_reasoning_operator_snapshot, programmable_reasoning_runtime_contract,
-    programmable_reasoning_system_info_summary, ProgrammableReasoningCapabilityContract,
-    ProgrammableReasoningCapabilityKind, ProgrammableReasoningExecutionBackend,
-    ProgrammableReasoningOperatorSnapshot, ProgrammableReasoningProposal,
-    ProgrammableReasoningProposalKind, ProgrammableReasoningProposalScope,
-    ProgrammableReasoningRuntimeContract, ProgrammableReasoningStage,
-    ProgrammableReasoningSystemInfoSummary, run_reasoning_runner_stdio,
-};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub use platform::{
     connect_wifi, init_nvs, init_spiffs, spiffs_usage, state_mount_path, Esp32Platform,
@@ -153,6 +129,36 @@ pub use platform::{
     AudioReferenceCapability, ConfigStore, MemorySnapshot, Platform, SkillStorage, StateFs,
     StorageMediaInfo, StorageMediaKind,
 };
+pub use reasoning::{
+    build_experience_crystal_operator_summary, default_lua_memory_query_capabilities,
+    idle_memory_forge_job_contracts, load_idle_memory_forge_operator_summary,
+    memory_attack_job_contracts, persist_idle_memory_forge_run,
+    programmable_reasoning_operator_snapshot, programmable_reasoning_runtime_contract,
+    programmable_reasoning_system_info_summary, promote_skill_crystal_candidates,
+    run_reasoning_runner_stdio, should_run_idle_memory_forge,
+    skill_crystal_candidate_to_runtime_skill_write, validate_memory_attack_result,
+    validate_memory_query_result, validate_skill_crystal_result, validate_tool_request_result,
+    ExperienceCrystalOperatorSummary, IdleMemoryForgeAdjudicationState,
+    IdleMemoryForgeAdmissionSnapshot, IdleMemoryForgeAttackBatch, IdleMemoryForgeJobContract,
+    IdleMemoryForgeJobKind, IdleMemoryForgeJobReport, IdleMemoryForgeJobStatus,
+    IdleMemoryForgeOperatorSummary, IdleMemoryForgeProposalBatch, IdleMemoryForgeRunLedger,
+    IdleMemoryForgeTrigger, MemoryAttackFinding, MemoryAttackFindingKind, MemoryAttackJobContract,
+    MemoryAttackJobKind, MemoryAttackJobReport, MemoryAttackJobStatus, MemoryAttackResult,
+    MemoryDistillationCandidate, MemoryQueryCandidate, MemoryQueryCandidateKind,
+    MemoryQueryContinuityRecord, MemoryQueryContinuityScope, MemoryQueryGroup,
+    MemoryQueryLongTermRecord, MemoryQueryResult, MemoryQuerySelection, MemoryQuerySnapshot,
+    MemoryQuerySnapshotCounts, ProgrammableReasoningCapabilityContract,
+    ProgrammableReasoningCapabilityKind, ProgrammableReasoningExecutionBackend,
+    ProgrammableReasoningOperatorSnapshot, ProgrammableReasoningProposal,
+    ProgrammableReasoningProposalKind, ProgrammableReasoningProposalScope,
+    ProgrammableReasoningRuntimeContract, ProgrammableReasoningStage,
+    ProgrammableReasoningSystemInfoSummary, SkillCrystalCandidate, SkillCrystalResult,
+    ToolRequestProposal, ToolRequestResult,
+};
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use tools::LuaMemoryQueryTool;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use tools::LuaToolBridgeTool;
 pub use tools::{
     build_default_registry, CalendarTool, DefaultRegistryDeps, FileEditTool, FileWriteTool,
     FilesTool, GetTimeTool, KvStoreTool, PrivateGardenTool, RemindAtTool, TaskTool, Tool,
@@ -160,10 +166,6 @@ pub use tools::{
     ToolCapabilityContract, ToolContext, ToolExposure, ToolMetadata, ToolPolicyContext,
     ToolRegistry, VoiceInputTool, VoiceOutputTool,
 };
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub use tools::LuaMemoryQueryTool;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub use tools::LuaToolBridgeTool;
 #[cfg(feature = "tools_diagnostics")]
 pub use tools::{
     CronManageTool, DeviceControlTool, I2cDeviceTool, I2cSensorTool, MemoryManageTool,

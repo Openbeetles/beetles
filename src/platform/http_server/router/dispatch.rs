@@ -994,7 +994,13 @@ mod tests {
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         {
             let qq_msg_id_cache = Arc::new(Mutex::new(HashMap::new()));
-            RouterEnv::new(inbound_tx, qq_msg_id_cache, false, String::new(), String::new())
+            RouterEnv::new(
+                inbound_tx,
+                qq_msg_id_cache,
+                false,
+                String::new(),
+                String::new(),
+            )
         }
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
         {
@@ -1037,7 +1043,9 @@ mod tests {
         assert_eq!(parsed["action"], "run_repair_plan");
         assert_eq!(parsed["delivery"], "in_memory");
 
-        let queued = system_inbound_rx.try_recv().expect("queued maintenance request");
+        let queued = system_inbound_rx
+            .try_recv()
+            .expect("queued maintenance request");
         assert_eq!(
             queued.channel.as_ref(),
             crate::runtime::CHANNEL_OPERATOR_MAINTENANCE

@@ -75,8 +75,8 @@ use crate::metrics;
 use crate::orchestrator::admission::{LlmDecision, ToolDecision};
 use crate::runtime::system_work::{
     classify_system_work, CHANNEL_CRON, CHANNEL_IDLE_MEMORY_FORGE,
-    CHANNEL_LONG_TERM_MEMORY_REFRESH, CHANNEL_OPERATOR_MAINTENANCE,
-    CHANNEL_POST_REPLY_MAINTENANCE, CHANNEL_SELF_RUNTIME,
+    CHANNEL_LONG_TERM_MEMORY_REFRESH, CHANNEL_OPERATOR_MAINTENANCE, CHANNEL_POST_REPLY_MAINTENANCE,
+    CHANNEL_SELF_RUNTIME,
 };
 use crate::state;
 use crate::task_execution::{
@@ -2025,12 +2025,10 @@ fn run_agent_loop_main(
         let mut before_poll = || {
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             {
-                if let Err(error) =
-                    crate::runtime::drain_persisted_operator_maintenance_requests(
-                        &system_inbound_tx,
-                        4,
-                    )
-                {
+                if let Err(error) = crate::runtime::drain_persisted_operator_maintenance_requests(
+                    &system_inbound_tx,
+                    4,
+                ) {
                     log::warn!(
                         "[operator_maintenance] failed to drain persisted requests: {}",
                         error

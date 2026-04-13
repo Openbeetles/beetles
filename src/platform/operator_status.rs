@@ -160,6 +160,7 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
             crate::ProgrammableReasoningStage::CapabilityBridgeExpansion => {
                 "capability_bridge_expansion"
             }
+            crate::ProgrammableReasoningStage::ExperienceCrystal => "experience_crystal",
         },
         snapshot.programmable_reasoning.runtime_contract.execution_enabled,
         match snapshot.programmable_reasoning.runtime_contract.execution_backend {

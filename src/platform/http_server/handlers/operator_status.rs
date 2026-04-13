@@ -37,7 +37,7 @@ mod tests {
         assert!(parsed["workflow"].get("recent_records").is_some());
         assert_eq!(
             parsed["programmable_reasoning"]["stage"].as_str(),
-            Some("capability_bridge_expansion")
+            Some("experience_crystal")
         );
         assert_eq!(
             parsed["programmable_reasoning"]["runtime_contract"]["execution_enabled"].as_bool(),

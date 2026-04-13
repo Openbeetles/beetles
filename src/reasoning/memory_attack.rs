@@ -157,9 +157,11 @@ fn normalize_memory_attack_result(result: MemoryAttackResult) -> Result<MemoryAt
 }
 
 fn normalize_attack_finding(finding: MemoryAttackFinding) -> Result<MemoryAttackFinding> {
-    let summary =
-        truncate_content_to_max(finding.summary.trim(), MEMORY_ATTACK_MAX_FINDING_SUMMARY_CHARS)
-            .into_owned();
+    let summary = truncate_content_to_max(
+        finding.summary.trim(),
+        MEMORY_ATTACK_MAX_FINDING_SUMMARY_CHARS,
+    )
+    .into_owned();
     let rationale = truncate_content_to_max(
         finding.rationale.trim(),
         MEMORY_ATTACK_MAX_FINDING_RATIONALE_CHARS,

@@ -214,10 +214,11 @@ pub fn build_memory_operator_surface(
     );
     let (policy_target, personality_governance, runtime_governance_gate, relationship_constitution) =
         build_policy_view(platform, now_secs, personality_targets.first())?;
-    let forge_summary = crate::load_idle_memory_forge_operator_summary(platform.state_fs().as_ref())
-        .ok()
-        .flatten()
-        .unwrap_or_default();
+    let forge_summary =
+        crate::load_idle_memory_forge_operator_summary(platform.state_fs().as_ref())
+            .ok()
+            .flatten()
+            .unwrap_or_default();
     let topology_entry = relationship_topology.as_ref().and_then(|topology| {
         policy_target.as_ref().and_then(|target| {
             topology

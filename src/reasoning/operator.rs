@@ -5,9 +5,13 @@ use crate::reasoning::constitution::{
     ProgrammableReasoningCapabilityContract, ProgrammableReasoningRuntimeContract,
     ProgrammableReasoningStage,
 };
+use crate::reasoning::experience_crystal::{
+    build_experience_crystal_operator_summary, ExperienceCrystalOperatorSummary,
+};
 use crate::reasoning::proposal::{
     programmable_reasoning_proposal_kinds, ProgrammableReasoningProposalKind,
 };
+use crate::skills::RuntimeSkillOperatorSummary;
 use serde::Serialize;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -16,6 +20,7 @@ pub struct ProgrammableReasoningOperatorSnapshot {
     pub runtime_contract: ProgrammableReasoningRuntimeContract,
     pub capabilities: Vec<ProgrammableReasoningCapabilityContract>,
     pub proposal_kinds: Vec<ProgrammableReasoningProposalKind>,
+    pub experience_crystals: ExperienceCrystalOperatorSummary,
     pub operator_summary: String,
 }
 
@@ -35,7 +40,10 @@ pub fn programmable_reasoning_operator_snapshot() -> ProgrammableReasoningOperat
         runtime_contract: runtime_contract.clone(),
         capabilities: programmable_reasoning_capability_taxonomy(),
         proposal_kinds: programmable_reasoning_proposal_kinds(),
-        operator_summary: "capability_bridge_expansion: programmable reasoning can now emit adjudication-required tool request proposals against a governed tool catalog, without direct host execution".to_string(),
+        experience_crystals: build_experience_crystal_operator_summary(
+            &RuntimeSkillOperatorSummary::default(),
+        ),
+        operator_summary: "experience_crystal: programmable reasoning can now validate adjudication-required skill crystal candidates and promote them into the governed runtime-skill path without adding a second execution plane".to_string(),
     }
 }
 
@@ -55,11 +63,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn operator_snapshot_reports_p5_contract() {
+    fn operator_snapshot_reports_p6_contract() {
         let snapshot = programmable_reasoning_operator_snapshot();
-        assert_eq!(snapshot.stage, ProgrammableReasoningStage::CapabilityBridgeExpansion);
-        assert_eq!(snapshot.capabilities.len(), 5);
-        assert_eq!(snapshot.proposal_kinds.len(), 4);
+        assert_eq!(
+            snapshot.stage,
+            ProgrammableReasoningStage::ExperienceCrystal
+        );
+        assert_eq!(snapshot.capabilities.len(), 6);
+        assert_eq!(snapshot.proposal_kinds.len(), 5);
         assert_eq!(
             snapshot.runtime_contract.execution_enabled,
             cfg!(target_os = "linux")
@@ -69,7 +80,7 @@ mod tests {
     #[test]
     fn system_info_summary_stays_compact() {
         let summary = programmable_reasoning_system_info_summary();
-        assert_eq!(summary.stage, ProgrammableReasoningStage::CapabilityBridgeExpansion);
+        assert_eq!(summary.stage, ProgrammableReasoningStage::ExperienceCrystal);
         assert_eq!(summary.execution_enabled, cfg!(target_os = "linux"));
         assert!(summary.linux_only);
         assert!(summary.proposal_only_persistence);

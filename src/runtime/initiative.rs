@@ -10,11 +10,11 @@ use crate::memory::{
 };
 use crate::orchestrator::{self, PressureLevel, ResourceSnapshot};
 use crate::platform::Platform;
-use crate::runtime::{inspect_platform_presence, PresenceState, RuntimeModeSnapshot};
 use crate::runtime::workflow::{
     append_workflow_audit, WorkflowAuditRecord, WorkflowDisposition, WorkflowEffect, WorkflowKind,
     WorkflowRecoveryPolicy, WorkflowTrigger,
 };
+use crate::runtime::{inspect_platform_presence, PresenceState, RuntimeModeSnapshot};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -594,15 +594,27 @@ pub fn initiative_tick(
 ) -> bool {
     let snapshot = inspect_platform_initiative(platform, now_secs);
     if !snapshot.ready {
-        append_initiative_workflow_audit(&snapshot, InitiativeEnqueueResult::NotAttempted, now_secs);
+        append_initiative_workflow_audit(
+            &snapshot,
+            InitiativeEnqueueResult::NotAttempted,
+            now_secs,
+        );
         return false;
     }
     let Some(target) = snapshot.target.as_ref() else {
-        append_initiative_workflow_audit(&snapshot, InitiativeEnqueueResult::NotAttempted, now_secs);
+        append_initiative_workflow_audit(
+            &snapshot,
+            InitiativeEnqueueResult::NotAttempted,
+            now_secs,
+        );
         return false;
     };
     let Some(message_preview) = snapshot.message_preview.as_ref() else {
-        append_initiative_workflow_audit(&snapshot, InitiativeEnqueueResult::NotAttempted, now_secs);
+        append_initiative_workflow_audit(
+            &snapshot,
+            InitiativeEnqueueResult::NotAttempted,
+            now_secs,
+        );
         return false;
     };
     let msg = match PcMsg::new_inbound_with_ingress(
@@ -641,7 +653,11 @@ pub fn initiative_tick(
                 target.scope_id,
                 snapshot.rationale
             );
-            append_initiative_workflow_audit(&snapshot, InitiativeEnqueueResult::Enqueued, now_secs);
+            append_initiative_workflow_audit(
+                &snapshot,
+                InitiativeEnqueueResult::Enqueued,
+                now_secs,
+            );
             true
         }
         Err(std::sync::mpsc::TrySendError::Full(_)) => {
@@ -676,8 +692,8 @@ pub fn reset_initiative_runtime_for_tests() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::{RuntimeMode, RuntimeModeActionBudget};
     use crate::runtime::workflow::{reset_workflow_audit_for_tests, workflow_audit_snapshot};
+    use crate::runtime::{RuntimeMode, RuntimeModeActionBudget};
     use std::sync::{Mutex, OnceLock};
 
     fn test_lock() -> &'static Mutex<()> {
@@ -959,7 +975,10 @@ mod tests {
 
         let audit = workflow_audit_snapshot(4);
         assert_eq!(audit.summary.no_trigger, 1);
-        assert_eq!(audit.recent_records[0].workflow, WorkflowKind::InitiativeTick);
+        assert_eq!(
+            audit.recent_records[0].workflow,
+            WorkflowKind::InitiativeTick
+        );
     }
 
     #[test]

@@ -6,11 +6,10 @@ use crate::config::AppConfig;
 use crate::error::{Error, Result};
 use crate::llm::ToolSpec as LlmToolSpec;
 use crate::tools::{
-    Tool, ToolApprovalMode, ToolCapabilityContract, ToolEffectClass,
-    ToolExecutionGateDecision, ToolExecutionGovernance, ToolExecutionGovernanceState,
-    ToolExecutionOutcome, ToolExecutionPermit, ToolExecutionRecord, ToolExecutionRequest,
-    ToolMetadata, ToolPolicyContext, ToolRiskLevel, ToolRollbackKind, MAX_TOOL_ARGS_LEN,
-    MAX_TOOL_RESULT_LEN,
+    Tool, ToolApprovalMode, ToolCapabilityContract, ToolEffectClass, ToolExecutionGateDecision,
+    ToolExecutionGovernance, ToolExecutionGovernanceState, ToolExecutionOutcome,
+    ToolExecutionPermit, ToolExecutionRecord, ToolExecutionRequest, ToolMetadata,
+    ToolPolicyContext, ToolRiskLevel, ToolRollbackKind, MAX_TOOL_ARGS_LEN, MAX_TOOL_RESULT_LEN,
 };
 use crate::util::truncate_to_byte_len;
 use indexmap::IndexMap;
@@ -923,10 +922,12 @@ fn register_audio_tools(
 #[inline(never)]
 fn register_host_only_tools(
     registry: &mut ToolRegistry,
-    #[cfg(target_os = "linux")]
-    long_term_memory_store: &Arc<dyn crate::memory::LongTermMemoryStore + Send + Sync>,
-    #[cfg(target_os = "linux")]
-    continuity_capsule_store: &Arc<dyn crate::memory::ContinuityCapsuleStore + Send + Sync>,
+    #[cfg(target_os = "linux")] long_term_memory_store: &Arc<
+        dyn crate::memory::LongTermMemoryStore + Send + Sync,
+    >,
+    #[cfg(target_os = "linux")] continuity_capsule_store: &Arc<
+        dyn crate::memory::ContinuityCapsuleStore + Send + Sync,
+    >,
 ) {
     registry.register(Box::new(super::ShellTool));
     registry.register(Box::new(super::ProcessTool));
@@ -1382,7 +1383,10 @@ mod tests {
             .into_iter()
             .map(|entry| entry.name)
             .collect::<Vec<_>>();
-        assert_eq!(user_names, vec!["visible".to_string(), "user_only_task".to_string()]);
+        assert_eq!(
+            user_names,
+            vec!["visible".to_string(), "user_only_task".to_string()]
+        );
 
         let system = ToolPolicyContext::new(crate::bus::IngressKind::System, "telegram");
         let system_names = registry
@@ -1405,11 +1409,8 @@ mod tests {
             registry.assess_tool_request_proposal("missing", &serde_json::json!({}), &policy);
         assert_eq!(unknown.decision, ToolBridgeProposalDecision::UnknownTool);
 
-        let denied = registry.assess_tool_request_proposal(
-            "explicit_tool",
-            &serde_json::json!({}),
-            &policy,
-        );
+        let denied =
+            registry.assess_tool_request_proposal("explicit_tool", &serde_json::json!({}), &policy);
         assert_eq!(denied.decision, ToolBridgeProposalDecision::Denied);
         assert!(denied.summary.contains("explicit_intent_required"));
     }

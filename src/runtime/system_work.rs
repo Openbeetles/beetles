@@ -56,9 +56,7 @@ pub fn classify_system_work(channel: &str, ingress: IngressKind) -> SystemWorkCl
         CHANNEL_POST_REPLY_MAINTENANCE
         | CHANNEL_SELF_RUNTIME
         | CHANNEL_OPERATOR_MAINTENANCE
-        | CHANNEL_IDLE_MEMORY_FORGE => {
-            SystemWorkClass::Maintenance
-        }
+        | CHANNEL_IDLE_MEMORY_FORGE => SystemWorkClass::Maintenance,
         _ => SystemWorkClass::SystemInteractive,
     }
 }

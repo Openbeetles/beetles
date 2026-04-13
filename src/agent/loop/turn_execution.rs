@@ -89,16 +89,15 @@ pub(super) fn execute_turn(
             .unwrap_or(false);
     tool_ctx.supports_explicit_outbound_message =
         msg.ingress == IngressKind::User && msg.channel.as_ref() != crate::CHANNEL_VOICE;
-    let mut delivery =
-        DeliverySession::new(
-            msg,
-            req_id,
-            outbound_tx,
-            editor,
-            channel_capability,
-            config.memory_system_kind,
-            loc,
-        );
+    let mut delivery = DeliverySession::new(
+        msg,
+        req_id,
+        outbound_tx,
+        editor,
+        channel_capability,
+        config.memory_system_kind,
+        loc,
+    );
     let PreparedWorkerConversation {
         mut runtime_carry,
         subject_state,

@@ -206,10 +206,7 @@ impl ToolContext for HttpClientToolContext<'_> {
             )
         })?;
         let channel = self.channel.as_deref().unwrap_or("system");
-        Ok(registry.tool_bridge_catalog_for_policy(&ToolPolicyContext::new(
-            self.ingress,
-            channel,
-        )))
+        Ok(registry.tool_bridge_catalog_for_policy(&ToolPolicyContext::new(self.ingress, channel)))
     }
 
     fn assess_tool_request_proposal(

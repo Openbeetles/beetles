@@ -132,17 +132,15 @@ fn append_supervisor_workflow_audit(
     recovery_policy: crate::runtime::WorkflowRecoveryPolicy,
     happened_at: u64,
 ) {
-    crate::runtime::append_workflow_audit(
-        crate::runtime::WorkflowAuditRecord::new(
-            crate::runtime::WorkflowKind::RebootRecovery,
-            crate::runtime::WorkflowTrigger::ModeTransition,
-            disposition,
-            effect,
-            recovery_policy,
-            format!("linux_supervisor:{}", rationale.trim()),
-            happened_at,
-        ),
-    );
+    crate::runtime::append_workflow_audit(crate::runtime::WorkflowAuditRecord::new(
+        crate::runtime::WorkflowKind::RebootRecovery,
+        crate::runtime::WorkflowTrigger::ModeTransition,
+        disposition,
+        effect,
+        recovery_policy,
+        format!("linux_supervisor:{}", rationale.trim()),
+        happened_at,
+    ));
 }
 
 fn append_supervisor_backoff_workflow_audit(rationale: &str, happened_at: u64, backoff_secs: u64) {
@@ -196,12 +194,7 @@ pub fn run_supervisor(
                     clear_safe_mode(&mut state);
                     if let Some(mut running_child) = child.take() {
                         let exit = terminate_child(&mut running_child)?;
-                        record_child_exit(
-                            &mut state,
-                            exit,
-                            now_secs,
-                            "restart_requested",
-                        );
+                        record_child_exit(&mut state, exit, now_secs, "restart_requested");
                     }
                     child_started_at = None;
                     release_validation_recorded = false;
@@ -232,12 +225,7 @@ pub fn run_supervisor(
                     clear_safe_mode(&mut state);
                     if let Some(mut running_child) = child.take() {
                         let exit = terminate_child(&mut running_child)?;
-                        record_child_exit(
-                            &mut state,
-                            exit,
-                            now_secs,
-                            "stop_requested",
-                        );
+                        record_child_exit(&mut state, exit, now_secs, "stop_requested");
                     }
                     append_supervisor_workflow_audit(
                         crate::runtime::WorkflowDisposition::Cancel,
@@ -411,7 +399,11 @@ pub fn run_supervisor(
                 state.restart_count = state.restart_count.saturating_add(1);
                 state.current_state = "backoff".to_string();
                 let backoff_secs = restart_backoff_secs(state.restart_count);
-                append_supervisor_backoff_workflow_audit("child_exit_backoff", now_secs, backoff_secs);
+                append_supervisor_backoff_workflow_audit(
+                    "child_exit_backoff",
+                    now_secs,
+                    backoff_secs,
+                );
                 write_state(&state)?;
                 restart_needed = true;
             }
@@ -788,8 +780,7 @@ mod tests {
     };
     use crate::runtime::workflow::{reset_workflow_audit_for_tests, workflow_audit_snapshot};
     use crate::runtime::{
-        WorkflowDisposition, WorkflowEffect, WorkflowKind, WorkflowRecoveryPolicy,
-        WorkflowTrigger,
+        WorkflowDisposition, WorkflowEffect, WorkflowKind, WorkflowRecoveryPolicy, WorkflowTrigger,
     };
     use std::os::unix::process::ExitStatusExt;
 
@@ -864,7 +855,10 @@ mod tests {
         let audit = workflow_audit_snapshot(4);
         assert_eq!(audit.summary.executed, 1);
         assert_eq!(audit.recent_records.len(), 1);
-        assert_eq!(audit.recent_records[0].workflow, WorkflowKind::RebootRecovery);
+        assert_eq!(
+            audit.recent_records[0].workflow,
+            WorkflowKind::RebootRecovery
+        );
         assert_eq!(
             audit.recent_records[0].trigger,
             WorkflowTrigger::ModeTransition

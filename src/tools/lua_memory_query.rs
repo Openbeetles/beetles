@@ -1,15 +1,12 @@
 //! Linux-only read-only memory query tool built on the programmable Lua sandbox.
 
 use crate::error::{Error, Result};
-use crate::memory::{
-    ContinuityCapsuleStore, LongTermMemoryQuery, LongTermMemoryStore,
-};
+use crate::memory::{ContinuityCapsuleStore, LongTermMemoryQuery, LongTermMemoryStore};
 use crate::reasoning::{
     build_memory_query_snapshot_from_stores, default_lua_memory_query_capabilities,
     validate_memory_query_result, LuaQueryBudget, LuaQueryRequest, LuaQueryResponse,
     MemoryQueryContinuityScope, MemoryQueryResult, MemoryQuerySelection, MemoryQuerySnapshot,
-    ReasoningExecutor,
-    MEMORY_QUERY_DEFAULT_CONTINUITY_LIMIT, MEMORY_QUERY_DEFAULT_LONG_TERM_LIMIT,
+    ReasoningExecutor, MEMORY_QUERY_DEFAULT_CONTINUITY_LIMIT, MEMORY_QUERY_DEFAULT_LONG_TERM_LIMIT,
 };
 use crate::tools::{
     parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata, ToolRiskLevel,
@@ -83,9 +80,8 @@ impl Tool for LuaMemoryQueryTool {
         let timeout_ms = obj.get("timeout_ms").and_then(Value::as_u64);
         let request = LuaQueryRequest {
             script: script.to_string(),
-            input: serde_json::to_value(&snapshot).map_err(|error| {
-                Error::config("lua_memory_query_tool", error.to_string())
-            })?,
+            input: serde_json::to_value(&snapshot)
+                .map_err(|error| Error::config("lua_memory_query_tool", error.to_string()))?,
             budget: timeout_ms
                 .map(|value| LuaQueryBudget::default().with_timeout_ms(value))
                 .unwrap_or_default(),
@@ -129,10 +125,11 @@ fn build_selection(
         .transpose()
         .map_err(|error| Error::config("lua_memory_query_tool", error.to_string()))?
         .or_else(|| {
-            ctx.current_chat_id().map(|chat_id| MemoryQueryContinuityScope {
-                scope_kind: crate::memory::ContinuityCapsuleScopeKind::Chat,
-                scope_id: chat_id.to_string(),
-            })
+            ctx.current_chat_id()
+                .map(|chat_id| MemoryQueryContinuityScope {
+                    scope_kind: crate::memory::ContinuityCapsuleScopeKind::Chat,
+                    scope_id: chat_id.to_string(),
+                })
         });
 
     Ok(MemoryQuerySelection {
@@ -140,12 +137,14 @@ fn build_selection(
         long_term_limit: obj
             .get("long_term_limit")
             .and_then(Value::as_u64)
-            .unwrap_or(MEMORY_QUERY_DEFAULT_LONG_TERM_LIMIT as u64) as usize,
+            .unwrap_or(MEMORY_QUERY_DEFAULT_LONG_TERM_LIMIT as u64)
+            as usize,
         continuity_scope,
         continuity_limit: obj
             .get("continuity_limit")
             .and_then(Value::as_u64)
-            .unwrap_or(MEMORY_QUERY_DEFAULT_CONTINUITY_LIMIT as u64) as usize,
+            .unwrap_or(MEMORY_QUERY_DEFAULT_CONTINUITY_LIMIT as u64)
+            as usize,
         include_long_term: obj
             .get("include_long_term")
             .and_then(Value::as_bool)
@@ -306,7 +305,10 @@ mod tests {
             _url: &str,
             _headers: &[(&str, &str)],
         ) -> Result<(u16, crate::platform::ResponseBody)> {
-            Err(Error::config("lua_memory_query_tool_test", "network unused"))
+            Err(Error::config(
+                "lua_memory_query_tool_test",
+                "network unused",
+            ))
         }
 
         fn post_with_headers(
@@ -315,7 +317,10 @@ mod tests {
             _headers: &[(&str, &str)],
             _body: &[u8],
         ) -> Result<(u16, crate::platform::ResponseBody)> {
-            Err(Error::config("lua_memory_query_tool_test", "network unused"))
+            Err(Error::config(
+                "lua_memory_query_tool_test",
+                "network unused",
+            ))
         }
 
         fn current_chat_id(&self) -> Option<&str> {

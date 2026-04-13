@@ -2,7 +2,9 @@ use super::*;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-fn workflow_kind_for_self_runtime_trigger(trigger: SelfRuntimeTrigger) -> crate::runtime::WorkflowKind {
+fn workflow_kind_for_self_runtime_trigger(
+    trigger: SelfRuntimeTrigger,
+) -> crate::runtime::WorkflowKind {
     match trigger {
         SelfRuntimeTrigger::PostReply => crate::runtime::WorkflowKind::SelfRuntimePostReply,
         SelfRuntimeTrigger::IdleTick => crate::runtime::WorkflowKind::SelfRuntimeIdleTick,
@@ -1030,7 +1032,9 @@ mod tests {
         );
 
         assert!(enqueued);
-        let job = system_inbound_rx.try_recv().expect("self runtime job should enqueue");
+        let job = system_inbound_rx
+            .try_recv()
+            .expect("self runtime job should enqueue");
         assert_eq!(job.chat_id.as_ref(), "chat-a");
         let audit = workflow_audit_snapshot(4);
         assert_eq!(audit.summary.executed, 1);

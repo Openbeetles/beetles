@@ -60,7 +60,11 @@ pub fn execute_lua_query(request: &LuaQueryRequest) -> Result<LuaQueryResponse> 
         ));
     }
 
-    let evaluated = match lua.load(&request.script).set_name("lua_query").eval::<LuaValue>() {
+    let evaluated = match lua
+        .load(&request.script)
+        .set_name("lua_query")
+        .eval::<LuaValue>()
+    {
         Ok(value) => value,
         Err(error) => {
             return Ok(LuaQueryResponse::failure(
@@ -96,7 +100,11 @@ pub fn execute_lua_query(request: &LuaQueryRequest) -> Result<LuaQueryResponse> 
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .clone();
-    Ok(LuaQueryResponse::success(result, trace, request.budget.clone()))
+    Ok(LuaQueryResponse::success(
+        result,
+        trace,
+        request.budget.clone(),
+    ))
 }
 
 fn build_lua_runtime(trace: Arc<Mutex<Vec<String>>>, max_trace_items: usize) -> Result<Lua> {
@@ -113,9 +121,9 @@ fn build_lua_runtime(trace: Arc<Mutex<Vec<String>>>, max_trace_items: usize) -> 
         "io",
         "debug",
     ] {
-        globals
-            .set(name, LuaValue::Nil)
-            .map_err(|error| crate::error::Error::config("lua_runtime_globals", error.to_string()))?;
+        globals.set(name, LuaValue::Nil).map_err(|error| {
+            crate::error::Error::config("lua_runtime_globals", error.to_string())
+        })?;
     }
 
     let trace_fn = lua
@@ -136,26 +144,31 @@ fn build_lua_runtime(trace: Arc<Mutex<Vec<String>>>, max_trace_items: usize) -> 
             let json: Value = lua.from_value(value)?;
             serde_json::to_string(&json).map_err(mlua::Error::external)
         })
-        .map_err(|error| crate::error::Error::config("lua_runtime_json_encode", error.to_string()))?;
-    globals
-        .set("json_encode", encode_fn)
-        .map_err(|error| crate::error::Error::config("lua_runtime_json_encode_set", error.to_string()))?;
+        .map_err(|error| {
+            crate::error::Error::config("lua_runtime_json_encode", error.to_string())
+        })?;
+    globals.set("json_encode", encode_fn).map_err(|error| {
+        crate::error::Error::config("lua_runtime_json_encode_set", error.to_string())
+    })?;
 
     let decode_fn = lua
         .create_function(|lua, text: String| {
             let value: Value = serde_json::from_str(&text).map_err(mlua::Error::external)?;
             lua.to_value(&value)
         })
-        .map_err(|error| crate::error::Error::config("lua_runtime_json_decode", error.to_string()))?;
-    globals
-        .set("json_decode", decode_fn)
-        .map_err(|error| crate::error::Error::config("lua_runtime_json_decode_set", error.to_string()))?;
+        .map_err(|error| {
+            crate::error::Error::config("lua_runtime_json_decode", error.to_string())
+        })?;
+    globals.set("json_decode", decode_fn).map_err(|error| {
+        crate::error::Error::config("lua_runtime_json_decode_set", error.to_string())
+    })?;
 
     Ok(lua)
 }
 
 fn sanitize_trace_item(value: &str) -> String {
-    value.chars()
+    value
+        .chars()
         .take(LUA_QUERY_MAX_TRACE_CHARS)
         .collect::<String>()
 }
@@ -176,14 +189,13 @@ pub fn run_reasoning_runner_stdio() -> Result<()> {
                 crate::reasoning::LuaQueryBudget::default(),
             );
             let encoded = serde_json::to_vec(&response).map_err(|encode_error| {
-                crate::error::Error::config(
-                    "lua_runner_protocol_encode",
-                    encode_error.to_string(),
-                )
+                crate::error::Error::config("lua_runner_protocol_encode", encode_error.to_string())
             })?;
             std::io::stdout()
                 .write_all(&encoded)
-                .map_err(|write_error| crate::error::Error::io("lua_runner_write_stdout", write_error))?;
+                .map_err(|write_error| {
+                    crate::error::Error::io("lua_runner_write_stdout", write_error)
+                })?;
             return Ok(());
         }
     };
@@ -197,13 +209,16 @@ pub fn run_reasoning_runner_stdio() -> Result<()> {
         })?;
         std::io::stdout()
             .write_all(&encoded)
-            .map_err(|write_error| crate::error::Error::io("lua_runner_write_stdout", write_error))?;
+            .map_err(|write_error| {
+                crate::error::Error::io("lua_runner_write_stdout", write_error)
+            })?;
         return Ok(());
     }
 
     let response = execute_lua_query(&request)?;
-    let encoded = serde_json::to_vec(&response)
-        .map_err(|error| crate::error::Error::config("lua_runner_response_encode", error.to_string()))?;
+    let encoded = serde_json::to_vec(&response).map_err(|error| {
+        crate::error::Error::config("lua_runner_response_encode", error.to_string())
+    })?;
     std::io::stdout()
         .write_all(&encoded)
         .map_err(|error| crate::error::Error::io("lua_runner_write_stdout", error))?;
@@ -241,7 +256,10 @@ fn set_limit(
     if status == 0 {
         Ok(())
     } else {
-        Err(crate::error::Error::io(stage, std::io::Error::last_os_error()))
+        Err(crate::error::Error::io(
+            stage,
+            std::io::Error::last_os_error(),
+        ))
     }
 }
 

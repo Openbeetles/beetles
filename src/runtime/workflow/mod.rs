@@ -4,14 +4,14 @@
 mod audit;
 mod types;
 
-pub use audit::{
-    append_workflow_audit, recent_workflow_audits, workflow_audit_snapshot, WorkflowAuditSnapshot,
-    WorkflowAuditSummary,
-};
 #[cfg(test)]
 pub use audit::reset_workflow_audit_for_tests;
 #[cfg(test)]
 pub use audit::workflow_audit_test_guard;
+pub use audit::{
+    append_workflow_audit, recent_workflow_audits, workflow_audit_snapshot, WorkflowAuditSnapshot,
+    WorkflowAuditSummary,
+};
 pub use types::{
     WorkflowAdmissionSnapshot, WorkflowAuditRecord, WorkflowDisposition, WorkflowEffect,
     WorkflowKind, WorkflowRecoveryPolicy, WorkflowTrigger,

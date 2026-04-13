@@ -120,6 +120,7 @@ pub enum RuntimeSkillWriteSource {
     Manual,
     Extraction,
     TaskLearning,
+    ProgrammableReasoning,
 }
 
 impl RuntimeSkillWriteSource {
@@ -128,6 +129,7 @@ impl RuntimeSkillWriteSource {
             Self::Manual => "manual",
             Self::Extraction => "extraction",
             Self::TaskLearning => "task_learning",
+            Self::ProgrammableReasoning => "programmable_reasoning",
         }
     }
 }

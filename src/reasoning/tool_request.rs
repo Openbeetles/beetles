@@ -36,8 +36,8 @@ pub fn validate_tool_request_result(value: Value) -> Result<ToolRequestResult> {
 }
 
 fn normalize_tool_request_result(result: ToolRequestResult) -> Result<ToolRequestResult> {
-    let summary = truncate_content_to_max(result.summary.trim(), TOOL_REQUEST_MAX_SUMMARY_CHARS)
-        .into_owned();
+    let summary =
+        truncate_content_to_max(result.summary.trim(), TOOL_REQUEST_MAX_SUMMARY_CHARS).into_owned();
     if summary.is_empty() {
         return Err(Error::config(
             "tool_request_result_validate",
@@ -65,11 +65,9 @@ fn normalize_tool_request_result(result: ToolRequestResult) -> Result<ToolReques
 }
 
 fn normalize_tool_request_proposal(proposal: ToolRequestProposal) -> Result<ToolRequestProposal> {
-    let tool_name = truncate_content_to_max(
-        proposal.tool_name.trim(),
-        TOOL_REQUEST_MAX_TOOL_NAME_CHARS,
-    )
-    .into_owned();
+    let tool_name =
+        truncate_content_to_max(proposal.tool_name.trim(), TOOL_REQUEST_MAX_TOOL_NAME_CHARS)
+            .into_owned();
     let summary = truncate_content_to_max(
         proposal.summary.trim(),
         TOOL_REQUEST_MAX_PROPOSAL_SUMMARY_CHARS,

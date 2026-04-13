@@ -1587,7 +1587,10 @@ mod tests {
         assert_eq!(report.action, SoulKernelRecoveryAction::NoBundleAvailable);
         let audit = workflow_audit_snapshot(4);
         assert_eq!(audit.summary.no_trigger, 1);
-        assert_eq!(audit.recent_records[0].workflow, crate::runtime::WorkflowKind::RebootRecovery);
+        assert_eq!(
+            audit.recent_records[0].workflow,
+            crate::runtime::WorkflowKind::RebootRecovery
+        );
     }
 
     #[test]

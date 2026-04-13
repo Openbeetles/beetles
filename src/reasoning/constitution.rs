@@ -11,6 +11,7 @@ pub enum ProgrammableReasoningStage {
     IdleMemoryForge,
     MemoryAttackDistillation,
     CapabilityBridgeExpansion,
+    ExperienceCrystal,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -21,6 +22,7 @@ pub enum ProgrammableReasoningCapabilityKind {
     IdleMaintenance,
     MemoryAttackDistillation,
     CapabilityBridgeExpansion,
+    ExperienceCrystal,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -54,7 +56,7 @@ pub struct ProgrammableReasoningRuntimeContract {
 pub fn programmable_reasoning_runtime_contract() -> ProgrammableReasoningRuntimeContract {
     let execution_enabled = cfg!(target_os = "linux");
     ProgrammableReasoningRuntimeContract {
-        stage: ProgrammableReasoningStage::CapabilityBridgeExpansion,
+        stage: ProgrammableReasoningStage::ExperienceCrystal,
         linux_only: true,
         execution_backend: if execution_enabled {
             ProgrammableReasoningExecutionBackend::LuaSandbox
@@ -70,14 +72,15 @@ pub fn programmable_reasoning_runtime_contract() -> ProgrammableReasoningRuntime
     }
 }
 
-pub fn programmable_reasoning_capability_taxonomy(
-) -> Vec<ProgrammableReasoningCapabilityContract> {
+pub fn programmable_reasoning_capability_taxonomy() -> Vec<ProgrammableReasoningCapabilityContract>
+{
     [
         ProgrammableReasoningCapabilityKind::TurnLocalReadonly,
         ProgrammableReasoningCapabilityKind::MemoryQuery,
         ProgrammableReasoningCapabilityKind::IdleMaintenance,
         ProgrammableReasoningCapabilityKind::MemoryAttackDistillation,
         ProgrammableReasoningCapabilityKind::CapabilityBridgeExpansion,
+        ProgrammableReasoningCapabilityKind::ExperienceCrystal,
     ]
     .into_iter()
     .map(|kind| ProgrammableReasoningCapabilityContract {
@@ -94,9 +97,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn runtime_contract_moves_to_p5_capability_bridge_expansion() {
+    fn runtime_contract_moves_to_p6_experience_crystal() {
         let contract = programmable_reasoning_runtime_contract();
-        assert_eq!(contract.stage, ProgrammableReasoningStage::CapabilityBridgeExpansion);
+        assert_eq!(
+            contract.stage,
+            ProgrammableReasoningStage::ExperienceCrystal
+        );
         assert!(contract.linux_only);
         assert_eq!(contract.execution_enabled, cfg!(target_os = "linux"));
         assert!(contract.proposal_only_persistence);
@@ -108,13 +114,11 @@ mod tests {
     #[test]
     fn capability_taxonomy_is_linux_only_and_non_executable() {
         let taxonomy = programmable_reasoning_capability_taxonomy();
-        assert_eq!(taxonomy.len(), 5);
+        assert_eq!(taxonomy.len(), 6);
         assert!(taxonomy.iter().all(|entry| entry.linux_only));
         assert!(taxonomy
             .iter()
             .all(|entry| entry.execution_enabled == cfg!(target_os = "linux")));
-        assert!(taxonomy
-            .iter()
-            .all(|entry| entry.proposal_only_persistence));
+        assert!(taxonomy.iter().all(|entry| entry.proposal_only_persistence));
     }
 }

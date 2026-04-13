@@ -799,11 +799,21 @@ impl PresencePulseContract {
     fn tool_progress(self, name: &str, index: usize, total: usize) -> String {
         match self.loc {
             UiLocale::Zh if total > 1 => {
-                format!("〔甲壳虫〕正在执行 {}（{}/{}），继续推进 🪲", name, index + 1, total)
+                format!(
+                    "〔甲壳虫〕正在执行 {}（{}/{}），继续推进 🪲",
+                    name,
+                    index + 1,
+                    total
+                )
             }
             UiLocale::Zh => format!("〔甲壳虫〕正在执行 {}，继续推进 🪲", name),
             UiLocale::En if total > 1 => {
-                format!("[Beetle] Running {} ({}/{}), still moving 🪲", name, index + 1, total)
+                format!(
+                    "[Beetle] Running {} ({}/{}), still moving 🪲",
+                    name,
+                    index + 1,
+                    total
+                )
             }
             UiLocale::En => format!("[Beetle] Running {}, still moving 🪲", name),
         }
@@ -1552,7 +1562,10 @@ mod tests {
         let first = outbound_rx.try_recv().expect("first pulse");
         let second = outbound_rx.try_recv().expect("second pulse");
         assert_eq!(first.content, "〔甲壳虫〕已接到，继续处理中 🪲");
-        assert_eq!(second.content, "〔甲壳虫〕这轮还在整理，结果马上接上 (｀･ω･´)ゞ");
+        assert_eq!(
+            second.content,
+            "〔甲壳虫〕这轮还在整理，结果马上接上 (｀･ω･´)ゞ"
+        );
         assert!(first.is_group);
         assert!(second.is_group);
         assert_eq!(delivery.report().presence_pulses_sent, 2);
@@ -1577,7 +1590,10 @@ mod tests {
         delivery.emit_tool_progress("board_info", 0, 1);
 
         let outbound = outbound_rx.try_recv().expect("tool pulse");
-        assert_eq!(outbound.content, "〔甲壳虫〕正在执行 board_info，继续推进 🪲");
+        assert_eq!(
+            outbound.content,
+            "〔甲壳虫〕正在执行 board_info，继续推进 🪲"
+        );
     }
 
     #[test]
@@ -1632,7 +1648,10 @@ mod tests {
         let first = outbound_rx.try_recv().expect("tool progress");
         let second = outbound_rx.try_recv().expect("followup pulse");
         assert_eq!(first.content, "〔甲壳虫〕正在执行 board_info，继续推进 🪲");
-        assert_eq!(second.content, "〔甲壳虫〕这轮还在整理，结果马上接上 (｀･ω･´)ゞ");
+        assert_eq!(
+            second.content,
+            "〔甲壳虫〕这轮还在整理，结果马上接上 (｀･ω･´)ゞ"
+        );
         assert!(outbound_rx.try_recv().is_err());
         assert_eq!(delivery.report().presence_pulses_sent, 1);
     }

@@ -10,9 +10,9 @@ use crate::platform::StateFs;
 use crate::reasoning::{
     build_memory_query_snapshot_from_stores, default_lua_memory_query_capabilities,
     memory_attack_job_contracts, validate_memory_attack_result, validate_memory_query_result,
-    CurrentExecutableLuaSandboxExecutor, LuaQueryBudget, LuaQueryRequest,
-    MemoryAttackJobKind, MemoryAttackJobReport, MemoryAttackJobStatus, MemoryAttackResult,
-    MemoryQueryContinuityScope, MemoryQueryResult, MemoryQuerySelection, ReasoningExecutor,
+    CurrentExecutableLuaSandboxExecutor, LuaQueryBudget, LuaQueryRequest, MemoryAttackJobKind,
+    MemoryAttackJobReport, MemoryAttackJobStatus, MemoryAttackResult, MemoryQueryContinuityScope,
+    MemoryQueryResult, MemoryQuerySelection, ReasoningExecutor,
 };
 use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
@@ -458,7 +458,8 @@ fn normalize_run_ledger(run: &IdleMemoryForgeRunLedger) -> IdleMemoryForgeRunLed
             batch.result.findings.iter_mut().for_each(|finding| {
                 finding.requires_adjudication = true;
             });
-            batch.result
+            batch
+                .result
                 .distillation_candidates
                 .iter_mut()
                 .for_each(|candidate| {
@@ -511,9 +512,11 @@ fn derive_primary_finding(run: &IdleMemoryForgeRunLedger) -> Option<String> {
                 .iter()
                 .flat_map(|batch| batch.result.distillation_candidates.iter())
                 .find_map(|candidate| {
-                    let summary =
-                        truncate_content_to_max(candidate.summary.trim(), MAX_PRIMARY_FINDING_CHARS)
-                            .into_owned();
+                    let summary = truncate_content_to_max(
+                        candidate.summary.trim(),
+                        MAX_PRIMARY_FINDING_CHARS,
+                    )
+                    .into_owned();
                     (!summary.is_empty()).then_some(summary)
                 })
         })
@@ -522,19 +525,20 @@ fn derive_primary_finding(run: &IdleMemoryForgeRunLedger) -> Option<String> {
                 .iter()
                 .flat_map(|batch| batch.result.candidates.iter())
                 .find_map(|candidate| {
-                    let finding =
-                        truncate_content_to_max(candidate.summary.trim(), MAX_PRIMARY_FINDING_CHARS)
-                            .into_owned();
+                    let finding = truncate_content_to_max(
+                        candidate.summary.trim(),
+                        MAX_PRIMARY_FINDING_CHARS,
+                    )
+                    .into_owned();
                     (!finding.is_empty()).then_some(finding)
                 })
                 .or_else(|| {
                     run.job_reports.iter().find_map(|report| {
-                        let finding =
-                            truncate_content_to_max(
-                                report.summary.trim(),
-                                MAX_PRIMARY_FINDING_CHARS,
-                            )
-                            .into_owned();
+                        let finding = truncate_content_to_max(
+                            report.summary.trim(),
+                            MAX_PRIMARY_FINDING_CHARS,
+                        )
+                        .into_owned();
                         (!finding.is_empty()).then_some(finding)
                     })
                 })
@@ -745,7 +749,10 @@ fn execute_idle_memory_forge_job(
     continuity_store: &dyn ContinuityCapsuleStore,
     chat_id: &str,
     now_secs: u64,
-) -> Result<(IdleMemoryForgeJobReport, Option<IdleMemoryForgeProposalBatch>)> {
+) -> Result<(
+    IdleMemoryForgeJobReport,
+    Option<IdleMemoryForgeProposalBatch>,
+)> {
     let snapshot =
         build_memory_query_snapshot_from_stores(selection, long_term_store, continuity_store)?;
     let snapshot_digest = snapshot.snapshot_digest.clone();
@@ -944,9 +951,7 @@ fn attack_job_kind_label(kind: MemoryAttackJobKind) -> &'static str {
     match kind {
         MemoryAttackJobKind::ContradictionSearch => "contradiction_search",
         MemoryAttackJobKind::EvidenceWeighing => "evidence_weighing",
-        MemoryAttackJobKind::DistillationProposalGeneration => {
-            "distillation_proposal_generation"
-        }
+        MemoryAttackJobKind::DistillationProposalGeneration => "distillation_proposal_generation",
     }
 }
 
@@ -1456,30 +1461,38 @@ mod tests {
 
     #[test]
     fn idle_forge_admission_requires_idle_background_window() {
-        assert!(!should_run_idle_memory_forge(&IdleMemoryForgeAdmissionSnapshot {
-            allow_periodic_maintenance: false,
-            active_agent_tasks: 0,
-            inbound_depth: 0,
-            outbound_depth: 0,
-        }));
-        assert!(!should_run_idle_memory_forge(&IdleMemoryForgeAdmissionSnapshot {
-            allow_periodic_maintenance: true,
-            active_agent_tasks: 1,
-            inbound_depth: 0,
-            outbound_depth: 0,
-        }));
-        assert!(!should_run_idle_memory_forge(&IdleMemoryForgeAdmissionSnapshot {
-            allow_periodic_maintenance: true,
-            active_agent_tasks: 0,
-            inbound_depth: 1,
-            outbound_depth: 0,
-        }));
-        assert!(should_run_idle_memory_forge(&IdleMemoryForgeAdmissionSnapshot {
-            allow_periodic_maintenance: true,
-            active_agent_tasks: 0,
-            inbound_depth: 0,
-            outbound_depth: 0,
-        }));
+        assert!(!should_run_idle_memory_forge(
+            &IdleMemoryForgeAdmissionSnapshot {
+                allow_periodic_maintenance: false,
+                active_agent_tasks: 0,
+                inbound_depth: 0,
+                outbound_depth: 0,
+            }
+        ));
+        assert!(!should_run_idle_memory_forge(
+            &IdleMemoryForgeAdmissionSnapshot {
+                allow_periodic_maintenance: true,
+                active_agent_tasks: 1,
+                inbound_depth: 0,
+                outbound_depth: 0,
+            }
+        ));
+        assert!(!should_run_idle_memory_forge(
+            &IdleMemoryForgeAdmissionSnapshot {
+                allow_periodic_maintenance: true,
+                active_agent_tasks: 0,
+                inbound_depth: 1,
+                outbound_depth: 0,
+            }
+        ));
+        assert!(should_run_idle_memory_forge(
+            &IdleMemoryForgeAdmissionSnapshot {
+                allow_periodic_maintenance: true,
+                active_agent_tasks: 0,
+                inbound_depth: 0,
+                outbound_depth: 0,
+            }
+        ));
     }
 
     #[test]
