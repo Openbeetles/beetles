@@ -16,6 +16,7 @@ pub mod calendar;
 pub mod continuity_snapshot;
 pub mod cron;
 pub mod cron_manage;
+pub mod diagnose_delivery;
 #[cfg(all(
     feature = "tools_network_extra",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -105,6 +106,7 @@ pub use board_info::BoardInfoTool;
 pub use calendar::CalendarTool;
 pub use continuity_snapshot::ContinuitySnapshotTool;
 pub use cron_manage::CronManageTool;
+pub use diagnose_delivery::DiagnoseDeliveryTool;
 #[cfg(all(
     feature = "tools_network_extra",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))

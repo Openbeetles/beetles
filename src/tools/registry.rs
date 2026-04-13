@@ -752,6 +752,9 @@ fn register_core_tools(
         remind_at_store,
     ))));
     registry.register(Box::new(super::BoardInfoTool::new(Arc::clone(platform))));
+    registry.register(Box::new(super::DiagnoseDeliveryTool::new(
+        config.enabled_channel.clone(),
+    )));
     registry.register(Box::new(super::KvStoreTool::new(platform.state_fs())));
     registry.register(Box::new(super::PrivateGardenTool::new(Arc::clone(
         private_garden_store,

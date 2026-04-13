@@ -1,6 +1,7 @@
 //! Unified operator-facing status contract for HTTP and CLI.
 
 use crate::device_capability::{build_device_capability_snapshots, DeviceCapabilityPlaneSnapshot};
+use crate::diagnosis::{build_delivery_diagnosis, DeliveryDiagnosisInput, DiagnosisResult};
 use crate::orchestrator;
 use crate::platform::memory_operator_surface::{
     build_memory_operator_surface, render_memory_operator_surface_text,
@@ -32,6 +33,7 @@ pub struct OperatorStatusSnapshot {
     pub build_package: crate::BuildPackageSnapshot,
     pub operator_surface: crate::platform::operator_surface::OperatorSurfaceBudget,
     pub reply_pipeline: ReplyPipelineOperatorSummary,
+    pub delivery_diagnosis: DiagnosisResult,
     pub memory_operator_surface: MemoryOperatorSurfaceSummary,
     pub workflow: runtime::WorkflowAuditSnapshot,
     pub programmable_reasoning: crate::ProgrammableReasoningOperatorSnapshot,
@@ -117,7 +119,13 @@ pub fn build_operator_status(
         input.tool_registry.inspect_execution_governance()?
     };
     let capability_planes = build_device_capability_snapshots(input.config, input.platform);
+    let runtime_capabilities = orchestrator::runtime_capability_snapshot();
     let reply_pipeline = ReplyPipelineOperatorSummary::from_metrics(&crate::metrics::snapshot());
+    let delivery_diagnosis = build_delivery_diagnosis(DeliveryDiagnosisInput {
+        enabled_channel: Some(input.config.enabled_channel.as_str()),
+        metrics: crate::metrics::snapshot(),
+        runtime_capabilities: runtime_capabilities.clone(),
+    });
     let presence = runtime::inspect_platform_presence(input.platform, current_unix_secs());
     let initiative = runtime::inspect_platform_initiative(input.platform, current_unix_secs());
     let os_closure = runtime::inspect_beetle_os_closure(&presence, &initiative);
@@ -139,6 +147,7 @@ pub fn build_operator_status(
         build_package: crate::current_build_package(),
         operator_surface,
         reply_pipeline,
+        delivery_diagnosis,
         memory_operator_surface,
         workflow: runtime::workflow_audit_snapshot(8),
         programmable_reasoning: crate::programmable_reasoning_operator_snapshot(),
@@ -149,7 +158,7 @@ pub fn build_operator_status(
         soul_kernel,
         presence,
         capability_planes,
-        runtime_capabilities: orchestrator::runtime_capability_snapshot(),
+        runtime_capabilities,
         tool_governance,
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         supervisor,
@@ -188,6 +197,11 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
         snapshot.reply_pipeline.final_recovery_last_ms,
         snapshot.reply_pipeline.dispatch_send_fail_total,
         snapshot.reply_pipeline.outbound_enqueue_fail_total,
+    ));
+    out.push_str(&format!(
+        "  delivery_diagnosis_summary: {}\n  delivery_diagnosis_confidence: {:?}\n",
+        snapshot.delivery_diagnosis.summary,
+        snapshot.delivery_diagnosis.confidence,
     ));
     if let Some(window) = snapshot.operator_surface.operator_window.as_ref() {
         out.push_str(&format!(
