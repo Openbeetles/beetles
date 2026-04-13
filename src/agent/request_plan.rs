@@ -2,6 +2,7 @@
 //! Centralizes runtime tool visibility plus typed tool-demand mapping so the
 //! agent loop stays thin and request understanding stays outside prompt hacks.
 
+use super::reply_surface::ReplySurface;
 use super::request_semantics::{EvidenceNeed, ExecutionPreference, RequestSemantics};
 use super::strategy::AgentRunStrategy;
 use crate::bus::PcMsg;
@@ -28,6 +29,7 @@ pub(crate) struct AgentRequestPlan<'a> {
     tool_specs: Vec<ToolSpec>,
     tool_call_mode: ToolCallMode,
     tool_use_demand: ToolUseDemand,
+    reply_surface: ReplySurface,
 }
 
 impl<'a> AgentRequestPlan<'a> {
@@ -49,11 +51,13 @@ impl<'a> AgentRequestPlan<'a> {
             }
         };
         let tool_use_demand = classify_tool_use_demand(strategy, semantics, &tool_specs);
+        let reply_surface = ReplySurface::for_turn(msg.ingress, semantics);
         Self {
             tool_policy,
             tool_specs,
             tool_call_mode,
             tool_use_demand,
+            reply_surface,
         }
     }
 
@@ -63,6 +67,10 @@ impl<'a> AgentRequestPlan<'a> {
 
     pub(crate) fn has_tools(&self) -> bool {
         !self.tool_specs.is_empty()
+    }
+
+    pub(crate) fn reply_surface(&self) -> ReplySurface {
+        self.reply_surface
     }
 
     pub(crate) fn uses_native_tools(&self) -> bool {

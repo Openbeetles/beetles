@@ -428,6 +428,10 @@ const AGENT_LOOP_TAG: &str = "main";
 #[derive(Default)]
 struct WorkerLatency {
     context_ms: u128,
+    request_semantics_ms: u128,
+    surface_finalize_ms: u128,
+    mental_privacy_review_ms: u128,
+    final_recovery_ms: u128,
     llm_round_total_ms: u128,
     tool_exec_ms: u128,
     session_write_ms: u128,
@@ -981,13 +985,27 @@ fn append_tool_result_block(
         || push_bounded_utf8(dst, "\n</tool_result>", max_bytes)
 }
 
-fn append_tool_evidence_summary_block(
+fn append_surface_evidence_block(
     dst: &mut String,
+    reply_surface: ReplySurface,
     evidence_lines: &[String],
     omitted_count: usize,
     max_bytes: usize,
 ) -> bool {
-    if push_bounded_utf8(dst, "<tool_evidence_summary>\n", max_bytes) {
+    if evidence_lines.is_empty() {
+        return false;
+    }
+    let Some(authority) = reply_surface.evidence_authority() else {
+        return false;
+    };
+    let mut open_tag = String::with_capacity(96);
+    let _ = write!(
+        &mut open_tag,
+        "<surface_evidence surface=\"{}\" authority=\"{}\">\n",
+        reply_surface.as_str(),
+        authority
+    );
+    if push_bounded_utf8(dst, open_tag.as_str(), max_bytes) {
         return true;
     }
     for line in evidence_lines {
@@ -1005,13 +1023,23 @@ fn append_tool_evidence_summary_block(
             return true;
         }
     }
-    push_bounded_utf8(dst, "</tool_evidence_summary>", max_bytes)
+    push_bounded_utf8(dst, "</surface_evidence>", max_bytes)
 }
 
-fn render_tool_evidence_summary_block(evidence_lines: &[String], omitted_count: usize) -> String {
+fn render_surface_evidence_block(
+    reply_surface: ReplySurface,
+    evidence_lines: &[String],
+    omitted_count: usize,
+) -> String {
     let estimated = evidence_lines.iter().map(String::len).sum::<usize>() + 96;
     let mut out = String::with_capacity(estimated);
-    let _ = append_tool_evidence_summary_block(&mut out, evidence_lines, omitted_count, usize::MAX);
+    let _ = append_surface_evidence_block(
+        &mut out,
+        reply_surface,
+        evidence_lines,
+        omitted_count,
+        usize::MAX,
+    );
     out
 }
 
@@ -1232,6 +1260,27 @@ fn summarize_tool_results(content: &str) -> String {
                     break;
                 }
             }
+            continue;
+        }
+        if line.starts_with("<surface_evidence ") {
+            let surface = extract_tag_attr(line, "surface").unwrap_or("unknown");
+            let authority = extract_tag_attr(line, "authority").unwrap_or("unknown");
+            let _ = writeln!(out, "[surface={} authority={}]", surface, authority);
+            for next in lines.by_ref() {
+                if next == "</surface_evidence>" {
+                    break;
+                }
+                let trimmed = next.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let _ = writeln!(
+                    out,
+                    "[evidence] {}",
+                    build_tool_evidence_preview(trimmed).unwrap_or_default()
+                );
+            }
+            wrote_any = true;
             continue;
         }
         if line == "<tool_evidence_summary>" {
@@ -1582,6 +1631,7 @@ fn handle_worker_path_error(
 
     match PcMsg::new_outbound_reply_to(msg, tr(UiMessage::NodeMaintenance, loc)) {
         Ok(reply) => {
+            metrics::record_internal_error_copy_suppressed();
             let _ = try_send_outbound(outbound_tx, reply, "chat-failure");
         }
         Err(build_error) => {
@@ -1603,8 +1653,9 @@ fn maybe_apply_mental_privacy_review(
     config: &AgentLoopConfig,
     msg: &PcMsg,
     loc: UiLocale,
-    request_semantics: RequestSemantics,
+    reply_surface: ReplySurface,
     reply_content: String,
+    worker_latency: &mut WorkerLatency,
 ) -> MentalPrivacyReviewOutcome {
     if msg.ingress != IngressKind::User || reply_content.trim().is_empty() {
         return MentalPrivacyReviewOutcome {
@@ -1614,7 +1665,7 @@ fn maybe_apply_mental_privacy_review(
             touched_targets: Vec::new(),
         };
     }
-    if request_semantics.is_public_surface() {
+    if !reply_surface.allows_mental_privacy_review() {
         return MentalPrivacyReviewOutcome {
             reply_content,
             action: crate::memory::MentalPrivacyShareAction::AllowOriginal,
@@ -1624,6 +1675,7 @@ fn maybe_apply_mental_privacy_review(
     }
 
     let t0 = metrics::record_llm_call_start();
+    let review_started = Instant::now();
     let mut privacy_http = HttpClientToolContext {
         http,
         chat_id: Some(msg.chat_id.clone()),
@@ -1661,11 +1713,17 @@ fn maybe_apply_mental_privacy_review(
     ) {
         Ok(review) => {
             metrics::record_llm_call_end(t0);
+            worker_latency.mental_privacy_review_ms = worker_latency
+                .mental_privacy_review_ms
+                .saturating_add(review_started.elapsed().as_millis());
             review
         }
         Err(error) => {
             metrics::record_llm_call_end(t0);
             metrics::record_llm_error();
+            worker_latency.mental_privacy_review_ms = worker_latency
+                .mental_privacy_review_ms
+                .saturating_add(review_started.elapsed().as_millis());
             log::warn!("[agent_mental_privacy] review failed: {}", error);
             MentalPrivacyReviewOutcome {
                 reply_content,
@@ -1779,7 +1837,7 @@ fn log_agent_latency_summary(
 ) {
     if total_ms >= latency_warn_ms {
         log::warn!(
-            "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} context_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={} level=slow",
+            "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} context_ms={} request_semantics_ms={} surface_finalize_ms={} mental_privacy_review_ms={} final_recovery_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={} level=slow",
             worker_lane_tag,
             req_id,
             channel,
@@ -1788,6 +1846,10 @@ fn log_agent_latency_summary(
             admission_ms,
             worker_prepare_ms,
             worker_latency.context_ms,
+            worker_latency.request_semantics_ms,
+            worker_latency.surface_finalize_ms,
+            worker_latency.mental_privacy_review_ms,
+            worker_latency.final_recovery_ms,
             worker_latency.llm_round_total_ms,
             worker_latency.tool_exec_ms,
             worker_latency.session_write_ms,
@@ -1804,7 +1866,7 @@ fn log_agent_latency_summary(
         );
     } else {
         log::info!(
-            "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} context_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={}",
+            "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} context_ms={} request_semantics_ms={} surface_finalize_ms={} mental_privacy_review_ms={} final_recovery_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={}",
             worker_lane_tag,
             req_id,
             channel,
@@ -1813,6 +1875,10 @@ fn log_agent_latency_summary(
             admission_ms,
             worker_prepare_ms,
             worker_latency.context_ms,
+            worker_latency.request_semantics_ms,
+            worker_latency.surface_finalize_ms,
+            worker_latency.mental_privacy_review_ms,
+            worker_latency.final_recovery_ms,
             worker_latency.llm_round_total_ms,
             worker_latency.tool_exec_ms,
             worker_latency.session_write_ms,
@@ -2217,9 +2283,31 @@ fn run_agent_loop_main(
                 continue;
             }
         };
-        let finalized = finalize_turn(
+        let finalized = match finalize_turn(
             http, worker_llm, config, &msg, loc, msg_start, outcome, telemetry,
-        );
+        ) {
+            Ok(finalized) => finalized,
+            Err(e) => {
+                handle_worker_path_error(
+                    e,
+                    AGENT_LOOP_TAG,
+                    &mut msg,
+                    loc,
+                    msg_start,
+                    queue_wait_ms,
+                    admission_ms,
+                    worker_prepare_ms,
+                    msg_key,
+                    &mut llm_failure_count,
+                    &user_inbound_tx,
+                    &system_inbound_tx,
+                    &outbound_tx,
+                    config,
+                    &mut turn_ledger,
+                );
+                continue;
+            }
+        };
         let handoff = deliver_turn(&outbound_tx, &msg, &finalized);
         complete_turn(
             LaneTurnFinalizeContext {
@@ -3153,6 +3241,8 @@ mod tests {
     struct ObservedAgentRequest {
         system: String,
         tool_count: usize,
+        last_message: String,
+        message_dump: String,
     }
 
     struct ObservedSequenceStubLlm {
@@ -3169,7 +3259,7 @@ mod tests {
             &self,
             _http: &mut dyn LlmHttpClient,
             system: &str,
-            _messages: &[Message],
+            messages: &[Message],
             tools: Option<&[crate::llm::ToolSpec]>,
             _tool_choice: ToolChoicePolicy,
         ) -> Result<LlmResponse> {
@@ -3179,6 +3269,15 @@ mod tests {
                 .push(ObservedAgentRequest {
                     system: system.to_string(),
                     tool_count: tools.map_or(0, |specs| specs.len()),
+                    last_message: messages
+                        .last()
+                        .map(|message| message.content.clone())
+                        .unwrap_or_default(),
+                    message_dump: messages
+                        .iter()
+                        .map(|message| format!("[{}]\n{}", message.role.as_ref(), message.content))
+                        .collect::<Vec<_>>()
+                        .join("\n---\n"),
                 });
             let mut responses = self.responses.lock().unwrap_or_else(|e| e.into_inner());
             if responses.is_empty() {
@@ -3453,14 +3552,15 @@ mod tests {
     fn summarize_tool_results_keeps_tool_evidence_summary() {
         let input = concat!(
             "Tool results:\n",
-            "<tool_evidence_summary>\n",
+            "<surface_evidence surface=\"public_runtime\" authority=\"public_runtime_host\">\n",
             "- [call_1] read_file: version = 1.2.3\n",
             "- [call_2] web_search: release date 2026-03-31\n",
-            "</tool_evidence_summary>\n",
+            "</surface_evidence>\n",
         );
         let summary = summarize_tool_results(input);
         assert!(summary.contains("[evidence] - [call_1] read_file: version = 1.2.3"));
         assert!(summary.contains("[evidence] - [call_2] web_search: release date 2026-03-31"));
+        assert!(summary.contains("[surface=public_runtime authority=public_runtime_host]"));
     }
 
     #[test]
@@ -3485,9 +3585,9 @@ mod tests {
             "<tool_result id=\"call_1\" tool=\"read_file\" status=\"ok\">\n",
             "version = 1.2.3\n",
             "</tool_result>\n",
-            "<tool_evidence_summary>\n",
+            "<surface_evidence surface=\"public_runtime\" authority=\"public_runtime_host\">\n",
             "- [call_1] read_file: version = 1.2.3\n",
-            "</tool_evidence_summary>\n",
+            "</surface_evidence>\n",
             "<memory_grounding>\n",
             "[summary] 用户偏好直接回答\n",
             "[long_term] - [project:current_project] 继续收口长期记忆\n",
@@ -3500,12 +3600,27 @@ mod tests {
     }
 
     #[test]
+    fn render_surface_evidence_block_includes_surface_and_authority() {
+        let block = render_surface_evidence_block(
+            ReplySurface::PublicRuntime,
+            &[String::from("- [call_1] board_info: cpu_usage=12%")],
+            0,
+        );
+        assert!(block.contains(
+            "<surface_evidence surface=\"public_runtime\" authority=\"public_runtime_host\">"
+        ));
+        assert!(block.contains("board_info: cpu_usage=12%"));
+        assert!(block.contains("</surface_evidence>"));
+    }
+
+    #[test]
     fn assemble_tool_round_user_message_reserves_space_for_evidence_before_memory() {
         let raw = format!(
             "Tool results:\n<tool_result id=\"call_1\" tool=\"read_file\" status=\"ok\">\n{}\n</tool_result>",
             "x".repeat(4300)
         );
-        let evidence = render_tool_evidence_summary_block(
+        let evidence = render_surface_evidence_block(
+            ReplySurface::PublicRuntime,
             &[String::from(
                 "- [call_1] read_file: version=1.2.3 path=/tmp/build.log",
             )],
@@ -3521,7 +3636,7 @@ mod tests {
         );
 
         assert!(truncated);
-        assert!(assembled.contains("<tool_evidence_summary>"));
+        assert!(assembled.contains("<surface_evidence surface=\"public_runtime\""));
         assert!(assembled.contains("version=1.2.3"));
     }
 
@@ -3531,7 +3646,8 @@ mod tests {
             "Tool results:\n<tool_result id=\"call_1\" tool=\"read_file\" status=\"ok\">\n{}\n</tool_result>",
             "y".repeat(4200)
         );
-        let evidence = render_tool_evidence_summary_block(
+        let evidence = render_surface_evidence_block(
+            ReplySurface::PublicRuntime,
             &[String::from(
                 "- [call_1] read_file: keep-this-evidence=/tmp/config.toml",
             )],
@@ -4324,7 +4440,8 @@ mod tests {
             Instant::now(),
             WorkerOutcome::Content(reply.clone()),
             telemetry,
-        );
+        )
+        .expect("finalize turn");
 
         let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
         assert!(
@@ -4333,6 +4450,185 @@ mod tests {
         );
         assert_eq!(finalized.reply_content, reply);
         assert!(!finalized.mental_privacy_review.applied);
+    }
+
+    #[test]
+    fn finalize_turn_uses_reply_surface_contract_for_privacy_review_decision() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![LlmResponse {
+                content: r#"{"applies":true,"request_kind":"share_any","share_action":"allow_original","response":"继续公开当前答复","rationale":"governed path still reviews","touched_targets":[]}"#.to_string(),
+                stop_reason: StopReason::EndTurn,
+                tool_calls: None,
+            }]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let mut config = test_agent_loop_config();
+        config.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
+        config.inner_life_store = Arc::new(LoadedInnerLifeStore {
+            value: crate::memory::InnerLife {
+                private_journal: "这是受保护的私域笔记。".to_string(),
+                ..crate::memory::InnerLife::default()
+            },
+        });
+        let msg =
+            PcMsg::new_inbound("qq_channel", "chat-governed", "继续回答", false).expect("message");
+        let telemetry = WorkerRunTelemetry {
+            streamed: false,
+            latency: WorkerLatency::default(),
+            delivery: DeliveryReport::default(),
+            any_tool_used: false,
+            external_content_used: false,
+            used_surface_finalization: false,
+            used_final_answer_recovery: false,
+            task_execution_used: false,
+            pressure: crate::orchestrator::PressureLevel::Normal,
+            runtime_mode: crate::runtime::RuntimeModeSnapshot {
+                current_mode: crate::runtime::RuntimeMode::Normal,
+                wifi_sta_connected: true,
+                boot_phase_active: false,
+                pairing_required: false,
+                pairing_state_known: false,
+                voice_exclusive_active: false,
+                background_maintenance_active: false,
+                config_plane_alive: false,
+                channel_plane_alive: true,
+                voice_plane_alive: false,
+                agent_plane_alive: true,
+                user_agent_lane_alive: true,
+                system_agent_lane_alive: false,
+                dual_agent_lanes_alive: false,
+                external_wss_managed_present: false,
+                external_wss_suspend_requested: false,
+                external_wss_suspended: false,
+                supervisor_present: false,
+                supervisor_alive: false,
+                supervisor_agent_alive: false,
+                recovery_safe_mode_active: false,
+                action_budget: crate::runtime::RuntimeModeActionBudget {
+                    allow_periodic_maintenance: true,
+                    allow_due_user_timers: true,
+                    allow_heartbeat_injection: true,
+                    allow_best_effort_delayed_tasks: true,
+                    allow_idle_self_runtime: true,
+                    allow_non_voice_outbound: true,
+                    allow_external_wss_connect: true,
+                    require_external_wss_suspended: false,
+                },
+            },
+            deliberation_class: crate::memory::TurnDeliberationClass::Standard,
+            request_semantics: RequestSemantics::public_tool_first(),
+            reply_surface: ReplySurface::GovernedConversation,
+            prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
+            runtime_skill_selected_ids: Vec::new(),
+            task_learning_selected_ids: Vec::new(),
+            subject_state: None,
+            mental_privacy_adjudication: None,
+            persona_priority_adjudication: None,
+        };
+
+        let finalized = self::reply_finalize::finalize_turn(
+            &mut http,
+            &llm,
+            &config,
+            &msg,
+            UiLocale::Zh,
+            Instant::now(),
+            WorkerOutcome::Content("这是受治理的普通答复。".to_string()),
+            telemetry,
+        )
+        .expect("finalize turn");
+
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(observed.len(), 1);
+        assert!(!finalized.reply_content.trim().is_empty());
+    }
+
+    #[test]
+    fn finalize_turn_returns_program_error_when_finalizer_washes_reply_empty() {
+        let llm = SequenceStubLlm {
+            responses: Mutex::new(Vec::new()),
+        };
+        let mut http = DummyPlatformHttp;
+        let config = test_agent_loop_config();
+        let msg = PcMsg::new_inbound("qq_channel", "chat-empty-final", "查看系统状态", false)
+            .expect("message");
+        let telemetry = WorkerRunTelemetry {
+            streamed: false,
+            latency: WorkerLatency::default(),
+            delivery: DeliveryReport::default(),
+            any_tool_used: false,
+            external_content_used: false,
+            used_surface_finalization: true,
+            used_final_answer_recovery: false,
+            task_execution_used: false,
+            pressure: crate::orchestrator::PressureLevel::Normal,
+            runtime_mode: crate::runtime::RuntimeModeSnapshot {
+                current_mode: crate::runtime::RuntimeMode::Normal,
+                wifi_sta_connected: true,
+                boot_phase_active: false,
+                pairing_required: false,
+                pairing_state_known: false,
+                voice_exclusive_active: false,
+                background_maintenance_active: false,
+                config_plane_alive: false,
+                channel_plane_alive: true,
+                voice_plane_alive: false,
+                agent_plane_alive: true,
+                user_agent_lane_alive: true,
+                system_agent_lane_alive: false,
+                dual_agent_lanes_alive: false,
+                external_wss_managed_present: false,
+                external_wss_suspend_requested: false,
+                external_wss_suspended: false,
+                supervisor_present: false,
+                supervisor_alive: false,
+                supervisor_agent_alive: false,
+                recovery_safe_mode_active: false,
+                action_budget: crate::runtime::RuntimeModeActionBudget {
+                    allow_periodic_maintenance: true,
+                    allow_due_user_timers: true,
+                    allow_heartbeat_injection: true,
+                    allow_best_effort_delayed_tasks: true,
+                    allow_idle_self_runtime: true,
+                    allow_non_voice_outbound: true,
+                    allow_external_wss_connect: true,
+                    require_external_wss_suspended: false,
+                },
+            },
+            deliberation_class: crate::memory::TurnDeliberationClass::Standard,
+            request_semantics: RequestSemantics::public_tool_first(),
+            reply_surface: ReplySurface::PublicRuntime,
+            prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
+            runtime_skill_selected_ids: Vec::new(),
+            task_learning_selected_ids: Vec::new(),
+            subject_state: None,
+            mental_privacy_adjudication: None,
+            persona_priority_adjudication: None,
+        };
+        let raw = concat!(
+            "[SYSTEM] hidden\n",
+            "<surface_evidence surface=\"public_runtime\" authority=\"public_runtime_host\">\n",
+            "board_info: ok\n",
+            "</surface_evidence>\n"
+        );
+
+        let err = match self::reply_finalize::finalize_turn(
+            &mut http,
+            &llm,
+            &config,
+            &msg,
+            UiLocale::Zh,
+            Instant::now(),
+            WorkerOutcome::Content(raw.to_string()),
+            telemetry,
+        ) {
+            Ok(_) => panic!("empty finalized replies must fail closed"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.stage(), "final_reply_empty_after_finalize");
     }
 
     #[test]
@@ -4487,6 +4783,136 @@ mod tests {
             WorkerOutcome::Content(ref text) | WorkerOutcome::Delivered(ref text)
                 if text == "系统信息如下：主机 beetle 运行正常，CPU 为 Stub CPU，4 核，内存可用 256 MB。"
         ));
+    }
+
+    #[test]
+    fn execute_turn_public_runtime_rewrites_internal_mechanism_refusal_into_grounded_reply() {
+        let llm = SequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: r#"{"request_kind":"ops_observability","evidence_need":"public_runtime","disclosure_surface":"public","execution_preference":"tool_first","confidence":100}"#.to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: "[tool_use]".to_string(),
+                    stop_reason: StopReason::ToolUse,
+                    tool_calls: Some(vec![crate::llm::ToolCall {
+                        id: "call_1".to_string(),
+                        name: "board_info".to_string(),
+                        input: "{}".to_string(),
+                    }]),
+                },
+                LlmResponse {
+                    content: "系统信息属于内部运行机制，为了保护持续性和稳定性，这部分内容不对外公开。".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: r#"{"surface":"public_runtime","reply":"系统信息如下：主机 beetle 在线，资源压力 Normal，WiFi 已连接，当前运行正常。"}"#.to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = crate::tools::ToolRegistry::new();
+        registry.register(Box::new(StubBoardInfoTool));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        let msg =
+            PcMsg::new_inbound("qq_channel", "chat-ops", "查看系统信息", false).expect("message");
+        let mut repeat = HashMap::new();
+
+        let turn_execution::ExecutedTurn { outcome, .. } = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-public-runtime-internal-refusal",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        assert!(matches!(
+            outcome,
+            WorkerOutcome::Content(ref text) | WorkerOutcome::Delivered(ref text)
+                if text == "系统信息如下：主机 beetle 在线，资源压力 Normal，WiFi 已连接，当前运行正常。"
+        ));
+    }
+
+    #[test]
+    fn execute_turn_public_runtime_finalization_input_uses_surface_evidence_without_memory_grounding(
+    ) {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: r#"{"request_kind":"ops_observability","evidence_need":"public_runtime","disclosure_surface":"public","execution_preference":"tool_first","confidence":100}"#.to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: "[tool_use]".to_string(),
+                    stop_reason: StopReason::ToolUse,
+                    tool_calls: Some(vec![crate::llm::ToolCall {
+                        id: "call_1".to_string(),
+                        name: "board_info".to_string(),
+                        input: "{}".to_string(),
+                    }]),
+                },
+                LlmResponse {
+                    content: "你好！".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: r#"{"surface":"public_runtime","reply":"系统状态正常。"}"#.to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = crate::tools::ToolRegistry::new();
+        registry.register(Box::new(StubBoardInfoTool));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        let msg =
+            PcMsg::new_inbound("qq_channel", "chat-ops", "查看系统状态", false).expect("message");
+        let mut repeat = HashMap::new();
+
+        let _ = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-public-runtime-surface-evidence",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        let finalization_request = observed
+            .iter()
+            .find(|request| request.system.contains("Public Runtime Finalization"))
+            .expect("finalization request");
+        assert!(finalization_request.message_dump.contains(
+            "<surface_evidence surface=\"public_runtime\" authority=\"public_runtime_host\">"
+        ));
+        assert!(finalization_request.message_dump.contains("board_info"));
+        assert!(!finalization_request
+            .message_dump
+            .contains("<memory_grounding>"));
     }
 
     #[test]

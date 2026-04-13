@@ -20,6 +20,10 @@ static MESSAGES_OUT: AtomicU32 = AtomicU32::new(0);
 static LLM_CALLS: AtomicU32 = AtomicU32::new(0);
 static LLM_ERRORS: AtomicU32 = AtomicU32::new(0);
 static LLM_LAST_MS: AtomicU32 = AtomicU32::new(0);
+static REQUEST_SEMANTICS_LAST_MS: AtomicU32 = AtomicU32::new(0);
+static SURFACE_FINALIZE_LAST_MS: AtomicU32 = AtomicU32::new(0);
+static MENTAL_PRIVACY_REVIEW_LAST_MS: AtomicU32 = AtomicU32::new(0);
+static FINAL_RECOVERY_LAST_MS: AtomicU32 = AtomicU32::new(0);
 static TTFT_LAST_MS: AtomicU32 = AtomicU32::new(0);
 static E2E_LAST_MS: AtomicU32 = AtomicU32::new(0);
 static POST_REPLY_LAST_MS: AtomicU32 = AtomicU32::new(0);
@@ -40,6 +44,9 @@ static WDT_FEEDS: AtomicU32 = AtomicU32::new(0);
 static DISPATCH_SEND_OK: AtomicU32 = AtomicU32::new(0);
 static DISPATCH_SEND_FAIL: AtomicU32 = AtomicU32::new(0);
 static OUTBOUND_ENQUEUE_FAIL: AtomicU32 = AtomicU32::new(0);
+static TOOL_SUCCEEDED_FINAL_DRIFT_TOTAL: AtomicU32 = AtomicU32::new(0);
+static EMPTY_FINAL_BLOCKED_TOTAL: AtomicU32 = AtomicU32::new(0);
+static INTERNAL_ERROR_COPY_SUPPRESSED_TOTAL: AtomicU32 = AtomicU32::new(0);
 static CHANNEL_HTTP_OK: AtomicU32 = AtomicU32::new(0);
 static CHANNEL_HTTP_FAIL: AtomicU32 = AtomicU32::new(0);
 static LAST_ACTIVE_EPOCH_SECS: AtomicU32 = AtomicU32::new(0);
@@ -146,6 +153,26 @@ pub fn record_llm_call_end(start: std::time::Instant) {
 }
 
 #[inline]
+pub fn record_request_semantics_ms(ms: u128) {
+    REQUEST_SEMANTICS_LAST_MS.store(ms.min(u32::MAX as u128) as u32, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_surface_finalize_ms(ms: u128) {
+    SURFACE_FINALIZE_LAST_MS.store(ms.min(u32::MAX as u128) as u32, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_mental_privacy_review_ms(ms: u128) {
+    MENTAL_PRIVACY_REVIEW_LAST_MS.store(ms.min(u32::MAX as u128) as u32, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_final_recovery_ms(ms: u128) {
+    FINAL_RECOVERY_LAST_MS.store(ms.min(u32::MAX as u128) as u32, Ordering::Relaxed);
+}
+
+#[inline]
 pub fn record_ttft_ms(ms: u128) {
     TTFT_LAST_MS.store(ms.min(u32::MAX as u128) as u32, Ordering::Relaxed);
 }
@@ -243,6 +270,21 @@ pub fn record_dispatch_send(ok: bool) {
 #[inline]
 pub fn record_outbound_enqueue_fail() {
     OUTBOUND_ENQUEUE_FAIL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_tool_succeeded_final_drift() {
+    TOOL_SUCCEEDED_FINAL_DRIFT_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_empty_final_blocked() {
+    EMPTY_FINAL_BLOCKED_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_internal_error_copy_suppressed() {
+    INTERNAL_ERROR_COPY_SUPPRESSED_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
 /// sender 线程在真实通道 HTTP 请求后上报（区别于 dispatch 入队成功）。
@@ -543,6 +585,10 @@ pub fn snapshot() -> MetricsSnapshot {
         llm_calls: LLM_CALLS.load(Ordering::Relaxed) as u64,
         llm_errors: LLM_ERRORS.load(Ordering::Relaxed) as u64,
         llm_last_ms: LLM_LAST_MS.load(Ordering::Relaxed) as u64,
+        request_semantics_last_ms: REQUEST_SEMANTICS_LAST_MS.load(Ordering::Relaxed) as u64,
+        surface_finalize_last_ms: SURFACE_FINALIZE_LAST_MS.load(Ordering::Relaxed) as u64,
+        mental_privacy_review_last_ms: MENTAL_PRIVACY_REVIEW_LAST_MS.load(Ordering::Relaxed) as u64,
+        final_recovery_last_ms: FINAL_RECOVERY_LAST_MS.load(Ordering::Relaxed) as u64,
         ttft_last_ms: TTFT_LAST_MS.load(Ordering::Relaxed) as u64,
         e2e_last_ms: E2E_LAST_MS.load(Ordering::Relaxed) as u64,
         post_reply_last_ms: POST_REPLY_LAST_MS.load(Ordering::Relaxed) as u64,
@@ -563,6 +609,11 @@ pub fn snapshot() -> MetricsSnapshot {
         dispatch_send_ok: DISPATCH_SEND_OK.load(Ordering::Relaxed) as u64,
         dispatch_send_fail: DISPATCH_SEND_FAIL.load(Ordering::Relaxed) as u64,
         outbound_enqueue_fail: OUTBOUND_ENQUEUE_FAIL.load(Ordering::Relaxed) as u64,
+        tool_succeeded_final_drift_total: TOOL_SUCCEEDED_FINAL_DRIFT_TOTAL.load(Ordering::Relaxed)
+            as u64,
+        empty_final_blocked_total: EMPTY_FINAL_BLOCKED_TOTAL.load(Ordering::Relaxed) as u64,
+        internal_error_copy_suppressed_total: INTERNAL_ERROR_COPY_SUPPRESSED_TOTAL
+            .load(Ordering::Relaxed) as u64,
         channel_http_ok: CHANNEL_HTTP_OK.load(Ordering::Relaxed) as u64,
         channel_http_fail: CHANNEL_HTTP_FAIL.load(Ordering::Relaxed) as u64,
         http_permit_wait_last_ms: HTTP_PERMIT_WAIT_LAST_MS.load(Ordering::Relaxed) as u64,
@@ -656,6 +707,10 @@ pub struct MetricsSnapshot {
     pub llm_calls: u64,
     pub llm_errors: u64,
     pub llm_last_ms: u64,
+    pub request_semantics_last_ms: u64,
+    pub surface_finalize_last_ms: u64,
+    pub mental_privacy_review_last_ms: u64,
+    pub final_recovery_last_ms: u64,
     pub ttft_last_ms: u64,
     pub e2e_last_ms: u64,
     pub post_reply_last_ms: u64,
@@ -676,6 +731,9 @@ pub struct MetricsSnapshot {
     pub dispatch_send_ok: u64,
     pub dispatch_send_fail: u64,
     pub outbound_enqueue_fail: u64,
+    pub tool_succeeded_final_drift_total: u64,
+    pub empty_final_blocked_total: u64,
+    pub internal_error_copy_suppressed_total: u64,
     pub channel_http_ok: u64,
     pub channel_http_fail: u64,
     pub http_permit_wait_last_ms: u64,
@@ -744,12 +802,16 @@ impl MetricsSnapshot {
         let mut buf = String::with_capacity(384);
         let _ = write!(
             buf,
-            "metrics msg_in={} msg_out={} llm_calls={} llm_err={} llm_last_ms={} ttft_last_ms={} e2e_last_ms={} post_reply_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} user_done={} sys_done={} cron_done={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} wdt_feeds={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} voice_in_capture_ms={} voice_in_stt_http_ms={} voice_out_tts_http_ms={} voice_out_play_ms={} voice_in_fail={} voice_out_fail={} voice_interrupt_req={} voice_interrupt_accept={} voice_cancel_sent={} voice_stale_drop={} voice_interrupt_ref_suppress={} voice_no_speech_to={} voice_resp_wait_to={} voice_post_play_to={} wake_word_trigger={} audio_turns={} audio_idle={} audio_mic_poll={} audio_mic_frames={} audio_mic_zero={} audio_loop_last_us={} audio_mic_read_last_us={} audio_spk_write_last_us={} audio_ref_frames={} audio_ref_zero={} audio_ref_depth_last={} wake_feed_calls={} wake_feed_busy_skip={} wake_feed_cooldown_skip={} wake_feed_detect={} wake_feed_last_us={} spiffs_ops={} spiffs_contention={} spiffs_wait_last_us={} spiffs_wait_total_us={} spiffs_hold_last_us={} spiffs_hold_total_us={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={} shttp_reuse={} shttp_create={} shttp_reset={} shttp_invalidate={}",
+            "metrics msg_in={} msg_out={} llm_calls={} llm_err={} llm_last_ms={} request_semantics_ms={} surface_finalize_ms={} mental_privacy_review_ms={} final_recovery_ms={} ttft_last_ms={} e2e_last_ms={} post_reply_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} user_done={} sys_done={} cron_done={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} wdt_feeds={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} final_drift_total={} empty_final_blocked_total={} internal_error_copy_suppressed_total={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} voice_in_capture_ms={} voice_in_stt_http_ms={} voice_out_tts_http_ms={} voice_out_play_ms={} voice_in_fail={} voice_out_fail={} voice_interrupt_req={} voice_interrupt_accept={} voice_cancel_sent={} voice_stale_drop={} voice_interrupt_ref_suppress={} voice_no_speech_to={} voice_resp_wait_to={} voice_post_play_to={} wake_word_trigger={} audio_turns={} audio_idle={} audio_mic_poll={} audio_mic_frames={} audio_mic_zero={} audio_loop_last_us={} audio_mic_read_last_us={} audio_spk_write_last_us={} audio_ref_frames={} audio_ref_zero={} audio_ref_depth_last={} wake_feed_calls={} wake_feed_busy_skip={} wake_feed_cooldown_skip={} wake_feed_detect={} wake_feed_last_us={} spiffs_ops={} spiffs_contention={} spiffs_wait_last_us={} spiffs_wait_total_us={} spiffs_hold_last_us={} spiffs_hold_total_us={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={} shttp_reuse={} shttp_create={} shttp_reset={} shttp_invalidate={}",
             self.messages_in,
             self.messages_out,
             self.llm_calls,
             self.llm_errors,
             self.llm_last_ms,
+            self.request_semantics_last_ms,
+            self.surface_finalize_last_ms,
+            self.mental_privacy_review_last_ms,
+            self.final_recovery_last_ms,
             self.ttft_last_ms,
             self.e2e_last_ms,
             self.post_reply_last_ms,
@@ -770,6 +832,9 @@ impl MetricsSnapshot {
             self.dispatch_send_ok,
             self.dispatch_send_fail,
             self.outbound_enqueue_fail,
+            self.tool_succeeded_final_drift_total,
+            self.empty_final_blocked_total,
+            self.internal_error_copy_suppressed_total,
             self.channel_http_ok,
             self.channel_http_fail,
             self.http_permit_wait_last_ms,

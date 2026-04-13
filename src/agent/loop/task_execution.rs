@@ -636,6 +636,10 @@ pub(super) fn try_run_task_execution(
             streamed: false,
             latency: WorkerLatency {
                 context_ms: latency.context_ms,
+                request_semantics_ms: latency.request_semantics_ms,
+                surface_finalize_ms: latency.surface_finalize_ms,
+                mental_privacy_review_ms: latency.mental_privacy_review_ms,
+                final_recovery_ms: latency.final_recovery_ms,
                 llm_round_total_ms: latency.llm_round_total_ms,
                 tool_exec_ms: latency.tool_exec_ms,
                 session_write_ms: latency.session_write_ms,

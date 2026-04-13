@@ -267,7 +267,9 @@ pub(super) fn execute_tool_use_round(
             round_failure_summary.record(kind);
         } else if config.strategy == AgentRunStrategy::LinuxEnhanced {
             used_external_content |= tool_result_uses_external_content(&tc.name, result_view);
-            if round_evidence_lines.len() < MAX_TOOL_EVIDENCE_ITEMS {
+            if request_plan.reply_surface().accepts_tool_evidence(&tc.name)
+                && round_evidence_lines.len() < MAX_TOOL_EVIDENCE_ITEMS
+            {
                 if let Some(line) = build_tool_evidence_line(&tc.id, &tc.name, result_view) {
                     round_evidence_lines.push(line);
                 }

@@ -39,6 +39,7 @@ pub(super) fn execute_turn(
     let compiler_tool_policy =
         crate::tools::ToolPolicyContext::new(msg.ingress, msg.channel.as_ref());
     let compiler_tool_specs = registry.tool_specs_for_llm(&compiler_tool_policy);
+    let request_semantics_started = Instant::now();
     let request_semantics = super::super::request_semantics::compile_request_semantics(
         &mut tool_ctx,
         worker_llm,
@@ -53,6 +54,7 @@ pub(super) fn execute_turn(
             tool_specs: &compiler_tool_specs,
         },
     );
+    latency.request_semantics_ms = request_semantics_started.elapsed().as_millis();
     let request_plan = AgentRequestPlan::build(
         msg,
         registry,
@@ -271,6 +273,15 @@ pub(super) fn execute_turn(
                 && delivered_current_chat_reply.is_none()
                 && reply_surface.requires_structured_finalization_after_tool_success()
             {
+                if !content.trim().is_empty() {
+                    metrics::record_tool_succeeded_final_drift();
+                    log::info!(
+                        "[reply_surface] tool succeeded but final drift detected surface={} channel={} chat_id={}",
+                        reply_surface.as_str(),
+                        msg.channel,
+                        msg.chat_id
+                    );
+                }
                 used_surface_finalization = true;
                 final_content = run_surface_finalization_round(
                     worker_llm,
@@ -394,7 +405,8 @@ pub(super) fn execute_turn(
                 round_failure_summary,
             );
             let evidence_block = (!round_evidence_lines.is_empty()).then(|| {
-                render_tool_evidence_summary_block(
+                render_surface_evidence_block(
+                    reply_surface,
                     &round_evidence_lines,
                     tool_round_output.omitted_evidence_count,
                 )
@@ -432,6 +444,7 @@ pub(super) fn execute_turn(
             }
             let memory_block = memory_grounding
                 .as_deref()
+                .filter(|_| reply_surface.allows_memory_grounding_block())
                 .map(render_memory_grounding_block);
             let raw_tool_results = std::mem::take(&mut tool_result_user_content);
             let (assembled_tool_results, _assembled_truncated) = assemble_tool_round_user_message(
@@ -487,6 +500,7 @@ pub(super) fn execute_turn(
         && msg.ingress == IngressKind::User
         && msg.channel.as_ref() != CHANNEL_CRON
     {
+        metrics::record_empty_final_blocked();
         return Err(crate::error::Error::config(
             "final_reply_empty",
             format!(

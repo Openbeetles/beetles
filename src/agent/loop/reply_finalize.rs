@@ -37,7 +37,7 @@ pub(super) fn finalize_turn(
     msg_start: Instant,
     outcome: WorkerOutcome,
     telemetry: WorkerRunTelemetry,
-) -> FinalizedTurn {
+) -> Result<FinalizedTurn> {
     let final_outcome = if telemetry.delivery.current_primary_delivered {
         "current_primary"
     } else if telemetry.used_surface_finalization {
@@ -60,7 +60,7 @@ pub(super) fn finalize_turn(
         pressure,
         runtime_mode: _runtime_mode,
         deliberation_class: _deliberation_class,
-        request_semantics,
+        request_semantics: _request_semantics,
         reply_surface,
         prompt_recall_intent,
         runtime_skill_selected_ids,
@@ -111,8 +111,9 @@ pub(super) fn finalize_turn(
             config,
             msg,
             loc,
-            request_semantics,
+            reply_surface,
             reply_content,
+            &mut worker_latency,
         );
         reply_content = mental_privacy_review.reply_content.clone();
     }
@@ -121,13 +122,26 @@ pub(super) fn finalize_turn(
         && msg.ingress == IngressKind::User
         && msg.channel.as_ref() != CHANNEL_CRON
     {
+        metrics::record_empty_final_blocked();
         log::warn!(
-            "[reply_surface] empty finalized reply surface={} channel={} chat_id={}",
+            "[reply_surface] empty finalized reply blocked surface={} finalization_policy={:?} governance_policy={:?} channel={} chat_id={}",
             reply_surface.as_str(),
+            reply_surface.finalization_policy(),
+            reply_surface.governance_policy(),
             msg.channel,
             msg.chat_id
         );
-        reply_content = tr(UiMessage::NodeMaintenance, loc);
+        return Err(crate::error::Error::config(
+            "final_reply_empty_after_finalize",
+            format!(
+                "reply_surface={} finalization_policy={:?} governance_policy={:?} channel={} chat_id={}",
+                reply_surface.as_str(),
+                reply_surface.finalization_policy(),
+                reply_surface.governance_policy(),
+                msg.channel,
+                msg.chat_id
+            ),
+        ));
     }
     let mark_important = !is_interrupt && reply_content.contains(AGENT_MARKER_MARK_IMPORTANT);
     let signal_comfort = !is_interrupt && reply_content.contains(AGENT_MARKER_SIGNAL_COMFORT);
@@ -145,7 +159,7 @@ pub(super) fn finalize_turn(
         metrics::record_final_answer_call();
     }
 
-    FinalizedTurn {
+    Ok(FinalizedTurn {
         delivery,
         skip_delivery: reply_content.trim() == "SILENT"
             || (msg.channel.as_ref() == CHANNEL_CRON && reply_content.is_empty()),
@@ -170,7 +184,7 @@ pub(super) fn finalize_turn(
         subject_state,
         mental_privacy_adjudication,
         persona_priority_adjudication,
-    }
+    })
 }
 
 pub(super) fn complete_turn(
@@ -425,6 +439,10 @@ pub(super) fn complete_turn(
     }
     metrics::record_react_rounds(worker_latency.react_rounds);
     metrics::record_tool_calls_last(worker_latency.tool_calls);
+    metrics::record_request_semantics_ms(worker_latency.request_semantics_ms);
+    metrics::record_surface_finalize_ms(worker_latency.surface_finalize_ms);
+    metrics::record_mental_privacy_review_ms(worker_latency.mental_privacy_review_ms);
+    metrics::record_final_recovery_ms(worker_latency.final_recovery_ms);
     metrics::record_ttft_ms(worker_latency.ttft_ms.unwrap_or(0));
     metrics::record_e2e_ms(reply_handoff_ms);
     metrics::record_post_reply_ms(post_reply_ms);

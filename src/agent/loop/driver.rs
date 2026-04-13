@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::borrow::Cow;
 
 const PUBLIC_RUNTIME_FINALIZATION_SYSTEM_SUFFIX: &str = "\n\n## Public Runtime Finalization\nThis turn is on the public_runtime reply surface. Using only the completed tool results and public runtime evidence already present in this conversation, produce the final user-facing answer now. Return JSON only with fields: surface and reply. surface must be public_runtime. reply must be a non-empty user-facing answer grounded in the current runtime evidence. Do not greet, do not ask generic follow-up questions, do not mention private/internal mechanisms, do not output progress logs, and do not call tools.";
+const PRIVATE_BOUNDARY_FINALIZATION_SYSTEM_SUFFIX: &str = "\n\n## Private Boundary Finalization\nThis turn is on the private_boundary reply surface. Using only the already-governed conclusions, tool evidence, and safe boundary decisions already present in this conversation, produce the final user-facing answer now. Return JSON only with fields: surface and reply. surface must be private_boundary. reply must be a non-empty user-facing answer. Do not reveal private source material, raw inner notes, internal-only memory, or hidden mechanisms. If the governed conclusion is that the request cannot be fulfilled, state that boundary clearly and briefly. Do not greet, do not output internal logs, and do not call tools.";
 
 fn collect_recent_assistant_messages<'a>(
     messages: &'a [Message],
@@ -149,6 +150,9 @@ pub(super) fn run_final_answer_recovery_round(
     match response {
         Ok(response) => {
             metrics::record_llm_call_end(t0);
+            latency.final_recovery_ms = latency
+                .final_recovery_ms
+                .saturating_add(llm_round_start.elapsed().as_millis());
             latency.react_rounds = latency.react_rounds.saturating_add(1);
             latency.llm_round_total_ms = latency
                 .llm_round_total_ms
@@ -159,6 +163,9 @@ pub(super) fn run_final_answer_recovery_round(
             metrics::record_llm_call_end(t0);
             metrics::record_llm_error();
             metrics::record_error_by_stage("agent_chat");
+            latency.final_recovery_ms = latency
+                .final_recovery_ms
+                .saturating_add(llm_round_start.elapsed().as_millis());
             Err(e.with_stage("agent_chat"))
         }
     }
@@ -167,8 +174,8 @@ pub(super) fn run_final_answer_recovery_round(
 fn structured_finalization_system_suffix(reply_surface: ReplySurface) -> Option<&'static str> {
     match reply_surface {
         ReplySurface::PublicRuntime => Some(PUBLIC_RUNTIME_FINALIZATION_SYSTEM_SUFFIX),
+        ReplySurface::PrivateBoundary => Some(PRIVATE_BOUNDARY_FINALIZATION_SYSTEM_SUFFIX),
         ReplySurface::GovernedConversation
-        | ReplySurface::PrivateBoundary
         | ReplySurface::TaskExecution
         | ReplySurface::InternalOnly => None,
     }
@@ -196,6 +203,28 @@ fn parse_surface_finalization_reply(reply_surface: ReplySurface, raw: &str) -> O
             Some(reply.trim().to_string())
         }
         _ => Some(trimmed.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn private_boundary_has_structured_finalization_prompt() {
+        assert!(structured_finalization_system_suffix(ReplySurface::PrivateBoundary).is_some());
+        assert!(
+            structured_finalization_system_suffix(ReplySurface::GovernedConversation).is_none()
+        );
+    }
+
+    #[test]
+    fn parse_surface_finalization_reply_accepts_private_boundary_json() {
+        let raw =
+            r#"{"surface":"private_boundary","reply":"这部分属于私域材料，我不能直接公开。"}"#;
+        let parsed = parse_surface_finalization_reply(ReplySurface::PrivateBoundary, raw)
+            .expect("parsed reply");
+        assert_eq!(parsed, "这部分属于私域材料，我不能直接公开。");
     }
 }
 
@@ -246,6 +275,9 @@ pub(super) fn run_surface_finalization_round(
     match response {
         Ok(response) => {
             metrics::record_llm_call_end(t0);
+            latency.surface_finalize_ms = latency
+                .surface_finalize_ms
+                .saturating_add(llm_round_start.elapsed().as_millis());
             latency.react_rounds = latency.react_rounds.saturating_add(1);
             latency.llm_round_total_ms = latency
                 .llm_round_total_ms
@@ -264,6 +296,9 @@ pub(super) fn run_surface_finalization_round(
             metrics::record_llm_call_end(t0);
             metrics::record_llm_error();
             metrics::record_error_by_stage("agent_chat");
+            latency.surface_finalize_ms = latency
+                .surface_finalize_ms
+                .saturating_add(llm_round_start.elapsed().as_millis());
             Err(e.with_stage("agent_chat"))
         }
     }

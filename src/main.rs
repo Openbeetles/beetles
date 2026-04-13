@@ -7,7 +7,7 @@
 use beetle::bus::IngressKind;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
 use beetle::constants::SOFTAP_DEFAULT_IPV4;
-use beetle::memory::{MemoryStore, SessionStore};
+use beetle::memory::MemoryStore;
 use beetle::network::{execute_stream_http_op, HttpClientClass, HttpFactory, NetworkGovernor};
 #[cfg(feature = "feishu")]
 use beetle::run_feishu_ws_loop;
@@ -58,6 +58,135 @@ struct StartedVoiceSession {
 
 struct TelegramTypingNotifier {
     token: String,
+}
+
+struct RuntimeStores {
+    memory_store: Arc<dyn beetle::memory::MemoryStore + Send + Sync>,
+    long_term_memory_store: Arc<dyn beetle::memory::LongTermMemoryStore + Send + Sync>,
+    continuity_capsule_store: Arc<dyn beetle::memory::ContinuityCapsuleStore + Send + Sync>,
+    long_term_memory_extraction_state_store:
+        Arc<dyn beetle::memory::LongTermMemoryExtractionStateStore + Send + Sync>,
+    session_store: Arc<dyn beetle::memory::SessionStore + Send + Sync>,
+    pending_retry_store: Arc<dyn beetle::memory::PendingRetryStore + Send + Sync>,
+    task_store: Arc<dyn beetle::task::TaskStore + Send + Sync>,
+    task_run_store: Arc<dyn beetle::task_execution::TaskRunStore + Send + Sync>,
+    task_artifact_store: Arc<dyn beetle::task_execution::TaskArtifactStore + Send + Sync>,
+    task_execution_ledger_store:
+        Arc<dyn beetle::task_execution::TaskExecutionLedgerStore + Send + Sync>,
+    task_learning_store: Arc<dyn beetle::task_execution::TaskLearningStore + Send + Sync>,
+    execution_state_store: Arc<dyn beetle::memory::ExecutionStateStore + Send + Sync>,
+    self_model_store: Arc<dyn beetle::memory::SelfModelStore + Send + Sync>,
+    self_authored_core_store: Arc<dyn beetle::memory::SelfAuthoredCoreStore + Send + Sync>,
+    core_revision_ledger_store: Arc<dyn beetle::memory::CoreRevisionLedgerStore + Send + Sync>,
+    relationship_constitution_store:
+        Arc<dyn beetle::memory::RelationshipConstitutionStore + Send + Sync>,
+    relationship_portfolio_store: Arc<dyn beetle::memory::RelationshipPortfolioStore + Send + Sync>,
+    world_sense_store: Arc<dyn beetle::memory::WorldSenseStore + Send + Sync>,
+    autonomy_strategy_store: Arc<dyn beetle::memory::AutonomyStrategyStore + Send + Sync>,
+    outer_voice_store: Arc<dyn beetle::memory::OuterVoiceStore + Send + Sync>,
+    inner_life_store: Arc<dyn beetle::memory::InnerLifeStore + Send + Sync>,
+    self_continuity_store: Arc<dyn beetle::memory::SelfContinuityStore + Send + Sync>,
+    relationship_topology_store: Arc<dyn beetle::memory::RelationshipTopologyStore + Send + Sync>,
+    private_doc_store: Arc<dyn beetle::memory::PrivateDocStore + Send + Sync>,
+    private_garden_store: Arc<dyn beetle::memory::PrivateGardenStore + Send + Sync>,
+    mental_privacy_store: Arc<dyn beetle::memory::MentalPrivacyStore + Send + Sync>,
+    important_message_store: Arc<dyn beetle::memory::ImportantMessageStore + Send + Sync>,
+    remind_at_store: Arc<dyn beetle::memory::RemindAtStore + Send + Sync>,
+    session_summary_store: Arc<dyn beetle::memory::SessionSummaryStore + Send + Sync>,
+    turn_ledger_store: Arc<dyn beetle::memory::TurnLedgerStore + Send + Sync>,
+    emotion_signal_store: Arc<beetle::memory::MemoryEmotionSignalStore>,
+}
+
+impl RuntimeStores {
+    fn collect(platform: &Arc<dyn Platform>) -> Self {
+        Self {
+            memory_store: platform.memory_store(),
+            long_term_memory_store: platform.long_term_memory_store(),
+            continuity_capsule_store: platform.continuity_capsule_store(),
+            long_term_memory_extraction_state_store: platform
+                .long_term_memory_extraction_state_store(),
+            session_store: platform.session_store(),
+            pending_retry_store: platform.pending_retry_store(),
+            task_store: platform.task_store(),
+            task_run_store: platform.task_run_store(),
+            task_artifact_store: platform.task_artifact_store(),
+            task_execution_ledger_store: platform.task_execution_ledger_store(),
+            task_learning_store: platform.task_learning_store(),
+            execution_state_store: platform.execution_state_store(),
+            self_model_store: platform.self_model_store(),
+            self_authored_core_store: platform.self_authored_core_store(),
+            core_revision_ledger_store: platform.core_revision_ledger_store(),
+            relationship_constitution_store: platform.relationship_constitution_store(),
+            relationship_portfolio_store: platform.relationship_portfolio_store(),
+            world_sense_store: platform.world_sense_store(),
+            autonomy_strategy_store: platform.autonomy_strategy_store(),
+            outer_voice_store: platform.outer_voice_store(),
+            inner_life_store: platform.inner_life_store(),
+            self_continuity_store: platform.self_continuity_store(),
+            relationship_topology_store: platform.relationship_topology_store(),
+            private_doc_store: platform.private_doc_store(),
+            private_garden_store: platform.private_garden_store(),
+            mental_privacy_store: platform.mental_privacy_store(),
+            important_message_store: platform.important_message_store(),
+            remind_at_store: platform.remind_at_store(),
+            session_summary_store: platform.session_summary_store(),
+            turn_ledger_store: platform.turn_ledger_store(),
+            emotion_signal_store: Arc::new(beetle::memory::MemoryEmotionSignalStore::new()),
+        }
+    }
+}
+
+struct RuntimeBus {
+    user_inbound_tx: beetle::bus::InboundTx,
+    user_inbound_rx: Option<beetle::bus::InboundRx>,
+    user_inbound_depth: Arc<std::sync::atomic::AtomicUsize>,
+    system_inbound_tx: beetle::bus::SystemInboundTx,
+    system_inbound_rx: Option<beetle::bus::SystemInboundRx>,
+    system_inbound_depth: Arc<std::sync::atomic::AtomicUsize>,
+    outbound_tx: beetle::bus::OutboundTx,
+    outbound_rx: Option<beetle::bus::OutboundRx>,
+    outbound_depth: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl RuntimeBus {
+    fn new(capacity: usize) -> Self {
+        let (bus, user_inbound_rx, outbound_rx) = MessageBus::new(capacity);
+        let (system_inbound_tx, system_inbound_rx, system_inbound_depth) =
+            beetle::bus::new_inbound_channel(capacity);
+        Self {
+            user_inbound_tx: bus.inbound_tx,
+            user_inbound_rx: Some(user_inbound_rx),
+            user_inbound_depth: Arc::clone(&bus.inbound_depth),
+            system_inbound_tx,
+            system_inbound_rx: Some(system_inbound_rx),
+            system_inbound_depth,
+            outbound_tx: bus.outbound_tx,
+            outbound_rx: Some(outbound_rx),
+            outbound_depth: Arc::clone(&bus.outbound_depth),
+        }
+    }
+}
+
+struct PreparedRuntimeAssembly {
+    platform: Arc<dyn Platform>,
+    config: Arc<AppConfig>,
+    config_store: Arc<dyn beetle::ConfigStore + Send + Sync>,
+    memory_system_kind: beetle::memory::MemorySystemKind,
+    resolve_locale_ui: Arc<dyn Fn() -> beetle::i18n::Locale + Send + Sync>,
+    skill_storage: Arc<dyn beetle::SkillStorage + Send + Sync>,
+    skill_prompt_cache: Arc<beetle::skills::SkillPromptCache>,
+    stores: RuntimeStores,
+    bus: RuntimeBus,
+    qq_msg_id_cache: beetle::channels::QqMsgIdCache,
+    qq_token_cache: beetle::channels::SharedQqTokenCache,
+    registry: Arc<beetle::ToolRegistry>,
+    baidu_token_cache: Option<Arc<beetle::audio::baidu_token::BaiduTokenCache>>,
+    voice_event_channel: Option<VoiceEventChannel>,
+    device_capability_registry: beetle::DeviceCapabilityRegistry,
+    channel_capability_registry: Arc<beetle::ChannelCapabilityRegistry>,
+    capability_package_runtime_capabilities: Arc<beetle::CapabilityPackageRuntimeCapabilities>,
+    network_governor: Arc<NetworkGovernor>,
+    communication_plane: CommunicationPlaneStartup,
 }
 
 impl beetle::TypingNotifier for TelegramTypingNotifier {
@@ -158,6 +287,33 @@ fn ensure_storage_ready(memory_store: &dyn MemoryStore) {
             log::warn!("[{}] set_user default failed: {}", TAG, e);
         }
     }
+}
+
+fn log_runtime_store_lengths(stores: &RuntimeStores) {
+    if let Ok(s) = stores.memory_store.get_memory() {
+        log::info!("[{}] memory len={}", TAG, s.len());
+    } else {
+        log::warn!("[{}] memory read failed or empty", TAG);
+    }
+    if let Ok(s) = stores.memory_store.get_soul() {
+        log::info!("[{}] soul len={}", TAG, s.len());
+    } else {
+        log::warn!("[{}] soul read failed", TAG);
+    }
+    if let Ok(s) = stores.memory_store.get_user() {
+        log::info!("[{}] user len={}", TAG, s.len());
+    } else {
+        log::warn!("[{}] user read failed", TAG);
+    }
+}
+
+fn record_startup_failure_and_request_restart(
+    platform: &Arc<dyn Platform>,
+    error: &beetle::Error,
+    reason: &'static str,
+) {
+    beetle::state::set_last_error(error);
+    beetle::runtime::request_restart_with_continuity_flush(Arc::clone(platform), None, reason);
 }
 
 fn bootstrap_pending_retry_into_inbound(
@@ -1819,9 +1975,11 @@ fn startup_soul_kernel_recovery(platform: Arc<dyn Platform>) {
     }
 }
 
-/// 启动编排：存储与总线 → 自检 → 后台任务与通道 → agent 循环与 flush。与 main 解耦便于单文件内可读性。
-fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_init_ok: bool) {
-    beetle::state::set_boot_phase_active(true);
+fn prepare_runtime_assembly(
+    platform: Arc<dyn Platform>,
+    config: Arc<AppConfig>,
+    wifi_init_ok: bool,
+) -> Option<PreparedRuntimeAssembly> {
     let config_store = platform.config_store();
     let memory_system_kind = platform.memory_system_kind();
     let resolve_locale_ui: Arc<dyn Fn() -> beetle::i18n::Locale + Send + Sync> = Arc::new({
@@ -1836,107 +1994,26 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         8192,
     ));
     let _ = skill_prompt_cache.refresh();
-    let memory_store: Arc<dyn MemoryStore + Send + Sync> = platform.memory_store();
-    let long_term_memory_store: Arc<dyn beetle::memory::LongTermMemoryStore + Send + Sync> =
-        platform.long_term_memory_store();
-    let continuity_capsule_store: Arc<dyn beetle::memory::ContinuityCapsuleStore + Send + Sync> =
-        platform.continuity_capsule_store();
-    let long_term_memory_extraction_state_store: Arc<
-        dyn beetle::memory::LongTermMemoryExtractionStateStore + Send + Sync,
-    > = platform.long_term_memory_extraction_state_store();
-    ensure_storage_ready(memory_store.as_ref());
-    if let Ok(s) = memory_store.get_memory() {
-        log::info!("[{}] memory len={}", TAG, s.len());
-    } else {
-        log::warn!("[{}] memory read failed or empty", TAG);
-    }
-    if let Ok(s) = memory_store.get_soul() {
-        log::info!("[{}] soul len={}", TAG, s.len());
-    } else {
-        log::warn!("[{}] soul read failed", TAG);
-    }
-    if let Ok(s) = memory_store.get_user() {
-        log::info!("[{}] user len={}", TAG, s.len());
-    } else {
-        log::warn!("[{}] user read failed", TAG);
-    }
+
+    let stores = RuntimeStores::collect(&platform);
+    ensure_storage_ready(stores.memory_store.as_ref());
+    log_runtime_store_lengths(&stores);
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("boot_memory_reads");
     enforce_heap_checkpoint("heap_after_boot_memory_reads");
 
-    let session_store: Arc<dyn SessionStore + Send + Sync> = platform.session_store();
-    let pending_retry_store: Arc<dyn beetle::memory::PendingRetryStore + Send + Sync> =
-        platform.pending_retry_store();
-    let task_store: Arc<dyn beetle::task::TaskStore + Send + Sync> = platform.task_store();
-    let task_run_store: Arc<dyn beetle::task_execution::TaskRunStore + Send + Sync> =
-        platform.task_run_store();
-    let task_artifact_store: Arc<dyn beetle::task_execution::TaskArtifactStore + Send + Sync> =
-        platform.task_artifact_store();
-    let task_execution_ledger_store: Arc<
-        dyn beetle::task_execution::TaskExecutionLedgerStore + Send + Sync,
-    > = platform.task_execution_ledger_store();
-    let task_learning_store: Arc<dyn beetle::task_execution::TaskLearningStore + Send + Sync> =
-        platform.task_learning_store();
-    let execution_state_store: Arc<dyn beetle::memory::ExecutionStateStore + Send + Sync> =
-        platform.execution_state_store();
-    let self_model_store: Arc<dyn beetle::memory::SelfModelStore + Send + Sync> =
-        platform.self_model_store();
-    let self_authored_core_store: Arc<dyn beetle::memory::SelfAuthoredCoreStore + Send + Sync> =
-        platform.self_authored_core_store();
-    let core_revision_ledger_store: Arc<dyn beetle::memory::CoreRevisionLedgerStore + Send + Sync> =
-        platform.core_revision_ledger_store();
-    let relationship_constitution_store: Arc<
-        dyn beetle::memory::RelationshipConstitutionStore + Send + Sync,
-    > = platform.relationship_constitution_store();
-    let relationship_portfolio_store: Arc<
-        dyn beetle::memory::RelationshipPortfolioStore + Send + Sync,
-    > = platform.relationship_portfolio_store();
-    let world_sense_store: Arc<dyn beetle::memory::WorldSenseStore + Send + Sync> =
-        platform.world_sense_store();
-    let autonomy_strategy_store: Arc<dyn beetle::memory::AutonomyStrategyStore + Send + Sync> =
-        platform.autonomy_strategy_store();
-    let outer_voice_store: Arc<dyn beetle::memory::OuterVoiceStore + Send + Sync> =
-        platform.outer_voice_store();
-    let inner_life_store: Arc<dyn beetle::memory::InnerLifeStore + Send + Sync> =
-        platform.inner_life_store();
-    let self_continuity_store: Arc<dyn beetle::memory::SelfContinuityStore + Send + Sync> =
-        platform.self_continuity_store();
-    let relationship_topology_store: Arc<
-        dyn beetle::memory::RelationshipTopologyStore + Send + Sync,
-    > = platform.relationship_topology_store();
-    let private_doc_store: Arc<dyn beetle::memory::PrivateDocStore + Send + Sync> =
-        platform.private_doc_store();
-    let private_garden_store: Arc<dyn beetle::memory::PrivateGardenStore + Send + Sync> =
-        platform.private_garden_store();
-    let mental_privacy_store: Arc<dyn beetle::memory::MentalPrivacyStore + Send + Sync> =
-        platform.mental_privacy_store();
-    let important_message_store: Arc<dyn beetle::memory::ImportantMessageStore + Send + Sync> =
-        platform.important_message_store();
-    let remind_at_store: Arc<dyn beetle::memory::RemindAtStore + Send + Sync> =
-        platform.remind_at_store();
-    let session_summary_store: Arc<dyn beetle::memory::SessionSummaryStore + Send + Sync> =
-        platform.session_summary_store();
-    let turn_ledger_store: Arc<dyn beetle::memory::TurnLedgerStore + Send + Sync> =
-        platform.turn_ledger_store();
-    let emotion_signal_store = Arc::new(beetle::memory::MemoryEmotionSignalStore::new());
-
-    let (bus, user_inbound_rx, outbound_rx) = MessageBus::new(DEFAULT_CAPACITY);
-    let (system_inbound_tx, system_inbound_rx, system_inbound_depth) =
-        beetle::bus::new_inbound_channel(DEFAULT_CAPACITY);
+    let bus = RuntimeBus::new(DEFAULT_CAPACITY);
     log::info!(
         "[{}] MessageBus created (capacity {})",
         TAG,
         DEFAULT_CAPACITY
     );
-    let user_inbound_depth = Arc::clone(&bus.inbound_depth);
-    let outbound_depth = Arc::clone(&bus.outbound_depth);
-    let user_inbound_tx = bus.inbound_tx;
-    let outbound_tx = bus.outbound_tx;
     bootstrap_pending_retry_into_inbound(
-        pending_retry_store.as_ref(),
-        &user_inbound_tx,
-        &system_inbound_tx,
+        stores.pending_retry_store.as_ref(),
+        &bus.user_inbound_tx,
+        &bus.system_inbound_tx,
     );
+
     let qq_msg_id_cache: beetle::channels::QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
     let qq_token_cache = beetle::channels::new_shared_qq_token_cache();
     #[allow(unused_variables)]
@@ -1944,26 +2021,27 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         &config,
         beetle::DefaultRegistryDeps {
             platform: Arc::clone(&platform),
-            remind_at_store: Arc::clone(&remind_at_store),
-            session_store: Arc::clone(&session_store),
-            memory_store: Arc::clone(&memory_store),
-            long_term_memory_store: Arc::clone(&long_term_memory_store),
-            turn_ledger_store: Arc::clone(&turn_ledger_store),
-            private_garden_store: Arc::clone(&private_garden_store),
+            remind_at_store: Arc::clone(&stores.remind_at_store),
+            session_store: Arc::clone(&stores.session_store),
+            memory_store: Arc::clone(&stores.memory_store),
+            long_term_memory_store: Arc::clone(&stores.long_term_memory_store),
+            turn_ledger_store: Arc::clone(&stores.turn_ledger_store),
+            private_garden_store: Arc::clone(&stores.private_garden_store),
             config_store: platform.config_store(),
         },
     );
-    // ── Audio init + voice runtime preparation (after MessageBus) ──────────
+
     beetle::bootstrap::init_audio_if_enabled(&platform, &config);
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("audio_init_phase_done");
     enforce_heap_checkpoint("heap_after_audio_init");
-    let mut voice_event_tx_rx =
+
+    let voice_event_channel =
         build_voice_event_channel(&platform, &config, baidu_token_cache.as_ref());
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("voice_event_channel_ready");
     let voice_channel_enabled = matches!(
-        voice_event_tx_rx.as_ref(),
+        voice_event_channel.as_ref(),
         Some(VoiceEventChannel {
             speak_capable: true,
             ..
@@ -2012,12 +2090,12 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         Arc::clone(&config),
     ));
 
-    if !startup_self_check(memory_store.as_ref()) {
+    if !startup_self_check(stores.memory_store.as_ref()) {
         log::error!(
             "[{}] startup self-check failed: storage not readable (get_memory and get_soul both failed)",
             TAG
         );
-        return;
+        return None;
     }
     let wifi_init_status = if wifi_init_ok { "ok" } else { "failed" };
     let sta_up = beetle::platform::is_wifi_sta_connected();
@@ -2028,7 +2106,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("http_client_probe_done");
     let communication_plane =
-        communication_plane_startup(http_client_ready, voice_event_tx_rx.is_some());
+        communication_plane_startup(http_client_ready, voice_event_channel.is_some());
     let spiffs_info = platform
         .spiffs_usage()
         .map(|(total, used)| format!("{} free", total.saturating_sub(used)))
@@ -2051,95 +2129,108 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         beetle::orchestrator::log_startup_memory_checkpoint("startup_self_check_ok");
     }
 
+    Some(PreparedRuntimeAssembly {
+        platform,
+        config,
+        config_store,
+        memory_system_kind,
+        resolve_locale_ui,
+        skill_storage,
+        skill_prompt_cache,
+        stores,
+        bus,
+        qq_msg_id_cache,
+        qq_token_cache,
+        registry,
+        baidu_token_cache,
+        voice_event_channel,
+        device_capability_registry,
+        channel_capability_registry,
+        capability_package_runtime_capabilities,
+        network_governor,
+        communication_plane,
+    })
+}
+
+fn start_support_planes(
+    assembly: &PreparedRuntimeAssembly,
+    wifi_init_ok: bool,
+) -> beetle::Result<()> {
     #[cfg(feature = "config_api")]
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     {
-        let shared_runtime_config = Arc::new(RwLock::new((*config).clone()));
-        match spawn_http_config_server(HttpServerSpawnContext {
-            platform: Arc::clone(&platform),
-            tool_registry: Arc::clone(&registry),
-            channel_capability_registry: Arc::clone(&channel_capability_registry),
-            inbound_depth: Arc::clone(&user_inbound_depth),
-            outbound_depth: Arc::clone(&outbound_depth),
-            memory_store: Arc::clone(&memory_store),
-            session_store: Arc::clone(&session_store),
-            system_inbound_tx: system_inbound_tx.clone(),
-            skill_prompt_cache: Arc::clone(&skill_prompt_cache),
-            inbound_tx: user_inbound_tx.clone(),
+        let shared_runtime_config = Arc::new(RwLock::new((*assembly.config).clone()));
+        spawn_http_config_server(HttpServerSpawnContext {
+            platform: Arc::clone(&assembly.platform),
+            tool_registry: Arc::clone(&assembly.registry),
+            channel_capability_registry: Arc::clone(&assembly.channel_capability_registry),
+            inbound_depth: Arc::clone(&assembly.bus.user_inbound_depth),
+            outbound_depth: Arc::clone(&assembly.bus.outbound_depth),
+            memory_store: Arc::clone(&assembly.stores.memory_store),
+            session_store: Arc::clone(&assembly.stores.session_store),
+            system_inbound_tx: assembly.bus.system_inbound_tx.clone(),
+            skill_prompt_cache: Arc::clone(&assembly.skill_prompt_cache),
+            inbound_tx: assembly.bus.user_inbound_tx.clone(),
             shared_config: Arc::clone(&shared_runtime_config),
-            llm_stream_enabled: config.llm_stream,
+            llm_stream_enabled: assembly.config.llm_stream,
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-            msg_id_cache: Arc::clone(&qq_msg_id_cache),
+            msg_id_cache: Arc::clone(&assembly.qq_msg_id_cache),
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-            qq_webhook_enabled: !config.qq_channel_app_id.trim().is_empty()
-                && !config.qq_channel_secret.trim().is_empty(),
+            qq_webhook_enabled: !assembly.config.qq_channel_app_id.trim().is_empty()
+                && !assembly.config.qq_channel_secret.trim().is_empty(),
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-            qq_app_id: config.qq_channel_app_id.clone(),
+            qq_app_id: assembly.config.qq_channel_app_id.clone(),
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-            qq_secret: config.qq_channel_secret.clone(),
-        }) {
-            Ok(_) => {
-                #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-                {
-                    log::info!(
-                        "[{}] HTTP config API server started (ESP WiFi config API; bootstrap SoftAP at {})",
-                        TAG,
-                        SOFTAP_DEFAULT_IPV4
-                    );
-                    beetle::orchestrator::log_startup_memory_checkpoint("config_api_started");
-                }
-                #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-                log::info!(
-                    "[{}] HTTP config API server started (config API on LAN; BEETLE_CONFIG_HTTP_LISTEN, default 0.0.0.0:80)",
-                    TAG
-                );
-            }
-            Err(error) => {
-                let error = beetle::Error::io("config_plane_spawn", error);
-                log::error!("[{}] HTTP config API server spawn failed: {}", TAG, error);
-                beetle::state::set_last_error(&error);
-                beetle::runtime::request_restart_with_continuity_flush(
-                    Arc::clone(&platform),
-                    None,
-                    "config_plane_spawn_failed",
-                );
-                return;
-            }
+            qq_secret: assembly.config.qq_channel_secret.clone(),
+        })
+        .map_err(|error| beetle::Error::io("config_plane_spawn", error))?;
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        {
+            log::info!(
+                "[{}] HTTP config API server started (ESP WiFi config API; bootstrap SoftAP at {})",
+                TAG,
+                SOFTAP_DEFAULT_IPV4
+            );
+            beetle::orchestrator::log_startup_memory_checkpoint("config_api_started");
         }
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        log::info!(
+            "[{}] HTTP config API server started (config API on LAN; BEETLE_CONFIG_HTTP_LISTEN, default 0.0.0.0:80)",
+            TAG
+        );
     }
 
     beetle::bg_timer::run_bg_timer(beetle::bg_timer::BgTimerContext {
-        system_inbound_tx: system_inbound_tx.clone(),
-        resolve_locale: Arc::clone(&resolve_locale_ui),
-        platform: Arc::clone(&platform),
+        system_inbound_tx: assembly.bus.system_inbound_tx.clone(),
+        resolve_locale: Arc::clone(&assembly.resolve_locale_ui),
+        platform: Arc::clone(&assembly.platform),
         version: VERSION,
         read_heartbeat: Box::new(|| beetle::platform::read_heartbeat_file().unwrap_or_default()),
-        user_inbound_depth: Arc::clone(&user_inbound_depth),
-        system_inbound_depth: Arc::clone(&system_inbound_depth),
-        outbound_depth: Arc::clone(&outbound_depth),
-        session_store: Arc::clone(&session_store),
-        memory_system_kind,
-        autonomy_strategy_store: Arc::clone(&autonomy_strategy_store),
-        self_authored_core_store: Arc::clone(&self_authored_core_store),
-        self_continuity_store: Arc::clone(&self_continuity_store),
-        relationship_portfolio_store: Arc::clone(&relationship_portfolio_store),
-        relationship_topology_store: Arc::clone(&relationship_topology_store),
-        memory_store: Some(Arc::clone(&memory_store)),
-        sensor_watch: device_capability_registry
+        user_inbound_depth: Arc::clone(&assembly.bus.user_inbound_depth),
+        system_inbound_depth: Arc::clone(&assembly.bus.system_inbound_depth),
+        outbound_depth: Arc::clone(&assembly.bus.outbound_depth),
+        session_store: Arc::clone(&assembly.stores.session_store),
+        memory_system_kind: assembly.memory_system_kind,
+        autonomy_strategy_store: Arc::clone(&assembly.stores.autonomy_strategy_store),
+        self_authored_core_store: Arc::clone(&assembly.stores.self_authored_core_store),
+        self_continuity_store: Arc::clone(&assembly.stores.self_continuity_store),
+        relationship_portfolio_store: Arc::clone(&assembly.stores.relationship_portfolio_store),
+        relationship_topology_store: Arc::clone(&assembly.stores.relationship_topology_store),
+        memory_store: Some(Arc::clone(&assembly.stores.memory_store)),
+        sensor_watch: assembly
+            .device_capability_registry
             .is_mounted(beetle::DEVICE_CAPABILITY_SENSOR)
             .then(|| beetle::cron::SensorWatchContext {
-                platform: Arc::clone(&platform),
-                devices: config.hardware_devices.clone(),
-                i2c_sensors: config.i2c_sensors.clone(),
+                platform: Arc::clone(&assembly.platform),
+                devices: assembly.config.hardware_devices.clone(),
+                i2c_sensors: assembly.config.i2c_sensors.clone(),
             }),
-        remind_store: Arc::clone(&remind_at_store),
-        task_store: Arc::clone(&task_store),
+        remind_store: Arc::clone(&assembly.stores.remind_at_store),
+        task_store: Arc::clone(&assembly.stores.task_store),
     });
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("bg_timer_started");
-    // bg_timer: merged cron + heartbeat + remind into one thread (saves ~20KB SRAM).
 
-    // 出站前等待 STA + 编排器初始化：须在 `create_http_client` 成功判定之前，以便 Linux 在 HTTP 桩返回 Err 时仍能 init orchestrator。
     if wifi_init_ok {
         beetle::platform::wait_for_network_ready();
     }
@@ -2148,9 +2239,9 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     beetle::orchestrator::log_startup_memory_checkpoint("orchestrator_initialized");
 
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
-    if platform.display_available() {
-        let display_platform = Arc::clone(&platform);
-        let display_config = Arc::clone(&config);
+    if assembly.platform.display_available() {
+        let display_platform = Arc::clone(&assembly.platform);
+        let display_config = Arc::clone(&assembly.config);
         let plan = thread_plan("display");
         let _ = beetle::util::spawn_guarded_with_profile_handle(
             "display",
@@ -2163,16 +2254,24 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         beetle::orchestrator::log_startup_memory_checkpoint("display_thread_spawned");
     }
 
+    Ok(())
+}
+
+fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle::Result<()> {
     #[allow(unused_mut)]
-    let (mut sinks, mut channel_rx_set) =
-        beetle::channels::build_channel_sinks(config.as_ref(), &qq_msg_id_cache, &qq_token_cache);
-    // F8: 启动进度条 stage=3（channel sinks 后）
+    let (mut sinks, mut channel_rx_set) = beetle::channels::build_channel_sinks(
+        assembly.config.as_ref(),
+        &assembly.qq_msg_id_cache,
+        &assembly.qq_token_cache,
+    );
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
-    if platform.display_available() {
-        let _ = platform.display_command(DisplayCommand::UpdateBootProgress { stage: 3 });
+    if assembly.platform.display_available() {
+        let _ = assembly
+            .platform
+            .display_command(DisplayCommand::UpdateBootProgress { stage: 3 });
     }
 
-    let enabled_channel = config.enabled_channel.as_str();
+    let enabled_channel = assembly.config.enabled_channel.as_str();
     log::info!(
         "[{}] enabled_channel='{}'",
         TAG,
@@ -2183,29 +2282,15 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         }
     );
 
-    let started_voice_session = if communication_plane.start_voice_session {
-        // Voice session is its own runtime plane: it may need HTTP/WSS during task execution,
-        // but startup should not be blocked by the communication-plane HTTP gate.
-        match spawn_voice_session_if_ready(
-            &platform,
-            &network_governor,
-            &config,
-            baidu_token_cache.as_ref(),
-            &user_inbound_tx,
-            &mut voice_event_tx_rx,
-        ) {
-            Ok(started) => started,
-            Err(error) => {
-                log::error!("[{}] voice_session startup failed: {}", TAG, error);
-                beetle::state::set_last_error(&error);
-                beetle::runtime::request_restart_with_continuity_flush(
-                    Arc::clone(&platform),
-                    None,
-                    "voice_session_spawn_failed",
-                );
-                return;
-            }
-        }
+    let started_voice_session = if assembly.communication_plane.start_voice_session {
+        spawn_voice_session_if_ready(
+            &assembly.platform,
+            &assembly.network_governor,
+            &assembly.config,
+            assembly.baidu_token_cache.as_ref(),
+            &assembly.bus.user_inbound_tx,
+            &mut assembly.voice_event_channel,
+        )?
     } else {
         None
     };
@@ -2215,20 +2300,20 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             Box::new(beetle::channels::VoiceSink::new(voice_tx)),
         );
     }
-
     let sinks = Arc::new(sinks);
 
-    if communication_plane.start_http_backed_ingress {
+    if assembly.communication_plane.start_http_backed_ingress {
         #[cfg(feature = "feishu")]
         if let Some(ref c) = channel_rx_set.feishu {
-            let tx = user_inbound_tx.clone();
+            let tx = assembly.bus.user_inbound_tx.clone();
             let id = c.app_id.clone();
             let sec = c.app_secret.clone();
-            let allowed = parse_allowed_chat_ids(&config.feishu_allowed_chat_ids);
-            let pending = Arc::clone(&pending_retry_store);
-            let http_factory = network_governor.http_factory(HttpClientClass::Background);
-            // WSS + JSON connect path: ESP uses the shared `STACK_CHANNEL_WS` budget; Linux keeps 64KB rustls headroom.
-            if let Err(error) = spawn_required_planned_thread(
+            let allowed = parse_allowed_chat_ids(&assembly.config.feishu_allowed_chat_ids);
+            let pending = Arc::clone(&assembly.stores.pending_retry_store);
+            let http_factory = assembly
+                .network_governor
+                .http_factory(HttpClientClass::Background);
+            spawn_required_planned_thread(
                 TAG,
                 "feishu_ws",
                 STACK_CHANNEL_WS,
@@ -2245,16 +2330,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                         beetle::network::connect_external_wss,
                     )
                 },
-            ) {
-                log::error!("[{}] Feishu WS spawn failed: {}", TAG, error);
-                beetle::state::set_last_error(&error);
-                beetle::runtime::request_restart_with_continuity_flush(
-                    Arc::clone(&platform),
-                    None,
-                    "feishu_ws_spawn_failed",
-                );
-                return;
-            }
+            )?;
         } else if enabled_channel == "feishu" {
             #[cfg(feature = "feishu")]
             log::warn!(
@@ -2266,15 +2342,16 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         if enabled_channel == "qq_channel" {
             if let Some(ref c) = channel_rx_set.qq_channel {
                 if !c.app_id.trim().is_empty() && !c.app_secret.trim().is_empty() {
-                    let qq_tx = user_inbound_tx.clone();
+                    let qq_tx = assembly.bus.user_inbound_tx.clone();
                     let qq_id = c.app_id.clone();
                     let qq_sec = c.app_secret.clone();
-                    let qq_cache_ws = std::sync::Arc::clone(&qq_msg_id_cache);
-                    let qq_token_cache_ws = qq_token_cache.clone();
-                    let qq_pending = Arc::clone(&pending_retry_store);
-                    let http_factory = network_governor.http_factory(HttpClientClass::Background);
-                    // QQ WS: ESP uses the shared `STACK_CHANNEL_WS` budget; Linux keeps 64KB because rustls overflows smaller stacks.
-                    if let Err(error) = spawn_required_planned_thread(
+                    let qq_cache_ws = Arc::clone(&assembly.qq_msg_id_cache);
+                    let qq_token_cache_ws = assembly.qq_token_cache.clone();
+                    let qq_pending = Arc::clone(&assembly.stores.pending_retry_store);
+                    let http_factory = assembly
+                        .network_governor
+                        .http_factory(HttpClientClass::Background);
+                    spawn_required_planned_thread(
                         TAG,
                         "qq_ws",
                         STACK_CHANNEL_WS,
@@ -2294,16 +2371,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                                 beetle::network::connect_external_wss,
                             )
                         },
-                    ) {
-                        log::error!("[{}] QQ WS spawn failed: {}", TAG, error);
-                        beetle::state::set_last_error(&error);
-                        beetle::runtime::request_restart_with_continuity_flush(
-                            Arc::clone(&platform),
-                            None,
-                            "qq_ws_spawn_failed",
-                        );
-                        return;
-                    }
+                    )?;
                 }
             }
         }
@@ -2314,161 +2382,175 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         );
     }
 
-    let mut agent_handle: Option<beetle::util::TaskHandle> = None;
+    if !assembly.communication_plane.start_dispatch || !assembly.communication_plane.start_senders {
+        return Ok(());
+    }
 
-    // Agent / flush 与各通道工厂均经 `create_http_client`，与代理配置一致。
-    if communication_plane.start_dispatch
-        && communication_plane.start_senders
-        && communication_plane.start_agent
+    let outbound_rx_for_dispatch = assembly
+        .bus
+        .outbound_rx
+        .take()
+        .ok_or_else(|| beetle::Error::config("dispatch_spawn", "outbound_rx already taken"))?;
+    let sinks_clone = Arc::clone(&sinks);
+    spawn_planned_handle("dispatch", STACK_DISPATCH, move || {
+        run_dispatch(outbound_rx_for_dispatch, sinks_clone)
+    })
+    .map_err(|error| beetle::Error::io("dispatch_spawn", error))?;
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    beetle::orchestrator::log_startup_memory_checkpoint("dispatch_spawn");
+
+    if assembly.communication_plane.start_poll_ingress
+        && enabled_channel == "telegram"
+        && !assembly.config.tg_token.trim().is_empty()
     {
-        let outbound_rx_for_dispatch = outbound_rx;
-        let sinks_clone = Arc::clone(&sinks);
-        if let Err(error) = spawn_planned_handle("dispatch", STACK_DISPATCH, move || {
-            run_dispatch(outbound_rx_for_dispatch, sinks_clone)
-        }) {
-            let error = beetle::Error::io("dispatch_spawn", error);
-            log::error!("[{}] dispatch spawn failed: {}", TAG, error);
-            beetle::state::set_last_error(&error);
-            beetle::runtime::request_restart_with_continuity_flush(
-                Arc::clone(&platform),
-                None,
-                "dispatch_spawn_failed",
-            );
-            return;
-        }
-        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        beetle::orchestrator::log_startup_memory_checkpoint("dispatch_spawn");
+        let tg_token = assembly.config.tg_token.clone();
+        let tg_allowed = parse_allowed_chat_ids(&assembly.config.tg_allowed_chat_ids);
+        let tg_group_activation = assembly.config.tg_group_activation.clone();
+        let tg_inbound_tx = assembly.bus.user_inbound_tx.clone();
+        let tg_outbound_tx = assembly.bus.outbound_tx.clone();
+        let tg_session_store = Arc::clone(&assembly.stores.session_store);
+        let tg_pending = Arc::clone(&assembly.stores.pending_retry_store);
+        let tg_inbound_depth = Arc::clone(&assembly.bus.user_inbound_depth);
+        let tg_outbound_depth = Arc::clone(&assembly.bus.outbound_depth);
+        let tg_config_store = Arc::clone(&assembly.config_store);
+        let tg_resolve_locale = Arc::clone(&assembly.resolve_locale_ui);
+        let http_factory = assembly
+            .network_governor
+            .http_factory(HttpClientClass::Background);
+        spawn_required_planned_thread(
+            TAG,
+            "tg_poll",
+            STACK_CHANNEL_SENDER,
+            "Telegram poll loop started",
+            "tg_poll_spawn",
+            move || {
+                beetle::run_telegram_poll_loop(
+                    tg_token,
+                    tg_allowed,
+                    tg_group_activation,
+                    tg_inbound_tx,
+                    tg_pending,
+                    tg_outbound_tx,
+                    tg_session_store,
+                    tg_inbound_depth,
+                    tg_outbound_depth,
+                    tg_config_store,
+                    tg_resolve_locale,
+                    move || http_factory(),
+                )
+            },
+        )?;
+    }
 
-        if communication_plane.start_poll_ingress
-            && enabled_channel == "telegram"
-            && !config.tg_token.trim().is_empty()
-        {
-            let tg_token = config.tg_token.clone();
-            let tg_allowed = parse_allowed_chat_ids(&config.tg_allowed_chat_ids);
-            let tg_group_activation = config.tg_group_activation.clone();
-            let tg_inbound_tx = user_inbound_tx.clone();
-            let tg_outbound_tx = outbound_tx.clone();
-            let tg_session_store = Arc::clone(&session_store);
-            let tg_pending = Arc::clone(&pending_retry_store);
-            let tg_inbound_depth = Arc::clone(&user_inbound_depth);
-            let tg_outbound_depth = Arc::clone(&outbound_depth);
-            let tg_config_store = Arc::clone(&config_store);
-            let tg_resolve_locale = Arc::clone(&resolve_locale_ui);
-            let http_factory = network_governor.http_factory(HttpClientClass::Background);
-            // tg_poll calls rustls on Linux; use same budget as other channel HTTPS threads.
-            if let Err(error) = spawn_required_planned_thread(
+    if let Some(ref bus_cfg) = assembly.config.i2c_bus {
+        if let Err(error) = assembly.platform.init_i2c(bus_cfg) {
+            log::warn!(
+                "[{}] I2C bus init failed (devices will be unavailable): {}",
                 TAG,
-                "tg_poll",
-                STACK_CHANNEL_SENDER,
-                "Telegram poll loop started",
-                "tg_poll_spawn",
-                move || {
-                    beetle::run_telegram_poll_loop(
-                        tg_token,
-                        tg_allowed,
-                        tg_group_activation,
-                        tg_inbound_tx,
-                        tg_pending,
-                        tg_outbound_tx,
-                        tg_session_store,
-                        tg_inbound_depth,
-                        tg_outbound_depth,
-                        tg_config_store,
-                        tg_resolve_locale,
-                        move || http_factory(),
-                    )
-                },
+                error
+            );
+        }
+    }
+
+    let create_http = assembly
+        .network_governor
+        .http_factory(HttpClientClass::Background);
+    beetle::channels::spawn_sender_threads(
+        &mut channel_rx_set,
+        &assembly.config.tg_token,
+        create_http,
+    )?;
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    beetle::orchestrator::log_startup_memory_checkpoint("sender_threads_spawned");
+
+    Ok(())
+}
+
+fn start_agent_plane(
+    assembly: &mut PreparedRuntimeAssembly,
+) -> beetle::Result<Option<beetle::util::TaskHandle>> {
+    if !assembly.communication_plane.start_agent {
+        return Ok(None);
+    }
+
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
+    if assembly.platform.display_available() {
+        let _ = assembly
+            .platform
+            .display_command(DisplayCommand::UpdateBootProgress { stage: 4 });
+    }
+
+    let worker_llm: Arc<dyn beetle::LlmClient + Send + Sync> = Arc::from(
+        beetle::build_llm_clients(&assembly.config, Arc::clone(&assembly.resolve_locale_ui)),
+    );
+
+    let get_skill_descriptions: Arc<dyn Fn() -> String + Send + Sync> = Arc::new({
+        let skill_prompt_cache = Arc::clone(&assembly.skill_prompt_cache);
+        move || skill_prompt_cache.get()
+    });
+    let get_capability_package_text: CapabilityPackageTextProvider = Arc::new({
+        let state_fs = assembly.platform.state_fs();
+        let runtime_capabilities = Arc::clone(&assembly.capability_package_runtime_capabilities);
+        move |channel, max_chars| {
+            if max_chars == 0 {
+                return None;
+            }
+            match beetle::build_capability_package_runtime_prompt_bundle(
+                state_fs.as_ref(),
+                runtime_capabilities.as_ref(),
+                channel,
+                max_chars,
             ) {
-                log::error!("[{}] Telegram poll spawn failed: {}", TAG, error);
-                beetle::state::set_last_error(&error);
-                beetle::runtime::request_restart_with_continuity_flush(
-                    Arc::clone(&platform),
-                    None,
-                    "tg_poll_spawn_failed",
-                );
-                return;
-            }
-        }
-
-        if let Some(ref bus_cfg) = config.i2c_bus {
-            if let Err(e) = platform.init_i2c(bus_cfg) {
-                log::warn!(
-                    "[{}] I2C bus init failed (devices will be unavailable): {}",
-                    TAG,
-                    e
-                );
-            }
-        }
-
-        let worker_llm: Arc<dyn beetle::LlmClient + Send + Sync> = Arc::from(
-            beetle::build_llm_clients(&config, Arc::clone(&resolve_locale_ui)),
-        );
-
-        let get_skill_descriptions: Arc<dyn Fn() -> String + Send + Sync> =
-            Arc::new(move || skill_prompt_cache.get());
-        let get_capability_package_text: CapabilityPackageTextProvider = Arc::new({
-            let state_fs = platform.state_fs();
-            let runtime_capabilities = Arc::clone(&capability_package_runtime_capabilities);
-            move |channel, max_chars| {
-                if max_chars == 0 {
-                    return None;
-                }
-                match beetle::build_capability_package_runtime_prompt_bundle(
-                    state_fs.as_ref(),
-                    runtime_capabilities.as_ref(),
-                    channel,
-                    max_chars,
-                ) {
-                    Ok(bundle) if !bundle.text.trim().is_empty() => Some(bundle.text),
-                    Ok(_) => None,
-                    Err(error) => {
-                        log::warn!(
-                            "[capability_package] failed to load runtime prompt bundle for {}: {}",
-                            channel,
-                            error
-                        );
-                        None
-                    }
+                Ok(bundle) if !bundle.text.trim().is_empty() => Some(bundle.text),
+                Ok(_) => None,
+                Err(error) => {
+                    log::warn!(
+                        "[capability_package] failed to load runtime prompt bundle for {}: {}",
+                        channel,
+                        error
+                    );
+                    None
                 }
             }
+        }
+    });
+    let session_max = assembly.config.session_max_messages.clamp(1, 128) as usize;
+    let typing_notifier: Option<Box<dyn beetle::TypingNotifier>> = assembly
+        .channel_capability_registry
+        .get(assembly.config.enabled_channel.as_str())
+        .filter(|entry| entry.enabled && entry.contract.supports_typing_or_chat_action)
+        .and_then(|entry| match entry.id {
+            beetle::CHANNEL_TELEGRAM if !assembly.config.tg_token.trim().is_empty() => {
+                Some(Box::new(TelegramTypingNotifier {
+                    token: assembly.config.tg_token.clone(),
+                }) as Box<dyn beetle::TypingNotifier>)
+            }
+            _ => None,
         });
-        let session_max = config.session_max_messages.clamp(1, 128) as usize;
-        let agent_user_inbound_tx = user_inbound_tx;
-        let agent_system_inbound_tx = system_inbound_tx;
-        let worker_user_inbound_tx = agent_user_inbound_tx;
-        let typing_notifier: Option<Box<dyn beetle::TypingNotifier>> = channel_capability_registry
-            .get(config.enabled_channel.as_str())
-            .filter(|entry| entry.enabled && entry.contract.supports_typing_or_chat_action)
-            .and_then(|entry| match entry.id {
-                beetle::CHANNEL_TELEGRAM if !config.tg_token.trim().is_empty() => {
-                    Some(Box::new(TelegramTypingNotifier {
-                        token: config.tg_token.clone(),
-                    }) as Box<dyn beetle::TypingNotifier>)
-                }
-                _ => None,
-            });
 
-        // 流式编辑器：根据 enabled_channel 选择对应通道的 StreamEditor 实现。
-        let stream_editor: Option<Arc<dyn beetle::StreamEditor + Send + Sync>> = if config
-            .llm_stream
-            && channel_capability_registry
-                .get(config.enabled_channel.as_str())
+    let stream_editor: Option<Arc<dyn beetle::StreamEditor + Send + Sync>> =
+        if assembly.config.llm_stream
+            && assembly
+                .channel_capability_registry
+                .get(assembly.config.enabled_channel.as_str())
                 .map(|entry| entry.enabled && entry.contract.supports_stream_edit)
                 .unwrap_or(false)
         {
-            let make_http = network_governor.http_factory(HttpClientClass::Interactive);
-            match config.enabled_channel.as_str() {
-                beetle::CHANNEL_TELEGRAM if !config.tg_token.trim().is_empty() => {
+            let make_http = assembly
+                .network_governor
+                .http_factory(HttpClientClass::Interactive);
+            match assembly.config.enabled_channel.as_str() {
+                beetle::CHANNEL_TELEGRAM if !assembly.config.tg_token.trim().is_empty() => {
                     Some(Arc::new(TelegramStreamEditor {
-                        token: config.tg_token.clone(),
+                        token: assembly.config.tg_token.clone(),
                         create_http: Arc::clone(&make_http),
                     })
                         as Arc<dyn beetle::StreamEditor + Send + Sync>)
                 }
-                beetle::CHANNEL_FEISHU if !config.feishu_app_id.trim().is_empty() => {
+                beetle::CHANNEL_FEISHU if !assembly.config.feishu_app_id.trim().is_empty() => {
                     Some(Arc::new(FeishuStreamEditor {
-                        app_id: config.feishu_app_id.clone(),
-                        app_secret: config.feishu_app_secret.clone(),
+                        app_id: assembly.config.feishu_app_id.clone(),
+                        app_secret: assembly.config.feishu_app_secret.clone(),
                         create_http: Arc::clone(&make_http),
                         state: Mutex::new(beetle::FeishuTokenCache::new()),
                     })
@@ -2479,191 +2561,161 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         } else {
             None
         };
-        let stream_editor_channel = stream_editor
-            .as_ref()
-            .map(|_| Arc::<str>::from(config.enabled_channel.as_str()));
-        let agent_strategy = if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
-            beetle::agent::AgentRunStrategy::Embedded
-        } else {
-            beetle::agent::AgentRunStrategy::LinuxEnhanced
-        };
-        let agent_config = Arc::new(beetle::AgentLoopConfig {
-            platform: Arc::clone(&platform),
-            memory_store: Arc::clone(&memory_store),
-            long_term_memory_store: Arc::clone(&long_term_memory_store),
-            continuity_capsule_store: Arc::clone(&continuity_capsule_store),
-            long_term_memory_extraction_state_store: Arc::clone(
-                &long_term_memory_extraction_state_store,
-            ),
-            session_store: Arc::clone(&session_store),
-            session_summary_store: Arc::clone(&session_summary_store),
-            execution_state_store: Arc::clone(&execution_state_store),
-            self_model_store: Arc::clone(&self_model_store),
-            self_authored_core_store: Arc::clone(&self_authored_core_store),
-            core_revision_ledger_store: Arc::clone(&core_revision_ledger_store),
-            relationship_constitution_store: Arc::clone(&relationship_constitution_store),
-            relationship_portfolio_store: Arc::clone(&relationship_portfolio_store),
-            world_sense_store: Arc::clone(&world_sense_store),
-            autonomy_strategy_store: Arc::clone(&autonomy_strategy_store),
-            outer_voice_store: Arc::clone(&outer_voice_store),
-            inner_life_store: Arc::clone(&inner_life_store),
-            self_continuity_store: Arc::clone(&self_continuity_store),
-            relationship_topology_store: Arc::clone(&relationship_topology_store),
-            private_doc_store: Arc::clone(&private_doc_store),
-            private_garden_store: Arc::clone(&private_garden_store),
-            mental_privacy_store: Arc::clone(&mental_privacy_store),
-            turn_ledger_store: Arc::clone(&turn_ledger_store),
-            skill_storage: Arc::clone(&skill_storage),
-            memory_system_kind,
-            get_skill_descriptions,
-            get_capability_package_text,
-            session_max_messages: session_max,
-            tg_group_activation: Arc::<str>::from(config.tg_group_activation.as_str()),
-            important_message_store: Arc::clone(&important_message_store),
-            emotion_signal_store: Arc::clone(&emotion_signal_store)
-                as Arc<dyn beetle::memory::EmotionSignalStore + Send + Sync>,
-            remind_store: Arc::clone(&remind_at_store),
-            task_store: Arc::clone(&task_store),
-            task_run_store: Arc::clone(&task_run_store),
-            task_artifact_store: Arc::clone(&task_artifact_store),
-            task_execution_ledger_store: Arc::clone(&task_execution_ledger_store),
-            task_learning_store: Arc::clone(&task_learning_store),
-            pending_retry: Arc::clone(&pending_retry_store),
-            channel_capability_registry: Arc::clone(&channel_capability_registry),
-            strategy: agent_strategy,
-            llm_stream: config.llm_stream,
-            stream_editor,
-            stream_editor_channel,
-            resolve_locale: std::sync::Arc::clone(&resolve_locale_ui),
-        });
-        #[cfg(feature = "cli")]
-        {
-            let cli_ctx = beetle::cli::CliContext::new(
-                Arc::clone(&config),
-                Arc::clone(&config_store),
-                Arc::clone(&memory_store),
-                Arc::clone(&session_store),
-                Arc::clone(&platform),
-                Arc::clone(&registry),
-                Arc::clone(&channel_capability_registry),
-                Arc::clone(&capability_package_runtime_capabilities),
-                config.llm_stream,
-                Some(Arc::clone(&user_inbound_depth)),
-                Some(Arc::clone(&outbound_depth)),
-            );
-            spawn_planned("cli_repl", 8192, move || {
-                let reader = std::io::BufReader::new(std::io::stdin());
-                beetle::cli::run_repl(cli_ctx, reader);
-            });
-            log::info!("[{}] CLI REPL started (stdin)", TAG);
-        }
-
-        let create_http = network_governor.http_factory(HttpClientClass::Background);
-        if let Err(error) = beetle::channels::spawn_sender_threads(
-            &mut channel_rx_set,
-            &config.tg_token,
-            create_http,
-        ) {
-            log::error!("[{}] sender thread startup failed: {}", TAG, error);
-            beetle::state::set_last_error(&error);
-            beetle::runtime::request_restart_with_continuity_flush(
-                Arc::clone(&platform),
-                None,
-                "sender_thread_spawn_failed",
-            );
-            return;
-        }
-        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        beetle::orchestrator::log_startup_memory_checkpoint("sender_threads_spawned");
-
-        // F8: 启动进度条 stage=4（agent 前）
-        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
-        if platform.display_available() {
-            let _ = platform.display_command(DisplayCommand::UpdateBootProgress { stage: 4 });
-        }
-
-        let agent_plan = thread_plan("agent_loop");
-        let tag = TAG;
-        let agent_registry = Arc::clone(&registry);
-        let agent_worker_llm = Arc::clone(&worker_llm);
-        let agent_platform = Arc::clone(&platform);
-        let agent_network = Arc::clone(&network_governor);
-        let agent_loop_config = Arc::clone(&agent_config);
-        let worker_system_inbound_tx = agent_system_inbound_tx.clone();
-        let worker_outbound_tx = outbound_tx.clone();
-        agent_handle = match beetle::util::spawn_guarded_with_profile_handle(
-            "agent_loop",
-            STACK_AGENT_LOOP,
-            agent_plan.core,
-            agent_plan.role,
-            move || {
-                let mut agent_http =
-                    match agent_network.open_http_client(HttpClientClass::Interactive) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            log::error!(
-                                "[{}] agent_loop open interactive HTTP client failed: {}",
-                                tag,
-                                e
-                            );
-                            beetle::state::set_last_error(&e);
-                            beetle::runtime::request_restart_with_continuity_flush(
-                                Arc::clone(&agent_platform),
-                                None,
-                                "agent_loop_http_init_failed",
-                            );
-                            return;
-                        }
-                    };
-                log::info!("[{}] agent_loop running on Core1 thread", tag);
-                if let Err(e) = run_agent_loop(
-                    agent_http.as_mut(),
-                    agent_worker_llm.as_ref(),
-                    agent_registry.as_ref(),
-                    agent_loop_config.as_ref(),
-                    worker_user_inbound_tx,
-                    user_inbound_rx,
-                    worker_system_inbound_tx,
-                    system_inbound_rx,
-                    worker_outbound_tx,
-                    typing_notifier,
-                ) {
-                    log::warn!("[{}] agent_loop error: {}", tag, e);
-                    beetle::state::set_last_error(&e);
-                }
-                beetle::runtime::request_restart_with_continuity_flush(
-                    agent_platform,
-                    None,
-                    "agent_loop_exit",
-                );
-            },
-        ) {
-            Ok(handle) => Some(handle),
-            Err(error) => {
-                let error = beetle::Error::io("agent_loop_spawn", error);
-                log::error!("[{}] agent_loop spawn failed: {}", TAG, error);
-                beetle::state::set_last_error(&error);
-                beetle::runtime::request_restart_with_continuity_flush(
-                    Arc::clone(&platform),
-                    None,
-                    "agent_loop_spawn_failed",
-                );
-                return;
-            }
-        };
-        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        beetle::orchestrator::log_startup_memory_checkpoint("agent_loop_spawn");
+    let stream_editor_channel = stream_editor
+        .as_ref()
+        .map(|_| Arc::<str>::from(assembly.config.enabled_channel.as_str()));
+    let agent_strategy = if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
+        beetle::agent::AgentRunStrategy::Embedded
     } else {
-        log::warn!(
-                "[{}] HTTP client not available (create_http_client failed): Feishu/QQ WSS ingress, dispatch, agent, Telegram poll, and outbound sender threads were not started. On Linux, ensure ureq/rustls stack and network; see dev-docs/beetle-os-plan.md and dev-docs/architecture-and-code.md.",
-                TAG
-            );
+        beetle::agent::AgentRunStrategy::LinuxEnhanced
+    };
+    let agent_config = Arc::new(beetle::AgentLoopConfig {
+        platform: Arc::clone(&assembly.platform),
+        memory_store: Arc::clone(&assembly.stores.memory_store),
+        long_term_memory_store: Arc::clone(&assembly.stores.long_term_memory_store),
+        continuity_capsule_store: Arc::clone(&assembly.stores.continuity_capsule_store),
+        long_term_memory_extraction_state_store: Arc::clone(
+            &assembly.stores.long_term_memory_extraction_state_store,
+        ),
+        session_store: Arc::clone(&assembly.stores.session_store),
+        session_summary_store: Arc::clone(&assembly.stores.session_summary_store),
+        execution_state_store: Arc::clone(&assembly.stores.execution_state_store),
+        self_model_store: Arc::clone(&assembly.stores.self_model_store),
+        self_authored_core_store: Arc::clone(&assembly.stores.self_authored_core_store),
+        core_revision_ledger_store: Arc::clone(&assembly.stores.core_revision_ledger_store),
+        relationship_constitution_store: Arc::clone(
+            &assembly.stores.relationship_constitution_store,
+        ),
+        relationship_portfolio_store: Arc::clone(&assembly.stores.relationship_portfolio_store),
+        world_sense_store: Arc::clone(&assembly.stores.world_sense_store),
+        autonomy_strategy_store: Arc::clone(&assembly.stores.autonomy_strategy_store),
+        outer_voice_store: Arc::clone(&assembly.stores.outer_voice_store),
+        inner_life_store: Arc::clone(&assembly.stores.inner_life_store),
+        self_continuity_store: Arc::clone(&assembly.stores.self_continuity_store),
+        relationship_topology_store: Arc::clone(&assembly.stores.relationship_topology_store),
+        private_doc_store: Arc::clone(&assembly.stores.private_doc_store),
+        private_garden_store: Arc::clone(&assembly.stores.private_garden_store),
+        mental_privacy_store: Arc::clone(&assembly.stores.mental_privacy_store),
+        turn_ledger_store: Arc::clone(&assembly.stores.turn_ledger_store),
+        skill_storage: Arc::clone(&assembly.skill_storage),
+        memory_system_kind: assembly.memory_system_kind,
+        get_skill_descriptions,
+        get_capability_package_text,
+        session_max_messages: session_max,
+        tg_group_activation: Arc::<str>::from(assembly.config.tg_group_activation.as_str()),
+        important_message_store: Arc::clone(&assembly.stores.important_message_store),
+        emotion_signal_store: Arc::clone(&assembly.stores.emotion_signal_store)
+            as Arc<dyn beetle::memory::EmotionSignalStore + Send + Sync>,
+        remind_store: Arc::clone(&assembly.stores.remind_at_store),
+        task_store: Arc::clone(&assembly.stores.task_store),
+        task_run_store: Arc::clone(&assembly.stores.task_run_store),
+        task_artifact_store: Arc::clone(&assembly.stores.task_artifact_store),
+        task_execution_ledger_store: Arc::clone(&assembly.stores.task_execution_ledger_store),
+        task_learning_store: Arc::clone(&assembly.stores.task_learning_store),
+        pending_retry: Arc::clone(&assembly.stores.pending_retry_store),
+        channel_capability_registry: Arc::clone(&assembly.channel_capability_registry),
+        strategy: agent_strategy,
+        llm_stream: assembly.config.llm_stream,
+        stream_editor,
+        stream_editor_channel,
+        resolve_locale: Arc::clone(&assembly.resolve_locale_ui),
+    });
+
+    #[cfg(feature = "cli")]
+    {
+        let cli_ctx = beetle::cli::CliContext::new(
+            Arc::clone(&assembly.config),
+            Arc::clone(&assembly.config_store),
+            Arc::clone(&assembly.stores.memory_store),
+            Arc::clone(&assembly.stores.session_store),
+            Arc::clone(&assembly.platform),
+            Arc::clone(&assembly.registry),
+            Arc::clone(&assembly.channel_capability_registry),
+            Arc::clone(&assembly.capability_package_runtime_capabilities),
+            assembly.config.llm_stream,
+            Some(Arc::clone(&assembly.bus.user_inbound_depth)),
+            Some(Arc::clone(&assembly.bus.outbound_depth)),
+        );
+        spawn_planned("cli_repl", 8192, move || {
+            let reader = std::io::BufReader::new(std::io::stdin());
+            beetle::cli::run_repl(cli_ctx, reader);
+        });
+        log::info!("[{}] CLI REPL started (stdin)", TAG);
     }
 
+    let agent_plan = thread_plan("agent_loop");
+    let tag = TAG;
+    let agent_registry = Arc::clone(&assembly.registry);
+    let agent_worker_llm = Arc::clone(&worker_llm);
+    let agent_platform = Arc::clone(&assembly.platform);
+    let agent_network = Arc::clone(&assembly.network_governor);
+    let agent_loop_config = Arc::clone(&agent_config);
+    let worker_user_inbound_tx = assembly.bus.user_inbound_tx.clone();
+    let user_inbound_rx = assembly.bus.user_inbound_rx.take().ok_or_else(|| {
+        beetle::Error::config("agent_loop_spawn", "user_inbound_rx already taken")
+    })?;
+    let worker_system_inbound_tx = assembly.bus.system_inbound_tx.clone();
+    let system_inbound_rx = assembly.bus.system_inbound_rx.take().ok_or_else(|| {
+        beetle::Error::config("agent_loop_spawn", "system_inbound_rx already taken")
+    })?;
+    let worker_outbound_tx = assembly.bus.outbound_tx.clone();
+    let handle = beetle::util::spawn_guarded_with_profile_handle(
+        "agent_loop",
+        STACK_AGENT_LOOP,
+        agent_plan.core,
+        agent_plan.role,
+        move || {
+            let mut agent_http = match agent_network.open_http_client(HttpClientClass::Interactive)
+            {
+                Ok(client) => client,
+                Err(error) => {
+                    log::error!(
+                        "[{}] agent_loop open interactive HTTP client failed: {}",
+                        tag,
+                        error
+                    );
+                    beetle::state::set_last_error(&error);
+                    beetle::runtime::request_restart_with_continuity_flush(
+                        Arc::clone(&agent_platform),
+                        None,
+                        "agent_loop_http_init_failed",
+                    );
+                    return;
+                }
+            };
+            log::info!("[{}] agent_loop running on Core1 thread", tag);
+            if let Err(error) = run_agent_loop(
+                agent_http.as_mut(),
+                agent_worker_llm.as_ref(),
+                agent_registry.as_ref(),
+                agent_loop_config.as_ref(),
+                worker_user_inbound_tx,
+                user_inbound_rx,
+                worker_system_inbound_tx,
+                system_inbound_rx,
+                worker_outbound_tx,
+                typing_notifier,
+            ) {
+                log::warn!("[{}] agent_loop error: {}", tag, error);
+                beetle::state::set_last_error(&error);
+            }
+            beetle::runtime::request_restart_with_continuity_flush(
+                agent_platform,
+                None,
+                "agent_loop_exit",
+            );
+        },
+    )
+    .map_err(|error| beetle::Error::io("agent_loop_spawn", error))?;
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    beetle::platform::task_wdt::register_current_task_to_task_wdt();
-    beetle::state::set_boot_phase_active(false);
+    beetle::orchestrator::log_startup_memory_checkpoint("agent_loop_spawn");
+    Ok(Some(handle))
+}
 
+fn run_runtime_guard_loop(
+    platform: Arc<dyn Platform>,
+    mut agent_handle: Option<beetle::util::TaskHandle>,
+) {
     loop {
         beetle::platform::task_wdt::feed_current_task();
         if let Some(handle) = agent_handle.as_ref() {
@@ -2683,4 +2735,57 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         beetle::platform::task_wdt::feed_current_task();
         log::debug!("[{}] running v{}", TAG, VERSION);
     }
+}
+
+/// 启动编排：存储与总线 → 自检 → 后台任务与通道 → agent 循环与 flush。与 main 解耦便于单文件内可读性。
+fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_init_ok: bool) {
+    beetle::state::set_boot_phase_active(true);
+    let mut assembly = match prepare_runtime_assembly(platform, config, wifi_init_ok) {
+        Some(assembly) => assembly,
+        None => return,
+    };
+
+    if let Err(error) = start_support_planes(&assembly, wifi_init_ok) {
+        log::error!("[{}] support plane startup failed: {}", TAG, error);
+        record_startup_failure_and_request_restart(
+            &assembly.platform,
+            &error,
+            "support_plane_startup_failed",
+        );
+        return;
+    }
+
+    if let Err(error) = start_communication_planes(&mut assembly) {
+        log::error!("[{}] communication plane startup failed: {}", TAG, error);
+        record_startup_failure_and_request_restart(
+            &assembly.platform,
+            &error,
+            "communication_plane_startup_failed",
+        );
+        return;
+    }
+
+    let agent_handle = match start_agent_plane(&mut assembly) {
+        Ok(handle) => handle,
+        Err(error) => {
+            log::error!("[{}] agent plane startup failed: {}", TAG, error);
+            record_startup_failure_and_request_restart(
+                &assembly.platform,
+                &error,
+                "agent_plane_startup_failed",
+            );
+            return;
+        }
+    };
+    if !assembly.communication_plane.start_agent {
+        log::warn!(
+            "[{}] HTTP client not available (create_http_client failed): Feishu/QQ WSS ingress, dispatch, agent, Telegram poll, and outbound sender threads were not started. On Linux, ensure ureq/rustls stack and network; see dev-docs/beetle-os-plan.md and dev-docs/architecture-and-code.md.",
+            TAG
+        );
+    }
+
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    beetle::platform::task_wdt::register_current_task_to_task_wdt();
+    beetle::state::set_boot_phase_active(false);
+    run_runtime_guard_loop(Arc::clone(&assembly.platform), agent_handle);
 }

@@ -5,6 +5,32 @@ use super::request_semantics::{DisclosureSurface, EvidenceNeed, RequestSemantics
 use crate::bus::IngressKind;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SurfaceEvidencePolicy {
+    PublicRuntimeAuthority,
+    GovernedConversationContext,
+    PrivateBoundaryContext,
+    TaskWorkspaceAuthority,
+    InternalOnly,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SurfaceGovernancePolicy {
+    SkipMentalPrivacyReview,
+    ApplyMentalPrivacyReview,
+    PrivateBoundaryReview,
+    TaskExecutionReview,
+    SuppressUserDelivery,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SurfaceFinalizationPolicy {
+    StructuredJson,
+    DirectOrRecovery,
+    TaskFinisher,
+    InternalOnly,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReplySurface {
     PublicRuntime,
     GovernedConversation,
@@ -28,8 +54,81 @@ impl ReplySurface {
         }
     }
 
+    pub(crate) fn evidence_policy(self) -> SurfaceEvidencePolicy {
+        match self {
+            Self::PublicRuntime => SurfaceEvidencePolicy::PublicRuntimeAuthority,
+            Self::GovernedConversation => SurfaceEvidencePolicy::GovernedConversationContext,
+            Self::PrivateBoundary => SurfaceEvidencePolicy::PrivateBoundaryContext,
+            Self::TaskExecution => SurfaceEvidencePolicy::TaskWorkspaceAuthority,
+            Self::InternalOnly => SurfaceEvidencePolicy::InternalOnly,
+        }
+    }
+
+    pub(crate) fn governance_policy(self) -> SurfaceGovernancePolicy {
+        match self {
+            Self::PublicRuntime => SurfaceGovernancePolicy::SkipMentalPrivacyReview,
+            Self::GovernedConversation => SurfaceGovernancePolicy::ApplyMentalPrivacyReview,
+            Self::PrivateBoundary => SurfaceGovernancePolicy::PrivateBoundaryReview,
+            Self::TaskExecution => SurfaceGovernancePolicy::TaskExecutionReview,
+            Self::InternalOnly => SurfaceGovernancePolicy::SuppressUserDelivery,
+        }
+    }
+
+    pub(crate) fn finalization_policy(self) -> SurfaceFinalizationPolicy {
+        match self {
+            Self::PublicRuntime | Self::PrivateBoundary => {
+                SurfaceFinalizationPolicy::StructuredJson
+            }
+            Self::GovernedConversation => SurfaceFinalizationPolicy::DirectOrRecovery,
+            Self::TaskExecution => SurfaceFinalizationPolicy::TaskFinisher,
+            Self::InternalOnly => SurfaceFinalizationPolicy::InternalOnly,
+        }
+    }
+
     pub(crate) fn requires_structured_finalization_after_tool_success(self) -> bool {
-        matches!(self, Self::PublicRuntime)
+        matches!(
+            self.finalization_policy(),
+            SurfaceFinalizationPolicy::StructuredJson
+        )
+    }
+
+    pub(crate) fn allows_mental_privacy_review(self) -> bool {
+        !matches!(
+            self.governance_policy(),
+            SurfaceGovernancePolicy::SkipMentalPrivacyReview
+                | SurfaceGovernancePolicy::SuppressUserDelivery
+        )
+    }
+
+    pub(crate) fn evidence_authority(self) -> Option<&'static str> {
+        match self.evidence_policy() {
+            SurfaceEvidencePolicy::PublicRuntimeAuthority => Some("public_runtime_host"),
+            SurfaceEvidencePolicy::GovernedConversationContext => Some("governed_context"),
+            SurfaceEvidencePolicy::PrivateBoundaryContext => Some("private_boundary_context"),
+            SurfaceEvidencePolicy::TaskWorkspaceAuthority => Some("task_workspace"),
+            SurfaceEvidencePolicy::InternalOnly => None,
+        }
+    }
+
+    pub(crate) fn allows_memory_grounding_block(self) -> bool {
+        matches!(
+            self.evidence_policy(),
+            SurfaceEvidencePolicy::GovernedConversationContext
+                | SurfaceEvidencePolicy::TaskWorkspaceAuthority
+        )
+    }
+
+    pub(crate) fn accepts_tool_evidence(self, tool_name: &str) -> bool {
+        match self.evidence_policy() {
+            SurfaceEvidencePolicy::PublicRuntimeAuthority => matches!(
+                tool_name,
+                "board_info" | "process" | "network" | "network_scan" | "system_control"
+            ),
+            SurfaceEvidencePolicy::GovernedConversationContext
+            | SurfaceEvidencePolicy::PrivateBoundaryContext
+            | SurfaceEvidencePolicy::TaskWorkspaceAuthority => true,
+            SurfaceEvidencePolicy::InternalOnly => false,
+        }
     }
 
     pub(crate) fn as_str(self) -> &'static str {
@@ -89,5 +188,50 @@ mod tests {
         );
         assert_eq!(surface, ReplySurface::InternalOnly);
         assert_eq!(surface.as_str(), "internal_only");
+    }
+
+    #[test]
+    fn public_runtime_contract_skips_privacy_review_and_uses_structured_finalization() {
+        let surface = ReplySurface::PublicRuntime;
+        assert_eq!(
+            surface.evidence_policy(),
+            SurfaceEvidencePolicy::PublicRuntimeAuthority
+        );
+        assert_eq!(
+            surface.governance_policy(),
+            SurfaceGovernancePolicy::SkipMentalPrivacyReview
+        );
+        assert_eq!(
+            surface.finalization_policy(),
+            SurfaceFinalizationPolicy::StructuredJson
+        );
+        assert!(!surface.allows_mental_privacy_review());
+    }
+
+    #[test]
+    fn private_boundary_contract_keeps_governance_and_structured_finalization() {
+        let surface = ReplySurface::PrivateBoundary;
+        assert_eq!(
+            surface.evidence_policy(),
+            SurfaceEvidencePolicy::PrivateBoundaryContext
+        );
+        assert_eq!(
+            surface.governance_policy(),
+            SurfaceGovernancePolicy::PrivateBoundaryReview
+        );
+        assert_eq!(
+            surface.finalization_policy(),
+            SurfaceFinalizationPolicy::StructuredJson
+        );
+        assert!(surface.allows_mental_privacy_review());
+    }
+
+    #[test]
+    fn public_runtime_contract_keeps_memory_grounding_out_of_evidence_block() {
+        let surface = ReplySurface::PublicRuntime;
+        assert!(!surface.allows_memory_grounding_block());
+        assert!(surface.accepts_tool_evidence("board_info"));
+        assert!(surface.accepts_tool_evidence("network"));
+        assert!(!surface.accepts_tool_evidence("memory_get"));
     }
 }
