@@ -19,6 +19,10 @@ Keep three things in mind:
 | `message` | send an outbound message managed by Beetle |
 | `task` | persistent task management |
 | `calendar` | persistent calendar events |
+| `mail` | read, inspect, and send mail through linked office accounts |
+| `documents` | browse and read linked office document libraries |
+| `office_config` | inspect, draft, validate, commit, and revoke office config |
+| `office_status` | view office accounts, defaults, credential presence, and runtime status |
 | `files` | list or read files in device storage |
 | `file_edit` | patch an existing text file in device storage |
 | `remind_at` | create a reminder |
@@ -31,6 +35,62 @@ Keep three things in mind:
 | `factual_memory` | read stable facts saved on the device |
 | `continuity_snapshot` | export, save, list, or import continuity data |
 | `file_write` | write or append to allowed device files |
+
+## Key Notes
+
+### `calendar`
+
+- Uses the local calendar by default.
+- After you link external calendar accounts, the same tool can also list, create, update, and delete remote events.
+- If more than one external account is available, pass `account_key` explicitly or set a default office account first.
+- `provider_status` returns the current calendar capability view, configured account status, and default-account/runtime summary.
+
+### `mail`
+
+- `mail` is the external office mail capability, not a local mailbox implementation.
+- Supported operations:
+  - `provider_status`
+  - `list`
+  - `get`
+  - `send`
+- If a default mail account is configured, or only one mail account is available, you can omit `provider` / `account_key`.
+- `send` is an explicit outbound action and requires `confirm=true`.
+- `provider_status` returns the current mail capability view, configured account status, and default-account/runtime summary.
+
+### `documents`
+
+- `documents` is the external office document-library capability. It does not replace the local/public document-reading tools.
+- Supported operations:
+  - `provider_status`
+  - `list`
+  - `read`
+  - `search`
+- If a default documents account is configured, or only one documents account is available, you can omit `provider` / `account_key`.
+- `provider_status` returns the current documents capability view, configured account status, and default-account/runtime summary.
+
+### `office_config`
+
+- This is the unified office configuration tool, not a private control plane for one service.
+- Supported operations:
+  - `inspect`
+  - `resolve_account`
+  - `draft_accounts`
+  - `draft_credentials`
+  - `validate_accounts`
+  - `validate_credentials`
+  - `commit_accounts`
+  - `commit_credentials`
+  - `revoke`
+  - `probe`
+- `draft_*` / `validate_*` work on structured drafts only and do not write state.
+- `commit_*` and `revoke` are explicit write actions and require `confirm=true`.
+- `probe` reports only real status. Missing config, unsupported probe paths, or current unavailability are returned explicitly.
+
+### `office_status`
+
+- Reads the unified office state instead of any one tool's private status.
+- Use it to inspect accounts, defaults, whether credentials exist, and the latest runtime status.
+- Optional `capability` lets you scope the result to `calendar`, `mail`, or `documents`.
 
 ## Tools Behind `tools_network_extra`
 

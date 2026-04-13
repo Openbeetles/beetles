@@ -190,7 +190,7 @@
 - **响应**：200，JSON 为 `OfficeCredentialsSegment`：
   - `items[].account_key`：账户主键，和 `/api/config/accounts` 里的注册表对齐
   - `items[].access_token` / `refresh_token` / `token_endpoint`：受控凭证字段
-  - `items[].metadata`：provider/capability 的补充元数据；当前共享 office capability 会消费其中的结构化字段，例如：
+  - `items[].metadata`：账户补充元数据；不同办公能力会在这里读取各自需要的结构化字段，例如：
     - `calendar_id`：calendar provider 默认日历标识
     - `calendar_username`
     - `calendar_base_url`
@@ -209,9 +209,7 @@
     - `documents_base_url`
     - `documents_root_path`
 - **说明**：这是 office 域共享凭证层，不再由 `calendar` 私有维护自己的 credential 真相。
-- **补充**：`calendar` 当前首个远端 provider 为 `caldav`；其账号用户名、集合根 URL、可选根路径映射同样来自 `metadata`，不会再裂出一份私有 calendar 配置文件。
-- **补充**：`mail`、`calendar`、`documents` 都消费这层共享凭证；`mail` 当前首个远端 provider 为 `imap_smtp`，其连接参数全部来自 `metadata`，而不是独立私有配置文件。
-- **补充**：`documents` 当前首个远端 provider 为 `webdav`；其账号用户名、根 URL、可选根目录映射同样来自 `metadata`，不会再单独裂出一份私有 documents 配置文件。
+- **补充**：`mail`、`calendar`、`documents` 都消费这层共享凭证；调用方不需要再为每个能力维护一份单独的私有凭证文件。
 - **补充**：运行态 probe/错误状态不在这个接口里，运行派生真相由 `runtime/office_runtime_status.json` 承载，并通过 `office_status` / `office_config probe` 这类上层能力消费。
 
 ### POST /api/config/office_credentials

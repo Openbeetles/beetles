@@ -40,61 +40,39 @@
 
 ### `calendar`
 
-- `provider` 为空时默认走本地 `local` 日历。
-- 远端 provider 现在支持多账户；同一 provider 下有多个账户时，可以显式传 `account_key`。
-- 如果 `/api/config/accounts` 已经为 `calendar` capability 配了默认账户，`calendar` 工具在远端多账户场景下可以不传 `account_key`，由共享 `OfficeService` 自动选中默认账户。
-- `provider_status` 会返回远端已注册 provider、已配置账户状态，以及可选的 `default_calendar_account_key` 和 `office_runtime_statuses`。
-- 当前第一阶段远端 provider 为 `caldav`：
-  - Linux / 非 ESP 构建会注册真实 CalDAV provider，支持 `list` / `get` / `create` / `update` / `delete`
-  - CalDAV 所需的用户名、根 URL、可选根路径映射来自共享 office credentials metadata，而不是 `calendar` 私有配置
-  - ESP 保留同一 capability/tool 合同，但不编入重型 CalDAV 传输栈
+- 默认使用本地日历。
+- 接入外部日历账户后，也可以查看、创建、更新和删除外部事件。
+- 如果同类外部账户有多个，可以显式传 `account_key`，也可以先在 office 配置里设默认账户。
+- `provider_status` 返回的是当前可用日历能力、已配置账户状态，以及默认账户和运行状态摘要。
 
 ### `mail`
 
-- `mail` 不是私有邮箱工具，而是共享 office authority 上的 mail capability。
-- 当前支持的操作包括：
+- `mail` 是外部办公邮件能力，不是本地私有邮箱实现。
+- 当前支持：
   - `provider_status`
   - `list`
   - `get`
   - `send`
-- `provider` 可以省略，但前提是：
-  - office 已经把 `mail` capability 绑定到默认账户，或
-  - 当前只存在一个已配置 mail provider
+- 如果已经配置默认邮件账户，或当前只有一个可用账户，可以省略 `provider` / `account_key`。
 - `send` 属于显式对外发送动作，要求 `confirm=true`。
-- `provider_status` 会返回：
-  - 已注册的远端 mail provider
-  - 已配置 mail 账户状态
-  - 可选的 `default_mail_account_key`
-  - 可选的 `office_runtime_statuses`
-- 当前第一阶段远端 provider 为 `imap_smtp`：
-  - Linux / 非 ESP 构建会注册真实 IMAP/SMTP provider
-  - ESP 保留同一 capability/tool 合同，但不编入重型 IMAP/SMTP 传输栈
+- `provider_status` 返回的是当前可用邮件能力、已配置账户状态，以及默认账户和运行状态摘要。
 
 ### `documents`
 
-- `documents` 是共享 office authority 上的 documents capability，不是本地 `document_read` / `document_search` 的替代品。
-- 当前支持的操作包括：
+- `documents` 是外部办公文档库/文件库能力，不替代本地文档读取工具。
+- 当前支持：
   - `provider_status`
   - `list`
   - `read`
   - `search`
-- `provider` 可以省略，但前提是：
-  - office 已经把 `documents` capability 绑定到默认账户，或
-  - 当前只存在一个已配置 documents provider
-- `provider_status` 会返回：
-  - 已注册的远端 documents provider
-  - 已配置 documents 账户状态
-  - 可选的 `default_documents_account_key`
-  - 可选的 `office_runtime_statuses`
-- 当前第一阶段远端 provider 为 `webdav`：
-  - Linux / 非 ESP 构建会注册真实 WebDAV provider，并支持真实目录探测、文件读取和内容搜索
-  - ESP 保留同一 capability/tool 合同，但不编入重型远端文档传输栈
+- 如果已经配置默认文档账户，或当前只有一个可用账户，可以省略 `provider` / `account_key`。
+- `provider_status` 返回的是当前可用文档能力、已配置账户状态，以及默认账户和运行状态摘要。
 - `documents` 读取的是“办公文档库/文件库”能力；本地设备存储里的文件检索仍然继续使用 `document_search`、`document_read`、`document_extract`
 
 ### `office_config`
 
-- 这是 office 域的 Agent-native 配置工具，不是某个 provider 的私有控制面。
-- 当前支持的操作包括：
+- 这是 office 域的统一配置工具，不是某个单独服务的私有控制面。
+- 当前支持：
   - `inspect`
   - `resolve_account`
   - `draft_accounts`
@@ -107,21 +85,13 @@
   - `probe`
 - `draft_*` / `validate_*` 只处理结构化草案，不会直接写盘。
 - `commit_*` 和 `revoke` 属于显式配置写操作，要求 `confirm=true`。
-- `probe` 只会返回真实结果：
-  - 有 provider probe adapter 时，返回真实探测结果
-  - 没有 adapter 时，返回结构化 `unsupported`，原因是 `probe_adapter_unavailable`
-  - 凭证缺失时，返回结构化 `missing_credential`
-  - 当前 `imap_smtp` / `webdav` / `caldav` 在 Linux / 非 ESP 构建下会执行真实 provider 探测
+- `probe` 只返回真实状态，不会假装成功；缺配置、不可探测或当前不可用都会明确说明原因。
 
 ### `office_status`
 
-- 读取 office 域共享权威层，而不是某个工具私有状态。
-- 返回内容会合并：
-  - `/api/config/accounts` 的账户注册表、默认绑定和策略
-  - `config/office_credentials.json` 的凭证存在性
-  - `runtime/office_runtime_status.json` 的探测结果和上次错误
-- 可选传 `capability`，只看某一个 capability，例如 `calendar` 或 `mail`。
-  现在也支持 `documents`。
+- 读取 office 域的统一状态，而不是某个工具自己的私有状态。
+- 可以用来查看账户、默认绑定、凭证是否存在，以及最近一次运行状态。
+- 可选传 `capability`，只看某一个能力，比如 `calendar`、`mail` 或 `documents`。
 
 ## `tools_network_extra` 工具
 
