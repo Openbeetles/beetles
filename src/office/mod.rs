@@ -2,10 +2,13 @@
 
 mod account;
 mod binding;
+#[cfg(feature = "capability_office")]
 mod config_management;
 mod credentials;
 mod policy;
+#[cfg(feature = "capability_office")]
 mod resolver;
+#[cfg(feature = "capability_office")]
 mod service;
 mod status;
 
@@ -13,6 +16,7 @@ pub use account::{
     OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
 };
 pub use binding::OfficeCapabilityBinding;
+#[cfg(feature = "capability_office")]
 pub use config_management::{
     OfficeAccountDraftRequest, OfficeConfigManagementService, OfficeConfigSnapshot,
     OfficeCredentialDraftRequest, OfficePolicyPatch, OfficeProbeAdapter, OfficeProbeDisposition,
@@ -23,9 +27,11 @@ pub use credentials::{
     OFFICE_METADATA_CALENDAR_ID, REL_PATH_OFFICE_CREDENTIALS,
 };
 pub use policy::OfficeSelectionPolicy;
+#[cfg(feature = "capability_office")]
 pub use resolver::{
     OfficeResolveRequest, OfficeResolveResult, OfficeResolveSelection, OfficeResolver,
 };
+#[cfg(feature = "capability_office")]
 pub use service::{
     OfficeAccountAuthorityStatus, OfficeAuthoritySummary, OfficeCapabilityDefault, OfficeService,
 };

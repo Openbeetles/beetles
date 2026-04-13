@@ -12,7 +12,15 @@ mod state_file_guard;
 ))]
 pub mod analyze_image;
 pub mod board_info;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub mod calendar;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub mod contacts_directory;
 pub mod continuity_snapshot;
 pub mod cron;
@@ -37,6 +45,10 @@ pub mod document_read;
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 pub mod document_search;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub mod documents;
 pub mod env;
 pub mod factual_memory;
@@ -63,6 +75,10 @@ pub mod lua_memory_query;
 pub mod lua_query;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod lua_tool_bridge;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub mod mail;
 pub mod memory_get;
 #[cfg(feature = "tools_diagnostics")]
@@ -75,7 +91,15 @@ pub mod model_config;
 pub mod network;
 #[cfg(feature = "tools_diagnostics")]
 pub mod network_scan;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub mod office_config;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub mod office_status;
 #[cfg(all(
     feature = "tools_network_extra",
@@ -112,7 +136,15 @@ pub mod web_search;
 ))]
 pub use analyze_image::AnalyzeImageTool;
 pub use board_info::BoardInfoTool;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use calendar::CalendarTool;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use contacts_directory::ContactsDirectoryTool;
 pub use continuity_snapshot::ContinuitySnapshotTool;
 pub use cron_manage::CronManageTool;
@@ -136,6 +168,10 @@ pub use document_read::DocumentReadTool;
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 pub use document_search::DocumentSearchTool;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use documents::DocumentsTool;
 pub use env::EnvTool;
 pub use execution_governance::{
@@ -166,6 +202,10 @@ pub use lua_memory_query::LuaMemoryQueryTool;
 pub use lua_query::LuaQueryTool;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use lua_tool_bridge::LuaToolBridgeTool;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use mail::MailTool;
 pub use memory_get::MemoryGetTool;
 #[cfg(feature = "tools_diagnostics")]
@@ -178,7 +218,15 @@ pub use model_config::ModelConfigTool;
 pub use network::NetworkTool;
 #[cfg(feature = "tools_diagnostics")]
 pub use network_scan::NetworkScanTool;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use office_config::OfficeConfigTool;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use office_status::OfficeStatusTool;
 #[cfg(all(
     feature = "tools_network_extra",

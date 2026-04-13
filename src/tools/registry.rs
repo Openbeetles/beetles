@@ -696,105 +696,13 @@ fn register_core_tools(
     turn_ledger_store: &Arc<dyn crate::memory::TurnLedgerStore + Send + Sync>,
     private_garden_store: &Arc<dyn crate::memory::PrivateGardenStore + Send + Sync>,
 ) {
-    let contacts_directory_store: Arc<
-        dyn crate::contacts_directory::ContactsDirectoryStore + Send + Sync,
-    > = Arc::new(crate::contacts_directory::StateFsContactsDirectoryStore::new(
-        platform.state_fs(),
-    ));
-    let office_config_service = crate::office::OfficeConfigManagementService::new(
-        Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(platform))),
-        platform.office_credential_store(),
-        platform.office_runtime_status_store(),
-    );
-    let office_service = crate::office::OfficeService::new(
-        config.office_accounts.registry.clone(),
-        config.office_accounts.binding.clone(),
-        config.office_accounts.policy.clone(),
-        platform.office_credential_store(),
-        platform.office_runtime_status_store(),
-    );
-    let calendar_credential_store: Arc<
-        dyn crate::calendar::CalendarProviderCredentialStore + Send + Sync,
-    > = Arc::new(
-        crate::calendar::OfficeBackedCalendarProviderCredentialStore::new(office_service.clone()),
-    );
-    let mail_credential_store: Arc<dyn crate::mail::MailProviderCredentialStore + Send + Sync> =
-        Arc::new(crate::mail::OfficeBackedMailProviderCredentialStore::new(
-            office_service.clone(),
-        ));
-    let documents_credential_store: Arc<
-        dyn crate::documents::DocumentsProviderCredentialStore + Send + Sync,
-    > = Arc::new(
-        crate::documents::OfficeBackedDocumentsProviderCredentialStore::new(office_service.clone()),
-    );
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    let office_config_service = office_config_service.with_probe_adapters(vec![
-        Arc::new(crate::mail::providers::imap_smtp::ImapSmtpOfficeProbeAdapter),
-        Arc::new(crate::documents::providers::webdav::WebDavOfficeProbeAdapter),
-        Arc::new(crate::calendar::providers::caldav::CalDavOfficeProbeAdapter),
-    ]);
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    let office_config_service = office_config_service;
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    let mail_providers = {
-        let mut providers = crate::mail::MailProviderRegistry::new();
-        providers.register(Arc::new(
-            crate::mail::providers::imap_smtp::ImapSmtpProvider,
-        ));
-        providers
-    };
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    let mail_providers = crate::mail::MailProviderRegistry::new();
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    let documents_providers = {
-        let mut providers = crate::documents::DocumentsProviderRegistry::new();
-        providers.register(Arc::new(
-            crate::documents::providers::webdav::WebDavProvider,
-        ));
-        providers
-    };
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    let documents_providers = crate::documents::DocumentsProviderRegistry::new();
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    let calendar_providers = {
-        let mut providers = crate::calendar::CalendarProviderRegistry::new();
-        providers.register(Arc::new(crate::calendar::providers::caldav::CalDavProvider));
-        providers
-    };
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    let calendar_providers = crate::calendar::CalendarProviderRegistry::new();
     registry.register(Box::new(super::GetTimeTool));
     registry.register(Box::new(super::EnvTool));
     registry.register(Box::new(super::MessageTool));
     registry.register(Box::new(super::TaskTool::new(
         platform.task_store(),
         platform.calendar_store(),
-        Arc::clone(&calendar_credential_store),
     )));
-    registry.register(Box::new(super::CalendarTool::with_office_service(
-        platform.calendar_store(),
-        Arc::clone(&calendar_credential_store),
-        calendar_providers,
-        office_service.clone(),
-    )));
-    registry.register(Box::new(super::MailTool::with_office_service_and_contacts(
-        Arc::clone(&mail_credential_store),
-        mail_providers,
-        office_service.clone(),
-        Arc::clone(&contacts_directory_store),
-    )));
-    registry.register(Box::new(super::ContactsDirectoryTool::new(Arc::clone(
-        &contacts_directory_store,
-    ))));
-    registry.register(Box::new(super::DocumentsTool::with_office_service(
-        Arc::clone(&documents_credential_store),
-        documents_providers,
-        office_service.clone(),
-    )));
-    registry.register(Box::new(super::OfficeConfigTool::new(
-        office_config_service,
-    )));
-    registry.register(Box::new(super::OfficeStatusTool::new(office_service)));
     registry.register(Box::new(super::FilesTool::new(platform.state_fs())));
     registry.register(Box::new(super::FileEditTool::new(platform.state_fs())));
     #[cfg(all(
@@ -907,6 +815,90 @@ fn register_core_tools(
             Arc::clone(platform),
         )));
     }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+#[cold]
+#[inline(never)]
+fn register_office_tools(
+    registry: &mut ToolRegistry,
+    config: &AppConfig,
+    platform: &Arc<dyn crate::Platform>,
+) {
+    let contacts_directory_store: Arc<
+        dyn crate::contacts_directory::ContactsDirectoryStore + Send + Sync,
+    > = Arc::new(
+        crate::contacts_directory::StateFsContactsDirectoryStore::new(platform.state_fs()),
+    );
+    let office_config_service = crate::office::OfficeConfigManagementService::new(
+        Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(platform))),
+        platform.office_credential_store(),
+        platform.office_runtime_status_store(),
+    )
+    .with_probe_adapters(vec![
+        Arc::new(crate::mail::providers::imap_smtp::ImapSmtpOfficeProbeAdapter),
+        Arc::new(crate::documents::providers::webdav::WebDavOfficeProbeAdapter),
+        Arc::new(crate::calendar::providers::caldav::CalDavOfficeProbeAdapter),
+    ]);
+    let office_service = crate::office::OfficeService::new(
+        config.office_accounts.registry.clone(),
+        config.office_accounts.binding.clone(),
+        config.office_accounts.policy.clone(),
+        platform.office_credential_store(),
+        platform.office_runtime_status_store(),
+    );
+    let calendar_credential_store: Arc<
+        dyn crate::calendar::CalendarProviderCredentialStore + Send + Sync,
+    > = Arc::new(
+        crate::calendar::OfficeBackedCalendarProviderCredentialStore::new(office_service.clone()),
+    );
+    let mail_credential_store: Arc<dyn crate::mail::MailProviderCredentialStore + Send + Sync> =
+        Arc::new(crate::mail::OfficeBackedMailProviderCredentialStore::new(
+            office_service.clone(),
+        ));
+    let documents_credential_store: Arc<
+        dyn crate::documents::DocumentsProviderCredentialStore + Send + Sync,
+    > = Arc::new(
+        crate::documents::OfficeBackedDocumentsProviderCredentialStore::new(office_service.clone()),
+    );
+    let mut mail_providers = crate::mail::MailProviderRegistry::new();
+    mail_providers.register(Arc::new(
+        crate::mail::providers::imap_smtp::ImapSmtpProvider,
+    ));
+    let mut documents_providers = crate::documents::DocumentsProviderRegistry::new();
+    documents_providers.register(Arc::new(
+        crate::documents::providers::webdav::WebDavProvider,
+    ));
+    let mut calendar_providers = crate::calendar::CalendarProviderRegistry::new();
+    calendar_providers.register(Arc::new(crate::calendar::providers::caldav::CalDavProvider));
+
+    registry.register(Box::new(super::CalendarTool::with_office_service(
+        platform.calendar_store(),
+        Arc::clone(&calendar_credential_store),
+        calendar_providers,
+        office_service.clone(),
+    )));
+    registry.register(Box::new(super::MailTool::with_office_service_and_contacts(
+        Arc::clone(&mail_credential_store),
+        mail_providers,
+        office_service.clone(),
+        Arc::clone(&contacts_directory_store),
+    )));
+    registry.register(Box::new(super::ContactsDirectoryTool::new(Arc::clone(
+        &contacts_directory_store,
+    ))));
+    registry.register(Box::new(super::DocumentsTool::with_office_service(
+        Arc::clone(&documents_credential_store),
+        documents_providers,
+        office_service.clone(),
+    )));
+    registry.register(Box::new(super::OfficeConfigTool::new(
+        office_config_service,
+    )));
+    registry.register(Box::new(super::OfficeStatusTool::new(office_service)));
 }
 
 #[cold]
@@ -1044,7 +1036,7 @@ fn register_host_only_tools(
     registry.register(Box::new(super::LuaQueryTool::default()));
     #[cfg(target_os = "linux")]
     registry.register(Box::new(super::LuaMemoryQueryTool::new(
-        Arc::new(crate::CurrentExecutableLuaSandboxExecutor),
+        Arc::new(crate::reasoning::CurrentExecutableLuaSandboxExecutor),
         Arc::clone(long_term_memory_store),
         Arc::clone(continuity_capsule_store),
     )));
@@ -1087,6 +1079,11 @@ pub fn build_default_registry(
         &turn_ledger_store,
         &private_garden_store,
     );
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    register_office_tools(&mut registry, config, &platform);
     register_extended_runtime_tools(
         &mut registry,
         config,

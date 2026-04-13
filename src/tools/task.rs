@@ -1,8 +1,8 @@
 //! task tool: durable personal task management with optional local calendar sync.
 
 use crate::calendar::{
-    CalendarEvent, CalendarEventStatus, CalendarProviderCredentialStore, CalendarProviderRegistry,
-    CalendarService, CalendarStore, CALENDAR_PROVIDER_LOCAL,
+    normalize_calendar_event, CalendarEvent, CalendarEventStatus, CalendarStore,
+    CALENDAR_PROVIDER_LOCAL,
 };
 use crate::error::{Error, Result};
 use crate::task::{normalize_task_item, TaskItem, TaskPriority, TaskQuery, TaskStatus, TaskStore};
@@ -18,7 +18,7 @@ static TASK_SEQ: AtomicU32 = AtomicU32::new(1);
 
 pub struct TaskTool {
     store: Arc<dyn TaskStore + Send + Sync>,
-    calendar_service: CalendarService,
+    calendar_store: Arc<dyn CalendarStore + Send + Sync>,
 }
 
 #[derive(Serialize)]
@@ -64,15 +64,10 @@ impl TaskTool {
     pub fn new(
         store: Arc<dyn TaskStore + Send + Sync>,
         calendar_store: Arc<dyn CalendarStore + Send + Sync>,
-        credential_store: Arc<dyn CalendarProviderCredentialStore + Send + Sync>,
     ) -> Self {
         Self {
             store,
-            calendar_service: CalendarService::new(
-                calendar_store,
-                credential_store,
-                CalendarProviderRegistry::new(),
-            ),
+            calendar_store,
         }
     }
 }
@@ -360,10 +355,12 @@ impl TaskTool {
             status: CalendarEventStatus::Confirmed,
             updated_at: now_secs,
         };
-        let created = task.calendar_event_id.is_empty();
-        let event =
-            self.calendar_service
-                .upsert(None, CALENDAR_PROVIDER_LOCAL, None, &event, created)?;
+        let event = normalize_calendar_event(event)?;
+        self.calendar_store.upsert(&event)?;
+        let event = self
+            .calendar_store
+            .get(&event.id)?
+            .ok_or_else(|| Error::config("tool_task", "calendar event missing after upsert"))?;
         task.calendar_event_id = event.id;
         Ok(())
     }
@@ -372,9 +369,7 @@ impl TaskTool {
         if event_id.trim().is_empty() {
             return Ok(());
         }
-        let _ = self
-            .calendar_service
-            .delete(None, CALENDAR_PROVIDER_LOCAL, None, event_id)?;
+        let _ = self.calendar_store.delete(event_id)?;
         Ok(())
     }
 }
@@ -470,9 +465,7 @@ fn build_task_id(title: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::calendar::{
-        CalendarProviderCredential, CalendarProviderCredentialStore, CalendarQuery,
-    };
+    use crate::calendar::CalendarQuery;
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -596,31 +589,6 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct StubCredentialStore;
-
-    impl CalendarProviderCredentialStore for StubCredentialStore {
-        fn get(&self, _account_key: &str) -> Result<Option<CalendarProviderCredential>> {
-            Ok(None)
-        }
-
-        fn find_account_keys_by_provider(&self, _provider: &str) -> Result<Vec<String>> {
-            Ok(Vec::new())
-        }
-
-        fn set(&self, _credential: &CalendarProviderCredential) -> Result<()> {
-            Ok(())
-        }
-
-        fn clear(&self, _account_key: &str) -> Result<()> {
-            Ok(())
-        }
-
-        fn list_statuses(&self) -> Result<Vec<crate::calendar::CalendarProviderCredentialStatus>> {
-            Ok(Vec::new())
-        }
-    }
-
-    #[derive(Default)]
     struct DummyCtx;
 
     impl ToolContext for DummyCtx {
@@ -659,7 +627,6 @@ mod tests {
         let tool = TaskTool::new(
             Arc::new(StubTaskStore::default()),
             Arc::new(StubCalendarStore::default()),
-            Arc::new(StubCredentialStore),
         );
         let mut ctx = DummyCtx;
         let created = tool
@@ -686,7 +653,6 @@ mod tests {
         let tool = TaskTool::new(
             Arc::new(StubTaskStore::default()),
             Arc::clone(&calendar_store),
-            Arc::new(StubCredentialStore),
         );
         let mut ctx = DummyCtx;
         let created = tool

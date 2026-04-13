@@ -1,9 +1,25 @@
 //! Shared documents domain: provider credentials, readable content, and service routing.
 
 mod content;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 mod credentials;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 mod provider;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub mod providers;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 mod service;
 
 use serde::{Deserialize, Serialize};
@@ -13,13 +29,25 @@ pub use content::{
     decode_searchable_document_text, detect_document_kind, DecodedReadableDocument,
     EMPTY_DOCUMENT_WARNING,
 };
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use credentials::{
     DocumentsProviderCredential, DocumentsProviderCredentialStatus,
     DocumentsProviderCredentialStore, OfficeBackedDocumentsProviderCredentialStore,
     OFFICE_METADATA_DOCUMENTS_BASE_URL, OFFICE_METADATA_DOCUMENTS_ROOT_PATH,
     OFFICE_METADATA_DOCUMENTS_USERNAME,
 };
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use provider::{DocumentsOperation, DocumentsProvider, DocumentsProviderRegistry};
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use service::DocumentsService;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

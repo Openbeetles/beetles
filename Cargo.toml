@@ -113,6 +113,7 @@ default_runtime = [
     "tools_network_extra",
     "thread_panic_catch",
 ]
+capability_office = []
 capability_voice = []
 capability_vision = []
 capability_sensor = []

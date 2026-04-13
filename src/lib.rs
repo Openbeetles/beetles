@@ -56,6 +56,10 @@ pub mod bus;
 pub mod calendar;
 pub mod channels;
 pub mod config;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub mod contacts_directory;
 pub mod diagnosis;
 pub mod display;
@@ -63,6 +67,10 @@ pub mod doctor;
 pub mod documents;
 pub mod error;
 pub mod llm;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub mod mail;
 pub mod memory;
 pub mod platform;
@@ -165,11 +173,19 @@ pub use tools::LuaMemoryQueryTool;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use tools::LuaToolBridgeTool;
 pub use tools::{
-    build_default_registry, CalendarTool, ContactsDirectoryTool, DefaultRegistryDeps,
-    DocumentsTool, FileEditTool, FileWriteTool, FilesTool, GetTimeTool, KvStoreTool, MailTool,
-    OfficeConfigTool, PrivateGardenTool, RemindAtTool, TaskTool, Tool, ToolBridgeCatalogEntry,
-    ToolBridgeProposalAssessment, ToolBridgeProposalDecision, ToolCapabilityContract, ToolContext,
-    ToolExposure, ToolMetadata, ToolPolicyContext, ToolRegistry, VoiceInputTool, VoiceOutputTool,
+    build_default_registry, DefaultRegistryDeps, FileEditTool, FileWriteTool, FilesTool,
+    GetTimeTool, KvStoreTool, PrivateGardenTool, RemindAtTool, TaskTool, Tool,
+    ToolBridgeCatalogEntry, ToolBridgeProposalAssessment, ToolBridgeProposalDecision,
+    ToolCapabilityContract, ToolContext, ToolExposure, ToolMetadata, ToolPolicyContext,
+    ToolRegistry, VoiceInputTool, VoiceOutputTool,
+};
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub use tools::{
+    CalendarTool, ContactsDirectoryTool, DocumentsTool, MailTool, OfficeConfigTool,
+    OfficeStatusTool,
 };
 #[cfg(feature = "tools_diagnostics")]
 pub use tools::{
@@ -259,6 +275,10 @@ impl<T: platform::PlatformHttpClient + ?Sized> channels::ChannelHttpClient for T
     }
 }
 
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 impl<T: platform::PlatformHttpClient + ?Sized> calendar::CalendarHttpClient for T {
     fn request_with_headers(
         &mut self,

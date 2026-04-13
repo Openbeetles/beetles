@@ -727,16 +727,34 @@ fn remove_if_exists(path: &Path) -> Result<()> {
     }
 }
 
+fn linux_supervisor_state_root() -> PathBuf {
+    if let Ok(path) = std::env::var("BEETLE_STATE_ROOT") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+
+    for candidate in ["/var/lib/beetle", "/data/beetle"] {
+        let path = PathBuf::from(candidate);
+        if path.exists() {
+            return path;
+        }
+    }
+
+    PathBuf::from("/var/lib/beetle")
+}
+
 fn supervisor_state_path() -> PathBuf {
-    crate::platform::state_mount_path().join(REL_PATH_LINUX_SUPERVISOR_STATE)
+    linux_supervisor_state_root().join(REL_PATH_LINUX_SUPERVISOR_STATE)
 }
 
 fn supervisor_lock_path() -> PathBuf {
-    crate::platform::state_mount_path().join(REL_PATH_LINUX_SUPERVISOR_LOCK)
+    linux_supervisor_state_root().join(REL_PATH_LINUX_SUPERVISOR_LOCK)
 }
 
 fn control_request_path(action: SupervisorControlAction) -> PathBuf {
-    crate::platform::state_mount_path().join(match action {
+    linux_supervisor_state_root().join(match action {
         SupervisorControlAction::Restart => REL_PATH_LINUX_SUPERVISOR_RESTART_REQUEST,
         SupervisorControlAction::Stop => REL_PATH_LINUX_SUPERVISOR_STOP_REQUEST,
         SupervisorControlAction::Rollback => REL_PATH_LINUX_SUPERVISOR_ROLLBACK_REQUEST,
@@ -774,15 +792,16 @@ fn is_pid_alive(pid: u32) -> bool {
 mod tests {
     use super::{
         append_supervisor_backoff_workflow_audit, append_supervisor_workflow_audit,
-        clear_failure_burst, clear_safe_mode, parse_exit_status, record_quick_failure,
-        restart_backoff_secs, safe_mode_active, try_acquire_supervisor_lock_at,
-        LinuxSupervisorState, SUPERVISOR_FAILURE_BURST_WINDOW_SECS,
+        clear_failure_burst, clear_safe_mode, linux_supervisor_state_root, parse_exit_status,
+        record_quick_failure, restart_backoff_secs, safe_mode_active,
+        try_acquire_supervisor_lock_at, LinuxSupervisorState, SUPERVISOR_FAILURE_BURST_WINDOW_SECS,
     };
     use crate::runtime::workflow::{reset_workflow_audit_for_tests, workflow_audit_snapshot};
     use crate::runtime::{
         WorkflowDisposition, WorkflowEffect, WorkflowKind, WorkflowRecoveryPolicy, WorkflowTrigger,
     };
     use std::os::unix::process::ExitStatusExt;
+    use std::path::PathBuf;
 
     #[test]
     fn restart_backoff_caps_at_thirty_seconds() {
@@ -837,6 +856,25 @@ mod tests {
         assert_eq!(state.failure_burst_count, 0);
         assert!(state.failure_burst_started_at.is_none());
         assert!(state.safe_mode_reason.is_none());
+    }
+
+    #[test]
+    fn linux_supervisor_state_root_defaults_without_platform_init() {
+        let previous = std::env::var_os("BEETLE_STATE_ROOT");
+        unsafe {
+            std::env::remove_var("BEETLE_STATE_ROOT");
+        }
+        let root = linux_supervisor_state_root();
+        match previous {
+            Some(value) => unsafe { std::env::set_var("BEETLE_STATE_ROOT", value) },
+            None => unsafe { std::env::remove_var("BEETLE_STATE_ROOT") },
+        }
+        assert_ne!(root, PathBuf::from("/tmp/beetle"));
+        assert!(
+            root == PathBuf::from("/var/lib/beetle") || root == PathBuf::from("/data/beetle"),
+            "unexpected state root: {}",
+            root.display()
+        );
     }
 
     #[test]

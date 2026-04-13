@@ -1597,7 +1597,7 @@ fn handle_doctor_command(platform: &Arc<dyn Platform>) {
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-fn handle_restart_command(_platform: &Arc<dyn Platform>) {
+fn handle_restart_command() {
     if std::path::Path::new("/etc/systemd/system/beetle.service").exists() {
         match std::process::Command::new("systemctl")
             .args(["restart", "beetle"])
@@ -1639,7 +1639,7 @@ fn handle_restart_command(_platform: &Arc<dyn Platform>) {
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-fn handle_stop_command(_platform: &Arc<dyn Platform>) {
+fn handle_stop_command() {
     if std::path::Path::new("/etc/systemd/system/beetle.service").exists() {
         match std::process::Command::new("systemctl")
             .args(["stop", "beetle"])
@@ -1800,6 +1800,11 @@ fn register_platform_memory_snapshot_provider(platform: &Arc<dyn Platform>) {
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn install_linux_rustls_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn run_linux_agent_entry(platform: Arc<dyn Platform>) {
     register_platform_memory_snapshot_provider(&platform);
     startup_soul_kernel_recovery(Arc::clone(&platform));
@@ -1818,6 +1823,30 @@ fn main() {
         .is_err()
     {
         eprintln!("[beetle] env_logger init failed (logging may be incomplete)");
+    }
+    install_linux_rustls_crypto_provider();
+
+    match &cli.command {
+        Commands::Restart => {
+            handle_restart_command();
+            return;
+        }
+        Commands::Stop => {
+            handle_stop_command();
+            return;
+        }
+        Commands::Version => {
+            println!("beetle v{}", VERSION);
+            return;
+        }
+        Commands::ReasoningRunner => {
+            if let Err(error) = beetle::run_reasoning_runner_stdio() {
+                eprintln!("[{}] reasoning runner failed: {}", TAG, error);
+                std::process::exit(1);
+            }
+            return;
+        }
+        _ => {}
     }
 
     let platform: Arc<dyn Platform> = Arc::new(LinuxPlatform::new());
@@ -1852,10 +1881,10 @@ fn main() {
             handle_status_command(&platform, json, chat_id.as_deref());
         }
         Commands::Restart => {
-            handle_restart_command(&platform);
+            unreachable!("restart must be handled before platform initialization");
         }
         Commands::Stop => {
-            handle_stop_command(&platform);
+            unreachable!("stop must be handled before platform initialization");
         }
         Commands::Doctor => {
             handle_doctor_command(&platform);
@@ -1865,13 +1894,10 @@ fn main() {
             ReleaseAction::Rollback => handle_release_rollback_command(&platform),
         },
         Commands::Version => {
-            println!("beetle v{}", VERSION);
+            unreachable!("version must be handled before platform initialization");
         }
         Commands::ReasoningRunner => {
-            if let Err(error) = beetle::run_reasoning_runner_stdio() {
-                eprintln!("[{}] reasoning runner failed: {}", TAG, error);
-                std::process::exit(1);
-            }
+            unreachable!("reasoning runner must be handled before platform initialization");
         }
     }
 }

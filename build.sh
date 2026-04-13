@@ -100,7 +100,7 @@ MSG_BUILD_COMPLETE="Build complete"
 MSG_BINARY="Binary"
 # 固定 target 到本仓库，避免环境/IDE 将 CARGO_TARGET_DIR 指到临时目录导致 esp-idf-sys bindings 与 esp-idf-svc cfg 不一致。
 export CARGO_TARGET_DIR="${SCRIPT_ROOT}/target"
-export PATH="${HOME}/.cargo/bin:${PATH}"
+export PATH="/usr/local/cargo/bin:${HOME}/.cargo/bin:${PATH}"
 
 # --- Parse args (same as build.ps1) ---
 DO_FLASH=""
@@ -408,6 +408,84 @@ ensure_local_stable_toolchain() {
     fi
 }
 
+linux_musl_linker_for_target() {
+    local candidate
+    case "$1" in
+        x86_64-unknown-linux-musl)
+            for candidate in x86_64-linux-musl-gcc x86_64-unknown-linux-musl-gcc; do
+                if command -v "$candidate" >/dev/null 2>&1; then
+                    printf '%s\n' "$candidate"
+                    return 0
+                fi
+            done
+            printf '%s\n' "x86_64-linux-musl-gcc"
+            ;;
+        armv7-unknown-linux-musleabihf)
+            for candidate in arm-linux-musleabihf-gcc armv7-unknown-linux-musleabihf-gcc; do
+                if command -v "$candidate" >/dev/null 2>&1; then
+                    printf '%s\n' "$candidate"
+                    return 0
+                fi
+            done
+            printf '%s\n' "arm-linux-musleabihf-gcc"
+            ;;
+        aarch64-unknown-linux-musl)
+            for candidate in aarch64-linux-musl-gcc aarch64-unknown-linux-musl-gcc; do
+                if command -v "$candidate" >/dev/null 2>&1; then
+                    printf '%s\n' "$candidate"
+                    return 0
+                fi
+            done
+            printf '%s\n' "aarch64-linux-musl-gcc"
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+ensure_linux_musl_linker_config() {
+    local target="$1"
+    local linker=""
+
+    linker=$(linux_musl_linker_for_target "$target") || return 0
+
+    mkdir -p .cargo
+    if ! grep -Fq "$target" .cargo/config.toml 2>/dev/null; then
+        cat >> .cargo/config.toml <<EOF
+
+[target.$target]
+linker = "$linker"
+EOF
+        echo "  Configured musl linker in .cargo/config.toml for $target"
+    fi
+
+    case "$target" in
+        x86_64-unknown-linux-musl)
+            export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER="$linker"
+            ;;
+        armv7-unknown-linux-musleabihf)
+            export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER="$linker"
+            ;;
+        aarch64-unknown-linux-musl)
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$linker"
+            ;;
+    esac
+}
+
+print_linux_musl_build_prereq_help() {
+    local target="$1"
+    local linker="$2"
+
+    echo ""
+    echo "Linux musl build prerequisites are missing for target: $target"
+    echo "This build needs the matching musl cross linker:"
+    echo "  $linker"
+    echo ""
+    echo "Recommended options:"
+    echo "  1) Use the matching musl build container/toolchain for this target."
+    echo "  2) Install the matching musl cross compiler and re-run ./build.sh."
+    echo ""
+}
+
 ensure_local_linux_native_build_prereqs() {
     local pm=""
 
@@ -440,6 +518,26 @@ ensure_local_linux_native_build_prereqs() {
         echo "Error: unsupported package manager for automatic prerequisite install." >&2
         exit 1
     fi
+}
+
+ensure_local_linux_musl_build_prereqs() {
+    local linker=""
+
+    if [[ "$(uname -s)" != "Linux" ]]; then
+        return 0
+    fi
+    if [[ ! "$BUILD_TARGET" =~ -unknown-linux-musl ]]; then
+        return 0
+    fi
+
+    linker=$(linux_musl_linker_for_target "$BUILD_TARGET") || return 0
+    if ! command -v "$linker" >/dev/null 2>&1; then
+        print_linux_musl_build_prereq_help "$BUILD_TARGET" "$linker"
+        echo "Error: required musl linker is unavailable for $BUILD_TARGET." >&2
+        exit 1
+    fi
+
+    ensure_linux_musl_linker_config "$BUILD_TARGET"
 }
 
 # --- Linux SSH deploy (merged from former deploy-linux.sh) ---
@@ -2149,7 +2247,8 @@ if [[ $PLATFORM_CHOICE -eq 2 || $PLATFORM_CHOICE -eq 3 || $PLATFORM_CHOICE -eq 4
   # 检测当前系统
   CURRENT_OS="$(uname -s)"
   if [[ "$CURRENT_OS" == "Linux" ]]; then
-    # 在 Linux 上，优先使用与当前架构匹配的原生 GNU target；musl 主要用于 macOS/host 交叉产物。
+    # Linux 本机上，若当前宿主与目标架构一致，则优先使用原生 GNU target；
+    # musl 主要用于 macOS/host 交叉产物与非原生 Linux 交叉路线。
     CURRENT_ARCH="$(uname -m)"
     if [[ $PLATFORM_CHOICE -eq 2 ]]; then
       BUILD_TARGET="x86_64-unknown-linux-gnu"
@@ -3103,6 +3202,7 @@ EOF
   if [[ -z "${USE_DOCKER:-}" ]]; then
     ensure_local_stable_toolchain
     ensure_local_linux_native_build_prereqs
+    ensure_local_linux_musl_build_prereqs
   fi
   if ! rustup +stable target list --installed | grep -q "$BUILD_TARGET"; then
     echo "  Adding target: $BUILD_TARGET"

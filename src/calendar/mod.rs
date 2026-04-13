@@ -1,22 +1,50 @@
 //! 共享日历领域层：事件模型、查询与存储抽象。
 //! Shared calendar domain: event model, query helpers, and store abstraction.
 
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 mod credentials;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 mod provider;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub mod providers;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 mod service;
 
 use crate::error::{Error, Result};
 use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
 
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use credentials::{
     CalendarProviderCredential, CalendarProviderCredentialStatus, CalendarProviderCredentialStore,
     OfficeBackedCalendarProviderCredentialStore,
 };
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use provider::{
     CalendarHttpClient, CalendarOperation, CalendarProvider, CalendarProviderRegistry,
 };
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use service::CalendarService;
 
 pub const REL_PATH_CALENDAR_EVENTS: &str = "memory/calendar_events.json";
