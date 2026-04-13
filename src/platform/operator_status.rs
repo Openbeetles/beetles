@@ -31,6 +31,7 @@ pub struct OperatorStatusSnapshot {
     pub platform_contract: OperatorPlatformContract,
     pub build_package: crate::BuildPackageSnapshot,
     pub operator_surface: crate::platform::operator_surface::OperatorSurfaceBudget,
+    pub reply_pipeline: ReplyPipelineOperatorSummary,
     pub memory_operator_surface: MemoryOperatorSurfaceSummary,
     pub workflow: runtime::WorkflowAuditSnapshot,
     pub programmable_reasoning: crate::ProgrammableReasoningOperatorSnapshot,
@@ -54,6 +55,54 @@ pub struct OperatorStatusSnapshot {
     pub release: Option<crate::runtime::LinuxReleaseStatus>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ReplyPipelineOperatorSummary {
+    pub request_semantics_last_ms: u64,
+    pub tool_exec_last_ms: u64,
+    pub surface_finalize_last_ms: u64,
+    pub mental_privacy_review_last_ms: u64,
+    pub final_recovery_last_ms: u64,
+    pub dispatch_send_fail_total: u64,
+    pub outbound_enqueue_fail_total: u64,
+    pub dominant_stage: &'static str,
+}
+
+impl ReplyPipelineOperatorSummary {
+    fn from_metrics(metrics: &crate::metrics::MetricsSnapshot) -> Self {
+        let finalization_total_ms = metrics
+            .surface_finalize_last_ms
+            .saturating_add(metrics.mental_privacy_review_last_ms)
+            .saturating_add(metrics.final_recovery_last_ms);
+        let dominant_stage = if metrics.dispatch_send_fail > 0 || metrics.outbound_enqueue_fail > 0
+        {
+            "delivery_failure"
+        } else if metrics.tool_exec_last_ms >= metrics.request_semantics_last_ms
+            && metrics.tool_exec_last_ms >= finalization_total_ms
+            && metrics.tool_exec_last_ms > 0
+        {
+            "tool_execution"
+        } else if finalization_total_ms >= metrics.request_semantics_last_ms
+            && finalization_total_ms > 0
+        {
+            "finalization"
+        } else if metrics.request_semantics_last_ms > 0 {
+            "request_semantics"
+        } else {
+            "idle"
+        };
+        Self {
+            request_semantics_last_ms: metrics.request_semantics_last_ms,
+            tool_exec_last_ms: metrics.tool_exec_last_ms,
+            surface_finalize_last_ms: metrics.surface_finalize_last_ms,
+            mental_privacy_review_last_ms: metrics.mental_privacy_review_last_ms,
+            final_recovery_last_ms: metrics.final_recovery_last_ms,
+            dispatch_send_fail_total: metrics.dispatch_send_fail,
+            outbound_enqueue_fail_total: metrics.outbound_enqueue_fail,
+            dominant_stage,
+        }
+    }
+}
+
 pub fn build_operator_status(
     input: OperatorStatusInput<'_>,
 ) -> crate::error::Result<OperatorStatusSnapshot> {
@@ -68,6 +117,7 @@ pub fn build_operator_status(
         input.tool_registry.inspect_execution_governance()?
     };
     let capability_planes = build_device_capability_snapshots(input.config, input.platform);
+    let reply_pipeline = ReplyPipelineOperatorSummary::from_metrics(&crate::metrics::snapshot());
     let presence = runtime::inspect_platform_presence(input.platform, current_unix_secs());
     let initiative = runtime::inspect_platform_initiative(input.platform, current_unix_secs());
     let os_closure = runtime::inspect_beetle_os_closure(&presence, &initiative);
@@ -88,6 +138,7 @@ pub fn build_operator_status(
         },
         build_package: crate::current_build_package(),
         operator_surface,
+        reply_pipeline,
         memory_operator_surface,
         workflow: runtime::workflow_audit_snapshot(8),
         programmable_reasoning: crate::programmable_reasoning_operator_snapshot(),
@@ -126,6 +177,17 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
         snapshot.platform_contract.hardware_discovery_available,
         snapshot.operator_surface.compact_view,
         snapshot.operator_surface.window_required_for_deep_routes,
+    ));
+    out.push_str(&format!(
+        "  reply_pipeline_dominant_stage: {}\n  reply_pipeline_request_semantics_last_ms: {}\n  reply_pipeline_tool_exec_last_ms: {}\n  reply_pipeline_surface_finalize_last_ms: {}\n  reply_pipeline_mental_privacy_review_last_ms: {}\n  reply_pipeline_final_recovery_last_ms: {}\n  reply_pipeline_dispatch_send_fail_total: {}\n  reply_pipeline_outbound_enqueue_fail_total: {}\n",
+        snapshot.reply_pipeline.dominant_stage,
+        snapshot.reply_pipeline.request_semantics_last_ms,
+        snapshot.reply_pipeline.tool_exec_last_ms,
+        snapshot.reply_pipeline.surface_finalize_last_ms,
+        snapshot.reply_pipeline.mental_privacy_review_last_ms,
+        snapshot.reply_pipeline.final_recovery_last_ms,
+        snapshot.reply_pipeline.dispatch_send_fail_total,
+        snapshot.reply_pipeline.outbound_enqueue_fail_total,
     ));
     if let Some(window) = snapshot.operator_surface.operator_window.as_ref() {
         out.push_str(&format!(
@@ -317,6 +379,9 @@ mod tests {
         assert!(payload["build_package"]["capabilities"]
             .get("voice")
             .is_some());
+        assert!(payload.get("reply_pipeline").is_some());
+        assert!(payload["reply_pipeline"].get("tool_exec_last_ms").is_some());
+        assert!(payload["reply_pipeline"].get("dominant_stage").is_some());
         assert!(payload.get("workflow").is_some());
         assert!(payload["workflow"].get("summary").is_some());
     }

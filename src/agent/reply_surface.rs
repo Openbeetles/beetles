@@ -227,6 +227,32 @@ mod tests {
     }
 
     #[test]
+    fn governed_and_task_execution_contracts_keep_review_paths_enabled() {
+        let governed = ReplySurface::GovernedConversation;
+        assert_eq!(
+            governed.governance_policy(),
+            SurfaceGovernancePolicy::ApplyMentalPrivacyReview
+        );
+        assert_eq!(
+            governed.finalization_policy(),
+            SurfaceFinalizationPolicy::DirectOrRecovery
+        );
+        assert!(governed.allows_mental_privacy_review());
+
+        let task = ReplySurface::TaskExecution;
+        assert_eq!(
+            task.governance_policy(),
+            SurfaceGovernancePolicy::TaskExecutionReview
+        );
+        assert_eq!(
+            task.finalization_policy(),
+            SurfaceFinalizationPolicy::TaskFinisher
+        );
+        assert!(task.allows_mental_privacy_review());
+        assert!(task.allows_memory_grounding_block());
+    }
+
+    #[test]
     fn public_runtime_contract_keeps_memory_grounding_out_of_evidence_block() {
         let surface = ReplySurface::PublicRuntime;
         assert!(!surface.allows_memory_grounding_block());

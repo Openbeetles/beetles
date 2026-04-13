@@ -30,9 +30,15 @@ mod tests {
         assert!(parsed.get("platform_contract").is_some());
         assert!(parsed.get("build_package").is_some());
         assert!(parsed.get("operator_surface").is_some());
+        assert!(parsed.get("reply_pipeline").is_some());
         assert!(parsed.get("memory_operator_surface").is_some());
         assert!(parsed.get("workflow").is_some());
         assert!(parsed.get("programmable_reasoning").is_some());
+        assert!(parsed["reply_pipeline"]
+            .get("request_semantics_last_ms")
+            .is_some());
+        assert!(parsed["reply_pipeline"].get("tool_exec_last_ms").is_some());
+        assert!(parsed["reply_pipeline"].get("dominant_stage").is_some());
         assert!(parsed["workflow"].get("summary").is_some());
         assert!(parsed["workflow"].get("recent_records").is_some());
         assert_eq!(

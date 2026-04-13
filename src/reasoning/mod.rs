@@ -3,6 +3,7 @@
 mod constitution;
 mod experience_crystal;
 mod idle_forge;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 mod lua_runner;
 mod memory_attack;
 mod memory_query;
@@ -31,6 +32,7 @@ pub use idle_forge::{
     IdleMemoryForgeOperatorSummary, IdleMemoryForgeProposalBatch, IdleMemoryForgeRunLedger,
     IdleMemoryForgeTrigger,
 };
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use lua_runner::{execute_lua_query, run_reasoning_runner_stdio};
 pub use memory_attack::{
     memory_attack_job_contracts, validate_memory_attack_result, MemoryAttackFinding,
@@ -60,3 +62,20 @@ pub use runtime::{
     SubprocessLuaSandboxExecutor,
 };
 pub use tool_request::{validate_tool_request_result, ToolRequestProposal, ToolRequestResult};
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub fn execute_lua_query(request: &LuaQueryRequest) -> crate::Result<LuaQueryResponse> {
+    Ok(LuaQueryResponse::failure(
+        "unsupported_platform",
+        "programmable reasoning lua sandbox is unavailable on esp targets",
+        request.budget.clone(),
+    ))
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub fn run_reasoning_runner_stdio() -> crate::Result<()> {
+    Err(crate::Error::config(
+        "reasoning_runner",
+        "programmable reasoning runner is unavailable on esp targets",
+    ))
+}

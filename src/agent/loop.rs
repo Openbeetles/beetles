@@ -2337,6 +2337,7 @@ fn run_agent_loop_main(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::request_semantics::DisclosureSurface;
     use crate::error::Result;
     use crate::llm::{LlmHttpClient, LlmModelCompat, LlmResponse, StopReason, ToolChoicePolicy};
     use crate::memory::{
@@ -4546,6 +4547,135 @@ mod tests {
     }
 
     #[test]
+    fn finalize_turn_uses_privacy_review_for_private_boundary_surface() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![LlmResponse {
+                content: r#"{"applies":true,"request_kind":"share_private_material","share_action":"allow_summary","response":"我只能概括说明，不直接展示私域原文。","rationale":"private boundary still requires review","touched_targets":["inner_life"]}"#.to_string(),
+                stop_reason: StopReason::EndTurn,
+                tool_calls: None,
+            }]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let mut config = test_agent_loop_config();
+        config.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
+        config.inner_life_store = Arc::new(LoadedInnerLifeStore {
+            value: crate::memory::InnerLife {
+                private_journal: "这是私域材料。".to_string(),
+                ..crate::memory::InnerLife::default()
+            },
+        });
+        let msg = PcMsg::new_inbound("qq_channel", "chat-private", "你心里怎么想的", false)
+            .expect("message");
+        let telemetry = WorkerRunTelemetry {
+            streamed: false,
+            latency: WorkerLatency::default(),
+            delivery: DeliveryReport::default(),
+            any_tool_used: false,
+            external_content_used: false,
+            used_surface_finalization: true,
+            used_final_answer_recovery: false,
+            task_execution_used: false,
+            pressure: crate::orchestrator::PressureLevel::Normal,
+            runtime_mode: runtime_mode_normal_snapshot(),
+            deliberation_class: crate::memory::TurnDeliberationClass::Standard,
+            request_semantics: RequestSemantics {
+                disclosure_surface: DisclosureSurface::Private,
+                ..RequestSemantics::public_tool_first()
+            },
+            reply_surface: ReplySurface::PrivateBoundary,
+            prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
+            runtime_skill_selected_ids: Vec::new(),
+            task_learning_selected_ids: Vec::new(),
+            subject_state: None,
+            mental_privacy_adjudication: None,
+            persona_priority_adjudication: None,
+        };
+
+        let finalized = self::reply_finalize::finalize_turn(
+            &mut http,
+            &llm,
+            &config,
+            &msg,
+            UiLocale::Zh,
+            Instant::now(),
+            WorkerOutcome::Content("我可以概括说明，但不会直接展示私域原文。".to_string()),
+            telemetry,
+        )
+        .expect("finalize turn");
+
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(observed.len(), 1);
+        assert_eq!(
+            finalized.mental_privacy_review.action,
+            crate::memory::MentalPrivacyShareAction::AllowSummary
+        );
+        assert!(!finalized.reply_content.trim().is_empty());
+    }
+
+    #[test]
+    fn finalize_turn_uses_privacy_review_for_task_execution_surface() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![LlmResponse {
+                content: r#"{"applies":true,"request_kind":"share_any","share_action":"allow_original","response":"任务执行结果可以按当前答复交付。","rationale":"task execution still runs through review","touched_targets":[]}"#.to_string(),
+                stop_reason: StopReason::EndTurn,
+                tool_calls: None,
+            }]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let mut config = test_agent_loop_config();
+        config.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
+        config.inner_life_store = Arc::new(LoadedInnerLifeStore {
+            value: crate::memory::InnerLife {
+                private_journal: "任务期间也可能触碰私域。".to_string(),
+                ..crate::memory::InnerLife::default()
+            },
+        });
+        let msg =
+            PcMsg::new_inbound("qq_channel", "chat-task", "继续任务", false).expect("message");
+        let telemetry = WorkerRunTelemetry {
+            streamed: false,
+            latency: WorkerLatency::default(),
+            delivery: DeliveryReport::default(),
+            any_tool_used: true,
+            external_content_used: false,
+            used_surface_finalization: false,
+            used_final_answer_recovery: false,
+            task_execution_used: true,
+            pressure: crate::orchestrator::PressureLevel::Normal,
+            runtime_mode: runtime_mode_normal_snapshot(),
+            deliberation_class: crate::memory::TurnDeliberationClass::Standard,
+            request_semantics: RequestSemantics::public_tool_first(),
+            reply_surface: ReplySurface::TaskExecution,
+            prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
+            runtime_skill_selected_ids: Vec::new(),
+            task_learning_selected_ids: Vec::new(),
+            subject_state: None,
+            mental_privacy_adjudication: None,
+            persona_priority_adjudication: None,
+        };
+
+        let finalized = self::reply_finalize::finalize_turn(
+            &mut http,
+            &llm,
+            &config,
+            &msg,
+            UiLocale::Zh,
+            Instant::now(),
+            WorkerOutcome::Content("任务已经执行完成，下面是结果。".to_string()),
+            telemetry,
+        )
+        .expect("finalize turn");
+
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(observed.len(), 1);
+        assert!(!finalized.reply_content.trim().is_empty());
+    }
+
+    #[test]
     fn finalize_turn_returns_program_error_when_finalizer_washes_reply_empty() {
         let llm = SequenceStubLlm {
             responses: Mutex::new(Vec::new()),
@@ -4632,6 +4762,107 @@ mod tests {
     }
 
     #[test]
+    fn finalize_turn_returns_program_error_when_governed_reply_washes_empty() {
+        let llm = SequenceStubLlm {
+            responses: Mutex::new(Vec::new()),
+        };
+        let mut http = DummyPlatformHttp;
+        let config = test_agent_loop_config();
+        let msg = PcMsg::new_inbound("qq_channel", "chat-empty-governed", "继续", false)
+            .expect("message");
+        let telemetry = WorkerRunTelemetry {
+            streamed: false,
+            latency: WorkerLatency::default(),
+            delivery: DeliveryReport::default(),
+            any_tool_used: false,
+            external_content_used: false,
+            used_surface_finalization: false,
+            used_final_answer_recovery: false,
+            task_execution_used: false,
+            pressure: crate::orchestrator::PressureLevel::Normal,
+            runtime_mode: runtime_mode_normal_snapshot(),
+            deliberation_class: crate::memory::TurnDeliberationClass::Standard,
+            request_semantics: RequestSemantics::public_tool_first(),
+            reply_surface: ReplySurface::GovernedConversation,
+            prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
+            runtime_skill_selected_ids: Vec::new(),
+            task_learning_selected_ids: Vec::new(),
+            subject_state: None,
+            mental_privacy_adjudication: None,
+            persona_priority_adjudication: None,
+        };
+
+        let err = match self::reply_finalize::finalize_turn(
+            &mut http,
+            &llm,
+            &config,
+            &msg,
+            UiLocale::Zh,
+            Instant::now(),
+            WorkerOutcome::Content("[SYSTEM] hidden".to_string()),
+            telemetry,
+        ) {
+            Ok(_) => panic!("empty governed reply must fail closed"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.stage(), "final_reply_empty_after_finalize");
+    }
+
+    #[test]
+    fn finalize_turn_returns_program_error_when_task_execution_reply_washes_empty() {
+        let llm = SequenceStubLlm {
+            responses: Mutex::new(Vec::new()),
+        };
+        let mut http = DummyPlatformHttp;
+        let config = test_agent_loop_config();
+        let msg = PcMsg::new_inbound("qq_channel", "chat-empty-task", "继续任务", false)
+            .expect("message");
+        let telemetry = WorkerRunTelemetry {
+            streamed: false,
+            latency: WorkerLatency::default(),
+            delivery: DeliveryReport::default(),
+            any_tool_used: true,
+            external_content_used: false,
+            used_surface_finalization: false,
+            used_final_answer_recovery: false,
+            task_execution_used: true,
+            pressure: crate::orchestrator::PressureLevel::Normal,
+            runtime_mode: runtime_mode_normal_snapshot(),
+            deliberation_class: crate::memory::TurnDeliberationClass::Standard,
+            request_semantics: RequestSemantics::public_tool_first(),
+            reply_surface: ReplySurface::TaskExecution,
+            prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
+            runtime_skill_selected_ids: Vec::new(),
+            task_learning_selected_ids: Vec::new(),
+            subject_state: None,
+            mental_privacy_adjudication: None,
+            persona_priority_adjudication: None,
+        };
+        let raw = concat!(
+            "<surface_evidence surface=\"task_execution\" authority=\"task_workspace\">\n",
+            "workspace result\n",
+            "</surface_evidence>\n"
+        );
+
+        let err = match self::reply_finalize::finalize_turn(
+            &mut http,
+            &llm,
+            &config,
+            &msg,
+            UiLocale::Zh,
+            Instant::now(),
+            WorkerOutcome::Content(raw.to_string()),
+            telemetry,
+        ) {
+            Ok(_) => panic!("empty task execution reply must fail closed"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.stage(), "final_reply_empty_after_finalize");
+    }
+
+    #[test]
     fn execute_turn_treats_stop_marker_as_plain_text_after_stop_semantics_removal() {
         let llm = SequenceStubLlm {
             responses: Mutex::new(vec![LlmResponse {
@@ -4663,6 +4894,42 @@ mod tests {
         assert!(
             matches!(outcome, WorkerOutcome::Content(ref text) if text == "[STOP] 好的，已停止。")
         );
+    }
+
+    fn runtime_mode_normal_snapshot() -> crate::runtime::RuntimeModeSnapshot {
+        crate::runtime::RuntimeModeSnapshot {
+            current_mode: crate::runtime::RuntimeMode::Normal,
+            wifi_sta_connected: true,
+            boot_phase_active: false,
+            pairing_required: false,
+            pairing_state_known: false,
+            voice_exclusive_active: false,
+            background_maintenance_active: false,
+            config_plane_alive: false,
+            channel_plane_alive: true,
+            voice_plane_alive: false,
+            agent_plane_alive: true,
+            user_agent_lane_alive: true,
+            system_agent_lane_alive: false,
+            dual_agent_lanes_alive: false,
+            external_wss_managed_present: false,
+            external_wss_suspend_requested: false,
+            external_wss_suspended: false,
+            supervisor_present: false,
+            supervisor_alive: false,
+            supervisor_agent_alive: false,
+            recovery_safe_mode_active: false,
+            action_budget: crate::runtime::RuntimeModeActionBudget {
+                allow_periodic_maintenance: true,
+                allow_due_user_timers: true,
+                allow_heartbeat_injection: true,
+                allow_best_effort_delayed_tasks: true,
+                allow_idle_self_runtime: true,
+                allow_non_voice_outbound: true,
+                allow_external_wss_connect: true,
+                require_external_wss_suspended: false,
+            },
+        }
     }
 
     #[test]

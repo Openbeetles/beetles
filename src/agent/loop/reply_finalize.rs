@@ -440,6 +440,7 @@ pub(super) fn complete_turn(
     metrics::record_react_rounds(worker_latency.react_rounds);
     metrics::record_tool_calls_last(worker_latency.tool_calls);
     metrics::record_request_semantics_ms(worker_latency.request_semantics_ms);
+    metrics::record_tool_exec_ms(worker_latency.tool_exec_ms);
     metrics::record_surface_finalize_ms(worker_latency.surface_finalize_ms);
     metrics::record_mental_privacy_review_ms(worker_latency.mental_privacy_review_ms);
     metrics::record_final_recovery_ms(worker_latency.final_recovery_ms);

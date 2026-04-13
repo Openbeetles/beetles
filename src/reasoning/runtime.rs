@@ -1,7 +1,7 @@
 //! Programmable reasoning runtime contracts and executors.
 
 use crate::error::Result;
-use crate::reasoning::lua_runner::execute_lua_query;
+use crate::reasoning::execute_lua_query;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
