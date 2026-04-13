@@ -5,6 +5,10 @@ use crate::office::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub const OFFICE_METADATA_CALENDAR_USERNAME: &str = "calendar_username";
+pub const OFFICE_METADATA_CALENDAR_BASE_URL: &str = "calendar_base_url";
+pub const OFFICE_METADATA_CALENDAR_ROOT_PATH: &str = "calendar_root_path";
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CalendarProviderCredential {
     pub account_key: String,
@@ -15,6 +19,12 @@ pub struct CalendarProviderCredential {
     pub account_label: String,
     #[serde(default)]
     pub calendar_id: String,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub root_path: String,
     #[serde(default)]
     pub access_token: String,
     #[serde(default)]
@@ -38,6 +48,12 @@ pub struct CalendarProviderCredentialStatus {
     #[serde(default)]
     pub calendar_id: String,
     #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub root_path: String,
+    #[serde(default)]
     pub configured: bool,
     #[serde(default)]
     pub has_refresh_token: bool,
@@ -57,13 +73,21 @@ pub trait CalendarProviderCredentialStore: Send + Sync {
 
 impl CalendarProviderCredential {
     pub fn status(&self) -> CalendarProviderCredentialStatus {
+        let transport_configured = if self.provider == "caldav" {
+            !self.username.trim().is_empty() && !self.base_url.trim().is_empty()
+        } else {
+            true
+        };
         CalendarProviderCredentialStatus {
             account_key: self.account_key.clone(),
             provider: self.provider.clone(),
             account_id: self.account_id.clone(),
             account_label: self.account_label.clone(),
             calendar_id: self.calendar_id.clone(),
-            configured: !self.access_token.trim().is_empty(),
+            username: self.username.clone(),
+            base_url: self.base_url.clone(),
+            root_path: self.root_path.clone(),
+            configured: !self.access_token.trim().is_empty() && transport_configured,
             has_refresh_token: !self.refresh_token.trim().is_empty(),
             expires_at_unix_secs: self.expires_at_unix_secs,
             updated_at: self.updated_at,
@@ -151,6 +175,24 @@ impl CalendarProviderCredentialStore for OfficeBackedCalendarProviderCredentialS
                 credential.calendar_id.trim().to_string(),
             );
         }
+        if !credential.username.trim().is_empty() {
+            metadata.insert(
+                OFFICE_METADATA_CALENDAR_USERNAME.to_string(),
+                credential.username.trim().to_string(),
+            );
+        }
+        if !credential.base_url.trim().is_empty() {
+            metadata.insert(
+                OFFICE_METADATA_CALENDAR_BASE_URL.to_string(),
+                credential.base_url.trim().trim_end_matches('/').to_string(),
+            );
+        }
+        if !credential.root_path.trim().is_empty() {
+            metadata.insert(
+                OFFICE_METADATA_CALENDAR_ROOT_PATH.to_string(),
+                credential.root_path.trim().to_string(),
+            );
+        }
         self.office.set_credential(&OfficeCredential {
             account_key: credential.account_key.clone(),
             access_token: credential.access_token.clone(),
@@ -183,7 +225,7 @@ impl CalendarProviderCredentialStore for OfficeBackedCalendarProviderCredentialS
     }
 }
 
-fn calendar_credential_from_office(
+pub(crate) fn calendar_credential_from_office(
     account: crate::office::OfficeAccount,
     credential: OfficeCredential,
 ) -> CalendarProviderCredential {
@@ -191,16 +233,89 @@ fn calendar_credential_from_office(
         .metadata_value(OFFICE_METADATA_CALENDAR_ID)
         .unwrap_or_default()
         .to_string();
+    let username = credential
+        .metadata_value(OFFICE_METADATA_CALENDAR_USERNAME)
+        .unwrap_or(account.external_account_id.as_str())
+        .trim()
+        .to_string();
+    let base_url = credential
+        .metadata_value(OFFICE_METADATA_CALENDAR_BASE_URL)
+        .unwrap_or_default()
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    let root_path = credential
+        .metadata_value(OFFICE_METADATA_CALENDAR_ROOT_PATH)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     CalendarProviderCredential {
         account_key: credential.account_key,
         provider: account.provider_kind,
         account_id: account.external_account_id,
         account_label: account.account_label,
         calendar_id,
+        username,
+        base_url,
+        root_path,
         access_token: credential.access_token,
         refresh_token: credential.refresh_token,
         token_endpoint: credential.token_endpoint,
         expires_at_unix_secs: credential.expires_at_unix_secs,
         updated_at: credential.updated_at,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::office::{OfficeAccount, OfficeAccountIdentityClass, OfficeCapability};
+
+    #[test]
+    fn calendar_credential_from_office_maps_caldav_transport_metadata() {
+        let credential = calendar_credential_from_office(
+            OfficeAccount {
+                account_key: "calendar-work".to_string(),
+                provider_kind: "caldav".to_string(),
+                external_account_id: "work@example.com".to_string(),
+                account_label: "Work Calendar".to_string(),
+                identity_class: OfficeAccountIdentityClass::Work,
+                enabled_capabilities: vec![OfficeCapability::Calendar],
+            },
+            OfficeCredential {
+                account_key: "calendar-work".to_string(),
+                access_token: "app-password".to_string(),
+                refresh_token: String::new(),
+                token_endpoint: String::new(),
+                expires_at_unix_secs: 0,
+                updated_at: 42,
+                metadata: [
+                    ("calendar_id".to_string(), "team".to_string()),
+                    (
+                        "calendar_username".to_string(),
+                        "caldav-user".to_string(),
+                    ),
+                    (
+                        "calendar_base_url".to_string(),
+                        "https://dav.example.com/remote.php/dav/calendars".to_string(),
+                    ),
+                    (
+                        "calendar_root_path".to_string(),
+                        "/work".to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            },
+        );
+
+        let value = serde_json::to_value(&credential).expect("serialize calendar credential");
+        assert_eq!(value["calendar_id"], "team");
+        assert_eq!(value["username"], "caldav-user");
+        assert_eq!(
+            value["base_url"],
+            "https://dav.example.com/remote.php/dav/calendars"
+        );
+        assert_eq!(value["root_path"], "/work");
     }
 }

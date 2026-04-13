@@ -311,6 +311,31 @@ impl EspHttpClient {
 }
 
 impl crate::platform::PlatformHttpClient for EspHttpClient {
+    fn request(
+        &mut self,
+        method: &str,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: Option<&[u8]>,
+    ) -> Result<(u16, ResponseBody)> {
+        match (method, body) {
+            ("GET", _) => self.do_get(url, headers),
+            ("DELETE", None) | ("DELETE", Some([])) => self.do_delete(url, headers),
+            (verb, Some(payload)) => self.do_request_with_body(verb, url, headers, payload),
+            (verb, None) => self.execute_request(|agent| {
+                let req = apply_headers(agent.request(verb, url), headers);
+                let resp = req
+                    .call()
+                    .or_any_status()
+                    .map_err(|e| transport_to_error(e, "http_request"))?;
+                let status = resp.status();
+                let reader = resp.into_reader();
+                let body = read_response_body_from_reader(reader)?;
+                Ok((status, body))
+            }),
+        }
+    }
+
     fn get(&mut self, url: &str, headers: &[(&str, &str)]) -> Result<(u16, ResponseBody)> {
         self.get_with_headers_inner(url, headers)
     }

@@ -51,6 +51,16 @@ pub(crate) struct HttpClientToolContext<'a> {
 }
 
 impl PlatformHttpClient for HttpClientToolContext<'_> {
+    fn request(
+        &mut self,
+        method: &str,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: Option<&[u8]>,
+    ) -> Result<(u16, ResponseBody)> {
+        self.http.request(method, url, headers, body)
+    }
+
     fn get(&mut self, url: &str, headers: &[(&str, &str)]) -> Result<(u16, ResponseBody)> {
         self.http.get(url, headers)
     }
@@ -82,6 +92,16 @@ impl PlatformHttpClient for HttpClientToolContext<'_> {
 }
 
 impl ToolContext for HttpClientToolContext<'_> {
+    fn request_with_headers(
+        &mut self,
+        method: &str,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: Option<&[u8]>,
+    ) -> Result<(u16, ResponseBody)> {
+        self.http.request(method, url, headers, body)
+    }
+
     fn get_with_headers(
         &mut self,
         url: &str,
@@ -248,6 +268,16 @@ impl<'a> ToolContextHttpClient<'a> {
 }
 
 impl PlatformHttpClient for ToolContextHttpClient<'_> {
+    fn request(
+        &mut self,
+        method: &str,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: Option<&[u8]>,
+    ) -> Result<(u16, ResponseBody)> {
+        self.ctx.request_with_headers(method, url, headers, body)
+    }
+
     fn get(&mut self, url: &str, headers: &[(&str, &str)]) -> Result<(u16, ResponseBody)> {
         self.ctx.get_with_headers(url, headers)
     }

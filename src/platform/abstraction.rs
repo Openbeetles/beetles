@@ -436,6 +436,25 @@ pub trait HardwareDiscovery: Send + Sync {
 
 /// 统一 HTTP 客户端：仅 get/post/post_streaming/reset 方法，LlmHttpClient、ToolContext、ChannelHttpClient 由 lib 层 blanket 转发。
 pub trait PlatformHttpClient {
+    fn request(
+        &mut self,
+        method: &str,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: Option<&[u8]>,
+    ) -> Result<(u16, ResponseBody)> {
+        match method {
+            "GET" => self.get(url, headers),
+            "POST" => self.post(url, headers, body.unwrap_or_default()),
+            "PATCH" => self.patch(url, headers, body.unwrap_or_default()),
+            "PUT" => self.put(url, headers, body.unwrap_or_default()),
+            "DELETE" => self.delete(url, headers),
+            other => Err(Error::config(
+                "http_request_method",
+                format!("unsupported http method: {other}"),
+            )),
+        }
+    }
     fn get(&mut self, url: &str, headers: &[(&str, &str)]) -> Result<(u16, ResponseBody)>;
     fn post(
         &mut self,
@@ -484,6 +503,15 @@ pub trait PlatformHttpClient {
 }
 
 impl PlatformHttpClient for Box<dyn PlatformHttpClient + '_> {
+    fn request(
+        &mut self,
+        method: &str,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: Option<&[u8]>,
+    ) -> Result<(u16, ResponseBody)> {
+        (**self).request(method, url, headers, body)
+    }
     fn get(&mut self, url: &str, headers: &[(&str, &str)]) -> Result<(u16, ResponseBody)> {
         (**self).get(url, headers)
     }

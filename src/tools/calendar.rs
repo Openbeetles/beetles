@@ -833,6 +833,9 @@ mod tests {
                 account_id: "acc-1".to_string(),
                 account_label: "Work".to_string(),
                 calendar_id: "team".to_string(),
+                username: String::new(),
+                base_url: String::new(),
+                root_path: String::new(),
                 access_token: "token".to_string(),
                 refresh_token: "refresh".to_string(),
                 token_endpoint: String::new(),
@@ -862,6 +865,51 @@ mod tests {
         );
     }
 
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[test]
+    fn calendar_tool_provider_status_exposes_caldav_transport_shape() {
+        let credential_store = Arc::new(StubCredentialStore::default());
+        credential_store
+            .set(&CalendarProviderCredential {
+                account_key: "calendar-work".to_string(),
+                provider: "caldav".to_string(),
+                account_id: "work@example.com".to_string(),
+                account_label: "Work Calendar".to_string(),
+                calendar_id: "team".to_string(),
+                username: "caldav-user".to_string(),
+                base_url: "https://dav.example.com/remote.php/dav/calendars".to_string(),
+                root_path: "/work".to_string(),
+                access_token: "app-password".to_string(),
+                refresh_token: String::new(),
+                token_endpoint: String::new(),
+                expires_at_unix_secs: 0,
+                updated_at: 7,
+            })
+            .unwrap();
+        let mut providers = CalendarProviderRegistry::new();
+        providers.register(Arc::new(
+            crate::calendar::providers::caldav::CalDavProvider,
+        ));
+        let tool = CalendarTool::with_providers(
+            Arc::new(StubCalendarStore::default()),
+            credential_store,
+            providers,
+        );
+        let mut ctx = DummyCtx;
+        let payload = tool
+            .execute(r#"{"op":"provider_status"}"#, &mut ctx)
+            .unwrap();
+        let payload: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(payload["registered_remote_providers"][0], "caldav");
+        assert_eq!(payload["configured_providers"][0]["provider"], "caldav");
+        assert_eq!(payload["configured_providers"][0]["configured"], true);
+        assert_eq!(
+            payload["configured_providers"][0]["base_url"],
+            "https://dav.example.com/remote.php/dav/calendars"
+        );
+        assert_eq!(payload["configured_providers"][0]["root_path"], "/work");
+    }
+
     #[test]
     fn calendar_tool_routes_remote_provider_via_office_default_account() {
         let credential_store = Arc::new(StubCredentialStore::default());
@@ -872,6 +920,9 @@ mod tests {
                 account_id: "work@example.com".to_string(),
                 account_label: "Work".to_string(),
                 calendar_id: "work".to_string(),
+                username: String::new(),
+                base_url: String::new(),
+                root_path: String::new(),
                 access_token: "token-work".to_string(),
                 refresh_token: String::new(),
                 token_endpoint: String::new(),
@@ -886,6 +937,9 @@ mod tests {
                 account_id: "personal@example.com".to_string(),
                 account_label: "Personal".to_string(),
                 calendar_id: "personal".to_string(),
+                username: String::new(),
+                base_url: String::new(),
+                root_path: String::new(),
                 access_token: "token-personal".to_string(),
                 refresh_token: String::new(),
                 token_endpoint: String::new(),

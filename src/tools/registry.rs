@@ -726,6 +726,7 @@ fn register_core_tools(
     let office_config_service = office_config_service.with_probe_adapters(vec![
         Arc::new(crate::mail::providers::imap_smtp::ImapSmtpOfficeProbeAdapter),
         Arc::new(crate::documents::providers::webdav::WebDavOfficeProbeAdapter),
+        Arc::new(crate::calendar::providers::caldav::CalDavOfficeProbeAdapter),
     ]);
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     let office_config_service = office_config_service;
@@ -745,6 +746,14 @@ fn register_core_tools(
     };
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     let documents_providers = crate::documents::DocumentsProviderRegistry::new();
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    let calendar_providers = {
+        let mut providers = crate::calendar::CalendarProviderRegistry::new();
+        providers.register(Arc::new(crate::calendar::providers::caldav::CalDavProvider));
+        providers
+    };
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    let calendar_providers = crate::calendar::CalendarProviderRegistry::new();
     registry.register(Box::new(super::GetTimeTool));
     registry.register(Box::new(super::EnvTool));
     registry.register(Box::new(super::MessageTool));
@@ -756,7 +765,7 @@ fn register_core_tools(
     registry.register(Box::new(super::CalendarTool::with_office_service(
         platform.calendar_store(),
         Arc::clone(&calendar_credential_store),
-        crate::calendar::CalendarProviderRegistry::new(),
+        calendar_providers,
         office_service.clone(),
     )));
     registry.register(Box::new(super::MailTool::with_office_service(

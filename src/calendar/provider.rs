@@ -14,6 +14,25 @@ pub enum CalendarOperation {
 }
 
 pub trait CalendarHttpClient {
+    fn request_with_headers(
+        &mut self,
+        method: &str,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: Option<&[u8]>,
+    ) -> Result<(u16, ResponseBody)> {
+        match method {
+            "GET" => self.get_with_headers(url, headers),
+            "POST" => self.post_with_headers(url, headers, body.unwrap_or_default()),
+            "PATCH" => self.patch_with_headers(url, headers, body.unwrap_or_default()),
+            "PUT" => self.put_with_headers(url, headers, body.unwrap_or_default()),
+            "DELETE" => self.delete_with_headers(url, headers),
+            other => Err(crate::error::Error::config(
+                "calendar_http_method",
+                format!("unsupported http method: {other}"),
+            )),
+        }
+    }
     fn get_with_headers(
         &mut self,
         url: &str,

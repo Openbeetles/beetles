@@ -325,6 +325,25 @@ impl ToolCapabilityContract {
 /// 工具执行时注入的上下文；HTTP 等由 lib 实现（如 EspHttpClient）。
 /// 当前会话的 chat_id/channel 供 remind_at 等工具使用；默认 None，agent 循环内用 wrapper 注入。
 pub trait ToolContext {
+    fn request_with_headers(
+        &mut self,
+        method: &str,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: Option<&[u8]>,
+    ) -> Result<(u16, crate::platform::ResponseBody)> {
+        match method {
+            "GET" => self.get_with_headers(url, headers),
+            "POST" => self.post_with_headers(url, headers, body.unwrap_or_default()),
+            "PATCH" => self.patch_with_headers(url, headers, body.unwrap_or_default()),
+            "PUT" => self.put_with_headers(url, headers, body.unwrap_or_default()),
+            "DELETE" => self.delete_with_headers(url, headers),
+            other => Err(crate::error::Error::config(
+                "tool_http_method",
+                format!("unsupported http method: {other}"),
+            )),
+        }
+    }
     fn get(&mut self, url: &str) -> Result<(u16, crate::platform::ResponseBody)> {
         self.get_with_headers(url, &[])
     }

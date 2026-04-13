@@ -44,6 +44,10 @@
 - 远端 provider 现在支持多账户；同一 provider 下有多个账户时，可以显式传 `account_key`。
 - 如果 `/api/config/accounts` 已经为 `calendar` capability 配了默认账户，`calendar` 工具在远端多账户场景下可以不传 `account_key`，由共享 `OfficeService` 自动选中默认账户。
 - `provider_status` 会返回远端已注册 provider、已配置账户状态，以及可选的 `default_calendar_account_key` 和 `office_runtime_statuses`。
+- 当前第一阶段远端 provider 为 `caldav`：
+  - Linux / 非 ESP 构建会注册真实 CalDAV provider，支持 `list` / `get` / `create` / `update` / `delete`
+  - CalDAV 所需的用户名、根 URL、可选根路径映射来自共享 office credentials metadata，而不是 `calendar` 私有配置
+  - ESP 保留同一 capability/tool 合同，但不编入重型 CalDAV 传输栈
 
 ### `mail`
 
@@ -107,7 +111,7 @@
   - 有 provider probe adapter 时，返回真实探测结果
   - 没有 adapter 时，返回结构化 `unsupported`，原因是 `probe_adapter_unavailable`
   - 凭证缺失时，返回结构化 `missing_credential`
-  - 当前 `imap_smtp` 在 Linux / 非 ESP 构建下会执行真实 IMAP 登录探测
+  - 当前 `imap_smtp` / `webdav` / `caldav` 在 Linux / 非 ESP 构建下会执行真实 provider 探测
 
 ### `office_status`
 

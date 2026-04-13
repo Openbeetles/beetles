@@ -3,6 +3,7 @@
 
 mod credentials;
 mod provider;
+pub mod providers;
 mod service;
 
 use crate::error::{Error, Result};

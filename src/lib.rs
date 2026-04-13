@@ -260,6 +260,16 @@ impl<T: platform::PlatformHttpClient + ?Sized> channels::ChannelHttpClient for T
 }
 
 impl<T: platform::PlatformHttpClient + ?Sized> calendar::CalendarHttpClient for T {
+    fn request_with_headers(
+        &mut self,
+        method: &str,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: Option<&[u8]>,
+    ) -> Result<(u16, platform::ResponseBody)> {
+        platform::PlatformHttpClient::request(self, method, url, headers, body)
+    }
+
     fn get_with_headers(
         &mut self,
         url: &str,

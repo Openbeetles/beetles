@@ -6,6 +6,7 @@ use crate::documents::{
     DocumentsProviderCredential, DocumentsQuery, DocumentsReadResult, DocumentsSearchHit,
     DocumentsSearchQuery,
 };
+
 use crate::documents::credentials::documents_credential_from_office;
 use crate::error::{Error, Result};
 use crate::office::{OfficeAccount, OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult};
@@ -135,12 +136,16 @@ impl DocumentsProvider for WebDavProvider {
                     let raw = http_get_bytes(credential, &entry.path)?;
                     if let Some(text) = decode_searchable_document_text(&entry.path, &raw) {
                         if contains_query_text(&text, &query.query, query.case_sensitive) {
-                            content_match =
-                                Some(build_search_snippet(&text, &query.query, query.case_sensitive));
+                            content_match = Some(build_search_snippet(
+                                &text,
+                                &query.query,
+                                query.case_sensitive,
+                            ));
                         }
                     }
                 } else {
-                    warning = Some("content not searched because the file is too large".to_string());
+                    warning =
+                        Some("content not searched because the file is too large".to_string());
                 }
 
                 if path_hit || content_match.is_some() {
@@ -222,13 +227,19 @@ impl OfficeProbeAdapter for WebDavOfficeProbeAdapter {
 
 fn validate_webdav_credential(credential: &DocumentsProviderCredential) -> Result<()> {
     if credential.username.trim().is_empty() {
-        return Err(Error::config("webdav_provider", "username must not be empty"));
+        return Err(Error::config(
+            "webdav_provider",
+            "username must not be empty",
+        ));
     }
     if credential.secret.trim().is_empty() {
         return Err(Error::config("webdav_provider", "secret must not be empty"));
     }
     if credential.base_url.trim().is_empty() {
-        return Err(Error::config("webdav_provider", "base_url must not be empty"));
+        return Err(Error::config(
+            "webdav_provider",
+            "base_url must not be empty",
+        ));
     }
     Ok(())
 }
@@ -402,12 +413,7 @@ fn parse_propfind_response(
                 tag_stack.pop();
             }
             Ok(Event::Eof) => break,
-            Err(error) => {
-                return Err(Error::config(
-                    "webdav_propfind_parse",
-                    error.to_string(),
-                ))
-            }
+            Err(error) => return Err(Error::config("webdav_propfind_parse", error.to_string())),
             _ => {}
         }
         buf.clear();
@@ -452,13 +458,12 @@ fn parse_propfind_response(
     Ok(entries)
 }
 
-fn relative_path_from_href(
-    credential: &DocumentsProviderCredential,
-    href: &str,
-) -> Option<String> {
+fn relative_path_from_href(credential: &DocumentsProviderCredential, href: &str) -> Option<String> {
     let href_path = strip_url_origin(href);
     let base_path = strip_url_origin(&credential.base_url);
-    let mut relative = href_path.strip_prefix(base_path.as_str()).unwrap_or(&href_path);
+    let mut relative = href_path
+        .strip_prefix(base_path.as_str())
+        .unwrap_or(&href_path);
     let root_prefix = normalize_root_prefix(&credential.root_path);
     if !root_prefix.is_empty() {
         relative = relative
@@ -575,7 +580,9 @@ mod tests {
         let entries = parse_propfind_response(&credential(), "", xml).expect("parse xml");
         assert_eq!(entries.len(), 2);
         assert!(entries.iter().any(|entry| entry.path == "Reports"));
-        assert!(entries.iter().any(|entry| entry.path == "Reports/report.txt"));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.path == "Reports/report.txt"));
     }
 
     #[test]
@@ -600,6 +607,9 @@ mod tests {
         let result = WebDavOfficeProbeAdapter
             .probe(&account, &credential)
             .expect("probe result");
-        assert_eq!(result.disposition, OfficeProbeDisposition::MissingCredential);
+        assert_eq!(
+            result.disposition,
+            OfficeProbeDisposition::MissingCredential
+        );
     }
 }
