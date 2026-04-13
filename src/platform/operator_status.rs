@@ -2,9 +2,10 @@
 
 use crate::device_capability::{build_device_capability_snapshots, DeviceCapabilityPlaneSnapshot};
 use crate::diagnosis::{
-    build_delivery_diagnosis, build_memory_runtime_diagnosis, build_system_diagnosis,
-    build_network_path_diagnosis_from_runtime, build_voice_path_diagnosis_from_runtime,
-    DeliveryDiagnosisInput, DiagnosisResult, SystemDiagnosisInput,
+    build_delivery_diagnosis, build_memory_runtime_diagnosis,
+    build_network_path_diagnosis_from_runtime, build_system_diagnosis,
+    build_voice_path_diagnosis_from_runtime, DeliveryDiagnosisInput, DiagnosisResult,
+    SystemDiagnosisInput,
 };
 use crate::orchestrator;
 use crate::platform::memory_operator_surface::{
@@ -234,28 +235,23 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
     ));
     out.push_str(&format!(
         "  delivery_diagnosis_summary: {}\n  delivery_diagnosis_confidence: {:?}\n",
-        snapshot.delivery_diagnosis.summary,
-        snapshot.delivery_diagnosis.confidence,
+        snapshot.delivery_diagnosis.summary, snapshot.delivery_diagnosis.confidence,
     ));
     out.push_str(&format!(
         "  system_diagnosis_summary: {}\n  system_diagnosis_confidence: {:?}\n",
-        snapshot.system_diagnosis.summary,
-        snapshot.system_diagnosis.confidence,
+        snapshot.system_diagnosis.summary, snapshot.system_diagnosis.confidence,
     ));
     out.push_str(&format!(
         "  memory_runtime_diagnosis_summary: {}\n  memory_runtime_diagnosis_confidence: {:?}\n",
-        snapshot.memory_runtime_diagnosis.summary,
-        snapshot.memory_runtime_diagnosis.confidence,
+        snapshot.memory_runtime_diagnosis.summary, snapshot.memory_runtime_diagnosis.confidence,
     ));
     out.push_str(&format!(
         "  network_path_diagnosis_summary: {}\n  network_path_diagnosis_confidence: {:?}\n",
-        snapshot.network_path_diagnosis.summary,
-        snapshot.network_path_diagnosis.confidence,
+        snapshot.network_path_diagnosis.summary, snapshot.network_path_diagnosis.confidence,
     ));
     out.push_str(&format!(
         "  voice_path_diagnosis_summary: {}\n  voice_path_diagnosis_confidence: {:?}\n",
-        snapshot.voice_path_diagnosis.summary,
-        snapshot.voice_path_diagnosis.confidence,
+        snapshot.voice_path_diagnosis.summary, snapshot.voice_path_diagnosis.confidence,
     ));
     if let Some(window) = snapshot.operator_surface.operator_window.as_ref() {
         out.push_str(&format!(

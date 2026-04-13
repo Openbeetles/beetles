@@ -15,17 +15,18 @@ use crate::platform::{
     heartbeat_file::read_heartbeat_file,
     spiffs::{
         spiffs_usage, CachedSkillMetaStore, CachedSkillStorage, SpiffsAutonomyStrategyStore,
-        SpiffsCalendarProviderCredentialStore, SpiffsCalendarStore, SpiffsContinuityCapsuleStore,
-        SpiffsCoreRevisionLedgerStore, SpiffsExecutionStateStore, SpiffsImportantMessageStore,
-        SpiffsInnerLifeStore, SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore,
-        SpiffsMemoryStore, SpiffsMentalPrivacyStore, SpiffsOuterVoiceStore,
-        SpiffsPendingRetryStore, SpiffsPrivateDocStore, SpiffsPrivateGardenStore,
-        SpiffsRelationshipConstitutionStore, SpiffsRelationshipPortfolioStore,
-        SpiffsRelationshipTopologyStore, SpiffsRemindAtStore, SpiffsSelfAuthoredCoreStore,
-        SpiffsSelfContinuityStore, SpiffsSelfModelStore, SpiffsSessionStore,
-        SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
-        SpiffsTaskArtifactStore, SpiffsTaskExecutionLedgerStore, SpiffsTaskLearningStore,
-        SpiffsTaskRunStore, SpiffsTaskStore, SpiffsTurnLedgerStore, SpiffsWorldSenseStore,
+        SpiffsCalendarStore, SpiffsContinuityCapsuleStore, SpiffsCoreRevisionLedgerStore,
+        SpiffsExecutionStateStore, SpiffsImportantMessageStore, SpiffsInnerLifeStore,
+        SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
+        SpiffsMentalPrivacyStore, SpiffsOfficeCredentialStore, SpiffsOfficeRuntimeStatusStore,
+        SpiffsOuterVoiceStore, SpiffsPendingRetryStore, SpiffsPrivateDocStore,
+        SpiffsPrivateGardenStore, SpiffsRelationshipConstitutionStore,
+        SpiffsRelationshipPortfolioStore, SpiffsRelationshipTopologyStore, SpiffsRemindAtStore,
+        SpiffsSelfAuthoredCoreStore, SpiffsSelfContinuityStore, SpiffsSelfModelStore,
+        SpiffsSessionStore, SpiffsSessionSummaryStore, SpiffsSkillMetaStore,
+        SpiffsSkillStorage, SpiffsTaskArtifactStore, SpiffsTaskExecutionLedgerStore,
+        SpiffsTaskLearningStore, SpiffsTaskRunStore, SpiffsTaskStore, SpiffsTurnLedgerStore,
+        SpiffsWorldSenseStore,
     },
     NvsConfigStore,
 };
@@ -39,7 +40,7 @@ use crate::runtime::write_back::{
     BufferedWorldSenseStore,
 };
 use crate::{
-    calendar::{CalendarProviderCredentialStore, CalendarStore},
+    calendar::CalendarStore,
     config::{AppConfig, AudioSegment},
     display::{DisplayCommand, DisplayConfig},
     memory::{
@@ -51,6 +52,7 @@ use crate::{
         RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore, SelfModelStore, SessionStore,
         SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
     },
+    office::{OfficeCredentialStore, OfficeRuntimeStatusStore},
     task::TaskStore,
     task_execution::{
         TaskArtifactStore, TaskExecutionLedgerStore, TaskLearningStore, TaskRunStore,
@@ -72,7 +74,8 @@ pub struct LinuxPlatform {
     session_store: Arc<dyn SessionStore + Send + Sync>,
     pending_retry_store: Arc<SpiffsPendingRetryStore>,
     calendar_store: Arc<SpiffsCalendarStore>,
-    calendar_provider_credential_store: Arc<SpiffsCalendarProviderCredentialStore>,
+    office_credential_store: Arc<SpiffsOfficeCredentialStore>,
+    office_runtime_status_store: Arc<SpiffsOfficeRuntimeStatusStore>,
     task_store: Arc<SpiffsTaskStore>,
     task_run_store: Arc<SpiffsTaskRunStore>,
     task_artifact_store: Arc<SpiffsTaskArtifactStore>,
@@ -178,9 +181,8 @@ impl LinuxPlatform {
             session_store,
             pending_retry_store: Arc::new(SpiffsPendingRetryStore::new()),
             calendar_store: Arc::new(SpiffsCalendarStore::new()),
-            calendar_provider_credential_store: Arc::new(
-                SpiffsCalendarProviderCredentialStore::new(),
-            ),
+            office_credential_store: Arc::new(SpiffsOfficeCredentialStore::new()),
+            office_runtime_status_store: Arc::new(SpiffsOfficeRuntimeStatusStore::new()),
             task_store: Arc::new(SpiffsTaskStore::new()),
             task_run_store: Arc::new(SpiffsTaskRunStore::new()),
             task_artifact_store: Arc::new(SpiffsTaskArtifactStore::new()),
@@ -347,11 +349,13 @@ impl Platform for LinuxPlatform {
         Arc::clone(&self.calendar_store) as Arc<dyn CalendarStore + Send + Sync>
     }
 
-    fn calendar_provider_credential_store(
-        &self,
-    ) -> Arc<dyn CalendarProviderCredentialStore + Send + Sync> {
-        Arc::clone(&self.calendar_provider_credential_store)
-            as Arc<dyn CalendarProviderCredentialStore + Send + Sync>
+    fn office_credential_store(&self) -> Arc<dyn OfficeCredentialStore + Send + Sync> {
+        Arc::clone(&self.office_credential_store) as Arc<dyn OfficeCredentialStore + Send + Sync>
+    }
+
+    fn office_runtime_status_store(&self) -> Arc<dyn OfficeRuntimeStatusStore + Send + Sync> {
+        Arc::clone(&self.office_runtime_status_store)
+            as Arc<dyn OfficeRuntimeStatusStore + Send + Sync>
     }
 
     fn task_store(&self) -> Arc<dyn TaskStore + Send + Sync> {

@@ -58,7 +58,10 @@ mod tests {
             Some("network_path")
         );
         assert!(parsed["network_path_diagnosis"].get("summary").is_some());
-        assert_eq!(parsed["voice_path_diagnosis"]["kind"].as_str(), Some("voice_path"));
+        assert_eq!(
+            parsed["voice_path_diagnosis"]["kind"].as_str(),
+            Some("voice_path")
+        );
         assert!(parsed["voice_path_diagnosis"].get("summary").is_some());
         assert!(parsed["workflow"].get("summary").is_some());
         assert!(parsed["workflow"].get("recent_records").is_some());

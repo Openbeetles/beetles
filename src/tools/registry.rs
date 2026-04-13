@@ -696,18 +696,64 @@ fn register_core_tools(
     turn_ledger_store: &Arc<dyn crate::memory::TurnLedgerStore + Send + Sync>,
     private_garden_store: &Arc<dyn crate::memory::PrivateGardenStore + Send + Sync>,
 ) {
+    let office_config_service = crate::office::OfficeConfigManagementService::new(
+        Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(platform))),
+        platform.office_credential_store(),
+        platform.office_runtime_status_store(),
+    );
+    let office_service = crate::office::OfficeService::new(
+        config.office_accounts.registry.clone(),
+        config.office_accounts.binding.clone(),
+        config.office_accounts.policy.clone(),
+        platform.office_credential_store(),
+        platform.office_runtime_status_store(),
+    );
+    let calendar_credential_store: Arc<
+        dyn crate::calendar::CalendarProviderCredentialStore + Send + Sync,
+    > = Arc::new(crate::calendar::OfficeBackedCalendarProviderCredentialStore::new(
+        office_service.clone(),
+    ));
+    let mail_credential_store: Arc<dyn crate::mail::MailProviderCredentialStore + Send + Sync> =
+        Arc::new(crate::mail::OfficeBackedMailProviderCredentialStore::new(
+            office_service.clone(),
+        ));
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    let office_config_service = office_config_service.with_probe_adapters(vec![Arc::new(
+            crate::mail::providers::imap_smtp::ImapSmtpOfficeProbeAdapter,
+    )]);
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    let office_config_service = office_config_service;
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    let mail_providers = {
+        let mut providers = crate::mail::MailProviderRegistry::new();
+        providers.register(Arc::new(crate::mail::providers::imap_smtp::ImapSmtpProvider));
+        providers
+    };
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    let mail_providers = crate::mail::MailProviderRegistry::new();
     registry.register(Box::new(super::GetTimeTool));
     registry.register(Box::new(super::EnvTool));
     registry.register(Box::new(super::MessageTool));
     registry.register(Box::new(super::TaskTool::new(
         platform.task_store(),
         platform.calendar_store(),
-        platform.calendar_provider_credential_store(),
+        Arc::clone(&calendar_credential_store),
     )));
-    registry.register(Box::new(super::CalendarTool::new(
+    registry.register(Box::new(super::CalendarTool::with_office_service(
         platform.calendar_store(),
-        platform.calendar_provider_credential_store(),
+        Arc::clone(&calendar_credential_store),
+        crate::calendar::CalendarProviderRegistry::new(),
+        office_service.clone(),
     )));
+    registry.register(Box::new(super::MailTool::with_office_service(
+        Arc::clone(&mail_credential_store),
+        mail_providers,
+        office_service.clone(),
+    )));
+    registry.register(Box::new(super::OfficeConfigTool::new(
+        office_config_service,
+    )));
+    registry.register(Box::new(super::OfficeStatusTool::new(office_service)));
     registry.register(Box::new(super::FilesTool::new(platform.state_fs())));
     registry.register(Box::new(super::FileEditTool::new(platform.state_fs())));
     #[cfg(all(

@@ -303,6 +303,50 @@ pub fn dispatch(
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
         }
+        ("GET", "/api/config/accounts") => {
+            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
+                return Ok(api_to_out(r));
+            }
+            let body = handlers::config::get_accounts_body(ctx)
+                .map_err(|e| err_other("http_router_dispatch", e))?;
+            Ok(OutgoingResponse::json(
+                200,
+                "OK",
+                CORS_HEADERS,
+                body.into_bytes(),
+            ))
+        }
+        ("POST", "/api/config/accounts") => {
+            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
+                return Ok(o);
+            }
+            let body_str = utf8_body(&incoming.body)?;
+            let r = handlers::config::post_accounts(ctx, body_str)
+                .map_err(|e| err_other("http_router_dispatch", e))?;
+            Ok(api_to_out(r))
+        }
+        ("GET", "/api/config/office_credentials") => {
+            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
+                return Ok(api_to_out(r));
+            }
+            let body = handlers::config::get_office_credentials_body(ctx)
+                .map_err(|e| err_other("http_router_dispatch", e))?;
+            Ok(OutgoingResponse::json(
+                200,
+                "OK",
+                CORS_HEADERS,
+                body.into_bytes(),
+            ))
+        }
+        ("POST", "/api/config/office_credentials") => {
+            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
+                return Ok(o);
+            }
+            let body_str = utf8_body(&incoming.body)?;
+            let r = handlers::config::post_office_credentials(ctx, body_str)
+                .map_err(|e| err_other("http_router_dispatch", e))?;
+            Ok(api_to_out(r))
+        }
         ("GET", "/api/config/hardware") => {
             if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
                 return Ok(api_to_out(r));

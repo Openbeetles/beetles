@@ -38,7 +38,9 @@ impl Tool for DiagnoseNetworkPathTool {
     fn execute(&self, _args: &str, _ctx: &mut dyn ToolContext) -> crate::Result<String> {
         let config = crate::config::AppConfig::load(
             self.config_store.as_ref(),
-            Some(&crate::config::PlatformConfigFileStore(Arc::clone(&self.platform))),
+            Some(&crate::config::PlatformConfigFileStore(Arc::clone(
+                &self.platform,
+            ))),
         );
         serialize_tool_output(
             "diagnose_network_path",

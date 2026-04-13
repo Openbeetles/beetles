@@ -75,6 +75,43 @@ pub fn post_system(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std:
     }
 }
 
+/// GET /api/config/accounts：返回 OfficeAccountsSegment JSON（文件不存在时返回空默认配置）。
+pub fn get_accounts_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
+    config::get_office_accounts_segment(ctx.config_file_store.as_ref())
+        .map_err(|e| to_io(e.to_string()))
+}
+
+/// POST /api/config/accounts：仅写办公账户段，body 为 OfficeAccountsSegment JSON。
+pub fn post_accounts(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
+    let loc = locale_from_store(ctx.config_store.as_ref());
+    match config::save_office_accounts_segment(ctx.config_file_store.as_ref(), body) {
+        Ok(()) => {
+            ctx.reload_config();
+            Ok(ApiResponse::ok_200_json("{\"ok\":true}"))
+        }
+        Err(e) => Ok(ApiResponse::err_400(&tr_error(&e, loc))),
+    }
+}
+
+/// GET /api/config/office_credentials：返回 OfficeCredentialsSegment JSON。
+pub fn get_office_credentials_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
+    config::get_office_credentials_segment(ctx.platform.office_credential_store().as_ref())
+        .map_err(|e| to_io(e.to_string()))
+}
+
+/// POST /api/config/office_credentials：仅写办公 credential 段。
+pub fn post_office_credentials(
+    ctx: &HandlerContext,
+    body: &str,
+) -> Result<ApiResponse, std::io::Error> {
+    let loc = locale_from_store(ctx.config_store.as_ref());
+    match config::save_office_credentials_segment(ctx.platform.office_credential_store().as_ref(), body)
+    {
+        Ok(()) => Ok(ApiResponse::ok_200_json("{\"ok\":true}")),
+        Err(e) => Ok(ApiResponse::err_400(&tr_error(&e, loc))),
+    }
+}
+
 /// GET /api/config/hardware：返回 HardwareSegment JSON（文件不存在时返回空 devices）。路由层要求配对码。
 pub fn get_hardware_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     match ctx

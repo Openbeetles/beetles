@@ -4,7 +4,9 @@ use crate::diagnosis::{
     DiagnosisFinding, DiagnosisKind, DiagnosisResult, DiagnosisRootCause,
 };
 use crate::i18n::Locale;
-use crate::orchestrator::{PressureLevel, RuntimeCapabilityState, RuntimeCapabilityStatus, TlsFragmentationRisk};
+use crate::orchestrator::{
+    PressureLevel, RuntimeCapabilityState, RuntimeCapabilityStatus, TlsFragmentationRisk,
+};
 
 pub struct NetworkPathDiagnosisInput<'a> {
     pub enabled_channel: Option<&'a str>,
@@ -25,7 +27,10 @@ pub fn build_network_path_diagnosis(input: NetworkPathDiagnosisInput<'_>) -> Dia
     let mut recommended_next_steps = Vec::new();
     let mut degraded_by = Vec::new();
     let mut evidence = vec![
-        DiagnosisEvidence::new("enabled_channel", input.enabled_channel.unwrap_or("unknown")),
+        DiagnosisEvidence::new(
+            "enabled_channel",
+            input.enabled_channel.unwrap_or("unknown"),
+        ),
         DiagnosisEvidence::new("wifi_connected", input.wifi_connected.to_string()),
         DiagnosisEvidence::new(
             "pressure",
@@ -41,7 +46,10 @@ pub fn build_network_path_diagnosis(input: NetworkPathDiagnosisInput<'_>) -> Dia
     let mut summary = "The current network path snapshot looks generally reachable.".to_string();
 
     if let Some(count) = input.dns_nameserver_count {
-        evidence.push(DiagnosisEvidence::new("dns_nameserver_count", count.to_string()));
+        evidence.push(DiagnosisEvidence::new(
+            "dns_nameserver_count",
+            count.to_string(),
+        ));
         if count == 0 {
             findings.push(DiagnosisFinding::observed(
                 "the host resolver currently has no nameservers configured",
@@ -119,12 +127,16 @@ pub fn build_network_path_diagnosis(input: NetworkPathDiagnosisInput<'_>) -> Dia
             "inspect heap fragmentation and resource pressure before retrying network-heavy work",
         ));
         if confidence != DiagnosisConfidence::High {
-            summary = "The current network path is guarded by elevated TLS fragmentation risk.".to_string();
+            summary = "The current network path is guarded by elevated TLS fragmentation risk."
+                .to_string();
         }
     }
 
     if let Some(snapshot) = input.connectivity_snapshot.as_ref() {
-        evidence.push(DiagnosisEvidence::new("connectivity_snapshot_stale", snapshot.stale.to_string()));
+        evidence.push(DiagnosisEvidence::new(
+            "connectivity_snapshot_stale",
+            snapshot.stale.to_string(),
+        ));
         if let Some(active_item) = snapshot
             .channels
             .iter()
@@ -204,7 +216,9 @@ pub fn build_network_path_diagnosis(input: NetworkPathDiagnosisInput<'_>) -> Dia
                 "inspect outbound readiness, WiFi settle state, and TLS fragmentation guardrails",
             ));
             if summary == "The current network path snapshot looks generally reachable." {
-                summary = "The current network snapshot is stale because live probing is suppressed.".to_string();
+                summary =
+                    "The current network snapshot is stale because live probing is suppressed."
+                        .to_string();
             }
         }
     }
@@ -224,7 +238,8 @@ pub fn build_network_path_diagnosis(input: NetworkPathDiagnosisInput<'_>) -> Dia
             "inspect http client creation or probe-stage failures before assuming the path is fully healthy",
         ));
         if summary == "The current network path snapshot looks generally reachable." {
-            summary = "The network-path probe could not complete cleanly in the current runtime.".to_string();
+            summary = "The network-path probe could not complete cleanly in the current runtime."
+                .to_string();
         }
     }
 
@@ -251,7 +266,8 @@ pub fn build_network_path_diagnosis(input: NetworkPathDiagnosisInput<'_>) -> Dia
                     "runtime_capability.network.outbound_http.status",
                     "offline",
                 ));
-                summary = "The current network path is degraded because outbound HTTP is offline.".to_string();
+                summary = "The current network path is degraded because outbound HTTP is offline."
+                    .to_string();
                 confidence = DiagnosisConfidence::High;
             }
             RuntimeCapabilityStatus::Degraded => {
@@ -273,7 +289,9 @@ pub fn build_network_path_diagnosis(input: NetworkPathDiagnosisInput<'_>) -> Dia
                     "degraded",
                 ));
                 if confidence != DiagnosisConfidence::High {
-                    summary = "The current network path is degraded because outbound HTTP is unstable.".to_string();
+                    summary =
+                        "The current network path is degraded because outbound HTTP is unstable."
+                            .to_string();
                 }
             }
             RuntimeCapabilityStatus::Online => {
@@ -315,14 +333,18 @@ pub fn build_network_path_diagnosis_from_runtime(
     let tls_fragmentation_risk = crate::orchestrator::current_tls_fragmentation_risk();
     let runtime_capabilities = crate::orchestrator::runtime_capability_snapshot();
     let proxy_configured = !config.proxy_url.trim().is_empty();
-    let (connectivity_snapshot, probe_error) =
-        capture_connectivity_snapshot(platform, config, loc);
+    let (connectivity_snapshot, probe_error) = capture_connectivity_snapshot(platform, config, loc);
     #[cfg(target_os = "linux")]
-    let dns_nameserver_count = Some(crate::host_observability::read_linux_dns_config().nameservers.len());
+    let dns_nameserver_count = Some(
+        crate::host_observability::read_linux_dns_config()
+            .nameservers
+            .len(),
+    );
     #[cfg(not(target_os = "linux"))]
     let dns_nameserver_count = None;
     #[cfg(target_os = "linux")]
-    let default_route_available = Some(crate::host_observability::read_linux_default_route().is_some());
+    let default_route_available =
+        Some(crate::host_observability::read_linux_default_route().is_some());
     #[cfg(not(target_os = "linux"))]
     let default_route_available = None;
 

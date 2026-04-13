@@ -70,6 +70,8 @@ libc = "0.2"
 env_logger = "0.11"
 pdf-extract = "0.10"
 mlua = { version = "0.10", features = ["lua54", "vendored", "serialize"] }
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "net", "time", "sync"] }
+futures = "0.3"
 # CLI 系统（仅 Linux）
 clap = { version = "4.5", features = ["derive", "cargo"] }
 # Step 7.2：Linux 配置 API（同步 HTTP，无 tokio）
@@ -77,12 +79,17 @@ tiny_http = "0.12"
 ureq = { version = "2.12", default-features = false, features = ["tls", "gzip", "socks-proxy"] }
 # Linux WSS（飞书/QQ 长连接）：同步客户端，rustls + webpki 根；禁止 default-features 以免拉 tokio。
 tungstenite = { version = "0.24", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
+rustls = "0.23"
+rustls-pki-types = "1.14.0"
+tokio-rustls = "0.26.4"
+webpki-roots = "1.0.6"
+lettre = { version = "0.11.19", default-features = false, features = ["builder", "smtp-transport", "rustls-tls"] }
+mail-parser = "0.11.2"
+async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"] }
 
 # Linux embedded WiFi：rtnetlink 控制面（仅 target_os=linux 编译进图）
 [target.'cfg(target_os = "linux")'.dependencies]
 rtnetlink = "0.20"
-tokio = { version = "1", default-features = false, features = ["rt", "macros", "net", "time", "sync"] }
-futures = "0.3"
 rusqlite = { version = "0.37", features = ["bundled"] }
 alsa = "0.9"
 udev = "0.9"

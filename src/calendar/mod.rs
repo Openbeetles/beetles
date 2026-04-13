@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 pub use credentials::{
     CalendarProviderCredential, CalendarProviderCredentialStatus, CalendarProviderCredentialStore,
-    REL_PATH_CALENDAR_PROVIDER_CREDENTIALS,
+    OfficeBackedCalendarProviderCredentialStore,
 };
 pub use provider::{
     CalendarHttpClient, CalendarOperation, CalendarProvider, CalendarProviderRegistry,

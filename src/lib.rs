@@ -61,6 +61,7 @@ pub mod display;
 pub mod doctor;
 pub mod error;
 pub mod llm;
+pub mod mail;
 pub mod memory;
 pub mod platform;
 pub mod reasoning;
@@ -79,6 +80,7 @@ pub mod bootstrap;
 pub mod cron;
 pub mod heartbeat;
 pub mod i18n;
+pub mod office;
 pub mod orchestrator;
 pub mod runtime;
 pub mod skills;
@@ -162,10 +164,10 @@ pub use tools::LuaMemoryQueryTool;
 pub use tools::LuaToolBridgeTool;
 pub use tools::{
     build_default_registry, CalendarTool, DefaultRegistryDeps, FileEditTool, FileWriteTool,
-    FilesTool, GetTimeTool, KvStoreTool, PrivateGardenTool, RemindAtTool, TaskTool, Tool,
-    ToolBridgeCatalogEntry, ToolBridgeProposalAssessment, ToolBridgeProposalDecision,
-    ToolCapabilityContract, ToolContext, ToolExposure, ToolMetadata, ToolPolicyContext,
-    ToolRegistry, VoiceInputTool, VoiceOutputTool,
+    FilesTool, GetTimeTool, KvStoreTool, MailTool, OfficeConfigTool, PrivateGardenTool,
+    RemindAtTool, TaskTool, Tool, ToolBridgeCatalogEntry, ToolBridgeProposalAssessment,
+    ToolBridgeProposalDecision, ToolCapabilityContract, ToolContext, ToolExposure, ToolMetadata,
+    ToolPolicyContext, ToolRegistry, VoiceInputTool, VoiceOutputTool,
 };
 #[cfg(feature = "tools_diagnostics")]
 pub use tools::{

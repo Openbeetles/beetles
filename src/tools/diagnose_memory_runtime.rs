@@ -10,10 +10,7 @@ pub struct DiagnoseMemoryRuntimeTool {
 }
 
 impl DiagnoseMemoryRuntimeTool {
-    pub fn new(
-        platform: Arc<dyn crate::Platform>,
-        continuity_snapshot_supported: bool,
-    ) -> Self {
+    pub fn new(platform: Arc<dyn crate::Platform>, continuity_snapshot_supported: bool) -> Self {
         Self {
             platform,
             continuity_snapshot_supported,

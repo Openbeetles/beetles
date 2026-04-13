@@ -3,7 +3,9 @@ use crate::diagnosis::{
     DiagnosisFinding, DiagnosisKind, DiagnosisResult, DiagnosisRootCause,
 };
 use crate::metrics::MetricsSnapshot;
-use crate::orchestrator::{PressureLevel, ResourceSnapshot, RuntimeCapabilityState, RuntimeCapabilityStatus};
+use crate::orchestrator::{
+    PressureLevel, ResourceSnapshot, RuntimeCapabilityState, RuntimeCapabilityStatus,
+};
 
 pub struct SystemDiagnosisInput<'a> {
     pub enabled_channel: Option<&'a str>,
@@ -22,19 +24,37 @@ pub fn build_system_diagnosis(input: SystemDiagnosisInput<'_>) -> DiagnosisResul
     let mut recommended_next_steps = Vec::new();
     let mut degraded_by = Vec::new();
     let mut evidence = vec![
-        DiagnosisEvidence::new("enabled_channel", input.enabled_channel.unwrap_or("unknown")),
-        DiagnosisEvidence::new("pressure", format!("{:?}", input.resource.pressure).to_ascii_lowercase()),
+        DiagnosisEvidence::new(
+            "enabled_channel",
+            input.enabled_channel.unwrap_or("unknown"),
+        ),
+        DiagnosisEvidence::new(
+            "pressure",
+            format!("{:?}", input.resource.pressure).to_ascii_lowercase(),
+        ),
         DiagnosisEvidence::new("presence_state", input.presence_state),
         DiagnosisEvidence::new("runtime_mode", input.runtime_mode),
         DiagnosisEvidence::new("wifi_connected", input.wifi_connected.to_string()),
         DiagnosisEvidence::new("os_closure_ready", input.os_closure_ready.to_string()),
-        DiagnosisEvidence::new("active_http_count", input.resource.active_http_count.to_string()),
-        DiagnosisEvidence::new("active_wss_count", input.resource.active_wss_count.to_string()),
-        DiagnosisEvidence::new("active_agent_tasks", input.resource.active_agent_tasks.to_string()),
+        DiagnosisEvidence::new(
+            "active_http_count",
+            input.resource.active_http_count.to_string(),
+        ),
+        DiagnosisEvidence::new(
+            "active_wss_count",
+            input.resource.active_wss_count.to_string(),
+        ),
+        DiagnosisEvidence::new(
+            "active_agent_tasks",
+            input.resource.active_agent_tasks.to_string(),
+        ),
         DiagnosisEvidence::new("inbound_depth", input.resource.inbound_depth.to_string()),
         DiagnosisEvidence::new("outbound_depth", input.resource.outbound_depth.to_string()),
         DiagnosisEvidence::new("llm_last_ms", input.metrics.llm_last_ms.to_string()),
-        DiagnosisEvidence::new("tool_exec_last_ms", input.metrics.tool_exec_last_ms.to_string()),
+        DiagnosisEvidence::new(
+            "tool_exec_last_ms",
+            input.metrics.tool_exec_last_ms.to_string(),
+        ),
     ];
     let mut confidence = DiagnosisConfidence::Medium;
     let mut summary = "The current runtime snapshot looks generally stable.".to_string();

@@ -6,9 +6,7 @@ use crate::platform::memory_operator_surface::{
     build_memory_operator_surface_with_capabilities, MemoryOperatorSurfaceSummary,
 };
 
-pub fn build_memory_runtime_diagnosis(
-    surface: &MemoryOperatorSurfaceSummary,
-) -> DiagnosisResult {
+pub fn build_memory_runtime_diagnosis(surface: &MemoryOperatorSurfaceSummary) -> DiagnosisResult {
     let gate = &surface.policy_view.runtime_governance_gate;
     let mut findings = Vec::new();
     let mut suspected_root_causes = Vec::new();
@@ -23,7 +21,10 @@ pub fn build_memory_runtime_diagnosis(
             "runtime_skill_count",
             surface.inspect.runtime_skill_count.to_string(),
         ),
-        DiagnosisEvidence::new("long_term_count", surface.inspect.long_term_count.to_string()),
+        DiagnosisEvidence::new(
+            "long_term_count",
+            surface.inspect.long_term_count.to_string(),
+        ),
         DiagnosisEvidence::new(
             "continuity_capsule_count",
             surface.inspect.continuity_capsule_count.to_string(),
@@ -34,10 +35,16 @@ pub fn build_memory_runtime_diagnosis(
         ),
         DiagnosisEvidence::new("repair_needed", surface.repair.repair_needed.to_string()),
         DiagnosisEvidence::new("primary_action", surface.repair.primary_action.as_str()),
-        DiagnosisEvidence::new("board_review_due", surface.diff.board_review_due.to_string()),
+        DiagnosisEvidence::new(
+            "board_review_due",
+            surface.diff.board_review_due.to_string(),
+        ),
         DiagnosisEvidence::new(
             "relationship_needs_runtime_attention",
-            surface.diff.relationship_needs_runtime_attention.to_string(),
+            surface
+                .diff
+                .relationship_needs_runtime_attention
+                .to_string(),
         ),
         DiagnosisEvidence::new(
             "drift_flag_count",
@@ -47,10 +54,7 @@ pub fn build_memory_runtime_diagnosis(
             "outstanding_count",
             surface.diff.outstanding.len().to_string(),
         ),
-        DiagnosisEvidence::new(
-            "conservative_reply",
-            gate.conservative_reply.to_string(),
-        ),
+        DiagnosisEvidence::new("conservative_reply", gate.conservative_reply.to_string()),
         DiagnosisEvidence::new(
             "allow_dynamic_persona_priority",
             gate.allow_dynamic_persona_priority.to_string(),

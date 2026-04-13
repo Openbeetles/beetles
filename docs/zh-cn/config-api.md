@@ -46,7 +46,7 @@
 
 下面这些接口在**设备已经激活**后，请求里**不用再带** `?code=` 或 `X-Pairing-Code`。这里说的“无需配对码”，是指这次请求不用附带，不是指设备没激活也能访问。
 
-**GET /**、**GET /api/config**、**GET /api/config/hardware**、**GET /api/config/audio**、**GET /api/config/display**、**GET /api/health**、**GET /api/metrics**、**GET /api/resource**、**GET /api/tools**、**GET /api/diagnose**、**GET /api/system_info**、**GET /api/channel_connectivity**、**GET /api/sessions**、**GET /api/memory/status**、**GET /api/skills**、**GET /api/soul**、**GET /api/user**；启用 `ota` 时另有 **GET /api/ota/check**。
+**GET /**、**GET /api/config**、**GET /api/config/accounts**、**GET /api/config/hardware**、**GET /api/config/audio**、**GET /api/config/display**、**GET /api/health**、**GET /api/metrics**、**GET /api/resource**、**GET /api/tools**、**GET /api/diagnose**、**GET /api/system_info**、**GET /api/channel_connectivity**、**GET /api/sessions**、**GET /api/memory/status**、**GET /api/skills**、**GET /api/soul**、**GET /api/user**；启用 `ota` 时另有 **GET /api/ota/check**。
 
 如果设备还没激活，访问上述接口就是 401。
 
@@ -57,7 +57,7 @@
 1. **配对码**：`?code=<6位数字>` 和/或 `X-Pairing-Code: <6位数字>`。
 2. **CSRF**：`X-CSRF-Token`（或 `x-csrf-token`）为 **GET /api/csrf_token** 返回体中的 `csrf_token`；缺失或无效 → **403**。
 
-包括但不限于：`POST /api/config/wifi`、`/api/config/llm`、`/api/config/channels`、`/api/config/system`、`/api/config/hardware`、`/api/config/audio`、`/api/config/display`；**POST**/**DELETE /api/skills**、**POST /api/skills/import**；**POST /api/soul**、**POST /api/user**；**DELETE /api/sessions**；**POST /api/restart**、**POST /api/config_reset**、**POST /api/webhook**；以及启用 OTA 时的 **POST /api/ota**。
+包括但不限于：`POST /api/config/wifi`、`/api/config/llm`、`/api/config/channels`、`/api/config/system`、`/api/config/accounts`、`/api/config/hardware`、`/api/config/audio`、`/api/config/display`；**POST**/**DELETE /api/skills**、**POST /api/skills/import**；**POST /api/soul**、**POST /api/user**；**DELETE /api/sessions**；**POST /api/restart**、**POST /api/config_reset**、**POST /api/webhook**；以及启用 OTA 时的 **POST /api/ota**。
 
 **例外**：**POST /api/pairing_code** 只在未激活时可用，不需要配对码或 CSRF；各聊天平台的回调接口走各自平台的签名或 token 规则，也不走这里这一套。
 
@@ -68,7 +68,7 @@
 
 ### 恢复出厂
 
-**POST /api/config_reset** 需要配对码 + CSRF。成功后会清掉配置和配对码，设备回到未激活状态。实现上会删除 `config/skills_meta.json`、`config/llm.json`、`config/channels.json`、`config/hardware.json`、`config/audio.json`、`config/display.json` 等文件。
+**POST /api/config_reset** 需要配对码 + CSRF。成功后会清掉配置和配对码，设备回到未激活状态。实现上会删除 `config/skills_meta.json`、`config/llm.json`、`config/channels.json`、`config/accounts.json`、`config/office_credentials.json`、`config/hardware.json`、`config/audio.json`、`config/display.json`，并清理 `runtime/office_runtime_status.json` 等派生状态文件。
 
 ---
 
@@ -115,7 +115,7 @@
 
 ## 配置读写
 
-配置不会只放在一个地方。比较小的项目，比如 WiFi、代理、会话条数、群组触发和界面语言，放在 NVS；大模型、通道、硬件、音频、显示和技能元信息分别放在 `config/*.json`。`GET /api/config` 会把这些内容合并后一次性返回。
+配置不会只放在一个地方。比较小的项目，比如 WiFi、代理、会话条数、群组触发和界面语言，放在 NVS；大模型、通道、办公账户、硬件、音频、显示和技能元信息分别放在 `config/*.json`。`GET /api/config` 会把这些内容合并后一次性返回。
 
 ### GET /api/wifi/scan
 
@@ -159,6 +159,63 @@
 - **校验**：这里只校验系统配置这一段。WiFi 字段长度 ≤ 64；`proxy_url` 可以为空，或者写成 `http://host:port`；`session_max_messages` 和 `tg_group_activation` 也要符合上面的范围和取值。
 - **响应**：成功 200 `{"ok": true}`；校验失败 400。
 - **说明**：WiFi 写入后需重启生效。
+
+### GET /api/config/accounts
+
+- **用途**：读取办公账户配置，也就是 `config/accounts.json` 的内容。
+- **鉴权**：已激活；GET **不必**附带配对码。
+- **响应**：200，JSON 为 `OfficeAccountsSegment`。文件不存在时返回空默认值：
+  - `registry.accounts`：以 `account_key` 为稳定主键的账户注册表
+  - `binding.capability_defaults`：各 capability 的默认账户
+  - `policy`：全局默认账户、歧义策略、身份偏好
+- **说明**：这是原始配置段接口，适合配置页和脚本整段读写；如果是 Agent 要代用户完成 inspect / draft / validate / commit / revoke / probe，应优先走 `office_config` 工具，而不是直接编辑这段 JSON。
+
+### POST /api/config/accounts
+
+- **用途**：写入办公账户配置，保存到 `config/accounts.json`。请求体要把这一整段完整传上来。
+- **鉴权**：已激活 + 配对码 + CSRF。
+- **请求**：`Content-Type: application/json`，Body 为 `OfficeAccountsSegment`。
+- **校验**（仅本段）：
+  - 账户总数不能超过实现限定上限
+  - 每个账户都必须有非空 `account_key`、`provider_kind`
+  - 每个账户必须声明至少一个 `enabled_capabilities`
+  - `binding.capability_defaults` 指向的账户必须存在，并且该账户必须启用对应 capability
+  - `policy.global_default_account_key` 如果存在，必须能在注册表中找到
+- **响应**：成功 200 `{"ok": true}`；校验失败 400。
+
+### GET /api/config/office_credentials
+
+- **用途**：读取办公凭证权威层，也就是 `config/office_credentials.json` 的内容。
+- **鉴权**：已激活；GET **不必**附带配对码。
+- **响应**：200，JSON 为 `OfficeCredentialsSegment`：
+  - `items[].account_key`：账户主键，和 `/api/config/accounts` 里的注册表对齐
+  - `items[].access_token` / `refresh_token` / `token_endpoint`：受控凭证字段
+  - `items[].metadata`：provider/capability 的补充元数据；当前共享 office capability 会消费其中的结构化字段，例如：
+    - `calendar_id`：calendar provider 默认日历标识
+    - `mail_username`
+    - `mail_imap_host`
+    - `mail_imap_port`
+    - `mail_imap_mailbox`
+    - `mail_imap_tls`
+    - `mail_smtp_host`
+    - `mail_smtp_port`
+    - `mail_smtp_tls`
+    - `mail_from_address`
+    - `mail_from_name`
+- **说明**：这是 office 域共享凭证层，不再由 `calendar` 私有维护自己的 credential 真相。
+- **补充**：`mail` 与 `calendar` 都消费这层共享凭证；`mail` 当前首个远端 provider 为 `imap_smtp`，其连接参数全部来自 `metadata`，而不是独立私有配置文件。
+- **补充**：运行态 probe/错误状态不在这个接口里，运行派生真相由 `runtime/office_runtime_status.json` 承载，并通过 `office_status` / `office_config probe` 这类上层能力消费。
+
+### POST /api/config/office_credentials
+
+- **用途**：写入办公凭证权威层，保存到 `config/office_credentials.json`。请求体要把这一整段完整传上来。
+- **鉴权**：已激活 + 配对码 + CSRF。
+- **请求**：`Content-Type: application/json`，Body 为 `OfficeCredentialsSegment`。
+- **校验**（仅本段）：
+  - 每个 `items[].account_key` 都必须非空
+  - 不允许重复 `account_key`
+  - 采用严格 JSON 解析；尾随垃圾、半截 JSON、重复记录都直接报错，不做兼容性兜底
+- **响应**：成功 200 `{"ok": true}`；校验失败 400。
 
 ### GET /api/config/hardware
 

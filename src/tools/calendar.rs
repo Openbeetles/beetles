@@ -2,12 +2,13 @@
 
 use super::http_bridge::ToolContextHttpClient;
 use crate::calendar::{
-    normalize_calendar_event, CalendarEvent, CalendarEventStatus, CalendarProviderCredentialStatus,
-    CalendarProviderCredentialStore, CalendarProviderRegistry, CalendarQuery, CalendarService,
-    CalendarStore, CALENDAR_PROVIDER_LOCAL,
+    normalize_calendar_event, CalendarEvent, CalendarEventStatus,
+    CalendarProviderCredentialStatus, CalendarProviderCredentialStore, CalendarProviderRegistry,
+    CalendarQuery, CalendarService, CalendarStore, CALENDAR_PROVIDER_LOCAL,
 };
 
 use crate::error::{Error, Result};
+use crate::office::{OfficeAccountRuntimeStatus, OfficeService};
 use crate::tools::{parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata};
 use crate::util::{current_unix_secs, parse_iso8601};
 use serde::Serialize;
@@ -27,7 +28,11 @@ struct CalendarProviderStatusResponse {
     op: &'static str,
     local_provider: &'static str,
     registered_remote_providers: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default_calendar_account_key: Option<String>,
     configured_providers: Vec<CalendarProviderCredentialStatus>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    office_runtime_statuses: Vec<OfficeAccountRuntimeStatus>,
 }
 
 #[derive(Serialize)]
@@ -79,10 +84,11 @@ impl CalendarTool {
         local_store: Arc<dyn CalendarStore + Send + Sync>,
         credential_store: Arc<dyn CalendarProviderCredentialStore + Send + Sync>,
     ) -> Self {
-        Self::with_providers(
+        Self::with_runtime(
             local_store,
             credential_store,
             CalendarProviderRegistry::new(),
+            None,
         )
     }
 
@@ -91,8 +97,36 @@ impl CalendarTool {
         credential_store: Arc<dyn CalendarProviderCredentialStore + Send + Sync>,
         providers: CalendarProviderRegistry,
     ) -> Self {
+        Self::with_runtime(local_store, credential_store, providers, None)
+    }
+
+    pub fn with_office_service(
+        local_store: Arc<dyn CalendarStore + Send + Sync>,
+        credential_store: Arc<dyn CalendarProviderCredentialStore + Send + Sync>,
+        providers: CalendarProviderRegistry,
+        office_service: OfficeService,
+    ) -> Self {
+        Self::with_runtime(
+            local_store,
+            credential_store,
+            providers,
+            Some(office_service),
+        )
+    }
+
+    fn with_runtime(
+        local_store: Arc<dyn CalendarStore + Send + Sync>,
+        credential_store: Arc<dyn CalendarProviderCredentialStore + Send + Sync>,
+        providers: CalendarProviderRegistry,
+        office_service: Option<OfficeService>,
+    ) -> Self {
         Self {
-            service: CalendarService::new(local_store, credential_store, providers),
+            service: CalendarService::with_office_service(
+                local_store,
+                credential_store,
+                providers,
+                office_service,
+            ),
         }
     }
 }
@@ -103,11 +137,11 @@ impl Tool for CalendarTool {
     }
 
     fn description(&self) -> &'static str {
-        "Manage persistent calendar events. Ops: list, get, create, update, delete, provider_status. Provider defaults to local. Times accept Unix seconds or ISO8601."
+        "Manage persistent calendar events. Ops: list, get, create, update, delete, provider_status. Provider defaults to local. Remote providers can route by explicit account_key or office calendar defaults when multiple accounts exist. Times accept Unix seconds or ISO8601."
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: list|get|create|update|delete|provider_status"},"provider":{"type":"string","description":"Calendar provider. Defaults to local."},"id":{"type":"string","description":"Event ID for get/update/delete"},"title":{"type":"string","description":"Event title for create/update"},"start_at":{"description":"Start time as Unix seconds or ISO8601","oneOf":[{"type":"number"},{"type":"string"}]},"end_at":{"description":"End time as Unix seconds or ISO8601","oneOf":[{"type":"number"},{"type":"string"}]},"timezone":{"type":"string","description":"Optional timezone label"},"location":{"type":"string","description":"Optional location"},"notes":{"type":"string","description":"Optional notes"},"calendar_id":{"type":"string","description":"Optional calendar ID. Defaults to default for local events."},"status":{"type":"string","description":"Optional status for update: confirmed|cancelled"},"start_from":{"description":"List query lower bound on start time","oneOf":[{"type":"number"},{"type":"string"}]},"start_to":{"description":"List query upper bound on start time","oneOf":[{"type":"number"},{"type":"string"}]},"limit":{"type":"integer","description":"List limit, default 10, max 50"},"include_cancelled":{"type":"boolean","description":"Whether list should include cancelled events"}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: list|get|create|update|delete|provider_status"},"provider":{"type":"string","description":"Calendar provider. Defaults to local."},"account_key":{"type":"string","description":"Optional remote account key when a provider has multiple configured accounts."},"id":{"type":"string","description":"Event ID for get/update/delete"},"title":{"type":"string","description":"Event title for create/update"},"start_at":{"description":"Start time as Unix seconds or ISO8601","oneOf":[{"type":"number"},{"type":"string"}]},"end_at":{"description":"End time as Unix seconds or ISO8601","oneOf":[{"type":"number"},{"type":"string"}]},"timezone":{"type":"string","description":"Optional timezone label"},"location":{"type":"string","description":"Optional location"},"notes":{"type":"string","description":"Optional notes"},"calendar_id":{"type":"string","description":"Optional calendar ID. Defaults to default for local events."},"status":{"type":"string","description":"Optional status for update: confirmed|cancelled"},"start_from":{"description":"List query lower bound on start time","oneOf":[{"type":"number"},{"type":"string"}]},"start_to":{"description":"List query upper bound on start time","oneOf":[{"type":"number"},{"type":"string"}]},"limit":{"type":"integer","description":"List limit, default 10, max 50"},"include_cancelled":{"type":"boolean","description":"Whether list should include cancelled events"}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
@@ -130,12 +164,15 @@ impl Tool for CalendarTool {
                         op: "provider_status",
                         local_provider: CALENDAR_PROVIDER_LOCAL,
                         registered_remote_providers,
+                        default_calendar_account_key: self.service.office_default_account_key(),
                         configured_providers,
+                        office_runtime_statuses: self.service.office_runtime_statuses()?,
                     },
                 )
             }
             "list" => {
                 let provider = parse_provider(&obj);
+                let account_key = parse_account_key(&obj);
                 let limit = obj.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize;
                 let query = CalendarQuery {
                     start_from_unix_secs: parse_optional_time(obj.get("start_from"))?
@@ -148,7 +185,8 @@ impl Tool for CalendarTool {
                         .unwrap_or(false),
                 };
                 let items = with_calendar_http(&provider, ctx, |http| {
-                    self.service.list(http, &provider, query)
+                    self.service
+                        .list(http, &provider, account_key.as_deref(), query)
                 })?;
                 serialize_tool_output(
                     "tool_calendar",
@@ -162,9 +200,11 @@ impl Tool for CalendarTool {
             }
             "get" => {
                 let provider = parse_provider(&obj);
+                let account_key = parse_account_key(&obj);
                 let id = required_str(&obj, "id", "tool_calendar")?;
                 let event = with_calendar_http(&provider, ctx, |http| {
-                    self.service.get(http, &provider, id)
+                    self.service
+                        .get(http, &provider, account_key.as_deref(), id)
                 })?
                 .ok_or_else(|| Error::config("tool_calendar", "event not found"))?;
                 serialize_tool_output(
@@ -178,6 +218,7 @@ impl Tool for CalendarTool {
             }
             "create" => {
                 let provider = parse_provider(&obj);
+                let account_key = parse_account_key(&obj);
                 let title = required_str(&obj, "title", "tool_calendar")?;
                 let start_at_unix_secs = parse_required_time(obj.get("start_at"), "start_at")?;
                 let end_at_unix_secs = parse_required_time(obj.get("end_at"), "end_at")?;
@@ -197,7 +238,8 @@ impl Tool for CalendarTool {
                     updated_at: now_secs,
                 })?;
                 let event = with_calendar_http(&provider, ctx, |http| {
-                    self.service.upsert(http, &provider, &event, true)
+                    self.service
+                        .upsert(http, &provider, account_key.as_deref(), &event, true)
                 })?;
                 serialize_tool_output(
                     "tool_calendar",
@@ -211,9 +253,11 @@ impl Tool for CalendarTool {
             }
             "update" => {
                 let provider = parse_provider(&obj);
+                let account_key = parse_account_key(&obj);
                 let id = required_str(&obj, "id", "tool_calendar")?;
                 let mut event = with_calendar_http(&provider, ctx, |http| {
-                    self.service.get(http, &provider, id)
+                    self.service
+                        .get(http, &provider, account_key.as_deref(), id)
                 })?
                 .ok_or_else(|| Error::config("tool_calendar", "event not found"))?;
                 let mut updated = Vec::new();
@@ -266,7 +310,8 @@ impl Tool for CalendarTool {
                 event.updated_at = current_unix_secs();
                 let event = normalize_calendar_event(event)?;
                 let event = with_calendar_http(&provider, ctx, |http| {
-                    self.service.upsert(http, &provider, &event, false)
+                    self.service
+                        .upsert(http, &provider, account_key.as_deref(), &event, false)
                 })?;
                 serialize_tool_output(
                     "tool_calendar",
@@ -282,9 +327,11 @@ impl Tool for CalendarTool {
             }
             "delete" => {
                 let provider = parse_provider(&obj);
+                let account_key = parse_account_key(&obj);
                 let id = required_str(&obj, "id", "tool_calendar")?;
                 let removed = with_calendar_http(&provider, ctx, |http| {
-                    self.service.delete(http, &provider, id)
+                    self.service
+                        .delete(http, &provider, account_key.as_deref(), id)
                 })?;
                 serialize_tool_output(
                     "tool_calendar",
@@ -331,6 +378,14 @@ fn parse_provider(obj: &serde_json::Map<String, Value>) -> String {
     } else {
         provider.to_string()
     }
+}
+
+fn parse_account_key(obj: &serde_json::Map<String, Value>) -> Option<String> {
+    obj.get("account_key")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn default_calendar_id(provider: &str, calendar_id: String) -> String {
@@ -415,6 +470,11 @@ mod tests {
         CalendarOperation, CalendarProvider, CalendarProviderCredential,
         CalendarProviderCredentialStore,
     };
+    use crate::office::{
+        OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry,
+        OfficeAccountRuntimeStatus, OfficeCapability, OfficeCapabilityBinding, OfficeCredential,
+        OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy, OfficeService,
+    };
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -469,28 +529,39 @@ mod tests {
     }
 
     impl CalendarProviderCredentialStore for StubCredentialStore {
-        fn get(&self, provider: &str) -> Result<Option<CalendarProviderCredential>> {
+        fn get(&self, account_key: &str) -> Result<Option<CalendarProviderCredential>> {
             Ok(self
                 .items
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .get(provider)
+                .get(account_key)
                 .cloned())
+        }
+
+        fn find_account_keys_by_provider(&self, provider: &str) -> Result<Vec<String>> {
+            Ok(self
+                .items
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .filter(|(_, credential)| credential.provider == provider)
+                .map(|(account_key, _)| account_key.clone())
+                .collect())
         }
 
         fn set(&self, credential: &CalendarProviderCredential) -> Result<()> {
             self.items
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .insert(credential.provider.clone(), credential.clone());
+                .insert(credential.account_key.clone(), credential.clone());
             Ok(())
         }
 
-        fn clear(&self, provider: &str) -> Result<()> {
+        fn clear(&self, account_key: &str) -> Result<()> {
             self.items
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .remove(provider);
+                .remove(account_key);
             Ok(())
         }
 
@@ -502,6 +573,69 @@ mod tests {
                 .values()
                 .map(CalendarProviderCredential::status)
                 .collect())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubOfficeCredentialStore {
+        items: Mutex<HashMap<String, OfficeCredential>>,
+    }
+
+    impl OfficeCredentialStore for StubOfficeCredentialStore {
+        fn get(&self, account_key: &str) -> Result<Option<OfficeCredential>> {
+            Ok(self
+                .items
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(account_key)
+                .cloned())
+        }
+
+        fn list(&self) -> Result<Vec<OfficeCredential>> {
+            Ok(self
+                .items
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .cloned()
+                .collect())
+        }
+
+        fn set(&self, credential: &OfficeCredential) -> Result<()> {
+            self.items
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(credential.account_key.clone(), credential.clone());
+            Ok(())
+        }
+
+        fn clear(&self, account_key: &str) -> Result<()> {
+            self.items
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(account_key);
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubRuntimeStatusStore;
+
+    impl OfficeRuntimeStatusStore for StubRuntimeStatusStore {
+        fn get(&self, _account_key: &str) -> Result<Option<OfficeAccountRuntimeStatus>> {
+            Ok(None)
+        }
+
+        fn list(&self) -> Result<Vec<OfficeAccountRuntimeStatus>> {
+            Ok(Vec::new())
+        }
+
+        fn set(&self, _status: &OfficeAccountRuntimeStatus) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _account_key: &str) -> Result<()> {
+            Ok(())
         }
     }
 
@@ -575,10 +709,23 @@ mod tests {
         fn list_events(
             &self,
             _http: &mut dyn crate::calendar::CalendarHttpClient,
-            _credential: &CalendarProviderCredential,
+            credential: &CalendarProviderCredential,
             _query: CalendarQuery,
         ) -> Result<Vec<CalendarEvent>> {
-            Ok(Vec::new())
+            Ok(vec![CalendarEvent {
+                id: format!("event-for-{}", credential.account_key),
+                title: credential.account_label.clone(),
+                start_at_unix_secs: 100,
+                end_at_unix_secs: 160,
+                timezone: String::new(),
+                location: String::new(),
+                notes: String::new(),
+                provider: credential.provider.clone(),
+                calendar_id: credential.calendar_id.clone(),
+                remote_id: credential.account_key.clone(),
+                status: CalendarEventStatus::Confirmed,
+                updated_at: 1,
+            }])
         }
 
         fn get_event(
@@ -681,6 +828,7 @@ mod tests {
         let credential_store = Arc::new(StubCredentialStore::default());
         credential_store
             .set(&CalendarProviderCredential {
+                account_key: "mock-work".to_string(),
                 provider: "mock_remote".to_string(),
                 account_id: "acc-1".to_string(),
                 account_label: "Work".to_string(),
@@ -707,9 +855,89 @@ mod tests {
         assert_eq!(payload["local_provider"], "local");
         assert_eq!(payload["registered_remote_providers"][0], "mock_remote");
         assert_eq!(payload["configured_providers"][0]["account_label"], "Work");
+        assert!(payload["default_calendar_account_key"].is_null());
         assert_eq!(
             payload["configured_providers"][0]["has_refresh_token"],
             true
         );
+    }
+
+    #[test]
+    fn calendar_tool_routes_remote_provider_via_office_default_account() {
+        let credential_store = Arc::new(StubCredentialStore::default());
+        credential_store
+            .set(&CalendarProviderCredential {
+                account_key: "calendar-work".to_string(),
+                provider: "mock_remote".to_string(),
+                account_id: "work@example.com".to_string(),
+                account_label: "Work".to_string(),
+                calendar_id: "work".to_string(),
+                access_token: "token-work".to_string(),
+                refresh_token: String::new(),
+                token_endpoint: String::new(),
+                expires_at_unix_secs: 0,
+                updated_at: 1,
+            })
+            .unwrap();
+        credential_store
+            .set(&CalendarProviderCredential {
+                account_key: "calendar-personal".to_string(),
+                provider: "mock_remote".to_string(),
+                account_id: "personal@example.com".to_string(),
+                account_label: "Personal".to_string(),
+                calendar_id: "personal".to_string(),
+                access_token: "token-personal".to_string(),
+                refresh_token: String::new(),
+                token_endpoint: String::new(),
+                expires_at_unix_secs: 0,
+                updated_at: 2,
+            })
+            .unwrap();
+        let mut providers = CalendarProviderRegistry::new();
+        providers.register(Arc::new(StubProvider));
+        let mut registry = OfficeAccountRegistry::new();
+        registry.insert(OfficeAccount {
+            account_key: "calendar-work".to_string(),
+            provider_kind: "mock_remote".to_string(),
+            external_account_id: "work@example.com".to_string(),
+            account_label: "Work".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Calendar],
+        });
+        registry.insert(OfficeAccount {
+            account_key: "calendar-personal".to_string(),
+            provider_kind: "mock_remote".to_string(),
+            external_account_id: "personal@example.com".to_string(),
+            account_label: "Personal".to_string(),
+            identity_class: OfficeAccountIdentityClass::Personal,
+            enabled_capabilities: vec![OfficeCapability::Calendar],
+        });
+        let mut binding = OfficeCapabilityBinding::default();
+        binding.set_default_account(OfficeCapability::Calendar, "calendar-work".to_string());
+        let office_service = OfficeService::new(
+            registry,
+            binding,
+            OfficeSelectionPolicy::default(),
+            Arc::new(StubOfficeCredentialStore::default()),
+            Arc::new(StubRuntimeStatusStore),
+        );
+        let tool = CalendarTool::with_office_service(
+            Arc::new(StubCalendarStore::default()),
+            credential_store,
+            providers,
+            office_service,
+        );
+        let mut ctx = DummyCtx;
+        let payload = tool
+            .execute(r#"{"op":"list","provider":"mock_remote"}"#, &mut ctx)
+            .unwrap();
+        let payload: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(payload["items"][0]["id"], "event-for-calendar-work");
+
+        let status = tool
+            .execute(r#"{"op":"provider_status"}"#, &mut ctx)
+            .unwrap();
+        let status: Value = serde_json::from_str(&status).unwrap();
+        assert_eq!(status["default_calendar_account_key"], "calendar-work");
     }
 }

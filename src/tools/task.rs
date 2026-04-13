@@ -361,9 +361,9 @@ impl TaskTool {
             updated_at: now_secs,
         };
         let created = task.calendar_event_id.is_empty();
-        let event = self
-            .calendar_service
-            .upsert(None, CALENDAR_PROVIDER_LOCAL, &event, created)?;
+        let event =
+            self.calendar_service
+                .upsert(None, CALENDAR_PROVIDER_LOCAL, None, &event, created)?;
         task.calendar_event_id = event.id;
         Ok(())
     }
@@ -374,7 +374,7 @@ impl TaskTool {
         }
         let _ = self
             .calendar_service
-            .delete(None, CALENDAR_PROVIDER_LOCAL, event_id)?;
+            .delete(None, CALENDAR_PROVIDER_LOCAL, None, event_id)?;
         Ok(())
     }
 }
@@ -599,15 +599,19 @@ mod tests {
     struct StubCredentialStore;
 
     impl CalendarProviderCredentialStore for StubCredentialStore {
-        fn get(&self, _provider: &str) -> Result<Option<CalendarProviderCredential>> {
+        fn get(&self, _account_key: &str) -> Result<Option<CalendarProviderCredential>> {
             Ok(None)
+        }
+
+        fn find_account_keys_by_provider(&self, _provider: &str) -> Result<Vec<String>> {
+            Ok(Vec::new())
         }
 
         fn set(&self, _credential: &CalendarProviderCredential) -> Result<()> {
             Ok(())
         }
 
-        fn clear(&self, _provider: &str) -> Result<()> {
+        fn clear(&self, _account_key: &str) -> Result<()> {
             Ok(())
         }
 

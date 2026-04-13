@@ -148,7 +148,9 @@ pub fn build_delivery_diagnosis_from_runtime(enabled_channel: Option<&str>) -> D
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orchestrator::{RuntimeCapabilityReason, RuntimeCapabilityState, RuntimeCapabilityStatus};
+    use crate::orchestrator::{
+        RuntimeCapabilityReason, RuntimeCapabilityState, RuntimeCapabilityStatus,
+    };
 
     #[test]
     fn delivery_diagnosis_marks_delivery_failure_as_root_cause() {

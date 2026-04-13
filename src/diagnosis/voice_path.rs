@@ -39,10 +39,7 @@ pub fn build_voice_path_diagnosis(input: VoicePathDiagnosisInput) -> DiagnosisRe
             "speaker_output",
             input.audio_duplex_capabilities.speaker_output.to_string(),
         ),
-        DiagnosisEvidence::new(
-            "audio_recording",
-            input.audio_recording.to_string(),
-        ),
+        DiagnosisEvidence::new("audio_recording", input.audio_recording.to_string()),
         DiagnosisEvidence::new("audio_playing", input.audio_playing.to_string()),
         DiagnosisEvidence::new(
             "voice_exclusive_active",
@@ -120,7 +117,8 @@ pub fn build_voice_path_diagnosis(input: VoicePathDiagnosisInput) -> DiagnosisRe
             "inspect_audio_config",
             "inspect audio configuration before expecting wake-word or TTS behavior",
         ));
-        summary = "Voice capability is compiled, but audio is disabled in configuration.".to_string();
+        summary =
+            "Voice capability is compiled, but audio is disabled in configuration.".to_string();
         confidence = DiagnosisConfidence::High;
     }
 
@@ -195,7 +193,8 @@ pub fn build_voice_path_diagnosis(input: VoicePathDiagnosisInput) -> DiagnosisRe
             "inspect voice metrics and recent input/output failure counters before retrying voice tasks",
         ));
         if summary == "The current voice path snapshot looks generally healthy." {
-            summary = "Recent voice pipeline failures were recorded in the current runtime.".to_string();
+            summary =
+                "Recent voice pipeline failures were recorded in the current runtime.".to_string();
             confidence = DiagnosisConfidence::High;
         }
     }
@@ -332,9 +331,11 @@ pub fn build_voice_path_diagnosis_from_runtime(
 ) -> DiagnosisResult {
     let audio_config = config.audio.as_ref();
     let audio_enabled = audio_config.is_some_and(|audio| audio.enabled);
-    let wake_word_enabled = audio_config.is_some_and(|audio| audio.enabled && audio.wake_word.enabled);
+    let wake_word_enabled =
+        audio_config.is_some_and(|audio| audio.enabled && audio.wake_word.enabled);
     let realtime_enabled = audio_config.is_some_and(crate::config::audio_realtime_enabled);
-    let presence = crate::runtime::inspect_platform_presence(platform, crate::util::current_unix_secs());
+    let presence =
+        crate::runtime::inspect_platform_presence(platform, crate::util::current_unix_secs());
     build_voice_path_diagnosis(VoicePathDiagnosisInput {
         voice_compiled: crate::compiled_voice_capability(),
         audio_enabled,

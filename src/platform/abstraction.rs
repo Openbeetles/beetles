@@ -1,7 +1,7 @@
 //! 平台抽象 trait：ConfigStore、SkillStorage、PlatformHttpClient、Platform。
 //! 核心域与 main 仅依赖这些 trait，便于后续支持多种硬件。
 
-use crate::calendar::{CalendarProviderCredentialStore, CalendarStore};
+use crate::calendar::CalendarStore;
 use crate::config::{AppConfig, AudioSegment, PinConfig};
 use crate::display::{DisplayCommand, DisplayConfig};
 use crate::error::{Error, Result};
@@ -13,6 +13,7 @@ use crate::memory::{
     RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore, SelfModelStore, SessionStore,
     SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
 };
+use crate::office::{OfficeCredentialStore, OfficeRuntimeStatusStore};
 use crate::platform::ResponseBody;
 use crate::task::TaskStore;
 use crate::task_execution::{
@@ -580,9 +581,8 @@ pub trait Platform: Send + Sync {
     fn session_store(&self) -> Arc<dyn SessionStore + Send + Sync>;
     fn pending_retry_store(&self) -> Arc<dyn PendingRetryStore + Send + Sync>;
     fn calendar_store(&self) -> Arc<dyn CalendarStore + Send + Sync>;
-    fn calendar_provider_credential_store(
-        &self,
-    ) -> Arc<dyn CalendarProviderCredentialStore + Send + Sync>;
+    fn office_credential_store(&self) -> Arc<dyn OfficeCredentialStore + Send + Sync>;
+    fn office_runtime_status_store(&self) -> Arc<dyn OfficeRuntimeStatusStore + Send + Sync>;
     fn task_store(&self) -> Arc<dyn TaskStore + Send + Sync>;
     fn task_run_store(&self) -> Arc<dyn TaskRunStore + Send + Sync>;
     fn task_artifact_store(&self) -> Arc<dyn TaskArtifactStore + Send + Sync>;

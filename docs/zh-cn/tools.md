@@ -19,6 +19,9 @@
 | `message` | 发送一条由程序接管的消息 |
 | `task` | 持久任务管理 |
 | `calendar` | 持久日历事件 |
+| `mail` | 通过共享 office 账户权威读取、查看和发送邮件 |
+| `office_config` | 以结构化操作检查、草拟、校验、提交和撤销 office 配置 |
+| `office_status` | 查看 office 账户、默认绑定、凭证存在性和运行态探测状态 |
 | `files` | 列出或读取设备存储中的文件 |
 | `file_edit` | 对设备存储中的文本文件做局部修改 |
 | `remind_at` | 创建提醒 |
@@ -31,6 +34,67 @@
 | `factual_memory` | 读取设备保存的稳定事实 |
 | `continuity_snapshot` | 导出、保存、列出或导入连续性数据 |
 | `file_write` | 向允许写入的设备文件写内容 |
+
+## 重点补充
+
+### `calendar`
+
+- `provider` 为空时默认走本地 `local` 日历。
+- 远端 provider 现在支持多账户；同一 provider 下有多个账户时，可以显式传 `account_key`。
+- 如果 `/api/config/accounts` 已经为 `calendar` capability 配了默认账户，`calendar` 工具在远端多账户场景下可以不传 `account_key`，由共享 `OfficeService` 自动选中默认账户。
+- `provider_status` 会返回远端已注册 provider、已配置账户状态，以及可选的 `default_calendar_account_key` 和 `office_runtime_statuses`。
+
+### `mail`
+
+- `mail` 不是私有邮箱工具，而是共享 office authority 上的 mail capability。
+- 当前支持的操作包括：
+  - `provider_status`
+  - `list`
+  - `get`
+  - `send`
+- `provider` 可以省略，但前提是：
+  - office 已经把 `mail` capability 绑定到默认账户，或
+  - 当前只存在一个已配置 mail provider
+- `send` 属于显式对外发送动作，要求 `confirm=true`。
+- `provider_status` 会返回：
+  - 已注册的远端 mail provider
+  - 已配置 mail 账户状态
+  - 可选的 `default_mail_account_key`
+  - 可选的 `office_runtime_statuses`
+- 当前第一阶段远端 provider 为 `imap_smtp`：
+  - Linux / 非 ESP 构建会注册真实 IMAP/SMTP provider
+  - ESP 保留同一 capability/tool 合同，但不编入重型 IMAP/SMTP 传输栈
+
+### `office_config`
+
+- 这是 office 域的 Agent-native 配置工具，不是某个 provider 的私有控制面。
+- 当前支持的操作包括：
+  - `inspect`
+  - `resolve_account`
+  - `draft_accounts`
+  - `draft_credentials`
+  - `validate_accounts`
+  - `validate_credentials`
+  - `commit_accounts`
+  - `commit_credentials`
+  - `revoke`
+  - `probe`
+- `draft_*` / `validate_*` 只处理结构化草案，不会直接写盘。
+- `commit_*` 和 `revoke` 属于显式配置写操作，要求 `confirm=true`。
+- `probe` 只会返回真实结果：
+  - 有 provider probe adapter 时，返回真实探测结果
+  - 没有 adapter 时，返回结构化 `unsupported`，原因是 `probe_adapter_unavailable`
+  - 凭证缺失时，返回结构化 `missing_credential`
+  - 当前 `imap_smtp` 在 Linux / 非 ESP 构建下会执行真实 IMAP 登录探测
+
+### `office_status`
+
+- 读取 office 域共享权威层，而不是某个工具私有状态。
+- 返回内容会合并：
+  - `/api/config/accounts` 的账户注册表、默认绑定和策略
+  - `config/office_credentials.json` 的凭证存在性
+  - `runtime/office_runtime_status.json` 的探测结果和上次错误
+- 可选传 `capability`，只看某一个 capability，例如 `calendar` 或 `mail`。
 
 ## `tools_network_extra` 工具
 

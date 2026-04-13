@@ -391,7 +391,6 @@ pub fn list_dir(path: impl AsRef<Path>) -> Result<Vec<String>> {
 
 pub mod autonomy_strategy;
 pub(crate) mod cached_json;
-pub mod calendar_credentials;
 pub mod calendar_store;
 pub mod continuity_capsule;
 pub mod core_revision_ledger;
@@ -402,6 +401,8 @@ pub mod long_term_extraction_state;
 pub mod long_term_memory;
 pub mod memory;
 pub mod mental_privacy;
+pub mod office_credentials;
+pub mod office_runtime_status;
 pub mod outer_voice;
 pub mod pending_retry;
 pub mod private_docs;
@@ -424,7 +425,6 @@ pub mod world_sense;
 pub use turn_ledger::SpiffsTurnLedgerStore;
 
 pub use autonomy_strategy::SpiffsAutonomyStrategyStore;
-pub use calendar_credentials::SpiffsCalendarProviderCredentialStore;
 pub use calendar_store::SpiffsCalendarStore;
 pub use continuity_capsule::SpiffsContinuityCapsuleStore;
 pub use core_revision_ledger::SpiffsCoreRevisionLedgerStore;
@@ -435,6 +435,8 @@ pub use long_term_extraction_state::SpiffsLongTermMemoryExtractionStateStore;
 pub use long_term_memory::SpiffsLongTermMemoryStore;
 pub use memory::SpiffsMemoryStore;
 pub use mental_privacy::SpiffsMentalPrivacyStore;
+pub use office_credentials::SpiffsOfficeCredentialStore;
+pub use office_runtime_status::SpiffsOfficeRuntimeStatusStore;
 pub use outer_voice::SpiffsOuterVoiceStore;
 pub use pending_retry::SpiffsPendingRetryStore;
 pub use private_docs::SpiffsPrivateDocStore;

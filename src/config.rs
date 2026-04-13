@@ -7,6 +7,10 @@ use crate::display::{
     DisplayConfig, DISPLAY_CONFIG_VERSION,
 };
 use crate::error::{Error, Result};
+use crate::office::{
+    OfficeAccountRegistry, OfficeCapability, OfficeCapabilityBinding, OfficeCredentialStore,
+    OfficeCredentialsSegment, OfficeSelectionPolicy,
+};
 use crate::platform::ConfigStore;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -61,8 +65,12 @@ pub const NVS_MAX_VALUE_LEN: usize = 512;
 pub const CONFIG_FIELD_MAX_LEN: usize = 64;
 /// URL 类字段长度上界（如 dingtalk_webhook_url）。
 pub const CONFIG_URL_MAX_LEN: usize = 512;
+pub const CONFIG_ACCOUNT_KEY_MAX_LEN: usize = 64;
+pub const CONFIG_ACCOUNT_LABEL_MAX_LEN: usize = 64;
+pub const CONFIG_PROVIDER_KIND_MAX_LEN: usize = 64;
+pub const CONFIG_EXTERNAL_ACCOUNT_ID_MAX_LEN: usize = 128;
+pub const CONFIG_OFFICE_ACCOUNT_LIMIT: usize = 16;
 
-#[cfg(any(test, feature = "cli"))]
 fn validate_field_len(s: &str, max: usize, field_name: &str) -> Result<()> {
     if s.len() > max {
         Err(Error::config(
@@ -74,10 +82,6 @@ fn validate_field_len(s: &str, max: usize, field_name: &str) -> Result<()> {
     }
 }
 
-#[cfg(any(test, feature = "cli"))]
-fn validate_url_len(s: &str, field_name: &str) -> Result<()> {
-    validate_field_len(s, CONFIG_URL_MAX_LEN, field_name)
-}
 /// 企业微信 default_touser 长度上界。
 pub const CONFIG_WECOM_TOUSER_MAX: usize = 128;
 /// 会话条数合法范围。
@@ -223,6 +227,9 @@ pub struct AppConfig {
     /// 音频配置（从 SPIFFS config/audio.json 加载），不序列化到 NVS。
     #[serde(skip, default)]
     pub audio: Option<AudioSegment>,
+    /// 办公账户配置（从 SPIFFS config/accounts.json 加载）。
+    #[serde(default)]
+    pub office_accounts: OfficeAccountsSegment,
 
     /// 加载过程中产生的可观测错误（NVS/SPIFFS/JSON 解析），仅 load() 内写入，不序列化。
     #[serde(skip, default)]
@@ -317,6 +324,7 @@ impl AppConfig {
             i2c_sensors: vec![],
             display: None,
             audio: None,
+            office_accounts: OfficeAccountsSegment::default(),
             load_errors: None,
         }
     }
@@ -425,6 +433,16 @@ impl AppConfig {
                 Ok(None) => {}
                 Err(_) => {
                     load_errors.push("spiffs_audio_read_error".into());
+                }
+            }
+            match r.read_config_file("config/accounts.json") {
+                Ok(Some(b)) => {
+                    let s = String::from_utf8_lossy(&b);
+                    c.merge_office_accounts_from_json(&s, &mut load_errors);
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    load_errors.push("spiffs_accounts_read_error".into());
                 }
             }
         }
@@ -561,6 +579,21 @@ impl AppConfig {
             Err(e) => {
                 log::warn!("[config] merge_audio_from_json parse failed: {}", e);
                 errors.push("audio_json_invalid".into());
+            }
+        }
+    }
+
+    pub fn merge_office_accounts_from_json(&mut self, json: &str, errors: &mut Vec<String>) {
+        match serde_json::from_str::<OfficeAccountsSegment>(json) {
+            Ok(seg) => {
+                self.office_accounts = seg;
+            }
+            Err(e) => {
+                log::warn!(
+                    "[config] merge_office_accounts_from_json parse failed: {}",
+                    e
+                );
+                errors.push("accounts_json_invalid".into());
             }
         }
     }
@@ -800,7 +833,11 @@ impl AppConfig {
             CONFIG_FIELD_MAX_LEN,
             "qq_channel_secret",
         )?;
-        validate_url_len(&c.dingtalk_webhook_url, "dingtalk_webhook_url")?;
+        validate_field_len(
+            &c.dingtalk_webhook_url,
+            CONFIG_URL_MAX_LEN,
+            "dingtalk_webhook_url",
+        )?;
         validate_field_len(&c.wecom_corp_id, CONFIG_FIELD_MAX_LEN, "wecom_corp_id")?;
         validate_field_len(
             &c.wecom_corp_secret,
@@ -985,6 +1022,17 @@ pub struct SystemSegment {
     pub tg_group_activation: String,
     #[serde(default)]
     pub locale: Option<String>,
+}
+
+/// POST /api/config/accounts 请求体。
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfficeAccountsSegment {
+    #[serde(default)]
+    pub registry: OfficeAccountRegistry,
+    #[serde(default)]
+    pub binding: OfficeCapabilityBinding,
+    #[serde(default)]
+    pub policy: OfficeSelectionPolicy,
 }
 
 // ── Audio config constants & schema ──
@@ -1652,6 +1700,119 @@ fn validate_system_segment_fields(seg: &SystemSegment) -> Result<()> {
             "config",
             "proxy_url must be empty or like http://host:port",
         ));
+    }
+    Ok(())
+}
+
+fn validate_office_accounts_segment(seg: &OfficeAccountsSegment) -> Result<()> {
+    let all_accounts = seg.registry.all_accounts();
+    if all_accounts.len() > CONFIG_OFFICE_ACCOUNT_LIMIT {
+        return Err(Error::config(
+            "office_accounts",
+            format!(
+                "office account count must be <= {}",
+                CONFIG_OFFICE_ACCOUNT_LIMIT
+            ),
+        ));
+    }
+    for account in all_accounts {
+        validate_field_len(
+            &account.account_key,
+            CONFIG_ACCOUNT_KEY_MAX_LEN,
+            "account_key",
+        )?;
+        validate_field_len(
+            &account.provider_kind,
+            CONFIG_PROVIDER_KIND_MAX_LEN,
+            "provider_kind",
+        )?;
+        validate_field_len(
+            &account.external_account_id,
+            CONFIG_EXTERNAL_ACCOUNT_ID_MAX_LEN,
+            "external_account_id",
+        )?;
+        validate_field_len(
+            &account.account_label,
+            CONFIG_ACCOUNT_LABEL_MAX_LEN,
+            "account_label",
+        )?;
+        if account.account_key.trim().is_empty() {
+            return Err(Error::config(
+                "office_accounts",
+                "account_key must not be empty",
+            ));
+        }
+        if account.provider_kind.trim().is_empty() {
+            return Err(Error::config(
+                "office_accounts",
+                "provider_kind must not be empty",
+            ));
+        }
+        if account.enabled_capabilities.is_empty() {
+            return Err(Error::config(
+                "office_accounts",
+                format!(
+                    "account '{}' must enable at least one capability",
+                    account.account_key
+                ),
+            ));
+        }
+    }
+    for capability in OfficeCapability::all() {
+        if let Some(account_key) = seg.binding.default_account_for(capability) {
+            let Some(account) = seg.registry.get(account_key) else {
+                return Err(Error::config(
+                    "office_accounts",
+                    format!(
+                        "binding default account '{}' for capability '{:?}' does not exist",
+                        account_key, capability
+                    ),
+                ));
+            };
+            if !account.enabled_capabilities.contains(&capability) {
+                return Err(Error::config(
+                    "office_accounts",
+                    format!(
+                        "binding default account '{}' does not enable capability '{:?}'",
+                        account_key, capability
+                    ),
+                ));
+            }
+        }
+    }
+    if !seg.policy.global_default_account_key.trim().is_empty()
+        && seg
+            .registry
+            .get(seg.policy.global_default_account_key.trim())
+            .is_none()
+    {
+        return Err(Error::config(
+            "office_accounts",
+            format!(
+                "global_default_account_key '{}' does not exist",
+                seg.policy.global_default_account_key
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_office_credentials_segment(seg: &OfficeCredentialsSegment) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for credential in &seg.items {
+        let account_key = credential.account_key.trim();
+        if account_key.is_empty() {
+            return Err(Error::config(
+                "office_credentials",
+                "account_key must not be empty",
+            ));
+        }
+        if !seen.insert(account_key.to_string()) {
+            return Err(Error::config(
+                "office_credentials",
+                format!("duplicate office credential account_key '{}'", account_key),
+            ));
+        }
     }
     Ok(())
 }
@@ -2603,6 +2764,69 @@ pub fn save_display_segment(
     Ok(())
 }
 
+/// GET /api/config/accounts：返回 accounts.json 内容（不存在时返回空 office accounts 配置）。
+pub fn get_office_accounts_segment(reader: &dyn ConfigFileStore) -> Result<String> {
+    match reader.read_config_file("config/accounts.json")? {
+        Some(b) => Ok(String::from_utf8_lossy(&b).into_owned()),
+        None => serde_json::to_string(&OfficeAccountsSegment::default())
+            .map_err(|e| Error::config("office_accounts", e.to_string())),
+    }
+}
+
+/// POST /api/config/accounts：校验并写入 SPIFFS config/accounts.json；body 即全量，不做合并。
+pub fn save_office_accounts_segment(writer: &dyn ConfigFileStore, body: &str) -> Result<()> {
+    let seg: OfficeAccountsSegment =
+        serde_json::from_str(body).map_err(|e| Error::config("deserialize", e.to_string()))?;
+    validate_office_accounts_segment(&seg)?;
+    let json =
+        serde_json::to_string(&seg).map_err(|e| Error::config("serialize", e.to_string()))?;
+    writer.write_config_file("config/accounts.json", json.as_bytes())?;
+    Ok(())
+}
+
+pub fn validate_office_accounts_candidate(seg: &OfficeAccountsSegment) -> Result<()> {
+    validate_office_accounts_segment(seg)
+}
+
+/// GET /api/config/office_credentials：返回 OfficeCredentialsSegment JSON。
+pub fn get_office_credentials_segment(store: &dyn OfficeCredentialStore) -> Result<String> {
+    let mut items = store.list()?;
+    items.sort_by(|left, right| left.account_key.cmp(&right.account_key));
+    serde_json::to_string(&OfficeCredentialsSegment { items })
+        .map_err(|e| Error::config("office_credentials", e.to_string()))
+}
+
+/// POST /api/config/office_credentials：严格解析并整体替换 office credentials authority。
+pub fn save_office_credentials_segment(
+    store: &dyn OfficeCredentialStore,
+    body: &str,
+) -> Result<()> {
+    let seg: OfficeCredentialsSegment =
+        serde_json::from_str(body).map_err(|e| Error::config("deserialize", e.to_string()))?;
+    validate_office_credentials_segment(&seg)?;
+    let current_keys = store
+        .list()?
+        .into_iter()
+        .map(|item| item.account_key)
+        .collect::<std::collections::BTreeSet<_>>();
+    let next_keys = seg
+        .items
+        .iter()
+        .map(|item| item.account_key.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    for account_key in current_keys.difference(&next_keys) {
+        store.clear(account_key)?;
+    }
+    for credential in &seg.items {
+        store.set(credential)?;
+    }
+    Ok(())
+}
+
+pub fn validate_office_credentials_candidate(seg: &OfficeCredentialsSegment) -> Result<()> {
+    validate_office_credentials_segment(seg)
+}
+
 /// 单条 ID 最大长度、白名单最大条数（避免滥用）。
 /// 单条 chat_id 最大长度（飞书 oc_xxx 等可超过 32）。
 const MAX_ALLOWED_ID_LEN: usize = 64;
@@ -2836,5 +3060,278 @@ mod tests {
             .expect("written");
         let saved: AudioSegment = serde_json::from_slice(&written).expect("parse saved audio");
         assert_eq!(saved.speaker.device_ref, None);
+    }
+
+    #[test]
+    fn save_office_accounts_segment_roundtrips_multi_account_registry() {
+        struct MemoryFileStore(std::sync::Mutex<Option<Vec<u8>>>);
+
+        impl ConfigFileStore for MemoryFileStore {
+            fn read_config_file(&self, _rel_path: &str) -> Result<Option<Vec<u8>>> {
+                Ok(self.0.lock().unwrap_or_else(|e| e.into_inner()).clone())
+            }
+
+            fn write_config_file(&self, _rel_path: &str, data: &[u8]) -> Result<()> {
+                *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(data.to_vec());
+                Ok(())
+            }
+
+            fn remove_config_file(&self, _rel_path: &str) -> Result<()> {
+                *self.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                Ok(())
+            }
+        }
+
+        let store = MemoryFileStore(std::sync::Mutex::new(None));
+        let body = r#"{
+            "registry": {
+                "accounts": {
+                    "mail-work": {
+                        "account_key": "mail-work",
+                        "provider_kind": "imap_smtp",
+                        "external_account_id": "work@example.com",
+                        "account_label": "工作邮箱",
+                        "identity_class": "work",
+                        "enabled_capabilities": ["mail"]
+                    },
+                    "calendar-personal": {
+                        "account_key": "calendar-personal",
+                        "provider_kind": "caldav",
+                        "external_account_id": "personal@example.com",
+                        "account_label": "私人日历",
+                        "identity_class": "personal",
+                        "enabled_capabilities": ["calendar"]
+                    }
+                }
+            },
+            "binding": {
+                "capability_defaults": {
+                    "mail": "mail-work",
+                    "calendar": "calendar-personal"
+                }
+            },
+            "policy": {
+                "global_default_account_key": "mail-work",
+                "ask_when_ambiguous": true,
+                "preferred_identity_class": "work"
+            }
+        }"#;
+
+        save_office_accounts_segment(&store, body).expect("save office accounts");
+        let saved = get_office_accounts_segment(&store).expect("get office accounts");
+        let parsed: OfficeAccountsSegment =
+            serde_json::from_str(&saved).expect("parse saved office accounts");
+        assert!(parsed.registry.get("mail-work").is_some());
+        assert!(parsed.registry.get("calendar-personal").is_some());
+        assert_eq!(
+            parsed.binding.default_account_for(OfficeCapability::Mail),
+            Some("mail-work")
+        );
+        assert_eq!(parsed.policy.global_default_account_key, "mail-work");
+    }
+
+    #[test]
+    fn save_office_accounts_segment_rejects_missing_binding_account() {
+        struct MemoryFileStore;
+
+        impl ConfigFileStore for MemoryFileStore {
+            fn read_config_file(&self, _rel_path: &str) -> Result<Option<Vec<u8>>> {
+                Ok(None)
+            }
+
+            fn write_config_file(&self, _rel_path: &str, _data: &[u8]) -> Result<()> {
+                Ok(())
+            }
+
+            fn remove_config_file(&self, _rel_path: &str) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let error = save_office_accounts_segment(
+            &MemoryFileStore,
+            r#"{
+                "registry": { "accounts": {} },
+                "binding": { "capability_defaults": { "mail": "ghost" } },
+                "policy": {}
+            }"#,
+        )
+        .expect_err("binding should reject unknown default account");
+        assert!(error
+            .to_string()
+            .contains("binding default account 'ghost'"));
+    }
+
+    #[test]
+    fn save_office_accounts_segment_rejects_binding_account_without_capability() {
+        struct MemoryFileStore;
+
+        impl ConfigFileStore for MemoryFileStore {
+            fn read_config_file(&self, _rel_path: &str) -> Result<Option<Vec<u8>>> {
+                Ok(None)
+            }
+
+            fn write_config_file(&self, _rel_path: &str, _data: &[u8]) -> Result<()> {
+                Ok(())
+            }
+
+            fn remove_config_file(&self, _rel_path: &str) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let error = save_office_accounts_segment(
+            &MemoryFileStore,
+            r#"{
+                "registry": {
+                    "accounts": {
+                        "mail-work": {
+                            "account_key": "mail-work",
+                            "provider_kind": "imap_smtp",
+                            "external_account_id": "work@example.com",
+                            "account_label": "Work",
+                            "identity_class": "work",
+                            "enabled_capabilities": ["mail"]
+                        }
+                    }
+                },
+                "binding": { "capability_defaults": { "calendar": "mail-work" } },
+                "policy": {}
+            }"#,
+        )
+        .expect_err("binding should reject accounts that do not enable the capability");
+        assert!(error
+            .to_string()
+            .contains("does not enable capability 'Calendar'"));
+    }
+
+    #[test]
+    fn merge_office_accounts_from_json_rejects_trailing_garbage() {
+        let mut config = AppConfig::load_from_env();
+        let mut errors = Vec::new();
+        config.merge_office_accounts_from_json(
+            r#"{
+                "registry": {
+                    "accounts": {
+                        "calendar-work": {
+                            "account_key": "calendar-work",
+                            "provider_kind": "caldav",
+                            "external_account_id": "work@example.com",
+                            "account_label": "Work",
+                            "identity_class": "work",
+                            "enabled_capabilities": ["calendar"]
+                        }
+                    }
+                },
+                "binding": {
+                    "capability_defaults": {
+                        "calendar": "calendar-work"
+                    }
+                },
+                "policy": {}
+            } trailing"#,
+            &mut errors,
+        );
+        assert_eq!(errors, vec!["accounts_json_invalid".to_string()]);
+        assert!(config
+            .office_accounts
+            .registry
+            .get("calendar-work")
+            .is_none());
+    }
+
+    #[test]
+    fn save_office_credentials_segment_roundtrips() {
+        struct MemoryOfficeCredentialStore(std::sync::Mutex<Vec<crate::office::OfficeCredential>>);
+
+        impl crate::office::OfficeCredentialStore for MemoryOfficeCredentialStore {
+            fn get(&self, account_key: &str) -> Result<Option<crate::office::OfficeCredential>> {
+                Ok(self
+                    .0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .iter()
+                    .find(|item| item.account_key == account_key)
+                    .cloned())
+            }
+
+            fn list(&self) -> Result<Vec<crate::office::OfficeCredential>> {
+                Ok(self.0.lock().unwrap_or_else(|e| e.into_inner()).clone())
+            }
+
+            fn set(&self, credential: &crate::office::OfficeCredential) -> Result<()> {
+                let mut guard = self.0.lock().unwrap_or_else(|e| e.into_inner());
+                guard.retain(|item| item.account_key != credential.account_key);
+                guard.push(credential.clone());
+                Ok(())
+            }
+
+            fn clear(&self, account_key: &str) -> Result<()> {
+                self.0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .retain(|item| item.account_key != account_key);
+                Ok(())
+            }
+        }
+
+        let store = MemoryOfficeCredentialStore(std::sync::Mutex::new(vec![]));
+        save_office_credentials_segment(
+            &store,
+            r#"{
+                "items": [
+                    {
+                        "account_key": "calendar-work",
+                        "access_token": "token",
+                        "refresh_token": "refresh",
+                        "token_endpoint": "https://example.com/token",
+                        "expires_at_unix_secs": 12,
+                        "updated_at": 34,
+                        "metadata": { "calendar_id": "primary" }
+                    }
+                ]
+            }"#,
+        )
+        .expect("save office credentials");
+
+        let saved = get_office_credentials_segment(&store).expect("get office credentials");
+        let parsed: OfficeCredentialsSegment =
+            serde_json::from_str(&saved).expect("parse office credentials");
+        assert_eq!(parsed.items.len(), 1);
+        assert_eq!(parsed.items[0].account_key, "calendar-work");
+        assert_eq!(
+            parsed.items[0].metadata.get("calendar_id").map(String::as_str),
+            Some("primary")
+        );
+    }
+
+    #[test]
+    fn save_office_credentials_segment_rejects_trailing_garbage() {
+        struct MemoryOfficeCredentialStore;
+
+        impl crate::office::OfficeCredentialStore for MemoryOfficeCredentialStore {
+            fn get(&self, _account_key: &str) -> Result<Option<crate::office::OfficeCredential>> {
+                Ok(None)
+            }
+
+            fn list(&self) -> Result<Vec<crate::office::OfficeCredential>> {
+                Ok(Vec::new())
+            }
+
+            fn set(&self, _credential: &crate::office::OfficeCredential) -> Result<()> {
+                Ok(())
+            }
+
+            fn clear(&self, _account_key: &str) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let error = save_office_credentials_segment(
+            &MemoryOfficeCredentialStore,
+            r#"{"items":[{"account_key":"calendar-work"}]} trailing"#,
+        )
+        .expect_err("office credentials should reject trailing garbage");
+        assert!(error.to_string().contains("trailing"));
     }
 }

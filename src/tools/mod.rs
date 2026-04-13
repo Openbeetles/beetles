@@ -61,6 +61,7 @@ pub mod lua_memory_query;
 pub mod lua_query;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod lua_tool_bridge;
+pub mod mail;
 pub mod memory_get;
 #[cfg(feature = "tools_diagnostics")]
 pub mod memory_manage;
@@ -72,6 +73,8 @@ pub mod model_config;
 pub mod network;
 #[cfg(feature = "tools_diagnostics")]
 pub mod network_scan;
+pub mod office_status;
+pub mod office_config;
 #[cfg(all(
     feature = "tools_network_extra",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -159,6 +162,7 @@ pub use lua_memory_query::LuaMemoryQueryTool;
 pub use lua_query::LuaQueryTool;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use lua_tool_bridge::LuaToolBridgeTool;
+pub use mail::MailTool;
 pub use memory_get::MemoryGetTool;
 #[cfg(feature = "tools_diagnostics")]
 pub use memory_manage::MemoryManageTool;
@@ -170,6 +174,8 @@ pub use model_config::ModelConfigTool;
 pub use network::NetworkTool;
 #[cfg(feature = "tools_diagnostics")]
 pub use network_scan::NetworkScanTool;
+pub use office_config::OfficeConfigTool;
+pub use office_status::OfficeStatusTool;
 #[cfg(all(
     feature = "tools_network_extra",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
