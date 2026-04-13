@@ -56,6 +56,7 @@ pub mod bus;
 pub mod calendar;
 pub mod channels;
 pub mod config;
+pub mod contacts_directory;
 pub mod diagnosis;
 pub mod display;
 pub mod doctor;
@@ -164,12 +165,11 @@ pub use tools::LuaMemoryQueryTool;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use tools::LuaToolBridgeTool;
 pub use tools::{
-    build_default_registry, CalendarTool, DefaultRegistryDeps, DocumentsTool, FileEditTool,
-    FileWriteTool, FilesTool, GetTimeTool, KvStoreTool, MailTool, OfficeConfigTool,
-    PrivateGardenTool, RemindAtTool, TaskTool, Tool, ToolBridgeCatalogEntry,
-    ToolBridgeProposalAssessment, ToolBridgeProposalDecision, ToolCapabilityContract,
-    ToolContext, ToolExposure, ToolMetadata, ToolPolicyContext, ToolRegistry, VoiceInputTool,
-    VoiceOutputTool,
+    build_default_registry, CalendarTool, ContactsDirectoryTool, DefaultRegistryDeps,
+    DocumentsTool, FileEditTool, FileWriteTool, FilesTool, GetTimeTool, KvStoreTool, MailTool,
+    OfficeConfigTool, PrivateGardenTool, RemindAtTool, TaskTool, Tool, ToolBridgeCatalogEntry,
+    ToolBridgeProposalAssessment, ToolBridgeProposalDecision, ToolCapabilityContract, ToolContext,
+    ToolExposure, ToolMetadata, ToolPolicyContext, ToolRegistry, VoiceInputTool, VoiceOutputTool,
 };
 #[cfg(feature = "tools_diagnostics")]
 pub use tools::{

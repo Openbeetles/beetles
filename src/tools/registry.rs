@@ -710,18 +710,18 @@ fn register_core_tools(
     );
     let calendar_credential_store: Arc<
         dyn crate::calendar::CalendarProviderCredentialStore + Send + Sync,
-    > = Arc::new(crate::calendar::OfficeBackedCalendarProviderCredentialStore::new(
-        office_service.clone(),
-    ));
+    > = Arc::new(
+        crate::calendar::OfficeBackedCalendarProviderCredentialStore::new(office_service.clone()),
+    );
     let mail_credential_store: Arc<dyn crate::mail::MailProviderCredentialStore + Send + Sync> =
         Arc::new(crate::mail::OfficeBackedMailProviderCredentialStore::new(
             office_service.clone(),
         ));
     let documents_credential_store: Arc<
         dyn crate::documents::DocumentsProviderCredentialStore + Send + Sync,
-    > = Arc::new(crate::documents::OfficeBackedDocumentsProviderCredentialStore::new(
-        office_service.clone(),
-    ));
+    > = Arc::new(
+        crate::documents::OfficeBackedDocumentsProviderCredentialStore::new(office_service.clone()),
+    );
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     let office_config_service = office_config_service.with_probe_adapters(vec![
         Arc::new(crate::mail::providers::imap_smtp::ImapSmtpOfficeProbeAdapter),
@@ -733,7 +733,9 @@ fn register_core_tools(
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     let mail_providers = {
         let mut providers = crate::mail::MailProviderRegistry::new();
-        providers.register(Arc::new(crate::mail::providers::imap_smtp::ImapSmtpProvider));
+        providers.register(Arc::new(
+            crate::mail::providers::imap_smtp::ImapSmtpProvider,
+        ));
         providers
     };
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -741,7 +743,9 @@ fn register_core_tools(
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     let documents_providers = {
         let mut providers = crate::documents::DocumentsProviderRegistry::new();
-        providers.register(Arc::new(crate::documents::providers::webdav::WebDavProvider));
+        providers.register(Arc::new(
+            crate::documents::providers::webdav::WebDavProvider,
+        ));
         providers
     };
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -778,6 +782,9 @@ fn register_core_tools(
         documents_providers,
         office_service.clone(),
     )));
+    registry.register(Box::new(super::ContactsDirectoryTool::new(Arc::new(
+        crate::contacts_directory::StateFsContactsDirectoryStore::new(platform.state_fs()),
+    ))));
     registry.register(Box::new(super::OfficeConfigTool::new(
         office_config_service,
     )));
@@ -1496,6 +1503,12 @@ mod tests {
     fn default_registry_registers_documents_tool() {
         let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
         assert!(ctx.tool_registry.get("documents").is_some());
+    }
+
+    #[test]
+    fn default_registry_registers_contacts_directory_tool() {
+        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+        assert!(ctx.tool_registry.get("contacts_directory").is_some());
     }
 
     #[test]

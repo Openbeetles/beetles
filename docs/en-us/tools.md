@@ -21,6 +21,7 @@ Keep three things in mind:
 | `calendar` | persistent calendar events |
 | `mail` | read, inspect, and send mail through linked office accounts |
 | `documents` | browse and read linked office document libraries |
+| `contacts_directory` | local people directory for agent lookup and later office composition |
 | `office_config` | inspect, draft, validate, commit, and revoke office config |
 | `office_status` | view office accounts, defaults, credential presence, and runtime status |
 | `files` | list or read files in device storage |
@@ -68,6 +69,18 @@ Keep three things in mind:
 - If a default documents account is configured, or only one documents account is available, you can omit `provider` / `account_key`.
 - `provider_status` returns the current documents capability view, configured account status, and default-account/runtime summary.
 
+### `contacts_directory`
+
+- `contacts_directory` is the local people-support layer, not a shell around an external directory provider.
+- Supported operations:
+  - `status`
+  - `list`
+  - `lookup`
+  - `upsert`
+  - `delete`
+- Use it to persist stable person data such as names, emails, aliases, organizations, and short notes.
+- Later `mail` / `calendar` flows should consume this shared people lookup instead of each capability inventing a separate contact model.
+
 ### `office_config`
 
 - This is the unified office configuration tool, not a private control plane for one service.
@@ -90,7 +103,7 @@ Keep three things in mind:
 
 - Reads the unified office state instead of any one tool's private status.
 - Use it to inspect accounts, defaults, whether credentials exist, and the latest runtime status.
-- Optional `capability` lets you scope the result to `calendar`, `mail`, or `documents`.
+- Optional `capability` lets you scope the result to `calendar`, `mail`, `documents`, or `contacts_directory`.
 
 ## Tools Behind `tools_network_extra`
 

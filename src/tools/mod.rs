@@ -13,6 +13,7 @@ mod state_file_guard;
 pub mod analyze_image;
 pub mod board_info;
 pub mod calendar;
+pub mod contacts_directory;
 pub mod continuity_snapshot;
 pub mod cron;
 pub mod cron_manage;
@@ -21,7 +22,6 @@ pub mod diagnose_memory_runtime;
 pub mod diagnose_network_path;
 pub mod diagnose_system;
 pub mod diagnose_voice_path;
-pub mod documents;
 #[cfg(all(
     feature = "tools_network_extra",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -37,6 +37,7 @@ pub mod document_read;
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 pub mod document_search;
+pub mod documents;
 pub mod env;
 pub mod factual_memory;
 pub mod file_edit;
@@ -74,8 +75,8 @@ pub mod model_config;
 pub mod network;
 #[cfg(feature = "tools_diagnostics")]
 pub mod network_scan;
-pub mod office_status;
 pub mod office_config;
+pub mod office_status;
 #[cfg(all(
     feature = "tools_network_extra",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -112,6 +113,7 @@ pub mod web_search;
 pub use analyze_image::AnalyzeImageTool;
 pub use board_info::BoardInfoTool;
 pub use calendar::CalendarTool;
+pub use contacts_directory::ContactsDirectoryTool;
 pub use continuity_snapshot::ContinuitySnapshotTool;
 pub use cron_manage::CronManageTool;
 pub use diagnose_delivery::DiagnoseDeliveryTool;
@@ -119,7 +121,6 @@ pub use diagnose_memory_runtime::DiagnoseMemoryRuntimeTool;
 pub use diagnose_network_path::DiagnoseNetworkPathTool;
 pub use diagnose_system::DiagnoseSystemTool;
 pub use diagnose_voice_path::DiagnoseVoicePathTool;
-pub use documents::DocumentsTool;
 #[cfg(all(
     feature = "tools_network_extra",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -135,6 +136,7 @@ pub use document_read::DocumentReadTool;
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 pub use document_search::DocumentSearchTool;
+pub use documents::DocumentsTool;
 pub use env::EnvTool;
 pub use execution_governance::{
     render_tool_execution_governance_markdown, ToolEmergencyStopState, ToolExecutionGateDecision,

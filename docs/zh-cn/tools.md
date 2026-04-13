@@ -21,6 +21,7 @@
 | `calendar` | 持久日历事件 |
 | `mail` | 通过共享 office 账户权威读取、查看和发送邮件 |
 | `documents` | 通过共享 office 账户权威查看远端文档库状态、目录、正文和搜索结果 |
+| `contacts_directory` | 本地联系人目录，供 Agent 做 people lookup 和后续办公组合 |
 | `office_config` | 以结构化操作检查、草拟、校验、提交和撤销 office 配置 |
 | `office_status` | 查看 office 账户、默认绑定、凭证存在性和运行态探测状态 |
 | `files` | 列出或读取设备存储中的文件 |
@@ -69,6 +70,18 @@
 - `provider_status` 返回的是当前可用文档能力、已配置账户状态，以及默认账户和运行状态摘要。
 - `documents` 读取的是“办公文档库/文件库”能力；本地设备存储里的文件检索仍然继续使用 `document_search`、`document_read`、`document_extract`
 
+### `contacts_directory`
+
+- `contacts_directory` 是本地联系人支撑层，不是外部通讯录 provider 的壳子。
+- 当前支持：
+  - `status`
+  - `list`
+  - `lookup`
+  - `upsert`
+  - `delete`
+- 它的目标是把“人”的稳定资料沉淀下来，比如姓名、邮箱、别名、组织和备注。
+- 后续 `mail` / `calendar` 会优先消费这里的 people lookup 结果，而不是各自重复维护一套联系人逻辑。
+
 ### `office_config`
 
 - 这是 office 域的统一配置工具，不是某个单独服务的私有控制面。
@@ -91,7 +104,7 @@
 
 - 读取 office 域的统一状态，而不是某个工具自己的私有状态。
 - 可以用来查看账户、默认绑定、凭证是否存在，以及最近一次运行状态。
-- 可选传 `capability`，只看某一个能力，比如 `calendar`、`mail` 或 `documents`。
+- 可选传 `capability`，只看某一个能力，比如 `calendar`、`mail`、`documents` 或 `contacts_directory`。
 
 ## `tools_network_extra` 工具
 
