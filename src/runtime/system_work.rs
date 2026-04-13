@@ -5,6 +5,7 @@ use crate::bus::IngressKind;
 
 pub const CHANNEL_HEARTBEAT: &str = "heartbeat";
 pub const CHANNEL_CRON: &str = "cron";
+pub const CHANNEL_IDLE_MEMORY_FORGE: &str = "_idle_memory_forge";
 pub const CHANNEL_LONG_TERM_MEMORY_REFRESH: &str = "_memory_refresh";
 pub const CHANNEL_OPERATOR_MAINTENANCE: &str = "_operator_maintenance";
 pub const CHANNEL_POST_REPLY_MAINTENANCE: &str = "_post_reply_maintenance";
@@ -52,7 +53,10 @@ pub fn classify_system_work(channel: &str, ingress: IngressKind) -> SystemWorkCl
         CHANNEL_CRON | CHANNEL_HEARTBEAT | CHANNEL_LONG_TERM_MEMORY_REFRESH => {
             SystemWorkClass::BackgroundLowPriority
         }
-        CHANNEL_POST_REPLY_MAINTENANCE | CHANNEL_SELF_RUNTIME | CHANNEL_OPERATOR_MAINTENANCE => {
+        CHANNEL_POST_REPLY_MAINTENANCE
+        | CHANNEL_SELF_RUNTIME
+        | CHANNEL_OPERATOR_MAINTENANCE
+        | CHANNEL_IDLE_MEMORY_FORGE => {
             SystemWorkClass::Maintenance
         }
         _ => SystemWorkClass::SystemInteractive,
@@ -91,6 +95,10 @@ mod tests {
     fn classify_maintenance_channels() {
         assert_eq!(
             classify_system_work(CHANNEL_SELF_RUNTIME, IngressKind::System),
+            SystemWorkClass::Maintenance
+        );
+        assert_eq!(
+            classify_system_work(CHANNEL_IDLE_MEMORY_FORGE, IngressKind::System),
             SystemWorkClass::Maintenance
         );
         assert_eq!(

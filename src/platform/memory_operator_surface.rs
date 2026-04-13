@@ -55,6 +55,7 @@ pub struct MemoryOperatorSurfaceSummary {
     pub trace: MemoryOperatorTraceView,
     pub diff: MemoryOperatorDiffView,
     pub repair: MemoryOperatorRepairView,
+    pub forge: MemoryOperatorForgeView,
     pub policy_view: MemoryOperatorPolicyView,
 }
 
@@ -130,6 +131,21 @@ pub struct MemoryOperatorPolicyView {
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
+pub struct MemoryOperatorForgeView {
+    pub last_run_at: u64,
+    pub total_candidates: usize,
+    pub attack_findings: usize,
+    pub distillation_candidates: usize,
+    pub adjudication_state: crate::IdleMemoryForgeAdjudicationState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_chat_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_source_channel: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary_finding: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct MemoryOperatorRelationshipTarget {
     pub scope_id: String,
     pub channel: String,
@@ -198,6 +214,10 @@ pub fn build_memory_operator_surface(
     );
     let (policy_target, personality_governance, runtime_governance_gate, relationship_constitution) =
         build_policy_view(platform, now_secs, personality_targets.first())?;
+    let forge_summary = crate::load_idle_memory_forge_operator_summary(platform.state_fs().as_ref())
+        .ok()
+        .flatten()
+        .unwrap_or_default();
     let topology_entry = relationship_topology.as_ref().and_then(|topology| {
         policy_target.as_ref().and_then(|target| {
             topology
@@ -328,6 +348,16 @@ pub fn build_memory_operator_surface(
                 .map(convert_relationship_target)
                 .collect(),
         },
+        forge: MemoryOperatorForgeView {
+            last_run_at: forge_summary.last_run_at,
+            total_candidates: forge_summary.total_candidates,
+            attack_findings: forge_summary.attack_findings,
+            distillation_candidates: forge_summary.distillation_candidates,
+            adjudication_state: forge_summary.adjudication_state,
+            last_chat_id: forge_summary.last_chat_id,
+            last_source_channel: forge_summary.last_source_channel,
+            primary_finding: forge_summary.primary_finding,
+        },
         policy_view: MemoryOperatorPolicyView {
             target: policy_target,
             personality_governance,
@@ -359,6 +389,17 @@ pub fn render_memory_operator_surface_text(surface: &MemoryOperatorSurfaceSummar
             "  memory_operator_trace_targets: {}\n",
             surface.trace.active_chat_targets.join(", ")
         ));
+    }
+    out.push_str(&format!(
+        "  memory_operator_forge_last_run_at: {}\n  memory_operator_forge_candidates: {}\n  memory_operator_forge_attack_findings: {}\n  memory_operator_forge_distillation_candidates: {}\n  memory_operator_forge_adjudication: {:?}\n",
+        surface.forge.last_run_at,
+        surface.forge.total_candidates,
+        surface.forge.attack_findings,
+        surface.forge.distillation_candidates,
+        surface.forge.adjudication_state,
+    ));
+    if let Some(finding) = surface.forge.primary_finding.as_deref() {
+        out.push_str(&format!("  memory_operator_forge_finding: {}\n", finding));
     }
     out
 }

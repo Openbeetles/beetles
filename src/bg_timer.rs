@@ -196,6 +196,13 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
                         ctx.memory_system_kind.memory_profile(),
                         now_unix_secs,
                     );
+                    crate::reasoning::enqueue_idle_memory_forge_tick(
+                        &ctx.system_inbound_tx,
+                        ctx.self_continuity_store.as_ref(),
+                        ctx.memory_system_kind.memory_profile(),
+                        ctx.platform.state_fs().as_ref(),
+                        now_unix_secs,
+                    );
                     crate::runtime::initiative_tick(
                         ctx.platform.as_ref(),
                         &ctx.system_inbound_tx,

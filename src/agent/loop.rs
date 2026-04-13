@@ -74,8 +74,9 @@ use crate::memory::{
 use crate::metrics;
 use crate::orchestrator::admission::{LlmDecision, ToolDecision};
 use crate::runtime::system_work::{
-    classify_system_work, CHANNEL_CRON, CHANNEL_LONG_TERM_MEMORY_REFRESH,
-    CHANNEL_OPERATOR_MAINTENANCE, CHANNEL_POST_REPLY_MAINTENANCE, CHANNEL_SELF_RUNTIME,
+    classify_system_work, CHANNEL_CRON, CHANNEL_IDLE_MEMORY_FORGE,
+    CHANNEL_LONG_TERM_MEMORY_REFRESH, CHANNEL_OPERATOR_MAINTENANCE,
+    CHANNEL_POST_REPLY_MAINTENANCE, CHANNEL_SELF_RUNTIME,
 };
 use crate::state;
 use crate::task_execution::{
@@ -210,6 +211,10 @@ fn is_post_reply_maintenance_job(msg: &PcMsg) -> bool {
     msg.ingress == IngressKind::System && msg.channel.as_ref() == CHANNEL_POST_REPLY_MAINTENANCE
 }
 
+fn is_idle_memory_forge_job(msg: &PcMsg) -> bool {
+    msg.ingress == IngressKind::System && msg.channel.as_ref() == CHANNEL_IDLE_MEMORY_FORGE
+}
+
 fn is_self_runtime_job(msg: &PcMsg) -> bool {
     msg.ingress == IngressKind::System && msg.channel.as_ref() == CHANNEL_SELF_RUNTIME
 }
@@ -221,6 +226,7 @@ fn is_operator_maintenance_job(msg: &PcMsg) -> bool {
 fn is_lane_background_job(msg: &PcMsg) -> bool {
     is_long_term_memory_refresh_job(msg)
         || is_post_reply_maintenance_job(msg)
+        || is_idle_memory_forge_job(msg)
         || is_self_runtime_job(msg)
         || is_operator_maintenance_job(msg)
 }
@@ -288,6 +294,15 @@ fn should_defer_background_job(msg: &PcMsg) -> Option<(&'static str, u64)> {
             msg,
             crate::runtime::WorkflowTrigger::OperatorRequested,
             crate::runtime::WorkflowKind::OperatorMaintenance,
+            "message_queues_busy",
+        );
+        return Some(("message_queues_busy", 1_000));
+    }
+    if is_idle_memory_forge_job(msg) {
+        append_background_defer_workflow_audit(
+            msg,
+            crate::runtime::WorkflowTrigger::CronTick,
+            crate::runtime::WorkflowKind::IdleMemoryForge,
             "message_queues_busy",
         );
         return Some(("message_queues_busy", 1_000));

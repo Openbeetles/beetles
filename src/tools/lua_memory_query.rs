@@ -5,9 +5,10 @@ use crate::memory::{
     ContinuityCapsuleStore, LongTermMemoryQuery, LongTermMemoryStore,
 };
 use crate::reasoning::{
-    default_lua_memory_query_capabilities, validate_memory_query_result,
-    LuaQueryBudget, LuaQueryRequest, LuaQueryResponse, MemoryQueryContinuityScope,
-    MemoryQueryResult, MemoryQuerySelection, MemoryQuerySnapshot, ReasoningExecutor,
+    build_memory_query_snapshot_from_stores, default_lua_memory_query_capabilities,
+    validate_memory_query_result, LuaQueryBudget, LuaQueryRequest, LuaQueryResponse,
+    MemoryQueryContinuityScope, MemoryQueryResult, MemoryQuerySelection, MemoryQuerySnapshot,
+    ReasoningExecutor,
     MEMORY_QUERY_DEFAULT_CONTINUITY_LIMIT, MEMORY_QUERY_DEFAULT_LONG_TERM_LIMIT,
 };
 use crate::tools::{
@@ -102,43 +103,12 @@ impl Tool for LuaMemoryQueryTool {
 
 impl LuaMemoryQueryTool {
     fn build_snapshot(&self, selection: &MemoryQuerySelection) -> Result<MemoryQuerySnapshot> {
-        let normalized = selection.normalized();
-        if !normalized.include_long_term && !normalized.include_continuity {
-            return Err(Error::config(
-                "lua_memory_query_tool",
-                "at least one memory plane must be included",
-            ));
-        }
-
-        let long_term_entries = if normalized.include_long_term {
-            if let Some(query) = normalized.long_term_query.as_ref() {
-                self.long_term_store.query(query)?
-            } else {
-                self.long_term_store.list(normalized.long_term_limit)?
-            }
-        } else {
-            Vec::new()
-        };
-
-        let continuity_capsules = if normalized.include_continuity {
-            if let Some(scope) = normalized.continuity_scope.as_ref() {
-                self.continuity_store.list_for_scope(
-                    scope.scope_kind,
-                    &scope.scope_id,
-                    normalized.continuity_limit,
-                )?
-            } else {
-                self.continuity_store.list(normalized.continuity_limit)?
-            }
-        } else {
-            Vec::new()
-        };
-
-        Ok(MemoryQuerySnapshot::new(
-            normalized,
-            long_term_entries,
-            continuity_capsules,
-        ))
+        build_memory_query_snapshot_from_stores(
+            selection,
+            self.long_term_store.as_ref(),
+            self.continuity_store.as_ref(),
+        )
+        .map_err(|error| Error::config("lua_memory_query_tool", error.to_string()))
     }
 }
 

@@ -154,6 +154,9 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
             crate::ProgrammableReasoningStage::TaskScriptingBaseline => "task_scripting_baseline",
             crate::ProgrammableReasoningStage::MemoryQueryPlane => "memory_query_plane",
             crate::ProgrammableReasoningStage::IdleMemoryForge => "idle_memory_forge",
+            crate::ProgrammableReasoningStage::MemoryAttackDistillation => {
+                "memory_attack_distillation"
+            }
         },
         snapshot.programmable_reasoning.runtime_contract.execution_enabled,
         match snapshot.programmable_reasoning.runtime_contract.execution_backend {

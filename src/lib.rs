@@ -116,6 +116,15 @@ pub use llm::{
 pub use network::{HttpClientClass, NetworkGovernor, VoiceExclusiveTransportGuard};
 pub use reasoning::{
     default_lua_memory_query_capabilities, validate_memory_query_result,
+    idle_memory_forge_job_contracts, load_idle_memory_forge_operator_summary,
+    persist_idle_memory_forge_run, should_run_idle_memory_forge, IdleMemoryForgeAdmissionSnapshot,
+    IdleMemoryForgeAdjudicationState, IdleMemoryForgeJobContract, IdleMemoryForgeJobKind,
+    IdleMemoryForgeJobReport, IdleMemoryForgeJobStatus, IdleMemoryForgeOperatorSummary,
+    IdleMemoryForgeAttackBatch, IdleMemoryForgeProposalBatch, IdleMemoryForgeRunLedger,
+    IdleMemoryForgeTrigger,
+    memory_attack_job_contracts, validate_memory_attack_result, MemoryAttackFinding,
+    MemoryAttackFindingKind, MemoryAttackJobContract, MemoryAttackJobKind, MemoryAttackJobReport,
+    MemoryAttackJobStatus, MemoryAttackResult, MemoryDistillationCandidate,
     MemoryQueryCandidate, MemoryQueryCandidateKind, MemoryQueryContinuityRecord,
     MemoryQueryContinuityScope, MemoryQueryGroup, MemoryQueryLongTermRecord, MemoryQueryResult,
     MemoryQuerySelection, MemoryQuerySnapshot, MemoryQuerySnapshotCounts,

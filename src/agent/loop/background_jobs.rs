@@ -263,6 +263,29 @@ fn run_long_term_memory_refresh_job(
     }
 }
 
+fn run_idle_memory_forge_job(config: &AgentLoopConfig, msg: &PcMsg) {
+    match crate::reasoning::run_idle_memory_forge_background_job(
+        config.long_term_memory_store.as_ref(),
+        config.continuity_capsule_store.as_ref(),
+        config.platform.state_fs().as_ref(),
+        msg,
+    ) {
+        Ok(summary) => {
+            if summary.total_candidates > 0 {
+                log::info!(
+                    "[idle_memory_forge] updated for {} (candidates={}, finding={})",
+                    msg.chat_id,
+                    summary.total_candidates,
+                    summary.primary_finding.unwrap_or_default()
+                );
+            } else {
+                log::info!("[idle_memory_forge] completed for {} (no candidates)", msg.chat_id);
+            }
+        }
+        Err(error) => log::warn!("[idle_memory_forge] failed for {}: {}", msg.chat_id, error),
+    }
+}
+
 fn run_post_reply_maintenance_job(
     http: &mut dyn PlatformHttpClient,
     worker_llm: &(dyn LlmClient + Send + Sync),
@@ -918,6 +941,10 @@ pub(super) fn try_run_lane_background_job(
     }
     if super::is_post_reply_maintenance_job(msg) {
         run_post_reply_maintenance_job(http, worker_llm, config, system_inbound_tx, msg);
+        return true;
+    }
+    if super::is_idle_memory_forge_job(msg) {
+        run_idle_memory_forge_job(config, msg);
         return true;
     }
     if super::is_self_runtime_job(msg) {

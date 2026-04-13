@@ -37,7 +37,7 @@ mod tests {
         assert!(parsed["workflow"].get("recent_records").is_some());
         assert_eq!(
             parsed["programmable_reasoning"]["stage"].as_str(),
-            Some("memory_query_plane")
+            Some("memory_attack_distillation")
         );
         assert_eq!(
             parsed["programmable_reasoning"]["runtime_contract"]["execution_enabled"].as_bool(),
@@ -47,6 +47,13 @@ mod tests {
         assert!(parsed["memory_operator_surface"].get("trace").is_some());
         assert!(parsed["memory_operator_surface"].get("diff").is_some());
         assert!(parsed["memory_operator_surface"].get("repair").is_some());
+        assert!(parsed["memory_operator_surface"].get("forge").is_some());
+        assert!(parsed["memory_operator_surface"]["forge"]
+            .get("attack_findings")
+            .is_some());
+        assert!(parsed["memory_operator_surface"]["forge"]
+            .get("distillation_candidates")
+            .is_some());
         assert!(parsed["memory_operator_surface"]
             .get("policy_view")
             .is_some());

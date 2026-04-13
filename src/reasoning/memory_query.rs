@@ -2,7 +2,8 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    ContinuityCapsule, ContinuityCapsuleScopeKind, LongTermMemoryEntry, LongTermMemoryQuery,
+    ContinuityCapsule, ContinuityCapsuleScopeKind, ContinuityCapsuleStore, LongTermMemoryEntry,
+    LongTermMemoryQuery, LongTermMemoryStore,
 };
 use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
@@ -198,6 +199,50 @@ pub fn default_lua_memory_query_capabilities() -> Vec<String> {
     capabilities
 }
 
+pub fn build_memory_query_snapshot_from_stores(
+    selection: &MemoryQuerySelection,
+    long_term_store: &dyn LongTermMemoryStore,
+    continuity_store: &dyn ContinuityCapsuleStore,
+) -> Result<MemoryQuerySnapshot> {
+    let normalized = selection.normalized();
+    if !normalized.include_long_term && !normalized.include_continuity {
+        return Err(Error::config(
+            "memory_query_snapshot",
+            "at least one memory plane must be included",
+        ));
+    }
+
+    let long_term_entries = if normalized.include_long_term {
+        if let Some(query) = normalized.long_term_query.as_ref() {
+            long_term_store.query(query)?
+        } else {
+            long_term_store.list(normalized.long_term_limit)?
+        }
+    } else {
+        Vec::new()
+    };
+
+    let continuity_capsules = if normalized.include_continuity {
+        if let Some(scope) = normalized.continuity_scope.as_ref() {
+            continuity_store.list_for_scope(
+                scope.scope_kind,
+                &scope.scope_id,
+                normalized.continuity_limit,
+            )?
+        } else {
+            continuity_store.list(normalized.continuity_limit)?
+        }
+    } else {
+        Vec::new()
+    };
+
+    Ok(MemoryQuerySnapshot::new(
+        normalized,
+        long_term_entries,
+        continuity_capsules,
+    ))
+}
+
 pub fn validate_memory_query_result(value: Value) -> Result<MemoryQueryResult> {
     let result: MemoryQueryResult = serde_json::from_value(value)
         .map_err(|error| Error::config("memory_query_result_decode", error.to_string()))?;
@@ -372,9 +417,10 @@ impl Hash for MemoryQueryContinuityScope {
 mod tests {
     use super::*;
     use crate::memory::{
-        ContinuityCapsule, ContinuityCapsuleKind, ContinuityCapsuleScopeKind,
-        ContinuityCapsuleSource, ContinuityCapsuleStatus, LongTermMemoryConfidence,
-        LongTermMemoryEntry, LongTermMemoryFreshness, LongTermMemoryKind,
+        ContinuityCapsule, ContinuityCapsuleDraft, ContinuityCapsuleKind,
+        ContinuityCapsuleScopeKind, ContinuityCapsuleSource, ContinuityCapsuleStatus,
+        ContinuityCapsuleWriteOutcome, LongTermMemoryConfidence, LongTermMemoryDraft,
+        LongTermMemoryEntry, LongTermMemoryFreshness, LongTermMemoryKind, LongTermMemorySlot,
         LongTermMemorySourceScope, LongTermMemorySourceType, LongTermMemoryStaleHint,
     };
     use serde_json::json;
@@ -442,6 +488,78 @@ mod tests {
         .expect_err("candidate should be rejected");
 
         assert!(error.to_string().contains("candidate must require adjudication"));
+    }
+
+    #[test]
+    fn build_snapshot_rejects_empty_plane_selection() {
+        struct EmptyLongTermStore;
+        impl LongTermMemoryStore for EmptyLongTermStore {
+            fn upsert_many(&self, _drafts: &[LongTermMemoryDraft], _now_secs: u64) -> Result<usize> {
+                Ok(0)
+            }
+            fn recall(
+                &self,
+                _query: &str,
+                _source_chat_id: Option<&str>,
+                _limit: usize,
+            ) -> Result<Vec<LongTermMemoryEntry>> {
+                Ok(Vec::new())
+            }
+            fn get(&self, _id: &str) -> Result<Option<LongTermMemoryEntry>> {
+                Ok(None)
+            }
+            fn get_slot(&self, _slot: &LongTermMemorySlot) -> Result<Option<LongTermMemoryEntry>> {
+                Ok(None)
+            }
+            fn query(&self, _query: &LongTermMemoryQuery) -> Result<Vec<LongTermMemoryEntry>> {
+                Ok(Vec::new())
+            }
+            fn list(&self, _limit: usize) -> Result<Vec<LongTermMemoryEntry>> {
+                Ok(Vec::new())
+            }
+            fn delete(&self, _id: &str) -> Result<bool> {
+                Ok(false)
+            }
+            fn delete_slot(&self, _slot: &LongTermMemorySlot) -> Result<bool> {
+                Ok(false)
+            }
+            fn count(&self) -> Result<usize> {
+                Ok(0)
+            }
+        }
+
+        struct EmptyContinuityStore;
+        impl ContinuityCapsuleStore for EmptyContinuityStore {
+            fn upsert_many(
+                &self,
+                _drafts: &[ContinuityCapsuleDraft],
+                _now_secs: u64,
+            ) -> Result<ContinuityCapsuleWriteOutcome> {
+                Ok(ContinuityCapsuleWriteOutcome::default())
+            }
+            fn get(&self, _capsule_id: &str) -> Result<Option<ContinuityCapsule>> {
+                Ok(None)
+            }
+            fn list(&self, _limit: usize) -> Result<Vec<ContinuityCapsule>> {
+                Ok(Vec::new())
+            }
+            fn count(&self) -> Result<usize> {
+                Ok(0)
+            }
+        }
+
+        let error = build_memory_query_snapshot_from_stores(
+            &MemoryQuerySelection {
+                include_long_term: false,
+                include_continuity: false,
+                ..MemoryQuerySelection::default()
+            },
+            &EmptyLongTermStore,
+            &EmptyContinuityStore,
+        )
+        .expect_err("selection should be rejected");
+
+        assert_eq!(error.stage(), "memory_query_snapshot");
     }
 
     fn sample_long_term_entry() -> LongTermMemoryEntry {
